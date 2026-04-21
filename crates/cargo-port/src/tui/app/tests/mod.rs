@@ -40,7 +40,6 @@ use crate::project::NonRustProject;
 use crate::project::Package;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
-use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
 use crate::project::RemoteInfo;
 use crate::project::RemoteKind;
@@ -233,17 +232,11 @@ fn resolved_root_label(item: &RootItem) -> String {
     ProjectList::new(vec![item.clone()]).resolved_root_labels(true)[0].clone()
 }
 
-/// Wrap owned `RootItem`s as `ProjectEntry`s for test helpers that pass
-/// slices to snapshot/finder functions.
-pub(super) fn as_entries(items: Vec<RootItem>) -> Vec<ProjectEntry> {
-    items
-        .into_iter()
-        .map(crate::project::ProjectEntry::new)
-        .collect()
+/// Wrap owned `RootItem`s in a `ProjectList` for test helpers that pass
+/// them to snapshot/finder functions.
+pub(super) fn as_entries(items: Vec<RootItem>) -> ProjectList {
+    crate::project_list::ProjectList::new(items)
 }
-
-/// Shorthand for callers that build a single-root test.
-pub(super) fn as_entry(item: RootItem) -> ProjectEntry { crate::project::ProjectEntry::new(item) }
 
 fn make_non_rust_project(name: Option<&str>, path: &str) -> RootItem {
     RootItem::NonRust(NonRustProject::new(test_path(path), name.map(String::from)))

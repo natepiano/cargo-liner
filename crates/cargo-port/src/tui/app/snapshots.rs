@@ -24,6 +24,7 @@ use crate::project::VendoredPackage;
 use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
+use crate::project_list::ProjectList;
 use crate::tui::columns;
 use crate::tui::columns::COL_DISK;
 use crate::tui::columns::COL_MAIN;
@@ -44,7 +45,7 @@ use crate::tui::render::PREFIX_WT_VENDORED;
 
 /// Build the flat list of visible rows from the project list and expansion state.
 pub(super) fn build_visible_rows(
-    entries: &[ProjectEntry],
+    entries: &ProjectList,
     expanded: &HashSet<ExpandKey>,
     include_non_rust: bool,
 ) -> Vec<VisibleRow> {
@@ -311,7 +312,7 @@ pub(super) fn git_main_snapshot(checkout: Option<&CheckoutInfo>) -> String {
 }
 
 pub(super) fn build_fit_widths_snapshot(
-    entries: &[ProjectEntry],
+    entries: &ProjectList,
     root_labels: &[String],
     lint_enabled: bool,
     generation: u64,
@@ -490,7 +491,7 @@ fn observe_package_worktree_group_fit_widths(
 }
 
 pub(super) fn build_disk_cache_snapshot(
-    entries: &[ProjectEntry],
+    entries: &ProjectList,
 ) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
     let mut root_sorted = Vec::new();
     for entry in entries {
@@ -579,7 +580,7 @@ fn collect_project_list_entry_disk(
     }
 }
 
-pub(super) fn initial_disk_roots(projects: &[ProjectEntry]) -> HashSet<AbsolutePath> {
+pub(super) fn initial_disk_roots(projects: &ProjectList) -> HashSet<AbsolutePath> {
     let mut abs_paths: Vec<&AbsolutePath> =
         projects.iter().map(|entry| entry.item.path()).collect();
     abs_paths.sort_by(|left, right| {

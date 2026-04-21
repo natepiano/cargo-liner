@@ -72,7 +72,7 @@ fn visible_rows_workspace_with_worktrees() {
     ]
     .into();
 
-    let rows = snapshots::build_visible_rows(&[super::as_entry(root)], &expanded, true);
+    let rows = snapshots::build_visible_rows(&super::as_entries(vec![root]), &expanded, true);
 
     assert_eq!(rows.len(), 8, "expected 8 rows, got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { node_index: 0 }));
@@ -238,7 +238,8 @@ fn visible_rows_non_workspace_worktrees() {
     };
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&[super::as_entry(build_root())], &expanded, true);
+    let rows =
+        snapshots::build_visible_rows(&super::as_entries(vec![build_root()]), &expanded, true);
 
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -246,7 +247,8 @@ fn visible_rows_non_workspace_worktrees() {
     assert!(matches!(rows[2], VisibleRow::WorktreeEntry { .. }));
 
     let expanded2: HashSet<ExpandKey> = [ExpandKey::Node(0), ExpandKey::Worktree(0, 0)].into();
-    let rows2 = snapshots::build_visible_rows(&[super::as_entry(build_root())], &expanded2, true);
+    let rows2 =
+        snapshots::build_visible_rows(&super::as_entries(vec![build_root()]), &expanded2, true);
     assert_eq!(rows2.len(), 3, "no extra rows for non-workspace worktree");
 }
 
@@ -840,7 +842,7 @@ fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
         )],
     );
     let root_label = resolved_root_label(&item);
-    let entries = vec![super::as_entry(item)];
+    let entries = super::as_entries(vec![item]);
     let widths =
         snapshots::build_fit_widths_snapshot(&entries, std::slice::from_ref(&root_label), true, 0);
     let root_width = columns::display_width(crate::tui::render::PREFIX_ROOT_COLLAPSED)
@@ -872,7 +874,7 @@ fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
         )],
     );
     let root_label = resolved_root_label(&item);
-    let entries = vec![super::as_entry(item)];
+    let entries = super::as_entries(vec![item]);
     let widths =
         snapshots::build_fit_widths_snapshot(&entries, std::slice::from_ref(&root_label), true, 0);
     let root_width = columns::display_width(crate::tui::render::PREFIX_ROOT_COLLAPSED)
@@ -968,7 +970,7 @@ fn visible_rows_workspace_no_worktrees() {
     );
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&[super::as_entry(root)], &expanded, true);
+    let rows = snapshots::build_visible_rows(&super::as_entries(vec![root]), &expanded, true);
 
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -1005,7 +1007,7 @@ fn visible_rows_include_vendored_children() {
     let root = RootItem::Rust(RustProject::Workspace(ws));
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&[super::as_entry(root)], &expanded, true);
+    let rows = snapshots::build_visible_rows(&super::as_entries(vec![root]), &expanded, true);
 
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));

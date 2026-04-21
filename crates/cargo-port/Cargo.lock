@@ -263,6 +263,7 @@ dependencies = [
  "confique",
  "crossterm",
  "dirs",
+ "indexmap",
  "notify",
  "nucleo-matcher",
  "ratatui",
