@@ -68,8 +68,7 @@ pub(super) fn root_module_exports_item(
     child_file: &Path,
     item_name: &str,
 ) -> bool {
-    let Some(child_module_name) =
-        module_paths::module_name_for_child_boundary_file(child_file)
+    let Some(child_module_name) = module_paths::module_name_for_child_boundary_file(child_file)
     else {
         return false;
     };

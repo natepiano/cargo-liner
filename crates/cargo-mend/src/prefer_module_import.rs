@@ -95,20 +95,7 @@ fn scan_file(
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = line_offsets(&text);
 
-    // Collect `mod` declarations in this file to avoid conflicts
-    let declared_modules: BTreeSet<String> = syntax
-        .items
-        .iter()
-        .filter_map(|item| {
-            if let syn::Item::Mod(item_mod) = item
-                && item_mod.content.is_none()
-            {
-                Some(item_mod.ident.to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
+    let declared_modules = collect_declared_modules(&syntax);
 
     // Pass 1: detect candidate function imports
     let mut detector = ImportDetector {
@@ -175,26 +162,13 @@ fn scan_file(
     );
 
     if !inline_detector.candidates.is_empty() {
-        let mut will_import_modules: BTreeSet<Vec<String>> = BTreeSet::new();
-        for item in &syntax.items {
-            if let Item::Use(item_use) = item
-                && let Some(flat) = flatten_use_tree(&item_use.tree)
-                && flat.rename.is_none()
-                && let Some(abs) = resolve_to_absolute(&flat.segments, &current_module_path)
-                && !abs.is_empty()
-                && leaf_is_module(src_root, &abs)
-            {
-                will_import_modules.insert(abs);
-            }
-        }
-        for functions in module_to_functions.values() {
-            for candidate in functions {
-                will_import_modules.insert(candidate.absolute_module.clone());
-            }
-        }
-
+        let will_import_modules = build_will_import_modules(
+            &syntax,
+            src_root,
+            &current_module_path,
+            &module_to_functions,
+        );
         let insertion_offset = file_level_insertion_offset(&syntax, &text, &offsets);
-
         let (inline_findings, inline_fixes) = build_inline_call_findings_and_fixes(
             analysis_root,
             path,
@@ -209,6 +183,48 @@ fn scan_file(
     }
 
     Ok((findings, fixes))
+}
+
+fn collect_declared_modules(syntax: &syn::File) -> BTreeSet<String> {
+    syntax
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let syn::Item::Mod(item_mod) = item
+                && item_mod.content.is_none()
+            {
+                Some(item_mod.ident.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn build_will_import_modules(
+    syntax: &syn::File,
+    src_root: &Path,
+    current_module_path: &[String],
+    module_to_functions: &BTreeMap<String, Vec<RawCandidate>>,
+) -> BTreeSet<Vec<String>> {
+    let mut will_import_modules: BTreeSet<Vec<String>> = BTreeSet::new();
+    for item in &syntax.items {
+        if let Item::Use(item_use) = item
+            && let Some(flat) = flatten_use_tree(&item_use.tree)
+            && flat.rename.is_none()
+            && let Some(absolute) = resolve_to_absolute(&flat.segments, current_module_path)
+            && !absolute.is_empty()
+            && leaf_is_module(src_root, &absolute)
+        {
+            will_import_modules.insert(absolute);
+        }
+    }
+    for functions in module_to_functions.values() {
+        for candidate in functions {
+            will_import_modules.insert(candidate.absolute_module.clone());
+        }
+    }
+    will_import_modules
 }
 
 fn file_level_insertion_offset(syntax: &syn::File, text: &str, offsets: &[usize]) -> usize {
