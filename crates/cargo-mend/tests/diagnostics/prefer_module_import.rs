@@ -1326,3 +1326,88 @@ fn main() {
         "inline call should not be flagged when `mod` declaration exists in same file"
     );
 }
+
+#[test]
+fn inline_call_skipped_inside_nested_mod_block() {
+    // Regression: the fixer used to insert `use super::layout;` at file top
+    // while rewriting the call site inside `mod tests`. At file top `super`
+    // means a different module than inside the nested `mod tests`, so the
+    // inserted use is unused and the nested call site loses its binding.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_nested_mod_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod layout;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/layout.rs"),
+        "pub fn set_root_grow_height(_tree: &mut i32) {}\n",
+    )
+    .expect("write layout");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        r#"fn example() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn calls_layout() {
+        let mut tree = 0;
+        crate::parent::layout::set_root_grow_height(&mut tree);
+    }
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
+        "inline call inside a nested `mod` block should not be flagged — \
+         scope would break if the use were inserted at file top"
+    );
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read consumer");
+    assert!(
+        consumer.contains("crate::parent::layout::set_root_grow_height"),
+        "nested-mod call site should be left untouched, got:\n{consumer}"
+    );
+    assert!(
+        !consumer.contains("use super::layout;")
+            && !consumer.contains("use crate::parent::layout;"),
+        "no use should be inserted at file top, got:\n{consumer}"
+    );
+}

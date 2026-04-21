@@ -112,6 +112,7 @@ fn scan_file(
         current_module_path: &current_module_path,
         declared_modules: &declared_modules,
         candidates: Vec::new(),
+        inline_mod_depth: 0,
     };
     inline_detector.visit_file(&syntax);
 
@@ -442,13 +443,31 @@ struct InlineCallDetector<'a> {
     current_module_path: &'a [String],
     declared_modules:    &'a BTreeSet<String>,
     candidates:          Vec<InlineCallCandidate>,
+    inline_mod_depth:    usize,
 }
 
 impl Visit<'_> for InlineCallDetector<'_> {
     // Paths inside `use` statements are not inline calls
     fn visit_item_use(&mut self, _: &ItemUse) {}
 
+    // Inline `mod foo { ... }` blocks introduce a new scope where `super`
+    // and the file-level insertion point no longer match the detector's
+    // file-level reasoning. Skip candidates collected inside them — fixing
+    // these would require scope-aware use insertion.
+    fn visit_item_mod(&mut self, node: &syn::ItemMod) {
+        if node.content.is_some() {
+            self.inline_mod_depth += 1;
+            syn::visit::visit_item_mod(self, node);
+            self.inline_mod_depth -= 1;
+        } else {
+            syn::visit::visit_item_mod(self, node);
+        }
+    }
+
     fn visit_expr_path(&mut self, node: &ExprPath) {
+        if self.inline_mod_depth > 0 {
+            return;
+        }
         if node.qself.is_some() {
             return;
         }
