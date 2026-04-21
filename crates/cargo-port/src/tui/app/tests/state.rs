@@ -3,8 +3,8 @@ use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::project::AbsolutePath;
 use crate::project::WorktreeGroup;
-use crate::tui::panes::DetailField;
 use crate::tui::panes;
+use crate::tui::panes::DetailField;
 
 #[test]
 fn lint_runtime_waits_for_scan_completion() {

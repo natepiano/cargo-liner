@@ -38,12 +38,12 @@ use super::render;
 use crate::ci;
 use crate::config;
 use crate::http::HttpClient;
+use crate::perf_log;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
-use crate::perf_log;
 
 pub(super) enum ExampleMsg {
     Output(String),

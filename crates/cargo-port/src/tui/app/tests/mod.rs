@@ -29,6 +29,7 @@ use crate::config::ScrollDirection;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::lint::LintStatus;
+use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::CheckoutInfo;
@@ -55,16 +56,15 @@ use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
 use crate::project_list::ProjectList;
+use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PaneId;
+use crate::tui::render;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
-use crate::tui::render;
-use crate::scan;
-use crate::project;
 
 mod background;
 mod discovery_shimmer;
@@ -487,8 +487,7 @@ fn add_git_worktree(primary_dir: &Path, worktree_dir: &Path, branch: &str) {
 
 fn item_from_project_dir(dir: &Path) -> RootItem {
     let cargo_toml = dir.join("Cargo.toml");
-    let parsed =
-        project::from_cargo_toml(&cargo_toml).unwrap_or_else(|_| std::process::abort());
+    let parsed = project::from_cargo_toml(&cargo_toml).unwrap_or_else(|_| std::process::abort());
     scan::cargo_project_to_item(parsed)
 }
 

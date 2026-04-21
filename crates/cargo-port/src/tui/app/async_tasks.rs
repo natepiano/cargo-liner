@@ -11,20 +11,25 @@ use super::ExpandKey::Node;
 use super::ExpandKey::Worktree;
 use super::ExpandKey::WorktreeGroup;
 use super::service_state::ServiceAvailability;
+use super::snapshots;
 use super::types::ConfigFileStamp;
 use super::types::PollBackgroundStats;
 use super::types::ScanPhase;
 use super::types::StartupPhaseTracker;
+use crate::ci;
 use crate::ci::OwnerRepo;
+use crate::config;
 use crate::config::CargoPortConfig;
 use crate::constants::SERVICE_RETRY_SECS;
 use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
+use crate::keymap;
 use crate::keymap::KeymapError;
 use crate::keymap::KeymapErrorReason::ParseError;
 use crate::lint;
 use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
+use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::GitRepoPresence;
@@ -45,6 +50,7 @@ use crate::tui::constants::STARTUP_PHASE_GIT;
 use crate::tui::constants::STARTUP_PHASE_GITHUB;
 use crate::tui::constants::STARTUP_PHASE_LINT;
 use crate::tui::panes::PaneId;
+use crate::tui::terminal;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -54,12 +60,6 @@ use crate::tui::toasts::TrackedItem;
 use crate::watcher;
 use crate::watcher::WatchRequest;
 use crate::watcher::WatcherMsg;
-use super::snapshots;
-use crate::tui::terminal;
-use crate::project;
-use crate::keymap;
-use crate::config;
-use crate::ci;
 
 #[derive(Clone)]
 struct LegacyRootExpansion {
@@ -1627,33 +1627,32 @@ impl App {
         let repo_url = repo_url.to_string();
         let ci_run_count = self.ci_run_count();
         thread::spawn(move || {
-            let data =
-                scan::load_cached_repo_data(&repo_cache, &owner_repo).unwrap_or_else(|| {
-                    let _ = tx.send(BackgroundMsg::RepoFetchQueued {
-                        repo: owner_repo.clone(),
-                    });
-                    let (result, meta, signal) = scan::fetch_ci_runs_cached(
-                        &client,
-                        &repo_url,
-                        owner_repo.owner(),
-                        owner_repo.repo(),
-                        ci_run_count,
-                    );
-                    scan::emit_service_signal(&tx, signal);
-                    let (runs, github_total) = match result {
-                        crate::scan::CiFetchResult::Loaded { runs, github_total } => {
-                            (runs, github_total)
-                        },
-                        crate::scan::CiFetchResult::CacheOnly(runs) => (runs, 0),
-                    };
-                    let data = crate::scan::CachedRepoData {
-                        runs,
-                        meta,
-                        github_total,
-                    };
-                    scan::store_cached_repo_data(&repo_cache, &owner_repo, data.clone());
-                    data
+            let data = scan::load_cached_repo_data(&repo_cache, &owner_repo).unwrap_or_else(|| {
+                let _ = tx.send(BackgroundMsg::RepoFetchQueued {
+                    repo: owner_repo.clone(),
                 });
+                let (result, meta, signal) = scan::fetch_ci_runs_cached(
+                    &client,
+                    &repo_url,
+                    owner_repo.owner(),
+                    owner_repo.repo(),
+                    ci_run_count,
+                );
+                scan::emit_service_signal(&tx, signal);
+                let (runs, github_total) = match result {
+                    crate::scan::CiFetchResult::Loaded { runs, github_total } => {
+                        (runs, github_total)
+                    },
+                    crate::scan::CiFetchResult::CacheOnly(runs) => (runs, 0),
+                };
+                let data = crate::scan::CachedRepoData {
+                    runs,
+                    meta,
+                    github_total,
+                };
+                scan::store_cached_repo_data(&repo_cache, &owner_repo, data.clone());
+                data
+            });
 
             let _ = tx.send(BackgroundMsg::CiRuns {
                 path:         path.clone(),
@@ -2371,12 +2370,7 @@ impl App {
         {
             self.priority_fetch_path = Some(abs_key);
             let abs_str = abs_path.display().to_string();
-            terminal::spawn_priority_fetch(
-                self,
-                display_path.as_str(),
-                &abs_str,
-                name.as_ref(),
-            );
+            terminal::spawn_priority_fetch(self, display_path.as_str(), &abs_str, name.as_ref());
         }
     }
 }

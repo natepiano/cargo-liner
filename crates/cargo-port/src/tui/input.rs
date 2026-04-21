@@ -14,19 +14,19 @@ use super::app::App;
 use super::app::ConfirmAction;
 use super::app::PendingClean;
 use super::finder;
+use super::interaction;
+use super::keymap_ui;
 use super::panes;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::settings;
 use super::shortcuts::InputContext;
+use super::terminal;
 use crate::keymap::GlobalAction;
 use crate::keymap::KeyBind;
 use crate::keymap::ProjectListAction;
 use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
-use super::terminal;
-use super::keymap_ui;
-use super::interaction;
 
 /// Last known mouse position, updated from every mouse event. Used to
 /// synthesize a click when `FocusGained` arrives because iTerm2 eats the

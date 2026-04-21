@@ -2,6 +2,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
+use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::constants::IN_SYNC;
@@ -14,6 +15,7 @@ use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::http::RateLimitQuota;
+use crate::lint;
 use crate::lint::LintRun;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -34,8 +36,6 @@ use crate::project::WorktreeGroup;
 use crate::tui::app::App;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::render;
-use crate::lint;
-use crate::ci;
 
 /// Get the local UTC offset in seconds (e.g., -28800 for PST).
 fn local_utc_offset_secs() -> i64 {
@@ -1019,10 +1019,7 @@ fn worktrees_from_item(item: &RootItem) -> Vec<WorktreeInfo> {
             let ahead_behind = if path.as_path() == primary_path.as_path() {
                 Some((0, 0))
             } else {
-                project::worktree_ahead_behind_primary(
-                    path.as_path(),
-                    primary_path.as_path(),
-                )
+                project::worktree_ahead_behind_primary(path.as_path(), primary_path.as_path())
             };
             WorktreeInfo {
                 name,

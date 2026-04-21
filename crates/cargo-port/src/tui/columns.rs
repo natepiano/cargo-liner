@@ -11,6 +11,7 @@ use super::constants::ERROR_COLOR;
 use super::constants::LABEL_COLOR;
 use super::constants::SECONDARY_TEXT_COLOR;
 use super::constants::TITLE_COLOR;
+use super::render;
 use crate::ci::Conclusion;
 use crate::constants::GIT_IGNORED_COLOR;
 use crate::constants::GIT_MODIFIED_COLOR;
@@ -19,7 +20,6 @@ use crate::constants::IN_SYNC;
 use crate::project::GitStatus;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
-use super::render;
 
 // ── Column indices ──────────────────────────────────────────────────
 pub(super) const COL_NAME: usize = 0;

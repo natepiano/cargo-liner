@@ -3,9 +3,9 @@ use super::info::WorktreeHealth;
 use super::package::Package;
 use super::paths::AbsolutePath;
 use super::project_fields::ProjectFields;
+use super::root_item;
 use super::workspace::Workspace;
 use crate::lint::LintStatus;
-use super::root_item;
 
 /// A worktree group: primary checkout + linked worktree checkouts.
 ///

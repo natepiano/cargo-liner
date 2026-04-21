@@ -24,6 +24,7 @@ use super::http::HttpClient;
 use super::http::ServiceKind;
 use super::http::ServiceSignal;
 use super::lint::LintStatus;
+use super::project;
 use super::project::AbsolutePath;
 use super::project::CargoParseResult;
 use super::project::CheckoutInfo;
@@ -41,7 +42,6 @@ use super::project::Submodule;
 use super::project::VendoredPackage;
 use super::project::Workspace;
 use super::project::WorktreeGroup;
-use super::project;
 use crate::enrichment;
 
 /// Messages sent from background threads to the main event loop.

@@ -20,6 +20,7 @@ use super::types::ScanState;
 use super::types::SelectionPaths;
 use super::types::SelectionSync;
 use super::types::UiModes;
+use crate::config;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
 use crate::keymap;
@@ -42,7 +43,6 @@ use crate::tui::terminal::ExampleMsg;
 use crate::tui::toasts::ToastManager;
 use crate::watcher;
 use crate::watcher::WatcherMsg;
-use crate::config;
 
 pub(super) struct AppChannels {
     example_tx:  mpsc::Sender<ExampleMsg>,

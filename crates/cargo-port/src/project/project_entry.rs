@@ -2,11 +2,11 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
 
+use super::git;
 use super::git::RepoInfo;
 use super::info::GitHubInfo;
 use super::info::ProjectCiData;
 use super::root_item::RootItem;
-use super::git;
 
 /// Repo-level metadata shared by every checkout of the same git repo.
 ///

@@ -6,6 +6,7 @@ use std::time::Instant;
 use super::App;
 use super::types::DiscoveryRowKind;
 use super::types::DiscoveryShimmer;
+use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::config::NavigationKeys;
@@ -29,16 +30,15 @@ use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::tui::columns;
+use crate::tui::panes;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::PaneId;
+use crate::tui::render;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastStyle::Warning;
 use crate::tui::toasts::ToastTaskId;
 use crate::tui::toasts::ToastView;
 use crate::tui::toasts::TrackedItem;
-use crate::tui::render;
-use crate::tui::panes;
-use crate::ci;
 
 impl App {
     pub(in super::super) const fn lint_enabled(&self) -> bool { self.current_config.lint.enabled }
@@ -403,10 +403,8 @@ impl App {
 
     /// Aggregate disk usage for a `RootItem`.
     pub(in super::super) fn formatted_disk_for_item(item: &RootItem) -> String {
-        item.disk_usage_bytes().map_or_else(
-            || render::format_bytes(0),
-            render::format_bytes,
-        )
+        item.disk_usage_bytes()
+            .map_or_else(|| render::format_bytes(0), render::format_bytes)
     }
 
     /// Aggregate CI for a `RootItem`.

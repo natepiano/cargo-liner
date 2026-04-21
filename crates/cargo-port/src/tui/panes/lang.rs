@@ -12,6 +12,7 @@ use ratatui::widgets::TableState;
 
 use super::PaneId;
 use super::package::RenderStyles;
+use crate::project;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
 use crate::tui::app::App;
@@ -22,7 +23,6 @@ use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::render;
-use crate::project;
 
 /// Fixed numeric column width for language stats.
 const LANG_NUM_COL: u16 = 8;

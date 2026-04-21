@@ -15,16 +15,16 @@ use crate::keymap::KeyBind;
 use crate::keymap::LintsAction;
 use crate::keymap::PackageAction;
 use crate::keymap::TargetsAction;
+use crate::lint;
+use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::ConfirmAction;
-use crate::tui::pane::Pane;
 use crate::tui::input;
-use crate::project;
-use crate::lint;
+use crate::tui::pane::Pane;
 
 /// Whether to build in release or debug mode.
 #[derive(Clone, Copy)]

@@ -41,10 +41,10 @@ use super::project::ProjectFields;
 use super::project::RepoInfo;
 use super::scan;
 use super::scan::BackgroundMsg;
+use crate::enrichment;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project::RootItem::NonRust;
-use crate::enrichment;
 
 /// Request to register an already-known project with the watcher.
 pub(crate) struct WatchRequest {

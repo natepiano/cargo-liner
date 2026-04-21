@@ -10,6 +10,7 @@ use toml::Value;
 
 use super::git;
 use super::info::ProjectInfo;
+use super::member_group;
 use super::non_rust::NonRustProject;
 use super::package::Package;
 use super::paths::AbsolutePath;
@@ -17,7 +18,6 @@ use super::project_fields::ProjectFields;
 use super::rust_info::Cargo;
 use super::rust_info::RustInfo;
 use super::workspace::Workspace;
-use super::member_group;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

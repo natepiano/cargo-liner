@@ -72,9 +72,7 @@ impl RootItem {
         }
     }
 
-    pub(crate) fn git_directory(&self) -> Option<AbsolutePath> {
-        git::resolve_git_dir(self.path())
-    }
+    pub(crate) fn git_directory(&self) -> Option<AbsolutePath> { git::resolve_git_dir(self.path()) }
 
     /// Directory leaf name for top-level root labels and disambiguation.
     pub(crate) fn root_directory_name(&self) -> RootDirectoryName {
@@ -362,9 +360,9 @@ impl RootItem {
                     if rust_project::vendored_in_workspace(primary, path).is_some() {
                         return rust_project::vendored_in_workspace_mut(primary, path);
                     }
-                    let idx = linked.iter().position(|l| {
-                        rust_project::vendored_in_workspace(l, path).is_some()
-                    })?;
+                    let idx = linked
+                        .iter()
+                        .position(|l| rust_project::vendored_in_workspace(l, path).is_some())?;
                     rust_project::vendored_in_workspace_mut(&mut linked[idx], path)
                 },
                 WorktreeGroup::Packages {
@@ -373,9 +371,9 @@ impl RootItem {
                     if rust_project::vendored_in_package(primary, path).is_some() {
                         return rust_project::vendored_in_package_mut(primary, path);
                     }
-                    let idx = linked.iter().position(|l| {
-                        rust_project::vendored_in_package(l, path).is_some()
-                    })?;
+                    let idx = linked
+                        .iter()
+                        .position(|l| rust_project::vendored_in_package(l, path).is_some())?;
                     rust_project::vendored_in_package_mut(&mut linked[idx], path)
                 },
             },
@@ -547,11 +545,11 @@ fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> 
     any.then_some(total)
 }
 
+use super::git;
 use super::package::Package;
 use super::rust_info::RustInfo;
-use super::workspace::Workspace;
 use super::rust_project;
-use super::git;
+use super::workspace::Workspace;
 
 pub(super) fn single_live_workspace<'a>(
     primary: &'a Workspace,

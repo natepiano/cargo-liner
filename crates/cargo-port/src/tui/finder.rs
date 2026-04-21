@@ -28,7 +28,9 @@ use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::LABEL_COLOR;
 use super::constants::MAX_FINDER_RESULTS;
 use super::constants::TITLE_COLOR;
+use super::interaction;
 use super::interaction::UiSurface::Overlay;
+use super::panes;
 use super::panes::PaneId;
 use super::panes::RunTargetKind;
 use crate::project::AbsolutePath;
@@ -43,8 +45,6 @@ use crate::project::RustProject;
 use crate::project::VendoredPackage;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
-use super::panes;
-use super::interaction;
 
 /// A searchable item in the universal finder.
 #[derive(Clone)]

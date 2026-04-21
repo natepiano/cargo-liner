@@ -845,9 +845,8 @@ fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
         snapshots::build_fit_widths_snapshot(&entries, std::slice::from_ref(&root_label), true, 0);
     let root_width = columns::display_width(crate::tui::render::PREFIX_ROOT_COLLAPSED)
         + columns::display_width(&root_label);
-    let primary_entry_width =
-        columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
-            + columns::display_width("obsidian_knife");
+    let primary_entry_width = columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
+        + columns::display_width("obsidian_knife");
     let linked_entry_width = columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
         + columns::display_width("obsidian_knife_test");
 
@@ -878,9 +877,8 @@ fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
         snapshots::build_fit_widths_snapshot(&entries, std::slice::from_ref(&root_label), true, 0);
     let root_width = columns::display_width(crate::tui::render::PREFIX_ROOT_COLLAPSED)
         + columns::display_width(&root_label);
-    let primary_entry_width =
-        columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
-            + columns::display_width("cargo-port");
+    let primary_entry_width = columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
+        + columns::display_width("cargo-port");
     let linked_entry_width = columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
         + columns::display_width("cargo-port_test");
 
