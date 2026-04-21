@@ -87,11 +87,12 @@ impl RootItem {
     }
 
     pub(crate) fn worktree_badge_suffix(&self) -> Option<String> {
-        let live_worktrees = match self {
-            Self::Worktrees(g) if g.renders_as_group() => g.live_entry_count(),
+        let visible_worktrees = match self {
+            Self::Worktrees(g) if g.renders_as_group() => g.visible_entry_count(),
             _ => 0,
         };
-        (live_worktrees > 0).then(|| format!(" {}:{live_worktrees}", crate::constants::WORKTREE))
+        (visible_worktrees > 0)
+            .then(|| format!(" {}:{visible_worktrees}", crate::constants::WORKTREE))
     }
 
     /// Whether this item has expandable children.

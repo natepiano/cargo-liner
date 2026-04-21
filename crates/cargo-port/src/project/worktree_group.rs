@@ -91,7 +91,7 @@ impl WorktreeGroup {
         }
     }
 
-    fn visible_entry_count(&self) -> usize {
+    pub(crate) fn visible_entry_count(&self) -> usize {
         match self {
             Self::Workspaces {
                 primary, linked, ..
