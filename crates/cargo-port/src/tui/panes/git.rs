@@ -452,10 +452,19 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
                 ]));
             }
         } else {
-            accum.lines.push(Line::from(vec![
-                Span::styled(format!(" {label:<label_width$} "), ls),
-                Span::styled(value, vs),
-            ]));
+            let mut spans = vec![Span::styled(format!(" {label:<label_width$} "), ls)];
+            if is_rate_limit_row
+                && data.github_status.is_available()
+                && let Some(idx) = value.find(" resets ")
+            {
+                let (base, reset) = value.split_at(idx);
+                let reset_style = selection.patch(Style::default().fg(INACTIVE_BORDER_COLOR));
+                spans.push(Span::styled(base.to_string(), vs));
+                spans.push(Span::styled(reset.to_string(), reset_style));
+            } else {
+                spans.push(Span::styled(value, vs));
+            }
+            accum.lines.push(Line::from(spans));
         }
     }
 }

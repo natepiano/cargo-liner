@@ -4,6 +4,7 @@ mod columns;
 mod config_reload;
 mod constants;
 mod cpu;
+mod duration_fmt;
 mod finder;
 mod input;
 mod interaction;

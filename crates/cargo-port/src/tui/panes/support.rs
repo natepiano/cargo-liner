@@ -610,15 +610,10 @@ pub(super) fn format_rate_limit_bucket(quota: Option<RateLimitQuota>) -> String 
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let secs = reset_at.saturating_sub(now);
-    format!("{base} resets {}", format_countdown(secs))
-}
-
-/// Format a non-negative second count as `HH:MM:SS`.
-fn format_countdown(secs: u64) -> String {
-    let hours = secs / 3600;
-    let mins = (secs % 3600) / 60;
-    let secs = secs % 60;
-    format!("{hours:02}:{mins:02}:{secs:02}")
+    format!(
+        "{base} resets {}",
+        crate::tui::duration_fmt::format_progressive(secs)
+    )
 }
 
 /// All fields for the `Package` column.
@@ -1499,21 +1494,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn countdown_zero_is_all_zeros() {
-        assert_eq!(format_countdown(0), "00:00:00");
-    }
-
-    #[test]
-    fn countdown_formats_hours_minutes_seconds() {
-        assert_eq!(format_countdown(3_723), "01:02:03");
-    }
-
-    #[test]
-    fn countdown_handles_multi_hour_values() {
-        assert_eq!(format_countdown(45_296), "12:34:56");
-    }
-
-    #[test]
     fn rate_limit_bucket_empty_without_quota() {
         assert!(format_rate_limit_bucket(None).is_empty());
     }
@@ -1548,9 +1528,6 @@ mod tests {
             remaining: 4900,
             reset_at:  Some(0),
         };
-        assert_eq!(
-            format_rate_limit_bucket(Some(quota)),
-            "4900/5000 resets 00:00:00"
-        );
+        assert_eq!(format_rate_limit_bucket(Some(quota)), "4900/5000 resets 0s");
     }
 }

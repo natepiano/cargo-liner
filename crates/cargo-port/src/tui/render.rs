@@ -658,6 +658,16 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             .add_modifier(Modifier::BOLD);
         left_spans.push(Span::styled(" ⟳ scanning… ", key_style));
     }
+    let uptime_secs = app.animation_elapsed().as_secs();
+    let uptime_label_style = Style::default()
+        .fg(TITLE_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let uptime_value_style = Style::default().fg(Color::White);
+    left_spans.push(Span::styled(" Uptime: ", uptime_label_style));
+    left_spans.push(Span::styled(
+        format!("{} ", super::duration_fmt::format_progressive(uptime_secs)),
+        uptime_value_style,
+    ));
     left_spans.extend(shortcut_spans(&groups.navigation));
 
     let center_spans = shortcut_spans(&groups.actions);
