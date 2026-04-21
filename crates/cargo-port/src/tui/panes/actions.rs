@@ -3,6 +3,7 @@ use std::path::Path;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 
+use super::BuildMode;
 use super::CiFetchKind;
 use super::DetailField;
 use super::PaneId;
@@ -26,13 +27,6 @@ use crate::tui::app::ConfirmAction;
 use crate::tui::input;
 use crate::tui::pane::Pane;
 
-/// Whether to build in release or debug mode.
-#[derive(Clone, Copy)]
-enum BuildMode {
-    Debug,
-    Release,
-}
-
 fn handle_target_action(app: &mut App, mode: BuildMode) {
     let Some(targets_data) = app.pane_data().targets.clone() else {
         return;
@@ -53,7 +47,7 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
             target_name: entry.name.clone(),
             package_name,
             kind: entry.kind,
-            release: matches!(mode, BuildMode::Release),
+            build_mode: mode,
         });
     }
 }

@@ -92,7 +92,7 @@ pub(super) struct App {
     bg_rx:                    mpsc::Receiver<BackgroundMsg>,
     priority_fetch_path:      Option<AbsolutePath>,
     expanded:                 HashSet<ExpandKey>,
-    pane_manager:             PaneManager<PaneId>,
+    pane_manager:             PaneManager,
     pane_data:                PaneDataStore,
     settings_edit_buf:        String,
     settings_edit_cursor:     usize,
@@ -268,11 +268,9 @@ impl App {
     #[cfg(test)]
     pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> { &mut self.expanded }
 
-    pub(super) const fn pane_manager(&self) -> &PaneManager<PaneId> { &self.pane_manager }
+    pub(super) const fn pane_manager(&self) -> &PaneManager { &self.pane_manager }
 
-    pub(super) const fn pane_manager_mut(&mut self) -> &mut PaneManager<PaneId> {
-        &mut self.pane_manager
-    }
+    pub(super) const fn pane_manager_mut(&mut self) -> &mut PaneManager { &mut self.pane_manager }
 
     pub(super) const fn finder(&self) -> &types::FinderState { &self.finder }
 

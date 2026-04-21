@@ -695,7 +695,6 @@ fn wrapped_line_count(line: &str, width: usize) -> usize {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use std::time::Duration;
 

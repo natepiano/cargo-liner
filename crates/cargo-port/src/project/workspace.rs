@@ -16,7 +16,8 @@ use super::project_fields::ProjectFields;
 use super::rust_info::RustInfo;
 
 /// A Rust workspace project. Contains member groups in addition to the
-/// shared `RustInfo` data. Derefs to `RustInfo` for uniform access.
+/// shared `RustInfo` data. Implements `Deref<Target = RustInfo>` for uniform
+/// access.
 ///
 /// Construct via struct literal — all fields default to empty/none, so tests
 /// can use `..Default::default()`.

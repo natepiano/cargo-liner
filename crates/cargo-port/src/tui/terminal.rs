@@ -393,7 +393,7 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
             cmd.arg("bench").arg("--bench").arg(&run.target_name);
         },
     }
-    if run.release {
+    if run.build_mode.is_release() {
         cmd.arg("--release");
     }
     if let Some(pkg) = &run.package_name {
@@ -420,7 +420,7 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pid);
 
     let name = run.target_name.clone();
-    let mode = if run.release { " (release)" } else { " (dev)" };
+    let mode = run.build_mode.label();
     app.set_example_output(vec![format!("Building {name}{mode}...")]);
     app.set_example_running(Some(format!("{name}{mode}")));
 

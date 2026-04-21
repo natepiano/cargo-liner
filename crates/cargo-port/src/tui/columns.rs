@@ -63,6 +63,20 @@ pub(super) struct ColumnDef {
     pub header_mode: HeaderMode,
 }
 
+impl ColumnDef {
+    pub(super) fn seed_width(&self) -> usize {
+        let base = match self.width {
+            ColumnWidth::Fixed(width) | ColumnWidth::Fit { min: width } => width,
+        };
+        if matches!(self.width, ColumnWidth::Fit { .. }) && self.header_mode == HeaderMode::Standard
+        {
+            base.max(display_width(self.header))
+        } else {
+            base
+        }
+    }
+}
+
 /// The canonical column layout — single source of truth.
 pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
     [
@@ -202,15 +216,7 @@ impl ResolvedWidths {
         let defs = column_defs(lint_enabled);
         let mut widths = [0usize; NUM_COLS];
         for (i, def) in defs.iter().enumerate() {
-            widths[i] = match def.width {
-                ColumnWidth::Fixed(w) => w,
-                ColumnWidth::Fit { min } => min,
-            };
-            if matches!(def.width, ColumnWidth::Fit { .. })
-                && def.header_mode == HeaderMode::Standard
-            {
-                widths[i] = widths[i].max(display_width(def.header));
-            }
+            widths[i] = def.seed_width();
         }
         Self {
             widths,
@@ -650,28 +656,25 @@ pub(super) fn build_summary_cells(widths: &ResolvedWidths, disk: &str) -> RowCel
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
-#[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use super::*;
     use crate::project::WorktreeHealth;
+
+    fn seeded_width(index: usize) -> usize { column_defs(true)[index].seed_width() }
 
     #[test]
     fn resolved_widths_seeds_from_defs() {
         let widths = ResolvedWidths::new(true);
         // Fixed columns get their fixed width
-        assert_eq!(widths.get(COL_LINT), 2);
-        assert_eq!(widths.get(COL_LANG), 2);
-        assert_eq!(widths.get(COL_CI), 2);
-        assert_eq!(widths.get(COL_GIT_PATH), 2);
+        assert_eq!(widths.get(COL_LINT), seeded_width(COL_LINT));
+        assert_eq!(widths.get(COL_LANG), seeded_width(COL_LANG));
+        assert_eq!(widths.get(COL_CI), seeded_width(COL_CI));
+        assert_eq!(widths.get(COL_GIT_PATH), seeded_width(COL_GIT_PATH));
         // Fit columns get their min
-        assert_eq!(widths.get(COL_NAME), 10);
-        assert_eq!(widths.get(COL_DISK), 4);
-        assert_eq!(widths.get(COL_SYNC), 2);
-        assert_eq!(widths.get(COL_MAIN), 1);
+        assert_eq!(widths.get(COL_NAME), seeded_width(COL_NAME));
+        assert_eq!(widths.get(COL_DISK), seeded_width(COL_DISK));
+        assert_eq!(widths.get(COL_SYNC), seeded_width(COL_SYNC));
+        assert_eq!(widths.get(COL_MAIN), seeded_width(COL_MAIN));
     }
 
     #[test]
@@ -681,7 +684,7 @@ mod tests {
         assert_eq!(widths.get(COL_NAME), 25);
         // Fixed column ignores observe
         widths.observe(COL_LINT, 99);
-        assert_eq!(widths.get(COL_LINT), 2);
+        assert_eq!(widths.get(COL_LINT), seeded_width(COL_LINT));
     }
 
     #[test]

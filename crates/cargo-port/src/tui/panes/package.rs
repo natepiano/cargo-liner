@@ -520,7 +520,7 @@ pub fn render_targets_panel(
     styles: &RenderStyles,
     area: Rect,
 ) {
-    let bin_count: usize = usize::from(data.is_binary);
+    let bin_count: usize = usize::from(data.primary_binary.is_some());
     let ex_count: usize = data.examples.iter().map(|group| group.names.len()).sum();
     let bench_count = data.benches.len();
 

@@ -16,7 +16,6 @@ pub(super) use layout::PaneSizeSpec;
 pub(super) use layout::ResolvedPane;
 pub(super) use layout::ResolvedPaneLayout;
 pub(super) use layout::constraints_for_sizes;
-pub(super) use manager::PaneKey;
 pub(super) use manager::PaneManager;
 pub(super) use rules::PaneRule;
 pub(super) use rules::RuleTitle;

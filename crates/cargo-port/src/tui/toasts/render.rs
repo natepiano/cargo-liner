@@ -496,7 +496,6 @@ fn render_toast_body(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use std::time::Duration;
     use std::time::Instant;

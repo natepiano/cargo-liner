@@ -55,6 +55,7 @@ pub(super) use spec::PaneId;
 pub(super) use spec::behavior;
 pub(super) use spec::has_row_hitboxes;
 pub(super) use spec::size_spec;
+pub(super) use support::BuildMode;
 pub(super) use support::CiData;
 #[cfg(test)]
 pub(super) use support::CiEmptyState;

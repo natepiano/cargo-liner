@@ -1110,14 +1110,14 @@ fn probe_new_projects(
                 spawn_project_refresh_after(bg_tx.clone(), abs_path.clone(), NEW_PROJECT_DEBOUNCE);
             }
             let tx = bg_tx.clone();
-            let task_ctx = scan::FetchContext {
+            let fetch_context = scan::FetchContext {
                 client: client.clone(),
             };
             enrichment::spawn_language_scan(abs_path.clone(), bg_tx.clone());
             rayon::spawn(move || {
                 let request = scan::ProjectDetailRequest {
                     tx: &tx,
-                    ctx: &task_ctx,
+                    fetch_context: &fetch_context,
                     _project_path: display_path.as_str(),
                     abs_path: &abs_path,
                     project_name: project_name.as_deref(),

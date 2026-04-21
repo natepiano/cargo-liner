@@ -109,7 +109,6 @@ fn truncate_to_width(text: &str, target_width: usize, add_ellipsis: bool) -> Str
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
 

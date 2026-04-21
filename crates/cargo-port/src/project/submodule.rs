@@ -168,10 +168,6 @@ fn ls_tree_submodule_commits(project_root: &Path) -> std::collections::HashMap<S
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use super::*;
 

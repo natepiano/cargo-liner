@@ -1003,7 +1003,7 @@ pub(crate) struct FetchContext {
 
 pub(crate) struct ProjectDetailRequest<'a> {
     pub tx:            &'a mpsc::Sender<BackgroundMsg>,
-    pub ctx:           &'a FetchContext,
+    pub fetch_context: &'a FetchContext,
     pub _project_path: &'a str,
     pub abs_path:      &'a Path,
     pub project_name:  Option<&'a str>,
@@ -1014,12 +1014,12 @@ pub(crate) struct ProjectDetailRequest<'a> {
 /// the provided channel. Used by both the main scan and project discovery paths.
 pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     let tx = req.tx;
-    let ctx = req.ctx;
+    let fetch_context = req.fetch_context;
     let abs_path = req.abs_path;
     let abs: AbsolutePath = abs_path.to_path_buf().into();
     let project_name = req.project_name;
     let repo_presence = req.repo_presence;
-    let client = &ctx.client;
+    let client = &fetch_context.client;
     // Local git info — includes git status but skips first_commit,
     // which is handled separately by
     // `schedule_git_first_commit_refreshes` (batched by repo root).
@@ -1051,7 +1051,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
                 submodules: submodules.clone(),
             });
             for sub in &submodules {
-                enrichment::enrich(sub, tx, ctx);
+                enrichment::enrich(sub, tx, fetch_context);
             }
         }
     }

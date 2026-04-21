@@ -25,7 +25,7 @@ use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
 use crate::keymap;
 use crate::keymap::KeymapError;
-use crate::keymap::KeymapErrorReason::ParseError;
+use crate::keymap::KeymapErrorReason::Parse;
 use crate::lint;
 use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
@@ -157,7 +157,7 @@ impl App {
                     scope:  String::new(),
                     action: String::new(),
                     key:    String::new(),
-                    reason: ParseError(format!("read error: {e}")),
+                    reason: Parse(format!("read error: {e}")),
                 }]);
                 return;
             },
@@ -435,7 +435,7 @@ impl App {
 
     fn schedule_startup_project_details(&self) {
         let tx = self.bg_tx.clone();
-        let task_ctx = std::sync::Arc::new(crate::scan::FetchContext {
+        let fetch_context = std::sync::Arc::new(crate::scan::FetchContext {
             client: self.http_client.clone(),
         });
         self.projects.for_each_leaf(|item| {
@@ -456,11 +456,11 @@ impl App {
                 GitRepoPresence::OutsideRepo
             };
             let tx = tx.clone();
-            let task_ctx = std::sync::Arc::clone(&task_ctx);
+            let fetch_context = std::sync::Arc::clone(&fetch_context);
             rayon::spawn(move || {
                 let request = crate::scan::ProjectDetailRequest {
                     tx: &tx,
-                    ctx: task_ctx.as_ref(),
+                    fetch_context: fetch_context.as_ref(),
                     _project_path: display_path.as_str(),
                     abs_path: &abs_path,
                     project_name: project_name.as_deref(),

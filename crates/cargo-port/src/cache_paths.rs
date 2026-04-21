@@ -42,10 +42,6 @@ pub(crate) fn lint_runs_root_for(cfg: &CargoPortConfig) -> AbsolutePath {
 pub(crate) fn lint_runs_root() -> AbsolutePath { app_cache_root().join(LINTS_CACHE_DIR).into() }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use super::*;
 

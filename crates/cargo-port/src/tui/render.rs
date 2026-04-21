@@ -313,18 +313,10 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
         },
         PaneId::Cpu => panes::render_cpu_panel(frame, app, &pane_render_styles(), area),
         PaneId::Targets => {
-            if let Some(targets_data) = app.pane_data().targets.clone() {
-                if targets_data.has_targets() {
-                    panes::render_targets_panel(
-                        frame,
-                        app,
-                        &targets_data,
-                        &pane_render_styles(),
-                        area,
-                    );
-                } else {
-                    panes::render_empty_targets_panel(frame, app, area);
-                }
+            if let Some(targets_data) = app.pane_data().targets.clone()
+                && targets_data.has_targets()
+            {
+                panes::render_targets_panel(frame, app, &targets_data, &pane_render_styles(), area);
             } else {
                 panes::render_empty_targets_panel(frame, app, area);
             }

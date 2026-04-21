@@ -30,11 +30,6 @@ pub use runtime::RegisterProjectRequest;
 pub use runtime::RuntimeHandle;
 pub use runtime::project_is_eligible;
 pub use runtime::spawn;
-#[allow(
-    unused_imports,
-    reason = "used by sibling modules during lint trigger migration"
-)]
-pub(crate) use trigger::LintTriggerEvent;
 pub(crate) use trigger::classify_event_path;
 #[cfg(test)]
 pub use types::LintCommand;

@@ -1,5 +1,4 @@
 use crate::tui::pane::PaneAxisSize;
-use crate::tui::pane::PaneKey;
 use crate::tui::pane::PaneSizeSpec;
 
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug, Hash)]
@@ -44,12 +43,6 @@ impl PaneId {
     pub(in super::super) const fn is_overlay(self) -> bool {
         matches!(self, Self::Settings | Self::Finder)
     }
-}
-
-impl PaneKey for PaneId {
-    fn index(self) -> usize { Self::index(self) }
-
-    fn key_count() -> usize { Self::pane_count() }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

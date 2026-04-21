@@ -232,7 +232,7 @@ struct GqlCheckRunConnection {
 // ── Client ───────────────────────────────────────────────────────────
 
 /// Shared HTTP client backed by `reqwest::Client` for connection
-/// pooling and async I/O. Clone is cheap — the underlying client uses
+/// pooling and async I/O. `Clone` is cheap — the underlying client uses
 /// `Arc`. A `tokio::runtime::Handle` is stored so sync callers can
 /// dispatch async work via `block_on`.
 #[derive(Clone)]

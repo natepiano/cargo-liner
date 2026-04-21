@@ -70,7 +70,6 @@ pub fn history_path_under(cache_root: &Path, project_root: &Path) -> AbsolutePat
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
 

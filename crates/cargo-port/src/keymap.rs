@@ -586,7 +586,7 @@ impl fmt::Display for KeymapError {
 }
 
 pub(crate) enum KeymapErrorReason {
-    ParseError(String),
+    Parse(String),
     ConflictWithGlobal(String),
     ConflictWithinScope(String),
     ReservedForVimMode,
@@ -597,7 +597,7 @@ pub(crate) enum KeymapErrorReason {
 impl fmt::Display for KeymapErrorReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ParseError(msg) => write!(f, "parse error: {msg}"),
+            Self::Parse(msg) => write!(f, "parse error: {msg}"),
             Self::ConflictWithGlobal(action) => write!(f, "conflicts with global.{action}"),
             Self::ConflictWithinScope(action) => write!(f, "conflicts with {action}"),
             Self::ReservedForVimMode => write!(f, "reserved for vim navigation"),
@@ -647,7 +647,7 @@ pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
                     scope:  String::new(),
                     action: String::new(),
                     key:    String::new(),
-                    reason: KeymapErrorReason::ParseError(format!("read error: {e}")),
+                    reason: KeymapErrorReason::Parse(format!("read error: {e}")),
                 }],
                 missing_actions: Vec::new(),
             };
@@ -663,7 +663,7 @@ pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
                     scope:  String::new(),
                     action: String::new(),
                     key:    String::new(),
-                    reason: KeymapErrorReason::ParseError(format!("TOML parse error: {e}")),
+                    reason: KeymapErrorReason::Parse(format!("TOML parse error: {e}")),
                 }],
                 missing_actions: Vec::new(),
             };
@@ -692,7 +692,7 @@ pub(crate) fn load_keymap_from_str(toml_str: &str, vim_mode: NavigationKeys) -> 
                     scope:  String::new(),
                     action: String::new(),
                     key:    String::new(),
-                    reason: KeymapErrorReason::ParseError(format!("TOML parse error: {e}")),
+                    reason: KeymapErrorReason::Parse(format!("TOML parse error: {e}")),
                 }],
                 missing_actions: Vec::new(),
             };
@@ -977,7 +977,7 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
                     (Some(bind), None)
                 }
             },
-            Some(Err(e)) => (None, Some(KeymapErrorReason::ParseError(e))),
+            Some(Err(e)) => (None, Some(KeymapErrorReason::Parse(e))),
             None => {
                 // Key missing from TOML — record and use default.
                 ctx.missing_actions.push(format!("{scope_name}.{toml_key}"));

@@ -67,11 +67,11 @@ fn parse_dir_list(value: &str) -> Vec<String> {
 
 type SettingsRow = (Option<SettingOption>, &'static str, String);
 
-fn format_lint_projects(cfg: &config::CargoPortConfig) -> String {
-    if cfg.lint.include.is_empty() {
+fn format_lint_projects(config: &config::CargoPortConfig) -> String {
+    if config.lint.include.is_empty() {
         "—".to_string()
     } else {
-        format_sorted_list(&cfg.lint.include)
+        format_sorted_list(&config.lint.include)
     }
 }
 
@@ -96,9 +96,9 @@ fn save_number_setting(
         finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
         return false;
     };
-    let mut cfg = app.current_config().clone();
-    apply(&mut cfg, number.max(0.0));
-    let _ = save_updated_config(app, &cfg);
+    let mut config = app.current_config().clone();
+    apply(&mut config, number.max(0.0));
+    let _ = save_updated_config(app, &config);
     true
 }
 
@@ -107,9 +107,9 @@ fn save_sorted_list_setting(
     value: &str,
     apply: impl FnOnce(&mut config::CargoPortConfig, Vec<String>),
 ) {
-    let mut cfg = app.current_config().clone();
-    apply(&mut cfg, normalize_sorted_list(value));
-    let _ = save_updated_config(app, &cfg);
+    let mut config = app.current_config().clone();
+    apply(&mut config, normalize_sorted_list(value));
+    let _ = save_updated_config(app, &config);
 }
 
 fn save_u32_setting(
@@ -121,9 +121,9 @@ fn save_u32_setting(
         finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
         return false;
     };
-    let mut cfg = app.current_config().clone();
-    apply(&mut cfg, number.max(1));
-    let _ = save_updated_config(app, &cfg);
+    let mut config = app.current_config().clone();
+    apply(&mut config, number.max(1));
+    let _ = save_updated_config(app, &config);
     true
 }
 
@@ -136,16 +136,16 @@ fn save_string_setting(
     value: &str,
     apply: impl FnOnce(&mut config::CargoPortConfig, String),
 ) {
-    let mut cfg = app.current_config().clone();
-    apply(&mut cfg, value.trim().to_string());
-    let _ = save_updated_config(app, &cfg);
+    let mut config = app.current_config().clone();
+    apply(&mut config, value.trim().to_string());
+    let _ = save_updated_config(app, &config);
 }
 
-fn format_lint_commands(cfg: &config::CargoPortConfig) -> String {
-    let commands = if cfg.lint.commands.is_empty() {
-        cfg.lint.resolved_commands()
+fn format_lint_commands(config: &config::CargoPortConfig) -> String {
+    let commands = if config.lint.commands.is_empty() {
+        config.lint.resolved_commands()
     } else {
-        cfg.lint.commands.clone()
+        config.lint.commands.clone()
     };
     commands
         .iter()
@@ -154,21 +154,23 @@ fn format_lint_commands(cfg: &config::CargoPortConfig) -> String {
         .join(", ")
 }
 
-fn format_lint_cache_size(cfg: &config::CargoPortConfig) -> String { cfg.lint.cache_size.clone() }
+fn format_lint_cache_size(config: &config::CargoPortConfig) -> String {
+    config.lint.cache_size.clone()
+}
 
-fn format_terminal_command(cfg: &config::CargoPortConfig) -> String {
-    if cfg.tui.terminal_command.trim().is_empty() {
+fn format_terminal_command(config: &config::CargoPortConfig) -> String {
+    if config.tui.terminal_command.trim().is_empty() {
         "Not configured. Set this command to enable the global terminal shortcut.".to_string()
     } else {
-        cfg.tui.terminal_command.clone()
+        config.tui.terminal_command.clone()
     }
 }
 
-fn format_other_primary_branches(cfg: &config::CargoPortConfig) -> String {
-    if cfg.tui.other_primary_branches.is_empty() {
+fn format_other_primary_branches(config: &config::CargoPortConfig) -> String {
+    if config.tui.other_primary_branches.is_empty() {
         "—".to_string()
     } else {
-        cfg.tui.other_primary_branches.join(", ")
+        config.tui.other_primary_branches.join(", ")
     }
 }
 
@@ -181,37 +183,37 @@ fn format_secs(secs: f64) -> String {
     }
 }
 
-fn format_flash_secs(cfg: &config::CargoPortConfig) -> String {
-    format_secs(cfg.tui.status_flash_secs)
+fn format_flash_secs(config: &config::CargoPortConfig) -> String {
+    format_secs(config.tui.status_flash_secs)
 }
 
-fn format_linger_secs(cfg: &config::CargoPortConfig) -> String {
-    format_secs(cfg.tui.task_linger_secs)
+fn format_linger_secs(config: &config::CargoPortConfig) -> String {
+    format_secs(config.tui.task_linger_secs)
 }
 
-fn format_discovery_shimmer_secs(cfg: &config::CargoPortConfig) -> String {
-    format_secs(cfg.tui.discovery_shimmer_secs)
+fn format_discovery_shimmer_secs(config: &config::CargoPortConfig) -> String {
+    format_secs(config.tui.discovery_shimmer_secs)
 }
 
-fn format_cpu_poll_ms(cfg: &config::CargoPortConfig) -> String { cfg.cpu.poll_ms.to_string() }
+fn format_cpu_poll_ms(config: &config::CargoPortConfig) -> String { config.cpu.poll_ms.to_string() }
 
-fn format_cpu_green_max(cfg: &config::CargoPortConfig) -> String {
-    cfg.cpu.green_max_percent.to_string()
+fn format_cpu_green_max(config: &config::CargoPortConfig) -> String {
+    config.cpu.green_max_percent.to_string()
 }
 
-fn format_cpu_yellow_max(cfg: &config::CargoPortConfig) -> String {
-    cfg.cpu.yellow_max_percent.to_string()
+fn format_cpu_yellow_max(config: &config::CargoPortConfig) -> String {
+    config.cpu.yellow_max_percent.to_string()
 }
 
-fn settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
-    let mut rows = general_settings_rows(app, cfg);
-    rows.extend(toast_settings_rows(cfg));
-    rows.extend(cpu_settings_rows(cfg));
-    rows.extend(lint_settings_rows(app, cfg));
+fn settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<SettingsRow> {
+    let mut rows = general_settings_rows(app, config);
+    rows.extend(toast_settings_rows(config));
+    rows.extend(cpu_settings_rows(config));
+    rows.extend(lint_settings_rows(app, config));
     rows
 }
 
-fn general_settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
+fn general_settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<SettingsRow> {
     vec![
         (None, "General", String::new()),
         (
@@ -247,7 +249,7 @@ fn general_settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<Settin
         (
             Some(SettingOption::CiRunCount),
             "CI run count",
-            cfg.tui.ci_run_count.to_string(),
+            config.tui.ci_run_count.to_string(),
         ),
         (
             Some(SettingOption::Editor),
@@ -257,74 +259,74 @@ fn general_settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<Settin
         (
             Some(SettingOption::TerminalCommand),
             "Terminal",
-            format_terminal_command(cfg),
+            format_terminal_command(config),
         ),
         (
             Some(SettingOption::MainBranch),
             "Main branch",
-            cfg.tui.main_branch.clone(),
+            config.tui.main_branch.clone(),
         ),
         (
             Some(SettingOption::OtherPrimaryBranches),
             "Other primary branches",
-            format_other_primary_branches(cfg),
+            format_other_primary_branches(config),
         ),
         (
             Some(SettingOption::IncludeDirs),
             "Include dirs",
-            format_sorted_list(&cfg.tui.include_dirs),
+            format_sorted_list(&config.tui.include_dirs),
         ),
         (
             Some(SettingOption::InlineDirs),
             "Inline dirs",
-            format_sorted_list(&cfg.tui.inline_dirs),
+            format_sorted_list(&config.tui.inline_dirs),
         ),
     ]
 }
 
-fn toast_settings_rows(cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
+fn toast_settings_rows(config: &config::CargoPortConfig) -> Vec<SettingsRow> {
     vec![
         (None, "Toasts", String::new()),
         (
             Some(SettingOption::StatusFlashSecs),
             "Status flash secs",
-            format_flash_secs(cfg),
+            format_flash_secs(config),
         ),
         (
             Some(SettingOption::TaskLingerSecs),
             "Task linger secs",
-            format_linger_secs(cfg),
+            format_linger_secs(config),
         ),
         (
             Some(SettingOption::DiscoveryShimmerSecs),
             "Discovery shimmer secs",
-            format_discovery_shimmer_secs(cfg),
+            format_discovery_shimmer_secs(config),
         ),
     ]
 }
 
-fn cpu_settings_rows(cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
+fn cpu_settings_rows(config: &config::CargoPortConfig) -> Vec<SettingsRow> {
     vec![
         (None, "CPU", String::new()),
         (
             Some(SettingOption::CpuPollMs),
             "Poll ms",
-            format_cpu_poll_ms(cfg),
+            format_cpu_poll_ms(config),
         ),
         (
             Some(SettingOption::CpuGreenMaxPercent),
             "Green max %",
-            format_cpu_green_max(cfg),
+            format_cpu_green_max(config),
         ),
         (
             Some(SettingOption::CpuYellowMaxPercent),
             "Yellow max %",
-            format_cpu_yellow_max(cfg),
+            format_cpu_yellow_max(config),
         ),
     ]
 }
 
-fn lint_settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsRow> {
+fn lint_settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<SettingsRow> {
     vec![
         (None, "Lints", String::new()),
         (
@@ -335,7 +337,7 @@ fn lint_settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsR
         (
             Some(SettingOption::LintOnDiscovery),
             "Lint on discovery",
-            if cfg.lint.on_discovery.is_immediate() {
+            if config.lint.on_discovery.is_immediate() {
                 "ON"
             } else {
                 "OFF"
@@ -345,17 +347,17 @@ fn lint_settings_rows(app: &App, cfg: &config::CargoPortConfig) -> Vec<SettingsR
         (
             Some(SettingOption::LintProjects),
             "Projects",
-            format_lint_projects(cfg),
+            format_lint_projects(config),
         ),
         (
             Some(SettingOption::LintCommands),
             "Commands",
-            format_lint_commands(cfg),
+            format_lint_commands(config),
         ),
         (
             Some(SettingOption::LintCacheSize),
             "Cache size",
-            format_lint_cache_size(cfg),
+            format_lint_cache_size(config),
         ),
     ]
 }
@@ -513,13 +515,13 @@ fn toggle_vim_mode(app: &mut App) {
             return;
         }
     }
-    let mut cfg = app.current_config().clone();
-    cfg.tui.navigation_keys.toggle();
-    let _ = save_updated_config(app, &cfg);
+    let mut config = app.current_config().clone();
+    config.tui.navigation_keys.toggle();
+    let _ = save_updated_config(app, &config);
 }
 
-fn save_updated_config(app: &mut App, cfg: &config::CargoPortConfig) -> bool {
-    match app.save_and_apply_config(cfg) {
+fn save_updated_config(app: &mut App, config: &config::CargoPortConfig) -> bool {
+    match app.save_and_apply_config(config) {
         Ok(()) => {
             app.show_timed_toast("Settings", "Saved");
             true
@@ -872,34 +874,34 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
 fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<SettingOption>) {
     match setting {
         Some(SettingOption::InvertScroll) => {
-            let mut cfg = app.current_config().clone();
-            cfg.mouse.invert_scroll.toggle();
-            let _ = save_updated_config(app, &cfg);
+            let mut config = app.current_config().clone();
+            config.mouse.invert_scroll.toggle();
+            let _ = save_updated_config(app, &config);
         },
         Some(SettingOption::NavigationKeys) => {
             toggle_vim_mode(app);
         },
         Some(SettingOption::CiRunCount) => {
-            let mut cfg = app.current_config().clone();
+            let mut config = app.current_config().clone();
             if key == KeyCode::Right {
-                cfg.tui.ci_run_count = cfg.tui.ci_run_count.saturating_add(1);
+                config.tui.ci_run_count = config.tui.ci_run_count.saturating_add(1);
             } else {
-                cfg.tui.ci_run_count = cfg.tui.ci_run_count.saturating_sub(1).max(1);
+                config.tui.ci_run_count = config.tui.ci_run_count.saturating_sub(1).max(1);
             }
-            let _ = save_updated_config(app, &cfg);
+            let _ = save_updated_config(app, &config);
         },
         Some(SettingOption::IncludeNonRust) => {
-            let mut cfg = app.current_config().clone();
-            cfg.tui.include_non_rust.toggle();
-            let _ = save_updated_config(app, &cfg);
+            let mut config = app.current_config().clone();
+            config.tui.include_non_rust.toggle();
+            let _ = save_updated_config(app, &config);
         },
         Some(SettingOption::LintsEnabled) => {
             toggle_lints(app);
         },
         Some(SettingOption::LintOnDiscovery) => {
-            let mut cfg = app.current_config().clone();
-            cfg.lint.on_discovery.toggle();
-            let _ = save_updated_config(app, &cfg);
+            let mut config = app.current_config().clone();
+            config.lint.on_discovery.toggle();
+            let _ = save_updated_config(app, &config);
         },
         Some(
             SettingOption::Editor
@@ -937,9 +939,9 @@ fn begin_settings_edit(app: &mut App, value: String) {
 fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
     match setting {
         Some(SettingOption::InvertScroll) => {
-            let mut cfg = app.current_config().clone();
-            cfg.mouse.invert_scroll.toggle();
-            let _ = save_updated_config(app, &cfg);
+            let mut config = app.current_config().clone();
+            config.mouse.invert_scroll.toggle();
+            let _ = save_updated_config(app, &config);
         },
         Some(SettingOption::NavigationKeys) => {
             toggle_vim_mode(app);
@@ -981,17 +983,17 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
             begin_settings_edit(app, format_cpu_yellow_max(app.current_config()));
         },
         Some(SettingOption::IncludeNonRust) => {
-            let mut cfg = app.current_config().clone();
-            cfg.tui.include_non_rust.toggle();
-            let _ = save_updated_config(app, &cfg);
+            let mut config = app.current_config().clone();
+            config.tui.include_non_rust.toggle();
+            let _ = save_updated_config(app, &config);
         },
         Some(SettingOption::LintsEnabled) => {
             toggle_lints(app);
         },
         Some(SettingOption::LintOnDiscovery) => {
-            let mut cfg = app.current_config().clone();
-            cfg.lint.on_discovery.toggle();
-            let _ = save_updated_config(app, &cfg);
+            let mut config = app.current_config().clone();
+            config.lint.on_discovery.toggle();
+            let _ = save_updated_config(app, &config);
         },
         Some(SettingOption::Editor) => {
             begin_settings_edit(app, app.editor().to_string());
@@ -1047,22 +1049,22 @@ fn apply_general_settings_edit(
 ) -> Result<bool, String> {
     match setting {
         SettingOption::CiRunCount => {
-            if !save_u32_setting(app, value, |cfg, count| cfg.tui.ci_run_count = count) {
+            if !save_u32_setting(app, value, |config, count| config.tui.ci_run_count = count) {
                 return Ok(true);
             }
         },
-        SettingOption::InlineDirs => save_sorted_list_setting(app, value, |cfg, dirs| {
-            cfg.tui.inline_dirs = dirs;
+        SettingOption::InlineDirs => save_sorted_list_setting(app, value, |config, dirs| {
+            config.tui.inline_dirs = dirs;
         }),
-        SettingOption::IncludeDirs => save_sorted_list_setting(app, value, |cfg, dirs| {
-            cfg.tui.include_dirs = dirs;
+        SettingOption::IncludeDirs => save_sorted_list_setting(app, value, |config, dirs| {
+            config.tui.include_dirs = dirs;
         }),
         SettingOption::Editor if !value.trim().is_empty() => {
-            save_string_setting(app, value, |cfg, editor| cfg.tui.editor = editor);
+            save_string_setting(app, value, |config, editor| config.tui.editor = editor);
         },
         SettingOption::TerminalCommand => {
-            save_string_setting(app, value, |cfg, command| {
-                cfg.tui.terminal_command = command;
+            save_string_setting(app, value, |config, command| {
+                config.tui.terminal_command = command;
             });
         },
         SettingOption::Editor
@@ -1075,50 +1077,54 @@ fn apply_general_settings_edit(
         | SettingOption::LintCommands
         | SettingOption::LintCacheSize => return Ok(false),
         SettingOption::MainBranch => {
-            let mut cfg = app.current_config().clone();
-            cfg.tui.main_branch = config::normalize_branch_name(value, "Main branch")?;
-            let _ = save_updated_config(app, &cfg);
+            let mut config = app.current_config().clone();
+            config.tui.main_branch = config::normalize_branch_name(value, "Main branch")?;
+            let _ = save_updated_config(app, &config);
         },
         SettingOption::OtherPrimaryBranches => {
-            let mut cfg = app.current_config().clone();
-            cfg.tui.other_primary_branches =
+            let mut config = app.current_config().clone();
+            config.tui.other_primary_branches =
                 config::normalize_branch_list(&parse_dir_list(value), "Other primary branches")?;
-            let _ = save_updated_config(app, &cfg);
+            let _ = save_updated_config(app, &config);
         },
         SettingOption::StatusFlashSecs => {
-            if !save_number_setting(app, value, |cfg, secs| cfg.tui.status_flash_secs = secs) {
+            if !save_number_setting(app, value, |config, secs| {
+                config.tui.status_flash_secs = secs;
+            }) {
                 return Ok(true);
             }
         },
         SettingOption::TaskLingerSecs => {
-            if !save_number_setting(app, value, |cfg, secs| cfg.tui.task_linger_secs = secs) {
+            if !save_number_setting(app, value, |config, secs| {
+                config.tui.task_linger_secs = secs;
+            }) {
                 return Ok(true);
             }
         },
         SettingOption::DiscoveryShimmerSecs => {
-            if !save_number_setting(app, value, |cfg, secs| {
-                cfg.tui.discovery_shimmer_secs = secs;
+            if !save_number_setting(app, value, |config, secs| {
+                config.tui.discovery_shimmer_secs = secs;
             }) {
                 return Ok(true);
             }
         },
         SettingOption::CpuPollMs => {
-            if !save_u32_setting(app, value, |cfg, poll_ms| {
-                cfg.cpu.poll_ms = u64::from(poll_ms);
+            if !save_u32_setting(app, value, |config, poll_ms| {
+                config.cpu.poll_ms = u64::from(poll_ms);
             }) {
                 return Ok(true);
             }
         },
         SettingOption::CpuGreenMaxPercent => {
-            if !save_u32_setting(app, value, |cfg, percent| {
-                cfg.cpu.green_max_percent = bounded_u8_from_u32(percent.min(100));
+            if !save_u32_setting(app, value, |config, percent| {
+                config.cpu.green_max_percent = bounded_u8_from_u32(percent.min(100));
             }) {
                 return Ok(true);
             }
         },
         SettingOption::CpuYellowMaxPercent => {
-            if !save_u32_setting(app, value, |cfg, percent| {
-                cfg.cpu.yellow_max_percent = bounded_u8_from_u32(percent.min(100));
+            if !save_u32_setting(app, value, |config, percent| {
+                config.cpu.yellow_max_percent = bounded_u8_from_u32(percent.min(100));
             }) {
                 return Ok(true);
             }
@@ -1134,23 +1140,23 @@ fn apply_lint_settings_edit(
 ) -> Result<bool, String> {
     match setting {
         SettingOption::LintProjects => {
-            save_sorted_list_setting(app, value, |cfg, dirs| cfg.lint.include = dirs);
+            save_sorted_list_setting(app, value, |config, dirs| config.lint.include = dirs);
             if app.inline_error().is_none() {
                 app.show_timed_toast("Settings", "Lint projects updated");
             }
         },
         SettingOption::LintCommands => {
-            let mut cfg = app.current_config().clone();
-            cfg.lint.commands = parse_lint_commands(value);
-            if save_updated_config(app, &cfg) {
+            let mut config = app.current_config().clone();
+            config.lint.commands = parse_lint_commands(value);
+            if save_updated_config(app, &config) {
                 app.show_timed_toast("Settings", "Lint commands updated");
             }
         },
         SettingOption::LintCacheSize => {
-            let mut cfg = app.current_config().clone();
-            cfg.lint.cache_size =
+            let mut config = app.current_config().clone();
+            config.lint.cache_size =
                 parse_lint_cache_size(value).map_err(|_| format!("Invalid cache size: {value}"))?;
-            if save_updated_config(app, &cfg) {
+            if save_updated_config(app, &config) {
                 app.show_timed_toast("Settings", "Lint cache size updated");
             }
         },
@@ -1204,16 +1210,16 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
 }
 
 fn toggle_lints(app: &mut App) {
-    let mut cfg = app.current_config().clone();
-    cfg.lint.enabled = !cfg.lint.enabled;
-    if !save_updated_config(app, &cfg) {
+    let mut config = app.current_config().clone();
+    config.lint.enabled = !config.lint.enabled;
+    if !save_updated_config(app, &config) {
         return;
     }
     app.show_timed_toast(
         "Settings",
         format!(
             "Lints {}",
-            if cfg.lint.enabled {
+            if config.lint.enabled {
                 "enabled"
             } else {
                 "disabled"
@@ -1301,24 +1307,24 @@ mod tests {
 
     #[test]
     fn format_discovery_shimmer_secs_renders_whole_numbers_cleanly() {
-        let mut cfg = config::CargoPortConfig::default();
-        cfg.tui.discovery_shimmer_secs = 4.0;
-        assert_eq!(format_discovery_shimmer_secs(&cfg), "4");
+        let mut config = config::CargoPortConfig::default();
+        config.tui.discovery_shimmer_secs = 4.0;
+        assert_eq!(format_discovery_shimmer_secs(&config), "4");
     }
 
     #[test]
     fn format_terminal_command_marks_blank_value_as_unconfigured() {
-        let cfg = config::CargoPortConfig::default();
+        let config = config::CargoPortConfig::default();
 
-        assert!(format_terminal_command(&cfg).contains("Not configured"));
+        assert!(format_terminal_command(&config).contains("Not configured"));
     }
 
     #[test]
     fn format_terminal_command_preserves_configured_value() {
-        let mut cfg = config::CargoPortConfig::default();
-        cfg.tui.terminal_command = "open -a Terminal .".to_string();
+        let mut config = config::CargoPortConfig::default();
+        config.tui.terminal_command = "open -a Terminal .".to_string();
 
-        assert_eq!(format_terminal_command(&cfg), "open -a Terminal .");
+        assert_eq!(format_terminal_command(&config), "open -a Terminal .");
     }
 
     #[test]

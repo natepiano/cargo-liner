@@ -329,14 +329,30 @@ pub struct TargetEntry {
     pub kind:         RunTargetKind,
 }
 
+#[derive(Clone, Copy)]
+pub enum BuildMode {
+    Debug,
+    Release,
+}
+
+impl BuildMode {
+    pub const fn is_release(self) -> bool { matches!(self, Self::Release) }
+
+    pub const fn label(self) -> &'static str {
+        if self.is_release() {
+            " (release)"
+        } else {
+            " (dev)"
+        }
+    }
+}
+
 /// Build a flat list of all runnable targets: binaries first, then examples alphabetically,
 /// then benches alphabetically.
 pub fn build_target_list_from_data(data: &TargetsData) -> Vec<TargetEntry> {
     let mut entries = Vec::new();
 
-    if data.is_binary
-        && let Some(name) = &data.binary_name
-    {
+    if let Some(name) = &data.primary_binary {
         entries.push(TargetEntry {
             display_name: name.clone(),
             name:         name.clone(),
@@ -395,7 +411,7 @@ pub struct PendingExampleRun {
     pub target_name:  String,
     pub package_name: Option<String>,
     pub kind:         RunTargetKind,
-    pub release:      bool,
+    pub build_mode:   BuildMode,
 }
 
 /// Whether a CI fetch should sync recent runs or discover older history.
@@ -741,15 +757,14 @@ pub struct WorktreeInfo {
 /// Per-pane data for the Targets panel.
 #[derive(Clone)]
 pub struct TargetsData {
-    pub is_binary:   bool,
-    pub binary_name: Option<String>,
-    pub examples:    Vec<ExampleGroup>,
-    pub benches:     Vec<String>,
+    pub primary_binary: Option<String>,
+    pub examples:       Vec<ExampleGroup>,
+    pub benches:        Vec<String>,
 }
 
 impl TargetsData {
     pub const fn has_targets(&self) -> bool {
-        self.is_binary || !self.examples.is_empty() || !self.benches.is_empty()
+        self.primary_binary.is_some() || !self.examples.is_empty() || !self.benches.is_empty()
     }
 }
 
@@ -1140,10 +1155,9 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             worktrees:          Vec::new(),
         },
         targets: TargetsData {
-            is_binary:   false,
-            binary_name: None,
-            examples:    Vec::new(),
-            benches:     Vec::new(),
+            primary_binary: None,
+            examples:       Vec::new(),
+            benches:        Vec::new(),
         },
     }
 }
@@ -1329,10 +1343,9 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             worktrees,
         },
         targets: TargetsData {
-            is_binary,
-            binary_name: if is_binary { Some(title_name) } else { None },
-            examples: cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
-            benches: cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
+            primary_binary: is_binary.then_some(title_name),
+            examples:       cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
+            benches:        cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
         },
     }
 }

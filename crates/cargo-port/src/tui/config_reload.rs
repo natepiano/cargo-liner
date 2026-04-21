@@ -272,10 +272,6 @@ pub(super) fn collect_reload_actions(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use super::*;
 
