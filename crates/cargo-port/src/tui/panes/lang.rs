@@ -22,6 +22,7 @@ use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::render;
+use crate::project;
 
 /// Fixed numeric column width for language stats.
 const LANG_NUM_COL: u16 = 8;
@@ -85,7 +86,7 @@ fn lang_footer_row(stats: &LanguageStats) -> Row<'static> {
 }
 
 fn lang_entry_row(entry: &LangEntry, name_width: usize) -> Row<'static> {
-    let icon = crate::project::language_icon(&entry.language);
+    let icon = project::language_icon(&entry.language);
     let name = render::truncate_with_ellipsis(&entry.language, name_width, "\u{2026}");
     let total = entry.code + entry.comments + entry.blanks;
     let num_style = Style::default().fg(TITLE_COLOR);

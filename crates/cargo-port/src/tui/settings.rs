@@ -24,6 +24,9 @@ use super::interaction::UiSurface::Overlay;
 use super::pane::PaneSelectionState;
 use super::panes::PaneId;
 use crate::config;
+use super::render;
+use super::interaction;
+use crate::keymap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::EnumCount, strum::EnumIter)]
 pub(super) enum SettingOption {
@@ -500,7 +503,7 @@ fn parse_lint_cache_size(value: &str) -> Result<String, String> {
 fn toggle_vim_mode(app: &mut App) {
     if !app.navigation_keys().uses_vim() {
         // Enabling vim mode — check for hjkl conflicts.
-        let conflicts = crate::keymap::vim_mode_conflicts(app.current_keymap());
+        let conflicts = keymap::vim_mode_conflicts(app.current_keymap());
         if !conflicts.is_empty() {
             let msg = format!(
                 "Cannot enable vim mode — these bindings use h/j/k/l:\n{}",
@@ -577,7 +580,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         let y = inner
             .y
             .saturating_add(u16::try_from(line_index).unwrap_or(u16::MAX));
-        super::interaction::register_pane_row_hitbox(
+        interaction::register_pane_row_hitbox(
             app,
             ratatui::layout::Rect::new(inner.x, y, inner.width, 1),
             PaneId::Settings,
@@ -690,7 +693,7 @@ fn push_lint_cache_size_row(
     ctx: &SettingsLineContext<'_>,
     value: &str,
 ) {
-    let used = crate::tui::render::format_bytes(app.lint_cache_usage().bytes);
+    let used = render::format_bytes(app.lint_cache_usage().bytes);
     let limit = &app.current_config().lint.cache_size;
     let usage_suffix = format!("  {used} / {limit}");
     lines.push(Line::from(vec![

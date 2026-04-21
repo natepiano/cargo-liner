@@ -33,6 +33,9 @@ use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::tui::app::App;
 use crate::tui::app::AvailabilityStatus;
+use crate::tui::render;
+use crate::lint;
+use crate::ci;
 
 /// Get the local UTC offset in seconds (e.g., -28800 for PST).
 fn local_utc_offset_secs() -> i64 {
@@ -1012,11 +1015,11 @@ fn worktrees_from_item(item: &RootItem) -> Vec<WorktreeInfo> {
     paths_and_names
         .into_iter()
         .map(|(path, name)| {
-            let branch = crate::project::get_worktree_branch(path.as_path());
+            let branch = project::get_worktree_branch(path.as_path());
             let ahead_behind = if path.as_path() == primary_path.as_path() {
                 Some((0, 0))
             } else {
-                crate::project::worktree_ahead_behind_primary(
+                project::worktree_ahead_behind_primary(
                     path.as_path(),
                     primary_path.as_path(),
                 )
@@ -1104,7 +1107,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
     let disk = submodule
         .info
         .disk_usage_bytes
-        .map_or_else(String::new, crate::tui::render::format_bytes);
+        .map_or_else(String::new, render::format_bytes);
 
     DetailPaneData {
         package: PackageData {
@@ -1361,7 +1364,7 @@ pub fn build_ci_data(app: &App) -> CiData {
         r.remotes
             .iter()
             .filter_map(|r| r.url.as_deref())
-            .any(|url| crate::ci::parse_owner_repo(url).is_some())
+            .any(|url| ci::parse_owner_repo(url).is_some())
     });
     let empty_state = if selected_path.is_some() && !has_ci_owner {
         CiEmptyState::BranchScopedOnly
@@ -1416,7 +1419,7 @@ pub fn build_lints_data(app: &App) -> LintsData {
         || vec![0; runs.len()],
         |project_root| {
             runs.iter()
-                .map(|run| crate::lint::run_archive_bytes(project_root, &run.run_id))
+                .map(|run| lint::run_archive_bytes(project_root, &run.run_id))
                 .collect()
         },
     );

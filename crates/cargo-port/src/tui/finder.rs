@@ -43,6 +43,8 @@ use crate::project::RustProject;
 use crate::project::VendoredPackage;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
+use super::panes;
+use super::interaction;
 
 /// A searchable item in the universal finder.
 #[derive(Clone)]
@@ -658,7 +660,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
 
         // Build target list and find the matching entry index
         {
-            let entries = super::panes::build_target_list_from_data(&targets_data);
+            let entries = panes::build_target_list_from_data(&targets_data);
             let target_kind = match item.kind {
                 FinderKind::Binary => RunTargetKind::Binary,
                 FinderKind::Example => RunTargetKind::Example,
@@ -931,7 +933,7 @@ fn render_finder_results(
             .y
             .saturating_add(1)
             .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
-        super::interaction::register_pane_row_hitbox(
+        interaction::register_pane_row_hitbox(
             app,
             Rect::new(area.x, row_y, area.width, 1),
             PaneId::Finder,

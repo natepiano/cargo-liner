@@ -44,6 +44,7 @@ use super::scan::BackgroundMsg;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project::RootItem::NonRust;
+use crate::enrichment;
 
 /// Request to register an already-known project with the watcher.
 pub(crate) struct WatchRequest {
@@ -793,7 +794,7 @@ fn spawn_project_refresh(bg_tx: mpsc::Sender<BackgroundMsg>, project_root: Absol
     rayon::spawn(move || {
         let Some(item) = scan::discover_project_item(&project_root).or_else(|| {
             let cargo_toml = project_root.join("Cargo.toml");
-            crate::project::from_cargo_toml(&cargo_toml)
+            project::from_cargo_toml(&cargo_toml)
                 .ok()
                 .map(scan::cargo_project_to_item)
         }) else {
@@ -1112,7 +1113,7 @@ fn probe_new_projects(
             let task_ctx = scan::FetchContext {
                 client: client.clone(),
             };
-            crate::enrichment::spawn_language_scan(abs_path.clone(), bg_tx.clone());
+            enrichment::spawn_language_scan(abs_path.clone(), bg_tx.clone());
             rayon::spawn(move || {
                 let request = scan::ProjectDetailRequest {
                     tx: &tx,
@@ -1170,7 +1171,7 @@ fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<RootItem> {
         return scan::discover_project_item(dir);
     }
     if non_rust.includes_non_rust() && dir.join(".git").is_dir() {
-        return Some(NonRust(crate::project::from_git_dir(dir)));
+        return Some(NonRust(project::from_git_dir(dir)));
     }
     None
 }

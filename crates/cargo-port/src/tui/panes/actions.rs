@@ -22,6 +22,9 @@ use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::ConfirmAction;
 use crate::tui::pane::Pane;
+use crate::tui::input;
+use crate::project;
+use crate::lint;
 
 /// Whether to build in release or debug mode.
 #[derive(Clone, Copy)]
@@ -233,7 +236,7 @@ fn handle_ci_fetch_more(app: &mut App) {
                 .find(|item| item.path() == path)
                 .and_then(|item| item.name().map(str::to_string))
         })
-        .unwrap_or_else(|| crate::project::home_relative_path(&ci_path));
+        .unwrap_or_else(|| project::home_relative_path(&ci_path));
     let is_exhausted = app
         .selected_project_path()
         .is_some_and(|path| app.ci_is_exhausted(path));
@@ -316,7 +319,7 @@ fn clear_lint_history(app: &mut App) {
     let Some(abs_path) = app.selected_project_path().map(Path::to_path_buf) else {
         return;
     };
-    let project_cache_dir = crate::lint::project_dir(&abs_path);
+    let project_cache_dir = lint::project_dir(&abs_path);
     let _ = std::fs::remove_dir_all(project_cache_dir);
 
     if let Some(lr) = app.lint_at_path_mut(&abs_path) {
@@ -350,7 +353,7 @@ fn open_lint_run_output(app: &App) {
         return;
     };
 
-    let project_cache_dir = crate::lint::project_dir(abs_path);
+    let project_cache_dir = lint::project_dir(abs_path);
     let log_paths: Vec<AbsolutePath> = run
         .commands
         .iter()
@@ -362,7 +365,7 @@ fn open_lint_run_output(app: &App) {
         return;
     }
 
-    let _ = crate::tui::input::open_paths_in_editor(
+    let _ = input::open_paths_in_editor(
         app.editor(),
         std::iter::once(abs_path).chain(log_paths.iter().map(AbsolutePath::as_path)),
     );

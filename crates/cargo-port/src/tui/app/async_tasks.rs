@@ -54,6 +54,12 @@ use crate::tui::toasts::TrackedItem;
 use crate::watcher;
 use crate::watcher::WatchRequest;
 use crate::watcher::WatcherMsg;
+use super::snapshots;
+use crate::tui::terminal;
+use crate::project;
+use crate::keymap;
+use crate::config;
+use crate::ci;
 
 #[derive(Clone)]
 struct LegacyRootExpansion {
@@ -114,7 +120,7 @@ impl App {
 
     pub(in super::super) fn load_initial_keymap(&mut self) {
         let vim_mode = self.current_config.tui.navigation_keys;
-        let result = crate::keymap::load_keymap(vim_mode);
+        let result = keymap::load_keymap(vim_mode);
         self.current_keymap = result.keymap;
         self.sync_keymap_watch_state();
         if !result.errors.is_empty() {
@@ -158,7 +164,7 @@ impl App {
         };
 
         let vim_mode = self.current_config.tui.navigation_keys;
-        let result = crate::keymap::load_keymap_from_str(&contents, vim_mode);
+        let result = keymap::load_keymap_from_str(&contents, vim_mode);
         self.current_keymap = result.keymap;
 
         if result.errors.is_empty() {
@@ -237,7 +243,7 @@ impl App {
         let reload_result = self
             .config_path
             .as_deref()
-            .map_or_else(crate::config::try_load, crate::config::try_load_from_path);
+            .map_or_else(config::try_load, config::try_load_from_path);
         match reload_result {
             Ok(cfg) => {
                 self.apply_config(&cfg);
@@ -252,7 +258,7 @@ impl App {
         &mut self,
         cfg: &CargoPortConfig,
     ) -> Result<(), String> {
-        crate::config::save(cfg)?;
+        config::save(cfg)?;
         self.apply_config(cfg);
         self.sync_config_watch_state();
         Ok(())
@@ -274,7 +280,7 @@ impl App {
                 has_cached_non_rust: self.has_cached_non_rust_projects(),
             },
         );
-        crate::config::set_active_config(cfg);
+        config::set_active_config(cfg);
         self.current_config = cfg.clone();
         if !self.discovery_shimmer_enabled() {
             self.discovery_shimmers.clear();
@@ -335,7 +341,7 @@ impl App {
     }
 
     pub(in super::super) fn respawn_watcher(&mut self) {
-        let watch_roots = crate::scan::resolve_include_dirs(&self.current_config.tui.include_dirs);
+        let watch_roots = scan::resolve_include_dirs(&self.current_config.tui.include_dirs);
         self.watch_tx = watcher::spawn_watcher(
             watch_roots,
             self.bg_tx.clone(),
@@ -370,7 +376,7 @@ impl App {
             }
         });
         for path in &paths {
-            let runs = crate::lint::read_history(path);
+            let runs = lint::read_history(path);
             if let Some(lr) = self.projects.lint_at_path_mut(path) {
                 lr.set_runs(runs);
             }
@@ -382,7 +388,7 @@ impl App {
         if !self.is_rust_at_path(project_path) {
             return;
         }
-        let runs = crate::lint::read_history(project_path);
+        let runs = lint::read_history(project_path);
         if let Some(lr) = self.projects.lint_at_path_mut(project_path) {
             lr.set_runs(runs);
         }
@@ -390,7 +396,7 @@ impl App {
 
     pub(in super::super) fn refresh_lint_cache_usage_from_disk(&mut self) {
         let cache_size_bytes = self.current_config.lint.cache_size_bytes().unwrap_or(None);
-        self.lint_cache_usage = crate::lint::retained_cache_usage(cache_size_bytes);
+        self.lint_cache_usage = lint::retained_cache_usage(cache_size_bytes);
     }
 
     /// Register file-system watchers for every item in the tree after a
@@ -412,7 +418,7 @@ impl App {
     pub(in super::super) fn register_item_background_services(&self, item: &RootItem) {
         let started = Instant::now();
         let abs_path = AbsolutePath::from(item.path().to_path_buf());
-        let repo_root = crate::project::git_repo_root(&abs_path);
+        let repo_root = project::git_repo_root(&abs_path);
         let has_repo_root = repo_root.is_some();
         let _ = self.watch_tx.send(WatcherMsg::Register(WatchRequest {
             project_label: abs_path.to_string_lossy().to_string(),
@@ -444,7 +450,7 @@ impl App {
                         .rust_info_at_path(item.path())
                         .is_some_and(|r| r.cargo().publishable())
                 });
-            let repo_presence = if crate::project::git_repo_root(&abs_path).is_some() {
+            let repo_presence = if project::git_repo_root(&abs_path).is_some() {
                 GitRepoPresence::InRepo
             } else {
                 GitRepoPresence::OutsideRepo
@@ -460,7 +466,7 @@ impl App {
                     project_name: project_name.as_deref(),
                     repo_presence,
                 };
-                crate::scan::fetch_project_details(&request);
+                scan::fetch_project_details(&request);
             });
         });
         self.schedule_member_crates_io_fetches();
@@ -486,7 +492,7 @@ impl App {
         rayon::spawn(move || {
             for (path, name) in targets {
                 let (info, signal) = client.fetch_crates_io_info(&name);
-                crate::scan::emit_service_signal(&tx, signal);
+                scan::emit_service_signal(&tx, signal);
                 if let Some(info) = info {
                     let _ = tx.send(crate::scan::BackgroundMsg::CratesIoVersion {
                         path,
@@ -503,7 +509,7 @@ impl App {
         let mut projects_by_repo: HashMap<AbsolutePath, Vec<AbsolutePath>> = HashMap::new();
         self.projects.for_each_leaf_path(|path, _| {
             let abs_path = AbsolutePath::from(path);
-            let Some(repo_root) = crate::project::git_repo_root(&abs_path) else {
+            let Some(repo_root) = project::git_repo_root(&abs_path) else {
                 return;
             };
             projects_by_repo
@@ -514,7 +520,7 @@ impl App {
         std::thread::spawn(move || {
             for (repo_root, paths) in projects_by_repo {
                 let started = Instant::now();
-                let first_commit = crate::project::get_first_commit(&repo_root);
+                let first_commit = project::get_first_commit(&repo_root);
                 tracing::info!(
                     elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
                     repo_root = %repo_root.display(),
@@ -576,7 +582,7 @@ impl App {
             .into_iter()
             .filter(|(path, _)| !self.is_deleted(path))
             .map(|(abs_path, is_rust)| RegisterProjectRequest {
-                project_label: crate::project::home_relative_path(&abs_path),
+                project_label: project::home_relative_path(&abs_path),
                 abs_path,
                 is_rust,
             })
@@ -697,7 +703,7 @@ impl App {
     }
 
     fn reset_startup_phase_state(&mut self) {
-        let disk_expected = super::snapshots::initial_disk_roots(&self.projects);
+        let disk_expected = snapshots::initial_disk_roots(&self.projects);
         let git_expected = self
             .projects
             .git_directories()
@@ -1027,7 +1033,7 @@ impl App {
         expected
             .iter()
             .map(|path| {
-                let label = crate::project::home_relative_path(path);
+                let label = project::home_relative_path(path);
                 let completed_at = if seen.contains(path) {
                     Some(Instant::now())
                 } else {
@@ -1050,7 +1056,7 @@ impl App {
         let items: Vec<String> = expected
             .iter()
             .filter(|path| !seen.contains(*path))
-            .map(|p| crate::project::home_relative_path(p))
+            .map(|p| project::home_relative_path(p))
             .collect();
         let refs: Vec<&str> = items.iter().map(String::as_str).collect();
         if refs.is_empty() {
@@ -1073,7 +1079,7 @@ impl App {
         let items: Vec<String> = expected
             .iter()
             .filter(|path| !seen.contains(*path))
-            .map(|p| crate::project::home_relative_path(p))
+            .map(|p| project::home_relative_path(p))
             .collect();
         let refs: Vec<&str> = items.iter().map(String::as_str).collect();
         if refs.is_empty() {
@@ -1099,7 +1105,7 @@ impl App {
             .running_clean_paths
             .iter()
             .map(|p| TrackedItem {
-                label:        crate::project::home_relative_path(p.as_path()),
+                label:        project::home_relative_path(p.as_path()),
                 key:          p.clone().into(),
                 started_at:   None,
                 completed_at: None,
@@ -1119,10 +1125,10 @@ impl App {
         let items: Vec<String> = self
             .running_clean_paths
             .iter()
-            .map(|p| crate::project::home_relative_path(p.as_path()))
+            .map(|p| project::home_relative_path(p.as_path()))
             .collect();
         let refs: Vec<&str> = items.iter().map(String::as_str).collect();
-        crate::tui::toasts::format_toast_items(&refs, crate::tui::toasts::toast_body_width())
+        toasts::format_toast_items(&refs, toasts::toast_body_width())
     }
 
     /// Keep a single "Retrieving GitHub repo details" toast in sync
@@ -1200,7 +1206,7 @@ impl App {
             .running_lint_paths
             .iter()
             .map(|(p, &started)| TrackedItem {
-                label:        crate::project::home_relative_path(p),
+                label:        project::home_relative_path(p),
                 key:          p.clone().into(),
                 started_at:   Some(started),
                 completed_at: None,
@@ -1327,7 +1333,7 @@ impl App {
     }
 
     fn rebuild_visible_rows_now(&mut self) {
-        self.cached_visible_rows = super::snapshots::build_visible_rows(
+        self.cached_visible_rows = snapshots::build_visible_rows(
             &self.projects,
             &self.expanded,
             self.include_non_rust().includes_non_rust(),
@@ -1341,7 +1347,7 @@ impl App {
         self.ci_display_modes.clear();
         self.clear_all_lint_state();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
-        self.github.fetch_cache = crate::scan::new_repo_cache();
+        self.github.fetch_cache = scan::new_repo_cache();
         self.github.repo_fetch_in_flight.clear();
         self.github.running_fetches.clear();
         self.github.running_fetch_toast = None;
@@ -1603,7 +1609,7 @@ impl App {
     }
 
     fn spawn_repo_fetch_for_git_info(&mut self, path: &Path, repo_url: &str) {
-        let Some(owner_repo) = crate::ci::parse_owner_repo(repo_url) else {
+        let Some(owner_repo) = ci::parse_owner_repo(repo_url) else {
             return;
         };
         // Dedup by `OwnerRepo`: a fetch for this repo is either already
@@ -1622,18 +1628,18 @@ impl App {
         let ci_run_count = self.ci_run_count();
         thread::spawn(move || {
             let data =
-                crate::scan::load_cached_repo_data(&repo_cache, &owner_repo).unwrap_or_else(|| {
+                scan::load_cached_repo_data(&repo_cache, &owner_repo).unwrap_or_else(|| {
                     let _ = tx.send(BackgroundMsg::RepoFetchQueued {
                         repo: owner_repo.clone(),
                     });
-                    let (result, meta, signal) = crate::scan::fetch_ci_runs_cached(
+                    let (result, meta, signal) = scan::fetch_ci_runs_cached(
                         &client,
                         &repo_url,
                         owner_repo.owner(),
                         owner_repo.repo(),
                         ci_run_count,
                     );
-                    crate::scan::emit_service_signal(&tx, signal);
+                    scan::emit_service_signal(&tx, signal);
                     let (runs, github_total) = match result {
                         crate::scan::CiFetchResult::Loaded { runs, github_total } => {
                             (runs, github_total)
@@ -1645,7 +1651,7 @@ impl App {
                         meta,
                         github_total,
                     };
-                    crate::scan::store_cached_repo_data(&repo_cache, &owner_repo, data.clone());
+                    scan::store_cached_repo_data(&repo_cache, &owner_repo, data.clone());
                     data
                 });
 
@@ -1747,10 +1753,10 @@ impl App {
         if fetch_head_advanced
             && self.is_scan_complete()
             && let Some(url) = self.fetch_url_for(path)
-            && let Some(owner_repo) = crate::ci::parse_owner_repo(&url)
+            && let Some(owner_repo) = ci::parse_owner_repo(&url)
             && !self.github.repo_fetch_in_flight.contains(&owner_repo)
         {
-            crate::scan::invalidate_cached_repo_data(&self.github.fetch_cache, &owner_repo);
+            scan::invalidate_cached_repo_data(&self.github.fetch_cache, &owner_repo);
         }
 
         self.maybe_trigger_repo_fetch(path);
@@ -1971,7 +1977,7 @@ impl App {
         thread::spawn(move || {
             loop {
                 if client.probe_service(service) {
-                    crate::scan::emit_service_recovered(&tx, service);
+                    scan::emit_service_recovered(&tx, service);
                     break;
                 }
                 thread::sleep(Duration::from_secs(SERVICE_RETRY_SECS));
@@ -2109,7 +2115,7 @@ impl App {
                 is_rust = rust;
             }
         });
-        let eligible = crate::lint::project_is_eligible(
+        let eligible = lint::project_is_eligible(
             &self.current_config.lint,
             &path.to_string_lossy(),
             path,
@@ -2365,7 +2371,7 @@ impl App {
         {
             self.priority_fetch_path = Some(abs_key);
             let abs_str = abs_path.display().to_string();
-            crate::tui::terminal::spawn_priority_fetch(
+            terminal::spawn_priority_fetch(
                 self,
                 display_path.as_str(),
                 &abs_str,

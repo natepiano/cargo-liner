@@ -36,6 +36,9 @@ use crate::tui::toasts::ToastStyle::Warning;
 use crate::tui::toasts::ToastTaskId;
 use crate::tui::toasts::ToastView;
 use crate::tui::toasts::TrackedItem;
+use crate::tui::render;
+use crate::tui::panes;
+use crate::ci;
 
 impl App {
     pub(in super::super) const fn lint_enabled(&self) -> bool { self.current_config.lint.enabled }
@@ -241,7 +244,7 @@ impl App {
             .at_path(path)
             .and_then(|project| project.disk_usage_bytes)
             .unwrap_or(0);
-        crate::tui::render::format_bytes(bytes)
+        render::format_bytes(bytes)
     }
 
     pub(in super::super) fn selected_ci_path(&self) -> Option<AbsolutePath> {
@@ -344,14 +347,14 @@ impl App {
                 .iter()
                 .find(|r| r.name == name)
                 .and_then(|r| r.url.as_deref())
-                .filter(|url| crate::ci::parse_owner_repo(url).is_some())
+                .filter(|url| ci::parse_owner_repo(url).is_some())
         };
         parseable("upstream")
             .or_else(|| parseable("origin"))
             .or_else(|| {
                 repo.remotes.iter().find_map(|r| {
                     let url = r.url.as_deref()?;
-                    crate::ci::parse_owner_repo(url).map(|_| url)
+                    ci::parse_owner_repo(url).map(|_| url)
                 })
             })
             .map(String::from)
@@ -401,8 +404,8 @@ impl App {
     /// Aggregate disk usage for a `RootItem`.
     pub(in super::super) fn formatted_disk_for_item(item: &RootItem) -> String {
         item.disk_usage_bytes().map_or_else(
-            || crate::tui::render::format_bytes(0),
-            crate::tui::render::format_bytes,
+            || render::format_bytes(0),
+            render::format_bytes,
         )
     }
 
@@ -683,7 +686,7 @@ impl App {
             InputContext::DetailFields => {
                 if self.base_focus() == PaneId::Package {
                     let pkg = self.pane_data.package.as_ref()?;
-                    let fields = crate::tui::panes::package_fields_from_data(pkg);
+                    let fields = panes::package_fields_from_data(pkg);
                     let field = *fields.get(self.pane_manager.pane(PaneId::Package).pos())?;
                     if field == DetailField::CratesIo && pkg.crates_version.is_some() {
                         Some("open")
@@ -692,7 +695,7 @@ impl App {
                     }
                 } else {
                     let git = self.pane_data.git.as_ref()?;
-                    let flat_len = crate::tui::panes::git_fields_from_data(git).len();
+                    let flat_len = panes::git_fields_from_data(git).len();
                     let pos = self.pane_manager.pane(PaneId::Git).pos();
                     if pos >= flat_len
                         && let Some(remote) = git.remotes.get(pos - flat_len)

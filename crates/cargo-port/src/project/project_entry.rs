@@ -6,6 +6,7 @@ use super::git::RepoInfo;
 use super::info::GitHubInfo;
 use super::info::ProjectCiData;
 use super::root_item::RootItem;
+use super::git;
 
 /// Repo-level metadata shared by every checkout of the same git repo.
 ///
@@ -70,7 +71,7 @@ impl DerefMut for ProjectEntry {
 }
 
 fn git_repo_for(item: &RootItem) -> Option<GitRepo> {
-    super::git::git_repo_root(item.path()).map(|_| GitRepo::default())
+    git::git_repo_root(item.path()).map(|_| GitRepo::default())
 }
 
 /// True if `target` is within (or equal to) the entry's hierarchy. Walks

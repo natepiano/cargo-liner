@@ -5,6 +5,7 @@ use super::paths::AbsolutePath;
 use super::project_fields::ProjectFields;
 use super::workspace::Workspace;
 use crate::lint::LintStatus;
+use super::root_item;
 
 /// A worktree group: primary checkout + linked worktree checkouts.
 ///
@@ -114,7 +115,7 @@ impl WorktreeGroup {
         match self {
             Self::Workspaces {
                 primary, linked, ..
-            } => super::root_item::single_live_workspace(primary, linked),
+            } => root_item::single_live_workspace(primary, linked),
             Self::Packages { .. } => None,
         }
     }
@@ -124,7 +125,7 @@ impl WorktreeGroup {
         match self {
             Self::Packages {
                 primary, linked, ..
-            } => super::root_item::single_live_package(primary, linked),
+            } => root_item::single_live_package(primary, linked),
             Self::Workspaces { .. } => None,
         }
     }

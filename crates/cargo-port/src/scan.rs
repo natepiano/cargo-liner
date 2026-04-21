@@ -41,6 +41,8 @@ use super::project::Submodule;
 use super::project::VendoredPackage;
 use super::project::Workspace;
 use super::project::WorktreeGroup;
+use super::project;
+use crate::enrichment;
 
 /// Messages sent from background threads to the main event loop.
 pub(crate) enum BackgroundMsg {
@@ -980,7 +982,7 @@ pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
             }
         }
         if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
-            let parsed = super::project::from_cargo_toml(entry.path()).ok()?;
+            let parsed = project::from_cargo_toml(entry.path()).ok()?;
             items.push(cargo_project_to_item(parsed));
         }
     }
@@ -1042,14 +1044,14 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
     // Send the Submodules message first so `at_path_mut` can resolve each
     // submodule before its per-entry enrichment messages arrive.
     if repo_presence.is_in_repo() {
-        let submodules = super::project::get_submodules(abs_path);
+        let submodules = project::get_submodules(abs_path);
         if !submodules.is_empty() {
             let _ = tx.send(BackgroundMsg::Submodules {
                 path:       abs.clone(),
                 submodules: submodules.clone(),
             });
             for sub in &submodules {
-                crate::enrichment::enrich(sub, tx, ctx);
+                enrichment::enrich(sub, tx, ctx);
             }
         }
     }
@@ -1229,7 +1231,7 @@ fn discover_non_rust_project(
     disk_entries: &mut Vec<(String, AbsolutePath)>,
     stats: &mut Phase1DiscoverStats,
 ) {
-    let project = super::project::from_git_dir(entry_path);
+    let project = project::from_git_dir(entry_path);
     let abs_path = project.path().clone();
     stats.projects += 1;
     stats.non_rust_projects += 1;
@@ -1279,7 +1281,7 @@ fn phase1_discover(scan_dirs: &[AbsolutePath], non_rust: NonRustInclusion) -> Ph
             if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
                 stats.manifests += 1;
                 let manifest_started = std::time::Instant::now();
-                let Ok(cargo_project) = super::project::from_cargo_toml(entry.path()) else {
+                let Ok(cargo_project) = project::from_cargo_toml(entry.path()) else {
                     continue;
                 };
                 tracing::info!(
@@ -1291,7 +1293,7 @@ fn phase1_discover(scan_dirs: &[AbsolutePath], non_rust: NonRustInclusion) -> Ph
                 let item = cargo_project_to_item(cargo_project);
                 let abs_path = item.path().clone();
                 let repo_presence_started = std::time::Instant::now();
-                let repo_presence = if super::project::git_repo_root(&abs_path).is_some() {
+                let repo_presence = if project::git_repo_root(&abs_path).is_some() {
                     GitRepoPresence::InRepo
                 } else {
                     GitRepoPresence::OutsideRepo

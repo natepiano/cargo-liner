@@ -19,6 +19,7 @@ use crate::constants::IN_SYNC;
 use crate::project::GitStatus;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
+use super::render;
 
 // ── Column indices ──────────────────────────────────────────────────
 pub(super) const COL_NAME: usize = 0;
@@ -453,7 +454,7 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
     let main_align = compact_status_align(row.git_main);
 
     let name_style = project_name_style(row.git_status);
-    let ci_style = super::render::conclusion_style(row.ci);
+    let ci_style = render::conclusion_style(row.ci);
     let git_path_style = Style::default();
 
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());

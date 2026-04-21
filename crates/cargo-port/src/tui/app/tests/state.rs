@@ -4,6 +4,7 @@ use crate::constants::NO_REMOTE_SYNC;
 use crate::project::AbsolutePath;
 use crate::project::WorktreeGroup;
 use crate::tui::panes::DetailField;
+use crate::tui::panes;
 
 #[test]
 fn lint_runtime_waits_for_scan_completion() {
@@ -84,7 +85,7 @@ fn ci_fetch_on_member_targets_workspace_owner_path() {
         make_git_info(Some("https://github.com/natepiano/demo")),
     );
 
-    crate::tui::panes::handle_ci_runs_key(
+    panes::handle_ci_runs_key(
         &mut app,
         &crossterm::event::KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::NONE),
     );
@@ -892,7 +893,7 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
         0,
     );
 
-    let ci_data = crate::tui::panes::build_ci_data(&app);
+    let ci_data = panes::build_ci_data(&app);
     assert_eq!(
         ci_data.empty_state.title(),
         " No CI runs for unpublished branch enh/various "
@@ -1316,7 +1317,7 @@ fn fetch_more_uses_sync_when_no_cached_runs() {
 
     app.select_project_in_tree(project.path());
 
-    crate::tui::panes::handle_ci_runs_key(
+    panes::handle_ci_runs_key(
         &mut app,
         &crossterm::event::KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::NONE),
     );

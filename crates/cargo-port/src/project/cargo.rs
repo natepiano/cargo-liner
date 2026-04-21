@@ -17,6 +17,7 @@ use super::project_fields::ProjectFields;
 use super::rust_info::Cargo;
 use super::rust_info::RustInfo;
 use super::workspace::Workspace;
+use super::member_group;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -384,5 +385,5 @@ fn count_targets(table: &Table, project_dir: &Path, toml_key: &str, dir_name: &s
         return 0;
     }
 
-    super::member_group::count_rs_files_recursive(&dir)
+    member_group::count_rs_files_recursive(&dir)
 }

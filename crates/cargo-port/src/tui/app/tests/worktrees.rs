@@ -1,4 +1,5 @@
 use super::*;
+use crate::scan;
 
 #[test]
 fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
@@ -226,7 +227,7 @@ fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace
 
     add_git_worktree(&primary_dir, &linked_dir, "test/brp");
     let linked_item =
-        crate::scan::discover_project_item(&linked_dir).unwrap_or_else(|| std::process::abort());
+        scan::discover_project_item(&linked_dir).unwrap_or_else(|| std::process::abort());
     apply_bg_msg(
         &mut app,
         BackgroundMsg::ProjectDiscovered { item: linked_item },
@@ -313,7 +314,7 @@ fn expanded_workspace_root_discovery_immediately_renders_primary_workspace_and_l
 
     add_git_worktree(&primary_dir, &linked_dir, "test/brp");
     let linked_item =
-        crate::scan::discover_project_item(&linked_dir).unwrap_or_else(|| std::process::abort());
+        scan::discover_project_item(&linked_dir).unwrap_or_else(|| std::process::abort());
     apply_bg_msg(
         &mut app,
         BackgroundMsg::ProjectDiscovered { item: linked_item },
@@ -381,7 +382,7 @@ fn project_discovery_updates_cached_rows_for_expanded_workspace_immediately() {
 
     add_git_worktree(&primary_dir, &linked_dir, "test/brp");
     let linked_item =
-        crate::scan::discover_project_item(&linked_dir).unwrap_or_else(|| std::process::abort());
+        scan::discover_project_item(&linked_dir).unwrap_or_else(|| std::process::abort());
 
     assert!(
         app.handle_bg_msg(BackgroundMsg::ProjectDiscovered { item: linked_item }),

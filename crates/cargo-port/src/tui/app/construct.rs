@@ -42,6 +42,7 @@ use crate::tui::terminal::ExampleMsg;
 use crate::tui::toasts::ToastManager;
 use crate::watcher;
 use crate::watcher::WatcherMsg;
+use crate::config;
 
 pub(super) struct AppChannels {
     example_tx:  mpsc::Sender<ExampleMsg>,
@@ -84,8 +85,8 @@ impl AppInit {
         cfg: &CargoPortConfig,
         http_client: &HttpClient,
     ) -> Self {
-        crate::config::set_active_config(cfg);
-        let config_path = crate::config::config_path();
+        config::set_active_config(cfg);
+        let config_path = config::config_path();
         let config_last_seen = config_path.as_deref().and_then(App::config_file_stamp);
         let lint_spawn = lint::spawn(cfg, bg_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&cfg.tui.include_dirs);

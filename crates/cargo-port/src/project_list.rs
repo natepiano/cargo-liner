@@ -19,6 +19,7 @@ use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
+use crate::scan;
 
 /// Owning wrapper around the project hierarchy.
 ///
@@ -616,7 +617,7 @@ fn regroup_workspace(ws: &mut Workspace, inline_dirs: &[String]) {
             .path()
             .strip_prefix(ws.path())
             .ok()
-            .map(crate::scan::normalize_workspace_path)
+            .map(scan::normalize_workspace_path)
             .unwrap_or_default();
         let subdir = relative.split('/').next().unwrap_or("").to_string();
         let group_name = if inline_dirs.contains(&subdir) || !relative.contains('/') {

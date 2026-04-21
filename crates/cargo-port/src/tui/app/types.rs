@@ -9,6 +9,7 @@ use crate::tui::finder::FINDER_COLUMN_COUNT;
 use crate::tui::finder::FinderItem;
 use crate::tui::panes::PaneId;
 use crate::tui::toasts::ToastTaskId;
+use crate::tui::terminal;
 
 /// An expand key: a node, group, worktree entry, or group within a worktree.
 #[derive(Hash, Eq, PartialEq, Clone)]
@@ -250,7 +251,7 @@ pub(in super::super) struct SelectionPaths {
 impl SelectionPaths {
     pub(in super::super) fn new() -> Self {
         Self {
-            last_selected: crate::tui::terminal::load_last_selected(),
+            last_selected: terminal::load_last_selected(),
             ..Self::default()
         }
     }

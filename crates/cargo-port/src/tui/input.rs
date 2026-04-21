@@ -24,6 +24,9 @@ use crate::keymap::KeyBind;
 use crate::keymap::ProjectListAction;
 use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
+use super::terminal;
+use super::keymap_ui;
+use super::interaction;
 
 /// Last known mouse position, updated from every mouse event. Used to
 /// synthesize a click when `FocusGained` arrives because iTerm2 eats the
@@ -49,7 +52,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             handle_mouse_event(app, mouse.kind, mouse.column, mouse.row);
         },
         Event::FocusGained => {
-            let _ = super::terminal::rearm_input_modes();
+            let _ = terminal::rearm_input_modes();
             if let Ok(pos) = LAST_MOUSE_POS.lock()
                 && let Some((column, row)) = *pos
             {
@@ -113,7 +116,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
     if app.is_keymap_open() {
-        super::keymap_ui::handle_keymap_key(app, raw, &normalized);
+        keymap_ui::handle_keymap_key(app, raw, &normalized);
         return;
     }
     if app.is_finder_open() {
@@ -295,7 +298,7 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    if super::interaction::handle_click(app, pos) {
+    if interaction::handle_click(app, pos) {
         return;
     }
 
@@ -450,7 +453,7 @@ fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
 }
 
 fn open_finder(app: &mut App) {
-    let (index, col_widths) = super::finder::build_finder_index(app.projects());
+    let (index, col_widths) = finder::build_finder_index(app.projects());
     let finder = app.finder_mut();
     finder.index = index;
     finder.col_widths = col_widths;
@@ -550,7 +553,7 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
             app.open_keymap();
             app.pane_manager_mut()
                 .pane_mut(PaneId::Keymap)
-                .set_len(super::keymap_ui::selectable_row_count());
+                .set_len(keymap_ui::selectable_row_count());
         },
         GlobalAction::Rescan => app.rescan(),
         GlobalAction::Dismiss => {

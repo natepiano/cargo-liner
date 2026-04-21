@@ -1,4 +1,5 @@
 use super::*;
+use crate::tui::columns;
 
 #[test]
 fn submodule_rows_render_disk_usage() {
@@ -842,13 +843,13 @@ fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
     let entries = vec![super::as_entry(item)];
     let widths =
         snapshots::build_fit_widths_snapshot(&entries, std::slice::from_ref(&root_label), true, 0);
-    let root_width = crate::tui::columns::display_width(crate::tui::render::PREFIX_ROOT_COLLAPSED)
-        + crate::tui::columns::display_width(&root_label);
+    let root_width = columns::display_width(crate::tui::render::PREFIX_ROOT_COLLAPSED)
+        + columns::display_width(&root_label);
     let primary_entry_width =
-        crate::tui::columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
-            + crate::tui::columns::display_width("obsidian_knife");
-    let linked_entry_width = crate::tui::columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
-        + crate::tui::columns::display_width("obsidian_knife_test");
+        columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
+            + columns::display_width("obsidian_knife");
+    let linked_entry_width = columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
+        + columns::display_width("obsidian_knife_test");
 
     assert_eq!(
         widths.get(crate::tui::columns::COL_NAME),
@@ -875,13 +876,13 @@ fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
     let entries = vec![super::as_entry(item)];
     let widths =
         snapshots::build_fit_widths_snapshot(&entries, std::slice::from_ref(&root_label), true, 0);
-    let root_width = crate::tui::columns::display_width(crate::tui::render::PREFIX_ROOT_COLLAPSED)
-        + crate::tui::columns::display_width(&root_label);
+    let root_width = columns::display_width(crate::tui::render::PREFIX_ROOT_COLLAPSED)
+        + columns::display_width(&root_label);
     let primary_entry_width =
-        crate::tui::columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
-            + crate::tui::columns::display_width("cargo-port");
-    let linked_entry_width = crate::tui::columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
-        + crate::tui::columns::display_width("cargo-port_test");
+        columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
+            + columns::display_width("cargo-port");
+    let linked_entry_width = columns::display_width(crate::tui::render::PREFIX_WT_FLAT)
+        + columns::display_width("cargo-port_test");
 
     assert_eq!(
         widths.get(crate::tui::columns::COL_NAME),

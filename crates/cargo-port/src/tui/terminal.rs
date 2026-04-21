@@ -43,6 +43,7 @@ use crate::project::RootItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
+use crate::perf_log;
 
 pub(super) enum ExampleMsg {
     Output(String),
@@ -112,7 +113,7 @@ pub fn run() -> ExitCode {
         },
     };
     config::set_active_config(&cfg);
-    let perf_log_path = crate::perf_log::init();
+    let perf_log_path = perf_log::init();
 
     let Ok(rt) = tokio::runtime::Runtime::new() else {
         tracing::error!("Error: failed to create async runtime");

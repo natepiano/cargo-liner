@@ -292,6 +292,7 @@ mod tests {
     use crate::tui::input;
     use crate::tui::pane::Pane;
     use crate::tui::pane::PaneSelectionState;
+    use crate::tui::panes;
     use crate::tui::panes::PaneId;
     use crate::tui::render;
     use crate::tui::settings::SettingOption;
@@ -464,7 +465,7 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         terminal
-            .draw(|frame| crate::tui::panes::render_lints_panel(frame, app, frame.area()))
+            .draw(|frame| panes::render_lints_panel(frame, app, frame.area()))
             .unwrap_or_else(|_| std::process::abort());
     }
 
@@ -477,7 +478,7 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         terminal
-            .draw(|frame| crate::tui::panes::render_ci_panel(frame, app, frame.area()))
+            .draw(|frame| panes::render_ci_panel(frame, app, frame.area()))
             .unwrap_or_else(|_| std::process::abort());
     }
 

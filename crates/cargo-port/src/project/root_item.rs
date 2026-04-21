@@ -73,7 +73,7 @@ impl RootItem {
     }
 
     pub(crate) fn git_directory(&self) -> Option<AbsolutePath> {
-        super::git::resolve_git_dir(self.path())
+        git::resolve_git_dir(self.path())
     }
 
     /// Directory leaf name for top-level root labels and disambiguation.
@@ -192,17 +192,17 @@ impl RootItem {
             Self::Worktrees(g) => match g {
                 WorktreeGroup::Workspaces {
                     primary, linked, ..
-                } => super::rust_project::info_in_workspace(primary, path).or_else(|| {
+                } => rust_project::info_in_workspace(primary, path).or_else(|| {
                     linked
                         .iter()
-                        .find_map(|l| super::rust_project::info_in_workspace(l, path))
+                        .find_map(|l| rust_project::info_in_workspace(l, path))
                 }),
                 WorktreeGroup::Packages {
                     primary, linked, ..
-                } => super::rust_project::info_in_package(primary, path).or_else(|| {
+                } => rust_project::info_in_package(primary, path).or_else(|| {
                     linked
                         .iter()
-                        .find_map(|l| super::rust_project::info_in_package(l, path))
+                        .find_map(|l| rust_project::info_in_package(l, path))
                 }),
             },
         };
@@ -221,17 +221,17 @@ impl RootItem {
             Self::Worktrees(g) => match g {
                 WorktreeGroup::Workspaces {
                     primary, linked, ..
-                } => super::rust_project::rust_info_in_workspace(primary, path).or_else(|| {
+                } => rust_project::rust_info_in_workspace(primary, path).or_else(|| {
                     linked
                         .iter()
-                        .find_map(|l| super::rust_project::rust_info_in_workspace(l, path))
+                        .find_map(|l| rust_project::rust_info_in_workspace(l, path))
                 }),
                 WorktreeGroup::Packages {
                     primary, linked, ..
-                } => super::rust_project::rust_info_in_package(primary, path).or_else(|| {
+                } => rust_project::rust_info_in_package(primary, path).or_else(|| {
                     linked
                         .iter()
-                        .find_map(|l| super::rust_project::rust_info_in_package(l, path))
+                        .find_map(|l| rust_project::rust_info_in_package(l, path))
                 }),
             },
         }
@@ -250,24 +250,24 @@ impl RootItem {
                 WorktreeGroup::Workspaces {
                     primary, linked, ..
                 } => {
-                    if super::rust_project::info_in_workspace(primary, path).is_some() {
-                        return super::rust_project::info_in_workspace_mut(primary, path);
+                    if rust_project::info_in_workspace(primary, path).is_some() {
+                        return rust_project::info_in_workspace_mut(primary, path);
                     }
                     let idx = linked
                         .iter()
-                        .position(|l| super::rust_project::info_in_workspace(l, path).is_some())?;
-                    super::rust_project::info_in_workspace_mut(&mut linked[idx], path)
+                        .position(|l| rust_project::info_in_workspace(l, path).is_some())?;
+                    rust_project::info_in_workspace_mut(&mut linked[idx], path)
                 },
                 WorktreeGroup::Packages {
                     primary, linked, ..
                 } => {
-                    if super::rust_project::info_in_package(primary, path).is_some() {
-                        return super::rust_project::info_in_package_mut(primary, path);
+                    if rust_project::info_in_package(primary, path).is_some() {
+                        return rust_project::info_in_package_mut(primary, path);
                     }
                     let idx = linked
                         .iter()
-                        .position(|l| super::rust_project::info_in_package(l, path).is_some())?;
-                    super::rust_project::info_in_package_mut(&mut linked[idx], path)
+                        .position(|l| rust_project::info_in_package(l, path).is_some())?;
+                    rust_project::info_in_package_mut(&mut linked[idx], path)
                 },
             },
         }
@@ -281,24 +281,24 @@ impl RootItem {
                 WorktreeGroup::Workspaces {
                     primary, linked, ..
                 } => {
-                    if super::rust_project::info_in_workspace(primary, path).is_some() {
-                        return super::rust_project::rust_info_in_workspace_mut(primary, path);
+                    if rust_project::info_in_workspace(primary, path).is_some() {
+                        return rust_project::rust_info_in_workspace_mut(primary, path);
                     }
                     let idx = linked
                         .iter()
-                        .position(|l| super::rust_project::info_in_workspace(l, path).is_some())?;
-                    super::rust_project::rust_info_in_workspace_mut(&mut linked[idx], path)
+                        .position(|l| rust_project::info_in_workspace(l, path).is_some())?;
+                    rust_project::rust_info_in_workspace_mut(&mut linked[idx], path)
                 },
                 WorktreeGroup::Packages {
                     primary, linked, ..
                 } => {
-                    if super::rust_project::info_in_package(primary, path).is_some() {
-                        return super::rust_project::rust_info_in_package_mut(primary, path);
+                    if rust_project::info_in_package(primary, path).is_some() {
+                        return rust_project::rust_info_in_package_mut(primary, path);
                     }
                     let idx = linked
                         .iter()
-                        .position(|l| super::rust_project::info_in_package(l, path).is_some())?;
-                    super::rust_project::rust_info_in_package_mut(&mut linked[idx], path)
+                        .position(|l| rust_project::info_in_package(l, path).is_some())?;
+                    rust_project::rust_info_in_package_mut(&mut linked[idx], path)
                 },
             },
         }
@@ -312,17 +312,17 @@ impl RootItem {
             Self::Worktrees(g) => match g {
                 WorktreeGroup::Workspaces {
                     primary, linked, ..
-                } => super::rust_project::lint_in_workspace(primary, path).or_else(|| {
+                } => rust_project::lint_in_workspace(primary, path).or_else(|| {
                     linked
                         .iter()
-                        .find_map(|l| super::rust_project::lint_in_workspace(l, path))
+                        .find_map(|l| rust_project::lint_in_workspace(l, path))
                 }),
                 WorktreeGroup::Packages {
                     primary, linked, ..
-                } => super::rust_project::lint_in_package(primary, path).or_else(|| {
+                } => rust_project::lint_in_package(primary, path).or_else(|| {
                     linked
                         .iter()
-                        .find_map(|l| super::rust_project::lint_in_package(l, path))
+                        .find_map(|l| rust_project::lint_in_package(l, path))
                 }),
             },
         }
@@ -335,17 +335,17 @@ impl RootItem {
             Self::Worktrees(g) => match g {
                 WorktreeGroup::Workspaces {
                     primary, linked, ..
-                } => super::rust_project::vendored_in_workspace(primary, path).or_else(|| {
+                } => rust_project::vendored_in_workspace(primary, path).or_else(|| {
                     linked
                         .iter()
-                        .find_map(|l| super::rust_project::vendored_in_workspace(l, path))
+                        .find_map(|l| rust_project::vendored_in_workspace(l, path))
                 }),
                 WorktreeGroup::Packages {
                     primary, linked, ..
-                } => super::rust_project::vendored_in_package(primary, path).or_else(|| {
+                } => rust_project::vendored_in_package(primary, path).or_else(|| {
                     linked
                         .iter()
-                        .find_map(|l| super::rust_project::vendored_in_package(l, path))
+                        .find_map(|l| rust_project::vendored_in_package(l, path))
                 }),
             },
         }
@@ -359,24 +359,24 @@ impl RootItem {
                 WorktreeGroup::Workspaces {
                     primary, linked, ..
                 } => {
-                    if super::rust_project::vendored_in_workspace(primary, path).is_some() {
-                        return super::rust_project::vendored_in_workspace_mut(primary, path);
+                    if rust_project::vendored_in_workspace(primary, path).is_some() {
+                        return rust_project::vendored_in_workspace_mut(primary, path);
                     }
                     let idx = linked.iter().position(|l| {
-                        super::rust_project::vendored_in_workspace(l, path).is_some()
+                        rust_project::vendored_in_workspace(l, path).is_some()
                     })?;
-                    super::rust_project::vendored_in_workspace_mut(&mut linked[idx], path)
+                    rust_project::vendored_in_workspace_mut(&mut linked[idx], path)
                 },
                 WorktreeGroup::Packages {
                     primary, linked, ..
                 } => {
-                    if super::rust_project::vendored_in_package(primary, path).is_some() {
-                        return super::rust_project::vendored_in_package_mut(primary, path);
+                    if rust_project::vendored_in_package(primary, path).is_some() {
+                        return rust_project::vendored_in_package_mut(primary, path);
                     }
                     let idx = linked.iter().position(|l| {
-                        super::rust_project::vendored_in_package(l, path).is_some()
+                        rust_project::vendored_in_package(l, path).is_some()
                     })?;
-                    super::rust_project::vendored_in_package_mut(&mut linked[idx], path)
+                    rust_project::vendored_in_package_mut(&mut linked[idx], path)
                 },
             },
         }
@@ -390,24 +390,24 @@ impl RootItem {
                 WorktreeGroup::Workspaces {
                     primary, linked, ..
                 } => {
-                    if super::rust_project::lint_in_workspace(primary, path).is_some() {
-                        return super::rust_project::lint_in_workspace_mut(primary, path);
+                    if rust_project::lint_in_workspace(primary, path).is_some() {
+                        return rust_project::lint_in_workspace_mut(primary, path);
                     }
                     let idx = linked
                         .iter()
-                        .position(|l| super::rust_project::lint_in_workspace(l, path).is_some())?;
-                    super::rust_project::lint_in_workspace_mut(&mut linked[idx], path)
+                        .position(|l| rust_project::lint_in_workspace(l, path).is_some())?;
+                    rust_project::lint_in_workspace_mut(&mut linked[idx], path)
                 },
                 WorktreeGroup::Packages {
                     primary, linked, ..
                 } => {
-                    if super::rust_project::lint_in_package(primary, path).is_some() {
-                        return super::rust_project::lint_in_package_mut(primary, path);
+                    if rust_project::lint_in_package(primary, path).is_some() {
+                        return rust_project::lint_in_package_mut(primary, path);
                     }
                     let idx = linked
                         .iter()
-                        .position(|l| super::rust_project::lint_in_package(l, path).is_some())?;
-                    super::rust_project::lint_in_package_mut(&mut linked[idx], path)
+                        .position(|l| rust_project::lint_in_package(l, path).is_some())?;
+                    rust_project::lint_in_package_mut(&mut linked[idx], path)
                 },
             },
         }
@@ -550,6 +550,8 @@ fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> 
 use super::package::Package;
 use super::rust_info::RustInfo;
 use super::workspace::Workspace;
+use super::rust_project;
+use super::git;
 
 pub(super) fn single_live_workspace<'a>(
     primary: &'a Workspace,

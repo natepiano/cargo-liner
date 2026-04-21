@@ -51,6 +51,13 @@ use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
+use super::toasts;
+use super::shortcuts;
+use super::settings;
+use super::keymap_ui;
+use super::interaction;
+use super::finder;
+use super::columns;
 
 #[derive(Clone, Copy)]
 pub(super) enum CiColumn {
@@ -232,23 +239,23 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     app.layout_cache_mut().tiled = tiled;
 
     render_status_bar(frame, app, outer_layout[1]);
-    let toast_result = super::toasts::render_toasts(
+    let toast_result = toasts::render_toasts(
         frame,
         outer_layout[0],
         &app.active_toasts(),
         app.is_focused(PaneId::Toasts),
         app.focused_toast_id(),
     );
-    super::interaction::register_toast_hitboxes(app, &toast_result.hitboxes);
+    interaction::register_toast_hitboxes(app, &toast_result.hitboxes);
 
     if app.is_settings_open() {
-        super::settings::render_settings_popup(frame, app);
+        settings::render_settings_popup(frame, app);
     }
     if app.is_keymap_open() {
-        super::keymap_ui::render_keymap_popup(frame, app);
+        keymap_ui::render_keymap_popup(frame, app);
     }
     if app.is_finder_open() {
-        super::finder::render_finder_popup(frame, app);
+        finder::render_finder_popup(frame, app);
     }
     if let Some(action) = app.confirm() {
         render_confirm_popup(frame, action);
@@ -338,7 +345,7 @@ fn sync_layout_pane_hitboxes(app: &mut App, layout: &pane::ResolvedPaneLayout<Pa
 fn sync_hovered_pane_row(app: &mut App) {
     let hovered = app
         .mouse_pos()
-        .and_then(|pos| super::interaction::hovered_pane_row_at(app, pos));
+        .and_then(|pos| interaction::hovered_pane_row_at(app, pos));
     app.set_hovered_pane_row(hovered);
     app.apply_hovered_pane_row();
 }
@@ -348,7 +355,7 @@ fn sync_hovered_pane_row(app: &mut App) {
 fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
     if panes::has_row_hitboxes(id) {
         let pane = app.pane_manager().pane(id).clone();
-        super::interaction::register_pane_row_hitboxes(app, id, &pane, Content);
+        interaction::register_pane_row_hitboxes(app, id, &pane, Content);
     }
 }
 
@@ -362,9 +369,9 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
                 .filter_map(|entry| entry.item.disk_usage_bytes())
                 .sum(),
         );
-        let header = super::columns::header_line(widths, " Projects");
-        let summary = super::columns::build_summary_cells(widths, &total_str);
-        let summary_line = Some(super::columns::row_to_line(&summary, widths));
+        let header = columns::header_line(widths, " Projects");
+        let summary = columns::build_summary_cells(widths, &total_str);
+        let summary_line = Some(columns::row_to_line(&summary, widths));
         let row_width = u16::try_from(widths.total_width()).unwrap_or(u16::MAX);
         (items, header, summary_line, row_width)
     };
@@ -439,7 +446,7 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     app.pane_manager_mut()
         .pane_mut(PaneId::ProjectList)
         .set_pos(list_state.selected().unwrap_or(0));
-    super::interaction::register_project_list_hitboxes(app, list_area, row_width);
+    interaction::register_project_list_hitboxes(app, list_area, row_width);
 
     if pin_summary && let Some(line) = summary_line {
         render_project_list_footer(frame, content_area, line);
@@ -642,7 +649,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         .and_then(|path| app.lint_at_path(path))
         .filter(|lr| !lr.runs().is_empty())
         .map(|_| "clear cache");
-    let groups = super::shortcuts::for_status_bar(
+    let groups = shortcuts::for_status_bar(
         context,
         enter_action,
         is_rust,
@@ -739,7 +746,7 @@ fn render_root_item(
             .at_path(item.path())
             .and_then(|p| p.language_stats.as_ref())
             .and_then(|ls| ls.entries.first())
-            .map_or("  ", |e| crate::project::language_icon(&e.language))
+            .map_or("  ", |e| project::language_icon(&e.language))
     };
     let lint = app.lint_icon_for_root(node_index);
     let origin_sync = app.git_sync(item.path());
@@ -758,7 +765,7 @@ fn render_root_item(
     let wt_health = item.worktree_health();
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, wt_health);
-    let row = super::columns::build_row_cells(super::columns::ProjectRow {
+    let row = columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
         name_segments: app.discovery_name_segments_for_path(
@@ -781,7 +788,7 @@ fn render_root_item(
         deleted,
         worktree_health: wt_health,
     });
-    ListItem::new(super::columns::row_to_line(&row, widths))
+    ListItem::new(columns::row_to_line(&row, widths))
 }
 
 /// Build a `ListItem` for a child project (workspace member, vendored crate,
@@ -832,7 +839,7 @@ fn render_child_item<P: project::ProjectFields>(
     } else {
         (disk.as_str(), None, None)
     };
-    let row = super::columns::build_row_cells(super::columns::ProjectRow {
+    let row = columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
         name_segments: app.discovery_name_segments_for_path(
@@ -855,7 +862,7 @@ fn render_child_item<P: project::ProjectFields>(
         deleted,
         worktree_health: project.worktree_health(),
     });
-    ListItem::new(super::columns::row_to_line(&row, widths))
+    ListItem::new(columns::row_to_line(&row, widths))
 }
 
 fn render_worktree_entry<'a>(
@@ -903,7 +910,7 @@ fn render_worktree_entry<'a>(
     let wt_health = worktree_health_for_entry(item, wi);
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, wt_health);
-    let row = super::columns::build_row_cells(super::columns::ProjectRow {
+    let row = columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name: &wt_name,
         name_segments: app.discovery_name_segments_for_path(
@@ -926,7 +933,7 @@ fn render_worktree_entry<'a>(
         deleted,
         worktree_health: wt_health,
     });
-    ListItem::new(super::columns::row_to_line(&row, widths))
+    ListItem::new(columns::row_to_line(&row, widths))
 }
 
 fn worktree_entry_name_and_expandable(
@@ -1064,8 +1071,8 @@ fn render_wt_group_header<'a>(
         PREFIX_WT_GROUP_COLLAPSED
     };
     let label = format!("{group_name} ({member_count})");
-    let row = super::columns::build_group_header_cells(prefix, &label);
-    ListItem::new(super::columns::row_to_line(&row, widths))
+    let row = columns::build_group_header_cells(prefix, &label);
+    ListItem::new(columns::row_to_line(&row, widths))
 }
 
 fn render_wt_member<'a>(
@@ -1105,8 +1112,8 @@ fn render_wt_member<'a>(
     };
     member.map_or_else(
         || {
-            let row = super::columns::build_group_header_cells(indent, &member_name);
-            ListItem::new(super::columns::row_to_line(&row, widths))
+            let row = columns::build_group_header_cells(indent, &member_name);
+            ListItem::new(columns::row_to_line(&row, widths))
         },
         |m| {
             let inherited_deleted = match &item.item {
@@ -1171,8 +1178,8 @@ fn render_member_item(
     };
     member.map_or_else(
         || {
-            let row = super::columns::build_group_header_cells(indent, &member_name);
-            ListItem::new(super::columns::row_to_line(&row, widths))
+            let row = columns::build_group_header_cells(indent, &member_name);
+            ListItem::new(columns::row_to_line(&row, widths))
         },
         |m| {
             let inherited_deleted = app.is_deleted(item.path());
@@ -1227,8 +1234,8 @@ fn render_vendored_item(
     let name = format!("{vendored_display_name} (v)");
     vendored.map_or_else(
         || {
-            let row = super::columns::build_group_header_cells(PREFIX_VENDORED, &name);
-            ListItem::new(super::columns::row_to_line(&row, widths))
+            let row = columns::build_group_header_cells(PREFIX_VENDORED, &name);
+            ListItem::new(columns::row_to_line(&row, widths))
         },
         |v| {
             let inherited_deleted = app.is_deleted(item.path());
@@ -1254,8 +1261,8 @@ fn render_submodule_item(
 ) -> ListItem<'static> {
     let item = &app.projects()[node_index];
     let Some(submodule) = item.submodules().get(submodule_index) else {
-        let row = super::columns::build_group_header_cells(PREFIX_SUBMODULE, "");
-        return ListItem::new(super::columns::row_to_line(&row, widths));
+        let row = columns::build_group_header_cells(PREFIX_SUBMODULE, "");
+        return ListItem::new(columns::row_to_line(&row, widths));
     };
     let name = format!("{} (s)", submodule.name);
     let sorted = child_sorted.get(&node_index).map_or(&[][..], Vec::as_slice);
@@ -1286,7 +1293,7 @@ fn render_path_only_entry(
     let deleted = app.is_deleted(inherited_deleted_path) || app.is_deleted(path);
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, entry.info().worktree_health);
-    let row = super::columns::build_row_cells(super::columns::ProjectRow {
+    let row = columns::build_row_cells(super::columns::ProjectRow {
         prefix,
         name,
         name_segments: app.discovery_name_segments_for_path(
@@ -1309,7 +1316,7 @@ fn render_path_only_entry(
         deleted,
         worktree_health: entry.info().worktree_health,
     });
-    ListItem::new(super::columns::row_to_line(&row, widths))
+    ListItem::new(columns::row_to_line(&row, widths))
 }
 
 fn render_wt_vendored_item(
@@ -1355,8 +1362,8 @@ fn render_wt_vendored_item(
     let name = format!("{vendored_display_name} (v)");
     vendored_pkg.map_or_else(
         || {
-            let row = super::columns::build_group_header_cells(PREFIX_WT_VENDORED, &name);
-            ListItem::new(super::columns::row_to_line(&row, widths))
+            let row = columns::build_group_header_cells(PREFIX_WT_VENDORED, &name);
+            ListItem::new(columns::row_to_line(&row, widths))
         },
         |v| {
             let inherited_deleted = match &item.item {
@@ -1451,8 +1458,8 @@ fn render_tree_item(
                 PREFIX_GROUP_COLLAPSED
             };
             let label = format!("{group_name} ({member_count})");
-            let row = super::columns::build_group_header_cells(prefix, &label);
-            ListItem::new(super::columns::row_to_line(&row, widths))
+            let row = columns::build_group_header_cells(prefix, &label);
+            ListItem::new(columns::row_to_line(&row, widths))
         },
         VisibleRow::Member {
             node_index,

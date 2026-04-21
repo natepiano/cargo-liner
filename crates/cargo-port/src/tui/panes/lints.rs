@@ -30,6 +30,7 @@ use crate::tui::pane;
 use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneTitleCount;
+use crate::tui::render;
 
 fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
     if data.runs.is_empty() {
@@ -89,7 +90,7 @@ fn build_lint_rows(
         let size = sizes
             .get(row_index)
             .copied()
-            .map_or_else(String::new, crate::tui::render::format_bytes);
+            .map_or_else(String::new, render::format_bytes);
 
         let (result_cell, row_style) = match run.status {
             LintRunStatus::Running => {

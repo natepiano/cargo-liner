@@ -1,5 +1,6 @@
 use super::*;
 use crate::project::WorktreeHealth::Normal;
+use crate::tui::columns;
 
 #[test]
 fn collapse_all_anchors_member_selection_to_root() {
@@ -406,7 +407,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
     );
 
     let item = &app.projects[0];
-    let row = crate::tui::columns::build_row_cells(crate::tui::columns::ProjectRow {
+    let row = columns::build_row_cells(crate::tui::columns::ProjectRow {
         prefix:            crate::tui::render::PREFIX_ROOT_LEAF,
         name:              &item.root_directory_name().into_string(),
         name_segments:     None,
@@ -425,7 +426,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         worktree_health:   Normal,
     });
     let widths = crate::tui::columns::ResolvedWidths::new(true);
-    let line = crate::tui::columns::row_to_line(&row, &widths);
+    let line = columns::row_to_line(&row, &widths);
 
     let suffix = line
         .spans

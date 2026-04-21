@@ -62,6 +62,9 @@ use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PaneId;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
+use crate::tui::render;
+use crate::scan;
+use crate::project;
 
 mod background;
 mod discovery_shimmer;
@@ -169,7 +172,7 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
         app.lint_enabled(),
         0,
     );
-    let items = crate::tui::render::render_tree_items(app, &widths);
+    let items = render::render_tree_items(app, &widths);
     let area = Rect::new(
         0,
         0,
@@ -199,7 +202,7 @@ fn render_tree_buffer(app: &mut App) -> (ratatui::buffer::Buffer, ResolvedWidths
         app.lint_enabled(),
         0,
     );
-    let items = crate::tui::render::render_tree_items(app, &widths);
+    let items = render::render_tree_items(app, &widths);
     let area = Rect::new(
         0,
         0,
@@ -485,8 +488,8 @@ fn add_git_worktree(primary_dir: &Path, worktree_dir: &Path, branch: &str) {
 fn item_from_project_dir(dir: &Path) -> RootItem {
     let cargo_toml = dir.join("Cargo.toml");
     let parsed =
-        crate::project::from_cargo_toml(&cargo_toml).unwrap_or_else(|_| std::process::abort());
-    crate::scan::cargo_project_to_item(parsed)
+        project::from_cargo_toml(&cargo_toml).unwrap_or_else(|_| std::process::abort());
+    scan::cargo_project_to_item(parsed)
 }
 
 fn apply_bg_msg(app: &mut App, msg: BackgroundMsg) {
