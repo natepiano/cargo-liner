@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::time::Instant;
@@ -123,6 +125,7 @@ fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
         cfg.tui.include_dirs = vec!["/tmp/test".to_string()];
     }
     let (bg_tx, bg_rx) = mpsc::channel();
+    let metadata_store = Arc::new(Mutex::new(crate::project::WorkspaceMetadataStore::new()));
     let mut app = App::new(
         projects,
         bg_tx,
@@ -130,6 +133,7 @@ fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
         &cfg,
         test_http_client(),
         Instant::now(),
+        metadata_store,
     );
     app.retry_spawn_mode = RetrySpawnMode::Disabled;
     app.sync_selected_project();

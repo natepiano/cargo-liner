@@ -232,6 +232,8 @@ pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPan
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::OnceLock;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -433,6 +435,8 @@ mod tests {
         let mut cfg = CargoPortConfig::default();
         cfg.tui.include_dirs = vec!["/tmp/test".to_string()];
         let (bg_tx, bg_rx) = mpsc::channel();
+        let metadata_store =
+            Arc::new(Mutex::new(crate::project::WorkspaceMetadataStore::new()));
         let mut app = App::new(
             projects,
             bg_tx,
@@ -440,6 +444,7 @@ mod tests {
             &cfg,
             test_http_client(),
             Instant::now(),
+            metadata_store,
         );
         app.sync_selected_project();
         app

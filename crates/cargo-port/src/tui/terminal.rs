@@ -5,6 +5,8 @@ use std::io::Stdout;
 use std::path::Path;
 use std::process::ExitCode;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -126,11 +128,13 @@ pub fn run() -> ExitCode {
     let scan_started_at = std::time::Instant::now();
     tracing::info!(kind = "initial", run = 1, "scan_start");
     let scan_dirs = scan::resolve_include_dirs(&cfg.tui.include_dirs);
+    let metadata_store = Arc::new(Mutex::new(crate::project::WorkspaceMetadataStore::new()));
     let (bg_tx, bg_rx) = scan::spawn_streaming_scan(
         scan_dirs,
         &cfg.tui.inline_dirs,
         cfg.tui.include_non_rust,
         http_client.clone(),
+        Arc::clone(&metadata_store),
     );
     let projects: Vec<RootItem> = Vec::new();
 
@@ -154,7 +158,15 @@ pub fn run() -> ExitCode {
         },
     };
 
-    let mut app = App::new(&projects, bg_tx, bg_rx, &cfg, http_client, scan_started_at);
+    let mut app = App::new(
+        &projects,
+        bg_tx,
+        bg_rx,
+        &cfg,
+        http_client,
+        scan_started_at,
+        metadata_store,
+    );
     tracing::info!(perf_log = %perf_log_path.display(), "tui_ready");
     let input_rx = spawn_input_thread();
 

@@ -81,3 +81,4 @@ pub(super) const STARTUP_PHASE_DISK: &str = "Disk usage";
 pub(super) const STARTUP_PHASE_GIT: &str = "Local git repos";
 pub(super) const STARTUP_PHASE_GITHUB: &str = "GitHub repos";
 pub(super) const STARTUP_PHASE_LINT: &str = "Lint cache";
+pub(super) const STARTUP_PHASE_METADATA: &str = "Cargo metadata";

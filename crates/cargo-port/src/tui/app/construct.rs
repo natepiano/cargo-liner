@@ -28,6 +28,7 @@ use crate::lint;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
+use crate::project::WorkspaceMetadataStore;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -121,6 +122,7 @@ struct CoreInputs {
     channels:        AppChannels,
     init:            AppInit,
     status_flash:    Option<(String, Instant)>,
+    metadata_store:  Arc<Mutex<WorkspaceMetadataStore>>,
 }
 
 impl App {
@@ -141,6 +143,7 @@ impl App {
         cfg: &CargoPortConfig,
         http_client: HttpClient,
         scan_started_at: Instant,
+        metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
     ) -> Self {
         let channels = AppChannels::new();
         let init = AppInit::new(projects, &bg_tx, cfg, &http_client);
@@ -154,6 +157,7 @@ impl App {
             channels,
             init,
             status_flash,
+            metadata_store,
         });
         app.finish_new();
         app
@@ -233,6 +237,7 @@ impl App {
             dirty: DirtyState::initial(),
             scan: ScanState::new(inputs.scan_started_at),
             selection: SelectionSync::Stable,
+            metadata_store: inputs.metadata_store,
         }
     }
 

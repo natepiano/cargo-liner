@@ -84,6 +84,10 @@ pub(in super::super) struct StartupPhaseTracker {
     /// terminal arrivals — transient lint-start messages do not advance it.
     pub lint:         KeyedPhase<AbsolutePath>,
     pub lint_startup: CountedPhase,
+    /// Keyed on workspace root; seen when a `BackgroundMsg::CargoMetadata`
+    /// arrival is either merged into the store or converted into an error
+    /// toast.
+    pub metadata:     KeyedPhase<AbsolutePath>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

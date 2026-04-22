@@ -580,6 +580,19 @@ fn collect_project_list_entry_disk(
     }
 }
 
+/// Collect workspace roots that should receive an initial `cargo metadata`
+/// dispatch: every Rust leaf project (workspace or standalone package),
+/// including each worktree in a group. Non-Rust projects are skipped.
+pub(super) fn initial_metadata_roots(projects: &ProjectList) -> HashSet<AbsolutePath> {
+    let mut roots = HashSet::new();
+    projects.for_each_leaf(|entry| {
+        if let RootItem::Rust(rust) = &entry.item {
+            roots.insert(rust.path().clone());
+        }
+    });
+    roots
+}
+
 pub(super) fn initial_disk_roots(projects: &ProjectList) -> HashSet<AbsolutePath> {
     let mut abs_paths: Vec<&AbsolutePath> =
         projects.iter().map(|entry| entry.item.path()).collect();

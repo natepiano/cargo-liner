@@ -40,6 +40,9 @@ use crate::lint::LintRuns;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::ProjectCiData;
+use crate::project::WorkspaceMetadataHandle;
+use crate::project::WorkspaceMetadataStore;
+use crate::project::WorkspaceSnapshot;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -144,6 +147,7 @@ pub(super) struct App {
     dirty:                    types::DirtyState,
     scan:                     types::ScanState,
     selection:                types::SelectionSync,
+    metadata_store:           Arc<Mutex<WorkspaceMetadataStore>>,
     #[cfg(test)]
     retry_spawn_mode:         types::RetrySpawnMode,
 }
@@ -413,5 +417,36 @@ impl App {
     pub(super) fn reset_cpu_placeholder(&mut self) {
         self.cpu_poller = CpuPoller::new(&self.current_config.cpu);
         self.pane_data_mut().cpu = Some(self.cpu_poller.placeholder_snapshot());
+    }
+
+    /// Clone of the process-wide cargo-metadata store. The scan thread and
+    /// future refresh paths stamp dispatches with a generation pulled from
+    /// this handle, and the main loop merges arrivals back into it.
+    pub(in super::super) fn metadata_store_handle(&self) -> Arc<Mutex<WorkspaceMetadataStore>> {
+        Arc::clone(&self.metadata_store)
+    }
+
+    /// Resolve a [`WorkspaceMetadataHandle`] to a cloned snapshot, or `None`
+    /// when the workspace has no snapshot yet. Callers get the snapshot by
+    /// value; the store lock is released before this returns.
+    pub(in super::super) fn resolve_metadata(
+        &self,
+        handle: &WorkspaceMetadataHandle,
+    ) -> Option<WorkspaceSnapshot> {
+        self.metadata_store
+            .lock()
+            .ok()
+            .and_then(|store| store.get(&handle.workspace_root).cloned())
+    }
+
+    /// Resolve the owning workspace's `target_directory` for any path inside
+    /// a known workspace. Accepts project roots, members, worktree entries,
+    /// vendored crate roots — the store walks ancestors internally. Returns
+    /// `None` when no snapshot covers `path` yet; callers should fall back
+    /// to `<project>/target`.
+    pub(in super::super) fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
+        let store = self.metadata_store.lock().ok()?;
+        let root = store.containing_workspace_root(path)?.clone();
+        store.get(&root).map(|snap| snap.target_directory.clone())
     }
 }

@@ -50,6 +50,7 @@ use crate::tui::constants::STARTUP_PHASE_DISK;
 use crate::tui::constants::STARTUP_PHASE_GIT;
 use crate::tui::constants::STARTUP_PHASE_GITHUB;
 use crate::tui::constants::STARTUP_PHASE_LINT;
+use crate::tui::constants::STARTUP_PHASE_METADATA;
 use crate::tui::panes::PaneId;
 use crate::tui::terminal;
 use crate::tui::terminal::CiFetchMsg;
@@ -718,6 +719,7 @@ impl App {
             .filter(|entry| entry.item.git_info().is_some())
             .filter_map(|entry| entry.item.git_directory())
             .collect::<HashSet<_>>();
+        let metadata_expected = snapshots::initial_metadata_roots(&self.projects);
         self.scan.startup_phases.scan_complete_at = Some(Instant::now());
         self.scan.startup_phases.startup_toast = None;
         self.scan.startup_phases.startup_complete_at = None;
@@ -738,27 +740,38 @@ impl App {
             .startup_phases
             .lint
             .reset_with_expected(HashSet::new());
+        self.scan
+            .startup_phases
+            .metadata
+            .reset_with_expected(metadata_expected);
     }
 
     // Created first so it appears above the detail toasts.
     fn start_startup_toast(&mut self) {
+        let now = Instant::now();
         let startup_items = vec![
             TrackedItem {
                 label:        STARTUP_PHASE_DISK.to_string(),
                 key:          STARTUP_PHASE_DISK.into(),
-                started_at:   Some(Instant::now()),
+                started_at:   Some(now),
                 completed_at: None,
             },
             TrackedItem {
                 label:        STARTUP_PHASE_GIT.to_string(),
                 key:          STARTUP_PHASE_GIT.into(),
-                started_at:   Some(Instant::now()),
+                started_at:   Some(now),
+                completed_at: None,
+            },
+            TrackedItem {
+                label:        STARTUP_PHASE_METADATA.to_string(),
+                key:          STARTUP_PHASE_METADATA.into(),
+                started_at:   Some(now),
                 completed_at: None,
             },
             TrackedItem {
                 label:        STARTUP_PHASE_LINT.to_string(),
                 key:          STARTUP_PHASE_LINT.into(),
-                started_at:   Some(Instant::now()),
+                started_at:   Some(now),
                 completed_at: None,
             },
         ];
@@ -791,6 +804,18 @@ impl App {
                 self.scan.startup_phases.git.toast = Some(task_id);
             }
         }
+        if let Some(metadata_expected) = self.scan.startup_phases.metadata.expected.clone() {
+            let metadata_items = Self::tracked_items_for_startup(
+                &metadata_expected,
+                &self.scan.startup_phases.metadata.seen,
+            );
+            if !metadata_items.is_empty() {
+                let body = self.startup_metadata_toast_body();
+                let task_id = self.start_task_toast("Running cargo metadata", &body);
+                self.set_task_tracked_items(task_id, &metadata_items);
+                self.scan.startup_phases.metadata.toast = Some(task_id);
+            }
+        }
         // The "Retrieving GitHub repo details" toast is driven by
         // `sync_running_repo_fetch_toast` from live `RepoFetchQueued`
         // messages — no separate startup-phase toast here.
@@ -802,6 +827,7 @@ impl App {
             git_expected = self.scan.startup_phases.git.expected_len(),
             repo_expected = self.scan.startup_phases.repo.expected_len(),
             lint_expected = self.scan.startup_phases.lint.expected_len(),
+            metadata_expected = self.scan.startup_phases.metadata.expected_len(),
             "startup_phase_plan"
         );
     }
@@ -814,6 +840,7 @@ impl App {
         self.maybe_complete_startup_disk(now, scan_complete_at);
         self.maybe_complete_startup_git(now, scan_complete_at);
         self.maybe_complete_startup_repo(now, scan_complete_at);
+        self.maybe_complete_startup_metadata(now, scan_complete_at);
         self.maybe_complete_startup_lints(now, scan_complete_at);
         self.maybe_complete_startup_ready(now, scan_complete_at);
     }
@@ -896,6 +923,30 @@ impl App {
         );
     }
 
+    pub(in super::super) fn maybe_complete_startup_metadata(
+        &mut self,
+        now: Instant,
+        scan_complete_at: Instant,
+    ) {
+        if !self.scan.startup_phases.metadata.complete_once(now) {
+            return;
+        }
+        if let Some(metadata_toast) = self.scan.startup_phases.metadata.take_toast() {
+            self.finish_task_toast(metadata_toast);
+        }
+        if let Some(toast) = self.scan.startup_phases.startup_toast {
+            self.mark_tracked_item_completed(toast, STARTUP_PHASE_METADATA);
+        }
+        tracing::info!(
+            phase = "metadata_applied",
+            since_scan_complete_ms =
+                crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+            seen = self.scan.startup_phases.metadata.seen.len(),
+            expected = self.scan.startup_phases.metadata.expected_len(),
+            "startup_phase_complete"
+        );
+    }
+
     pub(in super::super) fn maybe_complete_startup_lints(
         &mut self,
         now: Instant,
@@ -934,7 +985,8 @@ impl App {
             let disk_ready = self.scan.startup_phases.disk.complete_at.is_some();
             let git_ready = self.scan.startup_phases.git.complete_at.is_some();
             let repo_ready = self.scan.startup_phases.repo.complete_at.is_some();
-            if disk_ready && git_ready && repo_ready {
+            let metadata_ready = self.scan.startup_phases.metadata.complete_at.is_some();
+            if disk_ready && git_ready && repo_ready && metadata_ready {
                 self.scan.startup_phases.startup_complete_at = Some(now);
                 // Finish the startup toast only when lint startup cache
                 // check is also done, so "Lint cache" doesn't spin while
@@ -955,6 +1007,8 @@ impl App {
                     repo_expected = self.scan.startup_phases.repo.expected_len(),
                     lint_seen = self.scan.startup_phases.lint.seen.len(),
                     lint_expected = self.scan.startup_phases.lint.expected_len(),
+                    metadata_seen = self.scan.startup_phases.metadata.seen.len(),
+                    metadata_expected = self.scan.startup_phases.metadata.expected_len(),
                     "startup_complete"
                 );
                 tracing::info!(
@@ -988,6 +1042,18 @@ impl App {
             .as_ref()
             .unwrap_or(&empty);
         Self::startup_remaining_toast_body(expected, &self.scan.startup_phases.git.seen)
+    }
+
+    pub(in super::super) fn startup_metadata_toast_body(&self) -> String {
+        let empty = HashSet::new();
+        let expected = self
+            .scan
+            .startup_phases
+            .metadata
+            .expected
+            .as_ref()
+            .unwrap_or(&empty);
+        Self::startup_remaining_toast_body(expected, &self.scan.startup_phases.metadata.seen)
     }
 
     /// Build tracked items from expected/seen path sets. Already-seen paths
@@ -1311,6 +1377,7 @@ impl App {
             &self.current_config.tui.inline_dirs,
             self.include_non_rust(),
             self.http_client.clone(),
+            self.metadata_store_handle(),
         );
         self.bg_tx = tx;
         self.bg_rx = rx;
@@ -2287,18 +2354,10 @@ impl App {
             BackgroundMsg::CargoMetadata {
                 workspace_root,
                 generation,
-                fingerprint: _,
-                result: _,
+                fingerprint,
+                result,
             } => {
-                // TODO(step-1a): merge snapshots into WorkspaceMetadataStore,
-                // gate on fingerprint + generation, wire observability
-                // toasts. Dropping arrivals for now so the variant is live
-                // for the producer side without a half-finished consumer.
-                tracing::debug!(
-                    workspace_root = %workspace_root.as_path().display(),
-                    generation,
-                    "cargo_metadata_msg_received_unhandled"
-                );
+                self.handle_cargo_metadata_msg(workspace_root, generation, &fingerprint, result);
             },
         }
         false
@@ -2310,6 +2369,114 @@ impl App {
                 project.language_stats = Some(stats);
             }
         }
+    }
+
+    /// Merge a `cargo metadata` arrival back into the process-wide store and
+    /// advance the startup metadata phase. The startup path drives UI
+    /// feedback via the grouped "Running cargo metadata" tracked toast
+    /// created in `start_startup_detail_toasts`; post-startup per-workspace
+    /// spinners land with Step 1b (watcher-triggered refresh) — until then
+    /// only the startup path can arrive here.
+    fn handle_cargo_metadata_msg(
+        &mut self,
+        workspace_root: AbsolutePath,
+        generation: u64,
+        fingerprint: &crate::project::ManifestFingerprint,
+        result: Result<crate::project::WorkspaceSnapshot, crate::scan::CargoMetadataError>,
+    ) {
+        let Some(is_current) = self
+            .metadata_store
+            .lock()
+            .ok()
+            .map(|store| store.is_current_generation(&workspace_root, generation))
+        else {
+            tracing::warn!(
+                workspace_root = %workspace_root.as_path().display(),
+                generation,
+                "cargo_metadata_store_lock_poisoned"
+            );
+            return;
+        };
+        if !is_current {
+            tracing::debug!(
+                workspace_root = %workspace_root.as_path().display(),
+                generation,
+                "cargo_metadata_msg_stale_generation"
+            );
+            return;
+        }
+
+        match result {
+            Ok(snapshot) => {
+                if !self.accept_cargo_metadata_snapshot(
+                    &workspace_root,
+                    generation,
+                    fingerprint,
+                    snapshot,
+                ) {
+                    return;
+                }
+            },
+            Err(err) => {
+                let label = crate::project::home_relative_path(workspace_root.as_path());
+                self.show_timed_toast(
+                    format!("cargo metadata failed ({label})"),
+                    err.message.clone(),
+                );
+                tracing::warn!(
+                    workspace_root = %workspace_root.as_path().display(),
+                    generation,
+                    error = %err.message,
+                    "cargo_metadata_failed"
+                );
+            },
+        }
+
+        if let Some(task_id) = self.scan.startup_phases.metadata.toast {
+            let key = workspace_root.to_string();
+            self.toasts.mark_item_completed(task_id, &key);
+        }
+        self.scan
+            .startup_phases
+            .metadata
+            .seen
+            .insert(workspace_root);
+        self.maybe_log_startup_phase_completions();
+    }
+
+    /// Merge a successful `cargo metadata` arrival. Returns `false` when the
+    /// arrival was dropped because the captured fingerprint no longer
+    /// matches what's on disk — caller should skip startup-phase bookkeeping
+    /// so a later dispatch can still tick it off.
+    fn accept_cargo_metadata_snapshot(
+        &self,
+        workspace_root: &AbsolutePath,
+        generation: u64,
+        fingerprint: &crate::project::ManifestFingerprint,
+        snapshot: crate::project::WorkspaceSnapshot,
+    ) -> bool {
+        let current_fp =
+            crate::project::ManifestFingerprint::capture(workspace_root.as_path()).ok();
+        let fingerprint_drift = current_fp
+            .as_ref()
+            .is_some_and(|current| current != fingerprint);
+        if fingerprint_drift {
+            tracing::debug!(
+                workspace_root = %workspace_root.as_path().display(),
+                generation,
+                "cargo_metadata_msg_fingerprint_drift"
+            );
+            return false;
+        }
+        if let Ok(mut store) = self.metadata_store.lock() {
+            store.upsert(snapshot);
+        }
+        tracing::info!(
+            workspace_root = %workspace_root.as_path().display(),
+            generation,
+            "cargo_metadata_applied"
+        );
+        true
     }
 
     pub(in super::super) fn detail_path_is_affected(&self, path: &Path) -> bool {
