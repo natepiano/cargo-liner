@@ -44,7 +44,21 @@ impl ServiceAvailability {
     #[cfg(test)]
     pub(super) const fn is_unavailable(&self) -> bool { !self.status.is_available() }
 
-    pub(super) const fn mark_reachable(&mut self) { self.status = AvailabilityStatus::Reachable; }
+    /// Mark the service reachable. Returns the tracked toast id iff
+    /// this call is the transition out of an unavailable state —
+    /// caller should dismiss that toast and fire the recovery message.
+    /// Subsequent `Reachable` signals while already reachable return
+    /// `None`, so the recovery toast only fires once per outage.
+    pub(super) const fn mark_reachable(&mut self) -> Option<u64> {
+        let was_unavailable = !matches!(self.status, AvailabilityStatus::Reachable);
+        self.status = AvailabilityStatus::Reachable;
+        if was_unavailable {
+            self.retry_active = false;
+            self.unavailable_toast.take()
+        } else {
+            None
+        }
+    }
 
     /// Marks the service unreachable (network failure). Returns `true`
     /// iff `retry_active` transitioned from false to true — caller
@@ -69,12 +83,12 @@ impl ServiceAvailability {
         newly_active
     }
 
-    /// Whether this service needs a fresh unavailability toast pushed.
-    /// Only `true` when no toast is currently tracked. Caller pushes
-    /// the toast, then records its id via `set_toast`. Split from the
-    /// mark methods so the caller acts on the two concerns
-    /// independently (retry spawn vs. toast dedup).
-    pub(super) const fn needs_toast(&self) -> bool { self.unavailable_toast.is_none() }
+    /// The id of the tracked unavailability toast, if one was ever
+    /// pushed. Callers must verify liveness against the toast manager
+    /// before assuming a toast is still visible — the user may have
+    /// dismissed it out-of-band, in which case the id refers to a
+    /// toast that no longer exists.
+    pub(super) const fn toast_id(&self) -> Option<u64> { self.unavailable_toast }
 
     pub(super) const fn set_toast(&mut self, id: u64) { self.unavailable_toast = Some(id); }
 

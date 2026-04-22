@@ -365,7 +365,7 @@ fn body_lines_tracked<'a>(
     result
 }
 
-/// Format an elapsed duration as a compact string (e.g. "3s", "1m 23s").
+/// Format an elapsed duration as a compact string (e.g. "842µs", "3s", "1m 23s").
 fn format_elapsed(elapsed: std::time::Duration) -> String {
     let ms = elapsed.as_millis();
     if ms >= 60_000 {
@@ -373,8 +373,10 @@ fn format_elapsed(elapsed: std::time::Duration) -> String {
         format!("{}m {:02}s", secs / 60, secs % 60)
     } else if ms >= 10_000 {
         format!("{}s", elapsed.as_secs())
-    } else {
+    } else if ms >= 1 {
         format!("{ms}ms")
+    } else {
+        format!("{}µs", elapsed.as_micros())
     }
 }
 

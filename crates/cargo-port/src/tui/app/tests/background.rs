@@ -238,3 +238,86 @@ fn service_reachability_tracks_background_messages() {
     assert!(!app.github.availability.is_unavailable());
     assert!(!app.crates_io.availability.is_unavailable());
 }
+
+#[test]
+fn successful_request_dismisses_stuck_unreachable_toast() {
+    // Regression: `Reachable` signals used to be no-ops when the
+    // service was already marked unavailable. That left the
+    // persistent toast stuck whenever the retry probe couldn't
+    // complete (tight 1s HEAD timeout on a slow link, graphql quota
+    // quirks, etc.) even while real data fetches were succeeding.
+    // A successful request is authoritative evidence the service
+    // works — it must clear the toast.
+    let mut app = make_app(&[]);
+
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
+        service: ServiceKind::GitHub,
+    });
+    let toast_id = app
+        .github
+        .availability
+        .toast_id()
+        .expect("first unreachable signal pushes a toast");
+    assert!(app.toasts_is_alive_for_test(toast_id));
+    assert!(app.github.availability.is_unavailable());
+
+    app.handle_bg_msg(BackgroundMsg::ServiceReachable {
+        service: ServiceKind::GitHub,
+    });
+    assert!(
+        !app.github.availability.is_unavailable(),
+        "reachable signal should flip status back to available"
+    );
+    assert!(
+        !app.toasts_is_alive_for_test(toast_id),
+        "reachable signal must dismiss the persistent unreachable toast"
+    );
+}
+
+#[test]
+fn unreachable_toast_reappears_after_user_dismissal() {
+    // Regression: dismissing the persistent unreachable toast by hand
+    // left `ServiceAvailability.unavailable_toast` holding a stale id.
+    // Subsequent `ServiceUnreachable` signals saw `needs_toast()` =
+    // false and silently did nothing, so the user had no visible
+    // indicator that GitHub was still unreachable.
+    let mut app = make_app(&[]);
+
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
+        service: ServiceKind::GitHub,
+    });
+    let toast_id = app
+        .github
+        .availability
+        .toast_id()
+        .expect("first unreachable signal pushes a toast");
+
+    // User dismisses the toast and waits long enough for the exit
+    // animation to complete so the toast is evicted from the manager.
+    app.dismiss_toast(toast_id);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    app.prune_toasts();
+    assert!(
+        !app.toasts_is_alive_for_test(toast_id),
+        "dismissed toast should no longer be alive after exit animation"
+    );
+
+    // Another unreachable signal (e.g. the next fetch fails) must
+    // re-push a fresh toast instead of silently doing nothing.
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
+        service: ServiceKind::GitHub,
+    });
+    let new_id = app
+        .github
+        .availability
+        .toast_id()
+        .expect("second unreachable signal should retain a toast id");
+    assert_ne!(
+        new_id, toast_id,
+        "a fresh toast should be pushed with a new id"
+    );
+    assert!(
+        app.toasts_is_alive_for_test(new_id),
+        "the new toast should be visible"
+    );
+}

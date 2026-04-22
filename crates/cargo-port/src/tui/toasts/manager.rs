@@ -422,6 +422,18 @@ impl ToastManager {
         }
     }
 
+    /// Check if a toast with the given id is currently alive (present,
+    /// not dismissed, not expired). Returns false if the id is unknown
+    /// (e.g. the toast was manually dismissed and its exit animation
+    /// completed, so it's been evicted from the Vec).
+    pub fn is_alive(&self, id: u64) -> bool {
+        let now = Instant::now();
+        self.toasts
+            .iter()
+            .find(|toast| toast.id == id)
+            .is_some_and(|toast| toast.is_alive(now))
+    }
+
     /// Check if a task toast has been finished (countdown started).
     pub fn is_task_finished(&self, task_id: ToastTaskId) -> bool {
         self.toasts

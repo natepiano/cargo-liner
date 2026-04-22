@@ -84,6 +84,11 @@ impl App {
             .map(ToastView::id)
     }
 
+    #[cfg(test)]
+    pub(in super::super) fn toasts_is_alive_for_test(&self, id: u64) -> bool {
+        self.toasts.is_alive(id)
+    }
+
     pub(in super::super) fn prune_toasts(&mut self) {
         let now = Instant::now();
         let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);

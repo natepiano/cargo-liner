@@ -56,6 +56,7 @@ use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
 use crate::tui::toasts;
 use crate::tui::toasts::ToastStyle::Error;
+use crate::tui::toasts::ToastStyle::Warning;
 use crate::tui::toasts::ToastTaskId;
 use crate::tui::toasts::TrackedItem;
 use crate::watcher;
@@ -1027,24 +1028,24 @@ impl App {
 
     /// Build tracked items from expected/seen path sets. Already-seen paths
     /// are pre-marked as completed so the renderer shows them with strikethrough.
+    /// Pending items get `started_at = now` so they render with a live
+    /// spinner + ticking duration that freezes when the item completes —
+    /// matching the GitHub repo-fetch toast.
     pub(in super::super) fn tracked_items_for_startup(
         expected: &HashSet<AbsolutePath>,
         seen: &HashSet<AbsolutePath>,
     ) -> Vec<TrackedItem> {
+        let now = Instant::now();
         expected
             .iter()
             .map(|path| {
                 let label = project::home_relative_path(path);
-                let completed_at = if seen.contains(path) {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
+                let is_seen = seen.contains(path);
                 TrackedItem {
                     label,
                     key: path.into(),
-                    started_at: None,
-                    completed_at,
+                    started_at: if is_seen { None } else { Some(now) },
+                    completed_at: if is_seen { Some(now) } else { None },
                 }
             })
             .collect()
@@ -1890,7 +1891,7 @@ impl App {
     pub(in super::super) fn apply_service_signal(&mut self, signal: ServiceSignal) {
         match signal {
             ServiceSignal::Reachable(service) => {
-                self.availability_for(service).mark_reachable();
+                self.handle_service_reachable(service);
             },
             ServiceSignal::Unreachable(service) => {
                 self.apply_unavailability(service, AvailabilityKind::Unreachable);
@@ -1901,19 +1902,42 @@ impl App {
         }
     }
 
+    /// A successful request is authoritative evidence the service
+    /// works; treat it as recovery. Previously `Reachable` was a
+    /// no-op to avoid flicker, but that left the persistent
+    /// unavailability toast stuck whenever the retry probe couldn't
+    /// complete (tight 1s timeout, graphql quota quirks, etc.). The
+    /// recovery work fires only on the actual state transition, so
+    /// steady-state success signals stay silent.
+    fn handle_service_reachable(&mut self, service: ServiceKind) {
+        let Some(toast_id) = self.availability_for(service).mark_reachable() else {
+            return;
+        };
+        self.toasts.dismiss(toast_id);
+        let (title, body) = service_recovered_message(service);
+        self.show_timed_toast(title, body);
+    }
+
     fn apply_unavailability(&mut self, service: ServiceKind, kind: AvailabilityKind) {
-        let (spawn_retry, push_toast) = {
+        let (spawn_retry, prior_toast) = {
             let avail = self.availability_for(service);
             let spawn_retry = match kind {
                 AvailabilityKind::Unreachable => avail.mark_unreachable(),
                 AvailabilityKind::RateLimited => avail.mark_rate_limited(),
             };
-            (spawn_retry, avail.needs_toast())
+            (spawn_retry, avail.toast_id())
         };
         if spawn_retry {
             self.spawn_service_retry(service);
         }
-        if push_toast {
+        // The tracked toast id can go stale if the user dismissed the
+        // toast while the service was still unavailable — the toast
+        // manager evicts it after its exit animation, but the
+        // `ServiceAvailability` still holds the id. Recheck aliveness
+        // so the next unavailability signal re-pushes a fresh toast
+        // instead of silently assuming one is visible.
+        let alive = prior_toast.is_some_and(|id| self.toasts.is_alive(id));
+        if !alive {
             let toast_id = self.push_service_unavailable_toast(service, kind);
             self.availability_for(service).set_toast(toast_id);
         }
@@ -1932,7 +1956,7 @@ impl App {
         kind: AvailabilityKind,
     ) -> u64 {
         let (title, body) = service_unavailable_message(service, kind);
-        let id = self.toasts.push_persistent(title, body, Error, None, 1);
+        let id = self.toasts.push_persistent(title, body, Warning, None, 1);
         let toast_len = self.active_toasts().len();
         self.pane_manager
             .pane_mut(PaneId::Toasts)
