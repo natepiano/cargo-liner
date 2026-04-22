@@ -704,15 +704,12 @@ impl App {
                     }
                 } else {
                     let git = self.pane_data.git.as_ref()?;
-                    let flat_len = panes::git_fields_from_data(git).len();
                     let pos = self.pane_manager.pane(PaneId::Git).pos();
-                    if pos >= flat_len
-                        && let Some(remote) = git.remotes.get(pos - flat_len)
-                        && remote.full_url.is_some()
-                    {
-                        Some("open")
-                    } else {
-                        None
+                    match panes::git_row_at(git, pos) {
+                        Some(panes::GitRow::Remote(remote)) if remote.full_url.is_some() => {
+                            Some("open")
+                        },
+                        _ => None,
                     }
                 }
             },

@@ -660,9 +660,8 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     if data.stars.is_some() {
         fields.push(DetailField::Stars);
     }
-    if data.description.is_some() {
-        fields.push(DetailField::RepoDesc);
-    }
+    // RepoDesc is rendered separately in the About section by
+    // `render_git_about_section`, so it is intentionally not a flat field.
     if data.inception.is_some() {
         fields.push(DetailField::Inception);
     }
@@ -747,6 +746,33 @@ pub struct WorktreeInfo {
     pub name:         String,
     pub branch:       Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
+}
+
+/// What the Git pane cursor selects at a given `pos()`. Single source of
+/// truth shared by the renderer and the Enter-key handler so neither side
+/// can drift from the other's row layout.
+#[allow(
+    dead_code,
+    reason = "Field/Worktree payloads exist for exhaustiveness; callers may match only Remote"
+)]
+pub enum GitRow<'a> {
+    Field(DetailField),
+    Remote(&'a RemoteRow),
+    Worktree(&'a WorktreeInfo),
+}
+
+pub fn git_row_at(data: &GitData, pos: usize) -> Option<GitRow<'_>> {
+    let fields = git_fields_from_data(data);
+    let flat_len = fields.len();
+    if pos < flat_len {
+        return fields.get(pos).copied().map(GitRow::Field);
+    }
+    let pos = pos - flat_len;
+    if pos < data.remotes.len() {
+        return data.remotes.get(pos).map(GitRow::Remote);
+    }
+    let pos = pos - data.remotes.len();
+    data.worktrees.get(pos).map(GitRow::Worktree)
 }
 
 /// Per-pane data for the Targets panel.

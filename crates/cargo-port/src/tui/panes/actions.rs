@@ -143,10 +143,8 @@ fn handle_detail_enter(app: &mut App) {
             }
         }
     } else if let Some(git) = app.pane_data().git.as_ref() {
-        let flat_len = super::git_fields_from_data(git).len();
         let pos = app.pane_manager().pane(PaneId::Git).pos();
-        if pos >= flat_len
-            && let Some(remote) = git.remotes.get(pos - flat_len)
+        if let Some(super::GitRow::Remote(remote)) = super::git_row_at(git, pos)
             && let Some(url) = remote.full_url.as_deref()
         {
             open_url(url);

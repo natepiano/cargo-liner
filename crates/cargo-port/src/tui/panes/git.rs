@@ -678,11 +678,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
 
-    let all_fields = panes::git_fields_from_data(&git_data);
-    let flat_fields: Vec<DetailField> = all_fields
-        .into_iter()
-        .filter(|field| *field != DetailField::RepoDesc)
-        .collect();
+    let flat_fields = panes::git_fields_from_data(&git_data);
     let total_rows = flat_fields.len() + git_data.remotes.len() + git_data.worktrees.len();
     if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
         app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
