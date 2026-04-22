@@ -63,6 +63,13 @@ Work, in order:
 
 No UI-visible behavior changes from Step 1 except the new toasts. Nothing consumes the snapshots yet — `resolve_*` helpers return `Some` but nothing calls them.
 
+**Optional split into Step 1a / Step 1b.** Step 1 is intentionally large because every piece is pure plumbing with no consumers — each is trivially verifiable in isolation, but the whole stack must exist before Step 2 can use it. Default: ship as one PR. If diff size starts hurting review, split:
+
+- **Step 1a:** items 1–6 and 8 — `cargo_metadata` dep, store + types, `App::resolve_*`, `BackgroundMsg::CargoMetadata`, fingerprint with content hash + dispatch-generation, race guard, `metadata` phase field, observability toasts. Metadata dispatches once at initial scan; there is no refresh behavior yet.
+- **Step 1b:** items 7a and 7b — watcher classifier extension and the ancestor `.cargo/` watch-set subsystem. Layers refresh-on-edit behavior on top of the Step 1a plumbing.
+
+The boundary is clean because Step 1a is self-contained: metadata fetched once at startup, never refreshed. Boring, works, ships. Step 1b is additive. Use this split only if the reviewer flags the combined diff as too large; otherwise one PR is simpler.
+
 Verification:
 
 - Fingerprint unit tests per design plan → **Testing → Phase 1 plumbing**.
@@ -82,7 +89,7 @@ Context (verified file:line):
 
 Work:
 
-- At every path-check site above, prefer `resolve_target_dir(&workspace_root)` over `project.join("target")`. Fall back to the literal when `None`.
+- At every path-check site above, prefer `resolve_target_dir(&path)` over `project.join("target")`. `resolve_target_dir` accepts any project path and walks ancestors to the owning workspace root internally, so callers pass whatever path they already have (project root, worktree entry, etc.). Fall back to the literal when `None`.
 - Extend `render_confirm_popup` to render the resolved path on its own line below the prompt. Thread the path from `ConfirmAction::Clean(abs_path)` through to the popup call.
 - Disk usage is **not** touched in this step (Step 5 handles that).
 

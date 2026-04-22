@@ -374,7 +374,8 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     let expected = app
         .scan
         .startup_phases
-        .lint_expected
+        .lint
+        .expected
         .as_ref()
         .expect("lint expected");
     assert!(expected.is_empty());
@@ -388,7 +389,8 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     let expected = app
         .scan
         .startup_phases
-        .lint_expected
+        .lint
+        .expected
         .as_ref()
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
@@ -396,7 +398,8 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     assert!(
         !app.scan
             .startup_phases
-            .lint_seen_terminal
+            .lint
+            .seen
             .contains(project_a.path().as_path())
     );
     assert!(app.running_lint_paths.contains_key(project_a.path()));
@@ -407,7 +410,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
 
-    assert!(app.scan.startup_phases.lint_complete_at.is_some());
+    assert!(app.scan.startup_phases.lint.complete_at.is_some());
     assert!(app.running_lint_paths.is_empty());
     app.prune_toasts();
 }
@@ -486,12 +489,12 @@ fn startup_git_expected_uses_top_level_git_directories() {
     app.initialize_startup_phase_tracker();
 
     assert_eq!(
-        app.scan.startup_phases.git_expected,
-        HashSet::from([
+        app.scan.startup_phases.git.expected,
+        Some(HashSet::from([
             AbsolutePath::from(non_rust_dir.join(".git")),
             AbsolutePath::from(workspace_dir.join(".git")),
             AbsolutePath::from(primary_dir.join(".git")),
-        ])
+        ]))
     );
 }
 
@@ -524,7 +527,8 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
     assert!(
         app.scan
             .startup_phases
-            .git_seen
+            .git
+            .seen
             .contains(workspace_dir.join(".git").as_path())
     );
 }

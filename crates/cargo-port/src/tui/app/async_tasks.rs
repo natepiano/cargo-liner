@@ -10,6 +10,7 @@ use super::ExpandKey::Group;
 use super::ExpandKey::Node;
 use super::ExpandKey::Worktree;
 use super::ExpandKey::WorktreeGroup;
+use super::phase_state::PhaseCompletion;
 use super::service_state::ServiceAvailability;
 use super::snapshots;
 use super::types::ConfigFileStamp;
@@ -717,23 +718,26 @@ impl App {
             .filter(|entry| entry.item.git_info().is_some())
             .filter_map(|entry| entry.item.git_directory())
             .collect::<HashSet<_>>();
-        self.scan.startup_phases.disk_complete_at = None;
         self.scan.startup_phases.scan_complete_at = Some(Instant::now());
-        self.scan.startup_phases.disk_expected = Some(disk_expected);
-        self.scan.startup_phases.disk_seen.clear();
-        self.scan.startup_phases.git_expected = git_expected;
-        self.scan.startup_phases.git_seen = git_seen;
-        self.scan.startup_phases.git_complete_at = None;
-        self.scan.startup_phases.repo_expected.clear();
-        self.scan.startup_phases.repo_seen.clear();
-        self.scan.startup_phases.repo_complete_at = None;
-        self.scan.startup_phases.disk_toast = None;
-        self.scan.startup_phases.git_toast = None;
         self.scan.startup_phases.startup_toast = None;
-        self.scan.startup_phases.lint_expected = Some(HashSet::new());
-        self.scan.startup_phases.lint_seen_terminal.clear();
-        self.scan.startup_phases.lint_complete_at = None;
         self.scan.startup_phases.startup_complete_at = None;
+        self.scan
+            .startup_phases
+            .disk
+            .reset_with_expected(disk_expected);
+        self.scan
+            .startup_phases
+            .git
+            .reset_with_expected(git_expected);
+        self.scan.startup_phases.git.seen = git_seen;
+        self.scan
+            .startup_phases
+            .repo
+            .reset_with_expected(HashSet::new());
+        self.scan
+            .startup_phases
+            .lint
+            .reset_with_expected(HashSet::new());
     }
 
     // Created first so it appears above the detail toasts.
@@ -764,28 +768,28 @@ impl App {
     }
 
     fn start_startup_detail_toasts(&mut self) {
-        if let Some(disk_expected) = self.scan.startup_phases.disk_expected.clone() {
+        if let Some(disk_expected) = self.scan.startup_phases.disk.expected.clone() {
             let disk_items = Self::tracked_items_for_startup(
                 &disk_expected,
-                &self.scan.startup_phases.disk_seen,
+                &self.scan.startup_phases.disk.seen,
             );
             if !disk_items.is_empty() {
                 let body = self.startup_disk_toast_body();
                 let task_id = self.start_task_toast("Calculating disk usage", &body);
                 self.set_task_tracked_items(task_id, &disk_items);
-                self.scan.startup_phases.disk_toast = Some(task_id);
+                self.scan.startup_phases.disk.toast = Some(task_id);
             }
         }
 
-        let git_items = Self::tracked_items_for_startup(
-            &self.scan.startup_phases.git_expected,
-            &self.scan.startup_phases.git_seen,
-        );
-        if !git_items.is_empty() {
-            let body = self.startup_git_toast_body();
-            let task_id = self.start_task_toast("Scanning local git repos", &body);
-            self.set_task_tracked_items(task_id, &git_items);
-            self.scan.startup_phases.git_toast = Some(task_id);
+        if let Some(git_expected) = self.scan.startup_phases.git.expected.clone() {
+            let git_items =
+                Self::tracked_items_for_startup(&git_expected, &self.scan.startup_phases.git.seen);
+            if !git_items.is_empty() {
+                let body = self.startup_git_toast_body();
+                let task_id = self.start_task_toast("Scanning local git repos", &body);
+                self.set_task_tracked_items(task_id, &git_items);
+                self.scan.startup_phases.git.toast = Some(task_id);
+            }
         }
         // The "Retrieving GitHub repo details" toast is driven by
         // `sync_running_repo_fetch_toast` from live `RepoFetchQueued`
@@ -794,20 +798,10 @@ impl App {
 
     fn log_startup_phase_plan(&self) {
         tracing::info!(
-            disk_expected = self
-                .scan
-                .startup_phases
-                .disk_expected
-                .as_ref()
-                .map_or(0, HashSet::len),
-            git_expected = self.scan.startup_phases.git_expected.len(),
-            repo_expected = self.scan.startup_phases.repo_expected.len(),
-            lint_expected = self
-                .scan
-                .startup_phases
-                .lint_expected
-                .as_ref()
-                .map_or(0, HashSet::len),
+            disk_expected = self.scan.startup_phases.disk.expected_len(),
+            git_expected = self.scan.startup_phases.git.expected_len(),
+            repo_expected = self.scan.startup_phases.repo.expected_len(),
+            lint_expected = self.scan.startup_phases.lint.expected_len(),
             "startup_phase_plan"
         );
     }
@@ -829,39 +823,23 @@ impl App {
         now: Instant,
         scan_complete_at: Instant,
     ) {
-        if self.scan.startup_phases.disk_complete_at.is_none()
-            && self
-                .scan
-                .startup_phases
-                .disk_expected
-                .as_ref()
-                .is_some_and(|expected| {
-                    expected
-                        .iter()
-                        .all(|root| self.scan.startup_phases.disk_seen.contains(root))
-                })
-        {
-            self.scan.startup_phases.disk_complete_at = Some(now);
-            if let Some(disk_toast) = self.scan.startup_phases.disk_toast.take() {
-                self.finish_task_toast(disk_toast);
-            }
-            if let Some(toast) = self.scan.startup_phases.startup_toast {
-                self.mark_tracked_item_completed(toast, STARTUP_PHASE_DISK);
-            }
-            tracing::info!(
-                phase = "disk_applied",
-                since_scan_complete_ms =
-                    crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-                seen = self.scan.startup_phases.disk_seen.len(),
-                expected = self
-                    .scan
-                    .startup_phases
-                    .disk_expected
-                    .as_ref()
-                    .map_or(0, HashSet::len),
-                "startup_phase_complete"
-            );
+        if !self.scan.startup_phases.disk.complete_once(now) {
+            return;
         }
+        if let Some(disk_toast) = self.scan.startup_phases.disk.take_toast() {
+            self.finish_task_toast(disk_toast);
+        }
+        if let Some(toast) = self.scan.startup_phases.startup_toast {
+            self.mark_tracked_item_completed(toast, STARTUP_PHASE_DISK);
+        }
+        tracing::info!(
+            phase = "disk_applied",
+            since_scan_complete_ms =
+                crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+            seen = self.scan.startup_phases.disk.seen.len(),
+            expected = self.scan.startup_phases.disk.expected_len(),
+            "startup_phase_complete"
+        );
     }
 
     pub(in super::super) fn maybe_complete_startup_git(
@@ -869,26 +847,23 @@ impl App {
         now: Instant,
         scan_complete_at: Instant,
     ) {
-        if self.scan.startup_phases.git_complete_at.is_none()
-            && self.scan.startup_phases.git_seen.len()
-                >= self.scan.startup_phases.git_expected.len()
-        {
-            self.scan.startup_phases.git_complete_at = Some(now);
-            if let Some(git_toast) = self.scan.startup_phases.git_toast.take() {
-                self.finish_task_toast(git_toast);
-            }
-            if let Some(toast) = self.scan.startup_phases.startup_toast {
-                self.mark_tracked_item_completed(toast, STARTUP_PHASE_GIT);
-            }
-            tracing::info!(
-                phase = "git_local_applied",
-                since_scan_complete_ms =
-                    crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-                seen = self.scan.startup_phases.git_seen.len(),
-                expected = self.scan.startup_phases.git_expected.len(),
-                "startup_phase_complete"
-            );
+        if !self.scan.startup_phases.git.complete_once(now) {
+            return;
         }
+        if let Some(git_toast) = self.scan.startup_phases.git.take_toast() {
+            self.finish_task_toast(git_toast);
+        }
+        if let Some(toast) = self.scan.startup_phases.startup_toast {
+            self.mark_tracked_item_completed(toast, STARTUP_PHASE_GIT);
+        }
+        tracing::info!(
+            phase = "git_local_applied",
+            since_scan_complete_ms =
+                crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+            seen = self.scan.startup_phases.git.seen.len(),
+            expected = self.scan.startup_phases.git.expected_len(),
+            "startup_phase_complete"
+        );
     }
 
     pub(in super::super) fn maybe_complete_startup_repo(
@@ -898,30 +873,27 @@ impl App {
     ) {
         // Gate repo-phase completion on git-phase completion. Without
         // this, a scan that completes before any `RepoFetchQueued`
-        // arrives would see `repo_seen (0) >= repo_expected (0)` and
+        // arrives would see `repo.seen (0) >= repo.expected (0)` and
         // mark the phase done prematurely; subsequent staggered git
         // arrivals would then strand their repo fetches outside the
         // startup toast.
-        if self.scan.startup_phases.git_complete_at.is_none() {
+        if self.scan.startup_phases.git.complete_at.is_none() {
             return;
         }
-        if self.scan.startup_phases.repo_complete_at.is_none()
-            && self.scan.startup_phases.repo_seen.len()
-                >= self.scan.startup_phases.repo_expected.len()
-        {
-            self.scan.startup_phases.repo_complete_at = Some(now);
-            if let Some(toast) = self.scan.startup_phases.startup_toast {
-                self.mark_tracked_item_completed(toast, STARTUP_PHASE_GITHUB);
-            }
-            tracing::info!(
-                phase = "repo_fetch_applied",
-                since_scan_complete_ms =
-                    crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-                seen = self.scan.startup_phases.repo_seen.len(),
-                expected = self.scan.startup_phases.repo_expected.len(),
-                "startup_phase_complete"
-            );
+        if !self.scan.startup_phases.repo.complete_once(now) {
+            return;
         }
+        if let Some(toast) = self.scan.startup_phases.startup_toast {
+            self.mark_tracked_item_completed(toast, STARTUP_PHASE_GITHUB);
+        }
+        tracing::info!(
+            phase = "repo_fetch_applied",
+            since_scan_complete_ms =
+                crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+            seen = self.scan.startup_phases.repo.seen.len(),
+            expected = self.scan.startup_phases.repo.expected_len(),
+            "startup_phase_complete"
+        );
     }
 
     pub(in super::super) fn maybe_complete_startup_lints(
@@ -929,32 +901,28 @@ impl App {
         now: Instant,
         scan_complete_at: Instant,
     ) {
-        if self.scan.startup_phases.lint_complete_at.is_none()
-            && self
-                .scan
-                .startup_phases
-                .lint_expected
+        // Lint is only "complete" once real lint work has been registered —
+        // an initialized-empty expected set stays open. This diverges from
+        // the generic `PhaseCompletion::is_complete` semantics on purpose,
+        // so the check stays inline rather than going through the trait.
+        let lint = &self.scan.startup_phases.lint;
+        let should_complete = lint.complete_at.is_none()
+            && lint
+                .expected
                 .as_ref()
-                .is_some_and(|expected| {
-                    !expected.is_empty()
-                        && self.scan.startup_phases.lint_seen_terminal.len() >= expected.len()
-                })
-        {
-            self.scan.startup_phases.lint_complete_at = Some(now);
-            tracing::info!(
-                phase = "lint_terminal_applied",
-                since_scan_complete_ms =
-                    crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-                seen = self.scan.startup_phases.lint_seen_terminal.len(),
-                expected = self
-                    .scan
-                    .startup_phases
-                    .lint_expected
-                    .as_ref()
-                    .map_or(0, HashSet::len),
-                "startup_phase_complete"
-            );
+                .is_some_and(|expected| !expected.is_empty() && lint.seen.len() >= expected.len());
+        if !should_complete {
+            return;
         }
+        self.scan.startup_phases.lint.complete_at = Some(now);
+        tracing::info!(
+            phase = "lint_terminal_applied",
+            since_scan_complete_ms =
+                crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+            seen = self.scan.startup_phases.lint.seen.len(),
+            expected = self.scan.startup_phases.lint.expected_len(),
+            "startup_phase_complete"
+        );
     }
 
     pub(in super::super) fn maybe_complete_startup_ready(
@@ -963,15 +931,15 @@ impl App {
         scan_complete_at: Instant,
     ) {
         if self.scan.startup_phases.startup_complete_at.is_none() {
-            let disk_ready = self.scan.startup_phases.disk_complete_at.is_some();
-            let git_ready = self.scan.startup_phases.git_complete_at.is_some();
-            let repo_ready = self.scan.startup_phases.repo_complete_at.is_some();
+            let disk_ready = self.scan.startup_phases.disk.complete_at.is_some();
+            let git_ready = self.scan.startup_phases.git.complete_at.is_some();
+            let repo_ready = self.scan.startup_phases.repo.complete_at.is_some();
             if disk_ready && git_ready && repo_ready {
                 self.scan.startup_phases.startup_complete_at = Some(now);
                 // Finish the startup toast only when lint startup cache
                 // check is also done, so "Lint cache" doesn't spin while
                 // the toast exits.
-                if self.scan.startup_phases.lint_startup_complete_at.is_some()
+                if self.scan.startup_phases.lint_startup.complete_at.is_some()
                     && let Some(toast) = self.scan.startup_phases.startup_toast.take()
                 {
                     self.finish_task_toast(toast);
@@ -979,24 +947,14 @@ impl App {
                 tracing::info!(
                     since_scan_complete_ms =
                         crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-                    disk_seen = self.scan.startup_phases.disk_seen.len(),
-                    disk_expected = self
-                        .scan
-                        .startup_phases
-                        .disk_expected
-                        .as_ref()
-                        .map_or(0, HashSet::len),
-                    git_seen = self.scan.startup_phases.git_seen.len(),
-                    git_expected = self.scan.startup_phases.git_expected.len(),
-                    repo_seen = self.scan.startup_phases.repo_seen.len(),
-                    repo_expected = self.scan.startup_phases.repo_expected.len(),
-                    lint_seen = self.scan.startup_phases.lint_seen_terminal.len(),
-                    lint_expected = self
-                        .scan
-                        .startup_phases
-                        .lint_expected
-                        .as_ref()
-                        .map_or(0, HashSet::len),
+                    disk_seen = self.scan.startup_phases.disk.seen.len(),
+                    disk_expected = self.scan.startup_phases.disk.expected_len(),
+                    git_seen = self.scan.startup_phases.git.seen.len(),
+                    git_expected = self.scan.startup_phases.git.expected_len(),
+                    repo_seen = self.scan.startup_phases.repo.seen.len(),
+                    repo_expected = self.scan.startup_phases.repo.expected_len(),
+                    lint_seen = self.scan.startup_phases.lint.seen.len(),
+                    lint_expected = self.scan.startup_phases.lint.expected_len(),
                     "startup_complete"
                 );
                 tracing::info!(
@@ -1013,17 +971,23 @@ impl App {
         let expected = self
             .scan
             .startup_phases
-            .disk_expected
+            .disk
+            .expected
             .as_ref()
             .unwrap_or(&empty);
-        Self::startup_remaining_toast_body(expected, &self.scan.startup_phases.disk_seen)
+        Self::startup_remaining_toast_body(expected, &self.scan.startup_phases.disk.seen)
     }
 
     pub(in super::super) fn startup_git_toast_body(&self) -> String {
-        Self::startup_remaining_toast_body(
-            &self.scan.startup_phases.git_expected,
-            &self.scan.startup_phases.git_seen,
-        )
+        let empty = HashSet::new();
+        let expected = self
+            .scan
+            .startup_phases
+            .git
+            .expected
+            .as_ref()
+            .unwrap_or(&empty);
+        Self::startup_remaining_toast_body(expected, &self.scan.startup_phases.git.seen)
     }
 
     /// Build tracked items from expected/seen path sets. Already-seen paths
@@ -1672,8 +1636,8 @@ impl App {
             let git_dir = self
                 .startup_git_directory_for_path(path)
                 .unwrap_or_else(|| AbsolutePath::from(path));
-            self.scan.startup_phases.git_seen.insert(git_dir.clone());
-            if let Some(git_toast) = self.scan.startup_phases.git_toast {
+            self.scan.startup_phases.git.seen.insert(git_dir.clone());
+            if let Some(git_toast) = self.scan.startup_phases.git.toast {
                 self.mark_tracked_item_completed(git_toast, &git_dir.to_string());
             }
             self.maybe_log_startup_phase_completions();
@@ -1777,14 +1741,24 @@ impl App {
     }
 
     fn handle_repo_fetch_queued(&mut self, repo: OwnerRepo) {
-        let first_repo = self.scan.startup_phases.repo_expected.is_empty();
-        self.scan.startup_phases.repo_expected.insert(repo.clone());
+        let first_repo = self
+            .scan
+            .startup_phases
+            .repo
+            .expected
+            .as_ref()
+            .is_none_or(HashSet::is_empty);
+        self.scan
+            .startup_phases
+            .repo
+            .ensure_expected()
+            .insert(repo.clone());
         self.github.running_fetches.insert(repo, Instant::now());
         if first_repo {
             // First repo queued — add the "GitHub repos" tracked item
             // to the startup toast and reset completion so the phase
             // is re-evaluated now that there's actual work to track.
-            self.scan.startup_phases.repo_complete_at = None;
+            self.scan.startup_phases.repo.complete_at = None;
             self.scan.startup_phases.startup_complete_at = None;
             if let Some(toast) = self.scan.startup_phases.startup_toast {
                 let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
@@ -1810,7 +1784,7 @@ impl App {
     pub(in super::super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
         self.github.repo_fetch_in_flight.remove(&repo);
         self.github.running_fetches.remove(&repo);
-        self.scan.startup_phases.repo_seen.insert(repo);
+        self.scan.startup_phases.repo.seen.insert(repo);
         self.maybe_log_startup_phase_completions();
         self.sync_running_repo_fetch_toast();
     }
@@ -2020,8 +1994,8 @@ impl App {
 
     fn handle_disk_usage_msg(&mut self, path: &Path, bytes: u64) {
         let abs = AbsolutePath::from(path);
-        self.scan.startup_phases.disk_seen.insert(abs.clone());
-        if let Some(disk_toast) = self.scan.startup_phases.disk_toast {
+        self.scan.startup_phases.disk.seen.insert(abs.clone());
+        if let Some(disk_toast) = self.scan.startup_phases.disk.toast {
             self.mark_tracked_item_completed(disk_toast, &abs.to_string());
         }
         self.handle_disk_usage(path, bytes);
@@ -2034,8 +2008,8 @@ impl App {
         entries: Vec<(AbsolutePath, u64)>,
     ) {
         self.data_generation += 1;
-        self.scan.startup_phases.disk_seen.insert(root_path.clone());
-        if let Some(disk_toast) = self.scan.startup_phases.disk_toast {
+        self.scan.startup_phases.disk.seen.insert(root_path.clone());
+        if let Some(disk_toast) = self.scan.startup_phases.disk.toast {
             self.mark_tracked_item_completed(disk_toast, &root_path.to_string());
         }
         self.handle_disk_usage_batch(entries);
@@ -2055,22 +2029,15 @@ impl App {
         if let Some(lr) = self.projects.lint_at_path_mut(path) {
             lr.set_status(status);
         }
-        self.scan.startup_phases.lint_startup_seen += 1;
+        self.scan.startup_phases.lint_startup.seen += 1;
         self.maybe_complete_startup_lint_cache();
     }
 
     fn maybe_complete_startup_lint_cache(&mut self) {
-        if self.scan.startup_phases.lint_startup_complete_at.is_some() {
-            return;
-        }
-        let Some(expected) = self.scan.startup_phases.lint_startup_expected else {
-            return;
-        };
-        if self.scan.startup_phases.lint_startup_seen < expected {
-            return;
-        }
         let now = Instant::now();
-        self.scan.startup_phases.lint_startup_complete_at = Some(now);
+        if !self.scan.startup_phases.lint_startup.complete_once(now) {
+            return;
+        }
         // All startup lint statuses collected — compute cache size once.
         self.refresh_lint_cache_usage_from_disk();
         if let Some(toast) = self.scan.startup_phases.startup_toast {
@@ -2087,8 +2054,8 @@ impl App {
                 phase = "lint_startup_applied",
                 since_scan_complete_ms =
                     crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-                seen = self.scan.startup_phases.lint_startup_seen,
-                expected,
+                seen = self.scan.startup_phases.lint_startup.seen,
+                expected = self.scan.startup_phases.lint_startup.expected.unwrap_or(0),
                 "startup_phase_complete"
             );
         }
@@ -2145,13 +2112,9 @@ impl App {
         }
         if status_started {
             let abs_path = AbsolutePath::from(path);
-            let expected = self
-                .scan
-                .startup_phases
-                .lint_expected
-                .get_or_insert_with(HashSet::new);
+            let expected = self.scan.startup_phases.lint.ensure_expected();
             if expected.insert(abs_path) {
-                self.scan.startup_phases.lint_complete_at = None;
+                self.scan.startup_phases.lint.complete_at = None;
             }
         }
         if status_is_terminal {
@@ -2159,11 +2122,12 @@ impl App {
             if self
                 .scan
                 .startup_phases
-                .lint_expected
+                .lint
+                .expected
                 .as_ref()
                 .is_some_and(|expected| expected.contains(path))
             {
-                self.scan.startup_phases.lint_seen_terminal.insert(abs_path);
+                self.scan.startup_phases.lint.seen.insert(abs_path);
             }
         }
         self.maybe_log_startup_phase_completions();
@@ -2198,9 +2162,9 @@ impl App {
         self.projects = ProjectList::new(projects);
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();
-        self.scan.startup_phases.lint_startup_expected = Some(lint_registered);
-        self.scan.startup_phases.lint_startup_seen = 0;
-        self.scan.startup_phases.lint_startup_complete_at = None;
+        self.scan.startup_phases.lint_startup.expected = Some(lint_registered);
+        self.scan.startup_phases.lint_startup.seen = 0;
+        self.scan.startup_phases.lint_startup.complete_at = None;
         self.refresh_lint_runs_from_disk();
         self.data_generation += 1;
 

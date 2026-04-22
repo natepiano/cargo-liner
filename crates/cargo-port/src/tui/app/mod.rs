@@ -5,6 +5,7 @@ mod dismiss;
 mod focus;
 mod lint;
 mod navigation;
+mod phase_state;
 mod query;
 mod service_state;
 mod snapshots;

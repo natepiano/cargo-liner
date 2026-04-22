@@ -70,7 +70,7 @@ pub struct StartupPhaseTracker {
     pub git:           PhaseState<AbsolutePath>, // Keyed
     pub repo:          PhaseState<OwnerRepo>,    // Keyed
     pub lint:          PhaseState<AbsolutePath>, // Keyed
-    pub lint_startup:  PhaseState<!>,            // Counted — no key type
+    pub lint_startup:  PhaseState<()>,           // Counted — key type unused
     pub metadata:      PhaseState<AbsolutePath>, // Keyed; added in Phase 1
 }
 ```
@@ -92,8 +92,8 @@ pub fn is_complete<K: Hash + Eq>(s: &PhaseState<K>) -> bool {
 
 ### Work
 
-- Add `PhaseExpectation<K>` and `PhaseState<K>`.
-- Replace every named field group on `StartupPhaseTracker` with a typed `PhaseState`, including `lint_startup` (which uses `PhaseState<()>` with `PhaseExpectation::Count`).
+- Add `PhaseState<K>` with its `Keyed(KeyedPhase<K>)` / `Counted(CountedPhase)` variants (per the shape sketch above). `Option<HashSet<K>>` on `KeyedPhase` and `Option<usize>` on `CountedPhase` carry the `Unknown` (None) vs initialized (Some) distinction — no separate `PhaseExpectation` type.
+- Replace every named field group on `StartupPhaseTracker` with a typed `PhaseState`, including `lint_startup` (which uses `PhaseState<()>` wrapping `CountedPhase` — the `()` key is cosmetic since the `Counted` variant carries no key-typed fields).
 - Extract completion / toast update logic from `initialize_startup_phase_tracker` and `maybe_log_startup_phase_completions` (`src/tui/app/async_tasks.rs:698-810`) into helpers over `&mut PhaseState<K>`.
 - No behavior change. The tracker's external semantics (`is_scan_complete`, toast grouping, duration display) are unchanged.
 
@@ -124,7 +124,13 @@ One snapshot per workspace, keyed by `workspace_root`. Held in `App` as a `Works
 ```rust
 impl App {
     pub fn resolve_metadata(&self, handle: &WorkspaceMetadataHandle) -> Option<&PackageRecord>;
-    pub fn resolve_target_dir(&self, root: &AbsolutePath) -> Option<&AbsolutePath>;
+    /// Returns the resolved `target_directory` for the workspace that
+    /// contains `path`, or `None` if no containing workspace has a snapshot
+    /// yet. Accepts any path — workspace root, workspace member, worktree
+    /// entry, vendored crate root — and walks ancestors internally to find
+    /// the owning workspace root. Centralizing the lookup here keeps the
+    /// skip-walk and clean-confirm call sites from each reinventing it.
+    pub fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<&AbsolutePath>;
 }
 ```
 
@@ -506,7 +512,7 @@ No TTL pass. The synchronous re-fingerprint on clean-confirm is kept as a redund
 
 Every phase lands with tests. Not as a follow-up ticket.
 
-- **Phase 0.** Unit tests on `PhaseState<K>` covering: `PhaseExpectation::Unknown` vs `Set(empty)` distinction; `Set` and `Count` variants both complete correctly; empty/partial/complete transitions; completion idempotency; toast-id persistence across updates. `lint_startup` tracked via the shared helpers.
+- **Phase 0.** Unit tests on `PhaseState<K>` covering: `KeyedPhase.expected = None` vs `Some(HashSet::new())` distinction (Unknown vs initialized-but-empty); both `Keyed` and `Counted` variants complete correctly; empty/partial/complete transitions; completion idempotency; toast-id persistence across updates. `lint_startup` (a `PhaseState<()>` wrapping `CountedPhase`) tracked via the shared helpers.
 - **Phase 1 plumbing.**
   - `ManifestFingerprint`: content hash defeats `(mtime, len)` ABA — test writes two files with identical `(mtime, len)` but different bytes and asserts inequality. Rename-save (write tmp + `std::fs::rename`) with identical content must *not* invalidate the snapshot (inode change ignored). New-file appearance: `configs` map transitions `None → Some(FileStamp)` and invalidates. Dispatch-generation coalesces rapid re-dispatches — simulate a save-storm and assert at most one final accepted result.
   - Integration test spawns `cargo metadata` against a fixture workspace and checks `WorkspaceSnapshot` fields.

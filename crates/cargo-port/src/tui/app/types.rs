@@ -3,6 +3,8 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use super::phase_state::CountedPhase;
+use super::phase_state::KeyedPhase;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::tui::finder::FINDER_COLUMN_COUNT;
@@ -71,26 +73,17 @@ pub enum DiscoveryRowKind {
 
 #[derive(Debug, Default)]
 pub(in super::super) struct StartupPhaseTracker {
-    pub scan_complete_at:         Option<Instant>,
-    pub disk_expected:            Option<HashSet<AbsolutePath>>,
-    pub disk_seen:                HashSet<AbsolutePath>,
-    pub disk_complete_at:         Option<Instant>,
-    pub disk_toast:               Option<ToastTaskId>,
-    pub git_expected:             HashSet<AbsolutePath>,
-    pub git_seen:                 HashSet<AbsolutePath>,
-    pub git_complete_at:          Option<Instant>,
-    pub repo_expected:            HashSet<OwnerRepo>,
-    pub repo_seen:                HashSet<OwnerRepo>,
-    pub repo_complete_at:         Option<Instant>,
-    pub git_toast:                Option<ToastTaskId>,
-    pub startup_toast:            Option<ToastTaskId>,
-    pub lint_expected:            Option<HashSet<AbsolutePath>>,
-    pub lint_seen_terminal:       HashSet<AbsolutePath>,
-    pub lint_complete_at:         Option<Instant>,
-    pub lint_startup_expected:    Option<usize>,
-    pub lint_startup_seen:        usize,
-    pub lint_startup_complete_at: Option<Instant>,
-    pub startup_complete_at:      Option<Instant>,
+    pub scan_complete_at:    Option<Instant>,
+    pub startup_toast:       Option<ToastTaskId>,
+    pub startup_complete_at: Option<Instant>,
+
+    pub disk:         KeyedPhase<AbsolutePath>,
+    pub git:          KeyedPhase<AbsolutePath>,
+    pub repo:         KeyedPhase<OwnerRepo>,
+    /// Tracks terminal lint events (`Passed` / `Failed`). `seen` counts only
+    /// terminal arrivals — transient lint-start messages do not advance it.
+    pub lint:         KeyedPhase<AbsolutePath>,
+    pub lint_startup: CountedPhase,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
