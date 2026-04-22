@@ -71,7 +71,7 @@ impl ProjectCiData {
         }
     }
 
-    pub(crate) fn is_exhausted(&self) -> bool {
+    pub(crate) const fn is_exhausted(&self) -> bool {
         match self {
             Self::Unfetched => false,
             Self::Loaded(info) => info.exhausted && info.github_total as usize <= info.runs.len(),
