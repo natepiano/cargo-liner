@@ -2019,10 +2019,11 @@ impl App {
     }
 
     fn handle_disk_usage_msg(&mut self, path: &Path, bytes: u64) {
-        self.scan
-            .startup_phases
-            .disk_seen
-            .insert(AbsolutePath::from(path));
+        let abs = AbsolutePath::from(path);
+        self.scan.startup_phases.disk_seen.insert(abs.clone());
+        if let Some(disk_toast) = self.scan.startup_phases.disk_toast {
+            self.mark_tracked_item_completed(disk_toast, &abs.to_string());
+        }
         self.handle_disk_usage(path, bytes);
         self.maybe_log_startup_phase_completions();
     }
