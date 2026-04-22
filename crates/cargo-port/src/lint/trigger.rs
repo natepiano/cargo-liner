@@ -42,6 +42,68 @@ impl LintTriggerEvent {
     }
 }
 
+/// Kind of trigger for a `cargo metadata` refresh. Driven by the same
+/// watcher events that drive lint runs; callers dispatch a refresh on any
+/// match. See `docs/cargo_metadata.md` → **In-flight race handling** for
+/// why the fingerprint — rather than the kind — decides whether a pending
+/// spawn is still relevant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CargoMetadataTriggerKind {
+    Manifest,
+    Lockfile,
+    Toolchain,
+    CargoConfig,
+}
+
+/// Does `path` (under `project_root`) warrant a `cargo metadata` refresh?
+///
+/// Hits:
+/// - `<any>/Cargo.toml`
+/// - `<any>/Cargo.lock`
+/// - `<any>/rust-toolchain` or `<any>/rust-toolchain.toml`
+/// - `<any>/.cargo/config` or `<any>/.cargo/config.toml`
+///
+/// Skips events under `target/` and `.git/` directories. The
+/// `path.starts_with(project_root)` gate ensures out-of-tree hits do not
+/// leak in through the shared recursive watch — the ancestor
+/// `.cargo/config` case that lives *above* the project is handled
+/// separately by the ancestor watch-set subsystem.
+pub fn classify_cargo_metadata_event_path(
+    project_root: &Path,
+    path: &Path,
+) -> Option<CargoMetadataTriggerKind> {
+    if !path.starts_with(project_root) {
+        return None;
+    }
+    if path.components().any(|component| {
+        let part = component.as_os_str();
+        part == "target" || part == ".git"
+    }) {
+        return None;
+    }
+    classify_cargo_metadata_basename(path)
+}
+
+/// Basename-only variant used by the ancestor `.cargo/` watch-set path,
+/// where the `starts_with(project_root)` gate does not apply.
+pub fn classify_cargo_metadata_basename(path: &Path) -> Option<CargoMetadataTriggerKind> {
+    let file_name = path.file_name().and_then(|name| name.to_str())?;
+    match file_name {
+        "Cargo.toml" => Some(CargoMetadataTriggerKind::Manifest),
+        "Cargo.lock" => Some(CargoMetadataTriggerKind::Lockfile),
+        "rust-toolchain" | "rust-toolchain.toml" => Some(CargoMetadataTriggerKind::Toolchain),
+        "config" | "config.toml" => {
+            let parent_is_dot_cargo = path
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == ".cargo");
+            parent_is_dot_cargo.then_some(CargoMetadataTriggerKind::CargoConfig)
+        },
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 pub fn classify_event(project_root: &Path, event: &Event) -> Option<LintTriggerEvent> {
     event
@@ -144,6 +206,63 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn cargo_metadata_classifier_hits_manifest_lock_toolchain_and_cargo_config() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        let root = project_dir.path();
+
+        let hits = [
+            (root.join("Cargo.toml"), CargoMetadataTriggerKind::Manifest),
+            (root.join("Cargo.lock"), CargoMetadataTriggerKind::Lockfile),
+            (
+                root.join("rust-toolchain.toml"),
+                CargoMetadataTriggerKind::Toolchain,
+            ),
+            (
+                root.join("rust-toolchain"),
+                CargoMetadataTriggerKind::Toolchain,
+            ),
+            (
+                root.join(".cargo/config.toml"),
+                CargoMetadataTriggerKind::CargoConfig,
+            ),
+            (
+                root.join(".cargo/config"),
+                CargoMetadataTriggerKind::CargoConfig,
+            ),
+            (
+                root.join("nested/member/Cargo.toml"),
+                CargoMetadataTriggerKind::Manifest,
+            ),
+        ];
+        for (path, expected) in hits {
+            assert_eq!(
+                classify_cargo_metadata_event_path(root, &path),
+                Some(expected),
+                "expected metadata trigger for {}",
+                path.display()
+            );
+        }
+
+        let misses = [
+            root.join("src/main.rs"),
+            root.join("README.md"),
+            root.join("Cargo.toml.bak"),
+            root.join("target/debug/build.lock"),
+            root.join(".git/config"),
+            // `config.toml` *not* under a `.cargo/` parent must miss.
+            root.join("docs/config.toml"),
+        ];
+        for path in &misses {
+            assert_eq!(
+                classify_cargo_metadata_event_path(root, path),
+                None,
+                "unexpected metadata trigger for {}",
+                path.display()
+            );
+        }
     }
 
     #[test]

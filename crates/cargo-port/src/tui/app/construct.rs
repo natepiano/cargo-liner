@@ -85,6 +85,7 @@ impl AppInit {
         bg_tx: &mpsc::Sender<BackgroundMsg>,
         cfg: &CargoPortConfig,
         http_client: &HttpClient,
+        metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
     ) -> Self {
         config::set_active_config(cfg);
         let config_path = config::config_path();
@@ -98,6 +99,7 @@ impl AppInit {
             cfg.tui.include_non_rust,
             http_client.clone(),
             lint_spawn.handle.clone(),
+            metadata_store,
         );
         let built = scan::build_tree(projects, &cfg.tui.inline_dirs);
         let projects = crate::project_list::ProjectList::new(built);
@@ -146,7 +148,7 @@ impl App {
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
     ) -> Self {
         let channels = AppChannels::new();
-        let init = AppInit::new(projects, &bg_tx, cfg, &http_client);
+        let init = AppInit::new(projects, &bg_tx, cfg, &http_client, Arc::clone(&metadata_store));
         let status_flash = init.lint_warning.clone().map(|w| (w, Instant::now()));
         let mut app = Self::build_core(CoreInputs {
             http_client,

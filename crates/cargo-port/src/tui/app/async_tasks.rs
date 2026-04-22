@@ -353,6 +353,7 @@ impl App {
             self.include_non_rust(),
             self.http_client.clone(),
             self.lint_runtime.clone(),
+            self.metadata_store_handle(),
         );
     }
 

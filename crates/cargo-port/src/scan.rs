@@ -1281,18 +1281,43 @@ fn cargo_metadata_roots_for_item(item: &RootItem) -> Vec<AbsolutePath> {
 
 fn spawn_cargo_metadata_tree(scan_context: &StreamingScanContext, roots: Vec<AbsolutePath>) {
     for workspace_root in roots {
-        spawn_cargo_metadata_for_root(scan_context, workspace_root);
+        let dispatch = MetadataDispatchContext {
+            handle:         scan_context.client.handle.clone(),
+            tx:             scan_context.tx.clone(),
+            metadata_store: Arc::clone(&scan_context.metadata_store),
+            metadata_limit: Arc::clone(&scan_context.metadata_limit),
+        };
+        spawn_cargo_metadata_refresh(dispatch, workspace_root);
     }
 }
 
-fn spawn_cargo_metadata_for_root(
-    scan_context: &StreamingScanContext,
+/// Context shared by any caller that wants to kick off a
+/// `cargo metadata --no-deps --offline` task for a single workspace root.
+/// The scan thread uses this to do initial dispatch; the watcher uses it
+/// to re-run on manifest/config edits.
+#[derive(Clone)]
+pub(crate) struct MetadataDispatchContext {
+    pub handle:         tokio::runtime::Handle,
+    pub tx:             mpsc::Sender<BackgroundMsg>,
+    pub metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+    pub metadata_limit: Arc<tokio::sync::Semaphore>,
+}
+
+/// Queue a `cargo metadata` invocation for `workspace_root` on the shared
+/// tokio handle. Captures the fingerprint and bumps the store's dispatch
+/// generation before the blocking `exec()` fires; arrivals round-trip
+/// through `BackgroundMsg::CargoMetadata` so the main loop can gate on
+/// the latest generation.
+pub(crate) fn spawn_cargo_metadata_refresh(
+    dispatch: MetadataDispatchContext,
     workspace_root: AbsolutePath,
 ) {
-    let handle = scan_context.client.handle.clone();
-    let tx = scan_context.tx.clone();
-    let limit = Arc::clone(&scan_context.metadata_limit);
-    let store = Arc::clone(&scan_context.metadata_store);
+    let MetadataDispatchContext {
+        handle,
+        tx,
+        metadata_store: store,
+        metadata_limit: limit,
+    } = dispatch;
 
     handle.spawn(async move {
         let Ok(_permit) = limit.acquire_owned().await else {

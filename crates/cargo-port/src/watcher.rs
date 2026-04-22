@@ -41,10 +41,13 @@ use super::project::ProjectFields;
 use super::project::RepoInfo;
 use super::scan;
 use super::scan::BackgroundMsg;
+use super::scan::MetadataDispatchContext;
+use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::enrichment;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project::RootItem::NonRust;
+use crate::project::WorkspaceMetadataStore;
 
 /// Request to register an already-known project with the watcher.
 pub(crate) struct WatchRequest {
@@ -64,6 +67,17 @@ pub(crate) enum WatcherMsg {
 /// Spawn a unified background watcher thread. Watches the include
 /// directories recursively and handles disk-usage updates,
 /// new-project detection, and deleted-project detection.
+// Ancestor `.cargo/` watch-set subsystem (design plan → Phase 1 →
+// "Ancestor config watching") is not yet implemented. Today we only
+// refresh cargo metadata when a `Cargo.toml` / `Cargo.lock` /
+// `rust-toolchain[.toml]` / `.cargo/config[.toml]` edit fires inside
+// an already-registered project tree. Edits to an out-of-tree
+// ancestor `.cargo/config.toml` (e.g. `~/.cargo/config.toml` when the
+// project is elsewhere) will go undetected until the subsystem lands.
+// The missing piece is: walk each project root → CARGO_HOME at
+// register time, collect the ancestor `.cargo/` dirs, diff the union
+// across projects on add/remove, and register notify watches on the
+// diff. Tracked for Step 1b follow-up.
 pub(crate) fn spawn_watcher(
     watch_roots: Vec<AbsolutePath>,
     bg_tx: mpsc::Sender<BackgroundMsg>,
@@ -71,6 +85,7 @@ pub(crate) fn spawn_watcher(
     non_rust: NonRustInclusion,
     client: HttpClient,
     lint_runtime: Option<RuntimeHandle>,
+    metadata_store: Arc<std::sync::Mutex<WorkspaceMetadataStore>>,
 ) -> mpsc::Sender<WatcherMsg> {
     let (watch_tx, watch_rx) = mpsc::channel();
     let (notify_tx, notify_rx) = mpsc::channel();
@@ -87,6 +102,12 @@ pub(crate) fn spawn_watcher(
         elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
         "watcher_root_registration_complete"
     );
+    let metadata_dispatch = MetadataDispatchContext {
+        handle:         client.handle.clone(),
+        tx:             bg_tx.clone(),
+        metadata_store,
+        metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
+    };
     let ctx = WatcherLoopContext {
         watch_roots,
         bg_tx,
@@ -94,6 +115,7 @@ pub(crate) fn spawn_watcher(
         non_rust,
         client,
         lint_runtime,
+        metadata_dispatch,
     };
 
     spawn_watcher_thread(ctx, watch_rx, notify_rx, watcher);
@@ -102,12 +124,13 @@ pub(crate) fn spawn_watcher(
 }
 
 struct WatcherLoopContext {
-    watch_roots:  Vec<AbsolutePath>,
-    bg_tx:        mpsc::Sender<BackgroundMsg>,
-    ci_run_count: u32,
-    non_rust:     NonRustInclusion,
-    client:       HttpClient,
-    lint_runtime: Option<RuntimeHandle>,
+    watch_roots:       Vec<AbsolutePath>,
+    bg_tx:             mpsc::Sender<BackgroundMsg>,
+    ci_run_count:      u32,
+    non_rust:          NonRustInclusion,
+    client:            HttpClient,
+    lint_runtime:      Option<RuntimeHandle>,
+    metadata_dispatch: MetadataDispatchContext,
 }
 
 fn spawn_watcher_thread<W: Send + 'static>(
@@ -200,6 +223,7 @@ fn watcher_loop<W: Send + 'static>(
         non_rust,
         client,
         lint_runtime: _,
+        metadata_dispatch,
     } = ctx;
     let mut state = WatcherLoopState::new();
     let (disk_done_tx, disk_done_rx) = mpsc::channel::<String>();
@@ -230,6 +254,7 @@ fn watcher_loop<W: Send + 'static>(
             watch_roots,
             bg_tx,
             ctx.lint_runtime.as_ref(),
+            Some(metadata_dispatch),
             &mut state,
         );
         drain_completed_refreshes(
@@ -348,6 +373,7 @@ fn process_notify_events(
     watch_roots: &[AbsolutePath],
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     lint_runtime: Option<&RuntimeHandle>,
+    metadata_dispatch: Option<&MetadataDispatchContext>,
     state: &mut WatcherLoopState,
 ) {
     let notify_count = notify_events.len();
@@ -369,6 +395,7 @@ fn process_notify_events(
             },
             bg_tx,
             lint_runtime,
+            metadata_dispatch,
         };
         replay_buffered_events(
             &state.buffered_events,
@@ -402,6 +429,7 @@ fn process_notify_events(
             },
             bg_tx,
             lint_runtime,
+            metadata_dispatch,
         };
         replay_buffered_events(
             &notify_events,
@@ -443,6 +471,7 @@ fn replay_buffered_events(
                 &ctx.event,
                 ctx.bg_tx,
                 ctx.lint_runtime,
+                ctx.metadata_dispatch,
                 pending_disk,
                 pending_git,
                 pending_new,
@@ -475,9 +504,12 @@ struct EventContext<'a> {
 }
 
 struct WatcherDispatchContext<'a> {
-    event:        EventContext<'a>,
-    bg_tx:        &'a mpsc::Sender<BackgroundMsg>,
-    lint_runtime: Option<&'a RuntimeHandle>,
+    event:             EventContext<'a>,
+    bg_tx:             &'a mpsc::Sender<BackgroundMsg>,
+    lint_runtime:      Option<&'a RuntimeHandle>,
+    /// `None` in test harnesses that do not provide a tokio runtime;
+    /// disables the metadata refresh branch rather than panicking.
+    metadata_dispatch: Option<&'a MetadataDispatchContext>,
 }
 
 #[allow(
@@ -490,6 +522,7 @@ fn handle_notify_event(
     ctx: &EventContext<'_>,
     bg_tx: &mpsc::Sender<BackgroundMsg>,
     lint_runtime: Option<&RuntimeHandle>,
+    metadata_dispatch: Option<&MetadataDispatchContext>,
     pending_disk: &mut HashMap<String, WatchState>,
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
@@ -527,6 +560,18 @@ fn handle_notify_event(
                 lint::classify_event_path(&entry.abs_path, event.kind, event_path)
         {
             lint_runtime.lint_trigger(lint_trigger);
+        }
+        if let Some(dispatch) = metadata_dispatch
+            && let Some(kind) =
+                lint::classify_cargo_metadata_event_path(entry.abs_path.as_path(), event_path)
+        {
+            tracing::info!(
+                workspace_root = %entry.abs_path.display(),
+                event_path = %event_path.display(),
+                ?kind,
+                "watcher_cargo_metadata_refresh"
+            );
+            scan::spawn_cargo_metadata_refresh(dispatch.clone(), entry.abs_path.clone());
         }
         if is_target_metadata_event(event_path, entry.abs_path.as_path()) {
             spawn_project_refresh(bg_tx.clone(), entry.abs_path.clone());
@@ -578,11 +623,14 @@ fn handle_event(
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
 ) {
+    // Tests skip the metadata-refresh branch; no tokio runtime is
+    // provided so the `None` arm is the safe default.
     handle_notify_event(
         event_path,
         None,
         ctx,
         bg_tx,
+        None,
         None,
         pending_disk,
         pending_git,
@@ -1207,6 +1255,16 @@ mod tests {
         })
     }
 
+    fn test_metadata_dispatch(client: &HttpClient) -> MetadataDispatchContext {
+        let (tx, _rx) = mpsc::channel();
+        MetadataDispatchContext {
+            handle:         client.handle.clone(),
+            tx,
+            metadata_store: Arc::new(std::sync::Mutex::new(WorkspaceMetadataStore::new())),
+            metadata_limit: Arc::new(tokio::sync::Semaphore::new(1)),
+        }
+    }
+
     #[test]
     fn initial_registration_complete_transitions_watcher_out_of_initializing() {
         let (watch_tx, watch_rx) = mpsc::channel();
@@ -1288,6 +1346,7 @@ mod tests {
         let (bg_tx, _bg_rx) = mpsc::channel();
         let client = HttpClient::new(test_runtime().handle().clone()).expect("http client");
 
+        let client_for_dispatch = client.clone();
         spawn_watcher_thread(
             WatcherLoopContext {
                 watch_roots: Vec::new(),
@@ -1296,6 +1355,7 @@ mod tests {
                 non_rust: NonRustInclusion::Exclude,
                 client,
                 lint_runtime: None,
+                metadata_dispatch: test_metadata_dispatch(&client_for_dispatch),
             },
             watch_rx,
             notify_rx,
@@ -2259,6 +2319,7 @@ edition = "2024"
             event:        ctx,
             bg_tx:        &bg_tx,
             lint_runtime: None,
+            metadata_dispatch: None,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
@@ -2305,6 +2366,7 @@ edition = "2024"
             event:        ctx,
             bg_tx:        &bg_tx,
             lint_runtime: None,
+            metadata_dispatch: None,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
@@ -2489,6 +2551,7 @@ edition = "2024"
             &ctx,
             &bg_tx,
             Some(&runtime),
+            None,
             &mut pending_disk,
             &mut pending_git,
             &mut pending_new,
@@ -2586,6 +2649,7 @@ edition = "2024"
             event:        ctx,
             bg_tx:        &bg_tx,
             lint_runtime: None,
+            metadata_dispatch: None,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
