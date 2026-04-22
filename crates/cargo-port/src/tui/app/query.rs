@@ -39,6 +39,7 @@ use crate::tui::toasts::ToastStyle::Warning;
 use crate::tui::toasts::ToastTaskId;
 use crate::tui::toasts::ToastView;
 use crate::tui::toasts::TrackedItem;
+use crate::project;
 
 impl App {
     pub(in super::super) const fn lint_enabled(&self) -> bool { self.current_config.lint.enabled }
@@ -184,7 +185,7 @@ impl App {
     /// is shown and no spinner is started.
     pub(in super::super) fn start_clean(&mut self, project_path: &AbsolutePath) -> bool {
         if !project_path.as_path().join("target").exists() {
-            let name = crate::project::home_relative_path(project_path.as_path());
+            let name = project::home_relative_path(project_path.as_path());
             self.show_timed_toast("Already clean", name);
             return false;
         }
