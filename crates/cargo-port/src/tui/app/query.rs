@@ -16,6 +16,7 @@ use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
+use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::GitStatus;
@@ -39,7 +40,6 @@ use crate::tui::toasts::ToastStyle::Warning;
 use crate::tui::toasts::ToastTaskId;
 use crate::tui::toasts::ToastView;
 use crate::tui::toasts::TrackedItem;
-use crate::project;
 
 impl App {
     pub(in super::super) const fn lint_enabled(&self) -> bool { self.current_config.lint.enabled }
