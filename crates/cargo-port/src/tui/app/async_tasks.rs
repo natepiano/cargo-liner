@@ -1844,6 +1844,8 @@ impl App {
         // one exists, otherwise as a top-level peer.
         let discovered_path = item.path().to_path_buf();
         self.projects.insert_into_hierarchy(item);
+        self.projects
+            .regroup_members(&self.current_config.tui.inline_dirs);
         self.register_discovery_shimmer(discovered_path.as_path());
         self.migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
@@ -1874,6 +1876,8 @@ impl App {
         }
         // Re-replace with the runtime-data-enriched version.
         self.projects.replace_leaf_by_path(&path, item);
+        self.projects
+            .regroup_members(&self.current_config.tui.inline_dirs);
         self.projects.regroup_top_level_worktrees();
         self.reload_lint_history(&path);
         self.migrate_legacy_root_expansions(&legacy_expansions);
