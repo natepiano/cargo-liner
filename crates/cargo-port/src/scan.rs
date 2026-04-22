@@ -18,8 +18,10 @@ use super::ci::CiRun;
 use super::ci::GhRun;
 use super::ci::OwnerRepo;
 use super::config::NonRustInclusion;
+use super::constants::CARGO_METADATA_TIMEOUT;
 use super::constants::NO_MORE_RUNS_MARKER;
 use super::constants::SCAN_DISK_CONCURRENCY;
+use super::constants::SCAN_METADATA_CONCURRENCY;
 use super::http::HttpClient;
 use super::http::ServiceKind;
 use super::http::ServiceSignal;
@@ -31,16 +33,21 @@ use super::project::CheckoutInfo;
 use super::project::GitRepoPresence;
 use super::project::LangEntry;
 use super::project::LanguageStats;
+use super::project::ManifestFingerprint;
 use super::project::MemberGroup;
 use super::project::Package;
+use super::project::PackageRecord;
 use super::project::ProjectFields;
+use super::project::PublishPolicy;
 use super::project::RepoInfo;
 use super::project::RootItem;
 use super::project::RustInfo;
 use super::project::RustProject;
 use super::project::Submodule;
+use super::project::TargetRecord;
 use super::project::VendoredPackage;
 use super::project::Workspace;
+use super::project::WorkspaceSnapshot;
 use super::project::WorktreeGroup;
 use crate::enrichment;
 
@@ -150,6 +157,27 @@ pub(crate) enum BackgroundMsg {
     LanguageStatsBatch {
         entries: Vec<(AbsolutePath, LanguageStats)>,
     },
+    /// `cargo metadata --no-deps --offline` result for one workspace root.
+    /// The `fingerprint` was captured *before* the spawn; callers recompute
+    /// at merge time and discard the result on mismatch. `generation`
+    /// coalesces rapid re-dispatches — arrivals stamped with an older
+    /// generation are dropped rather than merged.
+    CargoMetadata {
+        workspace_root: AbsolutePath,
+        generation:     u64,
+        fingerprint:    ManifestFingerprint,
+        result:         Result<WorkspaceSnapshot, CargoMetadataError>,
+    },
+}
+
+/// Structured failure for a `cargo metadata` invocation. Held inside
+/// [`BackgroundMsg::CargoMetadata`] so the main loop can raise a keyed
+/// error toast and leave the affected rows in fallback state.
+#[derive(Clone, Debug)]
+pub(crate) struct CargoMetadataError {
+    /// First line of `cargo metadata`'s stderr, or a synthetic message for
+    /// I/O / timeout failures. Shown verbatim in the error toast.
+    pub message: String,
 }
 
 impl BackgroundMsg {
@@ -167,6 +195,7 @@ impl BackgroundMsg {
             | Self::LintStatus { path, .. }
             | Self::LintStartupStatus { path, .. } => Some(path.as_path()),
             Self::ProjectDiscovered { item } | Self::ProjectRefreshed { item } => Some(item.path()),
+            Self::CargoMetadata { workspace_root, .. } => Some(workspace_root.as_path()),
             Self::ScanResult { .. }
             | Self::DiskUsageBatch { .. }
             | Self::LanguageStatsBatch { .. }

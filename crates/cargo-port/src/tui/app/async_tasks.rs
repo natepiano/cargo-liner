@@ -1398,7 +1398,8 @@ impl App {
             | BackgroundMsg::ServiceRecovered { .. }
             | BackgroundMsg::ServiceUnreachable { .. }
             | BackgroundMsg::ServiceRateLimited { .. }
-            | BackgroundMsg::LanguageStatsBatch { .. } => {},
+            | BackgroundMsg::LanguageStatsBatch { .. }
+            | BackgroundMsg::CargoMetadata { .. } => {},
         }
     }
 
@@ -2282,6 +2283,22 @@ impl App {
             },
             BackgroundMsg::LanguageStatsBatch { entries } => {
                 self.handle_language_stats_batch(entries);
+            },
+            BackgroundMsg::CargoMetadata {
+                workspace_root,
+                generation,
+                fingerprint: _,
+                result: _,
+            } => {
+                // TODO(step-1a): merge snapshots into WorkspaceMetadataStore,
+                // gate on fingerprint + generation, wire observability
+                // toasts. Dropping arrivals for now so the variant is live
+                // for the producer side without a half-finished consumer.
+                tracing::debug!(
+                    workspace_root = %workspace_root.as_path().display(),
+                    generation,
+                    "cargo_metadata_msg_received_unhandled"
+                );
             },
         }
         false

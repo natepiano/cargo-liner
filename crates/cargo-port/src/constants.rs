@@ -50,6 +50,15 @@ pub(crate) const LINTS_CACHE_DIR: &str = "lint-runs";
 
 pub(crate) const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
 pub(crate) const SCAN_DISK_CONCURRENCY: usize = 2;
+/// `cargo metadata --no-deps` per workspace root, capped so a large multi-
+/// workspace tree doesn't monopolize the blocking pool. Runs briefly —
+/// milliseconds per invocation on typical workspaces — so a small cap is
+/// enough to preserve fairness with other enrichment tasks.
+pub(crate) const SCAN_METADATA_CONCURRENCY: usize = 4;
+/// Hard wall-clock cap for a single `cargo metadata` invocation. Beyond
+/// this the result is discarded and the workspace enters the error toast
+/// path.
+pub(crate) const CARGO_METADATA_TIMEOUT: Duration = Duration::from_secs(10);
 // ── HTTP constants ───────────────────────────────────────────────────
 
 pub(crate) const GITHUB_API_BASE: &str = "https://api.github.com";

@@ -29,9 +29,7 @@ impl<K: Eq + Hash> Default for KeyedPhase<K> {
 
 impl<K: Eq + Hash> KeyedPhase<K> {
     /// Length of the expected set; `0` when `expected` is `None`.
-    pub(super) fn expected_len(&self) -> usize {
-        self.expected.as_ref().map_or(0, HashSet::len)
-    }
+    pub(super) fn expected_len(&self) -> usize { self.expected.as_ref().map_or(0, HashSet::len) }
 
     /// Returns the expected set, initializing it to empty if `None`. Used by
     /// call sites that incrementally insert (e.g. `repo.expected.insert(id)`)
