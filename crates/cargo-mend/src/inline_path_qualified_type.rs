@@ -252,7 +252,13 @@ fn scan_file(
     };
 
     for occ in &visitor.occurrences {
-        process_occurrence(occ, &ctx, &mut inserted_use_paths, &mut findings, &mut fixes);
+        process_occurrence(
+            occ,
+            &ctx,
+            &mut inserted_use_paths,
+            &mut findings,
+            &mut fixes,
+        );
     }
 
     Ok((findings, fixes))
