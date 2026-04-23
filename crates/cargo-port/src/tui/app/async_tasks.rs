@@ -1582,10 +1582,29 @@ impl App {
         self.apply_disk_usage(path, bytes);
     }
 
-    pub(in super::super) fn handle_disk_usage_batch(&mut self, entries: Vec<(AbsolutePath, u64)>) {
-        for (path, bytes) in entries {
-            self.apply_disk_usage(path.as_path(), bytes);
+    pub(in super::super) fn handle_disk_usage_batch(
+        &mut self,
+        entries: Vec<(AbsolutePath, crate::scan::DirSizes)>,
+    ) {
+        for (path, sizes) in entries {
+            self.apply_disk_usage_breakdown(path.as_path(), sizes);
         }
+    }
+
+    /// Apply a [`DirSizes`] breakdown to the matching project. Shares
+    /// the post-set logic with `apply_disk_usage` (visibility /
+    /// lint-runtime registration) by reusing that helper for the
+    /// total — the new breakdown fields just ride alongside.
+    fn apply_disk_usage_breakdown(
+        &mut self,
+        path: &Path,
+        sizes: crate::scan::DirSizes,
+    ) {
+        if let Some(project) = self.projects.at_path_mut(path) {
+            project.in_project_target = Some(sizes.in_project_target);
+            project.in_project_non_target = Some(sizes.in_project_non_target);
+        }
+        self.apply_disk_usage(path, sizes.total);
     }
 
     pub(in super::super) fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
@@ -2074,7 +2093,7 @@ impl App {
     fn handle_disk_usage_batch_msg(
         &mut self,
         root_path: &AbsolutePath,
-        entries: Vec<(AbsolutePath, u64)>,
+        entries: Vec<(AbsolutePath, crate::scan::DirSizes)>,
     ) {
         self.data_generation += 1;
         self.scan.startup_phases.disk.seen.insert(root_path.clone());

@@ -57,9 +57,11 @@ pub(crate) enum BackgroundMsg {
     /// Disk usage (bytes) computed for a single project path.
     DiskUsage { path: AbsolutePath, bytes: u64 },
     /// Batch of disk usage results for projects under a common root.
+    /// Step 5: each entry carries both the total and the in-target /
+    /// non-target split used by the detail-pane breakdown.
     DiskUsageBatch {
         root_path: AbsolutePath,
-        entries:   Vec<(AbsolutePath, u64)>,
+        entries:   Vec<(AbsolutePath, DirSizes)>,
     },
     /// GitHub Actions CI runs fetched for a project.
     CiRuns {
@@ -1811,11 +1813,46 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
     });
 }
 
-fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, u64)> {
-    let mut totals: HashMap<AbsolutePath, u64> = tree
+/// Per-project disk size breakdown emitted by the tree walker.
+///
+/// `total = in_project_target + in_project_non_target` by construction —
+/// preserves the `disk_usage_bytes` formula for every owner (target is
+/// in-tree) and naturally shrinks for a sharer (its `in_project_target
+/// == 0` because the real target lives elsewhere under the workspace's
+/// redirected `target_directory`).
+///
+/// "Is this file inside a `target/` subtree?" uses the literal
+/// basename heuristic (any ancestor path component named `target`).
+/// A workspace that redirects via `CARGO_TARGET_DIR` /
+/// `.cargo/config.toml` ends up with `in_project_target = 0` for its
+/// members, matching the sharer semantics the design plan lays out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DirSizes {
+    pub total:                 u64,
+    pub in_project_target:     u64,
+    pub in_project_non_target: u64,
+}
+
+impl DirSizes {
+    fn add_file(&mut self, bytes: u64, file_path: &Path) {
+        self.total += bytes;
+        if file_lives_under_target(file_path) {
+            self.in_project_target += bytes;
+        } else {
+            self.in_project_non_target += bytes;
+        }
+    }
+}
+
+fn file_lives_under_target(path: &Path) -> bool {
+    path.components().any(|c| c.as_os_str() == "target")
+}
+
+fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
+    let mut totals: HashMap<AbsolutePath, DirSizes> = tree
         .entries
         .iter()
-        .map(|abs_path| (abs_path.clone(), 0))
+        .map(|abs_path| (abs_path.clone(), DirSizes::default()))
         .collect();
 
     for entry in WalkDir::new(&tree.root_abs_path).into_iter().flatten() {
@@ -1826,10 +1863,11 @@ fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, u64)> {
             continue;
         };
         let bytes = metadata.len();
-        let mut current = entry.path().parent();
+        let file_path = entry.path();
+        let mut current = file_path.parent();
         while let Some(dir) = current {
-            if let Some(total) = totals.get_mut(dir) {
-                *total += bytes;
+            if let Some(sizes) = totals.get_mut(dir) {
+                sizes.add_file(bytes, file_path);
             }
             if dir == tree.root_abs_path.as_path() {
                 break;
@@ -1841,13 +1879,13 @@ fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, u64)> {
     tree.entries
         .iter()
         .map(|abs_path| {
-            let bytes = totals.get(abs_path.as_path()).copied().unwrap_or(0);
-            (abs_path.clone(), bytes)
+            let sizes = totals.get(abs_path.as_path()).copied().unwrap_or_default();
+            (abs_path.clone(), sizes)
         })
         .collect()
 }
 
-pub(crate) fn disk_usage_batch_for_item(item: &RootItem) -> Vec<(AbsolutePath, u64)> {
+pub(crate) fn disk_usage_batch_for_item(item: &RootItem) -> Vec<(AbsolutePath, DirSizes)> {
     let entries = item
         .collect_project_info()
         .into_iter()
@@ -2070,10 +2108,46 @@ mod tests {
             root_abs_path: root.clone(),
             entries:       vec![root.clone(), child.clone()],
         });
-        let sizes: HashMap<AbsolutePath, u64> = sizes.into_iter().collect();
+        let sizes: HashMap<AbsolutePath, DirSizes> = sizes.into_iter().collect();
 
-        assert_eq!(sizes.get(root.as_path()), Some(&12));
-        assert_eq!(sizes.get(child.as_path()), Some(&7));
+        assert_eq!(sizes.get(root.as_path()).map(|s| s.total), Some(12));
+        assert_eq!(sizes.get(child.as_path()).map(|s| s.total), Some(7));
+    }
+
+    #[test]
+    fn dir_sizes_for_tree_splits_target_and_non_target_bytes_in_one_pass() {
+        // Step 5: confirm the single-pass walker partitions bytes
+        // between `in_project_target` and `in_project_non_target`
+        // based on whether any ancestor path component is named
+        // `target`. A file at `<root>/target/debug/foo` is counted
+        // as in-target; one at `<root>/src/main.rs` is not.
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let root: AbsolutePath = tmp.path().join("proj").into();
+        let src = root.join("src");
+        let target_debug = root.join("target").join("debug");
+        std::fs::create_dir_all(&src).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&target_debug).unwrap_or_else(|_| std::process::abort());
+        std::fs::write(src.join("main.rs"), vec![0_u8; 3])
+            .unwrap_or_else(|_| std::process::abort());
+        std::fs::write(target_debug.join("proj"), vec![0_u8; 17])
+            .unwrap_or_else(|_| std::process::abort());
+
+        let sizes = dir_sizes_for_tree(&DiskUsageTree {
+            root_abs_path: root.clone(),
+            entries:       vec![root],
+        });
+        let (_, entry) = &sizes[0];
+        assert_eq!(entry.total, 20, "total bytes = 3 (src) + 17 (target)");
+        assert_eq!(entry.in_project_target, 17, "target bytes isolated");
+        assert_eq!(
+            entry.in_project_non_target, 3,
+            "non-target bytes exclude the target/ subtree"
+        );
+        assert_eq!(
+            entry.in_project_target + entry.in_project_non_target,
+            entry.total,
+            "breakdown always sums to total (design plan formula)"
+        );
     }
 
     // ── collect_cargo_metadata_roots ─────────────────────────────────

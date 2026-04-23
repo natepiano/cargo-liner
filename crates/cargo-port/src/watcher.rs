@@ -3774,7 +3774,7 @@ edition = "2024"
         let member_bytes = entries
             .iter()
             .find(|(path, _)| **path == *member_dir)
-            .map(|(_, bytes)| *bytes)
+            .map(|(_, sizes)| sizes.total)
             .expect("member disk usage entry");
         assert!(
             member_bytes > 0,
