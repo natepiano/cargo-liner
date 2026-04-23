@@ -12,7 +12,7 @@ version     = "0.0.4-dev"
 
 [dependencies]
 ansi-to-tui        = "8.0.1"
-cargo_metadata     = "0.22"
+cargo_metadata     = "0.23.1"
 chrono             = "0.4.44"
 clap               = { version = "4", features = ["derive"] }
 colored            = "3.1.1"
