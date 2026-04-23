@@ -201,6 +201,13 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
 }
 
 fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
+    // Step 6e: while the confirm is waiting for a `cargo metadata`
+    // re-fetch, `y` is disabled — the plan isn't trustworthy yet.
+    // `n` cancels regardless, so we let the Ignore path fall through
+    // to take_confirm().
+    if key == KeyCode::Char('y') && app.confirm_verifying().is_some() {
+        return true;
+    }
     let Some(action) = app.take_confirm() else {
         return false;
     };
@@ -605,7 +612,11 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
             if let Some(selection) = app.clean_selection() {
                 match selection {
                     crate::tui::app::CleanSelection::Project { root } => {
-                        app.set_confirm(ConfirmAction::Clean(root));
+                        // Step 6e: request_clean_confirm re-fingerprints
+                        // the workspace. On drift it dispatches a
+                        // metadata refresh and opens the confirm in
+                        // Verifying state; on match it opens Ready.
+                        app.request_clean_confirm(root);
                     },
                     // Group-level fan-out (Step 7) not yet wired into
                     // the confirm flow. The selection is accepted by

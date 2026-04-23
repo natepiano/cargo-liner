@@ -260,7 +260,8 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     }
     if let Some(action) = app.confirm() {
         let body = confirm_action_body(app, action);
-        render_confirm_popup(frame, action, &body);
+        let verifying = app.confirm_verifying().is_some();
+        render_confirm_popup(frame, action, &body, verifying);
     }
 
     sync_hovered_pane_row(app);
@@ -327,12 +328,25 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
     }
 }
 
-fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction, body: &[String]) {
+fn render_confirm_popup(
+    frame: &mut Frame,
+    action: &ConfirmAction,
+    body: &[String],
+    verifying: bool,
+) {
+    // Step 6e: while the fingerprint re-check is in flight we swap
+    // the prompt + keys for a "Verifying target dir…" placeholder
+    // and drop the (y/n) suffix — `y` is ignored by handle_confirm_key
+    // in that state, and showing it enabled would lie to the user.
     let prompt = match action {
         ConfirmAction::Clean(_) => "Run cargo clean?",
     };
-
-    let prompt_text = format!(" {prompt}  (y/n) ");
+    let keys_suffix = if verifying { "" } else { " (y/n)" };
+    let prompt_text = if verifying {
+        " Verifying target dir… ".to_string()
+    } else {
+        format!(" {prompt} {keys_suffix} ")
+    };
     let prompt_width = prompt_text.len();
     let body_max = body.iter().map(String::len).max().unwrap_or(0);
     // leading " " + trailing " " around the widest body line.
@@ -349,15 +363,24 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction, body: &[Strin
     }
     .render(frame);
 
-    let mut lines = vec![Line::from(vec![
-        Span::styled(format!(" {prompt}  "), Style::default().fg(Color::White)),
-        Span::styled(
-            "(y/n)",
+    let mut lines = if verifying {
+        vec![Line::from(vec![Span::styled(
+            " Verifying target dir… ",
             Style::default()
-                .fg(TITLE_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ])];
+                .fg(LABEL_COLOR)
+                .add_modifier(Modifier::ITALIC),
+        )])]
+    } else {
+        vec![Line::from(vec![
+            Span::styled(format!(" {prompt}  "), Style::default().fg(Color::White)),
+            Span::styled(
+                "(y/n)",
+                Style::default()
+                    .fg(TITLE_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])]
+    };
     for body_line in body {
         lines.push(Line::from(vec![Span::styled(
             format!(" {body_line} "),

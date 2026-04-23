@@ -2456,6 +2456,10 @@ impl App {
             let key = workspace_root.to_string();
             self.toasts.mark_item_completed(task_id, &key);
         }
+        // Step 6e: if the user had a confirm popup waiting on this
+        // workspace's re-fingerprint, clear the Verifying flag so
+        // the next render shows Ready and 'y' starts working again.
+        self.clear_confirm_verifying_for(&workspace_root);
         self.scan
             .startup_phases
             .metadata

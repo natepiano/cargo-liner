@@ -1788,3 +1788,73 @@ fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
         },
     }
 }
+
+#[test]
+fn request_clean_confirm_opens_ready_when_fingerprint_matches() {
+    // Step 6e: when the stored snapshot's fingerprint still matches
+    // disk, the confirm popup opens immediately — no verifying
+    // state, no extra metadata dispatch. Covers the happy path.
+    let project = make_project(Some("demo"), "~/never-real/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    let workspace_root = AbsolutePath::from(project.path().as_path().to_path_buf());
+
+    // Seed a snapshot with a fingerprint the real disk can't match
+    // (the project path doesn't exist). capture() will fail on the
+    // non-existent path, and `should_verify_before_clean` treats
+    // capture failure as "no drift" → Ready.
+    app.metadata_store_handle()
+        .lock()
+        .unwrap_or_else(|_| std::process::abort())
+        .upsert(fake_snapshot(&workspace_root));
+
+    app.request_clean_confirm(workspace_root);
+
+    assert!(
+        app.confirm_verifying().is_none(),
+        "capture failure (test path doesn't exist) → no verifying state"
+    );
+    assert!(
+        app.confirm().is_some(),
+        "popup opens immediately in Ready"
+    );
+}
+
+#[test]
+fn request_clean_confirm_marks_verifying_when_no_snapshot_covers_path() {
+    // No snapshot → nothing to verify against → flag stays Verifying
+    // until a snapshot arrives. `request_clean_confirm` also spawns
+    // a cargo metadata refresh; we don't assert on the spawn here
+    // (the async task may race), but the `confirm_verifying` flag
+    // must be set synchronously.
+    let project = make_project(Some("demo"), "~/never-real/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    let workspace_root = AbsolutePath::from(project.path().as_path().to_path_buf());
+
+    app.request_clean_confirm(workspace_root.clone());
+
+    assert_eq!(
+        app.confirm_verifying(),
+        Some(&workspace_root),
+        "missing snapshot → confirm opens in Verifying state, \
+         pending on this workspace root"
+    );
+
+    // Simulate the arrival: synthetic CargoMetadata Ok arrival must
+    // clear the Verifying flag (design plan → "Verifying target
+    // dir…" transitions to Ready on snapshot arrival).
+    let generation = app
+        .metadata_store_handle()
+        .lock()
+        .unwrap_or_else(|_| std::process::abort())
+        .next_generation(&workspace_root);
+    app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+        workspace_root: workspace_root.clone(),
+        generation,
+        fingerprint: fake_fingerprint(),
+        result: Ok(fake_snapshot(&workspace_root)),
+    });
+    assert!(
+        app.confirm_verifying().is_none(),
+        "successful arrival clears the Verifying flag"
+    );
+}

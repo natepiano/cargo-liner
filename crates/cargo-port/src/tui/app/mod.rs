@@ -152,6 +152,13 @@ pub(super) struct App {
     selection:                types::SelectionSync,
     metadata_store:           Arc<Mutex<WorkspaceMetadataStore>>,
     target_dir_index:         target_index::TargetDirIndex,
+    /// Step 6e: workspace root whose manifest fingerprint drifted
+    /// between the last snapshot and the moment the user asked for
+    /// confirm (`c`). While `Some`, the confirm popup renders
+    /// "Verifying target dir…" and 'y' is ignored; the matching
+    /// `CargoMetadata` arrival in `handle_cargo_metadata_msg` clears
+    /// the slot so the popup transitions to Ready.
+    confirm_verifying:        Option<AbsolutePath>,
     #[cfg(test)]
     retry_spawn_mode:         types::RetrySpawnMode,
 }
@@ -313,7 +320,86 @@ impl App {
         &mut self.pending_cleans
     }
 
+    #[cfg(test)]
     pub(super) fn set_confirm(&mut self, action: ConfirmAction) { self.confirm = Some(action); }
+
+    /// Whether the currently-open confirm is still waiting for a
+    /// `cargo metadata` refresh to land (design plan → "Per-worktree
+    /// clean, Step 6e"). Callers that gate `y` on a settled plan
+    /// consult this.
+    pub(in super::super) const fn confirm_verifying(&self) -> Option<&AbsolutePath> {
+        self.confirm_verifying.as_ref()
+    }
+
+    /// Open a Clean confirm popup for `project_path`, first checking
+    /// whether the project's workspace manifest has drifted since the
+    /// last snapshot. On drift: dispatch a `cargo metadata` refresh,
+    /// mark the confirm as verifying (popup blocks `y` until the
+    /// refresh lands). On match: open the confirm Ready immediately.
+    pub(in super::super) fn request_clean_confirm(
+        &mut self,
+        project_path: AbsolutePath,
+    ) {
+        if self.should_verify_before_clean(&project_path) {
+            let dispatch = self.clean_metadata_dispatch();
+            scan::spawn_cargo_metadata_refresh(dispatch, project_path.clone());
+            self.confirm_verifying = Some(project_path.clone());
+        } else {
+            self.confirm_verifying = None;
+        }
+        self.confirm = Some(ConfirmAction::Clean(project_path));
+    }
+
+    /// Does the workspace covering `project_path` need a re-fetch
+    /// before the confirm opens? True when the on-disk manifest
+    /// fingerprint differs from the stored snapshot's fingerprint
+    /// (a `.cargo/config.toml` edit, a manifest save, etc.), OR when
+    /// no snapshot covers `project_path` at all.
+    fn should_verify_before_clean(&self, project_path: &AbsolutePath) -> bool {
+        let Ok(store) = self.metadata_store.lock() else {
+            return false;
+        };
+        let Some(workspace_root) = store.containing_workspace_root(project_path) else {
+            // No snapshot covers this path — nothing to verify against.
+            return true;
+        };
+        let Some(snapshot) = store.get(workspace_root) else {
+            return true;
+        };
+        let Ok(current) = crate::project::ManifestFingerprint::capture(workspace_root.as_path())
+        else {
+            return false;
+        };
+        current != snapshot.fingerprint
+    }
+
+    /// The scan's `MetadataDispatchContext` refreshed from the current
+    /// App state. Used by `request_clean_confirm` to re-dispatch on
+    /// fingerprint drift.
+    fn clean_metadata_dispatch(&self) -> scan::MetadataDispatchContext {
+        scan::MetadataDispatchContext {
+            handle:         self.http_client.handle.clone(),
+            tx:             self.bg_tx.clone(),
+            metadata_store: Arc::clone(&self.metadata_store),
+            // Use the shared scan-concurrency cap so confirm-triggered
+            // refreshes can't monopolize the metadata blocking pool.
+            metadata_limit: Arc::new(tokio::sync::Semaphore::new(
+                crate::constants::SCAN_METADATA_CONCURRENCY,
+            )),
+        }
+    }
+
+    /// Clear the verifying flag — called by `handle_cargo_metadata_msg`
+    /// when a refresh for the pending workspace lands.
+    pub(in super::super) fn clear_confirm_verifying_for(&mut self, workspace_root: &AbsolutePath) {
+        if self
+            .confirm_verifying
+            .as_ref()
+            .is_some_and(|pending| pending == workspace_root)
+        {
+            self.confirm_verifying = None;
+        }
+    }
 
     pub(super) const fn confirm(&self) -> Option<&ConfirmAction> { self.confirm.as_ref() }
 

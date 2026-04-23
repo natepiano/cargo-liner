@@ -241,6 +241,7 @@ impl App {
             selection: SelectionSync::Stable,
             metadata_store: inputs.metadata_store,
             target_dir_index: super::target_index::TargetDirIndex::new(),
+            confirm_verifying: None,
         }
     }
 

@@ -23,7 +23,6 @@ use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::scan;
 use crate::tui::app::App;
-use crate::tui::app::ConfirmAction;
 use crate::tui::input;
 use crate::tui::pane::Pane;
 
@@ -104,7 +103,9 @@ fn request_clean(app: &mut App) {
     if let Some(selection) = app.clean_selection() {
         match selection {
             crate::tui::app::CleanSelection::Project { root } => {
-                app.set_confirm(ConfirmAction::Clean(root));
+                // Step 6e: fingerprint re-check + possible Verifying
+                // popup state, per src/tui/input.rs.
+                app.request_clean_confirm(root);
             },
             crate::tui::app::CleanSelection::WorktreeGroup { .. } => {},
         }
