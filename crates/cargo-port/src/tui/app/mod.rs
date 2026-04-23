@@ -9,6 +9,7 @@ mod phase_state;
 mod query;
 mod service_state;
 mod snapshots;
+mod target_index;
 mod types;
 
 use std::collections::HashMap;
