@@ -93,7 +93,7 @@ impl AppInit {
         let lint_spawn = lint::spawn(cfg, bg_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&cfg.tui.include_dirs);
         let watch_tx = watcher::spawn_watcher(
-            watch_roots,
+            &watch_roots,
             bg_tx.clone(),
             cfg.tui.ci_run_count,
             cfg.tui.include_non_rust,

@@ -723,7 +723,7 @@ pub(crate) enum WatcherMsg {
 // across projects on add/remove, and register notify watches on the
 // diff. Tracked for Step 1b follow-up.
 pub(crate) fn spawn_watcher(
-    watch_roots: Vec<AbsolutePath>,
+    watch_roots: &[AbsolutePath],
     bg_tx: mpsc::Sender<BackgroundMsg>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
@@ -740,9 +740,18 @@ pub(crate) fn spawn_watcher(
         return watch_tx;
     };
     let started = Instant::now();
-    register_watch_roots(&mut watcher, &watch_roots);
+    let (registered_roots, failures) = register_watch_roots(&mut watcher, watch_roots);
+    for failure in &failures {
+        tracing::error!(
+            dir = %failure.dir.display(),
+            reason = %failure.reason,
+            "watcher_root_registration_failed"
+        );
+    }
     tracing::info!(
-        roots = watch_roots.len(),
+        requested = watch_roots.len(),
+        registered = registered_roots.dirs().len(),
+        failed = failures.len(),
         elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
         "watcher_root_registration_complete"
     );
@@ -753,7 +762,7 @@ pub(crate) fn spawn_watcher(
         metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
     };
     let ctx = WatcherLoopContext {
-        watch_roots,
+        watch_roots: registered_roots,
         bg_tx,
         ci_run_count,
         non_rust,
@@ -768,7 +777,7 @@ pub(crate) fn spawn_watcher(
 }
 
 struct WatcherLoopContext {
-    watch_roots:       Vec<AbsolutePath>,
+    watch_roots:       RegisteredRoots,
     bg_tx:             mpsc::Sender<BackgroundMsg>,
     ci_run_count:      u32,
     non_rust:          NonRustInclusion,
@@ -914,7 +923,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             tick,
             &watch_drain,
             notify_events,
-            watch_roots,
+            watch_roots.dirs(),
             &WatcherBackgroundSinks {
                 bg_tx,
                 lint_runtime: ctx.lint_runtime.as_ref(),
@@ -963,12 +972,78 @@ fn watcher_loop<W: Watcher + Send + 'static>(
     }
 }
 
-fn register_watch_roots(watcher: &mut impl Watcher, watch_dirs: &[AbsolutePath]) {
-    for dir in watch_dirs {
-        if dir.is_dir() {
-            let _ = watcher.watch(dir, RecursiveMode::Recursive);
+/// Witness that every advertised watch root has been successfully
+/// registered with the underlying [`Watcher`]. The only way to
+/// construct one is through [`register_watch_roots`], which produces
+/// it alongside any per-root failures. Downstream code that depends on
+/// "we are watching exactly these roots" takes a `&RegisteredRoots`
+/// instead of a `&[AbsolutePath]`, so the previously-representable
+/// state where the watcher loop runs but silently dropped a watch root
+/// is no longer constructible.
+pub(crate) struct RegisteredRoots {
+    dirs: Vec<AbsolutePath>,
+}
+
+impl RegisteredRoots {
+    pub(crate) fn dirs(&self) -> &[AbsolutePath] { &self.dirs }
+}
+
+impl Default for RegisteredRoots {
+    /// An empty registered set — trivially honest (we are watching
+    /// nothing, and we claim to be watching nothing). Used by tests
+    /// that exercise watcher logic without exercising registration.
+    fn default() -> Self { Self { dirs: Vec::new() } }
+}
+
+pub(crate) struct WatchRootRegistrationFailure {
+    pub(crate) dir:    AbsolutePath,
+    pub(crate) reason: WatchRootRegistrationFailureReason,
+}
+
+pub(crate) enum WatchRootRegistrationFailureReason {
+    NotADirectory,
+    Notify(notify::Error),
+}
+
+impl std::fmt::Display for WatchRootRegistrationFailureReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotADirectory => f.write_str("path is not a directory"),
+            Self::Notify(err) => write!(f, "notify watch failed: {err}"),
         }
     }
+}
+
+/// Try to register every entry in `watch_dirs` with the underlying
+/// [`Watcher`]. Returns the witness for the subset that succeeded plus
+/// the per-root failures. The caller must visibly handle the failures
+/// (the reason this function returns a tuple instead of `Result` is
+/// that running with a partial root set is still better than not
+/// running at all — but the caller cannot pretend the failures don't
+/// exist, because they are returned by value).
+fn register_watch_roots(
+    watcher: &mut impl Watcher,
+    watch_dirs: &[AbsolutePath],
+) -> (RegisteredRoots, Vec<WatchRootRegistrationFailure>) {
+    let mut registered = Vec::with_capacity(watch_dirs.len());
+    let mut failures = Vec::new();
+    for dir in watch_dirs {
+        if !dir.is_dir() {
+            failures.push(WatchRootRegistrationFailure {
+                dir:    dir.clone(),
+                reason: WatchRootRegistrationFailureReason::NotADirectory,
+            });
+            continue;
+        }
+        match watcher.watch(dir, RecursiveMode::Recursive) {
+            Ok(()) => registered.push(dir.clone()),
+            Err(err) => failures.push(WatchRootRegistrationFailure {
+                dir:    dir.clone(),
+                reason: WatchRootRegistrationFailureReason::Notify(err),
+            }),
+        }
+    }
+    (RegisteredRoots { dirs: registered }, failures)
 }
 
 struct WatchDrainResult {
@@ -2141,6 +2216,94 @@ mod tests {
         }
     }
 
+    /// Test double whose `watch()` returns `Err` for any path matching
+    /// `fail_on`. Lets the registration test simulate the real-world
+    /// case where notify accepts some watch roots and rejects others.
+    struct SelectiveFailWatcher {
+        fail_on: PathBuf,
+    }
+
+    impl notify::Watcher for SelectiveFailWatcher {
+        fn new<F: notify::EventHandler>(
+            _event_handler: F,
+            _config: notify::Config,
+        ) -> notify::Result<Self>
+        where
+            Self: Sized,
+        {
+            Ok(Self {
+                fail_on: PathBuf::new(),
+            })
+        }
+
+        fn watch(&mut self, path: &Path, _mode: RecursiveMode) -> notify::Result<()> {
+            if path == self.fail_on {
+                Err(notify::Error::generic("simulated watch failure"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn unwatch(&mut self, _path: &Path) -> notify::Result<()> { Ok(()) }
+
+        fn configure(&mut self, _config: notify::Config) -> notify::Result<bool> { Ok(true) }
+
+        fn kind() -> notify::WatcherKind
+        where
+            Self: Sized,
+        {
+            notify::WatcherKind::NullWatcher
+        }
+    }
+
+    /// Regression: `register_watch_roots` is the only constructor of
+    /// `RegisteredRoots`, and it must record (not silently drop) every
+    /// per-root failure — both `notify::Watcher::watch` errors and
+    /// non-directory inputs. The previous `let _ = watcher.watch(...)`
+    /// implementation made it impossible to detect that one of several
+    /// configured roots had failed to register, so the watcher loop
+    /// would run claiming to watch every advertised root while in fact
+    /// silently dropping events for one.
+    #[test]
+    fn register_watch_roots_reports_per_root_failures() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ok_a = tmp.path().join("ok_a");
+        let fails = tmp.path().join("fails");
+        let ok_b = tmp.path().join("ok_b");
+        let missing = tmp.path().join("does_not_exist");
+        for dir in [&ok_a, &fails, &ok_b] {
+            std::fs::create_dir_all(dir).expect("mkdir");
+        }
+        let mut watcher = SelectiveFailWatcher {
+            fail_on: fails.clone(),
+        };
+        let dirs = [
+            AbsolutePath::from(ok_a.clone()),
+            AbsolutePath::from(fails.clone()),
+            AbsolutePath::from(ok_b.clone()),
+            AbsolutePath::from(missing.clone()),
+        ];
+
+        let (registered, failures) = register_watch_roots(&mut watcher, &dirs);
+
+        assert_eq!(
+            registered.dirs(),
+            &[AbsolutePath::from(ok_a), AbsolutePath::from(ok_b)],
+            "only the dirs whose `watch()` succeeded should be in `RegisteredRoots`"
+        );
+        assert_eq!(failures.len(), 2, "two roots should fail");
+        assert_eq!(failures[0].dir.as_path(), fails.as_path());
+        assert!(matches!(
+            failures[0].reason,
+            WatchRootRegistrationFailureReason::Notify(_)
+        ));
+        assert_eq!(failures[1].dir.as_path(), missing.as_path());
+        assert!(matches!(
+            failures[1].reason,
+            WatchRootRegistrationFailureReason::NotADirectory
+        ));
+    }
+
     /// Pure `ancestor::AncestorFs` test double: every probed path
     /// is reported as absent. Keeps `compute_ancestor_cargo_dirs`
     /// deterministic without requiring a real filesystem.
@@ -2299,7 +2462,7 @@ mod tests {
         let client_for_dispatch = client.clone();
         spawn_watcher_thread(
             WatcherLoopContext {
-                watch_roots: Vec::new(),
+                watch_roots: RegisteredRoots::default(),
                 bg_tx,
                 ci_run_count: 0,
                 non_rust: NonRustInclusion::Exclude,

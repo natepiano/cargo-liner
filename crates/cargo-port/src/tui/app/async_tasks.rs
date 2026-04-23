@@ -359,7 +359,7 @@ impl App {
     pub(in super::super) fn respawn_watcher(&mut self) {
         let watch_roots = scan::resolve_include_dirs(&self.current_config.tui.include_dirs);
         self.watch_tx = watcher::spawn_watcher(
-            watch_roots,
+            &watch_roots,
             self.bg_tx.clone(),
             self.ci_run_count(),
             self.include_non_rust(),
