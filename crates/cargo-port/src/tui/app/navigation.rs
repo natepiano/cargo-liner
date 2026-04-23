@@ -320,8 +320,8 @@ impl App {
                     RootItem::Rust(rust) => Some(CleanSelection::Project {
                         root: rust.path().clone(),
                     }),
-                    // Worktree groups: deferred to Step 7.
-                    RootItem::Worktrees(_) | RootItem::NonRust(_) => None,
+                    RootItem::Worktrees(group) => Some(worktree_group_selection(group)),
+                    RootItem::NonRust(_) => None,
                 }
             },
             VisibleRow::WorktreeEntry {
@@ -1347,5 +1347,21 @@ impl App {
     pub(in super::super) fn select_project_in_tree(&mut self, target_path: &Path) {
         self.expand_path_in_tree(target_path);
         self.select_matching_visible_row(target_path);
+    }
+}
+
+/// Build a `CleanSelection::WorktreeGroup` from a live
+/// [`WorktreeGroup`]. Enum-agnostic (works for both Workspaces and
+/// Packages variants) so the caller doesn't have to match twice.
+fn worktree_group_selection(group: &WorktreeGroup) -> CleanSelection {
+    match group {
+        WorktreeGroup::Workspaces { primary, linked } => CleanSelection::WorktreeGroup {
+            primary: primary.path().clone(),
+            linked:  linked.iter().map(|ws| ws.path().clone()).collect(),
+        },
+        WorktreeGroup::Packages { primary, linked } => CleanSelection::WorktreeGroup {
+            primary: primary.path().clone(),
+            linked:  linked.iter().map(|pkg| pkg.path().clone()).collect(),
+        },
     }
 }

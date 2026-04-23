@@ -247,13 +247,44 @@ pub(in super::super) fn build_clean_plan(
     store: &WorkspaceMetadataStore,
     selection: &CleanSelection,
 ) -> CleanPlan {
+    build_clean_plan_with(index, store, selection, &FsExistenceCheck)
+}
+
+/// Existence-check injection point. Production uses [`FsExistenceCheck`]
+/// which defers to [`std::path::Path::exists`]; tests pass a table-
+/// driven double so synthetic paths don't trip the `DeletedWorktree`
+/// branch.
+pub(in super::super) trait ExistenceCheck {
+    fn exists(&self, path: &std::path::Path) -> bool;
+}
+
+pub(in super::super) struct FsExistenceCheck;
+
+impl ExistenceCheck for FsExistenceCheck {
+    fn exists(&self, path: &std::path::Path) -> bool { path.exists() }
+}
+
+pub(in super::super) fn build_clean_plan_with(
+    index: &TargetDirIndex,
+    store: &WorkspaceMetadataStore,
+    selection: &CleanSelection,
+    fs: &dyn ExistenceCheck,
+) -> CleanPlan {
     let selection_set = selection.selection_set();
     let mut plan = CleanPlan::default();
-    // Dedupe on target_directory as we walk the selection.
     let mut by_target: HashMap<AbsolutePath, CleanTarget> = HashMap::new();
     let mut affected_extras_set: HashSet<AbsolutePath> = HashSet::new();
 
     for project_root in &selection_set {
+        // Deleted worktrees: directories listed by git but missing
+        // from the filesystem. Skip with a dedicated reason so the
+        // progress toast can report them without aborting a
+        // group-level plan (design plan → **Group-level clean**).
+        if !fs.exists(project_root.as_path()) {
+            plan.skipped
+                .push((project_root.clone(), SkipReason::DeletedWorktree));
+            continue;
+        }
         // Resolve the target dir: prefer the index (authoritative when
         // metadata has landed); fall back to the store's resolution
         // path; surface `NoMetadata` when neither covers it.
@@ -271,7 +302,7 @@ pub(in super::super) fn build_clean_plan(
             .entry(target_dir.clone())
             .or_insert_with(|| CleanTarget {
                 target_directory: target_dir.clone(),
-                exists_on_disk: target_dir.as_path().exists(),
+                exists_on_disk: fs.exists(target_dir.as_path()),
                 method: CleanMethod::CargoClean {
                     cwd: project_root.clone(),
                 },
@@ -432,15 +463,37 @@ mod tests {
 
     fn empty_store() -> WorkspaceMetadataStore { WorkspaceMetadataStore::new() }
 
+    /// Test double: every path reports existing. Use this for the
+    /// pure `build_clean_plan` matrix so synthetic paths don't trip
+    /// the real-filesystem `DeletedWorktree` branch.
+    struct AllExist;
+
+    impl ExistenceCheck for AllExist {
+        fn exists(&self, _path: &std::path::Path) -> bool { true }
+    }
+
+    /// Test double: paths in the `missing` set report absent, all
+    /// others exist. Drives the `DeletedWorktree` scenarios.
+    struct MissingSet {
+        missing: Vec<AbsolutePath>,
+    }
+
+    impl ExistenceCheck for MissingSet {
+        fn exists(&self, path: &std::path::Path) -> bool {
+            !self.missing.iter().any(|p| p.as_path() == path)
+        }
+    }
+
     #[test]
     fn plan_for_single_project_with_no_sharing_emits_one_target() {
         let mut index = TargetDirIndex::new();
         index.upsert(project("/ws/a", MemberKind::Project), dir("/ws/a/target"));
 
-        let plan = build_clean_plan(
+        let plan = build_clean_plan_with(
             &index,
             &empty_store(),
             &CleanSelection::Project { root: dir("/ws/a") },
+            &AllExist,
         );
 
         assert_eq!(plan.targets.len(), 1);
@@ -454,10 +507,11 @@ mod tests {
     #[test]
     fn plan_reports_selection_without_metadata_as_skipped_no_metadata() {
         let index = TargetDirIndex::new();
-        let plan = build_clean_plan(
+        let plan = build_clean_plan_with(
             &index,
             &empty_store(),
             &CleanSelection::Project { root: dir("/ws/never") },
+            &AllExist,
         );
         assert!(plan.targets.is_empty());
         assert_eq!(
@@ -473,13 +527,14 @@ mod tests {
         index.upsert(project("/ws/b", MemberKind::Project), dir("/ws/b/target"));
         index.upsert(project("/ws/c", MemberKind::Project), dir("/ws/c/target"));
 
-        let plan = build_clean_plan(
+        let plan = build_clean_plan_with(
             &index,
             &empty_store(),
             &CleanSelection::WorktreeGroup {
                 primary: dir("/ws/a"),
                 linked:  vec![dir("/ws/b"), dir("/ws/c")],
             },
+            &AllExist,
         );
 
         assert_eq!(plan.targets.len(), 3);
@@ -498,13 +553,14 @@ mod tests {
         index.upsert(project("/ws/b", MemberKind::Project), dir("/shared"));
         index.upsert(project("/ws/c", MemberKind::Project), dir("/ws/c/target"));
 
-        let plan = build_clean_plan(
+        let plan = build_clean_plan_with(
             &index,
             &empty_store(),
             &CleanSelection::WorktreeGroup {
                 primary: dir("/ws/a"),
                 linked:  vec![dir("/ws/b"), dir("/ws/c")],
             },
+            &AllExist,
         );
 
         assert_eq!(plan.targets.len(), 2);
@@ -534,13 +590,14 @@ mod tests {
         index.upsert(project("/ws/b", MemberKind::Project), dir("/shared"));
         index.upsert(project("/ws/c", MemberKind::Project), dir("/shared"));
 
-        let plan = build_clean_plan(
+        let plan = build_clean_plan_with(
             &index,
             &empty_store(),
             &CleanSelection::WorktreeGroup {
                 primary: dir("/ws/a"),
                 linked:  vec![dir("/ws/b")],
             },
+            &AllExist,
         );
 
         assert_eq!(plan.targets.len(), 1);
@@ -561,10 +618,11 @@ mod tests {
             dir("/ws/target"),
         );
 
-        let plan = build_clean_plan(
+        let plan = build_clean_plan_with(
             &index,
             &empty_store(),
             &CleanSelection::Project { root: dir("/ws") },
+            &AllExist,
         );
 
         assert_eq!(plan.targets.len(), 1);
@@ -586,13 +644,14 @@ mod tests {
         index.upsert(project("/a", MemberKind::Project), dir("/a/target"));
         index.upsert(project("/b", MemberKind::Project), dir("/b/target"));
 
-        let plan = build_clean_plan(
+        let plan = build_clean_plan_with(
             &index,
             &empty_store(),
             &CleanSelection::WorktreeGroup {
                 primary: dir("/a"),
                 linked:  vec![dir("/b")],
             },
+            &AllExist,
         );
 
         // CleanMethod::CargoClean is the single-variant invariant
@@ -606,6 +665,42 @@ mod tests {
                 "cwd points at one of the covering projects"
             );
         }
+    }
+
+    #[test]
+    fn deleted_worktree_lands_in_skipped_without_aborting_group_plan() {
+        // Classic group-level scenario: 3 worktrees, one on disk,
+        // one with its target dir redirected, one whose directory is
+        // gone (git still knows about it — common after `git worktree
+        // remove --force` raced with a concurrent rebuild).
+        let mut index = TargetDirIndex::new();
+        index.upsert(project("/ws/a", MemberKind::Project), dir("/ws/a/target"));
+        index.upsert(project("/ws/b", MemberKind::Project), dir("/shared"));
+        // /ws/c is in the selection but not in the index — it will be
+        // caught by the `!exists()` check before the NoMetadata check.
+
+        let plan = build_clean_plan_with(
+            &index,
+            &empty_store(),
+            &CleanSelection::WorktreeGroup {
+                primary: dir("/ws/a"),
+                linked:  vec![dir("/ws/b"), dir("/ws/c")],
+            },
+            &MissingSet {
+                missing: vec![dir("/ws/c")],
+            },
+        );
+
+        assert_eq!(
+            plan.skipped,
+            vec![(dir("/ws/c"), SkipReason::DeletedWorktree)],
+            "deleted worktree lands in skipped with the dedicated reason"
+        );
+        assert_eq!(
+            plan.targets.len(),
+            2,
+            "remaining live worktrees still produce CleanTargets — plan does not abort"
+        );
     }
 
     #[test]

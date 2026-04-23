@@ -1748,10 +1748,12 @@ fn clean_selection_on_non_rust_root_is_none() {
 }
 
 #[test]
-fn clean_selection_on_worktree_root_defers_to_step_7() {
-    // Step 6 handles per-worktree cleans from WorktreeEntry rows;
-    // a Root row whose item is a WorktreeGroup stays None until
-    // Step 7 (group-level fan-out).
+fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
+    // Step 7: a Root row whose RootItem is a WorktreeGroup produces
+    // a CleanSelection::WorktreeGroup naming the primary checkout
+    // plus every linked worktree. build_clean_plan then dedupes on
+    // target_directory — shared-target worktrees collapse into a
+    // single CleanTarget with multiple covering_projects.
     let primary_path = test_path("~/cargo-port");
     let linked_path = test_path("~/cargo-port_feat");
     let primary = crate::project::Package {
@@ -1763,10 +1765,10 @@ fn clean_selection_on_worktree_root_defers_to_step_7() {
         ..crate::project::Package::default()
     };
     let linked = crate::project::Package {
-        path:            linked_path,
+        path:            linked_path.clone(),
         name:            Some("cargo-port_feat".to_string()),
         worktree_status: crate::project::WorktreeStatus::Linked {
-            primary: primary_path,
+            primary: primary_path.clone(),
         },
         ..crate::project::Package::default()
     };
@@ -1775,8 +1777,14 @@ fn clean_selection_on_worktree_root_defers_to_step_7() {
     );
     let mut app = make_app(std::slice::from_ref(&worktrees));
     app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
-    assert!(
-        app.clean_selection().is_none(),
-        "WorktreeGroup roots wait for Step 7; bare Root row is not eligible today"
-    );
+
+    match app.clean_selection().expect("group root is clean-eligible") {
+        CleanSelection::WorktreeGroup { primary, linked } => {
+            assert_eq!(primary, primary_path);
+            assert_eq!(linked, vec![linked_path]);
+        },
+        CleanSelection::Project { .. } => {
+            panic!("WorktreeGroup root should fan out, not reduce to a single Project")
+        },
+    }
 }
