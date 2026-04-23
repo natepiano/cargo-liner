@@ -1467,7 +1467,8 @@ impl App {
             | BackgroundMsg::ServiceUnreachable { .. }
             | BackgroundMsg::ServiceRateLimited { .. }
             | BackgroundMsg::LanguageStatsBatch { .. }
-            | BackgroundMsg::CargoMetadata { .. } => {},
+            | BackgroundMsg::CargoMetadata { .. }
+            | BackgroundMsg::OutOfTreeTargetSize { .. } => {},
         }
     }
 
@@ -2363,8 +2364,36 @@ impl App {
             } => {
                 self.handle_cargo_metadata_msg(workspace_root, generation, &fingerprint, result);
             },
+            BackgroundMsg::OutOfTreeTargetSize {
+                workspace_root,
+                target_dir,
+                bytes,
+            } => {
+                self.handle_out_of_tree_target_size(&workspace_root, &target_dir, bytes);
+            },
         }
         false
+    }
+
+    /// Merge an out-of-tree target walk result into the snapshot cache.
+    /// Declines when the snapshot's `target_directory` has since been
+    /// redirected — a fresh walk is already in flight under the new dir.
+    fn handle_out_of_tree_target_size(
+        &self,
+        workspace_root: &AbsolutePath,
+        target_dir: &AbsolutePath,
+        bytes: u64,
+    ) {
+        let Ok(mut store) = self.metadata_store.lock() else {
+            return;
+        };
+        if !store.set_out_of_tree_target_bytes(workspace_root, target_dir, bytes) {
+            tracing::debug!(
+                workspace_root = %workspace_root.as_path().display(),
+                target_dir = %target_dir.as_path().display(),
+                "out_of_tree_target_size_discarded_stale"
+            );
+        }
     }
 
     fn handle_language_stats_batch(&mut self, entries: Vec<(AbsolutePath, LanguageStats)>) {
@@ -2490,8 +2519,19 @@ impl App {
         }
         let target_directory = snapshot.target_directory.clone();
         let member_roots = snapshot_member_roots(&snapshot);
+        let needs_out_of_tree_walk = !target_directory
+            .as_path()
+            .starts_with(workspace_root.as_path());
         if let Ok(mut store) = self.metadata_store.lock() {
             store.upsert(snapshot);
+        }
+        if needs_out_of_tree_walk {
+            crate::scan::spawn_out_of_tree_target_walk(
+                &self.http_client.handle,
+                self.bg_tx.clone(),
+                workspace_root.clone(),
+                target_directory.clone(),
+            );
         }
         // Refresh the target-dir index so build_clean_plan / siblings
         // lookups see the fresh membership. Every package under this

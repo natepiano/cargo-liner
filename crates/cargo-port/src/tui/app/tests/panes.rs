@@ -108,6 +108,7 @@ fn seed_single_example_snapshot(app: &App, project_path: &AbsolutePath, example_
                 rust_toolchain: None,
                 configs:        std::collections::BTreeMap::new(),
             },
+            out_of_tree_target_bytes: None,
         });
 }
 
@@ -300,6 +301,7 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
             rust_toolchain: None,
             configs:        std::collections::BTreeMap::new(),
         },
+        out_of_tree_target_bytes: None,
     };
     let generation = app
         .metadata_store_handle()

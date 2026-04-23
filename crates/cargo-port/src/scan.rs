@@ -171,6 +171,16 @@ pub(crate) enum BackgroundMsg {
         fingerprint:    ManifestFingerprint,
         result:         Result<WorkspaceSnapshot, CargoMetadataError>,
     },
+    /// Disk walk result for an out-of-tree `target_directory`. Emitted by
+    /// [`spawn_out_of_tree_target_walk`] when a snapshot whose
+    /// `target_directory` sits outside its `workspace_root` lands. The
+    /// receiver stamps `bytes` onto the snapshot so the detail pane can
+    /// surface sharer target sizes that the per-project walker can't see.
+    OutOfTreeTargetSize {
+        workspace_root: AbsolutePath,
+        target_dir:     AbsolutePath,
+        bytes:          u64,
+    },
 }
 
 /// Structured failure for a `cargo metadata` invocation. Held inside
@@ -198,7 +208,8 @@ impl BackgroundMsg {
             | Self::LintStatus { path, .. }
             | Self::LintStartupStatus { path, .. } => Some(path.as_path()),
             Self::ProjectDiscovered { item } | Self::ProjectRefreshed { item } => Some(item.path()),
-            Self::CargoMetadata { workspace_root, .. } => Some(workspace_root.as_path()),
+            Self::CargoMetadata { workspace_root, .. }
+            | Self::OutOfTreeTargetSize { workspace_root, .. } => Some(workspace_root.as_path()),
             Self::ScanResult { .. }
             | Self::DiskUsageBatch { .. }
             | Self::LanguageStatsBatch { .. }
@@ -1389,6 +1400,55 @@ struct CargoMetadataTaskOutput {
     result:      Result<WorkspaceSnapshot, CargoMetadataError>,
 }
 
+/// Walk `target_dir` on a blocking thread and emit its total byte size via
+/// [`BackgroundMsg::OutOfTreeTargetSize`]. Used when a workspace snapshot
+/// reports a `target_directory` outside its `workspace_root`; the scan-time
+/// walker's per-project breakdown doesn't reach there, so this fills in the
+/// sharer target size for the detail pane.
+pub(crate) fn spawn_out_of_tree_target_walk(
+    handle: &tokio::runtime::Handle,
+    tx: mpsc::Sender<BackgroundMsg>,
+    workspace_root: AbsolutePath,
+    target_dir: AbsolutePath,
+) {
+    handle.spawn(async move {
+        let walk_target = target_dir.clone();
+        let bytes = tokio::task::spawn_blocking(move || sum_dir_bytes(walk_target.as_path())).await;
+        let bytes = match bytes {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::warn!(
+                    workspace_root = %workspace_root.display(),
+                    target_dir = %target_dir.display(),
+                    error = %err,
+                    "out_of_tree_target_walk_join_failed"
+                );
+                return;
+            },
+        };
+        tracing::debug!(
+            workspace_root = %workspace_root.display(),
+            target_dir = %target_dir.display(),
+            bytes,
+            "out_of_tree_target_walk_done"
+        );
+        let _ = tx.send(BackgroundMsg::OutOfTreeTargetSize {
+            workspace_root,
+            target_dir,
+            bytes,
+        });
+    });
+}
+
+fn sum_dir_bytes(dir: &Path) -> u64 {
+    WalkDir::new(dir)
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| entry.metadata().ok().map(|meta| meta.len()))
+        .sum()
+}
+
 fn run_cargo_metadata_for_root(
     workspace_root: &AbsolutePath,
     store: &Arc<Mutex<WorkspaceMetadataStore>>,
@@ -1515,6 +1575,7 @@ fn build_workspace_snapshot(
         workspace_members,
         fetched_at: std::time::SystemTime::now(),
         fingerprint,
+        out_of_tree_target_bytes: None,
     }
 }
 

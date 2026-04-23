@@ -1365,12 +1365,13 @@ fn fake_fingerprint() -> ManifestFingerprint {
 
 fn fake_snapshot(workspace_root: &AbsolutePath) -> WorkspaceSnapshot {
     WorkspaceSnapshot {
-        workspace_root:    workspace_root.clone(),
-        target_directory:  AbsolutePath::from(workspace_root.as_path().join("target")),
-        packages:          HashMap::new(),
-        workspace_members: Vec::new(),
-        fetched_at:        SystemTime::UNIX_EPOCH,
-        fingerprint:       fake_fingerprint(),
+        workspace_root:           workspace_root.clone(),
+        target_directory:         AbsolutePath::from(workspace_root.as_path().join("target")),
+        packages:                 HashMap::new(),
+        workspace_members:        Vec::new(),
+        fetched_at:               SystemTime::UNIX_EPOCH,
+        fingerprint:              fake_fingerprint(),
+        out_of_tree_target_bytes: None,
     }
 }
 
@@ -1586,12 +1587,13 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
         .lock()
         .expect("store")
         .upsert(WorkspaceSnapshot {
-            workspace_root:    project_path.clone(),
-            target_directory:  custom_target,
-            packages:          HashMap::new(),
-            workspace_members: Vec::new(),
-            fetched_at:        SystemTime::UNIX_EPOCH,
-            fingerprint:       fake_fingerprint(),
+            workspace_root:           project_path.clone(),
+            target_directory:         custom_target,
+            packages:                 HashMap::new(),
+            workspace_members:        Vec::new(),
+            fetched_at:               SystemTime::UNIX_EPOCH,
+            fingerprint:              fake_fingerprint(),
+            out_of_tree_target_bytes: None,
         });
 
     assert!(
@@ -1625,12 +1627,13 @@ fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
         .lock()
         .expect("store")
         .upsert(WorkspaceSnapshot {
-            workspace_root:    project_path.clone(),
-            target_directory:  custom_target,
-            packages:          HashMap::new(),
-            workspace_members: Vec::new(),
-            fetched_at:        SystemTime::UNIX_EPOCH,
-            fingerprint:       fake_fingerprint(),
+            workspace_root:           project_path.clone(),
+            target_directory:         custom_target,
+            packages:                 HashMap::new(),
+            workspace_members:        Vec::new(),
+            fetched_at:               SystemTime::UNIX_EPOCH,
+            fingerprint:              fake_fingerprint(),
+            out_of_tree_target_bytes: None,
         });
 
     assert!(
@@ -1868,4 +1871,48 @@ fn request_clean_confirm_marks_verifying_when_no_snapshot_covers_path() {
         app.confirm_verifying().is_none(),
         "successful arrival clears the Verifying flag"
     );
+}
+
+#[test]
+fn out_of_tree_target_size_message_stamps_snapshot() {
+    // Inject a snapshot with an out-of-tree target, then route an
+    // OutOfTreeTargetSize arrival through handle_bg_msg. The byte total
+    // should land on `WorkspaceSnapshot::out_of_tree_target_bytes`.
+    let workspace_root = AbsolutePath::from(PathBuf::from("/ws"));
+    let target_dir = AbsolutePath::from(PathBuf::from("/elsewhere/target"));
+    let pkg = crate::project::RootItem::Rust(crate::project::RustProject::Package(
+        crate::project::Package {
+            path: workspace_root.clone(),
+            name: Some("demo".into()),
+            ..crate::project::Package::default()
+        },
+    ));
+    let mut app = make_app(&[pkg]);
+    {
+        let store = app.metadata_store_handle();
+        let mut guard = store.lock().unwrap_or_else(|_| std::process::abort());
+        guard.upsert(WorkspaceSnapshot {
+            workspace_root:           workspace_root.clone(),
+            target_directory:         target_dir.clone(),
+            packages:                 HashMap::new(),
+            workspace_members:        Vec::new(),
+            fetched_at:               SystemTime::UNIX_EPOCH,
+            fingerprint:              fake_fingerprint(),
+            out_of_tree_target_bytes: None,
+        });
+    }
+
+    app.handle_bg_msg(BackgroundMsg::OutOfTreeTargetSize {
+        workspace_root: workspace_root.clone(),
+        target_dir,
+        bytes: 1_234_567,
+    });
+
+    let stamped = app
+        .metadata_store_handle()
+        .lock()
+        .unwrap_or_else(|_| std::process::abort())
+        .get(&workspace_root)
+        .and_then(|s| s.out_of_tree_target_bytes);
+    assert_eq!(stamped, Some(1_234_567));
 }

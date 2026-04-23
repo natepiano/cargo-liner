@@ -443,6 +443,12 @@ pub enum DetailField {
     /// Step 5b: bytes under the project root that are *not* inside a
     /// `target/` subtree (source, docs, .git, etc.).
     DiskNonTarget,
+    /// Sharer target: the workspace's `target_directory` lives outside
+    /// `workspace_root` (e.g. redirected by `CARGO_TARGET_DIR` or a
+    /// `.cargo/config.toml`). Byte total is filled by the cached
+    /// out-of-tree walk (`BackgroundMsg::OutOfTreeTargetSize`) since the
+    /// per-project walker never reaches there.
+    DiskOutOfTreeTarget,
     Lint,
     Ci,
     Branch,
@@ -473,6 +479,7 @@ impl DetailField {
             Self::Disk => "Disk",
             Self::DiskTarget => "  target/",
             Self::DiskNonTarget => "  other",
+            Self::DiskOutOfTreeTarget => "  target/ (out of tree)",
             Self::Lint => "Lint",
             Self::Ci => "CI",
             Self::Branch => "Branch",
@@ -553,6 +560,9 @@ impl DetailField {
             Self::DiskNonTarget => data
                 .in_project_non_target
                 .map_or_else(String::new, render::format_bytes),
+            Self::DiskOutOfTreeTarget => data
+                .out_of_tree_target_bytes
+                .map_or_else(String::new, render::format_bytes),
             Self::Edition => or_dash(data.edition.as_deref()),
             Self::License => or_dash(data.license.as_deref()),
             Self::Homepage => or_dash(data.homepage.as_deref()),
@@ -605,6 +615,7 @@ impl DetailField {
             | Self::Disk
             | Self::DiskTarget
             | Self::DiskNonTarget
+            | Self::DiskOutOfTreeTarget
             | Self::Targets
             | Self::Lint
             | Self::Ci
@@ -672,6 +683,9 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     if data.in_project_non_target.is_some() {
         fields.push(DetailField::DiskNonTarget);
     }
+    if data.out_of_tree_target_bytes.is_some() {
+        fields.push(DetailField::DiskOutOfTreeTarget);
+    }
     fields.push(DetailField::Targets);
     fields.push(DetailField::Lint);
     fields.push(DetailField::Ci);
@@ -735,31 +749,56 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
 /// Per-pane data for the Package detail panel.
 #[derive(Clone)]
 pub struct PackageData {
-    pub package_title:         String,
-    pub title_name:            String,
-    pub abs_path:              AbsolutePath,
-    pub path:                  String,
-    pub version:               String,
-    pub description:           Option<String>,
-    pub crates_version:        Option<String>,
-    pub crates_downloads:      Option<u64>,
-    pub types:                 String,
-    pub disk:                  String,
-    pub ci:                    Option<Conclusion>,
-    pub stats_rows:            Vec<(&'static str, usize)>,
-    pub has_package:           bool,
+    pub package_title:            String,
+    pub title_name:               String,
+    pub abs_path:                 AbsolutePath,
+    pub path:                     String,
+    pub version:                  String,
+    pub description:              Option<String>,
+    pub crates_version:           Option<String>,
+    pub crates_downloads:         Option<u64>,
+    pub types:                    String,
+    pub disk:                     String,
+    pub ci:                       Option<Conclusion>,
+    pub stats_rows:               Vec<(&'static str, usize)>,
+    pub has_package:              bool,
     /// Cargo edition ("2021", "2024", …) from the metadata snapshot.
     /// `None` until a snapshot has landed or for non-Rust projects.
-    pub edition:               Option<String>,
-    pub license:               Option<String>,
-    pub homepage:              Option<String>,
-    pub repository:            Option<String>,
+    pub edition:                  Option<String>,
+    pub license:                  Option<String>,
+    pub homepage:                 Option<String>,
+    pub repository:               Option<String>,
     /// Step 5b: bytes under the project root inside any `target/`
     /// subtree. `None` until the walker has reported a breakdown.
-    pub in_project_target:     Option<u64>,
+    pub in_project_target:        Option<u64>,
     /// Step 5b: everything else under the project root (source,
     /// docs, .git, vendored crates outside target, etc.).
-    pub in_project_non_target: Option<u64>,
+    pub in_project_non_target:    Option<u64>,
+    /// Byte size of the workspace's out-of-tree `target_directory`
+    /// (when the resolved target sits outside `workspace_root`). Flows
+    /// from `WorkspaceSnapshot::out_of_tree_target_bytes` once the
+    /// cached walk reports back; `None` for in-tree targets or before
+    /// the walk lands.
+    pub out_of_tree_target_bytes: Option<u64>,
+}
+
+/// Resolve the sharer target size for the row at `abs_path` — i.e. the
+/// workspace's cached walk of its out-of-tree `target_directory`. Returns
+/// `None` for in-tree targets (already reflected in `DiskTarget`) or
+/// before the walk has landed.
+fn lookup_out_of_tree_target_bytes(app: &App, abs_path: &AbsolutePath) -> Option<u64> {
+    let store = app.metadata_store_handle();
+    let guard = store.lock().ok()?;
+    let snap = guard
+        .containing_workspace_root(abs_path)
+        .and_then(|root| guard.get(root))?;
+    let is_in_tree = snap
+        .target_directory
+        .as_path()
+        .starts_with(snap.workspace_root.as_path());
+    let bytes = (!is_in_tree).then_some(snap.out_of_tree_target_bytes)?;
+    drop(guard);
+    bytes
 }
 
 /// Render "—" when a `PackageRecord` field is absent from the manifest
@@ -1319,6 +1358,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             repository: None,
             in_project_target: None,
             in_project_non_target: None,
+            out_of_tree_target_bytes: None,
         },
         git:     GitData {
             branch:             git_detail.branch,
@@ -1518,6 +1558,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         app.projects().at_path(abs_path).map_or((None, None), |pi| {
             (pi.in_project_target, pi.in_project_non_target)
         });
+    let out_of_tree_target_bytes = lookup_out_of_tree_target_bytes(app, &abs_path_owned);
 
     DetailPaneData {
         package: PackageData {
@@ -1540,6 +1581,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             repository,
             in_project_target,
             in_project_non_target,
+            out_of_tree_target_bytes,
         },
         git:     GitData {
             branch: git_detail.branch,

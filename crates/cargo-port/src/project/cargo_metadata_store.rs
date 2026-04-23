@@ -97,6 +97,27 @@ impl WorkspaceMetadataStore {
             .insert(snapshot.workspace_root.clone(), snapshot);
     }
 
+    /// Stamp the cached out-of-tree target size onto an existing snapshot.
+    /// No-op when `workspace_root` has no snapshot (the snapshot may have
+    /// been replaced between dispatch and arrival) or when the snapshot's
+    /// current `target_directory` no longer matches `target_dir` (a follow-
+    /// up `cargo metadata` redirected the target before the walk landed).
+    pub(crate) fn set_out_of_tree_target_bytes(
+        &mut self,
+        workspace_root: &AbsolutePath,
+        target_dir: &AbsolutePath,
+        bytes: u64,
+    ) -> bool {
+        let Some(snap) = self.by_root.get_mut(workspace_root) else {
+            return false;
+        };
+        if snap.target_directory != *target_dir {
+            return false;
+        }
+        snap.out_of_tree_target_bytes = Some(bytes);
+        true
+    }
+
     /// Drop the snapshot for `workspace_root`, if any.
     pub(crate) fn remove(&mut self, workspace_root: &AbsolutePath) {
         self.by_root.remove(workspace_root);
@@ -130,12 +151,21 @@ impl WorkspaceMetadataStore {
 /// A single workspace's resolved `cargo metadata` output.
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceSnapshot {
-    pub workspace_root:    AbsolutePath,
-    pub target_directory:  AbsolutePath,
-    pub packages:          HashMap<PackageId, PackageRecord>,
-    pub workspace_members: Vec<PackageId>,
-    pub fetched_at:        SystemTime,
-    pub fingerprint:       ManifestFingerprint,
+    pub workspace_root:           AbsolutePath,
+    pub target_directory:         AbsolutePath,
+    pub packages:                 HashMap<PackageId, PackageRecord>,
+    pub workspace_members:        Vec<PackageId>,
+    pub fetched_at:               SystemTime,
+    pub fingerprint:              ManifestFingerprint,
+    /// Byte size of `target_directory` when it lives *outside*
+    /// `workspace_root` (a sharer — e.g. redirected by
+    /// `CARGO_TARGET_DIR` or an ancestor `.cargo/config.toml`).
+    /// `None` for in-tree targets (the scan walker's
+    /// `in_project_target` covers those) and until the
+    /// out-of-tree walk has reported back. Populated by
+    /// [`crate::scan::BackgroundMsg::OutOfTreeTargetSize`] arrivals
+    /// via `WorkspaceMetadataStore::set_out_of_tree_target_bytes`.
+    pub out_of_tree_target_bytes: Option<u64>,
 }
 
 /// Normalized form of a single package's metadata. Field shapes mirror
@@ -522,6 +552,7 @@ mod tests {
                 rust_toolchain: None,
                 configs:        BTreeMap::new(),
             },
+            out_of_tree_target_bytes: None,
         }
     }
 
@@ -638,5 +669,53 @@ mod tests {
         store.upsert(fake_snapshot(root, target));
         let phantom_member = AbsolutePath::from(PathBuf::from("/ws/crates/never"));
         assert!(store.package_for_path(&phantom_member).is_none());
+    }
+
+    #[test]
+    fn set_out_of_tree_target_bytes_stamps_matching_snapshot() {
+        let mut store = WorkspaceMetadataStore::new();
+        let root = AbsolutePath::from(PathBuf::from("/ws"));
+        let target = AbsolutePath::from(PathBuf::from("/elsewhere/target"));
+        store.upsert(fake_snapshot(root.clone(), target.clone()));
+
+        let applied = store.set_out_of_tree_target_bytes(&root, &target, 42_000);
+        assert!(applied, "matching target_directory accepts the stamp");
+        assert_eq!(
+            store.get(&root).and_then(|s| s.out_of_tree_target_bytes),
+            Some(42_000)
+        );
+    }
+
+    #[test]
+    fn set_out_of_tree_target_bytes_declines_stale_target_dir() {
+        // A follow-up snapshot re-pointed target_directory between the
+        // walk's dispatch and its arrival. The old walk must NOT stamp
+        // the new snapshot.
+        let mut store = WorkspaceMetadataStore::new();
+        let root = AbsolutePath::from(PathBuf::from("/ws"));
+        let stale_target = AbsolutePath::from(PathBuf::from("/old/target"));
+        let current_target = AbsolutePath::from(PathBuf::from("/new/target"));
+        store.upsert(fake_snapshot(root.clone(), current_target));
+
+        let applied = store.set_out_of_tree_target_bytes(&root, &stale_target, 999);
+        assert!(
+            !applied,
+            "stale target_dir is discarded; a fresh walk is already in flight"
+        );
+        assert!(
+            store
+                .get(&root)
+                .and_then(|s| s.out_of_tree_target_bytes)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn set_out_of_tree_target_bytes_noop_without_snapshot() {
+        let mut store = WorkspaceMetadataStore::new();
+        let root = AbsolutePath::from(PathBuf::from("/ws"));
+        let target = AbsolutePath::from(PathBuf::from("/elsewhere/target"));
+        let applied = store.set_out_of_tree_target_bytes(&root, &target, 1);
+        assert!(!applied, "no snapshot → nothing to stamp");
     }
 }

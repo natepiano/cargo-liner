@@ -1232,6 +1232,7 @@ mod tests {
                     rust_toolchain: None,
                     configs:        std::collections::BTreeMap::new(),
                 },
+                out_of_tree_target_bytes: None,
             });
         render_ui(&mut app);
 
@@ -1295,12 +1296,12 @@ mod tests {
             .lock()
             .unwrap_or_else(|_| std::process::abort())
             .upsert(crate::project::WorkspaceSnapshot {
-                workspace_root:    AbsolutePath::from(project_dir.clone()),
-                target_directory:  AbsolutePath::from(custom_target.clone()),
-                packages:          std::collections::HashMap::new(),
-                workspace_members: Vec::new(),
-                fetched_at:        std::time::SystemTime::UNIX_EPOCH,
-                fingerprint:       crate::project::ManifestFingerprint {
+                workspace_root:           AbsolutePath::from(project_dir.clone()),
+                target_directory:         AbsolutePath::from(custom_target.clone()),
+                packages:                 std::collections::HashMap::new(),
+                workspace_members:        Vec::new(),
+                fetched_at:               std::time::SystemTime::UNIX_EPOCH,
+                fingerprint:              crate::project::ManifestFingerprint {
                     manifest:       crate::project::FileStamp {
                         mtime:        std::time::SystemTime::UNIX_EPOCH,
                         len:          0,
@@ -1310,6 +1311,7 @@ mod tests {
                     rust_toolchain: None,
                     configs:        std::collections::BTreeMap::new(),
                 },
+                out_of_tree_target_bytes: None,
             });
 
         app.set_confirm(crate::tui::app::ConfirmAction::Clean(AbsolutePath::from(
@@ -1372,6 +1374,7 @@ mod tests {
                 rust_toolchain: None,
                 configs:        std::collections::BTreeMap::new(),
             },
+            out_of_tree_target_bytes: None,
         };
         app.metadata_store_handle()
             .lock()
@@ -1476,6 +1479,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn package_pane_renders_out_of_tree_target_size_for_sharer() {
+        // When the workspace's target_directory sits outside
+        // workspace_root (e.g. redirected via CARGO_TARGET_DIR or an
+        // ancestor .cargo/config.toml), the per-project walker can't
+        // reach it. The cached walk fills in the sharer target size,
+        // which shows up beneath Disk as `target/ (out of tree)`.
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let project_dir = tmp.path().join("demo");
+        let shared_target = tmp.path().join("shared-target");
+        std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+        let mut app = make_app(&[make_package("demo", &project_dir)]);
+
+        let root = AbsolutePath::from(project_dir);
+        let target = AbsolutePath::from(shared_target);
+        {
+            let store = app.metadata_store_handle();
+            let mut guard = store.lock().unwrap_or_else(|_| std::process::abort());
+            guard.upsert(crate::project::WorkspaceSnapshot {
+                workspace_root:           root,
+                target_directory:         target,
+                packages:                 std::collections::HashMap::new(),
+                workspace_members:        Vec::new(),
+                fetched_at:               std::time::SystemTime::UNIX_EPOCH,
+                fingerprint:              crate::project::ManifestFingerprint {
+                    manifest:       crate::project::FileStamp {
+                        mtime:        std::time::SystemTime::UNIX_EPOCH,
+                        len:          0,
+                        content_hash: [0_u8; 32],
+                    },
+                    lockfile:       None,
+                    rust_toolchain: None,
+                    configs:        std::collections::BTreeMap::new(),
+                },
+                out_of_tree_target_bytes: Some(42 * 1024 * 1024),
+            });
+        }
+
+        let rendered = buffer_text(&mut app);
+        assert!(
+            rendered.contains("out of tree"),
+            "sharer detail pane must surface the out-of-tree target label"
+        );
+        assert!(
+            rendered.contains("42.0 MiB"),
+            "out-of-tree target size renders using format_bytes"
+        );
+    }
+
     /// Helper for the shared-target popup tests: stage two project
     /// "arrivals" whose snapshots point at the same `target_directory`,
     /// so the `TargetDirIndex` reports sibling B when we confirm a
@@ -1527,6 +1579,7 @@ mod tests {
                     rust_toolchain: None,
                     configs:        std::collections::BTreeMap::new(),
                 },
+                out_of_tree_target_bytes: None,
             };
             // Route through handle_bg_msg so the TargetDirIndex gets
             // refreshed alongside the store (Step 6c handler path).
