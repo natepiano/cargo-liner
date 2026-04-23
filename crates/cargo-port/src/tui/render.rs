@@ -259,46 +259,87 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         finder::render_finder_popup(frame, app);
     }
     if let Some(action) = app.confirm() {
-        let detail = confirm_action_detail(app, action);
-        render_confirm_popup(frame, action, &detail);
+        let body = confirm_action_body(app, action);
+        render_confirm_popup(frame, action, &body);
     }
 
     sync_hovered_pane_row(app);
 }
 
-/// Compute the secondary line shown below a confirm prompt. For
-/// `Clean(project)` it's the resolved `target_directory` (home-
-/// relative) so the user can see exactly what's about to get wiped —
-/// including redirects via `CARGO_TARGET_DIR` or `.cargo/config.toml`'s
-/// `build.target-dir`. All confirm actions currently produce a
-/// detail line; the return type stays concrete so callers can't
-/// forget to render it.
-fn confirm_action_detail(app: &App, action: &ConfirmAction) -> String {
+/// Maximum affected-checkout paths shown explicitly in the confirm
+/// dialog before collapsing the tail into a `+N more` line (design
+/// plan → "Confirm dialog → uniform rule").
+const AFFECTED_EXTRAS_VISIBLE_CAP: usize = 5;
+
+/// Body lines shown below the `Run cargo clean?` prompt — everything
+/// from the resolved target dir to the "Also affected" list and the
+/// nested-crate summary. Pre-formatted into strings so render stays
+/// a dumb pass-through.
+fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
     match action {
         ConfirmAction::Clean(project_path) => {
             let target = app
                 .resolve_target_dir(project_path)
                 .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join("target")));
-            project::home_relative_path(target.as_path())
+            let mut lines = vec![project::home_relative_path(target.as_path())];
+
+            // Report affected siblings (step 6d): projects that share
+            // this target dir but are not the selection. The
+            // TargetDirIndex is populated incrementally from
+            // handle_cargo_metadata_msg, so early in startup it may
+            // be empty — then these lists stay empty and the dialog
+            // reverts to the Step 2 single-line shape.
+            let selection = [project_path.clone()];
+            let siblings = app
+                .target_dir_index_ref()
+                .siblings(&target, &selection);
+            let mut project_siblings: Vec<&AbsolutePath> = Vec::new();
+            let mut nested_count = 0usize;
+            for member in siblings {
+                match member.kind {
+                    crate::tui::app::MemberKind::Project => {
+                        project_siblings.push(&member.project_root);
+                    },
+                    crate::tui::app::MemberKind::Submodule
+                    | crate::tui::app::MemberKind::Vendored => nested_count += 1,
+                }
+            }
+
+            if !project_siblings.is_empty() {
+                lines.push("Also affects:".to_string());
+                for sibling in project_siblings.iter().take(AFFECTED_EXTRAS_VISIBLE_CAP) {
+                    lines.push(format!("  {}", project::home_relative_path(sibling.as_path())));
+                }
+                if project_siblings.len() > AFFECTED_EXTRAS_VISIBLE_CAP {
+                    let extra = project_siblings.len() - AFFECTED_EXTRAS_VISIBLE_CAP;
+                    lines.push(format!("  +{extra} more"));
+                }
+            }
+            if nested_count > 0 {
+                let noun = if nested_count == 1 { "crate" } else { "crates" };
+                lines.push(format!(
+                    "  ({nested_count} nested {noun} also share this target)"
+                ));
+            }
+
+            lines
         },
     }
 }
 
-fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction, detail: &str) {
+fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction, body: &[String]) {
     let prompt = match action {
         ConfirmAction::Clean(_) => "Run cargo clean?",
     };
 
     let prompt_text = format!(" {prompt}  (y/n) ");
     let prompt_width = prompt_text.len();
-    // leading " " + trailing " " around the detail text
-    let detail_width = if detail.is_empty() { 0 } else { detail.len() + 2 };
-    let width = u16::try_from(prompt_width.max(detail_width) + 4).unwrap_or(u16::MAX);
-    let height = if detail.is_empty() {
-        CONFIRM_DIALOG_HEIGHT
-    } else {
-        CONFIRM_DIALOG_HEIGHT + 1
-    };
+    let body_max = body.iter().map(String::len).max().unwrap_or(0);
+    // leading " " + trailing " " around the widest body line.
+    let body_width = if body_max == 0 { 0 } else { body_max + 2 };
+    let width = u16::try_from(prompt_width.max(body_width) + 4).unwrap_or(u16::MAX);
+    let body_height = u16::try_from(body.len()).unwrap_or(u16::MAX);
+    let height = CONFIRM_DIALOG_HEIGHT.saturating_add(body_height);
 
     let inner = super::popup::PopupFrame {
         title: None,
@@ -317,9 +358,9 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction, detail: &str)
                 .add_modifier(Modifier::BOLD),
         ),
     ])];
-    if !detail.is_empty() {
+    for body_line in body {
         lines.push(Line::from(vec![Span::styled(
-            format!(" {detail} "),
+            format!(" {body_line} "),
             Style::default().fg(LABEL_COLOR),
         )]));
     }

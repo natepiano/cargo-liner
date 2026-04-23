@@ -65,6 +65,7 @@ mod tests;
 pub(super) use dismiss::DismissTarget;
 pub(super) use service_state::AvailabilityStatus;
 pub(super) use target_index::CleanSelection;
+pub(super) use target_index::MemberKind;
 pub(super) use types::CiFetchTracker;
 pub(super) use types::ConfirmAction;
 pub(super) use types::DiscoveryRowKind;
@@ -427,6 +428,15 @@ impl App {
     /// this handle, and the main loop merges arrivals back into it.
     pub(in super::super) fn metadata_store_handle(&self) -> Arc<Mutex<WorkspaceMetadataStore>> {
         Arc::clone(&self.metadata_store)
+    }
+
+    /// Borrow the [`target_index::TargetDirIndex`] for read-only
+    /// lookups (e.g. confirm-dialog "also affects" listings). Mutation
+    /// flows only through the metadata-arrival handler.
+    pub(in super::super) const fn target_dir_index_ref(
+        &self,
+    ) -> &target_index::TargetDirIndex {
+        &self.target_dir_index
     }
 
     /// Resolve a [`WorkspaceMetadataHandle`] to a cloned snapshot, or `None`

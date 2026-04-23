@@ -1388,6 +1388,113 @@ mod tests {
         );
     }
 
+    /// Helper for the shared-target popup tests: stage two project
+    /// "arrivals" whose snapshots point at the same `target_directory`,
+    /// so the `TargetDirIndex` reports sibling B when we confirm a
+    /// clean on A.
+    fn upsert_shared_target_snapshots(
+        app: &mut App,
+        primary_dir: &Path,
+        sibling_dirs: &[&Path],
+        target_dir: &Path,
+    ) {
+        use cargo_metadata::PackageId;
+        use cargo_metadata::semver::Version;
+        for dir in std::iter::once(primary_dir).chain(sibling_dirs.iter().copied()) {
+            let root = AbsolutePath::from(dir);
+            let manifest = AbsolutePath::from(dir.join("Cargo.toml"));
+            let pkg_name = dir.file_name().map_or_else(
+                || "demo".to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            let pkg = crate::project::PackageRecord {
+                id: PackageId {
+                    repr: format!("{pkg_name}-id"),
+                },
+                name: pkg_name,
+                version: Version::new(0, 1, 0),
+                edition: "2021".into(),
+                description: None,
+                license: None,
+                homepage: None,
+                repository: None,
+                manifest_path: manifest,
+                targets: Vec::new(),
+                publish: crate::project::PublishPolicy::Any,
+            };
+            let mut packages = std::collections::HashMap::new();
+            packages.insert(pkg.id.clone(), pkg);
+            let snap = crate::project::WorkspaceSnapshot {
+                workspace_root:    root.clone(),
+                target_directory:  AbsolutePath::from(target_dir),
+                packages,
+                workspace_members: Vec::new(),
+                fetched_at:        std::time::SystemTime::UNIX_EPOCH,
+                fingerprint:       crate::project::ManifestFingerprint {
+                    manifest:       crate::project::FileStamp {
+                        mtime:        std::time::SystemTime::UNIX_EPOCH,
+                        len:          0,
+                        content_hash: [0_u8; 32],
+                    },
+                    lockfile:       None,
+                    rust_toolchain: None,
+                    configs:        std::collections::BTreeMap::new(),
+                },
+            };
+            // Route through handle_bg_msg so the TargetDirIndex gets
+            // refreshed alongside the store (Step 6c handler path).
+            let store = app.metadata_store_handle();
+            let generation = store
+                .lock()
+                .unwrap_or_else(|_| std::process::abort())
+                .next_generation(&root);
+            app.handle_bg_msg(crate::scan::BackgroundMsg::CargoMetadata {
+                workspace_root: root,
+                generation,
+                fingerprint: snap.fingerprint.clone(),
+                result: Ok(snap),
+            });
+        }
+    }
+
+    #[test]
+    fn clean_confirm_popup_lists_affected_siblings_on_shared_target() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let primary_dir = tmp.path().join("main");
+        let sibling_dir = tmp.path().join("feat");
+        let target_dir = tmp.path().join("shared-target");
+        for dir in [&primary_dir, &sibling_dir] {
+            std::fs::create_dir_all(dir).unwrap_or_else(|_| std::process::abort());
+        }
+        std::fs::create_dir_all(&target_dir).unwrap_or_else(|_| std::process::abort());
+
+        let mut app = make_app(&[
+            make_package("main", &primary_dir),
+            make_package("feat", &sibling_dir),
+        ]);
+        upsert_shared_target_snapshots(
+            &mut app,
+            &primary_dir,
+            &[sibling_dir.as_path()],
+            &target_dir,
+        );
+
+        app.set_confirm(crate::tui::app::ConfirmAction::Clean(
+            AbsolutePath::from(primary_dir),
+        ));
+        let rendered = buffer_text(&mut app);
+
+        assert!(
+            rendered.contains("Also affects:"),
+            "shared-target popup should label the collateral list"
+        );
+        let sibling_label = crate::project::home_relative_path(sibling_dir.as_path());
+        assert!(
+            rendered.contains(&sibling_label),
+            "sibling path should appear in the affected list (expected {sibling_label:?})"
+        );
+    }
+
     #[test]
     fn clean_confirm_popup_falls_back_to_in_tree_target_without_snapshot() {
         let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
