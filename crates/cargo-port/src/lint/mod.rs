@@ -30,6 +30,7 @@ pub use runtime::RegisterProjectRequest;
 pub use runtime::RuntimeHandle;
 pub use runtime::project_is_eligible;
 pub use runtime::spawn;
+pub(crate) use trigger::classify_cargo_metadata_basename;
 pub(crate) use trigger::classify_cargo_metadata_event_path;
 pub(crate) use trigger::classify_event_path;
 #[cfg(test)]

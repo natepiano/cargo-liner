@@ -49,10 +49,6 @@ use crate::project::RootItem;
 use crate::project::RootItem::NonRust;
 use crate::project::WorkspaceMetadataStore;
 
-#[allow(
-    dead_code,
-    reason = "integration lands in a follow-up; tests exercise the helpers standalone"
-)]
 pub(super) mod ancestor {
     //! Pure helpers for the ancestor `.cargo/` watch-set subsystem
     //! (design plan → **Ancestor config watching**).
@@ -188,7 +184,6 @@ pub(super) mod ancestor {
 
     /// Real-filesystem implementation. The watcher uses this in
     /// production.
-    #[allow(dead_code, reason = "hooked up by 7b integration commit")]
     pub(in super::super) struct RealFs;
 
     impl AncestorFs for RealFs {
@@ -239,6 +234,12 @@ pub(super) mod ancestor {
 
         /// Unregister `project_root` and return the dirs that no project
         /// still claims.
+        #[allow(
+            dead_code,
+            reason = "Reserved for project-teardown: currently projects live \
+                      for the watcher's whole lifetime, but this is the right \
+                      symmetric API when that changes."
+        )]
         pub(in super::super) fn remove_project(
             &mut self,
             project_root: &AbsolutePath,
@@ -269,12 +270,38 @@ pub(super) mod ancestor {
         pub(in super::super) fn contains(&self, dir: &AbsolutePath) -> bool {
             self.refcount.contains_key(dir)
         }
+
+        /// Every project that currently claims `dir` — i.e. `dir`
+        /// appears in its ancestor watch set. Used to fan a config
+        /// edit under a watched `.cargo/` out to the affected
+        /// projects for metadata refresh.
+        pub(in super::super) fn projects_claiming(
+            &self,
+            dir: &AbsolutePath,
+        ) -> Vec<AbsolutePath> {
+            self.by_project
+                .iter()
+                .filter(|(_, watches)| watches.iter().any(|w| &w.dir == dir))
+                .map(|(project, _)| project.clone())
+                .collect()
+        }
+    }
+
+    /// Resolve `CARGO_HOME` with the `$CARGO_HOME` env var taking
+    /// precedence over the `~/.cargo` fallback — matches the store's
+    /// resolution so the watch set and fingerprint chain agree.
+    pub(in super::super) fn resolve_cargo_home() -> Option<std::path::PathBuf> {
+        if let Ok(home) = std::env::var("CARGO_HOME")
+            && !home.is_empty()
+        {
+            return Some(std::path::PathBuf::from(home));
+        }
+        dirs::home_dir().map(|home| home.join(".cargo"))
     }
 
     /// Does `event_path` sit under one of the `.cargo/` directories in
     /// the registry's watch set? Returns the matching `.cargo/`
     /// directory when it does, or `None` otherwise.
-    #[cfg(test)]
     pub(in super::super) fn event_under_watched_cargo_dir<'a>(
         event_path: &Path,
         watched: &'a HashSet<AbsolutePath>,
@@ -651,7 +678,7 @@ struct WatcherLoopContext {
     metadata_dispatch: MetadataDispatchContext,
 }
 
-fn spawn_watcher_thread<W: Send + 'static>(
+fn spawn_watcher_thread<W: Watcher + Send + 'static>(
     ctx: WatcherLoopContext,
     watch_rx: mpsc::Receiver<WatcherMsg>,
     notify_rx: mpsc::Receiver<notify::Result<notify::Event>>,
@@ -701,38 +728,43 @@ impl WatchState {
 }
 
 struct WatcherLoopState {
-    projects:             HashMap<AbsolutePath, ProjectEntry>,
-    project_parents:      HashSet<AbsolutePath>,
-    pending_disk:         HashMap<String, WatchState>,
-    pending_git:          HashMap<AbsolutePath, WatchState>,
-    pending_new:          HashMap<AbsolutePath, Instant>,
-    discovered:           HashSet<AbsolutePath>,
-    watched_git_metadata: HashSet<AbsolutePath>,
-    initializing:         bool,
-    buffered_events:      Vec<notify::Event>,
+    projects:          HashMap<AbsolutePath, ProjectEntry>,
+    project_parents:   HashSet<AbsolutePath>,
+    pending_disk:      HashMap<String, WatchState>,
+    pending_git:       HashMap<AbsolutePath, WatchState>,
+    pending_new:       HashMap<AbsolutePath, Instant>,
+    discovered:        HashSet<AbsolutePath>,
+    initializing:      bool,
+    buffered_events:   Vec<notify::Event>,
+    /// Ancestor `.cargo/` watch-set subsystem — tracks which dirs
+    /// the notify watcher needs to subscribe to so edits to out-of-
+    /// tree `~/.cargo/config.toml` (and siblings) can trigger
+    /// `cargo metadata` refreshes. Populated incrementally as
+    /// projects register.
+    ancestor_registry: ancestor::AncestorWatchRegistry,
 }
 
 impl WatcherLoopState {
     fn new() -> Self {
         Self {
-            projects:             HashMap::new(),
-            project_parents:      HashSet::new(),
-            pending_disk:         HashMap::new(),
-            pending_git:          HashMap::new(),
-            pending_new:          HashMap::new(),
-            discovered:           HashSet::new(),
-            watched_git_metadata: HashSet::new(),
-            initializing:         true,
-            buffered_events:      Vec::new(),
+            projects:          HashMap::new(),
+            project_parents:   HashSet::new(),
+            pending_disk:      HashMap::new(),
+            pending_git:       HashMap::new(),
+            pending_new:       HashMap::new(),
+            discovered:        HashSet::new(),
+            initializing:      true,
+            buffered_events:   Vec::new(),
+            ancestor_registry: ancestor::AncestorWatchRegistry::new(),
         }
     }
 }
 
-fn watcher_loop<W: Send + 'static>(
+fn watcher_loop<W: Watcher + Send + 'static>(
     ctx: &WatcherLoopContext,
     watch_rx: &mpsc::Receiver<WatcherMsg>,
     notify_rx: &mpsc::Receiver<notify::Result<notify::Event>>,
-    _watcher: W,
+    mut watcher: W,
 ) {
     let WatcherLoopContext {
         watch_roots,
@@ -748,16 +780,18 @@ fn watcher_loop<W: Send + 'static>(
     let (git_done_tx, git_done_rx) = mpsc::channel::<AbsolutePath>();
     let disk_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_DISK_CONCURRENCY));
     let git_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_GIT_CONCURRENCY));
+    let ancestor_fs = ancestor::RealFs;
+    let cargo_home = ancestor::resolve_cargo_home();
 
     let mut tick: u64 = 0;
     loop {
         tick += 1;
         let watch_drain = drain_watch_messages(
             watch_rx,
-            &mut state.projects,
-            &mut state.project_parents,
-            &mut state.watched_git_metadata,
-            &mut state.initializing,
+            &mut state,
+            &mut watcher,
+            &ancestor_fs,
+            cargo_home.as_deref(),
         );
         if watch_drain.disconnected {
             tracing::info!(tick, "watcher_loop_exit_disconnected");
@@ -833,10 +867,10 @@ struct WatchDrainResult {
 
 fn drain_watch_messages(
     watch_rx: &mpsc::Receiver<WatcherMsg>,
-    projects: &mut HashMap<AbsolutePath, ProjectEntry>,
-    project_parents: &mut HashSet<AbsolutePath>,
-    watched_git_metadata: &mut HashSet<AbsolutePath>,
-    initializing: &mut bool,
+    state: &mut WatcherLoopState,
+    watcher: &mut impl Watcher,
+    ancestor_fs: &dyn ancestor::AncestorFs,
+    cargo_home: Option<&Path>,
 ) -> WatchDrainResult {
     let mut result = WatchDrainResult {
         disconnected:           false,
@@ -845,10 +879,10 @@ fn drain_watch_messages(
     loop {
         match watch_rx.try_recv() {
             Ok(WatcherMsg::Register(req)) => {
-                apply_watch_request(req, projects, project_parents, watched_git_metadata);
+                apply_watch_request(req, state, watcher, ancestor_fs, cargo_home);
             },
             Ok(WatcherMsg::InitialRegistrationComplete) => {
-                *initializing = false;
+                state.initializing = false;
                 result.registration_completed = true;
             },
             Err(mpsc::TryRecvError::Empty) => return result,
@@ -862,19 +896,43 @@ fn drain_watch_messages(
 
 fn apply_watch_request(
     req: WatchRequest,
-    projects: &mut HashMap<AbsolutePath, ProjectEntry>,
-    project_parents: &mut HashSet<AbsolutePath>,
-    _watched_git_metadata: &mut HashSet<AbsolutePath>,
+    state: &mut WatcherLoopState,
+    watcher: &mut impl Watcher,
+    ancestor_fs: &dyn ancestor::AncestorFs,
+    cargo_home: Option<&Path>,
 ) {
+    let project_root = req.abs_path.clone();
+    // Step 1b 7b: compute the ancestor `.cargo/` watch set for this
+    // project and subscribe to every new directory the union
+    // requires. Watches are non-recursive (we only care about
+    // `config`/`config.toml` edits directly under the `.cargo/`
+    // folder). The registry dedupes across projects so shared
+    // ancestors (e.g. `~/.cargo`) are only watched once.
+    let ancestor_watches =
+        ancestor::compute_ancestor_cargo_dirs(project_root.as_path(), cargo_home, ancestor_fs);
+    let diff = state
+        .ancestor_registry
+        .add_project(project_root, ancestor_watches);
+    for watch in &diff.to_add {
+        if let Err(err) = watcher.watch(watch.dir.as_path(), RecursiveMode::NonRecursive) {
+            tracing::debug!(
+                dir = %watch.dir.display(),
+                error = %err,
+                "watcher_ancestor_watch_failed"
+            );
+        }
+    }
     if let Some(parent) = req.abs_path.parent() {
-        project_parents.insert(AbsolutePath::from(parent));
+        state
+            .project_parents
+            .insert(AbsolutePath::from(parent));
     }
     let git_dir = req.repo_root.as_deref().and_then(project::resolve_git_dir);
     let common_git_dir = req
         .repo_root
         .as_deref()
         .and_then(project::resolve_common_git_dir);
-    projects.insert(
+    state.projects.insert(
         req.abs_path.clone(),
         ProjectEntry {
             project_label: req.project_label,
@@ -919,6 +977,7 @@ fn process_notify_events(
                 projects: &state.projects,
                 project_parents: &state.project_parents,
                 discovered: &state.discovered,
+                ancestor_registry: Some(&state.ancestor_registry),
             },
             bg_tx: sinks.bg_tx,
             lint_runtime: sinks.lint_runtime,
@@ -953,6 +1012,7 @@ fn process_notify_events(
                 projects: &state.projects,
                 project_parents: &state.project_parents,
                 discovered: &state.discovered,
+                ancestor_registry: Some(&state.ancestor_registry),
             },
             bg_tx: sinks.bg_tx,
             lint_runtime: sinks.lint_runtime,
@@ -1024,10 +1084,14 @@ fn drain_completed_refreshes(
 
 /// Immutable state needed to classify a filesystem event.
 struct EventContext<'a> {
-    watch_roots:     &'a [AbsolutePath],
-    projects:        &'a HashMap<AbsolutePath, ProjectEntry>,
-    project_parents: &'a HashSet<AbsolutePath>,
-    discovered:      &'a HashSet<AbsolutePath>,
+    watch_roots:       &'a [AbsolutePath],
+    projects:          &'a HashMap<AbsolutePath, ProjectEntry>,
+    project_parents:   &'a HashSet<AbsolutePath>,
+    discovered:        &'a HashSet<AbsolutePath>,
+    /// Registry for the ancestor `.cargo/` watch-set subsystem —
+    /// `None` in test harnesses that don't exercise the ancestor
+    /// refresh path.
+    ancestor_registry: Option<&'a ancestor::AncestorWatchRegistry>,
 }
 
 struct WatcherDispatchContext<'a> {
@@ -1055,6 +1119,8 @@ fn handle_notify_event(
     pending_new: &mut HashMap<AbsolutePath, Instant>,
 ) {
     let now = Instant::now();
+
+    try_dispatch_ancestor_metadata_refresh(event_path, ctx, metadata_dispatch);
 
     let mut matched_fast_git = false;
     for entry in ctx.projects.values() {
@@ -1351,6 +1417,43 @@ fn is_internal_git_path(event_path: &Path, entry: &ProjectEntry) -> bool {
     git_dir.is_some_and(|d| event_path.starts_with(d))
         || common_git_dir.is_some_and(|d| event_path.starts_with(d))
         || repo_root.is_some_and(|r| event_path.starts_with(r.join(".git")))
+}
+
+/// Ancestor `.cargo/config[.toml]` edits live *outside* any
+/// registered project root, so they never match the per-project
+/// classifiers below. When the event's basename matches a cargo-
+/// metadata trigger AND the event sits under a `.cargo/` dir that
+/// the ancestor registry is watching, fan the refresh out to every
+/// project claiming that dir (Step 1b part 7b).
+fn try_dispatch_ancestor_metadata_refresh(
+    event_path: &Path,
+    ctx: &EventContext<'_>,
+    metadata_dispatch: Option<&MetadataDispatchContext>,
+) {
+    let Some(dispatch) = metadata_dispatch else {
+        return;
+    };
+    let Some(registry) = ctx.ancestor_registry else {
+        return;
+    };
+    if lint::classify_cargo_metadata_basename(event_path).is_none() {
+        return;
+    }
+    let watched = registry.current_watch_set();
+    let Some(cargo_dir) = ancestor::event_under_watched_cargo_dir(event_path, &watched)
+    else {
+        return;
+    };
+    let claimants = registry.projects_claiming(cargo_dir);
+    tracing::info!(
+        cargo_dir = %cargo_dir.display(),
+        event_path = %event_path.display(),
+        affected_projects = claimants.len(),
+        "watcher_ancestor_cargo_metadata_refresh"
+    );
+    for project_root in claimants {
+        scan::spawn_cargo_metadata_refresh(dispatch.clone(), project_root);
+    }
 }
 
 /// Does `event_path` sit under the workspace's resolved target
@@ -1818,6 +1921,52 @@ mod tests {
         }
     }
 
+    /// No-op `notify::Watcher` for unit tests that don't actually
+    /// care about filesystem subscriptions. `drain_watch_messages`
+    /// and `apply_watch_request` need *something* that implements
+    /// Watcher so the ancestor `.cargo/` registry can call
+    /// `watch(dir, …)`; this satisfies the trait without touching
+    /// the real FS layer. `unwatch` and the configuration knobs
+    /// return `Ok(())` / `()` since they're never actually exercised
+    /// by the tests.
+    struct NoopWatcher;
+
+    impl notify::Watcher for NoopWatcher {
+        fn new<F: notify::EventHandler>(
+            _event_handler: F,
+            _config: notify::Config,
+        ) -> notify::Result<Self>
+        where
+            Self: Sized,
+        {
+            Ok(Self)
+        }
+
+        fn watch(&mut self, _path: &Path, _mode: RecursiveMode) -> notify::Result<()> {
+            Ok(())
+        }
+
+        fn unwatch(&mut self, _path: &Path) -> notify::Result<()> { Ok(()) }
+
+        fn configure(&mut self, _config: notify::Config) -> notify::Result<bool> { Ok(true) }
+
+        fn kind() -> notify::WatcherKind
+        where
+            Self: Sized,
+        {
+            notify::WatcherKind::NullWatcher
+        }
+    }
+
+    /// Pure `ancestor::AncestorFs` test double: every probed path
+    /// is reported as absent. Keeps `compute_ancestor_cargo_dirs`
+    /// deterministic without requiring a real filesystem.
+    struct NoopFs;
+
+    impl ancestor::AncestorFs for NoopFs {
+        fn is_dir(&self, _path: &Path) -> bool { false }
+    }
+
     // ── is_target_event_for ──────────────────────────────────────────
 
     #[test]
@@ -1856,10 +2005,9 @@ mod tests {
     #[test]
     fn initial_registration_complete_transitions_watcher_out_of_initializing() {
         let (watch_tx, watch_rx) = mpsc::channel();
-        let mut projects = HashMap::new();
-        let mut project_parents = HashSet::new();
-        let mut watched_git_metadata = HashSet::new();
-        let mut initializing = true;
+        let mut state = WatcherLoopState::new();
+        let mut watcher = NoopWatcher;
+        let fs = NoopFs;
 
         watch_tx
             .send(WatcherMsg::InitialRegistrationComplete)
@@ -1867,14 +2015,14 @@ mod tests {
 
         let drained = drain_watch_messages(
             &watch_rx,
-            &mut projects,
-            &mut project_parents,
-            &mut watched_git_metadata,
-            &mut initializing,
+            &mut state,
+            &mut watcher,
+            &fs,
+            None,
         );
 
         assert!(drained.registration_completed);
-        assert!(!initializing);
+        assert!(!state.initializing);
     }
 
     #[test]
@@ -1896,18 +2044,17 @@ mod tests {
 
         let (result_tx, result_rx) = mpsc::channel();
         let watch_thread = std::thread::spawn(move || {
-            let mut projects = HashMap::new();
-            let mut project_parents = HashSet::new();
-            let mut watched_git_metadata = HashSet::new();
-            let mut initializing = true;
+            let mut state = WatcherLoopState::new();
+            let mut watcher = NoopWatcher;
+            let fs = NoopFs;
             let drained = drain_watch_messages(
                 &watch_rx,
-                &mut projects,
-                &mut project_parents,
-                &mut watched_git_metadata,
-                &mut initializing,
+                &mut state,
+                &mut watcher,
+                &fs,
+                None,
             );
-            let _ = result_tx.send((drained, initializing));
+            let _ = result_tx.send((drained, state.initializing));
         });
 
         let (drained, initializing) = result_rx
@@ -1921,14 +2068,62 @@ mod tests {
 
     #[test]
     fn spawn_watcher_thread_keeps_watcher_guard_alive_until_shutdown() {
-        struct DropSignal(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        /// Drop-signalling wrapper around a `NoopWatcher`. The loop
+        /// now requires `impl Watcher` (Step 7b integration), so we
+        /// delegate the trait to the inner watcher and use Drop on
+        /// the outer type to prove the guard outlives the thread.
+        struct DropSignal {
+            flag:  std::sync::Arc<std::sync::atomic::AtomicBool>,
+            inner: NoopWatcher,
+        }
 
         impl Drop for DropSignal {
-            fn drop(&mut self) { self.0.store(true, std::sync::atomic::Ordering::SeqCst); }
+            fn drop(&mut self) {
+                self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        impl notify::Watcher for DropSignal {
+            fn new<F: notify::EventHandler>(
+                _event_handler: F,
+                _config: notify::Config,
+            ) -> notify::Result<Self>
+            where
+                Self: Sized,
+            {
+                // DropSignal is constructed by test code; the trait's
+                // factory constructor isn't exercised here but needs
+                // to exist to satisfy the trait.
+                Err(notify::Error::generic(
+                    "DropSignal::new should not be called in tests",
+                ))
+            }
+
+            fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+                self.inner.watch(path, mode)
+            }
+
+            fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+                self.inner.unwatch(path)
+            }
+
+            fn configure(&mut self, config: notify::Config) -> notify::Result<bool> {
+                self.inner.configure(config)
+            }
+
+            fn kind() -> notify::WatcherKind
+            where
+                Self: Sized,
+            {
+                notify::WatcherKind::NullWatcher
+            }
         }
 
         let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let watcher_guard = DropSignal(std::sync::Arc::clone(&dropped));
+        let watcher_guard = DropSignal {
+            flag:  std::sync::Arc::clone(&dropped),
+            inner: NoopWatcher,
+        };
         let (watch_tx, watch_rx) = mpsc::channel();
         let (notify_tx, notify_rx) = mpsc::channel();
         let (bg_tx, _bg_rx) = mpsc::channel();
@@ -2252,6 +2447,7 @@ mod tests {
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -2369,6 +2565,7 @@ mod tests {
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -2517,6 +2714,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -2565,6 +2763,7 @@ edition = "2024"
             projects,
             project_parents,
             discovered,
+            ancestor_registry: None,
         }
     }
 
@@ -2621,6 +2820,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -2665,6 +2865,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -2705,6 +2906,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -2740,6 +2942,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -2780,6 +2983,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -2849,6 +3053,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -2901,6 +3106,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let dispatch = WatcherDispatchContext {
@@ -2948,6 +3154,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let dispatch = WatcherDispatchContext {
@@ -3006,6 +3213,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3055,6 +3263,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3121,6 +3330,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
@@ -3192,6 +3402,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
@@ -3231,6 +3442,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let dispatch = WatcherDispatchContext {
@@ -3275,6 +3487,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
@@ -3317,6 +3530,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3809,6 +4023,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3889,6 +4104,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3967,6 +4183,7 @@ edition = "2024"
             projects:        &projects,
             project_parents: &project_parents,
             discovered:      &discovered,
+            ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
