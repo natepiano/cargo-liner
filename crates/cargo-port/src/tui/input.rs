@@ -219,6 +219,20 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
                         .push_back(PendingClean { abs_path });
                 }
             },
+            ConfirmAction::CleanGroup { primary, linked } => {
+                // Fan out `start_clean` over every checkout in the
+                // group. Paths whose resolved target dir is absent
+                // short-circuit with the "Already clean" toast inside
+                // `start_clean` and don't contribute a pending entry;
+                // the remainder queue up for execution like individual
+                // project cleans.
+                for path in std::iter::once(primary).chain(linked) {
+                    if app.start_clean(&path) {
+                        app.pending_cleans_mut()
+                            .push_back(PendingClean { abs_path: path });
+                    }
+                }
+            },
         }
     }
     true
@@ -618,11 +632,9 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
                         // Verifying state; on match it opens Ready.
                         app.request_clean_confirm(root);
                     },
-                    // Group-level fan-out (Step 7) not yet wired into
-                    // the confirm flow. The selection is accepted by
-                    // `clean_selection` when Step 7 lands; for now
-                    // Root+Worktrees rows never surface here.
-                    crate::tui::app::CleanSelection::WorktreeGroup { .. } => {},
+                    crate::tui::app::CleanSelection::WorktreeGroup { primary, linked } => {
+                        app.request_clean_group_confirm(primary, linked);
+                    },
                 }
             }
         },

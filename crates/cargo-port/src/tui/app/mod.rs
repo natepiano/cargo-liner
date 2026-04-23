@@ -347,6 +347,29 @@ impl App {
         self.confirm = Some(ConfirmAction::Clean(project_path));
     }
 
+    /// Open the confirm dialog for a group-level clean — fans out to
+    /// primary + every linked worktree. The Verifying gate re-uses the
+    /// primary's workspace fingerprint; linked worktrees typically share
+    /// the same workspace manifest chain (same project, different
+    /// branches), so a single-primary re-fetch covers the drift window
+    /// for the group. If a linked worktree has diverged independently
+    /// (different `.cargo/config.toml`, etc.), its own re-dispatch will
+    /// still land before `start_clean` resolves its target dir.
+    pub(in super::super) fn request_clean_group_confirm(
+        &mut self,
+        primary: AbsolutePath,
+        linked: Vec<AbsolutePath>,
+    ) {
+        if self.should_verify_before_clean(&primary) {
+            let dispatch = self.clean_metadata_dispatch();
+            scan::spawn_cargo_metadata_refresh(dispatch, primary.clone());
+            self.confirm_verifying = Some(primary.clone());
+        } else {
+            self.confirm_verifying = None;
+        }
+        self.confirm = Some(ConfirmAction::CleanGroup { primary, linked });
+    }
+
     /// Does the workspace covering `project_path` need a re-fetch
     /// before the confirm opens? True when the on-disk manifest
     /// fingerprint differs from the stored snapshot's fingerprint

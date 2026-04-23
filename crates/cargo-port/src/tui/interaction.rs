@@ -1661,4 +1661,45 @@ mod tests {
             "without a snapshot, popup shows the default <project>/target (expected {expected:?})"
         );
     }
+
+    #[test]
+    fn clean_group_confirm_popup_lists_all_checkouts() {
+        // Selecting Clean on a worktree-group root should open the
+        // confirm popup with every checkout listed — the UX regression
+        // was that the WorktreeGroup arm was stubbed out so the popup
+        // never appeared at all.
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let primary = tmp.path().join("main");
+        let linked_a = tmp.path().join("feat-a");
+        let linked_b = tmp.path().join("feat-b");
+        for dir in [&primary, &linked_a, &linked_b] {
+            std::fs::create_dir_all(dir).unwrap_or_else(|_| std::process::abort());
+        }
+
+        let mut app = make_app(&[]);
+        app.set_confirm(crate::tui::app::ConfirmAction::CleanGroup {
+            primary: AbsolutePath::from(primary.clone()),
+            linked:  vec![
+                AbsolutePath::from(linked_a.clone()),
+                AbsolutePath::from(linked_b.clone()),
+            ],
+        });
+        let rendered = buffer_text_sized(&mut app, 160, 40);
+
+        assert!(
+            rendered.contains("Run cargo clean on all checkouts?"),
+            "group confirm uses the fan-out prompt"
+        );
+        assert!(
+            rendered.contains("Checkouts:"),
+            "group confirm labels the checkout list"
+        );
+        for dir in [&primary, &linked_a, &linked_b] {
+            let label = crate::project::home_relative_path(dir.as_path());
+            assert!(
+                rendered.contains(&label),
+                "every checkout appears in the popup (expected {label:?})"
+            );
+        }
+    }
 }

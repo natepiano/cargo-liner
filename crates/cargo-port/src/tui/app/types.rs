@@ -26,6 +26,14 @@ pub enum ExpandKey {
 pub enum ConfirmAction {
     /// `cargo clean` on the project at this absolute path.
     Clean(AbsolutePath),
+    /// `cargo clean` fanned out across every checkout in a worktree
+    /// group (primary + every linked worktree). Triggered by the
+    /// Clean shortcut when a `VisibleRow::Root` over a
+    /// `WorktreeGroup` is selected.
+    CleanGroup {
+        primary: AbsolutePath,
+        linked:  Vec<AbsolutePath>,
+    },
 }
 
 #[derive(Clone)]

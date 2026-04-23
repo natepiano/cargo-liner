@@ -291,41 +291,84 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
             // be empty — then these lists stay empty and the dialog
             // reverts to the Step 2 single-line shape.
             let selection = [project_path.clone()];
-            let siblings = app.target_dir_index_ref().siblings(&target, &selection);
-            let mut project_siblings: Vec<&AbsolutePath> = Vec::new();
-            let mut nested_count = 0usize;
-            for member in siblings {
-                match member.kind {
-                    crate::tui::app::MemberKind::Project => {
-                        project_siblings.push(&member.project_root);
-                    },
-                    crate::tui::app::MemberKind::Submodule
-                    | crate::tui::app::MemberKind::Vendored => nested_count += 1,
-                }
+            append_sibling_lines(app, &target, &selection, &mut lines);
+
+            lines
+        },
+        ConfirmAction::CleanGroup { primary, linked } => {
+            let mut lines = vec!["Checkouts:".to_string()];
+            // Render every checkout the fan-out will hit, capped so
+            // large groups don't overflow the popup. Collapse the tail
+            // behind `+N more` using the same cap as sibling lines.
+            let all_paths: Vec<&AbsolutePath> = std::iter::once(primary).chain(linked).collect();
+            for path in all_paths.iter().take(AFFECTED_EXTRAS_VISIBLE_CAP) {
+                lines.push(format!("  {}", project::home_relative_path(path.as_path())));
+            }
+            if all_paths.len() > AFFECTED_EXTRAS_VISIBLE_CAP {
+                let extra = all_paths.len() - AFFECTED_EXTRAS_VISIBLE_CAP;
+                lines.push(format!("  +{extra} more"));
             }
 
-            if !project_siblings.is_empty() {
-                lines.push("Also affects:".to_string());
-                for sibling in project_siblings.iter().take(AFFECTED_EXTRAS_VISIBLE_CAP) {
-                    lines.push(format!(
-                        "  {}",
-                        project::home_relative_path(sibling.as_path())
-                    ));
+            // Union of all siblings across every resolved target dir —
+            // a group clean can affect sibling projects outside the
+            // selection just like a single-project clean can.
+            let selection: Vec<AbsolutePath> = all_paths.iter().copied().cloned().collect();
+            let mut seen_targets: std::collections::HashSet<AbsolutePath> =
+                std::collections::HashSet::new();
+            for path in &all_paths {
+                let target = app
+                    .resolve_target_dir(path)
+                    .unwrap_or_else(|| AbsolutePath::from(path.as_path().join("target")));
+                if seen_targets.insert(target.clone()) {
+                    append_sibling_lines(app, &target, &selection, &mut lines);
                 }
-                if project_siblings.len() > AFFECTED_EXTRAS_VISIBLE_CAP {
-                    let extra = project_siblings.len() - AFFECTED_EXTRAS_VISIBLE_CAP;
-                    lines.push(format!("  +{extra} more"));
-                }
-            }
-            if nested_count > 0 {
-                let noun = if nested_count == 1 { "crate" } else { "crates" };
-                lines.push(format!(
-                    "  ({nested_count} nested {noun} also share this target)"
-                ));
             }
 
             lines
         },
+    }
+}
+
+/// Append the "Also affects:" block (sibling project paths + optional
+/// nested-crate summary) for a single resolved target dir. Shared
+/// between the `Clean` and `CleanGroup` body builders.
+fn append_sibling_lines(
+    app: &App,
+    target: &AbsolutePath,
+    selection: &[AbsolutePath],
+    lines: &mut Vec<String>,
+) {
+    let siblings = app.target_dir_index_ref().siblings(target, selection);
+    let mut project_siblings: Vec<&AbsolutePath> = Vec::new();
+    let mut nested_count = 0usize;
+    for member in siblings {
+        match member.kind {
+            crate::tui::app::MemberKind::Project => {
+                project_siblings.push(&member.project_root);
+            },
+            crate::tui::app::MemberKind::Submodule | crate::tui::app::MemberKind::Vendored => {
+                nested_count += 1
+            },
+        }
+    }
+    if !project_siblings.is_empty() {
+        lines.push("Also affects:".to_string());
+        for sibling in project_siblings.iter().take(AFFECTED_EXTRAS_VISIBLE_CAP) {
+            lines.push(format!(
+                "  {}",
+                project::home_relative_path(sibling.as_path())
+            ));
+        }
+        if project_siblings.len() > AFFECTED_EXTRAS_VISIBLE_CAP {
+            let extra = project_siblings.len() - AFFECTED_EXTRAS_VISIBLE_CAP;
+            lines.push(format!("  +{extra} more"));
+        }
+    }
+    if nested_count > 0 {
+        let noun = if nested_count == 1 { "crate" } else { "crates" };
+        lines.push(format!(
+            "  ({nested_count} nested {noun} also share this target)"
+        ));
     }
 }
 
@@ -341,6 +384,7 @@ fn render_confirm_popup(
     // in that state, and showing it enabled would lie to the user.
     let prompt = match action {
         ConfirmAction::Clean(_) => "Run cargo clean?",
+        ConfirmAction::CleanGroup { .. } => "Run cargo clean on all checkouts?",
     };
     let keys_suffix = if verifying { "" } else { " (y/n)" };
     let prompt_text = if verifying {

@@ -107,7 +107,9 @@ fn request_clean(app: &mut App) {
                 // popup state, per src/tui/input.rs.
                 app.request_clean_confirm(root);
             },
-            crate::tui::app::CleanSelection::WorktreeGroup { .. } => {},
+            crate::tui::app::CleanSelection::WorktreeGroup { primary, linked } => {
+                app.request_clean_group_confirm(primary, linked);
+            },
         }
     }
 }
