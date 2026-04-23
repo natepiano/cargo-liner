@@ -4,7 +4,9 @@ use super::App;
 use super::types::VisibleRow;
 use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
+use crate::project::RootItem;
 use crate::project::Visibility::Dismissed;
+use crate::project::WorktreeGroup;
 use crate::tui::panes::PaneId;
 
 // ── Dismiss target ──────────────────────────────────────────────
@@ -53,21 +55,17 @@ impl App {
                 worktree_index,
                 ..
             } => match &self.projects.get(node_index)?.item {
-                crate::project::RootItem::Worktrees(
-                    crate::project::WorktreeGroup::Workspaces {
-                        primary, linked, ..
-                    },
-                ) => {
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => {
                     if worktree_index == 0 {
                         Some(primary.path().clone())
                     } else {
                         linked.get(worktree_index - 1).map(|ws| ws.path().clone())
                     }
                 },
-                crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
-                    primary,
-                    linked,
-                    ..
+                RootItem::Worktrees(WorktreeGroup::Packages {
+                    primary, linked, ..
                 }) => {
                     if worktree_index == 0 {
                         Some(primary.path().clone())
@@ -129,19 +127,15 @@ impl App {
             .iter()
             .enumerate()
             .find_map(|(ni, item)| match &item.item {
-                crate::project::RootItem::Worktrees(
-                    crate::project::WorktreeGroup::Workspaces {
-                        primary, linked, ..
-                    },
-                ) => {
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => {
                     let has_match =
                         primary.path() == path || linked.iter().any(|l| l.path() == path);
                     has_match.then_some(ni)
                 },
-                crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
-                    primary,
-                    linked,
-                    ..
+                RootItem::Worktrees(WorktreeGroup::Packages {
+                    primary, linked, ..
                 }) => {
                     let has_match =
                         primary.path() == path || linked.iter().any(|l| l.path() == path);

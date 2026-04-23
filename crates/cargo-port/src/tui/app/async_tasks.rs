@@ -13,6 +13,8 @@ use super::ExpandKey::WorktreeGroup;
 use super::phase_state::PhaseCompletion;
 use super::service_state::ServiceAvailability;
 use super::snapshots;
+use super::target_index::MemberKind;
+use super::target_index::TargetDirMember;
 use super::types::ConfigFileStamp;
 use super::types::PollBackgroundStats;
 use super::types::ScanPhase;
@@ -33,17 +35,27 @@ use crate::lint::RegisterProjectRequest;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
+use crate::project::GitHubInfo;
 use crate::project::GitRepoPresence;
 use crate::project::LanguageStats;
 use crate::project::LocalGitState;
+use crate::project::ManifestFingerprint;
 use crate::project::ProjectFields;
 use crate::project::RepoInfo;
 use crate::project::RootItem;
+use crate::project::RustProject;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
+use crate::project::WorkspaceSnapshot;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
+use crate::scan::CachedRepoData;
+use crate::scan::CargoMetadataError;
+use crate::scan::CiFetchResult;
+use crate::scan::DirSizes;
+use crate::scan::FetchContext;
+use crate::scan::ProjectDetailRequest;
 use crate::tui::columns::ResolvedWidths;
 use crate::tui::config_reload;
 use crate::tui::constants::STARTUP_PHASE_DISK;
@@ -157,7 +169,7 @@ impl App {
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
-                self.show_keymap_diagnostics(&[crate::keymap::KeymapError {
+                self.show_keymap_diagnostics(&[KeymapError {
                     scope:  String::new(),
                     action: String::new(),
                     key:    String::new(),
@@ -440,7 +452,7 @@ impl App {
 
     fn schedule_startup_project_details(&self) {
         let tx = self.bg_tx.clone();
-        let fetch_context = std::sync::Arc::new(crate::scan::FetchContext {
+        let fetch_context = std::sync::Arc::new(FetchContext {
             client: self.http_client.clone(),
         });
         self.projects.for_each_leaf(|item| {
@@ -463,7 +475,7 @@ impl App {
             let tx = tx.clone();
             let fetch_context = std::sync::Arc::clone(&fetch_context);
             rayon::spawn(move || {
-                let request = crate::scan::ProjectDetailRequest {
+                let request = ProjectDetailRequest {
                     tx: &tx,
                     fetch_context: fetch_context.as_ref(),
                     _project_path: display_path.as_str(),
@@ -499,7 +511,7 @@ impl App {
                 let (info, signal) = client.fetch_crates_io_info(&name);
                 scan::emit_service_signal(&tx, signal);
                 if let Some(info) = info {
-                    let _ = tx.send(crate::scan::BackgroundMsg::CratesIoVersion {
+                    let _ = tx.send(BackgroundMsg::CratesIoVersion {
                         path,
                         version: info.version,
                         downloads: info.downloads,
@@ -550,15 +562,15 @@ impl App {
 
         for entry in &self.projects {
             let items: Vec<(&AbsolutePath, bool)> = match &entry.item {
-                crate::project::RootItem::Worktrees(
-                    crate::project::WorktreeGroup::Workspaces {
-                        primary, linked, ..
-                    },
-                ) => std::iter::once(primary)
+                RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
+                    primary,
+                    linked,
+                    ..
+                }) => std::iter::once(primary)
                     .chain(linked.iter())
                     .map(|p| (p.path(), true))
                     .collect(),
-                crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
+                RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
                     primary,
                     linked,
                     ..
@@ -608,16 +620,16 @@ impl App {
         let mut count = 0;
         for entry in &self.projects {
             match &entry.item {
-                RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
-                    runtime.register_project(crate::lint::RegisterProjectRequest {
+                RootItem::Rust(RustProject::Workspace(ws)) => {
+                    runtime.register_project(RegisterProjectRequest {
                         project_label: ws.display_path().into_string(),
                         abs_path:      ws.path().clone(),
                         is_rust:       true,
                     });
                     count += 1;
                 },
-                RootItem::Rust(crate::project::RustProject::Package(pkg)) => {
-                    runtime.register_project(crate::lint::RegisterProjectRequest {
+                RootItem::Rust(RustProject::Package(pkg)) => {
+                    runtime.register_project(RegisterProjectRequest {
                         project_label: pkg.display_path().into_string(),
                         abs_path:      pkg.path().clone(),
                         is_rust:       true,
@@ -630,7 +642,7 @@ impl App {
                     ..
                 }) => {
                     for ws in std::iter::once(primary).chain(linked.iter()) {
-                        runtime.register_project(crate::lint::RegisterProjectRequest {
+                        runtime.register_project(RegisterProjectRequest {
                             project_label: ws.display_path().into_string(),
                             abs_path:      ws.path().clone(),
                             is_rust:       true,
@@ -644,7 +656,7 @@ impl App {
                     ..
                 }) => {
                     for pkg in std::iter::once(primary).chain(linked.iter()) {
-                        runtime.register_project(crate::lint::RegisterProjectRequest {
+                        runtime.register_project(RegisterProjectRequest {
                             project_label: pkg.display_path().into_string(),
                             abs_path:      pkg.path().clone(),
                             is_rust:       true,
@@ -686,7 +698,7 @@ impl App {
             return;
         };
         tracing::info!(path = %item.display_path(), "lint_register");
-        runtime.register_project(crate::lint::RegisterProjectRequest {
+        runtime.register_project(RegisterProjectRequest {
             project_label: item.display_path().into_string(),
             abs_path:      path.clone(),
             is_rust:       true,
@@ -1260,33 +1272,29 @@ impl App {
                 }
 
                 match &entry.item {
-                    RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
-                        Some(LegacyRootExpansion {
-                            root_path:      ws.path().clone(),
-                            old_node_index: ni,
-                            had_children:   ws.has_members() || !ws.vendored().is_empty(),
-                            named_groups:   ws
-                                .groups()
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(gi, group)| {
-                                    group
-                                        .is_named()
-                                        .then(|| self.expanded.contains(&Group(ni, gi)))
-                                        .filter(|expanded| *expanded)
-                                        .map(|_| gi)
-                                })
-                                .collect(),
-                        })
-                    },
-                    RootItem::Rust(crate::project::RustProject::Package(pkg)) => {
-                        Some(LegacyRootExpansion {
-                            root_path:      pkg.path().clone(),
-                            old_node_index: ni,
-                            had_children:   !pkg.vendored().is_empty(),
-                            named_groups:   Vec::new(),
-                        })
-                    },
+                    RootItem::Rust(RustProject::Workspace(ws)) => Some(LegacyRootExpansion {
+                        root_path:      ws.path().clone(),
+                        old_node_index: ni,
+                        had_children:   ws.has_members() || !ws.vendored().is_empty(),
+                        named_groups:   ws
+                            .groups()
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(gi, group)| {
+                                group
+                                    .is_named()
+                                    .then(|| self.expanded.contains(&Group(ni, gi)))
+                                    .filter(|expanded| *expanded)
+                                    .map(|_| gi)
+                            })
+                            .collect(),
+                    }),
+                    RootItem::Rust(RustProject::Package(pkg)) => Some(LegacyRootExpansion {
+                        root_path:      pkg.path().clone(),
+                        old_node_index: ni,
+                        had_children:   !pkg.vendored().is_empty(),
+                        named_groups:   Vec::new(),
+                    }),
                     _ => None,
                 }
             })
@@ -1509,7 +1517,7 @@ impl App {
                         } else {
                             "no new runs".to_string()
                         };
-                        let result_item = crate::tui::toasts::TrackedItem {
+                        let result_item = TrackedItem {
                             label,
                             key: AbsolutePath::from(format!("{path}:result")).into(),
                             started_at: None,
@@ -1585,7 +1593,7 @@ impl App {
 
     pub(in super::super) fn handle_disk_usage_batch(
         &mut self,
-        entries: Vec<(AbsolutePath, crate::scan::DirSizes)>,
+        entries: Vec<(AbsolutePath, DirSizes)>,
     ) {
         for (path, sizes) in entries {
             self.apply_disk_usage_breakdown(path.as_path(), sizes);
@@ -1596,7 +1604,7 @@ impl App {
     /// the post-set logic with `apply_disk_usage` (visibility /
     /// lint-runtime registration) by reusing that helper for the
     /// total — the new breakdown fields just ride alongside.
-    fn apply_disk_usage_breakdown(&mut self, path: &Path, sizes: crate::scan::DirSizes) {
+    fn apply_disk_usage_breakdown(&mut self, path: &Path, sizes: DirSizes) {
         if let Some(project) = self.projects.at_path_mut(path) {
             project.in_project_target = Some(sizes.in_project_target);
             project.in_project_non_target = Some(sizes.in_project_non_target);
@@ -1661,12 +1669,10 @@ impl App {
                 );
                 scan::emit_service_signal(&tx, signal);
                 let (runs, github_total) = match result {
-                    crate::scan::CiFetchResult::Loaded { runs, github_total } => {
-                        (runs, github_total)
-                    },
-                    crate::scan::CiFetchResult::CacheOnly(runs) => (runs, 0),
+                    CiFetchResult::Loaded { runs, github_total } => (runs, github_total),
+                    CiFetchResult::CacheOnly(runs) => (runs, 0),
                 };
-                let data = crate::scan::CachedRepoData {
+                let data = CachedRepoData {
                     runs,
                     meta,
                     github_total,
@@ -1882,7 +1888,7 @@ impl App {
     ) {
         if let Some(entry) = self.projects.entry_containing_mut(path) {
             let repo = entry.git_repo.get_or_insert_with(Default::default);
-            repo.github_info = Some(crate::project::GitHubInfo { stars, description });
+            repo.github_info = Some(GitHubInfo { stars, description });
         }
     }
 
@@ -2090,7 +2096,7 @@ impl App {
     fn handle_disk_usage_batch_msg(
         &mut self,
         root_path: &AbsolutePath,
-        entries: Vec<(AbsolutePath, crate::scan::DirSizes)>,
+        entries: Vec<(AbsolutePath, DirSizes)>,
     ) {
         self.data_generation += 1;
         self.scan.startup_phases.disk.seen.insert(root_path.clone());
@@ -2426,8 +2432,8 @@ impl App {
         &mut self,
         workspace_root: AbsolutePath,
         generation: u64,
-        fingerprint: &crate::project::ManifestFingerprint,
-        result: Result<crate::project::WorkspaceSnapshot, crate::scan::CargoMetadataError>,
+        fingerprint: &ManifestFingerprint,
+        result: Result<WorkspaceSnapshot, CargoMetadataError>,
     ) {
         let Some(is_current) = self
             .metadata_store
@@ -2463,7 +2469,7 @@ impl App {
                 }
             },
             Err(err) => {
-                let label = crate::project::home_relative_path(workspace_root.as_path());
+                let label = project::home_relative_path(workspace_root.as_path());
                 self.show_timed_toast(
                     format!("cargo metadata failed ({label})"),
                     err.message.clone(),
@@ -2501,8 +2507,8 @@ impl App {
         &mut self,
         workspace_root: &AbsolutePath,
         generation: u64,
-        fingerprint: &crate::project::ManifestFingerprint,
-        snapshot: crate::project::WorkspaceSnapshot,
+        fingerprint: &ManifestFingerprint,
+        snapshot: WorkspaceSnapshot,
     ) -> bool {
         let current_fp =
             crate::project::ManifestFingerprint::capture(workspace_root.as_path()).ok();
@@ -2533,7 +2539,7 @@ impl App {
             store.upsert(snapshot);
         }
         if needs_out_of_tree_walk {
-            crate::scan::spawn_out_of_tree_target_walk(
+            scan::spawn_out_of_tree_target_walk(
                 &self.http_client.handle,
                 self.bg_tx.clone(),
                 workspace_root.clone(),
@@ -2549,9 +2555,9 @@ impl App {
         // acceptable for Step 6c.)
         for project_root in member_roots {
             self.target_dir_index.upsert(
-                crate::tui::app::target_index::TargetDirMember {
+                TargetDirMember {
                     project_root,
-                    kind: crate::tui::app::target_index::MemberKind::Project,
+                    kind: MemberKind::Project,
                 },
                 target_directory.clone(),
             );
@@ -2570,7 +2576,7 @@ impl App {
     /// Workspaces themselves keep the empty-default `Cargo` the parser
     /// produces — they have no single `PackageRecord`; members fan out
     /// into individual packages underneath.
-    fn apply_cargo_fields_from_snapshot(&mut self, snapshot: &crate::project::WorkspaceSnapshot) {
+    fn apply_cargo_fields_from_snapshot(&mut self, snapshot: &WorkspaceSnapshot) {
         use crate::project::Cargo;
         for record in snapshot.packages.values() {
             let Some(manifest_dir) = record.manifest_path.as_path().parent() else {
@@ -2725,7 +2731,7 @@ fn collect_publishable_children(item: &RootItem, out: &mut Vec<(AbsolutePath, St
 /// `TargetDirIndex` membership update after a successful
 /// `BackgroundMsg::CargoMetadata` arrival; every package under a given
 /// workspace shares the snapshot's `target_directory`.
-fn snapshot_member_roots(snapshot: &crate::project::WorkspaceSnapshot) -> Vec<AbsolutePath> {
+fn snapshot_member_roots(snapshot: &WorkspaceSnapshot) -> Vec<AbsolutePath> {
     snapshot
         .packages
         .values()

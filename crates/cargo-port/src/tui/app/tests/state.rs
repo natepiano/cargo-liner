@@ -8,8 +8,13 @@ use crate::constants::NO_REMOTE_SYNC;
 use crate::project::AbsolutePath;
 use crate::project::FileStamp;
 use crate::project::ManifestFingerprint;
+use crate::project::PackageRecord;
+use crate::project::PublishPolicy;
+use crate::project::RootItem;
+use crate::project::RustProject;
 use crate::project::WorkspaceSnapshot;
 use crate::project::WorktreeGroup;
+use crate::project::WorktreeStatus;
 use crate::scan::CargoMetadataError;
 use crate::tui::app::target_index::CleanSelection;
 use crate::tui::panes;
@@ -1573,13 +1578,11 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
     std::fs::create_dir_all(project_path.as_path()).unwrap_or_else(|_| std::process::abort());
     std::fs::create_dir_all(custom_target.as_path()).unwrap_or_else(|_| std::process::abort());
 
-    let pkg = crate::project::RootItem::Rust(crate::project::RustProject::Package(
-        crate::project::Package {
-            path: project_path.clone(),
-            name: Some("demo".into()),
-            ..crate::project::Package::default()
-        },
-    ));
+    let pkg = RootItem::Rust(RustProject::Package(crate::project::Package {
+        path: project_path.clone(),
+        name: Some("demo".into()),
+        ..crate::project::Package::default()
+    }));
     let mut app = make_app(&[pkg]);
 
     // Inject a snapshot pointing the project at the out-of-tree target.
@@ -1615,13 +1618,11 @@ fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
     std::fs::create_dir_all(project_path.as_path().join("target"))
         .unwrap_or_else(|_| std::process::abort());
 
-    let pkg = crate::project::RootItem::Rust(crate::project::RustProject::Package(
-        crate::project::Package {
-            path: project_path.clone(),
-            name: Some("demo".into()),
-            ..crate::project::Package::default()
-        },
-    ));
+    let pkg = RootItem::Rust(RustProject::Package(crate::project::Package {
+        path: project_path.clone(),
+        name: Some("demo".into()),
+        ..crate::project::Package::default()
+    }));
     let mut app = make_app(&[pkg]);
     app.metadata_store_handle()
         .lock()
@@ -1650,13 +1651,11 @@ fn start_clean_falls_back_to_literal_target_when_no_snapshot_yet() {
     std::fs::create_dir_all(project_path.as_path().join("target"))
         .unwrap_or_else(|_| std::process::abort());
 
-    let pkg = crate::project::RootItem::Rust(crate::project::RustProject::Package(
-        crate::project::Package {
-            path: project_path.clone(),
-            name: Some("demo".into()),
-            ..crate::project::Package::default()
-        },
-    ));
+    let pkg = RootItem::Rust(RustProject::Package(crate::project::Package {
+        path: project_path.clone(),
+        name: Some("demo".into()),
+        ..crate::project::Package::default()
+    }));
     let mut app = make_app(&[pkg]);
 
     assert!(
@@ -1775,7 +1774,7 @@ fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
     let primary = crate::project::Package {
         path: primary_path.clone(),
         name: Some("cargo-port".to_string()),
-        worktree_status: crate::project::WorktreeStatus::Primary {
+        worktree_status: WorktreeStatus::Primary {
             root: primary_path.clone(),
         },
         ..crate::project::Package::default()
@@ -1783,7 +1782,7 @@ fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
     let linked = crate::project::Package {
         path: linked_path.clone(),
         name: Some("cargo-port_feat".to_string()),
-        worktree_status: crate::project::WorktreeStatus::Linked {
+        worktree_status: WorktreeStatus::Linked {
             primary: primary_path.clone(),
         },
         ..crate::project::Package::default()
@@ -1880,13 +1879,11 @@ fn out_of_tree_target_size_message_stamps_snapshot() {
     // should land on `WorkspaceSnapshot::out_of_tree_target_bytes`.
     let workspace_root = AbsolutePath::from(PathBuf::from("/ws"));
     let target_dir = AbsolutePath::from(PathBuf::from("/elsewhere/target"));
-    let pkg = crate::project::RootItem::Rust(crate::project::RustProject::Package(
-        crate::project::Package {
-            path: workspace_root.clone(),
-            name: Some("demo".into()),
-            ..crate::project::Package::default()
-        },
-    ));
+    let pkg = RootItem::Rust(RustProject::Package(crate::project::Package {
+        path: workspace_root.clone(),
+        name: Some("demo".into()),
+        ..crate::project::Package::default()
+    }));
     let mut app = make_app(&[pkg]);
     {
         let store = app.metadata_store_handle();
@@ -1924,13 +1921,11 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     use cargo_metadata::semver::Version;
 
     let project_path = AbsolutePath::from(PathBuf::from("/abs/demo"));
-    let pkg_item = crate::project::RootItem::Rust(crate::project::RustProject::Package(
-        crate::project::Package {
-            path: project_path.clone(),
-            name: Some("demo".into()),
-            ..crate::project::Package::default()
-        },
-    ));
+    let pkg_item = RootItem::Rust(RustProject::Package(crate::project::Package {
+        path: project_path.clone(),
+        name: Some("demo".into()),
+        ..crate::project::Package::default()
+    }));
     let mut app = make_app(&[pkg_item]);
 
     // Before snapshot arrival: Cargo::default() → publishable true but
@@ -1944,7 +1939,7 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     let manifest_path = AbsolutePath::from(project_path.as_path().join("Cargo.toml"));
     let example_src = AbsolutePath::from(project_path.as_path().join("examples").join("hello.rs"));
     let bin_src = AbsolutePath::from(project_path.as_path().join("src").join("main.rs"));
-    let record = crate::project::PackageRecord {
+    let record = PackageRecord {
         id: PackageId {
             repr: "demo-id".into(),
         },
@@ -1972,7 +1967,7 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
                 required_features: Vec::new(),
             },
         ],
-        publish: crate::project::PublishPolicy::Never,
+        publish: PublishPolicy::Never,
     };
     let mut packages = HashMap::new();
     packages.insert(record.id.clone(), record);

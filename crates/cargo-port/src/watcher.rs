@@ -49,7 +49,7 @@ use crate::project::RootItem;
 use crate::project::RootItem::NonRust;
 use crate::project::WorkspaceMetadataStore;
 
-pub(super) mod ancestor {
+mod ancestor {
     //! Pure helpers for the ancestor `.cargo/` watch-set subsystem
     //! (design plan → **Ancestor config watching**).
     //!
@@ -2087,6 +2087,7 @@ mod tests {
     use crate::project::GitStatus;
     use crate::project::GitStatus::Clean;
     use crate::project::GitStatus::Modified;
+    use crate::project::RustProject;
 
     fn test_runtime() -> &'static tokio::runtime::Runtime {
         static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -4022,7 +4023,7 @@ edition = "2024"
         else {
             panic!("unexpected message");
         };
-        let RootItem::Rust(crate::project::RustProject::Package(pkg)) = item else {
+        let RootItem::Rust(RustProject::Package(pkg)) = item else {
             panic!("expected package worktree item");
         };
         assert_eq!(pkg.path(), linked_dir.as_path());
@@ -4065,7 +4066,7 @@ edition = "2024"
         else {
             panic!("unexpected message");
         };
-        let RootItem::Rust(crate::project::RustProject::Workspace(ws)) = item else {
+        let RootItem::Rust(RustProject::Workspace(ws)) = item else {
             panic!("expected workspace worktree item");
         };
         assert_eq!(ws.path(), linked_dir.as_path());
@@ -4107,7 +4108,7 @@ edition = "2024"
         else {
             panic!("unexpected message");
         };
-        let RootItem::Rust(crate::project::RustProject::Workspace(ws)) = item else {
+        let RootItem::Rust(RustProject::Workspace(ws)) = item else {
             panic!("expected normalized workspace refresh");
         };
         assert!(

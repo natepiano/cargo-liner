@@ -33,6 +33,7 @@ use super::interaction::UiSurface::Overlay;
 use super::panes;
 use super::panes::PaneId;
 use super::panes::RunTargetKind;
+use super::popup::PopupFrame;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ExampleGroup;
@@ -706,7 +707,7 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         )
     };
 
-    let inner = super::popup::PopupFrame {
+    let inner = PopupFrame {
         title:        Some(title),
         border_color: ACTIVE_BORDER_COLOR,
         width:        popup_width,

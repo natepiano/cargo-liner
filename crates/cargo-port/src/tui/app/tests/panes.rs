@@ -1,6 +1,13 @@
 use super::*;
+use crate::project::FileStamp;
+use crate::project::ManifestFingerprint;
+use crate::project::PackageRecord;
+use crate::project::PublishPolicy;
+use crate::project::TargetRecord;
+use crate::project::WorkspaceSnapshot;
 use crate::project::WorktreeHealth::Normal;
 use crate::tui::columns;
+use crate::tui::columns::ProjectRow;
 
 #[test]
 fn collapse_all_anchors_member_selection_to_root() {
@@ -62,7 +69,7 @@ fn seed_single_example_snapshot(app: &App, project_path: &AbsolutePath, example_
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
     use cargo_metadata::semver::Version;
-    let pkg = crate::project::PackageRecord {
+    let pkg = PackageRecord {
         id:            PackageId {
             repr: "demo-id".into(),
         },
@@ -85,21 +92,21 @@ fn seed_single_example_snapshot(app: &App, project_path: &AbsolutePath, example_
             edition:           "2021".to_string(),
             required_features: Vec::new(),
         }],
-        publish:       crate::project::PublishPolicy::Any,
+        publish:       PublishPolicy::Any,
     };
     let mut packages = std::collections::HashMap::new();
     packages.insert(pkg.id.clone(), pkg);
     app.metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())
-        .upsert(crate::project::WorkspaceSnapshot {
+        .upsert(WorkspaceSnapshot {
             workspace_root: project_path.clone(),
             target_directory: AbsolutePath::from(project_path.as_path().join("target")),
             packages,
             workspace_members: Vec::new(),
             fetched_at: std::time::SystemTime::UNIX_EPOCH,
-            fingerprint: crate::project::ManifestFingerprint {
-                manifest:       crate::project::FileStamp {
+            fingerprint: ManifestFingerprint {
+                manifest:       FileStamp {
                     mtime:        std::time::SystemTime::UNIX_EPOCH,
                     len:          0,
                     content_hash: [0_u8; 32],
@@ -261,14 +268,14 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
 
     let workspace_root = AbsolutePath::from("/never-real/demo");
     let manifest_path = AbsolutePath::from("/never-real/demo/Cargo.toml");
-    let example = crate::project::TargetRecord {
+    let example = TargetRecord {
         name:              "tracked_row_paths".to_string(),
         kinds:             vec![TargetKind::Example],
         src_path:          AbsolutePath::from("/never-real/demo/examples/tracked_row_paths.rs"),
         edition:           "2021".to_string(),
         required_features: Vec::new(),
     };
-    let pkg = crate::project::PackageRecord {
+    let pkg = PackageRecord {
         id: PackageId {
             repr: "demo-id".into(),
         },
@@ -281,18 +288,18 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
         repository: None,
         manifest_path,
         targets: vec![example],
-        publish: crate::project::PublishPolicy::Any,
+        publish: PublishPolicy::Any,
     };
     let mut packages = std::collections::HashMap::new();
     packages.insert(pkg.id.clone(), pkg);
-    let snap = crate::project::WorkspaceSnapshot {
+    let snap = WorkspaceSnapshot {
         workspace_root: workspace_root.clone(),
         target_directory: AbsolutePath::from("/never-real/demo/target"),
         packages,
         workspace_members: Vec::new(),
         fetched_at: std::time::SystemTime::UNIX_EPOCH,
-        fingerprint: crate::project::ManifestFingerprint {
-            manifest:       crate::project::FileStamp {
+        fingerprint: ManifestFingerprint {
+            manifest:       FileStamp {
                 mtime:        std::time::SystemTime::UNIX_EPOCH,
                 len:          0,
                 content_hash: [0_u8; 32],
@@ -539,7 +546,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
     );
 
     let item = &app.projects[0];
-    let row = columns::build_row_cells(crate::tui::columns::ProjectRow {
+    let row = columns::build_row_cells(ProjectRow {
         prefix:            crate::tui::render::PREFIX_ROOT_LEAF,
         name:              &item.root_directory_name().into_string(),
         name_segments:     None,

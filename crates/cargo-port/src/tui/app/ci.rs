@@ -9,6 +9,7 @@ use crate::project::AbsolutePath;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::scan;
+use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PaneId;
@@ -129,7 +130,7 @@ impl App {
             scan::store_cached_repo_data(
                 &self.github.fetch_cache,
                 &repo,
-                crate::scan::CachedRepoData {
+                CachedRepoData {
                     runs: merged.clone(),
                     meta,
                     github_total,

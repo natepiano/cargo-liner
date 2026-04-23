@@ -24,6 +24,7 @@ use super::interaction;
 use super::interaction::UiSurface::Overlay;
 use super::pane::PaneSelectionState;
 use super::panes::PaneId;
+use super::popup::PopupFrame;
 use super::render;
 use crate::config;
 use crate::keymap;
@@ -560,7 +561,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         .pane_mut(PaneId::Settings)
         .set_len(SettingOption::COUNT);
 
-    let inner = super::popup::PopupFrame {
+    let inner = PopupFrame {
         title:        Some(" Settings ".to_string()),
         border_color: ACTIVE_BORDER_COLOR,
         width:        SETTINGS_POPUP_WIDTH,

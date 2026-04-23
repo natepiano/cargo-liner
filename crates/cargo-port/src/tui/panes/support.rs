@@ -25,6 +25,7 @@ use crate::project::GitOrigin;
 use crate::project::GitStatus;
 use crate::project::NonRustProject;
 use crate::project::Package;
+use crate::project::PackageRecord;
 use crate::project::ProjectFields;
 use crate::project::ProjectType;
 use crate::project::RootItem;
@@ -785,9 +786,7 @@ pub struct PackageData {
 /// Resolve (version, description) for the detail pane from the
 /// authoritative snapshot. Returns `("-", None)` pre-snapshot — matches
 /// the Targets pane's pre-snapshot placeholder UX.
-fn snapshot_version_and_description(
-    pkg: Option<&crate::project::PackageRecord>,
-) -> (String, Option<String>) {
+fn snapshot_version_and_description(pkg: Option<&PackageRecord>) -> (String, Option<String>) {
     let version = pkg.map_or_else(|| "-".to_string(), |p| p.version.to_string());
     let description = pkg.and_then(|p| p.description.clone());
     (version, description)
@@ -916,10 +915,7 @@ impl TargetsData {
     /// pane); benches listed flat. The primary-binary name is the bin
     /// target whose name matches `title_name` (cargo's "default run"
     /// target); falls back to `None` if no such bin exists.
-    pub(in super::super) fn from_package_record(
-        record: &crate::project::PackageRecord,
-        title_name: &str,
-    ) -> Self {
+    pub(in super::super) fn from_package_record(record: &PackageRecord, title_name: &str) -> Self {
         use std::collections::HashMap;
 
         use cargo_metadata::TargetKind;

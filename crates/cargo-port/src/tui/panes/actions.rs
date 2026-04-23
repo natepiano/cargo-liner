@@ -6,6 +6,7 @@ use crossterm::event::KeyEvent;
 use super::BuildMode;
 use super::CiFetchKind;
 use super::DetailField;
+use super::GitRow;
 use super::PaneId;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
@@ -23,8 +24,10 @@ use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::scan;
 use crate::tui::app::App;
+use crate::tui::app::CleanSelection;
 use crate::tui::input;
 use crate::tui::pane::Pane;
+use crate::tui::toasts::TrackedItem;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
     let Some(targets_data) = app.pane_data().targets.clone() else {
@@ -102,12 +105,12 @@ fn request_clean(app: &mut App) {
     // see src/tui/input.rs for the symmetric site.
     if let Some(selection) = app.clean_selection() {
         match selection {
-            crate::tui::app::CleanSelection::Project { root } => {
+            CleanSelection::Project { root } => {
                 // Step 6e: fingerprint re-check + possible Verifying
                 // popup state, per src/tui/input.rs.
                 app.request_clean_confirm(root);
             },
-            crate::tui::app::CleanSelection::WorktreeGroup { primary, linked } => {
+            CleanSelection::WorktreeGroup { primary, linked } => {
                 app.request_clean_group_confirm(primary, linked);
             },
         }
@@ -150,7 +153,7 @@ fn handle_detail_enter(app: &mut App) {
         }
     } else if let Some(git) = app.pane_data().git.as_ref() {
         let pos = app.pane_manager().pane(PaneId::Git).pos();
-        if let Some(super::GitRow::Remote(remote)) = super::git_row_at(git, pos)
+        if let Some(GitRow::Remote(remote)) = super::git_row_at(git, pos)
             && let Some(url) = remote.full_url.as_deref()
         {
             open_url(url);
@@ -259,7 +262,7 @@ fn handle_ci_fetch_more(app: &mut App) {
         kind,
     });
     let task_id = app.start_task_toast("Fetching CI", &project_name);
-    let item = crate::tui::toasts::TrackedItem {
+    let item = TrackedItem {
         label:        project_name,
         key:          ci_path.into(),
         started_at:   Some(std::time::Instant::now()),

@@ -21,9 +21,11 @@ use super::app::App;
 use super::app::ConfirmAction;
 use super::app::DiscoveryRowKind;
 use super::app::ExpandKey;
+use super::app::MemberKind;
 use super::app::ResolvedWidths;
 use super::app::VisibleRow;
 use super::columns;
+use super::columns::ProjectRow;
 use super::constants::ACCENT_COLOR;
 use super::constants::BLOCK_BORDER_WIDTH;
 use super::constants::BYTES_PER_GIB;
@@ -47,6 +49,7 @@ use super::pane::PaneTitleGroup;
 use super::panes;
 use super::panes::LayoutCache;
 use super::panes::PaneId;
+use super::popup::PopupFrame;
 use super::settings;
 use super::shortcuts;
 use super::shortcuts::Shortcut;
@@ -57,6 +60,8 @@ use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
+use crate::project::RustProject;
+use crate::project::WorktreeGroup;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
 
@@ -343,12 +348,10 @@ fn append_sibling_lines(
     let mut nested_count = 0usize;
     for member in siblings {
         match member.kind {
-            crate::tui::app::MemberKind::Project => {
+            MemberKind::Project => {
                 project_siblings.push(&member.project_root);
             },
-            crate::tui::app::MemberKind::Submodule | crate::tui::app::MemberKind::Vendored => {
-                nested_count += 1
-            },
+            MemberKind::Submodule | MemberKind::Vendored => nested_count += 1,
         }
     }
     if !project_siblings.is_empty() {
@@ -400,7 +403,7 @@ fn render_confirm_popup(
     let body_height = u16::try_from(body.len()).unwrap_or(u16::MAX);
     let height = CONFIRM_DIALOG_HEIGHT.saturating_add(body_height);
 
-    let inner = super::popup::PopupFrame {
+    let inner = PopupFrame {
         title: None,
         border_color: TITLE_COLOR,
         width,
@@ -914,7 +917,7 @@ fn render_root_item(
     let wt_health = item.worktree_health();
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, wt_health);
-    let row = columns::build_row_cells(super::columns::ProjectRow {
+    let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
         name_segments: app.discovery_name_segments_for_path(
@@ -988,7 +991,7 @@ fn render_child_item<P: project::ProjectFields>(
     } else {
         (disk.as_str(), None, None)
     };
-    let row = columns::build_row_cells(super::columns::ProjectRow {
+    let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
         name_segments: app.discovery_name_segments_for_path(
@@ -1059,7 +1062,7 @@ fn render_worktree_entry<'a>(
     let wt_health = worktree_health_for_entry(item, wi);
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, wt_health);
-    let row = columns::build_row_cells(super::columns::ProjectRow {
+    let row = columns::build_row_cells(ProjectRow {
         prefix,
         name: &wt_name,
         name_segments: app.discovery_name_segments_for_path(
@@ -1091,10 +1094,8 @@ fn worktree_entry_name_and_expandable(
     fallback: &str,
 ) -> (String, bool) {
     let name = match item {
-        crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
-            primary,
-            linked,
-            ..
+        RootItem::Worktrees(WorktreeGroup::Workspaces {
+            primary, linked, ..
         }) => {
             let ws = if wi == 0 {
                 primary
@@ -1103,10 +1104,8 @@ fn worktree_entry_name_and_expandable(
             };
             ws.root_directory_name().into_string()
         },
-        crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
-            primary,
-            linked,
-            ..
+        RootItem::Worktrees(WorktreeGroup::Packages {
+            primary, linked, ..
         }) => {
             let pkg = if wi == 0 {
                 primary
@@ -1119,10 +1118,8 @@ fn worktree_entry_name_and_expandable(
     };
 
     let expandable = match item {
-        crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
-            primary,
-            linked,
-            ..
+        RootItem::Worktrees(WorktreeGroup::Workspaces {
+            primary, linked, ..
         }) => {
             let ws = if wi == 0 {
                 primary
@@ -1157,10 +1154,8 @@ fn disk_suffix_for_state(
 
 fn worktree_health_for_entry(item: &RootItem, wi: usize) -> WorktreeHealth {
     match item {
-        crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
-            primary,
-            linked,
-            ..
+        RootItem::Worktrees(WorktreeGroup::Workspaces {
+            primary, linked, ..
         }) => {
             if wi == 0 {
                 primary.worktree_health()
@@ -1170,10 +1165,8 @@ fn worktree_health_for_entry(item: &RootItem, wi: usize) -> WorktreeHealth {
                     .map_or(Normal, ProjectFields::worktree_health)
             }
         },
-        crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
-            primary,
-            linked,
-            ..
+        RootItem::Worktrees(WorktreeGroup::Packages {
+            primary, linked, ..
         }) => {
             if wi == 0 {
                 primary.worktree_health()
@@ -1196,10 +1189,8 @@ fn render_wt_group_header<'a>(
 ) -> ListItem<'a> {
     let item = &app.projects()[ni];
     let (group_name, member_count) = match &item.item {
-        crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
-            primary,
-            linked,
-            ..
+        RootItem::Worktrees(WorktreeGroup::Workspaces {
+            primary, linked, ..
         }) => {
             let ws = if wi == 0 {
                 primary
@@ -1238,10 +1229,8 @@ fn render_wt_member<'a>(
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
     let (member, member_name, is_named_group) = match &item.item {
-        crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
-            primary,
-            linked,
-            ..
+        RootItem::Worktrees(WorktreeGroup::Workspaces {
+            primary, linked, ..
         }) => {
             let ws = if wi == 0 {
                 primary
@@ -1266,11 +1255,9 @@ fn render_wt_member<'a>(
         },
         |m| {
             let inherited_deleted = match &item.item {
-                crate::project::RootItem::Worktrees(
-                    crate::project::WorktreeGroup::Workspaces {
-                        primary, linked, ..
-                    },
-                ) => {
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => {
                     let ws = if wi == 0 {
                         primary
                     } else {
@@ -1305,14 +1292,14 @@ fn render_member_item(
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (member, member_name, is_named) = match &item.item {
-        crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
+        RootItem::Rust(RustProject::Workspace(ws)) => {
             let group = &ws.groups()[group_index];
             let m = &group.members()[member_index];
             (Some(m), m.package_name().into_string(), group.is_named())
         },
-        crate::project::RootItem::Worktrees(
-            wtg @ crate::project::WorktreeGroup::Workspaces { primary, .. },
-        ) if !wtg.renders_as_group() => {
+        RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { primary, .. })
+            if !wtg.renders_as_group() =>
+        {
             let ws = wtg.single_live_workspace().unwrap_or(primary);
             let group = &ws.groups()[group_index];
             let m = &group.members()[member_index];
@@ -1356,24 +1343,24 @@ fn render_vendored_item(
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (vendored, vendored_display_name) = match &item.item {
-        crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
+        RootItem::Rust(RustProject::Workspace(ws)) => {
             let v = &ws.vendored()[vendored_index];
             (Some(v), v.package_name().into_string())
         },
-        crate::project::RootItem::Worktrees(
-            wtg @ crate::project::WorktreeGroup::Workspaces { primary, .. },
-        ) if !wtg.renders_as_group() => {
+        RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { primary, .. })
+            if !wtg.renders_as_group() =>
+        {
             let ws = wtg.single_live_workspace().unwrap_or(primary);
             let v = &ws.vendored()[vendored_index];
             (Some(v), v.package_name().into_string())
         },
-        crate::project::RootItem::Rust(crate::project::RustProject::Package(pkg)) => {
+        RootItem::Rust(RustProject::Package(pkg)) => {
             let v = &pkg.vendored()[vendored_index];
             (Some(v), v.package_name().into_string())
         },
-        crate::project::RootItem::Worktrees(
-            wtg @ crate::project::WorktreeGroup::Packages { primary, .. },
-        ) if !wtg.renders_as_group() => {
+        RootItem::Worktrees(wtg @ WorktreeGroup::Packages { primary, .. })
+            if !wtg.renders_as_group() =>
+        {
             let pkg = wtg.single_live_package().unwrap_or(primary);
             let v = &pkg.vendored()[vendored_index];
             (Some(v), v.package_name().into_string())
@@ -1442,7 +1429,7 @@ fn render_path_only_entry(
     let deleted = app.is_deleted(inherited_deleted_path) || app.is_deleted(path);
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, entry.info().worktree_health);
-    let row = columns::build_row_cells(super::columns::ProjectRow {
+    let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
         name_segments: app.discovery_name_segments_for_path(
@@ -1480,10 +1467,8 @@ fn render_wt_vendored_item(
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let vendored_pkg = match &item.item {
-        crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
-            primary,
-            linked,
-            ..
+        RootItem::Worktrees(WorktreeGroup::Workspaces {
+            primary, linked, ..
         }) => {
             let ws = if worktree_index == 0 {
                 primary
@@ -1492,10 +1477,8 @@ fn render_wt_vendored_item(
             };
             ws.vendored().get(vendored_index)
         },
-        crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
-            primary,
-            linked,
-            ..
+        RootItem::Worktrees(WorktreeGroup::Packages {
+            primary, linked, ..
         }) => {
             let pkg = if worktree_index == 0 {
                 primary
@@ -1516,11 +1499,9 @@ fn render_wt_vendored_item(
         },
         |v| {
             let inherited_deleted = match &item.item {
-                crate::project::RootItem::Worktrees(
-                    crate::project::WorktreeGroup::Workspaces {
-                        primary, linked, ..
-                    },
-                ) => {
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => {
                     let ws = if worktree_index == 0 {
                         primary
                     } else {
@@ -1528,10 +1509,8 @@ fn render_wt_vendored_item(
                     };
                     app.is_deleted(ws.path())
                 },
-                crate::project::RootItem::Worktrees(crate::project::WorktreeGroup::Packages {
-                    primary,
-                    linked,
-                    ..
+                RootItem::Worktrees(WorktreeGroup::Packages {
+                    primary, linked, ..
                 }) => {
                     let pkg = if worktree_index == 0 {
                         primary
@@ -1592,7 +1571,7 @@ fn render_tree_item(
         } => {
             let item = &app.projects()[*node_index];
             let (group_name, member_count) = match &item.item {
-                crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
+                RootItem::Rust(RustProject::Workspace(ws)) => {
                     let group = &ws.groups()[*group_index];
                     (group.group_name().to_string(), group.members().len())
                 },

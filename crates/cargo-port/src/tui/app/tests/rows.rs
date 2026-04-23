@@ -1,4 +1,5 @@
 use super::*;
+use crate::project::Submodule;
 use crate::tui::columns;
 
 #[test]
@@ -17,7 +18,7 @@ fn submodule_rows_render_disk_usage() {
         .projects
         .at_path_mut(Path::new(&root_path))
         .unwrap_or_else(|| std::process::abort());
-    root_info.submodules.push(crate::project::Submodule {
+    root_info.submodules.push(Submodule {
         name:          "lib/linux_x64".to_string(),
         path:          AbsolutePath::from(sub_path.clone()),
         relative_path: "lib/linux_x64".to_string(),

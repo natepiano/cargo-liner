@@ -324,12 +324,10 @@ fn make_workspace_raw_with_primary(
     }
 }
 
-fn inline_group(members: Vec<Package>) -> MemberGroup {
-    crate::project::MemberGroup::Inline { members }
-}
+fn inline_group(members: Vec<Package>) -> MemberGroup { MemberGroup::Inline { members } }
 
 fn named_group(name: &str, members: Vec<Package>) -> MemberGroup {
-    crate::project::MemberGroup::Named {
+    MemberGroup::Named {
         name: name.to_string(),
         members,
     }

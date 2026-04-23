@@ -11,6 +11,7 @@ use crossterm::event::MouseEventKind;
 use ratatui::layout::Position;
 
 use super::app::App;
+use super::app::CleanSelection;
 use super::app::ConfirmAction;
 use super::app::PendingClean;
 use super::finder;
@@ -27,6 +28,8 @@ use crate::keymap::KeyBind;
 use crate::keymap::ProjectListAction;
 use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
+use crate::project::RootItem;
+use crate::project::RustProject;
 
 /// Last known mouse position, updated from every mouse event. Used to
 /// synthesize a click when `FocusGained` arrives because iTerm2 eats the
@@ -381,7 +384,7 @@ fn open_in_editor(app: &mut App) {
         .projects()
         .iter()
         .find_map(|item| match &item.item {
-            crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws))
+            RootItem::Rust(RustProject::Workspace(ws))
                 if ws.groups().iter().any(|g| {
                     g.members()
                         .iter()
@@ -625,14 +628,14 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
             // per-worktree Clean shortcut.
             if let Some(selection) = app.clean_selection() {
                 match selection {
-                    crate::tui::app::CleanSelection::Project { root } => {
+                    CleanSelection::Project { root } => {
                         // Step 6e: request_clean_confirm re-fingerprints
                         // the workspace. On drift it dispatches a
                         // metadata refresh and opens the confirm in
                         // Verifying state; on match it opens Ready.
                         app.request_clean_confirm(root);
                     },
-                    crate::tui::app::CleanSelection::WorktreeGroup { primary, linked } => {
+                    CleanSelection::WorktreeGroup { primary, linked } => {
                         app.request_clean_group_confirm(primary, linked);
                     },
                 }

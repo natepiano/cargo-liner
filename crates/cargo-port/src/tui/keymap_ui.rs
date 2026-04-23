@@ -18,6 +18,7 @@ use super::constants::SECTION_ITEM_INDENT;
 use super::constants::TITLE_COLOR;
 use super::pane::PaneSelectionState;
 use super::panes::PaneId;
+use super::popup::PopupFrame;
 use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
 use crate::keymap::GlobalAction;
@@ -576,7 +577,7 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     let content_height = u16::try_from(rows.len()).unwrap_or(u16::MAX);
     let height = (content_height + 2).min(area.height.saturating_sub(2));
 
-    let inner = super::popup::PopupFrame {
+    let inner = PopupFrame {
         title: Some(" Keymap ".to_string()),
         border_color: ACTIVE_BORDER_COLOR,
         width,
