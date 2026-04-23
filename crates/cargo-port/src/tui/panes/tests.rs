@@ -18,27 +18,29 @@ use crate::tui::render::CiColumn;
 
 fn package_data(is_rust_project: bool) -> PackageData {
     PackageData {
-        package_title:    if is_rust_project {
+        package_title:         if is_rust_project {
             "Package".to_string()
         } else {
             "Project".to_string()
         },
-        title_name:       "demo".to_string(),
-        abs_path:         "/tmp/demo".into(),
-        path:             "~/demo".to_string(),
-        version:          "0.1.0".to_string(),
-        description:      None,
-        crates_version:   None,
-        crates_downloads: None,
-        types:            "lib".to_string(),
-        disk:             "36.3 GiB".to_string(),
-        ci:               None,
-        stats_rows:       Vec::new(),
-        has_package:      true,
-        edition:          None,
-        license:          None,
-        homepage:         None,
-        repository:       None,
+        title_name:            "demo".to_string(),
+        abs_path:              "/tmp/demo".into(),
+        path:                  "~/demo".to_string(),
+        version:               "0.1.0".to_string(),
+        description:           None,
+        crates_version:        None,
+        crates_downloads:      None,
+        types:                 "lib".to_string(),
+        disk:                  "36.3 GiB".to_string(),
+        ci:                    None,
+        stats_rows:             Vec::new(),
+        has_package:           true,
+        edition:               None,
+        license:               None,
+        homepage:              None,
+        repository:            None,
+        in_project_target:     None,
+        in_project_non_target: None,
     }
 }
 

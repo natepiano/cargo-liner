@@ -1388,6 +1388,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn package_pane_renders_target_and_non_target_disk_breakdown() {
+        // Step 5b: when the walker has reported the breakdown, the
+        // Package pane shows two rows beneath `Disk` — `target/`
+        // and `other` — so the user can see at a glance which half
+        // of their disk is build artifact vs source. Uses the bytes
+        // reported by handle_bg_msg::DiskUsageBatch.
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let project_dir = tmp.path().join("demo");
+        std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+        let mut app = make_app(&[make_package("demo", &project_dir)]);
+
+        // Stage a disk-usage batch with a clearly-split breakdown.
+        // 10 MiB target, 2 MiB source: assert both lines render with
+        // distinct byte formatting.
+        let abs_path = AbsolutePath::from(project_dir);
+        let sizes = crate::scan::DirSizes {
+            total:                 12 * 1024 * 1024,
+            in_project_target:     10 * 1024 * 1024,
+            in_project_non_target: 2 * 1024 * 1024,
+        };
+        app.handle_bg_msg(crate::scan::BackgroundMsg::DiskUsageBatch {
+            root_path: abs_path.clone(),
+            entries:   vec![(abs_path, sizes)],
+        });
+
+        let rendered = buffer_text(&mut app);
+        assert!(
+            rendered.contains("target/"),
+            "detail pane must surface the target/ breakdown label"
+        );
+        assert!(
+            rendered.contains("other"),
+            "detail pane must surface the non-target (other) breakdown label"
+        );
+        assert!(
+            rendered.contains("10.0 MiB"),
+            "in-target value renders using format_bytes"
+        );
+        assert!(
+            rendered.contains("2.0 MiB"),
+            "non-target value renders using format_bytes"
+        );
+    }
+
     /// Helper for the shared-target popup tests: stage two project
     /// "arrivals" whose snapshots point at the same `target_directory`,
     /// so the `TargetDirIndex` reports sibling B when we confirm a

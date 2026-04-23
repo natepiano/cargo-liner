@@ -436,6 +436,13 @@ pub enum DetailField {
     Path,
     Targets,
     Disk,
+    /// Step 5b: bytes consumed by the `target/` subtree rooted at the
+    /// project. Shown alongside Disk when the walker has reported a
+    /// breakdown.
+    DiskTarget,
+    /// Step 5b: bytes under the project root that are *not* inside a
+    /// `target/` subtree (source, docs, .git, etc.).
+    DiskNonTarget,
     Lint,
     Ci,
     Branch,
@@ -464,6 +471,8 @@ impl DetailField {
             Self::Path => "Path",
             Self::Targets => "Type",
             Self::Disk => "Disk",
+            Self::DiskTarget => "  target/",
+            Self::DiskNonTarget => "  other",
             Self::Lint => "Lint",
             Self::Ci => "CI",
             Self::Branch => "Branch",
@@ -538,6 +547,12 @@ impl DetailField {
                 .crates_downloads
                 .map_or_else(String::new, format_downloads),
             Self::Version => data.version.clone(),
+            Self::DiskTarget => data
+                .in_project_target
+                .map_or_else(String::new, render::format_bytes),
+            Self::DiskNonTarget => data
+                .in_project_non_target
+                .map_or_else(String::new, render::format_bytes),
             Self::Edition => or_dash(data.edition.as_deref()),
             Self::License => or_dash(data.license.as_deref()),
             Self::Homepage => or_dash(data.homepage.as_deref()),
@@ -588,6 +603,8 @@ impl DetailField {
             // Package fields — should not be called with git_value.
             Self::Path
             | Self::Disk
+            | Self::DiskTarget
+            | Self::DiskNonTarget
             | Self::Targets
             | Self::Lint
             | Self::Ci
@@ -646,10 +663,21 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     let mut fields = vec![
         DetailField::Path,
         DetailField::Disk,
-        DetailField::Targets,
-        DetailField::Lint,
-        DetailField::Ci,
     ];
+    // Step 5b: insert the target / non-target breakdown immediately
+    // below the aggregate Disk row when the walker has reported one,
+    // so the user sees which half of the bytes is build artifact vs
+    // source (the two always sum to Disk for owners; for sharers the
+    // target line reads 0 — target is redirected out of tree).
+    if data.in_project_target.is_some() {
+        fields.push(DetailField::DiskTarget);
+    }
+    if data.in_project_non_target.is_some() {
+        fields.push(DetailField::DiskNonTarget);
+    }
+    fields.push(DetailField::Targets);
+    fields.push(DetailField::Lint);
+    fields.push(DetailField::Ci);
     if data.has_package {
         fields.push(DetailField::Version);
     }
@@ -710,25 +738,31 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
 /// Per-pane data for the Package detail panel.
 #[derive(Clone)]
 pub struct PackageData {
-    pub package_title:    String,
-    pub title_name:       String,
-    pub abs_path:         AbsolutePath,
-    pub path:             String,
-    pub version:          String,
-    pub description:      Option<String>,
-    pub crates_version:   Option<String>,
-    pub crates_downloads: Option<u64>,
-    pub types:            String,
-    pub disk:             String,
-    pub ci:               Option<Conclusion>,
-    pub stats_rows:       Vec<(&'static str, usize)>,
-    pub has_package:      bool,
+    pub package_title:         String,
+    pub title_name:            String,
+    pub abs_path:              AbsolutePath,
+    pub path:                  String,
+    pub version:               String,
+    pub description:           Option<String>,
+    pub crates_version:        Option<String>,
+    pub crates_downloads:      Option<u64>,
+    pub types:                 String,
+    pub disk:                  String,
+    pub ci:                    Option<Conclusion>,
+    pub stats_rows:            Vec<(&'static str, usize)>,
+    pub has_package:           bool,
     /// Cargo edition ("2021", "2024", …) from the metadata snapshot.
     /// `None` until a snapshot has landed or for non-Rust projects.
-    pub edition:          Option<String>,
-    pub license:          Option<String>,
-    pub homepage:         Option<String>,
-    pub repository:       Option<String>,
+    pub edition:               Option<String>,
+    pub license:               Option<String>,
+    pub homepage:              Option<String>,
+    pub repository:            Option<String>,
+    /// Step 5b: bytes under the project root inside any `target/`
+    /// subtree. `None` until the walker has reported a breakdown.
+    pub in_project_target:     Option<u64>,
+    /// Step 5b: everything else under the project root (source,
+    /// docs, .git, vendored crates outside target, etc.).
+    pub in_project_non_target: Option<u64>,
 }
 
 /// Render "—" when a `PackageRecord` field is absent from the manifest
@@ -1282,6 +1316,8 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             license: None,
             homepage: None,
             repository: None,
+            in_project_target: None,
+            in_project_non_target: None,
         },
         git:     GitData {
             branch:             git_detail.branch,
@@ -1470,6 +1506,14 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let repository = snapshot_package.as_ref().and_then(|pkg| pkg.repository.clone());
 
     let title_name = src.title_name;
+    // Step 5b: pull the walker's breakdown off the matching project
+    // info (if any). Both stay None for rows that don't have disk
+    // data reported yet or for non-Rust leaves.
+    let (in_project_target, in_project_non_target) = app
+        .projects()
+        .at_path(abs_path)
+        .map_or((None, None), |pi| (pi.in_project_target, pi.in_project_non_target));
+
     DetailPaneData {
         package: PackageData {
             package_title: src.package_title,
@@ -1489,6 +1533,8 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             license,
             homepage,
             repository,
+            in_project_target,
+            in_project_non_target,
         },
         git:     GitData {
             branch: git_detail.branch,
