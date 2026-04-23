@@ -49,6 +49,523 @@ use crate::project::RootItem;
 use crate::project::RootItem::NonRust;
 use crate::project::WorkspaceMetadataStore;
 
+#[allow(
+    dead_code,
+    reason = "integration lands in a follow-up; tests exercise the helpers standalone"
+)]
+pub(super) mod ancestor {
+    //! Pure helpers for the ancestor `.cargo/` watch-set subsystem
+    //! (design plan → **Ancestor config watching**).
+    //!
+    //! Step 1b part 7b. The watcher loop is not yet wired to these
+    //! helpers — the integration needs a refactor to keep the live
+    //! `Watcher` accessible for dynamic watch/unwatch. Until then,
+    //! out-of-tree ancestor config edits (e.g. `~/.cargo/config.toml`
+    //! when the project is elsewhere) are not detected. See the
+    //! header comment on `spawn_watcher`.
+    //!
+    //! These helpers are `pub(in super::super)` so the future watcher-
+    //! loop integration can consume them; tests live alongside.
+    use std::collections::HashMap;
+    use std::collections::HashSet;
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    use crate::project::AbsolutePath;
+
+    /// One directory the watcher needs to subscribe to so that metadata
+    /// refreshes fire on ancestor `.cargo/config[.toml]` edits.
+    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+    pub(in super::super) struct AncestorCargoWatch {
+        /// The directory to pass to `notify::Watcher::watch` — either the
+        /// existing `.cargo/` itself, or the parent that *would* contain
+        /// `.cargo/` if the user runs `mkdir .cargo` there.
+        pub dir:  AbsolutePath,
+        pub role: AncestorCargoRole,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    pub(in super::super) enum AncestorCargoRole {
+        /// `<ancestor>/.cargo/` is a directory today. Watch events on
+        /// `config`/`config.toml` drive a metadata refresh.
+        CargoDir,
+        /// `<ancestor>/.cargo/` does not exist yet. Watch the parent so
+        /// we catch the `mkdir .cargo` that precedes the first config
+        /// file being created there, then re-run `compute` to promote.
+        Placeholder,
+    }
+
+    /// Walk `project_root`'s ancestor chain up to (and including)
+    /// `cargo_home`, yielding one [`AncestorCargoWatch`] per level.
+    /// `cargo_home = None` means we could not resolve `$CARGO_HOME` nor
+    /// `~/.cargo`; in that case the walk stops at the filesystem root.
+    ///
+    /// Levels where `<ancestor>/.cargo/` exists become `CargoDir` entries
+    /// pointing at the `.cargo/` directory. Levels where it doesn't
+    /// become `Placeholder` entries pointing at the ancestor itself.
+    ///
+    /// The caller is responsible for unioning across all registered
+    /// projects and diffing against the existing global watch set —
+    /// see [`AncestorWatchRegistry`].
+    pub(in super::super) fn compute_ancestor_cargo_dirs(
+        project_root: &Path,
+        cargo_home: Option<&Path>,
+        fs: &dyn AncestorFs,
+    ) -> Vec<AncestorCargoWatch> {
+        let mut watches = Vec::new();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        // Each level's probe is `<ancestor>/.cargo/`. CARGO_HOME is
+        // typically `<cargo_home_parent>/.cargo`, so the walk terminates
+        // once we've processed `cargo_home`'s parent — that's the level
+        // where the probe would have hit CARGO_HOME directly.
+        let stop_at = cargo_home.and_then(Path::parent).map(Path::to_path_buf);
+        let covered_cargo_home =
+            cargo_home.and_then(|home| home.parent().map(|parent| (home, parent)));
+
+        for ancestor in project_root.ancestors() {
+            let level = ancestor.to_path_buf();
+            if !seen.insert(level.clone()) {
+                continue;
+            }
+            push_watch_for_level(ancestor, fs, &mut watches);
+            if stop_at.as_deref().is_some_and(|home_parent| ancestor == home_parent) {
+                return watches;
+            }
+        }
+
+        // Ancestor walk never reached `cargo_home`'s parent — the
+        // classic case is `project_root=/opt/x` with `cargo_home=~/.cargo`,
+        // where `~/.cargo` sits on a sibling branch. Explicitly probe
+        // the CARGO_HOME parent level so the user-wide config still
+        // participates in the watch set.
+        if let Some((home, home_parent)) = covered_cargo_home
+            && !seen.contains(home_parent)
+        {
+            push_watch_for_level(home_parent, fs, &mut watches);
+            // The parent probe only records `<parent>/.cargo/` when it
+            // exists on disk. If the fake filesystem placed CARGO_HOME
+            // directly (without recording its parent as a cargo dir),
+            // the probe above produced a placeholder and we still need
+            // to add the explicit CargoDir entry.
+            if fs.is_dir(home)
+                && !watches.iter().any(|watch| {
+                    watch.dir.as_path() == home && watch.role == AncestorCargoRole::CargoDir
+                })
+            {
+                watches.push(AncestorCargoWatch {
+                    dir:  AbsolutePath::from(home.to_path_buf()),
+                    role: AncestorCargoRole::CargoDir,
+                });
+            }
+        }
+        watches
+    }
+
+    fn push_watch_for_level(
+        ancestor: &Path,
+        fs: &dyn AncestorFs,
+        watches: &mut Vec<AncestorCargoWatch>,
+    ) {
+        let cargo_dir = ancestor.join(".cargo");
+        if fs.is_dir(&cargo_dir) {
+            watches.push(AncestorCargoWatch {
+                dir:  AbsolutePath::from(cargo_dir),
+                role: AncestorCargoRole::CargoDir,
+            });
+        } else {
+            watches.push(AncestorCargoWatch {
+                dir:  AbsolutePath::from(ancestor.to_path_buf()),
+                role: AncestorCargoRole::Placeholder,
+            });
+        }
+    }
+
+    /// Minimal filesystem abstraction — lets tests drive the walk
+    /// deterministically without touching the real filesystem.
+    pub(in super::super) trait AncestorFs {
+        fn is_dir(&self, path: &Path) -> bool;
+    }
+
+    /// Real-filesystem implementation. The watcher uses this in
+    /// production.
+    #[allow(dead_code, reason = "hooked up by 7b integration commit")]
+    pub(in super::super) struct RealFs;
+
+    impl AncestorFs for RealFs {
+        fn is_dir(&self, path: &Path) -> bool { path.is_dir() }
+    }
+
+    /// Per-project watch set paired with a refcount for the union
+    /// across all registered projects. Adding a project returns the
+    /// dirs that newly entered the union; removing returns the dirs
+    /// that no project still claims.
+    #[derive(Debug, Default)]
+    pub(in super::super) struct AncestorWatchRegistry {
+        by_project: HashMap<AbsolutePath, Vec<AncestorCargoWatch>>,
+        refcount:   HashMap<AbsolutePath, usize>,
+    }
+
+    /// The diff the watcher should apply via `watch()` / `unwatch()`.
+    #[derive(Debug, Default, Eq, PartialEq)]
+    pub(in super::super) struct AncestorWatchDiff {
+        pub to_add:    Vec<AncestorCargoWatch>,
+        pub to_remove: Vec<AbsolutePath>,
+    }
+
+    impl AncestorWatchRegistry {
+        pub(in super::super) fn new() -> Self { Self::default() }
+
+        /// Register `project_root`'s ancestor chain. No-op if the
+        /// project is already registered.
+        pub(in super::super) fn add_project(
+            &mut self,
+            project_root: AbsolutePath,
+            watches: Vec<AncestorCargoWatch>,
+        ) -> AncestorWatchDiff {
+            if self.by_project.contains_key(&project_root) {
+                return AncestorWatchDiff::default();
+            }
+            let mut diff = AncestorWatchDiff::default();
+            for watch in &watches {
+                let count = self.refcount.entry(watch.dir.clone()).or_insert(0);
+                if *count == 0 {
+                    diff.to_add.push(watch.clone());
+                }
+                *count += 1;
+            }
+            self.by_project.insert(project_root, watches);
+            diff
+        }
+
+        /// Unregister `project_root` and return the dirs that no project
+        /// still claims.
+        pub(in super::super) fn remove_project(
+            &mut self,
+            project_root: &AbsolutePath,
+        ) -> AncestorWatchDiff {
+            let Some(watches) = self.by_project.remove(project_root) else {
+                return AncestorWatchDiff::default();
+            };
+            let mut diff = AncestorWatchDiff::default();
+            for watch in watches {
+                let remove = match self.refcount.get_mut(&watch.dir) {
+                    Some(count) => {
+                        *count = count.saturating_sub(1);
+                        *count == 0
+                    },
+                    None => false,
+                };
+                if remove {
+                    self.refcount.remove(&watch.dir);
+                    diff.to_remove.push(watch.dir);
+                }
+            }
+            diff
+        }
+
+        /// Stable snapshot of the current global watch set.
+        pub(in super::super) fn current_watch_set(&self) -> HashSet<AbsolutePath> {
+            self.refcount.keys().cloned().collect()
+        }
+
+        #[cfg(test)]
+        pub(in super::super) fn contains(&self, dir: &AbsolutePath) -> bool {
+            self.refcount.contains_key(dir)
+        }
+    }
+
+    /// Does `event_path` sit under one of the `.cargo/` directories in
+    /// the registry's watch set? Returns the matching `.cargo/`
+    /// directory when it does, or `None` otherwise.
+    #[cfg(test)]
+    pub(in super::super) fn event_under_watched_cargo_dir<'a>(
+        event_path: &Path,
+        watched: &'a HashSet<AbsolutePath>,
+    ) -> Option<&'a AbsolutePath> {
+        watched
+            .iter()
+            .filter(|candidate| {
+                candidate
+                    .as_path()
+                    .file_name()
+                    .is_some_and(|name| name == ".cargo")
+            })
+            .find(|candidate| event_path.starts_with(candidate.as_path()))
+    }
+
+    #[cfg(test)]
+    #[allow(
+        clippy::expect_used,
+        reason = "tests should panic on unexpected values"
+    )]
+    mod tests {
+        use super::*;
+
+        struct FakeFs(HashSet<PathBuf>);
+
+        impl AncestorFs for FakeFs {
+            fn is_dir(&self, path: &Path) -> bool { self.0.contains(path) }
+        }
+
+        fn fake_fs<const N: usize>(dirs: [&str; N]) -> FakeFs {
+            FakeFs(dirs.iter().map(PathBuf::from).collect())
+        }
+
+        fn dir(s: &str) -> AbsolutePath { AbsolutePath::from(PathBuf::from(s)) }
+
+        // ── compute_ancestor_cargo_dirs ───────────────────────────────
+
+        #[test]
+        fn compute_records_cargo_dir_when_present_and_placeholder_when_absent() {
+            let fs = fake_fs(["/home/u/.cargo"]);
+            let watches = compute_ancestor_cargo_dirs(
+                Path::new("/home/u/rust/myapp"),
+                Some(Path::new("/home/u/.cargo")),
+                &fs,
+            );
+
+            // At each ancestor level we emit exactly one entry: `CargoDir`
+            // if `<ancestor>/.cargo/` exists, else a `Placeholder` on the
+            // ancestor itself. Here only `/home/u/.cargo` exists, so the
+            // lower levels stay placeholders and `/home/u` collapses
+            // directly into the CargoDir record for its `.cargo/`.
+            assert_eq!(
+                watches,
+                vec![
+                    AncestorCargoWatch {
+                        dir:  dir("/home/u/rust/myapp"),
+                        role: AncestorCargoRole::Placeholder,
+                    },
+                    AncestorCargoWatch {
+                        dir:  dir("/home/u/rust"),
+                        role: AncestorCargoRole::Placeholder,
+                    },
+                    AncestorCargoWatch {
+                        dir:  dir("/home/u/.cargo"),
+                        role: AncestorCargoRole::CargoDir,
+                    },
+                ],
+                "placeholders trace the chain until the existing .cargo/ is reached; \
+                 the ancestor whose .cargo/ exists contributes the CargoDir entry alone"
+            );
+        }
+
+        #[test]
+        fn compute_inserts_intermediate_cargo_dir_entries() {
+            let fs = fake_fs(["/home/u/projects/.cargo", "/home/u/.cargo"]);
+            let watches = compute_ancestor_cargo_dirs(
+                Path::new("/home/u/projects/myapp"),
+                Some(Path::new("/home/u/.cargo")),
+                &fs,
+            );
+
+            assert!(watches.contains(&AncestorCargoWatch {
+                dir:  dir("/home/u/projects/.cargo"),
+                role: AncestorCargoRole::CargoDir,
+            }));
+            assert!(watches.contains(&AncestorCargoWatch {
+                dir:  dir("/home/u/.cargo"),
+                role: AncestorCargoRole::CargoDir,
+            }));
+        }
+
+        #[test]
+        fn compute_probes_cargo_home_explicitly_when_outside_ancestor_chain() {
+            let fs = fake_fs(["/home/u/.cargo"]);
+            let watches = compute_ancestor_cargo_dirs(
+                Path::new("/opt/x"),
+                Some(Path::new("/home/u/.cargo")),
+                &fs,
+            );
+            assert!(
+                watches.contains(&AncestorCargoWatch {
+                    dir:  dir("/home/u/.cargo"),
+                    role: AncestorCargoRole::CargoDir,
+                }),
+                "CARGO_HOME is watched even when not on the ancestor chain"
+            );
+        }
+
+        #[test]
+        fn compute_returns_only_chain_when_cargo_home_is_none() {
+            let fs = fake_fs([]);
+            let watches = compute_ancestor_cargo_dirs(Path::new("/a/b/c"), None, &fs);
+            let dirs: Vec<_> = watches.iter().map(|w| w.dir.clone()).collect();
+            assert_eq!(
+                dirs,
+                vec![dir("/a/b/c"), dir("/a/b"), dir("/a"), dir("/")],
+                "without CARGO_HOME we still walk to the fs root, \
+                 all placeholders since nothing exists"
+            );
+            assert!(watches.iter().all(|w| w.role == AncestorCargoRole::Placeholder));
+        }
+
+        // ── AncestorWatchRegistry ─────────────────────────────────────
+
+        fn placeholder(s: &str) -> AncestorCargoWatch {
+            AncestorCargoWatch {
+                dir:  dir(s),
+                role: AncestorCargoRole::Placeholder,
+            }
+        }
+
+        fn cargo_dir(s: &str) -> AncestorCargoWatch {
+            AncestorCargoWatch {
+                dir:  dir(s),
+                role: AncestorCargoRole::CargoDir,
+            }
+        }
+
+        #[test]
+        fn registry_add_project_reports_newly_required_dirs() {
+            let mut reg = AncestorWatchRegistry::new();
+            let diff = reg.add_project(
+                dir("/home/u/a"),
+                vec![
+                    placeholder("/home/u/a"),
+                    placeholder("/home/u"),
+                    cargo_dir("/home/u/.cargo"),
+                ],
+            );
+            assert_eq!(diff.to_add.len(), 3, "first project adds all three");
+            assert!(diff.to_remove.is_empty());
+            assert_eq!(reg.current_watch_set().len(), 3);
+        }
+
+        #[test]
+        fn registry_add_project_does_not_re_add_shared_ancestors() {
+            let mut reg = AncestorWatchRegistry::new();
+            reg.add_project(
+                dir("/home/u/a"),
+                vec![
+                    placeholder("/home/u/a"),
+                    placeholder("/home/u"),
+                    cargo_dir("/home/u/.cargo"),
+                ],
+            );
+            let diff = reg.add_project(
+                dir("/home/u/b"),
+                vec![
+                    placeholder("/home/u/b"),
+                    placeholder("/home/u"),
+                    cargo_dir("/home/u/.cargo"),
+                ],
+            );
+            assert_eq!(
+                diff.to_add,
+                vec![placeholder("/home/u/b")],
+                "only the dir that wasn't previously in the union is reported"
+            );
+            assert!(reg.contains(&dir("/home/u")));
+        }
+
+        #[test]
+        fn registry_remove_project_unwatches_only_orphaned_dirs() {
+            let mut reg = AncestorWatchRegistry::new();
+            reg.add_project(
+                dir("/home/u/a"),
+                vec![
+                    placeholder("/home/u/a"),
+                    placeholder("/home/u"),
+                    cargo_dir("/home/u/.cargo"),
+                ],
+            );
+            reg.add_project(
+                dir("/home/u/b"),
+                vec![
+                    placeholder("/home/u/b"),
+                    placeholder("/home/u"),
+                    cargo_dir("/home/u/.cargo"),
+                ],
+            );
+
+            let diff = reg.remove_project(&dir("/home/u/a"));
+            assert_eq!(
+                diff.to_remove,
+                vec![dir("/home/u/a")],
+                "shared ancestors stay watched while project b still depends on them"
+            );
+            assert!(reg.contains(&dir("/home/u")));
+            assert!(reg.contains(&dir("/home/u/.cargo")));
+
+            let diff = reg.remove_project(&dir("/home/u/b"));
+            let mut to_remove: Vec<_> = diff.to_remove.iter().map(|p| p.to_string()).collect();
+            to_remove.sort();
+            assert_eq!(
+                to_remove,
+                vec![
+                    "/home/u".to_string(),
+                    "/home/u/.cargo".to_string(),
+                    "/home/u/b".to_string(),
+                ],
+                "removing the last project with a claim on each dir unwatches it"
+            );
+            assert!(reg.current_watch_set().is_empty());
+        }
+
+        #[test]
+        fn registry_add_is_idempotent_on_same_project() {
+            let mut reg = AncestorWatchRegistry::new();
+            let watches = vec![
+                placeholder("/home/u/a"),
+                cargo_dir("/home/u/.cargo"),
+            ];
+            let first = reg.add_project(dir("/home/u/a"), watches.clone());
+            assert_eq!(first.to_add.len(), 2);
+
+            let second = reg.add_project(dir("/home/u/a"), watches);
+            assert!(
+                second.to_add.is_empty() && second.to_remove.is_empty(),
+                "re-adding the same project is a no-op"
+            );
+        }
+
+        #[test]
+        fn registry_remove_unknown_project_is_a_noop() {
+            let mut reg = AncestorWatchRegistry::new();
+            let diff = reg.remove_project(&dir("/never/added"));
+            assert_eq!(diff, AncestorWatchDiff::default());
+        }
+
+        // ── event_under_watched_cargo_dir ─────────────────────────────
+
+        #[test]
+        fn event_under_watched_cargo_dir_matches_config_edits() {
+            let watched: HashSet<AbsolutePath> =
+                [dir("/home/u/.cargo"), dir("/home/u")].into_iter().collect();
+
+            assert!(
+                event_under_watched_cargo_dir(
+                    Path::new("/home/u/.cargo/config.toml"),
+                    &watched
+                )
+                .is_some(),
+                "edit under /home/u/.cargo/ must be recognized"
+            );
+            assert!(
+                event_under_watched_cargo_dir(
+                    Path::new("/home/u/.cargo/config"),
+                    &watched
+                )
+                .is_some(),
+                "the legacy `config` (no extension) basename still counts"
+            );
+            assert!(
+                event_under_watched_cargo_dir(Path::new("/home/u/readme.md"), &watched).is_none(),
+                "a non-.cargo/ directory in the watch set isn't a cargo-config hit"
+            );
+            assert!(
+                event_under_watched_cargo_dir(
+                    Path::new("/other/.cargo/config.toml"),
+                    &watched
+                )
+                .is_none(),
+                "out-of-set cargo dirs are not flagged"
+            );
+        }
+    }
+}
+
 /// Request to register an already-known project with the watcher.
 pub(crate) struct WatchRequest {
     /// Display path (e.g. `~/foo/bar`).

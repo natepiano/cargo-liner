@@ -209,6 +209,66 @@ mod tests {
     }
 
     #[test]
+    fn cargo_metadata_basename_classifier_matches_irrespective_of_project_root() {
+        // The basename-only variant is how the (future) ancestor `.cargo/`
+        // watch-set subsystem will classify events that live *above* any
+        // registered project, where the `starts_with(project_root)` gate
+        // on `classify_cargo_metadata_event_path` would filter them out.
+        use std::path::Path;
+
+        let hits = [
+            (
+                Path::new("/home/user/.cargo/config.toml"),
+                CargoMetadataTriggerKind::CargoConfig,
+            ),
+            (
+                Path::new("/home/user/.cargo/config"),
+                CargoMetadataTriggerKind::CargoConfig,
+            ),
+            (
+                Path::new("/opt/proj/Cargo.toml"),
+                CargoMetadataTriggerKind::Manifest,
+            ),
+            (
+                Path::new("/opt/proj/Cargo.lock"),
+                CargoMetadataTriggerKind::Lockfile,
+            ),
+            (
+                Path::new("/opt/proj/rust-toolchain"),
+                CargoMetadataTriggerKind::Toolchain,
+            ),
+            (
+                Path::new("/opt/proj/rust-toolchain.toml"),
+                CargoMetadataTriggerKind::Toolchain,
+            ),
+        ];
+        for (path, expected) in hits {
+            assert_eq!(
+                classify_cargo_metadata_basename(path),
+                Some(expected),
+                "expected basename hit for {}",
+                path.display()
+            );
+        }
+
+        // `config.toml` without a `.cargo` parent is a miss — otherwise
+        // any ambient TOML file would trigger a refresh.
+        let misses = [
+            Path::new("/home/user/some/config.toml"),
+            Path::new("/etc/config"),
+            Path::new("/home/user/Cargo.toml.bak"),
+        ];
+        for path in misses {
+            assert_eq!(
+                classify_cargo_metadata_basename(path),
+                None,
+                "unexpected basename hit for {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
     fn cargo_metadata_classifier_hits_manifest_lock_toolchain_and_cargo_config() {
         let project_dir = tempfile::tempdir().expect("tempdir");
         let root = project_dir.path();

@@ -2058,4 +2058,75 @@ mod tests {
         assert_eq!(sizes.get(root.as_path()), Some(&12));
         assert_eq!(sizes.get(child.as_path()), Some(&7));
     }
+
+    // ── collect_cargo_metadata_roots ─────────────────────────────────
+
+    #[test]
+    fn collect_cargo_metadata_roots_yields_one_root_per_rust_leaf() {
+        let ws = make_workspace(Some("ws"), "/ws", false, Some("/ws"));
+        let pkg = make_package(Some("pkg"), "/pkg", false, Some("/pkg"));
+        let roots = collect_cargo_metadata_roots(&[ws, pkg]);
+
+        assert_eq!(
+            roots,
+            vec![
+                AbsolutePath::from("/ws"),
+                AbsolutePath::from("/pkg"),
+            ],
+            "each Rust leaf produces exactly one metadata root, preserving input order"
+        );
+    }
+
+    #[test]
+    fn collect_cargo_metadata_roots_skips_non_rust_projects() {
+        let non_rust = RootItem::NonRust(crate::project::NonRustProject::new(
+            AbsolutePath::from("/notes"),
+            Some("notes".into()),
+        ));
+        let pkg = make_package(Some("pkg"), "/pkg", false, Some("/pkg"));
+
+        let roots = collect_cargo_metadata_roots(&[non_rust, pkg]);
+
+        assert_eq!(
+            roots,
+            vec![AbsolutePath::from("/pkg")],
+            "non-rust leaves never receive a metadata dispatch"
+        );
+    }
+
+    #[test]
+    fn collect_cargo_metadata_roots_unions_primary_and_linked_worktrees() {
+        // Merge a primary + two linked worktrees into a group, then assert
+        // every worktree gets its own metadata root.
+        let primary = make_workspace(Some("ws"), "/ws", false, Some("/ws"));
+        let linked_a = make_workspace(Some("ws_feat"), "/ws_feat", true, Some("/ws"));
+        let linked_b = make_workspace(Some("ws_bug"), "/ws_bug", true, Some("/ws"));
+        let mut items = vec![primary, linked_a, linked_b];
+        merge_worktrees_new(&mut items);
+        assert_eq!(items.len(), 1, "merged into one worktree group");
+
+        let mut roots = collect_cargo_metadata_roots(&items);
+        roots.sort_by(|a, b| a.as_path().cmp(b.as_path()));
+        assert_eq!(
+            roots,
+            vec![
+                AbsolutePath::from("/ws"),
+                AbsolutePath::from("/ws_bug"),
+                AbsolutePath::from("/ws_feat"),
+            ],
+            "primary + every linked worktree gets its own metadata root"
+        );
+    }
+
+    #[test]
+    fn collect_cargo_metadata_roots_dedupes_repeated_paths() {
+        // Shouldn't happen in practice (each project has a unique path),
+        // but the deduping logic is cheap and catches any future caller
+        // that accidentally feeds the same root twice.
+        let pkg_a = make_package(Some("a"), "/pkg", false, Some("/pkg"));
+        let pkg_b = make_package(Some("b"), "/pkg", false, Some("/pkg"));
+
+        let roots = collect_cargo_metadata_roots(&[pkg_a, pkg_b]);
+        assert_eq!(roots, vec![AbsolutePath::from("/pkg")]);
+    }
 }

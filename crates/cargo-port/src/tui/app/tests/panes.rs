@@ -251,6 +251,34 @@ fn initial_disk_roots_groups_nested_projects_under_one_root() {
 }
 
 #[test]
+fn initial_metadata_roots_collects_every_rust_leaf() {
+    // Contrast with `initial_disk_roots`: metadata needs one dispatch per
+    // leaf (each Cargo.toml has its own resolved target_directory), not a
+    // deduped-by-prefix set.
+    let projects: Vec<RootItem> = [
+        make_project(Some("bevy"), "~/rust/bevy"),
+        make_project(Some("ecs"), "~/rust/bevy/crates/bevy_ecs"),
+        make_project(Some("hana"), "~/rust/hana"),
+    ]
+    .to_vec();
+
+    let roots = snapshots::initial_metadata_roots(&super::as_entries(projects));
+    assert_eq!(roots.len(), 3, "each Rust leaf gets its own metadata root");
+}
+
+#[test]
+fn initial_metadata_roots_skips_non_rust_leaves() {
+    let non_rust = RootItem::NonRust(crate::project::NonRustProject::new(
+        super::test_path("~/notes"),
+        Some("notes".into()),
+    ));
+    let pkg = make_project(Some("pkg"), "~/pkg");
+    let roots =
+        snapshots::initial_metadata_roots(&super::as_entries(vec![non_rust, pkg]));
+    assert_eq!(roots.len(), 1, "non-rust leaves are not metadata roots");
+}
+
+#[test]
 fn overlays_restore_prior_focus() {
     let app_project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[app_project]);
