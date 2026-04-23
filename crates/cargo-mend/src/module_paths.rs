@@ -1,7 +1,7 @@
 use std::path::Path;
 
-pub(crate) fn file_module_path(src_root: &Path, path: &Path) -> Option<Vec<String>> {
-    let relative = path.strip_prefix(src_root).ok()?;
+pub(crate) fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<String>> {
+    let relative = path.strip_prefix(source_root).ok()?;
     let mut result: Vec<String> = relative
         .parent()
         .into_iter()
@@ -54,40 +54,40 @@ mod tests {
 
     #[test]
     fn file_module_path_includes_leaf_file_name() {
-        let src_root = Path::new("/repo/src");
+        let source_root = Path::new("/repo/src");
         let path = Path::new("/repo/src/outer/child.rs");
         assert_eq!(
-            file_module_path(src_root, path),
+            file_module_path(source_root, path),
             Some(vec!["outer".to_string(), "child".to_string()])
         );
     }
 
     #[test]
-    fn file_module_path_uses_parent_dir_for_mod_rs() {
-        let src_root = Path::new("/repo/src");
+    fn file_module_path_uses_parent_dir_for_module_rs() {
+        let source_root = Path::new("/repo/src");
         let path = Path::new("/repo/src/outer/child/mod.rs");
         assert_eq!(
-            file_module_path(src_root, path),
+            file_module_path(source_root, path),
             Some(vec!["outer".to_string(), "child".to_string()])
         );
     }
 
     #[test]
     fn file_module_path_treats_lib_rs_as_root() {
-        let src_root = Path::new("/repo/src");
+        let source_root = Path::new("/repo/src");
         let path = Path::new("/repo/src/lib.rs");
-        assert_eq!(file_module_path(src_root, path), Some(Vec::new()));
+        assert_eq!(file_module_path(source_root, path), Some(Vec::new()));
     }
 
     #[test]
     fn file_module_path_treats_main_rs_as_root() {
-        let src_root = Path::new("/repo/src");
+        let source_root = Path::new("/repo/src");
         let path = Path::new("/repo/src/main.rs");
-        assert_eq!(file_module_path(src_root, path), Some(Vec::new()));
+        assert_eq!(file_module_path(source_root, path), Some(Vec::new()));
     }
 
     #[test]
-    fn child_boundary_name_for_mod_rs_is_parent_dir() {
+    fn child_boundary_name_for_module_rs_is_parent_dir() {
         let path = Path::new("/repo/src/outer/child/mod.rs");
         assert_eq!(module_name_for_child_boundary_file(path), Some("child"));
     }

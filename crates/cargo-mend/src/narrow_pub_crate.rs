@@ -39,6 +39,7 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<NarrowPubCrateScan> {
             start,
             end: start + PUB_VISIBILITY_PREFIX.len(),
             replacement: "pub(crate) ".to_string(),
+            import_group: None,
         });
     }
     Ok(NarrowPubCrateScan { fixes })

@@ -66,7 +66,7 @@ enum ItemCategory {
 struct VisibilityContext<'a, 'tcx> {
     tcx:                    TyCtxt<'tcx>,
     settings:               &'a DriverSettings,
-    src_root:               &'a Path,
+    source_root:            &'a Path,
     root_module:            &'a Path,
     effective_visibilities: &'a rustc_middle::middle::privacy::EffectiveVisibilities,
     source_cache:           &'a SourceCache,
@@ -150,7 +150,7 @@ pub(super) fn collect_and_store_findings(
 ) -> Result<bool> {
     let crate_root_file = real_file_path(tcx, tcx.def_span(CRATE_DEF_ID))
         .context("failed to determine local crate root file")?;
-    let Some(src_root) =
+    let Some(source_root) =
         source_cache::analysis_source_root_for(&crate_root_file, &settings.package_root)
     else {
         return Ok(false);
@@ -159,15 +159,15 @@ pub(super) fn collect_and_store_findings(
     let mut sink = FindingsSink::default();
     let crate_items = tcx.hir_crate_items(());
     let cache_roots: Vec<&Path> = if settings.config_root == settings.package_root {
-        vec![&src_root]
+        vec![&source_root]
     } else {
-        vec![&src_root, &settings.config_root]
+        vec![&source_root, &settings.config_root]
     };
     let source_cache = SourceCache::build(&cache_roots)?;
     let ctx = VisibilityContext {
         tcx,
         settings,
-        src_root: &src_root,
+        source_root: &source_root,
         root_module: &crate_root_file,
         effective_visibilities: tcx.effective_visibilities(()),
         source_cache: &source_cache,
@@ -246,7 +246,7 @@ fn analyze_item(
     let item_name = item.kind.ident().map(|ident| ident.to_string());
 
     if vis_text == "pub"
-        && is_boundary_file(ctx.src_root, ctx.root_module, &file_path)
+        && is_boundary_file(ctx.source_root, ctx.root_module, &file_path)
         && matches!(item.kind, ItemKind::Use(..))
         && use_item_contains_glob(ctx.tcx, item.span)?
     {
@@ -415,7 +415,7 @@ fn record_visibility_findings(
             .as_ref()
             .is_some_and(|path| {
                 ctx.settings
-                    .config
+                    .visibility_config
                     .allow_pub_mod
                     .iter()
                     .any(|allowed| allowed == path)
@@ -440,7 +440,7 @@ fn record_visibility_findings(
 
     if item.vis_text == "pub"
         && finding_context.parent_visibility == ParentVisibility::Private
-        && is_top_level_module_file(ctx.src_root, ctx.root_module, item.file_path)
+        && is_top_level_module_file(ctx.source_root, ctx.root_module, item.file_path)
         && allow_pub_crate_by_policy(
             finding_context.crate_kind,
             finding_context.module_location,
@@ -450,7 +450,8 @@ fn record_visibility_findings(
         maybe_record_narrow_to_pub_crate(ctx, item, sink)?;
     }
 
-    if item.vis_text == "pub" && !is_boundary_file(ctx.src_root, ctx.root_module, item.file_path) {
+    if item.vis_text == "pub" && !is_boundary_file(ctx.source_root, ctx.root_module, item.file_path)
+    {
         maybe_record_suspicious_pub(
             ctx,
             &SuspiciousPubInput {
@@ -562,7 +563,7 @@ fn maybe_record_suspicious_pub(
                     facade::parent_facade_export_status(
                         ctx.source_cache,
                         ctx.settings,
-                        ctx.src_root,
+                        ctx.source_root,
                         input.file_path,
                         name,
                     )
@@ -656,7 +657,7 @@ fn classify_suspicious_pub(
             facade::parent_facade_export_status(
                 ctx.source_cache,
                 ctx.settings,
-                ctx.src_root,
+                ctx.source_root,
                 input.file_path,
                 name,
             )
@@ -671,7 +672,7 @@ fn classify_suspicious_pub(
     if let Some(allowance) = assess_signature_exposure_allowance(
         ctx.source_cache,
         ctx.settings,
-        ctx.src_root,
+        ctx.source_root,
         input.file_path,
         input.item_name,
     )? {
@@ -734,7 +735,7 @@ fn basic_suspicious_pub_allowance(
     let item_key = config_rel_path.and_then(|path| item_name.map(|name| format!("{path}::{name}")));
     let allowlisted = item_key.as_ref().is_some_and(|key| {
         settings
-            .config
+            .visibility_config
             .allow_pub_items
             .iter()
             .any(|allowed| allowed == key)
@@ -783,7 +784,7 @@ fn assess_parent_facade_usage(
 fn assess_signature_exposure_allowance(
     source_cache: &SourceCache,
     settings: &DriverSettings,
-    src_root: &Path,
+    source_root: &Path,
     file_path: &Path,
     item_name: Option<&str>,
 ) -> Result<Option<AllowanceReason>> {
@@ -793,25 +794,25 @@ fn assess_signature_exposure_allowance(
     if exposure::child_item_is_exposed_by_other_crate_visible_signature(
         source_cache,
         settings,
-        src_root,
+        source_root,
         file_path,
         item_name,
     )? || exposure::impl_item_is_exposed_by_exported_self_type(
         source_cache,
         settings,
-        src_root,
+        source_root,
         file_path,
         item_name,
     )? || exposure::child_item_is_exposed_by_sibling_boundary_signature(
         source_cache,
         settings,
-        src_root,
+        source_root,
         file_path,
         item_name,
     )? || exposure::parent_boundary_public_signature_exposes_child_used_outside_parent(
         source_cache,
         settings,
-        src_root,
+        source_root,
         file_path,
         item_name,
     )? {
@@ -1086,11 +1087,11 @@ fn impl_self_type_name_from_tcx(tcx: TyCtxt<'_>, impl_item_def: LocalDefId) -> O
 
 /// True when `file` is part of a top-level module — either `src/foo.rs` or
 /// `src/foo/mod.rs` — but NOT the root module itself (lib.rs / main.rs).
-fn is_top_level_module_file(src_root: &Path, root_module: &Path, file: &Path) -> bool {
+fn is_top_level_module_file(source_root: &Path, root_module: &Path, file: &Path) -> bool {
     if file == root_module {
         return false;
     }
-    let Ok(relative) = file.strip_prefix(src_root) else {
+    let Ok(relative) = file.strip_prefix(source_root) else {
         return false;
     };
     let count = relative.components().count();
@@ -1102,12 +1103,187 @@ fn is_top_level_module_file(src_root: &Path, root_module: &Path, file: &Path) ->
     count == 2 && relative.file_name().and_then(|name| name.to_str()) == Some("mod.rs")
 }
 
-fn is_boundary_file(src_root: &Path, root_module: &Path, file: &Path) -> bool {
+fn is_boundary_file(source_root: &Path, root_module: &Path, file: &Path) -> bool {
     let is_root_file = file == root_module;
-    let is_mod_rs = file.file_name().and_then(|name| name.to_str()) == Some("mod.rs");
+    let is_module_rs = file.file_name().and_then(|name| name.to_str()) == Some("mod.rs");
     let is_top_level_file = file
-        .strip_prefix(src_root)
+        .strip_prefix(source_root)
         .ok()
         .is_some_and(|path| path.components().count() == 1);
-    is_root_file || is_mod_rs || is_top_level_file
+    is_root_file || is_module_rs || is_top_level_file
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::CrateKind;
+    use super::ModuleLocation;
+    use super::ParentVisibility;
+    use super::allow_pub_crate_by_policy;
+    use super::crate_kind_for_root;
+    use super::forbidden_pub_crate_help;
+    use super::suspicious_pub_note;
+
+    #[test]
+    fn allow_pub_crate_allows_library_crate_root_items() {
+        assert!(allow_pub_crate_by_policy(
+            CrateKind::Library,
+            ModuleLocation::CrateRoot,
+            ParentVisibility::Public
+        ));
+    }
+
+    #[test]
+    fn allow_pub_crate_allows_top_level_private_library_modules() {
+        assert!(allow_pub_crate_by_policy(
+            CrateKind::Library,
+            ModuleLocation::TopLevelPrivateModule,
+            ParentVisibility::Private
+        ));
+    }
+
+    #[test]
+    fn allow_pub_crate_rejects_nested_modules() {
+        assert!(!allow_pub_crate_by_policy(
+            CrateKind::Library,
+            ModuleLocation::NestedModule,
+            ParentVisibility::Private
+        ));
+    }
+
+    #[test]
+    fn allow_pub_crate_rejects_binary_crate_root_items() {
+        assert!(!allow_pub_crate_by_policy(
+            CrateKind::Binary,
+            ModuleLocation::CrateRoot,
+            ParentVisibility::Public
+        ));
+    }
+
+    #[test]
+    fn allow_pub_crate_allows_top_level_private_binary_modules() {
+        assert!(allow_pub_crate_by_policy(
+            CrateKind::Binary,
+            ModuleLocation::TopLevelPrivateModule,
+            ParentVisibility::Private
+        ));
+    }
+
+    #[test]
+    fn allow_pub_crate_rejects_binary_nested_modules() {
+        assert!(!allow_pub_crate_by_policy(
+            CrateKind::Binary,
+            ModuleLocation::NestedModule,
+            ParentVisibility::Private
+        ));
+    }
+
+    #[test]
+    fn allow_pub_crate_rejects_integration_test_items_in_any_location() {
+        for module_location in [
+            ModuleLocation::CrateRoot,
+            ModuleLocation::TopLevelPrivateModule,
+            ModuleLocation::NestedModule,
+        ] {
+            for parent_visibility in [ParentVisibility::Private, ParentVisibility::Public] {
+                assert!(
+                    !allow_pub_crate_by_policy(
+                        CrateKind::IntegrationTest,
+                        module_location,
+                        parent_visibility,
+                    ),
+                    "pub(crate) should be forbidden in integration-test crates \
+                     regardless of module location or parent visibility \
+                     (location = {module_location:?}, parent = {parent_visibility:?})",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn crate_kind_for_root_detects_library_from_lib_rs() {
+        let package_root = Path::new("/tmp/pkg");
+        assert_eq!(
+            crate_kind_for_root(&package_root.join("src/lib.rs"), package_root),
+            CrateKind::Library
+        );
+    }
+
+    #[test]
+    fn crate_kind_for_root_detects_binary_from_main_rs() {
+        let package_root = Path::new("/tmp/pkg");
+        assert_eq!(
+            crate_kind_for_root(&package_root.join("src/main.rs"), package_root),
+            CrateKind::Binary
+        );
+    }
+
+    #[test]
+    fn crate_kind_for_root_detects_integration_test_roots() {
+        let package_root = Path::new("/tmp/pkg");
+        for sub in ["tests", "examples", "benches"] {
+            let root = package_root.join(sub).join("support.rs");
+            assert_eq!(
+                crate_kind_for_root(&root, package_root),
+                CrateKind::IntegrationTest,
+                "{sub}/*.rs should classify as IntegrationTest",
+            );
+        }
+    }
+
+    #[test]
+    fn crate_kind_for_root_treats_nested_example_root_as_binary() {
+        let package_root = Path::new("/tmp/pkg");
+        assert_eq!(
+            crate_kind_for_root(&package_root.join("examples/demo/main.rs"), package_root),
+            CrateKind::Binary,
+            "a nested examples/<name>/main.rs root is unambiguous and behaves like a binary",
+        );
+        assert_eq!(
+            crate_kind_for_root(&package_root.join("tests/foo/main.rs"), package_root),
+            CrateKind::Binary,
+            "a nested tests/<name>/main.rs root is unambiguous and behaves like a binary",
+        );
+    }
+
+    #[test]
+    fn forbidden_pub_crate_help_handles_crate_root_items() {
+        assert_eq!(
+            forbidden_pub_crate_help(ModuleLocation::CrateRoot),
+            "consider using just `pub` or removing `pub(crate)` entirely"
+        );
+    }
+
+    #[test]
+    fn forbidden_pub_crate_help_handles_top_level_private_modules() {
+        assert_eq!(
+            forbidden_pub_crate_help(ModuleLocation::TopLevelPrivateModule),
+            "consider using just `pub` or removing `pub(crate)` entirely"
+        );
+    }
+
+    #[test]
+    fn forbidden_pub_crate_help_handles_nested_private_modules() {
+        assert_eq!(
+            forbidden_pub_crate_help(ModuleLocation::NestedModule),
+            "consider using `pub(super)` or removing `pub(crate)` entirely"
+        );
+    }
+
+    #[test]
+    fn suspicious_pub_note_uses_public_api_wording_for_libraries() {
+        assert_eq!(
+            suspicious_pub_note(CrateKind::Library, "struct"),
+            "struct is not reachable from the crate's public API"
+        );
+    }
+
+    #[test]
+    fn suspicious_pub_note_uses_subtree_wording_for_binaries() {
+        assert_eq!(
+            suspicious_pub_note(CrateKind::Binary, "function"),
+            "function is not used outside its parent module subtree"
+        );
+    }
 }

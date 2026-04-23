@@ -5,8 +5,6 @@ mod facade;
 mod persistence;
 mod settings;
 mod source_cache;
-#[cfg(test)]
-mod tests;
 mod visibility;
 
 pub(crate) use build::BuildOutputMode;

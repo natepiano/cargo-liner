@@ -96,8 +96,8 @@ impl DiagnosticsConfig {
 
 #[derive(Debug, Default, Deserialize)]
 struct GlobalConfigFile {
-    #[serde(default)]
-    diagnostics: DiagnosticsConfig,
+    #[serde(default, rename = "diagnostics")]
+    diagnostics_config: DiagnosticsConfig,
 }
 
 pub(crate) fn global_config_path() -> Option<PathBuf> {
@@ -114,16 +114,20 @@ pub(crate) fn load_global_diagnostics() -> DiagnosticsConfig {
         let Ok(contents) = fs::read_to_string(&path) else {
             return DiagnosticsConfig::default();
         };
-        return toml::from_str::<GlobalConfigFile>(&contents)
-            .map_or_else(|_| DiagnosticsConfig::default(), |f| f.diagnostics);
+        return toml::from_str::<GlobalConfigFile>(&contents).map_or_else(
+            |_| DiagnosticsConfig::default(),
+            |file| file.diagnostics_config,
+        );
     }
 
     let Ok(contents) = fs::read_to_string(&path) else {
         return DiagnosticsConfig::default();
     };
 
-    toml::from_str::<GlobalConfigFile>(&contents)
-        .map_or_else(|_| DiagnosticsConfig::default(), |f| f.diagnostics)
+    toml::from_str::<GlobalConfigFile>(&contents).map_or_else(
+        |_| DiagnosticsConfig::default(),
+        |file| file.diagnostics_config,
+    )
 }
 
 const DEFAULT_GLOBAL_CONFIG_TOML: &str = r"# cargo-mend global configuration
@@ -158,10 +162,10 @@ fn create_default_global_config(path: &Path) -> Result<()> {
 
 #[derive(Debug, Default, Deserialize)]
 struct ConfigFile {
-    #[serde(default)]
-    visibility:  VisibilityConfig,
-    #[serde(default)]
-    diagnostics: Option<DiagnosticsConfig>,
+    #[serde(default, rename = "visibility")]
+    visibility_config:  VisibilityConfig,
+    #[serde(default, rename = "diagnostics")]
+    diagnostics_config: Option<DiagnosticsConfig>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -174,10 +178,10 @@ pub(crate) struct VisibilityConfig {
 
 #[derive(Debug)]
 pub(crate) struct LoadedConfig {
-    pub config:      VisibilityConfig,
-    pub diagnostics: DiagnosticsConfig,
-    pub root:        PathBuf,
-    pub fingerprint: String,
+    pub visibility_config:  VisibilityConfig,
+    pub diagnostics_config: DiagnosticsConfig,
+    pub root:               PathBuf,
+    pub fingerprint:        String,
 }
 
 pub(crate) fn load_config(
@@ -201,7 +205,7 @@ pub(crate) fn load_config(
         if path.exists() {
             let text = fs::read_to_string(&path)
                 .with_context(|| format!("failed to read config {}", path.display()))?;
-            let file: ConfigFile = toml::from_str(&text)
+            let config_file: ConfigFile = toml::from_str(&text)
                 .with_context(|| format!("failed to parse config {}", path.display()))?;
             let root = path
                 .parent()
@@ -210,24 +214,24 @@ pub(crate) fn load_config(
                 .with_context(|| {
                     format!("failed to canonicalize config root for {}", path.display())
                 })?;
-            let diagnostics = file.diagnostics.map_or_else(
+            let diagnostics_config = config_file.diagnostics_config.map_or_else(
                 || global_diagnostics.clone(),
                 |project| global_diagnostics.merge_project(&project),
             );
             return Ok(LoadedConfig {
-                fingerprint: fingerprint_for(&root, &file.visibility)?,
-                config: file.visibility,
-                diagnostics,
+                fingerprint: fingerprint_for(&root, &config_file.visibility_config)?,
+                visibility_config: config_file.visibility_config,
+                diagnostics_config,
                 root,
             });
         }
     }
 
     Ok(LoadedConfig {
-        fingerprint: fingerprint_for(manifest_dir, &VisibilityConfig::default())?,
-        config:      VisibilityConfig::default(),
-        diagnostics: global_diagnostics.clone(),
-        root:        manifest_dir.to_path_buf(),
+        fingerprint:        fingerprint_for(manifest_dir, &VisibilityConfig::default())?,
+        visibility_config:  VisibilityConfig::default(),
+        diagnostics_config: global_diagnostics.clone(),
+        root:               manifest_dir.to_path_buf(),
     })
 }
 
@@ -256,7 +260,7 @@ mod tests {
         let result: Result<GlobalConfigFile, _> = toml::from_str(DEFAULT_GLOBAL_CONFIG_TOML);
         assert!(result.is_ok(), "DEFAULT_GLOBAL_CONFIG_TOML should parse");
         let global_config_file = result.unwrap();
-        for (code, enabled) in global_config_file.diagnostics.entries() {
+        for (code, enabled) in global_config_file.diagnostics_config.entries() {
             assert!(
                 enabled,
                 "default config should have {} enabled",
@@ -310,17 +314,17 @@ prefer_module_import = false
         let global_config_file = result.unwrap();
         assert!(
             !global_config_file
-                .diagnostics
+                .diagnostics_config
                 .is_enabled(DiagnosticCode::PreferModuleImport)
         );
         assert!(
             global_config_file
-                .diagnostics
+                .diagnostics_config
                 .is_enabled(DiagnosticCode::ForbiddenPubCrate)
         );
         assert!(
             global_config_file
-                .diagnostics
+                .diagnostics_config
                 .is_enabled(DiagnosticCode::SuspiciousPub)
         );
     }

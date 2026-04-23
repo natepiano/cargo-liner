@@ -38,12 +38,28 @@ struct ShortenImportFact {
     replacement:   String,
 }
 
+/// Identifies a group of `UseFix`es that belong to a single "import + its
+/// dependent rewrites" unit. When two passes independently propose imports
+/// that would bind the same bare name to different full paths in the same
+/// file, the combining layer drops every fix that carries a conflicting
+/// `ImportGroup`, keeping rewrites and the `use` insertion in sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImportGroup {
+    /// The bare name that the `use` brings into scope (e.g. `Package`).
+    pub bare_name: String,
+    /// The full path the `use` resolves (e.g. `crate::project::Package`).
+    pub full_path: String,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct UseFix {
-    pub path:        PathBuf,
-    pub start:       usize,
-    pub end:         usize,
-    pub replacement: String,
+    pub path:         PathBuf,
+    pub start:        usize,
+    pub end:          usize,
+    pub replacement:  String,
+    /// When set, this fix is part of a larger group that must be kept or
+    /// dropped together. See `ImportGroup`.
+    pub import_group: Option<ImportGroup>,
 }
 
 #[derive(Debug, Clone)]
@@ -201,11 +217,14 @@ pub(crate) fn restore_files(snapshots: &[(PathBuf, String)]) -> Result<()> {
 fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>> {
     let mut findings = Vec::new();
     for package_root in &selection.package_roots {
-        let src_root = package_root.join("src");
-        if !src_root.is_dir() {
+        let source_root = package_root.join("src");
+        if !source_root.is_dir() {
             continue;
         }
-        for entry in WalkDir::new(&src_root).into_iter().filter_map(Result::ok) {
+        for entry in WalkDir::new(&source_root)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
             let path = entry.path();
             if !entry.file_type().is_file()
                 || path.extension().and_then(|ext| ext.to_str()) != Some("rs")
@@ -214,7 +233,7 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
             }
             findings.extend(scan_file(
                 selection.analysis_root.as_path(),
-                &src_root,
+                &source_root,
                 path,
             )?);
         }
@@ -233,12 +252,12 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
     Ok(findings)
 }
 
-fn scan_file(analysis_root: &Path, src_root: &Path, path: &Path) -> Result<Vec<ImportFinding>> {
+fn scan_file(analysis_root: &Path, source_root: &Path, path: &Path) -> Result<Vec<ImportFinding>> {
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
         syn::parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    let base_module_path = module_paths::file_module_path(src_root, path)
+    let base_module_path = module_paths::file_module_path(source_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = line_offsets(&text);
     let mut visitor = UseVisitor {
@@ -313,6 +332,7 @@ impl Visit<'_> for UseVisitor<'_> {
                     start: start_offset,
                     end: end_offset,
                     replacement,
+                    import_group: None,
                 },
             });
         }
@@ -395,7 +415,6 @@ struct FlattenedImport {
 
 fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {
     let mut segments = Vec::new();
-    let mut rename = None;
     let mut cursor = tree;
     loop {
         match cursor {
@@ -405,21 +424,26 @@ fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {
             },
             UseTree::Name(name) => {
                 segments.push(name.ident.to_string());
-                break;
+                let original = format_path(&segments, None);
+                break Some(FlattenedImport {
+                    segments,
+                    original,
+                    rename: None,
+                });
             },
             UseTree::Rename(rename_tree) => {
                 segments.push(rename_tree.ident.to_string());
-                rename = Some(rename_tree.rename.to_string());
-                break;
+                let rename = rename_tree.rename.to_string();
+                let original = format_path(&segments, Some(&rename));
+                break Some(FlattenedImport {
+                    segments,
+                    original,
+                    rename: Some(rename),
+                });
             },
-            _ => return None,
+            _ => break None,
         }
     }
-    Some(FlattenedImport {
-        original: format_path(&segments, rename.as_deref()),
-        segments,
-        rename,
-    })
 }
 
 fn build_relative_path(
@@ -430,10 +454,11 @@ fn build_relative_path(
     let common = common_prefix_len(current_module_path, target_segments);
     let up_count = current_module_path.len().saturating_sub(common);
     let mut relative_segments = Vec::new();
-    match up_count {
-        0 => {},
-        1 => relative_segments.push("super".to_string()),
-        _ => return None,
+    if up_count > 1 {
+        return None;
+    }
+    if up_count == 1 {
+        relative_segments.push("super".to_string());
     }
     relative_segments.extend(target_segments[common..].iter().cloned());
     Some(format_path(&relative_segments, import.rename.as_deref()))
@@ -485,16 +510,18 @@ mod tests {
         let path = PathBuf::from("src/lib.rs");
         let fixes = vec![
             UseFix {
-                path:        path.clone(),
-                start:       100,
-                end:         110,
-                replacement: "first".to_string(),
+                path:         path.clone(),
+                start:        100,
+                end:          110,
+                replacement:  "first".to_string(),
+                import_group: None,
             },
             UseFix {
                 path,
                 start: 110,
                 end: 120,
                 replacement: "second".to_string(),
+                import_group: None,
             },
         ];
 

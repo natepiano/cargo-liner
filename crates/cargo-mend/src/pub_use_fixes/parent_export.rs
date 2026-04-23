@@ -45,6 +45,7 @@ pub(super) fn build_parent_pub_use_edit_for_exports(
             start,
             end,
             replacement,
+            import_group: None,
         });
     }
 

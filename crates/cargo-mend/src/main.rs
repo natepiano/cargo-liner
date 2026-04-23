@@ -91,14 +91,14 @@ fn run() -> Result<ExitCode, MendFailure> {
     let selection = selection::resolve_cargo_selection(cli.cargo.explicit_manifest_path())
         .map_err(MendFailure::Unexpected)?;
     let cargo_plan = selection::build_cargo_check_plan(&selection, &cli.cargo);
-    let config = config::load_config(
+    let loaded_config = config::load_config(
         selection.manifest_dir.as_path(),
         selection.workspace_root.as_path(),
         cli.manifest.config.as_deref(),
         &global_diagnostics,
     )
     .map_err(MendFailure::Unexpected)?;
-    let operation_mode = OperationMode::from_cli(&cli.fix);
+    let operation_mode = OperationMode::from(&cli.fix);
     let color = color_mode();
     let output = if cli.json {
         OutputFormat::Json
@@ -106,8 +106,8 @@ fn run() -> Result<ExitCode, MendFailure> {
         OutputFormat::Human
     };
     let start = Instant::now();
-    let outcome =
-        MendRunner::new(&selection, &cargo_plan, &config, color, output).run(operation_mode)?;
+    let outcome = MendRunner::new(&selection, &cargo_plan, &loaded_config, color, output)
+        .run(operation_mode)?;
 
     let fix_compiler_duration = if cli.fix.runs_compiler_fix() {
         Some(compiler::run_cargo_fix(&cargo_plan, color).map_err(MendFailure::Unexpected)?)
@@ -170,10 +170,13 @@ fn color_mode() -> render::ColorMode {
     }
 
     if let Ok(choice) = std::env::var("CARGO_TERM_COLOR") {
-        match choice.to_ascii_lowercase().as_str() {
-            "never" => return render::ColorMode::Disabled,
-            "always" => return render::ColorMode::Enabled,
-            _ => {},
+        let color_mode = match choice.to_ascii_lowercase().as_str() {
+            "never" => Some(render::ColorMode::Disabled),
+            "always" => Some(render::ColorMode::Enabled),
+            _ => None,
+        };
+        if let Some(color_mode) = color_mode {
+            return color_mode;
         }
     }
 

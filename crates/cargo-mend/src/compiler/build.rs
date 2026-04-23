@@ -151,7 +151,7 @@ fn run_cargo_check(
         .env(CONFIG_ROOT_ENV, &loaded_config.root)
         .env(
             CONFIG_JSON_ENV,
-            serde_json::to_string(&loaded_config.config)
+            serde_json::to_string(&loaded_config.visibility_config)
                 .context("failed to serialize mend config for compiler driver")?,
         )
         .env(CONFIG_FINGERPRINT_ENV, &loaded_config.fingerprint)
@@ -383,18 +383,18 @@ pub(super) fn classify_diagnostic_block(block: &[String]) -> DiagnosticBlockKind
 
         // Check for "generated N warnings" summary line first — always suppress
         if let Some((warning_count, fixable_count)) = parse_compiler_warning_summary(trimmed) {
-            return DiagnosticBlockKind::CompilerWarningSummary {
+            DiagnosticBlockKind::CompilerWarningSummary {
                 warning_count,
                 fixable_count,
-            };
-        }
-
-        let contains_unused_import_warning = trimmed.contains("warning: unused import:")
-            || trimmed.contains("warning: unused imports:");
-        if contains_unused_import_warning {
-            DiagnosticBlockKind::SuppressedUnusedImport
+            }
         } else {
-            DiagnosticBlockKind::ForwardedDiagnostic
+            let contains_unused_import_warning = trimmed.contains("warning: unused import:")
+                || trimmed.contains("warning: unused imports:");
+            if contains_unused_import_warning {
+                DiagnosticBlockKind::SuppressedUnusedImport
+            } else {
+                DiagnosticBlockKind::ForwardedDiagnostic
+            }
         }
     })
 }
@@ -452,4 +452,69 @@ pub(super) fn flush_diagnostic_block(
     }
 
     block.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BuildOutputMode;
+    use super::CompilerWarningFacts;
+    use super::DiagnosticBlockKind;
+    use super::classify_diagnostic_block;
+    use super::flush_diagnostic_block;
+    use super::is_progress_line;
+
+    #[test]
+    fn plain_building_progress_line_is_treated_as_progress() {
+        let line = "    Building [                             ] 0/1: cli_json_clean_fixture      \r    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s\n";
+        assert!(is_progress_line(line));
+    }
+
+    #[test]
+    fn progress_line_with_embedded_warning_is_not_treated_as_progress() {
+        let line = "    Building [                             ] 0/1: fixture...warning: unused import: `child::SpawnStats`\n";
+        assert!(!is_progress_line(line));
+    }
+
+    #[test]
+    fn classify_suppresses_unused_import_when_warning_follows_progress_prefix() {
+        let block = vec![
+            "    Building [                             ] 0/1: fixture...warning: unused import: `child::SpawnStats`\n"
+                .to_string(),
+            " --> src/actor/mod.rs:2:9\n".to_string(),
+            "  |\n".to_string(),
+            "2 | pub use child::SpawnStats;\n".to_string(),
+            "  |         ^^^^^^^^^^^^^^^^^\n".to_string(),
+            "\n".to_string(),
+        ];
+
+        assert!(matches!(
+            classify_diagnostic_block(&block),
+            DiagnosticBlockKind::SuppressedUnusedImport
+        ));
+    }
+
+    #[test]
+    fn quiet_builds_do_not_accumulate_compiler_warning_summary_counts() {
+        let mut block = vec![
+            "warning: `fixture` (lib) generated 3 warnings (1 duplicate) (run `cargo fix --lib -p fixture` to apply 1 suggestion)\n"
+                .to_string(),
+            "\n".to_string(),
+        ];
+        let mut printed_suppression_notice = false;
+        let mut compiler_warnings = CompilerWarningFacts::None;
+        let mut compiler_warning_count = 0;
+        let mut compiler_fixable_count = 0;
+
+        flush_diagnostic_block(
+            &mut block,
+            &mut printed_suppression_notice,
+            &mut compiler_warnings,
+            &mut compiler_warning_count,
+            &mut compiler_fixable_count,
+            BuildOutputMode::Quiet,
+        );
+
+        assert_eq!(compiler_warning_count, 0);
+        assert_eq!(compiler_fixable_count, 0);
+    }
 }

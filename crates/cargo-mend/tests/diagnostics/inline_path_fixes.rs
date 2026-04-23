@@ -251,14 +251,13 @@ mod tests {
     let interaction = fs::read_to_string(temp.path().join("src/tui/interaction.rs"))
         .expect("read fixed interaction");
     assert!(
-        interaction.contains(
-            "mod tests {\n    use std::mem;\n    use crate::tui::app::SearchMode::Active;\n"
-        ),
-        "expected nested-module import placement, got:\n{interaction}"
+        interaction
+            .contains("mod tests {\n    use std::mem;\n    use crate::tui::app::SearchMode;\n"),
+        "expected nested-module import of the enum type, got:\n{interaction}"
     );
     assert!(
-        interaction.contains("mem::size_of_val(&Active);"),
-        "expected bare variant reference inside nested module, got:\n{interaction}"
+        interaction.contains("mem::size_of_val(&SearchMode::Active);"),
+        "expected enum-qualified variant reference inside nested module, got:\n{interaction}"
     );
 }
 
@@ -840,5 +839,228 @@ fn uses_inline() -> crate::error::Result<String> {
     assert!(
         consumer.contains("Result<String, String>"),
         "prelude Result should be unchanged, got:\n{consumer}"
+    );
+}
+
+/// Struct literal paths (`crate::foo::Bar { .. }`) and pattern paths
+/// (`let crate::foo::Bar { .. } = ..`, `Some(crate::foo::Bar(x))`) are not
+/// reached by the default `visit_expr_path` / `visit_type_path` passes. This
+/// verifies each form is rewritten.
+#[test]
+fn struct_literal_and_pattern_paths_get_rewritten() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_struct_literal_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod types;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/types.rs"),
+        r#"pub struct MyType { pub x: i32 }
+pub struct TupleType(pub i32);
+"#,
+    )
+    .expect("write types");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        r#"pub fn make() -> i32 {
+    let value = crate::parent::types::MyType { x: 1 };
+    let crate::parent::types::MyType { x } = value;
+    let tup = crate::parent::types::TupleType(42);
+    let crate::parent::types::TupleType(y) = tup;
+    x + y
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
+
+    assert!(
+        consumer.contains("use crate::parent::types::MyType;")
+            || consumer.contains("use super::types::MyType;"),
+        "expected MyType import, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("use crate::parent::types::TupleType;")
+            || consumer.contains("use super::types::TupleType;"),
+        "expected TupleType import, got:\n{consumer}"
+    );
+    // The `use` lines will still contain the qualified path; ensure the
+    // body no longer does.
+    let body = consumer
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("use "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !body.contains("crate::parent::types::MyType"),
+        "struct literal / pattern should be rewritten, got body:\n{body}"
+    );
+    assert!(
+        !body.contains("crate::parent::types::TupleType"),
+        "tuple-struct literal / pattern should be rewritten, got body:\n{body}"
+    );
+    assert!(
+        consumer.contains("MyType { x: 1 }"),
+        "expected bare struct literal, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("let MyType { x } = value;"),
+        "expected bare struct pattern, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("TupleType(42)"),
+        "expected bare tuple-struct literal, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("let TupleType(y) = tup;"),
+        "expected bare tuple-struct pattern, got:\n{consumer}"
+    );
+}
+
+/// Regression: running `cargo mend --fix` on a file that mixes an enum
+/// variant `RustProject::Package(...)`, a same-named struct literal
+/// `Package { ... }` (brought in via `use super::*`), and a struct
+/// associated-function call `Package::default()` must not introduce an import
+/// of the variant `Package` that would shadow the bare struct name.
+///
+/// This is the cargo-port-uses-cargo-metadata case that motivated the fix.
+#[test]
+fn enum_variant_and_same_named_struct_do_not_collide() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "enum_struct_collision_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/project")).expect("create src/project");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod project;\nmod consumer;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/project/mod.rs"),
+        r#"#[derive(Default)]
+pub struct Package {
+    pub name: String,
+}
+
+pub enum RustProject {
+    Package(Package),
+}
+"#,
+    )
+    .expect("write project mod");
+    // Consumer: uses the enum variant via a fully-qualified path, uses the
+    // struct literal with a bare name (imported via `use super::*` in the
+    // inner `tests` module), and calls `Package::default()` as a struct
+    // associated function — all three mentions share the leaf `Package`.
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r#"pub fn keep() {}
+
+#[cfg(test)]
+mod tests {
+    use crate::project::Package;
+
+    #[test]
+    fn build_package() {
+        let pkg = crate::project::RustProject::Package(Package {
+            name: "demo".into(),
+            ..Package::default()
+        });
+        let _ = pkg;
+    }
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/consumer.rs")).expect("read fixed consumer");
+
+    // `Package::default()` is a struct associated-fn call. prefer_module_import
+    // must NOT treat `Package` as a module (filesystem is case-insensitive on
+    // macOS/Windows) and must not add a module-style `use crate::project::Package;`.
+    assert!(
+        !consumer.contains("use crate::project::Package::"),
+        "unexpected variant-leaf import introduced, got:\n{consumer}"
+    );
+
+    // The enum-variant rewrite must import the parent type, not the variant,
+    // so the bare `Package` struct (from the existing `use`) is not shadowed.
+    assert!(
+        consumer.contains("use crate::project::RustProject;"),
+        "expected import of the enum type `RustProject`, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("RustProject::Package(Package {"),
+        "expected enum-qualified variant, got:\n{consumer}"
+    );
+
+    // The subsequent `cargo check` that `cargo mend --fix` runs as validation
+    // must succeed; the explicit build below guards against silent regressions.
+    let check = cargo_command()
+        .arg("check")
+        .arg("--tests")
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .output()
+        .expect("run cargo check");
+    assert!(
+        check.status.success(),
+        "post-fix cargo check failed: {}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
     );
 }

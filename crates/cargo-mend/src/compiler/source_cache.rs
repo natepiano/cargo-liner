@@ -113,10 +113,10 @@ pub(super) fn analysis_source_root_for(
 }
 
 pub(super) fn module_path_from_boundary_file(
-    src_root: &Path,
+    source_root: &Path,
     boundary_file: &Path,
 ) -> Option<Vec<String>> {
-    let relative = boundary_file.strip_prefix(src_root).ok()?;
+    let relative = boundary_file.strip_prefix(source_root).ok()?;
     let mut components = relative
         .components()
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
@@ -131,18 +131,18 @@ pub(super) fn module_path_from_boundary_file(
 }
 
 pub(super) fn module_path_from_source_file(
-    src_root: &Path,
+    source_root: &Path,
     source_file: &Path,
 ) -> Option<Vec<String>> {
     if source_file.file_name().and_then(|name| name.to_str()) == Some("mod.rs") {
-        module_path_from_dir(src_root, source_file.parent()?)
+        module_path_from_dir(source_root, source_file.parent()?)
     } else {
-        module_path_from_boundary_file(src_root, source_file)
+        module_path_from_boundary_file(source_root, source_file)
     }
 }
 
-pub(super) fn module_path_from_dir(src_root: &Path, module_dir: &Path) -> Option<Vec<String>> {
-    let relative = module_dir.strip_prefix(src_root).ok()?;
+pub(super) fn module_path_from_dir(source_root: &Path, module_dir: &Path) -> Option<Vec<String>> {
+    let relative = module_dir.strip_prefix(source_root).ok()?;
     let components = relative
         .components()
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
@@ -188,9 +188,9 @@ pub(super) fn flatten_use_tree(prefix: Vec<String>, tree: &UseTree, out: &mut Ve
     }
 }
 
-fn rust_source_files(src_root: &Path) -> Result<Vec<PathBuf>> {
+fn rust_source_files(source_root: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    collect_rust_source_files(src_root, &mut files)?;
+    collect_rust_source_files(source_root, &mut files)?;
     Ok(files)
 }
 
@@ -285,5 +285,56 @@ pub(super) fn extract_use_renames(prefix: Vec<String>, tree: &UseTree, out: &mut
             }
         },
         UseTree::Name(_) | UseTree::Glob(_) => {},
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    use super::analysis_source_root_for;
+    use super::module_path_from_source_file;
+
+    #[test]
+    fn analysis_source_root_ignores_build_scripts() {
+        let package_root = Path::new("/tmp/example-crate");
+
+        assert_eq!(
+            analysis_source_root_for(&package_root.join("src/lib.rs"), package_root),
+            Some(package_root.join("src"))
+        );
+        assert_eq!(
+            analysis_source_root_for(&package_root.join("src/bin/demo.rs"), package_root),
+            Some(package_root.join("src/bin"))
+        );
+        assert_eq!(
+            analysis_source_root_for(&package_root.join("examples/demo.rs"), package_root),
+            Some(package_root.join("examples"))
+        );
+        assert_eq!(
+            analysis_source_root_for(&package_root.join("build.rs"), package_root),
+            None
+        );
+    }
+
+    #[test]
+    fn module_path_from_source_file_treats_main_rs_as_crate_root() -> anyhow::Result<()> {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("mend-main-root-test-{unique}"));
+        let source_dir = temp_dir.join("src");
+        fs::create_dir_all(&source_dir)?;
+        let main_rs = source_dir.join("main.rs");
+        fs::write(&main_rs, "fn main() {}\n")?;
+
+        assert_eq!(
+            module_path_from_source_file(&source_dir, &main_rs),
+            Some(Vec::new())
+        );
+
+        fs::remove_dir_all(&temp_dir)?;
+        Ok(())
     }
 }

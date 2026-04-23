@@ -20,6 +20,7 @@ use super::constants::PUB_VISIBILITY_PREFIX;
 use super::diagnostics::Finding;
 use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
+use super::imports::ImportGroup;
 use super::imports::UseFix;
 use super::imports::ValidatedFixSet;
 use super::module_paths;
@@ -34,18 +35,22 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImport
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
     for package_root in &selection.package_roots {
-        let src_root = package_root.join("src");
-        if !src_root.is_dir() {
+        let source_root = package_root.join("src");
+        if !source_root.is_dir() {
             continue;
         }
-        for entry in WalkDir::new(&src_root).into_iter().filter_map(Result::ok) {
+        for entry in WalkDir::new(&source_root)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
             let path = entry.path();
             if !entry.file_type().is_file()
                 || path.extension().and_then(|ext| ext.to_str()) != Some("rs")
             {
                 continue;
             }
-            let (findings, fixes) = scan_file(selection.analysis_root.as_path(), &src_root, path)?;
+            let (findings, fixes) =
+                scan_file(selection.analysis_root.as_path(), &source_root, path)?;
             all_findings.extend(findings);
             all_fixes.extend(fixes);
         }
@@ -113,14 +118,14 @@ struct InlineCallFindingInputs<'a> {
 
 fn scan_file(
     analysis_root: &Path,
-    src_root: &Path,
+    source_root: &Path,
     path: &Path,
 ) -> Result<(Vec<Finding>, Vec<UseFix>)> {
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
         syn::parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    let current_module_path = module_paths::file_module_path(src_root, path)
+    let current_module_path = module_paths::file_module_path(source_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = line_offsets(&text);
     let file_context = ScanFileContext {
@@ -134,7 +139,7 @@ fn scan_file(
 
     // Pass 1: detect candidate function imports
     let mut detector = ImportDetector {
-        src_root,
+        source_root,
         current_module_path: &current_module_path,
         declared_modules: &declared_modules,
         candidates: Vec::new(),
@@ -143,7 +148,7 @@ fn scan_file(
 
     // Pass 3: detect inline fully-qualified function calls (no matching `use`)
     let mut inline_detector = InlineCallDetector {
-        src_root,
+        source_root,
         current_module_path: &current_module_path,
         declared_modules: &declared_modules,
         candidates: Vec::new(),
@@ -199,7 +204,7 @@ fn scan_file(
     if !inline_detector.candidates.is_empty() {
         let will_import_modules = build_will_import_modules(
             &syntax,
-            src_root,
+            source_root,
             &current_module_path,
             &module_to_functions,
         );
@@ -237,7 +242,7 @@ fn collect_declared_modules(syntax: &syn::File) -> BTreeSet<String> {
 
 fn build_will_import_modules(
     syntax: &syn::File,
-    src_root: &Path,
+    source_root: &Path,
     current_module_path: &[String],
     module_to_functions: &BTreeMap<String, Vec<RawCandidate>>,
 ) -> BTreeSet<Vec<String>> {
@@ -248,7 +253,7 @@ fn build_will_import_modules(
             && flat.rename.is_none()
             && let Some(absolute) = resolve_to_absolute(&flat.segments, current_module_path)
             && !absolute.is_empty()
-            && leaf_is_module(src_root, &absolute)
+            && leaf_is_module(source_root, &absolute)
         {
             will_import_modules.insert(absolute);
         }
@@ -330,12 +335,18 @@ fn build_inline_call_findings_and_fixes(
             related: None,
         });
 
+        let group = Some(ImportGroup {
+            bare_name: candidate.module_name.clone(),
+            full_path: candidate.absolute_module.join("::"),
+        });
+
         // Rewrite the call-site prefix: `crate::layout::` -> `layout::`
         fixes.push(UseFix {
-            path:        file_context.path.to_path_buf(),
-            start:       prefix_start_byte,
-            end:         leaf_start_byte,
-            replacement: format!("{}::", candidate.module_name),
+            path:         file_context.path.to_path_buf(),
+            start:        prefix_start_byte,
+            end:          leaf_start_byte,
+            replacement:  format!("{}::", candidate.module_name),
+            import_group: group.clone(),
         });
 
         // Insert `use <module_path>;` once per target module, unless already
@@ -350,10 +361,11 @@ fn build_inline_call_findings_and_fixes(
             continue;
         }
         fixes.push(UseFix {
-            path:        file_context.path.to_path_buf(),
-            start:       inline_inputs.file_insertion_offset,
-            end:         inline_inputs.file_insertion_offset,
-            replacement: format!("use {};\n", candidate.module_path),
+            path:         file_context.path.to_path_buf(),
+            start:        inline_inputs.file_insertion_offset,
+            end:          inline_inputs.file_insertion_offset,
+            replacement:  format!("use {};\n", candidate.module_path),
+            import_group: group,
         });
     }
 
@@ -406,19 +418,25 @@ fn build_findings_and_fixes(
                 related: None,
             });
 
+            let group = Some(ImportGroup {
+                bare_name: func.module_name.clone(),
+                full_path: func.absolute_module.join("::"),
+            });
             if rewritten_modules.insert(func.module_path.clone()) {
                 fixes.push(UseFix {
-                    path:        file_context.path.to_path_buf(),
-                    start:       byte_start,
-                    end:         byte_end,
-                    replacement: func.replacement_use.clone(),
+                    path:         file_context.path.to_path_buf(),
+                    start:        byte_start,
+                    end:          byte_end,
+                    replacement:  func.replacement_use.clone(),
+                    import_group: group,
                 });
             } else {
                 fixes.push(UseFix {
-                    path:        file_context.path.to_path_buf(),
-                    start:       byte_start,
-                    end:         byte_end_with_newline,
-                    replacement: String::new(),
+                    path:         file_context.path.to_path_buf(),
+                    start:        byte_start,
+                    end:          byte_end_with_newline,
+                    replacement:  String::new(),
+                    import_group: group,
                 });
             }
         }
@@ -426,11 +444,24 @@ fn build_findings_and_fixes(
 
     for reference in import_inputs.references {
         if let Some(&module_name) = import_inputs.func_to_module.get(reference.name.as_str()) {
+            let group = import_inputs
+                .module_to_functions
+                .iter()
+                .find_map(|(_, funcs)| {
+                    funcs
+                        .iter()
+                        .find(|func| func.module_name == module_name)
+                        .map(|func| ImportGroup {
+                            bare_name: func.module_name.clone(),
+                            full_path: func.absolute_module.join("::"),
+                        })
+                });
             fixes.push(UseFix {
-                path:        file_context.path.to_path_buf(),
-                start:       reference.byte_start,
-                end:         reference.byte_end,
-                replacement: format!("{module_name}::{}", reference.name),
+                path:         file_context.path.to_path_buf(),
+                start:        reference.byte_start,
+                end:          reference.byte_end,
+                replacement:  format!("{module_name}::{}", reference.name),
+                import_group: group,
             });
         }
     }
@@ -441,7 +472,7 @@ fn build_findings_and_fixes(
 // --- Pass 1: Detect function imports ---
 
 struct ImportDetector<'a> {
-    src_root:            &'a Path,
+    source_root:         &'a Path,
     current_module_path: &'a [String],
     declared_modules:    &'a BTreeSet<String>,
     candidates:          Vec<RawCandidate>,
@@ -450,7 +481,7 @@ struct ImportDetector<'a> {
 impl Visit<'_> for ImportDetector<'_> {
     fn visit_item_use(&mut self, node: &ItemUse) {
         if let Some(candidate) = analyze_function_import(
-            self.src_root,
+            self.source_root,
             self.current_module_path,
             self.declared_modules,
             node,
@@ -461,7 +492,7 @@ impl Visit<'_> for ImportDetector<'_> {
 }
 
 struct InlineCallDetector<'a> {
-    src_root:            &'a Path,
+    source_root:         &'a Path,
     current_module_path: &'a [String],
     declared_modules:    &'a BTreeSet<String>,
     candidates:          Vec<InlineCallCandidate>,
@@ -494,7 +525,7 @@ impl Visit<'_> for InlineCallDetector<'_> {
             return;
         }
         if let Some(candidate) = analyze_inline_call(
-            self.src_root,
+            self.source_root,
             self.current_module_path,
             self.declared_modules,
             node,
@@ -505,7 +536,7 @@ impl Visit<'_> for InlineCallDetector<'_> {
 }
 
 fn analyze_inline_call(
-    src_root: &Path,
+    source_root: &Path,
     current_module_path: &[String],
     declared_modules: &BTreeSet<String>,
     node: &ExprPath,
@@ -531,17 +562,25 @@ fn analyze_inline_call(
         return None;
     }
     // Leaf must not itself be a module on disk
-    if leaf_is_module(src_root, &absolute_segments) {
+    if leaf_is_module(source_root, &absolute_segments) {
         return None;
     }
     // The parent segments must resolve to an actual module file
     let absolute_module = absolute_segments[..absolute_segments.len() - 1].to_vec();
-    if absolute_module.is_empty() || !leaf_is_module(src_root, &absolute_module) {
+    if absolute_module.is_empty() || !leaf_is_module(source_root, &absolute_module) {
         return None;
     }
 
     let module_name = segments[segments.len() - 2].clone();
     if module_name == "super" || module_name == "crate" {
+        return None;
+    }
+    // Rust modules are conventionally snake_case. A PascalCase segment is a
+    // type (struct/enum), so `Foo::bar()` is a struct-associated call, not a
+    // module-qualified function. Guarding here also avoids false positives on
+    // case-insensitive filesystems (macOS/Windows) where `leaf_is_module`
+    // would otherwise match `Foo.rs` against a real `foo.rs`.
+    if !is_snake_case_module_name(&module_name) {
         return None;
     }
     if declared_modules.contains(&module_name) {
@@ -572,7 +611,7 @@ fn analyze_inline_call(
 }
 
 fn analyze_function_import(
-    src_root: &Path,
+    source_root: &Path,
     current_module_path: &[String],
     declared_modules: &BTreeSet<String>,
     node: &ItemUse,
@@ -607,7 +646,7 @@ fn analyze_function_import(
 
     // Check if the leaf is actually a module on the filesystem — module names are also
     // snake_case, so naming alone cannot distinguish them from functions
-    if leaf_is_module(src_root, &absolute_segments) {
+    if leaf_is_module(source_root, &absolute_segments) {
         return None;
     }
 
@@ -617,6 +656,12 @@ fn analyze_function_import(
 
     // Skip if the module name is `super` — `use super::super;` is nonsensical
     if module_name == "super" || module_name == "crate" {
+        return None;
+    }
+
+    // Modules are conventionally snake_case; a PascalCase segment is a type,
+    // not a module. See `analyze_inline_call` for the full rationale.
+    if !is_snake_case_module_name(&module_name) {
         return None;
     }
 
@@ -666,7 +711,7 @@ fn resolve_to_absolute(segments: &[String], current_module_path: &[String]) -> O
     }
 }
 
-fn leaf_is_module(src_root: &Path, absolute_segments: &[String]) -> bool {
+fn leaf_is_module(source_root: &Path, absolute_segments: &[String]) -> bool {
     if absolute_segments.is_empty() {
         return false;
     }
@@ -674,7 +719,7 @@ fn leaf_is_module(src_root: &Path, absolute_segments: &[String]) -> bool {
     let parent_segments = &absolute_segments[..absolute_segments.len() - 1];
     let leaf = &absolute_segments[absolute_segments.len() - 1];
 
-    let mut parent_dir = src_root.to_path_buf();
+    let mut parent_dir = source_root.to_path_buf();
     for seg in parent_segments {
         parent_dir.push(seg);
     }
@@ -749,7 +794,6 @@ fn extract_visibility_prefix(node: &ItemUse) -> String {
 
 fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {
     let mut segments = Vec::new();
-    let mut rename = None;
     let mut cursor = tree;
     loop {
         match cursor {
@@ -759,18 +803,22 @@ fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {
             },
             UseTree::Name(name) => {
                 segments.push(name.ident.to_string());
-                break;
+                break Some(FlattenedImport {
+                    segments,
+                    rename: None,
+                });
             },
             UseTree::Rename(rename_tree) => {
                 segments.push(rename_tree.ident.to_string());
-                rename = Some(rename_tree.rename.to_string());
-                break;
+                break Some(FlattenedImport {
+                    segments,
+                    rename: Some(rename_tree.rename.to_string()),
+                });
             },
             // Grouped imports (`UseTree::Group`) or glob (`UseTree::Glob`) — skip
-            _ => return None,
+            _ => break None,
         }
     }
-    Some(FlattenedImport { segments, rename })
 }
 
 struct FlattenedImport {
@@ -795,6 +843,8 @@ fn is_snake_case_function_name(name: &str) -> bool {
     name.chars()
         .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
 }
+
+fn is_snake_case_module_name(name: &str) -> bool { is_snake_case_function_name(name) }
 
 // --- Pass 2: Collect bare references ---
 

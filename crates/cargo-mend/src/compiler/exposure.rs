@@ -15,7 +15,7 @@ use super::source_cache::SourceCache;
 pub(super) fn child_item_is_exposed_by_other_crate_visible_signature(
     source_cache: &SourceCache,
     settings: &DriverSettings,
-    src_root: &Path,
+    source_root: &Path,
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
@@ -36,7 +36,7 @@ pub(super) fn child_item_is_exposed_by_other_crate_visible_signature(
         if type_is_exposed_outside_parent(
             source_cache,
             settings,
-            src_root,
+            source_root,
             child_file,
             &exposing_item_name,
         )? {
@@ -60,7 +60,7 @@ pub(super) fn child_item_is_exposed_by_other_crate_visible_signature(
         if type_is_exposed_outside_parent(
             source_cache,
             settings,
-            src_root,
+            source_root,
             child_file,
             &self_type_name,
         )? {
@@ -74,11 +74,11 @@ pub(super) fn child_item_is_exposed_by_other_crate_visible_signature(
 pub(super) fn child_item_is_exposed_by_sibling_boundary_signature(
     source_cache: &SourceCache,
     settings: &DriverSettings,
-    src_root: &Path,
+    source_root: &Path,
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
-    let Some(parent_boundary) = facade::parent_boundary_for_child(src_root, child_file) else {
+    let Some(parent_boundary) = facade::parent_boundary_for_child(source_root, child_file) else {
         return Ok(false);
     };
 
@@ -104,7 +104,7 @@ pub(super) fn child_item_is_exposed_by_sibling_boundary_signature(
             if type_is_exposed_outside_parent(
                 source_cache,
                 settings,
-                src_root,
+                source_root,
                 candidate_file,
                 &exposing_item_name,
             )? {
@@ -128,7 +128,7 @@ pub(super) fn child_item_is_exposed_by_sibling_boundary_signature(
             if type_is_exposed_outside_parent(
                 source_cache,
                 settings,
-                src_root,
+                source_root,
                 candidate_file,
                 &self_type_name,
             )? {
@@ -143,7 +143,7 @@ pub(super) fn child_item_is_exposed_by_sibling_boundary_signature(
 pub(super) fn impl_item_is_exposed_by_exported_self_type(
     source_cache: &SourceCache,
     settings: &DriverSettings,
-    src_root: &Path,
+    source_root: &Path,
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
@@ -189,7 +189,7 @@ pub(super) fn impl_item_is_exposed_by_exported_self_type(
                 if type_is_exposed_outside_parent(
                     source_cache,
                     settings,
-                    src_root,
+                    source_root,
                     check_file,
                     &self_type_name,
                 )? {
@@ -254,11 +254,11 @@ fn file_defines_type(source_cache: &SourceCache, path: &Path, type_name: &str) -
 pub(super) fn parent_boundary_public_signature_exposes_child_used_outside_parent(
     source_cache: &SourceCache,
     settings: &DriverSettings,
-    src_root: &Path,
+    source_root: &Path,
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
-    let Some(parent_boundary) = facade::parent_boundary_for_child(src_root, child_file) else {
+    let Some(parent_boundary) = facade::parent_boundary_for_child(source_root, child_file) else {
         return Ok(false);
     };
 
@@ -280,14 +280,14 @@ pub(super) fn parent_boundary_public_signature_exposes_child_used_outside_parent
         return Ok(false);
     }
 
-    for source_file in source_cache.source_files_under(src_root) {
+    for source_file in source_cache.source_files_under(source_root) {
         if source_file == parent_boundary.boundary_file
             || source_file.starts_with(&parent_boundary.subtree_root)
         {
             continue;
         }
         let Some(current_module_path) =
-            source_cache::module_path_from_source_file(src_root, source_file)
+            source_cache::module_path_from_source_file(source_root, source_file)
         else {
             continue;
         };
@@ -322,14 +322,14 @@ pub(super) fn parent_boundary_public_signature_exposes_child_used_outside_parent
 pub(super) fn type_is_exposed_outside_parent(
     source_cache: &SourceCache,
     settings: &DriverSettings,
-    src_root: &Path,
+    source_root: &Path,
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
     Ok(facade::parent_facade_export_status(
         source_cache,
         settings,
-        src_root,
+        source_root,
         child_file,
         item_name,
     )?
@@ -337,28 +337,28 @@ pub(super) fn type_is_exposed_outside_parent(
         || facade::public_reexport_exists_outside_parent(
             source_cache,
             settings,
-            src_root,
+            source_root,
             child_file,
             item_name,
         )?
         || child_item_is_exposed_by_other_crate_visible_signature(
             source_cache,
             settings,
-            src_root,
+            source_root,
             child_file,
             item_name,
         )?
         || child_item_is_exposed_by_sibling_boundary_signature(
             source_cache,
             settings,
-            src_root,
+            source_root,
             child_file,
             item_name,
         )?
         || parent_boundary_public_signature_exposes_child_used_outside_parent(
             source_cache,
             settings,
-            src_root,
+            source_root,
             child_file,
             item_name,
         )?)

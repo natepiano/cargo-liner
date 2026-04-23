@@ -82,11 +82,11 @@ pub(super) fn root_module_exports_item(
 pub(super) fn parent_facade_export_status(
     source_cache: &SourceCache,
     settings: &DriverSettings,
-    src_root: &Path,
+    source_root: &Path,
     child_file: &Path,
     item_name: &str,
 ) -> Result<Option<ParentFacadeExportStatus>> {
-    let Some(initial_boundary) = parent_boundary_for_child(src_root, child_file) else {
+    let Some(initial_boundary) = parent_boundary_for_child(source_root, child_file) else {
         return Ok(None);
     };
 
@@ -113,7 +113,7 @@ pub(super) fn parent_facade_export_status(
 
         // Not found at this level — walk up to the next ancestor.
         current_child.clone_from(&parent_boundary.boundary_file);
-        let Some(next_boundary) = parent_of_boundary(src_root, &current_child) else {
+        let Some(next_boundary) = parent_of_boundary(source_root, &current_child) else {
             return Ok(None);
         };
         parent_boundary = next_boundary;
@@ -121,7 +121,7 @@ pub(super) fn parent_facade_export_status(
 
     let parent_rel_path = parent_boundary
         .boundary_file
-        .strip_prefix(src_root)
+        .strip_prefix(source_root)
         .unwrap_or(&parent_boundary.boundary_file)
         .to_string_lossy()
         .replace('\\', "/");
@@ -131,7 +131,7 @@ pub(super) fn parent_facade_export_status(
     let usage = scan_facade_usage(
         source_cache,
         settings,
-        src_root,
+        source_root,
         &parent_boundary,
         &exported_names,
     )?;
@@ -151,17 +151,17 @@ pub(super) fn parent_facade_export_status(
 pub(super) fn scan_facade_usage(
     source_cache: &SourceCache,
     settings: &DriverSettings,
-    src_root: &Path,
+    source_root: &Path,
     parent_boundary: &ParentBoundary,
     exported_names: &ParentFacadeExports,
 ) -> Result<ParentFacadeUsage> {
     let mut usage = ParentFacadeUsage::Unused;
-    for source_path in source_cache.source_files_under(src_root) {
+    for source_path in source_cache.source_files_under(source_root) {
         if source_path == parent_boundary.boundary_file {
             continue;
         }
         let Some(current_module_path) =
-            source_cache::module_path_from_source_file(src_root, source_path)
+            source_cache::module_path_from_source_file(source_root, source_path)
         else {
             continue;
         };
@@ -268,16 +268,16 @@ pub(super) fn workspace_source_mentions_parent_export_literal(
 }
 
 pub(super) fn parent_boundary_for_child(
-    src_root: &Path,
+    source_root: &Path,
     child_file: &Path,
 ) -> Option<ParentBoundary> {
     let parent_dir = child_file.parent()?;
-    let parent_mod_rs = parent_dir.join("mod.rs");
-    if parent_mod_rs.is_file() {
+    let parent_module_rs = parent_dir.join("mod.rs");
+    if parent_module_rs.is_file() {
         return Some(ParentBoundary {
-            boundary_file: parent_mod_rs,
+            boundary_file: parent_module_rs,
             subtree_root:  parent_dir.to_path_buf(),
-            module_path:   source_cache::module_path_from_dir(src_root, parent_dir)?,
+            module_path:   source_cache::module_path_from_dir(source_root, parent_dir)?,
         });
     }
 
@@ -286,7 +286,7 @@ pub(super) fn parent_boundary_for_child(
         return Some(ParentBoundary {
             boundary_file: parent_file.clone(),
             subtree_root:  parent_dir.to_path_buf(),
-            module_path:   source_cache::module_path_from_boundary_file(src_root, &parent_file)?,
+            module_path:   source_cache::module_path_from_boundary_file(source_root, &parent_file)?,
         });
     }
 
@@ -298,21 +298,24 @@ pub(super) fn parent_boundary_for_child(
 /// `parent_boundary_for_child` cannot be called on a `mod.rs` file because it
 /// would find itself.  This helper handles both `mod.rs` and named boundary
 /// files (e.g. `tools.rs`).
-pub(super) fn parent_of_boundary(src_root: &Path, boundary_file: &Path) -> Option<ParentBoundary> {
+pub(super) fn parent_of_boundary(
+    source_root: &Path,
+    boundary_file: &Path,
+) -> Option<ParentBoundary> {
     if boundary_file.file_name()?.to_str() != Some("mod.rs") {
-        return parent_boundary_for_child(src_root, boundary_file);
+        return parent_boundary_for_child(source_root, boundary_file);
     }
 
     // For mod.rs the enclosing directory IS the module, so go up one more
     // level to reach the parent module's directory.
     let container_dir = boundary_file.parent()?.parent()?;
 
-    let mod_rs = container_dir.join("mod.rs");
-    if mod_rs.is_file() {
+    let module_rs = container_dir.join("mod.rs");
+    if module_rs.is_file() {
         return Some(ParentBoundary {
-            boundary_file: mod_rs,
+            boundary_file: module_rs,
             subtree_root:  container_dir.to_path_buf(),
-            module_path:   source_cache::module_path_from_dir(src_root, container_dir)?,
+            module_path:   source_cache::module_path_from_dir(source_root, container_dir)?,
         });
     }
 
@@ -321,7 +324,7 @@ pub(super) fn parent_of_boundary(src_root: &Path, boundary_file: &Path) -> Optio
         return Some(ParentBoundary {
             boundary_file: named_file.clone(),
             subtree_root:  container_dir.to_path_buf(),
-            module_path:   source_cache::module_path_from_boundary_file(src_root, &named_file)?,
+            module_path:   source_cache::module_path_from_boundary_file(source_root, &named_file)?,
         });
     }
 
@@ -585,19 +588,20 @@ pub(super) const fn merge_reference_usage(
 pub(super) fn public_reexport_exists_outside_parent(
     source_cache: &SourceCache,
     settings: &DriverSettings,
-    src_root: &Path,
+    source_root: &Path,
     child_file: &Path,
     item_name: &str,
 ) -> Result<bool> {
-    let Some(parent_boundary) = parent_boundary_for_child(src_root, child_file) else {
+    let Some(parent_boundary) = parent_boundary_for_child(source_root, child_file) else {
         return Ok(false);
     };
-    let Some(child_module_path) = source_cache::module_path_from_source_file(src_root, child_file)
+    let Some(child_module_path) =
+        source_cache::module_path_from_source_file(source_root, child_file)
     else {
         return Ok(false);
     };
 
-    for source_file in source_cache.source_files_under(src_root) {
+    for source_file in source_cache.source_files_under(source_root) {
         if source_file.starts_with(&parent_boundary.subtree_root) {
             continue;
         }
@@ -605,7 +609,7 @@ pub(super) fn public_reexport_exists_outside_parent(
             continue;
         };
         let Some(current_module_path) =
-            source_cache::module_path_from_source_file(src_root, source_file)
+            source_cache::module_path_from_source_file(source_root, source_file)
         else {
             continue;
         };
@@ -657,4 +661,53 @@ pub(super) fn public_reexport_exists_outside_parent(
     }
 
     Ok(false)
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use super::ParentFacadeExports;
+    use super::ParentFacadeVisibility;
+    use super::exported_names_from_parent_boundary;
+
+    #[test]
+    fn grouped_parent_pub_use_is_fix_supported() {
+        let source = "pub use report_writer::{ReportDefinition, ReportWriter};\n";
+        let file = syn::parse_file(source).unwrap();
+        let exports =
+            exported_names_from_parent_boundary(&file, "report_writer", "ReportDefinition");
+        assert_eq!(exports.explicit, vec!["ReportDefinition".to_string()]);
+        assert!(exports.fix_supported);
+    }
+
+    #[test]
+    fn multiline_grouped_parent_pub_use_is_fix_supported() {
+        let source = "pub use child::{\n    Thing,\n    Other,\n};\n";
+        let file = syn::parse_file(source).unwrap();
+        let exports = exported_names_from_parent_boundary(&file, "child", "Thing");
+        assert_eq!(exports.explicit, vec!["Thing".to_string()]);
+        assert!(exports.fix_supported);
+    }
+
+    #[test]
+    fn grouped_parent_pub_use_with_rename_is_manual_only() {
+        let source = "pub use child::{Thing as RenamedThing, Other};\n";
+        let file = syn::parse_file(source).unwrap();
+        let exports = exported_names_from_parent_boundary(&file, "child", "Thing");
+        assert_eq!(
+            exports,
+            ParentFacadeExports {
+                explicit:      vec!["RenamedThing".to_string()],
+                fix_supported: false,
+                visibility:    Some(ParentFacadeVisibility::Public),
+            }
+        );
+
+        let exports = exported_names_from_parent_boundary(&file, "child", "Other");
+        assert_eq!(exports.explicit, vec!["Other".to_string()]);
+        assert!(exports.fix_supported);
+    }
 }

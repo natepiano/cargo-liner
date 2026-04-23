@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `prefer_module_import` now flags inline fully-qualified function calls (e.g. `crate::layout::set_root_grow_height(tree)`) with no matching `use`. `--fix` inserts `use crate::layout;` and rewrites the call site to `layout::set_root_grow_height(tree)`, deduplicating against existing module imports and function imports that pass 1 will rewrite
 
+### Changed
+- `inline_path_qualified_type --fix` now also shortens fully-qualified paths that appear as struct construction (`crate::foo::Bar { .. }`) or destructuring (`let crate::foo::Bar { x } = ..`, `Some(crate::foo::Bar(x))`). Previously these spots were left alone, so a single file could end up with a mix of shortened and still-qualified references to the same type
+
+### Fixed
+- `cargo mend --fix` no longer breaks the build when a file mixes an enum variant and a same-named struct (e.g. `RustProject::Package` alongside a `Package` struct). The enum variant is now imported via its parent type, so existing bare uses of the struct keep resolving
+- `cargo mend --fix` no longer turns a struct associated-function call like `Foo::bar()` into a bogus `use crate::...::Foo;` import
+
 ## [0.7.0] - 2026-04-16
 
 ### Added

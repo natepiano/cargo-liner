@@ -24,7 +24,7 @@ pub(super) fn current_analysis_fingerprint() -> String {
 #[derive(Debug, Clone)]
 pub(super) struct DriverSettings {
     pub config_root:          PathBuf,
-    pub config:               VisibilityConfig,
+    pub visibility_config:    VisibilityConfig,
     pub config_fingerprint:   String,
     pub analysis_fingerprint: String,
     pub scope_fingerprint:    String,
@@ -37,7 +37,7 @@ impl DriverSettings {
         let config_root = PathBuf::from(
             env::var_os(CONFIG_ROOT_ENV).context("missing MEND_CONFIG_ROOT for compiler driver")?,
         );
-        let config = serde_json::from_str(
+        let visibility_config = serde_json::from_str(
             &env::var(CONFIG_JSON_ENV).context("missing MEND_CONFIG_JSON for compiler driver")?,
         )
         .context("failed to parse MEND_CONFIG_JSON")?;
@@ -56,7 +56,7 @@ impl DriverSettings {
 
         Ok(Self {
             config_root,
-            config,
+            visibility_config,
             config_fingerprint,
             analysis_fingerprint: current_analysis_fingerprint(),
             scope_fingerprint,
@@ -133,7 +133,7 @@ mod tests {
     fn config_relative_path_for_settings_handles_package_relative_workspace_paths() {
         let settings = super::DriverSettings {
             config_root:          PathBuf::from("/workspace/root"),
-            config:               VisibilityConfig::default(),
+            visibility_config:    VisibilityConfig::default(),
             config_fingerprint:   "test".to_string(),
             scope_fingerprint:    "scope".to_string(),
             findings_dir:         PathBuf::from("/workspace/root/target/mend-findings"),
@@ -160,7 +160,7 @@ mod tests {
         )?;
         let settings = super::DriverSettings {
             config_root,
-            config: VisibilityConfig::default(),
+            visibility_config: VisibilityConfig::default(),
             config_fingerprint: "test".to_string(),
             scope_fingerprint: "scope".to_string(),
             findings_dir: temp.path().join("workspace/target/mend-findings"),

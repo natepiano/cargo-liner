@@ -18,6 +18,7 @@ use super::config::DiagnosticCode;
 use super::diagnostics::Finding;
 use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
+use super::imports::ImportGroup;
 use super::imports::UseFix;
 use super::imports::ValidatedFixSet;
 use super::module_paths;
@@ -32,18 +33,22 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<InlinePathScan> {
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
     for package_root in &selection.package_roots {
-        let src_root = package_root.join("src");
-        if !src_root.is_dir() {
+        let source_root = package_root.join("src");
+        if !source_root.is_dir() {
             continue;
         }
-        for entry in WalkDir::new(&src_root).into_iter().filter_map(Result::ok) {
+        for entry in WalkDir::new(&source_root)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
             let path = entry.path();
             if !entry.file_type().is_file()
                 || path.extension().and_then(|ext| ext.to_str()) != Some("rs")
             {
                 continue;
             }
-            let (findings, fixes) = scan_file(selection.analysis_root.as_path(), &src_root, path)?;
+            let (findings, fixes) =
+                scan_file(selection.analysis_root.as_path(), &source_root, path)?;
             all_findings.extend(findings);
             all_fixes.extend(fixes);
         }
@@ -57,10 +62,21 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<InlinePathScan> {
 }
 
 struct InlinePathOccurrence {
-    full_path:  String,
-    type_name:  String,
-    span_start: LineColumn,
-    span_end:   LineColumn,
+    /// The original fully-qualified path as written (e.g.
+    /// `crate::project::RustProject::Package`).
+    full_path:   String,
+    /// The path we intend to add as a `use` statement (e.g.
+    /// `crate::project::RustProject`). For enum variants this is the parent
+    /// type, not the variant itself.
+    import_path: String,
+    /// The bare last-segment of `import_path` — the name brought into scope
+    /// by the `use` (e.g. `RustProject`). Used for collision detection.
+    import_name: String,
+    /// What replaces the inline fully-qualified path in the source. For an
+    /// enum variant this is `Enum::Variant`; for a plain type it is `Type`.
+    replacement: String,
+    span_start:  LineColumn,
+    span_end:    LineColumn,
 }
 
 struct ScopeInfo {
@@ -90,7 +106,7 @@ struct ScopeCollectionContext<'a> {
 
 fn scan_file(
     analysis_root: &Path,
-    src_root: &Path,
+    source_root: &Path,
     path: &Path,
 ) -> Result<(Vec<Finding>, Vec<UseFix>)> {
     let text =
@@ -98,7 +114,7 @@ fn scan_file(
     let syntax =
         syn::parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
     let offsets = line_offsets(&text);
-    let base_module_path = module_paths::file_module_path(src_root, path)
+    let base_module_path = module_paths::file_module_path(source_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let mut scopes = Vec::new();
     let mut scope_collection_context = ScopeCollectionContext {
@@ -145,7 +161,7 @@ fn scan_file(
 
     for occ in &visitor.occurrences {
         // Skip collisions
-        if collision_names.contains(&occ.type_name) {
+        if collision_names.contains(&occ.import_name) {
             continue;
         }
 
@@ -169,19 +185,27 @@ fn scan_file(
             item: None,
             message: format!(
                 "use a `use` import for `{}` instead of inline path",
-                occ.type_name
+                occ.import_name
             ),
-            suggestion: Some(format!("consider adding: `use {};`", occ.full_path)),
+            suggestion: Some(format!("consider adding: `use {};`", occ.import_path)),
             fixability: FixSupport::InlinePathQualifiedType,
             related: None,
         });
 
-        // Replace the inline path with just the type name
+        // Group the rewrite and its companion `use` insertion so the combining
+        // layer can drop them together on cross-pass name collisions.
+        let group = Some(ImportGroup {
+            bare_name: occ.import_name.clone(),
+            full_path: occ.import_path.clone(),
+        });
+
+        // Replace the inline path with the shortened form
         fixes.push(UseFix {
-            path:        path.to_path_buf(),
-            start:       byte_start,
-            end:         byte_end,
-            replacement: occ.type_name.clone(),
+            path:         path.to_path_buf(),
+            start:        byte_start,
+            end:          byte_end,
+            replacement:  occ.replacement.clone(),
+            import_group: group.clone(),
         });
 
         let Some(scope_id) = find_innermost_scope(&scopes, byte_start) else {
@@ -190,16 +214,17 @@ fn scan_file(
         let scope = &scopes[scope_id];
 
         // Insert a `use` statement in the containing scope, not always at file scope.
-        if !scope.existing_imports.contains(&occ.full_path)
-            && inserted_use_paths.insert((scope_id, occ.full_path.clone()))
+        if !scope.existing_imports.contains(&occ.import_path)
+            && inserted_use_paths.insert((scope_id, occ.import_path.clone()))
         {
-            let use_path = canonicalize_inserted_use_path(scope, &occ.full_path);
+            let use_path = canonicalize_inserted_use_path(scope, &occ.import_path);
             let use_text = format!("{}use {use_path};\n", scope.indent);
             fixes.push(UseFix {
-                path:        path.to_path_buf(),
-                start:       scope.insertion_offset,
-                end:         scope.insertion_offset,
-                replacement: use_text,
+                path:         path.to_path_buf(),
+                start:        scope.insertion_offset,
+                end:          scope.insertion_offset,
+                replacement:  use_text,
+                import_group: group,
             });
         }
     }
@@ -322,17 +347,24 @@ fn find_collision_names(
     bare_type_names: &BTreeSet<String>,
     existing_imports: &BTreeSet<String>,
 ) -> BTreeSet<String> {
+    // Group by the name that will be brought into scope by the `use` (the
+    // `import_name`), and track the set of distinct import paths per name.
+    // If more than one distinct path maps to the same import name, the
+    // imports would collide — skip them all.
     let mut name_to_paths: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for occ in occurrences {
         name_to_paths
-            .entry(&occ.type_name)
+            .entry(&occ.import_name)
             .or_default()
-            .insert(&occ.full_path);
+            .insert(&occ.import_path);
     }
 
     let mut collisions = BTreeSet::new();
     for (name, paths) in &name_to_paths {
         let ambiguous = paths.len() > 1;
+        // If the name is already used bare somewhere in the file (e.g.
+        // `use super::*` brings in a struct `Package`), introducing a new
+        // `use crate::other::Package;` would shadow it.
         let would_shadow =
             bare_type_names.contains(*name) && !paths.iter().all(|p| existing_imports.contains(*p));
         if ambiguous || would_shadow {
@@ -369,6 +401,23 @@ impl InlinePathVisitor {
 
         let full_path = segments.join("::");
 
+        // Heuristic: if the penultimate segment is also PascalCase, the leaf
+        // is almost certainly an enum variant (or associated type/const) of
+        // that type. Import the parent type, not the leaf, so that variants
+        // stay disambiguated by their enum container (`RustProject::Package`
+        // rather than bare `Package`). This avoids collisions with
+        // same-named structs or other variants that share a leaf name.
+        let penultimate = &segments[segments.len() - 2];
+        let (import_segments, import_name, replacement) =
+            if is_pascal_case(penultimate) && penultimate != "Self" {
+                let import_segments = segments[..segments.len() - 1].to_vec();
+                let replacement = format!("{penultimate}::{leaf}");
+                (import_segments, penultimate.clone(), replacement)
+            } else {
+                (segments.clone(), leaf.clone(), leaf.clone())
+            };
+        let import_path = import_segments.join("::");
+
         // Use ident spans to exclude generic arguments from the replacement range.
         // path.span() includes generic args (e.g., `<T>`), but we only want to
         // replace the path portion, leaving generic args in place.
@@ -378,7 +427,9 @@ impl InlinePathVisitor {
 
         self.occurrences.push(InlinePathOccurrence {
             full_path,
-            type_name: leaf.clone(),
+            import_path,
+            import_name,
+            replacement,
             span_start: first_ident_span.start(),
             span_end: last_ident_span.end(),
         });
@@ -415,6 +466,53 @@ impl Visit<'_> for InlinePathVisitor {
             }
         }
         // Don't recurse — path segments don't contain sub-expressions
+    }
+
+    fn visit_expr_struct(&mut self, node: &syn::ExprStruct) {
+        // `Foo { .. }` and `crate::foo::Bar { .. }` — the path of a struct
+        // literal isn't reached by `visit_expr_path` / `visit_type_path`,
+        // so handle it explicitly.
+        if node.qself.is_none() {
+            self.check_path(&node.path);
+            if node.path.segments.len() == 1 {
+                let name = node.path.segments[0].ident.to_string();
+                if is_pascal_case(&name) {
+                    self.bare_type_names.insert(name);
+                }
+            }
+        }
+        syn::visit::visit_expr_struct(self, node);
+    }
+
+    fn visit_pat_struct(&mut self, node: &syn::PatStruct) {
+        // `Foo { .. }` and `crate::foo::Bar { .. }` in pattern position
+        // (`let Bar { .. } = ...`, match arms) — also not visited by
+        // `visit_expr_path` / `visit_type_path`.
+        if node.qself.is_none() {
+            self.check_path(&node.path);
+            if node.path.segments.len() == 1 {
+                let name = node.path.segments[0].ident.to_string();
+                if is_pascal_case(&name) {
+                    self.bare_type_names.insert(name);
+                }
+            }
+        }
+        syn::visit::visit_pat_struct(self, node);
+    }
+
+    fn visit_pat_tuple_struct(&mut self, node: &syn::PatTupleStruct) {
+        // `Foo(..)` in pattern position — e.g. `let Foo(x) = ...` or
+        // `Some(Enum::Variant(x))` match arms.
+        if node.qself.is_none() {
+            self.check_path(&node.path);
+            if node.path.segments.len() == 1 {
+                let name = node.path.segments[0].ident.to_string();
+                if is_pascal_case(&name) {
+                    self.bare_type_names.insert(name);
+                }
+            }
+        }
+        syn::visit::visit_pat_tuple_struct(self, node);
     }
 }
 

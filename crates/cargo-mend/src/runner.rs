@@ -36,15 +36,15 @@ use super::selection::CargoCheckPlan;
 use super::selection::Selection;
 
 pub(crate) struct MendRunner<'a> {
-    selection:  &'a Selection,
-    cargo_plan: &'a CargoCheckPlan,
-    config:     &'a LoadedConfig,
-    color:      render::ColorMode,
-    output:     render::OutputFormat,
+    selection:     &'a Selection,
+    cargo_plan:    &'a CargoCheckPlan,
+    loaded_config: &'a LoadedConfig,
+    color:         render::ColorMode,
+    output:        render::OutputFormat,
 }
 
 struct RunPlan {
-    mode:                      OperationMode,
+    operation_mode:            OperationMode,
     report:                    Report,
     import_scan:               Option<ImportScan>,
     prefer_module_import_scan: Option<PreferModuleImportScan>,
@@ -81,28 +81,31 @@ impl<'a> MendRunner<'a> {
     pub(crate) const fn new(
         selection: &'a Selection,
         cargo_plan: &'a CargoCheckPlan,
-        config: &'a LoadedConfig,
+        loaded_config: &'a LoadedConfig,
         color: render::ColorMode,
         output: render::OutputFormat,
     ) -> Self {
         Self {
             selection,
             cargo_plan,
-            config,
+            loaded_config,
             color,
             output,
         }
     }
 
-    pub(crate) fn run(&self, mode: OperationMode) -> Result<ExecutionOutcome, MendFailure> {
-        let planned = self.plan(mode)?;
+    pub(crate) fn run(
+        &self,
+        operation_mode: OperationMode,
+    ) -> Result<ExecutionOutcome, MendFailure> {
+        let planned = self.plan(operation_mode)?;
         self.execute(planned)
     }
 
-    fn plan(&self, mode: OperationMode) -> Result<RunPlan, MendFailure> {
+    fn plan(&self, operation_mode: OperationMode) -> Result<RunPlan, MendFailure> {
         let output_mode = if self.output == render::OutputFormat::Json {
             BuildOutputMode::Json
-        } else if mode.fixes.contains(FixKind::FixPubUse) {
+        } else if operation_mode.fixes.contains(FixKind::FixPubUse) {
             BuildOutputMode::SuppressUnusedImportWarnings
         } else {
             BuildOutputMode::Full
@@ -112,29 +115,32 @@ impl<'a> MendRunner<'a> {
         let check_duration = selection_result.check_duration;
         let compiler_warnings = selection_result.compiler_warnings;
         let compiler_fixable = selection_result.compiler_fixable;
-        let diagnostics = &self.config.diagnostics;
-        let import_scan = (mode.fixes.contains(FixKind::ShortenImport)
-            && (diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
-                || diagnostics.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)))
+        let diagnostics_config = &self.loaded_config.diagnostics_config;
+        let import_scan = (operation_mode.fixes.contains(FixKind::ShortenImport)
+            && (diagnostics_config.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
+                || diagnostics_config.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)))
         .then(|| imports::scan_selection(self.selection))
         .transpose()
         .map_err(MendFailure::Unexpected)?;
-        let prefer_module_import_scan = (mode.fixes.contains(FixKind::PreferModuleImport)
-            && diagnostics.is_enabled(DiagnosticCode::PreferModuleImport))
-        .then(|| prefer_module_import::scan_selection(self.selection))
-        .transpose()
-        .map_err(MendFailure::Unexpected)?;
-        let inline_path_scan = (mode.fixes.contains(FixKind::InlinePathQualifiedType)
-            && diagnostics.is_enabled(DiagnosticCode::InlinePathQualifiedType))
+        let prefer_module_import_scan =
+            (operation_mode.fixes.contains(FixKind::PreferModuleImport)
+                && diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport))
+            .then(|| prefer_module_import::scan_selection(self.selection))
+            .transpose()
+            .map_err(MendFailure::Unexpected)?;
+        let inline_path_scan = (operation_mode
+            .fixes
+            .contains(FixKind::InlinePathQualifiedType)
+            && diagnostics_config.is_enabled(DiagnosticCode::InlinePathQualifiedType))
         .then(|| inline_path_qualified_type::scan_selection(self.selection))
         .transpose()
         .map_err(MendFailure::Unexpected)?;
-        let narrow_pub_crate_scan = (mode.fixes.contains(FixKind::NarrowToPubCrate)
-            && diagnostics.is_enabled(DiagnosticCode::NarrowToPubCrate))
+        let narrow_pub_crate_scan = (operation_mode.fixes.contains(FixKind::NarrowToPubCrate)
+            && diagnostics_config.is_enabled(DiagnosticCode::NarrowToPubCrate))
         .then(|| narrow_pub_crate::scan_from_report(&report))
         .transpose()
         .map_err(MendFailure::Unexpected)?;
-        let pub_use_scan = mode
+        let pub_use_scan = operation_mode
             .fixes
             .contains(FixKind::FixPubUse)
             .then(|| pub_use_fixes::scan_selection(self.selection, &report))
@@ -142,7 +148,7 @@ impl<'a> MendRunner<'a> {
             .map_err(MendFailure::Unexpected)?;
 
         Ok(RunPlan {
-            mode,
+            operation_mode,
             report,
             import_scan,
             prefer_module_import_scan,
@@ -159,7 +165,7 @@ impl<'a> MendRunner<'a> {
         let check_duration = planned.check_duration;
         let compiler_warnings = planned.compiler_warnings;
         let compiler_fixable = planned.compiler_fixable;
-        match planned.mode.intent {
+        match planned.operation_mode.intent {
             OperationIntent::ReadOnly => Ok(ExecutionOutcome {
                 report: planned.report,
                 notice: None,
@@ -169,7 +175,7 @@ impl<'a> MendRunner<'a> {
             }),
             OperationIntent::DryRun => {
                 let notice = Self::build_fix_notice(
-                    planned.mode.intent,
+                    planned.operation_mode.intent,
                     Some(&planned.report),
                     planned.fix_scans(),
                 );
@@ -192,8 +198,11 @@ impl<'a> MendRunner<'a> {
         let fix_scans = planned.fix_scans();
         let fixes = Self::combined_fixes(fix_scans)?;
         if fixes.is_empty() {
-            let notice =
-                Self::build_fix_notice(planned.mode.intent, Some(&planned.report), fix_scans);
+            let notice = Self::build_fix_notice(
+                planned.operation_mode.intent,
+                Some(&planned.report),
+                fix_scans,
+            );
             return Ok(ExecutionOutcome {
                 report: planned.report,
                 notice,
@@ -209,7 +218,7 @@ impl<'a> MendRunner<'a> {
             Ok(validation) => {
                 let check_duration = plan_check_duration + validation.check_duration;
                 let notice = Self::build_fix_notice(
-                    planned.mode.intent,
+                    planned.operation_mode.intent,
                     Some(&validation.report),
                     fix_scans,
                 );
@@ -273,6 +282,9 @@ impl<'a> MendRunner<'a> {
         if let Some(scan) = fix_scans.pub_use {
             fixes.extend(scan.fixes.iter().cloned());
         }
+
+        let fixes = drop_conflicting_import_groups(fixes);
+
         imports::ValidatedFixSet::from_vec(fixes).map_err(MendFailure::Unexpected)
     }
 
@@ -329,25 +341,25 @@ impl<'a> MendRunner<'a> {
         let mut result = compiler::run_selection(
             self.selection,
             self.cargo_plan,
-            self.config,
+            self.loaded_config,
             output_mode,
             self.color,
         )?;
         let report = &mut result.report;
-        let diagnostics = &self.config.diagnostics;
-        if diagnostics.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
-            || diagnostics.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)
+        let diagnostics_config = &self.loaded_config.diagnostics_config;
+        if diagnostics_config.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
+            || diagnostics_config.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)
         {
             let import_scan =
                 imports::scan_selection(self.selection).map_err(MendFailure::Unexpected)?;
             report.findings.extend(import_scan.findings);
         }
-        if diagnostics.is_enabled(DiagnosticCode::PreferModuleImport) {
+        if diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport) {
             let prefer_module_import_scan = prefer_module_import::scan_selection(self.selection)
                 .map_err(MendFailure::Unexpected)?;
             report.findings.extend(prefer_module_import_scan.findings);
         }
-        if diagnostics.is_enabled(DiagnosticCode::InlinePathQualifiedType) {
+        if diagnostics_config.is_enabled(DiagnosticCode::InlinePathQualifiedType) {
             let inline_path_scan = inline_path_qualified_type::scan_selection(self.selection)
                 .map_err(MendFailure::Unexpected)?;
             report.findings.extend(inline_path_scan.findings);
@@ -387,8 +399,209 @@ impl<'a> MendRunner<'a> {
         // Filter out disabled diagnostics
         report
             .findings
-            .retain(|f| self.config.diagnostics.is_enabled(f.code));
+            .retain(|f| self.loaded_config.diagnostics_config.is_enabled(f.code));
         report.refresh_summary();
         Ok(result)
+    }
+}
+
+/// Cross-pass import reservation.
+///
+/// Each pass tags its "`use X;` insertion + the rewrites that depend on
+/// it" with a shared [`imports::ImportGroup`] (bare name + full path). If
+/// two different passes each want to bring a *different* full path into
+/// scope under the *same* bare name within the same file, applying both
+/// would either produce duplicate-name errors or silently shadow an
+/// existing binding. The safe default is to drop every fix in any
+/// conflicting group so the file either compiles after the remaining
+/// fixes land or is left for the user to reconcile. Untagged fixes
+/// (`import_group: None`) pass through unchanged.
+fn drop_conflicting_import_groups(fixes: Vec<imports::UseFix>) -> Vec<imports::UseFix> {
+    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    let mut bare_name_to_paths: BTreeMap<(PathBuf, String), BTreeSet<String>> = BTreeMap::new();
+    for fix in &fixes {
+        if let Some(group) = &fix.import_group {
+            bare_name_to_paths
+                .entry((fix.path.clone(), group.bare_name.clone()))
+                .or_default()
+                .insert(group.full_path.clone());
+        }
+    }
+
+    let conflicting: BTreeSet<(PathBuf, String)> = bare_name_to_paths
+        .into_iter()
+        .filter(|(_, paths)| paths.len() > 1)
+        .map(|(key, _)| key)
+        .collect();
+
+    if conflicting.is_empty() {
+        return fixes;
+    }
+
+    fixes
+        .into_iter()
+        .filter(|fix| {
+            fix.import_group.as_ref().is_none_or(|group| {
+                !conflicting.contains(&(fix.path.clone(), group.bare_name.clone()))
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::drop_conflicting_import_groups;
+    use super::imports::ImportGroup;
+    use super::imports::UseFix;
+
+    fn tagged(path: &str, start: usize, replacement: &str, bare: &str, full: &str) -> UseFix {
+        UseFix {
+            path: PathBuf::from(path),
+            start,
+            end: start,
+            replacement: replacement.to_string(),
+            import_group: Some(ImportGroup {
+                bare_name: bare.to_string(),
+                full_path: full.to_string(),
+            }),
+        }
+    }
+
+    fn untagged(path: &str, start: usize, replacement: &str) -> UseFix {
+        UseFix {
+            path: PathBuf::from(path),
+            start,
+            end: start,
+            replacement: replacement.to_string(),
+            import_group: None,
+        }
+    }
+
+    #[test]
+    fn no_conflicts_pass_through_unchanged() {
+        let fixes = vec![
+            tagged(
+                "src/a.rs",
+                0,
+                "use crate::foo::Bar;\n",
+                "Bar",
+                "crate::foo::Bar",
+            ),
+            tagged("src/a.rs", 50, "Bar", "Bar", "crate::foo::Bar"),
+            tagged(
+                "src/a.rs",
+                0,
+                "use crate::foo::Baz;\n",
+                "Baz",
+                "crate::foo::Baz",
+            ),
+        ];
+        let result = drop_conflicting_import_groups(fixes);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn same_bare_name_different_paths_drops_all_tagged() {
+        // Two passes both want to introduce `Package` but from different paths.
+        let fixes = vec![
+            tagged(
+                "src/a.rs",
+                0,
+                "use crate::a::Package;\n",
+                "Package",
+                "crate::a::Package",
+            ),
+            tagged("src/a.rs", 50, "Package", "Package", "crate::a::Package"),
+            tagged(
+                "src/a.rs",
+                0,
+                "use crate::b::Package;\n",
+                "Package",
+                "crate::b::Package",
+            ),
+            tagged("src/a.rs", 75, "Package", "Package", "crate::b::Package"),
+        ];
+        let result = drop_conflicting_import_groups(fixes);
+        assert!(
+            result.is_empty(),
+            "conflicting-group fixes should all be dropped, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn same_bare_name_same_full_path_kept() {
+        // Same group identity across fixes — not a conflict.
+        let fixes = vec![
+            tagged(
+                "src/a.rs",
+                0,
+                "use crate::a::Package;\n",
+                "Package",
+                "crate::a::Package",
+            ),
+            tagged("src/a.rs", 50, "Package", "Package", "crate::a::Package"),
+            tagged("src/a.rs", 80, "Package", "Package", "crate::a::Package"),
+        ];
+        let result = drop_conflicting_import_groups(fixes);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn conflict_isolated_per_file() {
+        // Same bare name, different paths — but in different files. No conflict.
+        let fixes = vec![
+            tagged(
+                "src/a.rs",
+                0,
+                "use crate::a::Package;\n",
+                "Package",
+                "crate::a::Package",
+            ),
+            tagged(
+                "src/b.rs",
+                0,
+                "use crate::b::Package;\n",
+                "Package",
+                "crate::b::Package",
+            ),
+        ];
+        let result = drop_conflicting_import_groups(fixes);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn untagged_fixes_always_pass_through_even_with_conflicts() {
+        // A conflict on `Package` should drop tagged fixes but leave an
+        // unrelated `ShortenImport`-style untagged fix intact.
+        let fixes = vec![
+            tagged(
+                "src/a.rs",
+                0,
+                "use crate::a::Package;\n",
+                "Package",
+                "crate::a::Package",
+            ),
+            tagged(
+                "src/a.rs",
+                0,
+                "use crate::b::Package;\n",
+                "Package",
+                "crate::b::Package",
+            ),
+            untagged("src/a.rs", 100, "use super::other;"),
+        ];
+        let result = drop_conflicting_import_groups(fixes);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].import_group.is_none());
     }
 }

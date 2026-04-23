@@ -63,14 +63,14 @@ fn rewrite_in_subtree_imports(
         fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
     let syntax =
         syn::parse_file(&source).with_context(|| format!("failed to parse {}", file.display()))?;
-    let src_root = plan::find_src_root(file).with_context(|| {
+    let source_root = plan::find_source_root(file).with_context(|| {
         format!(
             "failed to determine src root for subtree file {} under {}",
             file.display(),
             analysis_root.display()
         )
     })?;
-    let base_module_path = module_paths::file_module_path(&src_root, file)
+    let base_module_path = module_paths::file_module_path(&source_root, file)
         .with_context(|| format!("failed to determine module path for {}", file.display()))?;
     let offsets = line_offsets(&source);
     let mut visitor = PubUseFixVisitor {
@@ -120,6 +120,7 @@ impl Visit<'_> for PubUseFixVisitor<'_> {
                 start,
                 end,
                 replacement: rewritten,
+                import_group: None,
             });
         }
     }

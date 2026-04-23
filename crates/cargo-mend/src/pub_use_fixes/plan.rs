@@ -149,10 +149,10 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
             continue;
         };
 
-        let src_root = find_src_root(&fact.parent_module)
+        let source_root = find_source_root(&fact.parent_module)
             .context("failed to determine src root for parent module")?;
 
-        let parent_module_path = module_path_from_boundary_file(&src_root, &fact.parent_module)
+        let parent_module_path = module_path_from_boundary_file(&source_root, &fact.parent_module)
             .context("failed to determine parent module path")?;
         let mut target_item_path = parent_module_path.clone();
         target_item_path.push(fact.child_module.clone());
@@ -237,10 +237,11 @@ fn build_child_pub_super_fix(candidate: &PubUseCandidate) -> Result<UseFix> {
         );
     };
     Ok(UseFix {
-        path:        candidate.child_file.clone(),
-        start:       line_span.0 + relative_start,
-        end:         line_span.0 + relative_start + PUB_VISIBILITY_PREFIX.len(),
-        replacement: "pub(super) ".to_string(),
+        path:         candidate.child_file.clone(),
+        start:        line_span.0 + relative_start,
+        end:          line_span.0 + relative_start + PUB_VISIBILITY_PREFIX.len(),
+        replacement:  "pub(super) ".to_string(),
+        import_group: None,
     })
 }
 
@@ -267,8 +268,8 @@ fn normalize_rel_path(path: impl AsRef<Path>) -> String {
     path.as_ref().to_string_lossy().replace('\\', "/")
 }
 
-fn module_path_from_dir(src_root: &Path, module_dir: &Path) -> Option<Vec<String>> {
-    let relative = module_dir.strip_prefix(src_root).ok()?;
+fn module_path_from_dir(source_root: &Path, module_dir: &Path) -> Option<Vec<String>> {
+    let relative = module_dir.strip_prefix(source_root).ok()?;
     let components = relative
         .components()
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
@@ -276,15 +277,15 @@ fn module_path_from_dir(src_root: &Path, module_dir: &Path) -> Option<Vec<String
     (!components.is_empty()).then_some(components)
 }
 
-fn module_path_from_boundary_file(src_root: &Path, boundary_file: &Path) -> Option<Vec<String>> {
+fn module_path_from_boundary_file(source_root: &Path, boundary_file: &Path) -> Option<Vec<String>> {
     if boundary_file.file_name().and_then(|name| name.to_str()) == Some("mod.rs") {
-        return module_path_from_dir(src_root, boundary_file.parent()?);
+        return module_path_from_dir(source_root, boundary_file.parent()?);
     }
 
-    module_paths::file_module_path(src_root, boundary_file)
+    module_paths::file_module_path(source_root, boundary_file)
 }
 
-pub(super) fn find_src_root(path: &Path) -> Option<PathBuf> {
+pub(super) fn find_source_root(path: &Path) -> Option<PathBuf> {
     path.ancestors()
         .find(|ancestor| ancestor.file_name().and_then(|name| name.to_str()) == Some("src"))
         .map(Path::to_path_buf)
