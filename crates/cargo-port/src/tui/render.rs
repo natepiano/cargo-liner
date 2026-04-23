@@ -260,41 +260,44 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     }
     if let Some(action) = app.confirm() {
         let detail = confirm_action_detail(app, action);
-        render_confirm_popup(frame, action, detail.as_deref());
+        render_confirm_popup(frame, action, &detail);
     }
 
     sync_hovered_pane_row(app);
 }
 
-/// Compute the secondary line shown below a confirm prompt, if any.
-/// For `Clean(project)` it's the resolved `target_directory`
-/// (home-relative) so the user can see exactly what's about to get
-/// wiped — including redirects via `CARGO_TARGET_DIR` or
-/// `.cargo/config.toml`'s `build.target-dir`.
-fn confirm_action_detail(app: &App, action: &ConfirmAction) -> Option<String> {
+/// Compute the secondary line shown below a confirm prompt. For
+/// `Clean(project)` it's the resolved `target_directory` (home-
+/// relative) so the user can see exactly what's about to get wiped —
+/// including redirects via `CARGO_TARGET_DIR` or `.cargo/config.toml`'s
+/// `build.target-dir`. All confirm actions currently produce a
+/// detail line; the return type stays concrete so callers can't
+/// forget to render it.
+fn confirm_action_detail(app: &App, action: &ConfirmAction) -> String {
     match action {
         ConfirmAction::Clean(project_path) => {
             let target = app
                 .resolve_target_dir(project_path)
                 .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join("target")));
-            Some(project::home_relative_path(target.as_path()))
+            project::home_relative_path(target.as_path())
         },
     }
 }
 
-fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction, detail: Option<&str>) {
+fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction, detail: &str) {
     let prompt = match action {
         ConfirmAction::Clean(_) => "Run cargo clean?",
     };
 
     let prompt_text = format!(" {prompt}  (y/n) ");
     let prompt_width = prompt_text.len();
-    let detail_width = detail.map_or(0, |d| d.len() + 2); // leading " " + trailing " "
+    // leading " " + trailing " " around the detail text
+    let detail_width = if detail.is_empty() { 0 } else { detail.len() + 2 };
     let width = u16::try_from(prompt_width.max(detail_width) + 4).unwrap_or(u16::MAX);
-    let height = if detail.is_some() {
-        CONFIRM_DIALOG_HEIGHT + 1
-    } else {
+    let height = if detail.is_empty() {
         CONFIRM_DIALOG_HEIGHT
+    } else {
+        CONFIRM_DIALOG_HEIGHT + 1
     };
 
     let inner = super::popup::PopupFrame {
@@ -314,7 +317,7 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction, detail: Optio
                 .add_modifier(Modifier::BOLD),
         ),
     ])];
-    if let Some(detail) = detail {
+    if !detail.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             format!(" {detail} "),
             Style::default().fg(LABEL_COLOR),

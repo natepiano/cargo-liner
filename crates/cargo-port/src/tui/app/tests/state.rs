@@ -1362,7 +1362,7 @@ fn fake_fingerprint() -> ManifestFingerprint {
     }
 }
 
-fn fake_snapshot(workspace_root: AbsolutePath) -> WorkspaceSnapshot {
+fn fake_snapshot(workspace_root: &AbsolutePath) -> WorkspaceSnapshot {
     WorkspaceSnapshot {
         workspace_root:    workspace_root.clone(),
         target_directory:  AbsolutePath::from(
@@ -1427,7 +1427,7 @@ fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
 #[test]
 fn successful_metadata_arrival_advances_phase_and_tracked_item() {
     let project_a = make_project(Some("a"), "~/never-real/a");
-    let mut app = make_app(&[project_a.clone()]);
+    let mut app = make_app(std::slice::from_ref(&project_a));
     app.scan.phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
@@ -1442,7 +1442,7 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
         workspace_root: workspace_root.clone(),
         generation,
         fingerprint: fake_fingerprint(),
-        result: Ok(fake_snapshot(workspace_root.clone())),
+        result: Ok(fake_snapshot(&workspace_root)),
     });
 
     assert!(
@@ -1470,7 +1470,7 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
 #[test]
 fn stale_generation_metadata_arrival_is_dropped() {
     let project_a = make_project(Some("a"), "~/never-real/a");
-    let mut app = make_app(&[project_a.clone()]);
+    let mut app = make_app(std::slice::from_ref(&project_a));
     app.scan.phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
@@ -1485,7 +1485,7 @@ fn stale_generation_metadata_arrival_is_dropped() {
         workspace_root: workspace_root.clone(),
         generation: stale_gen,
         fingerprint: fake_fingerprint(),
-        result: Ok(fake_snapshot(workspace_root.clone())),
+        result: Ok(fake_snapshot(&workspace_root)),
     });
 
     assert!(
@@ -1508,7 +1508,7 @@ fn stale_generation_metadata_arrival_is_dropped() {
 #[test]
 fn failed_metadata_arrival_surfaces_error_toast() {
     let project_a = make_project(Some("a"), "~/never-real/a");
-    let mut app = make_app(&[project_a.clone()]);
+    let mut app = make_app(std::slice::from_ref(&project_a));
     app.scan.phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
@@ -1572,7 +1572,7 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
         .expect("store")
         .upsert(WorkspaceSnapshot {
             workspace_root:    project_path.clone(),
-            target_directory:  custom_target.clone(),
+            target_directory:  custom_target,
             packages:          HashMap::new(),
             workspace_members: Vec::new(),
             fetched_at:        SystemTime::UNIX_EPOCH,
@@ -1612,7 +1612,7 @@ fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
         .expect("store")
         .upsert(WorkspaceSnapshot {
             workspace_root:    project_path.clone(),
-            target_directory:  custom_target.clone(),
+            target_directory:  custom_target,
             packages:          HashMap::new(),
             workspace_members: Vec::new(),
             fetched_at:        SystemTime::UNIX_EPOCH,
@@ -1651,11 +1651,11 @@ fn start_clean_falls_back_to_literal_target_when_no_snapshot_yet() {
 
 /// The metadata phase gates `startup_complete_at`: with disk, git, repo
 /// phases all resolved but metadata still pending, startup must not be
-/// marked complete. Once metadata arrives, startup_complete_at is set.
+/// marked complete. Once metadata arrives, `startup_complete_at` is set.
 #[test]
 fn startup_ready_waits_on_metadata_phase() {
     let project_a = make_project(Some("a"), "~/never-real/a");
-    let mut app = make_app(&[project_a.clone()]);
+    let mut app = make_app(std::slice::from_ref(&project_a));
     app.scan.phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
@@ -1702,7 +1702,7 @@ fn startup_ready_waits_on_metadata_phase() {
         workspace_root: workspace_root.clone(),
         generation,
         fingerprint: fake_fingerprint(),
-        result: Ok(fake_snapshot(workspace_root)),
+        result: Ok(fake_snapshot(&workspace_root)),
     });
 
     assert!(

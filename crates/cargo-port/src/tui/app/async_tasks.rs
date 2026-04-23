@@ -2320,17 +2320,7 @@ impl App {
             BackgroundMsg::LintCachePruned {
                 runs_evicted,
                 bytes_reclaimed,
-            } => {
-                self.show_timed_toast(
-                    "Lint cache",
-                    format!(
-                        "Evicted {runs_evicted} {}, reclaimed {}",
-                        if runs_evicted == 1 { "run" } else { "runs" },
-                        crate::tui::render::format_bytes(bytes_reclaimed),
-                    ),
-                );
-                self.refresh_lint_cache_usage_from_disk();
-            },
+            } => self.handle_lint_cache_pruned(runs_evicted, bytes_reclaimed),
             BackgroundMsg::LintStatus { path, status } => {
                 self.handle_lint_status_msg(path.as_path(), status);
             },
@@ -2340,9 +2330,7 @@ impl App {
             BackgroundMsg::ServiceReachable { service } => {
                 self.apply_service_signal(ServiceSignal::Reachable(service));
             },
-            BackgroundMsg::ServiceRecovered { service } => {
-                self.mark_service_recovered(service);
-            },
+            BackgroundMsg::ServiceRecovered { service } => self.mark_service_recovered(service),
             BackgroundMsg::ServiceUnreachable { service } => {
                 self.apply_service_signal(ServiceSignal::Unreachable(service));
             },
@@ -2370,6 +2358,18 @@ impl App {
                 project.language_stats = Some(stats);
             }
         }
+    }
+
+    fn handle_lint_cache_pruned(&mut self, runs_evicted: usize, bytes_reclaimed: u64) {
+        let noun = if runs_evicted == 1 { "run" } else { "runs" };
+        self.show_timed_toast(
+            "Lint cache",
+            format!(
+                "Evicted {runs_evicted} {noun}, reclaimed {}",
+                crate::tui::render::format_bytes(bytes_reclaimed),
+            ),
+        );
+        self.refresh_lint_cache_usage_from_disk();
     }
 
     /// Merge a `cargo metadata` arrival back into the process-wide store and

@@ -1250,7 +1250,7 @@ mod tests {
         let custom_target = tmp.path().join("out-of-tree-target");
         app.metadata_store_handle()
             .lock()
-            .expect("store")
+            .unwrap_or_else(|_| std::process::abort())
             .upsert(crate::project::WorkspaceSnapshot {
                 workspace_root:    AbsolutePath::from(project_dir.clone()),
                 target_directory:  AbsolutePath::from(custom_target.clone()),
@@ -1314,7 +1314,7 @@ mod tests {
         let mut packages = std::collections::HashMap::new();
         packages.insert(pkg.id.clone(), pkg);
         let snap = crate::project::WorkspaceSnapshot {
-            workspace_root:    root.clone(),
+            workspace_root:    root,
             target_directory:  AbsolutePath::from(project_dir.join("target")),
             packages,
             workspace_members: Vec::new(),
@@ -1332,7 +1332,7 @@ mod tests {
         };
         app.metadata_store_handle()
             .lock()
-            .expect("store")
+            .unwrap_or_else(|_| std::process::abort())
             .upsert(snap);
     }
 

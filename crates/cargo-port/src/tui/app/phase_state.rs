@@ -166,8 +166,10 @@ mod tests {
 
     #[test]
     fn counted_initialized_zero_of_zero_is_complete() {
-        let mut phase = CountedPhase::default();
-        phase.expected = Some(0);
+        let phase = CountedPhase {
+            expected: Some(0),
+            ..CountedPhase::default()
+        };
         assert!(phase.is_complete());
     }
 
@@ -192,9 +194,11 @@ mod tests {
 
     #[test]
     fn complete_once_noop_when_not_complete() {
-        let mut phase = CountedPhase::default();
-        phase.expected = Some(2);
-        phase.seen = 1;
+        let mut phase = CountedPhase {
+            expected: Some(2),
+            seen: 1,
+            ..CountedPhase::default()
+        };
         assert!(!phase.complete_once(instant_at(0)));
         assert!(phase.complete_at().is_none());
     }
@@ -220,7 +224,7 @@ mod tests {
         let mut phase: KeyedPhase<i32> = KeyedPhase::default();
         phase.seen.insert(7);
         phase.complete_at = Some(instant_at(0));
-        phase.reset_with_expected([1].into_iter().collect());
+        phase.reset_with_expected(std::iter::once(1).collect());
         assert!(phase.seen.is_empty());
         assert!(phase.complete_at.is_none());
         assert_eq!(phase.expected_len(), 1);

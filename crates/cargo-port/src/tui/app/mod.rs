@@ -430,6 +430,11 @@ impl App {
     /// Resolve a [`WorkspaceMetadataHandle`] to a cloned snapshot, or `None`
     /// when the workspace has no snapshot yet. Callers get the snapshot by
     /// value; the store lock is released before this returns.
+    #[allow(
+        dead_code,
+        reason = "consumed in later steps (5/6); kept now so WorkspaceMetadataHandle \
+                  has a resolve path in place before handle-carrying RustInfo lands"
+    )]
     pub(in super::super) fn resolve_metadata(
         &self,
         handle: &WorkspaceMetadataHandle,

@@ -4,6 +4,12 @@
 //! `cargo_metadata` integration — this module defines the shape and
 //! read-side access; producers and consumers land in later steps.
 
+#![allow(
+    dead_code,
+    reason = "later steps consume these fields + methods (e.g. workspace_members, \
+              WorkspaceMetadataHandle); kept here so the store is complete now"
+)]
+
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::env;
@@ -167,7 +173,7 @@ impl PublishPolicy {
     pub(crate) fn from_cargo_publish(raw: Option<&[String]>) -> Self {
         match raw {
             None => Self::Any,
-            Some(list) if list.is_empty() => Self::Never,
+            Some([]) => Self::Never,
             Some(list) => Self::Registries(list.to_vec()),
         }
     }
@@ -436,7 +442,7 @@ mod tests {
 
         let fp = ManifestFingerprint::capture(&workspace).unwrap();
         assert!(
-            fp.configs.values().any(|stamp| stamp.is_none()),
+            fp.configs.values().any(Option::is_none),
             "absent configs are recorded as None, not omitted"
         );
     }
@@ -537,8 +543,8 @@ mod tests {
         store.upsert(fake_snapshot(root.clone(), target.clone()));
 
         assert_eq!(
-            store.resolved_target_dir(&root).map(AbsolutePath::clone),
-            Some(target.clone()),
+            store.resolved_target_dir(&root).cloned(),
+            Some(target),
             "exact-match workspace root resolves its own target_directory"
         );
     }
@@ -548,11 +554,11 @@ mod tests {
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/tmp/out-of-tree-target"));
-        store.upsert(fake_snapshot(root.clone(), target.clone()));
+        store.upsert(fake_snapshot(root, target.clone()));
 
         let member = AbsolutePath::from(PathBuf::from("/ws/crates/core/src/lib.rs"));
         assert_eq!(
-            store.resolved_target_dir(&member).map(AbsolutePath::clone),
+            store.resolved_target_dir(&member).cloned(),
             Some(target),
             "member paths resolve via ancestor walk up to the workspace root"
         );
@@ -606,7 +612,7 @@ mod tests {
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/ws/target"));
-        let mut snap = fake_snapshot(root.clone(), target);
+        let mut snap = fake_snapshot(root, target);
         let member_root = AbsolutePath::from(PathBuf::from("/ws/crates/core"));
         let pkg = fake_package_record(
             "core",
@@ -632,7 +638,7 @@ mod tests {
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/ws/target"));
-        store.upsert(fake_snapshot(root.clone(), target));
+        store.upsert(fake_snapshot(root, target));
         let phantom_member = AbsolutePath::from(PathBuf::from("/ws/crates/never"));
         assert!(store.package_for_path(&phantom_member).is_none());
     }

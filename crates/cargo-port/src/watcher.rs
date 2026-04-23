@@ -248,13 +248,10 @@ pub(super) mod ancestor {
             };
             let mut diff = AncestorWatchDiff::default();
             for watch in watches {
-                let remove = match self.refcount.get_mut(&watch.dir) {
-                    Some(count) => {
-                        *count = count.saturating_sub(1);
-                        *count == 0
-                    },
-                    None => false,
-                };
+                let remove = self.refcount.get_mut(&watch.dir).is_some_and(|count| {
+                    *count = count.saturating_sub(1);
+                    *count == 0
+                });
                 if remove {
                     self.refcount.remove(&watch.dir);
                     diff.to_remove.push(watch.dir);
@@ -489,7 +486,11 @@ pub(super) mod ancestor {
             assert!(reg.contains(&dir("/home/u/.cargo")));
 
             let diff = reg.remove_project(&dir("/home/u/b"));
-            let mut to_remove: Vec<_> = diff.to_remove.iter().map(|p| p.to_string()).collect();
+            let mut to_remove: Vec<_> = diff
+                .to_remove
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             to_remove.sort();
             assert_eq!(
                 to_remove,
@@ -769,9 +770,11 @@ fn watcher_loop<W: Send + 'static>(
             &watch_drain,
             notify_events,
             watch_roots,
-            bg_tx,
-            ctx.lint_runtime.as_ref(),
-            Some(metadata_dispatch),
+            &WatcherBackgroundSinks {
+                bg_tx,
+                lint_runtime:      ctx.lint_runtime.as_ref(),
+                metadata_dispatch: Some(metadata_dispatch),
+            },
             &mut state,
         );
         drain_completed_refreshes(
@@ -883,14 +886,21 @@ fn apply_watch_request(
     );
 }
 
+/// Background sinks the watcher fans events out to. Bundled so
+/// `process_notify_events` stays under the clippy `too_many_arguments`
+/// threshold as more dispatch targets get added.
+struct WatcherBackgroundSinks<'a> {
+    bg_tx:             &'a mpsc::Sender<BackgroundMsg>,
+    lint_runtime:      Option<&'a RuntimeHandle>,
+    metadata_dispatch: Option<&'a MetadataDispatchContext>,
+}
+
 fn process_notify_events(
     tick: u64,
     watch_drain: &WatchDrainResult,
     notify_events: Vec<notify::Event>,
     watch_roots: &[AbsolutePath],
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
-    lint_runtime: Option<&RuntimeHandle>,
-    metadata_dispatch: Option<&MetadataDispatchContext>,
+    sinks: &WatcherBackgroundSinks<'_>,
     state: &mut WatcherLoopState,
 ) {
     let notify_count = notify_events.len();
@@ -910,9 +920,9 @@ fn process_notify_events(
                 project_parents: &state.project_parents,
                 discovered: &state.discovered,
             },
-            bg_tx,
-            lint_runtime,
-            metadata_dispatch,
+            bg_tx: sinks.bg_tx,
+            lint_runtime: sinks.lint_runtime,
+            metadata_dispatch: sinks.metadata_dispatch,
         };
         replay_buffered_events(
             &state.buffered_events,
@@ -944,9 +954,9 @@ fn process_notify_events(
                 project_parents: &state.project_parents,
                 discovered: &state.discovered,
             },
-            bg_tx,
-            lint_runtime,
-            metadata_dispatch,
+            bg_tx: sinks.bg_tx,
+            lint_runtime: sinks.lint_runtime,
+            metadata_dispatch: sinks.metadata_dispatch,
         };
         replay_buffered_events(
             &notify_events,

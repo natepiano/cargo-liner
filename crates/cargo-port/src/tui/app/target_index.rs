@@ -7,6 +7,12 @@
 //! `build_clean_plan` (Step 6) and the worktree-group fan-out clean
 //! (Step 7).
 
+#![allow(
+    dead_code,
+    reason = "Step 6c wires these types into the App/handler; for now they \
+              stand alone with thorough tests"
+)]
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -239,7 +245,7 @@ impl CleanPlan {
 pub(in super::super) fn build_clean_plan(
     index: &TargetDirIndex,
     store: &WorkspaceMetadataStore,
-    selection: CleanSelection,
+    selection: &CleanSelection,
 ) -> CleanPlan {
     let selection_set = selection.selection_set();
     let mut plan = CleanPlan::default();
@@ -434,7 +440,7 @@ mod tests {
         let plan = build_clean_plan(
             &index,
             &empty_store(),
-            CleanSelection::Project { root: dir("/ws/a") },
+            &CleanSelection::Project { root: dir("/ws/a") },
         );
 
         assert_eq!(plan.targets.len(), 1);
@@ -451,7 +457,7 @@ mod tests {
         let plan = build_clean_plan(
             &index,
             &empty_store(),
-            CleanSelection::Project { root: dir("/ws/never") },
+            &CleanSelection::Project { root: dir("/ws/never") },
         );
         assert!(plan.targets.is_empty());
         assert_eq!(
@@ -470,7 +476,7 @@ mod tests {
         let plan = build_clean_plan(
             &index,
             &empty_store(),
-            CleanSelection::WorktreeGroup {
+            &CleanSelection::WorktreeGroup {
                 primary: dir("/ws/a"),
                 linked:  vec![dir("/ws/b"), dir("/ws/c")],
             },
@@ -495,7 +501,7 @@ mod tests {
         let plan = build_clean_plan(
             &index,
             &empty_store(),
-            CleanSelection::WorktreeGroup {
+            &CleanSelection::WorktreeGroup {
                 primary: dir("/ws/a"),
                 linked:  vec![dir("/ws/b"), dir("/ws/c")],
             },
@@ -531,7 +537,7 @@ mod tests {
         let plan = build_clean_plan(
             &index,
             &empty_store(),
-            CleanSelection::WorktreeGroup {
+            &CleanSelection::WorktreeGroup {
                 primary: dir("/ws/a"),
                 linked:  vec![dir("/ws/b")],
             },
@@ -558,7 +564,7 @@ mod tests {
         let plan = build_clean_plan(
             &index,
             &empty_store(),
-            CleanSelection::Project { root: dir("/ws") },
+            &CleanSelection::Project { root: dir("/ws") },
         );
 
         assert_eq!(plan.targets.len(), 1);
@@ -583,7 +589,7 @@ mod tests {
         let plan = build_clean_plan(
             &index,
             &empty_store(),
-            CleanSelection::WorktreeGroup {
+            &CleanSelection::WorktreeGroup {
                 primary: dir("/a"),
                 linked:  vec![dir("/b")],
             },
