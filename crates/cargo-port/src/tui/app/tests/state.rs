@@ -11,6 +11,7 @@ use crate::project::ManifestFingerprint;
 use crate::project::WorkspaceSnapshot;
 use crate::project::WorktreeGroup;
 use crate::scan::CargoMetadataError;
+use crate::tui::app::target_index::CleanSelection;
 use crate::tui::panes;
 use crate::tui::panes::DetailField;
 
@@ -1712,5 +1713,70 @@ fn startup_ready_waits_on_metadata_phase() {
     assert!(
         app.scan.startup_phases.startup_complete_at.is_some(),
         "startup is now ready once every phase has resolved"
+    );
+}
+
+// ── App::clean_selection (Step 6c gating) ──────────────────────────
+
+#[test]
+fn clean_selection_on_root_rust_project_returns_project_selection() {
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(std::slice::from_ref(&project));
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+
+    let selection = app
+        .clean_selection()
+        .expect("Rust root should be clean-eligible");
+    match selection {
+        CleanSelection::Project { root } => {
+            assert_eq!(root, test_path("~/demo"));
+        },
+        CleanSelection::WorktreeGroup { .. } => {
+            panic!("single Rust root should not yield a worktree-group selection")
+        },
+    }
+}
+
+#[test]
+fn clean_selection_on_non_rust_root_is_none() {
+    // The gating fix must not regress non-Rust rows: they stay
+    // clean-ineligible so the shortcut is dimmed in the status bar.
+    let non_rust = make_non_rust_project(Some("notes"), "~/notes");
+    let mut app = make_app(std::slice::from_ref(&non_rust));
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    assert!(app.clean_selection().is_none());
+}
+
+#[test]
+fn clean_selection_on_worktree_root_defers_to_step_7() {
+    // Step 6 handles per-worktree cleans from WorktreeEntry rows;
+    // a Root row whose item is a WorktreeGroup stays None until
+    // Step 7 (group-level fan-out).
+    let primary_path = test_path("~/cargo-port");
+    let linked_path = test_path("~/cargo-port_feat");
+    let primary = crate::project::Package {
+        path:            primary_path.clone(),
+        name:            Some("cargo-port".to_string()),
+        worktree_status: crate::project::WorktreeStatus::Primary {
+            root: primary_path.clone(),
+        },
+        ..crate::project::Package::default()
+    };
+    let linked = crate::project::Package {
+        path:            linked_path,
+        name:            Some("cargo-port_feat".to_string()),
+        worktree_status: crate::project::WorktreeStatus::Linked {
+            primary: primary_path,
+        },
+        ..crate::project::Package::default()
+    };
+    let worktrees = RootItem::Worktrees(
+        crate::project::WorktreeGroup::new_packages(primary, vec![linked]),
+    );
+    let mut app = make_app(std::slice::from_ref(&worktrees));
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    assert!(
+        app.clean_selection().is_none(),
+        "WorktreeGroup roots wait for Step 7; bare Root row is not eligible today"
     );
 }

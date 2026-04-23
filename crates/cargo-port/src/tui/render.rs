@@ -669,7 +669,11 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let context = app.input_context();
     let enter_action = app.enter_action();
-    let is_rust = app.selected_item().is_some_and(RootItem::is_rust);
+    // Clean shortcut uses `clean_selection` (design plan → gating
+    // fix): the flag is whether *some* clean is possible from the
+    // current row, not whether the Root item is Rust — that old
+    // heuristic disabled Clean on WorktreeEntry rows.
+    let clean_enabled = app.clean_selection().is_some();
     let clear_lint_action = app
         .selected_project_path()
         .and_then(|path| app.lint_at_path(path))
@@ -678,7 +682,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let groups = shortcuts::for_status_bar(
         context,
         enter_action,
-        is_rust,
+        clean_enabled,
         clear_lint_action,
         app.current_keymap(),
         app.terminal_command_configured(),

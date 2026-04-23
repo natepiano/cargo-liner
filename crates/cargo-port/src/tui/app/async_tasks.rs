@@ -2450,7 +2450,7 @@ impl App {
     /// matches what's on disk — caller should skip startup-phase bookkeeping
     /// so a later dispatch can still tick it off.
     fn accept_cargo_metadata_snapshot(
-        &self,
+        &mut self,
         workspace_root: &AbsolutePath,
         generation: u64,
         fingerprint: &crate::project::ManifestFingerprint,
@@ -2469,8 +2469,26 @@ impl App {
             );
             return false;
         }
+        let target_directory = snapshot.target_directory.clone();
+        let member_roots = snapshot_member_roots(&snapshot);
         if let Ok(mut store) = self.metadata_store.lock() {
             store.upsert(snapshot);
+        }
+        // Refresh the target-dir index so build_clean_plan / siblings
+        // lookups see the fresh membership. Every package under this
+        // workspace shares `target_directory`; upsert each so a
+        // subsequent clean on any member resolves to the correct dir.
+        // (Members that were in a *previous* snapshot but not this one
+        // will linger until a full scan restart — minor staleness,
+        // acceptable for Step 6c.)
+        for project_root in member_roots {
+            self.target_dir_index.upsert(
+                crate::tui::app::target_index::TargetDirMember {
+                    project_root,
+                    kind: crate::tui::app::target_index::MemberKind::Project,
+                },
+                target_directory.clone(),
+            );
         }
         tracing::info!(
             workspace_root = %workspace_root.as_path().display(),
@@ -2612,4 +2630,24 @@ fn collect_publishable_children(item: &RootItem, out: &mut Vec<(AbsolutePath, St
         },
         RootItem::NonRust(_) => {},
     }
+}
+
+/// Project root for each package covered by a [] —
+/// derived from each package's `manifest_path.parent()`. Feeds the
+/// `TargetDirIndex` membership update after a successful
+/// `BackgroundMsg::CargoMetadata` arrival; every package under a given
+/// workspace shares the snapshot's `target_directory`.
+fn snapshot_member_roots(
+    snapshot: &crate::project::WorkspaceSnapshot,
+) -> Vec<AbsolutePath> {
+    snapshot
+        .packages
+        .values()
+        .filter_map(|pkg| {
+            pkg.manifest_path
+                .as_path()
+                .parent()
+                .map(|parent| AbsolutePath::from(parent.to_path_buf()))
+        })
+        .collect()
 }

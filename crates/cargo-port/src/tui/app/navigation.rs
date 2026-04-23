@@ -2,6 +2,7 @@ use std::path::Path;
 
 use super::App;
 use super::snapshots;
+use super::target_index::CleanSelection;
 use super::types::ExpandKey;
 use super::types::VisibleRow;
 use crate::project;
@@ -290,6 +291,49 @@ impl App {
         match self.selected_row()? {
             VisibleRow::Root { node_index } => {
                 self.projects.get(node_index).map(|entry| &entry.item)
+            },
+            _ => None,
+        }
+    }
+
+    /// Map the currently selected row to a [`CleanSelection`] when the
+    /// Clean shortcut should be enabled on it. Design plan → **Gating
+    /// fix**: previously the three clean-gating sites all asked
+    /// `selected_item().is_some_and(RootItem::is_rust)`, which returns
+    /// `None` for any non-`Root` row — so `WorktreeEntry` rows silently
+    /// lost the Clean shortcut. This helper is the single source of
+    /// truth for clean eligibility; callers route through it.
+    ///
+    /// Eligible rows (this step):
+    /// - `VisibleRow::Root` on a `RootItem::Rust(_)` → `Project`.
+    /// - `VisibleRow::WorktreeEntry` → `Project` for that specific
+    ///   worktree's path.
+    ///
+    /// Worktree-group-level cleans (`VisibleRow::Root` on a
+    /// `RootItem::Worktrees`) land with Step 7 (group-level fan-out).
+    pub(in super::super) fn clean_selection(&self) -> Option<CleanSelection> {
+        let row = self.selected_row()?;
+        match row {
+            VisibleRow::Root { node_index } => {
+                let entry = self.projects.get(node_index)?;
+                match &entry.item {
+                    RootItem::Rust(rust) => Some(CleanSelection::Project {
+                        root: rust.path().clone(),
+                    }),
+                    // Worktree groups: deferred to Step 7.
+                    RootItem::Worktrees(_) | RootItem::NonRust(_) => None,
+                }
+            },
+            VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            } => {
+                let entry = self.projects.get(node_index)?;
+                Self::worktree_path_ref(&entry.item, worktree_index).map(|path| {
+                    CleanSelection::Project {
+                        root: AbsolutePath::from(path),
+                    }
+                })
             },
             _ => None,
         }

@@ -597,12 +597,22 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
         ProjectListAction::ExpandAll => app.expand_all(),
         ProjectListAction::CollapseAll => app.collapse_all(),
         ProjectListAction::Clean => {
-            if let Some(path) = app.selected_project_path()
-                && app
-                    .selected_item()
-                    .is_some_and(crate::project::RootItem::is_rust)
-            {
-                app.set_confirm(ConfirmAction::Clean(path.into()));
+            // Gate through App::clean_selection — the single source of
+            // truth for clean eligibility (design plan → gating fix).
+            // Previously this asked for `selected_item().is_rust()`
+            // which returns None for WorktreeEntry rows, dropping the
+            // per-worktree Clean shortcut.
+            if let Some(selection) = app.clean_selection() {
+                match selection {
+                    crate::tui::app::CleanSelection::Project { root } => {
+                        app.set_confirm(ConfirmAction::Clean(root));
+                    },
+                    // Group-level fan-out (Step 7) not yet wired into
+                    // the confirm flow. The selection is accepted by
+                    // `clean_selection` when Step 7 lands; for now
+                    // Root+Worktrees rows never surface here.
+                    crate::tui::app::CleanSelection::WorktreeGroup { .. } => {},
+                }
             }
         },
     }

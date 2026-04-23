@@ -64,6 +64,7 @@ mod tests;
 
 pub(super) use dismiss::DismissTarget;
 pub(super) use service_state::AvailabilityStatus;
+pub(super) use target_index::CleanSelection;
 pub(super) use types::CiFetchTracker;
 pub(super) use types::ConfirmAction;
 pub(super) use types::DiscoveryRowKind;
@@ -149,6 +150,7 @@ pub(super) struct App {
     scan:                     types::ScanState,
     selection:                types::SelectionSync,
     metadata_store:           Arc<Mutex<WorkspaceMetadataStore>>,
+    target_dir_index:         target_index::TargetDirIndex,
     #[cfg(test)]
     retry_spawn_mode:         types::RetrySpawnMode,
 }

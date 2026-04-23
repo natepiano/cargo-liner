@@ -99,12 +99,15 @@ pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
 }
 
 fn request_clean(app: &mut App) {
-    if let Some(path) = app.selected_project_path()
-        && app
-            .selected_item()
-            .is_some_and(crate::project::RootItem::is_rust)
-    {
-        app.set_confirm(ConfirmAction::Clean(path.into()));
+    // Gated through App::clean_selection (design plan → gating fix);
+    // see src/tui/input.rs for the symmetric site.
+    if let Some(selection) = app.clean_selection() {
+        match selection {
+            crate::tui::app::CleanSelection::Project { root } => {
+                app.set_confirm(ConfirmAction::Clean(root));
+            },
+            crate::tui::app::CleanSelection::WorktreeGroup { .. } => {},
+        }
     }
 }
 

@@ -240,6 +240,7 @@ impl App {
             scan: ScanState::new(inputs.scan_started_at),
             selection: SelectionSync::Stable,
             metadata_store: inputs.metadata_store,
+            target_dir_index: super::target_index::TargetDirIndex::new(),
         }
     }
 
