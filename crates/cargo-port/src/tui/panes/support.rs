@@ -828,6 +828,86 @@ impl TargetsData {
     pub const fn has_targets(&self) -> bool {
         self.primary_binary.is_some() || !self.examples.is_empty() || !self.benches.is_empty()
     }
+
+    /// Build from a snapshot [`PackageRecord`]. Examples grouped by
+    /// subdirectory derived from `TargetRecord.src_path` relative to
+    /// the package's manifest directory (design plan → Step 3, Targets
+    /// pane); benches listed flat. The primary-binary name is the bin
+    /// target whose name matches `title_name` (cargo's "default run"
+    /// target); falls back to `None` if no such bin exists.
+    pub(in super::super) fn from_package_record(
+        record: &crate::project::PackageRecord,
+        title_name: &str,
+    ) -> Self {
+        use std::collections::HashMap;
+
+        use cargo_metadata::TargetKind;
+
+        let manifest_dir = record.manifest_path.as_path().parent();
+
+        let mut example_groups: HashMap<String, Vec<String>> = HashMap::new();
+        let mut benches: Vec<String> = Vec::new();
+        let mut has_bin_with_title = false;
+
+        for target in &record.targets {
+            if target.kinds.contains(&TargetKind::Example) {
+                let category = manifest_dir
+                    .and_then(|dir| target.src_path.as_path().strip_prefix(dir).ok())
+                    .and_then(|rel| {
+                        let parts: Vec<_> = rel
+                            .components()
+                            .filter_map(|c| match c {
+                                std::path::Component::Normal(seg) => {
+                                    Some(seg.to_string_lossy().into_owned())
+                                },
+                                _ => None,
+                            })
+                            .collect();
+                        // `examples/<category>/<file>.rs` → category.
+                        // `examples/<file>.rs` → root-level (empty).
+                        if parts.len() >= 3 { Some(parts[1].clone()) } else { None }
+                    })
+                    .unwrap_or_default();
+                example_groups
+                    .entry(category)
+                    .or_default()
+                    .push(target.name.clone());
+            }
+            if target.kinds.contains(&TargetKind::Bench) {
+                benches.push(target.name.clone());
+            }
+            if target.kinds.contains(&TargetKind::Bin) && target.name == title_name {
+                has_bin_with_title = true;
+            }
+        }
+
+        let mut examples: Vec<ExampleGroup> = example_groups
+            .into_iter()
+            .map(|(category, mut names)| {
+                names.sort();
+                ExampleGroup { category, names }
+            })
+            .collect();
+        // Root-level first, then alphabetical by category — matches
+        // the hand-parsed `build_sorted_groups` convention so the UI
+        // ordering doesn't shift across the migration.
+        examples.sort_by(|a, b| {
+            let a_root = a.category.is_empty();
+            let b_root = b.category.is_empty();
+            match (a_root, b_root) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.category.cmp(&b.category),
+            }
+        });
+        benches.sort();
+
+        Self {
+            primary_binary: has_bin_with_title.then(|| title_name.to_string()),
+            examples,
+            benches,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1427,10 +1507,17 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             remotes: git_detail.remotes,
             worktrees,
         },
-        targets: TargetsData {
-            primary_binary: is_binary.then_some(title_name),
-            examples:       cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
-            benches:        cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
+        // Step 3a: derive Targets-pane data from the snapshot when it
+        // covers this project. Falls back to the hand-parsed `Cargo`
+        // values when no snapshot has landed yet, so the cold-start
+        // UI still shows something plausible.
+        targets: match snapshot_package.as_ref() {
+            Some(record) => TargetsData::from_package_record(record, &title_name),
+            None => TargetsData {
+                primary_binary: is_binary.then_some(title_name),
+                examples:       cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
+                benches:        cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
+            },
         },
     }
 }

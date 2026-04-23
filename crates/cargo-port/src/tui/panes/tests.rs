@@ -298,3 +298,157 @@ fn ci_table_keeps_durations_when_fixed_columns_fit() {
 
     assert!(panes::ci_table_shows_durations(&runs, &cols, 80));
 }
+
+// ── TargetsData::from_package_record ──────────────────────────────────
+
+#[cfg(test)]
+mod targets_from_snapshot {
+    use std::path::PathBuf;
+
+    use cargo_metadata::PackageId;
+    use cargo_metadata::TargetKind;
+    use cargo_metadata::semver::Version;
+
+    use crate::project::AbsolutePath;
+    use crate::project::PackageRecord;
+    use crate::project::PublishPolicy;
+    use crate::project::TargetRecord;
+    use crate::tui::panes::TargetsData;
+
+    fn target(name: &str, kinds: Vec<TargetKind>, src_path: &str) -> TargetRecord {
+        TargetRecord {
+            name:              name.into(),
+            kinds,
+            src_path:          AbsolutePath::from(PathBuf::from(src_path)),
+            edition:           "2021".into(),
+            required_features: Vec::new(),
+        }
+    }
+
+    fn record(name: &str, manifest: &str, targets: Vec<TargetRecord>) -> PackageRecord {
+        PackageRecord {
+            id: PackageId {
+                repr: format!("{name}-id"),
+            },
+            name: name.into(),
+            version: Version::new(0, 1, 0),
+            edition: "2021".into(),
+            description: None,
+            license: None,
+            homepage: None,
+            repository: None,
+            manifest_path: AbsolutePath::from(PathBuf::from(manifest)),
+            targets,
+            publish: PublishPolicy::Any,
+        }
+    }
+
+    #[test]
+    fn groups_examples_by_subdirectory_and_sorts_root_first() {
+        let pkg = record(
+            "demo",
+            "/ws/demo/Cargo.toml",
+            vec![
+                target("top", vec![TargetKind::Example], "/ws/demo/examples/top.rs"),
+                target(
+                    "draw",
+                    vec![TargetKind::Example],
+                    "/ws/demo/examples/2d/draw.rs",
+                ),
+                target(
+                    "mesh",
+                    vec![TargetKind::Example],
+                    "/ws/demo/examples/3d/mesh.rs",
+                ),
+                target(
+                    "cube",
+                    vec![TargetKind::Example],
+                    "/ws/demo/examples/3d/cube.rs",
+                ),
+            ],
+        );
+        let data = TargetsData::from_package_record(&pkg, "demo");
+
+        assert_eq!(data.examples.len(), 3, "root + 2d + 3d");
+        assert!(
+            data.examples[0].category.is_empty(),
+            "root-level group first (Bevy-style convention)"
+        );
+        assert_eq!(data.examples[0].names, vec!["top"]);
+        assert_eq!(data.examples[1].category, "2d");
+        assert_eq!(data.examples[1].names, vec!["draw"]);
+        assert_eq!(data.examples[2].category, "3d");
+        assert_eq!(data.examples[2].names, vec!["cube", "mesh"]);
+    }
+
+    #[test]
+    fn surfaces_benches_flat_and_sorted() {
+        let pkg = record(
+            "demo",
+            "/ws/demo/Cargo.toml",
+            vec![
+                target("b_zed", vec![TargetKind::Bench], "/ws/demo/benches/b_zed.rs"),
+                target("a_alpha", vec![TargetKind::Bench], "/ws/demo/benches/a_alpha.rs"),
+            ],
+        );
+        let data = TargetsData::from_package_record(&pkg, "demo");
+        assert_eq!(data.benches, vec!["a_alpha", "b_zed"]);
+    }
+
+    #[test]
+    fn primary_binary_matches_title_name_only() {
+        // A bin target named "demo" is considered the default-run
+        // binary; other bin targets are not lifted into
+        // primary_binary (they'd show up in a separate bin list
+        // that today isn't surfaced by TargetsData).
+        let with_match = record(
+            "demo",
+            "/ws/demo/Cargo.toml",
+            vec![target(
+                "demo",
+                vec![TargetKind::Bin],
+                "/ws/demo/src/main.rs",
+            )],
+        );
+        assert_eq!(
+            TargetsData::from_package_record(&with_match, "demo").primary_binary,
+            Some("demo".to_string())
+        );
+
+        let without_match = record(
+            "demo",
+            "/ws/demo/Cargo.toml",
+            vec![target(
+                "other",
+                vec![TargetKind::Bin],
+                "/ws/demo/src/bin/other.rs",
+            )],
+        );
+        assert_eq!(
+            TargetsData::from_package_record(&without_match, "demo").primary_binary,
+            None,
+            "bin targets whose name != package name don't become primary"
+        );
+    }
+
+    #[test]
+    fn ignores_non_example_non_bench_non_bin_kinds() {
+        let pkg = record(
+            "demo",
+            "/ws/demo/Cargo.toml",
+            vec![
+                target("demo", vec![TargetKind::Lib], "/ws/demo/src/lib.rs"),
+                target("it", vec![TargetKind::Test], "/ws/demo/tests/it.rs"),
+                target(
+                    "build-script",
+                    vec![TargetKind::CustomBuild],
+                    "/ws/demo/build.rs",
+                ),
+            ],
+        );
+        let data = TargetsData::from_package_record(&pkg, "demo");
+        assert!(data.primary_binary.is_none());
+        assert!(data.examples.is_empty());
+        assert!(data.benches.is_empty());
+    }
+}
