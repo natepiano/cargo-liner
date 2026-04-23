@@ -201,6 +201,8 @@ fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect
 
 const NO_DESCRIPTION_AVAILABLE: &str = "No description available";
 
+const STATS_TITLE: &str = "Structure";
+
 struct ProjectPanelRender<'a> {
     pkg_data:     &'a PackageData,
     fields:       &'a [DetailField],
@@ -346,18 +348,25 @@ fn render_project_description_section(
     };
     let stats_connector_x = project_stats_connector_x(context.pkg_data, lower_area);
     if separator_height > 0 {
-        pane::render_rules(
+        let rule_area = Rect {
+            x:      area.x,
+            y:      description_area.y.saturating_add(description_height),
+            width:  area.width,
+            height: 1,
+        };
+        let title = stats_connector_x.map(|_| pane::RuleTitle {
+            text:  STATS_TITLE,
+            style: context
+                .styles
+                .chrome
+                .title_style(matches!(context.focus, PaneFocusState::Active)),
+        });
+        pane::render_horizontal_rule(
             frame,
-            &[PaneRule::Horizontal {
-                area:        Rect {
-                    x:      area.x,
-                    y:      description_area.y.saturating_add(description_height),
-                    width:  area.width,
-                    height: 1,
-                },
-                connector_x: stats_connector_x,
-            }],
+            rule_area,
             context.border_style,
+            title,
+            stats_connector_x,
         );
     }
     if let Some(connector_x) = stats_connector_x {

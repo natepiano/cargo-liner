@@ -42,11 +42,11 @@ pub(in super::super) fn render_rules(frame: &mut Frame, rules: &[PaneRule], styl
 
 /// Render a horizontal rule with `├`/`┤` endcaps.
 ///
-/// - `title`: when present, embeds `├─ Title ─...─┤`. Falls back to the plain form when the area is
-///   too narrow to fit the title.
+/// - `title`: when present, embeds a section title. Without a connector this renders as `├─ Title
+///   ─...─┤`. With a connector the title sits to the right of the connector as `├─...─┬ Title
+///   ─...─┤`. Falls back to the plain form when the area is too narrow.
 /// - `connector_x`: absolute x column that should render as `┬` instead of `─`, used when a
-///   vertical pane border tees in from above. Only honored in the untitled form; a titled rule
-///   ignores it since section headers don't intersect with vertical rules.
+///   vertical pane border tees in from above.
 pub fn render_horizontal_rule(
     frame: &mut Frame,
     area: Rect,
@@ -58,8 +58,13 @@ pub fn render_horizontal_rule(
         return;
     }
 
-    let line = match title {
-        Some(title) if fits_title(area.width, title.text) => {
+    let line = match (title, connector_x) {
+        (Some(title), Some(c))
+            if connector_in_area(area, c) && fits_title_after_connector(area, c, title.text) =>
+        {
+            titled_line_with_connector(area, title, rule_style, c)
+        },
+        (Some(title), _) if fits_title(area.width, title.text) => {
             titled_line(area.width, title, rule_style)
         },
         _ => plain_line(area, rule_style, connector_x),
@@ -71,6 +76,21 @@ pub fn render_horizontal_rule(
 fn fits_title(width: u16, title: &str) -> bool {
     // Layout budget: "├─ " + title + " " + "┤" = title.width() + 5.
     usize::from(width) >= title.width() + 5
+}
+
+const fn connector_in_area(area: Rect, connector_x: u16) -> bool {
+    let first = area.x.saturating_add(1);
+    let last = area.x.saturating_add(area.width).saturating_sub(2);
+    connector_x >= first && connector_x <= last
+}
+
+fn fits_title_after_connector(area: Rect, connector_x: u16, title: &str) -> bool {
+    // Space right of the connector: " Title ─...─┤" needs at least title.width() + 3 columns.
+    let right_of_connector = area
+        .x
+        .saturating_add(area.width)
+        .saturating_sub(connector_x.saturating_add(1));
+    usize::from(right_of_connector) >= title.width() + 3
 }
 
 fn titled_line(width: u16, title: RuleTitle<'_>, rule_style: Style) -> Line<'static> {
@@ -85,6 +105,35 @@ fn titled_line(width: u16, title: RuleTitle<'_>, rule_style: Style) -> Line<'sta
     let fill = "─".repeat(dashes);
     Line::from(vec![
         Span::styled(LEADING.to_string(), rule_style),
+        Span::styled(title.text.to_string(), title.style),
+        Span::styled(format!(" {fill}{TRAILING}"), rule_style),
+    ])
+}
+
+fn titled_line_with_connector(
+    area: Rect,
+    title: RuleTitle<'_>,
+    rule_style: Style,
+    connector_x: u16,
+) -> Line<'static> {
+    const TRAILING: &str = "┤";
+    let left_dashes = usize::from(connector_x.saturating_sub(area.x).saturating_sub(1));
+    let left = format!("├{}", "─".repeat(left_dashes));
+    let right_width = usize::from(
+        area.x
+            .saturating_add(area.width)
+            .saturating_sub(connector_x.saturating_add(1)),
+    );
+    // After the ┬: " Title " + fill dashes + "┤".
+    let fill_dashes = right_width
+        .saturating_sub(1) // leading space before title
+        .saturating_sub(title.text.width())
+        .saturating_sub(1) // space between title and dashes
+        .saturating_sub(TRAILING.width());
+    let fill = "─".repeat(fill_dashes);
+    Line::from(vec![
+        Span::styled(left, rule_style),
+        Span::styled("┬ ".to_string(), rule_style),
         Span::styled(title.text.to_string(), title.style),
         Span::styled(format!(" {fill}{TRAILING}"), rule_style),
     ])

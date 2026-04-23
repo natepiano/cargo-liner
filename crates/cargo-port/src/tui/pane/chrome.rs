@@ -27,16 +27,20 @@ impl PaneChrome {
         Block::default()
             .borders(Borders::ALL)
             .title(title)
-            .title_style(if focused {
-                self.active_title
-            } else {
-                self.inactive_title
-            })
+            .title_style(self.title_style(focused))
             .border_style(if focused {
                 self.active_border
             } else {
                 self.inactive_border
             })
+    }
+
+    pub(in super::super) const fn title_style(self, focused: bool) -> Style {
+        if focused {
+            self.active_title
+        } else {
+            self.inactive_title
+        }
     }
 
     pub(in super::super) const fn with_inactive_border(self, inactive_border: Style) -> Self {
