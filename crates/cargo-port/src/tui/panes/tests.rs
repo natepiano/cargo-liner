@@ -35,6 +35,10 @@ fn package_data(is_rust_project: bool) -> PackageData {
         ci:               None,
         stats_rows:       Vec::new(),
         has_package:      true,
+        edition:          None,
+        license:          None,
+        homepage:         None,
+        repository:       None,
     }
 }
 
@@ -111,12 +115,26 @@ fn stats_width_cases() {
 #[test]
 fn package_fields_place_lint_and_ci_before_disk_for_rust_projects() {
     let data = package_data(true);
+    // Step 4 adds Edition / License / Homepage / Repository at the
+    // end of the Rust-package field list. They show unconditionally
+    // (the pane renders `—` for unset values).
     assert_eq!(
         model::package_fields_from_data(&data)
             .into_iter()
             .map(DetailField::label)
             .collect::<Vec<_>>(),
-        vec!["Path", "Disk", "Type", "Lint", "CI", "Version"]
+        vec![
+            "Path",
+            "Disk",
+            "Type",
+            "Lint",
+            "CI",
+            "Version",
+            "Edition",
+            "License",
+            "Homepage",
+            "Repository",
+        ]
     );
 }
 
@@ -133,14 +151,23 @@ fn package_fields_place_lint_and_ci_before_disk_for_non_rust_projects() {
 }
 
 #[test]
-fn package_label_width_expands_for_crates_io() {
+fn package_label_width_matches_widest_visible_field() {
     let data = PackageData {
         crates_version: Some("0.0.3".to_string()),
         crates_downloads: Some(74),
         ..package_data(true)
     };
     let fields = model::package_fields_from_data(&data);
-    assert_eq!(panes::package_label_width(&fields), "crates.io".len());
+    let expected = fields
+        .iter()
+        .map(|f| f.label().len())
+        .max()
+        .unwrap_or(0);
+    assert_eq!(panes::package_label_width(&fields), expected);
+    assert!(
+        expected >= "Repository".len(),
+        "label column must be wide enough for Step 4 fields (Repository = 10 chars)"
+    );
 }
 
 #[test]

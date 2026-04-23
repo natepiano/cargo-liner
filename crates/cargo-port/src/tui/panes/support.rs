@@ -452,6 +452,10 @@ pub enum DetailField {
     CratesIo,
     Downloads,
     Version,
+    Edition,
+    License,
+    Homepage,
+    Repository,
 }
 
 impl DetailField {
@@ -476,6 +480,10 @@ impl DetailField {
             Self::CratesIo => "crates.io",
             Self::Downloads => "Downloads",
             Self::Version => "Version",
+            Self::Edition => "Edition",
+            Self::License => "License",
+            Self::Homepage => "Homepage",
+            Self::Repository => "Repository",
         }
     }
 
@@ -530,6 +538,10 @@ impl DetailField {
                 .crates_downloads
                 .map_or_else(String::new, format_downloads),
             Self::Version => data.version.clone(),
+            Self::Edition => or_dash(data.edition.as_deref()),
+            Self::License => or_dash(data.license.as_deref()),
+            Self::Homepage => or_dash(data.homepage.as_deref()),
+            Self::Repository => or_dash(data.repository.as_deref()),
             Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
             // Git fields — should not be called with package_value.
             Self::Branch
@@ -582,6 +594,10 @@ impl DetailField {
             | Self::CratesIo
             | Self::Downloads
             | Self::Version
+            | Self::Edition
+            | Self::License
+            | Self::Homepage
+            | Self::Repository
             | Self::WorktreeError => String::new(),
         }
     }
@@ -643,6 +659,15 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     if data.crates_downloads.is_some() {
         fields.push(DetailField::Downloads);
     }
+    // Step 4 fields: show unconditionally on Rust packages so that
+    // unset values render as `—` and the UI surface matches the
+    // manifest faithfully even before a snapshot arrives.
+    if data.has_package {
+        fields.push(DetailField::Edition);
+        fields.push(DetailField::License);
+        fields.push(DetailField::Homepage);
+        fields.push(DetailField::Repository);
+    }
     fields
 }
 
@@ -698,6 +723,22 @@ pub struct PackageData {
     pub ci:               Option<Conclusion>,
     pub stats_rows:       Vec<(&'static str, usize)>,
     pub has_package:      bool,
+    /// Cargo edition ("2021", "2024", …) from the metadata snapshot.
+    /// `None` until a snapshot has landed or for non-Rust projects.
+    pub edition:          Option<String>,
+    pub license:          Option<String>,
+    pub homepage:         Option<String>,
+    pub repository:       Option<String>,
+}
+
+/// Render "—" when a `PackageRecord` field is absent from the manifest
+/// (design plan → step 4: "When any is missing from the manifest,
+/// render `—`.").
+fn or_dash(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| "—".to_string(), String::from)
 }
 
 /// Per-pane data for the Git detail panel.
@@ -1157,6 +1198,10 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             ci: None,
             stats_rows: Vec::new(),
             has_package: false,
+            edition: None,
+            license: None,
+            homepage: None,
+            repository: None,
         },
         git:     GitData {
             branch:             git_detail.branch,
@@ -1329,12 +1374,27 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 
     let is_binary = cargo.is_some_and(Cargo::is_binary);
 
+    // Step 4: pull edition / license / homepage / repository off the
+    // metadata snapshot. All four stay `None` when no snapshot covers
+    // the project yet (the caller's `package_value` arms render `—`
+    // for missing fields).
+    let abs_path_owned = AbsolutePath::from(abs_path);
+    let snapshot_package = app
+        .metadata_store_handle()
+        .lock()
+        .ok()
+        .and_then(|store| store.package_for_path(&abs_path_owned).cloned());
+    let edition = snapshot_package.as_ref().map(|pkg| pkg.edition.clone());
+    let license = snapshot_package.as_ref().and_then(|pkg| pkg.license.clone());
+    let homepage = snapshot_package.as_ref().and_then(|pkg| pkg.homepage.clone());
+    let repository = snapshot_package.as_ref().and_then(|pkg| pkg.repository.clone());
+
     let title_name = src.title_name;
     DetailPaneData {
         package: PackageData {
             package_title: src.package_title,
             title_name: title_name.clone(),
-            abs_path: AbsolutePath::from(abs_path),
+            abs_path: abs_path_owned,
             path: src.display_path.to_string(),
             version: cargo.and_then(Cargo::version).unwrap_or("-").to_string(),
             description: cargo.and_then(Cargo::description).map(str::to_string),
@@ -1345,6 +1405,10 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             ci,
             stats_rows: src.stats_rows,
             has_package: src.has_cargo,
+            edition,
+            license,
+            homepage,
+            repository,
         },
         git:     GitData {
             branch: git_detail.branch,

@@ -67,6 +67,24 @@ impl WorkspaceMetadataStore {
         self.by_root.get(root).map(|snap| &snap.target_directory)
     }
 
+    /// Look up the [`PackageRecord`] whose manifest sits at
+    /// `<path>/Cargo.toml` — i.e. the package whose root directory is
+    /// `path`. Works for standalone packages (where `path` is the
+    /// workspace root) and for workspace members (where `path` is a
+    /// member dir under the workspace root). Returns `None` when no
+    /// snapshot covers `path` or when no package in that snapshot
+    /// matches — the latter happens transiently when a manifest has
+    /// been edited and the follow-up `cargo metadata` hasn't landed
+    /// yet, so callers should treat `None` as "Loading…".
+    pub(crate) fn package_for_path(&self, path: &AbsolutePath) -> Option<&PackageRecord> {
+        let root = self.containing_workspace_root(path)?;
+        let snap = self.by_root.get(root)?;
+        let expected_manifest = path.as_path().join("Cargo.toml");
+        snap.packages
+            .values()
+            .find(|pkg| pkg.manifest_path.as_path() == expected_manifest)
+    }
+
     /// Insert or replace the snapshot for `workspace_root`.
     pub(crate) fn upsert(&mut self, snapshot: WorkspaceSnapshot) {
         self.by_root
@@ -538,5 +556,84 @@ mod tests {
             Some(target),
             "member paths resolve via ancestor walk up to the workspace root"
         );
+    }
+
+    fn fake_package_record(name: &str, manifest_path: AbsolutePath) -> PackageRecord {
+        PackageRecord {
+            id: PackageId {
+                repr: format!("{name}-test-id"),
+            },
+            name: name.into(),
+            version: Version::new(0, 1, 0),
+            edition: "2021".into(),
+            description: None,
+            license: Some("MIT".into()),
+            homepage: None,
+            repository: Some(format!("https://example.test/{name}")),
+            manifest_path,
+            targets: Vec::new(),
+            publish: PublishPolicy::Any,
+        }
+    }
+
+    #[test]
+    fn package_for_path_is_none_without_snapshot() {
+        let store = WorkspaceMetadataStore::new();
+        let path = AbsolutePath::from(PathBuf::from("/ws"));
+        assert!(store.package_for_path(&path).is_none());
+    }
+
+    #[test]
+    fn package_for_path_matches_standalone_package_at_its_root() {
+        let mut store = WorkspaceMetadataStore::new();
+        let root = AbsolutePath::from(PathBuf::from("/ws"));
+        let target = AbsolutePath::from(PathBuf::from("/ws/target"));
+        let mut snap = fake_snapshot(root.clone(), target);
+        let pkg = fake_package_record(
+            "demo",
+            AbsolutePath::from(PathBuf::from("/ws/Cargo.toml")),
+        );
+        snap.packages.insert(pkg.id.clone(), pkg);
+        store.upsert(snap);
+
+        let found = store.package_for_path(&root).expect("package found");
+        assert_eq!(found.name, "demo");
+        assert_eq!(found.license.as_deref(), Some("MIT"));
+    }
+
+    #[test]
+    fn package_for_path_matches_workspace_member() {
+        let mut store = WorkspaceMetadataStore::new();
+        let root = AbsolutePath::from(PathBuf::from("/ws"));
+        let target = AbsolutePath::from(PathBuf::from("/ws/target"));
+        let mut snap = fake_snapshot(root.clone(), target);
+        let member_root = AbsolutePath::from(PathBuf::from("/ws/crates/core"));
+        let pkg = fake_package_record(
+            "core",
+            AbsolutePath::from(PathBuf::from("/ws/crates/core/Cargo.toml")),
+        );
+        let pkg_id = pkg.id.clone();
+        snap.packages.insert(pkg_id.clone(), pkg);
+        snap.workspace_members.push(pkg_id);
+        store.upsert(snap);
+
+        let found = store
+            .package_for_path(&member_root)
+            .expect("member resolves via its own manifest_path");
+        assert_eq!(found.name, "core");
+    }
+
+    #[test]
+    fn package_for_path_returns_none_when_snapshot_has_no_matching_package() {
+        // Transient case: the snapshot covers this workspace but the
+        // specific package-dir path doesn't match any manifest (e.g. a
+        // Cargo.toml was just added and the follow-up dispatch hasn't
+        // landed yet). Callers should treat None as "Loading…".
+        let mut store = WorkspaceMetadataStore::new();
+        let root = AbsolutePath::from(PathBuf::from("/ws"));
+        let target = AbsolutePath::from(PathBuf::from("/ws/target"));
+        store.upsert(fake_snapshot(root.clone(), target));
+        let phantom_member = AbsolutePath::from(PathBuf::from("/ws/crates/never"));
+        assert!(store.package_for_path(&phantom_member).is_none());
     }
 }

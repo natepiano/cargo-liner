@@ -1285,6 +1285,109 @@ mod tests {
         );
     }
 
+    fn upsert_fake_package_snapshot(
+        app: &App,
+        project_dir: &Path,
+        license: Option<&str>,
+        homepage: Option<&str>,
+        repository: Option<&str>,
+    ) {
+        use cargo_metadata::PackageId;
+        use cargo_metadata::semver::Version;
+        let root = AbsolutePath::from(project_dir);
+        let manifest = AbsolutePath::from(project_dir.join("Cargo.toml"));
+        let pkg = crate::project::PackageRecord {
+            id: PackageId {
+                repr: "demo-test-id".into(),
+            },
+            name: "demo".into(),
+            version: Version::new(0, 1, 0),
+            edition: "2021".into(),
+            description: None,
+            license: license.map(String::from),
+            homepage: homepage.map(String::from),
+            repository: repository.map(String::from),
+            manifest_path: manifest,
+            targets: Vec::new(),
+            publish: crate::project::PublishPolicy::Any,
+        };
+        let mut packages = std::collections::HashMap::new();
+        packages.insert(pkg.id.clone(), pkg);
+        let snap = crate::project::WorkspaceSnapshot {
+            workspace_root:    root.clone(),
+            target_directory:  AbsolutePath::from(project_dir.join("target")),
+            packages,
+            workspace_members: Vec::new(),
+            fetched_at:        std::time::SystemTime::UNIX_EPOCH,
+            fingerprint:       crate::project::ManifestFingerprint {
+                manifest:       crate::project::FileStamp {
+                    mtime:        std::time::SystemTime::UNIX_EPOCH,
+                    len:          0,
+                    content_hash: [0_u8; 32],
+                },
+                lockfile:       None,
+                rust_toolchain: None,
+                configs:        std::collections::BTreeMap::new(),
+            },
+        };
+        app.metadata_store_handle()
+            .lock()
+            .expect("store")
+            .upsert(snap);
+    }
+
+    #[test]
+    fn package_pane_renders_snapshot_edition_license_homepage_repository() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let project_dir = tmp.path().join("demo");
+        std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+        let mut app = make_app(&[make_package("demo", &project_dir)]);
+        upsert_fake_package_snapshot(
+            &app,
+            &project_dir,
+            Some("MIT"),
+            Some("a.test/hp"),
+            Some("a.test/rp"),
+        );
+        let rendered = buffer_text(&mut app);
+
+        // All four Step-4 field labels must be present when their
+        // corresponding value is populated (edition is always set by
+        // the fake snapshot). Value fragments are kept short to fit
+        // the test backend's 120-column layout once the package pane
+        // has split off its allotted share.
+        for label in ["Edition", "License", "Homepage", "Repository"] {
+            assert!(
+                rendered.contains(label),
+                "{label} label missing from rendered package pane"
+            );
+        }
+        assert!(rendered.contains("2021"), "edition value (2021) missing");
+        assert!(rendered.contains("MIT"), "license value missing");
+        assert!(rendered.contains("a.test/hp"), "homepage value missing");
+        assert!(rendered.contains("a.test/rp"), "repository value missing");
+    }
+
+    #[test]
+    fn package_pane_renders_em_dash_for_missing_snapshot_fields() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let project_dir = tmp.path().join("demo");
+        std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+        let mut app = make_app(&[make_package("demo", &project_dir)]);
+        upsert_fake_package_snapshot(&app, &project_dir, None, None, None);
+        let rendered = buffer_text(&mut app);
+
+        // Absent manifest fields render as `—` (design plan step 4).
+        // Count dashes in the rendered screen — license / homepage /
+        // repository are all None here, so at least three should show.
+        let dash_count = rendered.matches('—').count();
+        assert!(
+            dash_count >= 3,
+            "expected at least 3 em-dash placeholders for missing \
+             license/homepage/repository, got {dash_count}"
+        );
+    }
+
     #[test]
     fn clean_confirm_popup_falls_back_to_in_tree_target_without_snapshot() {
         let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
