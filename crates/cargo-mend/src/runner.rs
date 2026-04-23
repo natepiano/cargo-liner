@@ -533,8 +533,7 @@ mod tests {
         let result = drop_conflicting_import_groups(fixes);
         assert!(
             result.is_empty(),
-            "conflicting-group fixes should all be dropped, got {:?}",
-            result
+            "conflicting-group fixes should all be dropped, got {result:?}"
         );
     }
 

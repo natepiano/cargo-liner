@@ -104,6 +104,89 @@ struct ScopeCollectionContext<'a> {
     scopes:  &'a mut Vec<ScopeInfo>,
 }
 
+struct OccurrenceContext<'a> {
+    path:            &'a Path,
+    display_path:    &'a str,
+    text:            &'a str,
+    offsets:         &'a [usize],
+    scopes:          &'a [ScopeInfo],
+    collision_names: &'a BTreeSet<String>,
+}
+
+fn process_occurrence(
+    occ: &InlinePathOccurrence,
+    ctx: &OccurrenceContext<'_>,
+    inserted_use_paths: &mut BTreeSet<(usize, String)>,
+    findings: &mut Vec<Finding>,
+    fixes: &mut Vec<UseFix>,
+) {
+    if ctx.collision_names.contains(&occ.import_name) {
+        return;
+    }
+
+    let byte_start = offset(ctx.offsets, occ.span_start);
+    let byte_end = offset(ctx.offsets, occ.span_end);
+
+    let source_line = ctx
+        .text
+        .lines()
+        .nth(occ.span_start.line.saturating_sub(1))
+        .unwrap_or_default()
+        .to_string();
+
+    findings.push(Finding {
+        severity: Severity::Warning,
+        code: DiagnosticCode::InlinePathQualifiedType,
+        path: ctx.display_path.to_string(),
+        line: occ.span_start.line,
+        column: occ.span_start.column + 1,
+        highlight_len: occ.full_path.len().max(1),
+        source_line,
+        item: None,
+        message: format!(
+            "use a `use` import for `{}` instead of inline path",
+            occ.import_name
+        ),
+        suggestion: Some(format!("consider adding: `use {};`", occ.import_path)),
+        fixability: FixSupport::InlinePathQualifiedType,
+        related: None,
+    });
+
+    // Group the rewrite and its companion `use` insertion so the combining
+    // layer can drop them together on cross-pass name collisions.
+    let group = Some(ImportGroup {
+        bare_name: occ.import_name.clone(),
+        full_path: occ.import_path.clone(),
+    });
+
+    fixes.push(UseFix {
+        path:         ctx.path.to_path_buf(),
+        start:        byte_start,
+        end:          byte_end,
+        replacement:  occ.replacement.clone(),
+        import_group: group.clone(),
+    });
+
+    let Some(scope_id) = find_innermost_scope(ctx.scopes, byte_start) else {
+        return;
+    };
+    let scope = &ctx.scopes[scope_id];
+
+    if !scope.existing_imports.contains(&occ.import_path)
+        && inserted_use_paths.insert((scope_id, occ.import_path.clone()))
+    {
+        let use_path = canonicalize_inserted_use_path(scope, &occ.import_path);
+        let use_text = format!("{}use {use_path};\n", scope.indent);
+        fixes.push(UseFix {
+            path:         ctx.path.to_path_buf(),
+            start:        scope.insertion_offset,
+            end:          scope.insertion_offset,
+            replacement:  use_text,
+            import_group: group,
+        });
+    }
+}
+
 fn scan_file(
     analysis_root: &Path,
     source_root: &Path,
@@ -159,74 +242,17 @@ fn scan_file(
     let mut fixes = Vec::new();
     let mut inserted_use_paths: BTreeSet<(usize, String)> = BTreeSet::new();
 
+    let ctx = OccurrenceContext {
+        path,
+        display_path: &display_path,
+        text: &text,
+        offsets: &offsets,
+        scopes: &scopes,
+        collision_names: &collision_names,
+    };
+
     for occ in &visitor.occurrences {
-        // Skip collisions
-        if collision_names.contains(&occ.import_name) {
-            continue;
-        }
-
-        let byte_start = offset(&offsets, occ.span_start);
-        let byte_end = offset(&offsets, occ.span_end);
-
-        let source_line = text
-            .lines()
-            .nth(occ.span_start.line.saturating_sub(1))
-            .unwrap_or_default()
-            .to_string();
-
-        findings.push(Finding {
-            severity: Severity::Warning,
-            code: DiagnosticCode::InlinePathQualifiedType,
-            path: display_path.clone(),
-            line: occ.span_start.line,
-            column: occ.span_start.column + 1,
-            highlight_len: occ.full_path.len().max(1),
-            source_line,
-            item: None,
-            message: format!(
-                "use a `use` import for `{}` instead of inline path",
-                occ.import_name
-            ),
-            suggestion: Some(format!("consider adding: `use {};`", occ.import_path)),
-            fixability: FixSupport::InlinePathQualifiedType,
-            related: None,
-        });
-
-        // Group the rewrite and its companion `use` insertion so the combining
-        // layer can drop them together on cross-pass name collisions.
-        let group = Some(ImportGroup {
-            bare_name: occ.import_name.clone(),
-            full_path: occ.import_path.clone(),
-        });
-
-        // Replace the inline path with the shortened form
-        fixes.push(UseFix {
-            path:         path.to_path_buf(),
-            start:        byte_start,
-            end:          byte_end,
-            replacement:  occ.replacement.clone(),
-            import_group: group.clone(),
-        });
-
-        let Some(scope_id) = find_innermost_scope(&scopes, byte_start) else {
-            continue;
-        };
-        let scope = &scopes[scope_id];
-
-        // Insert a `use` statement in the containing scope, not always at file scope.
-        if !scope.existing_imports.contains(&occ.import_path)
-            && inserted_use_paths.insert((scope_id, occ.import_path.clone()))
-        {
-            let use_path = canonicalize_inserted_use_path(scope, &occ.import_path);
-            let use_text = format!("{}use {use_path};\n", scope.indent);
-            fixes.push(UseFix {
-                path:         path.to_path_buf(),
-                start:        scope.insertion_offset,
-                end:          scope.insertion_offset,
-                replacement:  use_text,
-                import_group: group,
-            });
-        }
+        process_occurrence(occ, &ctx, &mut inserted_use_paths, &mut findings, &mut fixes);
     }
 
     Ok((findings, fixes))
