@@ -1264,10 +1264,12 @@ mod tests {
 
     // ── Confirm popup renders resolved target dir (Step 2) ─────────
 
-    fn buffer_text(app: &mut App) -> String {
+    fn buffer_text(app: &mut App) -> String { buffer_text_sized(app, 120, 40) }
+
+    fn buffer_text_sized(app: &mut App, width: u16, height: u16) -> String {
         app.ensure_visible_rows_cached();
         app.ensure_detail_cached();
-        let backend = TestBackend::new(120, 40);
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         terminal
             .draw(|frame| crate::tui::render::ui(frame, app))
@@ -1395,7 +1397,10 @@ mod tests {
             Some("a.test/hp"),
             Some("a.test/rp"),
         );
-        let rendered = buffer_text(&mut app);
+        // Use a taller backend so the package pane's full field list
+        // fits without scrolling — recent steps added rows (Targets /
+        // Lint / CI / Disk breakdown) ahead of Edition..Repository.
+        let rendered = buffer_text_sized(&mut app, 120, 80);
 
         // All four Step-4 field labels must be present when their
         // corresponding value is populated (edition is always set by
@@ -1421,7 +1426,9 @@ mod tests {
         std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
         let mut app = make_app(&[make_package("demo", &project_dir)]);
         upsert_fake_package_snapshot(&app, &project_dir, None, None, None);
-        let rendered = buffer_text(&mut app);
+        // Taller backend so the full field list fits — see the sibling
+        // test for why the default 120×40 isn't enough here.
+        let rendered = buffer_text_sized(&mut app, 120, 80);
 
         // Absent manifest fields render as `—` (design plan step 4).
         // Count dashes in the rendered screen — license / homepage /
