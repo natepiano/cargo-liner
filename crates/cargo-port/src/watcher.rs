@@ -285,6 +285,59 @@ pub(super) mod ancestor {
                 .map(|(project, _)| project.clone())
                 .collect()
         }
+
+        /// Every project whose current watch list contains `dir` as a
+        /// `Placeholder`. Used by the `mkdir .cargo` promotion path:
+        /// on a Create event with basename `.cargo` we find the
+        /// projects still waiting on that ancestor so they can
+        /// refresh their chain.
+        pub(in super::super) fn projects_with_placeholder_on(
+            &self,
+            dir: &AbsolutePath,
+        ) -> Vec<AbsolutePath> {
+            self.by_project
+                .iter()
+                .filter(|(_, watches)| {
+                    watches
+                        .iter()
+                        .any(|w| &w.dir == dir && w.role == AncestorCargoRole::Placeholder)
+                })
+                .map(|(project, _)| project.clone())
+                .collect()
+        }
+
+        /// Replace `project_root`'s watch list with `new`, returning
+        /// the net diff the caller should apply via `watch()` /
+        /// `unwatch()`. Dirs that were in the project's previous list
+        /// AND are in `new` (possibly with a different role) don't
+        /// appear in either side of the diff — the watcher is already
+        /// subscribed. Used when a `mkdir .cargo` Create event
+        /// promotes a Placeholder into a live `CargoDir` for an
+        /// affected project.
+        pub(in super::super) fn refresh_project(
+            &mut self,
+            project_root: AbsolutePath,
+            new: Vec<AncestorCargoWatch>,
+        ) -> AncestorWatchDiff {
+            let removal_diff = self.remove_project(&project_root);
+            let add_diff = self.add_project(project_root, new);
+            let removed_set: HashSet<AbsolutePath> =
+                removal_diff.to_remove.iter().cloned().collect();
+            let added_set: HashSet<AbsolutePath> =
+                add_diff.to_add.iter().map(|w| w.dir.clone()).collect();
+            AncestorWatchDiff {
+                to_add:    add_diff
+                    .to_add
+                    .into_iter()
+                    .filter(|w| !removed_set.contains(&w.dir))
+                    .collect(),
+                to_remove: removal_diff
+                    .to_remove
+                    .into_iter()
+                    .filter(|d| !added_set.contains(d))
+                    .collect(),
+            }
+        }
     }
 
     /// Resolve `CARGO_HOME` with the `$CARGO_HOME` env var taking
@@ -550,6 +603,59 @@ pub(super) mod ancestor {
         }
 
         #[test]
+        fn registry_refresh_project_promotes_placeholder_to_cargo_dir() {
+            // `mkdir .cargo` under a Placeholder ancestor: the
+            // registry's `refresh_project` swaps the Placeholder for
+            // a live CargoDir and reports the exact watch/unwatch
+            // diff the watcher should apply.
+            let mut reg = AncestorWatchRegistry::new();
+            reg.add_project(
+                dir("/home/u/a"),
+                vec![placeholder("/home/u"), placeholder("/home/u/a")],
+            );
+            assert!(reg.contains(&dir("/home/u")));
+
+            // `.cargo/` now exists at /home/u — refresh returns
+            // to_add for the new CargoDir + to_remove for the
+            // stale Placeholder.
+            let diff = reg.refresh_project(
+                dir("/home/u/a"),
+                vec![placeholder("/home/u/a"), cargo_dir("/home/u/.cargo")],
+            );
+            let mut added: Vec<_> = diff.to_add.iter().map(|w| w.dir.clone()).collect();
+            added.sort_by(|a, b| a.as_path().cmp(b.as_path()));
+            assert_eq!(added, vec![dir("/home/u/.cargo")]);
+            assert_eq!(diff.to_remove, vec![dir("/home/u")]);
+            assert!(reg.contains(&dir("/home/u/.cargo")));
+            assert!(!reg.contains(&dir("/home/u")));
+        }
+
+        #[test]
+        fn registry_projects_with_placeholder_on_filters_by_role() {
+            let mut reg = AncestorWatchRegistry::new();
+            reg.add_project(
+                dir("/home/u/a"),
+                vec![placeholder("/home/u/a"), placeholder("/home/u")],
+            );
+            reg.add_project(
+                dir("/home/u/b"),
+                vec![placeholder("/home/u/b"), cargo_dir("/home/u/.cargo")],
+            );
+
+            // /home/u is a Placeholder for /home/u/a only.
+            assert_eq!(
+                reg.projects_with_placeholder_on(&dir("/home/u")),
+                vec![dir("/home/u/a")]
+            );
+            // /home/u/.cargo is a CargoDir, not a Placeholder →
+            // nothing here.
+            assert!(
+                reg.projects_with_placeholder_on(&dir("/home/u/.cargo"))
+                    .is_empty()
+            );
+        }
+
+        #[test]
         fn registry_remove_unknown_project_is_a_noop() {
             let mut reg = AncestorWatchRegistry::new();
             let diff = reg.remove_project(&dir("/never/added"));
@@ -792,6 +898,18 @@ fn watcher_loop<W: Watcher + Send + 'static>(
         }
 
         let notify_events = drain_notify_events(notify_rx);
+        // Promote any ancestor `.cargo/` placeholders whose mkdir
+        // event just fired. Done before dispatch so subsequent
+        // `classify_cargo_metadata_basename` matches see the newly
+        // promoted CargoDir entries in the watch set.
+        promote_placeholders_on_cargo_create(
+            &notify_events,
+            &mut state.ancestor_registry,
+            &mut watcher,
+            &ancestor_fs,
+            cargo_home.as_deref(),
+            metadata_dispatch,
+        );
         process_notify_events(
             tick,
             &watch_drain,
@@ -1416,6 +1534,82 @@ fn is_internal_git_path(event_path: &Path, entry: &ProjectEntry) -> bool {
 /// metadata trigger AND the event sits under a `.cargo/` dir that
 /// the ancestor registry is watching, fan the refresh out to every
 /// project claiming that dir (Step 1b part 7b).
+/// Scan `notify_events` for `Create` events whose basename is
+/// `.cargo`. For each matching event, find the projects that are
+/// currently watching the *parent* dir as a Placeholder and refresh
+/// their ancestor chain — the Placeholder gets promoted to a live
+/// `CargoDir` entry, the watcher gets the `watch()` / `unwatch()` diff
+/// applied, and the claiming projects receive a cargo metadata
+/// refresh (the new `.cargo/config.toml` may redefine
+/// `target-directory`).
+///
+/// Runs before the main `handle_notify_event` dispatch so downstream
+/// classifier checks see the freshly promoted watch set.
+fn promote_placeholders_on_cargo_create(
+    notify_events: &[notify::Event],
+    registry: &mut ancestor::AncestorWatchRegistry,
+    watcher: &mut impl Watcher,
+    ancestor_fs: &dyn ancestor::AncestorFs,
+    cargo_home: Option<&Path>,
+    metadata_dispatch: &MetadataDispatchContext,
+) {
+    for event in notify_events {
+        if !matches!(event.kind, notify::event::EventKind::Create(_)) {
+            continue;
+        }
+        for path in &event.paths {
+            if path.file_name().is_none_or(|name| name != ".cargo") {
+                continue;
+            }
+            let Some(parent) = path.parent() else {
+                continue;
+            };
+            let parent_abs = AbsolutePath::from(parent.to_path_buf());
+            let claimants = registry.projects_with_placeholder_on(&parent_abs);
+            if claimants.is_empty() {
+                continue;
+            }
+            tracing::info!(
+                parent = %parent.display(),
+                placeholder_projects = claimants.len(),
+                "watcher_ancestor_placeholder_promotion"
+            );
+            for project_root in claimants {
+                let recomputed = ancestor::compute_ancestor_cargo_dirs(
+                    project_root.as_path(),
+                    cargo_home,
+                    ancestor_fs,
+                );
+                let diff = registry.refresh_project(project_root.clone(), recomputed);
+                for entry in &diff.to_add {
+                    if let Err(err) =
+                        watcher.watch(entry.dir.as_path(), RecursiveMode::NonRecursive)
+                    {
+                        tracing::debug!(
+                            dir = %entry.dir.display(),
+                            error = %err,
+                            "watcher_ancestor_promotion_watch_failed"
+                        );
+                    }
+                }
+                for dir in &diff.to_remove {
+                    if let Err(err) = watcher.unwatch(dir.as_path()) {
+                        tracing::debug!(
+                            dir = %dir.display(),
+                            error = %err,
+                            "watcher_ancestor_promotion_unwatch_failed"
+                        );
+                    }
+                }
+                // A newly-created `.cargo/config.toml` may redirect
+                // the target directory — force a fresh cargo metadata
+                // read for the project.
+                scan::spawn_cargo_metadata_refresh(metadata_dispatch.clone(), project_root);
+            }
+        }
+    }
+}
+
 fn try_dispatch_ancestor_metadata_refresh(
     event_path: &Path,
     ctx: &EventContext<'_>,
