@@ -54,6 +54,7 @@ use super::shortcuts::ShortcutState;
 use super::toasts;
 use crate::ci::Conclusion;
 use crate::project;
+use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::WorktreeHealth;
@@ -258,29 +259,53 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         finder::render_finder_popup(frame, app);
     }
     if let Some(action) = app.confirm() {
-        render_confirm_popup(frame, action);
+        let detail = confirm_action_detail(app, action);
+        render_confirm_popup(frame, action, detail.as_deref());
     }
 
     sync_hovered_pane_row(app);
 }
 
-fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
+/// Compute the secondary line shown below a confirm prompt, if any.
+/// For `Clean(project)` it's the resolved `target_directory`
+/// (home-relative) so the user can see exactly what's about to get
+/// wiped — including redirects via `CARGO_TARGET_DIR` or
+/// `.cargo/config.toml`'s `build.target-dir`.
+fn confirm_action_detail(app: &App, action: &ConfirmAction) -> Option<String> {
+    match action {
+        ConfirmAction::Clean(project_path) => {
+            let target = app
+                .resolve_target_dir(project_path)
+                .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join("target")));
+            Some(project::home_relative_path(target.as_path()))
+        },
+    }
+}
+
+fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction, detail: Option<&str>) {
     let prompt = match action {
         ConfirmAction::Clean(_) => "Run cargo clean?",
     };
 
-    let text = format!(" {prompt}  (y/n) ");
-    let width = u16::try_from(text.len() + 4).unwrap_or(u16::MAX);
+    let prompt_text = format!(" {prompt}  (y/n) ");
+    let prompt_width = prompt_text.len();
+    let detail_width = detail.map_or(0, |d| d.len() + 2); // leading " " + trailing " "
+    let width = u16::try_from(prompt_width.max(detail_width) + 4).unwrap_or(u16::MAX);
+    let height = if detail.is_some() {
+        CONFIRM_DIALOG_HEIGHT + 1
+    } else {
+        CONFIRM_DIALOG_HEIGHT
+    };
 
     let inner = super::popup::PopupFrame {
         title: None,
         border_color: TITLE_COLOR,
         width,
-        height: CONFIRM_DIALOG_HEIGHT,
+        height,
     }
     .render(frame);
 
-    let line = Line::from(vec![
+    let mut lines = vec![Line::from(vec![
         Span::styled(format!(" {prompt}  "), Style::default().fg(Color::White)),
         Span::styled(
             "(y/n)",
@@ -288,8 +313,14 @@ fn render_confirm_popup(frame: &mut Frame, action: &ConfirmAction) {
                 .fg(TITLE_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
-    ]);
-    frame.render_widget(Paragraph::new(line), inner);
+    ])];
+    if let Some(detail) = detail {
+        lines.push(Line::from(vec![Span::styled(
+            format!(" {detail} "),
+            Style::default().fg(LABEL_COLOR),
+        )]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {

@@ -1303,6 +1303,23 @@ pub(crate) struct MetadataDispatchContext {
     pub metadata_limit: Arc<tokio::sync::Semaphore>,
 }
 
+impl MetadataDispatchContext {
+    /// Lock the store briefly and clone the resolved `target_directory`
+    /// for any `path` inside a known workspace. Callers that hold a live
+    /// `App` should use `App::resolve_target_dir` instead; this shim
+    /// exists for the watcher, which holds the dispatch context but has
+    /// no direct App handle.
+    pub(crate) fn resolved_target_dir(
+        &self,
+        path: &AbsolutePath,
+    ) -> Option<AbsolutePath> {
+        self.metadata_store
+            .lock()
+            .ok()
+            .and_then(|store| store.resolved_target_dir(path).cloned())
+    }
+}
+
 /// Queue a `cargo metadata` invocation for `workspace_root` on the shared
 /// tokio handle. Captures the fingerprint and bumps the store's dispatch
 /// generation before the blocking `exec()` fires; arrivals round-trip

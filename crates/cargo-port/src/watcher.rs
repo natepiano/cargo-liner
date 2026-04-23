@@ -1101,7 +1101,13 @@ fn handle_notify_event(
             }
             return;
         }
-        let is_target_event = event_path.starts_with(entry.abs_path.join("target"));
+        let resolved_target =
+            metadata_dispatch.and_then(|dispatch| dispatch.resolved_target_dir(&entry.abs_path));
+        let is_target_event = is_target_event_for(
+            event_path,
+            entry.abs_path.as_path(),
+            resolved_target.as_deref(),
+        );
         schedule_disk_refresh(pending_disk, &entry.project_label, now);
         if !is_target_event && let Some(refresh_key) = git_refresh_key(entry) {
             enqueue_git_refresh(pending_git, refresh_key, now, false, "project_event");
@@ -1335,6 +1341,26 @@ fn is_internal_git_path(event_path: &Path, entry: &ProjectEntry) -> bool {
     git_dir.is_some_and(|d| event_path.starts_with(d))
         || common_git_dir.is_some_and(|d| event_path.starts_with(d))
         || repo_root.is_some_and(|r| event_path.starts_with(r.join(".git")))
+}
+
+/// Does `event_path` sit under the workspace's resolved target
+/// directory? `resolved_target = None` means we don't yet have a
+/// metadata snapshot — fall back to `<project_root>/target`, which is
+/// what cargo uses by default.
+///
+/// When the snapshot *is* available (e.g. target is redirected via
+/// `CARGO_TARGET_DIR` or `.cargo/config.toml`), events under the real
+/// target dir are suppressed and events under the in-tree `target/`
+/// decoy are treated as ordinary project events. The design doc
+/// (call-site migrations → step 2) calls this out explicitly.
+fn is_target_event_for(
+    event_path: &Path,
+    project_root: &Path,
+    resolved_target: Option<&Path>,
+) -> bool {
+    let fallback = project_root.join("target");
+    let dir = resolved_target.unwrap_or(fallback.as_path());
+    event_path.starts_with(dir)
 }
 
 fn is_target_metadata_event(event_path: &Path, project_root: &Path) -> bool {
@@ -1780,6 +1806,41 @@ mod tests {
             metadata_store: Arc::new(std::sync::Mutex::new(WorkspaceMetadataStore::new())),
             metadata_limit: Arc::new(tokio::sync::Semaphore::new(1)),
         }
+    }
+
+    // ── is_target_event_for ──────────────────────────────────────────
+
+    #[test]
+    fn is_target_event_for_uses_in_tree_default_without_snapshot() {
+        let root = Path::new("/home/u/proj");
+        let in_tree = root.join("target/debug/foo");
+        assert!(
+            is_target_event_for(&in_tree, root, None),
+            "default: events under <project>/target/ classify as target events"
+        );
+        let src = root.join("src/main.rs");
+        assert!(
+            !is_target_event_for(&src, root, None),
+            "events outside target/ are not target events"
+        );
+    }
+
+    #[test]
+    fn is_target_event_for_honors_resolved_out_of_tree_target() {
+        let root = Path::new("/home/u/proj");
+        let resolved = PathBuf::from("/tmp/custom-target");
+        let in_resolved = resolved.join("debug/foo");
+        let in_tree_decoy = root.join("target/debug/foo");
+
+        assert!(
+            is_target_event_for(&in_resolved, root, Some(&resolved)),
+            "with a resolved out-of-tree target, events there are target events"
+        );
+        assert!(
+            !is_target_event_for(&in_tree_decoy, root, Some(&resolved)),
+            "once the target is redirected, the in-tree <project>/target/ decoy \
+             is no longer treated as a target event"
+        );
     }
 
     #[test]

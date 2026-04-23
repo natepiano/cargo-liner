@@ -1542,6 +1542,113 @@ fn failed_metadata_arrival_surfaces_error_toast() {
     );
 }
 
+/// `start_clean` must prefer the workspace's resolved `target_directory`
+/// (from the metadata store) over the default `<project>/target` — that
+/// is the whole point of Step 2. Exercises three scenarios on a real
+/// tempdir to catch regressions in both the snapshot lookup and the
+/// filesystem existence check.
+#[test]
+fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_path = AbsolutePath::from(tmp.path().join("proj"));
+    let custom_target = AbsolutePath::from(tmp.path().join("out-of-tree-target"));
+    std::fs::create_dir_all(project_path.as_path())
+        .unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(custom_target.as_path())
+        .unwrap_or_else(|_| std::process::abort());
+
+    let pkg = crate::project::RootItem::Rust(
+        crate::project::RustProject::Package(crate::project::Package {
+            path: project_path.clone(),
+            name: Some("demo".into()),
+            ..crate::project::Package::default()
+        }),
+    );
+    let mut app = make_app(&[pkg]);
+
+    // Inject a snapshot pointing the project at the out-of-tree target.
+    app.metadata_store_handle()
+        .lock()
+        .expect("store")
+        .upsert(WorkspaceSnapshot {
+            workspace_root:    project_path.clone(),
+            target_directory:  custom_target.clone(),
+            packages:          HashMap::new(),
+            workspace_members: Vec::new(),
+            fetched_at:        SystemTime::UNIX_EPOCH,
+            fingerprint:       fake_fingerprint(),
+        });
+
+    assert!(
+        app.start_clean(&project_path),
+        "out-of-tree target dir exists → clean is queued (would have missed with join(\"target\"))"
+    );
+    assert!(app.running_clean_paths.contains_key(project_path.as_path()));
+}
+
+#[test]
+fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_path = AbsolutePath::from(tmp.path().join("proj"));
+    let custom_target = AbsolutePath::from(tmp.path().join("out-of-tree-target"));
+    std::fs::create_dir_all(project_path.as_path())
+        .unwrap_or_else(|_| std::process::abort());
+    // Also create the default `<project>/target` — this must NOT make the
+    // check pass, because the *resolved* target sits elsewhere and doesn't
+    // exist on disk.
+    std::fs::create_dir_all(project_path.as_path().join("target"))
+        .unwrap_or_else(|_| std::process::abort());
+
+    let pkg = crate::project::RootItem::Rust(
+        crate::project::RustProject::Package(crate::project::Package {
+            path: project_path.clone(),
+            name: Some("demo".into()),
+            ..crate::project::Package::default()
+        }),
+    );
+    let mut app = make_app(&[pkg]);
+    app.metadata_store_handle()
+        .lock()
+        .expect("store")
+        .upsert(WorkspaceSnapshot {
+            workspace_root:    project_path.clone(),
+            target_directory:  custom_target.clone(),
+            packages:          HashMap::new(),
+            workspace_members: Vec::new(),
+            fetched_at:        SystemTime::UNIX_EPOCH,
+            fingerprint:       fake_fingerprint(),
+        });
+
+    assert!(
+        !app.start_clean(&project_path),
+        "resolved target doesn't exist → already clean; in-tree target/ decoy must not trip it"
+    );
+    assert!(app.running_clean_paths.is_empty());
+}
+
+#[test]
+fn start_clean_falls_back_to_literal_target_when_no_snapshot_yet() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_path = AbsolutePath::from(tmp.path().join("proj"));
+    std::fs::create_dir_all(project_path.as_path().join("target"))
+        .unwrap_or_else(|_| std::process::abort());
+
+    let pkg = crate::project::RootItem::Rust(
+        crate::project::RustProject::Package(crate::project::Package {
+            path: project_path.clone(),
+            name: Some("demo".into()),
+            ..crate::project::Package::default()
+        }),
+    );
+    let mut app = make_app(&[pkg]);
+
+    assert!(
+        app.start_clean(&project_path),
+        "no snapshot → falls back to <project>/target, which exists → clean queued"
+    );
+    assert!(app.running_clean_paths.contains_key(project_path.as_path()));
+}
+
 /// The metadata phase gates `startup_complete_at`: with disk, git, repo
 /// phases all resolved but metadata still pending, startup must not be
 /// marked complete. Once metadata arrives, startup_complete_at is set.

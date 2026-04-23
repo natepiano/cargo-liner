@@ -58,6 +58,15 @@ impl WorkspaceMetadataStore {
         None
     }
 
+    /// Resolve the owning workspace's `target_directory` for any `path`
+    /// inside a known workspace. Returns `None` when no snapshot covers
+    /// `path` yet; callers should fall back to `<project_root>/target`.
+    /// This is the lock-free core of [`crate::tui::App::resolve_target_dir`].
+    pub(crate) fn resolved_target_dir(&self, path: &AbsolutePath) -> Option<&AbsolutePath> {
+        let root = self.containing_workspace_root(path)?;
+        self.by_root.get(root).map(|snap| &snap.target_directory)
+    }
+
     /// Insert or replace the snapshot for `workspace_root`.
     pub(crate) fn upsert(&mut self, snapshot: WorkspaceSnapshot) {
         self.by_root
@@ -466,6 +475,68 @@ mod tests {
         assert!(
             !store.dispatch_generations.contains_key(&root),
             "generation counter is dropped with the snapshot"
+        );
+    }
+
+    fn fake_snapshot(
+        workspace_root: AbsolutePath,
+        target_directory: AbsolutePath,
+    ) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            workspace_root,
+            target_directory,
+            packages: std::collections::HashMap::new(),
+            workspace_members: Vec::new(),
+            fetched_at: SystemTime::UNIX_EPOCH,
+            fingerprint: ManifestFingerprint {
+                manifest:       FileStamp {
+                    mtime:        SystemTime::UNIX_EPOCH,
+                    len:          0,
+                    content_hash: [0_u8; 32],
+                },
+                lockfile:       None,
+                rust_toolchain: None,
+                configs:        BTreeMap::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn resolved_target_dir_is_none_without_a_snapshot() {
+        let store = WorkspaceMetadataStore::new();
+        let path = AbsolutePath::from(PathBuf::from("/ws/src/lib.rs"));
+        assert!(
+            store.resolved_target_dir(&path).is_none(),
+            "no snapshot → None; callers fall back to <project>/target"
+        );
+    }
+
+    #[test]
+    fn resolved_target_dir_returns_snapshot_target_for_workspace_root() {
+        let mut store = WorkspaceMetadataStore::new();
+        let root = AbsolutePath::from(PathBuf::from("/ws"));
+        let target = AbsolutePath::from(PathBuf::from("/tmp/out-of-tree-target"));
+        store.upsert(fake_snapshot(root.clone(), target.clone()));
+
+        assert_eq!(
+            store.resolved_target_dir(&root).map(AbsolutePath::clone),
+            Some(target.clone()),
+            "exact-match workspace root resolves its own target_directory"
+        );
+    }
+
+    #[test]
+    fn resolved_target_dir_walks_ancestors_from_member_or_worktree_paths() {
+        let mut store = WorkspaceMetadataStore::new();
+        let root = AbsolutePath::from(PathBuf::from("/ws"));
+        let target = AbsolutePath::from(PathBuf::from("/tmp/out-of-tree-target"));
+        store.upsert(fake_snapshot(root.clone(), target.clone()));
+
+        let member = AbsolutePath::from(PathBuf::from("/ws/crates/core/src/lib.rs"));
+        assert_eq!(
+            store.resolved_target_dir(&member).map(AbsolutePath::clone),
+            Some(target),
+            "member paths resolve via ancestor walk up to the workspace root"
         );
     }
 }

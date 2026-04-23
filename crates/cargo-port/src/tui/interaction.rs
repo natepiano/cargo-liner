@@ -1217,4 +1217,91 @@ mod tests {
         assert_eq!(app.focused_pane(), PaneId::Git);
         assert_eq!(app.pane_manager().pane(PaneId::Git).pos(), 1);
     }
+
+    // ── Confirm popup renders resolved target dir (Step 2) ─────────
+
+    fn buffer_text(app: &mut App) -> String {
+        app.ensure_visible_rows_cached();
+        app.ensure_detail_cached();
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+        terminal
+            .draw(|frame| crate::tui::render::ui(frame, app))
+            .unwrap_or_else(|_| std::process::abort());
+        let area = terminal.size().unwrap_or_else(|_| std::process::abort());
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn clean_confirm_popup_shows_resolved_out_of_tree_target_dir() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let project_dir = tmp.path().join("demo");
+        std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+        let mut app = make_app(&[make_package("demo", &project_dir)]);
+
+        let custom_target = tmp.path().join("out-of-tree-target");
+        app.metadata_store_handle()
+            .lock()
+            .expect("store")
+            .upsert(crate::project::WorkspaceSnapshot {
+                workspace_root:    AbsolutePath::from(project_dir.clone()),
+                target_directory:  AbsolutePath::from(custom_target.clone()),
+                packages:          std::collections::HashMap::new(),
+                workspace_members: Vec::new(),
+                fetched_at:        std::time::SystemTime::UNIX_EPOCH,
+                fingerprint:       crate::project::ManifestFingerprint {
+                    manifest:       crate::project::FileStamp {
+                        mtime:        std::time::SystemTime::UNIX_EPOCH,
+                        len:          0,
+                        content_hash: [0_u8; 32],
+                    },
+                    lockfile:       None,
+                    rust_toolchain: None,
+                    configs:        std::collections::BTreeMap::new(),
+                },
+            });
+
+        app.set_confirm(crate::tui::app::ConfirmAction::Clean(
+            AbsolutePath::from(project_dir),
+        ));
+        let rendered = buffer_text(&mut app);
+
+        assert!(
+            rendered.contains("Run cargo clean?"),
+            "prompt line still renders"
+        );
+        let expected = crate::project::home_relative_path(custom_target.as_path());
+        assert!(
+            rendered.contains(&expected),
+            "resolved out-of-tree target dir is shown in the popup (expected {expected:?})"
+        );
+    }
+
+    #[test]
+    fn clean_confirm_popup_falls_back_to_in_tree_target_without_snapshot() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let project_dir = tmp.path().join("demo");
+        std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+        let mut app = make_app(&[make_package("demo", &project_dir)]);
+
+        app.set_confirm(crate::tui::app::ConfirmAction::Clean(
+            AbsolutePath::from(project_dir.clone()),
+        ));
+        let rendered = buffer_text(&mut app);
+
+        let fallback_target = project_dir.join("target");
+        let expected = crate::project::home_relative_path(fallback_target.as_path());
+        assert!(
+            rendered.contains(&expected),
+            "without a snapshot, popup shows the default <project>/target (expected {expected:?})"
+        );
+    }
 }

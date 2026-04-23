@@ -180,11 +180,21 @@ impl App {
     }
 
     /// Begin a clean for `project_path`. Returns `true` if a cargo clean
-    /// should be spawned; `false` when the project is already clean
-    /// (no `target/` dir), in which case a timed "Already clean" toast
-    /// is shown and no spinner is started.
+    /// should be spawned; `false` when the project is already clean,
+    /// in which case a timed "Already clean" toast is shown and no
+    /// spinner is started.
+    ///
+    /// Honors the workspace's resolved `target_directory` from the
+    /// metadata store (design plan → **Call-site migrations → step 2**):
+    /// a project redirected via `CARGO_TARGET_DIR` or
+    /// `.cargo/config.toml`'s `build.target-dir` is cleaned at the real
+    /// location. Falls back to `<project>/target` when no snapshot
+    /// covers `project_path` yet.
     pub(in super::super) fn start_clean(&mut self, project_path: &AbsolutePath) -> bool {
-        if !project_path.as_path().join("target").exists() {
+        let target_dir = self
+            .resolve_target_dir(project_path)
+            .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join("target")));
+        if !target_dir.as_path().exists() {
             let name = project::home_relative_path(project_path.as_path());
             self.show_timed_toast("Already clean", name);
             return false;

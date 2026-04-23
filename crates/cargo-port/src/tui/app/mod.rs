@@ -445,8 +445,9 @@ impl App {
     /// `None` when no snapshot covers `path` yet; callers should fall back
     /// to `<project>/target`.
     pub(in super::super) fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
-        let store = self.metadata_store.lock().ok()?;
-        let root = store.containing_workspace_root(path)?.clone();
-        store.get(&root).map(|snap| snap.target_directory.clone())
+        self.metadata_store
+            .lock()
+            .ok()
+            .and_then(|store| store.resolved_target_dir(path).cloned())
     }
 }
