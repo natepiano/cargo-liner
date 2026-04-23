@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-04-22
 
 ### Added
 - `prefer_module_import` now flags inline fully-qualified function calls (e.g. `crate::layout::set_root_grow_height(tree)`) with no matching `use`. `--fix` inserts `use crate::layout;` and rewrites the call site to `layout::set_root_grow_height(tree)`, deduplicating against existing module imports and function imports that pass 1 will rewrite
@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `cargo mend --fix` no longer breaks the build when a file mixes an enum variant and a same-named struct (e.g. `RustProject::Package` alongside a `Package` struct). The enum variant is now imported via its parent type, so existing bare uses of the struct keep resolving
 - `cargo mend --fix` no longer turns a struct associated-function call like `Foo::bar()` into a bogus `use crate::...::Foo;` import
+- `narrow_to_pub_crate` no longer suggests narrowing `pub` items to `pub(crate)` in integration test root files under `tests/`, `examples/`, or `benches/`, which are compiled both as their own targets and as modules of sibling targets
 
 ## [0.7.0] - 2026-04-16
 
