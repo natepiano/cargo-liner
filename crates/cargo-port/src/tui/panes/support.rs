@@ -660,10 +660,7 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
             DetailField::Ci,
         ];
     }
-    let mut fields = vec![
-        DetailField::Path,
-        DetailField::Disk,
-    ];
+    let mut fields = vec![DetailField::Path, DetailField::Disk];
     // Step 5b: insert the target / non-target breakdown immediately
     // below the aggregate Disk row when the walker has reported one,
     // so the user sees which half of the bytes is build artifact vs
@@ -851,7 +848,7 @@ pub fn git_row_at(data: &GitData, pos: usize) -> Option<GitRow<'_>> {
 }
 
 /// Per-pane data for the Targets panel.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct TargetsData {
     pub primary_binary: Option<String>,
     pub examples:       Vec<ExampleGroup>,
@@ -899,7 +896,11 @@ impl TargetsData {
                             .collect();
                         // `examples/<category>/<file>.rs` → category.
                         // `examples/<file>.rs` → root-level (empty).
-                        if parts.len() >= 3 { Some(parts[1].clone()) } else { None }
+                        if parts.len() >= 3 {
+                            Some(parts[1].clone())
+                        } else {
+                            None
+                        }
                     })
                     .unwrap_or_default();
                 example_groups
@@ -1488,8 +1489,6 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             .join(", ")
     });
 
-    let is_binary = cargo.is_some_and(Cargo::is_binary);
-
     // Step 4: pull edition / license / homepage / repository off the
     // metadata snapshot. All four stay `None` when no snapshot covers
     // the project yet (the caller's `package_value` arms render `—`
@@ -1501,23 +1500,29 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         .ok()
         .and_then(|store| store.package_for_path(&abs_path_owned).cloned());
     let edition = snapshot_package.as_ref().map(|pkg| pkg.edition.clone());
-    let license = snapshot_package.as_ref().and_then(|pkg| pkg.license.clone());
-    let homepage = snapshot_package.as_ref().and_then(|pkg| pkg.homepage.clone());
-    let repository = snapshot_package.as_ref().and_then(|pkg| pkg.repository.clone());
+    let license = snapshot_package
+        .as_ref()
+        .and_then(|pkg| pkg.license.clone());
+    let homepage = snapshot_package
+        .as_ref()
+        .and_then(|pkg| pkg.homepage.clone());
+    let repository = snapshot_package
+        .as_ref()
+        .and_then(|pkg| pkg.repository.clone());
 
     let title_name = src.title_name;
     // Step 5b: pull the walker's breakdown off the matching project
     // info (if any). Both stay None for rows that don't have disk
     // data reported yet or for non-Rust leaves.
-    let (in_project_target, in_project_non_target) = app
-        .projects()
-        .at_path(abs_path)
-        .map_or((None, None), |pi| (pi.in_project_target, pi.in_project_non_target));
+    let (in_project_target, in_project_non_target) =
+        app.projects().at_path(abs_path).map_or((None, None), |pi| {
+            (pi.in_project_target, pi.in_project_non_target)
+        });
 
     DetailPaneData {
         package: PackageData {
             package_title: src.package_title,
-            title_name: title_name.clone(),
+            title_name,
             abs_path: abs_path_owned,
             path: src.display_path.to_string(),
             version: cargo.and_then(Cargo::version).unwrap_or("-").to_string(),
@@ -1553,18 +1558,20 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             remotes: git_detail.remotes,
             worktrees,
         },
-        // Step 3a: derive Targets-pane data from the snapshot when it
-        // covers this project. Falls back to the hand-parsed `Cargo`
-        // values when no snapshot has landed yet, so the cold-start
-        // UI still shows something plausible.
-        targets: match snapshot_package.as_ref() {
-            Some(record) => TargetsData::from_package_record(record, &title_name),
-            None => TargetsData {
-                primary_binary: is_binary.then_some(title_name),
-                examples:       cargo.map_or_else(Vec::new, |c| c.examples().to_vec()),
-                benches:        cargo.map_or_else(Vec::new, |c| c.benches().to_vec()),
-            },
-        },
+        // Step 3a/3b: derive Targets-pane data from the snapshot when
+        // it covers this project. Without a snapshot the pane stays
+        // empty (design plan → "Workspace members + Targets pane
+        // migrate to snapshots atomically; targets show 'Loading…'
+        // without a snapshot"). The old hand-parsed fallback could
+        // disagree with cargo's real discovery rules (autoexamples,
+        // required-features, excluded targets), so we'd rather
+        // render nothing pre-snapshot than render something
+        // misleading.
+        targets: snapshot_package
+            .as_ref()
+            .map_or_else(TargetsData::default, |record| {
+                TargetsData::from_package_record(record, record.name.as_str())
+            }),
     }
 }
 

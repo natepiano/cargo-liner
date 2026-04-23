@@ -1366,9 +1366,7 @@ fn fake_fingerprint() -> ManifestFingerprint {
 fn fake_snapshot(workspace_root: &AbsolutePath) -> WorkspaceSnapshot {
     WorkspaceSnapshot {
         workspace_root:    workspace_root.clone(),
-        target_directory:  AbsolutePath::from(
-            workspace_root.as_path().join("target"),
-        ),
+        target_directory:  AbsolutePath::from(workspace_root.as_path().join("target")),
         packages:          HashMap::new(),
         workspace_members: Vec::new(),
         fetched_at:        SystemTime::UNIX_EPOCH,
@@ -1447,7 +1445,11 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
     });
 
     assert!(
-        app.scan.startup_phases.metadata.seen.contains(&workspace_root),
+        app.scan
+            .startup_phases
+            .metadata
+            .seen
+            .contains(&workspace_root),
         "metadata.seen records the arrived workspace"
     );
     assert!(
@@ -1477,20 +1479,30 @@ fn stale_generation_metadata_arrival_is_dropped() {
 
     let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
     let store = app.metadata_store_handle();
-    let stale_gen = store.lock().expect("store").next_generation(&workspace_root);
+    let stale_gen = store
+        .lock()
+        .expect("store")
+        .next_generation(&workspace_root);
     // A later dispatch bumps the generation; the stale arrival below
     // should be rejected.
-    let _newer_gen = store.lock().expect("store").next_generation(&workspace_root);
+    let _newer_gen = store
+        .lock()
+        .expect("store")
+        .next_generation(&workspace_root);
 
     app.handle_bg_msg(BackgroundMsg::CargoMetadata {
         workspace_root: workspace_root.clone(),
-        generation: stale_gen,
-        fingerprint: fake_fingerprint(),
-        result: Ok(fake_snapshot(&workspace_root)),
+        generation:     stale_gen,
+        fingerprint:    fake_fingerprint(),
+        result:         Ok(fake_snapshot(&workspace_root)),
     });
 
     assert!(
-        !app.scan.startup_phases.metadata.seen.contains(&workspace_root),
+        !app.scan
+            .startup_phases
+            .metadata
+            .seen
+            .contains(&workspace_root),
         "stale-generation arrival does not advance metadata.seen"
     );
     assert!(
@@ -1538,7 +1550,11 @@ fn failed_metadata_arrival_surfaces_error_toast() {
         "failure raises a timed error toast starting with 'cargo metadata failed'"
     );
     assert!(
-        app.scan.startup_phases.metadata.seen.contains(&workspace_root),
+        app.scan
+            .startup_phases
+            .metadata
+            .seen
+            .contains(&workspace_root),
         "failure still ticks the phase forward so startup doesn't wedge"
     );
 }
@@ -1553,18 +1569,16 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
     let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
     let project_path = AbsolutePath::from(tmp.path().join("proj"));
     let custom_target = AbsolutePath::from(tmp.path().join("out-of-tree-target"));
-    std::fs::create_dir_all(project_path.as_path())
-        .unwrap_or_else(|_| std::process::abort());
-    std::fs::create_dir_all(custom_target.as_path())
-        .unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(project_path.as_path()).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(custom_target.as_path()).unwrap_or_else(|_| std::process::abort());
 
-    let pkg = crate::project::RootItem::Rust(
-        crate::project::RustProject::Package(crate::project::Package {
+    let pkg = crate::project::RootItem::Rust(crate::project::RustProject::Package(
+        crate::project::Package {
             path: project_path.clone(),
             name: Some("demo".into()),
             ..crate::project::Package::default()
-        }),
-    );
+        },
+    ));
     let mut app = make_app(&[pkg]);
 
     // Inject a snapshot pointing the project at the out-of-tree target.
@@ -1592,21 +1606,20 @@ fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
     let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
     let project_path = AbsolutePath::from(tmp.path().join("proj"));
     let custom_target = AbsolutePath::from(tmp.path().join("out-of-tree-target"));
-    std::fs::create_dir_all(project_path.as_path())
-        .unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(project_path.as_path()).unwrap_or_else(|_| std::process::abort());
     // Also create the default `<project>/target` — this must NOT make the
     // check pass, because the *resolved* target sits elsewhere and doesn't
     // exist on disk.
     std::fs::create_dir_all(project_path.as_path().join("target"))
         .unwrap_or_else(|_| std::process::abort());
 
-    let pkg = crate::project::RootItem::Rust(
-        crate::project::RustProject::Package(crate::project::Package {
+    let pkg = crate::project::RootItem::Rust(crate::project::RustProject::Package(
+        crate::project::Package {
             path: project_path.clone(),
             name: Some("demo".into()),
             ..crate::project::Package::default()
-        }),
-    );
+        },
+    ));
     let mut app = make_app(&[pkg]);
     app.metadata_store_handle()
         .lock()
@@ -1634,13 +1647,13 @@ fn start_clean_falls_back_to_literal_target_when_no_snapshot_yet() {
     std::fs::create_dir_all(project_path.as_path().join("target"))
         .unwrap_or_else(|_| std::process::abort());
 
-    let pkg = crate::project::RootItem::Rust(
-        crate::project::RustProject::Package(crate::project::Package {
+    let pkg = crate::project::RootItem::Rust(crate::project::RustProject::Package(
+        crate::project::Package {
             path: project_path.clone(),
             name: Some("demo".into()),
             ..crate::project::Package::default()
-        }),
-    );
+        },
+    ));
     let mut app = make_app(&[pkg]);
 
     assert!(
@@ -1757,24 +1770,25 @@ fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
     let primary_path = test_path("~/cargo-port");
     let linked_path = test_path("~/cargo-port_feat");
     let primary = crate::project::Package {
-        path:            primary_path.clone(),
-        name:            Some("cargo-port".to_string()),
+        path: primary_path.clone(),
+        name: Some("cargo-port".to_string()),
         worktree_status: crate::project::WorktreeStatus::Primary {
             root: primary_path.clone(),
         },
         ..crate::project::Package::default()
     };
     let linked = crate::project::Package {
-        path:            linked_path.clone(),
-        name:            Some("cargo-port_feat".to_string()),
+        path: linked_path.clone(),
+        name: Some("cargo-port_feat".to_string()),
         worktree_status: crate::project::WorktreeStatus::Linked {
             primary: primary_path.clone(),
         },
         ..crate::project::Package::default()
     };
-    let worktrees = RootItem::Worktrees(
-        crate::project::WorktreeGroup::new_packages(primary, vec![linked]),
-    );
+    let worktrees = RootItem::Worktrees(crate::project::WorktreeGroup::new_packages(
+        primary,
+        vec![linked],
+    ));
     let mut app = make_app(std::slice::from_ref(&worktrees));
     app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
 
@@ -1813,10 +1827,7 @@ fn request_clean_confirm_opens_ready_when_fingerprint_matches() {
         app.confirm_verifying().is_none(),
         "capture failure (test path doesn't exist) → no verifying state"
     );
-    assert!(
-        app.confirm().is_some(),
-        "popup opens immediately in Ready"
-    );
+    assert!(app.confirm().is_some(), "popup opens immediately in Ready");
 }
 
 #[test]

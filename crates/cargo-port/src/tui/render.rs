@@ -291,9 +291,7 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
             // be empty — then these lists stay empty and the dialog
             // reverts to the Step 2 single-line shape.
             let selection = [project_path.clone()];
-            let siblings = app
-                .target_dir_index_ref()
-                .siblings(&target, &selection);
+            let siblings = app.target_dir_index_ref().siblings(&target, &selection);
             let mut project_siblings: Vec<&AbsolutePath> = Vec::new();
             let mut nested_count = 0usize;
             for member in siblings {
@@ -309,7 +307,10 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
             if !project_siblings.is_empty() {
                 lines.push("Also affects:".to_string());
                 for sibling in project_siblings.iter().take(AFFECTED_EXTRAS_VISIBLE_CAP) {
-                    lines.push(format!("  {}", project::home_relative_path(sibling.as_path())));
+                    lines.push(format!(
+                        "  {}",
+                        project::home_relative_path(sibling.as_path())
+                    ));
                 }
                 if project_siblings.len() > AFFECTED_EXTRAS_VISIBLE_CAP {
                     let extra = project_siblings.len() - AFFECTED_EXTRAS_VISIBLE_CAP;

@@ -124,7 +124,10 @@ pub(super) mod ancestor {
                 continue;
             }
             push_watch_for_level(ancestor, fs, &mut watches);
-            if stop_at.as_deref().is_some_and(|home_parent| ancestor == home_parent) {
+            if stop_at
+                .as_deref()
+                .is_some_and(|home_parent| ancestor == home_parent)
+            {
                 return watches;
             }
         }
@@ -275,10 +278,7 @@ pub(super) mod ancestor {
         /// appears in its ancestor watch set. Used to fan a config
         /// edit under a watched `.cargo/` out to the affected
         /// projects for metadata refresh.
-        pub(in super::super) fn projects_claiming(
-            &self,
-            dir: &AbsolutePath,
-        ) -> Vec<AbsolutePath> {
+        pub(in super::super) fn projects_claiming(&self, dir: &AbsolutePath) -> Vec<AbsolutePath> {
             self.by_project
                 .iter()
                 .filter(|(_, watches)| watches.iter().any(|w| &w.dir == dir))
@@ -421,7 +421,11 @@ pub(super) mod ancestor {
                 "without CARGO_HOME we still walk to the fs root, \
                  all placeholders since nothing exists"
             );
-            assert!(watches.iter().all(|w| w.role == AncestorCargoRole::Placeholder));
+            assert!(
+                watches
+                    .iter()
+                    .all(|w| w.role == AncestorCargoRole::Placeholder)
+            );
         }
 
         // ── AncestorWatchRegistry ─────────────────────────────────────
@@ -534,10 +538,7 @@ pub(super) mod ancestor {
         #[test]
         fn registry_add_is_idempotent_on_same_project() {
             let mut reg = AncestorWatchRegistry::new();
-            let watches = vec![
-                placeholder("/home/u/a"),
-                cargo_dir("/home/u/.cargo"),
-            ];
+            let watches = vec![placeholder("/home/u/a"), cargo_dir("/home/u/.cargo")];
             let first = reg.add_project(dir("/home/u/a"), watches.clone());
             assert_eq!(first.to_add.len(), 2);
 
@@ -559,23 +560,18 @@ pub(super) mod ancestor {
 
         #[test]
         fn event_under_watched_cargo_dir_matches_config_edits() {
-            let watched: HashSet<AbsolutePath> =
-                [dir("/home/u/.cargo"), dir("/home/u")].into_iter().collect();
+            let watched: HashSet<AbsolutePath> = [dir("/home/u/.cargo"), dir("/home/u")]
+                .into_iter()
+                .collect();
 
             assert!(
-                event_under_watched_cargo_dir(
-                    Path::new("/home/u/.cargo/config.toml"),
-                    &watched
-                )
-                .is_some(),
+                event_under_watched_cargo_dir(Path::new("/home/u/.cargo/config.toml"), &watched)
+                    .is_some(),
                 "edit under /home/u/.cargo/ must be recognized"
             );
             assert!(
-                event_under_watched_cargo_dir(
-                    Path::new("/home/u/.cargo/config"),
-                    &watched
-                )
-                .is_some(),
+                event_under_watched_cargo_dir(Path::new("/home/u/.cargo/config"), &watched)
+                    .is_some(),
                 "the legacy `config` (no extension) basename still counts"
             );
             assert!(
@@ -583,11 +579,8 @@ pub(super) mod ancestor {
                 "a non-.cargo/ directory in the watch set isn't a cargo-config hit"
             );
             assert!(
-                event_under_watched_cargo_dir(
-                    Path::new("/other/.cargo/config.toml"),
-                    &watched
-                )
-                .is_none(),
+                event_under_watched_cargo_dir(Path::new("/other/.cargo/config.toml"), &watched)
+                    .is_none(),
                 "out-of-set cargo dirs are not flagged"
             );
         }
@@ -648,8 +641,8 @@ pub(crate) fn spawn_watcher(
         "watcher_root_registration_complete"
     );
     let metadata_dispatch = MetadataDispatchContext {
-        handle:         client.handle.clone(),
-        tx:             bg_tx.clone(),
+        handle: client.handle.clone(),
+        tx: bg_tx.clone(),
         metadata_store,
         metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
     };
@@ -806,7 +799,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             watch_roots,
             &WatcherBackgroundSinks {
                 bg_tx,
-                lint_runtime:      ctx.lint_runtime.as_ref(),
+                lint_runtime: ctx.lint_runtime.as_ref(),
                 metadata_dispatch: Some(metadata_dispatch),
             },
             &mut state,
@@ -923,9 +916,7 @@ fn apply_watch_request(
         }
     }
     if let Some(parent) = req.abs_path.parent() {
-        state
-            .project_parents
-            .insert(AbsolutePath::from(parent));
+        state.project_parents.insert(AbsolutePath::from(parent));
     }
     let git_dir = req.repo_root.as_deref().and_then(project::resolve_git_dir);
     let common_git_dir = req
@@ -972,15 +963,15 @@ fn process_notify_events(
             "watcher_loop_registration_completed"
         );
         let dispatch = WatcherDispatchContext {
-            event: EventContext {
+            event:             EventContext {
                 watch_roots,
                 projects: &state.projects,
                 project_parents: &state.project_parents,
                 discovered: &state.discovered,
                 ancestor_registry: Some(&state.ancestor_registry),
             },
-            bg_tx: sinks.bg_tx,
-            lint_runtime: sinks.lint_runtime,
+            bg_tx:             sinks.bg_tx,
+            lint_runtime:      sinks.lint_runtime,
             metadata_dispatch: sinks.metadata_dispatch,
         };
         replay_buffered_events(
@@ -1007,15 +998,15 @@ fn process_notify_events(
             tracing::info!(tick, notify_count, "watcher_loop_processing_events");
         }
         let dispatch = WatcherDispatchContext {
-            event: EventContext {
+            event:             EventContext {
                 watch_roots,
                 projects: &state.projects,
                 project_parents: &state.project_parents,
                 discovered: &state.discovered,
                 ancestor_registry: Some(&state.ancestor_registry),
             },
-            bg_tx: sinks.bg_tx,
-            lint_runtime: sinks.lint_runtime,
+            bg_tx:             sinks.bg_tx,
+            lint_runtime:      sinks.lint_runtime,
             metadata_dispatch: sinks.metadata_dispatch,
         };
         replay_buffered_events(
@@ -1440,8 +1431,7 @@ fn try_dispatch_ancestor_metadata_refresh(
         return;
     }
     let watched = registry.current_watch_set();
-    let Some(cargo_dir) = ancestor::event_under_watched_cargo_dir(event_path, &watched)
-    else {
+    let Some(cargo_dir) = ancestor::event_under_watched_cargo_dir(event_path, &watched) else {
         return;
     };
     let claimants = registry.projects_claiming(cargo_dir);
@@ -1914,7 +1904,7 @@ mod tests {
     fn test_metadata_dispatch(client: &HttpClient) -> MetadataDispatchContext {
         let (tx, _rx) = mpsc::channel();
         MetadataDispatchContext {
-            handle:         client.handle.clone(),
+            handle: client.handle.clone(),
             tx,
             metadata_store: Arc::new(std::sync::Mutex::new(WorkspaceMetadataStore::new())),
             metadata_limit: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -1942,9 +1932,7 @@ mod tests {
             Ok(Self)
         }
 
-        fn watch(&mut self, _path: &Path, _mode: RecursiveMode) -> notify::Result<()> {
-            Ok(())
-        }
+        fn watch(&mut self, _path: &Path, _mode: RecursiveMode) -> notify::Result<()> { Ok(()) }
 
         fn unwatch(&mut self, _path: &Path) -> notify::Result<()> { Ok(()) }
 
@@ -2013,13 +2001,7 @@ mod tests {
             .send(WatcherMsg::InitialRegistrationComplete)
             .expect("send registration complete");
 
-        let drained = drain_watch_messages(
-            &watch_rx,
-            &mut state,
-            &mut watcher,
-            &fs,
-            None,
-        );
+        let drained = drain_watch_messages(&watch_rx, &mut state, &mut watcher, &fs, None);
 
         assert!(drained.registration_completed);
         assert!(!state.initializing);
@@ -2047,13 +2029,7 @@ mod tests {
             let mut state = WatcherLoopState::new();
             let mut watcher = NoopWatcher;
             let fs = NoopFs;
-            let drained = drain_watch_messages(
-                &watch_rx,
-                &mut state,
-                &mut watcher,
-                &fs,
-                None,
-            );
+            let drained = drain_watch_messages(&watch_rx, &mut state, &mut watcher, &fs, None);
             let _ = result_tx.send((drained, state.initializing));
         });
 
@@ -2078,9 +2054,7 @@ mod tests {
         }
 
         impl Drop for DropSignal {
-            fn drop(&mut self) {
-                self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            }
+            fn drop(&mut self) { self.flag.store(true, std::sync::atomic::Ordering::SeqCst); }
         }
 
         impl notify::Watcher for DropSignal {
@@ -2103,9 +2077,7 @@ mod tests {
                 self.inner.watch(path, mode)
             }
 
-            fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
-                self.inner.unwatch(path)
-            }
+            fn unwatch(&mut self, path: &Path) -> notify::Result<()> { self.inner.unwatch(path) }
 
             fn configure(&mut self, config: notify::Config) -> notify::Result<bool> {
                 self.inner.configure(config)
@@ -2443,10 +2415,10 @@ mod tests {
         let (project_dir, _, projects, watch_roots, project_parents, discovered) =
             repo_with_member_event_context(&tmp);
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
@@ -2561,10 +2533,10 @@ mod tests {
         let project_parents = HashSet::from(["/home/user/rust".into()]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
@@ -2710,10 +2682,10 @@ edition = "2024"
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
@@ -2816,10 +2788,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
@@ -2861,10 +2833,10 @@ edition = "2024"
         std::fs::write(wt_git_dir.join("HEAD"), "ref: refs/heads/wt-branch\n").expect("write HEAD");
         std::fs::write(wt_git_dir.join("index"), "fake-index").expect("write index");
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
@@ -2902,10 +2874,10 @@ edition = "2024"
         std::fs::create_dir_all(logs_head.parent().expect("logs dir")).expect("create logs dir");
         std::fs::write(&logs_head, "old..new commit message\n").expect("write logs/HEAD");
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
@@ -2938,10 +2910,10 @@ edition = "2024"
         let (_wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
             worktree_git_event_context(&tmp);
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
@@ -2979,10 +2951,10 @@ edition = "2024"
         let branch_ref = common_git_dir.join("refs").join("heads").join("wt-branch");
         std::fs::write(&branch_ref, "deadbeef\n").expect("write branch ref");
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
@@ -3049,10 +3021,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
@@ -3102,17 +3074,17 @@ edition = "2024"
         let (_wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
             worktree_git_event_context(&tmp);
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let dispatch = WatcherDispatchContext {
-            event:        ctx,
-            bg_tx:        &bg_tx,
-            lint_runtime: None,
+            event:             ctx,
+            bg_tx:             &bg_tx,
+            lint_runtime:      None,
             metadata_dispatch: None,
         };
         let mut pending_disk = HashMap::new();
@@ -3150,17 +3122,17 @@ edition = "2024"
         let branch_ref = common_git_dir.join("refs").join("heads").join("wt-branch");
         std::fs::write(&branch_ref, "deadbeef\n").expect("write branch ref");
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let dispatch = WatcherDispatchContext {
-            event:        ctx,
-            bg_tx:        &bg_tx,
-            lint_runtime: None,
+            event:             ctx,
+            bg_tx:             &bg_tx,
+            lint_runtime:      None,
             metadata_dispatch: None,
         };
         let mut pending_disk = HashMap::new();
@@ -3209,10 +3181,10 @@ edition = "2024"
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
@@ -3259,10 +3231,10 @@ edition = "2024"
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
@@ -3326,10 +3298,10 @@ edition = "2024"
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let mut pending_disk = HashMap::new();
@@ -3398,10 +3370,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(base)]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let mut pending_disk = HashMap::new();
@@ -3438,17 +3410,17 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(base)]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let dispatch = WatcherDispatchContext {
-            event:        ctx,
-            bg_tx:        &bg_tx,
-            lint_runtime: None,
+            event:             ctx,
+            bg_tx:             &bg_tx,
+            lint_runtime:      None,
             metadata_dispatch: None,
         };
         let mut pending_disk = HashMap::new();
@@ -3483,10 +3455,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(base)]);
         let discovered = HashSet::from([AbsolutePath::from(project_dir.clone())]);
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let mut pending_disk = HashMap::new();
@@ -3526,10 +3498,10 @@ edition = "2024"
         let project_parents = HashSet::new(); // empty — early scan
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
@@ -4019,10 +3991,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
@@ -4100,10 +4072,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
@@ -4179,10 +4151,10 @@ edition = "2024"
         let discovered = HashSet::from([AbsolutePath::from(canonical)]);
         let projects = HashMap::new();
         let ctx = EventContext {
-            watch_roots:     &watch_roots,
-            projects:        &projects,
-            project_parents: &project_parents,
-            discovered:      &discovered,
+            watch_roots:       &watch_roots,
+            projects:          &projects,
+            project_parents:   &project_parents,
+            discovered:        &discovered,
             ancestor_registry: None,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();

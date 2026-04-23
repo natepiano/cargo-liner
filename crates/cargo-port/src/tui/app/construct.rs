@@ -148,7 +148,13 @@ impl App {
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
     ) -> Self {
         let channels = AppChannels::new();
-        let init = AppInit::new(projects, &bg_tx, cfg, &http_client, Arc::clone(&metadata_store));
+        let init = AppInit::new(
+            projects,
+            &bg_tx,
+            cfg,
+            &http_client,
+            Arc::clone(&metadata_store),
+        );
         let status_flash = init.lint_warning.clone().map(|w| (w, Instant::now()));
         let mut app = Self::build_core(CoreInputs {
             http_client,

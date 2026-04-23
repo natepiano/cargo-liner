@@ -58,19 +58,14 @@ impl TargetDirIndex {
     /// project previously lived under a different target dir, the
     /// stale entry is evicted before inserting the new one. Safe to
     /// call repeatedly with the same inputs.
-    pub(in super::super) fn upsert(
-        &mut self,
-        member: TargetDirMember,
-        target_dir: AbsolutePath,
-    ) {
+    pub(in super::super) fn upsert(&mut self, member: TargetDirMember, target_dir: AbsolutePath) {
         let project_root = member.project_root.clone();
         if let Some(previous_dir) = self.by_project.get(&project_root).cloned() {
             if previous_dir == target_dir {
                 // No churn — just refresh kind in case it changed.
                 if let Some(bucket) = self.by_target_dir.get_mut(&target_dir) {
-                    if let Some(existing) = bucket
-                        .iter_mut()
-                        .find(|m| m.project_root == project_root)
+                    if let Some(existing) =
+                        bucket.iter_mut().find(|m| m.project_root == project_root)
                     {
                         existing.kind = member.kind;
                         return;
@@ -126,11 +121,7 @@ impl TargetDirIndex {
         self.by_project.get(project_root)
     }
 
-    fn evict_from_bucket(
-        &mut self,
-        target_dir: &AbsolutePath,
-        project_root: &AbsolutePath,
-    ) {
+    fn evict_from_bucket(&mut self, target_dir: &AbsolutePath, project_root: &AbsolutePath) {
         if let Some(bucket) = self.by_target_dir.get_mut(target_dir) {
             bucket.retain(|m| m.project_root != *project_root);
             if bucket.is_empty() {
@@ -228,8 +219,7 @@ impl CleanPlan {
     /// shared-target regression where the first clean wipes the dir
     /// and every subsequent click wrongly toasts "Already clean."
     pub(in super::super) fn is_already_clean(&self) -> bool {
-        self.targets.iter().all(|t| !t.exists_on_disk)
-            && self.affected_extras.is_empty()
+        self.targets.iter().all(|t| !t.exists_on_disk) && self.affected_extras.is_empty()
     }
 }
 
@@ -301,14 +291,14 @@ pub(in super::super) fn build_clean_plan_with(
         let entry = by_target
             .entry(target_dir.clone())
             .or_insert_with(|| CleanTarget {
-                target_directory: target_dir.clone(),
-                exists_on_disk: fs.exists(target_dir.as_path()),
-                method: CleanMethod::CargoClean {
+                target_directory:  target_dir.clone(),
+                exists_on_disk:    fs.exists(target_dir.as_path()),
+                method:            CleanMethod::CargoClean {
                     cwd: project_root.clone(),
                 },
                 covering_projects: Vec::new(),
-                affected_extras: Vec::new(),
-                nested_extras: Vec::new(),
+                affected_extras:   Vec::new(),
+                nested_extras:     Vec::new(),
             });
         if !entry.covering_projects.contains(project_root) {
             entry.covering_projects.push(project_root.clone());
@@ -332,12 +322,20 @@ pub(in super::super) fn build_clean_plan_with(
                 },
             }
         }
-        target.affected_extras.sort_by(|a, b| a.as_path().cmp(b.as_path()));
-        target.nested_extras.sort_by(|a, b| a.as_path().cmp(b.as_path()));
+        target
+            .affected_extras
+            .sort_by(|a, b| a.as_path().cmp(b.as_path()));
+        target
+            .nested_extras
+            .sort_by(|a, b| a.as_path().cmp(b.as_path()));
     }
 
     let mut targets: Vec<CleanTarget> = by_target.into_values().collect();
-    targets.sort_by(|a, b| a.target_directory.as_path().cmp(b.target_directory.as_path()));
+    targets.sort_by(|a, b| {
+        a.target_directory
+            .as_path()
+            .cmp(b.target_directory.as_path())
+    });
     plan.targets = targets;
     let mut affected_extras: Vec<AbsolutePath> = affected_extras_set.into_iter().collect();
     affected_extras.sort_by(|a, b| a.as_path().cmp(b.as_path()));
@@ -386,10 +384,7 @@ mod tests {
         // the old bucket.
         let mut index = TargetDirIndex::new();
         index.upsert(project("/ws/a", MemberKind::Project), dir("/ws/a/target"));
-        index.upsert(
-            project("/ws/a", MemberKind::Project),
-            dir("/tmp/custom"),
-        );
+        index.upsert(project("/ws/a", MemberKind::Project), dir("/tmp/custom"));
 
         assert!(
             index.siblings(&dir("/ws/a/target"), &[]).is_empty(),
@@ -510,7 +505,9 @@ mod tests {
         let plan = build_clean_plan_with(
             &index,
             &empty_store(),
-            &CleanSelection::Project { root: dir("/ws/never") },
+            &CleanSelection::Project {
+                root: dir("/ws/never"),
+            },
             &AllExist,
         );
         assert!(plan.targets.is_empty());

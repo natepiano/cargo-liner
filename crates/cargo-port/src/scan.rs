@@ -1311,10 +1311,7 @@ impl MetadataDispatchContext {
     /// `App` should use `App::resolve_target_dir` instead; this shim
     /// exists for the watcher, which holds the dispatch context but has
     /// no direct App handle.
-    pub(crate) fn resolved_target_dir(
-        &self,
-        path: &AbsolutePath,
-    ) -> Option<AbsolutePath> {
+    pub(crate) fn resolved_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
         self.metadata_store
             .lock()
             .ok()
@@ -1360,9 +1357,9 @@ pub(crate) fn spawn_cargo_metadata_refresh(
                 let fingerprint = ManifestFingerprint::capture(workspace_root.as_path())
                     .unwrap_or_else(|_| synthetic_fingerprint());
                 CargoMetadataTaskOutput {
-                    generation:  0,
+                    generation: 0,
                     fingerprint,
-                    result:      Err(CargoMetadataError {
+                    result: Err(CargoMetadataError {
                         message: format!(
                             "cargo metadata timed out after {}s",
                             CARGO_METADATA_TIMEOUT.as_secs()
@@ -1492,9 +1489,7 @@ fn build_workspace_snapshot(
                 license:       pkg.license.clone(),
                 homepage:      pkg.homepage.clone(),
                 repository:    pkg.repository.clone(),
-                manifest_path: AbsolutePath::from(PathBuf::from(
-                    pkg.manifest_path.as_std_path(),
-                )),
+                manifest_path: AbsolutePath::from(PathBuf::from(pkg.manifest_path.as_std_path())),
                 targets:       pkg
                     .targets
                     .iter()
@@ -2160,10 +2155,7 @@ mod tests {
 
         assert_eq!(
             roots,
-            vec![
-                AbsolutePath::from("/ws"),
-                AbsolutePath::from("/pkg"),
-            ],
+            vec![AbsolutePath::from("/ws"), AbsolutePath::from("/pkg"),],
             "each Rust leaf produces exactly one metadata root, preserving input order"
         );
     }

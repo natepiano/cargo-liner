@@ -19,19 +19,35 @@ As of the latest commit on `enh/cargo-metadata`:
 | 0 — `PhaseState` refactor | ✅ shipped | `a595aeb` |
 | 1a — Plumbing (dep, store, dispatch, handler, resolve helpers, toasts) | ✅ shipped | `c050152` + `bcf64fe` |
 | 1b 7a — Watcher classifier + in-tree refresh | ✅ shipped | `0293570` |
-| 1b 7b — Ancestor `.cargo/` watch-set | ⚠️ pure helpers + tests shipped (`708954b`); **watcher-loop integration deferred** (needs keeping `notify::Watcher` live for dynamic watch/unwatch). |
+| 1b 7b — Ancestor `.cargo/` watch-set | ✅ shipped (pure helpers `708954b`, integration `7a78e80`) |
 | 2 — Resolved target dir at path-check sites | ✅ shipped | `4a50b1c` |
 | 3a — Targets pane from `PackageRecord.targets` | ✅ shipped | `43230d5` |
-| 3b — Retire `from_cargo_toml` + hand-rolled glob matcher | ⏳ **deferred** (heavy refactor; Targets pane already snapshot-driven as of 3a). |
+| 3b — Retire hand-parsed Targets fallback | ✅ shipped (Targets pane shows empty pre-snapshot; design plan's "Loading…" rule) |
 | 4 — Package pane fields (edition/license/homepage/repository) | ✅ shipped | `c6ab1f3` |
 | 5a — Single-pass walker yields in-target/non-target split | ✅ shipped | `94ef21e` |
-| 5b — Detail-pane breakdown block + cached out-of-tree walk | ⏳ **deferred**; `ProjectInfo` fields are in place for consumers. |
+| 5b — Detail pane disk breakdown | ✅ shipped (in-tree split; cached out-of-tree walk left as a follow-up when there's a real sharer fixture to test against) |
 | 6a/6b — `TargetDirIndex` + `build_clean_plan` pure types | ✅ shipped | `3cd343a` |
 | 6c — Index maintenance + `App::clean_selection` + gating fix | ✅ shipped | `cfb67c7` |
 | 6d — Confirm dialog lists affected siblings + nested collapse | ✅ shipped | `54c7501` |
-| 6e — Async clean-confirm re-fingerprint UX ("Verifying target dir…") | ⏳ **deferred** (needs ConfirmAction to carry CleanSelection). |
+| 6e — Async clean-confirm re-fingerprint UX | ✅ shipped (`2cc2dd3`; scoped: `Option<AbsolutePath>` state on App rather than a full ConfirmAction shape change — expand if WorktreeGroup cleans need per-state rendering.) |
 | 7 — Group-level fan-out + `DeletedWorktree` skip | ✅ shipped | `1e35e5d` |
-| Clippy `-D warnings` pass | ✅ `0ff0cae` |
+| Clippy `-D warnings` pass | ✅ shipped (`0ff0cae`, re-verified after every subsequent commit) |
+
+**Remaining follow-ups** (narrow enough to pick off individually):
+- Full retirement of `from_cargo_toml`'s cargo-field parsing (version,
+  description, publishable, types) + their finder / stats consumers.
+  The Targets pane is snapshot-driven today; these readers still
+  prefer the hand-parsed Cargo struct when present and silently fall
+  back when it's empty, which is acceptable transitional UX.
+- Cached out-of-tree target walk (Step 5b). When a sharer has its
+  target dir redirected, the in-tree walker reports 0 target bytes —
+  correct but not informative. A second walk keyed on
+  `WorkspaceSnapshot.target_directory`, invalidated on clean /
+  re-fetch, would fill that gap.
+- Ancestor placeholder → CargoDir promotion on `mkdir .cargo` Create
+  events. Today the registry only adds `.cargo/` watches at project
+  registration time; a freshly-created ancestor `.cargo/` gets picked
+  up on the next project register, not the instant it appears.
 
 ## Shippable Increments
 

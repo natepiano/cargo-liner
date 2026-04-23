@@ -83,6 +83,13 @@ impl Cargo {
         self.examples.iter().map(|g| g.names.len()).sum()
     }
 
+    #[allow(
+        dead_code,
+        reason = "Step 3b: no more production callers; previously drove \
+                  `TargetsData.primary_binary` in the cold-start fallback, \
+                  which now defaults to None. Kept for future reuse against \
+                  PackageRecord.targets."
+    )]
     pub(crate) fn is_binary(&self) -> bool {
         self.types.iter().any(|t| matches!(t, ProjectType::Binary))
     }

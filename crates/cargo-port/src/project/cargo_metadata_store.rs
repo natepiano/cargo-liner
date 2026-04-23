@@ -595,10 +595,7 @@ mod tests {
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/ws/target"));
         let mut snap = fake_snapshot(root.clone(), target);
-        let pkg = fake_package_record(
-            "demo",
-            AbsolutePath::from(PathBuf::from("/ws/Cargo.toml")),
-        );
+        let pkg = fake_package_record("demo", AbsolutePath::from(PathBuf::from("/ws/Cargo.toml")));
         snap.packages.insert(pkg.id.clone(), pkg);
         store.upsert(snap);
 

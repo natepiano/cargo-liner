@@ -306,8 +306,7 @@ impl App {
     ///
     /// Eligible rows (this step):
     /// - `VisibleRow::Root` on a `RootItem::Rust(_)` → `Project`.
-    /// - `VisibleRow::WorktreeEntry` → `Project` for that specific
-    ///   worktree's path.
+    /// - `VisibleRow::WorktreeEntry` → `Project` for that specific worktree's path.
     ///
     /// Worktree-group-level cleans (`VisibleRow::Root` on a
     /// `RootItem::Worktrees`) land with Step 7 (group-level fan-out).

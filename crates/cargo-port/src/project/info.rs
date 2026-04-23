@@ -106,7 +106,7 @@ pub(crate) struct LanguageStats {
 /// mutation of lookup keys.
 #[derive(Clone, Default)]
 pub(crate) struct ProjectInfo {
-    pub disk_usage_bytes: Option<u64>,
+    pub disk_usage_bytes:      Option<u64>,
     /// Bytes rooted at this project's path that do **not** live inside
     /// any `target/` subtree (source, docs, .git, etc.). Populated by
     /// the scan walker in a single pass alongside `disk_usage_bytes`.
@@ -119,12 +119,12 @@ pub(crate) struct ProjectInfo {
     /// Bytes rooted at this project's path that live inside any
     /// `target/` subtree. Zero for sharers whose workspace redirects
     /// the target dir out-of-tree (e.g. via `CARGO_TARGET_DIR`).
-    pub in_project_target: Option<u64>,
-    pub local_git_state:  LocalGitState,
-    pub language_stats:   Option<LanguageStats>,
-    pub visibility:       Visibility,
-    pub worktree_health:  WorktreeHealth,
-    pub submodules:       Vec<Submodule>,
+    pub in_project_target:     Option<u64>,
+    pub local_git_state:       LocalGitState,
+    pub language_stats:        Option<LanguageStats>,
+    pub visibility:            Visibility,
+    pub worktree_health:       WorktreeHealth,
+    pub submodules:            Vec<Submodule>,
 }
 
 impl ProjectInfo {

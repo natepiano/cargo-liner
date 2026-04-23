@@ -33,7 +33,7 @@ fn package_data(is_rust_project: bool) -> PackageData {
         types:                 "lib".to_string(),
         disk:                  "36.3 GiB".to_string(),
         ci:                    None,
-        stats_rows:             Vec::new(),
+        stats_rows:            Vec::new(),
         has_package:           true,
         edition:               None,
         license:               None,
@@ -160,11 +160,7 @@ fn package_label_width_matches_widest_visible_field() {
         ..package_data(true)
     };
     let fields = model::package_fields_from_data(&data);
-    let expected = fields
-        .iter()
-        .map(|f| f.label().len())
-        .max()
-        .unwrap_or(0);
+    let expected = fields.iter().map(|f| f.label().len()).max().unwrap_or(0);
     assert_eq!(panes::package_label_width(&fields), expected);
     assert!(
         expected >= "Repository".len(),
@@ -319,10 +315,10 @@ mod targets_from_snapshot {
 
     fn target(name: &str, kinds: Vec<TargetKind>, src_path: &str) -> TargetRecord {
         TargetRecord {
-            name:              name.into(),
+            name: name.into(),
             kinds,
-            src_path:          AbsolutePath::from(PathBuf::from(src_path)),
-            edition:           "2021".into(),
+            src_path: AbsolutePath::from(PathBuf::from(src_path)),
+            edition: "2021".into(),
             required_features: Vec::new(),
         }
     }
@@ -389,8 +385,16 @@ mod targets_from_snapshot {
             "demo",
             "/ws/demo/Cargo.toml",
             vec![
-                target("b_zed", vec![TargetKind::Bench], "/ws/demo/benches/b_zed.rs"),
-                target("a_alpha", vec![TargetKind::Bench], "/ws/demo/benches/a_alpha.rs"),
+                target(
+                    "b_zed",
+                    vec![TargetKind::Bench],
+                    "/ws/demo/benches/b_zed.rs",
+                ),
+                target(
+                    "a_alpha",
+                    vec![TargetKind::Bench],
+                    "/ws/demo/benches/a_alpha.rs",
+                ),
             ],
         );
         let data = TargetsData::from_package_record(&pkg, "demo");

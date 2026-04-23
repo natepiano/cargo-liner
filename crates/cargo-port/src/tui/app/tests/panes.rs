@@ -54,25 +54,74 @@ fn name_width_with_gutter_reserves_space_before_lint() {
     assert_eq!(App::name_width_with_gutter(42), 43);
 }
 
+/// Upsert a minimal `WorkspaceSnapshot` into `app`'s metadata store
+/// for `project_path`, naming a single Example target so the Targets
+/// pane becomes tabbable. Keeps the per-test setup out of line when
+/// the test's focus is pane behavior, not snapshot plumbing.
+fn seed_single_example_snapshot(app: &App, project_path: &AbsolutePath, example_name: &str) {
+    use cargo_metadata::PackageId;
+    use cargo_metadata::TargetKind;
+    use cargo_metadata::semver::Version;
+    let pkg = crate::project::PackageRecord {
+        id:            PackageId {
+            repr: "demo-id".into(),
+        },
+        name:          "demo".into(),
+        version:       Version::new(0, 1, 0),
+        edition:       "2021".into(),
+        description:   None,
+        license:       None,
+        homepage:      None,
+        repository:    None,
+        manifest_path: AbsolutePath::from(project_path.as_path().join("Cargo.toml")),
+        targets:       vec![crate::project::TargetRecord {
+            name:              example_name.to_string(),
+            kinds:             vec![TargetKind::Example],
+            src_path:          AbsolutePath::from(
+                project_path
+                    .as_path()
+                    .join(format!("examples/{example_name}.rs")),
+            ),
+            edition:           "2021".to_string(),
+            required_features: Vec::new(),
+        }],
+        publish:       crate::project::PublishPolicy::Any,
+    };
+    let mut packages = std::collections::HashMap::new();
+    packages.insert(pkg.id.clone(), pkg);
+    app.metadata_store_handle()
+        .lock()
+        .unwrap_or_else(|_| std::process::abort())
+        .upsert(crate::project::WorkspaceSnapshot {
+            workspace_root: project_path.clone(),
+            target_directory: AbsolutePath::from(project_path.as_path().join("target")),
+            packages,
+            workspace_members: Vec::new(),
+            fetched_at: std::time::SystemTime::UNIX_EPOCH,
+            fingerprint: crate::project::ManifestFingerprint {
+                manifest:       crate::project::FileStamp {
+                    mtime:        std::time::SystemTime::UNIX_EPOCH,
+                    len:          0,
+                    content_hash: [0_u8; 32],
+                },
+                lockfile:       None,
+                rust_toolchain: None,
+                configs:        std::collections::BTreeMap::new(),
+            },
+        });
+}
+
 #[test]
 fn tabbable_panes_follow_canonical_order() {
+    // Step 3b: Targets pane requires a snapshot.
+    let project_path = test_path("~/demo");
     let project = RootItem::Rust(RustProject::Package(Package {
-        path: test_path("~/demo"),
+        path: project_path.clone(),
         name: Some("demo".to_string()),
-        rust: RustInfo {
-            cargo: Cargo {
-                examples: vec![ExampleGroup {
-                    category: String::new(),
-                    names:    vec!["example".to_string()],
-                }],
-                ..Cargo::default()
-            },
-            ..RustInfo::default()
-        },
         ..Package::default()
     }));
-
     let mut app = make_app(std::slice::from_ref(&project));
+    seed_single_example_snapshot(&app, &project_path, "example");
     app.toasts = ToastManager::default();
     app.pane_manager.pane_mut(PaneId::Toasts).set_len(0);
     app.scan.phase = ScanPhase::Complete;
@@ -178,8 +227,19 @@ fn new_toasts_do_not_steal_focus() {
 }
 
 #[test]
-fn project_refresh_updates_selected_tree_project_targets() {
-    let project = make_project(Some("demo"), "~/demo");
+fn snapshot_arrival_populates_selected_tree_project_targets() {
+    // Step 3b: Targets pane data now comes exclusively from the
+    // `cargo metadata` snapshot — the hand-parsed Cargo fallback
+    // has been retired per the design plan's "Loading… without a
+    // snapshot" rule. This test used to exercise the old fallback
+    // (ExampleGroup on the Cargo struct); rewritten to confirm
+    // the snapshot-driven path: a CargoMetadata arrival with an
+    // Example target lights up the pane.
+    use cargo_metadata::PackageId;
+    use cargo_metadata::TargetKind;
+    use cargo_metadata::semver::Version;
+
+    let project = make_project(Some("demo"), "/never-real/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     app.scan.phase = ScanPhase::Complete;
     app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
@@ -191,35 +251,78 @@ fn project_refresh_updates_selected_tree_project_targets() {
         .targets
         .as_ref()
         .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
-    assert_eq!(example_count, Some(0));
+    assert_eq!(
+        example_count,
+        Some(0),
+        "pre-snapshot: Targets pane is empty"
+    );
     assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
-    let refreshed = RootItem::Rust(RustProject::Package(Package {
-        path: test_path("~/demo"),
-        name: Some("demo".to_string()),
-        rust: RustInfo {
-            cargo: Cargo {
-                examples: vec![ExampleGroup {
-                    category: String::new(),
-                    names:    vec!["tracked_row_paths".to_string()],
-                }],
-                ..Cargo::default()
-            },
-            ..RustInfo::default()
+    let workspace_root = AbsolutePath::from("/never-real/demo");
+    let manifest_path = AbsolutePath::from("/never-real/demo/Cargo.toml");
+    let example = crate::project::TargetRecord {
+        name:              "tracked_row_paths".to_string(),
+        kinds:             vec![TargetKind::Example],
+        src_path:          AbsolutePath::from("/never-real/demo/examples/tracked_row_paths.rs"),
+        edition:           "2021".to_string(),
+        required_features: Vec::new(),
+    };
+    let pkg = crate::project::PackageRecord {
+        id: PackageId {
+            repr: "demo-id".into(),
         },
-        ..Package::default()
-    }));
-
-    app.handle_project_refreshed(refreshed);
-    app.sync_selected_project();
-
+        name: "demo".into(),
+        version: Version::new(0, 1, 0),
+        edition: "2021".into(),
+        description: None,
+        license: None,
+        homepage: None,
+        repository: None,
+        manifest_path,
+        targets: vec![example],
+        publish: crate::project::PublishPolicy::Any,
+    };
+    let mut packages = std::collections::HashMap::new();
+    packages.insert(pkg.id.clone(), pkg);
+    let snap = crate::project::WorkspaceSnapshot {
+        workspace_root: workspace_root.clone(),
+        target_directory: AbsolutePath::from("/never-real/demo/target"),
+        packages,
+        workspace_members: Vec::new(),
+        fetched_at: std::time::SystemTime::UNIX_EPOCH,
+        fingerprint: crate::project::ManifestFingerprint {
+            manifest:       crate::project::FileStamp {
+                mtime:        std::time::SystemTime::UNIX_EPOCH,
+                len:          0,
+                content_hash: [0_u8; 32],
+            },
+            lockfile:       None,
+            rust_toolchain: None,
+            configs:        std::collections::BTreeMap::new(),
+        },
+    };
+    let generation = app
+        .metadata_store_handle()
+        .lock()
+        .unwrap_or_else(|_| std::process::abort())
+        .next_generation(&workspace_root);
+    app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+        workspace_root,
+        generation,
+        fingerprint: snap.fingerprint.clone(),
+        result: Ok(snap),
+    });
     app.ensure_detail_cached();
     let example_count = app
         .pane_data
         .targets
         .as_ref()
         .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
-    assert_eq!(example_count, Some(1));
+    assert_eq!(
+        example_count,
+        Some(1),
+        "snapshot-arrival populates Targets from PackageRecord.targets"
+    );
     assert!(app.tabbable_panes().contains(&PaneId::Targets));
 }
 
@@ -273,8 +376,7 @@ fn initial_metadata_roots_skips_non_rust_leaves() {
         Some("notes".into()),
     ));
     let pkg = make_project(Some("pkg"), "~/pkg");
-    let roots =
-        snapshots::initial_metadata_roots(&super::as_entries(vec![non_rust, pkg]));
+    let roots = snapshots::initial_metadata_roots(&super::as_entries(vec![non_rust, pkg]));
     assert_eq!(roots.len(), 1, "non-rust leaves are not metadata roots");
 }
 

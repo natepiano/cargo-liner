@@ -1595,11 +1595,7 @@ impl App {
     /// the post-set logic with `apply_disk_usage` (visibility /
     /// lint-runtime registration) by reusing that helper for the
     /// total — the new breakdown fields just ride alongside.
-    fn apply_disk_usage_breakdown(
-        &mut self,
-        path: &Path,
-        sizes: crate::scan::DirSizes,
-    ) {
+    fn apply_disk_usage_breakdown(&mut self, path: &Path, sizes: crate::scan::DirSizes) {
         if let Some(project) = self.projects.at_path_mut(path) {
             project.in_project_target = Some(sizes.in_project_target);
             project.in_project_non_target = Some(sizes.in_project_non_target);
@@ -2660,9 +2656,7 @@ fn collect_publishable_children(item: &RootItem, out: &mut Vec<(AbsolutePath, St
 /// `TargetDirIndex` membership update after a successful
 /// `BackgroundMsg::CargoMetadata` arrival; every package under a given
 /// workspace shares the snapshot's `target_directory`.
-fn snapshot_member_roots(
-    snapshot: &crate::project::WorkspaceSnapshot,
-) -> Vec<AbsolutePath> {
+fn snapshot_member_roots(snapshot: &crate::project::WorkspaceSnapshot) -> Vec<AbsolutePath> {
     snapshot
         .packages
         .values()

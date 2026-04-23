@@ -435,8 +435,7 @@ mod tests {
         let mut cfg = CargoPortConfig::default();
         cfg.tui.include_dirs = vec!["/tmp/test".to_string()];
         let (bg_tx, bg_rx) = mpsc::channel();
-        let metadata_store =
-            Arc::new(Mutex::new(crate::project::WorkspaceMetadataStore::new()));
+        let metadata_store = Arc::new(Mutex::new(crate::project::WorkspaceMetadataStore::new()));
         let mut app = App::new(
             projects,
             bg_tx,
@@ -1177,19 +1176,63 @@ mod tests {
 
     #[test]
     fn targets_pane_row_click_selects_target() {
+        use cargo_metadata::PackageId;
+        use cargo_metadata::TargetKind;
+        use cargo_metadata::semver::Version;
+        // Step 3b: Targets pane now sources its data from the
+        // `cargo metadata` snapshot; the old hand-parsed Cargo
+        // fallback is retired. Populate two Example targets via
+        // a CargoMetadata arrival so the pane has at least two
+        // rows to click on.
         let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
         let project_dir = tmp.path().join("demo");
         std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
 
-        let cargo = Cargo {
-            types: vec![ProjectType::Binary],
-            examples: vec![ExampleGroup {
-                category: String::new(),
-                names:    vec!["example_a".to_string(), "example_b".to_string()],
-            }],
-            ..Cargo::default()
+        let mut app = make_app(&[make_package("demo", &project_dir)]);
+        let make_target = |name: &str| crate::project::TargetRecord {
+            name:              name.to_string(),
+            kinds:             vec![TargetKind::Example],
+            src_path:          AbsolutePath::from(project_dir.join(format!("examples/{name}.rs"))),
+            edition:           "2021".to_string(),
+            required_features: Vec::new(),
         };
-        let mut app = make_app(&[make_package_with_cargo("demo", &project_dir, cargo)]);
+        let pkg = crate::project::PackageRecord {
+            id:            PackageId {
+                repr: "demo-id".into(),
+            },
+            name:          "demo".into(),
+            version:       Version::new(0, 1, 0),
+            edition:       "2021".into(),
+            description:   None,
+            license:       None,
+            homepage:      None,
+            repository:    None,
+            manifest_path: AbsolutePath::from(project_dir.join("Cargo.toml")),
+            targets:       vec![make_target("example_a"), make_target("example_b")],
+            publish:       crate::project::PublishPolicy::Any,
+        };
+        let mut packages = std::collections::HashMap::new();
+        packages.insert(pkg.id.clone(), pkg);
+        app.metadata_store_handle()
+            .lock()
+            .unwrap_or_else(|_| std::process::abort())
+            .upsert(crate::project::WorkspaceSnapshot {
+                workspace_root: AbsolutePath::from(project_dir.clone()),
+                target_directory: AbsolutePath::from(project_dir.join("target")),
+                packages,
+                workspace_members: Vec::new(),
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                fingerprint: crate::project::ManifestFingerprint {
+                    manifest:       crate::project::FileStamp {
+                        mtime:        std::time::SystemTime::UNIX_EPOCH,
+                        len:          0,
+                        content_hash: [0_u8; 32],
+                    },
+                    lockfile:       None,
+                    rust_toolchain: None,
+                    configs:        std::collections::BTreeMap::new(),
+                },
+            });
         render_ui(&mut app);
 
         let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Targets), 1);
@@ -1269,9 +1312,9 @@ mod tests {
                 },
             });
 
-        app.set_confirm(crate::tui::app::ConfirmAction::Clean(
-            AbsolutePath::from(project_dir),
-        ));
+        app.set_confirm(crate::tui::app::ConfirmAction::Clean(AbsolutePath::from(
+            project_dir,
+        )));
         let rendered = buffer_text(&mut app);
 
         assert!(
@@ -1297,29 +1340,29 @@ mod tests {
         let root = AbsolutePath::from(project_dir);
         let manifest = AbsolutePath::from(project_dir.join("Cargo.toml"));
         let pkg = crate::project::PackageRecord {
-            id: PackageId {
+            id:            PackageId {
                 repr: "demo-test-id".into(),
             },
-            name: "demo".into(),
-            version: Version::new(0, 1, 0),
-            edition: "2021".into(),
-            description: None,
-            license: license.map(String::from),
-            homepage: homepage.map(String::from),
-            repository: repository.map(String::from),
+            name:          "demo".into(),
+            version:       Version::new(0, 1, 0),
+            edition:       "2021".into(),
+            description:   None,
+            license:       license.map(String::from),
+            homepage:      homepage.map(String::from),
+            repository:    repository.map(String::from),
             manifest_path: manifest,
-            targets: Vec::new(),
-            publish: crate::project::PublishPolicy::Any,
+            targets:       Vec::new(),
+            publish:       crate::project::PublishPolicy::Any,
         };
         let mut packages = std::collections::HashMap::new();
         packages.insert(pkg.id.clone(), pkg);
         let snap = crate::project::WorkspaceSnapshot {
-            workspace_root:    root,
-            target_directory:  AbsolutePath::from(project_dir.join("target")),
+            workspace_root: root,
+            target_directory: AbsolutePath::from(project_dir.join("target")),
             packages,
             workspace_members: Vec::new(),
-            fetched_at:        std::time::SystemTime::UNIX_EPOCH,
-            fingerprint:       crate::project::ManifestFingerprint {
+            fetched_at: std::time::SystemTime::UNIX_EPOCH,
+            fingerprint: crate::project::ManifestFingerprint {
                 manifest:       crate::project::FileStamp {
                     mtime:        std::time::SystemTime::UNIX_EPOCH,
                     len:          0,
@@ -1448,34 +1491,33 @@ mod tests {
         for dir in std::iter::once(primary_dir).chain(sibling_dirs.iter().copied()) {
             let root = AbsolutePath::from(dir);
             let manifest = AbsolutePath::from(dir.join("Cargo.toml"));
-            let pkg_name = dir.file_name().map_or_else(
-                || "demo".to_string(),
-                |n| n.to_string_lossy().into_owned(),
-            );
+            let pkg_name = dir
+                .file_name()
+                .map_or_else(|| "demo".to_string(), |n| n.to_string_lossy().into_owned());
             let pkg = crate::project::PackageRecord {
-                id: PackageId {
+                id:            PackageId {
                     repr: format!("{pkg_name}-id"),
                 },
-                name: pkg_name,
-                version: Version::new(0, 1, 0),
-                edition: "2021".into(),
-                description: None,
-                license: None,
-                homepage: None,
-                repository: None,
+                name:          pkg_name,
+                version:       Version::new(0, 1, 0),
+                edition:       "2021".into(),
+                description:   None,
+                license:       None,
+                homepage:      None,
+                repository:    None,
                 manifest_path: manifest,
-                targets: Vec::new(),
-                publish: crate::project::PublishPolicy::Any,
+                targets:       Vec::new(),
+                publish:       crate::project::PublishPolicy::Any,
             };
             let mut packages = std::collections::HashMap::new();
             packages.insert(pkg.id.clone(), pkg);
             let snap = crate::project::WorkspaceSnapshot {
-                workspace_root:    root.clone(),
-                target_directory:  AbsolutePath::from(target_dir),
+                workspace_root: root.clone(),
+                target_directory: AbsolutePath::from(target_dir),
                 packages,
                 workspace_members: Vec::new(),
-                fetched_at:        std::time::SystemTime::UNIX_EPOCH,
-                fingerprint:       crate::project::ManifestFingerprint {
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                fingerprint: crate::project::ManifestFingerprint {
                     manifest:       crate::project::FileStamp {
                         mtime:        std::time::SystemTime::UNIX_EPOCH,
                         len:          0,
@@ -1524,9 +1566,9 @@ mod tests {
             &target_dir,
         );
 
-        app.set_confirm(crate::tui::app::ConfirmAction::Clean(
-            AbsolutePath::from(primary_dir),
-        ));
+        app.set_confirm(crate::tui::app::ConfirmAction::Clean(AbsolutePath::from(
+            primary_dir,
+        )));
         let rendered = buffer_text(&mut app);
 
         assert!(
@@ -1547,9 +1589,9 @@ mod tests {
         std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
         let mut app = make_app(&[make_package("demo", &project_dir)]);
 
-        app.set_confirm(crate::tui::app::ConfirmAction::Clean(
-            AbsolutePath::from(project_dir.clone()),
-        ));
+        app.set_confirm(crate::tui::app::ConfirmAction::Clean(AbsolutePath::from(
+            project_dir.clone(),
+        )));
         let rendered = buffer_text(&mut app);
 
         let fallback_target = project_dir.join("target");

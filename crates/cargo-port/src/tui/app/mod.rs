@@ -336,10 +336,7 @@ impl App {
     /// last snapshot. On drift: dispatch a `cargo metadata` refresh,
     /// mark the confirm as verifying (popup blocks `y` until the
     /// refresh lands). On match: open the confirm Ready immediately.
-    pub(in super::super) fn request_clean_confirm(
-        &mut self,
-        project_path: AbsolutePath,
-    ) {
+    pub(in super::super) fn request_clean_confirm(&mut self, project_path: AbsolutePath) {
         if self.should_verify_before_clean(&project_path) {
             let dispatch = self.clean_metadata_dispatch();
             scan::spawn_cargo_metadata_refresh(dispatch, project_path.clone());
@@ -519,9 +516,7 @@ impl App {
     /// Borrow the [`target_index::TargetDirIndex`] for read-only
     /// lookups (e.g. confirm-dialog "also affects" listings). Mutation
     /// flows only through the metadata-arrival handler.
-    pub(in super::super) const fn target_dir_index_ref(
-        &self,
-    ) -> &target_index::TargetDirIndex {
+    pub(in super::super) const fn target_dir_index_ref(&self) -> &target_index::TargetDirIndex {
         &self.target_dir_index
     }
 
