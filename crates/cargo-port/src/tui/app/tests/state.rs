@@ -1,8 +1,16 @@
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::time::SystemTime;
+
 use super::*;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::project::AbsolutePath;
+use crate::project::FileStamp;
+use crate::project::ManifestFingerprint;
+use crate::project::WorkspaceSnapshot;
 use crate::project::WorktreeGroup;
+use crate::scan::CargoMetadataError;
 use crate::tui::panes;
 use crate::tui::panes::DetailField;
 
@@ -1330,5 +1338,272 @@ fn fetch_more_uses_sync_when_no_cached_runs() {
     assert!(
         matches!(fetch.kind, CiFetchKind::Sync),
         "should use Sync when no cached runs exist"
+    );
+}
+
+// ── Cargo metadata phase + arrival handling ─────────────────────────
+
+fn fake_fingerprint() -> ManifestFingerprint {
+    // Fields are irrelevant to the handler's accept path: if
+    // `capture()` on the workspace_root succeeds at runtime it will
+    // produce a real fingerprint that (almost certainly) differs from
+    // this one and the arrival gets dropped as drift. Tests use
+    // workspace_root paths that don't exist on disk so `capture()`
+    // fails (returns None) and the drift check becomes a no-op.
+    ManifestFingerprint {
+        manifest:       FileStamp {
+            mtime:        SystemTime::UNIX_EPOCH,
+            len:          0,
+            content_hash: [0_u8; 32],
+        },
+        lockfile:       None,
+        rust_toolchain: None,
+        configs:        BTreeMap::new(),
+    }
+}
+
+fn fake_snapshot(workspace_root: AbsolutePath) -> WorkspaceSnapshot {
+    WorkspaceSnapshot {
+        workspace_root:    workspace_root.clone(),
+        target_directory:  AbsolutePath::from(
+            workspace_root.as_path().join("target"),
+        ),
+        packages:          HashMap::new(),
+        workspace_members: Vec::new(),
+        fetched_at:        SystemTime::UNIX_EPOCH,
+        fingerprint:       fake_fingerprint(),
+    }
+}
+
+fn metadata_toast_items(app: &App) -> Vec<String> {
+    app.active_toasts()
+        .iter()
+        .find(|toast| toast.title() == "Running cargo metadata")
+        .map(|toast| {
+            toast
+                .tracked_items()
+                .iter()
+                .map(|item| item.label.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let project_b = make_project(Some("b"), "~/never-real/b");
+    let mut app = make_app(&[project_a.clone(), project_b.clone()]);
+    app.scan.phase = ScanPhase::Complete;
+
+    app.initialize_startup_phase_tracker();
+
+    let expected = app
+        .scan
+        .startup_phases
+        .metadata
+        .expected
+        .as_ref()
+        .expect("metadata expected set is seeded at startup");
+    assert_eq!(
+        expected.len(),
+        2,
+        "one expected entry per Rust leaf, matching snapshots::initial_metadata_roots"
+    );
+    assert!(expected.contains(project_a.path()));
+    assert!(expected.contains(project_b.path()));
+
+    assert!(
+        app.scan.startup_phases.metadata.toast.is_some(),
+        "a grouped 'Running cargo metadata' detail toast is created when expected is non-empty"
+    );
+    let items = metadata_toast_items(&app);
+    assert_eq!(items.len(), 2, "one tracked item per workspace root");
+}
+
+/// Happy path: a successful arrival at the current generation inserts
+/// the snapshot into the store, advances `metadata.seen`, and ticks the
+/// tracked item in the grouped toast.
+#[test]
+fn successful_metadata_arrival_advances_phase_and_tracked_item() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(&[project_a.clone()]);
+    app.scan.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
+    let generation = app
+        .metadata_store_handle()
+        .lock()
+        .expect("store lock")
+        .next_generation(&workspace_root);
+
+    app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+        workspace_root: workspace_root.clone(),
+        generation,
+        fingerprint: fake_fingerprint(),
+        result: Ok(fake_snapshot(workspace_root.clone())),
+    });
+
+    assert!(
+        app.scan.startup_phases.metadata.seen.contains(&workspace_root),
+        "metadata.seen records the arrived workspace"
+    );
+    assert!(
+        app.metadata_store_handle()
+            .lock()
+            .expect("store lock")
+            .get(&workspace_root)
+            .is_some(),
+        "successful snapshot was upserted into the store"
+    );
+    assert!(
+        app.scan.startup_phases.metadata.complete_at.is_some(),
+        "with only one expected root, the phase completes on arrival"
+    );
+}
+
+/// Race guard: an arrival stamped with a generation older than the
+/// current one is dropped. `metadata.seen` must not advance, the store
+/// must not upsert, and the toast must still show the workspace as
+/// pending.
+#[test]
+fn stale_generation_metadata_arrival_is_dropped() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(&[project_a.clone()]);
+    app.scan.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
+    let store = app.metadata_store_handle();
+    let stale_gen = store.lock().expect("store").next_generation(&workspace_root);
+    // A later dispatch bumps the generation; the stale arrival below
+    // should be rejected.
+    let _newer_gen = store.lock().expect("store").next_generation(&workspace_root);
+
+    app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+        workspace_root: workspace_root.clone(),
+        generation: stale_gen,
+        fingerprint: fake_fingerprint(),
+        result: Ok(fake_snapshot(workspace_root.clone())),
+    });
+
+    assert!(
+        !app.scan.startup_phases.metadata.seen.contains(&workspace_root),
+        "stale-generation arrival does not advance metadata.seen"
+    );
+    assert!(
+        app.metadata_store_handle()
+            .lock()
+            .expect("store")
+            .get(&workspace_root)
+            .is_none(),
+        "stale-generation arrival does not upsert"
+    );
+}
+
+/// Error path: a failed arrival surfaces a "cargo metadata failed"
+/// timed toast and still ticks the phase forward (so startup doesn't
+/// wedge on a permanent failure).
+#[test]
+fn failed_metadata_arrival_surfaces_error_toast() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(&[project_a.clone()]);
+    app.scan.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
+    let generation = app
+        .metadata_store_handle()
+        .lock()
+        .expect("store")
+        .next_generation(&workspace_root);
+
+    app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+        workspace_root: workspace_root.clone(),
+        generation,
+        fingerprint: fake_fingerprint(),
+        result: Err(CargoMetadataError {
+            message: "could not read Cargo.toml".into(),
+        }),
+    });
+
+    let error_toast_present = app
+        .active_toasts()
+        .iter()
+        .any(|toast| toast.title().starts_with("cargo metadata failed"));
+    assert!(
+        error_toast_present,
+        "failure raises a timed error toast starting with 'cargo metadata failed'"
+    );
+    assert!(
+        app.scan.startup_phases.metadata.seen.contains(&workspace_root),
+        "failure still ticks the phase forward so startup doesn't wedge"
+    );
+}
+
+/// The metadata phase gates `startup_complete_at`: with disk, git, repo
+/// phases all resolved but metadata still pending, startup must not be
+/// marked complete. Once metadata arrives, startup_complete_at is set.
+#[test]
+fn startup_ready_waits_on_metadata_phase() {
+    let project_a = make_project(Some("a"), "~/never-real/a");
+    let mut app = make_app(&[project_a.clone()]);
+    app.scan.phase = ScanPhase::Complete;
+    app.initialize_startup_phase_tracker();
+
+    let now = std::time::Instant::now();
+    let scan_started = app
+        .scan
+        .startup_phases
+        .scan_complete_at
+        .expect("scan complete at");
+
+    // Force disk/git/repo phases complete so only metadata is left
+    // gating startup_complete_at.
+    app.scan.startup_phases.disk.expected = Some(HashSet::new());
+    app.scan.startup_phases.git.expected = Some(HashSet::new());
+    app.scan.startup_phases.repo.expected = Some(HashSet::new());
+    app.maybe_complete_startup_disk(now, scan_started);
+    app.maybe_complete_startup_git(now, scan_started);
+    app.maybe_complete_startup_repo(now, scan_started);
+
+    assert!(
+        app.scan.startup_phases.disk.complete_at.is_some()
+            && app.scan.startup_phases.git.complete_at.is_some()
+            && app.scan.startup_phases.repo.complete_at.is_some(),
+        "disk/git/repo phases are now complete"
+    );
+    assert!(
+        app.scan.startup_phases.metadata.complete_at.is_none(),
+        "metadata still pending"
+    );
+    app.maybe_complete_startup_ready(now, scan_started);
+    assert!(
+        app.scan.startup_phases.startup_complete_at.is_none(),
+        "startup doesn't complete while metadata is still pending"
+    );
+
+    // Dispatch the metadata arrival → phase completes → startup ready.
+    let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
+    let generation = app
+        .metadata_store_handle()
+        .lock()
+        .expect("store")
+        .next_generation(&workspace_root);
+    app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+        workspace_root: workspace_root.clone(),
+        generation,
+        fingerprint: fake_fingerprint(),
+        result: Ok(fake_snapshot(workspace_root)),
+    });
+
+    assert!(
+        app.scan.startup_phases.metadata.complete_at.is_some(),
+        "metadata phase completes after the arrival"
+    );
+    assert!(
+        app.scan.startup_phases.startup_complete_at.is_some(),
+        "startup is now ready once every phase has resolved"
     );
 }
