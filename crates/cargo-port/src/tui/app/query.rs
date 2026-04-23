@@ -16,6 +16,7 @@ use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
+use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::GitStatus;
@@ -184,7 +185,7 @@ impl App {
     /// is shown and no spinner is started.
     pub(in super::super) fn start_clean(&mut self, project_path: &AbsolutePath) -> bool {
         if !project_path.as_path().join("target").exists() {
-            let name = crate::project::home_relative_path(project_path.as_path());
+            let name = project::home_relative_path(project_path.as_path());
             self.show_timed_toast("Already clean", name);
             return false;
         }
