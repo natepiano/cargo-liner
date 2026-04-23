@@ -10,6 +10,29 @@ Companion to `docs/cargo_metadata.md` (the design plan). This doc covers *how* t
 
 When the two docs disagree, the design plan wins; open a PR to reconcile this one.
 
+## Progress Snapshot
+
+As of the latest commit on `enh/cargo-metadata`:
+
+| Step | Status | Commits |
+|---|---|---|
+| 0 — `PhaseState` refactor | ✅ shipped | `a595aeb` |
+| 1a — Plumbing (dep, store, dispatch, handler, resolve helpers, toasts) | ✅ shipped | `c050152` + `bcf64fe` |
+| 1b 7a — Watcher classifier + in-tree refresh | ✅ shipped | `0293570` |
+| 1b 7b — Ancestor `.cargo/` watch-set | ⚠️ pure helpers + tests shipped (`708954b`); **watcher-loop integration deferred** (needs keeping `notify::Watcher` live for dynamic watch/unwatch). |
+| 2 — Resolved target dir at path-check sites | ✅ shipped | `4a50b1c` |
+| 3a — Targets pane from `PackageRecord.targets` | ✅ shipped | `43230d5` |
+| 3b — Retire `from_cargo_toml` + hand-rolled glob matcher | ⏳ **deferred** (heavy refactor; Targets pane already snapshot-driven as of 3a). |
+| 4 — Package pane fields (edition/license/homepage/repository) | ✅ shipped | `c6ab1f3` |
+| 5a — Single-pass walker yields in-target/non-target split | ✅ shipped | `94ef21e` |
+| 5b — Detail-pane breakdown block + cached out-of-tree walk | ⏳ **deferred**; `ProjectInfo` fields are in place for consumers. |
+| 6a/6b — `TargetDirIndex` + `build_clean_plan` pure types | ✅ shipped | `3cd343a` |
+| 6c — Index maintenance + `App::clean_selection` + gating fix | ✅ shipped | `cfb67c7` |
+| 6d — Confirm dialog lists affected siblings + nested collapse | ✅ shipped | `54c7501` |
+| 6e — Async clean-confirm re-fingerprint UX ("Verifying target dir…") | ⏳ **deferred** (needs ConfirmAction to carry CleanSelection). |
+| 7 — Group-level fan-out + `DeletedWorktree` skip | ✅ shipped | `1e35e5d` |
+| Clippy `-D warnings` pass | ✅ `0ff0cae` |
+
 ## Shippable Increments
 
 Each step is a single PR. Tests land in the same PR as the behavior (per design plan → **Testing**).
