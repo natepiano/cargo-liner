@@ -782,6 +782,17 @@ pub struct PackageData {
     pub out_of_tree_target_bytes: Option<u64>,
 }
 
+/// Resolve (version, description) for the detail pane from the
+/// authoritative snapshot. Returns `("-", None)` pre-snapshot — matches
+/// the Targets pane's pre-snapshot placeholder UX.
+fn snapshot_version_and_description(
+    pkg: Option<&crate::project::PackageRecord>,
+) -> (String, Option<String>) {
+    let version = pkg.map_or_else(|| "-".to_string(), |p| p.version.to_string());
+    let description = pkg.and_then(|p| p.description.clone());
+    (version, description)
+}
+
 /// Resolve the sharer target size for the row at `abs_path` — i.e. the
 /// workspace's cached walk of its out-of-tree `target_directory`. Returns
 /// `None` for in-tree targets (already reflected in `DiskTarget`) or
@@ -1560,14 +1571,16 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         });
     let out_of_tree_target_bytes = lookup_out_of_tree_target_bytes(app, &abs_path_owned);
 
+    let (version, description) = snapshot_version_and_description(snapshot_package.as_ref());
+
     DetailPaneData {
         package: PackageData {
             package_title: src.package_title,
             title_name,
             abs_path: abs_path_owned,
             path: src.display_path.to_string(),
-            version: cargo.and_then(Cargo::version).unwrap_or("-").to_string(),
-            description: cargo.and_then(Cargo::description).map(str::to_string),
+            version,
+            description,
             crates_version,
             crates_downloads,
             types: types_str,

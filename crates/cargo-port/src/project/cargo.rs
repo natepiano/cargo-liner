@@ -83,28 +83,6 @@ pub(crate) fn from_cargo_toml(
         .and_then(|n| n.as_str())
         .map(|s| (*s).to_string());
 
-    let version = table
-        .get("package")
-        .and_then(|p| p.get("version"))
-        .map(|v| {
-            v.as_str().map_or_else(
-                || {
-                    if v.get("workspace").and_then(Value::as_bool) == Some(true) {
-                        "(workspace)".to_string()
-                    } else {
-                        "-".to_string()
-                    }
-                },
-                |s| (*s).to_string(),
-            )
-        });
-
-    let description = table
-        .get("package")
-        .and_then(|p| p.get("description"))
-        .and_then(|n| n.as_str())
-        .map(|s| (*s).to_string());
-
     let worktree_status = git::get_worktree_status(project_dir);
     let worktree_health = git::get_worktree_health(project_dir);
 
@@ -120,8 +98,6 @@ pub(crate) fn from_cargo_toml(
     let test_count = count_targets(&table, project_dir, "test", "tests");
 
     let cargo = Cargo {
-        version,
-        description,
         types,
         examples,
         benches,

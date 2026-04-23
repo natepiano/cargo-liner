@@ -55,10 +55,16 @@ impl DerefMut for RustInfo {
 }
 
 /// Shared Cargo fields extracted from `Cargo.toml`.
+///
+/// Step 3b partial retirement: `version` and `description` are no longer
+/// hand-parsed here — the detail pane reads them from the authoritative
+/// `PackageRecord` via `App::resolve_metadata`. The remaining fields
+/// (types / examples / benches / `test_count` / publishable) still back
+/// the finder index, `ProjectCounts` stats, and `crates_io_name`
+/// publishability gating; migrating those to the snapshot is the next
+/// follow-up.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Cargo {
-    pub(crate) version:     Option<String>,
-    pub(crate) description: Option<String>,
     pub(crate) types:       Vec<ProjectType>,
     pub(crate) examples:    Vec<ExampleGroup>,
     pub(crate) benches:     Vec<String>,
@@ -72,10 +78,6 @@ impl Cargo {
     pub(crate) fn examples(&self) -> &[ExampleGroup] { &self.examples }
 
     pub(crate) fn benches(&self) -> &[String] { &self.benches }
-
-    pub(crate) fn version(&self) -> Option<&str> { self.version.as_deref() }
-
-    pub(crate) fn description(&self) -> Option<&str> { self.description.as_deref() }
 
     pub(crate) const fn test_count(&self) -> usize { self.test_count }
 
