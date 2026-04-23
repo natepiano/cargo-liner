@@ -2902,17 +2902,16 @@ edition = "2024"
             panic!("unexpected background message");
         };
         assert_eq!(refreshed.path(), project_root.path());
-        // Verify examples were parsed from the refreshed Cargo.toml
-        let example_count = match &refreshed {
-            crate::project::RootItem::Rust(crate::project::RustProject::Workspace(ws)) => {
-                ws.cargo().examples().iter().map(|g| g.names.len()).sum()
-            },
-            crate::project::RootItem::Rust(crate::project::RustProject::Package(pkg)) => {
-                pkg.cargo().examples().iter().map(|g| g.names.len()).sum()
-            },
-            _ => 0,
-        };
-        assert_eq!(example_count, 1);
+        // Step 3b retirement: the refreshed `Package`'s `Cargo` no
+        // longer carries hand-parsed example data — that flows from
+        // the authoritative `cargo metadata` snapshot. The contract
+        // pinned here is the refresh-emission shape (a `Package`
+        // arriving on `BackgroundMsg::ProjectRefreshed` for the
+        // watched root), not the derived target counts.
+        assert!(matches!(
+            refreshed,
+            crate::project::RootItem::Rust(crate::project::RustProject::Package(_))
+        ));
         assert_pending_disk(&pending_disk, "~/rust/demo");
         assert!(pending_git.is_empty());
         assert!(pending_new.is_empty());

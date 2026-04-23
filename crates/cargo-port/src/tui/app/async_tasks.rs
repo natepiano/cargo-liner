@@ -2522,6 +2522,13 @@ impl App {
         let needs_out_of_tree_walk = !target_directory
             .as_path()
             .starts_with(workspace_root.as_path());
+        // Step 3b: stamp Cargo fields (types / examples / benches /
+        // test_count / publishable) from each PackageRecord onto the
+        // matching Package / Workspace / VendoredPackage in the
+        // project list. Retires the hand-parsed defaults left in
+        // place by `from_cargo_toml`; the authoritative view is the
+        // snapshot.
+        self.apply_cargo_fields_from_snapshot(&snapshot);
         if let Ok(mut store) = self.metadata_store.lock() {
             store.upsert(snapshot);
         }
@@ -2555,6 +2562,28 @@ impl App {
             "cargo_metadata_applied"
         );
         true
+    }
+
+    /// Step 3b: derive [`Cargo`] fields from every [`PackageRecord`] in
+    /// `snapshot` and stamp them onto the matching live project entry
+    /// (standalone package, workspace member, or vendored package).
+    /// Workspaces themselves keep the empty-default `Cargo` the parser
+    /// produces — they have no single `PackageRecord`; members fan out
+    /// into individual packages underneath.
+    fn apply_cargo_fields_from_snapshot(&mut self, snapshot: &crate::project::WorkspaceSnapshot) {
+        use crate::project::Cargo;
+        for record in snapshot.packages.values() {
+            let Some(manifest_dir) = record.manifest_path.as_path().parent() else {
+                continue;
+            };
+            let cargo = Cargo::from_package_record(record);
+            if let Some(rust_info) = self.projects.rust_info_at_path_mut(manifest_dir) {
+                rust_info.cargo = cargo.clone();
+            }
+            if let Some(vendored) = self.projects.vendored_at_path_mut(manifest_dir) {
+                vendored.cargo = cargo;
+            }
+        }
     }
 
     pub(in super::super) fn detail_path_is_affected(&self, path: &Path) -> bool {

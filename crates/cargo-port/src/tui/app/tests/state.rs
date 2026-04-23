@@ -1916,3 +1916,103 @@ fn out_of_tree_target_size_message_stamps_snapshot() {
         .and_then(|s| s.out_of_tree_target_bytes);
     assert_eq!(stamped, Some(1_234_567));
 }
+
+#[test]
+fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
+    use cargo_metadata::PackageId;
+    use cargo_metadata::TargetKind;
+    use cargo_metadata::semver::Version;
+
+    let project_path = AbsolutePath::from(PathBuf::from("/abs/demo"));
+    let pkg_item = crate::project::RootItem::Rust(crate::project::RustProject::Package(
+        crate::project::Package {
+            path: project_path.clone(),
+            name: Some("demo".into()),
+            ..crate::project::Package::default()
+        },
+    ));
+    let mut app = make_app(&[pkg_item]);
+
+    // Before snapshot arrival: Cargo::default() → publishable true but
+    // empty types / examples / benches / test_count.
+    let pre_types = app
+        .projects
+        .rust_info_at_path(project_path.as_path())
+        .map_or(0, |r| r.cargo().types().len());
+    assert_eq!(pre_types, 0, "pre-snapshot types stay empty");
+
+    let manifest_path = AbsolutePath::from(project_path.as_path().join("Cargo.toml"));
+    let example_src = AbsolutePath::from(project_path.as_path().join("examples").join("hello.rs"));
+    let bin_src = AbsolutePath::from(project_path.as_path().join("src").join("main.rs"));
+    let record = crate::project::PackageRecord {
+        id: PackageId {
+            repr: "demo-id".into(),
+        },
+        name: "demo".into(),
+        version: Version::new(0, 1, 0),
+        edition: "2024".into(),
+        description: None,
+        license: None,
+        homepage: None,
+        repository: None,
+        manifest_path,
+        targets: vec![
+            crate::project::TargetRecord {
+                name:              "demo".into(),
+                kinds:             vec![TargetKind::Bin],
+                src_path:          bin_src,
+                edition:           "2024".into(),
+                required_features: Vec::new(),
+            },
+            crate::project::TargetRecord {
+                name:              "hello".into(),
+                kinds:             vec![TargetKind::Example],
+                src_path:          example_src,
+                edition:           "2024".into(),
+                required_features: Vec::new(),
+            },
+        ],
+        publish: crate::project::PublishPolicy::Never,
+    };
+    let mut packages = HashMap::new();
+    packages.insert(record.id.clone(), record);
+
+    let snap = WorkspaceSnapshot {
+        workspace_root: project_path.clone(),
+        target_directory: AbsolutePath::from(project_path.as_path().join("target")),
+        packages,
+        workspace_members: Vec::new(),
+        fetched_at: SystemTime::UNIX_EPOCH,
+        fingerprint: fake_fingerprint(),
+        out_of_tree_target_bytes: None,
+    };
+    let generation = app
+        .metadata_store_handle()
+        .lock()
+        .unwrap_or_else(|_| std::process::abort())
+        .next_generation(&project_path);
+    app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+        workspace_root: project_path.clone(),
+        generation,
+        fingerprint: snap.fingerprint.clone(),
+        result: Ok(snap),
+    });
+
+    let cargo = app
+        .projects
+        .rust_info_at_path(project_path.as_path())
+        .map_or_else(|| std::process::abort(), |r| r.cargo().clone());
+    assert!(
+        cargo.types().contains(&crate::project::ProjectType::Binary),
+        "Bin TargetKind → ProjectType::Binary stamped from snapshot"
+    );
+    assert_eq!(
+        cargo.example_count(),
+        1,
+        "Example TargetKind populates Cargo.examples"
+    );
+    assert!(
+        !cargo.publishable(),
+        "PublishPolicy::Never → Cargo.publishable false after snapshot"
+    );
+}
