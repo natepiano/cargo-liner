@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
@@ -48,650 +49,6 @@ use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project::RootItem::NonRust;
 use crate::project::WorkspaceMetadataStore;
-
-mod ancestor {
-    //! Pure helpers for the ancestor `.cargo/` watch-set subsystem
-    //! (design plan → **Ancestor config watching**).
-    //!
-    //! Step 1b part 7b. The watcher loop is not yet wired to these
-    //! helpers — the integration needs a refactor to keep the live
-    //! `Watcher` accessible for dynamic watch/unwatch. Until then,
-    //! out-of-tree ancestor config edits (e.g. `~/.cargo/config.toml`
-    //! when the project is elsewhere) are not detected. See the
-    //! header comment on `spawn_watcher`.
-    //!
-    //! These helpers are `pub(in super::super)` so the future watcher-
-    //! loop integration can consume them; tests live alongside.
-    use std::collections::HashMap;
-    use std::collections::HashSet;
-    use std::path::Path;
-    use std::path::PathBuf;
-
-    use crate::project::AbsolutePath;
-
-    /// One directory the watcher needs to subscribe to so that metadata
-    /// refreshes fire on ancestor `.cargo/config[.toml]` edits.
-    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-    pub(in super::super) struct AncestorCargoWatch {
-        /// The directory to pass to `notify::Watcher::watch` — either the
-        /// existing `.cargo/` itself, or the parent that *would* contain
-        /// `.cargo/` if the user runs `mkdir .cargo` there.
-        pub dir:  AbsolutePath,
-        pub role: AncestorCargoRole,
-    }
-
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub(in super::super) enum AncestorCargoRole {
-        /// `<ancestor>/.cargo/` is a directory today. Watch events on
-        /// `config`/`config.toml` drive a metadata refresh.
-        CargoDir,
-        /// `<ancestor>/.cargo/` does not exist yet. Watch the parent so
-        /// we catch the `mkdir .cargo` that precedes the first config
-        /// file being created there, then re-run `compute` to promote.
-        Placeholder,
-    }
-
-    /// Walk `project_root`'s ancestor chain up to (and including)
-    /// `cargo_home`, yielding one [`AncestorCargoWatch`] per level.
-    /// `cargo_home = None` means we could not resolve `$CARGO_HOME` nor
-    /// `~/.cargo`; in that case the walk stops at the filesystem root.
-    ///
-    /// Levels where `<ancestor>/.cargo/` exists become `CargoDir` entries
-    /// pointing at the `.cargo/` directory. Levels where it doesn't
-    /// become `Placeholder` entries pointing at the ancestor itself.
-    ///
-    /// The caller is responsible for unioning across all registered
-    /// projects and diffing against the existing global watch set —
-    /// see [`AncestorWatchRegistry`].
-    pub(in super::super) fn compute_ancestor_cargo_dirs(
-        project_root: &Path,
-        cargo_home: Option<&Path>,
-        fs: &dyn AncestorFs,
-    ) -> Vec<AncestorCargoWatch> {
-        let mut watches = Vec::new();
-        let mut seen: HashSet<PathBuf> = HashSet::new();
-        // Each level's probe is `<ancestor>/.cargo/`. CARGO_HOME is
-        // typically `<cargo_home_parent>/.cargo`, so the walk terminates
-        // once we've processed `cargo_home`'s parent — that's the level
-        // where the probe would have hit CARGO_HOME directly.
-        let stop_at = cargo_home.and_then(Path::parent).map(Path::to_path_buf);
-        let covered_cargo_home =
-            cargo_home.and_then(|home| home.parent().map(|parent| (home, parent)));
-
-        for ancestor in project_root.ancestors() {
-            let level = ancestor.to_path_buf();
-            if !seen.insert(level.clone()) {
-                continue;
-            }
-            push_watch_for_level(ancestor, fs, &mut watches);
-            if stop_at
-                .as_deref()
-                .is_some_and(|home_parent| ancestor == home_parent)
-            {
-                return watches;
-            }
-        }
-
-        // Ancestor walk never reached `cargo_home`'s parent — the
-        // classic case is `project_root=/opt/x` with `cargo_home=~/.cargo`,
-        // where `~/.cargo` sits on a sibling branch. Explicitly probe
-        // the CARGO_HOME parent level so the user-wide config still
-        // participates in the watch set.
-        if let Some((home, home_parent)) = covered_cargo_home
-            && !seen.contains(home_parent)
-        {
-            push_watch_for_level(home_parent, fs, &mut watches);
-            // The parent probe only records `<parent>/.cargo/` when it
-            // exists on disk. If the fake filesystem placed CARGO_HOME
-            // directly (without recording its parent as a cargo dir),
-            // the probe above produced a placeholder and we still need
-            // to add the explicit CargoDir entry.
-            if fs.is_dir(home)
-                && !watches.iter().any(|watch| {
-                    watch.dir.as_path() == home && watch.role == AncestorCargoRole::CargoDir
-                })
-            {
-                watches.push(AncestorCargoWatch {
-                    dir:  AbsolutePath::from(home.to_path_buf()),
-                    role: AncestorCargoRole::CargoDir,
-                });
-            }
-        }
-        watches
-    }
-
-    fn push_watch_for_level(
-        ancestor: &Path,
-        fs: &dyn AncestorFs,
-        watches: &mut Vec<AncestorCargoWatch>,
-    ) {
-        let cargo_dir = ancestor.join(".cargo");
-        if fs.is_dir(&cargo_dir) {
-            watches.push(AncestorCargoWatch {
-                dir:  AbsolutePath::from(cargo_dir),
-                role: AncestorCargoRole::CargoDir,
-            });
-        } else {
-            watches.push(AncestorCargoWatch {
-                dir:  AbsolutePath::from(ancestor.to_path_buf()),
-                role: AncestorCargoRole::Placeholder,
-            });
-        }
-    }
-
-    /// Minimal filesystem abstraction — lets tests drive the walk
-    /// deterministically without touching the real filesystem.
-    pub(in super::super) trait AncestorFs {
-        fn is_dir(&self, path: &Path) -> bool;
-    }
-
-    /// Real-filesystem implementation. The watcher uses this in
-    /// production.
-    pub(in super::super) struct RealFs;
-
-    impl AncestorFs for RealFs {
-        fn is_dir(&self, path: &Path) -> bool { path.is_dir() }
-    }
-
-    /// Per-project watch set paired with a refcount for the union
-    /// across all registered projects. Adding a project returns the
-    /// dirs that newly entered the union; removing returns the dirs
-    /// that no project still claims.
-    #[derive(Debug, Default)]
-    pub(in super::super) struct AncestorWatchRegistry {
-        by_project: HashMap<AbsolutePath, Vec<AncestorCargoWatch>>,
-        refcount:   HashMap<AbsolutePath, usize>,
-    }
-
-    /// The diff the watcher should apply via `watch()` / `unwatch()`.
-    #[derive(Debug, Default, Eq, PartialEq)]
-    pub(in super::super) struct AncestorWatchDiff {
-        pub to_add:    Vec<AncestorCargoWatch>,
-        pub to_remove: Vec<AbsolutePath>,
-    }
-
-    impl AncestorWatchRegistry {
-        pub(in super::super) fn new() -> Self { Self::default() }
-
-        /// Register `project_root`'s ancestor chain. No-op if the
-        /// project is already registered.
-        pub(in super::super) fn add_project(
-            &mut self,
-            project_root: AbsolutePath,
-            watches: Vec<AncestorCargoWatch>,
-        ) -> AncestorWatchDiff {
-            if self.by_project.contains_key(&project_root) {
-                return AncestorWatchDiff::default();
-            }
-            let mut diff = AncestorWatchDiff::default();
-            for watch in &watches {
-                let count = self.refcount.entry(watch.dir.clone()).or_insert(0);
-                if *count == 0 {
-                    diff.to_add.push(watch.clone());
-                }
-                *count += 1;
-            }
-            self.by_project.insert(project_root, watches);
-            diff
-        }
-
-        /// Unregister `project_root` and return the dirs that no project
-        /// still claims.
-        #[allow(
-            dead_code,
-            reason = "Reserved for project-teardown: currently projects live \
-                      for the watcher's whole lifetime, but this is the right \
-                      symmetric API when that changes."
-        )]
-        pub(in super::super) fn remove_project(
-            &mut self,
-            project_root: &AbsolutePath,
-        ) -> AncestorWatchDiff {
-            let Some(watches) = self.by_project.remove(project_root) else {
-                return AncestorWatchDiff::default();
-            };
-            let mut diff = AncestorWatchDiff::default();
-            for watch in watches {
-                let remove = self.refcount.get_mut(&watch.dir).is_some_and(|count| {
-                    *count = count.saturating_sub(1);
-                    *count == 0
-                });
-                if remove {
-                    self.refcount.remove(&watch.dir);
-                    diff.to_remove.push(watch.dir);
-                }
-            }
-            diff
-        }
-
-        /// Stable snapshot of the current global watch set.
-        pub(in super::super) fn current_watch_set(&self) -> HashSet<AbsolutePath> {
-            self.refcount.keys().cloned().collect()
-        }
-
-        #[cfg(test)]
-        pub(in super::super) fn contains(&self, dir: &AbsolutePath) -> bool {
-            self.refcount.contains_key(dir)
-        }
-
-        /// Every project that currently claims `dir` — i.e. `dir`
-        /// appears in its ancestor watch set. Used to fan a config
-        /// edit under a watched `.cargo/` out to the affected
-        /// projects for metadata refresh.
-        pub(in super::super) fn projects_claiming(&self, dir: &AbsolutePath) -> Vec<AbsolutePath> {
-            self.by_project
-                .iter()
-                .filter(|(_, watches)| watches.iter().any(|w| &w.dir == dir))
-                .map(|(project, _)| project.clone())
-                .collect()
-        }
-
-        /// Every project whose current watch list contains `dir` as a
-        /// `Placeholder`. Used by the `mkdir .cargo` promotion path:
-        /// on a Create event with basename `.cargo` we find the
-        /// projects still waiting on that ancestor so they can
-        /// refresh their chain.
-        pub(in super::super) fn projects_with_placeholder_on(
-            &self,
-            dir: &AbsolutePath,
-        ) -> Vec<AbsolutePath> {
-            self.by_project
-                .iter()
-                .filter(|(_, watches)| {
-                    watches
-                        .iter()
-                        .any(|w| &w.dir == dir && w.role == AncestorCargoRole::Placeholder)
-                })
-                .map(|(project, _)| project.clone())
-                .collect()
-        }
-
-        /// Replace `project_root`'s watch list with `new`, returning
-        /// the net diff the caller should apply via `watch()` /
-        /// `unwatch()`. Dirs that were in the project's previous list
-        /// AND are in `new` (possibly with a different role) don't
-        /// appear in either side of the diff — the watcher is already
-        /// subscribed. Used when a `mkdir .cargo` Create event
-        /// promotes a Placeholder into a live `CargoDir` for an
-        /// affected project.
-        pub(in super::super) fn refresh_project(
-            &mut self,
-            project_root: AbsolutePath,
-            new: Vec<AncestorCargoWatch>,
-        ) -> AncestorWatchDiff {
-            let removal_diff = self.remove_project(&project_root);
-            let add_diff = self.add_project(project_root, new);
-            let removed_set: HashSet<AbsolutePath> =
-                removal_diff.to_remove.iter().cloned().collect();
-            let added_set: HashSet<AbsolutePath> =
-                add_diff.to_add.iter().map(|w| w.dir.clone()).collect();
-            AncestorWatchDiff {
-                to_add:    add_diff
-                    .to_add
-                    .into_iter()
-                    .filter(|w| !removed_set.contains(&w.dir))
-                    .collect(),
-                to_remove: removal_diff
-                    .to_remove
-                    .into_iter()
-                    .filter(|d| !added_set.contains(d))
-                    .collect(),
-            }
-        }
-    }
-
-    /// Resolve `CARGO_HOME` with the `$CARGO_HOME` env var taking
-    /// precedence over the `~/.cargo` fallback — matches the store's
-    /// resolution so the watch set and fingerprint chain agree.
-    pub(in super::super) fn resolve_cargo_home() -> Option<std::path::PathBuf> {
-        if let Ok(home) = std::env::var("CARGO_HOME")
-            && !home.is_empty()
-        {
-            return Some(std::path::PathBuf::from(home));
-        }
-        dirs::home_dir().map(|home| home.join(".cargo"))
-    }
-
-    /// Does `event_path` sit under one of the `.cargo/` directories in
-    /// the registry's watch set? Returns the matching `.cargo/`
-    /// directory when it does, or `None` otherwise.
-    pub(in super::super) fn event_under_watched_cargo_dir<'a>(
-        event_path: &Path,
-        watched: &'a HashSet<AbsolutePath>,
-    ) -> Option<&'a AbsolutePath> {
-        watched
-            .iter()
-            .filter(|candidate| {
-                candidate
-                    .as_path()
-                    .file_name()
-                    .is_some_and(|name| name == ".cargo")
-            })
-            .find(|candidate| event_path.starts_with(candidate.as_path()))
-    }
-
-    #[cfg(test)]
-    #[allow(
-        clippy::expect_used,
-        reason = "tests should panic on unexpected values"
-    )]
-    mod tests {
-        use super::*;
-
-        struct FakeFs(HashSet<PathBuf>);
-
-        impl AncestorFs for FakeFs {
-            fn is_dir(&self, path: &Path) -> bool { self.0.contains(path) }
-        }
-
-        fn fake_fs<const N: usize>(dirs: [&str; N]) -> FakeFs {
-            FakeFs(dirs.iter().map(PathBuf::from).collect())
-        }
-
-        fn dir(s: &str) -> AbsolutePath { AbsolutePath::from(PathBuf::from(s)) }
-
-        // ── compute_ancestor_cargo_dirs ───────────────────────────────
-
-        #[test]
-        fn compute_records_cargo_dir_when_present_and_placeholder_when_absent() {
-            let fs = fake_fs(["/home/u/.cargo"]);
-            let watches = compute_ancestor_cargo_dirs(
-                Path::new("/home/u/rust/myapp"),
-                Some(Path::new("/home/u/.cargo")),
-                &fs,
-            );
-
-            // At each ancestor level we emit exactly one entry: `CargoDir`
-            // if `<ancestor>/.cargo/` exists, else a `Placeholder` on the
-            // ancestor itself. Here only `/home/u/.cargo` exists, so the
-            // lower levels stay placeholders and `/home/u` collapses
-            // directly into the CargoDir record for its `.cargo/`.
-            assert_eq!(
-                watches,
-                vec![
-                    AncestorCargoWatch {
-                        dir:  dir("/home/u/rust/myapp"),
-                        role: AncestorCargoRole::Placeholder,
-                    },
-                    AncestorCargoWatch {
-                        dir:  dir("/home/u/rust"),
-                        role: AncestorCargoRole::Placeholder,
-                    },
-                    AncestorCargoWatch {
-                        dir:  dir("/home/u/.cargo"),
-                        role: AncestorCargoRole::CargoDir,
-                    },
-                ],
-                "placeholders trace the chain until the existing .cargo/ is reached; \
-                 the ancestor whose .cargo/ exists contributes the CargoDir entry alone"
-            );
-        }
-
-        #[test]
-        fn compute_inserts_intermediate_cargo_dir_entries() {
-            let fs = fake_fs(["/home/u/projects/.cargo", "/home/u/.cargo"]);
-            let watches = compute_ancestor_cargo_dirs(
-                Path::new("/home/u/projects/myapp"),
-                Some(Path::new("/home/u/.cargo")),
-                &fs,
-            );
-
-            assert!(watches.contains(&AncestorCargoWatch {
-                dir:  dir("/home/u/projects/.cargo"),
-                role: AncestorCargoRole::CargoDir,
-            }));
-            assert!(watches.contains(&AncestorCargoWatch {
-                dir:  dir("/home/u/.cargo"),
-                role: AncestorCargoRole::CargoDir,
-            }));
-        }
-
-        #[test]
-        fn compute_probes_cargo_home_explicitly_when_outside_ancestor_chain() {
-            let fs = fake_fs(["/home/u/.cargo"]);
-            let watches = compute_ancestor_cargo_dirs(
-                Path::new("/opt/x"),
-                Some(Path::new("/home/u/.cargo")),
-                &fs,
-            );
-            assert!(
-                watches.contains(&AncestorCargoWatch {
-                    dir:  dir("/home/u/.cargo"),
-                    role: AncestorCargoRole::CargoDir,
-                }),
-                "CARGO_HOME is watched even when not on the ancestor chain"
-            );
-        }
-
-        #[test]
-        fn compute_returns_only_chain_when_cargo_home_is_none() {
-            let fs = fake_fs([]);
-            let watches = compute_ancestor_cargo_dirs(Path::new("/a/b/c"), None, &fs);
-            let dirs: Vec<_> = watches.iter().map(|w| w.dir.clone()).collect();
-            assert_eq!(
-                dirs,
-                vec![dir("/a/b/c"), dir("/a/b"), dir("/a"), dir("/")],
-                "without CARGO_HOME we still walk to the fs root, \
-                 all placeholders since nothing exists"
-            );
-            assert!(
-                watches
-                    .iter()
-                    .all(|w| w.role == AncestorCargoRole::Placeholder)
-            );
-        }
-
-        // ── AncestorWatchRegistry ─────────────────────────────────────
-
-        fn placeholder(s: &str) -> AncestorCargoWatch {
-            AncestorCargoWatch {
-                dir:  dir(s),
-                role: AncestorCargoRole::Placeholder,
-            }
-        }
-
-        fn cargo_dir(s: &str) -> AncestorCargoWatch {
-            AncestorCargoWatch {
-                dir:  dir(s),
-                role: AncestorCargoRole::CargoDir,
-            }
-        }
-
-        #[test]
-        fn registry_add_project_reports_newly_required_dirs() {
-            let mut reg = AncestorWatchRegistry::new();
-            let diff = reg.add_project(
-                dir("/home/u/a"),
-                vec![
-                    placeholder("/home/u/a"),
-                    placeholder("/home/u"),
-                    cargo_dir("/home/u/.cargo"),
-                ],
-            );
-            assert_eq!(diff.to_add.len(), 3, "first project adds all three");
-            assert!(diff.to_remove.is_empty());
-            assert_eq!(reg.current_watch_set().len(), 3);
-        }
-
-        #[test]
-        fn registry_add_project_does_not_re_add_shared_ancestors() {
-            let mut reg = AncestorWatchRegistry::new();
-            reg.add_project(
-                dir("/home/u/a"),
-                vec![
-                    placeholder("/home/u/a"),
-                    placeholder("/home/u"),
-                    cargo_dir("/home/u/.cargo"),
-                ],
-            );
-            let diff = reg.add_project(
-                dir("/home/u/b"),
-                vec![
-                    placeholder("/home/u/b"),
-                    placeholder("/home/u"),
-                    cargo_dir("/home/u/.cargo"),
-                ],
-            );
-            assert_eq!(
-                diff.to_add,
-                vec![placeholder("/home/u/b")],
-                "only the dir that wasn't previously in the union is reported"
-            );
-            assert!(reg.contains(&dir("/home/u")));
-        }
-
-        #[test]
-        fn registry_remove_project_unwatches_only_orphaned_dirs() {
-            let mut reg = AncestorWatchRegistry::new();
-            reg.add_project(
-                dir("/home/u/a"),
-                vec![
-                    placeholder("/home/u/a"),
-                    placeholder("/home/u"),
-                    cargo_dir("/home/u/.cargo"),
-                ],
-            );
-            reg.add_project(
-                dir("/home/u/b"),
-                vec![
-                    placeholder("/home/u/b"),
-                    placeholder("/home/u"),
-                    cargo_dir("/home/u/.cargo"),
-                ],
-            );
-
-            let diff = reg.remove_project(&dir("/home/u/a"));
-            assert_eq!(
-                diff.to_remove,
-                vec![dir("/home/u/a")],
-                "shared ancestors stay watched while project b still depends on them"
-            );
-            assert!(reg.contains(&dir("/home/u")));
-            assert!(reg.contains(&dir("/home/u/.cargo")));
-
-            let diff = reg.remove_project(&dir("/home/u/b"));
-            let mut to_remove: Vec<_> = diff
-                .to_remove
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect();
-            to_remove.sort();
-            assert_eq!(
-                to_remove,
-                vec![
-                    "/home/u".to_string(),
-                    "/home/u/.cargo".to_string(),
-                    "/home/u/b".to_string(),
-                ],
-                "removing the last project with a claim on each dir unwatches it"
-            );
-            assert!(reg.current_watch_set().is_empty());
-        }
-
-        #[test]
-        fn registry_add_is_idempotent_on_same_project() {
-            let mut reg = AncestorWatchRegistry::new();
-            let watches = vec![placeholder("/home/u/a"), cargo_dir("/home/u/.cargo")];
-            let first = reg.add_project(dir("/home/u/a"), watches.clone());
-            assert_eq!(first.to_add.len(), 2);
-
-            let second = reg.add_project(dir("/home/u/a"), watches);
-            assert!(
-                second.to_add.is_empty() && second.to_remove.is_empty(),
-                "re-adding the same project is a no-op"
-            );
-        }
-
-        #[test]
-        fn registry_refresh_project_promotes_placeholder_to_cargo_dir() {
-            // `mkdir .cargo` under a Placeholder ancestor: the
-            // registry's `refresh_project` swaps the Placeholder for
-            // a live CargoDir and reports the exact watch/unwatch
-            // diff the watcher should apply.
-            let mut reg = AncestorWatchRegistry::new();
-            reg.add_project(
-                dir("/home/u/a"),
-                vec![placeholder("/home/u"), placeholder("/home/u/a")],
-            );
-            assert!(reg.contains(&dir("/home/u")));
-
-            // `.cargo/` now exists at /home/u — refresh returns
-            // to_add for the new CargoDir + to_remove for the
-            // stale Placeholder.
-            let diff = reg.refresh_project(
-                dir("/home/u/a"),
-                vec![placeholder("/home/u/a"), cargo_dir("/home/u/.cargo")],
-            );
-            let mut added: Vec<_> = diff.to_add.iter().map(|w| w.dir.clone()).collect();
-            added.sort_by(|a, b| a.as_path().cmp(b.as_path()));
-            assert_eq!(added, vec![dir("/home/u/.cargo")]);
-            assert_eq!(diff.to_remove, vec![dir("/home/u")]);
-            assert!(reg.contains(&dir("/home/u/.cargo")));
-            assert!(!reg.contains(&dir("/home/u")));
-        }
-
-        #[test]
-        fn registry_projects_with_placeholder_on_filters_by_role() {
-            let mut reg = AncestorWatchRegistry::new();
-            reg.add_project(
-                dir("/home/u/a"),
-                vec![placeholder("/home/u/a"), placeholder("/home/u")],
-            );
-            reg.add_project(
-                dir("/home/u/b"),
-                vec![placeholder("/home/u/b"), cargo_dir("/home/u/.cargo")],
-            );
-
-            // /home/u is a Placeholder for /home/u/a only.
-            assert_eq!(
-                reg.projects_with_placeholder_on(&dir("/home/u")),
-                vec![dir("/home/u/a")]
-            );
-            // /home/u/.cargo is a CargoDir, not a Placeholder →
-            // nothing here.
-            assert!(
-                reg.projects_with_placeholder_on(&dir("/home/u/.cargo"))
-                    .is_empty()
-            );
-        }
-
-        #[test]
-        fn registry_remove_unknown_project_is_a_noop() {
-            let mut reg = AncestorWatchRegistry::new();
-            let diff = reg.remove_project(&dir("/never/added"));
-            assert_eq!(diff, AncestorWatchDiff::default());
-        }
-
-        // ── event_under_watched_cargo_dir ─────────────────────────────
-
-        #[test]
-        fn event_under_watched_cargo_dir_matches_config_edits() {
-            let watched: HashSet<AbsolutePath> = [dir("/home/u/.cargo"), dir("/home/u")]
-                .into_iter()
-                .collect();
-
-            assert!(
-                event_under_watched_cargo_dir(Path::new("/home/u/.cargo/config.toml"), &watched)
-                    .is_some(),
-                "edit under /home/u/.cargo/ must be recognized"
-            );
-            assert!(
-                event_under_watched_cargo_dir(Path::new("/home/u/.cargo/config"), &watched)
-                    .is_some(),
-                "the legacy `config` (no extension) basename still counts"
-            );
-            assert!(
-                event_under_watched_cargo_dir(Path::new("/home/u/readme.md"), &watched).is_none(),
-                "a non-.cargo/ directory in the watch set isn't a cargo-config hit"
-            );
-            assert!(
-                event_under_watched_cargo_dir(Path::new("/other/.cargo/config.toml"), &watched)
-                    .is_none(),
-                "out-of-set cargo dirs are not flagged"
-            );
-        }
-    }
-}
 
 /// Request to register an already-known project with the watcher.
 pub(crate) struct WatchRequest {
@@ -755,6 +112,7 @@ pub(crate) fn spawn_watcher(
         elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
         "watcher_root_registration_complete"
     );
+    register_cargo_home_watch(&mut watcher, &registered_roots);
     let metadata_dispatch = MetadataDispatchContext {
         handle: client.handle.clone(),
         tx: bg_tx.clone(),
@@ -836,34 +194,27 @@ impl WatchState {
 }
 
 struct WatcherLoopState {
-    projects:          HashMap<AbsolutePath, ProjectEntry>,
-    project_parents:   HashSet<AbsolutePath>,
-    pending_disk:      HashMap<String, WatchState>,
-    pending_git:       HashMap<AbsolutePath, WatchState>,
-    pending_new:       HashMap<AbsolutePath, Instant>,
-    discovered:        HashSet<AbsolutePath>,
-    initializing:      bool,
-    buffered_events:   Vec<notify::Event>,
-    /// Ancestor `.cargo/` watch-set subsystem — tracks which dirs
-    /// the notify watcher needs to subscribe to so edits to out-of-
-    /// tree `~/.cargo/config.toml` (and siblings) can trigger
-    /// `cargo metadata` refreshes. Populated incrementally as
-    /// projects register.
-    ancestor_registry: ancestor::AncestorWatchRegistry,
+    projects:        HashMap<AbsolutePath, ProjectEntry>,
+    project_parents: HashSet<AbsolutePath>,
+    pending_disk:    HashMap<String, WatchState>,
+    pending_git:     HashMap<AbsolutePath, WatchState>,
+    pending_new:     HashMap<AbsolutePath, Instant>,
+    discovered:      HashSet<AbsolutePath>,
+    initializing:    bool,
+    buffered_events: Vec<notify::Event>,
 }
 
 impl WatcherLoopState {
     fn new() -> Self {
         Self {
-            projects:          HashMap::new(),
-            project_parents:   HashSet::new(),
-            pending_disk:      HashMap::new(),
-            pending_git:       HashMap::new(),
-            pending_new:       HashMap::new(),
-            discovered:        HashSet::new(),
-            initializing:      true,
-            buffered_events:   Vec::new(),
-            ancestor_registry: ancestor::AncestorWatchRegistry::new(),
+            projects:        HashMap::new(),
+            project_parents: HashSet::new(),
+            pending_disk:    HashMap::new(),
+            pending_git:     HashMap::new(),
+            pending_new:     HashMap::new(),
+            discovered:      HashSet::new(),
+            initializing:    true,
+            buffered_events: Vec::new(),
         }
     }
 }
@@ -888,37 +239,17 @@ fn watcher_loop<W: Watcher + Send + 'static>(
     let (git_done_tx, git_done_rx) = mpsc::channel::<AbsolutePath>();
     let disk_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_DISK_CONCURRENCY));
     let git_limit = Arc::new(tokio::sync::Semaphore::new(WATCHER_GIT_CONCURRENCY));
-    let ancestor_fs = ancestor::RealFs;
-    let cargo_home = ancestor::resolve_cargo_home();
 
     let mut tick: u64 = 0;
     loop {
         tick += 1;
-        let watch_drain = drain_watch_messages(
-            watch_rx,
-            &mut state,
-            &mut watcher,
-            &ancestor_fs,
-            cargo_home.as_deref(),
-        );
+        let watch_drain = drain_watch_messages(watch_rx, &mut state, &mut watcher);
         if watch_drain.disconnected {
             tracing::info!(tick, "watcher_loop_exit_disconnected");
             return;
         }
 
         let notify_events = drain_notify_events(notify_rx);
-        // Promote any ancestor `.cargo/` placeholders whose mkdir
-        // event just fired. Done before dispatch so subsequent
-        // `classify_cargo_metadata_basename` matches see the newly
-        // promoted CargoDir entries in the watch set.
-        promote_placeholders_on_cargo_create(
-            &notify_events,
-            &mut state.ancestor_registry,
-            &mut watcher,
-            &ancestor_fs,
-            cargo_home.as_deref(),
-            metadata_dispatch,
-        );
         process_notify_events(
             tick,
             &watch_drain,
@@ -986,6 +317,15 @@ pub(crate) struct RegisteredRoots {
 
 impl RegisteredRoots {
     pub(crate) fn dirs(&self) -> &[AbsolutePath] { &self.dirs }
+
+    /// True when `path` is equal to or descends from any registered
+    /// root. Used to suppress redundant per-project ancestor watches
+    /// that would re-register an already-recursively-watched dir as
+    /// `NonRecursive` — on macOS `FSEvents` this changes the mode for
+    /// the path and silently drops subsequent recursive events.
+    pub(crate) fn covers(&self, path: &Path) -> bool {
+        self.dirs.iter().any(|root| path.starts_with(root))
+    }
 }
 
 impl Default for RegisteredRoots {
@@ -1046,6 +386,45 @@ fn register_watch_roots(
     (RegisteredRoots { dirs: registered }, failures)
 }
 
+/// Resolve `$CARGO_HOME` (falling back to `~/.cargo`).
+fn resolve_cargo_home() -> Option<PathBuf> {
+    if let Ok(home) = std::env::var("CARGO_HOME")
+        && !home.is_empty()
+    {
+        return Some(PathBuf::from(home));
+    }
+    dirs::home_dir().map(|home| home.join(".cargo"))
+}
+
+/// Subscribe to the cargo home directory (`$CARGO_HOME` or
+/// `~/.cargo`) so edits to `~/.cargo/config.toml` reach the watcher
+/// even when the user's recursive `include_dirs` don't cover it.
+/// Skipped when the cargo home is already inside one of the recursive
+/// roots — registering it again as `NonRecursive` would clobber the
+/// recursive subscription on macOS `FSEvents`.
+fn register_cargo_home_watch(watcher: &mut impl Watcher, registered_roots: &RegisteredRoots) {
+    let Some(cargo_home) = resolve_cargo_home() else {
+        return;
+    };
+    if !cargo_home.is_dir() {
+        return;
+    }
+    if registered_roots.covers(cargo_home.as_path()) {
+        return;
+    }
+    match watcher.watch(cargo_home.as_path(), RecursiveMode::NonRecursive) {
+        Ok(()) => tracing::info!(
+            cargo_home = %cargo_home.display(),
+            "watcher_cargo_home_registered"
+        ),
+        Err(err) => tracing::error!(
+            cargo_home = %cargo_home.display(),
+            error = %err,
+            "watcher_cargo_home_registration_failed"
+        ),
+    }
+}
+
 struct WatchDrainResult {
     disconnected:           bool,
     registration_completed: bool,
@@ -1054,9 +433,7 @@ struct WatchDrainResult {
 fn drain_watch_messages(
     watch_rx: &mpsc::Receiver<WatcherMsg>,
     state: &mut WatcherLoopState,
-    watcher: &mut impl Watcher,
-    ancestor_fs: &dyn ancestor::AncestorFs,
-    cargo_home: Option<&Path>,
+    _watcher: &mut impl Watcher,
 ) -> WatchDrainResult {
     let mut result = WatchDrainResult {
         disconnected:           false,
@@ -1065,7 +442,7 @@ fn drain_watch_messages(
     loop {
         match watch_rx.try_recv() {
             Ok(WatcherMsg::Register(req)) => {
-                apply_watch_request(req, state, watcher, ancestor_fs, cargo_home);
+                apply_watch_request(req, state);
             },
             Ok(WatcherMsg::InitialRegistrationComplete) => {
                 state.initializing = false;
@@ -1080,34 +457,7 @@ fn drain_watch_messages(
     }
 }
 
-fn apply_watch_request(
-    req: WatchRequest,
-    state: &mut WatcherLoopState,
-    watcher: &mut impl Watcher,
-    ancestor_fs: &dyn ancestor::AncestorFs,
-    cargo_home: Option<&Path>,
-) {
-    let project_root = req.abs_path.clone();
-    // Step 1b 7b: compute the ancestor `.cargo/` watch set for this
-    // project and subscribe to every new directory the union
-    // requires. Watches are non-recursive (we only care about
-    // `config`/`config.toml` edits directly under the `.cargo/`
-    // folder). The registry dedupes across projects so shared
-    // ancestors (e.g. `~/.cargo`) are only watched once.
-    let ancestor_watches =
-        ancestor::compute_ancestor_cargo_dirs(project_root.as_path(), cargo_home, ancestor_fs);
-    let diff = state
-        .ancestor_registry
-        .add_project(project_root, ancestor_watches);
-    for watch in &diff.to_add {
-        if let Err(err) = watcher.watch(watch.dir.as_path(), RecursiveMode::NonRecursive) {
-            tracing::debug!(
-                dir = %watch.dir.display(),
-                error = %err,
-                "watcher_ancestor_watch_failed"
-            );
-        }
-    }
+fn apply_watch_request(req: WatchRequest, state: &mut WatcherLoopState) {
     if let Some(parent) = req.abs_path.parent() {
         state.project_parents.insert(AbsolutePath::from(parent));
     }
@@ -1161,7 +511,6 @@ fn process_notify_events(
                 projects: &state.projects,
                 project_parents: &state.project_parents,
                 discovered: &state.discovered,
-                ancestor_registry: Some(&state.ancestor_registry),
             },
             bg_tx:             sinks.bg_tx,
             lint_runtime:      sinks.lint_runtime,
@@ -1196,7 +545,6 @@ fn process_notify_events(
                 projects: &state.projects,
                 project_parents: &state.project_parents,
                 discovered: &state.discovered,
-                ancestor_registry: Some(&state.ancestor_registry),
             },
             bg_tx:             sinks.bg_tx,
             lint_runtime:      sinks.lint_runtime,
@@ -1268,14 +616,10 @@ fn drain_completed_refreshes(
 
 /// Immutable state needed to classify a filesystem event.
 struct EventContext<'a> {
-    watch_roots:       &'a [AbsolutePath],
-    projects:          &'a HashMap<AbsolutePath, ProjectEntry>,
-    project_parents:   &'a HashSet<AbsolutePath>,
-    discovered:        &'a HashSet<AbsolutePath>,
-    /// Registry for the ancestor `.cargo/` watch-set subsystem —
-    /// `None` in test harnesses that don't exercise the ancestor
-    /// refresh path.
-    ancestor_registry: Option<&'a ancestor::AncestorWatchRegistry>,
+    watch_roots:     &'a [AbsolutePath],
+    projects:        &'a HashMap<AbsolutePath, ProjectEntry>,
+    project_parents: &'a HashSet<AbsolutePath>,
+    discovered:      &'a HashSet<AbsolutePath>,
 }
 
 struct WatcherDispatchContext<'a> {
@@ -1304,7 +648,7 @@ fn handle_notify_event(
 ) {
     let now = Instant::now();
 
-    try_dispatch_ancestor_metadata_refresh(event_path, ctx, metadata_dispatch);
+    try_dispatch_out_of_tree_cargo_config_refresh(event_path, ctx, metadata_dispatch);
 
     let mut matched_fast_git = false;
     for entry in ctx.projects.values() {
@@ -1603,89 +947,17 @@ fn is_internal_git_path(event_path: &Path, entry: &ProjectEntry) -> bool {
         || repo_root.is_some_and(|r| event_path.starts_with(r.join(".git")))
 }
 
-/// Ancestor `.cargo/config[.toml]` edits live *outside* any
-/// registered project root, so they never match the per-project
-/// classifiers below. When the event's basename matches a cargo-
-/// metadata trigger AND the event sits under a `.cargo/` dir that
-/// the ancestor registry is watching, fan the refresh out to every
-/// project claiming that dir (Step 1b part 7b).
-/// Scan `notify_events` for `Create` events whose basename is
-/// `.cargo`. For each matching event, find the projects that are
-/// currently watching the *parent* dir as a Placeholder and refresh
-/// their ancestor chain — the Placeholder gets promoted to a live
-/// `CargoDir` entry, the watcher gets the `watch()` / `unwatch()` diff
-/// applied, and the claiming projects receive a cargo metadata
-/// refresh (the new `.cargo/config.toml` may redefine
-/// `target-directory`).
+/// Cargo's `target-directory` may be redirected by an out-of-tree
+/// `<dir>/.cargo/config[.toml]` (typically `~/.cargo/config.toml`,
+/// the cargo home). Edits to such a config affect every project
+/// nested under `<dir>`, none of which contains the event path —
+/// so the per-project `classify_cargo_metadata_event_path` gate at
+/// the bottom of `handle_notify_event` will not fire for them.
 ///
-/// Runs before the main `handle_notify_event` dispatch so downstream
-/// classifier checks see the freshly promoted watch set.
-fn promote_placeholders_on_cargo_create(
-    notify_events: &[notify::Event],
-    registry: &mut ancestor::AncestorWatchRegistry,
-    watcher: &mut impl Watcher,
-    ancestor_fs: &dyn ancestor::AncestorFs,
-    cargo_home: Option<&Path>,
-    metadata_dispatch: &MetadataDispatchContext,
-) {
-    for event in notify_events {
-        if !matches!(event.kind, notify::event::EventKind::Create(_)) {
-            continue;
-        }
-        for path in &event.paths {
-            if path.file_name().is_none_or(|name| name != ".cargo") {
-                continue;
-            }
-            let Some(parent) = path.parent() else {
-                continue;
-            };
-            let parent_abs = AbsolutePath::from(parent.to_path_buf());
-            let claimants = registry.projects_with_placeholder_on(&parent_abs);
-            if claimants.is_empty() {
-                continue;
-            }
-            tracing::info!(
-                parent = %parent.display(),
-                placeholder_projects = claimants.len(),
-                "watcher_ancestor_placeholder_promotion"
-            );
-            for project_root in claimants {
-                let recomputed = ancestor::compute_ancestor_cargo_dirs(
-                    project_root.as_path(),
-                    cargo_home,
-                    ancestor_fs,
-                );
-                let diff = registry.refresh_project(project_root.clone(), recomputed);
-                for entry in &diff.to_add {
-                    if let Err(err) =
-                        watcher.watch(entry.dir.as_path(), RecursiveMode::NonRecursive)
-                    {
-                        tracing::debug!(
-                            dir = %entry.dir.display(),
-                            error = %err,
-                            "watcher_ancestor_promotion_watch_failed"
-                        );
-                    }
-                }
-                for dir in &diff.to_remove {
-                    if let Err(err) = watcher.unwatch(dir.as_path()) {
-                        tracing::debug!(
-                            dir = %dir.display(),
-                            error = %err,
-                            "watcher_ancestor_promotion_unwatch_failed"
-                        );
-                    }
-                }
-                // A newly-created `.cargo/config.toml` may redirect
-                // the target directory — force a fresh cargo metadata
-                // read for the project.
-                scan::spawn_cargo_metadata_refresh(metadata_dispatch.clone(), project_root);
-            }
-        }
-    }
-}
-
-fn try_dispatch_ancestor_metadata_refresh(
+/// When the event basename matches a cargo-metadata trigger AND the
+/// path looks like `<dir>/.cargo/config[.toml]`, fan a metadata
+/// refresh out to every project whose root is descendant of `<dir>`.
+fn try_dispatch_out_of_tree_cargo_config_refresh(
     event_path: &Path,
     ctx: &EventContext<'_>,
     metadata_dispatch: Option<&MetadataDispatchContext>,
@@ -1693,25 +965,22 @@ fn try_dispatch_ancestor_metadata_refresh(
     let Some(dispatch) = metadata_dispatch else {
         return;
     };
-    let Some(registry) = ctx.ancestor_registry else {
-        return;
-    };
-    if lint::classify_cargo_metadata_basename(event_path).is_none() {
+    if !matches!(
+        lint::classify_cargo_metadata_basename(event_path),
+        Some(lint::CargoMetadataTriggerKind::CargoConfig)
+    ) {
         return;
     }
-    let watched = registry.current_watch_set();
-    let Some(cargo_dir) = ancestor::event_under_watched_cargo_dir(event_path, &watched) else {
+    let Some(cargo_dir) = event_path.parent() else {
         return;
     };
-    let claimants = registry.projects_claiming(cargo_dir);
-    tracing::info!(
-        cargo_dir = %cargo_dir.display(),
-        event_path = %event_path.display(),
-        affected_projects = claimants.len(),
-        "watcher_ancestor_cargo_metadata_refresh"
-    );
-    for project_root in claimants {
-        scan::spawn_cargo_metadata_refresh(dispatch.clone(), project_root);
+    let Some(host_dir) = cargo_dir.parent() else {
+        return;
+    };
+    for project_root in ctx.projects.keys() {
+        if project_root.as_path().starts_with(host_dir) {
+            scan::spawn_cargo_metadata_refresh(dispatch.clone(), project_root.clone());
+        }
     }
 }
 
@@ -2304,13 +1573,371 @@ mod tests {
         ));
     }
 
-    /// Pure `ancestor::AncestorFs` test double: every probed path
-    /// is reported as absent. Keeps `compute_ancestor_cargo_dirs`
-    /// deterministic without requiring a real filesystem.
-    struct NoopFs;
+    /// Records every `watch()` and `unwatch()` call so a test can
+    /// assert that the watcher API was (or was not) touched for a
+    /// given path. Every call returns `Ok` regardless of mode.
+    struct RecordingWatcher {
+        watched:   Arc<std::sync::Mutex<Vec<(PathBuf, RecursiveMode)>>>,
+        unwatched: Arc<std::sync::Mutex<Vec<PathBuf>>>,
+    }
 
-    impl ancestor::AncestorFs for NoopFs {
-        fn is_dir(&self, _path: &Path) -> bool { false }
+    impl notify::Watcher for RecordingWatcher {
+        fn new<F: notify::EventHandler>(
+            _event_handler: F,
+            _config: notify::Config,
+        ) -> notify::Result<Self>
+        where
+            Self: Sized,
+        {
+            Ok(Self {
+                watched:   Arc::new(std::sync::Mutex::new(Vec::new())),
+                unwatched: Arc::new(std::sync::Mutex::new(Vec::new())),
+            })
+        }
+
+        fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+            self.watched
+                .lock()
+                .expect("recording watcher lock")
+                .push((path.to_path_buf(), mode));
+            Ok(())
+        }
+
+        fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+            self.unwatched
+                .lock()
+                .expect("recording watcher lock")
+                .push(path.to_path_buf());
+            Ok(())
+        }
+
+        fn configure(&mut self, _config: notify::Config) -> notify::Result<bool> { Ok(true) }
+
+        fn kind() -> notify::WatcherKind
+        where
+            Self: Sized,
+        {
+            notify::WatcherKind::NullWatcher
+        }
+    }
+
+    /// Regression: `register_cargo_home_watch` must not register
+    /// `~/.cargo` (or `$CARGO_HOME`) when the cargo home is already
+    /// inside one of the recursive watch roots. macOS `FSEvents`
+    /// tracks one mode per path, so a redundant `NonRecursive` call
+    /// would clobber the recursive subscription — the failure mode
+    /// that originally killed event delivery for everything under
+    /// `~/rust`.
+    #[test]
+    fn cargo_home_watch_skipped_when_covered_by_recursive_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cargo_home = tmp.path().join(".cargo");
+        std::fs::create_dir_all(&cargo_home).expect("mkdir cargo_home");
+        // Recursive root that contains the cargo home (the parent dir).
+        let registered_roots = RegisteredRoots {
+            dirs: vec![AbsolutePath::from(tmp.path())],
+        };
+
+        let mut watcher = RecordingWatcher::new_for_test();
+        let watched_handle = Arc::clone(&watcher.watched);
+
+        // SAFETY: tests run serially within the watcher::tests module,
+        // so the env-var mutation cannot race with another test.
+        unsafe {
+            std::env::set_var("CARGO_HOME", cargo_home.as_os_str());
+        }
+        register_cargo_home_watch(&mut watcher, &registered_roots);
+        unsafe { std::env::remove_var("CARGO_HOME") };
+
+        let recorded: Vec<(PathBuf, RecursiveMode)> = watched_handle
+            .lock()
+            .expect("recording watcher lock")
+            .clone();
+        assert!(
+            recorded.is_empty(),
+            "cargo home is covered by a recursive root — no extra watch should be registered, \
+             recorded calls: {recorded:?}"
+        );
+    }
+
+    impl RecordingWatcher {
+        fn new_for_test() -> Self {
+            Self {
+                watched:   Arc::new(std::sync::Mutex::new(Vec::new())),
+                unwatched: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    /// **TEST-ONLY** wrapper around any [`notify::Watcher`] that
+    /// records every `watch()` call and refuses any subsequent call
+    /// that would re-register the same path or land on a path covered
+    /// by an existing recursive watch. Used to assert the
+    /// architectural invariant below — **not** a production type.
+    struct GuardedWatcher<W: notify::Watcher> {
+        inner:      W,
+        registered: HashMap<PathBuf, RecursiveMode>,
+    }
+
+    impl<W: notify::Watcher> GuardedWatcher<W> {
+        fn wrap(inner: W) -> Self {
+            Self {
+                inner,
+                registered: HashMap::new(),
+            }
+        }
+    }
+
+    impl<W: notify::Watcher> notify::Watcher for GuardedWatcher<W> {
+        fn new<F: notify::EventHandler>(_eh: F, _cfg: notify::Config) -> notify::Result<Self>
+        where
+            Self: Sized,
+        {
+            Err(notify::Error::generic(
+                "GuardedWatcher is test infrastructure; construct via `GuardedWatcher::wrap`",
+            ))
+        }
+
+        fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+            if self.registered.contains_key(path) {
+                return Err(notify::Error::generic(&format!(
+                    "guarded watcher refused: `{}` already registered",
+                    path.display()
+                )));
+            }
+            for (existing, existing_mode) in &self.registered {
+                if *existing_mode == RecursiveMode::Recursive
+                    && path.starts_with(existing)
+                    && existing.as_path() != path
+                {
+                    return Err(notify::Error::generic(&format!(
+                        "guarded watcher refused: `{}` would be shadowed by recursive watch on \
+                         `{}` (registering it would silently change the mode of the recursive \
+                         watch on macOS FSEvents)",
+                        path.display(),
+                        existing.display()
+                    )));
+                }
+            }
+            self.inner.watch(path, mode)?;
+            self.registered.insert(path.to_path_buf(), mode);
+            Ok(())
+        }
+
+        fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+            let result = self.inner.unwatch(path);
+            self.registered.remove(path);
+            result
+        }
+
+        fn configure(&mut self, config: notify::Config) -> notify::Result<bool> {
+            self.inner.configure(config)
+        }
+
+        fn kind() -> notify::WatcherKind
+        where
+            Self: Sized,
+        {
+            W::kind()
+        }
+    }
+
+    /// **ARCHITECTURAL INVARIANT — DO NOT WEAKEN WITHOUT A DESIGN
+    /// DISCUSSION WITH THE USER.**
+    ///
+    /// Decision (2026-04-24): the watcher subsystem registers exactly
+    /// one notify watch per path. Recursive watch roots cover
+    /// everything inside them; no second `watch()` call may land on a
+    /// path already covered by a recursive root. The full per-project
+    /// ancestor-watch subsystem was removed for this reason — the
+    /// invariant must hold by construction in production code, not by
+    /// a runtime guard.
+    ///
+    /// This invariant exists because macOS `FSEvents` tracks one mode
+    /// per path — the original "git status never refreshes for
+    /// projects under `~/rust`" bug was caused by a `NonRecursive`
+    /// call silently overwriting a `Recursive` watch on the same path.
+    ///
+    /// The two tests below enforce the invariant from two angles:
+    ///   1. `guarded_watcher_rejects_overlap_with_recursive_root` — proves the test-only
+    ///      `GuardedWatcher` correctly detects both classes of redundant call (duplicate,
+    ///      shadowed).
+    ///   2. `startup_registration_introduces_no_overlapping_watches` — runs the production startup
+    ///      registration sequence (`register_watch_roots` + `register_cargo_home_watch`) through
+    ///      `GuardedWatcher` and asserts no rejection occurs. If anyone adds a redundant
+    ///      `watcher.watch()` call anywhere in that sequence, the guard rejects it and the test
+    ///      fails.
+    ///
+    /// **If either test fails, the right response is not to relax the
+    /// guard — it is to bring the design conflict back to the user
+    /// before changing the behavior.**
+    #[test]
+    fn guarded_watcher_rejects_overlap_with_recursive_root() {
+        let mut guard = GuardedWatcher::wrap(RecordingWatcher::new_for_test());
+
+        // First, a recursive root succeeds.
+        let root = PathBuf::from("/tmp/cargo_port_test_root");
+        guard
+            .watch(&root, RecursiveMode::Recursive)
+            .expect("recursive root accepted");
+
+        // Same path again — refused (would be a redundant double-register).
+        let dup_err = guard
+            .watch(&root, RecursiveMode::Recursive)
+            .expect_err("duplicate watch must be rejected");
+        assert!(
+            dup_err.to_string().contains("already registered"),
+            "duplicate-watch error should be self-explanatory, got: {dup_err}"
+        );
+
+        // Path covered by the recursive root — refused, regardless of mode.
+        let nested = root.join("project");
+        let nested_err = guard
+            .watch(&nested, RecursiveMode::NonRecursive)
+            .expect_err("nested NonRecursive watch must be rejected");
+        assert!(
+            nested_err
+                .to_string()
+                .contains("shadowed by recursive watch"),
+            "shadowed-watch error should call out the recursive root, got: {nested_err}"
+        );
+
+        // After unwatch, the path can be re-registered.
+        guard.unwatch(&root).expect("unwatch root");
+        guard
+            .watch(&nested, RecursiveMode::NonRecursive)
+            .expect("after unwatch, nested watch is permitted again");
+    }
+
+    /// **ARCHITECTURAL INVARIANT — see preceding test for the design
+    /// rationale and the standing decision with the user.**
+    ///
+    /// Drives the production startup registration sequence
+    /// (`register_watch_roots` followed by `register_cargo_home_watch`)
+    /// through a `GuardedWatcher`. If any code path inside those
+    /// functions issues a redundant `watcher.watch()` call — a
+    /// duplicate path, or a path shadowed by an already-registered
+    /// recursive root — the guard returns `Err`, the failure is
+    /// observable here, and the test fails.
+    ///
+    /// Inputs are picked to exercise the realistic shape: two
+    /// recursive roots, a cargo home that lives outside both — exactly
+    /// the configuration that uncovered the original bug. Adding a
+    /// new `watcher.watch()` call to any helper invoked here will fail
+    /// this test if it overlaps an existing registration.
+    #[test]
+    fn startup_registration_introduces_no_overlapping_watches() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root_a = tmp.path().join("rust");
+        let root_b = tmp.path().join("claude");
+        let cargo_home = tmp.path().join("cargo_home");
+        for dir in [&root_a, &root_b, &cargo_home] {
+            std::fs::create_dir_all(dir).expect("mkdir root");
+        }
+        let watch_roots = [AbsolutePath::from(root_a), AbsolutePath::from(root_b)];
+
+        let mut guard = GuardedWatcher::wrap(RecordingWatcher::new_for_test());
+
+        let (registered_roots, failures) = register_watch_roots(&mut guard, &watch_roots);
+        assert!(
+            failures.is_empty(),
+            "register_watch_roots must not produce per-root failures for non-overlapping inputs; \
+             got: {:?}",
+            failures
+                .iter()
+                .map(|f| (f.dir.display().to_string(), f.reason.to_string()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(registered_roots.dirs().len(), watch_roots.len());
+
+        // SAFETY: tests serialise within the watcher::tests module so
+        // the env-var write cannot race with another test reading it.
+        unsafe {
+            std::env::set_var("CARGO_HOME", cargo_home.as_os_str());
+        }
+        register_cargo_home_watch(&mut guard, &registered_roots);
+        unsafe { std::env::remove_var("CARGO_HOME") };
+
+        // Expected registered set: the two recursive roots plus the
+        // cargo home (which sits outside both). Anything more or less
+        // means a code path in the startup sequence either dropped a
+        // watch or registered an overlapping one.
+        let expected_count = watch_roots.len() + 1;
+        assert_eq!(
+            guard.registered.len(),
+            expected_count,
+            "guard's registered set should contain exactly the recursive roots plus cargo_home; \
+             got: {:?}",
+            guard.registered
+        );
+    }
+
+    /// `try_dispatch_out_of_tree_cargo_config_refresh` must spawn a
+    /// metadata refresh for every project nested under the dir that
+    /// contains the changed `.cargo/config.toml`. This stands in for
+    /// the deleted ancestor-registry dispatch path: when a
+    /// `.cargo/config.toml` event arrives via the recursive watch
+    /// (e.g. on `<root>/.cargo/config.toml`), every workspace under
+    /// `<root>` whose `target-directory` could be redirected by that
+    /// config gets re-read.
+    #[test]
+    fn out_of_tree_cargo_config_refresh_fans_out_to_descendant_projects() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let host = tmp.path().to_path_buf();
+        let cargo_dir = host.join(".cargo");
+        let event_path = cargo_dir.join("config.toml");
+        let project_under = host.join("nested").join("project");
+        let project_outside = tmp
+            .path()
+            .parent()
+            .unwrap_or_else(|| tmp.path())
+            .join("elsewhere");
+
+        let mut projects = HashMap::new();
+        for path in [&project_under, &project_outside] {
+            projects.insert(
+                AbsolutePath::from(path.clone()),
+                ProjectEntry {
+                    project_label:  path.display().to_string(),
+                    abs_path:       AbsolutePath::from(path.clone()),
+                    repo_root:      None,
+                    git_dir:        None,
+                    common_git_dir: None,
+                },
+            );
+        }
+        let watch_roots = vec![AbsolutePath::from(host.clone())];
+        let project_parents = HashSet::from([AbsolutePath::from(host.clone())]);
+        let discovered = HashSet::new();
+        let ctx = EventContext {
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
+        };
+
+        let (tx, rx) = mpsc::channel();
+        let dispatch = MetadataDispatchContext {
+            handle: test_runtime().handle().clone(),
+            tx,
+            metadata_store: Arc::new(std::sync::Mutex::new(WorkspaceMetadataStore::new())),
+            metadata_limit: Arc::new(tokio::sync::Semaphore::new(1)),
+        };
+
+        try_dispatch_out_of_tree_cargo_config_refresh(&event_path, &ctx, Some(&dispatch));
+
+        let mut refreshed: Vec<AbsolutePath> = Vec::new();
+        while let Ok(msg) = rx.recv_timeout(Duration::from_millis(200)) {
+            if let BackgroundMsg::CargoMetadata { workspace_root, .. } = msg {
+                refreshed.push(workspace_root);
+            }
+        }
+        assert_eq!(
+            refreshed,
+            vec![AbsolutePath::from(project_under)],
+            "only the project nested under `{}` should be refreshed; outside project must not be",
+            host.display()
+        );
     }
 
     // ── is_target_event_for ──────────────────────────────────────────
@@ -2353,13 +1980,12 @@ mod tests {
         let (watch_tx, watch_rx) = mpsc::channel();
         let mut state = WatcherLoopState::new();
         let mut watcher = NoopWatcher;
-        let fs = NoopFs;
 
         watch_tx
             .send(WatcherMsg::InitialRegistrationComplete)
             .expect("send registration complete");
 
-        let drained = drain_watch_messages(&watch_rx, &mut state, &mut watcher, &fs, None);
+        let drained = drain_watch_messages(&watch_rx, &mut state, &mut watcher);
 
         assert!(drained.registration_completed);
         assert!(!state.initializing);
@@ -2386,8 +2012,7 @@ mod tests {
         let watch_thread = std::thread::spawn(move || {
             let mut state = WatcherLoopState::new();
             let mut watcher = NoopWatcher;
-            let fs = NoopFs;
-            let drained = drain_watch_messages(&watch_rx, &mut state, &mut watcher, &fs, None);
+            let drained = drain_watch_messages(&watch_rx, &mut state, &mut watcher);
             let _ = result_tx.send((drained, state.initializing));
         });
 
@@ -2773,11 +2398,10 @@ mod tests {
         let (project_dir, _, projects, watch_roots, project_parents, discovered) =
             repo_with_member_event_context(&tmp);
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -2891,11 +2515,10 @@ mod tests {
         let project_parents = HashSet::from(["/home/user/rust".into()]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3040,11 +2663,10 @@ edition = "2024"
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3092,7 +2714,6 @@ edition = "2024"
             projects,
             project_parents,
             discovered,
-            ancestor_registry: None,
         }
     }
 
@@ -3145,11 +2766,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3190,11 +2810,10 @@ edition = "2024"
         std::fs::write(wt_git_dir.join("HEAD"), "ref: refs/heads/wt-branch\n").expect("write HEAD");
         std::fs::write(wt_git_dir.join("index"), "fake-index").expect("write index");
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3231,11 +2850,10 @@ edition = "2024"
         std::fs::create_dir_all(logs_head.parent().expect("logs dir")).expect("create logs dir");
         std::fs::write(&logs_head, "old..new commit message\n").expect("write logs/HEAD");
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3267,11 +2885,10 @@ edition = "2024"
         let (_wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
             worktree_git_event_context(&tmp);
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3308,11 +2925,10 @@ edition = "2024"
         let branch_ref = common_git_dir.join("refs").join("heads").join("wt-branch");
         std::fs::write(&branch_ref, "deadbeef\n").expect("write branch ref");
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3378,11 +2994,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3431,11 +3046,10 @@ edition = "2024"
         let (_wt_root, wt_git_dir, projects, watch_roots, project_parents, discovered) =
             worktree_git_event_context(&tmp);
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let dispatch = WatcherDispatchContext {
@@ -3479,11 +3093,10 @@ edition = "2024"
         let branch_ref = common_git_dir.join("refs").join("heads").join("wt-branch");
         std::fs::write(&branch_ref, "deadbeef\n").expect("write branch ref");
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let dispatch = WatcherDispatchContext {
@@ -3538,11 +3151,10 @@ edition = "2024"
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3588,11 +3200,10 @@ edition = "2024"
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -3655,11 +3266,10 @@ edition = "2024"
         let project_parents = HashSet::new();
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
@@ -3727,11 +3337,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(base)]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
@@ -3767,11 +3376,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(base)]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let dispatch = WatcherDispatchContext {
@@ -3812,11 +3420,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(base)]);
         let discovered = HashSet::from([AbsolutePath::from(project_dir.clone())]);
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
@@ -3855,11 +3462,10 @@ edition = "2024"
         let project_parents = HashSet::new(); // empty — early scan
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -4348,11 +3954,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -4429,11 +4034,10 @@ edition = "2024"
         let project_parents = HashSet::from([AbsolutePath::from(tmp.path())]);
         let discovered = HashSet::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
@@ -4508,11 +4112,10 @@ edition = "2024"
         let discovered = HashSet::from([AbsolutePath::from(canonical)]);
         let projects = HashMap::new();
         let ctx = EventContext {
-            watch_roots:       &watch_roots,
-            projects:          &projects,
-            project_parents:   &project_parents,
-            discovered:        &discovered,
-            ancestor_registry: None,
+            watch_roots:     &watch_roots,
+            projects:        &projects,
+            project_parents: &project_parents,
+            discovered:      &discovered,
         };
         let (bg_tx, _bg_rx) = mpsc::channel();
         let mut pending_disk = HashMap::new();
