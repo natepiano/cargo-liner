@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -6,8 +7,10 @@ use std::path::PathBuf;
 use anyhow::Context;
 use anyhow::Result;
 
-use super::parent_export;
-use super::rewrite;
+use super::parent_boundary;
+use super::parent_boundary::ParentBoundaryKey;
+use super::validated_plan;
+use super::validated_plan::ValidatedPubUsePlan;
 use crate::constants::PUB_VISIBILITY_PREFIX;
 use crate::diagnostics::Report;
 use crate::imports::UseFix;
@@ -37,23 +40,6 @@ struct PubUseCandidate {
     exported_name:      String,
     parent_module_path: Vec<String>,
     target_item_path:   Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct ParentBoundaryKey {
-    pub(super) parent_module: PathBuf,
-    pub(super) item_start:    usize,
-    pub(super) item_end:      usize,
-}
-
-pub(super) struct ValidatedPubUsePlan {
-    pub(super) parent_boundary:    ParentBoundaryKey,
-    pub(super) child_file:         PathBuf,
-    pub(super) child_module:       String,
-    pub(super) exported_name:      String,
-    pub(super) parent_module_path: Vec<String>,
-    pub(super) target_item_path:   Vec<String>,
-    pub(super) child_narrowing:    UseFix,
 }
 
 struct PubUseAnalysis {
@@ -88,15 +74,15 @@ pub fn scan_selection(selection: &Selection, report: &Report) -> Result<PubUseFi
 
     for (parent_boundary, exports) in parent_fix_groups {
         let removal =
-            parent_export::build_parent_pub_use_edit_for_exports(&parent_boundary, &exports)?;
+            parent_boundary::build_parent_pub_use_edit_for_exports(&parent_boundary, &exports)?;
         fixes.push(removal);
     }
 
-    fixes.extend(rewrite::rewrite_subtree_imports_for_plans(
+    fixes.extend(validated_plan::rewrite_subtree_imports_for_plans(
         selection,
         &analysis.supported_plans,
     )?);
-    let fixes = ValidatedFixSet::from_vec(fixes)?;
+    let fixes = ValidatedFixSet::try_from(fixes)?;
 
     Ok(PubUseFixScan {
         fixes,
@@ -131,7 +117,7 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
             .with_context(|| format!("failed to read {}", fact.child_file.display()))?;
         let parent_source = fs::read_to_string(&fact.parent_module)
             .with_context(|| format!("failed to read {}", fact.parent_module.display()))?;
-        let Some(parent_export) = parent_export::resolve_parent_pub_use_export(
+        let Some(parent_export) = parent_boundary::resolve_parent_pub_use_export(
             &parent_source,
             fact.parent_line,
             &fact.child_module,
@@ -149,7 +135,7 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
             continue;
         };
 
-        let source_root = find_source_root(&fact.parent_module)
+        let source_root = validated_plan::find_source_root(&fact.parent_module)
             .context("failed to determine src root for parent module")?;
 
         let parent_module_path = module_path_from_boundary_file(&source_root, &fact.parent_module)
@@ -227,7 +213,7 @@ fn build_validated_plan(
 fn build_child_pub_super_fix(candidate: &PubUseCandidate) -> Result<UseFix> {
     let source = fs::read_to_string(&candidate.child_file)
         .with_context(|| format!("failed to read {}", candidate.child_file.display()))?;
-    let line_span = rewrite::line_span(&source, candidate.child_line)
+    let line_span = validated_plan::line_span(&source, candidate.child_line)
         .context("failed to compute child visibility line span")?;
     let line_text = &source[line_span.0..line_span.1];
     let Some(relative_start) = line_text.find(PUB_VISIBILITY_PREFIX) else {
@@ -246,8 +232,8 @@ fn build_child_pub_super_fix(candidate: &PubUseCandidate) -> Result<UseFix> {
 }
 
 fn line_contains_plain_pub(source: &str, line: usize) -> Result<bool> {
-    let line_span =
-        rewrite::line_span(source, line).context("failed to compute child item line span")?;
+    let line_span = validated_plan::line_span(source, line)
+        .context("failed to compute child item line span")?;
     Ok(source[line_span.0..line_span.1].contains(PUB_VISIBILITY_PREFIX))
 }
 
@@ -278,15 +264,9 @@ fn module_path_from_dir(source_root: &Path, module_dir: &Path) -> Option<Vec<Str
 }
 
 fn module_path_from_boundary_file(source_root: &Path, boundary_file: &Path) -> Option<Vec<String>> {
-    if boundary_file.file_name().and_then(|name| name.to_str()) == Some("mod.rs") {
+    if boundary_file.file_name().and_then(OsStr::to_str) == Some("mod.rs") {
         return module_path_from_dir(source_root, boundary_file.parent()?);
     }
 
     module_paths::file_module_path(source_root, boundary_file)
-}
-
-pub(super) fn find_source_root(path: &Path) -> Option<PathBuf> {
-    path.ancestors()
-        .find(|ancestor| ancestor.file_name().and_then(|name| name.to_str()) == Some("src"))
-        .map(Path::to_path_buf)
 }

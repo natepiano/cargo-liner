@@ -123,7 +123,7 @@ fn compiler_message<'a>(
 
     Ok(CompilerMessage {
         reason: "compiler-message",
-        package_id: &package.package_id,
+        package_id: &package.id,
         manifest_path: package.manifest_path.display().to_string(),
         target: cargo_target(target),
         message,

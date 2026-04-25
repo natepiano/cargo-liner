@@ -42,7 +42,7 @@ pub(crate) struct CargoCheckPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PackageMetadata {
-    pub package_id:    String,
+    pub id:            String,
     pub manifest_path: PathBuf,
     pub root:          PathBuf,
     pub targets:       Vec<TargetMetadata>,
@@ -236,7 +236,7 @@ fn package_root_from_metadata(package: &Package) -> Result<PathBuf> {
 
 fn package_metadata_from_cargo(package: &Package) -> Result<PackageMetadata> {
     Ok(PackageMetadata {
-        package_id:    package.id.to_string(),
+        id:            package.id.to_string(),
         manifest_path: package.manifest_path.clone().into_std_path_buf(),
         root:          package_root_from_metadata(package)?,
         targets:       package
@@ -324,7 +324,7 @@ mod tests {
             scope,
             package_roots: vec![PathBuf::from("/workspace/member")],
             packages: vec![PackageMetadata {
-                package_id:    String::from("path+file:///workspace/member#member@0.1.0"),
+                id:            String::from("path+file:///workspace/member#member@0.1.0"),
                 manifest_path: PathBuf::from("/workspace/member/Cargo.toml"),
                 root:          PathBuf::from("/workspace/member"),
                 targets:       vec![TargetMetadata {

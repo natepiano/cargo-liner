@@ -1,6 +1,6 @@
-mod parent_export;
-mod plan;
-mod rewrite;
+mod parent_boundary;
+mod scan;
+mod validated_plan;
 
-pub(crate) use plan::PubUseFixScan;
-pub(crate) use plan::scan_selection;
+pub(crate) use scan::PubUseFixScan;
+pub(crate) use scan::scan_selection;

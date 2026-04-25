@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::Path;
 
 pub(crate) fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<String>> {
@@ -5,7 +6,7 @@ pub(crate) fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<St
     let mut result: Vec<String> = relative
         .parent()
         .into_iter()
-        .flat_map(|parent| parent.iter())
+        .flat_map(Path::iter)
         .filter_map(|segment| segment.to_str().map(str::to_string))
         .collect();
 
@@ -29,7 +30,7 @@ enum BoundaryModuleName<'a> {
 }
 
 fn module_name_for_boundary_file(path: &Path) -> Option<BoundaryModuleName<'_>> {
-    match path.file_name().and_then(|name| name.to_str()) {
+    match path.file_name().and_then(OsStr::to_str) {
         Some("mod.rs") => Some(BoundaryModuleName::Named(
             path.parent()?.file_name()?.to_str()?,
         )),
@@ -39,7 +40,7 @@ fn module_name_for_boundary_file(path: &Path) -> Option<BoundaryModuleName<'_>> 
 }
 
 fn module_name_for_file_module_path(path: &Path) -> Option<&str> {
-    match path.file_name().and_then(|name| name.to_str()) {
+    match path.file_name().and_then(OsStr::to_str) {
         Some("mod.rs" | "lib.rs" | "main.rs") => None,
         _ => path.file_stem()?.to_str(),
     }

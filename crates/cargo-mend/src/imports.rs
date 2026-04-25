@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -67,8 +68,10 @@ pub(crate) struct ValidatedFixSet {
     fixes: Vec<UseFix>,
 }
 
-impl ValidatedFixSet {
-    pub(crate) fn from_vec(mut fixes: Vec<UseFix>) -> Result<Self> {
+impl TryFrom<Vec<UseFix>> for ValidatedFixSet {
+    type Error = anyhow::Error;
+
+    fn try_from(mut fixes: Vec<UseFix>) -> Result<Self> {
         fixes.sort_by(|left, right| {
             (&left.path, left.start, left.end, &left.replacement).cmp(&(
                 &right.path,
@@ -121,7 +124,9 @@ impl ValidatedFixSet {
 
         Ok(Self { fixes })
     }
+}
 
+impl ValidatedFixSet {
     pub(crate) const fn is_empty(&self) -> bool { self.fixes.is_empty() }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = &UseFix> { self.fixes.iter() }
@@ -155,11 +160,11 @@ impl ShortenImportFact {
 
 pub(crate) fn scan_selection(selection: &Selection) -> Result<ImportScan> {
     let findings_with_fixes = scan_selection_with_fixes(selection)?;
-    let fixes = ValidatedFixSet::from_vec(
+    let fixes = ValidatedFixSet::try_from(
         findings_with_fixes
             .iter()
             .map(|finding| finding.fix.clone())
-            .collect(),
+            .collect::<Vec<_>>(),
     )?;
     Ok(ImportScan {
         findings: findings_with_fixes
@@ -227,7 +232,7 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
         {
             let path = entry.path();
             if !entry.file_type().is_file()
-                || path.extension().and_then(|ext| ext.to_str()) != Some("rs")
+                || path.extension().and_then(OsStr::to_str) != Some("rs")
             {
                 continue;
             }
@@ -525,7 +530,7 @@ mod tests {
             },
         ];
 
-        let validated_result = ValidatedFixSet::from_vec(fixes);
+        let validated_result = ValidatedFixSet::try_from(fixes);
         assert!(
             validated_result.is_ok(),
             "adjacent edits should be valid: {}",

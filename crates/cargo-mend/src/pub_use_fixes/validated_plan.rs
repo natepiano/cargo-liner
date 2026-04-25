@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -12,11 +13,20 @@ use syn::UseTree;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
-use super::plan;
-use super::plan::ValidatedPubUsePlan;
+use super::parent_boundary::ParentBoundaryKey;
 use crate::imports::UseFix;
 use crate::module_paths;
 use crate::selection::Selection;
+
+pub(super) struct ValidatedPubUsePlan {
+    pub(super) parent_boundary:    ParentBoundaryKey,
+    pub(super) child_file:         PathBuf,
+    pub(super) child_module:       String,
+    pub(super) exported_name:      String,
+    pub(super) parent_module_path: Vec<String>,
+    pub(super) target_item_path:   Vec<String>,
+    pub(super) child_narrowing:    UseFix,
+}
 
 pub(super) fn rewrite_subtree_imports_for_plans(
     selection: &Selection,
@@ -63,7 +73,7 @@ fn rewrite_in_subtree_imports(
         fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
     let syntax =
         syn::parse_file(&source).with_context(|| format!("failed to parse {}", file.display()))?;
-    let source_root = plan::find_source_root(file).with_context(|| {
+    let source_root = find_source_root(file).with_context(|| {
         format!(
             "failed to determine src root for subtree file {} under {}",
             file.display(),
@@ -437,6 +447,12 @@ pub(super) fn line_span(source: &str, line: usize) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
+pub(super) fn find_source_root(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|ancestor| ancestor.file_name().and_then(OsStr::to_str) == Some("src"))
+        .map(Path::to_path_buf)
+}
+
 fn rust_source_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     collect_rust_source_files(dir, &mut files)?;
@@ -451,7 +467,7 @@ fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()>
         let path = entry.path();
         if path.is_dir() {
             collect_rust_source_files(&path, files)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+        } else if path.extension().and_then(OsStr::to_str) == Some("rs") {
             files.push(path);
         }
     }

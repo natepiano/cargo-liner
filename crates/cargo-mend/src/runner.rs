@@ -285,7 +285,7 @@ impl<'a> MendRunner<'a> {
 
         let fixes = drop_conflicting_import_groups(fixes);
 
-        imports::ValidatedFixSet::from_vec(fixes).map_err(MendFailure::Unexpected)
+        imports::ValidatedFixSet::try_from(fixes).map_err(MendFailure::Unexpected)
     }
 
     fn build_fix_notice(

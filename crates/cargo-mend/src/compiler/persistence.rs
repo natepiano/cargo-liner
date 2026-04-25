@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fs;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -110,7 +111,7 @@ pub(super) fn load_report(
         )
     })? {
         let entry = entry?;
-        if entry.path().extension().and_then(|ext| ext.to_str()) != Some("json") {
+        if entry.path().extension().and_then(OsStr::to_str) != Some("json") {
             continue;
         }
 

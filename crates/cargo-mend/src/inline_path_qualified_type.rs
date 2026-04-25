@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 
@@ -43,7 +44,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<InlinePathScan> {
         {
             let path = entry.path();
             if !entry.file_type().is_file()
-                || path.extension().and_then(|ext| ext.to_str()) != Some("rs")
+                || path.extension().and_then(OsStr::to_str) != Some("rs")
             {
                 continue;
             }
@@ -57,7 +58,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<InlinePathScan> {
     all_findings.dedup_by(|a, b| a.path == b.path && a.line == b.line && a.column == b.column);
     Ok(InlinePathScan {
         findings: all_findings,
-        fixes:    ValidatedFixSet::from_vec(all_fixes)?,
+        fixes:    ValidatedFixSet::try_from(all_fixes)?,
     })
 }
 

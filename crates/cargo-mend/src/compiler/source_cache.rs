@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -134,7 +135,7 @@ pub(super) fn module_path_from_source_file(
     source_root: &Path,
     source_file: &Path,
 ) -> Option<Vec<String>> {
-    if source_file.file_name().and_then(|name| name.to_str()) == Some("mod.rs") {
+    if source_file.file_name().and_then(OsStr::to_str) == Some("mod.rs") {
         module_path_from_dir(source_root, source_file.parent()?)
     } else {
         module_path_from_boundary_file(source_root, source_file)
@@ -202,7 +203,7 @@ fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()>
         let path = entry.path();
         if path.is_dir() {
             collect_rust_source_files(&path, files)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+        } else if path.extension().and_then(OsStr::to_str) == Some("rs") {
             files.push(path);
         }
     }
@@ -240,7 +241,11 @@ impl<'ast> Visit<'ast> for PathExtractor {
 
     fn visit_path(&mut self, path: &'ast syn::Path) {
         if !self.inside_use_item {
-            let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+            let segments: Vec<String> = path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect();
             let origin = path_origin(&segments);
             self.expr_paths.push((segments, origin));
         }

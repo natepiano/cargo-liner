@@ -8,9 +8,15 @@ use syn::ItemUse;
 use syn::UseTree;
 use syn::spanned::Spanned;
 
-use super::plan::ParentBoundaryKey;
-use super::rewrite;
+use super::validated_plan;
 use crate::imports::UseFix;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct ParentBoundaryKey {
+    pub(super) parent_module: std::path::PathBuf,
+    pub(super) item_start:    usize,
+    pub(super) item_end:      usize,
+}
 
 pub(super) struct ParentExportResolution {
     pub(super) exported_name:   String,
@@ -24,7 +30,7 @@ pub(super) fn build_parent_pub_use_edit_for_exports(
     let source = fs::read_to_string(&parent_boundary.parent_module)
         .with_context(|| format!("failed to read {}", parent_boundary.parent_module.display()))?;
     let file = syn::parse_file(&source).context("failed to parse parent module file")?;
-    let offsets = rewrite::line_offsets(&source);
+    let offsets = validated_plan::line_offsets(&source);
     for item in file.items {
         let Item::Use(item_use) = item else {
             continue;
@@ -64,7 +70,7 @@ pub(super) fn resolve_parent_pub_use_export(
     item_name: &str,
 ) -> Result<Option<ParentExportResolution>> {
     let file = syn::parse_file(source).context("failed to parse parent module file")?;
-    let offsets = rewrite::line_offsets(source);
+    let offsets = validated_plan::line_offsets(source);
     for item in file.items {
         let Item::Use(item_use) = item else {
             continue;
@@ -262,7 +268,7 @@ fn render_parent_local_use_lines(exports: &[(String, String)]) -> Vec<String> {
 }
 
 fn item_use_byte_range(source: &str, offsets: &[usize], item_use: &ItemUse) -> (usize, usize) {
-    let start = rewrite::offset(offsets, item_use.span().start());
+    let start = validated_plan::offset(offsets, item_use.span().start());
     let end = source[start..]
         .find(';')
         .map_or(source.len(), |semicolon_offset| {
@@ -276,7 +282,7 @@ fn locally_used_exports(
     item_use: &ItemUse,
     exports: &[(String, String)],
 ) -> Result<Vec<(String, String)>> {
-    let offsets = rewrite::line_offsets(source);
+    let offsets = validated_plan::line_offsets(source);
     let (start, end) = item_use_byte_range(source, &offsets, item_use);
     let mut source_without_use = source.to_string();
     source_without_use.replace_range(start..end, "");
