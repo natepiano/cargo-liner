@@ -33,7 +33,10 @@ pub fn retained_cache_usage(cache_size_bytes: Option<u64>) -> CacheUsage {
 
 /// Total bytes on disk under a run's archived output directory
 /// (`{cache}/{project_key}/runs/{run_id}`).
-pub fn run_archive_bytes(project_root: &Path, run_id: &str) -> u64 {
+///
+/// Called only when seeding `LintRuns::archive_bytes` — UI reads go through
+/// the in-memory cache.
+pub(super) fn run_archive_bytes(project_root: &Path, run_id: &str) -> u64 {
     let run_dir = paths::project_dir(project_root).join("runs").join(run_id);
     total_bytes_under(&run_dir)
 }

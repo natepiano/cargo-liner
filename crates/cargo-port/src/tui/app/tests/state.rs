@@ -969,8 +969,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
 
     let value = DetailField::Ci.package_value(
         app.pane_data
-            .package
-            .as_ref()
+            .package()
             .unwrap_or_else(|| std::process::abort()),
         &app,
     );
@@ -1055,8 +1054,7 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
     );
     assert!(
         app.pane_data
-            .git
-            .as_ref()
+            .git()
             .and_then(|g| g.inception.as_ref())
             .is_some(),
         "detail panel should show Incept once git info arrives"
@@ -1073,8 +1071,7 @@ fn git_info_invalidates_selected_git_pane_cache() {
 
     assert_eq!(
         app.pane_data
-            .git
-            .as_ref()
+            .git()
             .and_then(|data| data.remotes.first())
             .and_then(|row| row.full_url.as_deref()),
         None
@@ -1089,11 +1086,148 @@ fn git_info_invalidates_selected_git_pane_cache() {
 
     assert_eq!(
         app.pane_data
-            .git
-            .as_ref()
+            .git()
             .and_then(|data| data.remotes.first())
             .and_then(|row| row.full_url.as_deref()),
         Some("https://github.com/natepiano/demo")
+    );
+}
+
+#[test]
+fn ensure_detail_cached_short_circuits_when_nothing_changed() {
+    let project_a = make_project(Some("alpha"), "~/alpha");
+    let project_b = make_project(Some("beta"), "~/beta");
+    let mut app = make_app(&[project_a, project_b]);
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    app.sync_selected_project();
+
+    // Seed the cache.
+    app.ensure_detail_cached();
+    let after_seed = app.pane_data.detail_build_count();
+    assert!(after_seed >= 1, "first call must build");
+
+    // Unchanged selection and generation — must NOT rebuild.
+    app.ensure_detail_cached();
+    app.ensure_detail_cached();
+    assert_eq!(
+        app.pane_data.detail_build_count(),
+        after_seed,
+        "idle frames must not rebuild the detail set"
+    );
+
+    // Bumping the data generation invalidates the stamp → must rebuild.
+    app.increment_data_generation();
+    app.ensure_detail_cached();
+    let after_generation_bump = app.pane_data.detail_build_count();
+    assert_eq!(
+        after_generation_bump,
+        after_seed + 1,
+        "generation bump must trigger exactly one rebuild"
+    );
+
+    // Changing the selected row invalidates the stamp → must rebuild.
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(1);
+    app.sync_selected_project();
+    app.ensure_detail_cached();
+    assert_eq!(
+        app.pane_data.detail_build_count(),
+        after_generation_bump + 1,
+        "selection change must trigger exactly one rebuild"
+    );
+
+    // Same selection, same generation, twice more — still no rebuild.
+    app.ensure_detail_cached();
+    app.ensure_detail_cached();
+    assert_eq!(
+        app.pane_data.detail_build_count(),
+        after_generation_bump + 1,
+        "further idle frames must not rebuild"
+    );
+}
+
+#[test]
+fn worktree_summary_or_compute_caches_until_tree_mutation() {
+    // Two distinct call sites for the *same* group root must hit the
+    // cache on the second call — the closure must not run twice.
+    let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
+    let group_root = test_path("~/demo");
+    let counter = std::sync::atomic::AtomicUsize::new(0);
+
+    let _ = app.worktree_summary_or_compute(group_root.as_path(), || {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Vec::new()
+    });
+    let _ = app.worktree_summary_or_compute(group_root.as_path(), || {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Vec::new()
+    });
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "second lookup must hit the cache, not recompute"
+    );
+
+    // A `TreeMutation` guard going out of scope must invalidate the
+    // cache via its `Drop` impl, regardless of whether any actual
+    // mutation methods were called. This is the type-level guarantee
+    // the guard exists to provide.
+    {
+        let _guard = app.mutate_tree();
+        // Drop here.
+    }
+
+    let _ = app.worktree_summary_or_compute(group_root.as_path(), || {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Vec::new()
+    });
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "after TreeMutation drops, the next lookup must recompute"
+    );
+}
+
+#[test]
+fn background_message_for_unselected_path_does_not_invalidate_detail() {
+    let project_a = make_project(Some("alpha"), "~/alpha");
+    let project_b = make_project(Some("beta"), "~/beta");
+    let mut app = make_app(&[project_a, project_b]);
+    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    app.sync_selected_project();
+    app.ensure_detail_cached();
+    let baseline = app.pane_data.detail_build_count();
+
+    // A disk-usage message for a *different* project must not bump the
+    // detail-cache key. Watchers fire dozens of these per second; if they
+    // each invalidate, the cache reduces to a no-op (the original
+    // regression).
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::DiskUsage {
+            path:  test_path("~/beta"),
+            bytes: 1024,
+        },
+    );
+    app.ensure_detail_cached();
+    assert_eq!(
+        app.pane_data.detail_build_count(),
+        baseline,
+        "unrelated background messages must not invalidate the detail cache"
+    );
+
+    // A message for the *selected* path must still invalidate.
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::DiskUsage {
+            path:  test_path("~/alpha"),
+            bytes: 2048,
+        },
+    );
+    app.ensure_detail_cached();
+    assert_eq!(
+        app.pane_data.detail_build_count(),
+        baseline + 1,
+        "messages affecting the selected path must rebuild exactly once"
     );
 }
 
@@ -1542,9 +1676,9 @@ fn failed_metadata_arrival_surfaces_error_toast() {
         workspace_root: workspace_root.clone(),
         generation,
         fingerprint: fake_fingerprint(),
-        result: Err(CargoMetadataError {
-            message: "could not read Cargo.toml".into(),
-        }),
+        result: Err(CargoMetadataError::Other(
+            "could not read Cargo.toml".into(),
+        )),
     });
 
     let error_toast_present = app
@@ -1562,6 +1696,55 @@ fn failed_metadata_arrival_surfaces_error_toast() {
             .seen
             .contains(&workspace_root),
         "failure still ticks the phase forward so startup doesn't wedge"
+    );
+}
+
+/// `WorkspaceMissing` (workspace deleted between dispatch and run, e.g. after
+/// the user removes a worktree) must NOT raise a user-facing toast — it's a
+/// stale-refresh race, not a real failure. Compare with the prior test which
+/// asserts `Other` does raise a toast: the two together pin down the
+/// dispatch contract on `CargoMetadataError`.
+#[test]
+fn cargo_metadata_workspace_missing_does_not_raise_toast() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let workspace_root = AbsolutePath::from(tmp.path().join("deleted_workspace"));
+    let pkg = RootItem::Rust(RustProject::Package(crate::project::Package {
+        path: workspace_root.clone(),
+        name: Some("ghost".into()),
+        ..crate::project::Package::default()
+    }));
+    let mut app = make_app(&[pkg]);
+    app.scan
+        .startup_phases
+        .metadata
+        .reset_with_expected(std::iter::once(workspace_root.clone()).collect());
+
+    let generation = app
+        .metadata_store_handle()
+        .lock()
+        .expect("store")
+        .next_generation(&workspace_root);
+
+    let toasts_before = app.active_toasts().len();
+    app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+        workspace_root: workspace_root.clone(),
+        generation,
+        fingerprint: fake_fingerprint(),
+        result: Err(CargoMetadataError::WorkspaceMissing),
+    });
+
+    assert_eq!(
+        app.active_toasts().len(),
+        toasts_before,
+        "WorkspaceMissing must not add any toast"
+    );
+    assert!(
+        app.scan
+            .startup_phases
+            .metadata
+            .seen
+            .contains(&workspace_root),
+        "WorkspaceMissing must still tick the phase forward"
     );
 }
 

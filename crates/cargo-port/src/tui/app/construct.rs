@@ -228,6 +228,7 @@ impl App {
             cached_root_sorted: Vec::new(),
             cached_child_sorted: HashMap::new(),
             cached_fit_widths,
+            worktree_summary_cache: std::cell::RefCell::new(HashMap::new()),
             data_generation: 0,
             mouse_pos: None,
             hovered_pane_row: None,
@@ -252,7 +253,8 @@ impl App {
     }
 
     fn finish_new(&mut self) {
-        self.pane_data_mut().cpu = Some(self.cpu_poller.placeholder_snapshot());
+        let placeholder = self.cpu_poller.placeholder_snapshot();
+        self.pane_data_mut().set_cpu(placeholder);
         self.load_initial_keymap();
         if let Some(warning) = self
             .status_flash

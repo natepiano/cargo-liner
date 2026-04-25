@@ -443,25 +443,6 @@ fn get_workflow_presence(repo_root: &Path) -> WorkflowPresence {
     }
 }
 
-/// Resolve the current branch for a worktree at `worktree_dir`.
-/// Returns `None` for detached HEAD or read failures.
-pub(crate) fn get_worktree_branch(worktree_dir: &Path) -> Option<String> {
-    git_output_logged(
-        worktree_dir,
-        "worktree_branch",
-        ["rev-parse", "--abbrev-ref", "HEAD"],
-    )
-    .ok()
-    .and_then(|o| {
-        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        if s.is_empty() || s == "HEAD" {
-            None
-        } else {
-            Some(s)
-        }
-    })
-}
-
 /// Ahead/behind of `worktree_dir`'s HEAD vs `primary_dir`'s HEAD. The
 /// primary HEAD is resolved to a commit SHA so refs resolve cleanly across
 /// the worktree's ref namespace.

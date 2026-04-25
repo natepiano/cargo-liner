@@ -653,7 +653,7 @@ fn confirm_finder(app: &mut App) {
 /// to the matching target entry.
 fn navigate_to_target(app: &mut App, item: &FinderItem) {
     // Focus the targets pane (now in the left panel below the project list).
-    let Some(targets_data) = app.pane_data().targets.clone() else {
+    let Some(targets_data) = app.pane_data().targets().cloned() else {
         return;
     };
     if targets_data.has_targets() {

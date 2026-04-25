@@ -30,14 +30,14 @@ use crate::tui::pane::Pane;
 use crate::tui::toasts::TrackedItem;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
-    let Some(targets_data) = app.pane_data().targets.clone() else {
+    let Some(targets_data) = app.pane_data().targets().cloned() else {
         return;
     };
     let entries = build_target_list_from_data(&targets_data);
     if let Some(entry) = entries.get(app.pane_manager().pane(PaneId::Targets).pos())
         && let Some(abs_path) = app.selected_project_path()
     {
-        let package_name = app.pane_data().package.as_ref().and_then(|d| {
+        let package_name = app.pane_data().package().and_then(|d| {
             if d.title_name == "-" {
                 None
             } else {
@@ -142,7 +142,7 @@ fn handle_detail_enter(app: &mut App) {
     if app.is_focused(PaneId::Targets) {
         handle_target_action(app, BuildMode::Debug);
     } else if app.base_focus() == PaneId::Package {
-        if let Some(pkg) = app.pane_data().package.as_ref() {
+        if let Some(pkg) = app.pane_data().package() {
             let fields = super::package_fields_from_data(pkg);
             if matches!(
                 fields.get(app.pane_manager().pane(PaneId::Package).pos()),
@@ -151,7 +151,7 @@ fn handle_detail_enter(app: &mut App) {
                 open_url(&format!("https://crates.io/crates/{}", pkg.title_name));
             }
         }
-    } else if let Some(git) = app.pane_data().git.as_ref() {
+    } else if let Some(git) = app.pane_data().git() {
         let pos = app.pane_manager().pane(PaneId::Git).pos();
         if let Some(GitRow::Remote(remote)) = super::git_row_at(git, pos)
             && let Some(url) = remote.full_url.as_deref()
@@ -209,8 +209,7 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
 fn handle_ci_enter(app: &App) {
     let visible_runs = app
         .pane_data()
-        .ci
-        .as_ref()
+        .ci()
         .map(|data| data.runs.clone())
         .unwrap_or_default();
     let cursor_pos = app.pane_manager().pane(PaneId::CiRuns).pos();
@@ -342,12 +341,7 @@ fn open_lint_run_output(app: &App) {
     let Some(abs_path) = app.selected_project_path() else {
         return;
     };
-    let Some(runs) = app
-        .pane_data()
-        .lints
-        .as_ref()
-        .map(|data| data.runs.as_slice())
-    else {
+    let Some(runs) = app.pane_data().lints().map(|data| data.runs.as_slice()) else {
         return;
     };
     if runs.is_empty() {

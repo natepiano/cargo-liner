@@ -60,7 +60,7 @@ fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'sta
 
 fn build_lint_rows(
     runs: &[LintRun],
-    sizes: &[u64],
+    sizes: &[Option<u64>],
     animation_elapsed: std::time::Duration,
     pane: &Pane,
     focus: PaneFocusState,
@@ -90,7 +90,8 @@ fn build_lint_rows(
         let size = sizes
             .get(row_index)
             .copied()
-            .map_or_else(String::new, render::format_bytes);
+            .flatten()
+            .map_or_else(|| "—".to_string(), render::format_bytes);
 
         let (result_cell, row_style) = match run.status {
             LintRunStatus::Running => {
@@ -131,7 +132,7 @@ fn build_lint_rows(
 }
 
 pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let Some(lints_data) = app.pane_data().lints.clone() else {
+    let Some(lints_data) = app.pane_data().lints().cloned() else {
         let block = lints_panel_block(" No Lint Runs ".to_string(), false, false);
         frame.render_widget(block, area);
         return;

@@ -710,7 +710,7 @@ impl App {
             InputContext::DetailTargets => Some("run"),
             InputContext::DetailFields => {
                 if self.base_focus() == PaneId::Package {
-                    let pkg = self.pane_data.package.as_ref()?;
+                    let pkg = self.pane_data.package()?;
                     let fields = panes::package_fields_from_data(pkg);
                     let field = *fields.get(self.pane_manager.pane(PaneId::Package).pos())?;
                     if field == DetailField::CratesIo && pkg.crates_version.is_some() {
@@ -719,7 +719,7 @@ impl App {
                         None
                     }
                 } else {
-                    let git = self.pane_data.git.as_ref()?;
+                    let git = self.pane_data.git()?;
                     let pos = self.pane_manager.pane(PaneId::Git).pos();
                     match panes::git_row_at(git, pos) {
                         Some(panes::GitRow::Remote(remote)) if remote.full_url.is_some() => {

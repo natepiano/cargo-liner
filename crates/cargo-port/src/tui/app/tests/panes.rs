@@ -256,8 +256,7 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
     app.ensure_detail_cached();
     let example_count = app
         .pane_data
-        .targets
-        .as_ref()
+        .targets()
         .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
     assert_eq!(
         example_count,
@@ -324,8 +323,7 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
     app.ensure_detail_cached();
     let example_count = app
         .pane_data
-        .targets
-        .as_ref()
+        .targets()
         .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
     assert_eq!(
         example_count,

@@ -246,7 +246,7 @@ fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
 fn empty_ci_title(data: &CiData) -> String { data.empty_state.title() }
 
 pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let Some(ci_data) = app.pane_data().ci.clone() else {
+    let Some(ci_data) = app.pane_data().ci().cloned() else {
         render_empty_ci_block(frame, " No CI Runs ", area);
         return;
     };

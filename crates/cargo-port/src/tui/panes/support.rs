@@ -15,8 +15,8 @@ use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::http::RateLimitQuota;
-use crate::lint;
 use crate::lint::LintRun;
+use crate::perf_log;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::Cargo;
@@ -29,6 +29,7 @@ use crate::project::PackageRecord;
 use crate::project::ProjectFields;
 use crate::project::ProjectType;
 use crate::project::RootItem;
+use crate::project::RustInfo;
 use crate::project::RustProject;
 use crate::project::Submodule;
 use crate::project::VendoredPackage;
@@ -748,7 +749,7 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
 }
 
 /// Per-pane data for the Package detail panel.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct PackageData {
     pub package_title:            String,
     pub title_name:               String,
@@ -822,7 +823,7 @@ fn or_dash(value: Option<&str>) -> String {
 }
 
 /// Per-pane data for the Git detail panel.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct GitData {
     pub branch:             Option<String>,
     pub status:             Option<GitStatus>,
@@ -1033,12 +1034,16 @@ impl CiData {
     pub const fn has_runs(&self) -> bool { !self.runs.is_empty() }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct LintsData {
     pub runs:    Vec<LintRun>,
     /// Archive-directory size in bytes for each run, aligned by index with
     /// `runs`.
-    pub sizes:   Vec<u64>,
+    /// Per-run archive size aligned with `runs`. `None` means the run has
+    /// no archive entry yet; `Some(0)` means the archive exists and is
+    /// empty. The renderer renders `None` as "—" and `Some(_)` as a byte
+    /// count, distinguishing missing data from known-empty.
+    pub sizes:   Vec<Option<u64>>,
     pub is_rust: bool,
 }
 
@@ -1223,9 +1228,14 @@ fn shorten_remote_url(url: &str, default_host: &str) -> String {
 /// Check whether a `RootItem` is a worktree group.
 const fn is_worktree_group(item: &RootItem) -> bool { matches!(item, RootItem::Worktrees(_)) }
 
-/// Collect worktree info from a worktree group item. Branch and ahead/behind
-/// are queried from git; ahead/behind is relative to the primary's HEAD.
-fn worktrees_from_item(item: &RootItem) -> Vec<WorktreeInfo> {
+/// Collect worktree info from a worktree group item.
+///
+/// Branch is read from cached `CheckoutInfo` populated by the watcher (no
+/// shell-out). Ahead/behind is computed via git shell-out — this is the
+/// expensive part — and is the reason the caller wraps this in
+/// `App::worktree_summary_or_compute` so each `(group, data_generation)`
+/// pair pays at most once.
+fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
     let (paths_and_names, primary_path) = match item {
         RootItem::Worktrees(WorktreeGroup::Workspaces {
             primary, linked, ..
@@ -1253,7 +1263,9 @@ fn worktrees_from_item(item: &RootItem) -> Vec<WorktreeInfo> {
     paths_and_names
         .into_iter()
         .map(|(path, name)| {
-            let branch = project::get_worktree_branch(path.as_path());
+            let branch = app
+                .git_info_for(path.as_path())
+                .and_then(|info| info.branch.clone());
             let ahead_behind = if path.as_path() == primary_path.as_path() {
                 Some((0, 0))
             } else {
@@ -1500,21 +1512,31 @@ struct PaneDataSource<'a> {
     package_title: String,
 }
 
-fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData {
-    let abs_path = src.abs_path;
-    let cargo = src.cargo;
-    let wt_item = src.wt_item;
-    let git_detail = build_git_detail_fields(app, abs_path);
+/// Crates-io fields pulled from either a Rust info or vendored entry.
+struct CratesIoFields {
+    version:   Option<String>,
+    downloads: Option<u64>,
+}
+
+fn resolve_crates_io_fields(app: &App, abs_path: &Path) -> CratesIoFields {
     let rust_info = app.projects().rust_info_at_path(abs_path);
     let vendored = app.projects().vendored_at_path(abs_path);
-    let crates_version = rust_info
-        .and_then(|r| r.crates_version().map(String::from))
-        .or_else(|| vendored.and_then(|v| v.crates_version().map(String::from)));
-    let crates_downloads = rust_info
-        .and_then(crate::project::RustInfo::crates_downloads)
-        .or_else(|| vendored.and_then(crate::project::VendoredPackage::crates_downloads));
+    CratesIoFields {
+        version:   rust_info
+            .and_then(|r| r.crates_version().map(String::from))
+            .or_else(|| vendored.and_then(|v| v.crates_version().map(String::from))),
+        downloads: rust_info
+            .and_then(RustInfo::crates_downloads)
+            .or_else(|| vendored.and_then(VendoredPackage::crates_downloads)),
+    }
+}
 
-    let (disk, ci) = wt_item.map_or_else(
+fn resolve_disk_and_ci(
+    app: &App,
+    abs_path: &Path,
+    wt_item: Option<&RootItem>,
+) -> (String, Option<Conclusion>) {
+    wt_item.map_or_else(
         || {
             let ci = if app.is_rust_at_path(abs_path) {
                 app.ci_for(abs_path)
@@ -1524,9 +1546,57 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             (app.formatted_disk(abs_path), ci)
         },
         |item| (App::formatted_disk_for_item(item), app.ci_for_item(item)),
-    );
+    )
+}
 
-    let worktrees = wt_item.map_or_else(Vec::new, worktrees_from_item);
+fn lookup_snapshot_package(app: &App, abs_path: &AbsolutePath) -> Option<PackageRecord> {
+    app.metadata_store_handle()
+        .lock()
+        .ok()
+        .and_then(|store| store.package_for_path(abs_path).cloned())
+}
+
+/// Manifest-derived fields pulled from the metadata snapshot.
+struct ManifestFields {
+    edition:     Option<String>,
+    license:     Option<String>,
+    homepage:    Option<String>,
+    repository:  Option<String>,
+    version:     String,
+    description: Option<String>,
+}
+
+fn manifest_fields_from(snapshot_package: Option<&PackageRecord>) -> ManifestFields {
+    let (version, description) = snapshot_version_and_description(snapshot_package);
+    ManifestFields {
+        edition: snapshot_package.map(|pkg| pkg.edition.clone()),
+        license: snapshot_package.and_then(|pkg| pkg.license.clone()),
+        homepage: snapshot_package.and_then(|pkg| pkg.homepage.clone()),
+        repository: snapshot_package.and_then(|pkg| pkg.repository.clone()),
+        version,
+        description,
+    }
+}
+
+fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData {
+    let abs_path = src.abs_path;
+    let cargo = src.cargo;
+    let wt_item = src.wt_item;
+    let t_git = std::time::Instant::now();
+    let git_detail = build_git_detail_fields(app, abs_path);
+    let git_detail_ms = perf_log::ms(t_git.elapsed().as_millis());
+
+    let crates_io = resolve_crates_io_fields(app, abs_path);
+
+    let t_disk = std::time::Instant::now();
+    let (disk, ci) = resolve_disk_and_ci(app, abs_path, wt_item);
+    let disk_ms = perf_log::ms(t_disk.elapsed().as_millis());
+
+    let t_wt = std::time::Instant::now();
+    let worktrees = wt_item.map_or_else(Vec::new, |item| {
+        app.worktree_summary_or_compute(item.path().as_path(), || worktrees_from_item(app, item))
+    });
+    let worktrees_ms = perf_log::ms(t_wt.elapsed().as_millis());
 
     let types_str = cargo.map_or_else(String::new, |c| {
         c.types()
@@ -1536,38 +1606,41 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             .join(", ")
     });
 
-    // Step 4: pull edition / license / homepage / repository off the
-    // metadata snapshot. All four stay `None` when no snapshot covers
-    // the project yet (the caller's `package_value` arms render `—`
-    // for missing fields).
     let abs_path_owned = AbsolutePath::from(abs_path);
-    let snapshot_package = app
-        .metadata_store_handle()
-        .lock()
-        .ok()
-        .and_then(|store| store.package_for_path(&abs_path_owned).cloned());
-    let edition = snapshot_package.as_ref().map(|pkg| pkg.edition.clone());
-    let license = snapshot_package
-        .as_ref()
-        .and_then(|pkg| pkg.license.clone());
-    let homepage = snapshot_package
-        .as_ref()
-        .and_then(|pkg| pkg.homepage.clone());
-    let repository = snapshot_package
-        .as_ref()
-        .and_then(|pkg| pkg.repository.clone());
+    let t_meta = std::time::Instant::now();
+    let snapshot_package = lookup_snapshot_package(app, &abs_path_owned);
+    let metadata_ms = perf_log::ms(t_meta.elapsed().as_millis());
+    let manifest = manifest_fields_from(snapshot_package.as_ref());
 
     let title_name = src.title_name;
-    // Step 5b: pull the walker's breakdown off the matching project
-    // info (if any). Both stay None for rows that don't have disk
-    // data reported yet or for non-Rust leaves.
     let (in_project_target, in_project_non_target) =
         app.projects().at_path(abs_path).map_or((None, None), |pi| {
             (pi.in_project_target, pi.in_project_non_target)
         });
+    let t_oot = std::time::Instant::now();
     let out_of_tree_target_bytes = lookup_out_of_tree_target_bytes(app, &abs_path_owned);
+    let oot_ms = perf_log::ms(t_oot.elapsed().as_millis());
 
-    let (version, description) = snapshot_version_and_description(snapshot_package.as_ref());
+    tracing::info!(
+        git_detail_ms,
+        disk_ms,
+        worktrees_ms,
+        metadata_ms,
+        oot_ms,
+        path = %abs_path.display(),
+        "pane_common_breakdown"
+    );
+
+    let ManifestFields {
+        edition,
+        license,
+        homepage,
+        repository,
+        version,
+        description,
+    } = manifest;
+    let crates_version = crates_io.version;
+    let crates_downloads = crates_io.downloads;
 
     DetailPaneData {
         package: PackageData {
@@ -1694,19 +1767,19 @@ pub fn build_ci_data(app: &App) -> CiData {
 
 pub fn build_lints_data(app: &App) -> LintsData {
     let selected_path = app.selected_project_path();
-    let runs: Vec<LintRun> = selected_path
-        .and_then(|path| {
-            app.lint_at_path(path)
-                .or_else(|| app.projects().vendored_owner_lint(path))
-        })
-        .map(|lr| lr.runs().to_vec())
-        .unwrap_or_default();
-    let sizes = selected_path.map_or_else(
-        || vec![0; runs.len()],
-        |project_root| {
-            runs.iter()
-                .map(|run| lint::run_archive_bytes(project_root, &run.run_id))
-                .collect()
+    let lint_runs = selected_path.and_then(|path| {
+        app.lint_at_path(path)
+            .or_else(|| app.projects().vendored_owner_lint(path))
+    });
+    let (runs, sizes) = lint_runs.map_or_else(
+        || (Vec::new(), Vec::new()),
+        |lr| {
+            let sizes: Vec<Option<u64>> = lr
+                .runs()
+                .iter()
+                .map(|run| lr.archive_bytes(&run.run_id))
+                .collect();
+            (lr.runs().to_vec(), sizes)
         },
     );
     LintsData {

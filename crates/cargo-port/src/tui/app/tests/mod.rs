@@ -542,12 +542,26 @@ fn make_git_info(url: Option<&str>) -> (CheckoutInfo, RepoInfo) {
     (checkout, repo)
 }
 
-/// Apply a `(CheckoutInfo, RepoInfo)` bundle to the app via the same
-/// path real `BackgroundMsg` dispatch would: `RepoInfo` first, then
-/// `CheckoutInfo`. Test helper that condenses the two-handler pattern.
+/// Apply a `(CheckoutInfo, RepoInfo)` bundle through the same
+/// `BackgroundMsg` dispatch the runtime uses: `RepoInfo` first, then
+/// `CheckoutInfo`. Routing through `apply_bg_msg` keeps the helper in sync
+/// with generation bumps and any other dispatch-wide invariants.
 fn apply_git_info(app: &mut App, path: &Path, (checkout, repo): (CheckoutInfo, RepoInfo)) {
-    app.handle_repo_info(path, repo);
-    app.handle_checkout_info(path, checkout);
+    let abs = AbsolutePath::from(path);
+    apply_bg_msg(
+        app,
+        BackgroundMsg::RepoInfo {
+            path: abs.clone(),
+            info: repo,
+        },
+    );
+    apply_bg_msg(
+        app,
+        BackgroundMsg::CheckoutInfo {
+            path: abs,
+            info: checkout,
+        },
+    );
 }
 
 #[derive(Clone, Copy)]

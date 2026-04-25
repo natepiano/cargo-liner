@@ -93,7 +93,7 @@ impl App {
             .map(AbsolutePath::from)
             .or_else(|| self.selection_paths.last_selected.clone());
         let should_focus_project_list = false;
-        self.projects = projects;
+        self.mutate_tree().replace_all(projects);
         self.prune_inactive_project_state();
         self.register_lint_for_root_items();
         self.refresh_lint_runs_from_disk();
@@ -395,7 +395,7 @@ impl App {
         for path in &paths {
             let runs = lint::read_history(path);
             if let Some(lr) = self.projects.lint_at_path_mut(path) {
-                lr.set_runs(runs);
+                lr.set_runs(runs, path);
             }
         }
         self.refresh_lint_cache_usage_from_disk();
@@ -407,7 +407,7 @@ impl App {
         }
         let runs = lint::read_history(project_path);
         if let Some(lr) = self.projects.lint_at_path_mut(project_path) {
-            lr.set_runs(runs);
+            lr.set_runs(runs, project_path);
         }
     }
 
@@ -1909,9 +1909,12 @@ impl App {
         // Insert into the hierarchy directly — under a parent workspace if
         // one exists, otherwise as a top-level peer.
         let discovered_path = item.path().to_path_buf();
-        self.projects.insert_into_hierarchy(item);
-        self.projects
-            .regroup_members(&self.current_config.tui.inline_dirs);
+        let inline_dirs = self.current_config.tui.inline_dirs.clone();
+        {
+            let mut tree = self.mutate_tree();
+            tree.insert_into_hierarchy(item);
+            tree.regroup_members(&inline_dirs);
+        }
         self.register_discovery_shimmer(discovered_path.as_path());
         self.migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
@@ -1920,7 +1923,7 @@ impl App {
         true
     }
 
-    pub(in super::super) fn handle_project_refreshed(&mut self, mut item: RootItem) -> bool {
+    pub(in super::super) fn handle_project_refreshed(&mut self, item: RootItem) -> bool {
         let legacy_expansions = self.capture_legacy_root_expansions();
         let path = item.path().to_path_buf();
 
@@ -1930,25 +1933,29 @@ impl App {
         // `worktree_status` is no longer on `ProjectInfo` — it lives directly
         // on `Workspace` / `Package` / `NonRustProject` — so this copy cannot
         // clobber it.
-        let Some(old) = self.projects.replace_leaf_by_path(&path, item.clone()) else {
-            return false;
-        };
-        for (project_path, info) in old.collect_project_info() {
-            if let Some(project) = item.at_path_mut(&project_path) {
-                let fresh_worktree_health = project.worktree_health;
-                *project = info;
-                project.worktree_health = fresh_worktree_health;
+        let inline_dirs = self.current_config.tui.inline_dirs.clone();
+        {
+            let mut tree = self.mutate_tree();
+            let Some(old) = tree.replace_leaf_by_path(&path, item.clone()) else {
+                return false;
+            };
+            let mut item = item;
+            for (project_path, info) in old.collect_project_info() {
+                if let Some(project) = item.at_path_mut(&project_path) {
+                    let fresh_worktree_health = project.worktree_health;
+                    *project = info;
+                    project.worktree_health = fresh_worktree_health;
+                }
             }
+            // Re-replace with the runtime-data-enriched version.
+            tree.replace_leaf_by_path(&path, item);
+            tree.regroup_members(&inline_dirs);
+            tree.regroup_top_level_worktrees();
         }
-        // Re-replace with the runtime-data-enriched version.
-        self.projects.replace_leaf_by_path(&path, item);
-        self.projects
-            .regroup_members(&self.current_config.tui.inline_dirs);
-        self.projects.regroup_top_level_worktrees();
         self.reload_lint_history(&path);
         self.migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
-        self.pane_data.clear_detail_data();
+        self.pane_data.clear_detail_data(None);
         // Signal that derived state needs refresh (batched by caller).
         true
     }
@@ -2074,13 +2081,27 @@ impl App {
         self.show_timed_toast(title, body);
     }
 
+    /// Bump `data_generation` only when a background message can change
+    /// what the currently-selected detail set would render.
+    ///
+    /// Two-stage filter:
+    /// 1. **Type-level (compile-time enforced):** `BackgroundMsg::detail_relevance` is exhaustive
+    ///    on every variant. Variants whose data flows into the detail set return `Some(path)`;
+    ///    variants for service signals, fetch lifecycle, or batched paths return `None`. Adding a
+    ///    new variant without classifying it is a build error.
+    /// 2. **Runtime (data-dependent):** even a detail-relevant message may target a project that
+    ///    isn't selected. `detail_path_is_affected` compares the message's path against the current
+    ///    selection.
+    ///
+    /// Removing this filter (or widening it via `path()`) reintroduces
+    /// the regression where every watcher tick invalidates the
+    /// detail-pane cache and reduces it to a no-op during scroll.
     fn update_generations_for_msg(&mut self, msg: &BackgroundMsg) {
-        if msg.path().is_some() {
+        if let Some(path) = msg.detail_relevance()
+            && self.detail_path_is_affected(path)
+        {
             self.data_generation += 1;
         }
-        if let Some(path) = msg.path()
-            && self.detail_path_is_affected(path)
-        {}
     }
 
     fn handle_disk_usage_msg(&mut self, path: &Path, bytes: u64) {
@@ -2250,7 +2271,7 @@ impl App {
             .selected_project_path()
             .map(AbsolutePath::from)
             .or_else(|| self.selection_paths.last_selected.clone());
-        self.projects = ProjectList::new(projects);
+        self.mutate_tree().replace_all(ProjectList::new(projects));
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();
         self.scan.startup_phases.lint_startup.expected = Some(lint_registered);
@@ -2468,18 +2489,31 @@ impl App {
                     return;
                 }
             },
-            Err(err) => {
-                let label = project::home_relative_path(workspace_root.as_path());
-                self.show_timed_toast(
-                    format!("cargo metadata failed ({label})"),
-                    err.message.clone(),
-                );
-                tracing::warn!(
-                    workspace_root = %workspace_root.as_path().display(),
-                    generation,
-                    error = %err.message,
-                    "cargo_metadata_failed"
-                );
+            Err(err) => match err.user_facing_message() {
+                Some(message) => {
+                    let label = project::home_relative_path(workspace_root.as_path());
+                    self.show_timed_toast(
+                        format!("cargo metadata failed ({label})"),
+                        message.to_string(),
+                    );
+                    tracing::warn!(
+                        workspace_root = %workspace_root.as_path().display(),
+                        generation,
+                        error = %message,
+                        "cargo_metadata_failed"
+                    );
+                },
+                None => {
+                    // `WorkspaceMissing`: the workspace root vanished
+                    // between dispatch and run (typically the user just
+                    // deleted a worktree). Stale-refresh race, not a real
+                    // failure — suppress the toast.
+                    tracing::debug!(
+                        workspace_root = %workspace_root.as_path().display(),
+                        generation,
+                        "cargo_metadata_workspace_missing"
+                    );
+                },
             },
         }
 
@@ -2619,8 +2653,7 @@ impl App {
             .unwrap_or_else(|| abs_key.display_path());
         let name = self
             .pane_data
-            .package
-            .as_ref()
+            .package()
             .map(|d| d.title_name.clone())
             .filter(|n| n != "-");
         if self

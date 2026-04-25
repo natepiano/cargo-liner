@@ -28,6 +28,7 @@ pub(super) use cpu::CPU_PANE_WIDTH;
 #[cfg(test)]
 pub(super) use cpu::cpu_required_pane_height;
 pub(super) use cpu::render_cpu_panel;
+pub(super) use data::DetailCacheKey;
 pub(super) use data::PaneDataStore;
 #[cfg(test)]
 pub(super) use git::git_label_width;

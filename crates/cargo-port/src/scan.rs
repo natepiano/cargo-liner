@@ -186,36 +186,88 @@ pub(crate) enum BackgroundMsg {
 /// Structured failure for a `cargo metadata` invocation. Held inside
 /// [`BackgroundMsg::CargoMetadata`] so the main loop can raise a keyed
 /// error toast and leave the affected rows in fallback state.
+///
+/// Variant chosen deliberately so the handler dispatches on cause rather
+/// than string-matching: `WorkspaceMissing` is the expected race when the
+/// user just deleted a worktree (no toast — the workspace is gone), and
+/// `Other` is a real failure surface that needs to be visible.
 #[derive(Clone, Debug)]
-pub(crate) struct CargoMetadataError {
-    /// First line of `cargo metadata`'s stderr, or a synthetic message for
-    /// I/O / timeout failures. Shown verbatim in the error toast.
-    pub message: String,
+pub(crate) enum CargoMetadataError {
+    /// Workspace root no longer exists on disk between dispatch and run.
+    /// Common when a worktree is deleted while a refresh is in flight.
+    /// Logged at debug; never shown to the user.
+    WorkspaceMissing,
+    /// All other failures: cargo subprocess errors, timeouts, parse
+    /// failures. Shown verbatim in a timed error toast.
+    Other(String),
+}
+
+impl CargoMetadataError {
+    /// Message body for the error toast — only meaningful for `Other`.
+    pub(crate) const fn user_facing_message(&self) -> Option<&str> {
+        match self {
+            Self::WorkspaceMissing => None,
+            Self::Other(message) => Some(message.as_str()),
+        }
+    }
 }
 
 impl BackgroundMsg {
-    /// Returns the project path this message relates to, if any.
-    pub(crate) fn path(&self) -> Option<&Path> {
+    /// If this message can change what the detail pane would render for a
+    /// project at some path, return that path. Otherwise return `None`.
+    ///
+    /// This is exhaustive on every variant *by design* — adding a new
+    /// `BackgroundMsg` without classifying it here is a compile error.
+    /// That's the type-level guarantee: invalidation policy can't drift
+    /// out of sync with the message catalog.
+    ///
+    /// "Affects detail" means the message could change a field in
+    /// `PaneDataStore`'s built detail set (`package`, `git`, `targets`,
+    /// `ci`, `lints`). Service-level signals, fetch lifecycle, and batch
+    /// notifications that are processed via dedicated paths return
+    /// `None` — they invalidate via their own routes (or don't need to).
+    pub(crate) fn detail_relevance(&self) -> Option<&Path> {
         match self {
-            Self::DiskUsage { path, .. }
-            | Self::CiRuns { path, .. }
-            | Self::CheckoutInfo { path, .. }
-            | Self::RepoInfo { path, .. }
-            | Self::GitFirstCommit { path, .. }
-            | Self::CratesIoVersion { path, .. }
-            | Self::RepoMeta { path, .. }
-            | Self::Submodules { path, .. }
-            | Self::LintStatus { path, .. }
+            // Per-project path bearing — each maps to a field rendered
+            // inside the detail set.
+            Self::DiskUsage { path, .. }              // package.disk
+            | Self::CiRuns { path, .. }                // ci.runs
+            | Self::CheckoutInfo { path, .. }          // git.branch / git.status
+            | Self::RepoInfo { path, .. }              // git.remotes / git.workflows
+            | Self::GitFirstCommit { path, .. }        // git.inception
+            | Self::CratesIoVersion { path, .. }      // package.crates_version
+            | Self::RepoMeta { path, .. }              // git.stars / git.description
+            | Self::Submodules { path, .. }            // submodules detail
+            | Self::LintStatus { path, .. }            // lints
             | Self::LintStartupStatus { path, .. } => Some(path.as_path()),
-            Self::ProjectDiscovered { item } | Self::ProjectRefreshed { item } => Some(item.path()),
+
+            // Discovery/refresh of an item is detail-relevant for that
+            // item's path (ahead/behind cache, package fields, etc.).
+            Self::ProjectDiscovered { item }
+            | Self::ProjectRefreshed { item } => Some(item.path()),
+
+            // Workspace-wide metadata feeds package + targets fields for
+            // every member of the workspace, but the path we have is the
+            // workspace root — `detail_path_is_affected` will widen the
+            // match correctly.
             Self::CargoMetadata { workspace_root, .. }
             | Self::OutOfTreeTargetSize { workspace_root, .. } => Some(workspace_root.as_path()),
+
+            // Wholesale tree replacement bumps `data_generation` via the
+            // dedicated `apply_tree_build` / scan-result paths. No
+            // per-message bump needed.
             Self::ScanResult { .. }
+            // Batch arrivals are aggregated and the handler bumps
+            // generation explicitly (see `handle_disk_usage_batch_msg`).
             | Self::DiskUsageBatch { .. }
+            // Language stats live in `RustInfo`, not in the detail set.
             | Self::LanguageStatsBatch { .. }
+            // Fetch lifecycle is reflected via toasts, not detail data.
             | Self::RepoFetchQueued { .. }
             | Self::RepoFetchComplete { .. }
+            // Cache pruning is internal to the lint subsystem.
             | Self::LintCachePruned { .. }
+            // Service availability is a separate UI surface.
             | Self::ServiceReachable { .. }
             | Self::ServiceRecovered { .. }
             | Self::ServiceUnreachable { .. }
@@ -1370,12 +1422,10 @@ pub(crate) fn spawn_cargo_metadata_refresh(
                 CargoMetadataTaskOutput {
                     generation: 0,
                     fingerprint,
-                    result: Err(CargoMetadataError {
-                        message: format!(
-                            "cargo metadata timed out after {}s",
-                            CARGO_METADATA_TIMEOUT.as_secs()
-                        ),
-                    }),
+                    result: Err(CargoMetadataError::Other(format!(
+                        "cargo metadata timed out after {}s",
+                        CARGO_METADATA_TIMEOUT.as_secs()
+                    ))),
                 }
             },
         };
@@ -1459,12 +1509,22 @@ fn run_cargo_metadata_for_root(
     let fingerprint = match ManifestFingerprint::capture(workspace_root.as_path()) {
         Ok(fp) => fp,
         Err(err) => {
+            // `NotFound` here means the workspace root vanished between
+            // dispatch and run — the user just deleted a worktree, or a
+            // similar race. Classify it as `WorkspaceMissing` so the
+            // handler can suppress the toast at the type level. All other
+            // I/O errors (permissions, etc.) flow into `Other`.
+            let result = if err.kind() == std::io::ErrorKind::NotFound {
+                Err(CargoMetadataError::WorkspaceMissing)
+            } else {
+                Err(CargoMetadataError::Other(format!(
+                    "fingerprint capture failed: {err}"
+                )))
+            };
             return CargoMetadataTaskOutput {
                 generation,
                 fingerprint: synthetic_fingerprint(),
-                result: Err(CargoMetadataError {
-                    message: format!("fingerprint capture failed: {err}"),
-                }),
+                result,
             };
         },
     };
@@ -1501,9 +1561,8 @@ fn execute_cargo_metadata(
     let mut cmd = cargo_metadata::MetadataCommand::new();
     cmd.manifest_path(manifest_path).no_deps();
     cmd.other_options(vec!["--offline".to_string()]);
-    cmd.exec().map_err(|err| CargoMetadataError {
-        message: format_cargo_metadata_error(&err),
-    })
+    cmd.exec()
+        .map_err(|err| CargoMetadataError::Other(format_cargo_metadata_error(&err)))
 }
 
 fn format_cargo_metadata_error(err: &cargo_metadata::Error) -> String {

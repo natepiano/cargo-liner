@@ -208,31 +208,28 @@ impl App {
                         .and_then(|p| p.language_stats.as_ref())
                         .is_some_and(|ls| !ls.entries.is_empty())
                 }),
-                PaneId::Git => self.pane_data.git.as_ref().is_some_and(|g| {
+                PaneId::Git => self.pane_data.git().is_some_and(|g| {
                     g.branch.is_some() || !g.remotes.is_empty() || !g.worktrees.is_empty()
                 }),
                 _ => false,
             },
-            PaneBehavior::Cpu => self.pane_data.cpu.is_some(),
+            PaneBehavior::Cpu => self.pane_data.cpu().is_some(),
             PaneBehavior::DetailTargets => self
                 .pane_data
-                .targets
-                .as_ref()
+                .targets()
                 .is_some_and(crate::tui::panes::TargetsData::has_targets),
             PaneBehavior::Lints => {
                 self.example_output.is_empty()
                     && self
                         .pane_data
-                        .lints
-                        .as_ref()
+                        .lints()
                         .is_some_and(crate::tui::panes::LintsData::has_runs)
             },
             PaneBehavior::CiRuns => {
                 self.example_output.is_empty()
                     && self
                         .pane_data
-                        .ci
-                        .as_ref()
+                        .ci()
                         .is_some_and(crate::tui::panes::CiData::has_runs)
             },
             PaneBehavior::Output => !self.example_output.is_empty(),

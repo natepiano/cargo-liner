@@ -233,8 +233,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     };
     let core_count = app
         .pane_data()
-        .cpu
-        .as_ref()
+        .cpu()
         .map_or(1, |snapshot| snapshot.cores.len());
     let tiled = panes::resolve_layout(outer_layout[0], left_width, core_count, bottom_row);
 
@@ -459,7 +458,7 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
         },
         PaneId::Cpu => panes::render_cpu_panel(frame, app, &pane_render_styles(), area),
         PaneId::Targets => {
-            if let Some(targets_data) = app.pane_data().targets.clone()
+            if let Some(targets_data) = app.pane_data().targets().cloned()
                 && targets_data.has_targets()
             {
                 panes::render_targets_panel(frame, app, &targets_data, &pane_render_styles(), area);

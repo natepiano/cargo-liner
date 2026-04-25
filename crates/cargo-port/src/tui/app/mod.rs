@@ -78,11 +78,13 @@ pub(super) use types::VisibleRow;
 pub(super) use super::columns::ResolvedWidths;
 use super::panes::PendingCiFetch;
 use super::panes::PendingExampleRun;
+use super::panes::WorktreeInfo;
 use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
 use super::terminal::ExampleMsg;
 use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
+use crate::project::RootItem;
 pub(super) struct App {
     current_config:           CargoPortConfig,
     http_client:              HttpClient,
@@ -133,6 +135,20 @@ pub(super) struct App {
     cached_root_sorted:       Vec<u64>,
     cached_child_sorted:      HashMap<usize, Vec<u64>>,
     cached_fit_widths:        ResolvedWidths,
+    /// Memoizes the result of `worktrees_from_item` per worktree-group root
+    /// path. The summary depends on cached `CheckoutInfo.branch` (always
+    /// fresh — read each lookup) and a `git rev-list` ahead/behind
+    /// shell-out (the expensive part). The shell-out result is cached
+    /// here forever within a session; `clear_worktree_summary_cache` is
+    /// called from tree-rebuild paths so additions/removals of worktrees
+    /// drop their entries. We deliberately do **not** key on
+    /// `data_generation` — that counter bumps on per-message watcher
+    /// events for the selected detail, and re-running the shell-out at
+    /// every such event reduces the cache to a no-op during scroll.
+    /// `RefCell` because `worktrees_from_item` runs inside
+    /// `build_pane_data_common`, which only has `&App`, and the memo
+    /// update is a pure additive caching side-effect.
+    worktree_summary_cache:   std::cell::RefCell<HashMap<AbsolutePath, Vec<WorktreeInfo>>>,
     data_generation:          u64,
     mouse_pos:                Option<Position>,
     hovered_pane_row:         Option<types::HoveredPaneRow>,
@@ -480,6 +496,42 @@ impl App {
 
     pub(super) const fn increment_data_generation(&mut self) { self.data_generation += 1; }
 
+    /// Return the cached worktree-summary for `group_root` if present;
+    /// otherwise compute via `compute` (the shell-out path), cache, and
+    /// return. Cache is sticky — only `clear_worktree_summary_cache`
+    /// invalidates it, called from tree-rebuild paths.
+    pub(super) fn worktree_summary_or_compute(
+        &self,
+        group_root: &Path,
+        compute: impl FnOnce() -> Vec<WorktreeInfo>,
+    ) -> Vec<WorktreeInfo> {
+        if let Some(infos) = self.worktree_summary_cache.borrow().get(group_root) {
+            return infos.clone();
+        }
+        let infos = compute();
+        self.worktree_summary_cache
+            .borrow_mut()
+            .insert(AbsolutePath::from(group_root), infos.clone());
+        infos
+    }
+
+    /// Drop all cached worktree summaries. Called automatically by
+    /// `TreeMutation::drop` so direct callers should never need this —
+    /// the only legitimate trigger is "the project tree just changed
+    /// shape." Kept private to this module.
+    fn clear_worktree_summary_cache(&self) { self.worktree_summary_cache.borrow_mut().clear(); }
+
+    /// Borrow `App` for a structural mutation of the project tree. The
+    /// returned guard is the **only** way (in production code) to call
+    /// methods that change which projects are present, where they live,
+    /// or how they are grouped. On drop, the guard clears all
+    /// tree-derived caches (currently `worktree_summary_cache`), so
+    /// invalidation cannot drift out of sync with mutation: the
+    /// borrow checker forces every structural change through this entry
+    /// point, and `Drop` runs unconditionally — even on early return or
+    /// panic.
+    pub(super) const fn mutate_tree(&mut self) -> TreeMutation<'_> { TreeMutation { app: self } }
+
     pub(super) const fn config_path(&self) -> Option<&AbsolutePath> { self.config_path.as_ref() }
 
     pub(super) const fn keymap_path(&self) -> Option<&AbsolutePath> { self.keymap_path.as_ref() }
@@ -520,13 +572,14 @@ impl App {
 
     pub(super) fn poll_cpu_if_due(&mut self, now: Instant) {
         if let Some(snapshot) = self.cpu_poller.poll_if_due(now) {
-            self.pane_data_mut().cpu = Some(snapshot);
+            self.pane_data_mut().set_cpu(snapshot);
         }
     }
 
     pub(super) fn reset_cpu_placeholder(&mut self) {
         self.cpu_poller = CpuPoller::new(&self.current_config.cpu);
-        self.pane_data_mut().cpu = Some(self.cpu_poller.placeholder_snapshot());
+        let placeholder = self.cpu_poller.placeholder_snapshot();
+        self.pane_data_mut().set_cpu(placeholder);
     }
 
     /// Clone of the process-wide cargo-metadata store. The scan thread and
@@ -572,4 +625,49 @@ impl App {
             .ok()
             .and_then(|store| store.resolved_target_dir(path).cloned())
     }
+}
+
+/// RAII guard for structural mutations of the project tree. Obtained via
+/// `App::mutate_tree`, dropped at end of scope (or earlier via `drop`),
+/// at which point all tree-derived caches are invalidated.
+///
+/// **Type-level invariant:** the only methods that change tree shape live
+/// on this guard, and the guard cannot be constructed outside `App`. New
+/// tree-mutation paths must be added here, which forces the cache-clear
+/// to fire — there is no way to forget invalidation. `Drop` runs on
+/// every exit path, including panics and early returns.
+pub(super) struct TreeMutation<'a> {
+    app: &'a mut App,
+}
+
+impl TreeMutation<'_> {
+    /// Replace the entire project list (used by tree-build paths).
+    pub(super) fn replace_all(&mut self, projects: ProjectList) { self.app.projects = projects; }
+
+    /// Insert a discovered project into the existing tree, returning
+    /// `true` if the insertion changed the tree.
+    pub(super) fn insert_into_hierarchy(&mut self, item: RootItem) -> bool {
+        self.app.projects.insert_into_hierarchy(item)
+    }
+
+    /// Replace a single leaf at `path` with `item`. Returns the previous
+    /// item if one was found.
+    pub(super) fn replace_leaf_by_path(&mut self, path: &Path, item: RootItem) -> Option<RootItem> {
+        self.app.projects.replace_leaf_by_path(path, item)
+    }
+
+    /// Re-bucket workspace members under inline-dir groups.
+    pub(super) fn regroup_members(&mut self, inline_dirs: &[String]) {
+        self.app.projects.regroup_members(inline_dirs);
+    }
+
+    /// Re-detect worktree groupings at the top level after a structural
+    /// change (insert / replace / remove).
+    pub(super) fn regroup_top_level_worktrees(&mut self) {
+        self.app.projects.regroup_top_level_worktrees();
+    }
+}
+
+impl Drop for TreeMutation<'_> {
+    fn drop(&mut self) { self.app.clear_worktree_summary_cache(); }
 }
