@@ -281,6 +281,92 @@ fn fixture_renders_every_current_diagnostic() {
 }
 
 #[test]
+fn cached_findings_reused_across_different_target_selections() {
+    // Regression: previously, the on-disk findings cache rejected reuse
+    // whenever the cargo CLI flags differed between runs (e.g.
+    // `--lib` vs `--all-targets`). When cargo's own fingerprint
+    // correctly skipped recompiling the lib, the wrapper never re-ran,
+    // and the lib-only findings cache was discarded — making
+    // `--all-targets` look like a strict subset of `--lib`. Cache
+    // reuse must depend only on the underlying source (which cargo
+    // already tracks) plus the diagnostic config — not on the user's
+    // target-selection flags.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "selection_cache_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/inner")).expect("create src");
+    fs::write(temp.path().join("src/lib.rs"), "pub mod inner;\n").expect("write lib");
+    fs::write(temp.path().join("src/inner/mod.rs"), "pub mod leaf;\n").expect("write inner mod");
+    fs::write(
+        temp.path().join("src/inner/leaf.rs"),
+        "pub(in crate::inner) fn cross_module_helper() -> i32 { 42 }\n",
+    )
+    .expect("write leaf");
+
+    let manifest = temp.path().join("Cargo.toml");
+
+    let baseline = run_mend_json(&manifest);
+    let baseline_count = baseline
+        .findings
+        .iter()
+        .filter(|f| f.code == DiagnosticCode::ForbiddenPubInCrate)
+        .count();
+    assert!(
+        baseline_count > 0,
+        "baseline run should report the forbidden_pub_in_crate finding"
+    );
+
+    // After the lib was just compiled, an `--all-targets` run must
+    // surface the same finding even though cargo will skip recompiling
+    // the lib (its rmeta is fresh from the baseline run).
+    let all_targets_output = mend_command()
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--all-targets")
+        .arg("--json")
+        .output()
+        .expect("run cargo-mend --all-targets --json");
+    let all_targets: Report = parse_mend_json_output(&all_targets_output.stdout);
+    let all_targets_count = all_targets
+        .findings
+        .iter()
+        .filter(|f| f.code == DiagnosticCode::ForbiddenPubInCrate)
+        .count();
+    assert_eq!(
+        all_targets_count,
+        baseline_count,
+        "--all-targets after lib-only run should reuse the cached lib finding (cargo will skip \
+         recompiling the lib, so the wrapper does not re-emit); got codes: {:?}",
+        all_targets
+            .findings
+            .iter()
+            .map(|f| f.code)
+            .collect::<Vec<_>>()
+    );
+
+    // And going back to the default selection should still see it
+    // (no recompile happens — pure cache replay).
+    let third = run_mend_json(&manifest);
+    let third_count = third
+        .findings
+        .iter()
+        .filter(|f| f.code == DiagnosticCode::ForbiddenPubInCrate)
+        .count();
+    assert_eq!(
+        third_count, baseline_count,
+        "default selection should still see the cached finding after the --all-targets run"
+    );
+}
+
+#[test]
 fn successive_json_runs_reuse_cached_findings_for_same_scope() {
     let temp = create_all_diagnostics_fixture();
 

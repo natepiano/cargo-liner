@@ -98,17 +98,12 @@ pub fn run_selection(
         }));
     }
 
-    let report = persistence::load_report(
-        &findings_dir,
-        selection,
-        &loaded_config.fingerprint,
-        &scope_fingerprint,
-    )
-    .map_err(|err| {
-        MendFailure::Analysis(AnalysisFailure {
-            cause: CompilerFailureCause::DriverExecution(err),
-        })
-    })?;
+    let report = persistence::load_report(&findings_dir, selection, &loaded_config.fingerprint)
+        .map_err(|err| {
+            MendFailure::Analysis(AnalysisFailure {
+                cause: CompilerFailureCause::DriverExecution(err),
+            })
+        })?;
 
     let mut report = report;
     report.facts.compiler_warnings = command_outcome.warning_facts;

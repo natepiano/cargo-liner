@@ -90,7 +90,6 @@ pub(super) fn load_report(
     findings_dir: &Path,
     selection: &Selection,
     config_fingerprint: &str,
-    scope_fingerprint: &str,
 ) -> Result<Report> {
     let selected_roots: Vec<PathBuf> = selection.package_roots.clone();
     let selected_root_strings: Vec<String> = selected_roots
@@ -126,7 +125,6 @@ pub(super) fn load_report(
             &selected_root_strings,
             &selected_canonical_roots,
             config_fingerprint,
-            scope_fingerprint,
         ) {
             continue;
         }
@@ -173,12 +171,16 @@ fn stored_report_matches_selection(
     selected_root_strings: &[String],
     selected_canonical_roots: &[PathBuf],
     config_fingerprint: &str,
-    scope_fingerprint: &str,
 ) -> bool {
+    // Source-level freshness is delegated to cargo: when sources change,
+    // cargo recompiles the target, the wrapper re-runs, and this file is
+    // overwritten. Cache reuse therefore must NOT depend on the cargo
+    // CLI flags (`--lib`, `--all-targets`, ...); those select targets,
+    // not findings, and gating on them would discard valid cached
+    // findings whenever cargo skipped a recompile.
     stored.version == FINDINGS_SCHEMA_VERSION
         && stored.analysis_fingerprint == settings::current_analysis_fingerprint()
         && stored.config_fingerprint == config_fingerprint
-        && stored.scope_fingerprint == scope_fingerprint
         && stored_crate_root_exists(stored)
         && stored_matches_selected_root(
             stored,
