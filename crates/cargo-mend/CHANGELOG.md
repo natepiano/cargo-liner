@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `prefer_module_import --fix` no longer rolls back when an imported function is shadowed by a local binding of the same name. The call-site rewriter now tracks `let`, function/closure parameter, `for`, and `match`-arm bindings, and leaves bare references alone when they resolve to a local. Previously code like `let dot_radius = scaling::dot_radius(...);` followed by uses of `dot_radius` got rewritten to `scaling::dot_radius` everywhere, producing fn-item-where-`f32`-expected errors and triggering rollback
+- `prefer_module_import --fix` no longer corrupts struct literal field shorthand. `Foo { name }` is now left as shorthand instead of being rewritten to the parse-error `Foo { module::name }`
+
 ## [0.8.0] - 2026-04-22
 
 ### Added

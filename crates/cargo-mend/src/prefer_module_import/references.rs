@@ -1,7 +1,17 @@
 use std::collections::BTreeSet;
 
+use syn::Block;
 use syn::Expr;
+use syn::ExprClosure;
+use syn::ExprForLoop;
+use syn::FieldValue;
+use syn::FnArg;
+use syn::ImplItemFn;
+use syn::ItemFn;
 use syn::ItemUse;
+use syn::Local;
+use syn::Pat;
+use syn::TraitItemFn;
 use syn::visit::Visit;
 
 use super::shared;
@@ -16,10 +26,148 @@ pub(super) struct ReferenceCollector<'a> {
     pub(super) offsets:        &'a [usize],
     pub(super) imported_names: &'a BTreeSet<String>,
     pub(super) references:     Vec<BareReference>,
+    pub(super) scopes:         Vec<BTreeSet<String>>,
+}
+
+impl<'a> ReferenceCollector<'a> {
+    pub(super) fn new(offsets: &'a [usize], imported_names: &'a BTreeSet<String>) -> Self {
+        Self {
+            offsets,
+            imported_names,
+            references: Vec::new(),
+            scopes: vec![BTreeSet::new()],
+        }
+    }
+
+    fn is_shadowed(&self, name: &str) -> bool {
+        self.scopes.iter().any(|scope| scope.contains(name))
+    }
+
+    fn enter_scope_with(&mut self, bindings: BTreeSet<String>) { self.scopes.push(bindings); }
+
+    fn enter_scope(&mut self) { self.scopes.push(BTreeSet::new()); }
+
+    fn exit_scope(&mut self) { self.scopes.pop(); }
 }
 
 impl Visit<'_> for ReferenceCollector<'_> {
     fn visit_item_use(&mut self, _: &ItemUse) {}
+
+    fn visit_block(&mut self, block: &Block) {
+        self.enter_scope();
+        syn::visit::visit_block(self, block);
+        self.exit_scope();
+    }
+
+    fn visit_local(&mut self, local: &Local) {
+        for attr in &local.attrs {
+            self.visit_attribute(attr);
+        }
+        if let Some(init) = &local.init {
+            self.visit_expr(&init.expr);
+            if let Some((_, diverge)) = &init.diverge {
+                self.visit_expr(diverge);
+            }
+        }
+        let mut bindings = BTreeSet::new();
+        collect_pat_bindings(&local.pat, &mut bindings);
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.extend(bindings);
+        }
+    }
+
+    fn visit_item_fn(&mut self, item: &ItemFn) {
+        for attr in &item.attrs {
+            self.visit_attribute(attr);
+        }
+        let mut params = BTreeSet::new();
+        collect_fn_param_bindings(item.sig.inputs.iter(), &mut params);
+        self.enter_scope_with(params);
+        syn::visit::visit_block(self, &item.block);
+        self.exit_scope();
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &ImplItemFn) {
+        for attr in &item.attrs {
+            self.visit_attribute(attr);
+        }
+        let mut params = BTreeSet::new();
+        collect_fn_param_bindings(item.sig.inputs.iter(), &mut params);
+        self.enter_scope_with(params);
+        syn::visit::visit_block(self, &item.block);
+        self.exit_scope();
+    }
+
+    fn visit_trait_item_fn(&mut self, item: &TraitItemFn) {
+        for attr in &item.attrs {
+            self.visit_attribute(attr);
+        }
+        if let Some(body) = &item.default {
+            let mut params = BTreeSet::new();
+            collect_fn_param_bindings(item.sig.inputs.iter(), &mut params);
+            self.enter_scope_with(params);
+            syn::visit::visit_block(self, body);
+            self.exit_scope();
+        }
+    }
+
+    fn visit_expr_closure(&mut self, closure: &ExprClosure) {
+        for attr in &closure.attrs {
+            self.visit_attribute(attr);
+        }
+        let mut params = BTreeSet::new();
+        for input in &closure.inputs {
+            collect_pat_bindings(input, &mut params);
+        }
+        self.enter_scope_with(params);
+        self.visit_expr(&closure.body);
+        self.exit_scope();
+    }
+
+    fn visit_expr_for_loop(&mut self, for_loop: &ExprForLoop) {
+        for attr in &for_loop.attrs {
+            self.visit_attribute(attr);
+        }
+        if let Some(label) = &for_loop.label {
+            self.visit_label(label);
+        }
+        self.visit_expr(&for_loop.expr);
+        let mut bindings = BTreeSet::new();
+        collect_pat_bindings(&for_loop.pat, &mut bindings);
+        self.enter_scope_with(bindings);
+        syn::visit::visit_block(self, &for_loop.body);
+        self.exit_scope();
+    }
+
+    fn visit_arm(&mut self, arm: &syn::Arm) {
+        for attr in &arm.attrs {
+            self.visit_attribute(attr);
+        }
+        let mut bindings = BTreeSet::new();
+        collect_pat_bindings(&arm.pat, &mut bindings);
+        self.enter_scope_with(bindings);
+        if let Some((_, guard)) = &arm.guard {
+            self.visit_expr(guard);
+        }
+        self.visit_expr(&arm.body);
+        self.exit_scope();
+    }
+
+    fn visit_field_value(&mut self, field_value: &FieldValue) {
+        for attr in &field_value.attrs {
+            self.visit_attribute(attr);
+        }
+        if field_value.colon_token.is_none() {
+            // Struct literal field shorthand `Foo { name }`. The expression
+            // is required to be a bare ident matching `name`; replacing it
+            // with `module::name` produces a parse error. Either way the
+            // value resolves to a local binding (otherwise the expansion
+            // `name: name` wouldn't compile), so leave the bare ident
+            // alone.
+            return;
+        }
+        self.visit_expr(&field_value.expr);
+    }
 
     fn visit_expr(&mut self, node: &Expr) {
         match node {
@@ -27,7 +175,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
                 if expr_path.qself.is_none() && expr_path.path.segments.len() == 1 {
                     let segment = &expr_path.path.segments[0];
                     let name = segment.ident.to_string();
-                    if self.imported_names.contains(&name) {
+                    if self.imported_names.contains(&name) && !self.is_shadowed(&name) {
                         let span = segment.ident.span();
                         let start = shared::offset(self.offsets, span.start());
                         let end = shared::offset(self.offsets, span.end());
@@ -51,6 +199,57 @@ impl Visit<'_> for ReferenceCollector<'_> {
             &mut self.references,
         );
         syn::visit::visit_macro(self, node);
+    }
+}
+
+fn collect_pat_bindings(pat: &Pat, bindings: &mut BTreeSet<String>) {
+    match pat {
+        Pat::Ident(pat_ident) => {
+            bindings.insert(pat_ident.ident.to_string());
+            if let Some((_, sub)) = &pat_ident.subpat {
+                collect_pat_bindings(sub, bindings);
+            }
+        },
+        Pat::Tuple(tuple) => {
+            for elem in &tuple.elems {
+                collect_pat_bindings(elem, bindings);
+            }
+        },
+        Pat::TupleStruct(tuple_struct) => {
+            for elem in &tuple_struct.elems {
+                collect_pat_bindings(elem, bindings);
+            }
+        },
+        Pat::Struct(pat_struct) => {
+            for field in &pat_struct.fields {
+                collect_pat_bindings(&field.pat, bindings);
+            }
+        },
+        Pat::Or(pat_or) => {
+            for case in &pat_or.cases {
+                collect_pat_bindings(case, bindings);
+            }
+        },
+        Pat::Reference(pat_ref) => collect_pat_bindings(&pat_ref.pat, bindings),
+        Pat::Slice(slice) => {
+            for elem in &slice.elems {
+                collect_pat_bindings(elem, bindings);
+            }
+        },
+        Pat::Type(pat_type) => collect_pat_bindings(&pat_type.pat, bindings),
+        Pat::Paren(paren) => collect_pat_bindings(&paren.pat, bindings),
+        _ => {},
+    }
+}
+
+fn collect_fn_param_bindings<'a>(
+    inputs: impl IntoIterator<Item = &'a FnArg>,
+    bindings: &mut BTreeSet<String>,
+) {
+    for input in inputs {
+        if let FnArg::Typed(pat_type) = input {
+            collect_pat_bindings(&pat_type.pat, bindings);
+        }
     }
 }
 

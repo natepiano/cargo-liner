@@ -1411,3 +1411,172 @@ mod tests {
         "no use should be inserted at file top, got:\n{consumer}"
     );
 }
+
+#[test]
+fn skips_bare_ref_shadowed_by_local_binding() {
+    // Regression: when a `let NAME = ...;` binding shadows an imported
+    // function with the same name, later bare references to NAME refer to
+    // the local, not the function. The fixer used to rewrite every bare
+    // ident match to `module::NAME`, producing `fn item` where `f32` was
+    // expected and triggering rollback on compile.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "shadow_local_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod scaling;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/scaling.rs"),
+        "pub fn dot_radius(_a: f32, _b: f32) -> f32 { 1.0 }\n",
+    )
+    .expect("write scaling");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        r#"use super::scaling::dot_radius;
+
+fn consume(_x: f32) {}
+fn apply_minus(_x: f32) -> f32 { 0.0 }
+
+fn example(font_size: f32, scale: f32) -> f32 {
+    let dot_radius = dot_radius(font_size, scale);
+    consume(dot_radius);
+    apply_minus(-dot_radius)
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed (rollback expected when bug is present): {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
+    assert!(
+        consumer.contains("use super::scaling;"),
+        "expected module import, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("let dot_radius = scaling::dot_radius(font_size, scale);"),
+        "let RHS (the actual function call) should be qualified, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("consume(dot_radius);"),
+        "bare reference to local must NOT be qualified, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("apply_minus(-dot_radius)"),
+        "unary-minus over local must NOT be qualified, got:\n{consumer}"
+    );
+    assert!(
+        !consumer.contains("consume(scaling::dot_radius)")
+            && !consumer.contains("-scaling::dot_radius"),
+        "must not rewrite local-variable references, got:\n{consumer}"
+    );
+}
+
+#[test]
+fn skips_struct_literal_field_shorthand() {
+    // Regression: struct literal field shorthand `Foo { name }` requires a
+    // bare ident (it's both the field name and the value local). Replacing
+    // the value with `module::name` produces a parse error. The fixer must
+    // leave shorthand inits alone (or expand them to `name: module::name`),
+    // not blindly rewrite the bare token.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "shorthand_init_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod scaling;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/scaling.rs"),
+        "pub fn dot_radius(_a: f32, _b: f32) -> f32 { 1.0 }\n",
+    )
+    .expect("write scaling");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        r#"use super::scaling::dot_radius;
+
+pub struct ArrowGeometry {
+    pub dot_radius: f32,
+    pub origin_y:   f32,
+}
+
+fn build(font_size: f32, scale: f32, origin_y: f32) -> ArrowGeometry {
+    let dot_radius = dot_radius(font_size, scale);
+    ArrowGeometry {
+        dot_radius,
+        origin_y,
+    }
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed (rollback expected when bug is present): {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
+    // Shorthand must survive intact: not `scaling::dot_radius,` in the literal.
+    assert!(
+        !consumer.contains("scaling::dot_radius,"),
+        "shorthand init must not be rewritten to a qualified path, got:\n{consumer}"
+    );
+    // The function call on the let RHS should still be qualified.
+    assert!(
+        consumer.contains("let dot_radius = scaling::dot_radius(font_size, scale);"),
+        "let RHS function call should be qualified, got:\n{consumer}"
+    );
+}

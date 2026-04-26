@@ -157,11 +157,7 @@ fn scan_file(
         .map(|candidate| candidate.function_name.clone())
         .collect();
 
-    let mut collector = ReferenceCollector {
-        offsets:        &offsets,
-        imported_names: &imported_names,
-        references:     Vec::new(),
-    };
+    let mut collector = ReferenceCollector::new(&offsets, &imported_names);
     syn::visit::Visit::visit_file(&mut collector, &syntax);
 
     let mut func_to_module: BTreeMap<&str, &str> = BTreeMap::new();
