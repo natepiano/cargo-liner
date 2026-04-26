@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-mend"
-version = "0.9.0-dev"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "cargo_metadata",

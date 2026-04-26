@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.1] - 2026-04-26
 
 ### Fixed
 - `prefer_module_import --fix` no longer rolls back when an imported function is shadowed by a local binding of the same name. The call-site rewriter now tracks `let`, function/closure parameter, `for`, and `match`-arm bindings, and leaves bare references alone when they resolve to a local. Previously code like `let dot_radius = scaling::dot_radius(...);` followed by uses of `dot_radius` got rewritten to `scaling::dot_radius` everywhere, producing fn-item-where-`f32`-expected errors and triggering rollback
