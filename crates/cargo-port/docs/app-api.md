@@ -333,46 +333,65 @@ and the step list, not here.
     enrichment" framing wins out — out of scope for this phase to keep the
     refactor bounded.
   - **Worked example: `handle_project_discovered`** (currently
-    `tui/app/async_tasks.rs:~1895-1920`). Today it reads
-    `self.current_config.tui.inline_dirs.clone()`, then opens
-    `self.mutate_tree()` and calls `tree.insert_into_hierarchy(item);
-    tree.regroup_members(&inline_dirs);`, then on drop calls
-    `self.register_discovery_shimmer(...)` and
-    `self.rebuild_visible_rows_now()`. After Phase 6:
-    `register_discovery_shimmer` lives on `Scan`,
-    `rebuild_visible_rows_now` lives on `Selection`. Two acceptable
-    shapes:
-    - **(a) keep follow-ups outside the guard**: drop the guard, then
-      call `self.scan.register_discovery_shimmer(...)` and
-      `self.selection.recompute_visibility(self.scan.projects())`
-      explicitly. Mirrors today's structure, but reintroduces the
-      "must remember" foot-gun for the shimmer call.
-    - **(b) fold them into `TreeMutation::drop`**: the guard's drop
-      registers shimmers for any newly-inserted paths it observed.
-      Type-enforced. Requires `TreeMutation` to track inserts, which
-      it already implicitly does via the `insert_into_hierarchy` /
-      `replace_leaf_by_path` etc. methods.
-    
-    The plan picks (b) — the whole point of the guard pattern is that
-    follow-ups can't be skipped.
+    `tui/app/async_tasks.rs:~1895-1920`).
+
+    **Today:**
+    ```rust
+    let inline_dirs = self.current_config.tui.inline_dirs.clone();
+    {
+        let mut tree = self.mutate_tree();
+        tree.insert_into_hierarchy(item);
+        tree.regroup_members(&inline_dirs);
+    } // <- TreeMutation::drop runs here, clearing worktree_summary_cache
+    self.register_discovery_shimmer(item.path());     // manual follow-up
+    self.rebuild_visible_rows_now();                  // manual follow-up
+    ```
+    The two manual follow-ups can be forgotten — that's the bug class
+    we want to design out.
+
+    **After Phase 6:**
+    ```rust
+    let inline_dirs = self.config.current().tui.inline_dirs.clone();
+    {
+        // Destructuring gives us three disjoint &mut borrows the
+        // compiler accepts simultaneously.
+        let App { scan, panes, selection, .. } = self;
+        let mut tree = TreeMutation::new(scan, panes, selection);
+        tree.insert_into_hierarchy(item);
+        tree.regroup_members(&inline_dirs);
+    } // <- TreeMutation::drop runs here. The Drop impl now does:
+      //     1. panes.clear_for_tree_change()
+      //     2. scan.register_shimmer(p) for each inserted path
+      //     3. selection.recompute_visibility(scan.projects())
+      //    No manual follow-ups after the block — they can't be
+      //    forgotten because they live in Drop.
+    ```
+
+    The behavioral difference: the two manual follow-ups disappear
+    from the call site and become part of `TreeMutation`'s automatic
+    cleanup. Same effect; impossible to skip.
+
   - **Inner shape of `TreeMutation` after the carve.**
-    ```text
+    ```rust
     struct TreeMutation<'a> {
         scan:      &'a mut Scan,
         panes:     &'a mut Panes,
         selection: &'a mut Selection,
-        inserted:  Vec<AbsolutePath>,  // for shimmer registration on drop
+        inserted:  Vec<AbsolutePath>,  // remembered by insert_into_hierarchy
     }
     impl Drop for TreeMutation<'_> {
         fn drop(&mut self) {
             self.panes.clear_for_tree_change();
-            for p in &self.inserted { self.scan.register_shimmer(p); }
+            for p in &self.inserted {
+                self.scan.register_shimmer(p);
+            }
             self.selection.recompute_visibility(self.scan.projects());
         }
     }
     ```
-    Borrow-OK because `scan` and `selection` are disjoint `&mut` fields
-    the guard owns separately, not borrowed from a shared `&mut App`.
+    Borrow-OK because `scan`, `panes`, `selection` are stored as three
+    independent `&mut` references on the guard struct itself — not
+    re-borrowed from a shared `&mut App` at drop time.
 
 - **Phase 5 (Config + Keymap, sharing a `WatchedFile<T>` primitive)**:
   - The shared "load from disk + watch stamp + try-reload" lifecycle is
