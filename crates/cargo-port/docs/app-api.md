@@ -69,9 +69,9 @@ App keeps only:
 - **handles** to the seven subsystems above (`panes`, `selection`,
   `background`, `inflight`, `config`, `keymap`, `scan`)
 - the **network state cluster** (`http_client`, `github`, `crates_io`) —
-  not carved in phases 1–6; see "Net subsystem (deferred)" below
+  not carved in phases 1–7; see "Net subsystem (deferred)" below
 
-That's roughly 16 fields instead of 60 after phases 1–6; ~12 if/when
+That's roughly 16 fields instead of 60 after phases 1–7; ~12 if/when
 the deferred `Net` carve lands.
 
 ### Two axes of structure inside `Panes`
@@ -79,15 +79,15 @@ the deferred `Net` carve lands.
 - **App → `Panes` boundary**: strict delegation, no trait. Single owner, single
   caller, concrete struct. `app.panes: Panes`.
 - **`Panes` → individual pane behavior**: a `Pane` trait, landing in
-  **Phase 6** (not Phase 1). Phase 1 absorbs the field cluster — that's the
-  prerequisite. Phase 6 is what actually fixes the per-pane god-object
+  **Phase 7** (not Phase 1). Phase 1 absorbs the field cluster — that's the
+  prerequisite. Phase 7 is what actually fixes the per-pane god-object
   problem: every concrete pane (`CiPane`, `CpuPane`, `GitPane`, `LintsPane`,
   `PackagePane`, `LangPane`) gets its own file with one `impl Pane` block,
   and the match-on-`PaneId` arms in `panes/spec.rs`, `panes/actions.rs`,
   `panes/support.rs`, and per-pane render files collapse into trait
   dispatch.
 
-  By Phase 6 all the other subsystems exist as proper types, so trait
+  By Phase 7 all the other subsystems exist as proper types, so trait
   methods can take typed subsystem references (e.g.,
   `Pane::handle_input(&mut self, &mut Selection, &mut Background, &mut
   Inflight, &Config, &mut Scan, &mut ToastManager, event)`). The
@@ -95,7 +95,7 @@ the deferred `Net` carve lands.
   encapsulation by file (each pane's behavior in one place named for the
   pane) is the win.
 
-  Phase 1 (field cluster only) and Phase 6 (per-pane trait split) are
+  Phase 1 (field cluster only) and Phase 7 (per-pane trait split) are
   the two halves of the same fix. The plan does both; it does not stop
   at Phase 1.
 
@@ -131,21 +131,30 @@ to hit.
 
 1. **Panes** first — biggest visibility win in `panes/`, and the fix the
    prior conversation has been pointing at.
-2. **Selection** — second-biggest field cluster (`cached_*`, `selection*`).
-   `cached_fit_widths` is renamed to `ProjectListWidths` (a one-step rename
-   of `ResolvedWidths`); the generic `ColumnWidths` extraction is
-   **deferred** until a second pane (lints / ci / git) actually wants to
-   consume it. Doing the generic split now is pure churn — the existing
-   `ResolvedWidths` is already a single typed struct used only by
-   project-list code, and the reusable primitive is explicitly speculative
-   until adoption. A rename is enough.
-3. **Background + Inflight** together — entangled (a "start" hits both).
-4. **Config + Keymap** (one phase) — extract shared `WatchedFile<T>`
+2. **`ColumnWidths` primitive + two adopters** — extract a generic
+   "fit columns to content with min-width-per-column" helper into a new
+   submodule `tui::columns::widths`, and adopt it in **two** existing
+   places that currently open-code the same pattern:
+   - the project list (`ResolvedWidths` becomes `ProjectListWidths`,
+     a wrapper around the new `ColumnWidths`),
+   - the CI pane (`build_ci_widths` in `panes/ci.rs:120` collapses
+     into a few calls into `ColumnWidths`).
+
+   The primitive ships paired with adoption that proves it works for
+   both shapes — not as speculative infrastructure. Lints / package /
+   git panes can adopt later if their column logic grows; today they
+   don't fit content-aware widths, so they're not on the hook for this
+   phase.
+3. **Selection** — second-biggest field cluster (`cached_*`,
+   `selection*`). `cached_fit_widths` is absorbed as the
+   `ProjectListWidths` introduced in Phase 2.
+4. **Background + Inflight** together — entangled (a "start" hits both).
+5. **Config + Keymap** (one phase) — extract shared `WatchedFile<T>`
    primitive, then carve `Config` and `Keymap` as two separate subsystems
    composing it. Tightly coupled by the primitive; extracting one without
    the other leaves the duplication in place.
-5. **Scan** — last because `mutate_tree` already gates it; mostly relocation.
-6. **Pane catalog rewrite** — the actual fix to the per-pane god-object
+6. **Scan** — `mutate_tree` already gates it; mostly relocation.
+7. **Pane catalog rewrite** — the actual fix to the per-pane god-object
    problem. Introduce a `Pane` trait, give every concrete pane its own
    file with one `impl Pane` block, and collapse the match-on-`PaneId`
    arms scattered through `panes/spec.rs`, `panes/actions.rs`,
@@ -157,24 +166,24 @@ to hit.
    Encapsulation by file is the win; each pane's behavior lives in one
    place named for the pane.
 
-   **Phase 6 begins with a re-review of the phase plan against
-   everything learned in Phases 1–5.** Subsystem APIs may have shifted,
+   **Phase 7 begins with a re-review of the phase plan against
+   everything learned in Phases 1–6.** Subsystem APIs may have shifted,
    the per-pane code's actual shape may have changed under us, and the
    trait signature drafted in this doc is a starting point, not a
-   contract. The first task in Phase 6 is to revisit this section and
+   contract. The first task in Phase 7 is to revisit this section and
    propose updates based on what the prior phases produced, before
    writing any pane impl code.
 
-**(Originally there was a separate "ColumnWidths primitive" phase between
-Panes and Selection. Outside review pointed out that it was pure churn
-without a concrete second consumer, so it was collapsed into Selection as a
-rename of `ResolvedWidths` → `ProjectListWidths`. Generic `ColumnWidths` is
-deferred until a second pane wants it.)**
+**(History: an earlier draft collapsed the `ColumnWidths` primitive
+into Selection, on the argument that the project list was the only
+consumer. That was wrong — `panes/ci.rs:120 build_ci_widths` already
+open-codes the same fitting pattern. Phase 2 is restored as a real
+phase that ships the primitive and adopts it in both places.)**
 
-**(Phase 6 was added after a directive that the per-pane god-object
-problem must be solved, not deferred. Phase 1 absorbs the field cluster;
-Phase 6 finishes the job by giving each pane its own implementation
-block.)**
+**(History: Phase 7 was added after a directive that the per-pane
+god-object problem must be solved, not deferred. Phase 1 absorbs the
+field cluster; Phase 7 finishes the job by giving each pane its own
+implementation block.)**
 
 ### Per-phase workflow (applies to every step above)
 
@@ -213,15 +222,15 @@ and the step list, not here.
 
 - **Phase 1 (Panes)**:
   - Phase 1 absorbs the field cluster only. The per-pane trait split is
-    Phase 6, not deferred indefinitely — see "Two axes of structure
+    Phase 7, not deferred indefinitely — see "Two axes of structure
     inside `Panes`" above.
   - `hovered_pane_row` lives in `Panes`. Hit-testing in Phase 1 is a
     match-on-`PaneId` inside `Panes`; collapses into `Pane::hit_test`
-    trait dispatch in Phase 6.
+    trait dispatch in Phase 7.
   - `Panes::handle_input` in Phase 1 keeps the `&mut App` shape that
     `panes/actions.rs` currently uses (every dispatch in
     `panes/actions.rs:32-336` reaches across ~6 of the 7 future
-    subsystems). Phase 6 replaces this with `Pane::handle_input`
+    subsystems). Phase 7 replaces this with `Pane::handle_input`
     taking typed subsystem references — at that point `panes/actions.rs`
     as a free-function module ceases to exist, replaced by per-pane
     `impl Pane` blocks.
@@ -231,11 +240,35 @@ and the step list, not here.
     that disappears from App."
   - **Phase-1 → Phase-5 staging.** `Panes::clear_for_tree_change()` lands
     in Phase 1 and is **called from App** (from the existing
-    `TreeMutation::drop`) until Phase 5 wires it into the new fan-out
+    `TreeMutation::drop`) until Phase 6 wires it into the new fan-out
     `TreeMutation::drop`. Without this temporary call, Phase 1 would
     orphan `worktree_summary_cache` invalidation.
 
-- **Phase 2 (Selection)**:
+- **Phase 2 (`ColumnWidths` primitive + two adopters)**:
+  - Generic `ColumnWidths` lands in a new submodule `tui::columns::widths`.
+    Shape: `pub struct ColumnWidths { specs: Vec<ColumnSpec>, widths:
+    Vec<u16> }` where `ColumnSpec` carries a header-label minimum and
+    optional max. API: `new(specs)`, `observe_cell(col, width)` (grow
+    column to fit content), `widths() -> &[u16]`, `into_constraints() ->
+    Vec<Constraint>` (for ratatui).
+  - **Adopt in the project list.** `ResolvedWidths` becomes
+    `ProjectListWidths` — a thin wrapper holding `ColumnWidths` plus the
+    project-list helpers (`row_to_line`, `header_line`,
+    `build_summary_cells`). `summary_label_col` stays a free function in
+    `tui::columns` (likely reused by future summary rows).
+  - **Adopt in the CI pane.** `panes/ci.rs:120 build_ci_widths` is
+    open-coded today — `ci_runs.iter().map(|r| r.branch.len()).max()`,
+    `commit_title.len()` max, header-label minimums. Replace with
+    `ColumnWidths` calls; delete the manual fitting.
+  - **Out of scope this phase.** Lints pane (uses fixed-length
+    constraints today), package pane (`kind_col_width` is a static
+    label-width lookup, not content-aware fitting), git pane. They can
+    adopt later if their column logic grows.
+  - **Why this is a real phase.** The reusable primitive ships paired
+    with the two consumers that prove it works for both shapes
+    (project-list rows + CI runs). Not speculative infrastructure.
+
+- **Phase 3 (Selection)**:
   - `cached_fit_widths` is absorbed under the new name `ProjectListWidths`
     (a rename of `ResolvedWidths` — no generic split this phase, see
     phase ordering).
@@ -265,14 +298,14 @@ and the step list, not here.
     lives in Selection; the boolean "finder is the active input mode" lives
     in `app.ui_modes`. App routes `/` → enter finder mode; while in finder
     mode, keystrokes go to `selection.mutate(...).apply_finder(input)`.
-  - **Call-site cost across phases.** Phase 2 will write
-    `selection.mutate(&self.projects)`. After Phase 5 (Scan) moves
+  - **Call-site cost across phases.** Phase 3 will write
+    `selection.mutate(&self.projects)`. After Phase 6 (Scan) moves
     `projects` to `self.scan.projects()`, those call sites mass-rewrite
     to `selection.mutate(self.scan.projects())`. Acceptable per-phase
-    sweep, not a redesign — but worth knowing 3 of 5 phases will touch
-    the same selection-mutation call sites.
+    sweep, not a redesign — but worth knowing 3 phases will touch the
+    same selection-mutation call sites.
 
-- **Phase 5 (Scan)**:
+- **Phase 6 (Scan)**:
   - `mutate_tree` stays on `App` (not on `Scan`) for borrow-checker
     reasons. Each call site uses `let App { scan, panes, selection, .. } =
     self;` to split-borrow disjoint fields and pass them to the guard's
@@ -305,7 +338,7 @@ and the step list, not here.
     `self.mutate_tree()` and calls `tree.insert_into_hierarchy(item);
     tree.regroup_members(&inline_dirs);`, then on drop calls
     `self.register_discovery_shimmer(...)` and
-    `self.rebuild_visible_rows_now()`. After Phase 5:
+    `self.rebuild_visible_rows_now()`. After Phase 6:
     `register_discovery_shimmer` lives on `Scan`,
     `rebuild_visible_rows_now` lives on `Selection`. Two acceptable
     shapes:
@@ -341,7 +374,7 @@ and the step list, not here.
     Borrow-OK because `scan` and `selection` are disjoint `&mut` fields
     the guard owns separately, not borrowed from a shared `&mut App`.
 
-- **Phase 4 (Config + Keymap, sharing a `WatchedFile<T>` primitive)**:
+- **Phase 5 (Config + Keymap, sharing a `WatchedFile<T>` primitive)**:
   - The shared "load from disk + watch stamp + try-reload" lifecycle is
     extracted as a generic struct `WatchedFile<T>` in a new submodule
     `tui::watched_file`. Not a trait — App calls each watched thing
@@ -361,16 +394,16 @@ and the step list, not here.
   - Settings-modal mode (whether settings editor owns input) stays in
     `app.ui_modes` — same split as finder.
 
-- **Phase 6 (Pane catalog rewrite)**:
-  - **First task: re-review the Phase 6 plan.** Before writing any
+- **Phase 7 (Pane catalog rewrite)**:
+  - **First task: re-review the Phase 7 plan.** Before writing any
     `impl Pane` code, revisit this section, the `Panes` table row, and
     the "Two axes of structure inside `Panes`" section against the
-    actual state of Phases 1–5 as committed. Subsystem APIs may have
+    actual state of Phases 1–6 as committed. Subsystem APIs may have
     moved, the per-pane code's shape may have evolved, and the trait
     signature drafted in this doc is a starting point. Update the doc
     to reflect what was learned, get the user's approval on the
     revisions, then start implementing.
-  - **Trait shape (starting point, subject to Phase 6 re-review).**
+  - **Trait shape (starting point, subject to Phase 7 re-review).**
     ```rust
     pub trait Pane {
         fn id(&self) -> PaneId;
@@ -391,7 +424,7 @@ and the step list, not here.
     `panes/ci.rs`, `panes/cpu.rs`, `panes/git.rs`, `panes/lints.rs`,
     `panes/package.rs`, `panes/lang.rs`. Each contains the struct
     definition, the `impl Pane` block, and any private helpers. Today
-    several of these files exist but only contain render code; Phase 6
+    several of these files exist but only contain render code; Phase 7
     expands them to own the full behavior.
   - **What collapses.** `panes/actions.rs` (~336 lines of free
     functions taking `&mut App` plus a top-level dispatch match) and
@@ -402,7 +435,7 @@ and the step list, not here.
   - **Hover hit-testing.** Each pane implements `hit_test` to return
     its own `HoverTarget`. Today this logic is inlined per-pane via
     `register_*_row_hitboxes` helpers writing into `pane_manager`
-    during render — Phase 6 cleans this up so hit-testing is a query,
+    during render — Phase 7 cleans this up so hit-testing is a query,
     not a render side-effect.
   - **`PaneId` enum stays.** It's still the index used by App, by
     `Panes` for focus and lookup, and by callers asking "which pane is
@@ -411,10 +444,10 @@ and the step list, not here.
     decided at re-review time), keyed by `PaneId`.
   - **What stays in `panes/data.rs`.** The data registry
     (`PaneDataStore`) that caches per-pane data computed by builders
-    is orthogonal to per-pane behavior — it stays as is. Phase 6 is
+    is orthogonal to per-pane behavior — it stays as is. Phase 7 is
     about behavior, not data.
 
-- **Phase 3 (Background + Inflight)**:
+- **Phase 4 (Background + Inflight)**:
   - One phase, not two. Every "start" call site touches both subsystems
     (push to channel + mark in-flight + update toast); splitting would
     touch each site twice.
@@ -501,7 +534,7 @@ it lands. Items marked **App-shell** stay on `App`.
 
 App-shell field count after the **planned 6 phases**: ~16 (focus stack
 + modal/UI shell + `http_client` + `github` + `crates_io` + 7 subsystem
-handles). Down from ~60. Phase 6 (pane catalog rewrite) reorganizes per-pane
+handles). Down from ~60. Phase 7 (pane catalog rewrite) reorganizes per-pane
 *behavior* but does not add or remove App fields. The full ~12 number quoted
 earlier in the doc assumes the deferred Net carve completes; without it, the
 network state remains a residual god-object cluster on App-shell.
@@ -510,7 +543,7 @@ network state remains a residual god-object cluster on App-shell.
 
 `http_client` + `github` (`GitHubState`) + `crates_io` (`CratesIoState`)
 together form a sixth subsystem that this plan does **not** carve in
-phases 1–6, but should carve afterward. Sketch:
+phases 1–7, but should carve afterward. Sketch:
 
 | Field | Why it groups here |
 |---|---|
@@ -533,8 +566,8 @@ Why deferred:
   before reducing it. Better done after the existing 5 phases settle
   the patterns.
 
-This plan does not block on `Net`; phases 1–6 are valuable on their
-own. App still owns these three fields after Phase 6.
+This plan does not block on `Net`; phases 1–7 are valuable on their
+own. App still owns these three fields after Phase 7.
 
 ## Methods that stay on App
 
@@ -550,7 +583,7 @@ because they orchestrate across subsystems.
 - **`rescan` is the canonical orchestrator example.** Today it
   mutates `github.fetch_cache`, swaps `bg_tx`/`bg_rx`, resets `scan`
   state, and reconfigures `lint_runtime` — crossing 4 of the 7
-  subsystems plus the deferred `Net`. After phases 1–6, its body
+  subsystems plus the deferred `Net`. After phases 1–7, its body
   becomes a sequence of subsystem calls (`self.background.swap_bg_channel(...)`,
   `self.inflight.refresh_lint_runtime_from_config(...)`,
   etc.) but the orchestration shape stays.
@@ -594,13 +627,12 @@ plan rather than treating them as scope creep:
 
 - **`Panes::handle_input` signature.** Phase 1 lands it taking `&mut App`
   (because `panes/actions.rs:32-336` reaches into ~6 of the 7 future
-  subsystems). Phase 3 (Background+Inflight) or Phase 4 (Config+Keymap)
-  is the realistic point to change it to
-  `(&mut self, &mut Inflight, &mut Background, &mut Selection, ctx) ->
-  …` once those subsystems exist. Expect to update every dispatch
-  function in `panes/actions.rs` (~12 functions, ~336 lines) when this
-  flip happens.
-- **`Inflight::StartContext` field set.** Phase 3 lands it with the
+  subsystems). Phase 7 replaces it wholesale with `Pane::handle_input`
+  taking typed subsystem references — that's the dedicated phase for
+  this work, not a mid-phase revision. The intermediate phases (3–6)
+  may layer in narrower facade methods, but the structural rewrite is
+  Phase 7.
+- **`Inflight::StartContext` field set.** Phase 4 lands it with the
   fields named above. If a future phase introduces a new
   cross-subsystem dependency for a start path (e.g., a tree-aware lint
   start), the cleanest fix is to add the field to `StartContext` rather
