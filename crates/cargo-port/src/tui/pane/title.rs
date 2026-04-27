@@ -3,14 +3,14 @@ use std::borrow::Cow;
 use super::scroll_indicator;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(in super::super) struct PaneTitleGroup<'a> {
-    pub(in super::super) label:  Cow<'a, str>,
-    pub(in super::super) len:    usize,
-    pub(in super::super) cursor: Option<usize>,
+pub struct PaneTitleGroup<'a> {
+    pub label:  Cow<'a, str>,
+    pub len:    usize,
+    pub cursor: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(in super::super) enum PaneTitleCount<'a> {
+pub enum PaneTitleCount<'a> {
     None,
     Single {
         len:    usize,
@@ -30,7 +30,7 @@ impl PaneTitleCount<'_> {
         }
     }
 
-    pub(in super::super) fn body(&self) -> String {
+    pub fn body(&self) -> String {
         match self {
             Self::None => String::new(),
             Self::Single { len, cursor } => format!("({})", Self::count_text(*len, *cursor)),
@@ -49,7 +49,7 @@ impl PaneTitleCount<'_> {
     }
 }
 
-pub(in super::super) fn pane_title(title: &str, count: &PaneTitleCount<'_>) -> String {
+pub fn pane_title(title: &str, count: &PaneTitleCount<'_>) -> String {
     let body = count.body();
     if body.is_empty() {
         format!(" {title} ")
@@ -58,7 +58,7 @@ pub(in super::super) fn pane_title(title: &str, count: &PaneTitleCount<'_>) -> S
     }
 }
 
-pub(in super::super) fn prefixed_pane_title(title: &str, count: &PaneTitleCount<'_>) -> String {
+pub fn prefixed_pane_title(title: &str, count: &PaneTitleCount<'_>) -> String {
     let body = count.body();
     if body.is_empty() {
         format!(" {title} ")

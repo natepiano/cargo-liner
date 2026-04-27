@@ -21,19 +21,16 @@ pub enum DismissTarget {
 // ── Resolution + dispatch ───────────────────────────────────────
 
 impl App {
-    pub(in super::super) fn dismiss_target_for_row_inner(
-        &self,
-        row: VisibleRow,
-    ) -> Option<DismissTarget> {
+    pub fn dismiss_target_for_row_inner(&self, row: VisibleRow) -> Option<DismissTarget> {
         let dismiss_path = match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => self
-                .projects
+                .projects()
                 .get(node_index)
                 .map(|item| item.path().clone()),
             VisibleRow::Member { node_index, .. }
             | VisibleRow::Vendored { node_index, .. }
             | VisibleRow::Submodule { node_index, .. } => self
-                .projects
+                .projects()
                 .get(node_index)
                 .map(|item| item.path().clone()),
             VisibleRow::WorktreeEntry {
@@ -54,7 +51,7 @@ impl App {
                 node_index,
                 worktree_index,
                 ..
-            } => match &self.projects.get(node_index)?.item {
+            } => match &self.projects().get(node_index)?.item {
                 RootItem::Worktrees(WorktreeGroup::Workspaces {
                     primary, linked, ..
                 }) => {
@@ -85,7 +82,7 @@ impl App {
     }
 
     /// Resolve the currently focused pane into a dismiss target, if one exists.
-    pub(in super::super) fn focused_dismiss_target(&self) -> Option<DismissTarget> {
+    pub fn focused_dismiss_target(&self) -> Option<DismissTarget> {
         match self.focused_pane {
             PaneId::Toasts => self.focused_toast_id().map(DismissTarget::Toast),
             PaneId::ProjectList => self
@@ -96,12 +93,12 @@ impl App {
     }
 
     /// Perform the dismiss for the given target.
-    pub(in super::super) fn dismiss(&mut self, target: DismissTarget) {
+    pub fn dismiss(&mut self, target: DismissTarget) {
         match target {
             DismissTarget::Toast(id) => self.dismiss_toast(id),
             DismissTarget::DeletedProject(path) => {
                 let parent_node_index = self.worktree_parent_node_index(&path);
-                if let Some(project) = self.projects.at_path_mut(&path) {
+                if let Some(project) = self.projects_mut().at_path_mut(&path) {
                     project.visibility = Dismissed;
                 }
                 self.ensure_visible_rows_cached();
@@ -123,7 +120,7 @@ impl App {
     /// If `path` is a worktree entry's project path, return the parent
     /// node index so the selection can jump to the Root row after dismiss.
     fn worktree_parent_node_index(&self, path: &Path) -> Option<usize> {
-        self.projects
+        self.projects()
             .iter()
             .enumerate()
             .find_map(|(ni, item)| match &item.item {

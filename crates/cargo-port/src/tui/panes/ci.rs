@@ -54,7 +54,7 @@ fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
     Row::new(header_cells).bottom_margin(0)
 }
 
-pub(in super::super) const CI_COMPACT_DURATION_WIDTH: usize = 2;
+pub const CI_COMPACT_DURATION_WIDTH: usize = 2;
 
 fn build_ci_data_row(
     ci_run: &CiRun,
@@ -203,7 +203,7 @@ fn ci_duration_min_width(ci_runs: &[CiRun], col: CiColumn) -> usize {
     col.label().len().max(max_data)
 }
 
-pub(in super::super) fn ci_total_width(ci_runs: &[CiRun], show_durations: bool) -> usize {
+pub fn ci_total_width(ci_runs: &[CiRun], show_durations: bool) -> usize {
     if show_durations {
         ci_total_min_width(ci_runs)
     } else {
@@ -242,11 +242,7 @@ fn ci_table_fixed_width(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bo
     base + job_columns + total + column_count.saturating_sub(1)
 }
 
-pub(in super::super) fn ci_table_shows_durations(
-    ci_runs: &[CiRun],
-    cols: &[CiColumn],
-    inner_width: u16,
-) -> bool {
+pub fn ci_table_shows_durations(ci_runs: &[CiRun], cols: &[CiColumn], inner_width: u16) -> bool {
     ci_table_fixed_width(ci_runs, cols, true) <= usize::from(inner_width)
 }
 

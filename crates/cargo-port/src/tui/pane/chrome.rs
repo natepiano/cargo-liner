@@ -15,15 +15,15 @@ use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::TITLE_COLOR;
 
 #[derive(Clone, Copy)]
-pub(in super::super) struct PaneChrome {
-    pub(in super::super) active_border:   Style,
-    pub(in super::super) inactive_border: Style,
-    pub(in super::super) active_title:    Style,
-    pub(in super::super) inactive_title:  Style,
+pub struct PaneChrome {
+    pub active_border:   Style,
+    pub inactive_border: Style,
+    pub active_title:    Style,
+    pub inactive_title:  Style,
 }
 
 impl PaneChrome {
-    pub(in super::super) fn block(self, title: String, focused: bool) -> Block<'static> {
+    pub fn block(self, title: String, focused: bool) -> Block<'static> {
         Block::default()
             .borders(Borders::ALL)
             .title(title)
@@ -35,7 +35,7 @@ impl PaneChrome {
             })
     }
 
-    pub(in super::super) const fn title_style(self, focused: bool) -> Style {
+    pub const fn title_style(self, focused: bool) -> Style {
         if focused {
             self.active_title
         } else {
@@ -43,7 +43,7 @@ impl PaneChrome {
         }
     }
 
-    pub(in super::super) const fn with_inactive_border(self, inactive_border: Style) -> Self {
+    pub const fn with_inactive_border(self, inactive_border: Style) -> Self {
         Self {
             inactive_border,
             ..self
@@ -51,7 +51,7 @@ impl PaneChrome {
     }
 }
 
-pub(in super::super) fn default_pane_chrome() -> PaneChrome {
+pub fn default_pane_chrome() -> PaneChrome {
     let title_style = Style::default().add_modifier(Modifier::BOLD);
     PaneChrome {
         active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
@@ -61,7 +61,7 @@ pub(in super::super) fn default_pane_chrome() -> PaneChrome {
     }
 }
 
-pub(in super::super) fn empty_pane_block(title: impl Into<String>) -> Block<'static> {
+pub fn empty_pane_block(title: impl Into<String>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .title(title.into())
@@ -69,7 +69,7 @@ pub(in super::super) fn empty_pane_block(title: impl Into<String>) -> Block<'sta
         .border_style(Style::default().fg(INACTIVE_BORDER_COLOR))
 }
 
-pub(in super::super) fn render_overflow_affordance(frame: &mut Frame, area: Rect, pane: &Pane) {
+pub fn render_overflow_affordance(frame: &mut Frame, area: Rect, pane: &Pane) {
     let Some(label) = pane.overflow_affordance() else {
         return;
     };

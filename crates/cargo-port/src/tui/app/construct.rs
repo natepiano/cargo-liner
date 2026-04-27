@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -8,9 +7,6 @@ use std::time::Instant;
 use super::App;
 use super::service_state::CratesIoState;
 use super::service_state::GitHubState;
-use super::types::DirtyState;
-#[cfg(test)]
-use super::types::RetrySpawnMode;
 use super::types::ScanState;
 use super::types::UiModes;
 use crate::config;
@@ -32,6 +28,7 @@ use crate::tui::inflight::Inflight;
 use crate::tui::keymap_state::Keymap;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::Panes;
+use crate::tui::scan_state::Scan;
 use crate::tui::selection::Selection;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
@@ -120,9 +117,9 @@ struct CoreInputs {
 }
 
 impl App {
-    pub(in super::super) fn has_cached_non_rust_projects(&self) -> bool {
+    pub fn has_cached_non_rust_projects(&self) -> bool {
         let mut found = false;
-        self.projects.for_each_leaf(|item| {
+        self.projects().for_each_leaf(|item| {
             if !item.is_rust() {
                 found = true;
             }
@@ -130,7 +127,7 @@ impl App {
         found
     }
 
-    pub(in super::super) fn new(
+    pub fn new(
         projects: &[RootItem],
         bg_tx: mpsc::Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
@@ -182,38 +179,31 @@ impl App {
             .as_ref()
             .map(|p| p.as_path().to_path_buf());
         let keymap = Keymap::new(keymap_path_buf, keymap::ResolvedKeymap::defaults());
+        let scan = Scan::new(
+            init.projects,
+            ScanState::new(inputs.scan_started_at),
+            inputs.metadata_store,
+        );
         Self {
             http_client: inputs.http_client,
             github: GitHubState::new(),
             crates_io: CratesIoState::new(),
-            projects: init.projects,
-            lint_cache_usage: crate::lint::CacheUsage::default(),
-            discovery_shimmers: HashMap::new(),
-            pending_git_first_commit: HashMap::new(),
             panes,
             selection,
             background,
             inflight,
             config,
             keymap,
-            priority_fetch_path: None,
+            scan,
             focused_pane: PaneId::ProjectList,
             return_focus: None,
             confirm: None,
             animation_started: Instant::now(),
-            #[cfg(test)]
-            retry_spawn_mode: RetrySpawnMode::Enabled,
-            data_generation: 0,
             mouse_pos: None,
             status_flash: inputs.status_flash,
             toasts: ToastManager::default(),
             inline_error: None,
             ui_modes: UiModes::default(),
-            dirty: DirtyState::initial(),
-            scan: ScanState::new(inputs.scan_started_at),
-            metadata_store: inputs.metadata_store,
-            target_dir_index: super::target_index::TargetDirIndex::new(),
-            confirm_verifying: None,
         }
     }
 
@@ -230,7 +220,7 @@ impl App {
         self.force_settings_if_unconfigured();
         self.prune_inactive_project_state();
         self.register_existing_projects();
-        if !self.projects.is_empty() {
+        if !self.projects().is_empty() {
             self.finish_watcher_registration_batch();
         }
         self.refresh_lint_runs_from_disk();

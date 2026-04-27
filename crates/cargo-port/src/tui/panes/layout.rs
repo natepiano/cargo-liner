@@ -15,19 +15,19 @@ use crate::tui::pane::ResolvedPane;
 use crate::tui::pane::ResolvedPaneLayout;
 
 #[derive(Default)]
-pub(in super::super) struct LayoutCache {
-    pub(in super::super) project_list_body: Rect,
-    pub(in super::super) tiled:             ResolvedPaneLayout<PaneId>,
-    pub(in super::super) ui_hitboxes:       Vec<UiHitbox>,
+pub struct LayoutCache {
+    pub project_list_body: Rect,
+    pub tiled:             ResolvedPaneLayout<PaneId>,
+    pub ui_hitboxes:       Vec<UiHitbox>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in super::super) enum BottomRow {
+pub enum BottomRow {
     Diagnostics,
     Output,
 }
 
-pub(in super::super) fn derived_layout(bottom_row: BottomRow) -> PaneGridLayout<PaneId> {
+pub fn derived_layout(bottom_row: BottomRow) -> PaneGridLayout<PaneId> {
     let mut placements = vec![
         PanePlacement {
             pane:     PaneId::ProjectList,
@@ -104,11 +104,9 @@ pub(in super::super) fn derived_layout(bottom_row: BottomRow) -> PaneGridLayout<
     PaneGridLayout { placements }
 }
 
-pub(in super::super) fn tab_order(bottom_row: BottomRow) -> Vec<PaneId> {
-    derived_layout(bottom_row).tab_order()
-}
+pub fn tab_order(bottom_row: BottomRow) -> Vec<PaneId> { derived_layout(bottom_row).tab_order() }
 
-pub(in super::super) fn resolve_layout(
+pub fn resolve_layout(
     area: Rect,
     left_width: u16,
     core_count: usize,

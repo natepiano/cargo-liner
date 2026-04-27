@@ -13,11 +13,12 @@
 //! is to let the recompute fire. Type-enforced; no convention to
 //! remember.
 //!
-//! - **Fan-out flavor** — see [`TreeMutation`] (this module). The guard currently borrows `&mut
-//!   App` and on drop clears `Panes`-owned tree-derived caches via
-//!   [`super::panes::Panes::clear_for_tree_change`] plus rebuilds `Selection`'s visible-rows cache
-//!   via [`super::selection::Selection::recompute_visibility`]. Phase 6 will rewrite the guard to
-//!   borrow Scan + Panes + Selection directly so the dependency is declared at the type level.
+//! - **Fan-out flavor** — see [`TreeMutation`] (this module). The guard borrows `&mut Scan + &mut
+//!   Panes + &mut Selection` directly so its `Drop` can fan out across the three subsystems with
+//!   the dependency declared at the type level. On drop it clears
+//!   [`super::panes::Panes::clear_for_tree_change`] and rebuilds
+//!   [`super::selection::Selection::recompute_visibility`]. `App::mutate_tree` constructs the guard
+//!   via destructuring so the three subsystem borrows are disjoint.
 //! - **Self-only flavor** — see [`super::selection::SelectionMutation`]. Visibility-changing
 //!   mutations on `Selection` (`toggle_expand`, `apply_finder`) are only callable through the
 //!   guard; `Drop` recomputes `cached_visible_rows`.
@@ -82,6 +83,7 @@ use super::panes::LayoutCache;
 use super::panes::PaneDataStore;
 use super::panes::PaneId;
 use super::panes::Panes;
+use super::scan_state::Scan;
 use super::selection::Selection;
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
@@ -117,15 +119,21 @@ pub(super) use dismiss::DismissTarget;
 pub(super) use service_state::AvailabilityStatus;
 pub(super) use target_index::CleanSelection;
 pub(super) use target_index::MemberKind;
+pub(super) use target_index::TargetDirIndex;
 pub(super) use types::CiFetchTracker;
 pub(super) use types::CiRunDisplayMode;
 pub(super) use types::ConfirmAction;
+pub(super) use types::DirtyState;
 pub(super) use types::DiscoveryRowKind;
+pub(super) use types::DiscoveryShimmer;
 pub(super) use types::ExpandKey;
 pub(super) use types::FinderState;
 pub(super) use types::HoveredPaneRow;
 pub(super) use types::PendingClean;
 pub(super) use types::PollBackgroundStats;
+#[cfg(test)]
+pub(super) use types::RetrySpawnMode;
+pub(super) use types::ScanState;
 pub(super) use types::SelectionPaths;
 pub(super) use types::SelectionSync;
 pub(super) use types::VisibleRow;
@@ -141,72 +149,61 @@ use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
 use crate::project::RootItem;
 pub(super) struct App {
-    http_client:              HttpClient,
-    github:                   GitHubState,
-    crates_io:                CratesIoState,
-    projects:                 ProjectList,
-    lint_cache_usage:         CacheUsage,
-    discovery_shimmers:       HashMap<AbsolutePath, types::DiscoveryShimmer>,
-    pending_git_first_commit: HashMap<AbsolutePath, String>,
+    http_client:       HttpClient,
+    github:            GitHubState,
+    crates_io:         CratesIoState,
     /// Panes subsystem (Phase 1 of the App-API carve, see
     /// `docs/app-api.md`). Owns `pane_manager`, `pane_data`,
     /// `visited_panes`, `layout_cache`, `worktree_summary_cache`,
     /// `hovered_pane_row`, `ci_display_modes`, `cpu_poller`. App's
     /// impl-files reach pane state through this handle.
-    panes:                    Panes,
+    panes:             Panes,
     /// Selection subsystem (Phase 3 of the App-API carve, see
     /// `docs/app-api.md`). Owns `selection_paths`, `selection`
     /// (`SelectionSync`), `expanded`, `finder`,
     /// `cached_visible_rows`, `cached_root_sorted`,
     /// `cached_child_sorted`, `cached_fit_widths` (now
     /// `ProjectListWidths`).
-    selection:                Selection,
+    selection:         Selection,
     /// Background subsystem (Phase 4 of the App-API carve, see
     /// `docs/app-api.md`). Owns the four mpsc channel pairs plus
     /// `watch_tx`. The `bg_*` pair is replaced wholesale on every
     /// rescan via [`Background::swap_bg_channel`]; the others outlive
     /// any single rescan.
-    background:               Background,
+    background:        Background,
     /// Inflight subsystem (Phase 4 of the App-API carve). Owns the
     /// running-paths maps, toast slots, ci-fetch tracker, pending
     /// queues, example-runner state, and `lint_runtime`.
-    inflight:                 Inflight,
+    inflight:          Inflight,
     /// Config subsystem (Phase 5 of the App-API carve, see
     /// `docs/app-api.md`). Owns `current_config`, `config_path`,
     /// `config_last_seen`, plus the in-app settings editor's
     /// `SettingsEditBuffer` (the previous `settings_edit_buf` and
     /// `settings_edit_cursor` collapsed into one typed pair).
     /// Composes `WatchedFile<CargoPortConfig>`.
-    config:                   Config,
+    config:            Config,
     /// Keymap subsystem (Phase 5 of the App-API carve). Owns
     /// `current_keymap`, `keymap_path`, `keymap_last_seen`,
     /// `keymap_diagnostics_id`. Composes
     /// `WatchedFile<ResolvedKeymap>`.
-    keymap:                   Keymap,
-    priority_fetch_path:      Option<AbsolutePath>,
-    focused_pane:             PaneId,
-    return_focus:             Option<PaneId>,
-    confirm:                  Option<ConfirmAction>,
-    animation_started:        Instant,
-    data_generation:          u64,
-    mouse_pos:                Option<Position>,
-    status_flash:             Option<(String, std::time::Instant)>,
-    toasts:                   ToastManager,
-    inline_error:             Option<String>,
-    ui_modes:                 types::UiModes,
-    dirty:                    types::DirtyState,
-    scan:                     types::ScanState,
-    metadata_store:           Arc<Mutex<WorkspaceMetadataStore>>,
-    target_dir_index:         target_index::TargetDirIndex,
-    /// Step 6e: workspace root whose manifest fingerprint drifted
-    /// between the last snapshot and the moment the user asked for
-    /// confirm (`c`). While `Some`, the confirm popup renders
-    /// "Verifying target dir…" and 'y' is ignored; the matching
-    /// `CargoMetadata` arrival in `handle_cargo_metadata_msg` clears
-    /// the slot so the popup transitions to Ready.
-    confirm_verifying:        Option<AbsolutePath>,
-    #[cfg(test)]
-    retry_spawn_mode:         types::RetrySpawnMode,
+    keymap:            Keymap,
+    /// Scan subsystem (Phase 6 of the App-API carve, see
+    /// `docs/app-api.md`). Owns `projects`, `scan`
+    /// (`ScanState`), `dirty`, `data_generation`,
+    /// `discovery_shimmers`, `pending_git_first_commit`,
+    /// `metadata_store`, `target_dir_index`, `priority_fetch_path`,
+    /// `confirm_verifying`, `lint_cache_usage`, and (test-only)
+    /// `retry_spawn_mode`.
+    scan:              Scan,
+    focused_pane:      PaneId,
+    return_focus:      Option<PaneId>,
+    confirm:           Option<ConfirmAction>,
+    animation_started: Instant,
+    mouse_pos:         Option<Position>,
+    status_flash:      Option<(String, std::time::Instant)>,
+    toasts:            ToastManager,
+    inline_error:      Option<String>,
+    ui_modes:          types::UiModes,
 }
 
 impl App {
@@ -236,10 +233,9 @@ impl App {
         scan::resolve_include_dirs(&self.config.current().tui.include_dirs)
     }
 
-    pub(super) const fn projects(&self) -> &ProjectList { &self.projects }
+    pub(super) const fn projects(&self) -> &ProjectList { self.scan.projects() }
 
-    #[cfg(test)]
-    pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { &mut self.projects }
+    pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { self.scan.projects_mut() }
 
     pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { &self.github.fetch_cache }
 
@@ -254,17 +250,14 @@ impl App {
     /// from the shared `HttpClient` state every frame — not persisted.
     pub(super) fn rate_limit(&self) -> GitHubRateLimit { self.http_client.rate_limit_snapshot() }
 
-    pub(in super::super) fn complete_ci_fetch_for(&mut self, path: &Path) -> bool {
+    pub fn complete_ci_fetch_for(&mut self, path: &Path) -> bool {
         self.inflight.ci_fetch_tracker_mut().complete(path)
     }
 
-    pub(in super::super) fn replace_ci_data_for_path(
-        &mut self,
-        path: &Path,
-        ci_data: ProjectCiData,
-    ) {
+    pub fn replace_ci_data_for_path(&mut self, path: &Path, ci_data: ProjectCiData) {
         if let Some(repo) = self
-            .projects
+            .scan
+            .projects_mut()
             .entry_containing_mut(path)
             .and_then(|entry| entry.git_repo.as_mut())
         {
@@ -272,29 +265,29 @@ impl App {
         }
     }
 
-    pub(in super::super) fn start_ci_fetch_for(&mut self, path: AbsolutePath) {
+    pub fn start_ci_fetch_for(&mut self, path: AbsolutePath) {
         self.inflight.ci_fetch_tracker_mut().start(path);
     }
 
-    pub(super) const fn lint_cache_usage(&self) -> &CacheUsage { &self.lint_cache_usage }
+    pub(super) const fn lint_cache_usage(&self) -> &CacheUsage { self.scan.lint_cache_usage() }
 
     pub(super) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
-        self.projects.lint_at_path(path)
+        self.projects().lint_at_path(path)
     }
 
     pub(super) fn lint_at_path_mut(&mut self, path: &Path) -> Option<&mut LintRuns> {
-        self.projects.lint_at_path_mut(path)
+        self.projects_mut().lint_at_path_mut(path)
     }
 
     pub(super) fn clear_all_lint_state(&mut self) {
         let mut paths = Vec::new();
-        self.projects.for_each_leaf_path(|path, is_rust| {
+        self.projects().for_each_leaf_path(|path, is_rust| {
             if is_rust {
                 paths.push(path.to_path_buf());
             }
         });
         for path in &paths {
-            if let Some(lr) = self.projects.lint_at_path_mut(path) {
+            if let Some(lr) = self.projects_mut().lint_at_path_mut(path) {
                 lr.clear_runs();
             }
         }
@@ -417,22 +410,20 @@ impl App {
     /// `cargo metadata` refresh to land (design plan → "Per-worktree
     /// clean, Step 6e"). Callers that gate `y` on a settled plan
     /// consult this.
-    pub(in super::super) const fn confirm_verifying(&self) -> Option<&AbsolutePath> {
-        self.confirm_verifying.as_ref()
-    }
+    pub const fn confirm_verifying(&self) -> Option<&AbsolutePath> { self.scan.confirm_verifying() }
 
     /// Open a Clean confirm popup for `project_path`, first checking
     /// whether the project's workspace manifest has drifted since the
     /// last snapshot. On drift: dispatch a `cargo metadata` refresh,
     /// mark the confirm as verifying (popup blocks `y` until the
     /// refresh lands). On match: open the confirm Ready immediately.
-    pub(in super::super) fn request_clean_confirm(&mut self, project_path: AbsolutePath) {
+    pub fn request_clean_confirm(&mut self, project_path: AbsolutePath) {
         if self.should_verify_before_clean(&project_path) {
             let dispatch = self.clean_metadata_dispatch();
             scan::spawn_cargo_metadata_refresh(dispatch, project_path.clone());
-            self.confirm_verifying = Some(project_path.clone());
+            self.scan.set_confirm_verifying(Some(project_path.clone()));
         } else {
-            self.confirm_verifying = None;
+            self.scan.set_confirm_verifying(None);
         }
         self.confirm = Some(ConfirmAction::Clean(project_path));
     }
@@ -445,7 +436,7 @@ impl App {
     /// for the group. If a linked worktree has diverged independently
     /// (different `.cargo/config.toml`, etc.), its own re-dispatch will
     /// still land before `start_clean` resolves its target dir.
-    pub(in super::super) fn request_clean_group_confirm(
+    pub fn request_clean_group_confirm(
         &mut self,
         primary: AbsolutePath,
         linked: Vec<AbsolutePath>,
@@ -453,9 +444,9 @@ impl App {
         if self.should_verify_before_clean(&primary) {
             let dispatch = self.clean_metadata_dispatch();
             scan::spawn_cargo_metadata_refresh(dispatch, primary.clone());
-            self.confirm_verifying = Some(primary.clone());
+            self.scan.set_confirm_verifying(Some(primary.clone()));
         } else {
-            self.confirm_verifying = None;
+            self.scan.set_confirm_verifying(None);
         }
         self.confirm = Some(ConfirmAction::CleanGroup { primary, linked });
     }
@@ -466,7 +457,7 @@ impl App {
     /// (a `.cargo/config.toml` edit, a manifest save, etc.), OR when
     /// no snapshot covers `project_path` at all.
     fn should_verify_before_clean(&self, project_path: &AbsolutePath) -> bool {
-        let Ok(store) = self.metadata_store.lock() else {
+        let Ok(store) = self.scan.metadata_store().lock() else {
             return false;
         };
         let Some(workspace_root) = store.containing_workspace_root(project_path) else {
@@ -490,7 +481,7 @@ impl App {
         scan::MetadataDispatchContext {
             handle:         self.http_client.handle.clone(),
             tx:             self.background.bg_sender(),
-            metadata_store: Arc::clone(&self.metadata_store),
+            metadata_store: Arc::clone(self.scan.metadata_store()),
             // Use the shared scan-concurrency cap so confirm-triggered
             // refreshes can't monopolize the metadata blocking pool.
             metadata_limit: Arc::new(tokio::sync::Semaphore::new(
@@ -501,13 +492,13 @@ impl App {
 
     /// Clear the verifying flag — called by `handle_cargo_metadata_msg`
     /// when a refresh for the pending workspace lands.
-    pub(in super::super) fn clear_confirm_verifying_for(&mut self, workspace_root: &AbsolutePath) {
+    pub fn clear_confirm_verifying_for(&mut self, workspace_root: &AbsolutePath) {
         if self
-            .confirm_verifying
-            .as_ref()
+            .scan
+            .confirm_verifying()
             .is_some_and(|pending| pending == workspace_root)
         {
-            self.confirm_verifying = None;
+            self.scan.set_confirm_verifying(None);
         }
     }
 
@@ -567,7 +558,7 @@ impl App {
         self.inflight.set_example_running(running);
     }
 
-    pub(super) const fn increment_data_generation(&mut self) { self.data_generation += 1; }
+    pub(super) const fn increment_data_generation(&mut self) { self.scan.bump_generation(); }
 
     /// Delegates to `Panes::worktree_summary_or_compute`. Kept on App
     /// so existing call sites (e.g. `panes/support.rs`) need no
@@ -580,16 +571,39 @@ impl App {
         self.panes.worktree_summary_or_compute(group_root, compute)
     }
 
-    /// Borrow `App` for a structural mutation of the project tree. The
-    /// returned guard is the **only** way (in production code) to call
-    /// methods that change which projects are present, where they live,
-    /// or how they are grouped. On drop, the guard clears all
-    /// tree-derived caches (currently `worktree_summary_cache`), so
-    /// invalidation cannot drift out of sync with mutation: the
-    /// borrow checker forces every structural change through this entry
-    /// point, and `Drop` runs unconditionally — even on early return or
-    /// panic.
-    pub(super) const fn mutate_tree(&mut self) -> TreeMutation<'_> { TreeMutation { app: self } }
+    /// Borrow `App` for a structural mutation of the project tree.
+    /// The returned guard borrows `Scan + Panes + Selection`
+    /// directly so its `Drop` can fan out across the three
+    /// subsystems with the dependency declared at the type level.
+    /// `mutate_tree` stays on `App` (rather than on `Scan`) so
+    /// callers can split-borrow the three disjoint App fields:
+    /// putting it on `Scan` would force callers to hold
+    /// `&mut self.scan` while also passing `&mut self.panes` and
+    /// `&mut self.selection`, which the borrow checker rejects
+    /// because method-call syntax reborrows the receiver.
+    ///
+    /// Mutation guard (RAII) — fan-out flavor. See "Recurring
+    /// patterns" in this module.
+    pub(super) const fn mutate_tree(&mut self) -> TreeMutation<'_> {
+        let include_non_rust = self
+            .config
+            .current()
+            .tui
+            .include_non_rust
+            .includes_non_rust();
+        let Self {
+            scan,
+            panes,
+            selection,
+            ..
+        } = self;
+        TreeMutation {
+            scan,
+            panes,
+            selection,
+            include_non_rust,
+        }
+    }
 
     pub(super) fn config_path(&self) -> Option<&Path> { self.config.path() }
 
@@ -600,7 +614,33 @@ impl App {
     pub(super) const fn take_confirm(&mut self) -> Option<ConfirmAction> { self.confirm.take() }
 
     #[cfg(test)]
-    pub(super) fn set_projects(&mut self, projects: ProjectList) { self.projects = projects; }
+    pub(super) fn set_projects(&mut self, projects: ProjectList) {
+        *self.scan.projects_mut() = projects;
+    }
+
+    #[cfg(test)]
+    pub(super) const fn set_retry_spawn_mode_for_test(&mut self, mode: types::RetrySpawnMode) {
+        self.scan.set_retry_spawn_mode(mode);
+    }
+
+    /// Test-only — production paths reach Scan sub-fields via the
+    /// top-level App accessors (`projects`, `current_config`, etc.).
+    #[cfg(test)]
+    pub(super) const fn scan(&self) -> &Scan { &self.scan }
+
+    #[cfg(test)]
+    pub(super) const fn scan_mut(&mut self) -> &mut Scan { &mut self.scan }
+
+    #[cfg(test)]
+    pub(super) const fn scan_state(&self) -> &types::ScanState { self.scan.scan_state() }
+
+    #[cfg(test)]
+    pub(super) const fn scan_state_mut(&mut self) -> &mut types::ScanState {
+        self.scan.scan_state_mut()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn data_generation_for_test(&self) -> u64 { self.scan.generation() }
 
     #[cfg(test)]
     pub(super) const fn toasts_mut(&mut self) -> &mut ToastManager { &mut self.toasts }
@@ -638,16 +678,14 @@ impl App {
     /// Clone of the process-wide cargo-metadata store. The scan thread and
     /// future refresh paths stamp dispatches with a generation pulled from
     /// this handle, and the main loop merges arrivals back into it.
-    pub(in super::super) fn metadata_store_handle(&self) -> Arc<Mutex<WorkspaceMetadataStore>> {
-        Arc::clone(&self.metadata_store)
+    pub fn metadata_store_handle(&self) -> Arc<Mutex<WorkspaceMetadataStore>> {
+        Arc::clone(self.scan.metadata_store())
     }
 
-    /// Borrow the [`target_index::TargetDirIndex`] for read-only
-    /// lookups (e.g. confirm-dialog "also affects" listings). Mutation
-    /// flows only through the metadata-arrival handler.
-    pub(in super::super) const fn target_dir_index_ref(&self) -> &target_index::TargetDirIndex {
-        &self.target_dir_index
-    }
+    /// Borrow the [`TargetDirIndex`] for read-only lookups (e.g.
+    /// confirm-dialog "also affects" listings). Mutation flows only
+    /// through the metadata-arrival handler.
+    pub const fn target_dir_index_ref(&self) -> &TargetDirIndex { self.scan.target_dir_index() }
 
     /// Resolve a [`WorkspaceMetadataHandle`] to a cloned snapshot, or `None`
     /// when the workspace has no snapshot yet. Callers get the snapshot by
@@ -657,11 +695,9 @@ impl App {
         reason = "consumed in later steps (5/6); kept now so WorkspaceMetadataHandle \
                   has a resolve path in place before handle-carrying RustInfo lands"
     )]
-    pub(in super::super) fn resolve_metadata(
-        &self,
-        handle: &WorkspaceMetadataHandle,
-    ) -> Option<WorkspaceSnapshot> {
-        self.metadata_store
+    pub fn resolve_metadata(&self, handle: &WorkspaceMetadataHandle) -> Option<WorkspaceSnapshot> {
+        self.scan
+            .metadata_store()
             .lock()
             .ok()
             .and_then(|store| store.get(&handle.workspace_root).cloned())
@@ -672,70 +708,73 @@ impl App {
     /// vendored crate roots — the store walks ancestors internally. Returns
     /// `None` when no snapshot covers `path` yet; callers should fall back
     /// to `<project>/target`.
-    pub(in super::super) fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
-        self.metadata_store
+    pub fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
+        self.scan
+            .metadata_store()
             .lock()
             .ok()
             .and_then(|store| store.resolved_target_dir(path).cloned())
     }
 }
 
-/// RAII guard for structural mutations of the project tree. Obtained via
-/// `App::mutate_tree`, dropped at end of scope (or earlier via `drop`),
-/// at which point all tree-derived caches are invalidated.
+/// RAII guard for structural mutations of the project tree.
+/// Obtained via [`App::mutate_tree`]; dropped at end of scope (or
+/// earlier via `drop`), at which point all tree-derived caches are
+/// invalidated.
 ///
-/// **Type-level invariant:** the only methods that change tree shape live
-/// on this guard, and the guard cannot be constructed outside `App`. New
-/// tree-mutation paths must be added here, which forces the cache-clear
-/// to fire — there is no way to forget invalidation. `Drop` runs on
-/// every exit path, including panics and early returns.
+/// **Type-level invariant:** the guard borrows `&mut Scan + &mut
+/// Panes + &mut Selection` simultaneously. New tree-mutation paths
+/// added here force the cache-clear to fire on `Drop` — there is
+/// no way to forget invalidation. `Drop` runs on every exit path,
+/// including panics and early returns.
+///
+/// Mutation guard (RAII), fan-out flavor. See "Recurring patterns"
+/// in [`crate::tui::app`] for the pattern.
 pub(super) struct TreeMutation<'a> {
-    app: &'a mut App,
+    scan:             &'a mut Scan,
+    panes:            &'a mut Panes,
+    selection:        &'a mut Selection,
+    include_non_rust: bool,
 }
 
 impl TreeMutation<'_> {
     /// Replace the entire project list (used by tree-build paths).
-    pub(super) fn replace_all(&mut self, projects: ProjectList) { self.app.projects = projects; }
+    pub(super) fn replace_all(&mut self, projects: ProjectList) {
+        *self.scan.projects_mut() = projects;
+    }
 
     /// Insert a discovered project into the existing tree, returning
     /// `true` if the insertion changed the tree.
     pub(super) fn insert_into_hierarchy(&mut self, item: RootItem) -> bool {
-        self.app.projects.insert_into_hierarchy(item)
+        self.scan.projects_mut().insert_into_hierarchy(item)
     }
 
     /// Replace a single leaf at `path` with `item`. Returns the previous
     /// item if one was found.
     pub(super) fn replace_leaf_by_path(&mut self, path: &Path, item: RootItem) -> Option<RootItem> {
-        self.app.projects.replace_leaf_by_path(path, item)
+        self.scan.projects_mut().replace_leaf_by_path(path, item)
     }
 
     /// Re-bucket workspace members under inline-dir groups.
     pub(super) fn regroup_members(&mut self, inline_dirs: &[String]) {
-        self.app.projects.regroup_members(inline_dirs);
+        self.scan.projects_mut().regroup_members(inline_dirs);
     }
 
     /// Re-detect worktree groupings at the top level after a structural
     /// change (insert / replace / remove).
     pub(super) fn regroup_top_level_worktrees(&mut self) {
-        self.app.projects.regroup_top_level_worktrees();
+        self.scan.projects_mut().regroup_top_level_worktrees();
     }
 }
 
 impl Drop for TreeMutation<'_> {
-    /// Phase 1+3 staging: temporarily routes the existing
-    /// tree-mutation invalidation through
-    /// `Panes::clear_for_tree_change` (drops the
-    /// worktree-summary cache) and
-    /// `Selection::recompute_visibility` (rebuilds
-    /// `cached_visible_rows` against the new tree shape). Phase 6
-    /// will rewrite this guard to borrow `Scan + Panes + Selection`
-    /// directly so the dependency is declared at the type level;
-    /// these per-field nudges go away then.
+    /// Fan out across the three subsystems whose derived state
+    /// depends on tree shape:
+    /// 1. [`Panes::clear_for_tree_change`] drops `worktree_summary_cache`.
+    /// 2. [`Selection::recompute_visibility`] rebuilds `cached_visible_rows` against the new tree.
     fn drop(&mut self) {
-        self.app.panes.clear_for_tree_change();
-        let include_non_rust = self.app.include_non_rust().includes_non_rust();
-        self.app
-            .selection
-            .recompute_visibility(&self.app.projects, include_non_rust);
+        self.panes.clear_for_tree_change();
+        self.selection
+            .recompute_visibility(self.scan.projects(), self.include_non_rust);
     }
 }

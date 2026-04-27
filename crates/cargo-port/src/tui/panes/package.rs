@@ -489,7 +489,7 @@ fn render_stats_column(
     frame.render_widget(Paragraph::new(stat_lines), stats_inner);
 }
 
-pub(in super::super) fn description_lines(
+pub fn description_lines(
     description: Option<&str>,
     width: u16,
     max_height: u16,

@@ -7,7 +7,7 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in super::super) enum PaneRule {
+pub enum PaneRule {
     Horizontal {
         area:        Rect,
         connector_x: Option<u16>,
@@ -28,7 +28,7 @@ pub struct RuleTitle<'a> {
     pub style: Style,
 }
 
-pub(in super::super) fn render_rules(frame: &mut Frame, rules: &[PaneRule], style: Style) {
+pub fn render_rules(frame: &mut Frame, rules: &[PaneRule], style: Style) {
     for rule in rules {
         match *rule {
             PaneRule::Horizontal { area, connector_x } => {

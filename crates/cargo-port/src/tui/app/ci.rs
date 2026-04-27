@@ -16,7 +16,7 @@ use crate::tui::panes::PaneId;
 
 impl App {
     pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<ci::OwnerRepo> {
-        let entry_path = self.projects.entry_containing(path)?.item.path().clone();
+        let entry_path = self.projects().entry_containing(path)?.item.path().clone();
         self.primary_url_for(entry_path.as_path())
             .and_then(ci::parse_owner_repo)
     }
@@ -27,7 +27,7 @@ impl App {
             .primary_url_for(path)
             .and_then(ci::parse_owner_repo)
             .is_some_and(|owner_repo| scan::is_exhausted(owner_repo.owner(), owner_repo.repo()));
-        if let Some(entry) = self.projects.entry_containing_mut(path) {
+        if let Some(entry) = self.scan.projects_mut().entry_containing_mut(path) {
             let repo = entry.git_repo.get_or_insert_with(Default::default);
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs,
@@ -138,7 +138,7 @@ impl App {
             );
         }
         self.inflight.ci_fetch_tracker_mut().complete(abs.as_path());
-        if let Some(entry) = self.projects.entry_containing_mut(abs.as_path()) {
+        if let Some(entry) = self.scan.projects_mut().entry_containing_mut(abs.as_path()) {
             let repo = entry.git_repo.get_or_insert_with(Default::default);
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs: merged,
@@ -146,7 +146,7 @@ impl App {
                 exhausted,
             });
         }
-        self.data_generation += 1;
+        self.scan.bump_generation();
     }
 
     pub(super) fn ci_display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
@@ -180,7 +180,7 @@ impl App {
         self.panes
             .set_ci_display_mode(AbsolutePath::from(path), new_mode);
         self.pane_manager_mut().pane_mut(PaneId::CiRuns).home();
-        self.data_generation += 1;
+        self.scan.bump_generation();
     }
 
     pub(super) fn ci_runs_for_display_inner(&self, path: &Path) -> Vec<CiRun> {

@@ -132,7 +132,7 @@ fn tabbable_panes_follow_canonical_order() {
     seed_single_example_snapshot(&app, &project_path, "example");
     app.toasts = ToastManager::default();
     app.pane_manager_mut().pane_mut(PaneId::Toasts).set_len(0);
-    app.scan.phase = ScanPhase::Complete;
+    app.scan_state_mut().phase = ScanPhase::Complete;
     apply_git_info(
         &mut app,
         project.path(),
@@ -251,7 +251,7 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
 
     let project = make_project(Some("demo"), "/never-real/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.scan.phase = ScanPhase::Complete;
+    app.scan_state_mut().phase = ScanPhase::Complete;
     app.pane_manager_mut()
         .pane_mut(PaneId::ProjectList)
         .set_pos(0);
@@ -530,7 +530,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         "top-level project should be deleted"
     );
     assert_eq!(
-        app.projects
+        app.projects()
             .at_path(&abs_path)
             .expect("top-level project should still exist in hierarchy")
             .visibility,
@@ -552,7 +552,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         "deleted top-level project should expose dismiss affordance"
     );
 
-    let item = &app.projects[0];
+    let item = &app.projects()[0].item;
     let row = columns::build_row_cells(ProjectRow {
         prefix:            crate::tui::render::PREFIX_ROOT_LEAF,
         name:              &item.root_directory_name().into_string(),
@@ -622,7 +622,7 @@ fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
         "top-level project should be deleted"
     );
     assert_eq!(
-        app.projects
+        app.projects()
             .at_path(&abs_path)
             .expect("top-level project should still exist in hierarchy")
             .visibility,
@@ -644,7 +644,7 @@ fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
         "dismissed top-level deleted project should no longer render"
     );
     assert_eq!(
-        app.projects
+        app.projects()
             .at_path(&abs_path)
             .expect("top-level project should remain in hierarchy after dismiss")
             .visibility,

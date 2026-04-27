@@ -10,7 +10,7 @@ impl App {
     /// Only roots and worktree entries own lint state. Members, vendored
     /// packages, and group headers do not — the match is exhaustive so new
     /// variants must be classified.
-    pub(in super::super) fn selected_row_owns_lint(&self) -> bool {
+    pub fn selected_row_owns_lint(&self) -> bool {
         match self.selected_row() {
             Some(
                 VisibleRow::Root { .. }
@@ -31,42 +31,38 @@ impl App {
 
     /// Lint icon frame for the current animation state, or a blank space if lint is
     /// disabled or no log exists.
-    pub(in super::super) fn lint_icon(&self, path: &Path) -> &'static str {
+    pub fn lint_icon(&self, path: &Path) -> &'static str {
         use crate::constants::LINT_NO_LOG;
 
         if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
-        let Some(lr) = self.projects.lint_at_path(path) else {
+        let Some(lr) = self.projects().lint_at_path(path) else {
             return LINT_NO_LOG;
         };
         lr.status().icon().frame_at(self.animation_elapsed())
     }
 
-    pub(in super::super) fn lint_icon_for_root(&self, node_index: usize) -> &'static str {
+    pub fn lint_icon_for_root(&self, node_index: usize) -> &'static str {
         use crate::constants::LINT_NO_LOG;
 
         if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
-        let Some(item) = self.projects.get(node_index) else {
+        let Some(item) = self.projects().get(node_index) else {
             return LINT_NO_LOG;
         };
         let status = item.lint_rollup_status();
         status.icon().frame_at(self.animation_elapsed())
     }
 
-    pub(in super::super) fn lint_icon_for_worktree(
-        &self,
-        node_index: usize,
-        worktree_index: usize,
-    ) -> &'static str {
+    pub fn lint_icon_for_worktree(&self, node_index: usize, worktree_index: usize) -> &'static str {
         use crate::constants::LINT_NO_LOG;
 
         if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
-        let Some(entry) = self.projects.get(node_index) else {
+        let Some(entry) = self.projects().get(node_index) else {
             return LINT_NO_LOG;
         };
         let RootItem::Worktrees(g) = &entry.item else {
@@ -76,13 +72,13 @@ impl App {
         status.icon().frame_at(self.animation_elapsed())
     }
 
-    pub(in super::super) fn selected_lint_icon(&self, path: &Path) -> Option<&'static str> {
+    pub fn selected_lint_icon(&self, path: &Path) -> Option<&'static str> {
         if !self.lint_enabled() {
             return None;
         }
         match self.selected_row() {
             Some(VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. }) => {
-                self.projects.get(node_index).map(|item| {
+                self.projects().get(node_index).map(|item| {
                     item.lint_rollup_status()
                         .icon()
                         .frame_at(self.animation_elapsed())
@@ -99,7 +95,7 @@ impl App {
                     ..
                 },
             ) => {
-                let RootItem::Worktrees(g) = &self.projects.get(node_index)?.item else {
+                let RootItem::Worktrees(g) = &self.projects().get(node_index)?.item else {
                     return None;
                 };
                 let status = g.lint_status_for_worktree(worktree_index);
@@ -113,9 +109,9 @@ impl App {
                 | VisibleRow::WorktreeVendored { .. },
             )
             | None => self
-                .projects
+                .projects()
                 .lint_at_path(path)
-                .or_else(|| self.projects.vendored_owner_lint(path))
+                .or_else(|| self.projects().vendored_owner_lint(path))
                 .map(|lr| lr.status().icon().frame_at(self.animation_elapsed())),
         }
     }

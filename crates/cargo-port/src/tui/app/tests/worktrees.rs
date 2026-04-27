@@ -130,9 +130,9 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
     app.handle_disk_usage(test_path("~/ws").as_path(), 15);
     app.handle_disk_usage(test_path("~/ws_feat").as_path(), 21);
 
-    assert_eq!(app.projects[0].disk_usage_bytes(), Some(36));
+    assert_eq!(app.projects()[0].disk_usage_bytes(), Some(36));
     assert_eq!(
-        App::formatted_disk_for_item(&app.projects[0]),
+        App::formatted_disk_for_item(&app.projects()[0].item),
         crate::tui::render::format_bytes(36)
     );
 }
@@ -160,7 +160,7 @@ fn handle_project_discovered_deduplicates_by_path() {
     app.handle_project_discovered(pkg1);
     app.handle_project_discovered(pkg2);
     app.handle_project_discovered(pkg3);
-    assert_eq!(app.projects.len(), 2);
+    assert_eq!(app.projects().len(), 2);
 }
 
 #[test]
@@ -176,7 +176,11 @@ fn handle_project_discovered_inserts_new_root_in_sorted_position() {
         "~/rust/cache-apt-pkgs-action",
     )));
 
-    let actual: Vec<_> = app.projects.iter().map(|entry| entry.item.path()).collect();
+    let actual: Vec<_> = app
+        .projects()
+        .iter()
+        .map(|entry| entry.item.path())
+        .collect();
     assert_eq!(
         actual,
         vec![
@@ -236,7 +240,7 @@ fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace
         BackgroundMsg::ProjectDiscovered { item: linked_item },
     );
 
-    let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) = &app.projects[0].item
+    let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) = &app.projects()[0].item
     else {
         panic!("expected discovered workspace worktree to form a worktree group");
     };
@@ -637,7 +641,7 @@ fn handle_project_discovered_does_not_allocate_per_comparison() {
         app.handle_project_discovered(item);
     }
     let elapsed = start.elapsed();
-    assert_eq!(app.projects.len(), 200);
+    assert_eq!(app.projects().len(), 200);
     assert!(
         elapsed.as_millis() < 100,
         "discovery of 200 projects took {elapsed:?} - possible display_path allocation regression"
@@ -650,10 +654,10 @@ fn is_deleted_does_not_allocate_display_paths() {
     for i in 0..200 {
         let path = format!("/abs/project_{i}");
         let item = RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
-        app.projects.push(item);
+        app.projects_mut().push(item);
     }
-    let target = app.projects[100].path().to_path_buf();
-    app.projects
+    let target = app.projects()[100].path().to_path_buf();
+    app.projects_mut()
         .at_path_mut(&target)
         .expect("target project should exist")
         .visibility = Deleted;

@@ -15,7 +15,7 @@ fn submodule_rows_render_disk_usage() {
     let mut app = make_app(&[root]);
 
     let root_info = app
-        .projects
+        .projects_mut()
         .at_path_mut(Path::new(&root_path))
         .unwrap_or_else(|| std::process::abort());
     root_info.submodules.push(Submodule {
@@ -360,7 +360,7 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
         "dismissing the deleted worktree should collapse the group to the root row"
     );
     assert_eq!(
-        match &app.projects[0].item {
+        match &app.projects()[0].item {
             RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. }) => {
                 assert_eq!(wtg.live_entry_count(), 1);
                 usize::from(wtg.renders_as_group())
@@ -378,7 +378,7 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
         "selection should move back to the surviving top-level project"
     );
     assert_eq!(
-        app.projects
+        app.projects()
             .at_path(&linked_abs)
             .expect("linked worktree should remain in the hierarchy")
             .visibility,
@@ -449,7 +449,7 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
         "dismissing the deleted workspace worktree should collapse to the root row"
     );
     assert_eq!(
-        match &app.projects[0].item {
+        match &app.projects()[0].item {
             RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) => {
                 assert_eq!(wtg.live_entry_count(), 1);
                 usize::from(wtg.renders_as_group())
@@ -572,7 +572,7 @@ fn dismissing_deleted_linked_workspace_worktree_preserves_primary_member_disk_si
     app.handle_disk_usage(Path::new(&primary_path), 2_000_000);
     app.handle_disk_usage(Path::new(&member_path), 1_234_567);
     assert_eq!(
-        app.projects
+        app.projects()
             .at_path(Path::new(&member_path))
             .and_then(|info| info.disk_usage_bytes),
         Some(1_234_567)
@@ -598,7 +598,7 @@ fn dismissing_deleted_linked_workspace_worktree_preserves_primary_member_disk_si
     app.ensure_visible_rows_cached();
 
     assert_eq!(
-        app.projects
+        app.projects()
             .at_path(Path::new(&member_path))
             .and_then(|info| info.disk_usage_bytes),
         Some(1_234_567),

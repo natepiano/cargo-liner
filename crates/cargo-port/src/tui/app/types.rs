@@ -41,26 +41,26 @@ pub struct PendingClean {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in super::super) struct HoveredPaneRow {
+pub struct HoveredPaneRow {
     pub pane: PaneId,
     pub row:  usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in super::super) struct DiscoveryShimmer {
+pub struct DiscoveryShimmer {
     pub started_at: Instant,
     pub duration:   Duration,
 }
 
 impl DiscoveryShimmer {
-    pub(in super::super) const fn new(started_at: Instant, duration: Duration) -> Self {
+    pub const fn new(started_at: Instant, duration: Duration) -> Self {
         Self {
             started_at,
             duration,
         }
     }
 
-    pub(in super::super) fn is_active_at(self, now: Instant) -> bool {
+    pub fn is_active_at(self, now: Instant) -> bool {
         now.duration_since(self.started_at) < self.duration
     }
 }
@@ -73,7 +73,7 @@ pub enum DiscoveryRowKind {
 }
 
 #[derive(Debug, Default)]
-pub(in super::super) struct StartupPhaseTracker {
+pub struct StartupPhaseTracker {
     pub scan_complete_at:    Option<Instant>,
     pub startup_toast:       Option<ToastTaskId>,
     pub startup_complete_at: Option<Instant>,
@@ -92,33 +92,33 @@ pub(in super::super) struct StartupPhaseTracker {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in super::super) enum Dirtiness {
+pub enum Dirtiness {
     #[default]
     Clean,
     Dirty,
 }
 
 impl Dirtiness {
-    pub(in super::super) const fn is_dirty(self) -> bool { matches!(self, Self::Dirty) }
+    pub const fn is_dirty(self) -> bool { matches!(self, Self::Dirty) }
 
-    pub(in super::super) const fn mark_dirty(&mut self) { *self = Self::Dirty; }
+    pub const fn mark_dirty(&mut self) { *self = Self::Dirty; }
 
-    pub(in super::super) const fn mark_clean(&mut self) { *self = Self::Clean; }
+    pub const fn mark_clean(&mut self) { *self = Self::Clean; }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in super::super) enum FinderMode {
+pub enum FinderMode {
     #[default]
     Hidden,
     Visible,
 }
 
 impl FinderMode {
-    pub(in super::super) const fn is_visible(self) -> bool { matches!(self, Self::Visible) }
+    pub const fn is_visible(self) -> bool { matches!(self, Self::Visible) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in super::super) enum SettingsMode {
+pub enum SettingsMode {
     #[default]
     Hidden,
     Browsing,
@@ -126,13 +126,13 @@ pub(in super::super) enum SettingsMode {
 }
 
 impl SettingsMode {
-    pub(in super::super) const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
+    pub const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
 
-    pub(in super::super) const fn is_editing(self) -> bool { matches!(self, Self::Editing) }
+    pub const fn is_editing(self) -> bool { matches!(self, Self::Editing) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in super::super) enum KeymapMode {
+pub enum KeymapMode {
     #[default]
     Hidden,
     Browsing,
@@ -140,26 +140,24 @@ pub(in super::super) enum KeymapMode {
 }
 
 impl KeymapMode {
-    pub(in super::super) const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
+    pub const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
 
-    pub(in super::super) const fn is_awaiting_key(self) -> bool {
-        matches!(self, Self::AwaitingKey)
-    }
+    pub const fn is_awaiting_key(self) -> bool { matches!(self, Self::AwaitingKey) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in super::super) enum ScanPhase {
+pub enum ScanPhase {
     #[default]
     Running,
     Complete,
 }
 
 impl ScanPhase {
-    pub(in super::super) const fn is_complete(self) -> bool { matches!(self, Self::Complete) }
+    pub const fn is_complete(self) -> bool { matches!(self, Self::Complete) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in super::super) enum ExitMode {
+pub enum ExitMode {
     #[default]
     Continue,
     Quit,
@@ -167,27 +165,25 @@ pub(in super::super) enum ExitMode {
 }
 
 impl ExitMode {
-    pub(in super::super) const fn should_quit(self) -> bool {
-        matches!(self, Self::Quit | Self::Restart)
-    }
+    pub const fn should_quit(self) -> bool { matches!(self, Self::Quit | Self::Restart) }
 
-    pub(in super::super) const fn should_restart(self) -> bool { matches!(self, Self::Restart) }
+    pub const fn should_restart(self) -> bool { matches!(self, Self::Restart) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in super::super) enum SelectionSync {
+pub enum SelectionSync {
     #[default]
     Stable,
     Changed,
 }
 
 impl SelectionSync {
-    pub(in super::super) const fn is_changed(self) -> bool { matches!(self, Self::Changed) }
+    pub const fn is_changed(self) -> bool { matches!(self, Self::Changed) }
 }
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum RetrySpawnMode {
+pub enum RetrySpawnMode {
     #[default]
     Enabled,
     Disabled,
@@ -195,16 +191,16 @@ pub(super) enum RetrySpawnMode {
 
 #[cfg(test)]
 impl RetrySpawnMode {
-    pub(super) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
+    pub const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 #[derive(Debug)]
-pub(in super::super) struct DirtyState {
+pub struct DirtyState {
     pub terminal: Dirtiness,
 }
 
 impl DirtyState {
-    pub(in super::super) const fn initial() -> Self {
+    pub const fn initial() -> Self {
         Self {
             terminal: Dirtiness::Clean,
         }
@@ -212,7 +208,7 @@ impl DirtyState {
 }
 
 #[derive(Debug, Default)]
-pub(in super::super) struct UiModes {
+pub struct UiModes {
     pub finder:   FinderMode,
     pub settings: SettingsMode,
     pub keymap:   KeymapMode,
@@ -220,7 +216,7 @@ pub(in super::super) struct UiModes {
 }
 
 #[derive(Debug)]
-pub(in super::super) struct ScanState {
+pub struct ScanState {
     pub phase:          ScanPhase,
     pub started_at:     Instant,
     pub run_count:      u64,
@@ -228,7 +224,7 @@ pub(in super::super) struct ScanState {
 }
 
 impl ScanState {
-    pub(in super::super) fn new(started_at: Instant) -> Self {
+    pub fn new(started_at: Instant) -> Self {
         Self {
             phase: ScanPhase::Running,
             started_at,
@@ -239,7 +235,7 @@ impl ScanState {
 }
 
 #[derive(Debug, Default)]
-pub(in super::super) struct SelectionPaths {
+pub struct SelectionPaths {
     pub last_selected:      Option<AbsolutePath>,
     pub selected_project:   Option<AbsolutePath>,
     pub collapsed_selected: Option<AbsolutePath>,
@@ -247,7 +243,7 @@ pub(in super::super) struct SelectionPaths {
 }
 
 impl SelectionPaths {
-    pub(in super::super) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             last_selected: terminal::load_last_selected(),
             ..Self::default()
@@ -255,7 +251,7 @@ impl SelectionPaths {
     }
 }
 
-pub(in super::super) struct FinderState {
+pub struct FinderState {
     pub query:      String,
     pub results:    Vec<usize>,
     pub total:      usize,
@@ -264,7 +260,7 @@ pub(in super::super) struct FinderState {
 }
 
 impl FinderState {
-    pub(in super::super) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             query:      String::new(),
             results:    Vec::new(),
@@ -364,7 +360,7 @@ impl CiFetchTracker {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in super::super) enum CiRunDisplayMode {
+pub enum CiRunDisplayMode {
     #[default]
     BranchOnly,
     All,

@@ -15,64 +15,42 @@ use crate::tui::settings::SettingOption::IncludeDirs;
 use crate::tui::shortcuts::InputContext;
 
 impl App {
-    pub(in super::super) const fn is_finder_open(&self) -> bool {
-        self.ui_modes.finder.is_visible()
-    }
+    pub const fn is_finder_open(&self) -> bool { self.ui_modes.finder.is_visible() }
 
-    pub(in super::super) const fn is_settings_open(&self) -> bool {
-        self.ui_modes.settings.is_visible()
-    }
+    pub const fn is_settings_open(&self) -> bool { self.ui_modes.settings.is_visible() }
 
-    pub(in super::super) const fn is_settings_editing(&self) -> bool {
-        self.ui_modes.settings.is_editing()
-    }
+    pub const fn is_settings_editing(&self) -> bool { self.ui_modes.settings.is_editing() }
 
-    pub(in super::super) const fn is_scan_complete(&self) -> bool { self.scan.phase.is_complete() }
+    pub const fn is_scan_complete(&self) -> bool { self.scan.scan_state().phase.is_complete() }
 
-    pub(in super::super) const fn should_quit(&self) -> bool { self.ui_modes.exit.should_quit() }
+    pub const fn should_quit(&self) -> bool { self.ui_modes.exit.should_quit() }
 
-    pub(in super::super) const fn should_restart(&self) -> bool {
-        self.ui_modes.exit.should_restart()
-    }
+    pub const fn should_restart(&self) -> bool { self.ui_modes.exit.should_restart() }
 
-    pub(in super::super) const fn selection_changed(&self) -> bool {
-        self.selection.sync().is_changed()
-    }
+    pub const fn selection_changed(&self) -> bool { self.selection.sync().is_changed() }
 
-    pub(in super::super) const fn mark_selection_changed(&mut self) {
-        self.selection.mark_sync_changed();
-    }
+    pub const fn mark_selection_changed(&mut self) { self.selection.mark_sync_changed(); }
 
-    pub(in super::super) const fn clear_selection_changed(&mut self) {
-        self.selection.mark_sync_stable();
-    }
+    pub const fn clear_selection_changed(&mut self) { self.selection.mark_sync_stable(); }
 
-    pub(in super::super) const fn request_quit(&mut self) { self.ui_modes.exit = ExitMode::Quit; }
+    pub const fn request_quit(&mut self) { self.ui_modes.exit = ExitMode::Quit; }
 
-    pub(in super::super) const fn request_restart(&mut self) {
-        self.ui_modes.exit = ExitMode::Restart;
-    }
+    pub const fn request_restart(&mut self) { self.ui_modes.exit = ExitMode::Restart; }
 
-    pub(in super::super) const fn open_finder(&mut self) {
-        self.ui_modes.finder = FinderMode::Visible;
-    }
+    pub const fn open_finder(&mut self) { self.ui_modes.finder = FinderMode::Visible; }
 
-    pub(in super::super) const fn close_finder(&mut self) {
-        self.ui_modes.finder = FinderMode::Hidden;
-    }
+    pub const fn close_finder(&mut self) { self.ui_modes.finder = FinderMode::Hidden; }
 
-    pub(in super::super) const fn open_settings(&mut self) {
-        self.ui_modes.settings = SettingsMode::Browsing;
-    }
+    pub const fn open_settings(&mut self) { self.ui_modes.settings = SettingsMode::Browsing; }
 
-    pub(in super::super) fn close_settings(&mut self) {
+    pub fn close_settings(&mut self) {
         self.ui_modes.settings = SettingsMode::Hidden;
         self.inline_error = None;
     }
 
     /// Open the settings overlay and position the cursor on `IncludeDirs`
     /// when no include directories are configured.
-    pub(in super::super) fn force_settings_if_unconfigured(&mut self) {
+    pub fn force_settings_if_unconfigured(&mut self) {
         if !self.config.current().tui.include_dirs.is_empty() {
             return;
         }
@@ -86,53 +64,43 @@ impl App {
         self.set_inline_error("Configure at least one include directory before continuing");
     }
 
-    pub(in super::super) const fn is_keymap_open(&self) -> bool {
-        self.ui_modes.keymap.is_visible()
-    }
+    pub const fn is_keymap_open(&self) -> bool { self.ui_modes.keymap.is_visible() }
 
-    pub(in super::super) const fn open_keymap(&mut self) {
-        self.ui_modes.keymap = KeymapMode::Browsing;
-    }
+    pub const fn open_keymap(&mut self) { self.ui_modes.keymap = KeymapMode::Browsing; }
 
-    pub(in super::super) fn close_keymap(&mut self) {
+    pub fn close_keymap(&mut self) {
         self.ui_modes.keymap = KeymapMode::Hidden;
         self.inline_error = None;
     }
 
-    pub(in super::super) fn keymap_begin_awaiting(&mut self) {
+    pub fn keymap_begin_awaiting(&mut self) {
         self.ui_modes.keymap = KeymapMode::AwaitingKey;
         self.inline_error = None;
     }
 
-    pub(in super::super) fn keymap_end_awaiting(&mut self) {
+    pub fn keymap_end_awaiting(&mut self) {
         self.ui_modes.keymap = KeymapMode::Browsing;
         self.inline_error = None;
     }
 
-    pub(in super::super) fn begin_settings_editing(&mut self) {
+    pub fn begin_settings_editing(&mut self) {
         self.ui_modes.settings = SettingsMode::Editing;
         self.inline_error = None;
     }
 
-    pub(in super::super) fn end_settings_editing(&mut self) {
+    pub fn end_settings_editing(&mut self) {
         self.ui_modes.settings = SettingsMode::Browsing;
         self.inline_error = None;
     }
 
-    pub(in super::super) const fn mark_terminal_dirty(&mut self) {
-        self.dirty.terminal.mark_dirty();
-    }
+    pub const fn mark_terminal_dirty(&mut self) { self.scan.dirty_mut().terminal.mark_dirty(); }
 
-    pub(in super::super) const fn clear_terminal_dirty(&mut self) {
-        self.dirty.terminal.mark_clean();
-    }
+    pub const fn clear_terminal_dirty(&mut self) { self.scan.dirty_mut().terminal.mark_clean(); }
 
-    pub(in super::super) const fn terminal_is_dirty(&self) -> bool {
-        self.dirty.terminal.is_dirty()
-    }
+    pub const fn terminal_is_dirty(&self) -> bool { self.scan.dirty().terminal.is_dirty() }
 
     /// Derive the current input context from app state.
-    pub(in super::super) const fn input_context(&self) -> InputContext {
+    pub const fn input_context(&self) -> InputContext {
         if self.ui_modes.keymap.is_awaiting_key() && self.inline_error.is_some() {
             InputContext::KeymapConflict
         } else if self.ui_modes.keymap.is_awaiting_key() {
@@ -158,9 +126,9 @@ impl App {
         }
     }
 
-    pub(in super::super) fn is_focused(&self, pane: PaneId) -> bool { self.focused_pane == pane }
+    pub fn is_focused(&self, pane: PaneId) -> bool { self.focused_pane == pane }
 
-    pub(in super::super) fn pane_focus_state(&self, pane: PaneId) -> PaneFocusState {
+    pub fn pane_focus_state(&self, pane: PaneId) -> PaneFocusState {
         if self.is_focused(pane) {
             PaneFocusState::Active
         } else if self.remembers_selection(pane) {
@@ -170,7 +138,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn base_focus(&self) -> PaneId {
+    pub fn base_focus(&self) -> PaneId {
         if self.focused_pane.is_overlay() {
             self.return_focus.unwrap_or(PaneId::ProjectList)
         } else {
@@ -178,7 +146,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn focus_pane(&mut self, pane: PaneId) {
+    pub fn focus_pane(&mut self, pane: PaneId) {
         self.focused_pane = pane;
         if !pane.is_overlay() {
             self.panes.mark_visited(pane);
@@ -186,7 +154,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn open_overlay(&mut self, pane: PaneId) {
+    pub fn open_overlay(&mut self, pane: PaneId) {
         if !pane.is_overlay() {
             self.focus_pane(pane);
             return;
@@ -195,18 +163,18 @@ impl App {
         self.focused_pane = pane;
     }
 
-    pub(in super::super) fn close_overlay(&mut self) {
+    pub fn close_overlay(&mut self) {
         self.focused_pane = self.return_focus.unwrap_or(PaneId::ProjectList);
         self.return_focus = None;
     }
 
-    pub(in super::super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
+    pub fn is_pane_tabbable(&self, pane: PaneId) -> bool {
         match panes::behavior(pane) {
             PaneBehavior::ProjectList => true,
             PaneBehavior::DetailFields => match pane {
                 PaneId::Package => self.selected_project_path().is_some(),
                 PaneId::Lang => self.selected_project_path().is_some_and(|path| {
-                    self.projects
+                    self.projects()
                         .at_path(path)
                         .and_then(|p| p.language_stats.as_ref())
                         .is_some_and(|ls| !ls.entries.is_empty())
@@ -241,7 +209,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn tabbable_panes(&self) -> Vec<PaneId> {
+    pub fn tabbable_panes(&self) -> Vec<PaneId> {
         panes::tab_order(if self.inflight.example_output_is_empty() {
             panes::BottomRow::Diagnostics
         } else {
@@ -256,7 +224,7 @@ impl App {
         .collect()
     }
 
-    pub(in super::super) fn focus_next_pane(&mut self) {
+    pub fn focus_next_pane(&mut self) {
         self.prune_toasts();
         let panes = self.tabbable_panes();
         if panes.is_empty() {
@@ -278,7 +246,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn focus_previous_pane(&mut self) {
+    pub fn focus_previous_pane(&mut self) {
         self.prune_toasts();
         let panes = self.tabbable_panes();
         if panes.is_empty() {
@@ -301,7 +269,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn reset_project_panes(&mut self) {
+    pub fn reset_project_panes(&mut self) {
         self.pane_manager_mut().pane_mut(PaneId::Package).home();
         self.pane_manager_mut().pane_mut(PaneId::Git).home();
         self.pane_manager_mut().pane_mut(PaneId::Targets).home();
@@ -314,7 +282,5 @@ impl App {
         self.panes.unvisit(PaneId::CiRuns);
     }
 
-    pub(in super::super) fn remembers_selection(&self, pane: PaneId) -> bool {
-        self.panes.remembers_visited(pane)
-    }
+    pub fn remembers_selection(&self, pane: PaneId) -> bool { self.panes.remembers_visited(pane) }
 }

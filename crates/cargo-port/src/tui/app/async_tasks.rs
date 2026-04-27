@@ -85,7 +85,7 @@ struct LegacyRootExpansion {
 
 impl App {
     #[cfg(test)]
-    pub(in super::super) fn apply_tree_build(&mut self, projects: ProjectList) {
+    pub fn apply_tree_build(&mut self, projects: ProjectList) {
         let selected_path = self
             .selected_project_path()
             .map(AbsolutePath::from)
@@ -95,12 +95,12 @@ impl App {
         self.prune_inactive_project_state();
         self.register_lint_for_root_items();
         self.refresh_lint_runs_from_disk();
-        self.data_generation += 1;
+        self.scan.bump_generation();
 
         // Try to restore selection
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
-        } else if !self.projects.is_empty() {
+        } else if !self.projects().is_empty() {
             self.pane_manager_mut()
                 .pane_mut(PaneId::ProjectList)
                 .set_pos(0);
@@ -111,7 +111,7 @@ impl App {
         self.sync_selected_project();
     }
 
-    pub(in super::super) fn record_config_reload_failure(&mut self, err: &str) {
+    pub fn record_config_reload_failure(&mut self, err: &str) {
         self.status_flash = Some((
             "Config reload failed; keeping previous settings".to_string(),
             Instant::now(),
@@ -119,7 +119,7 @@ impl App {
         self.show_timed_toast("Config reload failed", err.to_string());
     }
 
-    pub(in super::super) fn load_initial_keymap(&mut self) {
+    pub fn load_initial_keymap(&mut self) {
         let vim_mode = self.config.current().tui.navigation_keys;
         let result = keymap::load_keymap(vim_mode);
         self.keymap.replace_current(result.keymap);
@@ -138,7 +138,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn maybe_reload_keymap_from_disk(&mut self) {
+    pub fn maybe_reload_keymap_from_disk(&mut self) {
         let Some(path) = self.keymap.take_stamp_change() else {
             return;
         };
@@ -180,7 +180,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn sync_keymap_stamp(&mut self) { self.keymap.sync_stamp(); }
+    pub fn sync_keymap_stamp(&mut self) { self.keymap.sync_stamp(); }
 
     fn show_keymap_diagnostics(&mut self, errors: &[KeymapError]) {
         // Dismiss previous diagnostics toast if any.
@@ -216,7 +216,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn maybe_reload_config_from_disk(&mut self) {
+    pub fn maybe_reload_config_from_disk(&mut self) {
         let Some(path) = self.config.take_stamp_change() else {
             return;
         };
@@ -232,17 +232,14 @@ impl App {
         }
     }
 
-    pub(in super::super) fn save_and_apply_config(
-        &mut self,
-        cfg: &CargoPortConfig,
-    ) -> Result<(), String> {
+    pub fn save_and_apply_config(&mut self, cfg: &CargoPortConfig) -> Result<(), String> {
         config::save(cfg)?;
         self.apply_config(cfg);
         self.config.sync_stamp();
         Ok(())
     }
 
-    pub(in super::super) fn apply_config(&mut self, cfg: &CargoPortConfig) {
+    pub fn apply_config(&mut self, cfg: &CargoPortConfig) {
         if self.config.current() == cfg {
             return;
         }
@@ -261,7 +258,7 @@ impl App {
         config::set_active_config(cfg);
         *self.config.current_mut() = cfg.clone();
         if !self.discovery_shimmer_enabled() {
-            self.discovery_shimmers.clear();
+            self.scan.discovery_shimmers_mut().clear();
         }
 
         if prev_force != next_force {
@@ -295,7 +292,8 @@ impl App {
             if actions.rebuild_tree.should_apply() {
                 // Regroup workspace members in-place based on updated
                 // inline_dirs, then refresh derived state.
-                self.projects
+                self.scan
+                    .projects_mut()
                     .regroup_members(&self.config.current().tui.inline_dirs);
                 self.refresh_derived_state();
             }
@@ -322,7 +320,7 @@ impl App {
     /// orchestrator. See "Recurring patterns" in
     /// `src/tui/app/mod.rs` for the cross-subsystem orchestrator
     /// pattern.
-    pub(in super::super) fn apply_lint_config_change(&mut self, cfg: &CargoPortConfig) {
+    pub fn apply_lint_config_change(&mut self, cfg: &CargoPortConfig) {
         // Inflight: respawn the lint runtime + clear in-flight tracking.
         let lint_spawn = lint::spawn(cfg, self.background.bg_sender());
         self.inflight.set_lint_runtime(lint_spawn.handle);
@@ -334,7 +332,7 @@ impl App {
         // disk, bump generation.
         self.clear_all_lint_state();
         self.refresh_lint_runs_from_disk();
-        self.data_generation += 1;
+        self.scan.bump_generation();
 
         // Selection: recompute fit widths (column schema differs
         // with lint enabled / disabled).
@@ -349,11 +347,11 @@ impl App {
     /// Backwards-compatible shim. Existing callers (rescan, config
     /// reload) still call `refresh_lint_runtime_from_config`; the
     /// real orchestration lives in [`Self::apply_lint_config_change`].
-    pub(in super::super) fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
+    pub fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
         self.apply_lint_config_change(cfg);
     }
 
-    pub(in super::super) fn respawn_watcher(&mut self) {
+    pub fn respawn_watcher(&mut self) {
         let watch_roots = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
         let new_watcher = watcher::spawn_watcher(
             &watch_roots,
@@ -367,13 +365,13 @@ impl App {
         self.background.replace_watcher_sender(new_watcher);
     }
 
-    pub(in super::super) fn register_existing_projects(&self) {
-        self.projects.for_each_leaf(|item| {
+    pub fn register_existing_projects(&self) {
+        self.projects().for_each_leaf(|item| {
             self.register_item_background_services(item);
         });
     }
 
-    pub(in super::super) fn finish_watcher_registration_batch(&self) {
+    pub fn finish_watcher_registration_batch(&self) {
         let _ = self
             .background
             .send_watcher(WatcherMsg::InitialRegistrationComplete);
@@ -385,40 +383,41 @@ impl App {
         self.finish_watcher_registration_batch();
     }
 
-    pub(in super::super) fn refresh_lint_runs_from_disk(&mut self) {
+    pub fn refresh_lint_runs_from_disk(&mut self) {
         let mut paths = Vec::new();
-        self.projects.for_each_leaf_path(|path, is_rust| {
+        self.projects().for_each_leaf_path(|path, is_rust| {
             if is_rust {
                 paths.push(path.to_path_buf());
             }
         });
         for path in &paths {
             let runs = lint::read_history(path);
-            if let Some(lr) = self.projects.lint_at_path_mut(path) {
+            if let Some(lr) = self.scan.projects_mut().lint_at_path_mut(path) {
                 lr.set_runs(runs, path);
             }
         }
         self.refresh_lint_cache_usage_from_disk();
     }
 
-    pub(in super::super) fn reload_lint_history(&mut self, project_path: &Path) {
+    pub fn reload_lint_history(&mut self, project_path: &Path) {
         if !self.is_rust_at_path(project_path) {
             return;
         }
         let runs = lint::read_history(project_path);
-        if let Some(lr) = self.projects.lint_at_path_mut(project_path) {
+        if let Some(lr) = self.scan.projects_mut().lint_at_path_mut(project_path) {
             lr.set_runs(runs, project_path);
         }
     }
 
-    pub(in super::super) fn refresh_lint_cache_usage_from_disk(&mut self) {
+    pub fn refresh_lint_cache_usage_from_disk(&mut self) {
         let cache_size_bytes = self
             .config
             .current()
             .lint
             .cache_size_bytes()
             .unwrap_or(None);
-        self.lint_cache_usage = lint::retained_cache_usage(cache_size_bytes);
+        self.scan
+            .set_lint_cache_usage(lint::retained_cache_usage(cache_size_bytes));
     }
 
     /// Register file-system watchers for every item in the tree after a
@@ -426,7 +425,7 @@ impl App {
     fn register_background_services_for_tree(&self) {
         let started = Instant::now();
         let mut count = 0usize;
-        self.projects.for_each_leaf(|item| {
+        self.projects().for_each_leaf(|item| {
             self.register_item_background_services(item);
             count += 1;
         });
@@ -437,7 +436,7 @@ impl App {
         );
     }
 
-    pub(in super::super) fn register_item_background_services(&self, item: &RootItem) {
+    pub fn register_item_background_services(&self, item: &RootItem) {
         let started = Instant::now();
         let abs_path = AbsolutePath::from(item.path().to_path_buf());
         let repo_root = project::git_repo_root(&abs_path);
@@ -462,7 +461,7 @@ impl App {
         let fetch_context = std::sync::Arc::new(FetchContext {
             client: self.http_client.clone(),
         });
-        self.projects.for_each_leaf(|item| {
+        self.projects().for_each_leaf(|item| {
             let abs_path = item.path().to_path_buf();
             let display_path = item.display_path().into_string();
             let project_name = item
@@ -470,7 +469,7 @@ impl App {
                 .then(|| item.name().map(str::to_string))
                 .flatten()
                 .filter(|_| {
-                    self.projects
+                    self.projects()
                         .rust_info_at_path(item.path())
                         .is_some_and(|r| r.cargo().publishable())
                 });
@@ -507,7 +506,7 @@ impl App {
         let tx = self.background.bg_sender();
         let client = self.http_client.clone();
         let mut targets: Vec<(AbsolutePath, String)> = Vec::new();
-        for entry in &self.projects {
+        for entry in self.projects() {
             collect_publishable_children(&entry.item, &mut targets);
         }
         if targets.is_empty() {
@@ -528,10 +527,10 @@ impl App {
         });
     }
 
-    pub(in super::super) fn schedule_git_first_commit_refreshes(&self) {
+    pub fn schedule_git_first_commit_refreshes(&self) {
         let tx = self.background.bg_sender();
         let mut projects_by_repo: HashMap<AbsolutePath, Vec<AbsolutePath>> = HashMap::new();
-        self.projects.for_each_leaf_path(|path, _| {
+        self.projects().for_each_leaf_path(|path, _| {
             let abs_path = AbsolutePath::from(path);
             let Some(repo_root) = project::git_repo_root(&abs_path) else {
                 return;
@@ -567,7 +566,7 @@ impl App {
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
 
-        for entry in &self.projects {
+        for entry in self.projects() {
             let items: Vec<(&AbsolutePath, bool)> = match &entry.item {
                 RootItem::Worktrees(crate::project::WorktreeGroup::Workspaces {
                     primary,
@@ -598,7 +597,7 @@ impl App {
         entries
     }
 
-    pub(in super::super) fn lint_runtime_projects_snapshot(&self) -> Vec<RegisterProjectRequest> {
+    pub fn lint_runtime_projects_snapshot(&self) -> Vec<RegisterProjectRequest> {
         if !self.is_scan_complete() {
             return Vec::new();
         }
@@ -613,7 +612,7 @@ impl App {
             .collect()
     }
 
-    pub(in super::super) fn sync_lint_runtime_projects(&self) {
+    pub fn sync_lint_runtime_projects(&self) {
         let Some(runtime) = self.inflight.lint_runtime() else {
             return;
         };
@@ -625,7 +624,7 @@ impl App {
             return 0;
         };
         let mut count = 0;
-        for entry in &self.projects {
+        for entry in self.projects() {
             match &entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     runtime.register_project(RegisterProjectRequest {
@@ -686,7 +685,7 @@ impl App {
         let path = item.path();
         // Skip workspace members — the workspace root's watcher covers them.
         let mut is_member = false;
-        self.projects.for_each_leaf(|existing| {
+        self.projects().for_each_leaf(|existing| {
             if matches!(
                 &existing.item,
                 RootItem::Rust(crate::project::RustProject::Workspace(_))
@@ -713,12 +712,12 @@ impl App {
     }
 
     fn register_lint_for_path(&self, path: &Path) {
-        if let Some(item) = self.projects.iter().find(|i| i.path() == path) {
+        if let Some(item) = self.projects().iter().find(|i| i.path() == path) {
             self.register_lint_project_if_eligible(item);
         }
     }
 
-    pub(in super::super) fn initialize_startup_phase_tracker(&mut self) {
+    pub fn initialize_startup_phase_tracker(&mut self) {
         self.reset_startup_phase_state();
         self.start_startup_toast();
         self.start_startup_detail_toasts();
@@ -727,40 +726,48 @@ impl App {
     }
 
     fn reset_startup_phase_state(&mut self) {
-        let disk_expected = snapshots::initial_disk_roots(&self.projects);
+        let disk_expected = snapshots::initial_disk_roots(self.projects());
         let git_expected = self
-            .projects
+            .projects()
             .git_directories()
             .into_iter()
             .collect::<HashSet<_>>();
         let git_seen = self
-            .projects
+            .projects()
             .iter()
             .filter(|entry| entry.item.git_info().is_some())
             .filter_map(|entry| entry.item.git_directory())
             .collect::<HashSet<_>>();
-        let metadata_expected = snapshots::initial_metadata_roots(&self.projects);
-        self.scan.startup_phases.scan_complete_at = Some(Instant::now());
-        self.scan.startup_phases.startup_toast = None;
-        self.scan.startup_phases.startup_complete_at = None;
+        let metadata_expected = snapshots::initial_metadata_roots(self.projects());
+        self.scan.scan_state_mut().startup_phases.scan_complete_at = Some(Instant::now());
+        self.scan.scan_state_mut().startup_phases.startup_toast = None;
         self.scan
+            .scan_state_mut()
+            .startup_phases
+            .startup_complete_at = None;
+        self.scan
+            .scan_state_mut()
             .startup_phases
             .disk
             .reset_with_expected(disk_expected);
         self.scan
+            .scan_state_mut()
             .startup_phases
             .git
             .reset_with_expected(git_expected);
-        self.scan.startup_phases.git.seen = git_seen;
+        self.scan.scan_state_mut().startup_phases.git.seen = git_seen;
         self.scan
+            .scan_state_mut()
             .startup_phases
             .repo
             .reset_with_expected(HashSet::new());
         self.scan
+            .scan_state_mut()
             .startup_phases
             .lint
             .reset_with_expected(HashSet::new());
         self.scan
+            .scan_state_mut()
             .startup_phases
             .metadata
             .reset_with_expected(metadata_expected);
@@ -797,43 +804,66 @@ impl App {
         ];
         let task_id = self.start_task_toast("Startup", "");
         self.set_task_tracked_items(task_id, &startup_items);
-        self.scan.startup_phases.startup_toast = Some(task_id);
+        self.scan.scan_state_mut().startup_phases.startup_toast = Some(task_id);
     }
 
     fn start_startup_detail_toasts(&mut self) {
-        if let Some(disk_expected) = self.scan.startup_phases.disk.expected.clone() {
+        if let Some(disk_expected) = self
+            .scan
+            .scan_state_mut()
+            .startup_phases
+            .disk
+            .expected
+            .clone()
+        {
             let disk_items = Self::tracked_items_for_startup(
                 &disk_expected,
-                &self.scan.startup_phases.disk.seen,
+                &self.scan.scan_state_mut().startup_phases.disk.seen,
             );
             if !disk_items.is_empty() {
                 let body = self.startup_disk_toast_body();
                 let task_id = self.start_task_toast("Calculating disk usage", &body);
                 self.set_task_tracked_items(task_id, &disk_items);
-                self.scan.startup_phases.disk.toast = Some(task_id);
+                self.scan.scan_state_mut().startup_phases.disk.toast = Some(task_id);
             }
         }
 
-        if let Some(git_expected) = self.scan.startup_phases.git.expected.clone() {
-            let git_items =
-                Self::tracked_items_for_startup(&git_expected, &self.scan.startup_phases.git.seen);
+        if let Some(git_expected) = self
+            .scan
+            .scan_state_mut()
+            .startup_phases
+            .git
+            .expected
+            .clone()
+        {
+            let git_items = Self::tracked_items_for_startup(
+                &git_expected,
+                &self.scan.scan_state_mut().startup_phases.git.seen,
+            );
             if !git_items.is_empty() {
                 let body = self.startup_git_toast_body();
                 let task_id = self.start_task_toast("Scanning local git repos", &body);
                 self.set_task_tracked_items(task_id, &git_items);
-                self.scan.startup_phases.git.toast = Some(task_id);
+                self.scan.scan_state_mut().startup_phases.git.toast = Some(task_id);
             }
         }
-        if let Some(metadata_expected) = self.scan.startup_phases.metadata.expected.clone() {
+        if let Some(metadata_expected) = self
+            .scan
+            .scan_state_mut()
+            .startup_phases
+            .metadata
+            .expected
+            .clone()
+        {
             let metadata_items = Self::tracked_items_for_startup(
                 &metadata_expected,
-                &self.scan.startup_phases.metadata.seen,
+                &self.scan.scan_state_mut().startup_phases.metadata.seen,
             );
             if !metadata_items.is_empty() {
                 let body = self.startup_metadata_toast_body();
                 let task_id = self.start_task_toast("Running cargo metadata", &body);
                 self.set_task_tracked_items(task_id, &metadata_items);
-                self.scan.startup_phases.metadata.toast = Some(task_id);
+                self.scan.scan_state_mut().startup_phases.metadata.toast = Some(task_id);
             }
         }
         // The "Retrieving GitHub repo details" toast is driven by
@@ -843,17 +873,23 @@ impl App {
 
     fn log_startup_phase_plan(&self) {
         tracing::info!(
-            disk_expected = self.scan.startup_phases.disk.expected_len(),
-            git_expected = self.scan.startup_phases.git.expected_len(),
-            repo_expected = self.scan.startup_phases.repo.expected_len(),
-            lint_expected = self.scan.startup_phases.lint.expected_len(),
-            metadata_expected = self.scan.startup_phases.metadata.expected_len(),
+            disk_expected = self.scan.scan_state().startup_phases.disk.expected_len(),
+            git_expected = self.scan.scan_state().startup_phases.git.expected_len(),
+            repo_expected = self.scan.scan_state().startup_phases.repo.expected_len(),
+            lint_expected = self.scan.scan_state().startup_phases.lint.expected_len(),
+            metadata_expected = self
+                .scan
+                .scan_state()
+                .startup_phases
+                .metadata
+                .expected_len(),
             "startup_phase_plan"
         );
     }
 
-    pub(in super::super) fn maybe_log_startup_phase_completions(&mut self) {
-        let Some(scan_complete_at) = self.scan.startup_phases.scan_complete_at else {
+    pub fn maybe_log_startup_phase_completions(&mut self) {
+        let Some(scan_complete_at) = self.scan.scan_state_mut().startup_phases.scan_complete_at
+        else {
             return;
         };
         let now = Instant::now();
@@ -865,118 +901,156 @@ impl App {
         self.maybe_complete_startup_ready(now, scan_complete_at);
     }
 
-    pub(in super::super) fn maybe_complete_startup_disk(
-        &mut self,
-        now: Instant,
-        scan_complete_at: Instant,
-    ) {
-        if !self.scan.startup_phases.disk.complete_once(now) {
+    pub fn maybe_complete_startup_disk(&mut self, now: Instant, scan_complete_at: Instant) {
+        if !self
+            .scan
+            .scan_state_mut()
+            .startup_phases
+            .disk
+            .complete_once(now)
+        {
             return;
         }
-        if let Some(disk_toast) = self.scan.startup_phases.disk.take_toast() {
+        if let Some(disk_toast) = self.scan.scan_state_mut().startup_phases.disk.take_toast() {
             self.finish_task_toast(disk_toast);
         }
-        if let Some(toast) = self.scan.startup_phases.startup_toast {
+        if let Some(toast) = self.scan.scan_state_mut().startup_phases.startup_toast {
             self.mark_tracked_item_completed(toast, STARTUP_PHASE_DISK);
         }
         tracing::info!(
             phase = "disk_applied",
             since_scan_complete_ms =
                 crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-            seen = self.scan.startup_phases.disk.seen.len(),
-            expected = self.scan.startup_phases.disk.expected_len(),
+            seen = self.scan.scan_state_mut().startup_phases.disk.seen.len(),
+            expected = self
+                .scan
+                .scan_state_mut()
+                .startup_phases
+                .disk
+                .expected_len(),
             "startup_phase_complete"
         );
     }
 
-    pub(in super::super) fn maybe_complete_startup_git(
-        &mut self,
-        now: Instant,
-        scan_complete_at: Instant,
-    ) {
-        if !self.scan.startup_phases.git.complete_once(now) {
+    pub fn maybe_complete_startup_git(&mut self, now: Instant, scan_complete_at: Instant) {
+        if !self
+            .scan
+            .scan_state_mut()
+            .startup_phases
+            .git
+            .complete_once(now)
+        {
             return;
         }
-        if let Some(git_toast) = self.scan.startup_phases.git.take_toast() {
+        if let Some(git_toast) = self.scan.scan_state_mut().startup_phases.git.take_toast() {
             self.finish_task_toast(git_toast);
         }
-        if let Some(toast) = self.scan.startup_phases.startup_toast {
+        if let Some(toast) = self.scan.scan_state_mut().startup_phases.startup_toast {
             self.mark_tracked_item_completed(toast, STARTUP_PHASE_GIT);
         }
         tracing::info!(
             phase = "git_local_applied",
             since_scan_complete_ms =
                 crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-            seen = self.scan.startup_phases.git.seen.len(),
-            expected = self.scan.startup_phases.git.expected_len(),
+            seen = self.scan.scan_state_mut().startup_phases.git.seen.len(),
+            expected = self.scan.scan_state_mut().startup_phases.git.expected_len(),
             "startup_phase_complete"
         );
     }
 
-    pub(in super::super) fn maybe_complete_startup_repo(
-        &mut self,
-        now: Instant,
-        scan_complete_at: Instant,
-    ) {
+    pub fn maybe_complete_startup_repo(&mut self, now: Instant, scan_complete_at: Instant) {
         // Gate repo-phase completion on git-phase completion. Without
         // this, a scan that completes before any `RepoFetchQueued`
         // arrives would see `repo.seen (0) >= repo.expected (0)` and
         // mark the phase done prematurely; subsequent staggered git
         // arrivals would then strand their repo fetches outside the
         // startup toast.
-        if self.scan.startup_phases.git.complete_at.is_none() {
+        if self
+            .scan
+            .scan_state_mut()
+            .startup_phases
+            .git
+            .complete_at
+            .is_none()
+        {
             return;
         }
-        if !self.scan.startup_phases.repo.complete_once(now) {
+        if !self
+            .scan
+            .scan_state_mut()
+            .startup_phases
+            .repo
+            .complete_once(now)
+        {
             return;
         }
-        if let Some(toast) = self.scan.startup_phases.startup_toast {
+        if let Some(toast) = self.scan.scan_state_mut().startup_phases.startup_toast {
             self.mark_tracked_item_completed(toast, STARTUP_PHASE_GITHUB);
         }
         tracing::info!(
             phase = "repo_fetch_applied",
             since_scan_complete_ms =
                 crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-            seen = self.scan.startup_phases.repo.seen.len(),
-            expected = self.scan.startup_phases.repo.expected_len(),
+            seen = self.scan.scan_state_mut().startup_phases.repo.seen.len(),
+            expected = self
+                .scan
+                .scan_state_mut()
+                .startup_phases
+                .repo
+                .expected_len(),
             "startup_phase_complete"
         );
     }
 
-    pub(in super::super) fn maybe_complete_startup_metadata(
-        &mut self,
-        now: Instant,
-        scan_complete_at: Instant,
-    ) {
-        if !self.scan.startup_phases.metadata.complete_once(now) {
+    pub fn maybe_complete_startup_metadata(&mut self, now: Instant, scan_complete_at: Instant) {
+        if !self
+            .scan
+            .scan_state_mut()
+            .startup_phases
+            .metadata
+            .complete_once(now)
+        {
             return;
         }
-        if let Some(metadata_toast) = self.scan.startup_phases.metadata.take_toast() {
+        if let Some(metadata_toast) = self
+            .scan
+            .scan_state_mut()
+            .startup_phases
+            .metadata
+            .take_toast()
+        {
             self.finish_task_toast(metadata_toast);
         }
-        if let Some(toast) = self.scan.startup_phases.startup_toast {
+        if let Some(toast) = self.scan.scan_state_mut().startup_phases.startup_toast {
             self.mark_tracked_item_completed(toast, STARTUP_PHASE_METADATA);
         }
         tracing::info!(
             phase = "metadata_applied",
             since_scan_complete_ms =
                 crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-            seen = self.scan.startup_phases.metadata.seen.len(),
-            expected = self.scan.startup_phases.metadata.expected_len(),
+            seen = self
+                .scan
+                .scan_state_mut()
+                .startup_phases
+                .metadata
+                .seen
+                .len(),
+            expected = self
+                .scan
+                .scan_state_mut()
+                .startup_phases
+                .metadata
+                .expected_len(),
             "startup_phase_complete"
         );
     }
 
-    pub(in super::super) fn maybe_complete_startup_lints(
-        &mut self,
-        now: Instant,
-        scan_complete_at: Instant,
-    ) {
+    pub fn maybe_complete_startup_lints(&mut self, now: Instant, scan_complete_at: Instant) {
         // Lint is only "complete" once real lint work has been registered —
         // an initialized-empty expected set stays open. This diverges from
         // the generic `PhaseCompletion::is_complete` semantics on purpose,
         // so the check stays inline rather than going through the trait.
-        let lint = &self.scan.startup_phases.lint;
+        let lint = &self.scan.scan_state_mut().startup_phases.lint;
         let should_complete = lint.complete_at.is_none()
             && lint
                 .expected
@@ -985,95 +1059,107 @@ impl App {
         if !should_complete {
             return;
         }
-        self.scan.startup_phases.lint.complete_at = Some(now);
+        self.scan.scan_state_mut().startup_phases.lint.complete_at = Some(now);
         tracing::info!(
             phase = "lint_terminal_applied",
             since_scan_complete_ms =
                 crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-            seen = self.scan.startup_phases.lint.seen.len(),
-            expected = self.scan.startup_phases.lint.expected_len(),
+            seen = self.scan.scan_state_mut().startup_phases.lint.seen.len(),
+            expected = self
+                .scan
+                .scan_state_mut()
+                .startup_phases
+                .lint
+                .expected_len(),
             "startup_phase_complete"
         );
     }
 
-    pub(in super::super) fn maybe_complete_startup_ready(
-        &mut self,
-        now: Instant,
-        scan_complete_at: Instant,
-    ) {
-        if self.scan.startup_phases.startup_complete_at.is_none() {
-            let disk_ready = self.scan.startup_phases.disk.complete_at.is_some();
-            let git_ready = self.scan.startup_phases.git.complete_at.is_some();
-            let repo_ready = self.scan.startup_phases.repo.complete_at.is_some();
-            let metadata_ready = self.scan.startup_phases.metadata.complete_at.is_some();
-            if disk_ready && git_ready && repo_ready && metadata_ready {
-                self.scan.startup_phases.startup_complete_at = Some(now);
-                // Finish the startup toast only when lint startup cache
-                // check is also done, so "Lint cache" doesn't spin while
-                // the toast exits.
-                if self.scan.startup_phases.lint_startup.complete_at.is_some()
-                    && let Some(toast) = self.scan.startup_phases.startup_toast.take()
-                {
-                    self.finish_task_toast(toast);
-                }
-                tracing::info!(
-                    since_scan_complete_ms =
-                        crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-                    disk_seen = self.scan.startup_phases.disk.seen.len(),
-                    disk_expected = self.scan.startup_phases.disk.expected_len(),
-                    git_seen = self.scan.startup_phases.git.seen.len(),
-                    git_expected = self.scan.startup_phases.git.expected_len(),
-                    repo_seen = self.scan.startup_phases.repo.seen.len(),
-                    repo_expected = self.scan.startup_phases.repo.expected_len(),
-                    lint_seen = self.scan.startup_phases.lint.seen.len(),
-                    lint_expected = self.scan.startup_phases.lint.expected_len(),
-                    metadata_seen = self.scan.startup_phases.metadata.seen.len(),
-                    metadata_expected = self.scan.startup_phases.metadata.expected_len(),
-                    "startup_complete"
-                );
-                tracing::info!(
-                    since_scan_complete_ms =
-                        crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-                    "steady_state_begin"
-                );
-            }
+    pub fn maybe_complete_startup_ready(&mut self, now: Instant, scan_complete_at: Instant) {
+        let phases = self.scan.scan_state_mut();
+        if phases.startup_phases.startup_complete_at.is_some() {
+            return;
         }
+        let disk_ready = phases.startup_phases.disk.complete_at.is_some();
+        let git_ready = phases.startup_phases.git.complete_at.is_some();
+        let repo_ready = phases.startup_phases.repo.complete_at.is_some();
+        let metadata_ready = phases.startup_phases.metadata.complete_at.is_some();
+        if !(disk_ready && git_ready && repo_ready && metadata_ready) {
+            return;
+        }
+        phases.startup_phases.startup_complete_at = Some(now);
+        // Finish the startup toast only when lint startup cache check
+        // is also done, so "Lint cache" doesn't spin while the toast
+        // exits.
+        let lint_done = phases.startup_phases.lint_startup.complete_at.is_some();
+        if lint_done && let Some(toast) = phases.startup_phases.startup_toast.take() {
+            self.finish_task_toast(toast);
+        }
+        let phases = self.scan.scan_state();
+        let since_scan_ms = crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis());
+        tracing::info!(
+            since_scan_complete_ms = since_scan_ms,
+            disk_seen = phases.startup_phases.disk.seen.len(),
+            disk_expected = phases.startup_phases.disk.expected_len(),
+            git_seen = phases.startup_phases.git.seen.len(),
+            git_expected = phases.startup_phases.git.expected_len(),
+            repo_seen = phases.startup_phases.repo.seen.len(),
+            repo_expected = phases.startup_phases.repo.expected_len(),
+            lint_seen = phases.startup_phases.lint.seen.len(),
+            lint_expected = phases.startup_phases.lint.expected_len(),
+            metadata_seen = phases.startup_phases.metadata.seen.len(),
+            metadata_expected = phases.startup_phases.metadata.expected_len(),
+            "startup_complete"
+        );
+        tracing::info!(since_scan_complete_ms = since_scan_ms, "steady_state_begin");
     }
 
-    pub(in super::super) fn startup_disk_toast_body(&self) -> String {
+    pub fn startup_disk_toast_body(&self) -> String {
         let empty = HashSet::new();
         let expected = self
             .scan
+            .scan_state()
             .startup_phases
             .disk
             .expected
             .as_ref()
             .unwrap_or(&empty);
-        Self::startup_remaining_toast_body(expected, &self.scan.startup_phases.disk.seen)
+        Self::startup_remaining_toast_body(
+            expected,
+            &self.scan.scan_state().startup_phases.disk.seen,
+        )
     }
 
-    pub(in super::super) fn startup_git_toast_body(&self) -> String {
+    pub fn startup_git_toast_body(&self) -> String {
         let empty = HashSet::new();
         let expected = self
             .scan
+            .scan_state()
             .startup_phases
             .git
             .expected
             .as_ref()
             .unwrap_or(&empty);
-        Self::startup_remaining_toast_body(expected, &self.scan.startup_phases.git.seen)
+        Self::startup_remaining_toast_body(
+            expected,
+            &self.scan.scan_state().startup_phases.git.seen,
+        )
     }
 
-    pub(in super::super) fn startup_metadata_toast_body(&self) -> String {
+    pub fn startup_metadata_toast_body(&self) -> String {
         let empty = HashSet::new();
         let expected = self
             .scan
+            .scan_state()
             .startup_phases
             .metadata
             .expected
             .as_ref()
             .unwrap_or(&empty);
-        Self::startup_remaining_toast_body(expected, &self.scan.startup_phases.metadata.seen)
+        Self::startup_remaining_toast_body(
+            expected,
+            &self.scan.scan_state().startup_phases.metadata.seen,
+        )
     }
 
     /// Build tracked items from expected/seen path sets. Already-seen paths
@@ -1081,7 +1167,7 @@ impl App {
     /// Pending items get `started_at = now` so they render with a live
     /// spinner + ticking duration that freezes when the item completes —
     /// matching the GitHub repo-fetch toast.
-    pub(in super::super) fn tracked_items_for_startup(
+    pub fn tracked_items_for_startup(
         expected: &HashSet<AbsolutePath>,
         seen: &HashSet<AbsolutePath>,
     ) -> Vec<TrackedItem> {
@@ -1101,7 +1187,7 @@ impl App {
             .collect()
     }
 
-    pub(in super::super) fn startup_remaining_toast_body(
+    pub fn startup_remaining_toast_body(
         expected: &HashSet<AbsolutePath>,
         seen: &HashSet<AbsolutePath>,
     ) -> String {
@@ -1118,14 +1204,14 @@ impl App {
     }
 
     fn startup_git_directory_for_path(&self, path: &Path) -> Option<AbsolutePath> {
-        self.projects
+        self.projects()
             .iter()
             .find(|entry| entry.item.at_path(path).is_some())
             .and_then(|entry| entry.item.git_directory())
     }
 
     #[cfg(test)]
-    pub(in super::super) fn startup_lint_toast_body_for(
+    pub fn startup_lint_toast_body_for(
         expected: &HashSet<AbsolutePath>,
         seen: &HashSet<AbsolutePath>,
     ) -> String {
@@ -1141,7 +1227,7 @@ impl App {
         toasts::format_toast_items(&refs, toasts::toast_body_width())
     }
 
-    pub(in super::super) fn sync_running_clean_toast(&mut self) {
+    pub fn sync_running_clean_toast(&mut self) {
         let running = self.inflight.running_clean_paths().clone();
         let next =
             self.sync_tracked_path_toast(self.inflight.clean_toast(), "cargo clean", &running);
@@ -1264,7 +1350,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn sync_running_lint_toast(&mut self) {
+    pub fn sync_running_lint_toast(&mut self) {
         let running = self.inflight.running_lint_paths().clone();
         let next = self.sync_tracked_path_toast(self.inflight.lint_toast(), "Lints", &running);
         self.inflight.set_lint_toast(next);
@@ -1272,10 +1358,10 @@ impl App {
 
     /// Lightweight refresh of derived state after in-place hierarchy changes
     /// (discovery, refresh). Marks caches dirty without a full tree rebuild.
-    pub(in super::super) const fn refresh_derived_state(&mut self) { self.data_generation += 1; }
+    pub const fn refresh_derived_state(&mut self) { self.scan.bump_generation(); }
 
     fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
-        self.projects
+        self.projects()
             .iter()
             .enumerate()
             .filter_map(|(ni, entry)| {
@@ -1314,9 +1400,12 @@ impl App {
     }
 
     fn migrate_legacy_root_expansions(&mut self, legacy: &[LegacyRootExpansion]) {
+        let Self {
+            scan, selection, ..
+        } = self;
         for legacy_root in legacy {
-            let Some((current_index, current_entry)) = self
-                .projects
+            let Some((current_index, current_entry)) = scan
+                .projects()
                 .iter()
                 .enumerate()
                 .find(|(_, entry)| entry.item.path() == legacy_root.root_path.as_path())
@@ -1328,21 +1417,19 @@ impl App {
                 RootItem::Worktrees(
                     group @ crate::project::WorktreeGroup::Workspaces { primary, .. },
                 ) if group.renders_as_group() => {
-                    self.selection.expanded_mut().insert(Node(current_index));
+                    selection.expanded_mut().insert(Node(current_index));
                     if legacy_root.had_children {
-                        self.selection
-                            .expanded_mut()
-                            .insert(Worktree(current_index, 0));
+                        selection.expanded_mut().insert(Worktree(current_index, 0));
                     }
                     for &group_index in &legacy_root.named_groups {
                         if primary.groups().get(group_index).is_some() {
-                            self.selection.expanded_mut().insert(WorktreeGroup(
+                            selection.expanded_mut().insert(WorktreeGroup(
                                 current_index,
                                 0,
                                 group_index,
                             ));
                         }
-                        self.selection
+                        selection
                             .expanded_mut()
                             .remove(&Group(legacy_root.old_node_index, group_index));
                     }
@@ -1350,11 +1437,9 @@ impl App {
                 RootItem::Worktrees(group @ crate::project::WorktreeGroup::Packages { .. })
                     if group.renders_as_group() =>
                 {
-                    self.selection.expanded_mut().insert(Node(current_index));
+                    selection.expanded_mut().insert(Node(current_index));
                     if legacy_root.had_children {
-                        self.selection
-                            .expanded_mut()
-                            .insert(Worktree(current_index, 0));
+                        selection.expanded_mut().insert(Worktree(current_index, 0));
                     }
                 },
                 _ => {},
@@ -1364,28 +1449,35 @@ impl App {
 
     fn rebuild_visible_rows_now(&mut self) {
         let include_non_rust = self.include_non_rust().includes_non_rust();
-        self.selection
-            .recompute_visibility(&self.projects, include_non_rust);
+        let Self {
+            scan, selection, ..
+        } = self;
+        selection.recompute_visibility(scan.projects(), include_non_rust);
     }
 
-    pub(in super::super) fn rescan(&mut self) {
-        self.projects.clear();
+    pub fn rescan(&mut self) {
+        self.scan.projects_mut().clear();
         // disk_usage lives on project items — cleared with projects above
         self.inflight.ci_fetch_tracker_mut().clear();
         self.panes.clear_ci_display_modes();
         self.clear_all_lint_state();
-        self.lint_cache_usage = crate::lint::CacheUsage::default();
+        self.scan
+            .set_lint_cache_usage(crate::lint::CacheUsage::default());
         self.github.fetch_cache = scan::new_repo_cache();
         self.github.repo_fetch_in_flight.clear();
         self.github.running_fetches.clear();
         self.github.running_fetch_toast = None;
-        self.discovery_shimmers.clear();
-        self.scan.phase = ScanPhase::Running;
-        self.scan.started_at = Instant::now();
-        self.scan.run_count += 1;
-        self.scan.startup_phases = StartupPhaseTracker::default();
-        tracing::info!(kind = "rescan", run = self.scan.run_count, "scan_start");
-        self.priority_fetch_path = None;
+        self.scan.discovery_shimmers_mut().clear();
+        self.scan.scan_state_mut().phase = ScanPhase::Running;
+        self.scan.scan_state_mut().started_at = Instant::now();
+        self.scan.scan_state_mut().run_count += 1;
+        self.scan.scan_state_mut().startup_phases = StartupPhaseTracker::default();
+        tracing::info!(
+            kind = "rescan",
+            run = self.scan.scan_state().run_count,
+            "scan_start"
+        );
+        self.scan.set_priority_fetch_path(None);
         self.focus_pane(PaneId::ProjectList);
         self.close_settings();
         self.close_finder();
@@ -1397,7 +1489,7 @@ impl App {
         self.pane_manager_mut()
             .pane_mut(PaneId::ProjectList)
             .set_scroll_offset(0);
-        self.data_generation += 1;
+        self.scan.bump_generation();
         let scan_dirs = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
         let (tx, rx) = scan::spawn_streaming_scan(
             scan_dirs,
@@ -1412,7 +1504,7 @@ impl App {
         self.refresh_lint_runtime_from_config(&current_config);
     }
 
-    pub(in super::super) fn poll_background(&mut self) -> PollBackgroundStats {
+    pub fn poll_background(&mut self) -> PollBackgroundStats {
         const MAX_MSGS_PER_FRAME: usize = 50;
         let mut needs_rebuild = false;
         let mut msg_count = 0;
@@ -1454,17 +1546,14 @@ impl App {
                 fit_results = stats.fit_results,
                 disk_results = stats.disk_results,
                 needs_rebuild = stats.needs_rebuild,
-                items = self.projects.len(),
+                items = self.projects().len(),
                 "poll_background"
             );
         }
         stats
     }
 
-    pub(in super::super) const fn record_background_msg_kind(
-        stats: &mut PollBackgroundStats,
-        msg: &BackgroundMsg,
-    ) {
+    pub const fn record_background_msg_kind(stats: &mut PollBackgroundStats, msg: &BackgroundMsg) {
         match msg {
             BackgroundMsg::DiskUsage { .. } | BackgroundMsg::DiskUsageBatch { .. } => {
                 stats.disk_usage_msgs += 1;
@@ -1497,7 +1586,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn log_saturated_background_batch(stats: &PollBackgroundStats) {
+    pub fn log_saturated_background_batch(stats: &PollBackgroundStats) {
         const MAX_MSGS_PER_FRAME: usize = 50;
         if stats.bg_msgs != MAX_MSGS_PER_FRAME {
             return;
@@ -1512,7 +1601,7 @@ impl App {
         );
     }
 
-    pub(in super::super) fn poll_ci_fetches(&mut self) -> usize {
+    pub fn poll_ci_fetches(&mut self) -> usize {
         let mut count = 0;
         while let Ok(msg) = self.background.ci_fetch_rx().try_recv() {
             match msg {
@@ -1554,7 +1643,7 @@ impl App {
         count
     }
 
-    pub(in super::super) fn poll_example_msgs(&mut self) -> usize {
+    pub fn poll_example_msgs(&mut self) -> usize {
         let mut count = 0;
         while let Ok(msg) = self.background.example_rx().try_recv() {
             match msg {
@@ -1567,7 +1656,7 @@ impl App {
         count
     }
 
-    pub(in super::super) fn apply_example_progress(&mut self, line: String) {
+    pub fn apply_example_progress(&mut self, line: String) {
         if let Some(last) = self.inflight.example_output_mut().last_mut() {
             *last = line;
         } else {
@@ -1575,7 +1664,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn finish_example_run(&mut self) {
+    pub fn finish_example_run(&mut self) {
         self.inflight.set_example_running(None);
         self.inflight
             .example_output_mut()
@@ -1583,7 +1672,7 @@ impl App {
         self.mark_terminal_dirty();
     }
 
-    pub(in super::super) fn poll_clean_msgs(&mut self) {
+    pub fn poll_clean_msgs(&mut self) {
         while let Ok(msg) = self.background.clean_rx().try_recv() {
             match msg {
                 CleanMsg::Finished(abs_path) => {
@@ -1604,7 +1693,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
+    pub fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
         if self
             .inflight
             .running_clean_paths_mut()
@@ -1616,10 +1705,7 @@ impl App {
         self.apply_disk_usage(path, bytes);
     }
 
-    pub(in super::super) fn handle_disk_usage_batch(
-        &mut self,
-        entries: Vec<(AbsolutePath, DirSizes)>,
-    ) {
+    pub fn handle_disk_usage_batch(&mut self, entries: Vec<(AbsolutePath, DirSizes)>) {
         for (path, sizes) in entries {
             self.apply_disk_usage_breakdown(path.as_path(), sizes);
         }
@@ -1630,17 +1716,17 @@ impl App {
     /// lint-runtime registration) by reusing that helper for the
     /// total — the new breakdown fields just ride alongside.
     fn apply_disk_usage_breakdown(&mut self, path: &Path, sizes: DirSizes) {
-        if let Some(project) = self.projects.at_path_mut(path) {
+        if let Some(project) = self.projects_mut().at_path_mut(path) {
             project.in_project_target = Some(sizes.in_project_target);
             project.in_project_non_target = Some(sizes.in_project_non_target);
         }
         self.apply_disk_usage(path, sizes.total);
     }
 
-    pub(in super::super) fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
+    pub fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
         // Set disk usage on the matching project item and update visibility.
         let mut lint_runtime_changed = false;
-        if let Some(project) = self.projects.at_path_mut(path) {
+        if let Some(project) = self.projects_mut().at_path_mut(path) {
             project.disk_usage_bytes = Some(bytes);
             if bytes == 0 && !path.exists() && project.visibility != Deleted {
                 project.visibility = Deleted;
@@ -1731,20 +1817,20 @@ impl App {
     /// fetch trigger is here because either a `RepoInfo` or
     /// `CheckoutInfo` arrival can signal "this repo's state changed";
     /// the dedup set absorbs N attempts for the same `OwnerRepo`.
-    pub(in super::super) fn handle_checkout_info(&mut self, path: &Path, info: CheckoutInfo) {
+    pub fn handle_checkout_info(&mut self, path: &Path, info: CheckoutInfo) {
         tracing::info!(
             path = %path.display(),
             git_status = %info.status.label(),
             "checkout_info_applied"
         );
 
-        if let Some(project) = self.projects.at_path_mut(path) {
+        if let Some(project) = self.projects_mut().at_path_mut(path) {
             project.local_git_state = LocalGitState::Detected(Box::new(info));
         }
         // Detected git state implies the entry is in a git repo. Ensure
         // the entry has a `git_repo` slot so per-repo writes (CI,
         // GitHub meta, RepoInfo) can land on it.
-        if let Some(entry) = self.projects.entry_containing_mut(path) {
+        if let Some(entry) = self.scan.projects_mut().entry_containing_mut(path) {
             entry.git_repo.get_or_insert_with(Default::default);
         }
 
@@ -1752,8 +1838,13 @@ impl App {
             let git_dir = self
                 .startup_git_directory_for_path(path)
                 .unwrap_or_else(|| AbsolutePath::from(path));
-            self.scan.startup_phases.git.seen.insert(git_dir.clone());
-            if let Some(git_toast) = self.scan.startup_phases.git.toast {
+            self.scan
+                .scan_state_mut()
+                .startup_phases
+                .git
+                .seen
+                .insert(git_dir.clone());
+            if let Some(git_toast) = self.scan.scan_state_mut().startup_phases.git.toast {
                 self.mark_tracked_item_completed(git_toast, &git_dir.to_string());
             }
             self.maybe_log_startup_phase_completions();
@@ -1768,7 +1859,7 @@ impl App {
     /// checkout would produce silent arbitration if they ever
     /// diverged). The `path` is the primary's path — the emitter is
     /// responsible for that contract.
-    pub(in super::super) fn handle_repo_info(&mut self, path: &Path, mut info: RepoInfo) {
+    pub fn handle_repo_info(&mut self, path: &Path, mut info: RepoInfo) {
         // Preserve a previously-fetched `first_commit` across refresh.
         // `RepoInfo::get` always returns `None` for it; the value is
         // filled in either by a prior `handle_git_first_commit` write
@@ -1777,8 +1868,8 @@ impl App {
             .repo_info_for(path)
             .and_then(|existing| existing.first_commit.clone());
         if info.first_commit.is_none() {
-            info.first_commit =
-                preserved_first_commit.or_else(|| self.pending_git_first_commit.remove(path));
+            info.first_commit = preserved_first_commit
+                .or_else(|| self.scan.pending_git_first_commit_mut().remove(path));
         }
 
         // Gate GitHub cache invalidation on `FETCH_HEAD` mtime actually
@@ -1792,7 +1883,7 @@ impl App {
         let fetch_head_advanced =
             info.last_fetched.is_some() && info.last_fetched != previous_last_fetched;
 
-        if let Some(entry) = self.projects.entry_containing_mut(path) {
+        if let Some(entry) = self.scan.projects_mut().entry_containing_mut(path) {
             if entry.item.path().as_path() != path {
                 // Non-primary write — discard per the policy above.
                 return;
@@ -1820,7 +1911,7 @@ impl App {
     /// `handle_repo_info` by `last_fetched` advance. Submodule paths are
     /// excluded — submodule CI/metadata is shown on the parent project.
     fn maybe_trigger_repo_fetch(&mut self, path: &Path) {
-        if self.projects.is_submodule_path(path) {
+        if self.projects().is_submodule_path(path) {
             return;
         }
         let Some(url) = self.fetch_url_for(path) else {
@@ -1829,11 +1920,7 @@ impl App {
         self.spawn_repo_fetch_for_git_info(path, &url);
     }
 
-    pub(in super::super) fn handle_git_first_commit(
-        &mut self,
-        path: &Path,
-        first_commit: Option<&str>,
-    ) {
+    pub fn handle_git_first_commit(&mut self, path: &Path, first_commit: Option<&str>) {
         let first_commit = first_commit.map(String::from);
         // first_commit is per-repo, so it lands on the entry's
         // `RepoInfo`. If the entry's `repo_info` slot doesn't exist yet
@@ -1841,30 +1928,34 @@ impl App {
         // `pending_git_first_commit` and `handle_repo_info` will fold
         // it in when repo info arrives.
         let applied = self
-            .projects
+            .scan
+            .projects_mut()
             .entry_containing_mut(path)
             .and_then(|entry| entry.git_repo.as_mut()?.repo_info.as_mut())
             .map(|repo| repo.first_commit.clone_from(&first_commit))
             .is_some();
         if applied {
-            self.pending_git_first_commit.remove(path);
+            self.scan.pending_git_first_commit_mut().remove(path);
         } else if let Some(first_commit) = first_commit {
-            self.pending_git_first_commit
+            self.scan
+                .pending_git_first_commit_mut()
                 .insert(AbsolutePath::from(path), first_commit);
         } else {
-            self.pending_git_first_commit.remove(path);
+            self.scan.pending_git_first_commit_mut().remove(path);
         }
     }
 
     fn handle_repo_fetch_queued(&mut self, repo: OwnerRepo) {
         let first_repo = self
             .scan
+            .scan_state_mut()
             .startup_phases
             .repo
             .expected
             .as_ref()
             .is_none_or(HashSet::is_empty);
         self.scan
+            .scan_state_mut()
             .startup_phases
             .repo
             .ensure_expected()
@@ -1874,9 +1965,12 @@ impl App {
             // First repo queued — add the "GitHub repos" tracked item
             // to the startup toast and reset completion so the phase
             // is re-evaluated now that there's actual work to track.
-            self.scan.startup_phases.repo.complete_at = None;
-            self.scan.startup_phases.startup_complete_at = None;
-            if let Some(toast) = self.scan.startup_phases.startup_toast {
+            self.scan.scan_state_mut().startup_phases.repo.complete_at = None;
+            self.scan
+                .scan_state_mut()
+                .startup_phases
+                .startup_complete_at = None;
+            if let Some(toast) = self.scan.scan_state_mut().startup_phases.startup_toast {
                 let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
                 self.toasts.add_new_tracked_items(
                     toast,
@@ -1897,31 +1991,31 @@ impl App {
         self.sync_running_repo_fetch_toast();
     }
 
-    pub(in super::super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
+    pub fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
         self.github.repo_fetch_in_flight.remove(&repo);
         self.github.running_fetches.remove(&repo);
-        self.scan.startup_phases.repo.seen.insert(repo);
+        self.scan
+            .scan_state_mut()
+            .startup_phases
+            .repo
+            .seen
+            .insert(repo);
         self.maybe_log_startup_phase_completions();
         self.sync_running_repo_fetch_toast();
     }
 
-    pub(in super::super) fn handle_repo_meta(
-        &mut self,
-        path: &Path,
-        stars: u64,
-        description: Option<String>,
-    ) {
-        if let Some(entry) = self.projects.entry_containing_mut(path) {
+    pub fn handle_repo_meta(&mut self, path: &Path, stars: u64, description: Option<String>) {
+        if let Some(entry) = self.scan.projects_mut().entry_containing_mut(path) {
             let repo = entry.git_repo.get_or_insert_with(Default::default);
             repo.github_info = Some(GitHubInfo { stars, description });
         }
     }
 
-    pub(in super::super) fn handle_project_discovered(&mut self, item: RootItem) -> bool {
+    pub fn handle_project_discovered(&mut self, item: RootItem) -> bool {
         let legacy_expansions = self.capture_legacy_root_expansions();
         let discovered_path = item.path().to_path_buf();
         let mut already_exists = false;
-        self.projects.for_each_leaf_path(|path, _| {
+        self.projects().for_each_leaf_path(|path, _| {
             if path == discovered_path {
                 already_exists = true;
             }
@@ -1948,7 +2042,7 @@ impl App {
         true
     }
 
-    pub(in super::super) fn handle_project_refreshed(&mut self, item: RootItem) -> bool {
+    pub fn handle_project_refreshed(&mut self, item: RootItem) -> bool {
         let legacy_expansions = self.capture_legacy_root_expansions();
         let path = item.path().to_path_buf();
 
@@ -1985,7 +2079,7 @@ impl App {
         true
     }
 
-    pub(in super::super) fn apply_service_signal(&mut self, signal: ServiceSignal) {
+    pub fn apply_service_signal(&mut self, signal: ServiceSignal) {
         match signal {
             ServiceSignal::Reachable(service) => {
                 self.handle_service_reachable(service);
@@ -2061,9 +2155,9 @@ impl App {
         id
     }
 
-    pub(in super::super) fn spawn_service_retry(&self, service: ServiceKind) {
+    pub fn spawn_service_retry(&self, service: ServiceKind) {
         #[cfg(test)]
-        if !self.retry_spawn_mode.is_enabled() {
+        if !self.scan.retry_spawn_mode().is_enabled() {
             return;
         }
 
@@ -2085,7 +2179,7 @@ impl App {
     /// quota-exempt, so this is safe to run even when GitHub is
     /// refusing other calls. Logged via `rate_limit_prime_ok` /
     /// `rate_limit_prime_failed`.
-    pub(in super::super) fn spawn_rate_limit_prime(&self) {
+    pub fn spawn_rate_limit_prime(&self) {
         let client = self.http_client.clone();
         thread::spawn(move || {
             let (snapshot, _signal) = client.fetch_rate_limit();
@@ -2097,7 +2191,7 @@ impl App {
         });
     }
 
-    pub(in super::super) fn mark_service_recovered(&mut self, service: ServiceKind) {
+    pub fn mark_service_recovered(&mut self, service: ServiceKind) {
         let Some(toast_id) = self.availability_for(service).mark_recovered() else {
             return;
         };
@@ -2125,14 +2219,19 @@ impl App {
         if let Some(path) = msg.detail_relevance()
             && self.detail_path_is_affected(path)
         {
-            self.data_generation += 1;
+            self.scan.bump_generation();
         }
     }
 
     fn handle_disk_usage_msg(&mut self, path: &Path, bytes: u64) {
         let abs = AbsolutePath::from(path);
-        self.scan.startup_phases.disk.seen.insert(abs.clone());
-        if let Some(disk_toast) = self.scan.startup_phases.disk.toast {
+        self.scan
+            .scan_state_mut()
+            .startup_phases
+            .disk
+            .seen
+            .insert(abs.clone());
+        if let Some(disk_toast) = self.scan.scan_state_mut().startup_phases.disk.toast {
             self.mark_tracked_item_completed(disk_toast, &abs.to_string());
         }
         self.handle_disk_usage(path, bytes);
@@ -2144,9 +2243,14 @@ impl App {
         root_path: &AbsolutePath,
         entries: Vec<(AbsolutePath, DirSizes)>,
     ) {
-        self.data_generation += 1;
-        self.scan.startup_phases.disk.seen.insert(root_path.clone());
-        if let Some(disk_toast) = self.scan.startup_phases.disk.toast {
+        self.scan.bump_generation();
+        self.scan
+            .scan_state_mut()
+            .startup_phases
+            .disk
+            .seen
+            .insert(root_path.clone());
+        if let Some(disk_toast) = self.scan.scan_state_mut().startup_phases.disk.toast {
             self.mark_tracked_item_completed(disk_toast, &root_path.to_string());
         }
         self.handle_disk_usage_batch(entries);
@@ -2154,45 +2258,67 @@ impl App {
     }
 
     fn handle_crates_io_version_msg(&mut self, path: &Path, version: String, downloads: u64) {
-        if let Some(rust_info) = self.projects.rust_info_at_path_mut(path) {
+        if let Some(rust_info) = self.projects_mut().rust_info_at_path_mut(path) {
             rust_info.set_crates_io(version, downloads);
-        } else if let Some(vendored) = self.projects.vendored_at_path_mut(path) {
+        } else if let Some(vendored) = self.projects_mut().vendored_at_path_mut(path) {
             vendored.set_crates_io(version, downloads);
         }
     }
 
     fn handle_lint_startup_status_msg(&mut self, path: &AbsolutePath, status: LintStatus) {
         // Apply the cached status to the project (same as a live status).
-        if let Some(lr) = self.projects.lint_at_path_mut(path) {
+        if let Some(lr) = self.scan.projects_mut().lint_at_path_mut(path) {
             lr.set_status(status);
         }
-        self.scan.startup_phases.lint_startup.seen += 1;
+        self.scan.scan_state_mut().startup_phases.lint_startup.seen += 1;
         self.maybe_complete_startup_lint_cache();
     }
 
     fn maybe_complete_startup_lint_cache(&mut self) {
         let now = Instant::now();
-        if !self.scan.startup_phases.lint_startup.complete_once(now) {
+        if !self
+            .scan
+            .scan_state_mut()
+            .startup_phases
+            .lint_startup
+            .complete_once(now)
+        {
             return;
         }
         // All startup lint statuses collected — compute cache size once.
         self.refresh_lint_cache_usage_from_disk();
-        if let Some(toast) = self.scan.startup_phases.startup_toast {
+        if let Some(toast) = self.scan.scan_state_mut().startup_phases.startup_toast {
             self.mark_tracked_item_completed(toast, STARTUP_PHASE_LINT);
         }
         // If core startup already finished, now finish the startup toast.
-        if self.scan.startup_phases.startup_complete_at.is_some()
-            && let Some(toast) = self.scan.startup_phases.startup_toast.take()
+        if self
+            .scan
+            .scan_state()
+            .startup_phases
+            .startup_complete_at
+            .is_some()
+            && let Some(toast) = self
+                .scan
+                .scan_state_mut()
+                .startup_phases
+                .startup_toast
+                .take()
         {
             self.finish_task_toast(toast);
         }
-        if let Some(scan_complete_at) = self.scan.startup_phases.scan_complete_at {
+        if let Some(scan_complete_at) = self.scan.scan_state().startup_phases.scan_complete_at {
             tracing::info!(
                 phase = "lint_startup_applied",
                 since_scan_complete_ms =
                     crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-                seen = self.scan.startup_phases.lint_startup.seen,
-                expected = self.scan.startup_phases.lint_startup.expected.unwrap_or(0),
+                seen = self.scan.scan_state().startup_phases.lint_startup.seen,
+                expected = self
+                    .scan
+                    .scan_state()
+                    .startup_phases
+                    .lint_startup
+                    .expected
+                    .unwrap_or(0),
                 "startup_phase_complete"
             );
         }
@@ -2207,13 +2333,13 @@ impl App {
             LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog
         );
         if !self.is_rust_at_path(path) {
-            if let Some(lr) = self.projects.lint_at_path_mut(path) {
+            if let Some(lr) = self.scan.projects_mut().lint_at_path_mut(path) {
                 lr.clear_runs();
             }
             return;
         }
         let mut is_rust = false;
-        self.projects.for_each_leaf_path(|p, rust| {
+        self.projects().for_each_leaf_path(|p, rust| {
             if p == path {
                 is_rust = rust;
             }
@@ -2225,14 +2351,14 @@ impl App {
             is_rust,
         );
         if eligible {
-            if let Some(lr) = self.projects.lint_at_path_mut(path) {
+            if let Some(lr) = self.scan.projects_mut().lint_at_path_mut(path) {
                 lr.set_status(status);
             }
             if status_is_terminal {
                 self.reload_lint_history(path);
             }
         } else {
-            if let Some(lr) = self.projects.lint_at_path_mut(path) {
+            if let Some(lr) = self.scan.projects_mut().lint_at_path_mut(path) {
                 lr.clear_runs();
             }
             self.inflight.running_lint_paths_mut().remove(path);
@@ -2251,22 +2377,33 @@ impl App {
         }
         if status_started {
             let abs_path = AbsolutePath::from(path);
-            let expected = self.scan.startup_phases.lint.ensure_expected();
+            let expected = self
+                .scan
+                .scan_state_mut()
+                .startup_phases
+                .lint
+                .ensure_expected();
             if expected.insert(abs_path) {
-                self.scan.startup_phases.lint.complete_at = None;
+                self.scan.scan_state_mut().startup_phases.lint.complete_at = None;
             }
         }
         if status_is_terminal {
             let abs_path = AbsolutePath::from(path);
             if self
                 .scan
+                .scan_state_mut()
                 .startup_phases
                 .lint
                 .expected
                 .as_ref()
                 .is_some_and(|expected| expected.contains(path))
             {
-                self.scan.startup_phases.lint.seen.insert(abs_path);
+                self.scan
+                    .scan_state_mut()
+                    .startup_phases
+                    .lint
+                    .seen
+                    .insert(abs_path);
             }
         }
         self.maybe_log_startup_phase_completions();
@@ -2277,16 +2414,17 @@ impl App {
         projects: Vec<RootItem>,
         disk_entries: &[(String, AbsolutePath)],
     ) {
-        let kind = if self.scan.run_count == 1 {
+        let kind = if self.scan.scan_state_mut().run_count == 1 {
             "initial"
         } else {
             "rescan"
         };
 
         tracing::info!(
-            elapsed_ms = crate::perf_log::ms(self.scan.started_at.elapsed().as_millis()),
+            elapsed_ms =
+                crate::perf_log::ms(self.scan.scan_state().started_at.elapsed().as_millis()),
             kind,
-            run = self.scan.run_count,
+            run = self.scan.scan_state_mut().run_count,
             tree_items = projects.len(),
             disk_entries = disk_entries.len(),
             "scan_result_applied"
@@ -2301,16 +2439,24 @@ impl App {
         self.mutate_tree().replace_all(ProjectList::new(projects));
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();
-        self.scan.startup_phases.lint_startup.expected = Some(lint_registered);
-        self.scan.startup_phases.lint_startup.seen = 0;
-        self.scan.startup_phases.lint_startup.complete_at = None;
+        self.scan
+            .scan_state_mut()
+            .startup_phases
+            .lint_startup
+            .expected = Some(lint_registered);
+        self.scan.scan_state_mut().startup_phases.lint_startup.seen = 0;
+        self.scan
+            .scan_state_mut()
+            .startup_phases
+            .lint_startup
+            .complete_at = None;
         self.refresh_lint_runs_from_disk();
-        self.data_generation += 1;
+        self.scan.bump_generation();
 
         // Restore selection.
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
-        } else if !self.projects.is_empty() {
+        } else if !self.projects().is_empty() {
             self.pane_manager_mut()
                 .pane_mut(PaneId::ProjectList)
                 .set_pos(0);
@@ -2322,14 +2468,14 @@ impl App {
         self.finish_watcher_registration_batch();
 
         // Mark scan complete and initialize startup tracking.
-        self.scan.phase = ScanPhase::Complete;
+        self.scan.scan_state_mut().phase = ScanPhase::Complete;
         self.initialize_startup_phase_tracker();
         self.schedule_startup_project_details();
         self.schedule_git_first_commit_refreshes();
     }
 
     /// Handle a single `BackgroundMsg`. Returns `true` if the tree needs rebuilding.
-    pub(in super::super) fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
+    pub fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
         self.update_generations_for_msg(&msg);
         match msg {
             BackgroundMsg::DiskUsage { path, bytes } => {
@@ -2359,7 +2505,7 @@ impl App {
                 self.handle_git_first_commit(path.as_path(), first_commit.as_deref());
             },
             BackgroundMsg::Submodules { path, submodules } => {
-                if let Some(info) = self.projects.at_path_mut(path.as_path()) {
+                if let Some(info) = self.projects_mut().at_path_mut(path.as_path()) {
                     info.submodules = submodules;
                 }
             },
@@ -2440,7 +2586,7 @@ impl App {
         target_dir: &AbsolutePath,
         bytes: u64,
     ) {
-        let Ok(mut store) = self.metadata_store.lock() else {
+        let Ok(mut store) = self.scan.metadata_store().lock() else {
             return;
         };
         if !store.set_out_of_tree_target_bytes(workspace_root, target_dir, bytes) {
@@ -2454,7 +2600,7 @@ impl App {
 
     fn handle_language_stats_batch(&mut self, entries: Vec<(AbsolutePath, LanguageStats)>) {
         for (path, stats) in entries {
-            if let Some(project) = self.projects.at_path_mut(path.as_path()) {
+            if let Some(project) = self.projects_mut().at_path_mut(path.as_path()) {
                 project.language_stats = Some(stats);
             }
         }
@@ -2486,7 +2632,8 @@ impl App {
         result: Result<WorkspaceSnapshot, CargoMetadataError>,
     ) {
         let Some(is_current) = self
-            .metadata_store
+            .scan
+            .metadata_store()
             .lock()
             .ok()
             .map(|store| store.is_current_generation(&workspace_root, generation))
@@ -2546,7 +2693,7 @@ impl App {
             },
         }
 
-        if let Some(task_id) = self.scan.startup_phases.metadata.toast {
+        if let Some(task_id) = self.scan.scan_state_mut().startup_phases.metadata.toast {
             let key = workspace_root.to_string();
             self.toasts.mark_item_completed(task_id, &key);
         }
@@ -2555,6 +2702,7 @@ impl App {
         // the next render shows Ready and 'y' starts working again.
         self.clear_confirm_verifying_for(&workspace_root);
         self.scan
+            .scan_state_mut()
             .startup_phases
             .metadata
             .seen
@@ -2598,7 +2746,7 @@ impl App {
         // place by `from_cargo_toml`; the authoritative view is the
         // snapshot.
         self.apply_cargo_fields_from_snapshot(&snapshot);
-        if let Ok(mut store) = self.metadata_store.lock() {
+        if let Ok(mut store) = self.scan.metadata_store().lock() {
             store.upsert(snapshot);
         }
         if needs_out_of_tree_walk {
@@ -2617,7 +2765,7 @@ impl App {
         // will linger until a full scan restart — minor staleness,
         // acceptable for Step 6c.)
         for project_root in member_roots {
-            self.target_dir_index.upsert(
+            self.scan.target_dir_index_mut().upsert(
                 TargetDirMember {
                     project_root,
                     kind: MemberKind::Project,
@@ -2646,16 +2794,16 @@ impl App {
                 continue;
             };
             let cargo = Cargo::from_package_record(record);
-            if let Some(rust_info) = self.projects.rust_info_at_path_mut(manifest_dir) {
+            if let Some(rust_info) = self.projects_mut().rust_info_at_path_mut(manifest_dir) {
                 rust_info.cargo = cargo.clone();
             }
-            if let Some(vendored) = self.projects.vendored_at_path_mut(manifest_dir) {
+            if let Some(vendored) = self.projects_mut().vendored_at_path_mut(manifest_dir) {
                 vendored.cargo = cargo;
             }
         }
     }
 
-    pub(in super::super) fn detail_path_is_affected(&self, path: &Path) -> bool {
+    pub fn detail_path_is_affected(&self, path: &Path) -> bool {
         let Some(selected_path) = self.selected_project_path() else {
             return false;
         };
@@ -2665,14 +2813,14 @@ impl App {
         // Check if both paths resolve to the same lint-owning node (e.g.,
         // a worktree group where one entry's status change affects the
         // root rollup displayed in the detail pane).
-        self.projects
+        self.projects()
             .lint_at_path(selected_path)
-            .zip(self.projects.lint_at_path(path))
+            .zip(self.projects().lint_at_path(path))
             .is_some_and(|(a, b)| std::ptr::eq(a, b))
     }
 
     /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.
-    pub(in super::super) fn maybe_priority_fetch(&mut self) {
+    pub fn maybe_priority_fetch(&mut self) {
         let Some(abs_path) = self.selected_project_path().map(Path::to_path_buf) else {
             return;
         };
@@ -2686,12 +2834,12 @@ impl App {
             .map(|d| d.title_name.clone())
             .filter(|n| n != "-");
         if self
-            .projects
+            .projects()
             .at_path(abs_key.as_path())
             .is_none_or(|p| p.disk_usage_bytes.is_none())
-            && self.priority_fetch_path.as_ref() != Some(&abs_key)
+            && self.scan.priority_fetch_path() != Some(&abs_key)
         {
-            self.priority_fetch_path = Some(abs_key);
+            self.scan.set_priority_fetch_path(Some(abs_key));
             let abs_str = abs_path.display().to_string();
             terminal::spawn_priority_fetch(self, display_path.as_str(), &abs_str, name.as_ref());
         }

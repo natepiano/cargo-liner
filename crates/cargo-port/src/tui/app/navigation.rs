@@ -22,21 +22,23 @@ use crate::tui::panes::DetailCacheKey;
 use crate::tui::panes::PaneId;
 
 impl App {
-    pub(in super::super) fn ensure_visible_rows_cached(&mut self) {
+    pub fn ensure_visible_rows_cached(&mut self) {
         let include_non_rust = self.include_non_rust().includes_non_rust();
-        self.selection
-            .recompute_visibility(&self.projects, include_non_rust);
+        let Self {
+            scan, selection, ..
+        } = self;
+        selection.recompute_visibility(scan.projects(), include_non_rust);
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
-    pub(in super::super) fn visible_rows(&self) -> &[VisibleRow] { self.selection.visible_rows() }
+    pub fn visible_rows(&self) -> &[VisibleRow] { self.selection.visible_rows() }
 
-    pub(in super::super) fn ensure_fit_widths_cached(&mut self) {
+    pub fn ensure_fit_widths_cached(&mut self) {
         let root_labels = self
-            .projects
+            .projects()
             .resolved_root_labels(self.include_non_rust().includes_non_rust());
         let widths = snapshots::build_fit_widths_snapshot(
-            &self.projects,
+            self.projects(),
             &root_labels,
             self.lint_enabled(),
             0,
@@ -44,21 +46,18 @@ impl App {
         self.selection.set_fit_widths(widths);
     }
 
-    pub(in super::super) fn observe_name_width(
-        widths: &mut ProjectListWidths,
-        content_width: usize,
-    ) {
+    pub fn observe_name_width(widths: &mut ProjectListWidths, content_width: usize) {
         use COL_NAME;
 
         widths.observe(COL_NAME, Self::name_width_with_gutter(content_width));
     }
 
-    pub(in super::super) const fn name_width_with_gutter(content_width: usize) -> usize {
+    pub const fn name_width_with_gutter(content_width: usize) -> usize {
         content_width.saturating_add(1)
     }
 
-    pub(in super::super) fn ensure_disk_cache(&mut self) {
-        let (root_sorted, child_sorted) = snapshots::build_disk_cache_snapshot(&self.projects);
+    pub fn ensure_disk_cache(&mut self) {
+        let (root_sorted, child_sorted) = snapshots::build_disk_cache_snapshot(self.projects());
         self.selection.set_disk_caches(root_sorted, child_sorted);
     }
 
@@ -67,10 +66,10 @@ impl App {
     /// data generation has changed since the last build — both are the only
     /// inputs to `build_selected_pane_data`, so a matching stamp means the
     /// stored detail is still correct.
-    pub(in super::super) fn ensure_detail_cached(&mut self) {
+    pub fn ensure_detail_cached(&mut self) {
         let desired = self.selected_row().map(|row| DetailCacheKey {
             row,
-            generation: self.data_generation,
+            generation: self.scan.generation(),
         });
         if self.pane_data().detail_is_current(desired) {
             return;
@@ -113,7 +112,7 @@ impl App {
         let row = self.selected_row()?;
         match row {
             VisibleRow::Root { node_index } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 Some(tui::panes::build_pane_data(self, item))
             },
             VisibleRow::Member {
@@ -121,7 +120,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 let pkg = Self::resolve_member(item, group_index, member_index)?;
                 Some(tui::panes::build_pane_data_for_member(self, pkg))
             },
@@ -129,13 +128,13 @@ impl App {
                 node_index,
                 vendored_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 let vendored = Self::resolve_vendored(item, vendored_index)?;
                 Some(tui::panes::build_pane_data_for_vendored(self, vendored))
             },
             VisibleRow::GroupHeader { node_index, .. } => {
                 // Group headers show the parent project's detail
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 Some(tui::panes::build_pane_data(self, item))
             },
             VisibleRow::WorktreeEntry {
@@ -147,7 +146,7 @@ impl App {
                 worktree_index,
                 ..
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 self.build_worktree_detail(item, worktree_index)
             },
             VisibleRow::WorktreeMember {
@@ -156,7 +155,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 let pkg =
                     Self::worktree_member_ref(item, worktree_index, group_index, member_index)?;
                 Some(tui::panes::build_pane_data_for_member(self, pkg))
@@ -166,7 +165,7 @@ impl App {
                 worktree_index,
                 vendored_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 let vendored = Self::worktree_vendored_ref(item, worktree_index, vendored_index)?;
                 Some(tui::panes::build_pane_data_for_vendored(self, vendored))
             },
@@ -174,7 +173,7 @@ impl App {
                 node_index,
                 submodule_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 let submodule = item.submodules().get(submodule_index)?;
                 Some(tui::panes::build_pane_data_for_submodule(self, submodule))
             },
@@ -312,17 +311,17 @@ impl App {
         }
     }
 
-    pub(in super::super) fn selected_row(&self) -> Option<VisibleRow> {
+    pub fn selected_row(&self) -> Option<VisibleRow> {
         let rows = self.visible_rows();
         let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
         rows.get(selected).copied()
     }
 
     /// Returns the `RootItem` when a root row is selected.
-    pub(in super::super) fn selected_item(&self) -> Option<&RootItem> {
+    pub fn selected_item(&self) -> Option<&RootItem> {
         match self.selected_row()? {
             VisibleRow::Root { node_index } => {
-                self.projects.get(node_index).map(|entry| &entry.item)
+                self.projects().get(node_index).map(|entry| &entry.item)
             },
             _ => None,
         }
@@ -342,11 +341,11 @@ impl App {
     ///
     /// Worktree-group-level cleans (`VisibleRow::Root` on a
     /// `RootItem::Worktrees`) land with Step 7 (group-level fan-out).
-    pub(in super::super) fn clean_selection(&self) -> Option<CleanSelection> {
+    pub fn clean_selection(&self) -> Option<CleanSelection> {
         let row = self.selected_row()?;
         match row {
             VisibleRow::Root { node_index } => {
-                let entry = self.projects.get(node_index)?;
+                let entry = self.projects().get(node_index)?;
                 match &entry.item {
                     RootItem::Rust(rust) => Some(CleanSelection::Project {
                         root: rust.path().clone(),
@@ -359,7 +358,7 @@ impl App {
                 node_index,
                 worktree_index,
             } => {
-                let entry = self.projects.get(node_index)?;
+                let entry = self.projects().get(node_index)?;
                 Self::worktree_path_ref(&entry.item, worktree_index).map(|path| {
                     CleanSelection::Project {
                         root: AbsolutePath::from(path),
@@ -372,31 +371,31 @@ impl App {
 
     /// Returns the absolute path of the currently selected project, borrowed
     /// from the visible tree rows.
-    pub(in super::super) fn selected_project_path(&self) -> Option<&Path> {
+    pub fn selected_project_path(&self) -> Option<&Path> {
         let row = self.selected_row()?;
         self.path_for_row(row)
     }
 
     /// Given a `VisibleRow`, resolve the absolute `&Path` borrowed from
     /// `project_list_items`.
-    pub(in super::super) fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
+    pub fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                Some(self.projects.get(node_index)?.path().as_path())
+                Some(self.projects().get(node_index)?.path().as_path())
             },
             VisibleRow::Member {
                 node_index,
                 group_index,
                 member_index,
             } => Self::member_path_ref(
-                &self.projects.get(node_index)?.item,
+                &self.projects().get(node_index)?.item,
                 group_index,
                 member_index,
             ),
             VisibleRow::Vendored {
                 node_index,
                 vendored_index,
-            } => Self::vendored_path_ref(&self.projects.get(node_index)?.item, vendored_index),
+            } => Self::vendored_path_ref(&self.projects().get(node_index)?.item, vendored_index),
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
@@ -405,14 +404,14 @@ impl App {
                 node_index,
                 worktree_index,
                 ..
-            } => Self::worktree_path_ref(&self.projects.get(node_index)?.item, worktree_index),
+            } => Self::worktree_path_ref(&self.projects().get(node_index)?.item, worktree_index),
             VisibleRow::WorktreeMember {
                 node_index,
                 worktree_index,
                 group_index,
                 member_index,
             } => Self::worktree_member_path_ref(
-                &self.projects.get(node_index)?.item,
+                &self.projects().get(node_index)?.item,
                 worktree_index,
                 group_index,
                 member_index,
@@ -422,7 +421,7 @@ impl App {
                 worktree_index,
                 vendored_index,
             } => Self::worktree_vendored_path_ref(
-                &self.projects.get(node_index)?.item,
+                &self.projects().get(node_index)?.item,
                 worktree_index,
                 vendored_index,
             ),
@@ -430,7 +429,7 @@ impl App {
                 node_index,
                 submodule_index,
             } => self
-                .projects
+                .projects()
                 .get(node_index)?
                 .submodules()
                 .get(submodule_index)
@@ -487,7 +486,7 @@ impl App {
     }
 
     /// Resolve the display path of the currently selected row using `project_list_items`.
-    pub(in super::super) fn selected_display_path(&self) -> Option<DisplayPath> {
+    pub fn selected_display_path(&self) -> Option<DisplayPath> {
         let rows = self.visible_rows();
         let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
         let row = rows.get(selected)?;
@@ -495,10 +494,10 @@ impl App {
     }
 
     /// Given a `VisibleRow`, resolve the display path from `project_list_items`.
-    pub(in super::super) fn display_path_for_row(&self, row: VisibleRow) -> Option<DisplayPath> {
+    pub fn display_path_for_row(&self, row: VisibleRow) -> Option<DisplayPath> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 Some(item.display_path())
             },
             VisibleRow::Member {
@@ -506,7 +505,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => {
                         let group = ws.groups().get(group_index)?;
@@ -527,7 +526,7 @@ impl App {
                 node_index,
                 vendored_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => ws
                         .vendored()
@@ -565,7 +564,7 @@ impl App {
                 worktree_index,
                 ..
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 Self::worktree_display_path(item, worktree_index)
             },
             VisibleRow::WorktreeMember {
@@ -574,7 +573,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 Self::worktree_member_display_path(item, worktree_index, group_index, member_index)
             },
             VisibleRow::WorktreeVendored {
@@ -582,14 +581,14 @@ impl App {
                 worktree_index,
                 vendored_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 Self::worktree_vendored_display_path(item, worktree_index, vendored_index)
             },
             VisibleRow::Submodule {
                 node_index,
                 submodule_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 let submodule = item.submodules().get(submodule_index)?;
                 Some(DisplayPath::new(project::home_relative_path(
                     &submodule.path,
@@ -599,10 +598,10 @@ impl App {
     }
 
     /// Given a `VisibleRow`, resolve the absolute path from `project_list_items`.
-    pub(in super::super) fn abs_path_for_row(&self, row: VisibleRow) -> Option<AbsolutePath> {
+    pub fn abs_path_for_row(&self, row: VisibleRow) -> Option<AbsolutePath> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 Some(item.path().clone())
             },
             VisibleRow::Member {
@@ -610,7 +609,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => {
                         let group = ws.groups().get(group_index)?;
@@ -631,7 +630,7 @@ impl App {
                 node_index,
                 vendored_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => {
                         ws.vendored().get(vendored_index).map(|p| p.path().clone())
@@ -667,7 +666,7 @@ impl App {
                 worktree_index,
                 ..
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 Self::worktree_abs_path(item, worktree_index)
             },
             VisibleRow::WorktreeMember {
@@ -676,7 +675,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 Self::worktree_member_abs_path(item, worktree_index, group_index, member_index)
             },
             VisibleRow::WorktreeVendored {
@@ -684,14 +683,14 @@ impl App {
                 worktree_index,
                 vendored_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 Self::worktree_vendored_abs_path(item, worktree_index, vendored_index)
             },
             VisibleRow::Submodule {
                 node_index,
                 submodule_index,
             } => {
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 item.submodules()
                     .get(submodule_index)
                     .map(|s| s.path.clone())
@@ -701,7 +700,7 @@ impl App {
 
     /// Check if a group at the given indices is an inline (unnamed) group.
     fn is_inline_group(&self, ni: usize, gi: usize) -> bool {
-        let Some(item) = self.projects.get(ni) else {
+        let Some(item) = self.projects().get(ni) else {
             return true;
         };
         match &item.item {
@@ -714,7 +713,7 @@ impl App {
 
     /// Check if a worktree group at the given indices is an inline (unnamed) group.
     fn is_worktree_inline_group(&self, ni: usize, wi: usize, gi: usize) -> bool {
-        let Some(item) = self.projects.get(ni) else {
+        let Some(item) = self.projects().get(ni) else {
             return true;
         };
         match &item.item {
@@ -950,7 +949,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn selected_is_expandable(&self) -> bool {
+    pub fn selected_is_expandable(&self) -> bool {
         let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
         self.visible_rows()
             .get(selected)
@@ -959,10 +958,10 @@ impl App {
             .is_some()
     }
 
-    pub(in super::super) fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {
+    pub fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {
         match row {
             VisibleRow::Root { node_index } => self
-                .projects
+                .projects()
                 .get(node_index)?
                 .has_children()
                 .then_some(ExpandKey::Node(node_index)),
@@ -976,7 +975,7 @@ impl App {
             } => {
                 // In the new model, worktree entries don't expand themselves.
                 // But we keep the expand key for backward compat with workspace worktrees.
-                let item = self.projects.get(node_index)?;
+                let item = self.projects().get(node_index)?;
                 match &item.item {
                     RootItem::Worktrees(WorktreeGroup::Workspaces {
                         primary, linked, ..
@@ -1009,7 +1008,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn expand(&mut self) -> bool {
+    pub fn expand(&mut self) -> bool {
         if !self.selected_is_expandable() {
             return false;
         }
@@ -1024,7 +1023,7 @@ impl App {
     }
 
     /// Remove `key` from expanded, recompute rows, and move cursor to `target`.
-    pub(in super::super) fn collapse_to(&mut self, key: &ExpandKey, target: VisibleRow) {
+    pub fn collapse_to(&mut self, key: &ExpandKey, target: VisibleRow) {
         self.selection.expanded_mut().remove(key);
         self.ensure_visible_rows_cached();
         if let Some(pos) = self.visible_rows().iter().position(|r| *r == target) {
@@ -1036,11 +1035,11 @@ impl App {
 
     /// Try to remove `key` from expanded. If present, mark dirty and return `true`.
     /// Otherwise return `false` (caller should cascade to parent).
-    pub(in super::super) fn try_collapse(&mut self, key: &ExpandKey) -> bool {
+    pub fn try_collapse(&mut self, key: &ExpandKey) -> bool {
         self.selection.expanded_mut().remove(key)
     }
 
-    pub(in super::super) fn collapse(&mut self) -> bool {
+    pub fn collapse(&mut self) -> bool {
         let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
@@ -1052,7 +1051,7 @@ impl App {
             || self.pane_manager().pane(PaneId::ProjectList).pos() != selected_before
     }
 
-    pub(in super::super) fn collapse_row(&mut self, row: VisibleRow) {
+    pub fn collapse_row(&mut self, row: VisibleRow) {
         match row {
             VisibleRow::Root { node_index: ni } => {
                 self.try_collapse(&ExpandKey::Node(ni));
@@ -1150,9 +1149,9 @@ impl App {
         }
     }
 
-    pub(in super::super) fn row_count(&self) -> usize { self.visible_rows().len() }
+    pub fn row_count(&self) -> usize { self.visible_rows().len() }
 
-    pub(in super::super) fn move_up(&mut self) {
+    pub fn move_up(&mut self) {
         let count = self.row_count();
         if count == 0 {
             return;
@@ -1165,7 +1164,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn move_down(&mut self) {
+    pub fn move_down(&mut self) {
         let count = self.row_count();
         if count == 0 {
             return;
@@ -1178,7 +1177,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn move_to_top(&mut self) {
+    pub fn move_to_top(&mut self) {
         if self.row_count() > 0 {
             self.pane_manager_mut()
                 .pane_mut(PaneId::ProjectList)
@@ -1186,7 +1185,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn move_to_bottom(&mut self) {
+    pub fn move_to_bottom(&mut self) {
         let count = self.row_count();
         if count > 0 {
             self.pane_manager_mut()
@@ -1195,7 +1194,7 @@ impl App {
         }
     }
 
-    pub(in super::super) const fn collapse_anchor_row(row: VisibleRow) -> VisibleRow {
+    pub const fn collapse_anchor_row(row: VisibleRow) -> VisibleRow {
         match row {
             VisibleRow::GroupHeader { node_index, .. }
             | VisibleRow::Member { node_index, .. }
@@ -1223,7 +1222,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn expand_all(&mut self) {
+    pub fn expand_all(&mut self) {
         let selected_path = self
             .selection
             .paths_mut()
@@ -1231,17 +1230,18 @@ impl App {
             .take()
             .or_else(|| self.selected_project_path().map(AbsolutePath::from));
         self.selection.paths_mut().collapsed_anchor = None;
-        for (ni, entry) in self.projects.iter().enumerate() {
+        let Self {
+            scan, selection, ..
+        } = self;
+        for (ni, entry) in scan.projects().iter().enumerate() {
             if entry.item.has_children() {
-                self.selection.expanded_mut().insert(ExpandKey::Node(ni));
+                selection.expanded_mut().insert(ExpandKey::Node(ni));
             }
             match &entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     for (gi, group) in ws.groups().iter().enumerate() {
                         if group.is_named() {
-                            self.selection
-                                .expanded_mut()
-                                .insert(ExpandKey::Group(ni, gi));
+                            selection.expanded_mut().insert(ExpandKey::Group(ni, gi));
                         }
                     }
                 },
@@ -1250,13 +1250,11 @@ impl App {
                 }) => {
                     for (wi, ws) in std::iter::once(primary).chain(linked.iter()).enumerate() {
                         if ws.has_members() {
-                            self.selection
-                                .expanded_mut()
-                                .insert(ExpandKey::Worktree(ni, wi));
+                            selection.expanded_mut().insert(ExpandKey::Worktree(ni, wi));
                         }
                         for (gi, group) in ws.groups().iter().enumerate() {
                             if group.is_named() {
-                                self.selection
+                                selection
                                     .expanded_mut()
                                     .insert(ExpandKey::WorktreeGroup(ni, wi, gi));
                             }
@@ -1271,7 +1269,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn collapse_all(&mut self) {
+    pub fn collapse_all(&mut self) {
         let selected_path = self.selected_project_path().map(AbsolutePath::from);
         let anchor = self.selected_row().map(Self::collapse_anchor_row);
         self.selection.expanded_mut().clear();
@@ -1293,32 +1291,33 @@ impl App {
         }
     }
 
-    pub(in super::super) fn expand_path_in_tree(&mut self, target_path: &Path) {
-        for (ni, entry) in self.projects.iter().enumerate() {
+    pub fn expand_path_in_tree(&mut self, target_path: &Path) {
+        let Self {
+            scan, selection, ..
+        } = self;
+        for (ni, entry) in scan.projects().iter().enumerate() {
             match &entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     for (gi, group) in ws.groups().iter().enumerate() {
                         for member in group.members() {
                             if member.path() == target_path {
-                                self.selection.expanded_mut().insert(ExpandKey::Node(ni));
+                                selection.expanded_mut().insert(ExpandKey::Node(ni));
                                 if group.is_named() {
-                                    self.selection
-                                        .expanded_mut()
-                                        .insert(ExpandKey::Group(ni, gi));
+                                    selection.expanded_mut().insert(ExpandKey::Group(ni, gi));
                                 }
                             }
                         }
                     }
                     for vendored in ws.vendored() {
                         if vendored.path() == target_path {
-                            self.selection.expanded_mut().insert(ExpandKey::Node(ni));
+                            selection.expanded_mut().insert(ExpandKey::Node(ni));
                         }
                     }
                 },
                 RootItem::Rust(RustProject::Package(pkg)) => {
                     for vendored in pkg.vendored() {
                         if vendored.path() == target_path {
-                            self.selection.expanded_mut().insert(ExpandKey::Node(ni));
+                            selection.expanded_mut().insert(ExpandKey::Node(ni));
                         }
                     }
                 },
@@ -1328,17 +1327,15 @@ impl App {
                 }) => {
                     for (wi, ws) in std::iter::once(primary).chain(linked.iter()).enumerate() {
                         if ws.path() == target_path {
-                            self.selection.expanded_mut().insert(ExpandKey::Node(ni));
+                            selection.expanded_mut().insert(ExpandKey::Node(ni));
                         }
                         for (gi, group) in ws.groups().iter().enumerate() {
                             for member in group.members() {
                                 if member.path() == target_path {
-                                    self.selection.expanded_mut().insert(ExpandKey::Node(ni));
-                                    self.selection
-                                        .expanded_mut()
-                                        .insert(ExpandKey::Worktree(ni, wi));
+                                    selection.expanded_mut().insert(ExpandKey::Node(ni));
+                                    selection.expanded_mut().insert(ExpandKey::Worktree(ni, wi));
                                     if group.is_named() {
-                                        self.selection
+                                        selection
                                             .expanded_mut()
                                             .insert(ExpandKey::WorktreeGroup(ni, wi, gi));
                                     }
@@ -1347,10 +1344,8 @@ impl App {
                         }
                         for vendored in ws.vendored() {
                             if vendored.path() == target_path {
-                                self.selection.expanded_mut().insert(ExpandKey::Node(ni));
-                                self.selection
-                                    .expanded_mut()
-                                    .insert(ExpandKey::Worktree(ni, wi));
+                                selection.expanded_mut().insert(ExpandKey::Node(ni));
+                                selection.expanded_mut().insert(ExpandKey::Worktree(ni, wi));
                             }
                         }
                     }
@@ -1360,14 +1355,12 @@ impl App {
                 }) => {
                     for (wi, pkg) in std::iter::once(primary).chain(linked.iter()).enumerate() {
                         if pkg.path() == target_path {
-                            self.selection.expanded_mut().insert(ExpandKey::Node(ni));
+                            selection.expanded_mut().insert(ExpandKey::Node(ni));
                         }
                         for vendored in pkg.vendored() {
                             if vendored.path() == target_path {
-                                self.selection.expanded_mut().insert(ExpandKey::Node(ni));
-                                self.selection
-                                    .expanded_mut()
-                                    .insert(ExpandKey::Worktree(ni, wi));
+                                selection.expanded_mut().insert(ExpandKey::Node(ni));
+                                selection.expanded_mut().insert(ExpandKey::Worktree(ni, wi));
                             }
                         }
                     }
@@ -1376,16 +1369,12 @@ impl App {
         }
     }
 
-    pub(in super::super) fn row_matches_project_path(
-        &self,
-        row: VisibleRow,
-        target_path: &Path,
-    ) -> bool {
+    pub fn row_matches_project_path(&self, row: VisibleRow, target_path: &Path) -> bool {
         self.path_for_row(row)
             .is_some_and(|path| path == target_path)
     }
 
-    pub(in super::super) fn select_matching_visible_row(&mut self, target_path: &Path) {
+    pub fn select_matching_visible_row(&mut self, target_path: &Path) {
         self.ensure_visible_rows_cached();
         let selected_index = self
             .visible_rows()
@@ -1398,7 +1387,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn select_project_in_tree(&mut self, target_path: &Path) {
+    pub fn select_project_in_tree(&mut self, target_path: &Path) {
         self.expand_path_in_tree(target_path);
         self.select_matching_visible_row(target_path);
     }

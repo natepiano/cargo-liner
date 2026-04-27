@@ -42,43 +42,35 @@ use crate::tui::toasts::ToastView;
 use crate::tui::toasts::TrackedItem;
 
 impl App {
-    pub(in super::super) const fn lint_enabled(&self) -> bool { self.config.current().lint.enabled }
+    pub const fn lint_enabled(&self) -> bool { self.config.current().lint.enabled }
 
-    pub(in super::super) const fn invert_scroll(&self) -> ScrollDirection {
+    pub const fn invert_scroll(&self) -> ScrollDirection {
         self.config.current().mouse.invert_scroll
     }
 
-    pub(in super::super) const fn include_non_rust(&self) -> NonRustInclusion {
+    pub const fn include_non_rust(&self) -> NonRustInclusion {
         self.config.current().tui.include_non_rust
     }
 
-    pub(in super::super) const fn ci_run_count(&self) -> u32 {
-        self.config.current().tui.ci_run_count
-    }
+    pub const fn ci_run_count(&self) -> u32 { self.config.current().tui.ci_run_count }
 
-    pub(in super::super) const fn navigation_keys(&self) -> NavigationKeys {
+    pub const fn navigation_keys(&self) -> NavigationKeys {
         self.config.current().tui.navigation_keys
     }
 
-    pub(in super::super) fn editor(&self) -> &str { &self.config.current().tui.editor }
+    pub fn editor(&self) -> &str { &self.config.current().tui.editor }
 
-    pub(in super::super) fn terminal_command(&self) -> &str {
-        &self.config.current().tui.terminal_command
-    }
+    pub fn terminal_command(&self) -> &str { &self.config.current().tui.terminal_command }
 
-    pub(in super::super) fn terminal_command_configured(&self) -> bool {
-        !self.terminal_command().trim().is_empty()
-    }
+    pub fn terminal_command_configured(&self) -> bool { !self.terminal_command().trim().is_empty() }
 
     fn toast_timeout(&self) -> Duration {
         Duration::from_secs_f64(self.config.current().tui.status_flash_secs)
     }
 
-    pub(in super::super) fn active_toasts(&self) -> Vec<ToastView<'_>> {
-        self.toasts.active(Instant::now())
-    }
+    pub fn active_toasts(&self) -> Vec<ToastView<'_>> { self.toasts.active(Instant::now()) }
 
-    pub(in super::super) fn focused_toast_id(&self) -> Option<u64> {
+    pub fn focused_toast_id(&self) -> Option<u64> {
         let active = self.active_toasts();
         active
             .get(self.pane_manager().pane(PaneId::Toasts).pos())
@@ -86,11 +78,9 @@ impl App {
     }
 
     #[cfg(test)]
-    pub(in super::super) fn toasts_is_alive_for_test(&self, id: u64) -> bool {
-        self.toasts.is_alive(id)
-    }
+    pub fn toasts_is_alive_for_test(&self, id: u64) -> bool { self.toasts.is_alive(id) }
 
-    pub(in super::super) fn prune_toasts(&mut self) {
+    pub fn prune_toasts(&mut self) {
         let now = Instant::now();
         let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
         self.toasts.prune_tracked_items(now, linger);
@@ -104,11 +94,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn show_timed_toast(
-        &mut self,
-        title: impl Into<String>,
-        body: impl Into<String>,
-    ) {
+    pub fn show_timed_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {
         self.toasts.push_timed(title, body, self.toast_timeout(), 1);
         let toast_len = self.active_toasts().len();
         self.pane_manager_mut()
@@ -116,11 +102,7 @@ impl App {
             .set_len(toast_len);
     }
 
-    pub(in super::super) fn show_timed_warning_toast(
-        &mut self,
-        title: impl Into<String>,
-        body: impl Into<String>,
-    ) {
+    pub fn show_timed_warning_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {
         self.toasts
             .push_timed_styled(title, body, self.toast_timeout(), 1, Warning);
         let toast_len = self.active_toasts().len();
@@ -129,7 +111,7 @@ impl App {
             .set_len(toast_len);
     }
 
-    pub(in super::super) fn start_task_toast(
+    pub fn start_task_toast(
         &mut self,
         title: impl Into<String>,
         body: impl Into<String>,
@@ -142,7 +124,7 @@ impl App {
         task_id
     }
 
-    pub(in super::super) fn finish_task_toast(&mut self, task_id: ToastTaskId) {
+    pub fn finish_task_toast(&mut self, task_id: ToastTaskId) {
         // If tracked items remain, linger so strikethrough animation plays.
         // If no tracked items, exit immediately — nothing to animate.
         let linger = if self.toasts.tracked_item_count(task_id) > 0 {
@@ -154,11 +136,7 @@ impl App {
         self.prune_toasts();
     }
 
-    pub(in super::super) fn set_task_tracked_items(
-        &mut self,
-        task_id: ToastTaskId,
-        items: &[TrackedItem],
-    ) {
+    pub fn set_task_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) {
         let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
         self.toasts.set_tracked_items(task_id, items, linger);
         let toast_len = self.active_toasts().len();
@@ -167,11 +145,7 @@ impl App {
             .set_len(toast_len);
     }
 
-    pub(in super::super) fn mark_tracked_item_completed(
-        &mut self,
-        task_id: ToastTaskId,
-        key: &str,
-    ) {
+    pub fn mark_tracked_item_completed(&mut self, task_id: ToastTaskId, key: &str) {
         self.toasts.mark_item_completed(task_id, key);
         let toast_len = self.active_toasts().len();
         self.pane_manager_mut()
@@ -190,7 +164,7 @@ impl App {
     /// `.cargo/config.toml`'s `build.target-dir` is cleaned at the real
     /// location. Falls back to `<project>/target` when no snapshot
     /// covers `project_path` yet.
-    pub(in super::super) fn start_clean(&mut self, project_path: &AbsolutePath) -> bool {
+    pub fn start_clean(&mut self, project_path: &AbsolutePath) -> bool {
         let target_dir = self
             .resolve_target_dir(project_path)
             .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join("target")));
@@ -206,19 +180,19 @@ impl App {
         true
     }
 
-    pub(in super::super) fn clean_spawn_failed(&mut self, project_path: &AbsolutePath) {
+    pub fn clean_spawn_failed(&mut self, project_path: &AbsolutePath) {
         self.inflight
             .running_clean_paths_mut()
             .remove(project_path.as_path());
         self.sync_running_clean_toast();
     }
 
-    pub(in super::super) fn dismiss_toast(&mut self, id: u64) {
+    pub fn dismiss_toast(&mut self, id: u64) {
         self.toasts.dismiss(id);
         self.prune_toasts();
     }
 
-    pub(in super::super) fn sync_selected_project(&mut self) {
+    pub fn sync_selected_project(&mut self) {
         self.ensure_visible_rows_cached();
         let current = self.selected_project_path().map(AbsolutePath::from);
         if self
@@ -253,46 +227,46 @@ impl App {
         if let Some(abs_path) = current
             && self.selection.paths_mut().last_selected.as_ref() != Some(&abs_path)
         {
-            self.data_generation += 1;
+            self.scan.bump_generation();
             self.selection.paths_mut().last_selected = Some(abs_path);
             self.mark_selection_changed();
             self.maybe_priority_fetch();
         }
     }
 
-    pub(in super::super) fn is_deleted(&self, path: &Path) -> bool {
+    pub fn is_deleted(&self, path: &Path) -> bool {
         use crate::project::Visibility;
-        self.projects
+        self.projects()
             .at_path(path)
             .is_some_and(|project| project.visibility == Visibility::Deleted)
     }
 
-    pub(in super::super) fn selected_project_is_deleted(&self) -> bool {
+    pub fn selected_project_is_deleted(&self) -> bool {
         self.selected_project_path()
             .is_some_and(|path| self.is_deleted(path))
     }
 
-    pub(in super::super) fn formatted_disk(&self, path: &Path) -> String {
+    pub fn formatted_disk(&self, path: &Path) -> String {
         let bytes = self
-            .projects
+            .projects()
             .at_path(path)
             .and_then(|project| project.disk_usage_bytes)
             .unwrap_or(0);
         render::format_bytes(bytes)
     }
 
-    pub(in super::super) fn selected_ci_path(&self) -> Option<AbsolutePath> {
+    pub fn selected_ci_path(&self) -> Option<AbsolutePath> {
         let path = self.selected_project_path()?;
-        let entry = self.projects.entry_containing(path)?;
+        let entry = self.projects().entry_containing(path)?;
         Some(entry.item.path().clone())
     }
 
-    pub(in super::super) fn selected_ci_runs(&self) -> Vec<CiRun> {
+    pub fn selected_ci_runs(&self) -> Vec<CiRun> {
         self.selected_project_path()
             .map_or_else(Vec::new, |path| self.ci_runs_for_display(path))
     }
 
-    pub(in super::super) fn unpublished_ci_branch_name(&self, path: &Path) -> Option<String> {
+    pub fn unpublished_ci_branch_name(&self, path: &Path) -> Option<String> {
         let git = self.git_info_for(path)?;
         let default_branch = self
             .repo_info_for(path)
@@ -302,7 +276,7 @@ impl App {
             .flatten()
     }
 
-    pub(in super::super) fn ci_for(&self, path: &Path) -> Option<Conclusion> {
+    pub fn ci_for(&self, path: &Path) -> Option<Conclusion> {
         // A branch with no upstream tracking can't have CI runs — don't
         // show the parent repo's result for an unpushed worktree branch.
         if self.unpublished_ci_branch_name(path).is_some() {
@@ -313,32 +287,32 @@ impl App {
             .map(|run| run.conclusion)
     }
 
-    pub(in super::super) fn ci_data_for(&self, path: &Path) -> Option<&ProjectCiData> {
-        self.projects
+    pub fn ci_data_for(&self, path: &Path) -> Option<&ProjectCiData> {
+        self.projects()
             .entry_containing(path)
             .and_then(|entry| entry.git_repo.as_ref())
             .map(|repo| &repo.ci_data)
     }
 
-    pub(in super::super) fn ci_info_for(&self, path: &Path) -> Option<&ProjectCiInfo> {
+    pub fn ci_info_for(&self, path: &Path) -> Option<&ProjectCiInfo> {
         self.ci_data_for(path).and_then(ProjectCiData::info)
     }
 
-    pub(in super::super) fn ci_is_fetching(&self, path: &Path) -> bool {
-        self.projects.entry_containing(path).is_some_and(|entry| {
+    pub fn ci_is_fetching(&self, path: &Path) -> bool {
+        self.projects().entry_containing(path).is_some_and(|entry| {
             self.inflight
                 .ci_fetch_tracker()
                 .is_fetching(entry.item.path().as_path())
         })
     }
 
-    pub(in super::super) fn ci_is_exhausted(&self, path: &Path) -> bool {
+    pub fn ci_is_exhausted(&self, path: &Path) -> bool {
         self.ci_data_for(path)
             .is_some_and(ProjectCiData::is_exhausted)
     }
 
-    pub(in super::super) fn git_info_for(&self, path: &Path) -> Option<&CheckoutInfo> {
-        self.projects
+    pub fn git_info_for(&self, path: &Path) -> Option<&CheckoutInfo> {
+        self.projects()
             .at_path(path)
             .and_then(|project| project.local_git_state.info())
     }
@@ -347,15 +321,15 @@ impl App {
     /// entry containing `path`. `None` means either the path isn't in a
     /// known entry, the entry isn't in a git repo, or the background
     /// `LocalGitInfo::get` call hasn't completed yet.
-    pub(in super::super) fn repo_info_for(&self, path: &Path) -> Option<&RepoInfo> {
-        self.projects
+    pub fn repo_info_for(&self, path: &Path) -> Option<&RepoInfo> {
+        self.projects()
             .entry_containing(path)
             .and_then(|entry| entry.git_repo.as_ref()?.repo_info.as_ref())
     }
 
     /// Convenience: the primary remote's URL for the checkout at `path`,
     /// looked up against its containing entry's `RepoInfo`.
-    pub(in super::super) fn primary_url_for(&self, path: &Path) -> Option<&str> {
+    pub fn primary_url_for(&self, path: &Path) -> Option<&str> {
         let checkout = self.git_info_for(path)?;
         let repo = self.repo_info_for(path)?;
         checkout.primary_url(repo)
@@ -363,7 +337,7 @@ impl App {
 
     /// Convenience: the primary remote's ahead/behind for the checkout
     /// at `path`.
-    pub(in super::super) fn primary_ahead_behind_for(&self, path: &Path) -> Option<(usize, usize)> {
+    pub fn primary_ahead_behind_for(&self, path: &Path) -> Option<(usize, usize)> {
         let checkout = self.git_info_for(path)?;
         let repo = self.repo_info_for(path)?;
         checkout.primary_ahead_behind(repo)
@@ -375,7 +349,7 @@ impl App {
     /// still belongs to the repo and should fetch repo-level metadata.
     /// Preference order: `upstream`, then `origin`, then the first
     /// remote with a parseable owner/repo URL.
-    pub(in super::super) fn fetch_url_for(&self, path: &Path) -> Option<String> {
+    pub fn fetch_url_for(&self, path: &Path) -> Option<String> {
         let repo = self.repo_info_for(path)?;
         let parseable = |name: &str| {
             repo.remotes
@@ -395,8 +369,8 @@ impl App {
             .map(String::from)
     }
 
-    pub(in super::super) fn is_rust_at_path(&self, path: &Path) -> bool {
-        self.projects.iter().any(|item| {
+    pub fn is_rust_at_path(&self, path: &Path) -> bool {
+        self.projects().iter().any(|item| {
             if item
                 .submodules()
                 .iter()
@@ -437,13 +411,13 @@ impl App {
     }
 
     /// Aggregate disk usage for a `RootItem`.
-    pub(in super::super) fn formatted_disk_for_item(item: &RootItem) -> String {
+    pub fn formatted_disk_for_item(item: &RootItem) -> String {
         item.disk_usage_bytes()
             .map_or_else(|| render::format_bytes(0), render::format_bytes)
     }
 
     /// Aggregate CI for a `RootItem`.
-    pub(in super::super) fn ci_for_item(&self, item: &RootItem) -> Option<Conclusion> {
+    pub fn ci_for_item(&self, item: &RootItem) -> Option<Conclusion> {
         let paths = Self::unique_item_paths(item);
         if paths.len() == 1 {
             return self.ci_for(&paths[0]);
@@ -473,34 +447,33 @@ impl App {
         }
     }
 
-    pub(in super::super) fn animation_elapsed(&self) -> Duration {
-        self.animation_started.elapsed()
-    }
+    pub fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
 
-    pub(in super::super) fn discovery_shimmer_enabled(&self) -> bool {
+    pub fn discovery_shimmer_enabled(&self) -> bool {
         self.config.current().tui.discovery_shimmer_secs > 0.0
     }
 
-    pub(in super::super) fn discovery_shimmer_duration(&self) -> Duration {
+    pub fn discovery_shimmer_duration(&self) -> Duration {
         Duration::from_secs_f64(self.config.current().tui.discovery_shimmer_secs)
     }
 
-    pub(in super::super) fn register_discovery_shimmer(&mut self, path: &Path) {
+    pub fn register_discovery_shimmer(&mut self, path: &Path) {
         if !self.is_scan_complete() || !self.discovery_shimmer_enabled() {
             return;
         }
-        self.discovery_shimmers.insert(
-            AbsolutePath::from(path),
-            DiscoveryShimmer::new(Instant::now(), self.discovery_shimmer_duration()),
-        );
+        let shimmer = DiscoveryShimmer::new(Instant::now(), self.discovery_shimmer_duration());
+        self.scan
+            .discovery_shimmers_mut()
+            .insert(AbsolutePath::from(path), shimmer);
     }
 
-    pub(in super::super) fn prune_discovery_shimmers(&mut self, now: Instant) {
-        self.discovery_shimmers
+    pub fn prune_discovery_shimmers(&mut self, now: Instant) {
+        self.scan
+            .discovery_shimmers_mut()
             .retain(|_, shimmer| shimmer.is_active_at(now));
     }
 
-    pub(in super::super) fn discovery_name_segments_for_path(
+    pub fn discovery_name_segments_for_path(
         &self,
         row_path: &Path,
         name: &str,
@@ -548,7 +521,8 @@ impl App {
         now: Instant,
         row_kind: DiscoveryRowKind,
     ) -> Option<(AbsolutePath, DiscoveryShimmer)> {
-        self.discovery_shimmers
+        self.scan
+            .discovery_shimmers()
             .iter()
             .filter(|(session_path, shimmer)| {
                 shimmer.is_active_at(now)
@@ -577,19 +551,19 @@ impl App {
     }
 
     fn discovery_scope_contains(&self, session_path: &Path, row_path: &Path) -> bool {
-        self.projects
+        self.projects()
             .iter()
             .any(|item| root_item_scope_contains(item, session_path, row_path))
     }
 
     fn discovery_parent_row(&self, session_path: &Path) -> Option<DiscoveryParentRow> {
-        self.projects
+        self.projects()
             .iter()
             .find_map(|item| root_item_parent_row(item, session_path))
     }
 
-    pub(in super::super) fn is_vendored_path(&self, path: &Path) -> bool {
-        self.projects.iter().any(|item| match &item.item {
+    pub fn is_vendored_path(&self, path: &Path) -> bool {
+        self.projects().iter().any(|item| match &item.item {
             RootItem::Rust(RustProject::Workspace(ws)) => {
                 ws.vendored().iter().any(|v| v.path() == path)
             },
@@ -610,8 +584,8 @@ impl App {
         })
     }
 
-    pub(in super::super) fn is_workspace_member_path(&self, path: &Path) -> bool {
-        self.projects.iter().any(|item| match &item.item {
+    pub fn is_workspace_member_path(&self, path: &Path) -> bool {
+        self.projects().iter().any(|item| match &item.item {
             RootItem::Rust(RustProject::Workspace(ws)) => ws
                 .groups()
                 .iter()
@@ -627,14 +601,14 @@ impl App {
         })
     }
 
-    pub(in super::super) fn git_status_for(&self, path: &Path) -> Option<GitStatus> {
+    pub fn git_status_for(&self, path: &Path) -> Option<GitStatus> {
         self.git_info_for(path).map(|info| info.status)
     }
 
     /// Roll up the worst git path state across all **visible** children of a
     /// `RootItem`.  For worktree groups, checks primary + non-dismissed linked
     /// entries.  For everything else, returns the state for the single path.
-    pub(in super::super) fn git_status_for_item(&self, item: &RootItem) -> Option<GitStatus> {
+    pub fn git_status_for_item(&self, item: &RootItem) -> Option<GitStatus> {
         match item {
             RootItem::Worktrees(g) => {
                 let states: Box<dyn Iterator<Item = Option<GitStatus>>> = match g {
@@ -665,12 +639,13 @@ impl App {
         }
     }
 
-    pub(in super::super) fn prune_inactive_project_state(&mut self) {
+    pub fn prune_inactive_project_state(&mut self) {
         let mut all_paths: HashSet<AbsolutePath> = HashSet::new();
-        self.projects.for_each_leaf_path(|path, _| {
+        self.projects().for_each_leaf_path(|path, _| {
             all_paths.insert(AbsolutePath::from(path));
         });
-        self.pending_git_first_commit
+        self.scan
+            .pending_git_first_commit_mut()
             .retain(|path, _| all_paths.contains(path));
         self.inflight
             .ci_fetch_tracker_mut()
@@ -678,7 +653,7 @@ impl App {
     }
 
     /// Formatted ahead/behind sync status for the project list columns.
-    pub(in super::super) fn git_sync(&self, path: &Path) -> String {
+    pub fn git_sync(&self, path: &Path) -> String {
         let Some(info) = self.git_info_for(path) else {
             return String::new();
         };
@@ -695,7 +670,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn git_main(&self, path: &Path) -> String {
+    pub fn git_main(&self, path: &Path) -> String {
         let Some(info) = self.git_info_for(path) else {
             return String::new();
         };
@@ -714,7 +689,7 @@ impl App {
     /// Returns the Enter-key action label for the current cursor position,
     /// or `None` if Enter does nothing here. Used by the shortcut bar to
     /// only show Enter when it's actionable.
-    pub(in super::super) fn enter_action(&self) -> Option<&'static str> {
+    pub fn enter_action(&self) -> Option<&'static str> {
         match self.input_context() {
             InputContext::DetailTargets => Some("run"),
             InputContext::DetailFields => {

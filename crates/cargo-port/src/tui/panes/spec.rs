@@ -2,7 +2,7 @@ use crate::tui::pane::PaneAxisSize;
 use crate::tui::pane::PaneSizeSpec;
 
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug, Hash)]
-pub(in super::super) enum PaneId {
+pub enum PaneId {
     #[default]
     ProjectList,
     Package,
@@ -20,7 +20,7 @@ pub(in super::super) enum PaneId {
 }
 
 impl PaneId {
-    pub(in super::super) const fn index(self) -> usize {
+    pub const fn index(self) -> usize {
         match self {
             Self::ProjectList => 0,
             Self::Package => 1,
@@ -38,15 +38,13 @@ impl PaneId {
         }
     }
 
-    pub(in super::super) const fn pane_count() -> usize { Self::Keymap.index() + 1 }
+    pub const fn pane_count() -> usize { Self::Keymap.index() + 1 }
 
-    pub(in super::super) const fn is_overlay(self) -> bool {
-        matches!(self, Self::Settings | Self::Finder)
-    }
+    pub const fn is_overlay(self) -> bool { matches!(self, Self::Settings | Self::Finder) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in super::super) enum PaneBehavior {
+pub enum PaneBehavior {
     ProjectList,
     DetailFields,
     DetailTargets,
@@ -58,7 +56,7 @@ pub(in super::super) enum PaneBehavior {
     Overlay,
 }
 
-pub(in super::super) const fn behavior(id: PaneId) -> PaneBehavior {
+pub const fn behavior(id: PaneId) -> PaneBehavior {
     match id {
         PaneId::ProjectList => PaneBehavior::ProjectList,
         PaneId::Package | PaneId::Lang | PaneId::Git => PaneBehavior::DetailFields,
@@ -72,7 +70,7 @@ pub(in super::super) const fn behavior(id: PaneId) -> PaneBehavior {
     }
 }
 
-pub(in super::super) const fn has_row_hitboxes(id: PaneId) -> bool {
+pub const fn has_row_hitboxes(id: PaneId) -> bool {
     // The Git pane registers its own hitboxes from `render_git_panel`
     // because rows don't map 1:1 to screen lines (section rules, column
     // headers, and spacers break the default flat mapping).
@@ -85,7 +83,7 @@ pub(in super::super) const fn has_row_hitboxes(id: PaneId) -> bool {
     )
 }
 
-pub(in super::super) const fn size_spec(id: PaneId, cpu_width: u16) -> PaneSizeSpec {
+pub const fn size_spec(id: PaneId, cpu_width: u16) -> PaneSizeSpec {
     match id {
         PaneId::Cpu => PaneSizeSpec {
             width:  PaneAxisSize::Fixed(cpu_width),

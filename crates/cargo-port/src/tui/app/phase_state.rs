@@ -9,7 +9,7 @@ use crate::tui::toasts::ToastTaskId;
 /// "initialized, nothing to do." The distinction matters: an Unknown phase
 /// cannot be `is_complete`, but an initialized-empty one can.
 #[derive(Debug)]
-pub(in super::super) struct KeyedPhase<K: Eq + Hash> {
+pub struct KeyedPhase<K: Eq + Hash> {
     pub expected:    Option<HashSet<K>>,
     pub seen:        HashSet<K>,
     pub complete_at: Option<Instant>,
@@ -50,7 +50,7 @@ impl<K: Eq + Hash> KeyedPhase<K> {
 /// A phase that tracks cardinality only — no per-item identity. Parallel to
 /// `KeyedPhase` but with `usize` counters instead of `HashSet`.
 #[derive(Debug, Default)]
-pub(in super::super) struct CountedPhase {
+pub struct CountedPhase {
     pub expected:    Option<usize>,
     pub seen:        usize,
     pub complete_at: Option<Instant>,
@@ -61,7 +61,7 @@ pub(in super::super) struct CountedPhase {
 /// implementations — the minimum that justifies a trait under the style
 /// guide. Having the trait lets callers write `phase.complete_once(now)`
 /// without caring which kind of phase they hold.
-pub(in super::super) trait PhaseCompletion {
+pub trait PhaseCompletion {
     /// `true` once `expected` is set and `seen` has caught up to it.
     fn is_complete(&self) -> bool;
 

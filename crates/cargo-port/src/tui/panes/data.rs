@@ -12,7 +12,7 @@ use crate::tui::cpu::CpuSnapshot;
 /// Two keys match iff both the selected row and the app's data generation
 /// match — neither changing means the built detail is still accurate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in super::super) struct DetailCacheKey {
+pub struct DetailCacheKey {
     pub row:        VisibleRow,
     pub generation: u64,
 }
@@ -26,7 +26,7 @@ pub(in super::super) struct DetailCacheKey {
 ///   setter and is not covered by the stamp.
 ///
 /// Fields are private so the stamp cannot go out of sync with the data.
-pub(in super::super) struct PaneDataStore {
+pub struct PaneDataStore {
     package:       Option<PackageData>,
     git:           Option<GitData>,
     cpu:           Option<CpuSnapshot>,
@@ -39,7 +39,7 @@ pub(in super::super) struct PaneDataStore {
 }
 
 impl PaneDataStore {
-    pub(in super::super) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             package:                    None,
             git:                        None,
@@ -53,20 +53,20 @@ impl PaneDataStore {
         }
     }
 
-    pub(in super::super) const fn package(&self) -> Option<&PackageData> { self.package.as_ref() }
-    pub(in super::super) const fn git(&self) -> Option<&GitData> { self.git.as_ref() }
-    pub(in super::super) const fn targets(&self) -> Option<&TargetsData> { self.targets.as_ref() }
-    pub(in super::super) const fn ci(&self) -> Option<&CiData> { self.ci.as_ref() }
-    pub(in super::super) const fn lints(&self) -> Option<&LintsData> { self.lints.as_ref() }
-    pub(in super::super) const fn cpu(&self) -> Option<&CpuSnapshot> { self.cpu.as_ref() }
+    pub const fn package(&self) -> Option<&PackageData> { self.package.as_ref() }
+    pub const fn git(&self) -> Option<&GitData> { self.git.as_ref() }
+    pub const fn targets(&self) -> Option<&TargetsData> { self.targets.as_ref() }
+    pub const fn ci(&self) -> Option<&CiData> { self.ci.as_ref() }
+    pub const fn lints(&self) -> Option<&LintsData> { self.lints.as_ref() }
+    pub const fn cpu(&self) -> Option<&CpuSnapshot> { self.cpu.as_ref() }
 
     /// True when the stored detail matches `desired` — caller can skip
     /// rebuilding. A desired key of `None` matches a cleared store.
-    pub(in super::super) fn detail_is_current(&self, desired: Option<DetailCacheKey>) -> bool {
+    pub fn detail_is_current(&self, desired: Option<DetailCacheKey>) -> bool {
         self.detail_stamp == desired
     }
 
-    pub(in super::super) fn set_detail_data(
+    pub fn set_detail_data(
         &mut self,
         stamp: DetailCacheKey,
         package: PackageData,
@@ -91,7 +91,7 @@ impl PaneDataStore {
     /// empty result. Stamping with `desired` (rather than always `None`)
     /// keeps a "tried to build for this key and got nothing" state from
     /// thrashing: the next frame with the same key short-circuits.
-    pub(in super::super) fn clear_detail_data(&mut self, stamp: Option<DetailCacheKey>) {
+    pub fn clear_detail_data(&mut self, stamp: Option<DetailCacheKey>) {
         self.package = None;
         self.git = None;
         self.targets = None;
@@ -104,13 +104,13 @@ impl PaneDataStore {
         }
     }
 
-    pub(in super::super) fn set_cpu(&mut self, snapshot: CpuSnapshot) { self.cpu = Some(snapshot); }
+    pub fn set_cpu(&mut self, snapshot: CpuSnapshot) { self.cpu = Some(snapshot); }
 
     /// Number of times the detail set has been written (via
     /// `set_detail_data` or `clear_detail_data`). Lets tests prove that
     /// `ensure_detail_cached` actually short-circuits on a cache hit.
     #[cfg(test)]
-    pub(in super::super) const fn detail_build_count(&self) -> u64 { self.detail_builds }
+    pub const fn detail_build_count(&self) -> u64 { self.detail_builds }
 
     /// Test-only override: replace the `lints` slot without disturbing the
     /// detail stamp. Used by render tests that need a specific lints
@@ -118,16 +118,14 @@ impl PaneDataStore {
     /// place so a subsequent `ensure_detail_cached` short-circuits and
     /// preserves the override.
     #[cfg(test)]
-    pub(in super::super) fn override_lints_for_test(&mut self, data: LintsData) {
-        self.lints = Some(data);
-    }
+    pub fn override_lints_for_test(&mut self, data: LintsData) { self.lints = Some(data); }
 
     /// Test-only override: replace `ci.runs` on an already-populated
     /// detail set and drop the mode label. Mirrors what a production
     /// rebuild would produce for fixture CI data without forcing the test
     /// to assemble a whole `DetailPaneData`.
     #[cfg(test)]
-    pub(in super::super) fn override_ci_runs_for_test(&mut self, runs: Vec<CiRun>) {
+    pub fn override_ci_runs_for_test(&mut self, runs: Vec<CiRun>) {
         if let Some(ci) = self.ci.as_mut() {
             ci.runs = runs;
             ci.mode_label = None;

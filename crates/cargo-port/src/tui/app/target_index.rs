@@ -23,7 +23,7 @@ use crate::project::WorkspaceMetadataStore;
 /// sibling sharing a target dir is a real "collateral" project or a
 /// nested crate that should be collapsed into a summary line.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(in super::super) enum MemberKind {
+pub enum MemberKind {
     /// A first-class project row — listed explicitly in the confirm
     /// dialog when it shares a target dir with the selection.
     Project,
@@ -36,7 +36,7 @@ pub(in super::super) enum MemberKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in super::super) struct TargetDirMember {
+pub struct TargetDirMember {
     pub project_root: AbsolutePath,
     pub kind:         MemberKind,
 }
@@ -46,19 +46,19 @@ pub(in super::super) struct TargetDirMember {
 /// Both maps stay in sync via [`TargetDirIndex::upsert`] /
 /// [`TargetDirIndex::remove`].
 #[derive(Debug, Default)]
-pub(in super::super) struct TargetDirIndex {
+pub struct TargetDirIndex {
     by_target_dir: HashMap<AbsolutePath, Vec<TargetDirMember>>,
     by_project:    HashMap<AbsolutePath, AbsolutePath>,
 }
 
 impl TargetDirIndex {
-    pub(in super::super) fn new() -> Self { Self::default() }
+    pub fn new() -> Self { Self::default() }
 
     /// Set/replace the `target_dir` for `member.project_root`. If the
     /// project previously lived under a different target dir, the
     /// stale entry is evicted before inserting the new one. Safe to
     /// call repeatedly with the same inputs.
-    pub(in super::super) fn upsert(&mut self, member: TargetDirMember, target_dir: AbsolutePath) {
+    pub fn upsert(&mut self, member: TargetDirMember, target_dir: AbsolutePath) {
         let project_root = member.project_root.clone();
         if let Some(previous_dir) = self.by_project.get(&project_root).cloned() {
             if previous_dir == target_dir {
@@ -86,7 +86,7 @@ impl TargetDirIndex {
 
     /// Remove all entries for `project_root`. Called when a project
     /// disappears from the scan set.
-    pub(in super::super) fn remove(&mut self, project_root: &AbsolutePath) {
+    pub fn remove(&mut self, project_root: &AbsolutePath) {
         if let Some(dir) = self.by_project.remove(project_root) {
             self.evict_from_bucket(&dir, project_root);
         }
@@ -96,7 +96,7 @@ impl TargetDirIndex {
     /// whose root is in `exclude`. The caller (usually `build_clean_plan`)
     /// passes its selection-set here so self-members don't get listed
     /// as "collateral" in the confirm dialog.
-    pub(in super::super) fn siblings<'a>(
+    pub fn siblings<'a>(
         &'a self,
         target_dir: &AbsolutePath,
         exclude: &[AbsolutePath],
@@ -114,10 +114,7 @@ impl TargetDirIndex {
     }
 
     /// Current target dir for `project_root`, if known.
-    pub(in super::super) fn target_dir_for(
-        &self,
-        project_root: &AbsolutePath,
-    ) -> Option<&AbsolutePath> {
+    pub fn target_dir_for(&self, project_root: &AbsolutePath) -> Option<&AbsolutePath> {
         self.by_project.get(project_root)
     }
 
@@ -140,7 +137,7 @@ impl TargetDirIndex {
 /// case — `primary` is the canonical checkout, `linked` lists every
 /// linked worktree at selection time.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in super::super) enum CleanSelection {
+pub enum CleanSelection {
     Project {
         root: AbsolutePath,
     },
@@ -165,7 +162,7 @@ impl CleanSelection {
 /// contributing a [`CleanTarget`]. Surfaced to the confirm dialog and
 /// the progress toast.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in super::super) enum SkipReason {
+pub enum SkipReason {
     /// No `cargo metadata` snapshot covers this project yet — clean
     /// can't resolve the right target dir.
     NoMetadata,
@@ -176,7 +173,7 @@ pub(in super::super) enum SkipReason {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in super::super) enum CleanMethod {
+pub enum CleanMethod {
     /// Shell out to `cargo clean` with `cwd = project root`. Cleans
     /// the entire `target_directory` resolved from that cwd — any
     /// sibling sharing the dir is wiped alongside. The confirm dialog
@@ -185,7 +182,7 @@ pub(in super::super) enum CleanMethod {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in super::super) struct CleanTarget {
+pub struct CleanTarget {
     pub target_directory:  AbsolutePath,
     pub exists_on_disk:    bool,
     pub method:            CleanMethod,
@@ -204,7 +201,7 @@ pub(in super::super) struct CleanTarget {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(in super::super) struct CleanPlan {
+pub struct CleanPlan {
     /// Deduped on `target_directory`.
     pub targets:         Vec<CleanTarget>,
     /// Flat union of every `CleanTarget.affected_extras` — convenience
@@ -218,7 +215,7 @@ impl CleanPlan {
     /// disk **and** no collateral share is listed. Prevents the
     /// shared-target regression where the first clean wipes the dir
     /// and every subsequent click wrongly toasts "Already clean."
-    pub(in super::super) fn is_already_clean(&self) -> bool {
+    pub fn is_already_clean(&self) -> bool {
         self.targets.iter().all(|t| !t.exists_on_disk) && self.affected_extras.is_empty()
     }
 }
@@ -232,7 +229,7 @@ impl CleanPlan {
 /// with `selection_set` as the `exclude` argument so the selection's
 /// own members don't appear as "collateral extras" (design plan →
 /// **Mixed worktree groups → Selection exclusion**).
-pub(in super::super) fn build_clean_plan(
+pub fn build_clean_plan(
     index: &TargetDirIndex,
     store: &WorkspaceMetadataStore,
     selection: &CleanSelection,
@@ -244,17 +241,17 @@ pub(in super::super) fn build_clean_plan(
 /// which defers to [`std::path::Path::exists`]; tests pass a table-
 /// driven double so synthetic paths don't trip the `DeletedWorktree`
 /// branch.
-pub(in super::super) trait ExistenceCheck {
+pub trait ExistenceCheck {
     fn exists(&self, path: &std::path::Path) -> bool;
 }
 
-pub(in super::super) struct FsExistenceCheck;
+pub struct FsExistenceCheck;
 
 impl ExistenceCheck for FsExistenceCheck {
     fn exists(&self, path: &std::path::Path) -> bool { path.exists() }
 }
 
-pub(in super::super) fn build_clean_plan_with(
+pub fn build_clean_plan_with(
     index: &TargetDirIndex,
     store: &WorkspaceMetadataStore,
     selection: &CleanSelection,

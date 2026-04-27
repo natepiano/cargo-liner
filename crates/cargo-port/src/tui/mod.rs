@@ -17,6 +17,7 @@ mod pane;
 mod panes;
 mod popup;
 mod render;
+mod scan_state;
 mod selection;
 mod settings;
 mod shortcuts;

@@ -69,7 +69,7 @@ const fn section_for_pos(
     }
 }
 
-pub(in super::super) fn git_label_width(data: &GitData, fields: &[DetailField]) -> usize {
+pub fn git_label_width(data: &GitData, fields: &[DetailField]) -> usize {
     fields
         .iter()
         .map(|field| match *field {
