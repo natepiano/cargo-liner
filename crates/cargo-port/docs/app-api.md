@@ -671,3 +671,20 @@ plan rather than treating them as scope creep:
     shape when one subsystem's mutation forces invalidation across
     siblings — the borrow declares the dependency at the type level.
   Apply this pattern to any future subsystem with the same invariant.
+
+  **In-code documentation requirement.** Every mutation guard *must* land
+  with a doc comment on the guard struct that:
+  1. Names the type-level invariant the guard enforces (what makes
+     bypass impossible).
+  2. Names what runs in `Drop` (which caches clear / which recomputes
+     fire).
+  3. Tells a future maintainer where to add new mutation paths — i.e.,
+     "add new methods *here*, not on the underlying subsystem, so the
+     drop-clear fires."
+
+  The existing `TreeMutation` (`src/tui/app/mod.rs:630-639`) is the
+  reference template. New guards introduced by Phases 3, 6, or any
+  later phase copy that doc shape — no comment is shorter, no
+  comment is fluffier. The plan's "Recurring patterns" section names
+  the pattern; the guard's doc comment is what a future maintainer
+  hits first when reading the code.
