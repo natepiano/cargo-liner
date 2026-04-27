@@ -13,6 +13,7 @@ mod pane;
 mod panes;
 mod popup;
 mod render;
+mod selection;
 mod settings;
 mod shortcuts;
 mod terminal;

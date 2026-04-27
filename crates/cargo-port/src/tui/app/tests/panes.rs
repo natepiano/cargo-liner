@@ -24,7 +24,7 @@ fn collapse_all_anchors_member_selection_to_root() {
 
     let mut app = make_app(&[workspace, member.clone()]);
     apply_items(&mut app, &[root]);
-    app.expanded.insert(ExpandKey::Node(0));
+    app.expanded_mut().insert(ExpandKey::Node(0));
     app.select_project_in_tree(member.path());
 
     app.collapse_all();
@@ -451,7 +451,8 @@ fn project_change_resets_project_dependent_panes() {
     assert!(!app.remembers_selection(PaneId::Targets));
     assert!(!app.remembers_selection(PaneId::CiRuns));
     assert_eq!(
-        app.selection_paths
+        app.selection()
+            .paths()
             .selected_project
             .as_ref()
             .map(crate::project::AbsolutePath::as_path),
@@ -464,15 +465,15 @@ fn apply_config_resets_column_layout_flag() {
     let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
     let mut cfg = CargoPortConfig::default();
 
-    assert!(!app.cached_fit_widths.lint_enabled());
+    assert!(!app.cached_fit_widths().lint_enabled());
 
     cfg.lint.enabled = true;
     app.apply_config(&cfg);
-    assert!(app.cached_fit_widths.lint_enabled());
+    assert!(app.cached_fit_widths().lint_enabled());
 
     cfg.lint.enabled = false;
     app.apply_config(&cfg);
-    assert!(!app.cached_fit_widths.lint_enabled());
+    assert!(!app.cached_fit_widths().lint_enabled());
 }
 
 #[test]

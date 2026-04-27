@@ -14,11 +14,13 @@
 //! remember.
 //!
 //! - **Fan-out flavor** — see [`TreeMutation`] (this module). The guard currently borrows `&mut
-//!   App` and clears `Panes`-owned tree-derived caches via
-//!   [`super::panes::Panes::clear_for_tree_change`]. Phase 6 will rewrite the guard to borrow Scan
-//!   + Panes + Selection directly so the type signature declares the dependency.
-//! - **Self-only flavor** — lands in Phase 3 with `SelectionMutation` (stub: see `docs/app-api.md`
-//!   § "Phase 3 (Selection)").
+//!   App` and on drop clears `Panes`-owned tree-derived caches via
+//!   [`super::panes::Panes::clear_for_tree_change`] plus rebuilds `Selection`'s visible-rows cache
+//!   via [`super::selection::Selection::recompute_visibility`]. Phase 6 will rewrite the guard to
+//!   borrow Scan + Panes + Selection directly so the dependency is declared at the type level.
+//! - **Self-only flavor** — see [`super::selection::SelectionMutation`]. Visibility-changing
+//!   mutations on `Selection` (`toggle_expand`, `apply_finder`) are only callable through the
+//!   guard; `Drop` recomputes `cached_visible_rows`.
 //!
 //! ## Cross-subsystem orchestrator on App
 //! Operations that touch multiple subsystems and have no single
@@ -48,7 +50,7 @@ mod navigation;
 mod phase_state;
 mod query;
 mod service_state;
-mod snapshots;
+pub(in crate::tui) mod snapshots;
 mod target_index;
 mod types;
 
@@ -70,6 +72,7 @@ use super::panes::LayoutCache;
 use super::panes::PaneDataStore;
 use super::panes::PaneId;
 use super::panes::Panes;
+use super::selection::Selection;
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
@@ -111,9 +114,12 @@ pub(super) use types::CiRunDisplayMode;
 pub(super) use types::ConfirmAction;
 pub(super) use types::DiscoveryRowKind;
 pub(super) use types::ExpandKey;
+pub(super) use types::FinderState;
 pub(super) use types::HoveredPaneRow;
 pub(super) use types::PendingClean;
 pub(super) use types::PollBackgroundStats;
+pub(super) use types::SelectionPaths;
+pub(super) use types::SelectionSync;
 pub(super) use types::VisibleRow;
 
 pub(super) use super::columns::ProjectListWidths;
@@ -142,10 +148,16 @@ pub(super) struct App {
     /// `hovered_pane_row`, `ci_display_modes`, `cpu_poller`. App's
     /// impl-files reach pane state through this handle.
     panes:                    Panes,
+    /// Selection subsystem (Phase 3 of the App-API carve, see
+    /// `docs/app-api.md`). Owns `selection_paths`, `selection`
+    /// (`SelectionSync`), `expanded`, `finder`,
+    /// `cached_visible_rows`, `cached_root_sorted`,
+    /// `cached_child_sorted`, `cached_fit_widths` (now
+    /// `ProjectListWidths`).
+    selection:                Selection,
     bg_tx:                    mpsc::Sender<BackgroundMsg>,
     bg_rx:                    mpsc::Receiver<BackgroundMsg>,
     priority_fetch_path:      Option<AbsolutePath>,
-    expanded:                 HashSet<ExpandKey>,
     settings_edit_buf:        String,
     settings_edit_cursor:     usize,
     focused_pane:             PaneId,
@@ -171,12 +183,6 @@ pub(super) struct App {
     ci_fetch_toast:           Option<ToastTaskId>,
     watch_tx:                 mpsc::Sender<WatcherMsg>,
     lint_runtime:             Option<RuntimeHandle>,
-    selection_paths:          types::SelectionPaths,
-    finder:                   types::FinderState,
-    cached_visible_rows:      Vec<VisibleRow>,
-    cached_root_sorted:       Vec<u64>,
-    cached_child_sorted:      HashMap<usize, Vec<u64>>,
-    cached_fit_widths:        ProjectListWidths,
     data_generation:          u64,
     mouse_pos:                Option<Position>,
     status_flash:             Option<(String, std::time::Instant)>,
@@ -191,7 +197,6 @@ pub(super) struct App {
     ui_modes:                 types::UiModes,
     dirty:                    types::DirtyState,
     scan:                     types::ScanState,
-    selection:                types::SelectionSync,
     metadata_store:           Arc<Mutex<WorkspaceMetadataStore>>,
     target_dir_index:         target_index::TargetDirIndex,
     /// Step 6e: workspace root whose manifest fingerprint drifted
@@ -309,20 +314,24 @@ impl App {
 
     pub(super) fn apply_hovered_pane_row(&mut self) { self.panes.apply_hovered_pane_row(); }
 
-    pub(super) const fn cached_fit_widths(&self) -> &ProjectListWidths { &self.cached_fit_widths }
+    pub(super) const fn cached_fit_widths(&self) -> &ProjectListWidths {
+        self.selection.fit_widths()
+    }
 
-    pub(super) fn cached_root_sorted(&self) -> &[u64] { &self.cached_root_sorted }
+    pub(super) fn cached_root_sorted(&self) -> &[u64] { self.selection.cached_root_sorted() }
 
     pub(super) const fn cached_child_sorted(&self) -> &HashMap<usize, Vec<u64>> {
-        &self.cached_child_sorted
+        self.selection.cached_child_sorted()
     }
 
     pub(super) const fn focused_pane(&self) -> PaneId { self.focused_pane }
 
-    pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { &self.expanded }
+    pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { self.selection.expanded() }
 
     #[cfg(test)]
-    pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> { &mut self.expanded }
+    pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> {
+        self.selection.expanded_mut()
+    }
 
     pub(super) const fn pane_manager(&self) -> &PaneManager { self.panes.pane_manager() }
 
@@ -330,12 +339,36 @@ impl App {
         self.panes.pane_manager_mut()
     }
 
-    pub(super) const fn finder(&self) -> &types::FinderState { &self.finder }
+    pub(super) const fn finder(&self) -> &types::FinderState { self.selection.finder() }
 
-    pub(super) const fn finder_mut(&mut self) -> &mut types::FinderState { &mut self.finder }
+    pub(super) const fn finder_mut(&mut self) -> &mut types::FinderState {
+        self.selection.finder_mut()
+    }
+
+    /// Read-only handle to the [`Selection`] subsystem. Used by
+    /// callers that need access to multiple sub-fields in one
+    /// borrow (e.g. tests reading `paths()` + `expanded()`). Most
+    /// production paths reach individual sub-fields through the
+    /// existing top-level App accessors.
+    #[allow(
+        dead_code,
+        reason = "facade exposed alongside selection_mut for symmetric API; \
+                  current internal callers route through top-level App accessors"
+    )]
+    pub(super) const fn selection(&self) -> &Selection { &self.selection }
+
+    /// Mutable handle to the [`Selection`] subsystem. Currently used
+    /// by call sites that need to invoke `Selection::mutate(...)`
+    /// to obtain a [`super::selection::SelectionMutation`] guard.
+    #[allow(
+        dead_code,
+        reason = "facade for future call sites that take SelectionMutation guards; \
+                  Phase 3 lands the API alongside the field absorption"
+    )]
+    pub(super) const fn selection_mut(&mut self) -> &mut Selection { &mut self.selection }
 
     pub(super) const fn last_selected_path(&self) -> Option<&AbsolutePath> {
-        self.selection_paths.last_selected.as_ref()
+        self.selection.paths().last_selected.as_ref()
     }
 
     pub(super) fn set_pending_example_run(&mut self, run: PendingExampleRun) {
@@ -675,11 +708,20 @@ impl TreeMutation<'_> {
 }
 
 impl Drop for TreeMutation<'_> {
-    /// Phase 1 staging: temporarily routes the existing tree-mutation
-    /// invalidation through `Panes::clear_for_tree_change` so the
-    /// `worktree_summary_cache` (now owned by `Panes`) is still
-    /// cleared. Phase 6 will rewrite `TreeMutation` as a fan-out
-    /// guard borrowing `Scan + Panes + Selection` directly; this
-    /// per-field nudge will go away then.
-    fn drop(&mut self) { self.app.panes.clear_for_tree_change(); }
+    /// Phase 1+3 staging: temporarily routes the existing
+    /// tree-mutation invalidation through
+    /// `Panes::clear_for_tree_change` (drops the
+    /// worktree-summary cache) and
+    /// `Selection::recompute_visibility` (rebuilds
+    /// `cached_visible_rows` against the new tree shape). Phase 6
+    /// will rewrite this guard to borrow `Scan + Panes + Selection`
+    /// directly so the dependency is declared at the type level;
+    /// these per-field nudges go away then.
+    fn drop(&mut self) {
+        self.app.panes.clear_for_tree_change();
+        let include_non_rust = self.app.include_non_rust().includes_non_rust();
+        self.app
+            .selection
+            .recompute_visibility(&self.app.projects, include_non_rust);
+    }
 }

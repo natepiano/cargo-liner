@@ -20,7 +20,7 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
     let mut app = make_app(&[make_workspace_project(None, "~/ws")]);
     app.current_config.lint.enabled = true;
     apply_items(&mut app, &[root]);
-    app.expanded.insert(ExpandKey::Node(0));
+    app.expanded_mut().insert(ExpandKey::Node(0));
     app.ensure_visible_rows_cached();
 
     app.projects_mut()
@@ -80,7 +80,7 @@ fn linked_worktree_entry_builds_detail_for_selected_row() {
 
     let mut app = make_app(&[]);
     apply_items(&mut app, &[root]);
-    app.expanded.insert(ExpandKey::Node(0));
+    app.expanded_mut().insert(ExpandKey::Node(0));
     app.ensure_visible_rows_cached();
 
     assert_eq!(
@@ -305,7 +305,7 @@ fn expanded_workspace_root_discovery_immediately_renders_primary_workspace_and_l
     let mut app = make_app(&[]);
     apply_items(&mut app, &[primary_item]);
 
-    app.expanded.insert(ExpandKey::Node(0));
+    app.expanded_mut().insert(ExpandKey::Node(0));
     app.ensure_visible_rows_cached();
     assert_eq!(
         app.visible_rows(),
@@ -384,7 +384,7 @@ fn project_discovery_updates_cached_rows_for_expanded_workspace_immediately() {
 
     let mut app = make_app(&[]);
     apply_items(&mut app, &[primary_item]);
-    app.expanded.insert(ExpandKey::Node(0));
+    app.expanded_mut().insert(ExpandKey::Node(0));
     app.ensure_visible_rows_cached();
 
     add_git_worktree(&primary_dir, &linked_dir, "test/brp");
@@ -437,7 +437,7 @@ fn stale_workspace_regroup_immediately_renders_primary_workspace_and_linked_row(
     let mut app = make_app(&[]);
     apply_items(&mut app, &[primary_item]);
 
-    app.expanded.insert(ExpandKey::Node(0));
+    app.expanded_mut().insert(ExpandKey::Node(0));
     app.ensure_visible_rows_cached();
     assert_eq!(
         app.visible_rows(),

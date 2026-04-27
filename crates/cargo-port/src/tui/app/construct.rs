@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -13,12 +12,9 @@ use super::service_state::CratesIoState;
 use super::service_state::GitHubState;
 use super::types::ConfigFileStamp;
 use super::types::DirtyState;
-use super::types::FinderState;
 #[cfg(test)]
 use super::types::RetrySpawnMode;
 use super::types::ScanState;
-use super::types::SelectionPaths;
-use super::types::SelectionSync;
 use super::types::UiModes;
 use crate::config;
 use crate::config::CargoPortConfig;
@@ -32,9 +28,9 @@ use crate::project::WorkspaceMetadataStore;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
-use crate::tui::columns::ProjectListWidths;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::Panes;
+use crate::tui::selection::Selection;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -172,7 +168,7 @@ impl App {
         let init = inputs.init;
         let channels = inputs.channels;
         let panes = Panes::new(&inputs.cfg.cpu);
-        let cached_fit_widths = ProjectListWidths::new(inputs.cfg.lint.enabled);
+        let selection = Selection::new(inputs.cfg.lint.enabled);
         Self {
             current_config: inputs.cfg,
             http_client: inputs.http_client,
@@ -184,10 +180,10 @@ impl App {
             discovery_shimmers: HashMap::new(),
             pending_git_first_commit: HashMap::new(),
             panes,
+            selection,
             bg_tx: inputs.bg_tx,
             bg_rx: inputs.bg_rx,
             priority_fetch_path: None,
-            expanded: HashSet::new(),
             settings_edit_buf: String::new(),
             settings_edit_cursor: 0,
             focused_pane: PaneId::ProjectList,
@@ -215,12 +211,6 @@ impl App {
             lint_runtime: init.lint_runtime,
             #[cfg(test)]
             retry_spawn_mode: RetrySpawnMode::Enabled,
-            selection_paths: SelectionPaths::new(),
-            finder: FinderState::new(),
-            cached_visible_rows: Vec::new(),
-            cached_root_sorted: Vec::new(),
-            cached_child_sorted: HashMap::new(),
-            cached_fit_widths,
             data_generation: 0,
             mouse_pos: None,
             status_flash: inputs.status_flash,
@@ -235,7 +225,6 @@ impl App {
             ui_modes: UiModes::default(),
             dirty: DirtyState::initial(),
             scan: ScanState::new(inputs.scan_started_at),
-            selection: SelectionSync::Stable,
             metadata_store: inputs.metadata_store,
             target_dir_index: super::target_index::TargetDirIndex::new(),
             confirm_verifying: None,

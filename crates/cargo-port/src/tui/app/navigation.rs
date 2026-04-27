@@ -23,26 +23,25 @@ use crate::tui::panes::PaneId;
 
 impl App {
     pub(in super::super) fn ensure_visible_rows_cached(&mut self) {
-        self.cached_visible_rows = snapshots::build_visible_rows(
-            &self.projects,
-            &self.expanded,
-            self.include_non_rust().includes_non_rust(),
-        );
+        let include_non_rust = self.include_non_rust().includes_non_rust();
+        self.selection
+            .recompute_visibility(&self.projects, include_non_rust);
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
-    pub(in super::super) fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
+    pub(in super::super) fn visible_rows(&self) -> &[VisibleRow] { self.selection.visible_rows() }
 
     pub(in super::super) fn ensure_fit_widths_cached(&mut self) {
         let root_labels = self
             .projects
             .resolved_root_labels(self.include_non_rust().includes_non_rust());
-        self.cached_fit_widths = snapshots::build_fit_widths_snapshot(
+        let widths = snapshots::build_fit_widths_snapshot(
             &self.projects,
             &root_labels,
             self.lint_enabled(),
             0,
         );
+        self.selection.set_fit_widths(widths);
     }
 
     pub(in super::super) fn observe_name_width(
@@ -60,8 +59,7 @@ impl App {
 
     pub(in super::super) fn ensure_disk_cache(&mut self) {
         let (root_sorted, child_sorted) = snapshots::build_disk_cache_snapshot(&self.projects);
-        self.cached_root_sorted = root_sorted;
-        self.cached_child_sorted = child_sorted;
+        self.selection.set_disk_caches(root_sorted, child_sorted);
     }
 
     /// Ensure per-pane data on `PaneManager` is up to date for the selected
@@ -1022,12 +1020,12 @@ impl App {
         let Some(key) = self.expand_key_for_row(row) else {
             return false;
         };
-        self.expanded.insert(key)
+        self.selection.expanded_mut().insert(key)
     }
 
     /// Remove `key` from expanded, recompute rows, and move cursor to `target`.
     pub(in super::super) fn collapse_to(&mut self, key: &ExpandKey, target: VisibleRow) {
-        self.expanded.remove(key);
+        self.selection.expanded_mut().remove(key);
         self.ensure_visible_rows_cached();
         if let Some(pos) = self.visible_rows().iter().position(|r| *r == target) {
             self.pane_manager_mut()
@@ -1039,7 +1037,7 @@ impl App {
     /// Try to remove `key` from expanded. If present, mark dirty and return `true`.
     /// Otherwise return `false` (caller should cascade to parent).
     pub(in super::super) fn try_collapse(&mut self, key: &ExpandKey) -> bool {
-        self.expanded.remove(key)
+        self.selection.expanded_mut().remove(key)
     }
 
     pub(in super::super) fn collapse(&mut self) -> bool {
@@ -1047,10 +1045,10 @@ impl App {
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
         };
-        let expanded_before = self.expanded.len();
+        let expanded_before = self.selection.expanded().len();
         let selected_before = self.pane_manager().pane(PaneId::ProjectList).pos();
         self.collapse_row(row);
-        self.expanded.len() != expanded_before
+        self.selection.expanded().len() != expanded_before
             || self.pane_manager().pane(PaneId::ProjectList).pos() != selected_before
     }
 
@@ -1227,20 +1225,23 @@ impl App {
 
     pub(in super::super) fn expand_all(&mut self) {
         let selected_path = self
-            .selection_paths
+            .selection
+            .paths_mut()
             .collapsed_selected
             .take()
             .or_else(|| self.selected_project_path().map(AbsolutePath::from));
-        self.selection_paths.collapsed_anchor = None;
+        self.selection.paths_mut().collapsed_anchor = None;
         for (ni, entry) in self.projects.iter().enumerate() {
             if entry.item.has_children() {
-                self.expanded.insert(ExpandKey::Node(ni));
+                self.selection.expanded_mut().insert(ExpandKey::Node(ni));
             }
             match &entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     for (gi, group) in ws.groups().iter().enumerate() {
                         if group.is_named() {
-                            self.expanded.insert(ExpandKey::Group(ni, gi));
+                            self.selection
+                                .expanded_mut()
+                                .insert(ExpandKey::Group(ni, gi));
                         }
                     }
                 },
@@ -1249,11 +1250,15 @@ impl App {
                 }) => {
                     for (wi, ws) in std::iter::once(primary).chain(linked.iter()).enumerate() {
                         if ws.has_members() {
-                            self.expanded.insert(ExpandKey::Worktree(ni, wi));
+                            self.selection
+                                .expanded_mut()
+                                .insert(ExpandKey::Worktree(ni, wi));
                         }
                         for (gi, group) in ws.groups().iter().enumerate() {
                             if group.is_named() {
-                                self.expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                                self.selection
+                                    .expanded_mut()
+                                    .insert(ExpandKey::WorktreeGroup(ni, wi, gi));
                             }
                         }
                     }
@@ -1269,7 +1274,7 @@ impl App {
     pub(in super::super) fn collapse_all(&mut self) {
         let selected_path = self.selected_project_path().map(AbsolutePath::from);
         let anchor = self.selected_row().map(Self::collapse_anchor_row);
-        self.expanded.clear();
+        self.selection.expanded_mut().clear();
         self.ensure_visible_rows_cached();
         if let Some(anchor) = anchor
             && let Some(pos) = self.visible_rows().iter().position(|row| *row == anchor)
@@ -1280,11 +1285,11 @@ impl App {
         }
         let anchor_path = self.selected_project_path().map(AbsolutePath::from);
         if selected_path == anchor_path {
-            self.selection_paths.collapsed_selected = None;
-            self.selection_paths.collapsed_anchor = None;
+            self.selection.paths_mut().collapsed_selected = None;
+            self.selection.paths_mut().collapsed_anchor = None;
         } else {
-            self.selection_paths.collapsed_selected = selected_path;
-            self.selection_paths.collapsed_anchor = anchor_path;
+            self.selection.paths_mut().collapsed_selected = selected_path;
+            self.selection.paths_mut().collapsed_anchor = anchor_path;
         }
     }
 
@@ -1295,23 +1300,25 @@ impl App {
                     for (gi, group) in ws.groups().iter().enumerate() {
                         for member in group.members() {
                             if member.path() == target_path {
-                                self.expanded.insert(ExpandKey::Node(ni));
+                                self.selection.expanded_mut().insert(ExpandKey::Node(ni));
                                 if group.is_named() {
-                                    self.expanded.insert(ExpandKey::Group(ni, gi));
+                                    self.selection
+                                        .expanded_mut()
+                                        .insert(ExpandKey::Group(ni, gi));
                                 }
                             }
                         }
                     }
                     for vendored in ws.vendored() {
                         if vendored.path() == target_path {
-                            self.expanded.insert(ExpandKey::Node(ni));
+                            self.selection.expanded_mut().insert(ExpandKey::Node(ni));
                         }
                     }
                 },
                 RootItem::Rust(RustProject::Package(pkg)) => {
                     for vendored in pkg.vendored() {
                         if vendored.path() == target_path {
-                            self.expanded.insert(ExpandKey::Node(ni));
+                            self.selection.expanded_mut().insert(ExpandKey::Node(ni));
                         }
                     }
                 },
@@ -1321,23 +1328,29 @@ impl App {
                 }) => {
                     for (wi, ws) in std::iter::once(primary).chain(linked.iter()).enumerate() {
                         if ws.path() == target_path {
-                            self.expanded.insert(ExpandKey::Node(ni));
+                            self.selection.expanded_mut().insert(ExpandKey::Node(ni));
                         }
                         for (gi, group) in ws.groups().iter().enumerate() {
                             for member in group.members() {
                                 if member.path() == target_path {
-                                    self.expanded.insert(ExpandKey::Node(ni));
-                                    self.expanded.insert(ExpandKey::Worktree(ni, wi));
+                                    self.selection.expanded_mut().insert(ExpandKey::Node(ni));
+                                    self.selection
+                                        .expanded_mut()
+                                        .insert(ExpandKey::Worktree(ni, wi));
                                     if group.is_named() {
-                                        self.expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                                        self.selection
+                                            .expanded_mut()
+                                            .insert(ExpandKey::WorktreeGroup(ni, wi, gi));
                                     }
                                 }
                             }
                         }
                         for vendored in ws.vendored() {
                             if vendored.path() == target_path {
-                                self.expanded.insert(ExpandKey::Node(ni));
-                                self.expanded.insert(ExpandKey::Worktree(ni, wi));
+                                self.selection.expanded_mut().insert(ExpandKey::Node(ni));
+                                self.selection
+                                    .expanded_mut()
+                                    .insert(ExpandKey::Worktree(ni, wi));
                             }
                         }
                     }
@@ -1347,12 +1360,14 @@ impl App {
                 }) => {
                     for (wi, pkg) in std::iter::once(primary).chain(linked.iter()).enumerate() {
                         if pkg.path() == target_path {
-                            self.expanded.insert(ExpandKey::Node(ni));
+                            self.selection.expanded_mut().insert(ExpandKey::Node(ni));
                         }
                         for vendored in pkg.vendored() {
                             if vendored.path() == target_path {
-                                self.expanded.insert(ExpandKey::Node(ni));
-                                self.expanded.insert(ExpandKey::Worktree(ni, wi));
+                                self.selection.expanded_mut().insert(ExpandKey::Node(ni));
+                                self.selection
+                                    .expanded_mut()
+                                    .insert(ExpandKey::Worktree(ni, wi));
                             }
                         }
                     }

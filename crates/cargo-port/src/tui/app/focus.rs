@@ -4,7 +4,6 @@ use super::App;
 use super::types::ExitMode;
 use super::types::FinderMode;
 use super::types::KeymapMode;
-use super::types::SelectionSync;
 use super::types::SettingsMode;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::panes;
@@ -36,14 +35,16 @@ impl App {
         self.ui_modes.exit.should_restart()
     }
 
-    pub(in super::super) const fn selection_changed(&self) -> bool { self.selection.is_changed() }
+    pub(in super::super) const fn selection_changed(&self) -> bool {
+        self.selection.sync().is_changed()
+    }
 
     pub(in super::super) const fn mark_selection_changed(&mut self) {
-        self.selection = SelectionSync::Changed;
+        self.selection.mark_sync_changed();
     }
 
     pub(in super::super) const fn clear_selection_changed(&mut self) {
-        self.selection = SelectionSync::Stable;
+        self.selection.mark_sync_stable();
     }
 
     pub(in super::super) const fn request_quit(&mut self) { self.ui_modes.exit = ExitMode::Quit; }

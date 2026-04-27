@@ -219,19 +219,23 @@ impl App {
         self.ensure_visible_rows_cached();
         let current = self.selected_project_path().map(AbsolutePath::from);
         if self
-            .selection_paths
+            .selection
+            .paths()
             .collapsed_anchor
             .as_ref()
             .is_some_and(|anchor| current.as_ref() != Some(anchor))
         {
-            self.selection_paths.collapsed_selected = None;
-            self.selection_paths.collapsed_anchor = None;
+            self.selection.paths_mut().collapsed_selected = None;
+            self.selection.paths_mut().collapsed_anchor = None;
         }
-        if self.selection_paths.selected_project == current {
+        if self.selection.paths_mut().selected_project == current {
             return;
         }
 
-        self.selection_paths.selected_project.clone_from(&current);
+        self.selection
+            .paths_mut()
+            .selected_project
+            .clone_from(&current);
         self.reset_project_panes();
 
         let panes = self.tabbable_panes();
@@ -244,10 +248,10 @@ impl App {
         }
 
         if let Some(abs_path) = current
-            && self.selection_paths.last_selected.as_ref() != Some(&abs_path)
+            && self.selection.paths_mut().last_selected.as_ref() != Some(&abs_path)
         {
             self.data_generation += 1;
-            self.selection_paths.last_selected = Some(abs_path);
+            self.selection.paths_mut().last_selected = Some(abs_path);
             self.mark_selection_changed();
             self.maybe_priority_fetch();
         }

@@ -56,7 +56,6 @@ use crate::scan::CiFetchResult;
 use crate::scan::DirSizes;
 use crate::scan::FetchContext;
 use crate::scan::ProjectDetailRequest;
-use crate::tui::columns::ProjectListWidths;
 use crate::tui::config_reload;
 use crate::tui::constants::STARTUP_PHASE_DISK;
 use crate::tui::constants::STARTUP_PHASE_GIT;
@@ -91,7 +90,7 @@ impl App {
         let selected_path = self
             .selected_project_path()
             .map(AbsolutePath::from)
-            .or_else(|| self.selection_paths.last_selected.clone());
+            .or_else(|| self.selection.paths_mut().last_selected.clone());
         let should_focus_project_list = false;
         self.mutate_tree().replace_all(projects);
         self.prune_inactive_project_state();
@@ -350,7 +349,7 @@ impl App {
         self.sync_running_lint_toast();
         self.sync_lint_runtime_projects();
         self.refresh_lint_runs_from_disk();
-        self.cached_fit_widths = ProjectListWidths::new(self.lint_enabled());
+        self.selection.reset_fit_widths(self.lint_enabled());
         self.data_generation += 1;
         if let Some(warning) = lint_spawn.warning {
             self.status_flash = Some((warning.clone(), Instant::now()));
@@ -1269,7 +1268,7 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(ni, entry)| {
-                if !self.expanded.contains(&Node(ni)) {
+                if !self.selection.expanded().contains(&Node(ni)) {
                     return None;
                 }
 
@@ -1285,7 +1284,7 @@ impl App {
                             .filter_map(|(gi, group)| {
                                 group
                                     .is_named()
-                                    .then(|| self.expanded.contains(&Group(ni, gi)))
+                                    .then(|| self.selection.expanded().contains(&Group(ni, gi)))
                                     .filter(|expanded| *expanded)
                                     .map(|_| gi)
                             })
@@ -1318,25 +1317,33 @@ impl App {
                 RootItem::Worktrees(
                     group @ crate::project::WorktreeGroup::Workspaces { primary, .. },
                 ) if group.renders_as_group() => {
-                    self.expanded.insert(Node(current_index));
+                    self.selection.expanded_mut().insert(Node(current_index));
                     if legacy_root.had_children {
-                        self.expanded.insert(Worktree(current_index, 0));
+                        self.selection
+                            .expanded_mut()
+                            .insert(Worktree(current_index, 0));
                     }
                     for &group_index in &legacy_root.named_groups {
                         if primary.groups().get(group_index).is_some() {
-                            self.expanded
-                                .insert(WorktreeGroup(current_index, 0, group_index));
+                            self.selection.expanded_mut().insert(WorktreeGroup(
+                                current_index,
+                                0,
+                                group_index,
+                            ));
                         }
-                        self.expanded
+                        self.selection
+                            .expanded_mut()
                             .remove(&Group(legacy_root.old_node_index, group_index));
                     }
                 },
                 RootItem::Worktrees(group @ crate::project::WorktreeGroup::Packages { .. })
                     if group.renders_as_group() =>
                 {
-                    self.expanded.insert(Node(current_index));
+                    self.selection.expanded_mut().insert(Node(current_index));
                     if legacy_root.had_children {
-                        self.expanded.insert(Worktree(current_index, 0));
+                        self.selection
+                            .expanded_mut()
+                            .insert(Worktree(current_index, 0));
                     }
                 },
                 _ => {},
@@ -1345,11 +1352,9 @@ impl App {
     }
 
     fn rebuild_visible_rows_now(&mut self) {
-        self.cached_visible_rows = snapshots::build_visible_rows(
-            &self.projects,
-            &self.expanded,
-            self.include_non_rust().includes_non_rust(),
-        );
+        let include_non_rust = self.include_non_rust().includes_non_rust();
+        self.selection
+            .recompute_visibility(&self.projects, include_non_rust);
     }
 
     pub(in super::super) fn rescan(&mut self) {
@@ -1374,9 +1379,9 @@ impl App {
         self.close_settings();
         self.close_finder();
         self.reset_project_panes();
-        self.selection_paths.selected_project = None;
+        self.selection.paths_mut().selected_project = None;
         self.pending_ci_fetch = None;
-        self.expanded.clear();
+        self.selection.expanded_mut().clear();
         self.pane_manager_mut().pane_mut(PaneId::ProjectList).home();
         self.pane_manager_mut()
             .pane_mut(PaneId::ProjectList)
@@ -2272,7 +2277,7 @@ impl App {
         let selected_path = self
             .selected_project_path()
             .map(AbsolutePath::from)
-            .or_else(|| self.selection_paths.last_selected.clone());
+            .or_else(|| self.selection.paths_mut().last_selected.clone());
         self.mutate_tree().replace_all(ProjectList::new(projects));
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();

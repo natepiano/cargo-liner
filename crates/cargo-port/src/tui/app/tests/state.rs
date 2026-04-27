@@ -89,7 +89,7 @@ fn ci_fetch_on_member_targets_workspace_owner_path() {
 
     let mut app = make_app(&[workspace, member.clone()]);
     apply_items(&mut app, &[root]);
-    app.expanded.insert(ExpandKey::Node(0));
+    app.expanded_mut().insert(ExpandKey::Node(0));
     app.ensure_visible_rows_cached();
     app.select_project_in_tree(member.path());
 
