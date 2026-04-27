@@ -69,30 +69,35 @@ App keeps only:
 - **handles** to the seven subsystems above (`panes`, `selection`,
   `background`, `inflight`, `config`, `keymap`, `scan`)
 - the **network state cluster** (`http_client`, `github`, `crates_io`) —
-  not carved in phases 1–5; see "Net subsystem (deferred)" below
+  not carved in phases 1–6; see "Net subsystem (deferred)" below
 
-That's roughly 16 fields instead of 60 after phases 1–5; ~12 if/when
+That's roughly 16 fields instead of 60 after phases 1–6; ~12 if/when
 the deferred `Net` carve lands.
 
 ### Two axes of structure inside `Panes`
 
 - **App → `Panes` boundary**: strict delegation, no trait. Single owner, single
   caller, concrete struct. `app.panes: Panes`.
-- **`Panes` → individual pane behavior**: a `Pane` trait *eventually*, but
-  **not in Phase 1**. Per-pane code today (`panes/spec.rs`, `panes/actions.rs`,
-  `panes/support.rs`, the per-pane render functions like
-  `panes/git.rs::register_git_row_hitboxes`) currently mixes pure-data
-  classification (used by `PaneManager` layout, not per-pane), free functions
-  taking `&mut App`, and renderers that *write into* `pane_manager` from
-  inside render. A useful `Pane::handle_input` would need `&mut App` (or a
-  `&mut PanesContext` carrying refs to ~6 of the 7 subsystems), at which
-  point the trait stops paying for itself.
+- **`Panes` → individual pane behavior**: a `Pane` trait, landing in
+  **Phase 6** (not Phase 1). Phase 1 absorbs the field cluster — that's the
+  prerequisite. Phase 6 is what actually fixes the per-pane god-object
+  problem: every concrete pane (`CiPane`, `CpuPane`, `GitPane`, `LintsPane`,
+  `PackagePane`, `LangPane`) gets its own file with one `impl Pane` block,
+  and the match-on-`PaneId` arms in `panes/spec.rs`, `panes/actions.rs`,
+  `panes/support.rs`, and per-pane render files collapse into trait
+  dispatch.
 
-  Phase 1 carves only the App↔`Panes` facade and absorbs the field cluster.
-  The trait split is a revisit *after* the cluster moves and after we see
-  what the per-pane code actually wants. Hover handling, for example, can
-  start as a match-on-`PaneId` inside `Panes` and migrate to trait dispatch
-  later if the pattern stabilizes.
+  By Phase 6 all the other subsystems exist as proper types, so trait
+  methods can take typed subsystem references (e.g.,
+  `Pane::handle_input(&mut self, &mut Selection, &mut Background, &mut
+  Inflight, &Config, &mut Scan, &mut ToastManager, event)`). The
+  parameter list is dependency injection, not a god-object handle —
+  encapsulation by file (each pane's behavior in one place named for the
+  pane) is the win.
+
+  Phase 1 (field cluster only) and Phase 6 (per-pane trait split) are
+  the two halves of the same fix. The plan does both; it does not stop
+  at Phase 1.
 
 ## Visibility math after this
 
@@ -140,12 +145,36 @@ to hit.
    composing it. Tightly coupled by the primitive; extracting one without
    the other leaves the duplication in place.
 5. **Scan** — last because `mutate_tree` already gates it; mostly relocation.
+6. **Pane catalog rewrite** — the actual fix to the per-pane god-object
+   problem. Introduce a `Pane` trait, give every concrete pane its own
+   file with one `impl Pane` block, and collapse the match-on-`PaneId`
+   arms scattered through `panes/spec.rs`, `panes/actions.rs`,
+   `panes/support.rs`, and the per-pane render files into trait dispatch.
+   By this phase all the other subsystems exist as proper types, so
+   trait methods take typed subsystem references (`&mut Selection,
+   &mut Background, &mut Inflight, &Config, &mut Scan, &mut
+   ToastManager`) — that's just dependency injection, not a god-object.
+   Encapsulation by file is the win; each pane's behavior lives in one
+   place named for the pane.
+
+   **Phase 6 begins with a re-review of the phase plan against
+   everything learned in Phases 1–5.** Subsystem APIs may have shifted,
+   the per-pane code's actual shape may have changed under us, and the
+   trait signature drafted in this doc is a starting point, not a
+   contract. The first task in Phase 6 is to revisit this section and
+   propose updates based on what the prior phases produced, before
+   writing any pane impl code.
 
 **(Originally there was a separate "ColumnWidths primitive" phase between
 Panes and Selection. Outside review pointed out that it was pure churn
 without a concrete second consumer, so it was collapsed into Selection as a
 rename of `ResolvedWidths` → `ProjectListWidths`. Generic `ColumnWidths` is
 deferred until a second pane wants it.)**
+
+**(Phase 6 was added after a directive that the per-pane god-object
+problem must be solved, not deferred. Phase 1 absorbs the field cluster;
+Phase 6 finishes the job by giving each pane its own implementation
+block.)**
 
 ### Per-phase workflow (applies to every step above)
 
@@ -183,17 +212,19 @@ sequencing, scope) are not retained — once decided, they live in the tables
 and the step list, not here.
 
 - **Phase 1 (Panes)**:
-  - Phase 1 absorbs the field cluster only. The `Pane` trait split is
-    deferred — see "Two axes of structure inside `Panes`" above.
+  - Phase 1 absorbs the field cluster only. The per-pane trait split is
+    Phase 6, not deferred indefinitely — see "Two axes of structure
+    inside `Panes`" above.
   - `hovered_pane_row` lives in `Panes`. Hit-testing in Phase 1 is a
-    match-on-`PaneId` inside `Panes`; can migrate to trait dispatch later.
+    match-on-`PaneId` inside `Panes`; collapses into `Pane::hit_test`
+    trait dispatch in Phase 6.
   - `Panes::handle_input` in Phase 1 keeps the `&mut App` shape that
     `panes/actions.rs` currently uses (every dispatch in
     `panes/actions.rs:32-336` reaches across ~6 of the 7 future
-    subsystems). It is the most likely facade to be revisited in Phase 3
-    (Background+Inflight) or Phase 4 (Config+Keymap), once those
-    subsystems exist and Panes can stop reaching back through App. See
-    "Rollback / revisit policy" below.
+    subsystems). Phase 6 replaces this with `Pane::handle_input`
+    taking typed subsystem references — at that point `panes/actions.rs`
+    as a free-function module ceases to exist, replaced by per-pane
+    `impl Pane` blocks.
   - `apply_hovered_pane_row` (`tui/app/mod.rs:278-286`) moves wholesale
     into `Panes` — it reads `hovered_pane_row` and writes `pane_manager`,
     both of which become Panes-internal. Canonical example of "method
@@ -330,6 +361,59 @@ and the step list, not here.
   - Settings-modal mode (whether settings editor owns input) stays in
     `app.ui_modes` — same split as finder.
 
+- **Phase 6 (Pane catalog rewrite)**:
+  - **First task: re-review the Phase 6 plan.** Before writing any
+    `impl Pane` code, revisit this section, the `Panes` table row, and
+    the "Two axes of structure inside `Panes`" section against the
+    actual state of Phases 1–5 as committed. Subsystem APIs may have
+    moved, the per-pane code's shape may have evolved, and the trait
+    signature drafted in this doc is a starting point. Update the doc
+    to reflect what was learned, get the user's approval on the
+    revisions, then start implementing.
+  - **Trait shape (starting point, subject to Phase 6 re-review).**
+    ```rust
+    pub trait Pane {
+        fn id(&self) -> PaneId;
+        fn render(&mut self, frame: &mut Frame, area: Rect, ctx: PaneRenderCtx<'_>);
+        fn hit_test(&self, row: u16) -> Option<HoverTarget>;
+        fn handle_input(&mut self, event: &KeyEvent, ctx: PaneInputCtx<'_>) -> InputOutcome;
+        fn refresh_for_selection(&mut self, ctx: PaneRefreshCtx<'_>);
+    }
+    ```
+    The `PaneRenderCtx`, `PaneInputCtx`, `PaneRefreshCtx` structs each
+    bundle the typed subsystem references the method needs (for
+    example, `PaneInputCtx { selection: &mut Selection, background:
+    &mut Background, inflight: &mut Inflight, config: &Config, scan:
+    &mut Scan, toasts: &mut ToastManager }`). Bundling the parameters
+    in named structs keeps signatures readable and gives a single
+    place to add dependencies if a future pane behavior needs more.
+  - **Per-pane files.** One file per concrete pane:
+    `panes/ci.rs`, `panes/cpu.rs`, `panes/git.rs`, `panes/lints.rs`,
+    `panes/package.rs`, `panes/lang.rs`. Each contains the struct
+    definition, the `impl Pane` block, and any private helpers. Today
+    several of these files exist but only contain render code; Phase 6
+    expands them to own the full behavior.
+  - **What collapses.** `panes/actions.rs` (~336 lines of free
+    functions taking `&mut App` plus a top-level dispatch match) and
+    the match-on-`PaneId` arms in `panes/spec.rs` and `panes/support.rs`
+    disappear. Their bodies move into the relevant `impl Pane`
+    methods. The dispatch becomes `panes.with_focused_mut(|pane|
+    pane.handle_input(event, ctx))` inside `Panes`.
+  - **Hover hit-testing.** Each pane implements `hit_test` to return
+    its own `HoverTarget`. Today this logic is inlined per-pane via
+    `register_*_row_hitboxes` helpers writing into `pane_manager`
+    during render — Phase 6 cleans this up so hit-testing is a query,
+    not a render side-effect.
+  - **`PaneId` enum stays.** It's still the index used by App, by
+    `Panes` for focus and lookup, and by callers asking "which pane is
+    selected?" Trait dispatch happens through `Panes`'s storage of
+    `Vec<Box<dyn Pane>>` (or a typed array indexed by `PaneId`,
+    decided at re-review time), keyed by `PaneId`.
+  - **What stays in `panes/data.rs`.** The data registry
+    (`PaneDataStore`) that caches per-pane data computed by builders
+    is orthogonal to per-pane behavior — it stays as is. Phase 6 is
+    about behavior, not data.
+
 - **Phase 3 (Background + Inflight)**:
   - One phase, not two. Every "start" call site touches both subsystems
     (push to channel + mark in-flight + update toast); splitting would
@@ -415,17 +499,18 @@ it lands. Items marked **App-shell** stay on `App`.
 | `confirm_verifying` | Scan |
 | `retry_spawn_mode` (test-only) | Scan |
 
-App-shell field count after the **planned 5 phases**: ~16 (focus stack
+App-shell field count after the **planned 6 phases**: ~16 (focus stack
 + modal/UI shell + `http_client` + `github` + `crates_io` + 7 subsystem
-handles). Down from ~60. The full ~12 number quoted earlier in the doc
-assumes the deferred Net carve completes; without it, the network state
-remains a residual god-object cluster on App-shell.
+handles). Down from ~60. Phase 6 (pane catalog rewrite) reorganizes per-pane
+*behavior* but does not add or remove App fields. The full ~12 number quoted
+earlier in the doc assumes the deferred Net carve completes; without it, the
+network state remains a residual god-object cluster on App-shell.
 
 ### Net subsystem (deferred — sketch only)
 
 `http_client` + `github` (`GitHubState`) + `crates_io` (`CratesIoState`)
 together form a sixth subsystem that this plan does **not** carve in
-phases 1–5, but should carve afterward. Sketch:
+phases 1–6, but should carve afterward. Sketch:
 
 | Field | Why it groups here |
 |---|---|
@@ -448,9 +533,8 @@ Why deferred:
   before reducing it. Better done after the existing 5 phases settle
   the patterns.
 
-This plan does not block on `Net`; phases 1–5 are valuable on their
-own. But the doc should state plainly that App still owns these three
-fields after Phase 5, not pretend otherwise.
+This plan does not block on `Net`; phases 1–6 are valuable on their
+own. App still owns these three fields after Phase 6.
 
 ## Methods that stay on App
 
@@ -466,7 +550,7 @@ because they orchestrate across subsystems.
 - **`rescan` is the canonical orchestrator example.** Today it
   mutates `github.fetch_cache`, swaps `bg_tx`/`bg_rx`, resets `scan`
   state, and reconfigures `lint_runtime` — crossing 4 of the 7
-  subsystems plus the deferred `Net`. After phases 1–5, its body
+  subsystems plus the deferred `Net`. After phases 1–6, its body
   becomes a sequence of subsystem calls (`self.background.swap_bg_channel(...)`,
   `self.inflight.refresh_lint_runtime_from_config(...)`,
   etc.) but the orchestration shape stays.
