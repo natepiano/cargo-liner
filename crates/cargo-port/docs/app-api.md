@@ -66,13 +66,12 @@ App keeps only:
   who to highlight via `render(frame, focused)`.
 - the **modal/UI shell** (`confirm`, `toasts`, `inline_error`, `status_flash`,
   `ui_modes`, `mouse_pos`, `animation_started`)
-- **handles** to the seven subsystems above (`panes`, `selection`,
-  `background`, `inflight`, `config`, `keymap`, `scan`)
-- the **network state cluster** (`http_client`, `github`, `crates_io`) —
-  not carved in phases 1–7; see "Net subsystem (deferred)" below
+- **handles** to the eight subsystems above (`panes`, `selection`,
+  `background`, `inflight`, `config`, `keymap`, `scan`, `net`)
 
-That's roughly 16 fields instead of 60 after phases 1–7; ~12 if/when
-the deferred `Net` carve lands.
+That's roughly 12 fields instead of 60 after phases 1–8. After Phase
+7 only (before Net carves), the count is ~16 — the difference is the
+network state cluster, which moves out in Phase 8.
 
 ### Two axes of structure inside `Panes`
 
@@ -173,6 +172,24 @@ to hit.
    contract. The first task in Phase 7 is to revisit this section and
    propose updates based on what the prior phases produced, before
    writing any pane impl code.
+8. **Net subsystem** — extract the network-state cluster (`http_client`,
+   `github`, `crates_io`) into its own subsystem. Today these three
+   fields together carry the HTTP client and rate-limit state, the
+   GitHub repo-fetch cache plus in-flight fetch tracking plus
+   availability tracker, and the crates.io availability tracker. They
+   share the HTTP client, are read by the Git pane, the project tree,
+   and the rate-limit display, and overlap with two other subsystems
+   (Inflight and Scan). After Phase 8, App stops owning any
+   network-related state directly.
+
+   **Phase 8 begins with a re-review of the phase plan against
+   everything learned in Phases 1–7.** The skeleton in this doc was
+   drafted before any of the prior phases existed; the actual
+   `running_fetches` / `fetch_cache` overlaps with Inflight and Scan
+   may have resolved themselves along the way, the `availability`
+   tracking may have moved, and the public API drafted below is a
+   starting point. Update this section and get user approval before
+   writing carve code.
 
 **(History: an earlier draft collapsed the `ColumnWidths` primitive
 into Selection, on the argument that the project list was the only
@@ -184,6 +201,12 @@ phase that ships the primitive and adopts it in both places.)**
 god-object problem must be solved, not deferred. Phase 1 absorbs the
 field cluster; Phase 7 finishes the job by giving each pane its own
 implementation block.)**
+
+**(History: Phase 8 was added after a directive that the network
+state cluster must be properly separated, not left as residual
+App-shell hand-waving. Earlier drafts called it a "deferred sketch"
+that this plan would not address; that punted the same god-object
+problem one cluster down. The plan now finishes the carve.)**
 
 ### Per-phase workflow (applies to every step above)
 
@@ -479,6 +502,34 @@ and the step list, not here.
     errors, manual toasts). `Inflight` methods that update toasts take
     `&mut ToastManager` as a parameter.
 
+- **Phase 8 (Net subsystem)**:
+  - **First task: re-review the Phase 8 plan.** Before writing carve
+    code, revisit the "Net subsystem (Phase 8 skeleton)" section and
+    the field-appendix entries against the actual state of Phases
+    1–7. Three open questions to answer at re-review time, captured
+    in that section:
+    1. Do `running_fetches` / `running_fetch_toast` move into
+       `Inflight`, or stay in `Net`?
+    2. Does `fetch_cache` belong in `Net` (HTTP-coupled) or `Scan`
+       (tree-enrichment cache)?
+    3. Does `availability` collapse into `Net::availability(service)`
+       or stay per-service?
+    Update the section, get user approval on the answers, then
+    implement.
+  - **Phase 8 starts after Phase 7.** All other subsystems exist by
+    then, so `Net` can take typed references to whatever it depends
+    on (today: `Inflight` for the running-fetches question, `Scan`
+    for the fetch-cache question) without re-introducing god-object
+    parameters.
+  - **What disappears from App.** The three fields (`http_client`,
+    `github`, `crates_io`) plus every accessor today exposing them
+    (e.g., `App::repo_fetch_cache`, `App::github_status`,
+    `App::rate_limit`, `App::start_repo_fetch_for`,
+    `App::complete_repo_fetch_for`). All move onto `Net` or the
+    chosen home from re-review.
+  - **End state.** App owns no network state directly. Eight
+    subsystem handles, ~12 App-shell fields total.
+
 ## Field assignment appendix (every App field accounted for)
 
 The subsystem table covers the headline carves. This appendix is the
@@ -488,9 +539,9 @@ it lands. Items marked **App-shell** stay on `App`.
 | Field | Destination |
 |---|---|
 | `current_config` | Config |
-| `http_client` | **Net subsystem (post-Phase-5 carve)** — see "Net subsystem (deferred)" below |
-| `github` (`GitHubState`: `fetch_cache`, `repo_fetch_in_flight`, `running_fetches`, `running_fetch_toast`, `availability`) | **Net subsystem (post-Phase-5 carve)** |
-| `crates_io` (`CratesIoState`) | **Net subsystem (post-Phase-5 carve)** |
+| `http_client` | Net (Phase 8) |
+| `github` (`GitHubState`: `fetch_cache`, `repo_fetch_in_flight`, `running_fetches`, `running_fetch_toast`, `availability`) | Net (Phase 8); `running_fetches`/`running_fetch_toast` may move to Inflight at Phase 8 re-review |
+| `crates_io` (`CratesIoState`) | Net (Phase 8) |
 | `projects` | Scan |
 | `ci_fetch_tracker` | Inflight |
 | `ci_display_modes` | Panes (per-pane render preference) |
@@ -551,18 +602,23 @@ it lands. Items marked **App-shell** stay on `App`.
 | `confirm_verifying` | Scan |
 | `retry_spawn_mode` (test-only) | Scan |
 
-App-shell field count after the **planned 6 phases**: ~16 (focus stack
-+ modal/UI shell + `http_client` + `github` + `crates_io` + 7 subsystem
-handles). Down from ~60. Phase 7 (pane catalog rewrite) reorganizes per-pane
-*behavior* but does not add or remove App fields. The full ~12 number quoted
-earlier in the doc assumes the deferred Net carve completes; without it, the
-network state remains a residual god-object cluster on App-shell.
+App-shell field count after the **planned 8 phases**: ~12 (focus stack
++ modal/UI shell + 8 subsystem handles). Down from ~60. Phase 7 (pane
+catalog rewrite) reorganizes per-pane *behavior* but does not add or
+remove App fields. Phase 8 (Net carve) removes the last residual cluster
+of network state from App-shell, taking the count from ~16 (after
+Phase 7) down to ~12.
 
-### Net subsystem (deferred — sketch only)
+### `Net` subsystem (Phase 8 skeleton — subject to re-review)
 
 `http_client` + `github` (`GitHubState`) + `crates_io` (`CratesIoState`)
-together form a sixth subsystem that this plan does **not** carve in
-phases 1–7, but should carve afterward. Sketch:
+together form an eighth subsystem. This is a **skeleton only** — Phase
+8 begins with a re-review of this section against everything learned in
+Phases 1–7 (the `running_fetches` / `Inflight` overlap and the
+`fetch_cache` / `Scan` overlap may have resolved themselves along the
+way), and the public API drafted here is a starting point.
+
+Fields absorbed:
 
 | Field | Why it groups here |
 |---|---|
@@ -570,23 +626,35 @@ phases 1–7, but should carve afterward. Sketch:
 | `github: GitHubState` (`fetch_cache`, `repo_fetch_in_flight`, `running_fetches`, `running_fetch_toast`, `availability`) | All keyed by repo, all fed by HTTP |
 | `crates_io: CratesIoState` (`availability`) | Same lifecycle as `github` (availability tracker) |
 
-Public API roughly: `net.http_client()`, `net.github_status()`,
-`net.crates_io_status()`, `net.fetch_cache()`, `net.start_repo_fetch(...)`,
-`net.complete_repo_fetch(...)`, `net.poll_rate_limit()`. Read by
-panes (Git pane reads availability + rate limit) and by Scan
-(`fetch_cache` feeds tree enrichment).
+Sketch of public API (re-review will refine):
+```text
+net.http_client() -> &HttpClient
+net.github_status() -> AvailabilityStatus
+net.crates_io_status() -> AvailabilityStatus
+net.fetch_cache() -> &RepoCache
+net.start_repo_fetch(repo, ctx) -> StartOutcome
+net.complete_repo_fetch(repo, result)
+net.poll_rate_limit() -> GitHubRateLimit
+```
 
-Why deferred:
-- `running_fetches` + `running_fetch_toast` overlap with `Inflight`'s
-  domain — needs a decision about whether repo fetches go through
-  `Inflight` (uniform "in-flight tracker") or `Net` (HTTP-coupled).
-- `fetch_cache` overlaps with `Scan`'s domain (tree-enrichment cache).
-- The carve adds a 6th subsystem, raising App-shell complexity
-  before reducing it. Better done after the existing 5 phases settle
-  the patterns.
+Read by Panes (Git pane reads availability + rate limit) and by Scan
+(`fetch_cache` feeds tree enrichment). Phase 8's re-review must answer:
 
-This plan does not block on `Net`; phases 1–7 are valuable on their
-own. App still owns these three fields after Phase 7.
+- Do GitHub repo fetches go through `Inflight` (uniform "in-flight
+  tracker" pattern) or stay in `Net` (HTTP-coupled)? Today
+  `running_fetches` + `running_fetch_toast` are GitHub-specific; if
+  Inflight has matured into a generic `start_/finish_` shape by
+  Phase 8, moving them is the right call. If not, leave them in `Net`.
+- Does `fetch_cache` belong in `Net` (HTTP-coupled, response cache)
+  or in `Scan` (tree-enrichment cache, keyed by repo path)? Today it
+  lives on App; Phase 8's re-review picks a home.
+- Does the `availability` tracker (currently per-service in `github`
+  and `crates_io`) collapse into a single `Net::availability(service)`
+  query, or stay as separate fields?
+
+After Phase 8 there is **no residual network state on App-shell**.
+App's eight subsystem handles are: `panes`, `selection`, `background`,
+`inflight`, `config`, `keymap`, `scan`, `net`.
 
 ## Methods that stay on App
 
@@ -602,10 +670,11 @@ because they orchestrate across subsystems.
 - **`rescan` is the canonical orchestrator example.** Today it
   mutates `github.fetch_cache`, swaps `bg_tx`/`bg_rx`, resets `scan`
   state, and reconfigures `lint_runtime` — crossing 4 of the 7
-  subsystems plus the deferred `Net`. After phases 1–7, its body
-  becomes a sequence of subsystem calls (`self.background.swap_bg_channel(...)`,
+  subsystems plus `Net`. After phases 1–8, its body becomes a sequence
+  of subsystem calls (`self.background.swap_bg_channel(...)`,
   `self.inflight.refresh_lint_runtime_from_config(...)`,
-  etc.) but the orchestration shape stays.
+  `self.net.invalidate_fetch_cache(...)`, etc.) but the orchestration
+  shape stays.
 - **Move into `Panes`:** `apply_hovered_pane_row`
   (`tui/app/mod.rs:278-286`), `toggle_ci_display_mode_for`
   (`mod.rs:565`), `focus_pane`, `register_*_row_hitboxes` helpers (today
