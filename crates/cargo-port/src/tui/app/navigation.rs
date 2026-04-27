@@ -17,7 +17,7 @@ use crate::project::VendoredPackage;
 use crate::project::WorktreeGroup;
 use crate::tui;
 use crate::tui::columns::COL_NAME;
-use crate::tui::columns::ResolvedWidths;
+use crate::tui::columns::ProjectListWidths;
 use crate::tui::panes::DetailCacheKey;
 use crate::tui::panes::PaneId;
 
@@ -45,7 +45,10 @@ impl App {
         );
     }
 
-    pub(in super::super) fn observe_name_width(widths: &mut ResolvedWidths, content_width: usize) {
+    pub(in super::super) fn observe_name_width(
+        widths: &mut ProjectListWidths,
+        content_width: usize,
+    ) {
         use COL_NAME;
 
         widths.observe(COL_NAME, Self::name_width_with_gutter(content_width));

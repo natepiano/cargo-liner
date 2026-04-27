@@ -29,7 +29,7 @@ use crate::tui::columns;
 use crate::tui::columns::COL_DISK;
 use crate::tui::columns::COL_MAIN;
 use crate::tui::columns::COL_SYNC;
-use crate::tui::columns::ResolvedWidths;
+use crate::tui::columns::ProjectListWidths;
 use crate::tui::render;
 use crate::tui::render::PREFIX_GROUP_COLLAPSED;
 use crate::tui::render::PREFIX_MEMBER_INLINE;
@@ -316,8 +316,8 @@ pub(super) fn build_fit_widths_snapshot(
     root_labels: &[String],
     lint_enabled: bool,
     generation: u64,
-) -> ResolvedWidths {
-    let mut widths = ResolvedWidths::new(lint_enabled);
+) -> ProjectListWidths {
+    let mut widths = ProjectListWidths::new(lint_enabled);
 
     for (index, entry) in entries.iter().enumerate() {
         observe_item_fit_widths(&mut widths, entry, &root_labels[index]);
@@ -327,7 +327,7 @@ pub(super) fn build_fit_widths_snapshot(
     widths
 }
 
-fn observe_item_fit_widths(widths: &mut ResolvedWidths, entry: &ProjectEntry, root_label: &str) {
+fn observe_item_fit_widths(widths: &mut ProjectListWidths, entry: &ProjectEntry, root_label: &str) {
     let dw = columns::display_width;
     let item = &entry.item;
     let repo_info = entry
@@ -363,7 +363,7 @@ fn observe_item_fit_widths(widths: &mut ResolvedWidths, entry: &ProjectEntry, ro
 }
 
 fn observe_path_only_entry_fit_widths(
-    widths: &mut ResolvedWidths,
+    widths: &mut ProjectListWidths,
     prefix: &str,
     label: &str,
     entry: &impl crate::project::ProjectFields,
@@ -374,7 +374,7 @@ fn observe_path_only_entry_fit_widths(
 }
 
 fn observe_new_member_group_fit_widths(
-    widths: &mut ResolvedWidths,
+    widths: &mut ProjectListWidths,
     groups: &[MemberGroup],
     is_worktree: bool,
 ) {
@@ -410,7 +410,7 @@ fn observe_new_member_group_fit_widths(
 }
 
 fn observe_typed_vendored_fit_widths(
-    widths: &mut ResolvedWidths,
+    widths: &mut ProjectListWidths,
     vendored: &[VendoredPackage],
     prefix: &str,
 ) {
@@ -423,7 +423,7 @@ fn observe_typed_vendored_fit_widths(
 }
 
 fn observe_workspace_worktree_entry_fit_widths(
-    widths: &mut ResolvedWidths,
+    widths: &mut ProjectListWidths,
     ws: &Workspace,
     repo_info: Option<&RepoInfo>,
 ) {
@@ -443,7 +443,7 @@ fn observe_workspace_worktree_entry_fit_widths(
 }
 
 fn observe_package_worktree_entry_fit_widths(
-    widths: &mut ResolvedWidths,
+    widths: &mut ProjectListWidths,
     pkg: &Package,
     repo_info: Option<&RepoInfo>,
 ) {
@@ -457,7 +457,7 @@ fn observe_package_worktree_entry_fit_widths(
 }
 
 fn observe_workspace_worktree_group_fit_widths(
-    widths: &mut ResolvedWidths,
+    widths: &mut ProjectListWidths,
     wtg: &WorktreeGroup,
     repo_info: Option<&RepoInfo>,
 ) {
@@ -474,7 +474,7 @@ fn observe_workspace_worktree_group_fit_widths(
 }
 
 fn observe_package_worktree_group_fit_widths(
-    widths: &mut ResolvedWidths,
+    widths: &mut ProjectListWidths,
     wtg: &WorktreeGroup,
     repo_info: Option<&RepoInfo>,
 ) {

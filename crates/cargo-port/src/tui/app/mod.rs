@@ -15,8 +15,8 @@
 //!
 //! - **Fan-out flavor** — see [`TreeMutation`] (this module). The guard currently borrows `&mut
 //!   App` and clears `Panes`-owned tree-derived caches via
-//!   [`super::panes::Panes::clear_for_tree_change`]. Phase 6 will rewrite the guard to borrow `Scan
-//!   + Panes + Selection` directly so the type signature declares the dependency.
+//!   [`super::panes::Panes::clear_for_tree_change`]. Phase 6 will rewrite the guard to borrow Scan
+//!   + Panes + Selection directly so the type signature declares the dependency.
 //! - **Self-only flavor** — lands in Phase 3 with `SelectionMutation` (stub: see `docs/app-api.md`
 //!   § "Phase 3 (Selection)").
 //!
@@ -116,7 +116,7 @@ pub(super) use types::PendingClean;
 pub(super) use types::PollBackgroundStats;
 pub(super) use types::VisibleRow;
 
-pub(super) use super::columns::ResolvedWidths;
+pub(super) use super::columns::ProjectListWidths;
 use super::panes::PendingCiFetch;
 use super::panes::PendingExampleRun;
 use super::panes::WorktreeInfo;
@@ -176,7 +176,7 @@ pub(super) struct App {
     cached_visible_rows:      Vec<VisibleRow>,
     cached_root_sorted:       Vec<u64>,
     cached_child_sorted:      HashMap<usize, Vec<u64>>,
-    cached_fit_widths:        ResolvedWidths,
+    cached_fit_widths:        ProjectListWidths,
     data_generation:          u64,
     mouse_pos:                Option<Position>,
     status_flash:             Option<(String, std::time::Instant)>,
@@ -309,7 +309,7 @@ impl App {
 
     pub(super) fn apply_hovered_pane_row(&mut self) { self.panes.apply_hovered_pane_row(); }
 
-    pub(super) const fn cached_fit_widths(&self) -> &ResolvedWidths { &self.cached_fit_widths }
+    pub(super) const fn cached_fit_widths(&self) -> &ProjectListWidths { &self.cached_fit_widths }
 
     pub(super) fn cached_root_sorted(&self) -> &[u64] { &self.cached_root_sorted }
 

@@ -58,7 +58,7 @@ use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
-use crate::tui::columns::ResolvedWidths;
+use crate::tui::columns::ProjectListWidths;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PaneId;
 use crate::tui::render;
@@ -194,7 +194,7 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
         .collect()
 }
 
-fn render_tree_buffer(app: &mut App) -> (ratatui::buffer::Buffer, ResolvedWidths) {
+fn render_tree_buffer(app: &mut App) -> (ratatui::buffer::Buffer, ProjectListWidths) {
     app.ensure_visible_rows_cached();
     let widths = snapshots::build_fit_widths_snapshot(
         &app.projects,
@@ -217,7 +217,7 @@ fn render_tree_buffer(app: &mut App) -> (ratatui::buffer::Buffer, ResolvedWidths
 
 fn row_has_crossed_out_content(
     buffer: &ratatui::buffer::Buffer,
-    widths: &ResolvedWidths,
+    widths: &ProjectListWidths,
     row: usize,
 ) -> bool {
     (0..widths.total_width()).any(|x| {

@@ -1,3 +1,5 @@
+pub(in crate::tui) mod widths;
+
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -5,6 +7,8 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
+use self::widths::ColumnSpec;
+use self::widths::ColumnWidths;
 use super::constants::COLUMN_HEADER_COLOR;
 use super::constants::DISCOVERY_SHIMMER_COLOR;
 use super::constants::ERROR_COLOR;
@@ -199,53 +203,67 @@ pub(super) struct RowCells {
 
 // ── Resolved widths ─────────────────────────────────────────────────
 
-pub(super) struct ResolvedWidths {
-    widths:         [usize; NUM_COLS],
+/// Project-list column widths. Thin wrapper around the generic
+/// [`ColumnWidths`] primitive (Phase 2 of the App-API carve, see
+/// `docs/app-api.md`) that adds the lint-enabled flag, the generation
+/// counter App uses to invalidate cached widths after tree changes,
+/// and the project-list-specific seeding from `column_defs`.
+pub(super) struct ProjectListWidths {
+    inner:          ColumnWidths,
     lint_enabled:   bool,
     pub generation: u64,
 }
 
-impl Default for ResolvedWidths {
+impl Default for ProjectListWidths {
     fn default() -> Self { Self::new(true) }
 }
 
-impl ResolvedWidths {
-    /// Seed from column definitions: Fixed columns get their width, Fit columns
-    /// get their minimum.
+impl ProjectListWidths {
+    /// Seed from column definitions: Fixed columns get their width,
+    /// Fit columns get their minimum.
     pub(super) fn new(lint_enabled: bool) -> Self {
-        let defs = column_defs(lint_enabled);
-        let mut widths = [0usize; NUM_COLS];
-        for (i, def) in defs.iter().enumerate() {
-            widths[i] = def.seed_width();
-        }
         Self {
-            widths,
+            inner: ColumnWidths::new(project_list_specs(lint_enabled)),
             lint_enabled,
             generation: u64::MAX,
         }
     }
 
-    /// Update a Fit column with observed content width. No-op for Fixed columns.
+    /// Update a Fit column with observed content width. No-op for
+    /// Fixed columns (`ColumnSpec::fixed` caps `max == min`).
     pub(super) fn observe(&mut self, col: usize, width: usize) {
-        if let ColumnWidth::Fit { .. } = column_defs(self.lint_enabled)[col].width {
-            self.widths[col] = self.widths[col].max(width);
-        }
+        self.inner.observe_cell_usize(col, width);
     }
 
-    /// Get the resolved width for a column.
-    pub(super) const fn get(&self, col: usize) -> usize { self.widths[col] }
+    /// Resolved width for a column.
+    pub(super) fn get(&self, col: usize) -> usize { usize::from(self.inner.get(col)) }
 
     /// Total display width of all columns including gaps.
     pub(super) fn total_width(&self) -> usize {
         let defs = column_defs(self.lint_enabled);
         let mut total = 0;
         for (i, def) in defs.iter().enumerate() {
-            total += def.gap + self.widths[i];
+            total += def.gap + self.get(i);
         }
         total
     }
 
     pub(super) const fn lint_enabled(&self) -> bool { self.lint_enabled }
+}
+
+/// Map the project-list `column_defs` into [`ColumnSpec`]s for
+/// `ColumnWidths`.
+fn project_list_specs(lint_enabled: bool) -> Vec<ColumnSpec> {
+    column_defs(lint_enabled)
+        .iter()
+        .map(|def| {
+            let seed = u16::try_from(def.seed_width()).unwrap_or(u16::MAX);
+            match def.width {
+                ColumnWidth::Fixed(_) => ColumnSpec::fixed(seed),
+                ColumnWidth::Fit { .. } => ColumnSpec::fit(seed),
+            }
+        })
+        .collect()
 }
 
 // ── Display-width helpers ───────────────────────────────────────────
@@ -281,7 +299,7 @@ fn pad_center(s: &str, target: usize) -> String {
 
 /// Render a `RowCells` into a styled `Line` using the column definitions and
 /// resolved widths. Replaces `project_row_spans`.
-pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'static> {
+pub(super) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'static> {
     let defs = column_defs(widths.lint_enabled());
     let mut spans = Vec::with_capacity(NUM_COLS);
     // Track which span indices are suffix spans (exempt from strikethrough).
@@ -369,7 +387,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ResolvedWidths) -> Line<'stat
 
 /// Build the header `Line` from column definitions and resolved widths.
 /// `name_text` is the dynamic header for the Name column (e.g. "~/rust (42)").
-pub(super) fn header_line(widths: &ResolvedWidths, name_text: &str) -> Line<'static> {
+pub(super) fn header_line(widths: &ProjectListWidths, name_text: &str) -> Line<'static> {
     let defs = column_defs(widths.lint_enabled());
     let header_style = Style::default()
         .fg(COLUMN_HEADER_COLOR)
@@ -612,7 +630,7 @@ pub(super) fn build_group_header_cells(prefix: &str, label: &str) -> RowCells {
     }
 }
 
-fn summary_label_col(widths: &ResolvedWidths) -> usize {
+fn summary_label_col(widths: &ProjectListWidths) -> usize {
     (0..COL_DISK)
         .rev()
         .find(|&col| widths.get(col) > 0)
@@ -620,7 +638,7 @@ fn summary_label_col(widths: &ResolvedWidths) -> usize {
 }
 
 /// Build a `RowCells` for the summary (Σ) row.
-pub(super) fn build_summary_cells(widths: &ResolvedWidths, disk: &str) -> RowCells {
+pub(super) fn build_summary_cells(widths: &ProjectListWidths, disk: &str) -> RowCells {
     let total_style = Style::default()
         .fg(TITLE_COLOR)
         .add_modifier(Modifier::BOLD);
@@ -664,7 +682,7 @@ mod tests {
 
     #[test]
     fn resolved_widths_seeds_from_defs() {
-        let widths = ResolvedWidths::new(true);
+        let widths = ProjectListWidths::new(true);
         // Fixed columns get their fixed width
         assert_eq!(widths.get(COL_LINT), seeded_width(COL_LINT));
         assert_eq!(widths.get(COL_LANG), seeded_width(COL_LANG));
@@ -679,7 +697,7 @@ mod tests {
 
     #[test]
     fn observe_grows_fit_columns() {
-        let mut widths = ResolvedWidths::new(true);
+        let mut widths = ProjectListWidths::new(true);
         widths.observe(COL_NAME, 25);
         assert_eq!(widths.get(COL_NAME), 25);
         // Fixed column ignores observe
@@ -690,7 +708,7 @@ mod tests {
     #[test]
     fn total_width_sums_gaps_and_widths() {
         let defs = column_defs(true);
-        let widths = ResolvedWidths::new(true);
+        let widths = ProjectListWidths::new(true);
         let total = widths.total_width();
         let expected: usize = defs
             .iter()
@@ -702,7 +720,7 @@ mod tests {
 
     #[test]
     fn header_line_borrows_only_overflow_from_name() {
-        let mut widths = ResolvedWidths::new(true);
+        let mut widths = ProjectListWidths::new(true);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -722,7 +740,7 @@ mod tests {
 
     #[test]
     fn git_header_borrows_from_hidden_lang_column() {
-        let mut widths = ResolvedWidths::new(true);
+        let mut widths = ProjectListWidths::new(true);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -758,7 +776,7 @@ mod tests {
 
     #[test]
     fn row_to_line_same_width_with_and_without_emoji() {
-        let mut widths = ResolvedWidths::new(true);
+        let mut widths = ProjectListWidths::new(true);
         widths.observe(COL_NAME, 32);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -822,7 +840,7 @@ mod tests {
 
     #[test]
     fn summary_row_places_sigma_next_to_disk_total() {
-        let mut widths = ResolvedWidths::new(true);
+        let mut widths = ProjectListWidths::new(true);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -843,7 +861,7 @@ mod tests {
     #[test]
     fn lint_column_collapses_when_disabled() {
         let defs = column_defs(false);
-        let mut widths = ResolvedWidths::new(false);
+        let mut widths = ProjectListWidths::new(false);
         widths.observe(COL_NAME, 30);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);
@@ -864,7 +882,7 @@ mod tests {
 
     #[test]
     fn hidden_lint_column_does_not_shift_ci_cells() {
-        let mut widths = ResolvedWidths::new(false);
+        let mut widths = ProjectListWidths::new(false);
         widths.observe(COL_NAME, 24);
         widths.observe(COL_DISK, 8);
         widths.observe(COL_SYNC, 2);

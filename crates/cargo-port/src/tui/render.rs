@@ -22,7 +22,7 @@ use super::app::ConfirmAction;
 use super::app::DiscoveryRowKind;
 use super::app::ExpandKey;
 use super::app::MemberKind;
-use super::app::ResolvedWidths;
+use super::app::ProjectListWidths;
 use super::app::VisibleRow;
 use super::columns;
 use super::columns::ProjectRow;
@@ -882,7 +882,7 @@ fn render_root_item(
     node_index: usize,
     root_labels: &[String],
     root_sorted: &[u64],
-    widths: &ResolvedWidths,
+    widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let item = &app.projects()[node_index];
     let name = &root_labels[node_index];
@@ -951,7 +951,7 @@ fn render_child_item<P: project::ProjectFields>(
     child_sorted: &[u64],
     prefix: &'static str,
     inherited_deleted: bool,
-    widths: &ResolvedWidths,
+    widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let path = project.path();
     let disk = app.formatted_disk(path);
@@ -1021,7 +1021,7 @@ fn render_worktree_entry<'a>(
     ni: usize,
     wi: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ResolvedWidths,
+    widths: &ProjectListWidths,
 ) -> ListItem<'a> {
     let item = &app.projects()[ni];
     let display_path = app.display_path_for_row(VisibleRow::WorktreeEntry {
@@ -1184,7 +1184,7 @@ fn render_wt_group_header<'a>(
     ni: usize,
     wi: usize,
     gi: usize,
-    widths: &ResolvedWidths,
+    widths: &ProjectListWidths,
 ) -> ListItem<'a> {
     let item = &app.projects()[ni];
     let (group_name, member_count) = match &item.item {
@@ -1221,7 +1221,7 @@ fn render_wt_member<'a>(
     gi: usize,
     mi: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ResolvedWidths,
+    widths: &ProjectListWidths,
 ) -> ListItem<'a> {
     let item = &app.projects()[ni];
     let empty = Vec::new();
@@ -1285,7 +1285,7 @@ fn render_member_item(
     group_index: usize,
     member_index: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ResolvedWidths,
+    widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let item = &app.projects()[node_index];
     let empty = Vec::new();
@@ -1336,7 +1336,7 @@ fn render_vendored_item(
     node_index: usize,
     vendored_index: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ResolvedWidths,
+    widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let item = &app.projects()[node_index];
     let empty = Vec::new();
@@ -1392,7 +1392,7 @@ fn render_submodule_item(
     node_index: usize,
     submodule_index: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ResolvedWidths,
+    widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let item = &app.projects()[node_index];
     let Some(submodule) = item.submodules().get(submodule_index) else {
@@ -1419,7 +1419,7 @@ fn render_path_only_entry(
     prefix: &'static str,
     name: &str,
     sorted: &[u64],
-    widths: &ResolvedWidths,
+    widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let path = entry.path().as_path();
     let disk = app.formatted_disk(path);
@@ -1460,7 +1460,7 @@ fn render_wt_vendored_item(
     worktree_index: usize,
     vendored_index: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ResolvedWidths,
+    widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let item = &app.projects()[node_index];
     let empty = Vec::new();
@@ -1533,7 +1533,7 @@ fn render_wt_vendored_item(
     )
 }
 
-pub(super) fn render_tree_items(app: &App, widths: &ResolvedWidths) -> Vec<ListItem<'static>> {
+pub(super) fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<ListItem<'static>> {
     let root_sorted = app.cached_root_sorted();
     let child_sorted = app.cached_child_sorted();
     let root_labels = app
@@ -1558,7 +1558,7 @@ fn render_tree_item(
     root_labels: &[String],
     root_sorted: &[u64],
     child_sorted: &HashMap<usize, Vec<u64>>,
-    widths: &ResolvedWidths,
+    widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     match row {
         VisibleRow::Root { node_index } => {

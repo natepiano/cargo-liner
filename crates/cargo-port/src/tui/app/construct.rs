@@ -32,7 +32,7 @@ use crate::project::WorkspaceMetadataStore;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
-use crate::tui::columns::ResolvedWidths;
+use crate::tui::columns::ProjectListWidths;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::Panes;
 use crate::tui::terminal::CiFetchMsg;
@@ -172,7 +172,7 @@ impl App {
         let init = inputs.init;
         let channels = inputs.channels;
         let panes = Panes::new(&inputs.cfg.cpu);
-        let cached_fit_widths = ResolvedWidths::new(inputs.cfg.lint.enabled);
+        let cached_fit_widths = ProjectListWidths::new(inputs.cfg.lint.enabled);
         Self {
             current_config: inputs.cfg,
             http_client: inputs.http_client,

@@ -56,7 +56,7 @@ use crate::scan::CiFetchResult;
 use crate::scan::DirSizes;
 use crate::scan::FetchContext;
 use crate::scan::ProjectDetailRequest;
-use crate::tui::columns::ResolvedWidths;
+use crate::tui::columns::ProjectListWidths;
 use crate::tui::config_reload;
 use crate::tui::constants::STARTUP_PHASE_DISK;
 use crate::tui::constants::STARTUP_PHASE_GIT;
@@ -350,7 +350,7 @@ impl App {
         self.sync_running_lint_toast();
         self.sync_lint_runtime_projects();
         self.refresh_lint_runs_from_disk();
-        self.cached_fit_widths = ResolvedWidths::new(self.lint_enabled());
+        self.cached_fit_widths = ProjectListWidths::new(self.lint_enabled());
         self.data_generation += 1;
         if let Some(warning) = lint_spawn.warning {
             self.status_flash = Some((warning.clone(), Instant::now()));

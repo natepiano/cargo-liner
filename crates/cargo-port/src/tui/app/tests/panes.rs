@@ -570,7 +570,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         deleted:           true,
         worktree_health:   Normal,
     });
-    let widths = crate::tui::columns::ResolvedWidths::new(true);
+    let widths = crate::tui::columns::ProjectListWidths::new(true);
     let line = columns::row_to_line(&row, &widths);
 
     let suffix = line

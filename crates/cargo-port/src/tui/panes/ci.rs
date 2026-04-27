@@ -15,6 +15,8 @@ use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::tui::app::App;
+use crate::tui::columns::widths::ColumnSpec;
+use crate::tui::columns::widths::ColumnWidths;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
@@ -118,15 +120,6 @@ fn build_ci_data_row(
 }
 
 fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -> Vec<Constraint> {
-    let branch_width = u16::try_from(
-        ci_runs
-            .iter()
-            .map(|run| run.branch.len())
-            .max()
-            .unwrap_or("Branch".len())
-            .max("Branch".len()),
-    )
-    .unwrap_or(u16::MAX);
     let glyph_width = u16::try_from(
         Conclusion::Success
             .icon()
@@ -134,31 +127,63 @@ fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -
             .max(Conclusion::Failure.icon().width()),
     )
     .unwrap_or(u16::MAX);
-    let commit_width = u16::try_from(
-        ci_runs
-            .iter()
-            .map(|run| run.commit_title.as_deref().unwrap_or("").len())
-            .max()
-            .unwrap_or(" Commit".len())
-            .max(" Commit".len()),
-    )
-    .unwrap_or(u16::MAX);
-    let mut widths = vec![
-        Constraint::Length(commit_width),
-        Constraint::Length(branch_width),
-        Constraint::Length(CI_TIMESTAMP_WIDTH),
+
+    // Column layout: Commit, Branch, Timestamp, then per-job (duration,
+    // glyph) pairs, then (Total, glyph). Header-label minimums seed the
+    // `Fit` columns; `Fixed` columns ignore observed content.
+    let mut specs = vec![
+        ColumnSpec::fit(label_width(" Commit")),
+        ColumnSpec::fit(label_width("Branch")),
+        ColumnSpec::fixed(CI_TIMESTAMP_WIDTH),
     ];
     for col in cols {
-        let width =
-            u16::try_from(ci_duration_width(ci_runs, *col, show_durations)).unwrap_or(u16::MAX);
-        widths.push(Constraint::Length(width));
-        widths.push(Constraint::Length(glyph_width));
+        let label_min = label_width(col.label());
+        if show_durations {
+            specs.push(ColumnSpec::fit(label_min));
+        } else {
+            specs.push(ColumnSpec::fixed(
+                label_min.max(u16::try_from(CI_COMPACT_DURATION_WIDTH).unwrap_or(u16::MAX)),
+            ));
+        }
+        specs.push(ColumnSpec::fixed(glyph_width));
     }
-    let total_width = u16::try_from(ci_total_width(ci_runs, show_durations)).unwrap_or(u16::MAX);
-    widths.push(Constraint::Length(total_width));
-    widths.push(Constraint::Length(glyph_width));
-    widths
+    let total_label = label_width("Total");
+    if show_durations {
+        specs.push(ColumnSpec::fit(total_label));
+    } else {
+        let compact = u16::try_from(CI_COMPACT_DURATION_WIDTH).unwrap_or(u16::MAX);
+        specs.push(ColumnSpec::fixed(total_label.max(compact)));
+    }
+    specs.push(ColumnSpec::fixed(glyph_width));
+
+    let mut widths = ColumnWidths::new(specs);
+
+    for run in ci_runs {
+        widths.observe_cell_usize(0, run.commit_title.as_deref().unwrap_or("").len());
+        widths.observe_cell_usize(1, run.branch.len());
+    }
+    if show_durations {
+        for (i, col) in cols.iter().enumerate() {
+            let col_idx = 3 + i * 2;
+            for run in ci_runs {
+                if let Some(job) = run.jobs.iter().find(|job| col.matches(&job.name)) {
+                    widths.observe_cell_usize(col_idx, job.duration.trim().len());
+                }
+            }
+        }
+        let total_idx = 3 + cols.len() * 2;
+        for run in ci_runs {
+            if let Some(seconds) = run.wall_clock_secs {
+                widths.observe_cell_usize(total_idx, ci::format_secs(seconds).trim().len());
+            }
+        }
+    }
+
+    widths.to_constraints()
 }
+
+/// Display width of a header label, clamped to `u16`.
+fn label_width(label: &str) -> u16 { u16::try_from(label.len()).unwrap_or(u16::MAX) }
 
 fn ci_duration_width(ci_runs: &[CiRun], col: CiColumn, show_durations: bool) -> usize {
     if show_durations {

@@ -122,6 +122,11 @@ fn visible_rows_workspace_with_worktrees() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "fixture-heavy tree-rendering test; splitting it would dilute the \
+              single behavioral assertion at the bottom"
+)]
 fn expand_linked_workspace_worktree_renders_its_members() {
     let member_a = make_member(Some("a"), "~/ws/a");
     let member_b = make_member(Some("b"), "~/ws/b");
