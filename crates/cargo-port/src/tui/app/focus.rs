@@ -73,7 +73,7 @@ impl App {
     /// Open the settings overlay and position the cursor on `IncludeDirs`
     /// when no include directories are configured.
     pub(in super::super) fn force_settings_if_unconfigured(&mut self) {
-        if !self.current_config.tui.include_dirs.is_empty() {
+        if !self.config.current().tui.include_dirs.is_empty() {
             return;
         }
         self.open_overlay(Settings);

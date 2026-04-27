@@ -1266,7 +1266,7 @@ fn lint_rollups_distinguish_root_from_primary_worktree() {
     );
 
     let mut app = make_app(&[make_project(None, "~/ws")]);
-    app.current_config.lint.enabled = true;
+    app.current_config_mut().lint.enabled = true;
     apply_items(&mut app, &[root]);
     app.projects_mut()
         .lint_at_path_mut(&test_path("~/ws"))
@@ -1302,7 +1302,7 @@ fn lint_rollup_prefers_running_root_over_member_history() {
     );
 
     let mut app = make_app(&[make_workspace_project(None, "~/ws")]);
-    app.current_config.lint.enabled = true;
+    app.current_config_mut().lint.enabled = true;
     apply_items(&mut app, &[root]);
     app.projects_mut()
         .lint_at_path_mut(&test_path("~/ws"))
@@ -1321,7 +1321,7 @@ fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
     );
 
     let mut app = make_app(&[make_project(None, "~/ws")]);
-    app.current_config.lint.enabled = true;
+    app.current_config_mut().lint.enabled = true;
     apply_items(&mut app, &[root]);
     app.projects_mut()
         .lint_at_path_mut(&test_path("~/ws"))

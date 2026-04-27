@@ -42,28 +42,28 @@ use crate::tui::toasts::ToastView;
 use crate::tui::toasts::TrackedItem;
 
 impl App {
-    pub(in super::super) const fn lint_enabled(&self) -> bool { self.current_config.lint.enabled }
+    pub(in super::super) const fn lint_enabled(&self) -> bool { self.config.current().lint.enabled }
 
     pub(in super::super) const fn invert_scroll(&self) -> ScrollDirection {
-        self.current_config.mouse.invert_scroll
+        self.config.current().mouse.invert_scroll
     }
 
     pub(in super::super) const fn include_non_rust(&self) -> NonRustInclusion {
-        self.current_config.tui.include_non_rust
+        self.config.current().tui.include_non_rust
     }
 
     pub(in super::super) const fn ci_run_count(&self) -> u32 {
-        self.current_config.tui.ci_run_count
+        self.config.current().tui.ci_run_count
     }
 
     pub(in super::super) const fn navigation_keys(&self) -> NavigationKeys {
-        self.current_config.tui.navigation_keys
+        self.config.current().tui.navigation_keys
     }
 
-    pub(in super::super) fn editor(&self) -> &str { &self.current_config.tui.editor }
+    pub(in super::super) fn editor(&self) -> &str { &self.config.current().tui.editor }
 
     pub(in super::super) fn terminal_command(&self) -> &str {
-        &self.current_config.tui.terminal_command
+        &self.config.current().tui.terminal_command
     }
 
     pub(in super::super) fn terminal_command_configured(&self) -> bool {
@@ -71,7 +71,7 @@ impl App {
     }
 
     fn toast_timeout(&self) -> Duration {
-        Duration::from_secs_f64(self.current_config.tui.status_flash_secs)
+        Duration::from_secs_f64(self.config.current().tui.status_flash_secs)
     }
 
     pub(in super::super) fn active_toasts(&self) -> Vec<ToastView<'_>> {
@@ -92,7 +92,7 @@ impl App {
 
     pub(in super::super) fn prune_toasts(&mut self) {
         let now = Instant::now();
-        let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+        let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
         self.toasts.prune_tracked_items(now, linger);
         self.toasts.prune(now);
         let toast_len = self.active_toasts().len();
@@ -146,7 +146,7 @@ impl App {
         // If tracked items remain, linger so strikethrough animation plays.
         // If no tracked items, exit immediately — nothing to animate.
         let linger = if self.toasts.tracked_item_count(task_id) > 0 {
-            Duration::from_secs_f64(self.current_config.tui.task_linger_secs)
+            Duration::from_secs_f64(self.config.current().tui.task_linger_secs)
         } else {
             Duration::ZERO
         };
@@ -159,7 +159,7 @@ impl App {
         task_id: ToastTaskId,
         items: &[TrackedItem],
     ) {
-        let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+        let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
         self.toasts.set_tracked_items(task_id, items, linger);
         let toast_len = self.active_toasts().len();
         self.pane_manager_mut()
@@ -478,11 +478,11 @@ impl App {
     }
 
     pub(in super::super) fn discovery_shimmer_enabled(&self) -> bool {
-        self.current_config.tui.discovery_shimmer_secs > 0.0
+        self.config.current().tui.discovery_shimmer_secs > 0.0
     }
 
     pub(in super::super) fn discovery_shimmer_duration(&self) -> Duration {
-        Duration::from_secs_f64(self.current_config.tui.discovery_shimmer_secs)
+        Duration::from_secs_f64(self.config.current().tui.discovery_shimmer_secs)
     }
 
     pub(in super::super) fn register_discovery_shimmer(&mut self, path: &Path) {

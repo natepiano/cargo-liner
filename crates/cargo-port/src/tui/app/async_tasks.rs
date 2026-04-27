@@ -15,7 +15,6 @@ use super::service_state::ServiceAvailability;
 use super::snapshots;
 use super::target_index::MemberKind;
 use super::target_index::TargetDirMember;
-use super::types::ConfigFileStamp;
 use super::types::PollBackgroundStats;
 use super::types::ScanPhase;
 use super::types::StartupPhaseTracker;
@@ -112,21 +111,6 @@ impl App {
         self.sync_selected_project();
     }
 
-    pub(in super::super) fn config_file_stamp(path: &Path) -> Option<ConfigFileStamp> {
-        let metadata = std::fs::metadata(path).ok()?;
-        Some(ConfigFileStamp {
-            modified: metadata.modified().ok(),
-            len:      metadata.len(),
-        })
-    }
-
-    pub(in super::super) fn sync_config_watch_state(&mut self) {
-        self.config_last_seen = self
-            .config_path
-            .as_deref()
-            .and_then(Self::config_file_stamp);
-    }
-
     pub(in super::super) fn record_config_reload_failure(&mut self, err: &str) {
         self.status_flash = Some((
             "Config reload failed; keeping previous settings".to_string(),
@@ -136,10 +120,10 @@ impl App {
     }
 
     pub(in super::super) fn load_initial_keymap(&mut self) {
-        let vim_mode = self.current_config.tui.navigation_keys;
+        let vim_mode = self.config.current().tui.navigation_keys;
         let result = keymap::load_keymap(vim_mode);
-        self.current_keymap = result.keymap;
-        self.sync_keymap_watch_state();
+        self.keymap.replace_current(result.keymap);
+        self.keymap.sync_stamp();
         if !result.errors.is_empty() {
             self.show_keymap_diagnostics(&result.errors);
         }
@@ -155,19 +139,11 @@ impl App {
     }
 
     pub(in super::super) fn maybe_reload_keymap_from_disk(&mut self) {
-        let current_stamp = self
-            .keymap_path
-            .as_deref()
-            .and_then(Self::config_file_stamp);
-        if current_stamp == self.keymap_last_seen {
-            return;
-        }
-        self.keymap_last_seen = current_stamp;
-
-        let Some(path) = &self.keymap_path else {
+        let Some(path) = self.keymap.take_stamp_change() else {
             return;
         };
-        let contents = match std::fs::read_to_string(path) {
+        let path = path.to_path_buf();
+        let contents = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
                 self.show_keymap_diagnostics(&[KeymapError {
@@ -180,9 +156,9 @@ impl App {
             },
         };
 
-        let vim_mode = self.current_config.tui.navigation_keys;
+        let vim_mode = self.config.current().tui.navigation_keys;
         let result = keymap::load_keymap_from_str(&contents, vim_mode);
-        self.current_keymap = result.keymap;
+        self.keymap.replace_current(result.keymap);
 
         if result.errors.is_empty() {
             self.dismiss_keymap_diagnostics();
@@ -191,12 +167,9 @@ impl App {
         }
 
         if !result.missing_actions.is_empty() {
-            if let Some(path) = &self.keymap_path {
-                let content =
-                    crate::keymap::ResolvedKeymap::default_toml_from(&self.current_keymap);
-                let _ = std::fs::write(path, content);
-                self.sync_keymap_watch_state();
-            }
+            let content = crate::keymap::ResolvedKeymap::default_toml_from(self.keymap.current());
+            let _ = std::fs::write(&path, content);
+            self.keymap.sync_stamp();
             self.show_timed_toast(
                 "Keymap updated",
                 format!(
@@ -207,14 +180,7 @@ impl App {
         }
     }
 
-    pub(in super::super) fn sync_keymap_stamp(&mut self) { self.sync_keymap_watch_state(); }
-
-    fn sync_keymap_watch_state(&mut self) {
-        self.keymap_last_seen = self
-            .keymap_path
-            .as_deref()
-            .and_then(Self::config_file_stamp);
-    }
+    pub(in super::super) fn sync_keymap_stamp(&mut self) { self.keymap.sync_stamp(); }
 
     fn show_keymap_diagnostics(&mut self, errors: &[KeymapError]) {
         // Dismiss previous diagnostics toast if any.
@@ -225,7 +191,10 @@ impl App {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        let action_path = self.keymap_path.clone();
+        let action_path = self
+            .keymap
+            .path()
+            .map(|p| AbsolutePath::from(p.to_path_buf()));
 
         let id = self.toasts.push_persistent(
             "Keymap errors (using defaults)",
@@ -234,7 +203,7 @@ impl App {
             action_path,
             1,
         );
-        self.keymap_diagnostics_id = Some(id);
+        self.keymap.set_diagnostics_id(Some(id));
         let toast_len = self.active_toasts().len();
         self.pane_manager_mut()
             .pane_mut(PaneId::Toasts)
@@ -242,29 +211,21 @@ impl App {
     }
 
     fn dismiss_keymap_diagnostics(&mut self) {
-        if let Some(id) = self.keymap_diagnostics_id.take() {
+        if let Some(id) = self.keymap.take_diagnostics_id() {
             self.toasts.dismiss(id);
         }
     }
 
     pub(in super::super) fn maybe_reload_config_from_disk(&mut self) {
-        let current_stamp = self
-            .config_path
-            .as_deref()
-            .and_then(Self::config_file_stamp);
-        if current_stamp == self.config_last_seen {
+        let Some(path) = self.config.take_stamp_change() else {
             return;
-        }
-
-        self.config_last_seen = current_stamp;
-        let reload_result = self
-            .config_path
-            .as_deref()
-            .map_or_else(config::try_load, config::try_load_from_path);
+        };
+        let path_buf = path.to_path_buf();
+        let reload_result = config::try_load_from_path(&path_buf);
         match reload_result {
             Ok(cfg) => {
                 self.apply_config(&cfg);
-                self.sync_config_watch_state();
+                self.config.sync_stamp();
                 self.show_timed_toast("Settings", "Reloaded from disk");
             },
             Err(err) => self.record_config_reload_failure(&err),
@@ -277,20 +238,20 @@ impl App {
     ) -> Result<(), String> {
         config::save(cfg)?;
         self.apply_config(cfg);
-        self.sync_config_watch_state();
+        self.config.sync_stamp();
         Ok(())
     }
 
     pub(in super::super) fn apply_config(&mut self, cfg: &CargoPortConfig) {
-        if self.current_config == *cfg {
+        if self.config.current() == cfg {
             return;
         }
 
-        let prev_force = self.current_config.debug.force_github_rate_limit;
+        let prev_force = self.config.current().debug.force_github_rate_limit;
         let next_force = cfg.debug.force_github_rate_limit;
 
         let actions = config_reload::collect_reload_actions(
-            &self.current_config,
+            self.config.current(),
             cfg,
             config_reload::ReloadContext {
                 scan_complete:       self.is_scan_complete(),
@@ -298,7 +259,7 @@ impl App {
             },
         );
         config::set_active_config(cfg);
-        self.current_config = cfg.clone();
+        *self.config.current_mut() = cfg.clone();
         if !self.discovery_shimmer_enabled() {
             self.discovery_shimmers.clear();
         }
@@ -335,7 +296,7 @@ impl App {
                 // Regroup workspace members in-place based on updated
                 // inline_dirs, then refresh derived state.
                 self.projects
-                    .regroup_members(&self.current_config.tui.inline_dirs);
+                    .regroup_members(&self.config.current().tui.inline_dirs);
                 self.refresh_derived_state();
             }
         }
@@ -393,7 +354,7 @@ impl App {
     }
 
     pub(in super::super) fn respawn_watcher(&mut self) {
-        let watch_roots = scan::resolve_include_dirs(&self.current_config.tui.include_dirs);
+        let watch_roots = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
         let new_watcher = watcher::spawn_watcher(
             &watch_roots,
             self.background.bg_sender(),
@@ -451,7 +412,12 @@ impl App {
     }
 
     pub(in super::super) fn refresh_lint_cache_usage_from_disk(&mut self) {
-        let cache_size_bytes = self.current_config.lint.cache_size_bytes().unwrap_or(None);
+        let cache_size_bytes = self
+            .config
+            .current()
+            .lint
+            .cache_size_bytes()
+            .unwrap_or(None);
         self.lint_cache_usage = lint::retained_cache_usage(cache_size_bytes);
     }
 
@@ -1197,7 +1163,8 @@ impl App {
                 let empty: HashSet<String> = HashSet::new();
                 self.toasts.complete_missing_items(task_id, &empty);
                 if !self.toasts.is_task_finished(task_id) {
-                    let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+                    let linger =
+                        Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
                     self.toasts.finish_task(task_id, linger);
                 }
             }
@@ -1222,7 +1189,7 @@ impl App {
             && self.toasts.reactivate_task(task_id)
         {
             self.toasts.complete_missing_items(task_id, &running_keys);
-            let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+            let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
             self.toasts
                 .add_new_tracked_items(task_id, &running_items, linger);
             for item in &running_items {
@@ -1253,7 +1220,8 @@ impl App {
                 let empty: HashSet<String> = HashSet::new();
                 self.toasts.complete_missing_items(task_id, &empty);
                 if !self.toasts.is_task_finished(task_id) {
-                    let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+                    let linger =
+                        Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
                     self.toasts.finish_task(task_id, linger);
                 }
             }
@@ -1280,7 +1248,7 @@ impl App {
             && self.toasts.reactivate_task(task_id)
         {
             self.toasts.complete_missing_items(task_id, &running_keys);
-            let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+            let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
             self.toasts
                 .add_new_tracked_items(task_id, &running_items, linger);
             for item in &running_items {
@@ -1430,17 +1398,17 @@ impl App {
             .pane_mut(PaneId::ProjectList)
             .set_scroll_offset(0);
         self.data_generation += 1;
-        let scan_dirs = scan::resolve_include_dirs(&self.current_config.tui.include_dirs);
+        let scan_dirs = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
         let (tx, rx) = scan::spawn_streaming_scan(
             scan_dirs,
-            &self.current_config.tui.inline_dirs,
+            &self.config.current().tui.inline_dirs,
             self.include_non_rust(),
             self.http_client.clone(),
             self.metadata_store_handle(),
         );
         self.background.swap_bg_channel(tx, rx);
         self.respawn_watcher();
-        let current_config = self.current_config.clone();
+        let current_config = self.config.current().clone();
         self.refresh_lint_runtime_from_config(&current_config);
     }
 
@@ -1573,7 +1541,7 @@ impl App {
                             completed_at: None,
                         };
                         let linger = std::time::Duration::from_secs_f64(
-                            self.current_config.tui.task_linger_secs,
+                            self.config.current().tui.task_linger_secs,
                         );
                         self.toasts
                             .add_new_tracked_items(task_id, &[result_item], linger);
@@ -1909,7 +1877,7 @@ impl App {
             self.scan.startup_phases.repo.complete_at = None;
             self.scan.startup_phases.startup_complete_at = None;
             if let Some(toast) = self.scan.startup_phases.startup_toast {
-                let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
+                let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
                 self.toasts.add_new_tracked_items(
                     toast,
                     &[TrackedItem {
@@ -1966,7 +1934,7 @@ impl App {
         // Insert into the hierarchy directly — under a parent workspace if
         // one exists, otherwise as a top-level peer.
         let discovered_path = item.path().to_path_buf();
-        let inline_dirs = self.current_config.tui.inline_dirs.clone();
+        let inline_dirs = self.config.current().tui.inline_dirs.clone();
         {
             let mut tree = self.mutate_tree();
             tree.insert_into_hierarchy(item);
@@ -1990,7 +1958,7 @@ impl App {
         // `worktree_status` is no longer on `ProjectInfo` — it lives directly
         // on `Workspace` / `Package` / `NonRustProject` — so this copy cannot
         // clobber it.
-        let inline_dirs = self.current_config.tui.inline_dirs.clone();
+        let inline_dirs = self.config.current().tui.inline_dirs.clone();
         {
             let mut tree = self.mutate_tree();
             let Some(old) = tree.replace_leaf_by_path(&path, item.clone()) else {
@@ -2251,7 +2219,7 @@ impl App {
             }
         });
         let eligible = lint::project_is_eligible(
-            &self.current_config.lint,
+            &self.config.current().lint,
             &path.to_string_lossy(),
             path,
             is_rust,

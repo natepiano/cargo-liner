@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::time::Duration;
 use std::time::Instant;
-use std::time::SystemTime;
 
 use super::phase_state::CountedPhase;
 use super::phase_state::KeyedPhase;
@@ -45,12 +44,6 @@ pub struct PendingClean {
 pub(in super::super) struct HoveredPaneRow {
     pub pane: PaneId,
     pub row:  usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in super::super) struct ConfigFileStamp {
-    pub modified: Option<SystemTime>,
-    pub len:      u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -39,8 +39,10 @@
 //! bespoke state, write the lifecycle as a generic struct and have
 //! each subsystem compose it.
 //!
-//! - Lands in Phase 5 with `tui::watched_file::WatchedFile<T>`, composed by `Config` (with edit
-//!   buffer) and `Keymap` (with diagnostics-toast id).
+//! - See [`super::watched_file::WatchedFile<T>`] (Phase 5), composed by
+//!   [`super::config_state::Config`] (with the `SettingsEditBuffer` edit buffer) and
+//!   [`super::keymap_state::Keymap`] (with the diagnostics-toast id). The primitive captures the
+//!   load-on-disk-change contract once; the two subsystems add their bespoke state on top.
 
 mod async_tasks;
 mod ci;
@@ -72,7 +74,9 @@ use ratatui::layout::Position;
 use self::service_state::CratesIoState;
 use self::service_state::GitHubState;
 use super::background::Background;
+use super::config_state::Config;
 use super::inflight::Inflight;
+use super::keymap_state::Keymap;
 use super::pane::PaneManager;
 use super::panes::LayoutCache;
 use super::panes::PaneDataStore;
@@ -137,7 +141,6 @@ use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
 use crate::project::RootItem;
 pub(super) struct App {
-    current_config:           CargoPortConfig,
     http_client:              HttpClient,
     github:                   GitHubState,
     crates_io:                CratesIoState,
@@ -168,9 +171,19 @@ pub(super) struct App {
     /// running-paths maps, toast slots, ci-fetch tracker, pending
     /// queues, example-runner state, and `lint_runtime`.
     inflight:                 Inflight,
+    /// Config subsystem (Phase 5 of the App-API carve, see
+    /// `docs/app-api.md`). Owns `current_config`, `config_path`,
+    /// `config_last_seen`, plus the in-app settings editor's
+    /// `SettingsEditBuffer` (the previous `settings_edit_buf` and
+    /// `settings_edit_cursor` collapsed into one typed pair).
+    /// Composes `WatchedFile<CargoPortConfig>`.
+    config:                   Config,
+    /// Keymap subsystem (Phase 5 of the App-API carve). Owns
+    /// `current_keymap`, `keymap_path`, `keymap_last_seen`,
+    /// `keymap_diagnostics_id`. Composes
+    /// `WatchedFile<ResolvedKeymap>`.
+    keymap:                   Keymap,
     priority_fetch_path:      Option<AbsolutePath>,
-    settings_edit_buf:        String,
-    settings_edit_cursor:     usize,
     focused_pane:             PaneId,
     return_focus:             Option<PaneId>,
     confirm:                  Option<ConfirmAction>,
@@ -179,12 +192,6 @@ pub(super) struct App {
     mouse_pos:                Option<Position>,
     status_flash:             Option<(String, std::time::Instant)>,
     toasts:                   ToastManager,
-    config_path:              Option<AbsolutePath>,
-    config_last_seen:         Option<types::ConfigFileStamp>,
-    current_keymap:           ResolvedKeymap,
-    keymap_path:              Option<AbsolutePath>,
-    keymap_last_seen:         Option<types::ConfigFileStamp>,
-    keymap_diagnostics_id:    Option<u64>,
     inline_error:             Option<String>,
     ui_modes:                 types::UiModes,
     dirty:                    types::DirtyState,
@@ -203,16 +210,30 @@ pub(super) struct App {
 }
 
 impl App {
-    pub(super) const fn current_config(&self) -> &CargoPortConfig { &self.current_config }
+    pub(super) const fn current_config(&self) -> &CargoPortConfig { self.config.current() }
 
-    pub(super) const fn current_keymap(&self) -> &ResolvedKeymap { &self.current_keymap }
-
-    pub(super) const fn current_keymap_mut(&mut self) -> &mut ResolvedKeymap {
-        &mut self.current_keymap
+    /// Test-only mutable access to the active config. Production
+    /// paths route through [`Self::apply_config`] so derived state
+    /// (panes, selection, scan-shaped fields) stays in sync.
+    #[cfg(test)]
+    pub(super) const fn current_config_mut(&mut self) -> &mut CargoPortConfig {
+        self.config.current_mut()
     }
 
+    pub(super) const fn current_keymap(&self) -> &ResolvedKeymap { self.keymap.current() }
+
+    pub(super) const fn current_keymap_mut(&mut self) -> &mut ResolvedKeymap {
+        self.keymap.current_mut()
+    }
+
+    /// Test-only — production paths reach Config sub-fields via
+    /// the top-level App accessors (`current_config`, `config_path`,
+    /// `settings_edit_*`).
+    #[cfg(test)]
+    pub(super) const fn config_mut(&mut self) -> &mut Config { &mut self.config }
+
     pub(super) fn resolved_dirs(&self) -> Vec<AbsolutePath> {
-        scan::resolve_include_dirs(&self.current_config.tui.include_dirs)
+        scan::resolve_include_dirs(&self.config.current().tui.include_dirs)
     }
 
     pub(super) const fn projects(&self) -> &ProjectList { &self.projects }
@@ -492,17 +513,16 @@ impl App {
 
     pub(super) const fn confirm(&self) -> Option<&ConfirmAction> { self.confirm.as_ref() }
 
-    pub(super) fn settings_edit_buf(&self) -> &str { &self.settings_edit_buf }
+    pub(super) fn settings_edit_buf(&self) -> &str { self.config.edit_buffer().buf() }
 
-    pub(super) const fn settings_edit_cursor(&self) -> usize { self.settings_edit_cursor }
+    pub(super) const fn settings_edit_cursor(&self) -> usize { self.config.edit_buffer().cursor() }
 
     pub(super) const fn settings_edit_parts_mut(&mut self) -> (&mut String, &mut usize) {
-        (&mut self.settings_edit_buf, &mut self.settings_edit_cursor)
+        self.config.edit_buffer_mut().parts_mut()
     }
 
     pub(super) fn set_settings_edit_state(&mut self, value: String, cursor: usize) {
-        self.settings_edit_buf = value;
-        self.settings_edit_cursor = cursor;
+        self.config.edit_buffer_mut().set(value, cursor);
     }
 
     pub(super) const fn inline_error(&self) -> Option<&String> { self.inline_error.as_ref() }
@@ -571,9 +591,9 @@ impl App {
     /// panic.
     pub(super) const fn mutate_tree(&mut self) -> TreeMutation<'_> { TreeMutation { app: self } }
 
-    pub(super) const fn config_path(&self) -> Option<&AbsolutePath> { self.config_path.as_ref() }
+    pub(super) fn config_path(&self) -> Option<&Path> { self.config.path() }
 
-    pub(super) const fn keymap_path(&self) -> Option<&AbsolutePath> { self.keymap_path.as_ref() }
+    pub(super) fn keymap_path(&self) -> Option<&Path> { self.keymap.path() }
 
     pub(super) const fn ui_modes(&self) -> &types::UiModes { &self.ui_modes }
 
@@ -612,7 +632,7 @@ impl App {
     pub(super) fn poll_cpu_if_due(&mut self, now: Instant) { self.panes.cpu_tick(now); }
 
     pub(super) fn reset_cpu_placeholder(&mut self) {
-        self.panes.reset_cpu(&self.current_config.cpu);
+        self.panes.reset_cpu(&self.config.current().cpu);
     }
 
     /// Clone of the process-wide cargo-metadata store. The scan thread and

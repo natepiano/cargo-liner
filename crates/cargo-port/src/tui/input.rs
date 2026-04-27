@@ -458,11 +458,8 @@ fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
     };
 
     let context = app.input_context();
-    let Some(path) = overlay_editor_target_path(
-        context,
-        app.config_path().map(AbsolutePath::as_path),
-        app.keymap_path().map(AbsolutePath::as_path),
-    ) else {
+    let Some(path) = overlay_editor_target_path(context, app.config_path(), app.keymap_path())
+    else {
         return false;
     };
 

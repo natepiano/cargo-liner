@@ -8,7 +8,6 @@ use std::time::Instant;
 use super::App;
 use super::service_state::CratesIoState;
 use super::service_state::GitHubState;
-use super::types::ConfigFileStamp;
 use super::types::DirtyState;
 #[cfg(test)]
 use super::types::RetrySpawnMode;
@@ -28,7 +27,9 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::tui::background::Background;
 use crate::tui::background::BackgroundChannels;
+use crate::tui::config_state::Config;
 use crate::tui::inflight::Inflight;
+use crate::tui::keymap_state::Keymap;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::Panes;
 use crate::tui::selection::Selection;
@@ -65,12 +66,11 @@ impl AppChannels {
 }
 
 struct AppInit {
-    config_path:      Option<AbsolutePath>,
-    config_last_seen: Option<ConfigFileStamp>,
-    lint_warning:     Option<String>,
-    lint_runtime:     Option<RuntimeHandle>,
-    watch_tx:         mpsc::Sender<WatcherMsg>,
-    projects:         ProjectList,
+    config_path:  Option<AbsolutePath>,
+    lint_warning: Option<String>,
+    lint_runtime: Option<RuntimeHandle>,
+    watch_tx:     mpsc::Sender<WatcherMsg>,
+    projects:     ProjectList,
 }
 
 impl AppInit {
@@ -83,7 +83,6 @@ impl AppInit {
     ) -> Self {
         config::set_active_config(cfg);
         let config_path = config::config_path();
-        let config_last_seen = config_path.as_deref().and_then(App::config_file_stamp);
         let lint_spawn = lint::spawn(cfg, bg_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&cfg.tui.include_dirs);
         let watch_tx = watcher::spawn_watcher(
@@ -100,7 +99,6 @@ impl AppInit {
 
         Self {
             config_path,
-            config_last_seen,
             lint_warning: lint_spawn.warning,
             lint_runtime: lint_spawn.handle,
             watch_tx,
@@ -178,8 +176,13 @@ impl App {
             watch_tx: init.watch_tx,
         });
         let inflight = Inflight::new(init.lint_runtime);
+        let config_path_buf = init.config_path.as_ref().map(|p| p.as_path().to_path_buf());
+        let config = Config::new(config_path_buf, inputs.cfg);
+        let keymap_path_buf = keymap::keymap_path()
+            .as_ref()
+            .map(|p| p.as_path().to_path_buf());
+        let keymap = Keymap::new(keymap_path_buf, keymap::ResolvedKeymap::defaults());
         Self {
-            current_config: inputs.cfg,
             http_client: inputs.http_client,
             github: GitHubState::new(),
             crates_io: CratesIoState::new(),
@@ -191,9 +194,9 @@ impl App {
             selection,
             background,
             inflight,
+            config,
+            keymap,
             priority_fetch_path: None,
-            settings_edit_buf: String::new(),
-            settings_edit_cursor: 0,
             focused_pane: PaneId::ProjectList,
             return_focus: None,
             confirm: None,
@@ -204,12 +207,6 @@ impl App {
             mouse_pos: None,
             status_flash: inputs.status_flash,
             toasts: ToastManager::default(),
-            config_path: init.config_path,
-            config_last_seen: init.config_last_seen,
-            current_keymap: keymap::ResolvedKeymap::defaults(),
-            keymap_path: keymap::keymap_path(),
-            keymap_last_seen: None,
-            keymap_diagnostics_id: None,
             inline_error: None,
             ui_modes: UiModes::default(),
             dirty: DirtyState::initial(),
@@ -238,7 +235,7 @@ impl App {
         }
         self.refresh_lint_runs_from_disk();
         self.http_client
-            .set_force_github_rate_limit(self.current_config.debug.force_github_rate_limit);
+            .set_force_github_rate_limit(self.config.current().debug.force_github_rate_limit);
         self.spawn_rate_limit_prime();
     }
 }

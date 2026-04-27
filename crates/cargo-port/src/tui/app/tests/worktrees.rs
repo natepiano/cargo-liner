@@ -18,7 +18,7 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
     let root = make_workspace_worktrees_item(primary_ws, vec![linked_ws]);
 
     let mut app = make_app(&[make_workspace_project(None, "~/ws")]);
-    app.current_config.lint.enabled = true;
+    app.current_config_mut().lint.enabled = true;
     apply_items(&mut app, &[root]);
     app.expanded_mut().insert(ExpandKey::Node(0));
     app.ensure_visible_rows_cached();
