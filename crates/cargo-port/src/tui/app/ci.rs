@@ -35,7 +35,7 @@ impl App {
                 exhausted,
             });
         } else {
-            self.ci_fetch_tracker.complete(path);
+            self.inflight.ci_fetch_tracker_mut().complete(path);
         }
     }
 
@@ -137,7 +137,7 @@ impl App {
                 },
             );
         }
-        self.ci_fetch_tracker.complete(abs.as_path());
+        self.inflight.ci_fetch_tracker_mut().complete(abs.as_path());
         if let Some(entry) = self.projects.entry_containing_mut(abs.as_path()) {
             let repo = entry.git_repo.get_or_insert_with(Default::default);
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {

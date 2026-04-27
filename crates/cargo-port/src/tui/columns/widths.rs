@@ -10,7 +10,7 @@ use ratatui::layout::Constraint;
 
 /// Per-column width constraint for [`ColumnWidths`].
 #[derive(Clone, Copy, Debug)]
-pub(in crate::tui) struct ColumnSpec {
+pub struct ColumnSpec {
     /// Minimum width for this column. The column never shrinks below
     /// this, and is seeded to this width by [`ColumnWidths::new`].
     pub min: u16,
@@ -23,10 +23,10 @@ pub(in crate::tui) struct ColumnSpec {
 impl ColumnSpec {
     /// Fit-to-content column with a header-label minimum and no
     /// upper cap.
-    pub(in crate::tui) const fn fit(min: u16) -> Self { Self { min, max: None } }
+    pub const fn fit(min: u16) -> Self { Self { min, max: None } }
 
     /// Fixed-width column whose width is independent of content.
-    pub(in crate::tui) const fn fixed(width: u16) -> Self {
+    pub const fn fixed(width: u16) -> Self {
         Self {
             min: width,
             max: Some(width),
@@ -37,71 +37,50 @@ impl ColumnSpec {
 /// Resolved widths for a fit-to-content table. Owns one width per
 /// column; mutate via [`Self::observe_cell`] as content is iterated.
 #[derive(Clone, Debug)]
-pub(in crate::tui) struct ColumnWidths {
+pub struct ColumnWidths {
     specs:  Vec<ColumnSpec>,
     widths: Vec<u16>,
 }
 
 impl ColumnWidths {
     /// Seed widths to each spec's minimum.
-    pub(in crate::tui) fn new(specs: Vec<ColumnSpec>) -> Self {
+    pub fn new(specs: Vec<ColumnSpec>) -> Self {
         let widths = specs.iter().map(|spec| spec.min).collect();
         Self { specs, widths }
     }
 
     /// Grow `col` to fit `width`. Capped at the spec's `max` if set.
     /// `Fixed` columns (where `max == Some(min)`) are no-ops.
-    pub(in crate::tui) fn observe_cell(&mut self, col: usize, width: u16) {
+    pub fn observe_cell(&mut self, col: usize, width: u16) {
         let spec = self.specs[col];
         let candidate = self.widths[col].max(width);
         self.widths[col] = spec.max.map_or(candidate, |cap| candidate.min(cap));
     }
 
     /// Convenience: observe `width` (as `usize`, clamped to `u16`).
-    pub(in crate::tui) fn observe_cell_usize(&mut self, col: usize, width: usize) {
+    pub fn observe_cell_usize(&mut self, col: usize, width: usize) {
         let clamped = u16::try_from(width).unwrap_or(u16::MAX);
         self.observe_cell(col, clamped);
     }
 
     /// Resolved width for `col`.
-    pub(in crate::tui) fn get(&self, col: usize) -> u16 { self.widths[col] }
-
-    /// Resolved widths as an `&[u16]`.
-    #[allow(
-        dead_code,
-        reason = "part of the documented ColumnWidths facade; future panes that \
-                  need raw widths use this rather than reaching for `get` per column"
-    )]
-    pub(in crate::tui) fn widths(&self) -> &[u16] { &self.widths }
+    pub fn get(&self, col: usize) -> u16 { self.widths[col] }
 
     /// Convert to ratatui [`Constraint::Length`] entries — one per
     /// column, in order.
-    pub(in crate::tui) fn to_constraints(&self) -> Vec<Constraint> {
+    pub fn to_constraints(&self) -> Vec<Constraint> {
         self.widths
             .iter()
             .copied()
             .map(Constraint::Length)
             .collect()
     }
-
-    /// Sum of all resolved column widths.
-    #[allow(
-        dead_code,
-        reason = "part of the documented ColumnWidths facade; future fit-check \
-                  paths (analogous to `ci_table_shows_durations`) consume it"
-    )]
-    pub(in crate::tui) fn total(&self) -> u16 {
-        self.widths.iter().copied().fold(0u16, u16::saturating_add)
-    }
-
-    /// Number of columns.
-    #[allow(dead_code, reason = "part of the documented ColumnWidths facade")]
-    pub(in crate::tui) const fn len(&self) -> usize { self.widths.len() }
 }
 
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
+    clippy::unwrap_used,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {

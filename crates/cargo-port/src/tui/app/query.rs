@@ -199,14 +199,17 @@ impl App {
             self.show_timed_toast("Already clean", name);
             return false;
         }
-        self.running_clean_paths
+        self.inflight
+            .running_clean_paths_mut()
             .insert(project_path.clone(), Instant::now());
         self.sync_running_clean_toast();
         true
     }
 
     pub(in super::super) fn clean_spawn_failed(&mut self, project_path: &AbsolutePath) {
-        self.running_clean_paths.remove(project_path.as_path());
+        self.inflight
+            .running_clean_paths_mut()
+            .remove(project_path.as_path());
         self.sync_running_clean_toast();
     }
 
@@ -323,7 +326,8 @@ impl App {
 
     pub(in super::super) fn ci_is_fetching(&self, path: &Path) -> bool {
         self.projects.entry_containing(path).is_some_and(|entry| {
-            self.ci_fetch_tracker
+            self.inflight
+                .ci_fetch_tracker()
                 .is_fetching(entry.item.path().as_path())
         })
     }
@@ -668,7 +672,8 @@ impl App {
         });
         self.pending_git_first_commit
             .retain(|path, _| all_paths.contains(path));
-        self.ci_fetch_tracker
+        self.inflight
+            .ci_fetch_tracker_mut()
             .retain(|path| all_paths.contains(path));
     }
 

@@ -1,11 +1,13 @@
 mod animation;
 mod app;
+mod background;
 mod columns;
 mod config_reload;
 mod constants;
 mod cpu;
 mod duration_fmt;
 mod finder;
+mod inflight;
 mod input;
 mod interaction;
 mod keymap_ui;

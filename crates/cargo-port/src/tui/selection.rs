@@ -24,19 +24,19 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use super::app;
+use super::app::ExpandKey;
+use super::app::FinderState;
+use super::app::ProjectListWidths;
+use super::app::SelectionPaths;
+use super::app::SelectionSync;
+use super::app::VisibleRow;
 use crate::project_list::ProjectList;
-use crate::tui::app::ExpandKey;
-use crate::tui::app::FinderState;
-use crate::tui::app::ProjectListWidths;
-use crate::tui::app::SelectionPaths;
-use crate::tui::app::SelectionSync;
-use crate::tui::app::VisibleRow;
-use crate::tui::app::snapshots;
 
 /// Owns every selection-related piece of state. App holds a single
 /// `selection: Selection` field instead of the eight raw fields it
 /// carried before Phase 3.
-pub(in crate::tui) struct Selection {
+pub(super) struct Selection {
     paths:               SelectionPaths,
     sync:                SelectionSync,
     expanded:            HashSet<ExpandKey>,
@@ -48,7 +48,7 @@ pub(in crate::tui) struct Selection {
 }
 
 impl Selection {
-    pub(in crate::tui) fn new(lint_enabled: bool) -> Self {
+    pub(super) fn new(lint_enabled: bool) -> Self {
         Self {
             paths:               SelectionPaths::new(),
             sync:                SelectionSync::Stable,
@@ -63,21 +63,21 @@ impl Selection {
 
     // ── path tracking ───────────────────────────────────────────────
 
-    pub(in crate::tui) const fn paths(&self) -> &SelectionPaths { &self.paths }
+    pub(super) const fn paths(&self) -> &SelectionPaths { &self.paths }
 
-    pub(in crate::tui) const fn paths_mut(&mut self) -> &mut SelectionPaths { &mut self.paths }
+    pub(super) const fn paths_mut(&mut self) -> &mut SelectionPaths { &mut self.paths }
 
     // ── sync flag ───────────────────────────────────────────────────
 
-    pub(in crate::tui) const fn sync(&self) -> SelectionSync { self.sync }
+    pub(super) const fn sync(&self) -> SelectionSync { self.sync }
 
-    pub(in crate::tui) const fn mark_sync_changed(&mut self) { self.sync = SelectionSync::Changed; }
+    pub(super) const fn mark_sync_changed(&mut self) { self.sync = SelectionSync::Changed; }
 
-    pub(in crate::tui) const fn mark_sync_stable(&mut self) { self.sync = SelectionSync::Stable; }
+    pub(super) const fn mark_sync_stable(&mut self) { self.sync = SelectionSync::Stable; }
 
     // ── expansion set ───────────────────────────────────────────────
 
-    pub(in crate::tui) const fn expanded(&self) -> &HashSet<ExpandKey> { &self.expanded }
+    pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { &self.expanded }
 
     /// Mutable access to the expansion set. Phase 3 keeps this
     /// directly accessible because most callers (rebuild paths
@@ -86,55 +86,36 @@ impl Selection {
     /// recompute the `SelectionMutation` guard fires. The guard
     /// covers single-key toggle paths where the recompute is the
     /// whole point.
-    pub(in crate::tui) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> {
-        &mut self.expanded
-    }
+    pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> { &mut self.expanded }
 
     // ── finder state ────────────────────────────────────────────────
 
-    pub(in crate::tui) const fn finder(&self) -> &FinderState { &self.finder }
+    pub(super) const fn finder(&self) -> &FinderState { &self.finder }
 
-    pub(in crate::tui) const fn finder_mut(&mut self) -> &mut FinderState { &mut self.finder }
+    pub(super) const fn finder_mut(&mut self) -> &mut FinderState { &mut self.finder }
 
     // ── cached visible rows ─────────────────────────────────────────
 
-    pub(in crate::tui) fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
-
-    /// Replace the cached visible rows directly (for callers that
-    /// build the row list elsewhere — e.g. preserving a custom
-    /// visibility filter). Most paths should use
-    /// [`Self::recompute_visibility`] instead.
-    #[allow(
-        dead_code,
-        reason = "facade method retained for future explicit-row callers; \
-                  recompute_visibility covers every current call site"
-    )]
-    pub(in crate::tui) fn set_visible_rows(&mut self, rows: Vec<VisibleRow>) {
-        self.cached_visible_rows = rows;
-    }
+    pub(super) fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
 
     /// Recompute `cached_visible_rows` from the current `expanded`
     /// set and `projects`. Called by [`SelectionMutation::drop`] and
     /// (via App) from `TreeMutation::drop` so externally-driven tree
     /// mutations also keep the visible-rows cache fresh.
-    pub(in crate::tui) fn recompute_visibility(
-        &mut self,
-        projects: &ProjectList,
-        include_non_rust: bool,
-    ) {
+    pub(super) fn recompute_visibility(&mut self, projects: &ProjectList, include_non_rust: bool) {
         self.cached_visible_rows =
-            snapshots::build_visible_rows(projects, &self.expanded, include_non_rust);
+            app::build_visible_rows(projects, &self.expanded, include_non_rust);
     }
 
     // ── disk-sort caches ────────────────────────────────────────────
 
-    pub(in crate::tui) fn cached_root_sorted(&self) -> &[u64] { &self.cached_root_sorted }
+    pub(super) fn cached_root_sorted(&self) -> &[u64] { &self.cached_root_sorted }
 
-    pub(in crate::tui) const fn cached_child_sorted(&self) -> &HashMap<usize, Vec<u64>> {
+    pub(super) const fn cached_child_sorted(&self) -> &HashMap<usize, Vec<u64>> {
         &self.cached_child_sorted
     }
 
-    pub(in crate::tui) fn set_disk_caches(
+    pub(super) fn set_disk_caches(
         &mut self,
         root_sorted: Vec<u64>,
         child_sorted: HashMap<usize, Vec<u64>>,
@@ -145,22 +126,21 @@ impl Selection {
 
     // ── fit widths ──────────────────────────────────────────────────
 
-    pub(in crate::tui) const fn fit_widths(&self) -> &ProjectListWidths { &self.cached_fit_widths }
+    pub(super) const fn fit_widths(&self) -> &ProjectListWidths { &self.cached_fit_widths }
 
-    #[allow(
-        dead_code,
-        reason = "facade for callers that observe new widths into the cached set; \
-                  current paths replace the whole snapshot via set_fit_widths"
-    )]
-    pub(in crate::tui) const fn fit_widths_mut(&mut self) -> &mut ProjectListWidths {
+    /// Test-only — production paths replace the whole snapshot via
+    /// [`Self::set_fit_widths`] and never observe individual columns
+    /// after seeding.
+    #[cfg(test)]
+    pub(super) const fn fit_widths_mut(&mut self) -> &mut ProjectListWidths {
         &mut self.cached_fit_widths
     }
 
-    pub(in crate::tui) fn set_fit_widths(&mut self, widths: ProjectListWidths) {
+    pub(super) fn set_fit_widths(&mut self, widths: ProjectListWidths) {
         self.cached_fit_widths = widths;
     }
 
-    pub(in crate::tui) fn reset_fit_widths(&mut self, lint_enabled: bool) {
+    pub(super) fn reset_fit_widths(&mut self, lint_enabled: bool) {
         self.cached_fit_widths = ProjectListWidths::new(lint_enabled);
     }
 
@@ -184,7 +164,7 @@ impl Selection {
                   ensure_visible_rows_cached() call in the same code path; \
                   Phase 7 migrates them to take the guard."
     )]
-    pub(in crate::tui) const fn mutate<'a>(
+    pub(super) const fn mutate<'a>(
         &'a mut self,
         projects: &'a ProjectList,
         include_non_rust: bool,
@@ -208,7 +188,7 @@ impl Selection {
               the guard ships now so the type is in place when call sites \
               switch."
 )]
-pub(in crate::tui) struct SelectionMutation<'a> {
+pub(super) struct SelectionMutation<'a> {
     selection:        &'a mut Selection,
     projects:         &'a ProjectList,
     include_non_rust: bool,
@@ -222,7 +202,7 @@ pub(in crate::tui) struct SelectionMutation<'a> {
 impl SelectionMutation<'_> {
     /// Toggle membership of `key` in the expansion set. Returns
     /// `true` if the key was newly inserted.
-    pub(in crate::tui) fn toggle_expand(&mut self, key: ExpandKey) -> bool {
+    pub(super) fn toggle_expand(&mut self, key: ExpandKey) -> bool {
         if self.selection.expanded.contains(&key) {
             self.selection.expanded.remove(&key);
             false
@@ -234,29 +214,25 @@ impl SelectionMutation<'_> {
 
     /// Insert `key` into the expansion set. Returns `true` if the
     /// key was newly inserted.
-    pub(in crate::tui) fn expand(&mut self, key: ExpandKey) -> bool {
-        self.selection.expanded.insert(key)
-    }
+    pub(super) fn expand(&mut self, key: ExpandKey) -> bool { self.selection.expanded.insert(key) }
 
     /// Remove `key` from the expansion set. Returns `true` if the
     /// key was present.
-    pub(in crate::tui) fn collapse(&mut self, key: &ExpandKey) -> bool {
+    pub(super) fn collapse(&mut self, key: &ExpandKey) -> bool {
         self.selection.expanded.remove(key)
     }
 
     /// Mutable access to the underlying expansion set, for bulk
     /// operations (e.g. `clear`, multi-key inserts) that still want
     /// the drop-recompute to fire afterward.
-    pub(in crate::tui) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> {
+    pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> {
         &mut self.selection.expanded
     }
 
     /// Mutable access to the finder state, for callers that update
     /// the finder query / results inline. The drop-recompute fires
     /// on guard release.
-    pub(in crate::tui) const fn finder_mut(&mut self) -> &mut FinderState {
-        &mut self.selection.finder
-    }
+    pub(super) const fn finder_mut(&mut self) -> &mut FinderState { &mut self.selection.finder }
 }
 
 impl Drop for SelectionMutation<'_> {

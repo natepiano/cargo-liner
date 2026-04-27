@@ -31,7 +31,7 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
     );
     let mut app = make_app(&[]);
     let (watch_tx, watch_rx) = mpsc::channel();
-    app.watch_tx = watch_tx;
+    app.background_mut().replace_watcher_sender(watch_tx);
 
     apply_bg_msg(
         &mut app,
@@ -75,7 +75,7 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
 fn empty_scan_result_finishes_watcher_registration_batch() {
     let mut app = make_app(&[]);
     let (watch_tx, watch_rx) = mpsc::channel();
-    app.watch_tx = watch_tx;
+    app.background_mut().replace_watcher_sender(watch_tx);
 
     apply_bg_msg(
         &mut app,

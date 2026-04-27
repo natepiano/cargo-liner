@@ -44,7 +44,7 @@ use crate::tui::render::PREFIX_WT_MEMBER_NAMED;
 use crate::tui::render::PREFIX_WT_VENDORED;
 
 /// Build the flat list of visible rows from the project list and expansion state.
-pub(in crate::tui) fn build_visible_rows(
+pub fn build_visible_rows(
     entries: &ProjectList,
     expanded: &HashSet<ExpandKey>,
     include_non_rust: bool,

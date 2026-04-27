@@ -104,7 +104,8 @@ fn ci_fetch_on_member_targets_workspace_owner_path() {
         &crossterm::event::KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::NONE),
     );
     assert_eq!(
-        app.pending_ci_fetch
+        app.inflight()
+            .pending_ci_fetch_ref()
             .as_ref()
             .map(|fetch| fetch.project_path.clone()),
         Some(test_path("~/ws").display().to_string())
@@ -393,7 +394,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .as_ref()
         .expect("lint expected");
     assert!(expected.is_empty());
-    assert!(app.lint_toast.is_none());
+    assert!(app.inflight().lint_toast().is_none());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_a.path().to_path_buf().into(),
@@ -416,8 +417,12 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
             .seen
             .contains(project_a.path().as_path())
     );
-    assert!(app.running_lint_paths.contains_key(project_a.path()));
-    assert!(app.lint_toast.is_some());
+    assert!(
+        app.inflight()
+            .running_lint_paths()
+            .contains_key(project_a.path())
+    );
+    assert!(app.inflight().lint_toast().is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_a.path().to_path_buf().into(),
@@ -425,7 +430,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     });
 
     assert!(app.scan.startup_phases.lint.complete_at.is_some());
-    assert!(app.running_lint_paths.is_empty());
+    assert!(app.inflight().running_lint_paths().is_empty());
     app.prune_toasts();
 }
 
@@ -557,20 +562,20 @@ fn lint_toast_reuses_existing_on_restart() {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
-    let first_toast = app.lint_toast;
+    let first_toast = app.inflight().lint_toast();
     assert!(first_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
-    assert_eq!(app.lint_toast, first_toast);
+    assert_eq!(app.inflight().lint_toast(), first_toast);
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
     });
-    assert_eq!(app.lint_toast, first_toast);
+    assert_eq!(app.inflight().lint_toast(), first_toast);
 }
 
 #[test]
@@ -1486,7 +1491,10 @@ fn fetch_more_uses_sync_when_no_cached_runs() {
         &crossterm::event::KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::NONE),
     );
 
-    let fetch = app.pending_ci_fetch.as_ref().expect("fetch should be set");
+    let fetch = app
+        .inflight()
+        .pending_ci_fetch_ref()
+        .expect("fetch should be set");
     assert!(
         matches!(fetch.kind, CiFetchKind::Sync),
         "should use Sync when no cached runs exist"
@@ -1798,7 +1806,11 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
         app.start_clean(&project_path),
         "out-of-tree target dir exists → clean is queued (would have missed with join(\"target\"))"
     );
-    assert!(app.running_clean_paths.contains_key(project_path.as_path()));
+    assert!(
+        app.inflight()
+            .running_clean_paths()
+            .contains_key(project_path.as_path())
+    );
 }
 
 #[test]
@@ -1836,7 +1848,7 @@ fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
         !app.start_clean(&project_path),
         "resolved target doesn't exist → already clean; in-tree target/ decoy must not trip it"
     );
-    assert!(app.running_clean_paths.is_empty());
+    assert!(app.inflight().running_clean_paths().is_empty());
 }
 
 #[test]
@@ -1857,7 +1869,11 @@ fn start_clean_falls_back_to_literal_target_when_no_snapshot_yet() {
         app.start_clean(&project_path),
         "no snapshot → falls back to <project>/target, which exists → clean queued"
     );
-    assert!(app.running_clean_paths.contains_key(project_path.as_path()));
+    assert!(
+        app.inflight()
+            .running_clean_paths()
+            .contains_key(project_path.as_path())
+    );
 }
 
 /// The metadata phase gates `startup_complete_at`: with disk, git, repo
@@ -2210,5 +2226,54 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     assert!(
         !cargo.publishable(),
         "PublishPolicy::Never → Cargo.publishable false after snapshot"
+    );
+}
+
+#[test]
+fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
+    use std::time::Instant;
+
+    let project = make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+
+    // Inflight: pre-seed a stale running-lint path so we can prove
+    // the orchestrator clears it.
+    app.inflight
+        .running_lint_paths_mut()
+        .insert(test_path("~/demo"), Instant::now());
+    assert!(!app.inflight().running_lint_paths().is_empty());
+
+    // App-shell scan-shaped state: capture the pre-call generation.
+    let gen_before = app.data_generation;
+
+    // Selection: replace fit_widths with a sentinel generation so we
+    // can prove reset_fit_widths fired (reset re-seeds with
+    // `generation: u64::MAX`, which is the construct-time default).
+    {
+        let widths = app.selection_mut().fit_widths_mut();
+        widths.generation = 0;
+    }
+    assert_eq!(app.selection().fit_widths().generation, 0);
+
+    let cfg = app.current_config().clone();
+    app.apply_lint_config_change(&cfg);
+
+    // Inflight: running-lint paths cleared, lint runtime present
+    // (re-spawned).
+    assert!(
+        app.inflight().running_lint_paths().is_empty(),
+        "apply_lint_config_change must clear in-flight lint paths"
+    );
+    // Scan-shaped: data_generation bumped exactly once.
+    assert_eq!(
+        app.data_generation,
+        gen_before + 1,
+        "apply_lint_config_change must bump data_generation"
+    );
+    // Selection: fit_widths reset (back to construct-time sentinel).
+    assert_eq!(
+        app.selection().fit_widths().generation,
+        u64::MAX,
+        "apply_lint_config_change must reset fit_widths"
     );
 }

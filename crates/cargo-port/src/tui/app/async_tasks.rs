@@ -341,33 +341,69 @@ impl App {
         }
     }
 
-    pub(in super::super) fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
-        let lint_spawn = lint::spawn(cfg, self.bg_tx.clone());
-        self.lint_runtime = lint_spawn.handle;
-        self.clear_all_lint_state();
-        self.running_lint_paths.clear();
+    /// Apply a lint configuration change. Cross-subsystem
+    /// orchestration — not a method on any single subsystem because
+    /// lint config changes fan out across three areas:
+    ///
+    /// - **Inflight**: respawns the lint runtime, clears in-flight lint paths, refreshes the lint
+    ///   toast, syncs the running project list against the new runtime.
+    /// - **Scan**-shaped state owned today by App: clears in-memory lint state on `projects`,
+    ///   refreshes lint runs from disk, bumps `data_generation` so detail panes redraw. (Phase 6
+    ///   moves this cluster into a real `Scan` subsystem; the call shape stays.)
+    /// - **Selection**: recomputes `cached_fit_widths` because the project pane's column schema
+    ///   depends on whether lints are enabled.
+    ///
+    /// Called from the per-tick config-reload handler (today via the
+    /// `refresh_lint_runtime_from_config` shim below). New side-
+    /// effects of a lint-config change MUST be added here (or in
+    /// the relevant subsystem method this function calls), not in
+    /// random callers — that's the point of having a single
+    /// orchestrator. See "Recurring patterns" in
+    /// `src/tui/app/mod.rs` for the cross-subsystem orchestrator
+    /// pattern.
+    pub(in super::super) fn apply_lint_config_change(&mut self, cfg: &CargoPortConfig) {
+        // Inflight: respawn the lint runtime + clear in-flight tracking.
+        let lint_spawn = lint::spawn(cfg, self.background.bg_sender());
+        self.inflight.set_lint_runtime(lint_spawn.handle);
+        self.inflight.running_lint_paths_mut().clear();
         self.sync_running_lint_toast();
         self.sync_lint_runtime_projects();
+
+        // Scan-shaped state on App: clear lint state, refresh from
+        // disk, bump generation.
+        self.clear_all_lint_state();
         self.refresh_lint_runs_from_disk();
-        self.selection.reset_fit_widths(self.lint_enabled());
         self.data_generation += 1;
+
+        // Selection: recompute fit widths (column schema differs
+        // with lint enabled / disabled).
+        self.selection.reset_fit_widths(self.lint_enabled());
+
         if let Some(warning) = lint_spawn.warning {
             self.status_flash = Some((warning.clone(), Instant::now()));
             self.show_timed_toast("Lint runtime", warning);
         }
     }
 
+    /// Backwards-compatible shim. Existing callers (rescan, config
+    /// reload) still call `refresh_lint_runtime_from_config`; the
+    /// real orchestration lives in [`Self::apply_lint_config_change`].
+    pub(in super::super) fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
+        self.apply_lint_config_change(cfg);
+    }
+
     pub(in super::super) fn respawn_watcher(&mut self) {
         let watch_roots = scan::resolve_include_dirs(&self.current_config.tui.include_dirs);
-        self.watch_tx = watcher::spawn_watcher(
+        let new_watcher = watcher::spawn_watcher(
             &watch_roots,
-            self.bg_tx.clone(),
+            self.background.bg_sender(),
             self.ci_run_count(),
             self.include_non_rust(),
             self.http_client.clone(),
-            self.lint_runtime.clone(),
+            self.inflight.lint_runtime_clone(),
             self.metadata_store_handle(),
         );
+        self.background.replace_watcher_sender(new_watcher);
     }
 
     pub(in super::super) fn register_existing_projects(&self) {
@@ -377,7 +413,9 @@ impl App {
     }
 
     pub(in super::super) fn finish_watcher_registration_batch(&self) {
-        let _ = self.watch_tx.send(WatcherMsg::InitialRegistrationComplete);
+        let _ = self
+            .background
+            .send_watcher(WatcherMsg::InitialRegistrationComplete);
     }
 
     fn respawn_watcher_and_register_existing_projects(&mut self) {
@@ -438,11 +476,13 @@ impl App {
         let abs_path = AbsolutePath::from(item.path().to_path_buf());
         let repo_root = project::git_repo_root(&abs_path);
         let has_repo_root = repo_root.is_some();
-        let _ = self.watch_tx.send(WatcherMsg::Register(WatchRequest {
-            project_label: abs_path.to_string_lossy().to_string(),
-            abs_path: abs_path.clone(),
-            repo_root,
-        }));
+        let _ = self
+            .background
+            .send_watcher(WatcherMsg::Register(WatchRequest {
+                project_label: abs_path.to_string_lossy().to_string(),
+                abs_path: abs_path.clone(),
+                repo_root,
+            }));
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
             path = %item.display_path(),
@@ -452,7 +492,7 @@ impl App {
     }
 
     fn schedule_startup_project_details(&self) {
-        let tx = self.bg_tx.clone();
+        let tx = self.background.bg_sender();
         let fetch_context = std::sync::Arc::new(FetchContext {
             client: self.http_client.clone(),
         });
@@ -498,7 +538,7 @@ impl App {
     /// crates. This method supplements it by iterating both and fetching
     /// crates.io data for each publishable one.
     fn schedule_member_crates_io_fetches(&self) {
-        let tx = self.bg_tx.clone();
+        let tx = self.background.bg_sender();
         let client = self.http_client.clone();
         let mut targets: Vec<(AbsolutePath, String)> = Vec::new();
         for entry in &self.projects {
@@ -523,7 +563,7 @@ impl App {
     }
 
     pub(in super::super) fn schedule_git_first_commit_refreshes(&self) {
-        let tx = self.bg_tx.clone();
+        let tx = self.background.bg_sender();
         let mut projects_by_repo: HashMap<AbsolutePath, Vec<AbsolutePath>> = HashMap::new();
         self.projects.for_each_leaf_path(|path, _| {
             let abs_path = AbsolutePath::from(path);
@@ -608,14 +648,14 @@ impl App {
     }
 
     pub(in super::super) fn sync_lint_runtime_projects(&self) {
-        let Some(runtime) = &self.lint_runtime else {
+        let Some(runtime) = self.inflight.lint_runtime() else {
             return;
         };
         runtime.sync_projects(self.lint_runtime_projects_snapshot());
     }
 
     fn register_lint_for_root_items(&self) -> usize {
-        let Some(runtime) = &self.lint_runtime else {
+        let Some(runtime) = self.inflight.lint_runtime() else {
             return 0;
         };
         let mut count = 0;
@@ -694,7 +734,7 @@ impl App {
             tracing::info!(reason = "workspace_member", path = %item.display_path(), "lint_register_skip");
             return;
         }
-        let Some(runtime) = &self.lint_runtime else {
+        let Some(runtime) = self.inflight.lint_runtime() else {
             tracing::info!(reason = "no_runtime", path = %item.display_path(), "lint_register_skip");
             return;
         };
@@ -1136,8 +1176,10 @@ impl App {
     }
 
     pub(in super::super) fn sync_running_clean_toast(&mut self) {
-        let running = self.running_clean_paths.clone();
-        self.clean_toast = self.sync_tracked_path_toast(self.clean_toast, "cargo clean", &running);
+        let running = self.inflight.running_clean_paths().clone();
+        let next =
+            self.sync_tracked_path_toast(self.inflight.clean_toast(), "cargo clean", &running);
+        self.inflight.set_clean_toast(next);
     }
 
     /// Shared per-path task toast sync: grows as new paths start,
@@ -1255,8 +1297,9 @@ impl App {
     }
 
     pub(in super::super) fn sync_running_lint_toast(&mut self) {
-        let running = self.running_lint_paths.clone();
-        self.lint_toast = self.sync_tracked_path_toast(self.lint_toast, "Lints", &running);
+        let running = self.inflight.running_lint_paths().clone();
+        let next = self.sync_tracked_path_toast(self.inflight.lint_toast(), "Lints", &running);
+        self.inflight.set_lint_toast(next);
     }
 
     /// Lightweight refresh of derived state after in-place hierarchy changes
@@ -1360,7 +1403,7 @@ impl App {
     pub(in super::super) fn rescan(&mut self) {
         self.projects.clear();
         // disk_usage lives on project items — cleared with projects above
-        self.ci_fetch_tracker.clear();
+        self.inflight.ci_fetch_tracker_mut().clear();
         self.panes.clear_ci_display_modes();
         self.clear_all_lint_state();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
@@ -1380,7 +1423,7 @@ impl App {
         self.close_finder();
         self.reset_project_panes();
         self.selection.paths_mut().selected_project = None;
-        self.pending_ci_fetch = None;
+        self.inflight.clear_pending_ci_fetch();
         self.selection.expanded_mut().clear();
         self.pane_manager_mut().pane_mut(PaneId::ProjectList).home();
         self.pane_manager_mut()
@@ -1395,8 +1438,7 @@ impl App {
             self.http_client.clone(),
             self.metadata_store_handle(),
         );
-        self.bg_tx = tx;
-        self.bg_rx = rx;
+        self.background.swap_bg_channel(tx, rx);
         self.respawn_watcher();
         let current_config = self.current_config.clone();
         self.refresh_lint_runtime_from_config(&current_config);
@@ -1410,7 +1452,7 @@ impl App {
         let mut stats = PollBackgroundStats::default();
 
         while msg_count < MAX_MSGS_PER_FRAME {
-            let Ok(msg) = self.bg_rx.try_recv() else {
+            let Ok(msg) = self.background.bg_rx().try_recv() else {
                 break;
             };
             Self::record_background_msg_kind(&mut stats, &msg);
@@ -1504,7 +1546,7 @@ impl App {
 
     pub(in super::super) fn poll_ci_fetches(&mut self) -> usize {
         let mut count = 0;
-        while let Ok(msg) = self.ci_fetch_rx.try_recv() {
+        while let Ok(msg) = self.background.ci_fetch_rx().try_recv() {
             match msg {
                 CiFetchMsg::Complete { path, result, kind } => {
                     let before = self
@@ -1515,7 +1557,7 @@ impl App {
                         .ci_info_for(Path::new(&path))
                         .map_or(0, |info| info.runs.len());
                     let new_runs = after.saturating_sub(before);
-                    if let Some(task_id) = self.ci_fetch_toast.take() {
+                    if let Some(task_id) = self.inflight.take_ci_fetch_toast() {
                         let empty: std::collections::HashSet<String> =
                             std::collections::HashSet::new();
                         self.toasts.complete_missing_items(task_id, &empty);
@@ -1546,9 +1588,9 @@ impl App {
 
     pub(in super::super) fn poll_example_msgs(&mut self) -> usize {
         let mut count = 0;
-        while let Ok(msg) = self.example_rx.try_recv() {
+        while let Ok(msg) = self.background.example_rx().try_recv() {
             match msg {
-                ExampleMsg::Output(line) => self.example_output.push(line),
+                ExampleMsg::Output(line) => self.inflight.example_output_mut().push(line),
                 ExampleMsg::Progress(line) => self.apply_example_progress(line),
                 ExampleMsg::Finished => self.finish_example_run(),
             }
@@ -1558,21 +1600,23 @@ impl App {
     }
 
     pub(in super::super) fn apply_example_progress(&mut self, line: String) {
-        if let Some(last) = self.example_output.last_mut() {
+        if let Some(last) = self.inflight.example_output_mut().last_mut() {
             *last = line;
         } else {
-            self.example_output.push(line);
+            self.inflight.example_output_mut().push(line);
         }
     }
 
     pub(in super::super) fn finish_example_run(&mut self) {
-        self.example_running = None;
-        self.example_output.push("── done ──".to_string());
+        self.inflight.set_example_running(None);
+        self.inflight
+            .example_output_mut()
+            .push("── done ──".to_string());
         self.mark_terminal_dirty();
     }
 
     pub(in super::super) fn poll_clean_msgs(&mut self) {
-        while let Ok(msg) = self.clean_rx.try_recv() {
+        while let Ok(msg) = self.background.clean_rx().try_recv() {
             match msg {
                 CleanMsg::Finished(abs_path) => {
                     // Normally `handle_disk_usage` removes the path
@@ -1580,7 +1624,8 @@ impl App {
                     // This is the safety-net terminator if no disk
                     // update arrives.
                     if self
-                        .running_clean_paths
+                        .inflight
+                        .running_clean_paths_mut()
                         .remove(abs_path.as_path())
                         .is_some()
                     {
@@ -1592,7 +1637,12 @@ impl App {
     }
 
     pub(in super::super) fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
-        if self.running_clean_paths.remove(path).is_some() {
+        if self
+            .inflight
+            .running_clean_paths_mut()
+            .remove(path)
+            .is_some()
+        {
             self.sync_running_clean_toast();
         }
         self.apply_disk_usage(path, bytes);
@@ -1633,7 +1683,7 @@ impl App {
             }
         }
         if lint_runtime_changed {
-            if let Some(runtime) = &self.lint_runtime
+            if let Some(runtime) = self.inflight.lint_runtime()
                 && bytes == 0
             {
                 runtime.unregister_project(AbsolutePath::from(path));
@@ -1656,7 +1706,7 @@ impl App {
             return;
         }
 
-        let tx = self.bg_tx.clone();
+        let tx = self.background.bg_sender();
         let client = self.http_client.clone();
         let repo_cache = self.github.fetch_cache.clone();
         let path: AbsolutePath = AbsolutePath::from(path);
@@ -2049,7 +2099,7 @@ impl App {
             return;
         }
 
-        let tx = self.bg_tx.clone();
+        let tx = self.background.bg_sender();
         let client = self.http_client.clone();
         thread::spawn(move || {
             loop {
@@ -2217,13 +2267,15 @@ impl App {
             if let Some(lr) = self.projects.lint_at_path_mut(path) {
                 lr.clear_runs();
             }
-            self.running_lint_paths.remove(path);
+            self.inflight.running_lint_paths_mut().remove(path);
         }
         if status_started {
-            self.running_lint_paths.insert(abs, Instant::now());
+            self.inflight
+                .running_lint_paths_mut()
+                .insert(abs, Instant::now());
         }
         if status_is_terminal {
-            self.running_lint_paths.remove(path);
+            self.inflight.running_lint_paths_mut().remove(path);
         }
         self.sync_running_lint_toast();
         if !self.is_scan_complete() {
@@ -2584,7 +2636,7 @@ impl App {
         if needs_out_of_tree_walk {
             scan::spawn_out_of_tree_target_walk(
                 &self.http_client.handle,
-                self.bg_tx.clone(),
+                self.background.bg_sender(),
                 workspace_root.clone(),
                 target_directory.clone(),
             );

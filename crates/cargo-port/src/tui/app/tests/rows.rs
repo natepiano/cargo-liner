@@ -121,13 +121,10 @@ fn visible_rows_workspace_with_worktrees() {
     ));
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "fixture-heavy tree-rendering test; splitting it would dilute the \
-              single behavioral assertion at the bottom"
-)]
-fn expand_linked_workspace_worktree_renders_its_members() {
+/// Fixture for `expand_linked_workspace_worktree_renders_its_members`.
+/// Builds the primary + linked worktree pair separately so the test
+/// body itself stays focused on row-shape assertions.
+fn linked_workspace_worktrees_fixture() -> RootItem {
     let member_a = make_member(Some("a"), "~/ws/a");
     let member_b = make_member(Some("b"), "~/ws/b");
 
@@ -143,8 +140,12 @@ fn expand_linked_workspace_worktree_renders_its_members() {
         vec![named_group("crates", vec![member_a, member_b])],
         Some("ws_feat"),
     );
-    let root = make_workspace_worktrees_item(primary, vec![linked]);
-    let mut app = make_app(&[root]);
+    make_workspace_worktrees_item(primary, vec![linked])
+}
+
+#[test]
+fn expand_linked_workspace_worktree_renders_its_members() {
+    let mut app = make_app(&[linked_workspace_worktrees_fixture()]);
 
     app.ensure_visible_rows_cached();
     assert_eq!(

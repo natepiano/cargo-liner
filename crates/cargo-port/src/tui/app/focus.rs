@@ -222,27 +222,27 @@ impl App {
                 .targets()
                 .is_some_and(crate::tui::panes::TargetsData::has_targets),
             PaneBehavior::Lints => {
-                self.example_output.is_empty()
+                self.inflight.example_output_is_empty()
                     && self
                         .pane_data()
                         .lints()
                         .is_some_and(crate::tui::panes::LintsData::has_runs)
             },
             PaneBehavior::CiRuns => {
-                self.example_output.is_empty()
+                self.inflight.example_output_is_empty()
                     && self
                         .pane_data()
                         .ci()
                         .is_some_and(crate::tui::panes::CiData::has_runs)
             },
-            PaneBehavior::Output => !self.example_output.is_empty(),
+            PaneBehavior::Output => !self.inflight.example_output_is_empty(),
             PaneBehavior::Toasts => !self.active_toasts().is_empty(),
             PaneBehavior::Overlay => false,
         }
     }
 
     pub(in super::super) fn tabbable_panes(&self) -> Vec<PaneId> {
-        panes::tab_order(if self.example_output.is_empty() {
+        panes::tab_order(if self.inflight.example_output_is_empty() {
             panes::BottomRow::Diagnostics
         } else {
             panes::BottomRow::Output

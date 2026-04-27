@@ -29,8 +29,10 @@
 //! future maintainers that new side-effects of the same event MUST be
 //! added here, not scattered.
 //!
-//! - Lands in Phase 4 with `App::apply_lint_config_change`. See `docs/app-api.md` § "Methods that
-//!   stay on App" for the template.
+//! - See [`App::apply_lint_config_change`] (Phase 4). Touches Inflight (respawn lint runtime, clear
+//!   in-flight paths, sync toast), the Scan-shaped state on App (clear lint state, refresh from
+//!   disk, bump `data_generation`), and Selection (recompute fit widths). New side-effects of a
+//!   lint-config change MUST be added there.
 //!
 //! ## Generic primitive plus bespoke state
 //! When two subsystems need the same lifecycle but carry different
@@ -50,7 +52,9 @@ mod navigation;
 mod phase_state;
 mod query;
 mod service_state;
-pub(in crate::tui) mod snapshots;
+mod snapshots;
+
+pub(super) use snapshots::build_visible_rows;
 mod target_index;
 mod types;
 
@@ -67,6 +71,8 @@ use ratatui::layout::Position;
 
 use self::service_state::CratesIoState;
 use self::service_state::GitHubState;
+use super::background::Background;
+use super::inflight::Inflight;
 use super::pane::PaneManager;
 use super::panes::LayoutCache;
 use super::panes::PaneDataStore;
@@ -81,7 +87,6 @@ use crate::http::HttpClient;
 use crate::keymap::ResolvedKeymap;
 use crate::lint::CacheUsage;
 use crate::lint::LintRuns;
-use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::ProjectCiData;
 use crate::project::WorkspaceMetadataHandle;
@@ -91,7 +96,6 @@ use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::RepoCache;
-use crate::watcher::WatcherMsg;
 
 #[cfg(test)]
 #[allow(
@@ -138,7 +142,6 @@ pub(super) struct App {
     github:                   GitHubState,
     crates_io:                CratesIoState,
     projects:                 ProjectList,
-    ci_fetch_tracker:         CiFetchTracker,
     lint_cache_usage:         CacheUsage,
     discovery_shimmers:       HashMap<AbsolutePath, types::DiscoveryShimmer>,
     pending_git_first_commit: HashMap<AbsolutePath, String>,
@@ -155,34 +158,23 @@ pub(super) struct App {
     /// `cached_child_sorted`, `cached_fit_widths` (now
     /// `ProjectListWidths`).
     selection:                Selection,
-    bg_tx:                    mpsc::Sender<BackgroundMsg>,
-    bg_rx:                    mpsc::Receiver<BackgroundMsg>,
+    /// Background subsystem (Phase 4 of the App-API carve, see
+    /// `docs/app-api.md`). Owns the four mpsc channel pairs plus
+    /// `watch_tx`. The `bg_*` pair is replaced wholesale on every
+    /// rescan via [`Background::swap_bg_channel`]; the others outlive
+    /// any single rescan.
+    background:               Background,
+    /// Inflight subsystem (Phase 4 of the App-API carve). Owns the
+    /// running-paths maps, toast slots, ci-fetch tracker, pending
+    /// queues, example-runner state, and `lint_runtime`.
+    inflight:                 Inflight,
     priority_fetch_path:      Option<AbsolutePath>,
     settings_edit_buf:        String,
     settings_edit_cursor:     usize,
     focused_pane:             PaneId,
     return_focus:             Option<PaneId>,
-    pending_example_run:      Option<PendingExampleRun>,
-    pending_ci_fetch:         Option<PendingCiFetch>,
-    pending_cleans:           VecDeque<PendingClean>,
     confirm:                  Option<ConfirmAction>,
     animation_started:        Instant,
-    ci_fetch_tx:              mpsc::Sender<CiFetchMsg>,
-    ci_fetch_rx:              mpsc::Receiver<CiFetchMsg>,
-    clean_tx:                 mpsc::Sender<CleanMsg>,
-    clean_rx:                 mpsc::Receiver<CleanMsg>,
-    example_running:          Option<String>,
-    example_child:            Arc<Mutex<Option<u32>>>,
-    example_output:           Vec<String>,
-    example_tx:               mpsc::Sender<ExampleMsg>,
-    example_rx:               mpsc::Receiver<ExampleMsg>,
-    running_clean_paths:      HashMap<AbsolutePath, Instant>,
-    clean_toast:              Option<ToastTaskId>,
-    running_lint_paths:       HashMap<AbsolutePath, Instant>,
-    lint_toast:               Option<ToastTaskId>,
-    ci_fetch_toast:           Option<ToastTaskId>,
-    watch_tx:                 mpsc::Sender<WatcherMsg>,
-    lint_runtime:             Option<RuntimeHandle>,
     data_generation:          u64,
     mouse_pos:                Option<Position>,
     status_flash:             Option<(String, std::time::Instant)>,
@@ -242,7 +234,7 @@ impl App {
     pub(super) fn rate_limit(&self) -> GitHubRateLimit { self.http_client.rate_limit_snapshot() }
 
     pub(in super::super) fn complete_ci_fetch_for(&mut self, path: &Path) -> bool {
-        self.ci_fetch_tracker.complete(path)
+        self.inflight.ci_fetch_tracker_mut().complete(path)
     }
 
     pub(in super::super) fn replace_ci_data_for_path(
@@ -260,7 +252,7 @@ impl App {
     }
 
     pub(in super::super) fn start_ci_fetch_for(&mut self, path: AbsolutePath) {
-        self.ci_fetch_tracker.start(path);
+        self.inflight.ci_fetch_tracker_mut().start(path);
     }
 
     pub(super) const fn lint_cache_usage(&self) -> &CacheUsage { &self.lint_cache_usage }
@@ -347,24 +339,15 @@ impl App {
 
     /// Read-only handle to the [`Selection`] subsystem. Used by
     /// callers that need access to multiple sub-fields in one
-    /// borrow (e.g. tests reading `paths()` + `expanded()`). Most
-    /// production paths reach individual sub-fields through the
-    /// existing top-level App accessors.
-    #[allow(
-        dead_code,
-        reason = "facade exposed alongside selection_mut for symmetric API; \
-                  current internal callers route through top-level App accessors"
-    )]
+    /// Test-only — production paths reach individual sub-fields
+    /// through the existing top-level App accessors.
+    #[cfg(test)]
     pub(super) const fn selection(&self) -> &Selection { &self.selection }
 
-    /// Mutable handle to the [`Selection`] subsystem. Currently used
-    /// by call sites that need to invoke `Selection::mutate(...)`
-    /// to obtain a [`super::selection::SelectionMutation`] guard.
-    #[allow(
-        dead_code,
-        reason = "facade for future call sites that take SelectionMutation guards; \
-                  Phase 3 lands the API alongside the field absorption"
-    )]
+    /// Test-only — production paths use the documented top-level
+    /// accessors. Tests use this to drive `Selection::mutate(...)`
+    /// and to inspect inflight-only Selection state.
+    #[cfg(test)]
     pub(super) const fn selection_mut(&mut self) -> &mut Selection { &mut self.selection }
 
     pub(super) const fn last_selected_path(&self) -> Option<&AbsolutePath> {
@@ -372,28 +355,39 @@ impl App {
     }
 
     pub(super) fn set_pending_example_run(&mut self, run: PendingExampleRun) {
-        self.pending_example_run = Some(run);
+        self.inflight.set_pending_example_run(run);
     }
 
     pub(super) const fn take_pending_example_run(&mut self) -> Option<PendingExampleRun> {
-        self.pending_example_run.take()
+        self.inflight.take_pending_example_run()
     }
 
     pub(super) fn set_pending_ci_fetch(&mut self, fetch: PendingCiFetch) {
-        self.pending_ci_fetch = Some(fetch);
+        self.inflight.set_pending_ci_fetch(fetch);
     }
 
     pub(super) const fn set_ci_fetch_toast(&mut self, task_id: ToastTaskId) {
-        self.ci_fetch_toast = Some(task_id);
+        self.inflight.set_ci_fetch_toast(Some(task_id));
     }
 
     pub(super) const fn take_pending_ci_fetch(&mut self) -> Option<PendingCiFetch> {
-        self.pending_ci_fetch.take()
+        self.inflight.take_pending_ci_fetch()
     }
 
     pub(super) const fn pending_cleans_mut(&mut self) -> &mut VecDeque<PendingClean> {
-        &mut self.pending_cleans
+        self.inflight.pending_cleans_mut()
     }
+
+    /// Test-only — production paths reach background channels via
+    /// the per-channel accessors below.
+    #[cfg(test)]
+    pub(super) const fn background_mut(&mut self) -> &mut Background { &mut self.background }
+
+    /// Read-only handle to the [`Inflight`] subsystem. Test-only —
+    /// production paths reach individual sub-fields through the
+    /// existing top-level App accessors.
+    #[cfg(test)]
+    pub(super) const fn inflight(&self) -> &Inflight { &self.inflight }
 
     #[cfg(test)]
     pub(super) fn set_confirm(&mut self, action: ConfirmAction) { self.confirm = Some(action); }
@@ -474,7 +468,7 @@ impl App {
     fn clean_metadata_dispatch(&self) -> scan::MetadataDispatchContext {
         scan::MetadataDispatchContext {
             handle:         self.http_client.handle.clone(),
-            tx:             self.bg_tx.clone(),
+            tx:             self.background.bg_sender(),
             metadata_store: Arc::clone(&self.metadata_store),
             // Use the shared scan-concurrency cap so confirm-triggered
             // refreshes can't monopolize the metadata blocking pool.
@@ -519,38 +513,38 @@ impl App {
 
     pub(super) fn clear_inline_error(&mut self) { self.inline_error = None; }
 
-    pub(super) fn bg_tx(&self) -> mpsc::Sender<BackgroundMsg> { self.bg_tx.clone() }
+    pub(super) fn bg_tx(&self) -> mpsc::Sender<BackgroundMsg> { self.background.bg_sender() }
 
     pub(super) fn http_client(&self) -> HttpClient { self.http_client.clone() }
 
-    pub(super) fn ci_fetch_tx(&self) -> mpsc::Sender<CiFetchMsg> { self.ci_fetch_tx.clone() }
-
-    pub(super) fn clean_tx(&self) -> mpsc::Sender<CleanMsg> { self.clean_tx.clone() }
-
-    pub(super) fn example_tx(&self) -> mpsc::Sender<ExampleMsg> { self.example_tx.clone() }
-
-    pub(super) fn example_child(&self) -> Arc<Mutex<Option<u32>>> {
-        Arc::clone(&self.example_child)
+    pub(super) fn ci_fetch_tx(&self) -> mpsc::Sender<CiFetchMsg> {
+        self.background.ci_fetch_sender()
     }
 
-    pub(super) fn example_output(&self) -> &[String] { &self.example_output }
+    pub(super) fn clean_tx(&self) -> mpsc::Sender<CleanMsg> { self.background.clean_sender() }
+
+    pub(super) fn example_tx(&self) -> mpsc::Sender<ExampleMsg> { self.background.example_sender() }
+
+    pub(super) fn example_child(&self) -> Arc<Mutex<Option<u32>>> { self.inflight.example_child() }
+
+    pub(super) fn example_output(&self) -> &[String] { self.inflight.example_output() }
 
     pub(super) fn set_example_output(&mut self, output: Vec<String>) {
-        let was_empty = self.example_output.is_empty();
-        self.example_output = output;
-        if was_empty && !self.example_output.is_empty() {
+        let was_empty = self.inflight.example_output_is_empty();
+        self.inflight.set_example_output(output);
+        if was_empty && !self.inflight.example_output_is_empty() {
             self.focus_pane(PaneId::Output);
         }
     }
 
     pub(super) const fn example_output_mut(&mut self) -> &mut Vec<String> {
-        &mut self.example_output
+        self.inflight.example_output_mut()
     }
 
-    pub(super) fn example_running(&self) -> Option<&str> { self.example_running.as_deref() }
+    pub(super) fn example_running(&self) -> Option<&str> { self.inflight.example_running() }
 
     pub(super) fn set_example_running(&mut self, running: Option<String>) {
-        self.example_running = running;
+        self.inflight.set_example_running(running);
     }
 
     pub(super) const fn increment_data_generation(&mut self) { self.data_generation += 1; }

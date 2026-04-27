@@ -89,4 +89,4 @@ pub(super) use support::format_timestamp;
 pub(super) use support::git_fields_from_data;
 pub(super) use support::git_row_at;
 pub(super) use support::package_fields_from_data;
-pub(in crate::tui) use system::Panes;
+pub(super) use system::Panes;

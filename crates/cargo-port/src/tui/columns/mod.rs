@@ -1,4 +1,4 @@
-pub(in crate::tui) mod widths;
+mod widths;
 
 use ratatui::style::Color;
 use ratatui::style::Modifier;
@@ -6,9 +6,9 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
+pub(super) use widths::ColumnSpec;
+pub(super) use widths::ColumnWidths;
 
-use self::widths::ColumnSpec;
-use self::widths::ColumnWidths;
 use super::constants::COLUMN_HEADER_COLOR;
 use super::constants::DISCOVERY_SHIMMER_COLOR;
 use super::constants::ERROR_COLOR;

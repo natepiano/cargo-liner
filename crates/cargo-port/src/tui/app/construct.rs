@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -7,7 +6,6 @@ use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
 use super::App;
-use super::CiFetchTracker;
 use super::service_state::CratesIoState;
 use super::service_state::GitHubState;
 use super::types::ConfigFileStamp;
@@ -28,6 +26,9 @@ use crate::project::WorkspaceMetadataStore;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
+use crate::tui::background::Background;
+use crate::tui::background::BackgroundChannels;
+use crate::tui::inflight::Inflight;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::Panes;
 use crate::tui::selection::Selection;
@@ -169,46 +170,34 @@ impl App {
         let channels = inputs.channels;
         let panes = Panes::new(&inputs.cfg.cpu);
         let selection = Selection::new(inputs.cfg.lint.enabled);
+        let background = Background::new(BackgroundChannels {
+            bg:       (inputs.bg_tx, inputs.bg_rx),
+            ci_fetch: (channels.ci_fetch_tx, channels.ci_fetch_rx),
+            clean:    (channels.clean_tx, channels.clean_rx),
+            example:  (channels.example_tx, channels.example_rx),
+            watch_tx: init.watch_tx,
+        });
+        let inflight = Inflight::new(init.lint_runtime);
         Self {
             current_config: inputs.cfg,
             http_client: inputs.http_client,
             github: GitHubState::new(),
             crates_io: CratesIoState::new(),
             projects: init.projects,
-            ci_fetch_tracker: CiFetchTracker::default(),
             lint_cache_usage: crate::lint::CacheUsage::default(),
             discovery_shimmers: HashMap::new(),
             pending_git_first_commit: HashMap::new(),
             panes,
             selection,
-            bg_tx: inputs.bg_tx,
-            bg_rx: inputs.bg_rx,
+            background,
+            inflight,
             priority_fetch_path: None,
             settings_edit_buf: String::new(),
             settings_edit_cursor: 0,
             focused_pane: PaneId::ProjectList,
             return_focus: None,
-            pending_example_run: None,
-            pending_ci_fetch: None,
-            pending_cleans: VecDeque::new(),
             confirm: None,
             animation_started: Instant::now(),
-            ci_fetch_tx: channels.ci_fetch_tx,
-            ci_fetch_rx: channels.ci_fetch_rx,
-            clean_tx: channels.clean_tx,
-            clean_rx: channels.clean_rx,
-            example_running: None,
-            example_child: Arc::new(Mutex::new(None)),
-            example_output: Vec::new(),
-            example_tx: channels.example_tx,
-            example_rx: channels.example_rx,
-            running_clean_paths: HashMap::new(),
-            clean_toast: None,
-            running_lint_paths: HashMap::new(),
-            lint_toast: None,
-            ci_fetch_toast: None,
-            watch_tx: init.watch_tx,
-            lint_runtime: init.lint_runtime,
             #[cfg(test)]
             retry_spawn_mode: RetrySpawnMode::Enabled,
             data_generation: 0,
