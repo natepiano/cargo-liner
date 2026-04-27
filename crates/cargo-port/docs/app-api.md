@@ -25,7 +25,7 @@ within that subsystem's module — not `pub(in super::super)`.
 | **Panes** (`tui::panes::Panes`) | `pane_manager`, `pane_data`, `visited_panes`, `layout_cache`, `worktree_summary_cache`, `hovered_pane_row`, `ci_display_modes`, `cpu_poller` | `refresh_for_selection`, `render(frame, focused)`, `handle_input(&mut self, app: &mut App, …)` (Phase 1: still takes `&mut App`; revisit in later phase per "Rollback / revisit policy"), `clear_for_tree_change`, `cpu_tick`, `set_hover`, `toggle_ci_display_mode_for(path)`, `apply_hovered_pane_row` |
 | **Selection** (`tui::selection::Selection`) | `cached_visible_rows`, `cached_root_sorted`, `cached_child_sorted`, `cached_fit_widths` (renamed `ProjectListWidths` in Phase 2), `selection_paths`, `selection`, `expanded`, `finder` | Direct: `visible_rows`, `cursor_row`, `move_cursor`, `select_path`, `fit_widths`, `selected_paths`, `mutate(&projects) -> SelectionMutation<'_>`. On `SelectionMutation`: `toggle_expand`, `apply_finder` (recompute fires on drop). |
 | **Background** (`tui::background::Background`) | All four mpsc tx/rx pairs (`bg_*`, `ci_fetch_*`, `clean_*`, `example_*`), `watch_tx` | `poll_all -> PendingMessages`, `send_watcher`, `spawn_clean`, `spawn_ci_fetch`, `spawn_example`, `bg_sender`, `swap_bg_channel(new_tx, new_rx)` (called by rescan) |
-| **Inflight** (`tui::inflight::Inflight`) | `running_clean_paths`, `running_lint_paths`, `clean_toast`, `lint_toast`, `ci_fetch_toast`, `ci_fetch_tracker`, `pending_cleans`, `pending_ci_fetch`, `pending_example_run`, `example_running`, `example_child`, `example_output`, **`lint_runtime`** (relocated here from Background — `start_lint` is the only consumer; co-locating runtime with start avoids cross-subsystem reach) | `start_clean(path, ctx)`, `finish_clean`, `start_lint(path, ctx)`, `finish_lint`, `start_ci_fetch`, `finish_ci_fetch`, `start_example`, `kill_example`, `is_clean_running`, `is_lint_running`, `queue_clean`, `drain_next_pending_clean`, `refresh_lint_runtime_from_config(&CargoPortConfig)`. `ctx` here is a small struct `StartContext<'a> { toasts: &mut ToastManager, config: &CargoPortConfig, background: &mut Background, scan: &Scan }` — the actual dependency surface, named once instead of per-method. |
+| **Inflight** (`tui::inflight::Inflight`) | `running_clean_paths`, `running_lint_paths`, `clean_toast`, `lint_toast`, `ci_fetch_toast`, `ci_fetch_tracker`, `pending_cleans`, `pending_ci_fetch`, `pending_example_run`, `example_running`, `example_child`, `example_output`, **`lint_runtime`** (relocated here from Background — `start_lint` is the only consumer; co-locating runtime with start avoids cross-subsystem reach) | `start_clean(path, ctx)`, `finish_clean`, `start_lint(path, ctx)`, `finish_lint`, `start_ci_fetch`, `finish_ci_fetch`, `start_example`, `kill_example`, `is_clean_running`, `is_lint_running`, `queue_clean`, `drain_next_pending_clean`, `respawn_lint_runtime(&LintConfig)` (just the runtime respawn — full lint-config-change handling is orchestrated by App, see below). `ctx` here is a small struct `StartContext<'a> { toasts: &mut ToastManager, config: &CargoPortConfig, background: &mut Background, scan: &Scan }` — the actual dependency surface, named once instead of per-method. |
 | **Config** (`tui::config_state::Config`) | `current_config`, `config_path`, `config_last_seen`, `settings_edit_buf`, `settings_edit_cursor` (last two combined as `SettingsEditBuffer`) | `current`, `try_reload(&mut toasts) -> ReloadOutcome`, `begin_settings_edit -> &mut SettingsEditBuffer`, `commit_settings_edit(&mut toasts) -> CommitOutcome`, `discard_settings_edit` |
 | **Keymap** (`tui::keymap_state::Keymap`) | `current_keymap`, `keymap_path`, `keymap_last_seen`, `keymap_diagnostics_id` | `current`, `try_reload(&mut toasts) -> ReloadOutcome` |
 | **`WatchedFile<T>`** (`tui::watched_file`, generic primitive) | `path`, `stamp`, `current: T` | `current`, `path`, `try_reload(parse_fn) -> ReloadOutcome` where `parse_fn: impl FnOnce(&[u8]) -> Result<T, String>` and `ReloadOutcome = enum { Unchanged, Reloaded, Failed(String) }` — **non-generic**, error stringified at the parse boundary. App's tick polls Config and Keymap side-by-side and surfaces `Failed(msg)` as a toast uniformly. Composed by both `Config` and `Keymap`; not held by App directly. |
@@ -672,9 +672,49 @@ because they orchestrate across subsystems.
   state, and reconfigures `lint_runtime` — crossing 4 of the 7
   subsystems plus `Net`. After phases 1–8, its body becomes a sequence
   of subsystem calls (`self.background.swap_bg_channel(...)`,
-  `self.inflight.refresh_lint_runtime_from_config(...)`,
+  `self.apply_lint_config_change(...)` (see below),
   `self.net.invalidate_fetch_cache(...)`, etc.) but the orchestration
   shape stays.
+- **`apply_lint_config_change` is App-shell, not Inflight.** Today's
+  `App::refresh_lint_runtime_from_config` (`tui/app/async_tasks.rs:343-357`)
+  is doing more than its name suggests: it respawns the lint runtime
+  *and* clears in-memory lint state, clears `running_lint_paths`,
+  syncs the running-lint toast, syncs the lint runtime's project
+  list, refreshes lint runs from disk, recomputes column widths
+  (because the project pane shows different columns when lints are
+  on vs off), and bumps `data_generation`. After the carve those
+  side-effects span three subsystems:
+  - **Inflight**: `respawn_lint_runtime(&config.lint)`, clear
+    `running_lint_paths`, sync toast.
+  - **Scan**: clear in-memory lint state, refresh lint runs from
+    disk, bump `data_generation`.
+  - **Selection**: recompute `cached_fit_widths` (lint-enabled
+    column schema differs from lint-disabled).
+  The orchestration lives on App as `apply_lint_config_change`,
+  called from the per-tick config-reload handler. **In-code
+  documentation requirement** (same shape as the mutation-guard rule
+  above): the function must land with a doc comment that names
+  every subsystem it touches and what it does in each, so a future
+  maintainer adding a new lint-config side-effect knows where to put
+  it. Reference template (rough draft, refine at implementation):
+  ```rust
+  /// Apply a lint configuration change. Cross-subsystem orchestration —
+  /// not a method on any single subsystem because lint config changes
+  /// fan out across three areas:
+  ///
+  /// - **Inflight**: respawns the lint runtime, clears in-flight lint
+  ///   paths, refreshes the lint toast.
+  /// - **Scan**: clears in-memory lint state, refreshes lint runs from
+  ///   disk, bumps `data_generation` so detail panes redraw.
+  /// - **Selection**: recomputes `cached_fit_widths` because the
+  ///   project pane's column schema depends on whether lints are
+  ///   enabled.
+  ///
+  /// Called from the per-tick config-reload handler. New side-effects
+  /// of a lint-config change MUST be added here (or in the relevant
+  /// subsystem method this function calls), not in random callers.
+  fn apply_lint_config_change(&mut self, lint_cfg: &LintConfig);
+  ```
 - **Move into `Panes`:** `apply_hovered_pane_row`
   (`tui/app/mod.rs:278-286`), `toggle_ci_display_mode_for`
   (`mod.rs:565`), `focus_pane`, `register_*_row_hitboxes` helpers (today
@@ -690,9 +730,11 @@ because they orchestrate across subsystems.
   `selected_project_path`, `lint_at_path`/`lint_at_path_mut` (callers
   pass through, real owner is `projects`).
 - **Move into `Inflight`:** `start_task_toast`-style helpers,
-  `running_clean_paths`/`running_lint_paths` accessors,
-  `refresh_lint_runtime_from_config` (since `lint_runtime` lives in
-  Inflight per the table revision above).
+  `running_clean_paths`/`running_lint_paths` accessors. Just the
+  *runtime respawn* portion of `refresh_lint_runtime_from_config`
+  becomes `Inflight::respawn_lint_runtime`; the broader
+  cross-subsystem orchestration becomes `App::apply_lint_config_change`
+  per the entry above.
 - **Disappear (collapse into facade):** the ~270 `pub(in super::super)
   fn` accessors that exist solely to expose a single field through App.
 
@@ -757,3 +799,23 @@ plan rather than treating them as scope creep:
   comment is fluffier. The plan's "Recurring patterns" section names
   the pattern; the guard's doc comment is what a future maintainer
   hits first when reading the code.
+
+- **Cross-subsystem orchestrator on App**: when an operation has to
+  touch multiple subsystems and there's no single subsystem where it
+  naturally lives, it stays on `App` as a named method (e.g.,
+  `App::apply_lint_config_change`, `App::rescan`). These are the
+  legitimate App-shell methods after the carve.
+
+  **In-code documentation requirement.** Every cross-subsystem
+  orchestrator on App *must* land with a doc comment that:
+  1. States that it's a cross-subsystem orchestration (and is therefore
+     intentionally on `App`, not on one of the subsystems).
+  2. Lists every subsystem it touches and what it does in each.
+  3. Tells a future maintainer that new side-effects of the same
+     event MUST be added here (or in the subsystem methods this
+     function calls), not in random other callers — so the
+     orchestration stays the single source of truth for the event.
+
+  The plan's "Methods that stay on App" section gives a concrete
+  template for `apply_lint_config_change`. New orchestrators copy
+  that doc shape.
