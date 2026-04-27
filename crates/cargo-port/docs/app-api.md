@@ -771,6 +771,79 @@ plan rather than treating them as scope creep:
 
 ## Recurring patterns
 
+**Where the patterns live in code.** Phase 1 lands a module-level doc
+comment at the top of `src/tui/app/mod.rs` that names every recurring
+pattern this plan introduces, briefly describes each, and points at
+the canonical example for each. Subsequent phases extend that comment
+when they introduce new patterns. The plan document is the design
+source of truth; the App-module doc comment is the in-code index a
+maintainer hits when reading the code.
+
+Every individual use of a pattern (a mutation guard, a cross-subsystem
+orchestrator, a generic-primitive composition) lands with its own doc
+comment that references the App-module index by pattern name — e.g.,
+`/// Mutation guard (RAII). See "Recurring patterns" in
+src/tui/app/mod.rs for the pattern; this is the fan-out variant
+covering Scan + Panes + Selection invalidation.` That keeps the index
+authoritative and the per-use comments short.
+
+**Reference template for the App-module doc comment** (Phase 1
+delivers this; refine across phases):
+
+```rust
+//! # Recurring patterns
+//!
+//! This module's structure (and the subsystems it owns) follows a few
+//! patterns that recur across the codebase. New code that fits one of
+//! these patterns MUST follow the named pattern, not invent a variant.
+//!
+//! ## Mutation guard (RAII)
+//! Gate mutating methods through a temporary handle whose `Drop` runs
+//! the recompute that derived caches need. The only way to call the
+//! mutating methods is via the handle; the only way to drop the handle
+//! is to let the recompute fire. Type-enforced; no convention to
+//! remember.
+//!
+//! - **Self-only flavor** — see `SelectionMutation` (carved in Phase 3).
+//! - **Fan-out flavor** — see `TreeMutation` (this module). The guard
+//!   borrows the sibling subsystems it must invalidate; `Drop` fans
+//!   out across them.
+//!
+//! ## Cross-subsystem orchestrator on App
+//! When an operation has to touch multiple subsystems and there is no
+//! single subsystem where it naturally lives, it stays as a named
+//! method on `App`. These are the legitimate App-shell methods after
+//! the carve. Their doc comments name every subsystem they touch and
+//! instruct future maintainers that new side-effects of the same
+//! event MUST be added there, not scattered.
+//!
+//! - See `App::apply_lint_config_change` (Phase 4) — touches Inflight
+//!   + Scan + Selection.
+//! - See `App::rescan` — touches Background + Scan + Inflight + Net.
+//!
+//! ## Generic primitive plus bespoke state
+//! When two subsystems need the same lifecycle (e.g., load-watch-reload)
+//! but carry different bespoke state, write the lifecycle as a generic
+//! struct and have each subsystem compose it.
+//!
+//! - See `tui::watched_file::WatchedFile<T>` (Phase 5) — composed by
+//!   `Config` (with edit buffer) and `Keymap` (with diagnostics-toast
+//!   id).
+```
+
+Phase rules:
+
+- **Phase 1** lands the initial pattern index covering "Mutation guard
+  (RAII) — fan-out flavor" referencing the existing `TreeMutation`,
+  plus stub entries for the other patterns marked "lands in Phase N."
+- **Each later phase** that introduces a new instance of a pattern
+  updates the App-module doc comment to point at the new canonical
+  example (or fills in the stub if it's the first instance).
+- **Each later phase** that introduces a *new* pattern adds a new
+  section to the App-module doc comment with the same shape.
+
+The patterns themselves:
+
 - **Mutation guard (RAII)**: when a subsystem has derived/cached state that
   must be recomputed after a cluster of mutations, gate the mutating methods
   through a `&mut Self`-borrowing guard whose `Drop` runs the recompute.
