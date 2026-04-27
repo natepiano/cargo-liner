@@ -109,9 +109,9 @@ impl App {
                     self.select_root_row(ni);
                 } else {
                     let count = self.row_count();
-                    let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
+                    let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
                     if selected >= count {
-                        self.pane_manager
+                        self.pane_manager_mut()
                             .pane_mut(PaneId::ProjectList)
                             .set_pos(count.saturating_sub(1));
                     }
@@ -152,7 +152,9 @@ impl App {
             .iter()
             .position(|row| matches!(row, VisibleRow::Root { node_index: ni } if *ni == node_index))
         {
-            self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(pos);
+            self.pane_manager_mut()
+                .pane_mut(PaneId::ProjectList)
+                .set_pos(pos);
         }
     }
 }

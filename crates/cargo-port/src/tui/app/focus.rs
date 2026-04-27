@@ -78,7 +78,9 @@ impl App {
         self.open_overlay(Settings);
         self.open_settings();
         if let Some(idx) = SettingOption::iter().position(|s| s == IncludeDirs) {
-            self.pane_manager.pane_mut(PaneId::Settings).set_pos(idx);
+            self.pane_manager_mut()
+                .pane_mut(PaneId::Settings)
+                .set_pos(idx);
         }
         self.set_inline_error("Configure at least one include directory before continuing");
     }
@@ -178,7 +180,7 @@ impl App {
     pub(in super::super) fn focus_pane(&mut self, pane: PaneId) {
         self.focused_pane = pane;
         if !pane.is_overlay() {
-            self.visited_panes.insert(pane);
+            self.panes.mark_visited(pane);
             self.return_focus = None;
         }
     }
@@ -208,27 +210,27 @@ impl App {
                         .and_then(|p| p.language_stats.as_ref())
                         .is_some_and(|ls| !ls.entries.is_empty())
                 }),
-                PaneId::Git => self.pane_data.git().is_some_and(|g| {
+                PaneId::Git => self.pane_data().git().is_some_and(|g| {
                     g.branch.is_some() || !g.remotes.is_empty() || !g.worktrees.is_empty()
                 }),
                 _ => false,
             },
-            PaneBehavior::Cpu => self.pane_data.cpu().is_some(),
+            PaneBehavior::Cpu => self.pane_data().cpu().is_some(),
             PaneBehavior::DetailTargets => self
-                .pane_data
+                .pane_data()
                 .targets()
                 .is_some_and(crate::tui::panes::TargetsData::has_targets),
             PaneBehavior::Lints => {
                 self.example_output.is_empty()
                     && self
-                        .pane_data
+                        .pane_data()
                         .lints()
                         .is_some_and(crate::tui::panes::LintsData::has_runs)
             },
             PaneBehavior::CiRuns => {
                 self.example_output.is_empty()
                     && self
-                        .pane_data
+                        .pane_data()
                         .ci()
                         .is_some_and(crate::tui::panes::CiData::has_runs)
             },
@@ -261,9 +263,9 @@ impl App {
         }
         let current = self.base_focus();
         if current == PaneId::Toasts
-            && self.pane_manager.pane(PaneId::Toasts).pos() + 1 < self.active_toasts().len()
+            && self.pane_manager().pane(PaneId::Toasts).pos() + 1 < self.active_toasts().len()
         {
-            self.pane_manager.pane_mut(PaneId::Toasts).down();
+            self.pane_manager_mut().pane_mut(PaneId::Toasts).down();
             self.focus_pane(PaneId::Toasts);
             return;
         }
@@ -271,7 +273,7 @@ impl App {
         let next = panes[(index + 1) % panes.len()];
         self.focus_pane(next);
         if next == PaneId::Toasts {
-            self.pane_manager.pane_mut(PaneId::Toasts).home();
+            self.pane_manager_mut().pane_mut(PaneId::Toasts).home();
         }
     }
 
@@ -282,8 +284,8 @@ impl App {
             return;
         }
         let current = self.base_focus();
-        if current == PaneId::Toasts && self.pane_manager.pane(PaneId::Toasts).pos() > 0 {
-            self.pane_manager.pane_mut(PaneId::Toasts).up();
+        if current == PaneId::Toasts && self.pane_manager().pane(PaneId::Toasts).pos() > 0 {
+            self.pane_manager_mut().pane_mut(PaneId::Toasts).up();
             self.focus_pane(PaneId::Toasts);
             return;
         }
@@ -292,26 +294,26 @@ impl App {
         self.focus_pane(prev);
         if prev == PaneId::Toasts {
             let last_index = self.active_toasts().len().saturating_sub(1);
-            self.pane_manager
+            self.pane_manager_mut()
                 .pane_mut(PaneId::Toasts)
                 .set_pos(last_index);
         }
     }
 
     pub(in super::super) fn reset_project_panes(&mut self) {
-        self.pane_manager.pane_mut(PaneId::Package).home();
-        self.pane_manager.pane_mut(PaneId::Git).home();
-        self.pane_manager.pane_mut(PaneId::Targets).home();
-        self.pane_manager.pane_mut(PaneId::CiRuns).home();
-        self.pane_manager.pane_mut(PaneId::Lints).home();
-        self.pane_manager.pane_mut(PaneId::Toasts).home();
-        self.visited_panes.remove(&PaneId::Package);
-        self.visited_panes.remove(&PaneId::Git);
-        self.visited_panes.remove(&PaneId::Targets);
-        self.visited_panes.remove(&PaneId::CiRuns);
+        self.pane_manager_mut().pane_mut(PaneId::Package).home();
+        self.pane_manager_mut().pane_mut(PaneId::Git).home();
+        self.pane_manager_mut().pane_mut(PaneId::Targets).home();
+        self.pane_manager_mut().pane_mut(PaneId::CiRuns).home();
+        self.pane_manager_mut().pane_mut(PaneId::Lints).home();
+        self.pane_manager_mut().pane_mut(PaneId::Toasts).home();
+        self.panes.unvisit(PaneId::Package);
+        self.panes.unvisit(PaneId::Git);
+        self.panes.unvisit(PaneId::Targets);
+        self.panes.unvisit(PaneId::CiRuns);
     }
 
     pub(in super::super) fn remembers_selection(&self, pane: PaneId) -> bool {
-        self.visited_panes.contains(&pane)
+        self.panes.remembers_visited(pane)
     }
 }

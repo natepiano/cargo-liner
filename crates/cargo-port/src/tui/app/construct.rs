@@ -33,11 +33,8 @@ use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::tui::columns::ResolvedWidths;
-use crate::tui::cpu::CpuPoller;
-use crate::tui::pane::PaneManager;
-use crate::tui::panes::LayoutCache;
-use crate::tui::panes::PaneDataStore;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::Panes;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -174,7 +171,7 @@ impl App {
     fn build_core(inputs: CoreInputs) -> Self {
         let init = inputs.init;
         let channels = inputs.channels;
-        let cpu_poller = CpuPoller::new(&inputs.cfg.cpu);
+        let panes = Panes::new(&inputs.cfg.cpu);
         let cached_fit_widths = ResolvedWidths::new(inputs.cfg.lint.enabled);
         Self {
             current_config: inputs.cfg,
@@ -183,22 +180,18 @@ impl App {
             crates_io: CratesIoState::new(),
             projects: init.projects,
             ci_fetch_tracker: CiFetchTracker::default(),
-            ci_display_modes: HashMap::new(),
             lint_cache_usage: crate::lint::CacheUsage::default(),
             discovery_shimmers: HashMap::new(),
             pending_git_first_commit: HashMap::new(),
-            cpu_poller,
+            panes,
             bg_tx: inputs.bg_tx,
             bg_rx: inputs.bg_rx,
             priority_fetch_path: None,
             expanded: HashSet::new(),
-            pane_manager: PaneManager::new(),
-            pane_data: PaneDataStore::new(),
             settings_edit_buf: String::new(),
             settings_edit_cursor: 0,
             focused_pane: PaneId::ProjectList,
             return_focus: None,
-            visited_panes: std::iter::once(PaneId::ProjectList).collect(),
             pending_example_run: None,
             pending_ci_fetch: None,
             pending_cleans: VecDeque::new(),
@@ -228,11 +221,8 @@ impl App {
             cached_root_sorted: Vec::new(),
             cached_child_sorted: HashMap::new(),
             cached_fit_widths,
-            worktree_summary_cache: std::cell::RefCell::new(HashMap::new()),
             data_generation: 0,
             mouse_pos: None,
-            hovered_pane_row: None,
-            layout_cache: LayoutCache::default(),
             status_flash: inputs.status_flash,
             toasts: ToastManager::default(),
             config_path: init.config_path,
@@ -253,8 +243,7 @@ impl App {
     }
 
     fn finish_new(&mut self) {
-        let placeholder = self.cpu_poller.placeholder_snapshot();
-        self.pane_data_mut().set_cpu(placeholder);
+        self.panes_mut().install_cpu_placeholder();
         self.load_initial_keymap();
         if let Some(warning) = self
             .status_flash

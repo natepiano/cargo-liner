@@ -923,7 +923,9 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     app.scan.phase = ScanPhase::Complete;
-    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_pos(0);
     app.sync_selected_project();
 
     apply_git_info(
@@ -968,7 +970,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
     app.ensure_detail_cached();
 
     let value = DetailField::Ci.package_value(
-        app.pane_data
+        app.pane_data()
             .package()
             .unwrap_or_else(|| std::process::abort()),
         &app,
@@ -1019,7 +1021,9 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
 fn git_first_commit_arriving_before_git_info_is_preserved() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_pos(0);
     app.sync_selected_project();
 
     apply_bg_msg(
@@ -1053,7 +1057,7 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
         Some("2026-03-12T21:18:54-04:00")
     );
     assert!(
-        app.pane_data
+        app.pane_data()
             .git()
             .and_then(|g| g.inception.as_ref())
             .is_some(),
@@ -1065,12 +1069,14 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
 fn git_info_invalidates_selected_git_pane_cache() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_pos(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.pane_data
+        app.pane_data()
             .git()
             .and_then(|data| data.remotes.first())
             .and_then(|row| row.full_url.as_deref()),
@@ -1085,7 +1091,7 @@ fn git_info_invalidates_selected_git_pane_cache() {
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.pane_data
+        app.pane_data()
             .git()
             .and_then(|data| data.remotes.first())
             .and_then(|row| row.full_url.as_deref()),
@@ -1098,19 +1104,21 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     let project_a = make_project(Some("alpha"), "~/alpha");
     let project_b = make_project(Some("beta"), "~/beta");
     let mut app = make_app(&[project_a, project_b]);
-    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_pos(0);
     app.sync_selected_project();
 
     // Seed the cache.
     app.ensure_detail_cached();
-    let after_seed = app.pane_data.detail_build_count();
+    let after_seed = app.pane_data().detail_build_count();
     assert!(after_seed >= 1, "first call must build");
 
     // Unchanged selection and generation — must NOT rebuild.
     app.ensure_detail_cached();
     app.ensure_detail_cached();
     assert_eq!(
-        app.pane_data.detail_build_count(),
+        app.pane_data().detail_build_count(),
         after_seed,
         "idle frames must not rebuild the detail set"
     );
@@ -1118,7 +1126,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     // Bumping the data generation invalidates the stamp → must rebuild.
     app.increment_data_generation();
     app.ensure_detail_cached();
-    let after_generation_bump = app.pane_data.detail_build_count();
+    let after_generation_bump = app.pane_data().detail_build_count();
     assert_eq!(
         after_generation_bump,
         after_seed + 1,
@@ -1126,11 +1134,13 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     );
 
     // Changing the selected row invalidates the stamp → must rebuild.
-    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(1);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_pos(1);
     app.sync_selected_project();
     app.ensure_detail_cached();
     assert_eq!(
-        app.pane_data.detail_build_count(),
+        app.pane_data().detail_build_count(),
         after_generation_bump + 1,
         "selection change must trigger exactly one rebuild"
     );
@@ -1139,7 +1149,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     app.ensure_detail_cached();
     app.ensure_detail_cached();
     assert_eq!(
-        app.pane_data.detail_build_count(),
+        app.pane_data().detail_build_count(),
         after_generation_bump + 1,
         "further idle frames must not rebuild"
     );
@@ -1192,10 +1202,12 @@ fn background_message_for_unselected_path_does_not_invalidate_detail() {
     let project_a = make_project(Some("alpha"), "~/alpha");
     let project_b = make_project(Some("beta"), "~/beta");
     let mut app = make_app(&[project_a, project_b]);
-    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_pos(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
-    let baseline = app.pane_data.detail_build_count();
+    let baseline = app.pane_data().detail_build_count();
 
     // A disk-usage message for a *different* project must not bump the
     // detail-cache key. Watchers fire dozens of these per second; if they
@@ -1210,7 +1222,7 @@ fn background_message_for_unselected_path_does_not_invalidate_detail() {
     );
     app.ensure_detail_cached();
     assert_eq!(
-        app.pane_data.detail_build_count(),
+        app.pane_data().detail_build_count(),
         baseline,
         "unrelated background messages must not invalidate the detail cache"
     );
@@ -1225,7 +1237,7 @@ fn background_message_for_unselected_path_does_not_invalidate_detail() {
     );
     app.ensure_detail_cached();
     assert_eq!(
-        app.pane_data.detail_build_count(),
+        app.pane_data().detail_build_count(),
         baseline + 1,
         "messages affecting the selected path must rebuild exactly once"
     );
@@ -1920,7 +1932,9 @@ fn startup_ready_waits_on_metadata_phase() {
 fn clean_selection_on_root_rust_project_returns_project_selection() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_pos(0);
 
     let selection = app
         .clean_selection()
@@ -1941,7 +1955,9 @@ fn clean_selection_on_non_rust_root_is_none() {
     // clean-ineligible so the shortcut is dimmed in the status bar.
     let non_rust = make_non_rust_project(Some("notes"), "~/notes");
     let mut app = make_app(std::slice::from_ref(&non_rust));
-    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_pos(0);
     assert!(app.clean_selection().is_none());
 }
 
@@ -1975,7 +1991,9 @@ fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
         vec![linked],
     ));
     let mut app = make_app(std::slice::from_ref(&worktrees));
-    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_pos(0);
 
     match app.clean_selection().expect("group root is clean-eligible") {
         CleanSelection::WorktreeGroup { primary, linked } => {

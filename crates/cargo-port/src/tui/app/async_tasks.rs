@@ -103,7 +103,9 @@ impl App {
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
         } else if !self.projects.is_empty() {
-            self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+            self.pane_manager_mut()
+                .pane_mut(PaneId::ProjectList)
+                .set_pos(0);
         }
         if should_focus_project_list {
             self.focus_pane(PaneId::ProjectList);
@@ -235,7 +237,7 @@ impl App {
         );
         self.keymap_diagnostics_id = Some(id);
         let toast_len = self.active_toasts().len();
-        self.pane_manager
+        self.pane_manager_mut()
             .pane_mut(PaneId::Toasts)
             .set_len(toast_len);
     }
@@ -1354,7 +1356,7 @@ impl App {
         self.projects.clear();
         // disk_usage lives on project items — cleared with projects above
         self.ci_fetch_tracker.clear();
-        self.ci_display_modes.clear();
+        self.panes.clear_ci_display_modes();
         self.clear_all_lint_state();
         self.lint_cache_usage = crate::lint::CacheUsage::default();
         self.github.fetch_cache = scan::new_repo_cache();
@@ -1375,8 +1377,8 @@ impl App {
         self.selection_paths.selected_project = None;
         self.pending_ci_fetch = None;
         self.expanded.clear();
-        self.pane_manager.pane_mut(PaneId::ProjectList).home();
-        self.pane_manager
+        self.pane_manager_mut().pane_mut(PaneId::ProjectList).home();
+        self.pane_manager_mut()
             .pane_mut(PaneId::ProjectList)
             .set_scroll_offset(0);
         self.data_generation += 1;
@@ -1864,7 +1866,7 @@ impl App {
                     linger,
                 );
                 let toast_len = self.active_toasts().len();
-                self.pane_manager
+                self.pane_manager_mut()
                     .pane_mut(PaneId::Toasts)
                     .set_len(toast_len);
             }
@@ -1955,7 +1957,7 @@ impl App {
         self.reload_lint_history(&path);
         self.migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
-        self.pane_data.clear_detail_data(None);
+        self.pane_data_mut().clear_detail_data(None);
         // Signal that derived state needs refresh (batched by caller).
         true
     }
@@ -2030,7 +2032,7 @@ impl App {
         let (title, body) = service_unavailable_message(service, kind);
         let id = self.toasts.push_persistent(title, body, Warning, None, 1);
         let toast_len = self.active_toasts().len();
-        self.pane_manager
+        self.pane_manager_mut()
             .pane_mut(PaneId::Toasts)
             .set_len(toast_len);
         id
@@ -2284,7 +2286,9 @@ impl App {
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
         } else if !self.projects.is_empty() {
-            self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+            self.pane_manager_mut()
+                .pane_mut(PaneId::ProjectList)
+                .set_pos(0);
         }
         self.sync_selected_project();
 
@@ -2652,7 +2656,7 @@ impl App {
             .selected_display_path()
             .unwrap_or_else(|| abs_key.display_path());
         let name = self
-            .pane_data
+            .pane_data()
             .package()
             .map(|d| d.title_name.clone())
             .filter(|n| n != "-");

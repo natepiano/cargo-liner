@@ -121,7 +121,7 @@ impl App {
             },
         };
 
-        self.pane_manager
+        self.pane_manager_mut()
             .pane_mut(PaneId::CiRuns)
             .set_pos(merged.len());
         if let Some(repo) = self.owner_repo_for_path_inner(&abs) {
@@ -150,7 +150,7 @@ impl App {
     }
 
     pub(super) fn ci_display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
-        self.ci_display_modes.get(path).copied().unwrap_or_default()
+        self.panes.ci_display_mode_for(path)
     }
 
     pub(super) fn ci_display_mode_label_for_inner(&self, path: &Path) -> &'static str {
@@ -170,16 +170,16 @@ impl App {
 
     pub(super) fn toggle_ci_display_mode_for_inner(&mut self, path: &Path) {
         if !self.ci_toggle_available_for_inner(path) {
-            self.ci_display_modes.remove(path);
+            self.panes.remove_ci_display_mode(path);
             return;
         }
         let new_mode = match self.ci_display_mode_for(path) {
             CiRunDisplayMode::BranchOnly => CiRunDisplayMode::All,
             CiRunDisplayMode::All => CiRunDisplayMode::BranchOnly,
         };
-        self.ci_display_modes
-            .insert(AbsolutePath::from(path), new_mode);
-        self.pane_manager.pane_mut(PaneId::CiRuns).home();
+        self.panes
+            .set_ci_display_mode(AbsolutePath::from(path), new_mode);
+        self.pane_manager_mut().pane_mut(PaneId::CiRuns).home();
         self.data_generation += 1;
     }
 

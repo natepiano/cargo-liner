@@ -71,7 +71,7 @@ impl App {
             row,
             generation: self.data_generation,
         });
-        if self.pane_data.detail_is_current(desired) {
+        if self.pane_data().detail_is_current(desired) {
             return;
         }
         let started = std::time::Instant::now();
@@ -86,7 +86,7 @@ impl App {
                 let lints_started = std::time::Instant::now();
                 let lints = tui::panes::build_lints_data(self);
                 let lints_ms = perf_log::ms(lints_started.elapsed().as_millis());
-                self.pane_data.set_detail_data(
+                self.pane_data_mut().set_detail_data(
                     key,
                     data.package,
                     data.git,
@@ -102,7 +102,7 @@ impl App {
                     "detail_build_breakdown"
                 );
             },
-            None => self.pane_data.clear_detail_data(desired),
+            None => self.pane_data_mut().clear_detail_data(desired),
         }
     }
 
@@ -313,7 +313,7 @@ impl App {
 
     pub(in super::super) fn selected_row(&self) -> Option<VisibleRow> {
         let rows = self.visible_rows();
-        let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
+        let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
         rows.get(selected).copied()
     }
 
@@ -488,7 +488,7 @@ impl App {
     /// Resolve the display path of the currently selected row using `project_list_items`.
     pub(in super::super) fn selected_display_path(&self) -> Option<DisplayPath> {
         let rows = self.visible_rows();
-        let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
+        let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
         let row = rows.get(selected)?;
         self.display_path_for_row(*row)
     }
@@ -950,7 +950,7 @@ impl App {
     }
 
     pub(in super::super) fn selected_is_expandable(&self) -> bool {
-        let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
+        let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
         self.visible_rows()
             .get(selected)
             .copied()
@@ -1012,7 +1012,7 @@ impl App {
         if !self.selected_is_expandable() {
             return false;
         }
-        let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
+        let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
         };
@@ -1027,7 +1027,9 @@ impl App {
         self.expanded.remove(key);
         self.ensure_visible_rows_cached();
         if let Some(pos) = self.visible_rows().iter().position(|r| *r == target) {
-            self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(pos);
+            self.pane_manager_mut()
+                .pane_mut(PaneId::ProjectList)
+                .set_pos(pos);
         }
     }
 
@@ -1038,15 +1040,15 @@ impl App {
     }
 
     pub(in super::super) fn collapse(&mut self) -> bool {
-        let selected = self.pane_manager.pane(PaneId::ProjectList).pos();
+        let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
         };
         let expanded_before = self.expanded.len();
-        let selected_before = self.pane_manager.pane(PaneId::ProjectList).pos();
+        let selected_before = self.pane_manager().pane(PaneId::ProjectList).pos();
         self.collapse_row(row);
         self.expanded.len() != expanded_before
-            || self.pane_manager.pane(PaneId::ProjectList).pos() != selected_before
+            || self.pane_manager().pane(PaneId::ProjectList).pos() != selected_before
     }
 
     pub(in super::super) fn collapse_row(&mut self, row: VisibleRow) {
@@ -1154,9 +1156,9 @@ impl App {
         if count == 0 {
             return;
         }
-        let current = self.pane_manager.pane(PaneId::ProjectList).pos();
+        let current = self.pane_manager().pane(PaneId::ProjectList).pos();
         if current > 0 {
-            self.pane_manager
+            self.pane_manager_mut()
                 .pane_mut(PaneId::ProjectList)
                 .set_pos(current - 1);
         }
@@ -1167,9 +1169,9 @@ impl App {
         if count == 0 {
             return;
         }
-        let current = self.pane_manager.pane(PaneId::ProjectList).pos();
+        let current = self.pane_manager().pane(PaneId::ProjectList).pos();
         if current < count - 1 {
-            self.pane_manager
+            self.pane_manager_mut()
                 .pane_mut(PaneId::ProjectList)
                 .set_pos(current + 1);
         }
@@ -1177,14 +1179,16 @@ impl App {
 
     pub(in super::super) fn move_to_top(&mut self) {
         if self.row_count() > 0 {
-            self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+            self.pane_manager_mut()
+                .pane_mut(PaneId::ProjectList)
+                .set_pos(0);
         }
     }
 
     pub(in super::super) fn move_to_bottom(&mut self) {
         let count = self.row_count();
         if count > 0 {
-            self.pane_manager
+            self.pane_manager_mut()
                 .pane_mut(PaneId::ProjectList)
                 .set_pos(count - 1);
         }
@@ -1267,7 +1271,9 @@ impl App {
         if let Some(anchor) = anchor
             && let Some(pos) = self.visible_rows().iter().position(|row| *row == anchor)
         {
-            self.pane_manager.pane_mut(PaneId::ProjectList).set_pos(pos);
+            self.pane_manager_mut()
+                .pane_mut(PaneId::ProjectList)
+                .set_pos(pos);
         }
         let anchor_path = self.selected_project_path().map(AbsolutePath::from);
         if selected_path == anchor_path {
@@ -1368,7 +1374,7 @@ impl App {
             .iter()
             .position(|row| self.row_matches_project_path(*row, target_path));
         if let Some(selected_index) = selected_index {
-            self.pane_manager
+            self.pane_manager_mut()
                 .pane_mut(PaneId::ProjectList)
                 .set_pos(selected_index);
         }

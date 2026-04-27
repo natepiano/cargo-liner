@@ -42,7 +42,9 @@ fn expanded_workspace_members_use_the_parent_shimmer_owner() {
     app.scan.phase = ScanPhase::Complete;
 
     assert!(app.handle_project_discovered(workspace));
-    app.pane_manager.pane_mut(PaneId::ProjectList).set_pos(0);
+    app.pane_manager_mut()
+        .pane_mut(PaneId::ProjectList)
+        .set_pos(0);
     assert!(app.expand());
     app.ensure_visible_rows_cached();
 

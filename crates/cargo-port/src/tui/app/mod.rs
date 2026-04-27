@@ -1,3 +1,43 @@
+//! # Recurring patterns
+//!
+//! `App` and the subsystems it owns follow a few patterns that recur
+//! across the codebase. New code that fits one of these patterns MUST
+//! follow the named pattern, not invent a variant. The
+//! `docs/app-api.md` plan is the design source of truth; this index
+//! is the in-code map a maintainer hits when reading the code.
+//!
+//! ## Mutation guard (RAII)
+//! Gate mutating methods through a temporary handle whose `Drop` runs
+//! the recompute that derived caches need. The only way to call the
+//! mutating methods is via the handle; the only way to drop the handle
+//! is to let the recompute fire. Type-enforced; no convention to
+//! remember.
+//!
+//! - **Fan-out flavor** — see [`TreeMutation`] (this module). The guard currently borrows `&mut
+//!   App` and clears `Panes`-owned tree-derived caches via
+//!   [`super::panes::Panes::clear_for_tree_change`]. Phase 6 will rewrite the guard to borrow `Scan
+//!   + Panes + Selection` directly so the type signature declares the dependency.
+//! - **Self-only flavor** — lands in Phase 3 with `SelectionMutation` (stub: see `docs/app-api.md`
+//!   § "Phase 3 (Selection)").
+//!
+//! ## Cross-subsystem orchestrator on App
+//! Operations that touch multiple subsystems and have no single
+//! subsystem where they naturally live stay as named methods on `App`.
+//! Their doc comments name every subsystem they touch and instruct
+//! future maintainers that new side-effects of the same event MUST be
+//! added here, not scattered.
+//!
+//! - Lands in Phase 4 with `App::apply_lint_config_change`. See `docs/app-api.md` § "Methods that
+//!   stay on App" for the template.
+//!
+//! ## Generic primitive plus bespoke state
+//! When two subsystems need the same lifecycle but carry different
+//! bespoke state, write the lifecycle as a generic struct and have
+//! each subsystem compose it.
+//!
+//! - Lands in Phase 5 with `tui::watched_file::WatchedFile<T>`, composed by `Config` (with edit
+//!   buffer) and `Keymap` (with diagnostics-toast id).
+
 mod async_tasks;
 mod ci;
 mod construct;
@@ -25,11 +65,11 @@ use ratatui::layout::Position;
 
 use self::service_state::CratesIoState;
 use self::service_state::GitHubState;
-use super::cpu::CpuPoller;
 use super::pane::PaneManager;
 use super::panes::LayoutCache;
 use super::panes::PaneDataStore;
 use super::panes::PaneId;
+use super::panes::Panes;
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
@@ -67,6 +107,7 @@ pub(super) use service_state::AvailabilityStatus;
 pub(super) use target_index::CleanSelection;
 pub(super) use target_index::MemberKind;
 pub(super) use types::CiFetchTracker;
+pub(super) use types::CiRunDisplayMode;
 pub(super) use types::ConfirmAction;
 pub(super) use types::DiscoveryRowKind;
 pub(super) use types::ExpandKey;
@@ -92,22 +133,23 @@ pub(super) struct App {
     crates_io:                CratesIoState,
     projects:                 ProjectList,
     ci_fetch_tracker:         CiFetchTracker,
-    ci_display_modes:         HashMap<AbsolutePath, types::CiRunDisplayMode>,
     lint_cache_usage:         CacheUsage,
     discovery_shimmers:       HashMap<AbsolutePath, types::DiscoveryShimmer>,
     pending_git_first_commit: HashMap<AbsolutePath, String>,
-    cpu_poller:               CpuPoller,
+    /// Panes subsystem (Phase 1 of the App-API carve, see
+    /// `docs/app-api.md`). Owns `pane_manager`, `pane_data`,
+    /// `visited_panes`, `layout_cache`, `worktree_summary_cache`,
+    /// `hovered_pane_row`, `ci_display_modes`, `cpu_poller`. App's
+    /// impl-files reach pane state through this handle.
+    panes:                    Panes,
     bg_tx:                    mpsc::Sender<BackgroundMsg>,
     bg_rx:                    mpsc::Receiver<BackgroundMsg>,
     priority_fetch_path:      Option<AbsolutePath>,
     expanded:                 HashSet<ExpandKey>,
-    pane_manager:             PaneManager,
-    pane_data:                PaneDataStore,
     settings_edit_buf:        String,
     settings_edit_cursor:     usize,
     focused_pane:             PaneId,
     return_focus:             Option<PaneId>,
-    visited_panes:            HashSet<PaneId>,
     pending_example_run:      Option<PendingExampleRun>,
     pending_ci_fetch:         Option<PendingCiFetch>,
     pending_cleans:           VecDeque<PendingClean>,
@@ -135,24 +177,8 @@ pub(super) struct App {
     cached_root_sorted:       Vec<u64>,
     cached_child_sorted:      HashMap<usize, Vec<u64>>,
     cached_fit_widths:        ResolvedWidths,
-    /// Memoizes the result of `worktrees_from_item` per worktree-group root
-    /// path. The summary depends on cached `CheckoutInfo.branch` (always
-    /// fresh — read each lookup) and a `git rev-list` ahead/behind
-    /// shell-out (the expensive part). The shell-out result is cached
-    /// here forever within a session; `clear_worktree_summary_cache` is
-    /// called from tree-rebuild paths so additions/removals of worktrees
-    /// drop their entries. We deliberately do **not** key on
-    /// `data_generation` — that counter bumps on per-message watcher
-    /// events for the selected detail, and re-running the shell-out at
-    /// every such event reduces the cache to a no-op during scroll.
-    /// `RefCell` because `worktrees_from_item` runs inside
-    /// `build_pane_data_common`, which only has `&App`, and the memo
-    /// update is a pure additive caching side-effect.
-    worktree_summary_cache:   std::cell::RefCell<HashMap<AbsolutePath, Vec<WorktreeInfo>>>,
     data_generation:          u64,
     mouse_pos:                Option<Position>,
-    hovered_pane_row:         Option<types::HoveredPaneRow>,
-    layout_cache:             LayoutCache,
     status_flash:             Option<(String, std::time::Instant)>,
     toasts:                   ToastManager,
     config_path:              Option<AbsolutePath>,
@@ -256,13 +282,19 @@ impl App {
         }
     }
 
-    pub(super) const fn layout_cache(&self) -> &LayoutCache { &self.layout_cache }
+    pub(super) const fn layout_cache(&self) -> &LayoutCache { self.panes.layout_cache() }
 
-    pub(super) const fn layout_cache_mut(&mut self) -> &mut LayoutCache { &mut self.layout_cache }
+    pub(super) const fn layout_cache_mut(&mut self) -> &mut LayoutCache {
+        self.panes.layout_cache_mut()
+    }
 
-    pub(super) const fn pane_data(&self) -> &PaneDataStore { &self.pane_data }
+    pub(super) const fn pane_data(&self) -> &PaneDataStore { self.panes.pane_data() }
 
-    pub(super) const fn pane_data_mut(&mut self) -> &mut PaneDataStore { &mut self.pane_data }
+    pub(super) const fn pane_data_mut(&mut self) -> &mut PaneDataStore {
+        self.panes.pane_data_mut()
+    }
+
+    pub(super) const fn panes_mut(&mut self) -> &mut Panes { &mut self.panes }
 
     pub(super) const fn mouse_pos(&self) -> Option<Position> { self.mouse_pos }
 
@@ -272,18 +304,10 @@ impl App {
         &mut self,
         hovered_pane_row: Option<types::HoveredPaneRow>,
     ) {
-        self.hovered_pane_row = hovered_pane_row;
+        self.panes.set_hover(hovered_pane_row);
     }
 
-    pub(super) fn apply_hovered_pane_row(&mut self) {
-        self.pane_manager.clear_hover();
-        let Some(hovered) = self.hovered_pane_row else {
-            return;
-        };
-        self.pane_manager
-            .pane_mut(hovered.pane)
-            .set_hovered(Some(hovered.row));
-    }
+    pub(super) fn apply_hovered_pane_row(&mut self) { self.panes.apply_hovered_pane_row(); }
 
     pub(super) const fn cached_fit_widths(&self) -> &ResolvedWidths { &self.cached_fit_widths }
 
@@ -300,9 +324,11 @@ impl App {
     #[cfg(test)]
     pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> { &mut self.expanded }
 
-    pub(super) const fn pane_manager(&self) -> &PaneManager { &self.pane_manager }
+    pub(super) const fn pane_manager(&self) -> &PaneManager { self.panes.pane_manager() }
 
-    pub(super) const fn pane_manager_mut(&mut self) -> &mut PaneManager { &mut self.pane_manager }
+    pub(super) const fn pane_manager_mut(&mut self) -> &mut PaneManager {
+        self.panes.pane_manager_mut()
+    }
 
     pub(super) const fn finder(&self) -> &types::FinderState { &self.finder }
 
@@ -496,30 +522,16 @@ impl App {
 
     pub(super) const fn increment_data_generation(&mut self) { self.data_generation += 1; }
 
-    /// Return the cached worktree-summary for `group_root` if present;
-    /// otherwise compute via `compute` (the shell-out path), cache, and
-    /// return. Cache is sticky — only `clear_worktree_summary_cache`
-    /// invalidates it, called from tree-rebuild paths.
+    /// Delegates to `Panes::worktree_summary_or_compute`. Kept on App
+    /// so existing call sites (e.g. `panes/support.rs`) need no
+    /// rewrite this phase.
     pub(super) fn worktree_summary_or_compute(
         &self,
         group_root: &Path,
         compute: impl FnOnce() -> Vec<WorktreeInfo>,
     ) -> Vec<WorktreeInfo> {
-        if let Some(infos) = self.worktree_summary_cache.borrow().get(group_root) {
-            return infos.clone();
-        }
-        let infos = compute();
-        self.worktree_summary_cache
-            .borrow_mut()
-            .insert(AbsolutePath::from(group_root), infos.clone());
-        infos
+        self.panes.worktree_summary_or_compute(group_root, compute)
     }
-
-    /// Drop all cached worktree summaries. Called automatically by
-    /// `TreeMutation::drop` so direct callers should never need this —
-    /// the only legitimate trigger is "the project tree just changed
-    /// shape." Kept private to this module.
-    fn clear_worktree_summary_cache(&self) { self.worktree_summary_cache.borrow_mut().clear(); }
 
     /// Borrow `App` for a structural mutation of the project tree. The
     /// returned guard is the **only** way (in production code) to call
@@ -570,16 +582,10 @@ impl App {
         self.ci_runs_for_display_inner(path)
     }
 
-    pub(super) fn poll_cpu_if_due(&mut self, now: Instant) {
-        if let Some(snapshot) = self.cpu_poller.poll_if_due(now) {
-            self.pane_data_mut().set_cpu(snapshot);
-        }
-    }
+    pub(super) fn poll_cpu_if_due(&mut self, now: Instant) { self.panes.cpu_tick(now); }
 
     pub(super) fn reset_cpu_placeholder(&mut self) {
-        self.cpu_poller = CpuPoller::new(&self.current_config.cpu);
-        let placeholder = self.cpu_poller.placeholder_snapshot();
-        self.pane_data_mut().set_cpu(placeholder);
+        self.panes.reset_cpu(&self.current_config.cpu);
     }
 
     /// Clone of the process-wide cargo-metadata store. The scan thread and
@@ -669,5 +675,11 @@ impl TreeMutation<'_> {
 }
 
 impl Drop for TreeMutation<'_> {
-    fn drop(&mut self) { self.app.clear_worktree_summary_cache(); }
+    /// Phase 1 staging: temporarily routes the existing tree-mutation
+    /// invalidation through `Panes::clear_for_tree_change` so the
+    /// `worktree_summary_cache` (now owned by `Panes`) is still
+    /// cleared. Phase 6 will rewrite `TreeMutation` as a fan-out
+    /// guard borrowing `Scan + Panes + Selection` directly; this
+    /// per-field nudge will go away then.
+    fn drop(&mut self) { self.app.panes.clear_for_tree_change(); }
 }

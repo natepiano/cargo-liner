@@ -81,7 +81,7 @@ impl App {
     pub(in super::super) fn focused_toast_id(&self) -> Option<u64> {
         let active = self.active_toasts();
         active
-            .get(self.pane_manager.pane(PaneId::Toasts).pos())
+            .get(self.pane_manager().pane(PaneId::Toasts).pos())
             .map(ToastView::id)
     }
 
@@ -96,7 +96,7 @@ impl App {
         self.toasts.prune_tracked_items(now, linger);
         self.toasts.prune(now);
         let toast_len = self.active_toasts().len();
-        self.pane_manager
+        self.pane_manager_mut()
             .pane_mut(PaneId::Toasts)
             .set_len(toast_len);
         if self.base_focus() == PaneId::Toasts && self.active_toasts().is_empty() {
@@ -111,7 +111,7 @@ impl App {
     ) {
         self.toasts.push_timed(title, body, self.toast_timeout(), 1);
         let toast_len = self.active_toasts().len();
-        self.pane_manager
+        self.pane_manager_mut()
             .pane_mut(PaneId::Toasts)
             .set_len(toast_len);
     }
@@ -124,7 +124,7 @@ impl App {
         self.toasts
             .push_timed_styled(title, body, self.toast_timeout(), 1, Warning);
         let toast_len = self.active_toasts().len();
-        self.pane_manager
+        self.pane_manager_mut()
             .pane_mut(PaneId::Toasts)
             .set_len(toast_len);
     }
@@ -136,7 +136,7 @@ impl App {
     ) -> ToastTaskId {
         let task_id = self.toasts.push_task(title, body, 1);
         let toast_len = self.active_toasts().len();
-        self.pane_manager
+        self.pane_manager_mut()
             .pane_mut(PaneId::Toasts)
             .set_len(toast_len);
         task_id
@@ -162,7 +162,7 @@ impl App {
         let linger = Duration::from_secs_f64(self.current_config.tui.task_linger_secs);
         self.toasts.set_tracked_items(task_id, items, linger);
         let toast_len = self.active_toasts().len();
-        self.pane_manager
+        self.pane_manager_mut()
             .pane_mut(PaneId::Toasts)
             .set_len(toast_len);
     }
@@ -174,7 +174,7 @@ impl App {
     ) {
         self.toasts.mark_item_completed(task_id, key);
         let toast_len = self.active_toasts().len();
-        self.pane_manager
+        self.pane_manager_mut()
             .pane_mut(PaneId::Toasts)
             .set_len(toast_len);
     }
@@ -710,17 +710,17 @@ impl App {
             InputContext::DetailTargets => Some("run"),
             InputContext::DetailFields => {
                 if self.base_focus() == PaneId::Package {
-                    let pkg = self.pane_data.package()?;
+                    let pkg = self.pane_data().package()?;
                     let fields = panes::package_fields_from_data(pkg);
-                    let field = *fields.get(self.pane_manager.pane(PaneId::Package).pos())?;
+                    let field = *fields.get(self.pane_manager().pane(PaneId::Package).pos())?;
                     if field == DetailField::CratesIo && pkg.crates_version.is_some() {
                         Some("open")
                     } else {
                         None
                     }
                 } else {
-                    let git = self.pane_data.git()?;
-                    let pos = self.pane_manager.pane(PaneId::Git).pos();
+                    let git = self.pane_data().git()?;
+                    let pos = self.pane_manager().pane(PaneId::Git).pos();
                     match panes::git_row_at(git, pos) {
                         Some(panes::GitRow::Remote(remote)) if remote.full_url.is_some() => {
                             Some("open")
@@ -735,7 +735,7 @@ impl App {
                     .and_then(|path| self.ci_info_for(path));
                 let run_count = ci_info.map_or(0, |info| info.runs.len());
                 let selected_path = self.selected_project_path();
-                if self.pane_manager.pane(PaneId::CiRuns).pos() == run_count
+                if self.pane_manager().pane(PaneId::CiRuns).pos() == run_count
                     && !selected_path.is_some_and(|path| self.ci_is_fetching(path))
                     && !selected_path.is_some_and(|path| self.ci_is_exhausted(path))
                 {
