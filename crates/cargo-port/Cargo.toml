@@ -47,7 +47,9 @@ tempfile = "3"
 #   #[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
 allow_attributes_without_reason = "deny"
 expect_used                     = "deny"
+self_named_module_files         = "deny" # use module/mod.rs (directory form) when a module has submodules
 panic                           = "deny"
+unreachable                     = "deny"
 unwrap_used                     = "deny"
 
 # Enable lint groups as errors (with lower priority so allows can override)

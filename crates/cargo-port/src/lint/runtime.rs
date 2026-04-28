@@ -82,10 +82,6 @@ impl RuntimeHandle {
     }
 }
 
-impl Drop for RuntimeHandle {
-    fn drop(&mut self) { let _ = self.tx.send(SupervisorMsg::Shutdown); }
-}
-
 pub struct SpawnResult {
     pub handle:  Option<RuntimeHandle>,
     pub warning: Option<String>,
@@ -104,7 +100,6 @@ enum SupervisorMsg {
     LintTriggered {
         event: LintTriggerEvent,
     },
-    Shutdown,
 }
 
 struct ProjectWorker {
@@ -192,7 +187,7 @@ fn supervisor_loop(
                     let _ = worker.trigger_tx.send(event);
                 }
             },
-            Ok(SupervisorMsg::Shutdown) | Err(_) => {
+            Err(_) => {
                 for (_, worker) in workers.drain() {
                     stop_worker(worker);
                 }
