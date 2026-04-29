@@ -78,7 +78,6 @@ use super::background::Background;
 use super::config_state::Config;
 use super::inflight::Inflight;
 use super::keymap_state::Keymap;
-use super::pane::PaneManager;
 use super::panes::LayoutCache;
 use super::panes::PaneDataStore;
 use super::panes::PaneId;
@@ -362,12 +361,6 @@ impl App {
     #[cfg(test)]
     pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> {
         self.selection.expanded_mut()
-    }
-
-    pub(super) const fn pane_manager(&self) -> &PaneManager { self.panes.pane_manager() }
-
-    pub(super) const fn pane_manager_mut(&mut self) -> &mut PaneManager {
-        self.panes.pane_manager_mut()
     }
 
     pub(super) const fn finder(&self) -> &types::FinderState { self.selection.finder() }

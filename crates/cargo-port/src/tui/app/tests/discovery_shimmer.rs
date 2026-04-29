@@ -44,9 +44,7 @@ fn expanded_workspace_members_use_the_parent_shimmer_owner() {
     app.scan_state_mut().phase = ScanPhase::Complete;
 
     assert!(app.handle_project_discovered(workspace));
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
-        .set_pos(0);
+    app.panes_mut().project_list_mut().viewport_mut().set_pos(0);
     assert!(app.expand());
     app.ensure_visible_rows_cached();
 

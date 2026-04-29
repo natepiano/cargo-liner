@@ -501,8 +501,9 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
         }
 
         let selection = app
-            .pane_manager()
-            .pane(PaneId::Keymap)
+            .panes()
+            .keymap()
+            .viewport()
             .selection_state(selectable_index, app.pane_focus_state(PaneId::Keymap));
         let key_text = if selection != PaneSelectionState::Unselected && is_awaiting {
             app.inline_error()

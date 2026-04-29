@@ -277,7 +277,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
         if pane_id == PaneId::ProjectList || !pane_rect.contains(pos) {
             continue;
         }
-        let pane = app.pane_manager_mut().pane_mut(pane_id);
+        let pane = app.panes_mut().viewport_mut_for(pane_id);
         if up {
             pane.up();
         } else {
@@ -573,8 +573,9 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
         GlobalAction::OpenKeymap => {
             app.open_overlay(PaneId::Keymap);
             app.open_keymap();
-            app.pane_manager_mut()
-                .pane_mut(PaneId::Keymap)
+            app.panes_mut()
+                .keymap_mut()
+                .viewport_mut()
                 .set_len(keymap_ui::selectable_row_count());
         },
         GlobalAction::Rescan => app.rescan(),

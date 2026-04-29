@@ -642,9 +642,7 @@ fn expect_real_discovery_creates_group(kind: WorktreeProjectKind) {
         "real worktree discovery should create a worktree group",
     );
 
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
-        .set_pos(0);
+    app.panes_mut().project_list_mut().viewport_mut().set_pos(0);
     assert!(app.expand(), "root should expand into worktree entries");
     app.ensure_visible_rows_cached();
     assert_eq!(app.visible_rows().len(), 3);
@@ -995,9 +993,7 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
 }
 
 fn assert_deleted_linked_worktree_dismisses_to_root(app: &mut App, linked_dir: &Path) {
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
-        .set_pos(0);
+    app.panes_mut().project_list_mut().viewport_mut().set_pos(0);
     assert!(
         app.expand(),
         "root should expand into worktree entries after regroup"
@@ -1014,9 +1010,7 @@ fn assert_deleted_linked_worktree_dismisses_to_root(app: &mut App, linked_dir: &
         },
     );
     assert!(app.is_deleted(linked_dir));
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
-        .set_pos(2);
+    app.panes_mut().project_list_mut().viewport_mut().set_pos(2);
     let target = app
         .focused_dismiss_target()
         .expect("deleted linked worktree should be dismissable");

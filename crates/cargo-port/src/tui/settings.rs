@@ -1236,9 +1236,7 @@ pub(super) fn focus_terminal_command(app: &mut App) {
     if let Some(index) =
         SettingOption::iter().position(|setting| setting == SettingOption::TerminalCommand)
     {
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Settings)
-            .set_pos(index);
+        app.panes_mut().settings_mut().viewport_mut().set_pos(index);
     }
 }
 

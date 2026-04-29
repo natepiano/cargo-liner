@@ -19,7 +19,6 @@ use crate::tui;
 use crate::tui::columns::COL_NAME;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::panes::DetailCacheKey;
-use crate::tui::panes::PaneId;
 
 impl App {
     pub fn ensure_visible_rows_cached(&mut self) {
@@ -313,7 +312,7 @@ impl App {
 
     pub fn selected_row(&self) -> Option<VisibleRow> {
         let rows = self.visible_rows();
-        let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
+        let selected = self.panes().project_list().viewport().pos();
         rows.get(selected).copied()
     }
 
@@ -488,7 +487,7 @@ impl App {
     /// Resolve the display path of the currently selected row using `project_list_items`.
     pub fn selected_display_path(&self) -> Option<DisplayPath> {
         let rows = self.visible_rows();
-        let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
+        let selected = self.panes().project_list().viewport().pos();
         let row = rows.get(selected)?;
         self.display_path_for_row(*row)
     }
@@ -950,7 +949,7 @@ impl App {
     }
 
     pub fn selected_is_expandable(&self) -> bool {
-        let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
+        let selected = self.panes().project_list().viewport().pos();
         self.visible_rows()
             .get(selected)
             .copied()
@@ -1012,7 +1011,7 @@ impl App {
         if !self.selected_is_expandable() {
             return false;
         }
-        let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
+        let selected = self.panes().project_list().viewport().pos();
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
         };
@@ -1027,8 +1026,9 @@ impl App {
         self.selection.expanded_mut().remove(key);
         self.ensure_visible_rows_cached();
         if let Some(pos) = self.visible_rows().iter().position(|r| *r == target) {
-            self.pane_manager_mut()
-                .pane_mut(PaneId::ProjectList)
+            self.panes_mut()
+                .project_list_mut()
+                .viewport_mut()
                 .set_pos(pos);
         }
     }
@@ -1040,15 +1040,15 @@ impl App {
     }
 
     pub fn collapse(&mut self) -> bool {
-        let selected = self.pane_manager().pane(PaneId::ProjectList).pos();
+        let selected = self.panes().project_list().viewport().pos();
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
         };
         let expanded_before = self.selection.expanded().len();
-        let selected_before = self.pane_manager().pane(PaneId::ProjectList).pos();
+        let selected_before = self.panes().project_list().viewport().pos();
         self.collapse_row(row);
         self.selection.expanded().len() != expanded_before
-            || self.pane_manager().pane(PaneId::ProjectList).pos() != selected_before
+            || self.panes().project_list().viewport().pos() != selected_before
     }
 
     pub fn collapse_row(&mut self, row: VisibleRow) {
@@ -1156,10 +1156,11 @@ impl App {
         if count == 0 {
             return;
         }
-        let current = self.pane_manager().pane(PaneId::ProjectList).pos();
+        let current = self.panes().project_list().viewport().pos();
         if current > 0 {
-            self.pane_manager_mut()
-                .pane_mut(PaneId::ProjectList)
+            self.panes_mut()
+                .project_list_mut()
+                .viewport_mut()
                 .set_pos(current - 1);
         }
     }
@@ -1169,18 +1170,20 @@ impl App {
         if count == 0 {
             return;
         }
-        let current = self.pane_manager().pane(PaneId::ProjectList).pos();
+        let current = self.panes().project_list().viewport().pos();
         if current < count - 1 {
-            self.pane_manager_mut()
-                .pane_mut(PaneId::ProjectList)
+            self.panes_mut()
+                .project_list_mut()
+                .viewport_mut()
                 .set_pos(current + 1);
         }
     }
 
     pub fn move_to_top(&mut self) {
         if self.row_count() > 0 {
-            self.pane_manager_mut()
-                .pane_mut(PaneId::ProjectList)
+            self.panes_mut()
+                .project_list_mut()
+                .viewport_mut()
                 .set_pos(0);
         }
     }
@@ -1188,8 +1191,9 @@ impl App {
     pub fn move_to_bottom(&mut self) {
         let count = self.row_count();
         if count > 0 {
-            self.pane_manager_mut()
-                .pane_mut(PaneId::ProjectList)
+            self.panes_mut()
+                .project_list_mut()
+                .viewport_mut()
                 .set_pos(count - 1);
         }
     }
@@ -1277,8 +1281,9 @@ impl App {
         if let Some(anchor) = anchor
             && let Some(pos) = self.visible_rows().iter().position(|row| *row == anchor)
         {
-            self.pane_manager_mut()
-                .pane_mut(PaneId::ProjectList)
+            self.panes_mut()
+                .project_list_mut()
+                .viewport_mut()
                 .set_pos(pos);
         }
         let anchor_path = self.selected_project_path().map(AbsolutePath::from);
@@ -1381,8 +1386,9 @@ impl App {
             .iter()
             .position(|row| self.row_matches_project_path(*row, target_path));
         if let Some(selected_index) = selected_index {
-            self.pane_manager_mut()
-                .pane_mut(PaneId::ProjectList)
+            self.panes_mut()
+                .project_list_mut()
+                .viewport_mut()
                 .set_pos(selected_index);
         }
     }

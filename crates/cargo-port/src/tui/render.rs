@@ -625,26 +625,31 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
     } else {
         content_area
     };
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
+    app.panes_mut()
+        .project_list_mut()
+        .viewport_mut()
         .set_len(total_project_rows);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
+    app.panes_mut()
+        .project_list_mut()
+        .viewport_mut()
         .set_content_area(list_area);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
+    app.panes_mut()
+        .project_list_mut()
+        .viewport_mut()
         .set_viewport_rows(usize::from(list_area.height));
     let project_list = List::new(items);
-    let mut list_state = ListState::default()
-        .with_selected(Some(app.pane_manager().pane(PaneId::ProjectList).pos()));
-    *list_state.offset_mut() = app.pane_manager().pane(PaneId::ProjectList).scroll_offset();
+    let mut list_state =
+        ListState::default().with_selected(Some(app.panes().project_list().viewport().pos()));
+    *list_state.offset_mut() = app.panes().project_list().viewport().scroll_offset();
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
     app.layout_cache_mut().project_list_body = list_area;
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
+    app.panes_mut()
+        .project_list_mut()
+        .viewport_mut()
         .set_scroll_offset(list_state.offset());
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
+    app.panes_mut()
+        .project_list_mut()
+        .viewport_mut()
         .set_pos(list_state.selected().unwrap_or(0));
     interaction::register_project_list_hitboxes(app, list_area, row_width);
 
@@ -652,12 +657,13 @@ pub(super) fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) 
         render_project_list_footer(frame, content_area, line);
     }
 
-    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::ProjectList));
+    pane::render_overflow_affordance(frame, area, app.panes().project_list().viewport());
 }
 
-fn clear_project_list_surface(app: &mut App) {
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
+const fn clear_project_list_surface(app: &mut App) {
+    app.panes_mut()
+        .project_list_mut()
+        .viewport_mut()
         .clear_surface();
 }
 
@@ -673,7 +679,7 @@ fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<
 
 fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
     let focused = app.is_focused(PaneId::ProjectList);
-    let cursor = app.pane_manager().pane(PaneId::ProjectList).pos();
+    let cursor = app.panes().project_list().viewport().pos();
     let roots = app.resolved_dirs();
 
     // Count visible rows per root directory and determine which root the
@@ -1565,7 +1571,7 @@ pub(super) fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<Li
         .projects()
         .resolved_root_labels(app.include_non_rust().includes_non_rust());
     let focus = app.pane_focus_state(PaneId::ProjectList);
-    let pane = app.pane_manager().pane(PaneId::ProjectList);
+    let pane = app.panes().project_list().viewport();
 
     let rows = app.visible_rows();
     rows.iter()

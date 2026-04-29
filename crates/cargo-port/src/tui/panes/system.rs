@@ -35,6 +35,7 @@ use super::pane_impls::LangPane;
 use super::pane_impls::LintsPane;
 use super::pane_impls::OutputPane;
 use super::pane_impls::PackagePane;
+use super::pane_impls::ProjectListPane;
 use super::pane_impls::SettingsPane;
 use super::pane_impls::TargetsPane;
 use super::pane_impls::ToastsPane;
@@ -69,18 +70,19 @@ pub struct DispatchArgs<'a> {
 pub struct Panes {
     // ── Per-pane state (Phase 8 migrated). Phase 9 brings the
     //    remaining seven panes in alongside their state.
-    package:  PackagePane,
-    lang:     LangPane,
-    cpu:      CpuPane,
-    git:      GitPane,
-    lints:    LintsPane,
-    ci_runs:  CiPane,
-    toasts:   ToastsPane,
-    keymap:   KeymapPane,
-    settings: SettingsPane,
-    finder:   FinderPane,
-    output:   OutputPane,
-    targets:  TargetsPane,
+    package:      PackagePane,
+    lang:         LangPane,
+    cpu:          CpuPane,
+    git:          GitPane,
+    lints:        LintsPane,
+    ci_runs:      CiPane,
+    toasts:       ToastsPane,
+    keymap:       KeymapPane,
+    settings:     SettingsPane,
+    finder:       FinderPane,
+    output:       OutputPane,
+    targets:      TargetsPane,
+    project_list: ProjectListPane,
 
     // ── Phase 1 grab-bag (dissolves in Phases 9–10):
     manager:                PaneManager,
@@ -99,18 +101,19 @@ pub struct Panes {
 impl Panes {
     pub fn new(cpu_cfg: &CpuConfig) -> Self {
         Self {
-            package:  PackagePane::new(),
-            lang:     LangPane::new(),
-            cpu:      CpuPane::new(cpu_cfg),
-            git:      GitPane::new(),
-            lints:    LintsPane::new(),
-            ci_runs:  CiPane::new(),
-            toasts:   ToastsPane::new(),
-            keymap:   KeymapPane::new(),
-            settings: SettingsPane::new(),
-            finder:   FinderPane::new(),
-            output:   OutputPane::new(),
-            targets:  TargetsPane::new(),
+            package:      PackagePane::new(),
+            lang:         LangPane::new(),
+            cpu:          CpuPane::new(cpu_cfg),
+            git:          GitPane::new(),
+            lints:        LintsPane::new(),
+            ci_runs:      CiPane::new(),
+            toasts:       ToastsPane::new(),
+            keymap:       KeymapPane::new(),
+            settings:     SettingsPane::new(),
+            finder:       FinderPane::new(),
+            output:       OutputPane::new(),
+            targets:      TargetsPane::new(),
+            project_list: ProjectListPane::new(),
 
             manager:                PaneManager::new(),
             data:                   PaneDataStore::new(),
@@ -185,6 +188,12 @@ impl Panes {
 
     /// Mutable typed accessor for the Targets pane.
     pub const fn targets_mut(&mut self) -> &mut TargetsPane { &mut self.targets }
+
+    /// Typed accessor for the `ProjectList` pane.
+    pub const fn project_list(&self) -> &ProjectListPane { &self.project_list }
+
+    /// Mutable typed accessor for the `ProjectList` pane.
+    pub const fn project_list_mut(&mut self) -> &mut ProjectListPane { &mut self.project_list }
 
     /// Write the detail-set content across the four migrated detail
     /// panes (Package/Git/CI/Lints) plus the targets slot in
@@ -359,7 +368,7 @@ impl Panes {
     /// vestigial `PaneManager` slot for un-migrated panes. Used
     /// by hitbox registration in `render.rs::register_hitbox_for_pane`
     /// and any code that needs a viewport by `PaneId`.
-    pub fn viewport_for(&self, id: PaneId) -> &Viewport {
+    pub const fn viewport_for(&self, id: PaneId) -> &Viewport {
         match id {
             PaneId::Cpu => self.cpu.viewport(),
             PaneId::Lang => self.lang.viewport(),
@@ -373,7 +382,7 @@ impl Panes {
             PaneId::Finder => self.finder.viewport(),
             PaneId::Output => self.output.viewport(),
             PaneId::Targets => self.targets.viewport(),
-            PaneId::ProjectList => self.manager.pane(id),
+            PaneId::ProjectList => self.project_list.viewport(),
         }
     }
 
@@ -385,7 +394,7 @@ impl Panes {
     /// code that needs to set a cursor position by `PaneId`.
     /// Each Phase-8 / Phase-9 sub-commit moves one pane out of
     /// the fallback arm.
-    pub fn set_pane_pos(&mut self, id: PaneId, row: usize) {
+    pub const fn set_pane_pos(&mut self, id: PaneId, row: usize) {
         match id {
             PaneId::Cpu => self.cpu.viewport_mut().set_pos(row),
             PaneId::Lang => self.lang.viewport_mut().set_pos(row),
@@ -399,13 +408,9 @@ impl Panes {
             PaneId::Finder => self.finder.viewport_mut().set_pos(row),
             PaneId::Output => self.output.viewport_mut().set_pos(row),
             PaneId::Targets => self.targets.viewport_mut().set_pos(row),
-            PaneId::ProjectList => self.manager.pane_mut(id).set_pos(row),
+            PaneId::ProjectList => self.project_list.viewport_mut().set_pos(row),
         }
     }
-
-    pub const fn pane_manager(&self) -> &PaneManager { &self.manager }
-
-    pub const fn pane_manager_mut(&mut self) -> &mut PaneManager { &mut self.manager }
 
     pub const fn pane_data(&self) -> &PaneDataStore { &self.data }
 
@@ -443,6 +448,7 @@ impl Panes {
         self.finder.viewport_mut().set_hovered(None);
         self.output.viewport_mut().set_hovered(None);
         self.targets.viewport_mut().set_hovered(None);
+        self.project_list.viewport_mut().set_hovered(None);
         let Some(hovered) = self.hovered_row else {
             return;
         };
@@ -452,8 +458,9 @@ impl Panes {
 
     /// Mutable counterpart to `viewport_for`. Routes to the per-pane
     /// `Viewport` for migrated panes, falls back to the vestigial
-    /// `PaneManager` slot for un-migrated panes.
-    fn viewport_mut_for(&mut self, id: PaneId) -> &mut Viewport {
+    /// `PaneManager` slot for un-migrated panes (none remain after
+    /// Phase 9.7a, but the match still covers the full `PaneId` set).
+    pub const fn viewport_mut_for(&mut self, id: PaneId) -> &mut Viewport {
         match id {
             PaneId::Cpu => self.cpu.viewport_mut(),
             PaneId::Lang => self.lang.viewport_mut(),
@@ -467,7 +474,7 @@ impl Panes {
             PaneId::Finder => self.finder.viewport_mut(),
             PaneId::Output => self.output.viewport_mut(),
             PaneId::Targets => self.targets.viewport_mut(),
-            PaneId::ProjectList => self.manager.pane_mut(id),
+            PaneId::ProjectList => self.project_list.viewport_mut(),
         }
     }
 

@@ -32,9 +32,7 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
         .unwrap()
         .set_status(LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")));
 
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
-        .set_pos(0);
+    app.panes_mut().project_list_mut().viewport_mut().set_pos(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
     let root_worktrees = app.panes().git().content().map(|g| g.worktrees.clone());
@@ -47,9 +45,7 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
         Some("ws_feat")
     );
 
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
-        .set_pos(1);
+    app.panes_mut().project_list_mut().viewport_mut().set_pos(1);
     app.sync_selected_project();
     app.ensure_detail_cached();
     assert_eq!(
@@ -101,9 +97,7 @@ fn linked_worktree_entry_builds_detail_for_selected_row() {
         ]
     );
 
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
-        .set_pos(2);
+    app.panes_mut().project_list_mut().viewport_mut().set_pos(2);
     app.sync_selected_project();
     app.ensure_detail_cached();
 
@@ -253,9 +247,7 @@ fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace
         "linked workspace worktree should arrive with member groups populated"
     );
 
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
-        .set_pos(0);
+    app.panes_mut().project_list_mut().viewport_mut().set_pos(0);
     assert!(app.expand(), "root should expand into worktree entries");
     app.ensure_visible_rows_cached();
     assert_eq!(
@@ -273,9 +265,7 @@ fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace
         ]
     );
 
-    app.pane_manager_mut()
-        .pane_mut(PaneId::ProjectList)
-        .set_pos(2);
+    app.panes_mut().project_list_mut().viewport_mut().set_pos(2);
     assert!(
         app.expand(),
         "linked workspace worktree should expand into its workspace members"

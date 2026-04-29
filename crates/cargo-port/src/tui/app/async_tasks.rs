@@ -101,8 +101,9 @@ impl App {
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
         } else if !self.projects().is_empty() {
-            self.pane_manager_mut()
-                .pane_mut(PaneId::ProjectList)
+            self.panes_mut()
+                .project_list_mut()
+                .viewport_mut()
                 .set_pos(0);
         }
         if should_focus_project_list {
@@ -205,8 +206,9 @@ impl App {
         );
         self.keymap.set_diagnostics_id(Some(id));
         let toast_len = self.active_toasts().len();
-        self.pane_manager_mut()
-            .pane_mut(PaneId::Toasts)
+        self.panes_mut()
+            .toasts_mut()
+            .viewport_mut()
             .set_len(toast_len);
     }
 
@@ -1485,9 +1487,10 @@ impl App {
         self.selection.paths_mut().selected_project = None;
         self.inflight.clear_pending_ci_fetch();
         self.selection.expanded_mut().clear();
-        self.pane_manager_mut().pane_mut(PaneId::ProjectList).home();
-        self.pane_manager_mut()
-            .pane_mut(PaneId::ProjectList)
+        self.panes_mut().project_list_mut().viewport_mut().home();
+        self.panes_mut()
+            .project_list_mut()
+            .viewport_mut()
             .set_scroll_offset(0);
         self.scan.bump_generation();
         let scan_dirs = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
@@ -1983,8 +1986,9 @@ impl App {
                     linger,
                 );
                 let toast_len = self.active_toasts().len();
-                self.pane_manager_mut()
-                    .pane_mut(PaneId::Toasts)
+                self.panes_mut()
+                    .toasts_mut()
+                    .viewport_mut()
                     .set_len(toast_len);
             }
         }
@@ -2149,8 +2153,9 @@ impl App {
         let (title, body) = service_unavailable_message(service, kind);
         let id = self.toasts.push_persistent(title, body, Warning, None, 1);
         let toast_len = self.active_toasts().len();
-        self.pane_manager_mut()
-            .pane_mut(PaneId::Toasts)
+        self.panes_mut()
+            .toasts_mut()
+            .viewport_mut()
             .set_len(toast_len);
         id
     }
@@ -2457,8 +2462,9 @@ impl App {
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
         } else if !self.projects().is_empty() {
-            self.pane_manager_mut()
-                .pane_mut(PaneId::ProjectList)
+            self.panes_mut()
+                .project_list_mut()
+                .viewport_mut()
                 .set_pos(0);
         }
         self.sync_selected_project();

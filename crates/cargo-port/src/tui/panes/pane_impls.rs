@@ -421,6 +421,32 @@ impl TargetsPane {
     pub fn clear_content(&mut self) { self.content = None; }
 }
 
+// ── ProjectList ─────────────────────────────────────────────────
+//
+// Phase 9.7a: cursor `Viewport` absorbed onto ProjectListPane.
+// ProjectList is the largest pane by render-body line count, but
+// its only state is the viewport — there is no content slot
+// (the renderer reads off `app.projects()` and the layout cache
+// directly). Phase 9.7b relocates the ~13 render helpers from
+// `tui/render.rs` into `panes/project_list.rs`. After that the
+// last `PaneManager` slot is gone and Phase 10 deletes the
+// vestigial `manager` field on `Panes`.
+pub struct ProjectListPane {
+    viewport: Viewport,
+}
+
+impl ProjectListPane {
+    pub const fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+        }
+    }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+}
+
 // ── Output ──────────────────────────────────────────────────────
 //
 // Phase 9.5: `OutputPane` lands as a per-pane struct alongside its

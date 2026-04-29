@@ -64,7 +64,7 @@ pub(super) struct ToastHitbox {
 }
 
 pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row_width: u16) {
-    let pane = app.pane_manager().pane(PaneId::ProjectList);
+    let pane = app.panes().project_list().viewport();
     let visible_height = usize::from(list_area.height);
     let visible_start = pane.scroll_offset();
     let visible_end = pane.len().min(visible_start.saturating_add(visible_height));
@@ -222,9 +222,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
         UiTarget::ToastCard(id) => {
             let active = app.active_toasts();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
-                app.pane_manager_mut()
-                    .pane_mut(PaneId::Toasts)
-                    .set_pos(index);
+                app.panes_mut().toasts_mut().viewport_mut().set_pos(index);
                 app.focus_pane(PaneId::Toasts);
             }
             true
@@ -712,9 +710,7 @@ mod tests {
 
         let mut app = make_app(&[make_package("deleted", &deleted_dir)]);
         mark_deleted(&mut app, &deleted_dir);
-        app.pane_manager_mut()
-            .pane_mut(PaneId::ProjectList)
-            .set_pos(0);
+        app.panes_mut().project_list_mut().viewport_mut().set_pos(0);
         render_ui(&mut app);
 
         let keyboard_target = app
@@ -759,7 +755,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::ProjectList);
-        assert_eq!(app.pane_manager().pane(PaneId::ProjectList).pos(), 1);
+        assert_eq!(app.panes().project_list().viewport().pos(), 1);
         assert_eq!(
             app.selected_project_path().map(Path::to_path_buf),
             Some(second),
@@ -1107,9 +1103,7 @@ mod tests {
         render_ui(&mut app);
         let stale_click = row_dismiss_point(&app, 0);
 
-        app.pane_manager_mut()
-            .pane_mut(PaneId::ProjectList)
-            .set_pos(0);
+        app.panes_mut().project_list_mut().viewport_mut().set_pos(0);
         let target = app
             .focused_dismiss_target()
             .unwrap_or_else(|| std::process::abort());
@@ -1139,8 +1133,9 @@ mod tests {
             app.toasts_mut()
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
         let toast_len = app.active_toasts().len();
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Toasts)
+        app.panes_mut()
+            .toasts_mut()
+            .viewport_mut()
             .set_len(toast_len);
         render_ui(&mut app);
 
@@ -1169,8 +1164,9 @@ mod tests {
             app.toasts_mut()
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
         let toast_len = app.active_toasts().len();
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Toasts)
+        app.panes_mut()
+            .toasts_mut()
+            .viewport_mut()
             .set_len(toast_len);
         render_ui(&mut app);
 

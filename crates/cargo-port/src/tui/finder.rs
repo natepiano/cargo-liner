@@ -892,8 +892,9 @@ fn render_finder_results(
                 )),
             ])
             .style(
-                app.pane_manager()
-                    .pane(PaneId::Finder)
+                app.panes()
+                    .finder()
+                    .viewport()
                     .selection_state(row_index, app.pane_focus_state(PaneId::Finder))
                     .overlay_style(),
             )
