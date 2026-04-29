@@ -200,12 +200,13 @@ pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyE
             app.close_keymap();
             app.close_overlay();
         },
-        KeyCode::Up => app.pane_manager_mut().pane_mut(PaneId::Keymap).up(),
-        KeyCode::Down => app.pane_manager_mut().pane_mut(PaneId::Keymap).down(),
-        KeyCode::Home => app.pane_manager_mut().pane_mut(PaneId::Keymap).home(),
+        KeyCode::Up => app.panes_mut().keymap_mut().viewport_mut().up(),
+        KeyCode::Down => app.panes_mut().keymap_mut().viewport_mut().down(),
+        KeyCode::Home => app.panes_mut().keymap_mut().viewport_mut().home(),
         KeyCode::End => app
-            .pane_manager_mut()
-            .pane_mut(PaneId::Keymap)
+            .panes_mut()
+            .keymap_mut()
+            .viewport_mut()
             .set_pos(selectable_row_count().saturating_sub(1)),
         KeyCode::Enter => app.keymap_begin_awaiting(),
         _ => {},
@@ -227,7 +228,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     let bind = KeyBind::new(event.code, event.modifiers);
     let rows = build_rows(app.current_keymap());
     let selectable: Vec<&KeymapRow> = rows.iter().filter(|r| !r.is_header).collect();
-    let Some(row) = selectable.get(app.pane_manager().pane(PaneId::Keymap).pos()) else {
+    let Some(row) = selectable.get(app.panes().keymap().viewport().pos()) else {
         return;
     };
 
@@ -585,7 +586,7 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     }
     .render(frame);
 
-    let selected_pos = app.pane_manager().pane(PaneId::Keymap).pos();
+    let selected_pos = app.panes().keymap().viewport().pos();
     let is_awaiting = app.ui_modes().keymap.is_awaiting_key();
     let lines = build_lines(&rows, app, is_awaiting);
 

@@ -29,6 +29,7 @@ use super::layout::LayoutCache;
 use super::pane_impls::CiPane;
 use super::pane_impls::CpuPane;
 use super::pane_impls::GitPane;
+use super::pane_impls::KeymapPane;
 use super::pane_impls::LangPane;
 use super::pane_impls::LintsPane;
 use super::pane_impls::PackagePane;
@@ -71,6 +72,7 @@ pub struct Panes {
     lints:   LintsPane,
     ci_runs: CiPane,
     toasts:  ToastsPane,
+    keymap:  KeymapPane,
 
     // ── Phase 1 grab-bag (dissolves in Phases 9–10):
     manager:                PaneManager,
@@ -96,6 +98,7 @@ impl Panes {
             lints:   LintsPane::new(),
             ci_runs: CiPane::new(),
             toasts:  ToastsPane::new(),
+            keymap:  KeymapPane::new(),
 
             manager:                PaneManager::new(),
             data:                   PaneDataStore::new(),
@@ -146,6 +149,12 @@ impl Panes {
 
     /// Mutable typed accessor for the Toasts pane.
     pub const fn toasts_mut(&mut self) -> &mut ToastsPane { &mut self.toasts }
+
+    /// Typed accessor for the Keymap pane.
+    pub const fn keymap(&self) -> &KeymapPane { &self.keymap }
+
+    /// Mutable typed accessor for the Keymap pane.
+    pub const fn keymap_mut(&mut self) -> &mut KeymapPane { &mut self.keymap }
 
     /// Write the detail-set content across the four migrated detail
     /// panes (Package/Git/CI/Lints) plus the targets slot in
@@ -328,6 +337,7 @@ impl Panes {
             PaneId::Package => self.package.viewport(),
             PaneId::Git => self.git.viewport(),
             PaneId::Toasts => self.toasts.viewport(),
+            PaneId::Keymap => self.keymap.viewport(),
             _ => self.manager.pane(id),
         }
     }
@@ -349,6 +359,7 @@ impl Panes {
             PaneId::Package => self.package.viewport_mut().set_pos(row),
             PaneId::Git => self.git.viewport_mut().set_pos(row),
             PaneId::Toasts => self.toasts.viewport_mut().set_pos(row),
+            PaneId::Keymap => self.keymap.viewport_mut().set_pos(row),
             _ => self.manager.pane_mut(id).set_pos(row),
         }
     }

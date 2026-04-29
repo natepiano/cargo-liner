@@ -319,3 +319,26 @@ impl ToastsPane {
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 }
+
+// ── Keymap ──────────────────────────────────────────────────────
+//
+// Phase 9.2: cursor `Viewport` absorbed onto KeymapPane. The
+// keymap popup renders via `keymap_ui::render_keymap_popup` (an
+// overlay path, not `render_tiled_pane`), so there is no `Pane`
+// trait impl. The viewport tracks cursor position over the
+// keymap-row list.
+pub struct KeymapPane {
+    viewport: Viewport,
+}
+
+impl KeymapPane {
+    pub const fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+        }
+    }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+}
