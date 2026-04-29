@@ -278,6 +278,10 @@ impl Pane for LintsPane {
     fn input_context(&self) -> InputContextKind { InputContextKind::Lints }
     fn has_row_hitboxes(&self) -> bool { false }
     fn size_spec(&self, _cpu_width: u16) -> PaneSizeSpec { PaneSizeSpec::fill() }
+
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: PaneRenderCtx<'_, '_>) {
+        super::lints::render_lints_pane_body(frame, area, self, ctx);
+    }
 }
 
 // ── CiRuns ──────────────────────────────────────────────────────

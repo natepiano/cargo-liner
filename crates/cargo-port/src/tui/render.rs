@@ -483,7 +483,22 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
                 panes::render_empty_targets_panel(frame, app, area);
             }
         },
-        PaneId::Lints => panes::render_lints_panel(frame, app, area),
+        PaneId::Lints => {
+            let focused_pane = app.focused_pane();
+            let focus_state = app.pane_focus_state(PaneId::Lints);
+            let is_focused = app.is_focused(PaneId::Lints);
+            let animation_elapsed = app.animation_elapsed();
+            let (panes, config) = app.split_panes_and_config();
+            panes.dispatch_lints_render(
+                frame,
+                area,
+                focused_pane,
+                focus_state,
+                is_focused,
+                animation_elapsed,
+                config,
+            );
+        },
         PaneId::CiRuns => panes::render_ci_panel(frame, app, area),
         PaneId::Output => render_example_output(frame, app, area),
         PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {},

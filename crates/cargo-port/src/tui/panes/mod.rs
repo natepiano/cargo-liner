@@ -46,7 +46,8 @@ pub(super) use layout::BottomRow;
 pub(super) use layout::LayoutCache;
 pub(super) use layout::resolve_layout;
 pub(super) use layout::tab_order;
-pub(super) use lints::render_lints_panel;
+// `render_lints_panel` removed in Phase 8.10 — LintsPane::render is the
+// trait method now. `render_tiled_pane` dispatches via `panes.dispatch_lints_render`.
 pub(super) use package::RenderStyles;
 #[cfg(test)]
 pub(super) use package::description_lines;

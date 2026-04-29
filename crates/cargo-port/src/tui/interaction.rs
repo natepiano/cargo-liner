@@ -497,8 +497,24 @@ mod tests {
         });
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+        let focused_pane = app.focused_pane();
+        let focus_state = app.pane_focus_state(PaneId::Lints);
+        let is_focused = app.is_focused(PaneId::Lints);
+        let animation_elapsed = app.animation_elapsed();
         terminal
-            .draw(|frame| panes::render_lints_panel(frame, app, frame.area()))
+            .draw(|frame| {
+                let area = frame.area();
+                let (panes, config) = app.split_panes_and_config();
+                panes.dispatch_lints_render(
+                    frame,
+                    area,
+                    focused_pane,
+                    focus_state,
+                    is_focused,
+                    animation_elapsed,
+                    config,
+                );
+            })
             .unwrap_or_else(|_| std::process::abort());
     }
 

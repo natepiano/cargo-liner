@@ -14,17 +14,17 @@ use ratatui::widgets::TableState;
 
 use super::LintsData;
 use super::PaneId;
+use super::dispatch::PaneRenderCtx;
+use super::pane_impls::LintsPane;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::tui::LINT_SPINNER;
-use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
-use crate::tui::interaction;
 use crate::tui::interaction::UiSurface::Content;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
@@ -131,43 +131,48 @@ fn build_lint_rows(
     rows
 }
 
-pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let Some(lints_data) = app.panes().lints().content().cloned() else {
+/// Body of `LintsPane::render`. Same shape as
+/// `cpu::render_cpu_pane_body`: typed parameters instead of
+/// `&mut App`. Helpers above already operate on `&Viewport`.
+pub(super) fn render_lints_pane_body(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &mut LintsPane,
+    ctx: PaneRenderCtx<'_, '_>,
+) {
+    let Some(lints_data) = pane.content().cloned() else {
         let block = lints_panel_block(" No Lint Runs ".to_string(), false, false);
         frame.render_widget(block, area);
         return;
     };
 
-    let focused = app.is_focused(PaneId::Lints);
-    let title = lints_panel_title(&lints_data, focused, app.panes().lints().viewport().pos());
+    let focused = ctx.is_focused;
+    let title = lints_panel_title(&lints_data, focused, pane.viewport().pos());
     let block = lints_panel_block(title, focused, !lints_data.runs.is_empty());
 
     let inner = block.inner(area);
     {
-        let viewport = app.panes_mut().lints_mut().viewport_mut();
+        let viewport = pane.viewport_mut();
         viewport.set_content_area(inner);
         viewport.set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
     }
 
     if lints_data.runs.is_empty() {
         frame.render_widget(block, area);
-        app.panes_mut().lints_mut().viewport_mut().set_len(0);
+        pane.viewport_mut().set_len(0);
         return;
     }
 
-    let pane = app.panes().lints().viewport().clone();
-    let focus = app.pane_focus_state(PaneId::Lints);
+    let viewport_clone = pane.viewport().clone();
+    let focus = ctx.focus_state;
     let rows = build_lint_rows(
         &lints_data.runs,
         &lints_data.sizes,
-        app.animation_elapsed(),
-        &pane,
+        ctx.animation_elapsed,
+        &viewport_clone,
         focus,
     );
-    app.panes_mut()
-        .lints_mut()
-        .viewport_mut()
-        .set_len(rows.len());
+    pane.viewport_mut().set_len(rows.len());
 
     let col_header_style = Style::default()
         .fg(COLUMN_HEADER_COLOR)
@@ -200,34 +205,43 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     .row_highlight_style(Style::default());
 
     let mut table_state =
-        TableState::default().with_selected(Some(app.panes().lints().viewport().pos()));
+        TableState::default().with_selected(Some(pane.viewport().pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.panes_mut()
-        .lints_mut()
-        .viewport_mut()
+    pane.viewport_mut()
         .set_scroll_offset(table_state.offset());
-    pane::render_overflow_affordance(frame, area, app.panes().lints().viewport());
+    pane::render_overflow_affordance(frame, area, pane.viewport());
 
     let visible_height = usize::from(inner.height.saturating_sub(1));
     let visible_start = table_state.offset();
-    let visible_end = app
-        .panes()
-        .lints()
+    let visible_end = pane
         .viewport()
         .len()
         .min(visible_start.saturating_add(visible_height));
 
+    let PaneRenderCtx { hit_sink, .. } = ctx;
     for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
         let row_y = inner
             .y
             .saturating_add(1)
             .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
-        interaction::register_pane_row_hitbox(
-            app,
+        hit_sink.push_pane_row(
             Rect::new(inner.x, row_y, inner.width, 1),
             PaneId::Lints,
             row_index,
             Content,
         );
     }
+}
+
+#[allow(
+    dead_code,
+    reason = "test-only helper for fixtures that pre-populate via App; will be inlined or removed once tests use trait dispatch directly"
+)]
+pub(super) fn render_lints_pane_for_test(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &mut LintsPane,
+    ctx: PaneRenderCtx<'_, '_>,
+) {
+    render_lints_pane_body(frame, area, pane, ctx);
 }
