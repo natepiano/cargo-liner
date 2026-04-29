@@ -865,6 +865,23 @@ and the step list, not here.
   the carve is considered shipped.
 
 - **Phase 8 (Migrate the 6 detail/data panes)**:
+  - **Phase 8 ships as up to 6 commits**, one per pane (or
+    grouped if a pair migrates trivially together). Order is
+    simplest-first to grow the trait-dispatch surface
+    incrementally with validation between commits. Both/all
+    commits land before Phase 8 is considered shipped; Phase 9
+    starts after every detail/data pane is fully on the trait.
+  - **Each per-pane commit may itself ship in two stages** if
+    the migration is large: (a) **state relocation** — move
+    pane-specific extras (`cpu_poller`, `ci_display_modes`),
+    content slot, and viewport onto the per-pane struct;
+    update typed accessors and assembly path; old free-function
+    render body still runs (now reading from per-pane state via
+    typed accessors). (b) **body migration** — move the render
+    and input bodies into trait methods, flip the dispatch
+    sites, retire dead-code allows. The split keeps each commit
+    reviewable; both stages must land before that pane is
+    considered shipped.
   - Migrate `CiPane`, `CpuPane`, `GitPane`, `LintsPane`,
     `PackagePane`, `LangPane`. Each pane gains:
     - `viewport: Viewport` field (the per-pane cursor/scroll/hover/

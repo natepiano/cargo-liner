@@ -6,7 +6,6 @@ use super::TargetsData;
 #[cfg(test)]
 use crate::ci::CiRun;
 use crate::tui::app::VisibleRow;
-use crate::tui::cpu::CpuSnapshot;
 
 /// Identifies the inputs that produced a built `PaneDataStore` detail set.
 /// Two keys match iff both the selected row and the app's data generation
@@ -22,14 +21,13 @@ pub struct DetailCacheKey {
 /// - `package`/`git`/`targets`/`ci`/`lints` are the "detail set" and can only change together via
 ///   `set_detail_data` / `clear_detail_data`. Every write records a stamp so `detail_is_current`
 ///   can tell callers whether a rebuild would be redundant.
-/// - `cpu` is independent of the detail set (different cadence, different producer). It has its own
-///   setter and is not covered by the stamp.
+///
+/// Phase 8.1a moved `cpu` out of this store onto `CpuPane`.
 ///
 /// Fields are private so the stamp cannot go out of sync with the data.
 pub struct PaneDataStore {
     package:       Option<PackageData>,
     git:           Option<GitData>,
-    cpu:           Option<CpuSnapshot>,
     targets:       Option<TargetsData>,
     ci:            Option<CiData>,
     lints:         Option<LintsData>,
@@ -43,7 +41,6 @@ impl PaneDataStore {
         Self {
             package:                    None,
             git:                        None,
-            cpu:                        None,
             targets:                    None,
             ci:                         None,
             lints:                      None,
@@ -58,7 +55,6 @@ impl PaneDataStore {
     pub const fn targets(&self) -> Option<&TargetsData> { self.targets.as_ref() }
     pub const fn ci(&self) -> Option<&CiData> { self.ci.as_ref() }
     pub const fn lints(&self) -> Option<&LintsData> { self.lints.as_ref() }
-    pub const fn cpu(&self) -> Option<&CpuSnapshot> { self.cpu.as_ref() }
 
     /// True when the stored detail matches `desired` — caller can skip
     /// rebuilding. A desired key of `None` matches a cleared store.
@@ -103,8 +99,6 @@ impl PaneDataStore {
             self.detail_builds += 1;
         }
     }
-
-    pub fn set_cpu(&mut self, snapshot: CpuSnapshot) { self.cpu = Some(snapshot); }
 
     /// Number of times the detail set has been written (via
     /// `set_detail_data` or `clear_detail_data`). Lets tests prove that

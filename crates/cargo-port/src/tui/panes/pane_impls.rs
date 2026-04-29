@@ -16,9 +16,14 @@
 //! produce the same answers and are pinned by the
 //! characterization tests in `panes/spec.rs`.
 
+use std::time::Instant;
+
 use super::dispatch::InputContextKind;
 use super::dispatch::Pane;
 use super::spec::PaneId;
+use crate::config::CpuConfig;
+use crate::tui::cpu::CpuPoller;
+use crate::tui::cpu::CpuSnapshot;
 use crate::tui::pane::PaneAxisSize;
 use crate::tui::pane::PaneSizeSpec;
 
@@ -50,7 +55,53 @@ impl Pane for LangPane {
 }
 
 // ── Cpu ─────────────────────────────────────────────────────────
-pub struct CpuPane;
+//
+// Phase 8.1a: CpuPane absorbs `cpu_poller` (was on `Panes` grab
+// bag) and `content` (was the `cpu` slot in `PaneDataStore`).
+// Cursor still lives in `PaneManager`'s `[Viewport; 13]` array;
+// migrating the cursor is Phase 8.1b. Render body remains in
+// `panes/cpu.rs::render_cpu_panel` as a free function for now —
+// Phase 8.1b moves it into the trait.
+pub struct CpuPane {
+    content: Option<CpuSnapshot>,
+    poller:  CpuPoller,
+}
+
+impl CpuPane {
+    pub fn new(cfg: &CpuConfig) -> Self {
+        let mut pane = Self {
+            content: None,
+            poller:  CpuPoller::new(cfg),
+        };
+        pane.install_placeholder();
+        pane
+    }
+
+    /// Tick the CPU poller. If a fresh snapshot is produced, store
+    /// it as the pane's content. Called once per app tick by App.
+    pub fn tick(&mut self, now: Instant) {
+        if let Some(snapshot) = self.poller.poll_if_due(now) {
+            self.content = Some(snapshot);
+        }
+    }
+
+    /// Recreate the poller for `cfg` and seed `content` with a
+    /// placeholder snapshot. Used after a config reload changes
+    /// CPU poll behavior.
+    pub fn reset(&mut self, cfg: &CpuConfig) {
+        self.poller = CpuPoller::new(cfg);
+        self.install_placeholder();
+    }
+
+    /// Seed `content` with the current poller's placeholder
+    /// snapshot without recreating the poller. Used at startup.
+    pub fn install_placeholder(&mut self) {
+        self.content = Some(self.poller.placeholder_snapshot());
+    }
+
+    pub const fn content(&self) -> Option<&CpuSnapshot> { self.content.as_ref() }
+}
+
 impl Pane for CpuPane {
     fn id(&self) -> PaneId { PaneId::Cpu }
     fn input_context(&self) -> InputContextKind {
@@ -173,7 +224,7 @@ mod tests {
             PaneId::ProjectList => Box::new(ProjectListPane),
             PaneId::Package => Box::new(PackagePane),
             PaneId::Lang => Box::new(LangPane),
-            PaneId::Cpu => Box::new(CpuPane),
+            PaneId::Cpu => Box::new(CpuPane::new(&CpuConfig::default())),
             PaneId::Git => Box::new(GitPane),
             PaneId::Targets => Box::new(TargetsPane),
             PaneId::Lints => Box::new(LintsPane),

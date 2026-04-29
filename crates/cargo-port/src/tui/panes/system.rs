@@ -40,7 +40,6 @@ use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
 use crate::tui::app::CiRunDisplayMode;
 use crate::tui::app::HoveredPaneRow;
-use crate::tui::cpu::CpuPoller;
 use crate::tui::pane::PaneManager;
 
 /// Owns every pane-related piece of state. App holds a single `panes:
@@ -76,7 +75,7 @@ pub struct Panes {
     worktree_summary_cache: RefCell<HashMap<AbsolutePath, Vec<WorktreeInfo>>>,
     hovered_row:            Option<HoveredPaneRow>,
     ci_display_modes:       HashMap<AbsolutePath, CiRunDisplayMode>,
-    cpu_poller:             CpuPoller,
+    // `cpu_poller` was here; absorbed onto `CpuPane` in Phase 8.1a.
 }
 
 impl Panes {
@@ -85,7 +84,7 @@ impl Panes {
             project_list: ProjectListPane,
             package:      PackagePane,
             lang:         LangPane,
-            cpu:          CpuPane,
+            cpu:          CpuPane::new(cpu_cfg),
             git:          GitPane,
             targets:      TargetsPane,
             lints:        LintsPane,
@@ -103,9 +102,20 @@ impl Panes {
             worktree_summary_cache: RefCell::new(HashMap::new()),
             hovered_row:            None,
             ci_display_modes:       HashMap::new(),
-            cpu_poller:             CpuPoller::new(cpu_cfg),
         }
     }
+
+    /// Typed accessor for the CPU pane. Used by callers that
+    /// need to read CPU-pane state (content snapshot, etc.) —
+    /// e.g., the render path and `is_pane_tabbable`.
+    pub const fn cpu(&self) -> &CpuPane { &self.cpu }
+
+    /// Mutable typed accessor for the CPU pane.
+    #[allow(
+        dead_code,
+        reason = "Phase 8.1a accessor; first mutating caller wires up in 8.1b body migration"
+    )]
+    pub const fn cpu_mut(&mut self) -> &mut CpuPane { &mut self.cpu }
 
     /// Trait-dispatch entry: returns the per-pane struct for
     /// `id` as `&dyn Pane`. Phase 7 supports only the
@@ -235,29 +245,19 @@ impl Panes {
     /// adds caches that need exclusive access.
     pub fn clear_for_tree_change(&self) { self.worktree_summary_cache.borrow_mut().clear(); }
 
-    /// Tick the CPU poller. If a fresh snapshot is produced, hand it
-    /// to `pane_data` so the CPU pane redraws with current values.
-    pub fn cpu_tick(&mut self, now: Instant) {
-        if let Some(snapshot) = self.cpu_poller.poll_if_due(now) {
-            self.data.set_cpu(snapshot);
-        }
-    }
+    /// Tick the CPU pane's poller. Delegates to `CpuPane::tick`
+    /// after Phase 8.1a moved the poller and content slot onto the
+    /// pane.
+    pub fn cpu_tick(&mut self, now: Instant) { self.cpu.tick(now); }
 
-    /// Recreate the CPU poller for `cfg` and seed `pane_data` with a
-    /// placeholder snapshot. Used at startup and after a config reload
-    /// changes CPU poll behavior.
-    pub fn reset_cpu(&mut self, cfg: &CpuConfig) {
-        self.cpu_poller = CpuPoller::new(cfg);
-        let placeholder = self.cpu_poller.placeholder_snapshot();
-        self.data.set_cpu(placeholder);
-    }
+    /// Reset the CPU pane after a config reload changes CPU poll
+    /// behavior. Delegates to `CpuPane::reset`.
+    pub fn reset_cpu(&mut self, cfg: &CpuConfig) { self.cpu.reset(cfg); }
 
-    /// Seed `pane_data` with the current poller's placeholder snapshot
-    /// without recreating the poller. Used from `App::finish_new`.
-    pub fn install_cpu_placeholder(&mut self) {
-        let placeholder = self.cpu_poller.placeholder_snapshot();
-        self.data.set_cpu(placeholder);
-    }
+    /// Seed the CPU pane's content with the current poller's
+    /// placeholder snapshot. Delegates to
+    /// `CpuPane::install_placeholder`. Used from `App::finish_new`.
+    pub fn install_cpu_placeholder(&mut self) { self.cpu.install_placeholder(); }
 }
 
 #[cfg(test)]

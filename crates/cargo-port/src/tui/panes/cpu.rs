@@ -355,7 +355,7 @@ pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles,
     let focus = app.pane_focus_state(PaneId::Cpu);
     let pane = app.pane_manager().pane(PaneId::Cpu);
     let cursor = matches!(focus, PaneFocusState::Active).then(|| pane.pos());
-    let title = app.pane_data().cpu().map_or_else(
+    let title = app.panes().cpu().content().map_or_else(
         || " CPU ".to_string(),
         |snapshot| cpu_panel_title(snapshot.cores.len(), cursor),
     );
@@ -369,8 +369,9 @@ pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles,
     }
 
     let snapshot = app
-        .pane_data()
+        .panes()
         .cpu()
+        .content()
         .cloned()
         .unwrap_or_else(|| cpu::CpuSnapshot::placeholder(1));
     let layout = CpuPanelLayout::new(inner, snapshot.cores.len());

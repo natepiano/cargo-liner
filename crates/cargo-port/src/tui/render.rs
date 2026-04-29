@@ -232,8 +232,9 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         panes::BottomRow::Output
     };
     let core_count = app
-        .pane_data()
+        .panes()
         .cpu()
+        .content()
         .map_or(1, |snapshot| snapshot.cores.len());
     let tiled = panes::resolve_layout(outer_layout[0], left_width, core_count, bottom_row);
 

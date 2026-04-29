@@ -113,7 +113,10 @@ use crate::scan::RepoCache;
     reason = "tests should panic on unexpected values"
 )]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
-#[allow(clippy::unreachable, reason = "tests should panic on unexpected values")]
+#[allow(
+    clippy::unreachable,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests;
 
 pub(super) use dismiss::DismissTarget;
@@ -307,6 +310,11 @@ impl App {
     }
 
     pub(super) const fn panes_mut(&mut self) -> &mut Panes { &mut self.panes }
+
+    /// Read-only view of the per-pane registry. Used by render
+    /// paths that need typed access to a pane's content (e.g.,
+    /// `app.panes().cpu().content()`).
+    pub(super) const fn panes(&self) -> &Panes { &self.panes }
 
     pub(super) const fn mouse_pos(&self) -> Option<Position> { self.mouse_pos }
 

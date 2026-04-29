@@ -184,7 +184,7 @@ impl App {
                 }),
                 _ => false,
             },
-            PaneBehavior::Cpu => self.pane_data().cpu().is_some(),
+            PaneBehavior::Cpu => self.panes().cpu().content().is_some(),
             PaneBehavior::DetailTargets => self
                 .pane_data()
                 .targets()
