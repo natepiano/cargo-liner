@@ -33,6 +33,7 @@ use super::pane_impls::KeymapPane;
 use super::pane_impls::LangPane;
 use super::pane_impls::LintsPane;
 use super::pane_impls::PackagePane;
+use super::pane_impls::SettingsPane;
 use super::pane_impls::ToastsPane;
 use super::spec::PaneId;
 use super::support::WorktreeInfo;
@@ -65,14 +66,15 @@ pub struct DispatchArgs<'a> {
 pub struct Panes {
     // ── Per-pane state (Phase 8 migrated). Phase 9 brings the
     //    remaining seven panes in alongside their state.
-    package: PackagePane,
-    lang:    LangPane,
-    cpu:     CpuPane,
-    git:     GitPane,
-    lints:   LintsPane,
-    ci_runs: CiPane,
-    toasts:  ToastsPane,
-    keymap:  KeymapPane,
+    package:  PackagePane,
+    lang:     LangPane,
+    cpu:      CpuPane,
+    git:      GitPane,
+    lints:    LintsPane,
+    ci_runs:  CiPane,
+    toasts:   ToastsPane,
+    keymap:   KeymapPane,
+    settings: SettingsPane,
 
     // ── Phase 1 grab-bag (dissolves in Phases 9–10):
     manager:                PaneManager,
@@ -91,14 +93,15 @@ pub struct Panes {
 impl Panes {
     pub fn new(cpu_cfg: &CpuConfig) -> Self {
         Self {
-            package: PackagePane::new(),
-            lang:    LangPane::new(),
-            cpu:     CpuPane::new(cpu_cfg),
-            git:     GitPane::new(),
-            lints:   LintsPane::new(),
-            ci_runs: CiPane::new(),
-            toasts:  ToastsPane::new(),
-            keymap:  KeymapPane::new(),
+            package:  PackagePane::new(),
+            lang:     LangPane::new(),
+            cpu:      CpuPane::new(cpu_cfg),
+            git:      GitPane::new(),
+            lints:    LintsPane::new(),
+            ci_runs:  CiPane::new(),
+            toasts:   ToastsPane::new(),
+            keymap:   KeymapPane::new(),
+            settings: SettingsPane::new(),
 
             manager:                PaneManager::new(),
             data:                   PaneDataStore::new(),
@@ -155,6 +158,12 @@ impl Panes {
 
     /// Mutable typed accessor for the Keymap pane.
     pub const fn keymap_mut(&mut self) -> &mut KeymapPane { &mut self.keymap }
+
+    /// Typed accessor for the Settings pane.
+    pub const fn settings(&self) -> &SettingsPane { &self.settings }
+
+    /// Mutable typed accessor for the Settings pane.
+    pub const fn settings_mut(&mut self) -> &mut SettingsPane { &mut self.settings }
 
     /// Write the detail-set content across the four migrated detail
     /// panes (Package/Git/CI/Lints) plus the targets slot in
@@ -338,6 +347,7 @@ impl Panes {
             PaneId::Git => self.git.viewport(),
             PaneId::Toasts => self.toasts.viewport(),
             PaneId::Keymap => self.keymap.viewport(),
+            PaneId::Settings => self.settings.viewport(),
             _ => self.manager.pane(id),
         }
     }
@@ -360,6 +370,7 @@ impl Panes {
             PaneId::Git => self.git.viewport_mut().set_pos(row),
             PaneId::Toasts => self.toasts.viewport_mut().set_pos(row),
             PaneId::Keymap => self.keymap.viewport_mut().set_pos(row),
+            PaneId::Settings => self.settings.viewport_mut().set_pos(row),
             _ => self.manager.pane_mut(id).set_pos(row),
         }
     }
@@ -384,17 +395,46 @@ impl Panes {
         self.hovered_row = hovered;
     }
 
-    /// Push the current `hovered_pane_row` into the underlying pane
-    /// manager. Clears any prior hover first, then sets the row on the
-    /// pane indicated by `hovered_pane_row` (if any).
+    /// Push the current `hovered_pane_row` into the per-pane viewports.
+    /// Clears any prior hover across every pane first, then sets the row
+    /// on the pane indicated by `hovered_pane_row` (if any). Migrated
+    /// panes own their own `Viewport`; un-migrated panes still live on
+    /// `PaneManager`. The polymorphic `viewport_mut_for` dispatch keeps
+    /// reads and writes on the same source.
     pub fn apply_hovered_pane_row(&mut self) {
         self.manager.clear_hover();
+        self.package.viewport_mut().set_hovered(None);
+        self.lang.viewport_mut().set_hovered(None);
+        self.cpu.viewport_mut().set_hovered(None);
+        self.git.viewport_mut().set_hovered(None);
+        self.lints.viewport_mut().set_hovered(None);
+        self.ci_runs.viewport_mut().set_hovered(None);
+        self.toasts.viewport_mut().set_hovered(None);
+        self.keymap.viewport_mut().set_hovered(None);
+        self.settings.viewport_mut().set_hovered(None);
         let Some(hovered) = self.hovered_row else {
             return;
         };
-        self.manager
-            .pane_mut(hovered.pane)
+        self.viewport_mut_for(hovered.pane)
             .set_hovered(Some(hovered.row));
+    }
+
+    /// Mutable counterpart to `viewport_for`. Routes to the per-pane
+    /// `Viewport` for migrated panes, falls back to the vestigial
+    /// `PaneManager` slot for un-migrated panes.
+    fn viewport_mut_for(&mut self, id: PaneId) -> &mut Viewport {
+        match id {
+            PaneId::Cpu => self.cpu.viewport_mut(),
+            PaneId::Lang => self.lang.viewport_mut(),
+            PaneId::Lints => self.lints.viewport_mut(),
+            PaneId::CiRuns => self.ci_runs.viewport_mut(),
+            PaneId::Package => self.package.viewport_mut(),
+            PaneId::Git => self.git.viewport_mut(),
+            PaneId::Toasts => self.toasts.viewport_mut(),
+            PaneId::Keymap => self.keymap.viewport_mut(),
+            PaneId::Settings => self.settings.viewport_mut(),
+            _ => self.manager.pane_mut(id),
+        }
     }
 
     pub fn ci_display_mode_for(&self, path: &Path) -> CiRunDisplayMode {

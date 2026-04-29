@@ -557,8 +557,9 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         .saturating_add(2)
         .saturating_add(1);
 
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Settings)
+    app.panes_mut()
+        .settings_mut()
+        .viewport_mut()
         .set_len(SettingOption::COUNT);
 
     let inner = PopupFrame {
@@ -569,8 +570,9 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     }
     .render(frame);
 
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Settings)
+    app.panes_mut()
+        .settings_mut()
+        .viewport_mut()
         .set_content_area(inner);
 
     let paragraph = Paragraph::new(lines);
@@ -789,14 +791,15 @@ pub(super) fn build_settings_lines(
             continue;
         }
 
-        let cursor = if app.pane_manager().pane(PaneId::Settings).pos() == selection_index {
+        let cursor = if app.panes().settings().viewport().pos() == selection_index {
             "▶ "
         } else {
             "  "
         };
         let selection = app
-            .pane_manager()
-            .pane(PaneId::Settings)
+            .panes()
+            .settings()
+            .viewport()
             .selection_state(selection_index, app.pane_focus_state(PaneId::Settings));
         let setting = *setting;
         let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
@@ -841,7 +844,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         return;
     }
 
-    let setting = SettingOption::from_index(app.pane_manager().pane(PaneId::Settings).pos());
+    let setting = SettingOption::from_index(app.panes().settings().viewport().pos());
 
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
@@ -854,11 +857,11 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Up => {
             app.clear_inline_error();
-            app.pane_manager_mut().pane_mut(PaneId::Settings).up();
+            app.panes_mut().settings_mut().viewport_mut().up();
         },
         KeyCode::Down => {
             app.clear_inline_error();
-            app.pane_manager_mut().pane_mut(PaneId::Settings).down();
+            app.panes_mut().settings_mut().viewport_mut().down();
         },
         KeyCode::Left | KeyCode::Right => {
             app.clear_inline_error();
@@ -1016,7 +1019,7 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
 }
 
 fn apply_settings_edit(app: &mut App) {
-    let setting = SettingOption::from_index(app.pane_manager().pane(PaneId::Settings).pos());
+    let setting = SettingOption::from_index(app.panes().settings().viewport().pos());
     let value = app.settings_edit_buf().to_string();
     let result = setting.map_or(Ok(()), |setting| {
         apply_settings_edit_for(app, setting, &value)

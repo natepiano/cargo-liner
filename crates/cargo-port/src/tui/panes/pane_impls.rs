@@ -342,3 +342,26 @@ impl KeymapPane {
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 }
+
+// ── Settings ────────────────────────────────────────────────────
+//
+// Phase 9.3: cursor `Viewport` absorbed onto SettingsPane. The
+// settings popup renders via `settings::render_settings_popup`
+// (overlay path, not `render_tiled_pane`), so there is no `Pane`
+// trait impl. The viewport tracks cursor position over the
+// settings options list.
+pub struct SettingsPane {
+    viewport: Viewport,
+}
+
+impl SettingsPane {
+    pub const fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+        }
+    }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+}

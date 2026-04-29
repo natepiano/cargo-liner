@@ -891,11 +891,11 @@ mod tests {
         app.open_settings();
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Settings), 5);
+        let (x, y) = pane_row_point(app.panes().settings().viewport(), 5);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.pane_manager().pane(PaneId::Settings).pos(),
+            app.panes().settings().viewport().pos(),
             SettingOption::CiRunCount as usize,
             "clicking a rendered settings option should select the logical setting, not the visual line index including spacer/header rows"
         );
@@ -909,13 +909,14 @@ mod tests {
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
-        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Settings), 5);
+        let (x, y) = pane_row_point(app.panes().settings().viewport(), 5);
         move_mouse(&mut app, x, y);
         render_ui(&mut app);
 
         assert_eq!(
-            app.pane_manager()
-                .pane(PaneId::Settings)
+            app.panes()
+                .settings()
+                .viewport()
                 .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
             PaneSelectionState::Hovered,
         );
@@ -923,16 +924,18 @@ mod tests {
         press_key(&mut app, KeyCode::Down);
         render_ui(&mut app);
 
-        assert_eq!(app.pane_manager().pane(PaneId::Settings).pos(), 1);
+        assert_eq!(app.panes().settings().viewport().pos(), 1);
         assert_eq!(
-            app.pane_manager()
-                .pane(PaneId::Settings)
+            app.panes()
+                .settings()
+                .viewport()
                 .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
             PaneSelectionState::Unselected,
         );
         assert_eq!(
-            app.pane_manager()
-                .pane(PaneId::Settings)
+            app.panes()
+                .settings()
+                .viewport()
                 .selection_state(1, app.pane_focus_state(PaneId::Settings)),
             PaneSelectionState::Active,
         );
@@ -946,15 +949,16 @@ mod tests {
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
-        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Settings), 5);
+        let (x, y) = pane_row_point(app.panes().settings().viewport(), 5);
         move_mouse(&mut app, x, y);
         render_ui(&mut app);
         press_key(&mut app, KeyCode::Down);
         render_ui(&mut app);
 
         assert_eq!(
-            app.pane_manager()
-                .pane(PaneId::Settings)
+            app.panes()
+                .settings()
+                .viewport()
                 .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
             PaneSelectionState::Unselected,
         );
@@ -963,8 +967,9 @@ mod tests {
         render_ui(&mut app);
 
         assert_eq!(
-            app.pane_manager()
-                .pane(PaneId::Settings)
+            app.panes()
+                .settings()
+                .viewport()
                 .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
             PaneSelectionState::Hovered,
         );
@@ -978,15 +983,16 @@ mod tests {
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
-        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Settings), 5);
+        let (x, y) = pane_row_point(app.panes().settings().viewport(), 5);
         input::set_last_mouse_pos_for_test(Some((x, y)));
         focus_gained(&mut app);
         render_ui(&mut app);
 
-        assert_eq!(app.pane_manager().pane(PaneId::Settings).pos(), hovered_row);
+        assert_eq!(app.panes().settings().viewport().pos(), hovered_row);
         assert_eq!(
-            app.pane_manager()
-                .pane(PaneId::Settings)
+            app.panes()
+                .settings()
+                .viewport()
                 .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
             PaneSelectionState::Active,
         );
@@ -1211,11 +1217,11 @@ mod tests {
         app.open_settings();
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Settings), 2);
+        let (x, y) = pane_row_point(app.panes().settings().viewport(), 2);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.pane_manager().pane(PaneId::Settings).pos(),
+            app.panes().settings().viewport().pos(),
             SettingOption::InvertScroll as usize
         );
     }
