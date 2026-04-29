@@ -27,9 +27,9 @@ use crate::tui::constants::TITLE_COLOR;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface::Content;
 use crate::tui::pane;
-use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneTitleCount;
+use crate::tui::pane::Viewport;
 use crate::tui::render;
 
 fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
@@ -62,7 +62,7 @@ fn build_lint_rows(
     runs: &[LintRun],
     sizes: &[Option<u64>],
     animation_elapsed: std::time::Duration,
-    pane: &Pane,
+    pane: &Viewport,
     focus: PaneFocusState,
 ) -> Vec<Row<'static>> {
     let date_style = Style::default()

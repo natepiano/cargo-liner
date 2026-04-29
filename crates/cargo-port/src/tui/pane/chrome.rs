@@ -7,7 +7,7 @@ use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use super::Pane;
+use super::Viewport;
 use crate::tui::constants::ACTIVE_BORDER_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
 use crate::tui::constants::INACTIVE_TITLE_COLOR;
@@ -69,7 +69,7 @@ pub fn empty_pane_block(title: impl Into<String>) -> Block<'static> {
         .border_style(Style::default().fg(INACTIVE_BORDER_COLOR))
 }
 
-pub fn render_overflow_affordance(frame: &mut Frame, area: Rect, pane: &Pane) {
+pub fn render_overflow_affordance(frame: &mut Frame, area: Rect, pane: &Viewport) {
     let Some(label) = pane.overflow_affordance() else {
         return;
     };

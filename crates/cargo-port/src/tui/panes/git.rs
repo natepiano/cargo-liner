@@ -29,16 +29,16 @@ use crate::tui::constants::TITLE_COLOR;
 use crate::tui::interaction;
 use crate::tui::interaction::UiSurface;
 use crate::tui::pane;
-use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneSelectionState;
 use crate::tui::pane::PaneTitleCount;
+use crate::tui::pane::Viewport;
 use crate::tui::panes;
 
 struct GitRenderCtx<'a> {
     data:   &'a GitData,
     fields: &'a [DetailField],
-    pane:   &'a Pane,
+    pane:   &'a Viewport,
     focus:  PaneFocusState,
     styles: &'a RenderStyles,
 }
@@ -332,7 +332,7 @@ fn render_section_overlays(
 struct RenderFlatArgs<'a> {
     data:        &'a GitData,
     fields:      &'a [DetailField],
-    pane:        &'a Pane,
+    pane:        &'a Viewport,
     focus:       PaneFocusState,
     styles:      &'a RenderStyles,
     area_width:  u16,

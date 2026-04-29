@@ -5,7 +5,7 @@ use super::app::App;
 use super::app::DismissTarget;
 use super::app::HoveredPaneRow;
 use super::columns;
-use super::pane::Pane;
+use super::pane::Viewport;
 use super::panes::PaneId;
 
 const DISMISS_SUFFIX: &str = " [x]";
@@ -150,7 +150,7 @@ pub(super) fn register_pane_row_hitbox(
 pub(super) fn register_pane_row_hitboxes(
     app: &mut App,
     pane_id: PaneId,
-    pane: &Pane,
+    pane: &Viewport,
     surface: UiSurface,
 ) {
     let area = pane.content_area();
@@ -301,8 +301,8 @@ mod tests {
     use crate::tui::app::ExpandKey;
     use crate::tui::finder;
     use crate::tui::input;
-    use crate::tui::pane::Pane;
     use crate::tui::pane::PaneSelectionState;
+    use crate::tui::pane::Viewport;
     use crate::tui::panes;
     use crate::tui::panes::LintsData;
     use crate::tui::panes::PaneId;
@@ -549,7 +549,7 @@ mod tests {
         )
     }
 
-    fn pane_row_point(pane: &Pane, row_index: usize) -> (u16, u16) {
+    fn pane_row_point(pane: &Viewport, row_index: usize) -> (u16, u16) {
         let area = pane.content_area();
         (
             area.x.saturating_add(1),

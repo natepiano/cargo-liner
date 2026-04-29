@@ -30,12 +30,12 @@ use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
 use crate::tui::pane;
-use crate::tui::pane::Pane;
 use crate::tui::pane::PaneChrome;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRule;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
+use crate::tui::pane::Viewport;
 use crate::tui::panes;
 use crate::tui::render;
 
@@ -49,7 +49,7 @@ struct PackageRenderCtx<'a> {
     app:    &'a App,
     data:   &'a PackageData,
     fields: &'a [DetailField],
-    pane:   &'a Pane,
+    pane:   &'a Viewport,
     focus:  PaneFocusState,
     styles: &'a RenderStyles,
 }
@@ -399,7 +399,7 @@ fn render_project_description_section(
 fn render_project_metadata(
     frame: &mut Frame,
     app: &App,
-    pane: &Pane,
+    pane: &Viewport,
     context: &ProjectPanelRender<'_>,
     lower_area: Rect,
 ) -> usize {

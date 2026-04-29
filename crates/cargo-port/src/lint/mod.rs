@@ -12,6 +12,7 @@ mod types;
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
+    clippy::unreachable,
     reason = "tests should panic on unexpected values"
 )]
 mod tests;

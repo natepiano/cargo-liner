@@ -185,9 +185,10 @@ to hit.
    pane-specific extras (`CpuPane` absorbs `cpu_poller`; `CiPane`
    absorbs `ci_display_modes`). Render and input bodies move from
    free functions in `panes/*.rs` and `panes/actions.rs` into trait
-   methods. `DetailFieldsPane` (sub-trait with default `handle_input`)
-   covers Package/Lang/Git/Cpu/Targets — Targets in this list will be
-   formally migrated in Phase 9, but the sub-trait lands here.
+   methods. Shared input-handling bodies (Up/Down/Home/End nav,
+   detail-pane keymap dispatch) ride as default helper methods on
+   the `Pane` trait itself — no sub-traits. Each pane's
+   `handle_input` body opts in to whichever helpers it needs.
 9. **Migrate the remaining 7 panes** — `ProjectListPane`,
    `TargetsPane`, `OutputPane`, `ToastsPane`, `SettingsPane`,
    `FinderPane`, `KeymapPane`. `ProjectList`'s ~250-line render body
@@ -498,7 +499,7 @@ and the step list, not here.
 
   1. **Every pane is a struct.** All 13 `PaneId` variants —
      `ProjectListPane`, `PackagePane`, `LangPane`, `CpuPane`,
-     `GitPane`, `TargetsPane`, `LintsPane`, `CiRunsPane`,
+     `GitPane`, `TargetsPane`, `LintsPane`, `CiPane`,
      `OutputPane`, `ToastsPane`, `SettingsPane`, `FinderPane`,
      `KeymapPane` — exist as their own struct.
   2. **A pane owns its own state.** Cursor, scroll, viewport,
@@ -512,10 +513,12 @@ and the step list, not here.
      `Panes` struct is repurposed as a registry that owns the
      per-pane structs as named fields. It carries no pane-keyed
      state of its own.
-  5. **Common behavior is expressed via a trait.** `Pane` (and
-     possibly sub-traits like `DetailFieldsPane` with default
-     methods) define the shared interface. Each pane's behavior
-     is its `impl Pane`.
+  5. **Common behavior is expressed via a trait.** A single `Pane`
+     trait defines the shared interface, with default helper
+     methods on the trait itself for shared input-handling shapes
+     (nav keys, detail-pane keymap dispatch). No sub-traits — the
+     base trait's default methods cover the code-reuse cases.
+     Each pane's behavior is its `impl Pane`.
   6. **Outsiders read pane state through methods.** No reaching
      into pane fields from App or other subsystems. If App needs
      CI's display mode, it calls `panes.ci().display_mode_for(path)`;
@@ -605,21 +608,50 @@ and the step list, not here.
   `content_area`, `hovered`) become `Viewport`'s fields, plus
   `is_visited` (newly absorbed from `Panes::visited`).
 
-  **Sub-traits with default methods for behavior families.**
+  **Shared input-handling bodies as default helper methods on
+  `Pane` itself — no sub-traits.** The detail panes (Package, Lang,
+  Git, Cpu, Targets) and the table panes (Lints, CiRuns) share
+  enough input-handling shape (Up/Down/Home/End nav block, then
+  keymap-action dispatch) that we want one shared body, not seven
+  copies. Earlier drafts proposed sub-traits (`NavigablePane`,
+  `DetailFieldsPane`) for this. Dropped: nothing in the codebase
+  does `dyn NavigablePane` dispatch; the sub-traits existed
+  purely to make a default method body inheritable, which the
+  base `Pane` trait can do directly.
 
-  - `NavigablePane: Pane` — provides a default `handle_input` body
-    for the Up/Down/Home/End navigation block shared by 7 panes
-    (Package, Lang, Git, Cpu, Targets, Lints, CiRuns). Implementors
-    override only the post-nav action dispatch.
-  - `DetailFieldsPane: NavigablePane` — provides a default
-    `handle_input` body that runs the nav block then dispatches
-    the detail-pane keymap action via a per-pane hook
-    `dispatch_detail_action(action, ctx)`. Covers Package, Lang,
-    Git, Cpu, Targets.
+  ```rust
+  trait Pane {
+      fn handle_input(&mut self, event: &KeyEvent, ctx: PaneInputCtx<'_>);
 
-  Sub-traits land in **Phase 8** (when the first pane that needs
-  them migrates), not in Phase 7 — Phase 7 ships the foundation
-  trait only.
+      // Default helper available to any pane. Non-using panes ignore.
+      fn handle_nav_keys(&mut self, event: &KeyEvent) -> bool {
+          match event.code {
+              KeyCode::Up   => { self.viewport_mut().up();   true }
+              KeyCode::Down => { self.viewport_mut().down(); true }
+              KeyCode::Home => { self.viewport_mut().home(); true }
+              KeyCode::End  => { self.viewport_mut().end();  true }
+              _ => false,
+          }
+      }
+  }
+
+  impl Pane for PackagePane {
+      fn handle_input(&mut self, event, ctx) {
+          if self.handle_nav_keys(event) { return; }
+          // package-specific keymap-action dispatch follows
+      }
+  }
+  ```
+
+  Each pane's `handle_input` body opts in to whichever helpers it
+  needs. The "nav block" helper is on the `Pane` trait. The
+  "detail-pane keymap-action dispatch" helper, if it earns its
+  weight in shared lines, lands the same way: a default method
+  on `Pane`. Sub-traits stay out of the design.
+
+  Helpers land in **Phase 8** (when the first pane that needs them
+  migrates), not in Phase 7 — Phase 7 ships the foundation trait
+  only.
 
   **`Panes` is repurposed, not deleted.** The struct survives at
   the same name; it becomes a registry whose only contents are
@@ -634,7 +666,7 @@ and the step list, not here.
       git:          GitPane,
       targets:      TargetsPane,
       lints:        LintsPane,
-      ci_runs:      CiRunsPane,
+      ci_runs:      CiPane,
       output:       OutputPane,
       toasts:       ToastsPane,
       settings:     SettingsPane,
@@ -645,7 +677,7 @@ and the step list, not here.
       pub fn pane(&self, id: PaneId) -> &dyn Pane { /* match */ }
       pub fn pane_mut(&mut self, id: PaneId) -> &mut dyn Pane { /* match */ }
       // Typed accessors for callers that want a specific pane:
-      pub fn ci(&self) -> &CiRunsPane { &self.ci_runs }
+      pub fn ci(&self) -> &CiPane { &self.ci_runs }
       pub fn cpu_mut(&mut self) -> &mut CpuPane { &mut self.cpu }
       // ... one pair per pane as needed.
   }
@@ -659,20 +691,64 @@ and the step list, not here.
   audit shows no current call site needs this — single-pane dispatch
   is the only access pattern — but the option exists.
 
+  **Pane construction.** Each per-pane struct is built once at App
+  startup with whatever dependencies it needs (e.g., `CpuPane`
+  needs the `CpuConfig` to build its `CpuPoller`; `KeymapPane`
+  needs the initial keymap reference). Constructors stay
+  per-pane: `CpuPane::new(cfg)`, `CiPane::new()`, etc.
+  `Panes::new(deps: PaneDeps)` is the single entry point that
+  builds all 13 panes from a small `PaneDeps` struct (carrying
+  `&CpuConfig` and any other startup-time dependencies). All
+  construction logic lives in one place; no sprawl into App.
+
+  **Project-selection invalidation.** Per-pane `content` slots
+  become stale when the user selects a different project. The
+  invalidation flow is centralized in the data-assembly path
+  (`panes/support.rs`): on a selection change, the assembly path
+  re-runs and overwrites all six (Phase 8) / all twelve content
+  slots (Phase 9+). There is no per-pane invalidation hook on the
+  `Pane` trait — content is always overwritten by the assembly
+  pass, never selectively cleared. This is consistent with
+  invariant 8 (assembly writes per-pane state) and avoids ad-hoc
+  `clear_*` methods on individual panes.
+
+  **Testability.** Each ctx struct (`PaneRenderCtx`,
+  `PaneInputCtx`, `PaneNavCtx`) ships with a `for_test(...)` or
+  `default_for_test()` constructor that builds the bundle from
+  test stubs of each subsystem. Without this, isolated pane
+  tests are uneconomical and "panes own behavior" is only
+  theoretically testable. The test constructors land in Phase 7
+  alongside the ctx struct definitions.
+
   **Phase 7 scope (foundation only).** This phase introduces the
   trait, `Viewport`, the registry repurpose, and **skeleton**
-  `impl Pane` blocks for all 13 panes whose method bodies just
-  call the existing free functions (`render_*_panel`,
-  `handle_*_key`). Per-pane bodies do not move yet. The
-  `PaneBehavior` enum is deleted; its three uses (input dispatch,
-  `input_context` lookup, `is_navigable` check) flip to trait
-  dispatch. The `match PaneId` in `render.rs::render_tiled_pane`
-  flips to `panes.pane_mut(id).render(...)`. The current
-  grab-bag fields on `Panes` (`manager`, `data`, `visited`,
-  `layout_cache`, `worktree_summary_cache`, `hovered_row`,
-  `ci_display_modes`, `cpu_poller`) stay where they are during
-  Phase 7 — their migration happens during Phases 8–9 as each pane
-  fully takes ownership of its share.
+  `impl Pane` blocks for all 13 panes that implement only the
+  `PaneId`-pure metadata methods (`id`, `has_row_hitboxes`,
+  `size_spec`, `input_context`). Render, input, viewport
+  accessors, and `is_navigable` are declared on the trait but
+  not yet implemented per-pane — their default bodies on the
+  trait panic with `unimplemented!()` and no caller dispatches
+  through them yet. (The borrow-checker shape of the eventual
+  trait dispatch — see Phase 7 design notes — forces this
+  split: per-pane bodies cannot accept `&mut App` while `panes`
+  is mutably borrowed out of App, and the typed ctx bundles
+  cannot be assembled until each pane's per-pane state moves
+  onto its own struct. Phase 8 migrates state + bodies
+  pane-by-pane and flips the dispatch sites then.)
+
+  The `PaneBehavior` enum and the existing free-function
+  dispatch (`panes::has_row_hitboxes`, `panes::size_spec`,
+  `panes::behavior`) **survive Phase 7 unchanged**. They remain
+  the canonical callers throughout Phase 7. Phase 8/9 flip
+  dispatch sites pane-by-pane as bodies migrate; Phase 9 deletes
+  `PaneBehavior` once both render and input dispatch flow
+  through the trait.
+
+  The current grab-bag fields on `Panes` (`manager`, `data`,
+  `visited`, `layout_cache`, `worktree_summary_cache`,
+  `hovered_row`, `ci_display_modes`, `cpu_poller`) stay where
+  they are during Phase 7 — their migration happens during
+  Phases 8–9 as each pane fully takes ownership of its share.
 
   **Borrow-checker shape.** `PaneRenderCtx`, `PaneInputCtx`, and
   `PaneNavCtx` carry pre-extracted typed references to the
@@ -737,30 +813,83 @@ and the step list, not here.
   the rectangles flow into `PaneRenderCtx::hit_sink` (a
   `&mut HitboxSink` carrying the current hover-lookup table), and
   the registration helpers stay where they are today, just
-  re-pointed from `pane_manager` to the sink. Phase 10 adds
-  `Pane::hit_test(row) -> Option<HoverTarget>` to the trait,
-  removes `hit_sink` from `PaneRenderCtx`, and deletes the
-  registration helpers entirely — hover lookup becomes a query
-  pass instead of a render side-effect.
+  re-pointed from `pane_manager` to the sink.
+
+  **Where `HitboxSink` physically lives.** During Phases 7–9 it is
+  a thin wrapper around the existing `pane_manager` row-hitbox map
+  — the same data structure callers read today, just behind a typed
+  handle that the ctx can carry. Mouse-position handling continues
+  to look up the map exactly as it does today; only the *write
+  path* (render → ctx → sink → map) is re-routed. The wrapper
+  exists so the trait method's signature can name "the place
+  hitboxes go" without exposing `&mut PaneManager` itself. In
+  Phase 10 both the wrapper type and the underlying map are
+  deleted in the same change.
+
+  **Test stubbability.** `HitboxSink` carries a no-op variant
+  (e.g., `HitboxSink::null()`) usable from `PaneRenderCtx::for_test`
+  so isolated render tests don't have to construct a real hover-
+  lookup table. The wrapper is small and trivially stubbable.
+
+  Phase 10 adds `Pane::hit_test(row) -> Option<HoverTarget>` to
+  the trait, removes `hit_sink` from `PaneRenderCtx`, deletes
+  `HitboxSink` and the registration helpers — hover lookup becomes
+  a query pass instead of a render side-effect.
+
+- **Phase 7 cleanup obligations carried into Phase 8.**
+  Phase 7 ships several `#[allow(dead_code, reason = "Phase 7
+  foundation; wired up in Phase 8")]` markers on items that exist
+  for the foundation but have no caller yet. Phase 8 **must
+  remove every Phase-7 in-flight allow it activates**:
+  - `Panes::pane(id)` / `Panes::pane_mut(id)` — first dispatch
+    site (the `match PaneId` flip in `render.rs::render_tiled_pane`
+    or any pane's `handle_input` dispatch) deletes the allow.
+  - `Pane` trait — first non-trivial caller of any trait method
+    deletes the allow.
+  - `InputContextKind` — first user (the `app/focus.rs::input_context`
+    flip) deletes the allow.
+  - `Viewport::hovered()` — first default-impl method on `Pane`
+    that calls it deletes the allow.
+  - `PaneRenderCtx` / `PaneInputCtx` / `PaneNavCtx` — when each
+    ctx is first populated with real subsystem refs (i.e., when
+    the first pane's render/input body migrates), drop the
+    `#[allow(dead_code, reason = "Phase 7 placeholder ctx; ...")]`
+    on the affected struct.
+  - `HitboxSink::null()` — first non-test caller (a real Phase-8
+    render dispatcher constructing a sink) deletes the allow.
+
+  Phase 9 / Phase 10 inherit any allow that hasn't lapsed by end
+  of Phase 8. Phase 10 is the last phase that may carry an
+  in-flight allow from this set; if any survive past Phase 10's
+  validation, the design has a gap that must be addressed before
+  the carve is considered shipped.
 
 - **Phase 8 (Migrate the 6 detail/data panes)**:
   - Migrate `CiPane`, `CpuPane`, `GitPane`, `LintsPane`,
     `PackagePane`, `LangPane`. Each pane gains:
     - `viewport: Viewport` field (the per-pane cursor/scroll/hover/
       visited state, replacing its slot in the old `PaneManager`).
-    - `content: Option<XData>` field (replacing its slot in
-      `PaneDataStore`).
+    - `content: Option<XData>` field. For panes that have a
+      `PaneDataStore` slot today (Package, Cpu, Git, CI, Lints —
+      five of the six migrating in Phase 8), this replaces that
+      slot. `LangPane` does not have a `PaneDataStore` slot today
+      (`render_lang_panel_standalone` reads language stats
+      directly off the project tree); after Phase 8 it gains a
+      content slot the same way the others do.
     - Pane-specific extras: `CpuPane` absorbs `Panes::cpu_poller`;
       `CiPane` absorbs `Panes::ci_display_modes`.
   - Render and input bodies move from the free functions in
     `panes/*.rs` and `panes/actions.rs` into the trait method
     bodies. The skeleton impls from Phase 7 get filled in.
-  - `NavigablePane` and `DetailFieldsPane` sub-traits land here.
-    `PackagePane`, `LangPane`, `GitPane`, `CpuPane` implement
-    `DetailFieldsPane` and provide `dispatch_detail_action`
-    (TargetsPane joins the family in Phase 9 when it migrates).
-    `LintsPane` and `CiRunsPane` implement `NavigablePane` plus
-    their own `handle_input` action body.
+  - Shared input-handling default methods on `Pane` land here.
+    The Up/Down/Home/End nav helper (`handle_nav_keys`) and the
+    detail-pane keymap-dispatch helper land alongside the first
+    pane that uses them. Detail panes (`PackagePane`, `LangPane`,
+    `GitPane`, `CpuPane`) call both helpers from their
+    `handle_input` body; table panes (`LintsPane`, `CiPane`)
+    call the nav helper plus their own action dispatch.
+    `TargetsPane` adopts the same shape in Phase 9 when it
+    migrates.
   - **`CpuPane::tick(now: Instant)`** is a concrete method (not on
     the `Pane` trait) that owns the per-tick CPU poll. App's per-tick
     handler calls `self.panes.cpu_mut().tick(now)` — replaces today's
@@ -774,8 +903,11 @@ and the step list, not here.
     (`CiData`/`GitData`/`LintsData`/…), so a single trait method
     would have to be generic on associated type for no real benefit.
     The assembly path knows the concrete types it writes to. The
-    central `PaneDataStore`'s slots for these six panes are
-    removed; only Targets/Output stay there until Phase 9.
+    `PaneDataStore` slots for the five Phase-8 migrators that have
+    one (Package, Cpu, Git, CI, Lints) are removed; the `targets`
+    slot remains in `PaneDataStore` until Phase 9 takes Targets.
+    `LangPane` did not have a slot today, so it adds a content
+    field rather than replacing one.
   - **`worktree_summary_cache` half-state.** GitPane migrates in
     Phase 8, but `Panes::worktree_summary_cache` stays on the
     registry through Phase 9. GitPane reads/writes it via a
@@ -796,14 +928,23 @@ and the step list, not here.
 - **Phase 9 (Migrate the remaining 7 panes)**:
   - Migrate `ProjectListPane`, `TargetsPane`, `OutputPane`,
     `ToastsPane`, `SettingsPane`, `FinderPane`, `KeymapPane`.
-  - `ProjectListPane` is the largest move: ~250 lines of render
-    code (`render_project_list` and helpers in `render.rs`) move
-    into `panes/project_list.rs`. The tree-row rendering helpers
-    (`render_root_item`, `render_member_item`, etc.) move with
-    it.
-  - **`TargetsPane` joins `DetailFieldsPane`.** The sub-trait
-    landed in Phase 8 with four implementors (Package/Lang/Git/Cpu);
-    `TargetsPane`'s migration in Phase 9 adds it as the fifth.
+  - `ProjectListPane` is the largest move by far: closer to ~600
+    lines once the named tree-row helpers are counted
+    (`render_project_list`, `render_root_item`, `render_child_item`,
+    `render_member_item`, `render_worktree_entry`,
+    `render_wt_group_header`, `render_wt_member`,
+    `render_vendored_item`, `render_submodule_item`,
+    `render_path_only_entry`, `render_wt_vendored_item`,
+    `render_tree_items`, `render_tree_item`). All move from
+    `render.rs` into `panes/project_list.rs`. **Phase 9 ships as
+    two commits**: `ProjectListPane` alone in the first commit, the
+    remaining six panes in the second. Both land before the phase
+    is considered shipped.
+  - **`TargetsPane` adopts the shared input-handler helpers.** The
+    nav helper and detail-pane dispatch helper landed in Phase 8 on
+    the `Pane` trait; `TargetsPane`'s migration in Phase 9 calls
+    them from its own `handle_input` body, same shape as the four
+    detail panes that adopted in Phase 8 (Package/Lang/Git/Cpu).
   - The overlay panes (`SettingsPane`, `FinderPane`,
     `KeymapPane`) get the same trait treatment. Their special
     handling for the App-shell modal mode (`ui_modes.settings`,
@@ -840,11 +981,12 @@ and the step list, not here.
     helpers — which during Phases 7–9 wrote into `hit_sink` — are
     deleted. Mouse-position handling switches from looking up the
     side dictionary to calling `panes.pane(id).hit_test(row)`.
-  - **`Panes::worktree_summary_cache`** finds its final home —
-    likely on `GitPane` (the cache feeds Git pane's worktree
-    section), or on the data-assembly service if the assembly
-    path needs it before any pane has been told. Decided at
-    Phase 10 implementation time based on call-site shape.
+  - **`Panes::worktree_summary_cache` moves to `GitPane`.** The
+    cache feeds the Git pane's worktree section; it is git-pane
+    content. The "data-assembly service" alternative discussed in
+    earlier drafts was the assembly path absorbing what is
+    properly pane state to avoid putting it on the obvious owner.
+    Pre-committed here, not "decided at implementation time."
   - **`Panes::layout_cache`** moves to App-shell (it's coordination
     state, not pane state — what rect each pane occupies on
     screen, computed once per draw and shared).
@@ -918,7 +1060,7 @@ it lands. Items marked **App-shell** stay on `App`.
 | `crates_io` (`CratesIoState`) | Net (Phase 11) |
 | `projects` | Scan |
 | `ci_fetch_tracker` | Inflight |
-| `ci_display_modes` | Panes in Phase 1; moves to `CiRunsPane` in Phase 8 |
+| `ci_display_modes` | Panes in Phase 1; moves to `CiPane` in Phase 8 |
 | `lint_cache_usage` | Scan (cache-stat counter, not in-flight bookkeeping) |
 | `discovery_shimmers` | Scan (with future-revisit note: may move to Inflight) |
 | `pending_git_first_commit` | Scan (with same future-revisit note) |
@@ -1103,7 +1245,7 @@ because they orchestrate across subsystems.
     a `(PaneId, row)` pair and dispatches to the per-pane
     `set_hover`.
   - `toggle_ci_display_mode_for` (`mod.rs:565`) — under Phase 1
-    this lives on `Panes`; under Phase 8 it lands on `CiRunsPane`
+    this lives on `Panes`; under Phase 8 it lands on `CiPane`
     along with `ci_display_modes`. Outside callers reach it via
     `panes.ci_mut().toggle_display_mode_for(path)`.
   - `focus_pane` — App-shell. `focused_pane` and `return_focus`

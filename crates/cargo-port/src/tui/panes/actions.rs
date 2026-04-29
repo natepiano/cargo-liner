@@ -26,7 +26,7 @@ use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::CleanSelection;
 use crate::tui::input;
-use crate::tui::pane::Pane;
+use crate::tui::pane::Viewport;
 use crate::tui::toasts::TrackedItem;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
@@ -119,7 +119,7 @@ fn request_clean(app: &mut App) {
 
 /// Return a mutable reference to the pane that owns the cursor for the
 /// currently active detail column.
-fn active_detail_pane(app: &mut App) -> &mut Pane {
+fn active_detail_pane(app: &mut App) -> &mut Viewport {
     match app.base_focus() {
         PaneId::Targets => app.pane_manager_mut().pane_mut(PaneId::Targets),
         PaneId::Lang => app.pane_manager_mut().pane_mut(PaneId::Lang),

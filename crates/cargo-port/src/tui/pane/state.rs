@@ -43,18 +43,22 @@ impl ScrollState {
     }
 }
 
-/// Per-pane state shared by every scrollable panel in the TUI.
+/// The shared UI-mechanics state every pane carries: cursor, scroll,
+/// viewport rows, content area, hovered row, len.
 ///
-/// Each pane owns its cursor, knows its row count, and stores the screen
-/// region it occupies so navigation and mouse hit-testing are self-contained.
+/// Each per-pane struct (Phase 7+) embeds a `Viewport` and exposes it via
+/// the `Pane` trait's `viewport()` / `viewport_mut()` accessors. Default
+/// methods on the trait (cursor moves, scroll, hover, etc.) delegate to
+/// the embedded `Viewport`, so per-pane impls only write the
+/// genuinely-different methods.
 #[derive(Default, Clone)]
-pub struct Pane {
+pub struct Viewport {
     cursor:        ScrollState,
     hovered:       Option<usize>,
     len:           usize,
     content_area:  Rect,
     scroll_offset: usize,
-    viewport_rows: usize,
+    visible_rows:  usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,7 +76,7 @@ pub enum PaneSelectionState {
     Unselected,
 }
 
-impl Pane {
+impl Viewport {
     pub const fn new() -> Self {
         Self {
             cursor:        ScrollState { pos: 0 },
@@ -80,7 +84,7 @@ impl Pane {
             len:           0,
             content_area:  Rect::new(0, 0, 0, 0),
             scroll_offset: 0,
-            viewport_rows: 0,
+            visible_rows:  0,
         }
     }
 
@@ -111,7 +115,7 @@ impl Pane {
         self.hovered = None;
         self.content_area = Rect::ZERO;
         self.scroll_offset = 0;
-        self.viewport_rows = 0;
+        self.visible_rows = 0;
         self.cursor.clamp(0);
     }
 
@@ -119,9 +123,15 @@ impl Pane {
 
     pub const fn set_scroll_offset(&mut self, offset: usize) { self.scroll_offset = offset; }
 
-    pub const fn set_viewport_rows(&mut self, rows: usize) { self.viewport_rows = rows; }
+    pub const fn set_viewport_rows(&mut self, rows: usize) { self.visible_rows = rows; }
 
     pub const fn set_hovered(&mut self, hovered: Option<usize>) { self.hovered = hovered; }
+
+    #[allow(
+        dead_code,
+        reason = "Phase 7 accessor for Pane trait; consumed in Phase 8 default impls"
+    )]
+    pub const fn hovered(&self) -> Option<usize> { self.hovered }
 
     pub const fn content_area(&self) -> Rect { self.content_area }
 
@@ -130,13 +140,13 @@ impl Pane {
     pub const fn len(&self) -> usize { self.len }
 
     pub const fn overflow_affordance(&self) -> Option<&'static str> {
-        let viewport_rows = self.viewport_rows;
-        if viewport_rows == 0 || self.len <= viewport_rows {
+        let visible_rows = self.visible_rows;
+        if visible_rows == 0 || self.len <= visible_rows {
             return None;
         }
 
         let has_above = self.scroll_offset > 0;
-        let has_below = self.scroll_offset.saturating_add(viewport_rows) < self.len;
+        let has_below = self.scroll_offset.saturating_add(visible_rows) < self.len;
         match (has_above, has_below) {
             (true, true) => Some("▲ more ▼"),
             (true, false) => Some("▲ more"),
@@ -169,9 +179,9 @@ impl Pane {
 impl PaneSelectionState {
     pub fn overlay_style(self) -> Style {
         match self {
-            Self::Active => Pane::selection_style(PaneFocusState::Active),
+            Self::Active => Viewport::selection_style(PaneFocusState::Active),
             Self::Hovered => Style::default().bg(HOVER_FOCUS_COLOR),
-            Self::Remembered => Pane::selection_style(PaneFocusState::Remembered),
+            Self::Remembered => Viewport::selection_style(PaneFocusState::Remembered),
             Self::Unselected => Style::default(),
         }
     }
@@ -188,13 +198,13 @@ mod tests {
     use ratatui::style::Modifier;
     use ratatui::style::Style;
 
-    use super::Pane;
     use super::PaneFocusState;
     use super::PaneSelectionState;
+    use super::Viewport;
 
     #[test]
     fn active_selection_style_only_adds_background_and_emphasis() {
-        let style = Pane::selection_style(PaneFocusState::Active);
+        let style = Viewport::selection_style(PaneFocusState::Active);
 
         assert_eq!(style.fg, None);
         assert_eq!(style.bg, Some(super::ACTIVE_FOCUS_COLOR));
@@ -231,7 +241,7 @@ mod tests {
 
     #[test]
     fn selection_state_returns_hovered_for_non_selected_hovered_row() {
-        let mut pane = Pane::new();
+        let mut pane = Viewport::new();
         pane.set_len(3);
         pane.set_hovered(Some(2));
 
@@ -243,7 +253,7 @@ mod tests {
 
     #[test]
     fn selection_state_prefers_cursor_over_hovered_row() {
-        let mut pane = Pane::new();
+        let mut pane = Viewport::new();
         pane.set_len(3);
         pane.set_pos(1);
         pane.set_hovered(Some(1));
@@ -256,7 +266,7 @@ mod tests {
 
     #[test]
     fn selection_state_prefers_hover_for_inactive_selected_row() {
-        let mut pane = Pane::new();
+        let mut pane = Viewport::new();
         pane.set_len(3);
         pane.set_pos(0);
         pane.set_hovered(Some(0));
@@ -269,7 +279,7 @@ mod tests {
 
     #[test]
     fn overflow_affordance_is_hidden_when_all_rows_fit() {
-        let mut pane = Pane::new();
+        let mut pane = Viewport::new();
         pane.set_len(3);
         pane.set_viewport_rows(3);
 
@@ -278,7 +288,7 @@ mod tests {
 
     #[test]
     fn overflow_affordance_shows_bottom_only_at_top() {
-        let mut pane = Pane::new();
+        let mut pane = Viewport::new();
         pane.set_len(5);
         pane.set_viewport_rows(3);
         pane.set_scroll_offset(0);
@@ -288,7 +298,7 @@ mod tests {
 
     #[test]
     fn overflow_affordance_shows_both_in_middle() {
-        let mut pane = Pane::new();
+        let mut pane = Viewport::new();
         pane.set_len(7);
         pane.set_viewport_rows(3);
         pane.set_scroll_offset(2);
@@ -298,7 +308,7 @@ mod tests {
 
     #[test]
     fn overflow_affordance_shows_top_only_at_bottom() {
-        let mut pane = Pane::new();
+        let mut pane = Viewport::new();
         pane.set_len(5);
         pane.set_viewport_rows(3);
         pane.set_scroll_offset(2);

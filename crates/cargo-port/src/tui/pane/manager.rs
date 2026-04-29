@@ -1,18 +1,18 @@
-use super::Pane;
+use super::Viewport;
 use crate::tui::panes::PaneId;
 
 pub struct PaneManager {
-    panes: Vec<Pane>,
+    panes: Vec<Viewport>,
 }
 
 impl PaneManager {
-    pub fn pane(&self, id: PaneId) -> &Pane { &self.panes[id.index()] }
+    pub fn pane(&self, id: PaneId) -> &Viewport { &self.panes[id.index()] }
 
-    pub fn pane_mut(&mut self, id: PaneId) -> &mut Pane { &mut self.panes[id.index()] }
+    pub fn pane_mut(&mut self, id: PaneId) -> &mut Viewport { &mut self.panes[id.index()] }
 
     pub fn new() -> Self {
         Self {
-            panes: vec![Pane::new(); PaneId::pane_count()],
+            panes: vec![Viewport::new(); PaneId::pane_count()],
         }
     }
 

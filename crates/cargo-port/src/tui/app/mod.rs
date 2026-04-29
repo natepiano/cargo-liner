@@ -113,6 +113,7 @@ use crate::scan::RepoCache;
     reason = "tests should panic on unexpected values"
 )]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
+#[allow(clippy::unreachable, reason = "tests should panic on unexpected values")]
 mod tests;
 
 pub(super) use dismiss::DismissTarget;

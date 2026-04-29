@@ -2,11 +2,13 @@ mod actions;
 mod ci;
 mod cpu;
 mod data;
+mod dispatch;
 mod git;
 mod lang;
 mod layout;
 mod lints;
 mod package;
+mod pane_impls;
 mod spec;
 mod support;
 mod system;
@@ -31,6 +33,10 @@ pub(super) use cpu::cpu_required_pane_height;
 pub(super) use cpu::render_cpu_panel;
 pub(super) use data::DetailCacheKey;
 pub(super) use data::PaneDataStore;
+// Phase 7 foundation types live in `dispatch` and `pane_impls` and
+// stay private to this module during Phase 7. Consumers outside
+// `panes/` start wiring up in Phase 8 as render/input bodies
+// migrate; the re-exports land then.
 #[cfg(test)]
 pub(super) use git::git_label_width;
 pub(super) use git::render_git_panel;

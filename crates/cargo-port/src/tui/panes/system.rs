@@ -19,7 +19,21 @@ use std::path::Path;
 use std::time::Instant;
 
 use super::data::PaneDataStore;
+use super::dispatch::Pane;
 use super::layout::LayoutCache;
+use super::pane_impls::CiPane;
+use super::pane_impls::CpuPane;
+use super::pane_impls::FinderPane;
+use super::pane_impls::GitPane;
+use super::pane_impls::KeymapPane;
+use super::pane_impls::LangPane;
+use super::pane_impls::LintsPane;
+use super::pane_impls::OutputPane;
+use super::pane_impls::PackagePane;
+use super::pane_impls::ProjectListPane;
+use super::pane_impls::SettingsPane;
+use super::pane_impls::TargetsPane;
+use super::pane_impls::ToastsPane;
 use super::spec::PaneId;
 use super::support::WorktreeInfo;
 use crate::config::CpuConfig;
@@ -33,6 +47,25 @@ use crate::tui::pane::PaneManager;
 /// Panes` field instead of the eight raw fields it carried before
 /// Phase 1.
 pub struct Panes {
+    // ── Phase 7: per-pane registry (unit structs today; absorb
+    //    state in Phases 8–9). Methods `pane(id)` and
+    //    `pane_mut(id)` dispatch through the trait via these
+    //    fields.
+    project_list: ProjectListPane,
+    package:      PackagePane,
+    lang:         LangPane,
+    cpu:          CpuPane,
+    git:          GitPane,
+    targets:      TargetsPane,
+    lints:        LintsPane,
+    ci_runs:      CiPane,
+    output:       OutputPane,
+    toasts:       ToastsPane,
+    settings:     SettingsPane,
+    finder:       FinderPane,
+    keymap:       KeymapPane,
+
+    // ── Phase 1 grab-bag (dissolves in Phases 8–10):
     manager:                PaneManager,
     data:                   PaneDataStore,
     visited:                HashSet<PaneId>,
@@ -49,6 +82,20 @@ pub struct Panes {
 impl Panes {
     pub fn new(cpu_cfg: &CpuConfig) -> Self {
         Self {
+            project_list: ProjectListPane,
+            package:      PackagePane,
+            lang:         LangPane,
+            cpu:          CpuPane,
+            git:          GitPane,
+            targets:      TargetsPane,
+            lints:        LintsPane,
+            ci_runs:      CiPane,
+            output:       OutputPane,
+            toasts:       ToastsPane,
+            settings:     SettingsPane,
+            finder:       FinderPane,
+            keymap:       KeymapPane,
+
             manager:                PaneManager::new(),
             data:                   PaneDataStore::new(),
             visited:                std::iter::once(PaneId::ProjectList).collect(),
@@ -57,6 +104,56 @@ impl Panes {
             hovered_row:            None,
             ci_display_modes:       HashMap::new(),
             cpu_poller:             CpuPoller::new(cpu_cfg),
+        }
+    }
+
+    /// Trait-dispatch entry: returns the per-pane struct for
+    /// `id` as `&dyn Pane`. Phase 7 supports only the
+    /// `PaneId`-pure trait methods (`id`, `has_row_hitboxes`,
+    /// `size_spec`, `input_context`); Phase 8/9 fill in render,
+    /// input, and viewport accessors as bodies migrate.
+    #[allow(
+        dead_code,
+        reason = "Phase 7 registry entry; first dispatch site wires up in Phase 8"
+    )]
+    pub fn pane(&self, id: PaneId) -> &dyn Pane {
+        match id {
+            PaneId::ProjectList => &self.project_list,
+            PaneId::Package => &self.package,
+            PaneId::Lang => &self.lang,
+            PaneId::Cpu => &self.cpu,
+            PaneId::Git => &self.git,
+            PaneId::Targets => &self.targets,
+            PaneId::Lints => &self.lints,
+            PaneId::CiRuns => &self.ci_runs,
+            PaneId::Output => &self.output,
+            PaneId::Toasts => &self.toasts,
+            PaneId::Settings => &self.settings,
+            PaneId::Finder => &self.finder,
+            PaneId::Keymap => &self.keymap,
+        }
+    }
+
+    /// Mutable trait-dispatch entry. See `pane`.
+    #[allow(
+        dead_code,
+        reason = "Phase 7 registry entry; first dispatch site wires up in Phase 8"
+    )]
+    pub fn pane_mut(&mut self, id: PaneId) -> &mut dyn Pane {
+        match id {
+            PaneId::ProjectList => &mut self.project_list,
+            PaneId::Package => &mut self.package,
+            PaneId::Lang => &mut self.lang,
+            PaneId::Cpu => &mut self.cpu,
+            PaneId::Git => &mut self.git,
+            PaneId::Targets => &mut self.targets,
+            PaneId::Lints => &mut self.lints,
+            PaneId::CiRuns => &mut self.ci_runs,
+            PaneId::Output => &mut self.output,
+            PaneId::Toasts => &mut self.toasts,
+            PaneId::Settings => &mut self.settings,
+            PaneId::Finder => &mut self.finder,
+            PaneId::Keymap => &mut self.keymap,
         }
     }
 
@@ -160,5 +257,51 @@ impl Panes {
     pub fn install_cpu_placeholder(&mut self) {
         let placeholder = self.cpu_poller.placeholder_snapshot();
         self.data.set_cpu(placeholder);
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    //! Verify the registry returns the right concrete pane for every
+    //! `PaneId` variant. Pinned now so Phase 8/9 migrations cannot
+    //! silently mis-wire dispatch.
+    use crate::config::CpuConfig;
+    use crate::tui::panes::PaneId;
+    use crate::tui::panes::system::Panes;
+
+    fn fresh() -> Panes { Panes::new(&CpuConfig::default()) }
+
+    fn all_ids() -> [PaneId; 13] {
+        [
+            PaneId::ProjectList,
+            PaneId::Package,
+            PaneId::Lang,
+            PaneId::Cpu,
+            PaneId::Git,
+            PaneId::Targets,
+            PaneId::Lints,
+            PaneId::CiRuns,
+            PaneId::Output,
+            PaneId::Toasts,
+            PaneId::Settings,
+            PaneId::Finder,
+            PaneId::Keymap,
+        ]
+    }
+
+    #[test]
+    fn pane_returns_matching_id() {
+        let panes = fresh();
+        for id in all_ids() {
+            assert_eq!(panes.pane(id).id(), id, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn pane_mut_returns_matching_id() {
+        let mut panes = fresh();
+        for id in all_ids() {
+            assert_eq!(panes.pane_mut(id).id(), id, "{id:?}");
+        }
     }
 }
