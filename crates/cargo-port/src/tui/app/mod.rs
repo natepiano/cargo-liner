@@ -312,6 +312,16 @@ impl App {
     /// `app.panes().cpu().content()`).
     pub(super) const fn panes(&self) -> &Panes { &self.panes }
 
+    /// Split-borrow accessor: `&mut Panes` plus `&Config`. Used
+    /// by per-pane render dispatchers (Phase 8.9+) that need both
+    /// a mutable handle to the per-pane registry (to drive the
+    /// trait's render method) and an immutable read of config (for
+    /// rendering decisions). The two fields are disjoint, so
+    /// holding both refs simultaneously is sound.
+    pub(super) const fn split_panes_and_config(&mut self) -> (&mut Panes, &Config) {
+        (&mut self.panes, &self.config)
+    }
+
     pub(super) const fn mouse_pos(&self) -> Option<Position> { self.mouse_pos }
 
     pub(super) const fn set_mouse_pos(&mut self, pos: Option<Position>) { self.mouse_pos = pos; }

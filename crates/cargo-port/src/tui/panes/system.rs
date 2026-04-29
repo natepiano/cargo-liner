@@ -190,6 +190,40 @@ impl Panes {
         self.ci_runs.override_runs_for_test(runs);
     }
 
+    /// Dispatch `CpuPane`'s render through the `Pane` trait.
+    /// Owns the borrow split between the CPU pane and the
+    /// hitbox vec inside `layout_cache` — both live under
+    /// `&mut self.panes`, so callers outside this module can't
+    /// construct the ctx directly without help.
+    ///
+    /// Phase 8.9: first body-migrated pane. Other migrated panes
+    /// get their own `dispatch_*_render` helpers as bodies move.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "ctx-shaped args; consolidating into a struct adds indirection without simplifying"
+    )]
+    pub fn dispatch_cpu_render(
+        &mut self,
+        frame: &mut ratatui::Frame<'_>,
+        area: ratatui::layout::Rect,
+        focused_pane: PaneId,
+        focus_state: crate::tui::pane::PaneFocusState,
+        is_focused: bool,
+        animation_elapsed: std::time::Duration,
+        config: &crate::tui::config_state::Config,
+    ) {
+        let mut sink = super::dispatch::HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let ctx = super::dispatch::PaneRenderCtx {
+            focused_pane,
+            focus_state,
+            is_focused,
+            animation_elapsed,
+            config,
+            hit_sink: &mut sink,
+        };
+        super::dispatch::Pane::render(&mut self.cpu, frame, area, ctx);
+    }
+
     /// Polymorphic read-only viewport accessor. Routes to the
     /// per-pane `Viewport` for migrated panes, falls back to the
     /// vestigial `PaneManager` slot for un-migrated panes. Used

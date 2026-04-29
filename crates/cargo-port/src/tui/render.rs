@@ -457,7 +457,23 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
         PaneId::Lang => {
             panes::render_lang_panel_standalone(frame, app, &pane_render_styles(), area);
         },
-        PaneId::Cpu => panes::render_cpu_panel(frame, app, &pane_render_styles(), area),
+        PaneId::Cpu => {
+            let focused_pane = app.focused_pane();
+            let focus_state = app.pane_focus_state(PaneId::Cpu);
+            let is_focused = app.is_focused(PaneId::Cpu);
+            let animation_elapsed = app.animation_elapsed();
+            // Destructure App so `panes` and `config` are disjoint borrows.
+            let (panes, config) = app.split_panes_and_config();
+            panes.dispatch_cpu_render(
+                frame,
+                area,
+                focused_pane,
+                focus_state,
+                is_focused,
+                animation_elapsed,
+                config,
+            );
+        },
         PaneId::Targets => {
             if let Some(targets_data) = app.pane_data().targets().cloned()
                 && targets_data.has_targets()

@@ -10,18 +10,21 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
 use super::PaneId;
+use super::dispatch::HitboxSink;
+use super::dispatch::PaneRenderCtx;
 use super::package::RenderStyles;
-use crate::tui::app::App;
+use super::pane_impls::CpuPane;
+use crate::config::CpuConfig;
 use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::cpu;
-use crate::tui::interaction;
 use crate::tui::interaction::UiSurface::Content;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRule;
 use crate::tui::pane::PaneTitleCount;
+use crate::tui::pane::Viewport;
 
 const CPU_BAR_WIDTH: usize = 10;
 pub(super) const CPU_CONTENT_WIDTH: u16 = 17;
@@ -62,8 +65,7 @@ impl CpuSelectableRow {
     }
 }
 
-fn cpu_bar_line(percent: u8, app: &App) -> Line<'static> {
-    let cpu_cfg = &app.current_config().cpu;
+fn cpu_bar_line(percent: u8, cpu_cfg: &CpuConfig) -> Line<'static> {
     let filled = cpu::filled_cells(percent);
     let severity = cpu::severity(percent, cpu_cfg).color();
     let filled_span = Span::styled("█".repeat(filled), Style::default().fg(severity));
@@ -82,10 +84,10 @@ fn cpu_bar_line(percent: u8, app: &App) -> Line<'static> {
     ])
 }
 
-fn gpu_bar_line(percent: Option<u8>, app: &App) -> Line<'static> {
+fn gpu_bar_line(percent: Option<u8>, cpu_cfg: &CpuConfig) -> Line<'static> {
     let value = percent.unwrap_or(0);
     let filled = cpu::filled_cells(value);
-    let severity = cpu::severity(value, &app.current_config().cpu).color();
+    let severity = cpu::severity(value, cpu_cfg).color();
     let filled_span = Span::styled("█".repeat(filled), Style::default().fg(severity));
     let empty_span = Span::styled(
         " ".repeat(CPU_BAR_WIDTH.saturating_sub(filled)),
@@ -207,27 +209,24 @@ fn cpu_panel_title(core_count: usize, cursor: Option<usize>) -> String {
     format!(" CPU ({core_count} {core_label}) ")
 }
 
-fn cpu_row_overlay_style(app: &App, logical_row: usize, focus: PaneFocusState) -> Style {
-    app.panes()
-        .cpu()
-        .viewport()
-        .selection_state(logical_row, focus)
-        .overlay_style()
+fn cpu_row_overlay_style(viewport: &Viewport, logical_row: usize, focus: PaneFocusState) -> Style {
+    viewport.selection_state(logical_row, focus).overlay_style()
 }
 
 fn render_selectable_row(
     frame: &mut Frame,
-    app: &mut App,
+    viewport: &Viewport,
+    hit_sink: &mut HitboxSink<'_>,
     area: Rect,
     logical_row: usize,
     focus: PaneFocusState,
     paragraph: Paragraph<'static>,
 ) {
     frame.render_widget(
-        paragraph.style(cpu_row_overlay_style(app, logical_row, focus)),
+        paragraph.style(cpu_row_overlay_style(viewport, logical_row, focus)),
         area,
     );
-    interaction::register_pane_row_hitbox(app, area, PaneId::Cpu, logical_row, Content);
+    hit_sink.push_pane_row(area, PaneId::Cpu, logical_row, Content);
 }
 
 fn render_cpu_dividers(
@@ -264,7 +263,8 @@ fn render_cpu_dividers(
 
 fn render_aggregate_row(
     frame: &mut Frame,
-    app: &mut App,
+    viewport: &Viewport,
+    hit_sink: &mut HitboxSink<'_>,
     snapshot: &cpu::CpuSnapshot,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
@@ -272,7 +272,8 @@ fn render_aggregate_row(
     let logical_row = CpuSelectableRow::Aggregate.logical_index(layout.core_count);
     render_selectable_row(
         frame,
-        app,
+        viewport,
+        hit_sink,
         layout.rows[0],
         logical_row,
         focus,
@@ -282,7 +283,9 @@ fn render_aggregate_row(
 
 fn render_core_rows(
     frame: &mut Frame,
-    app: &mut App,
+    viewport: &Viewport,
+    hit_sink: &mut HitboxSink<'_>,
+    cpu_cfg: &CpuConfig,
     snapshot: &cpu::CpuSnapshot,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
@@ -291,24 +294,27 @@ fn render_core_rows(
         let logical_row = CpuSelectableRow::Core(core_index).logical_index(layout.core_count);
         render_selectable_row(
             frame,
-            app,
+            viewport,
+            hit_sink,
             layout.rows[1 + core_index],
             logical_row,
             focus,
-            Paragraph::new(cpu_bar_line(core.percent, app)),
+            Paragraph::new(cpu_bar_line(core.percent, cpu_cfg)),
         );
     }
 }
 
 fn render_breakdown_row(
     frame: &mut Frame,
-    app: &mut App,
+    viewport: &Viewport,
+    hit_sink: &mut HitboxSink<'_>,
     focus: PaneFocusState,
     row: BreakdownRowSpec<'_>,
 ) {
     render_selectable_row(
         frame,
-        app,
+        viewport,
+        hit_sink,
         row.area,
         row.logical_row,
         focus,
@@ -323,7 +329,9 @@ fn render_breakdown_row(
 
 fn render_gpu_row(
     frame: &mut Frame,
-    app: &mut App,
+    viewport: &Viewport,
+    hit_sink: &mut HitboxSink<'_>,
+    cpu_cfg: &CpuConfig,
     snapshot: &cpu::CpuSnapshot,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
@@ -331,7 +339,8 @@ fn render_gpu_row(
     let logical_row = CpuSelectableRow::Gpu.logical_index(layout.core_count);
     render_selectable_row(
         frame,
-        app,
+        viewport,
+        hit_sink,
         layout.rows[layout.gpu_row],
         logical_row,
         focus,
@@ -340,38 +349,44 @@ fn render_gpu_row(
                 Span::raw(" "),
                 Span::styled("GPU", Style::default().fg(COLUMN_HEADER_COLOR)),
             ]),
-            gpu_bar_line(snapshot.gpu_percent, app),
+            gpu_bar_line(snapshot.gpu_percent, cpu_cfg),
         ]),
     );
 }
 
-const fn sync_cpu_pane_state(app: &mut App, inner: Rect, core_count: usize) {
-    let viewport = app.panes_mut().cpu_mut().viewport_mut();
+const fn sync_cpu_pane_state(viewport: &mut Viewport, inner: Rect, core_count: usize) {
     viewport.set_len(total_selectable_rows(core_count));
     viewport.set_content_area(inner);
     viewport.set_scroll_offset(0);
 }
 
-pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles, area: Rect) {
-    let focus = app.pane_focus_state(PaneId::Cpu);
-    let viewport = app.panes().cpu().viewport();
-    let cursor = matches!(focus, PaneFocusState::Active).then(|| viewport.pos());
-    let title = app.panes().cpu().content().map_or_else(
+/// Body of `CpuPane::render`. Lives here (next to its helpers)
+/// rather than inline in `pane_impls.rs` because the helpers
+/// belong with the per-pane render code; only the trait method
+/// itself sits in `pane_impls.rs` and delegates here.
+pub(super) fn render_cpu_pane_body(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &mut CpuPane,
+    styles: &RenderStyles,
+    ctx: PaneRenderCtx<'_, '_>,
+) {
+    let focus = ctx.focus_state;
+    let cursor = matches!(focus, PaneFocusState::Active).then(|| pane.viewport().pos());
+    let title = pane.content().map_or_else(
         || " CPU ".to_string(),
         |snapshot| cpu_panel_title(snapshot.cores.len(), cursor),
     );
-    let block = styles.chrome.block(title, app.is_focused(PaneId::Cpu));
+    let block = styles.chrome.block(title, ctx.is_focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     if inner.height == 0 {
-        app.panes_mut().cpu_mut().viewport_mut().clear_surface();
+        pane.viewport_mut().clear_surface();
         return;
     }
 
-    let snapshot = app
-        .panes()
-        .cpu()
+    let snapshot = pane
         .content()
         .cloned()
         .unwrap_or_else(|| cpu::CpuSnapshot::placeholder(1));
@@ -383,11 +398,18 @@ pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles,
         styles.chrome.inactive_border
     };
     render_cpu_dividers(frame, area, &layout, border_style);
-    render_aggregate_row(frame, app, &snapshot, &layout, focus);
-    render_core_rows(frame, app, &snapshot, &layout, focus);
+
+    let cpu_cfg = &ctx.config.current().cpu;
+    let PaneRenderCtx { hit_sink, .. } = ctx;
+    let viewport = pane.viewport();
+    render_aggregate_row(frame, viewport, hit_sink, &snapshot, &layout, focus);
+    render_core_rows(
+        frame, viewport, hit_sink, cpu_cfg, &snapshot, &layout, focus,
+    );
     render_breakdown_row(
         frame,
-        app,
+        viewport,
+        hit_sink,
         focus,
         BreakdownRowSpec {
             area:        layout.rows[layout.system_row],
@@ -399,7 +421,8 @@ pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles,
     );
     render_breakdown_row(
         frame,
-        app,
+        viewport,
+        hit_sink,
         focus,
         BreakdownRowSpec {
             area:        layout.rows[layout.user_row],
@@ -411,7 +434,8 @@ pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles,
     );
     render_breakdown_row(
         frame,
-        app,
+        viewport,
+        hit_sink,
         focus,
         BreakdownRowSpec {
             area:        layout.rows[layout.idle_row],
@@ -421,6 +445,8 @@ pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles,
             color:       Color::White,
         },
     );
-    render_gpu_row(frame, app, &snapshot, &layout, focus);
-    sync_cpu_pane_state(app, inner, snapshot.cores.len());
+    render_gpu_row(
+        frame, viewport, hit_sink, cpu_cfg, &snapshot, &layout, focus,
+    );
+    sync_cpu_pane_state(pane.viewport_mut(), inner, snapshot.cores.len());
 }

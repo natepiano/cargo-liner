@@ -137,8 +137,27 @@ pub(super) fn register_pane_row_hitbox(
     row: usize,
     surface: UiSurface,
 ) {
-    let order_index = app.layout_cache().ui_hitboxes.len();
-    app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
+    push_pane_row_hitbox(
+        &mut app.layout_cache_mut().ui_hitboxes,
+        rect,
+        pane,
+        row,
+        surface,
+    );
+}
+
+/// Lower-level push: takes the hitbox vec directly. Used by the
+/// per-pane trait dispatch path (Phase 8.9+) where the trait
+/// method has access to a `HitboxSink` instead of `&mut App`.
+pub(super) fn push_pane_row_hitbox(
+    hitboxes: &mut Vec<UiHitbox>,
+    rect: Rect,
+    pane: PaneId,
+    row: usize,
+    surface: UiSurface,
+) {
+    let order_index = hitboxes.len();
+    hitboxes.push(UiHitbox::new(
         rect,
         UiTarget::PaneRow { pane, row },
         surface,

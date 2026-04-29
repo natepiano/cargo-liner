@@ -30,7 +30,8 @@ pub(super) use ci::render_ci_panel;
 pub(super) use cpu::CPU_PANE_WIDTH;
 #[cfg(test)]
 pub(super) use cpu::cpu_required_pane_height;
-pub(super) use cpu::render_cpu_panel;
+// `render_cpu_panel` removed in Phase 8.9 — CpuPane::render is the
+// trait method now. `render_tiled_pane` dispatches via `panes.cpu_mut().render`.
 pub(super) use data::DetailCacheKey;
 pub(super) use data::PaneDataStore;
 // Phase 7 foundation types live in `dispatch` and `pane_impls` and

@@ -25,28 +25,30 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use super::PaneId;
+use crate::tui::config_state::Config;
+use crate::tui::interaction::UiHitbox;
+use crate::tui::interaction::UiSurface;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneSizeSpec;
 
-/// Read-only side of an in-flight render's hitbox-registration sink.
-///
-/// Phase 7: a placeholder type — skeleton impls don't render, so
-/// no hitboxes flow through it yet. Phase 8/9 re-route the
-/// `register_*_row_hitboxes` writes here. Phase 10 deletes the
-/// type entirely when `Pane::hit_test` becomes a query method.
-#[derive(Debug, Default)]
-pub struct HitboxSink {
-    _placeholder: (),
+/// Hitbox-registration sink used during render. Phase 8.9 wires
+/// it up to wrap App's `layout_cache.ui_hitboxes` so per-pane
+/// `Pane::render` impls can push hitboxes without `&mut App`.
+/// Phase 10 deletes the sink when `Pane::hit_test` becomes a
+/// query method.
+pub struct HitboxSink<'a> {
+    hitboxes: &'a mut Vec<UiHitbox>,
 }
 
-impl HitboxSink {
-    /// A sink that discards every write. Used by Phase 7's
-    /// (currently empty) flow and by isolated render tests.
-    #[allow(
-        dead_code,
-        reason = "Phase 7 placeholder; first non-test caller wires up in Phase 8"
-    )]
-    pub const fn null() -> Self { Self { _placeholder: () } }
+impl<'a> HitboxSink<'a> {
+    /// Wrap a hitbox vec for push by per-pane render. Constructed
+    /// at the dispatch site in `render.rs::render_tiled_pane`.
+    pub const fn new(hitboxes: &'a mut Vec<UiHitbox>) -> Self { Self { hitboxes } }
+
+    /// Push a row hitbox for `pane` at `rect` covering row `row`.
+    pub fn push_pane_row(&mut self, rect: Rect, pane: PaneId, row: usize, surface: UiSurface) {
+        crate::tui::interaction::push_pane_row_hitbox(self.hitboxes, rect, pane, row, surface);
+    }
 }
 
 /// Routing kind a focused pane reports to App's input router.
@@ -72,22 +74,19 @@ pub enum InputContextKind {
     Overlay,
 }
 
-/// Bundle of references a pane needs at render time.
-///
-/// Phase-7 placeholder: fields populate pane-by-pane in Phase 8
-/// as each pane's render body migrates and declares which
-/// subsystems it reads. Listing all subsystem refs up front would
-/// force every Phase-7 dispatch site to construct refs no pane
-/// uses yet; we add them as bodies move.
+/// Bundle of references a pane needs at render time. Fields
+/// populate pane-by-pane in Phase 8/9 as render bodies migrate.
 #[allow(
     dead_code,
-    reason = "Phase 7 placeholder ctx; populated pane-by-pane in Phase 8"
+    reason = "Phase 8 ctx; subsystem refs added pane-by-pane as bodies migrate"
 )]
-pub struct PaneRenderCtx<'a> {
+pub struct PaneRenderCtx<'a, 'b> {
     pub focused_pane:      PaneId,
     pub focus_state:       PaneFocusState,
+    pub is_focused:        bool,
     pub animation_elapsed: std::time::Duration,
-    pub hit_sink:          &'a mut HitboxSink,
+    pub config:            &'a Config,
+    pub hit_sink:          &'a mut HitboxSink<'b>,
 }
 
 /// Bundle of references a pane needs at input-handling time.
@@ -141,7 +140,7 @@ pub trait Pane {
     // overrides per-pane as bodies migrate; Phase 9 finishes the
     // remaining seven panes; Phase 10 removes the panic and the
     // sink.
-    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: PaneRenderCtx<'_>) {
+    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: PaneRenderCtx<'_, '_>) {
         unimplemented!("render lands per-pane in Phase 8/9")
     }
     fn handle_input(&mut self, _event: &KeyEvent, _ctx: PaneInputCtx<'_>) {
@@ -155,7 +154,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hitbox_sink_null_constructs() { let _sink = HitboxSink::null(); }
+    fn hitbox_sink_pushes_to_underlying_vec() {
+        let mut hitboxes = Vec::new();
+        let mut sink = HitboxSink::new(&mut hitboxes);
+        sink.push_pane_row(
+            ratatui::layout::Rect::new(0, 0, 10, 1),
+            PaneId::Cpu,
+            3,
+            UiSurface::Content,
+        );
+        assert_eq!(hitboxes.len(), 1);
+    }
 
     #[test]
     fn input_context_kind_value_typed() {

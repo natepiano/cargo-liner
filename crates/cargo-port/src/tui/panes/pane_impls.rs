@@ -20,8 +20,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
+use ratatui::Frame;
+use ratatui::layout::Rect;
+
 use super::dispatch::InputContextKind;
 use super::dispatch::Pane;
+use super::dispatch::PaneRenderCtx;
 use super::spec::PaneId;
 use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
@@ -176,6 +180,15 @@ impl Pane for CpuPane {
             width:  PaneAxisSize::Fixed(cpu_width),
             height: PaneAxisSize::Fill(1),
         }
+    }
+
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: PaneRenderCtx<'_, '_>) {
+        // Body lives in `panes/cpu.rs` next to its helpers.
+        let styles = super::package::RenderStyles {
+            readonly_label: ratatui::style::Style::default().fg(crate::tui::constants::LABEL_COLOR),
+            chrome:         crate::tui::pane::default_pane_chrome(),
+        };
+        super::cpu::render_cpu_pane_body(frame, area, self, &styles, ctx);
     }
 }
 
