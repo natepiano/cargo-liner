@@ -33,6 +33,7 @@ use super::pane_impls::GitPane;
 use super::pane_impls::KeymapPane;
 use super::pane_impls::LangPane;
 use super::pane_impls::LintsPane;
+use super::pane_impls::OutputPane;
 use super::pane_impls::PackagePane;
 use super::pane_impls::SettingsPane;
 use super::pane_impls::ToastsPane;
@@ -77,6 +78,7 @@ pub struct Panes {
     keymap:   KeymapPane,
     settings: SettingsPane,
     finder:   FinderPane,
+    output:   OutputPane,
 
     // ── Phase 1 grab-bag (dissolves in Phases 9–10):
     manager:                PaneManager,
@@ -105,6 +107,7 @@ impl Panes {
             keymap:   KeymapPane::new(),
             settings: SettingsPane::new(),
             finder:   FinderPane::new(),
+            output:   OutputPane::new(),
 
             manager:                PaneManager::new(),
             data:                   PaneDataStore::new(),
@@ -358,6 +361,7 @@ impl Panes {
             PaneId::Keymap => self.keymap.viewport(),
             PaneId::Settings => self.settings.viewport(),
             PaneId::Finder => self.finder.viewport(),
+            PaneId::Output => self.output.viewport(),
             _ => self.manager.pane(id),
         }
     }
@@ -382,6 +386,7 @@ impl Panes {
             PaneId::Keymap => self.keymap.viewport_mut().set_pos(row),
             PaneId::Settings => self.settings.viewport_mut().set_pos(row),
             PaneId::Finder => self.finder.viewport_mut().set_pos(row),
+            PaneId::Output => self.output.viewport_mut().set_pos(row),
             _ => self.manager.pane_mut(id).set_pos(row),
         }
     }
@@ -424,6 +429,7 @@ impl Panes {
         self.keymap.viewport_mut().set_hovered(None);
         self.settings.viewport_mut().set_hovered(None);
         self.finder.viewport_mut().set_hovered(None);
+        self.output.viewport_mut().set_hovered(None);
         let Some(hovered) = self.hovered_row else {
             return;
         };
@@ -446,6 +452,7 @@ impl Panes {
             PaneId::Keymap => self.keymap.viewport_mut(),
             PaneId::Settings => self.settings.viewport_mut(),
             PaneId::Finder => self.finder.viewport_mut(),
+            PaneId::Output => self.output.viewport_mut(),
             _ => self.manager.pane_mut(id),
         }
     }

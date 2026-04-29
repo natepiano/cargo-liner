@@ -531,7 +531,7 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
             frame,
             panes::Panes::dispatch_ci_render,
         ),
-        PaneId::Output => render_example_output(frame, app, area),
+        PaneId::Output => panes::render_output_panel(frame, app, area),
         PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {},
     }
 }
@@ -754,44 +754,6 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &st
 
 fn should_pin_project_summary(project_rows: usize, has_summary: bool, inner_height: u16) -> bool {
     has_summary && project_rows.saturating_add(1) > usize::from(inner_height)
-}
-
-fn render_example_output(frame: &mut Frame, app: &App, area: Rect) {
-    let title = app.example_running().map_or_else(
-        || " Output (Esc to close) ".to_string(),
-        |n| format!(" Running: {n} "),
-    );
-
-    let block = pane::default_pane_chrome()
-        .with_inactive_border(Style::default().fg(LABEL_COLOR))
-        .block(title, app.is_focused(PaneId::Output));
-
-    let lines: Vec<Line> = app
-        .example_output()
-        .iter()
-        .map(|l| {
-            let padded = format!(" {l}");
-            ansi_to_tui::IntoText::into_text(&padded).map_or_else(
-                |_| Line::from(Span::raw(padded.clone())),
-                |text| {
-                    text.lines
-                        .into_iter()
-                        .next()
-                        .unwrap_or_else(|| Line::from(""))
-                },
-            )
-        })
-        .collect();
-
-    let inner_height = area.height.saturating_sub(2);
-    let total_lines = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    let scroll_offset = total_lines.saturating_sub(inner_height);
-
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll_offset, 0));
-
-    frame.render_widget(paragraph, area);
 }
 
 fn shortcut_spans(shortcuts: &[Shortcut]) -> Vec<Span<'static>> {

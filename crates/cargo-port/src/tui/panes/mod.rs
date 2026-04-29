@@ -7,6 +7,7 @@ mod git;
 mod lang;
 mod layout;
 mod lints;
+mod output;
 mod package;
 mod pane_impls;
 mod spec;
@@ -51,6 +52,7 @@ pub(super) use layout::resolve_layout;
 pub(super) use layout::tab_order;
 // `render_lints_panel` removed in Phase 8.10 — LintsPane::render is the
 // trait method now. `render_tiled_pane` dispatches via `panes.dispatch_lints_render`.
+pub(super) use output::render_output_panel;
 pub(super) use package::RenderStyles;
 #[cfg(test)]
 pub(super) use package::description_lines;

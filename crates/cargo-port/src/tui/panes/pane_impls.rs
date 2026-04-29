@@ -387,3 +387,31 @@ impl FinderPane {
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 }
+
+// ── Output ──────────────────────────────────────────────────────
+//
+// Phase 9.5: `OutputPane` lands as a per-pane struct alongside its
+// render body, which moves into `panes/output.rs`. Output has no
+// cursor, no selection, no hover, and no content slot today — the
+// renderer auto-scrolls to the bottom of `app.example_output()`.
+// The empty `Viewport` is kept for parity with the other panes (so
+// `viewport_for(PaneId::Output)` routes here in Phase 9.8 when
+// `PaneManager` is removed). No `Pane` trait impl: the render body
+// reaches into App-shell state (`example_running`, `example_output`)
+// that doesn't fit `PaneRenderCtx`, so it stays a free function
+// called directly from `render_tiled_pane`.
+pub struct OutputPane {
+    viewport: Viewport,
+}
+
+impl OutputPane {
+    pub const fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+        }
+    }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+}
