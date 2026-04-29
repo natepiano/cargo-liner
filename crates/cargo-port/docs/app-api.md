@@ -204,24 +204,76 @@ to hit.
     dictionary in `pane_manager` to calling `pane.hit_test(row)`.
     Any residual fields on `Panes` that the per-pane migrations left
     behind get their final home (App-shell or pane-local).
-11. **Net subsystem** — extract the network-state cluster (`http_client`,
+11. **Lint subsystem** — extract the lint-state cluster off App into
+    its own subsystem. Today the lint runtime, run history, status
+    cache, icon helpers, trigger plumbing, and `is_rust_at_path` /
+    `lint_icon` / `selected_lint_icon` accessors are all directly on
+    App. After Phase 11, App stops owning any lint-related state
+    directly; readers go through `App::lint() -> &Lint`.
+
+    Lint depends on Background+Inflight (Phase 4 — done; lint runs
+    spawn through it), Config (Phase 5 — done; lint config is a
+    `WatchedFile`), and Scan (Phase 6 — done; project/path lookups).
+    No Net dependency — lint runs are local cargo invocations.
+
+    **Phase 11 begins with a re-review of the phase plan against
+    everything learned in Phases 1–10.** Output of the design phase:
+    field-cluster list, public API, and the `LintDisplay` typed enum
+    (see "Typed display values, not pre-rendered strings" in
+    Recurring patterns). The carve sub-phases land the fields and
+    the API together, including `Lint::package_display(path) ->
+    LintDisplay` for the Package pane row. The typed enum is a
+    non-negotiable carve deliverable, not a follow-up. Get user
+    approval on the design before writing carve code.
+
+12. **Net subsystem** — extract the network-state cluster (`http_client`,
     `github`, `crates_io`) into its own subsystem. Today these three
     fields together carry the HTTP client and rate-limit state, the
     GitHub repo-fetch cache plus in-flight fetch tracking plus
     availability tracker, and the crates.io availability tracker. They
     share the HTTP client, are read by the Git pane, the project tree,
     and the rate-limit display, and overlap with two other subsystems
-    (Inflight and Scan). After Phase 11, App stops owning any
+    (Inflight and Scan). After Phase 12, App stops owning any
     network-related state directly.
 
-    **Phase 11 begins with a re-review of the phase plan against
-    everything learned in Phases 1–10.** The skeleton in this doc was
+    **Phase 12 begins with a re-review of the phase plan against
+    everything learned in Phases 1–11.** The skeleton in this doc was
     drafted before any of the prior phases existed; the actual
     `running_fetches` / `fetch_cache` overlaps with Inflight and Scan
     may have resolved themselves along the way, the `availability`
     tracking may have moved, and the public API drafted below is a
     starting point. Update this section and get user approval before
     writing carve code.
+
+13. **Ci subsystem** — extract the CI-state cluster off App into its
+    own subsystem. Today the CI run cache, workflow detection, branch
+    publication state, and `ci_for` / `ci_for_item` accessors are
+    directly on App; the CI display strings on `PackageData` funnel
+    through ~6 of these. After Phase 13, App stops owning any
+    CI-related state directly; readers go through `App::ci() -> &Ci`.
+
+    Ci depends on Background+Inflight (Phase 4 — done), Scan (Phase 6
+    — done), **and Net (Phase 12)**. Ci must come after Net so it
+    can compose `Net`'s HTTP client + GitHub fetch cache cleanly,
+    rather than reaching into App for HTTP state and re-plumbing
+    after Net carves.
+
+    **Phase 13 begins with a re-review of the phase plan against
+    everything learned in Phases 1–12.** Output of the design phase:
+    field-cluster list, public API, and the `CiDisplay` typed enum.
+    The carve sub-phases land the fields and the API together,
+    including `Ci::package_display(path) -> CiDisplay`. As with
+    Phase 11, the typed enum is a non-negotiable carve deliverable.
+
+    **Phase 13.last (capstone, lands inside Phase 13)** — once both
+    `Lint::package_display` and `Ci::package_display` exist, flip
+    `PackageData.lint_display` and `PackageData.ci_display` from
+    `String` to the typed `LintDisplay` / `CiDisplay` enums. Update
+    the Package renderer in `panes/package.rs` to match on enum
+    variants instead of string-comparing constants like
+    `NO_LINT_RUNS`, `NO_CI_WORKFLOW`. Delete `resolve_lint_display`
+    and `resolve_ci_display` from `panes/support.rs`. Pure
+    consumer-side cleanup gated by both subsystems being done.
 
 **(History: an earlier draft collapsed the `ColumnWidths` primitive
 into Selection, on the argument that the project list was the only
@@ -255,6 +307,20 @@ trait + Viewport + registry + skeleton impls), Phase 8 (migrate
 six detail/data panes), Phase 9 (migrate the remaining seven
 panes), Phase 10 (hit-test promotion + final cleanup). The
 network carve was renumbered from Phase 8 to Phase 11.)**
+
+**(History: Phases 11 and 13 (Lint and Ci subsystems) were added
+after a Phase 8.14 review of the Package pane's `lint_display` /
+`ci_display` resolution surfaced a smell — producing those two
+display strings funneled ~6 App methods through two free helpers
+in `panes/support.rs`, with `String` as the carrier type. The
+right fix was to move the resolution behind subsystems that own
+the lint and CI domain state, and to replace the strings with
+typed enums (`LintDisplay`, `CiDisplay`). Net was renumbered
+from 11 to 12. Ci sits after Net because it composes `Net`'s
+HTTP client and fetch cache. The typed enums and the
+`PackageData` capstone (Phase 13.last) are contracted into the
+carve phases, not deferred as follow-ups, so the typed-display
+intent cannot drift back to `String` fields.)**
 
 ### Per-phase workflow (applies to every step above)
 
@@ -1386,6 +1452,16 @@ delivers this; refine across phases):
 //! - See `tui::watched_file::WatchedFile<T>` (Phase 5) — composed by
 //!   `Config` (with edit buffer) and `Keymap` (with diagnostics-toast
 //!   id).
+//!
+//! ## Typed display values, not pre-rendered strings
+//! When a pane renders a value derived from a subsystem, the subsystem
+//! returns a typed enum naming the *state*, not a `String` pre-formatted
+//! for display. The renderer matches on variants and formats at render
+//! time. Stops cross-subsystem free helpers from accreting in
+//! `panes/support.rs` and stops stringly-typed dispatch in renderers.
+//!
+//! - See `LintDisplay` (Phase 11) — lint state for the Package pane row.
+//! - See `CiDisplay` (Phase 13) — CI state for the Package pane row.
 ```
 
 Phase rules:
@@ -1450,35 +1526,78 @@ The patterns themselves:
   template for `apply_lint_config_change`. New orchestrators copy
   that doc pattern.
 
-## Phase 8 follow-ups (deferred cleanups)
+- **Typed display values, not pre-rendered strings**: when a UI
+  consumer (typically a pane) needs to render a value derived from
+  a subsystem's state, the subsystem returns a typed value
+  describing the *state* — not a `String` pre-formatted for
+  display. The renderer matches on the typed value's variants and
+  formats them at render time.
 
-These are smells surfaced during Phase 8 body migrations that we
-chose not to fix in-line so the migrations could ship. Each is its
-own small phase after Phase 8 is fully landed, before Phase 9.
+  Why: pre-rendered strings collapse semantically distinct states
+  (e.g., "no CI workflow", "no CI runs", "runs present with
+  conclusion X + count N") into flat text the renderer disambiguates
+  by string equality (`if value == NO_LINT_RUNS`). That's
+  stringly-typed dispatch — fragile, hides the state machine, and
+  forces every consumer to re-derive the same string-comparison
+  logic. It also tends to drag in a free helper that funnels
+  multiple App methods to assemble the string, which is the smell
+  Phases 11 and 13 exist to fix (see "Phase 8 follow-ups").
+
+  Apply this pattern when a subsystem owns the underlying state
+  and a pane is currently building a `*_display: String` field
+  out of cross-subsystem reads. The subsystem grows a typed enum
+  and a `<Subsystem>::<consumer>_display(...)` method that returns
+  it; `PaneData` carries the enum, not the string.
+
+  **In-code documentation requirement.** Every typed-display enum
+  *must* land with a doc comment that:
+  1. Names the consumer (e.g., "Display value for the Lint row in
+     the Package detail pane").
+  2. Documents each variant and the underlying state it
+     represents (not how it renders — rendering is the
+     consumer's job).
+  3. References this pattern by name so future readers find the
+     index.
+
+  - See `LintDisplay` (Phase 11) — Lint state for the Package
+    pane row.
+  - See `CiDisplay` (Phase 13) — CI state for the Package pane row.
+
+## Phase 8 follow-ups (resolved)
+
+Items surfaced during Phase 8 that were tracked here for
+follow-up. Both are now resolved or contracted into named phases:
 
 - **`PackageData` Lint/Ci display resolution belongs behind a
-  typed boundary.** Phase 8.14 migrated `DetailField::package_value`
-  to a pure data→string function by pre-resolving `lint_display:
-  String` and `ci_display: String` in `support.rs::build_pane_data_common`
-  (the "Option A" pre-resolve approach). The smell that drove that
-  fix is still present: producing those two strings requires ~6
-  App-method reads (lint runs lookup, CI workflow lookup, branch
-  publication state, vendored vs. rust-info crate-version source,
-  etc.), funnelled through two free helpers (`resolve_lint_display`,
-  `resolve_ci_display`) that sit in `support.rs` with no typed home.
-  The deferred cleanup ("Option 2") is to introduce typed wrappers
-  — `LintDisplay` / `CiDisplay` (or similar) — that own their
-  resolution rules behind a proper interface, instead of two free
-  functions inlined in the assembly path. Until then, every new
-  display-string field on `PackageData` will pull this same shape
-  of free helper into `support.rs`, which is exactly what we
-  want to stop doing.
+  typed boundary.** *Resolved by being contracted into Phases 11
+  and 13.* Phase 8.14 left `lint_display: String` and
+  `ci_display: String` on `PackageData`, fed by two free helpers
+  in `panes/support.rs` (`resolve_lint_display`,
+  `resolve_ci_display`) that funnelled ~6 App methods each. The
+  permanent fix lives in the new carve phases:
 
-- **Autonomously-added `#[allow]` markers from Phase 7 need
-  user review.** During Phase 7 a number of `#[allow(...)]`
-  attributes were added without explicit user sign-off (they
-  were the fastest way to get the trait skeletons compiling).
-  Per the project rule "never autonomously add `#[allow]`
-  attributes", these need to be walked through with the user
-  one by one before Phase 8 closes — either justified in a
-  comment, replaced with a real fix, or removed.
+  - Phase 11.0 (Lint design) defines the `LintDisplay` typed enum
+    and the `Lint::package_display(path) -> LintDisplay` API as
+    non-negotiable carve deliverables.
+  - Phase 13.0 (Ci design) does the same for `CiDisplay` /
+    `Ci::package_display(path) -> CiDisplay`.
+  - Phase 13.last (capstone, inside Phase 13) flips the
+    `PackageData` field types from `String` to the typed enums,
+    updates the renderer to match on variants, and deletes the
+    free helpers from `support.rs`.
+
+  See "Typed display values, not pre-rendered strings" in
+  Recurring patterns for the principle that drives this work.
+
+- **Autonomously-added `#[allow]` markers from Phase 7 need user
+  review.** *Resolved in Phase 8.15.* The Phase-7 `#[allow(dead_code)]`
+  markers covered placeholder trait surface (`Pane::id`,
+  `input_context`, `has_row_hitboxes`, `size_spec`, `handle_input`,
+  `is_navigable`, plus `PaneInputCtx`, `PaneNavCtx`,
+  `InputContextKind`, the `Panes::pane`/`pane_mut` registry, and
+  `PaneRenderCtx::focused_pane`/`selection`). Phase 8.15 trimmed
+  the trait + ctx surface to its live shape: only `fn render` on
+  the trait, only the `PaneRenderCtx` fields render bodies actually
+  read. Phase 9 reintroduces what it needs when each remaining
+  pane absorbs state and a render body — additions that are
+  driven by working code, not by speculative scaffolding.
