@@ -719,7 +719,7 @@ impl App {
                     .and_then(|path| self.ci_info_for(path));
                 let run_count = ci_info.map_or(0, |info| info.runs.len());
                 let selected_path = self.selected_project_path();
-                if self.pane_manager().pane(PaneId::CiRuns).pos() == run_count
+                if self.panes().ci().viewport().pos() == run_count
                     && !selected_path.is_some_and(|path| self.ci_is_fetching(path))
                     && !selected_path.is_some_and(|path| self.ci_is_exhausted(path))
                 {

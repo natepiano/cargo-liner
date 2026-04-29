@@ -178,10 +178,10 @@ fn open_url(url: &str) {
 pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.pane_manager_mut().pane_mut(PaneId::CiRuns).up(),
-        KeyCode::Down => return app.pane_manager_mut().pane_mut(PaneId::CiRuns).down(),
-        KeyCode::Home => return app.pane_manager_mut().pane_mut(PaneId::CiRuns).home(),
-        KeyCode::End => return app.pane_manager_mut().pane_mut(PaneId::CiRuns).end(),
+        KeyCode::Up => return app.panes_mut().ci_mut().viewport_mut().up(),
+        KeyCode::Down => return app.panes_mut().ci_mut().viewport_mut().down(),
+        KeyCode::Home => return app.panes_mut().ci_mut().viewport_mut().home(),
+        KeyCode::End => return app.panes_mut().ci_mut().viewport_mut().end(),
         _ => {},
     }
 
@@ -212,7 +212,7 @@ fn handle_ci_enter(app: &App) {
         .ci()
         .map(|data| data.runs.clone())
         .unwrap_or_default();
-    let cursor_pos = app.pane_manager().pane(PaneId::CiRuns).pos();
+    let cursor_pos = app.panes().ci().viewport().pos();
     if let Some(run) = visible_runs.get(cursor_pos) {
         open_url(&run.url);
     }
@@ -311,7 +311,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
         }),
     );
     app.complete_ci_fetch_for(abs);
-    app.pane_manager_mut().pane_mut(PaneId::CiRuns).home();
+    app.panes_mut().ci_mut().viewport_mut().home();
     app.increment_data_generation();
 }
 

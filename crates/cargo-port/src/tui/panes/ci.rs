@@ -273,31 +273,27 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     if !ci_data.has_runs() {
-        app.pane_manager_mut().pane_mut(PaneId::CiRuns).set_len(0);
-        app.pane_manager_mut()
-            .pane_mut(PaneId::CiRuns)
-            .set_content_area(Rect::ZERO);
+        let viewport = app.panes_mut().ci_mut().viewport_mut();
+        viewport.set_len(0);
+        viewport.set_content_area(Rect::ZERO);
         render_empty_ci_block(frame, &empty_ci_title(&ci_data), area);
         return;
     }
 
     let ci_focused = app.is_focused(PaneId::CiRuns);
     let ci_focus = app.pane_focus_state(PaneId::CiRuns);
-    let focused_pos = ci_focused.then(|| app.pane_manager().pane(PaneId::CiRuns).pos());
+    let focused_pos = ci_focused.then(|| app.panes().ci().viewport().pos());
     let title = ci_panel_title(&ci_data, focused_pos);
 
     let ci_block = pane::default_pane_chrome().block(title, ci_focused);
 
     let inner = ci_block.inner(area);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::CiRuns)
-        .set_len(ci_data.runs.len());
-    app.pane_manager_mut()
-        .pane_mut(PaneId::CiRuns)
-        .set_content_area(inner);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::CiRuns)
-        .set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
+    {
+        let viewport = app.panes_mut().ci_mut().viewport_mut();
+        viewport.set_len(ci_data.runs.len());
+        viewport.set_content_area(inner);
+        viewport.set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
+    }
 
     let all_columns = [
         CiColumn::Fmt,
@@ -330,8 +326,9 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                 ci_run,
                 &cols,
                 show_durations,
-                app.pane_manager()
-                    .pane(PaneId::CiRuns)
+                app.panes()
+                    .ci()
+                    .viewport()
                     .selection_state(row_index, ci_focus),
             )
         })
@@ -346,12 +343,13 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .row_highlight_style(Style::default());
 
     let mut table_state =
-        TableState::default().with_selected(Some(app.pane_manager().pane(PaneId::CiRuns).pos()));
+        TableState::default().with_selected(Some(app.panes().ci().viewport().pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::CiRuns)
+    app.panes_mut()
+        .ci_mut()
+        .viewport_mut()
         .set_scroll_offset(table_state.offset());
-    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::CiRuns));
+    pane::render_overflow_affordance(frame, area, app.panes().ci().viewport());
     register_ci_row_hitboxes(app, ci_data.runs.len(), inner, table_state.offset());
 }
 

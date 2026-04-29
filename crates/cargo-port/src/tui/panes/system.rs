@@ -88,7 +88,7 @@ impl Panes {
             git:          GitPane,
             targets:      TargetsPane,
             lints:        LintsPane::new(),
-            ci_runs:      CiPane,
+            ci_runs:      CiPane::new(),
             output:       OutputPane,
             toasts:       ToastsPane,
             settings:     SettingsPane,
@@ -125,6 +125,12 @@ impl Panes {
     /// Mutable typed accessor for the Lints pane.
     pub const fn lints_mut(&mut self) -> &mut LintsPane { &mut self.lints }
 
+    /// Typed accessor for the `CiRuns` pane.
+    pub const fn ci(&self) -> &CiPane { &self.ci_runs }
+
+    /// Mutable typed accessor for the `CiRuns` pane.
+    pub const fn ci_mut(&mut self) -> &mut CiPane { &mut self.ci_runs }
+
     /// Set the cursor position for `id`'s viewport, routing to
     /// each migrated pane's per-pane `Viewport` for those that
     /// have absorbed it, falling back to the still-vestigial
@@ -138,6 +144,7 @@ impl Panes {
             PaneId::Cpu => self.cpu.viewport_mut().set_pos(row),
             PaneId::Lang => self.lang.viewport_mut().set_pos(row),
             PaneId::Lints => self.lints.viewport_mut().set_pos(row),
+            PaneId::CiRuns => self.ci_runs.viewport_mut().set_pos(row),
             _ => self.manager.pane_mut(id).set_pos(row),
         }
     }

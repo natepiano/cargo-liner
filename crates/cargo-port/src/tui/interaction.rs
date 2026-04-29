@@ -579,7 +579,7 @@ mod tests {
     }
 
     fn ci_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.pane_manager().pane(PaneId::CiRuns).content_area();
+        let area = app.panes().ci().viewport().content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -988,7 +988,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.pane_manager().pane(PaneId::CiRuns).pos(),
+            app.panes().ci().viewport().pos(),
             1,
             "clicking the second rendered CI run should select run index 1, not the header-offset visual row"
         );

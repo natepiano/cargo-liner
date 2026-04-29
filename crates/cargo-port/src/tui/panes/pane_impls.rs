@@ -202,7 +202,26 @@ impl Pane for LintsPane {
 }
 
 // ── CiRuns ──────────────────────────────────────────────────────
-pub struct CiPane;
+//
+// Phase 8.4: cursor `Viewport` migrates onto CiPane. Content
+// stays in the detail set; ci_display_modes will absorb in a
+// later sub-phase.
+pub struct CiPane {
+    viewport: Viewport,
+}
+
+impl CiPane {
+    pub const fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+        }
+    }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+}
+
 impl Pane for CiPane {
     fn id(&self) -> PaneId { PaneId::CiRuns }
     fn input_context(&self) -> InputContextKind { InputContextKind::CiRuns }
@@ -280,7 +299,7 @@ mod tests {
             PaneId::Git => Box::new(GitPane),
             PaneId::Targets => Box::new(TargetsPane),
             PaneId::Lints => Box::new(LintsPane::new()),
-            PaneId::CiRuns => Box::new(CiPane),
+            PaneId::CiRuns => Box::new(CiPane::new()),
             PaneId::Output => Box::new(OutputPane),
             PaneId::Toasts => Box::new(ToastsPane),
             PaneId::Settings => Box::new(SettingsPane),

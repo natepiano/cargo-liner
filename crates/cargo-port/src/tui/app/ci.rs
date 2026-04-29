@@ -12,7 +12,6 @@ use crate::scan;
 use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
 use crate::tui::panes::CiFetchKind;
-use crate::tui::panes::PaneId;
 
 impl App {
     pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<ci::OwnerRepo> {
@@ -121,8 +120,9 @@ impl App {
             },
         };
 
-        self.pane_manager_mut()
-            .pane_mut(PaneId::CiRuns)
+        self.panes_mut()
+            .ci_mut()
+            .viewport_mut()
             .set_pos(merged.len());
         if let Some(repo) = self.owner_repo_for_path_inner(&abs) {
             let meta = scan::load_cached_repo_data(&self.github.fetch_cache, &repo)
@@ -179,7 +179,7 @@ impl App {
         };
         self.panes
             .set_ci_display_mode(AbsolutePath::from(path), new_mode);
-        self.pane_manager_mut().pane_mut(PaneId::CiRuns).home();
+        self.panes_mut().ci_mut().viewport_mut().home();
         self.scan.bump_generation();
     }
 
