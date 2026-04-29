@@ -2285,7 +2285,7 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
         .insert(test_path("~/demo"), Instant::now());
     assert!(!app.inflight().running_lint_paths().is_empty());
 
-    // App-shell scan-shaped state: capture the pre-call generation.
+    // App-shell scan state: capture the pre-call generation.
     let gen_before = app.data_generation_for_test();
 
     // Selection: replace fit_widths with a sentinel generation so we
@@ -2306,7 +2306,7 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
         app.inflight().running_lint_paths().is_empty(),
         "apply_lint_config_change must clear in-flight lint paths"
     );
-    // Scan-shaped: data_generation bumped exactly once.
+    // Scan: data_generation bumped exactly once.
     assert_eq!(
         app.data_generation_for_test(),
         gen_before + 1,

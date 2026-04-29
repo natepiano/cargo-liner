@@ -601,7 +601,7 @@ impl WorktreeProjectKind {
 
     fn root_item(dir: &Path) -> RootItem { item_from_project_dir(dir) }
 
-    fn assert_group_shape(self, app: &App, linked_len: usize, context: &str) {
+    fn assert_group_layout(self, app: &App, linked_len: usize, context: &str) {
         assert_eq!(app.projects().len(), 1, "{context}");
         match (self, &app.projects()[0].item) {
             (Self::Package, RootItem::Worktrees(WorktreeGroup::Packages { linked, .. })) => {
@@ -636,7 +636,7 @@ fn expect_real_discovery_creates_group(kind: WorktreeProjectKind) {
         BackgroundMsg::ProjectDiscovered { item: linked_item },
     );
 
-    kind.assert_group_shape(
+    kind.assert_group_layout(
         &app,
         1,
         "real worktree discovery should create a worktree group",
@@ -679,7 +679,7 @@ fn expect_real_discovery_appends_existing_group(kind: WorktreeProjectKind) {
         },
     );
 
-    kind.assert_group_shape(
+    kind.assert_group_layout(
         &app,
         2,
         "second real worktree discovery should append inside the existing group",
@@ -898,7 +898,7 @@ fn expect_refresh_regroups_stale_top_level_discovery(kind: WorktreeProjectKind) 
         BackgroundMsg::ProjectRefreshed { item: refreshed },
     );
 
-    kind.assert_group_shape(
+    kind.assert_group_layout(
         &app,
         1,
         "refreshing the stale top-level row should regroup it under the primary worktree container",
@@ -970,7 +970,7 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
         BackgroundMsg::ProjectRefreshed { item: refreshed },
     );
 
-    kind.assert_group_shape(
+    kind.assert_group_layout(
         &app,
         2,
         "refresh should fold the stale row into the existing worktree group",

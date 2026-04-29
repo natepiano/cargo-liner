@@ -1045,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn expanded_tree_reshape_rebuilds_clickable_rows() {
+    fn expanded_tree_rebuild_refreshes_clickable_rows() {
         let primary: AbsolutePath = "/abs/app".into();
         let linked: AbsolutePath = "/abs/app_feat".into();
         let mut app = make_app(&[RootItem::Rust(RustProject::Package(make_package_worktree(

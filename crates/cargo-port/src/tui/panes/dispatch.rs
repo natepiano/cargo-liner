@@ -11,7 +11,7 @@
 //! during Phase 7 the existing free-function dispatch in
 //! `render.rs` and `input.rs` keeps driving the app.
 //!
-//! The borrow-checker shape (per the design doc) is what forces
+//! The borrow-checker constraint (per the design doc) is what forces
 //! this thin Phase 7 split: trait method bodies cannot accept
 //! `&mut App` while `panes` is mutably borrowed out of App, and
 //! the typed ctx bundles cannot be assembled until each pane's

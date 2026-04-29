@@ -1337,7 +1337,7 @@ fn probe_new_projects(
             if abs_path.join("Cargo.toml").exists() {
                 // Newly created Rust worktrees can be discovered before all
                 // nested workspace members are visible. A delayed normalized
-                // refresh repairs that initial partial shape once the checkout
+                // refresh repairs that initial partial state once the checkout
                 // settles.
                 spawn_project_refresh_after(bg_tx.clone(), abs_path.clone(), NEW_PROJECT_DEBOUNCE);
             }
@@ -1820,7 +1820,7 @@ mod tests {
     /// recursive root — the guard returns `Err`, the failure is
     /// observable here, and the test fails.
     ///
-    /// Inputs are picked to exercise the realistic shape: two
+    /// Inputs are picked to exercise the realistic case: two
     /// recursive roots, a cargo home that lives outside both — exactly
     /// the configuration that uncovered the original bug. Adding a
     /// new `watcher.watch()` call to any helper invoked here will fail
@@ -2150,7 +2150,7 @@ mod tests {
     // ── project_level_dir ────────────────────────────────────────────
 
     #[test]
-    fn project_level_dir_handles_synthetic_path_shapes() {
+    fn project_level_dir_handles_synthetic_path_forms() {
         struct Case {
             name:        &'static str,
             watch_roots: &'static [&'static str],
@@ -2691,7 +2691,7 @@ edition = "2024"
         // Step 3b retirement: the refreshed `Package`'s `Cargo` no
         // longer carries hand-parsed example data — that flows from
         // the authoritative `cargo metadata` snapshot. The contract
-        // pinned here is the refresh-emission shape (a `Package`
+        // pinned here is the refresh-emission pattern (a `Package`
         // arriving on `BackgroundMsg::ProjectRefreshed` for the
         // watched root), not the derived target counts.
         assert!(matches!(

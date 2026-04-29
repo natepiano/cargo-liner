@@ -142,10 +142,10 @@ pub(crate) fn parse_rate_limit_snapshot(value: &serde_json::Value) -> GitHubRate
     }
 }
 
-/// True for the two REST shapes GitHub uses for rate-limit refusals:
+/// True for the two REST forms GitHub uses for rate-limit refusals:
 /// `429 Too Many Requests`, or `403 Forbidden` with
 /// `X-RateLimit-Remaining: 0` (the secondary-rate-limit / abuse-detection
-/// shape). A bare 403 is auth-related and not rate-limit.
+/// form). A bare 403 is auth-related and not rate-limit.
 pub(crate) fn github_is_rate_limited(
     status: reqwest::StatusCode,
     headers: &reqwest::header::HeaderMap,

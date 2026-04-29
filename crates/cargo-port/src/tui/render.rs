@@ -294,7 +294,7 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
             // TargetDirIndex is populated incrementally from
             // handle_cargo_metadata_msg, so early in startup it may
             // be empty — then these lists stay empty and the dialog
-            // reverts to the Step 2 single-line shape.
+            // reverts to the Step 2 single-line layout.
             let selection = [project_path.clone()];
             append_sibling_lines(app, &target, &selection, &mut lines);
 

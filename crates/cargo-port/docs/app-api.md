@@ -141,7 +141,7 @@ to hit.
      into a few calls into `ColumnWidths`).
 
    The primitive ships paired with adoption that proves it works for
-   both shapes — not as speculative infrastructure. Lints / package /
+   both consumers — not as speculative infrastructure. Lints / package /
    git panes can adopt later if their column logic grows; today they
    don't fit content-aware widths, so they're not on the hook for this
    phase.
@@ -303,7 +303,7 @@ and the step list, not here.
     `Pane::hit_test` trait dispatch in Phase 10. The hovered-row
     field itself is absorbed into each pane's `Viewport.hovered_row`
     during Phases 8–9.
-  - `Panes::handle_input` in Phase 1 keeps the `&mut App` shape that
+  - `Panes::handle_input` in Phase 1 keeps the `&mut App` signature that
     `panes/actions.rs` currently uses (every dispatch in
     `panes/actions.rs:32-336` reaches across ~6 of the 7 future
     subsystems). Phase 7 introduces `Pane::handle_input` on the
@@ -342,7 +342,7 @@ and the step list, not here.
     label-width lookup, not content-aware fitting), git pane. They can
     adopt later if their column logic grows.
   - **Why this is a real phase.** The reusable primitive ships paired
-    with the two consumers that prove it works for both shapes
+    with the two consumers that prove it works for both forms
     (project-list rows + CI runs). Not speculative infrastructure.
 
 - **Phase 3 (Selection)**:
@@ -448,7 +448,7 @@ and the step list, not here.
     from the call site and become part of `TreeMutation`'s automatic
     cleanup. Same effect; impossible to skip.
 
-  - **Inner shape of `TreeMutation` after the carve.**
+  - **Inner structure of `TreeMutation` after the carve.**
     ```rust
     struct TreeMutation<'a> {
         scan:      &'a mut Scan,
@@ -505,7 +505,7 @@ and the step list, not here.
   2. **A pane owns its own state.** Cursor, scroll, viewport,
      content data, and any pane-specific extras (poller, display
      modes, etc.) live on that pane's struct.
-  3. **State that's the same shape across all panes still lives
+  3. **State of the same kind across all panes still lives
      per-pane, not in a shared array indexed by `PaneId`.**
      Example: every pane has a "current cursor row" — each pane
      holds its own copy. No `[Pane; N]` array of cursors.
@@ -515,7 +515,7 @@ and the step list, not here.
      state of its own.
   5. **Common behavior is expressed via a trait.** A single `Pane`
      trait defines the shared interface, with default helper
-     methods on the trait itself for shared input-handling shapes
+     methods on the trait itself for shared input-handling patterns
      (nav keys, detail-pane keymap dispatch). No sub-traits — the
      base trait's default methods cover the code-reuse cases.
      Each pane's behavior is its `impl Pane`.
@@ -534,7 +534,7 @@ and the step list, not here.
      the matching pane's content slot. The central `PaneDataStore`
      is gone after Phase 9.
 
-  **Pane trait shape.**
+  **Pane trait declaration.**
 
   ```rust
   pub trait Pane {
@@ -568,7 +568,7 @@ and the step list, not here.
   }
   ```
 
-  Notes on trait shape:
+  Notes on the trait:
   - **`size_spec` takes no parameter.** `CpuPane`'s width depends on
     its CPU snapshot, which `CpuPane` already owns after Phase 8.
     Earlier drafts threaded `cpu_width` through every pane's
@@ -611,7 +611,7 @@ and the step list, not here.
   **Shared input-handling bodies as default helper methods on
   `Pane` itself — no sub-traits.** The detail panes (Package, Lang,
   Git, Cpu, Targets) and the table panes (Lints, CiRuns) share
-  enough input-handling shape (Up/Down/Home/End nav block, then
+  enough input-handling pattern (Up/Down/Home/End nav block, then
   keymap-action dispatch) that we want one shared body, not seven
   copies. Earlier drafts proposed sub-traits (`NavigablePane`,
   `DetailFieldsPane`) for this. Dropped: nothing in the codebase
@@ -728,7 +728,7 @@ and the step list, not here.
   accessors, and `is_navigable` are declared on the trait but
   not yet implemented per-pane — their default bodies on the
   trait panic with `unimplemented!()` and no caller dispatches
-  through them yet. (The borrow-checker shape of the eventual
+  through them yet. (The borrow-checker constraint of the eventual
   trait dispatch — see Phase 7 design notes — forces this
   split: per-pane bodies cannot accept `&mut App` while `panes`
   is mutably borrowed out of App, and the typed ctx bundles
@@ -750,7 +750,7 @@ and the step list, not here.
   they are during Phase 7 — their migration happens during
   Phases 8–9 as each pane fully takes ownership of its share.
 
-  **Borrow-checker shape.** `PaneRenderCtx`, `PaneInputCtx`, and
+  **Borrow-checker constraint.** `PaneRenderCtx`, `PaneInputCtx`, and
   `PaneNavCtx` carry pre-extracted typed references to the
   subsystems each method needs (Selection, Inflight, Background,
   Config, Scan, ToastManager, Keymap, animation_elapsed) — they
@@ -758,7 +758,7 @@ and the step list, not here.
   pane is borrowed *out* of `Panes` at dispatch time. Anything a
   pane needs from outside its own state goes through the ctx
   bundle. The Phase 7 audit (run during the re-review) confirmed
-  no pane reads or writes another pane's state, so this shape is
+  no pane reads or writes another pane's state, so this design is
   sufficient.
 
   **What `PaneRenderCtx` carries (per-pane needs from the audit).**
@@ -905,7 +905,7 @@ and the step list, not here.
     `GitPane`, `CpuPane`) call both helpers from their
     `handle_input` body; table panes (`LintsPane`, `CiPane`)
     call the nav helper plus their own action dispatch.
-    `TargetsPane` adopts the same shape in Phase 9 when it
+    `TargetsPane` adopts the same pattern in Phase 9 when it
     migrates.
   - **`CpuPane::tick(now: Instant)`** is a concrete method (not on
     the `Pane` trait) that owns the per-tick CPU poll. App's per-tick
@@ -960,7 +960,7 @@ and the step list, not here.
   - **`TargetsPane` adopts the shared input-handler helpers.** The
     nav helper and detail-pane dispatch helper landed in Phase 8 on
     the `Pane` trait; `TargetsPane`'s migration in Phase 9 calls
-    them from its own `handle_input` body, same shape as the four
+    them from its own `handle_input` body, same pattern as the four
     detail panes that adopted in Phase 8 (Package/Lang/Git/Cpu).
   - The overlay panes (`SettingsPane`, `FinderPane`,
     `KeymapPane`) get the same trait treatment. Their special
@@ -1179,7 +1179,7 @@ answer:
 - Do GitHub repo fetches go through `Inflight` (uniform "in-flight
   tracker" pattern) or stay in `Net` (HTTP-coupled)? Today
   `running_fetches` + `running_fetch_toast` are GitHub-specific; if
-  Inflight has matured into a generic `start_/finish_` shape by
+  Inflight has matured into a generic `start_/finish_` pattern by
   Phase 11, moving them is the right call. If not, leave them in
   `Net`.
 - Does `fetch_cache` belong in `Net` (HTTP-coupled, response cache)
@@ -1211,7 +1211,7 @@ because they orchestrate across subsystems.
   of subsystem calls (`self.background.swap_bg_channel(...)`,
   `self.apply_lint_config_change(...)` (see below),
   `self.net.invalidate_fetch_cache(...)`, etc.) but the orchestration
-  shape stays.
+  pattern stays.
 - **`apply_lint_config_change` is App-shell, not Inflight.** Today's
   `App::refresh_lint_runtime_from_config` (`tui/app/async_tasks.rs:343-357`)
   is doing more than its name suggests: it respawns the lint runtime
@@ -1229,7 +1229,7 @@ because they orchestrate across subsystems.
     column schema differs from lint-disabled).
   The orchestration lives on App as `apply_lint_config_change`,
   called from the per-tick config-reload handler. **In-code
-  documentation requirement** (same shape as the mutation-guard rule
+  documentation requirement** (same pattern as the mutation-guard rule
   above): the function must land with a doc comment that names
   every subsystem it touches and what it does in each, so a future
   maintainer adding a new lint-config side-effect knows where to put
@@ -1397,7 +1397,7 @@ Phase rules:
   updates the App-module doc comment to point at the new canonical
   example (or fills in the stub if it's the first instance).
 - **Each later phase** that introduces a *new* pattern adds a new
-  section to the App-module doc comment with the same shape.
+  section to the App-module doc comment with the same pattern.
 
 The patterns themselves:
 
@@ -1409,7 +1409,7 @@ The patterns themselves:
     derived state on drop.
   - **Fan-out**: `TreeMutation` borrows references to other subsystems
     (`&mut panes, &mut selection`) and invalidates each on drop. Use this
-    shape when one subsystem's mutation forces invalidation across
+    pattern when one subsystem's mutation forces invalidation across
     siblings — the borrow declares the dependency at the type level.
   Apply this pattern to any future subsystem with the same invariant.
 
@@ -1425,7 +1425,7 @@ The patterns themselves:
 
   The existing `TreeMutation` (`src/tui/app/mod.rs:630-639`) is the
   reference template. New guards introduced by Phases 3, 6, or any
-  later phase copy that doc shape — no comment is shorter, no
+  later phase copy that doc pattern — no comment is shorter, no
   comment is fluffier. The plan's "Recurring patterns" section names
   the pattern; the guard's doc comment is what a future maintainer
   hits first when reading the code.
@@ -1448,4 +1448,4 @@ The patterns themselves:
 
   The plan's "Methods that stay on App" section gives a concrete
   template for `apply_lint_config_change`. New orchestrators copy
-  that doc shape.
+  that doc pattern.

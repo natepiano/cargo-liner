@@ -1,7 +1,7 @@
 //! Typed cache of `cargo metadata` output, keyed by workspace root.
 //!
 //! Holds one [`WorkspaceSnapshot`] per detected workspace. Phase 1 of the
-//! `cargo_metadata` integration — this module defines the shape and
+//! `cargo_metadata` integration — this module defines the structure and
 //! read-side access; producers and consumers land in later steps.
 
 #![allow(
@@ -168,7 +168,7 @@ pub(crate) struct WorkspaceSnapshot {
     pub out_of_tree_target_bytes: Option<u64>,
 }
 
-/// Normalized form of a single package's metadata. Field shapes mirror
+/// Normalized form of a single package's metadata. Field structure mirrors
 /// `cargo_metadata::Package` but keep only the bits the UI and query paths
 /// actually need.
 #[derive(Clone, Debug)]

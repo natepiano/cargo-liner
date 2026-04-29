@@ -193,7 +193,7 @@ impl Panes {
     /// Dispatch `CiPane`'s render through the `Pane` trait.
     #[allow(
         clippy::too_many_arguments,
-        reason = "ctx-shaped args; consolidating into a struct adds indirection without simplifying"
+        reason = "ctx args; consolidating into a struct adds indirection without simplifying"
     )]
     pub fn dispatch_ci_render(
         &mut self,
@@ -220,7 +220,7 @@ impl Panes {
     /// Dispatch `LintsPane`'s render through the `Pane` trait.
     #[allow(
         clippy::too_many_arguments,
-        reason = "ctx-shaped args; consolidating into a struct adds indirection without simplifying"
+        reason = "ctx args; consolidating into a struct adds indirection without simplifying"
     )]
     pub fn dispatch_lints_render(
         &mut self,
@@ -254,7 +254,7 @@ impl Panes {
     /// get their own `dispatch_*_render` helpers as bodies move.
     #[allow(
         clippy::too_many_arguments,
-        reason = "ctx-shaped args; consolidating into a struct adds indirection without simplifying"
+        reason = "ctx args; consolidating into a struct adds indirection without simplifying"
     )]
     pub fn dispatch_cpu_render(
         &mut self,
@@ -435,7 +435,7 @@ impl Panes {
     /// `TreeMutation::drop` (Phase 1: invoked from the existing guard
     /// in `tui::app::mod.rs`; Phase 6 will re-wire the new fan-out
     /// guard to call this directly). Currently clears
-    /// `worktree_summary_cache`; future tree-shape-dependent caches
+    /// `worktree_summary_cache`; future tree-dependent caches
     /// owned by `Panes` add their clear here.
     ///
     /// Takes `&self` because the only cache cleared today lives

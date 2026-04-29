@@ -75,7 +75,7 @@ impl<T> WatchedFile<T> {
     /// since the last seen value, updating the cached stamp before
     /// returning. Used by callers (e.g. keymap reload) that need to
     /// drive a custom parser whose result type doesn't fit
-    /// [`Self::try_reload`]'s `Result<T, String>` shape.
+    /// [`Self::try_reload`]'s `Result<T, String>` signature.
     pub(super) fn take_stamp_change(&mut self) -> Option<&Path> {
         let path = self.path.as_deref()?;
         let current = read_stamp(path);

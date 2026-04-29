@@ -123,7 +123,7 @@ fn visible_rows_workspace_with_worktrees() {
 
 /// Fixture for `expand_linked_workspace_worktree_renders_its_members`.
 /// Builds the primary + linked worktree pair separately so the test
-/// body itself stays focused on row-shape assertions.
+/// body itself stays focused on row-layout assertions.
 fn linked_workspace_worktrees_fixture() -> RootItem {
     let member_a = make_member(Some("a"), "~/ws/a");
     let member_b = make_member(Some("b"), "~/ws/b");

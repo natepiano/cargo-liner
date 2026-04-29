@@ -55,7 +55,7 @@ impl Keymap {
     /// its own rich parser (`keymap::load_keymap_from_str`) whose
     /// `KeymapLoadResult` doesn't fit
     /// [`crate::tui::watched_file::WatchedFile::try_reload`]'s
-    /// `Result<T, String>` shape.
+    /// `Result<T, String>` signature.
     pub(super) fn take_stamp_change(&mut self) -> Option<&Path> { self.file.take_stamp_change() }
 
     pub(super) const fn set_diagnostics_id(&mut self, id: Option<u64>) { self.diagnostics_id = id; }

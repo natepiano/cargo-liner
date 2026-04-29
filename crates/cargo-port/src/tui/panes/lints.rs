@@ -131,7 +131,7 @@ fn build_lint_rows(
     rows
 }
 
-/// Body of `LintsPane::render`. Same shape as
+/// Body of `LintsPane::render`. Same as
 /// `cpu::render_cpu_pane_body`: typed parameters instead of
 /// `&mut App`. Helpers above already operate on `&Viewport`.
 pub(super) fn render_lints_pane_body(

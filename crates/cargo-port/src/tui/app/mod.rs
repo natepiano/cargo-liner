@@ -31,7 +31,7 @@
 //! added here, not scattered.
 //!
 //! - See [`App::apply_lint_config_change`] (Phase 4). Touches Inflight (respawn lint runtime, clear
-//!   in-flight paths, sync toast), the Scan-shaped state on App (clear lint state, refresh from
+//!   in-flight paths, sync toast), the Scan state on App (clear lint state, refresh from
 //!   disk, bump `data_generation`), and Selection (recompute fit widths). New side-effects of a
 //!   lint-config change MUST be added there.
 //!
@@ -215,7 +215,7 @@ impl App {
 
     /// Test-only mutable access to the active config. Production
     /// paths route through [`Self::apply_config`] so derived state
-    /// (panes, selection, scan-shaped fields) stays in sync.
+    /// (panes, selection, scan-state fields) stays in sync.
     #[cfg(test)]
     pub(super) const fn current_config_mut(&mut self) -> &mut CargoPortConfig {
         self.config.current_mut()
@@ -784,7 +784,7 @@ impl TreeMutation<'_> {
 
 impl Drop for TreeMutation<'_> {
     /// Fan out across the three subsystems whose derived state
-    /// depends on tree shape:
+    /// depends on tree structure:
     /// 1. [`Panes::clear_for_tree_change`] drops `worktree_summary_cache`.
     /// 2. [`Selection::recompute_visibility`] rebuilds `cached_visible_rows` against the new tree.
     fn drop(&mut self) {

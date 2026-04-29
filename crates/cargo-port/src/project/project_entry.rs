@@ -55,11 +55,11 @@ impl ProjectEntry {
 }
 
 /// `ProjectEntry` derefs transparently to its contained `RootItem` so
-/// call sites that only need tree-shape data (paths, names, visibility,
+/// call sites that only need tree-structure data (paths, names, visibility,
 /// ...) don't have to rewrite `entry.foo()` as `entry.item.foo()`.
 /// Pattern-matching on variants still needs explicit `&entry.item`
 /// because Deref coercion doesn't apply there — that's fine, those
-/// sites already read tree-shape structure.
+/// sites already read the tree's structural data.
 impl Deref for ProjectEntry {
     type Target = RootItem;
 
