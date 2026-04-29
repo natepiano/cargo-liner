@@ -32,6 +32,7 @@ use super::pane_impls::GitPane;
 use super::pane_impls::LangPane;
 use super::pane_impls::LintsPane;
 use super::pane_impls::PackagePane;
+use super::pane_impls::ToastsPane;
 use super::spec::PaneId;
 use super::support::WorktreeInfo;
 use crate::config::CpuConfig;
@@ -69,6 +70,7 @@ pub struct Panes {
     git:     GitPane,
     lints:   LintsPane,
     ci_runs: CiPane,
+    toasts:  ToastsPane,
 
     // ── Phase 1 grab-bag (dissolves in Phases 9–10):
     manager:                PaneManager,
@@ -93,6 +95,7 @@ impl Panes {
             git:     GitPane::new(),
             lints:   LintsPane::new(),
             ci_runs: CiPane::new(),
+            toasts:  ToastsPane::new(),
 
             manager:                PaneManager::new(),
             data:                   PaneDataStore::new(),
@@ -137,6 +140,12 @@ impl Panes {
 
     /// Mutable typed accessor for the Git pane.
     pub const fn git_mut(&mut self) -> &mut GitPane { &mut self.git }
+
+    /// Typed accessor for the Toasts pane.
+    pub const fn toasts(&self) -> &ToastsPane { &self.toasts }
+
+    /// Mutable typed accessor for the Toasts pane.
+    pub const fn toasts_mut(&mut self) -> &mut ToastsPane { &mut self.toasts }
 
     /// Write the detail-set content across the four migrated detail
     /// panes (Package/Git/CI/Lints) plus the targets slot in
@@ -318,6 +327,7 @@ impl Panes {
             PaneId::CiRuns => self.ci_runs.viewport(),
             PaneId::Package => self.package.viewport(),
             PaneId::Git => self.git.viewport(),
+            PaneId::Toasts => self.toasts.viewport(),
             _ => self.manager.pane(id),
         }
     }
@@ -338,6 +348,7 @@ impl Panes {
             PaneId::CiRuns => self.ci_runs.viewport_mut().set_pos(row),
             PaneId::Package => self.package.viewport_mut().set_pos(row),
             PaneId::Git => self.git.viewport_mut().set_pos(row),
+            PaneId::Toasts => self.toasts.viewport_mut().set_pos(row),
             _ => self.manager.pane_mut(id).set_pos(row),
         }
     }

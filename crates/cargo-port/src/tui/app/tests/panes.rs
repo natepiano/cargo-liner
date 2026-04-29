@@ -131,7 +131,7 @@ fn tabbable_panes_follow_canonical_order() {
     let mut app = make_app(std::slice::from_ref(&project));
     seed_single_example_snapshot(&app, &project_path, "example");
     app.toasts = ToastManager::default();
-    app.pane_manager_mut().pane_mut(PaneId::Toasts).set_len(0);
+    app.panes_mut().toasts_mut().viewport_mut().set_len(0);
     app.scan_state_mut().phase = ScanPhase::Complete;
     apply_git_info(
         &mut app,

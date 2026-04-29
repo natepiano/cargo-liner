@@ -73,7 +73,7 @@ impl App {
     pub fn focused_toast_id(&self) -> Option<u64> {
         let active = self.active_toasts();
         active
-            .get(self.pane_manager().pane(PaneId::Toasts).pos())
+            .get(self.panes().toasts().viewport().pos())
             .map(ToastView::id)
     }
 

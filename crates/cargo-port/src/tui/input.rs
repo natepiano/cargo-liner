@@ -643,13 +643,14 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
 
 fn handle_toast_key(app: &mut App, event: &KeyEvent) {
     match event.code {
-        KeyCode::Up => app.pane_manager_mut().pane_mut(PaneId::Toasts).up(),
-        KeyCode::Down => app.pane_manager_mut().pane_mut(PaneId::Toasts).down(),
-        KeyCode::Home => app.pane_manager_mut().pane_mut(PaneId::Toasts).home(),
+        KeyCode::Up => app.panes_mut().toasts_mut().viewport_mut().up(),
+        KeyCode::Down => app.panes_mut().toasts_mut().viewport_mut().down(),
+        KeyCode::Home => app.panes_mut().toasts_mut().viewport_mut().home(),
         KeyCode::End => {
             let last_index = app.active_toasts().len().saturating_sub(1);
-            app.pane_manager_mut()
-                .pane_mut(PaneId::Toasts)
+            app.panes_mut()
+                .toasts_mut()
+                .viewport_mut()
                 .set_pos(last_index);
         },
         KeyCode::Enter => {
@@ -657,7 +658,7 @@ fn handle_toast_key(app: &mut App, event: &KeyEvent) {
             if let Some(toast) = app
                 .active_toasts()
                 .into_iter()
-                .nth(app.pane_manager().pane(PaneId::Toasts).pos())
+                .nth(app.panes().toasts().viewport().pos())
                 && let Some(path) = toast.action_path()
             {
                 let editor = app.editor().to_string();

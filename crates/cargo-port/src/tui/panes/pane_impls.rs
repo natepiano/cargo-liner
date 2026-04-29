@@ -296,3 +296,26 @@ impl Pane for CiPane {
         super::ci::render_ci_pane_body(frame, area, self, ctx);
     }
 }
+
+// ── Toasts ──────────────────────────────────────────────────────
+//
+// Phase 9.1: cursor `Viewport` absorbed onto ToastsPane. Toasts
+// render via the overlay path in `render.rs` (not `render_tiled_pane`),
+// so there is no `Pane` trait impl — the trait is for tiled-render
+// dispatch only. The viewport tracks cursor position over the active
+// toast list.
+pub struct ToastsPane {
+    viewport: Viewport,
+}
+
+impl ToastsPane {
+    pub const fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+        }
+    }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+}

@@ -234,9 +234,9 @@ impl App {
         }
         let current = self.base_focus();
         if current == PaneId::Toasts
-            && self.pane_manager().pane(PaneId::Toasts).pos() + 1 < self.active_toasts().len()
+            && self.panes().toasts().viewport().pos() + 1 < self.active_toasts().len()
         {
-            self.pane_manager_mut().pane_mut(PaneId::Toasts).down();
+            self.panes_mut().toasts_mut().viewport_mut().down();
             self.focus_pane(PaneId::Toasts);
             return;
         }
@@ -244,7 +244,7 @@ impl App {
         let next = panes[(index + 1) % panes.len()];
         self.focus_pane(next);
         if next == PaneId::Toasts {
-            self.pane_manager_mut().pane_mut(PaneId::Toasts).home();
+            self.panes_mut().toasts_mut().viewport_mut().home();
         }
     }
 
@@ -255,8 +255,8 @@ impl App {
             return;
         }
         let current = self.base_focus();
-        if current == PaneId::Toasts && self.pane_manager().pane(PaneId::Toasts).pos() > 0 {
-            self.pane_manager_mut().pane_mut(PaneId::Toasts).up();
+        if current == PaneId::Toasts && self.panes().toasts().viewport().pos() > 0 {
+            self.panes_mut().toasts_mut().viewport_mut().up();
             self.focus_pane(PaneId::Toasts);
             return;
         }
@@ -265,8 +265,9 @@ impl App {
         self.focus_pane(prev);
         if prev == PaneId::Toasts {
             let last_index = self.active_toasts().len().saturating_sub(1);
-            self.pane_manager_mut()
-                .pane_mut(PaneId::Toasts)
+            self.panes_mut()
+                .toasts_mut()
+                .viewport_mut()
                 .set_pos(last_index);
         }
     }
@@ -277,7 +278,7 @@ impl App {
         self.pane_manager_mut().pane_mut(PaneId::Targets).home();
         self.panes_mut().ci_mut().viewport_mut().home();
         self.panes_mut().lints_mut().viewport_mut().home();
-        self.pane_manager_mut().pane_mut(PaneId::Toasts).home();
+        self.panes_mut().toasts_mut().viewport_mut().home();
         self.panes.unvisit(PaneId::Package);
         self.panes.unvisit(PaneId::Git);
         self.panes.unvisit(PaneId::Targets);
