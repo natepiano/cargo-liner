@@ -59,7 +59,6 @@ pub(super) use package::detail_column_scroll_offset;
 #[cfg(test)]
 pub(super) use package::package_label_width;
 pub(super) use package::render_empty_targets_panel;
-pub(super) use package::render_package_panel;
 pub(super) use package::render_targets_panel;
 #[cfg(test)]
 pub(super) use package::stats_column_width;

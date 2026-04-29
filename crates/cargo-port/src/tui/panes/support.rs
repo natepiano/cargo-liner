@@ -506,51 +506,16 @@ impl DetailField {
     }
 
     /// Get the display value for a package field from `PackageData`.
-    pub fn package_value(self, data: &PackageData, app: &App) -> String {
+    /// All values are pure-on-data — Lint and Ci read from
+    /// pre-resolved `data.lint_display` / `data.ci_display` fields
+    /// populated by the assembly path (Phase 8.14).
+    pub fn package_value(self, data: &PackageData) -> String {
         match self {
             Self::Path => data.path.clone(),
             Self::Disk => data.disk.clone(),
             Self::Targets => data.types.clone(),
-            Self::Lint => {
-                if !app.is_rust_at_path(data.abs_path.as_path()) {
-                    return NO_LINT_RUNS_NOT_RUST.to_string();
-                }
-                let abs_path = data.abs_path.as_path();
-                let is_worktree_group = data.package_title == "Worktree Group";
-                let lint_icon = if is_worktree_group {
-                    app.selected_lint_icon(abs_path)
-                        .unwrap_or_else(|| app.lint_icon(abs_path))
-                } else {
-                    app.lint_icon(abs_path)
-                };
-                match lint_run_count_for(app, abs_path, is_worktree_group) {
-                    Some(0) | None => NO_LINT_RUNS.to_string(),
-                    Some(n) => format!("{lint_icon} {n}"),
-                }
-            },
-            Self::Ci => {
-                let has_workflows = app
-                    .repo_info_for(data.abs_path.as_path())
-                    .is_some_and(|repo| repo.workflows.is_present());
-                if !has_workflows {
-                    return NO_CI_WORKFLOW.to_string();
-                }
-                if app
-                    .unpublished_ci_branch_name(data.abs_path.as_path())
-                    .is_some()
-                {
-                    return NO_CI_UNPUBLISHED_BRANCH.to_string();
-                }
-                let icon = data.ci.map_or_else(String::new, |c| c.icon().to_string());
-                let ci_runs_label = build_ci_runs_label(app, data.abs_path.as_path());
-                if !ci_runs_label.is_empty() {
-                    format!("{icon} {ci_runs_label}")
-                } else if icon.is_empty() {
-                    NO_CI_RUNS.to_string()
-                } else {
-                    icon
-                }
-            },
+            Self::Lint => data.lint_display.clone(),
+            Self::Ci => data.ci_display.clone(),
             Self::CratesIo => data.crates_version.as_deref().unwrap_or("").to_string(),
             Self::Downloads => data
                 .crates_downloads
@@ -750,10 +715,17 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
 
 /// Per-pane data for the Package detail panel.
 #[derive(Clone, Default)]
+/// Per-project pane data the Package pane renders. The "value"
+/// fields are pre-resolved display strings — callers can render
+/// without `&App` access.
+///
+/// The `lint_display` and `ci_display` fields are the App-derived
+/// strings that used to be computed at render time via
+/// `DetailField::package_value(data, app)`. Pre-resolving them
+/// lets `PackagePane::render` operate on `&PackageData` alone.
 pub struct PackageData {
     pub package_title:            String,
     pub title_name:               String,
-    pub abs_path:                 AbsolutePath,
     pub path:                     String,
     pub version:                  String,
     pub description:              Option<String>,
@@ -776,6 +748,12 @@ pub struct PackageData {
     /// Step 5b: everything else under the project root (source,
     /// docs, .git, vendored crates outside target, etc.).
     pub in_project_non_target:    Option<u64>,
+    /// Pre-resolved display string for the Lint field; populated
+    /// at assembly time so render can read it without `&App`.
+    pub lint_display:             String,
+    /// Pre-resolved display string for the Ci field; populated at
+    /// assembly time so render can read it without `&App`.
+    pub ci_display:               String,
     /// Byte size of the workspace's out-of-tree `target_directory`
     /// (when the resolved target sits outside `workspace_root`). Flows
     /// from `WorkspaceSnapshot::out_of_tree_target_bytes` once the
@@ -1360,7 +1338,6 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
         package: PackageData {
             package_title: "Submodule".to_string(),
             title_name: submodule.name.clone(),
-            abs_path: abs_path.clone(),
             path: display_path,
             version,
             description: submodule.url.clone(),
@@ -1378,6 +1355,11 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             in_project_target: None,
             in_project_non_target: None,
             out_of_tree_target_bytes: None,
+            // Submodules don't render the Lint/Ci fields; the
+            // `package_fields_from_data` filter excludes them when
+            // there's no Cargo manifest. Empty strings are safe.
+            lint_display: String::new(),
+            ci_display: String::new(),
         },
         git:     GitData {
             branch:             git_detail.branch,
@@ -1578,10 +1560,77 @@ fn manifest_fields_from(snapshot_package: Option<&PackageRecord>) -> ManifestFie
     }
 }
 
+/// Args for `build_package_data` — the resolved values
+/// `build_pane_data_common` computes once it has `&App` access,
+/// handed off to the pure constructor below.
+struct BuildPackageDataArgs {
+    package_title:            String,
+    title_name:               String,
+    display_path:             String,
+    stats_rows:               Vec<(&'static str, usize)>,
+    has_cargo:                bool,
+    manifest:                 ManifestFields,
+    crates_version:           Option<String>,
+    crates_downloads:         Option<u64>,
+    types_str:                String,
+    disk:                     String,
+    ci:                       Option<Conclusion>,
+    in_project_target:        Option<u64>,
+    in_project_non_target:    Option<u64>,
+    out_of_tree_target_bytes: Option<u64>,
+    lint_display:             String,
+    ci_display:               String,
+}
+
+/// Pure constructor: assemble `PackageData` from already-resolved
+/// values. Extracted from `build_pane_data_common` so that
+/// orchestrator stays under the line limit.
+fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
+    let ManifestFields {
+        edition,
+        license,
+        homepage,
+        repository,
+        version,
+        description,
+    } = args.manifest;
+    PackageData {
+        package_title: args.package_title,
+        title_name: args.title_name,
+        path: args.display_path,
+        version,
+        description,
+        crates_version: args.crates_version,
+        crates_downloads: args.crates_downloads,
+        types: args.types_str,
+        disk: args.disk,
+        ci: args.ci,
+        stats_rows: args.stats_rows,
+        has_package: args.has_cargo,
+        edition,
+        license,
+        homepage,
+        repository,
+        in_project_target: args.in_project_target,
+        in_project_non_target: args.in_project_non_target,
+        out_of_tree_target_bytes: args.out_of_tree_target_bytes,
+        lint_display: args.lint_display,
+        ci_display: args.ci_display,
+    }
+}
+
 fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData {
-    let abs_path = src.abs_path;
-    let cargo = src.cargo;
-    let wt_item = src.wt_item;
+    let PaneDataSource {
+        abs_path,
+        display_path,
+        title_name,
+        has_cargo,
+        cargo,
+        wt_item,
+        stats_rows,
+        package_title,
+    } = src;
+    let display_path = display_path.to_owned();
     let t_git = std::time::Instant::now();
     let git_detail = build_git_detail_fields(app, abs_path);
     let git_detail_ms = perf_log::ms(t_git.elapsed().as_millis());
@@ -1612,7 +1661,6 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let metadata_ms = perf_log::ms(t_meta.elapsed().as_millis());
     let manifest = manifest_fields_from(snapshot_package.as_ref());
 
-    let title_name = src.title_name;
     let (in_project_target, in_project_non_target) =
         app.projects().at_path(abs_path).map_or((None, None), |pi| {
             (pi.in_project_target, pi.in_project_non_target)
@@ -1642,30 +1690,55 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let crates_version = crates_io.version;
     let crates_downloads = crates_io.downloads;
 
-    DetailPaneData {
-        package: PackageData {
-            package_title: src.package_title,
-            title_name,
-            abs_path: abs_path_owned,
-            path: src.display_path.to_string(),
-            version,
-            description,
-            crates_version,
-            crates_downloads,
-            types: types_str,
-            disk,
-            ci,
-            stats_rows: src.stats_rows,
-            has_package: src.has_cargo,
+    let lint_display = resolve_lint_display(app, &abs_path_owned, &package_title);
+    let ci_display = resolve_ci_display(app, &abs_path_owned, ci);
+    let package = build_package_data(BuildPackageDataArgs {
+        package_title,
+        title_name,
+        display_path,
+        stats_rows,
+        has_cargo,
+        manifest: ManifestFields {
             edition,
             license,
             homepage,
             repository,
-            in_project_target,
-            in_project_non_target,
-            out_of_tree_target_bytes,
+            version,
+            description,
         },
-        git:     GitData {
+        crates_version,
+        crates_downloads,
+        types_str,
+        disk,
+        ci,
+        in_project_target,
+        in_project_non_target,
+        out_of_tree_target_bytes,
+        lint_display,
+        ci_display,
+    });
+
+    assemble_detail_pane_data(package, git_detail, worktrees, snapshot_package.as_ref())
+}
+
+/// Assemble `DetailPaneData` from already-resolved inputs.
+/// Step 3a/3b: derive Targets-pane data from the snapshot when it
+/// covers this project. Without a snapshot the pane stays empty
+/// (design plan → "Workspace members + Targets pane migrate to
+/// snapshots atomically; targets show 'Loading…' without a
+/// snapshot"). The old hand-parsed fallback could disagree with
+/// cargo's real discovery rules (autoexamples, required-features,
+/// excluded targets), so we'd rather render nothing pre-snapshot
+/// than render something misleading.
+fn assemble_detail_pane_data(
+    package: PackageData,
+    git_detail: GitDetailFields,
+    worktrees: Vec<WorktreeInfo>,
+    snapshot_package: Option<&PackageRecord>,
+) -> DetailPaneData {
+    DetailPaneData {
+        package,
+        git: GitData {
             branch: git_detail.branch,
             status: git_detail.path,
             vs_local: git_detail.vs_local,
@@ -1682,20 +1755,57 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             remotes: git_detail.remotes,
             worktrees,
         },
-        // Step 3a/3b: derive Targets-pane data from the snapshot when
-        // it covers this project. Without a snapshot the pane stays
-        // empty (design plan → "Workspace members + Targets pane
-        // migrate to snapshots atomically; targets show 'Loading…'
-        // without a snapshot"). The old hand-parsed fallback could
-        // disagree with cargo's real discovery rules (autoexamples,
-        // required-features, excluded targets), so we'd rather
-        // render nothing pre-snapshot than render something
-        // misleading.
-        targets: snapshot_package
-            .as_ref()
-            .map_or_else(TargetsData::default, |record| {
-                TargetsData::from_package_record(record, record.name.as_str())
-            }),
+        targets: snapshot_package.map_or_else(TargetsData::default, |record| {
+            TargetsData::from_package_record(record, record.name.as_str())
+        }),
+    }
+}
+
+/// Compute the display string for the Lint field. Used at
+/// detail-pane assembly time to pre-resolve the value into
+/// `PackageData.lint_display`, so render can read it without
+/// `&App`.
+fn resolve_lint_display(app: &App, abs_path: &AbsolutePath, package_title: &str) -> String {
+    let path = abs_path.as_path();
+    if !app.is_rust_at_path(path) {
+        return NO_LINT_RUNS_NOT_RUST.to_string();
+    }
+    let is_worktree_group = package_title == "Worktree Group";
+    let lint_icon = if is_worktree_group {
+        app.selected_lint_icon(path)
+            .unwrap_or_else(|| app.lint_icon(path))
+    } else {
+        app.lint_icon(path)
+    };
+    match lint_run_count_for(app, path, is_worktree_group) {
+        Some(0) | None => NO_LINT_RUNS.to_string(),
+        Some(n) => format!("{lint_icon} {n}"),
+    }
+}
+
+/// Compute the display string for the Ci field. Used at
+/// detail-pane assembly time to pre-resolve the value into
+/// `PackageData.ci_display`, so render can read it without
+/// `&App`.
+fn resolve_ci_display(app: &App, abs_path: &AbsolutePath, ci: Option<Conclusion>) -> String {
+    let path = abs_path.as_path();
+    let has_workflows = app
+        .repo_info_for(path)
+        .is_some_and(|repo| repo.workflows.is_present());
+    if !has_workflows {
+        return NO_CI_WORKFLOW.to_string();
+    }
+    if app.unpublished_ci_branch_name(path).is_some() {
+        return NO_CI_UNPUBLISHED_BRANCH.to_string();
+    }
+    let icon = ci.map_or_else(String::new, |c| c.icon().to_string());
+    let ci_runs_label = build_ci_runs_label(app, path);
+    if !ci_runs_label.is_empty() {
+        format!("{icon} {ci_runs_label}")
+    } else if icon.is_empty() {
+        NO_CI_RUNS.to_string()
+    } else {
+        icon
     }
 }
 

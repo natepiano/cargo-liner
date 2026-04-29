@@ -299,6 +299,28 @@ impl Panes {
         Pane::render(&mut self.lang, frame, area, ctx);
     }
 
+    /// Dispatch `PackagePane`'s render through the `Pane` trait.
+    pub fn dispatch_package_render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        args: &DispatchArgs<'_>,
+    ) {
+        let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let ctx = PaneRenderCtx {
+            focused_pane:          args.focused_pane,
+            focus_state:           args.focus_state,
+            is_focused:            args.is_focused,
+            animation_elapsed:     args.animation_elapsed,
+            config:                args.config,
+            selection:             args.selection,
+            scan:                  args.scan,
+            selected_project_path: args.selected_project_path,
+            hit_sink:              &mut sink,
+        };
+        Pane::render(&mut self.package, frame, area, ctx);
+    }
+
     /// Dispatch `GitPane`'s render through the `Pane` trait.
     pub fn dispatch_git_render(
         &mut self,

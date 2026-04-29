@@ -483,7 +483,13 @@ fn dispatch_via_trait(
 fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect) {
     match pane {
         PaneId::ProjectList => render_left_panel(frame, app, area),
-        PaneId::Package => panes::render_package_panel(frame, app, area),
+        PaneId::Package => dispatch_via_trait(
+            app,
+            area,
+            PaneId::Package,
+            frame,
+            panes::Panes::dispatch_package_render,
+        ),
         PaneId::Git => dispatch_via_trait(
             app,
             area,

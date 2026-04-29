@@ -21,6 +21,8 @@ use super::DetailField;
 use super::PackageData;
 use super::PaneId;
 use super::TargetsData;
+use super::dispatch::PaneRenderCtx;
+use super::pane_impls::PackagePane;
 use crate::constants::NO_LINT_RUNS;
 use crate::tui::app::App;
 use crate::tui::constants::ACCENT_COLOR;
@@ -46,7 +48,6 @@ pub struct RenderStyles {
 }
 
 struct PackageRenderCtx<'a> {
-    app:    &'a App,
     data:   &'a PackageData,
     fields: &'a [DetailField],
     pane:   &'a Viewport,
@@ -100,7 +101,6 @@ pub fn package_label_width(fields: &[DetailField]) -> usize {
 }
 
 fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect) -> usize {
-    let app = ctx.app;
     let data = ctx.data;
     let fields = ctx.fields;
     let pane = ctx.pane;
@@ -115,7 +115,7 @@ fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect
         }
         let label = field.label();
         let selection = pane.selection_state(i, focus);
-        let value = field.package_value(data, app);
+        let value = field.package_value(data);
         let base_label_style = styles.readonly_label;
         let base_value_style = if *field == DetailField::Ci {
             if value == crate::constants::NO_CI_WORKFLOW
@@ -216,19 +216,33 @@ struct ProjectPanelAreas {
     lower: Rect,
 }
 
-pub fn render_package_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    if let Some(pkg_data) = app.panes().package().content().cloned() {
-        let styles = RenderStyles {
-            readonly_label: Style::default().fg(LABEL_COLOR),
-            chrome:         pane::default_pane_chrome(),
-        };
+/// Body of `PackagePane::render`. Reads pane state through
+/// `pane: &mut PackagePane` and the typed `PaneRenderCtx` instead
+/// of the whole `App`.
+pub(super) fn render_package_pane_body(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &mut PackagePane,
+    styles: &RenderStyles,
+    ctx: PaneRenderCtx<'_, '_>,
+) {
+    let PaneRenderCtx {
+        focus_state,
+        hit_sink: _hit_sink,
+        focused_pane: _,
+        is_focused: _,
+        animation_elapsed: _,
+        config: _,
+        selection: _,
+        scan: _,
+        selected_project_path: _,
+    } = ctx;
 
-        render_project_panel(frame, app, &pkg_data, &styles, area);
-    } else {
+    let Some(pkg_data) = pane.content().cloned() else {
         let title_style = Style::default()
             .fg(TITLE_COLOR)
             .add_modifier(Modifier::BOLD);
-        app.panes_mut().package_mut().viewport_mut().clear_surface();
+        pane.viewport_mut().clear_surface();
         let empty_block = Block::default()
             .borders(Borders::ALL)
             .title(" Details ")
@@ -236,31 +250,12 @@ pub fn render_package_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         let content = vec![Line::from("  No project selected")];
         let detail = Paragraph::new(content).block(empty_block);
         frame.render_widget(detail, area);
-    }
-}
+        return;
+    };
 
-pub fn render_empty_targets_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Targets)
-        .clear_surface();
-    let empty_targets = pane::empty_pane_block(" No Targets ");
-    frame.render_widget(empty_targets, area);
-}
-
-fn render_project_panel(
-    frame: &mut Frame,
-    app: &mut App,
-    pkg_data: &PackageData,
-    styles: &RenderStyles,
-    area: Rect,
-) {
-    let fields = panes::package_fields_from_data(pkg_data);
-    app.panes_mut()
-        .package_mut()
-        .viewport_mut()
-        .set_len(fields.len());
-    let focus = app.pane_focus_state(PaneId::Package);
-    let border_style = if matches!(focus, PaneFocusState::Active) {
+    let fields = panes::package_fields_from_data(&pkg_data);
+    pane.viewport_mut().set_len(fields.len());
+    let border_style = if matches!(focus_state, PaneFocusState::Active) {
         styles.chrome.active_border
     } else {
         styles.chrome.inactive_border
@@ -269,36 +264,35 @@ fn render_project_panel(
     let project_block = styles
         .chrome
         .with_inactive_border(border_style)
-        .block(title, matches!(focus, PaneFocusState::Active));
+        .block(title, matches!(focus_state, PaneFocusState::Active));
     let project_inner = project_block.inner(area);
     frame.render_widget(project_block, area);
 
     let context = ProjectPanelRender {
-        pkg_data,
+        pkg_data: &pkg_data,
         fields: &fields,
-        focus,
+        focus: focus_state,
         styles,
         border_style,
     };
     let areas = render_project_description_section(frame, &context, area, project_inner);
     {
-        let viewport = app.panes_mut().package_mut().viewport_mut();
+        let viewport = pane.viewport_mut();
         viewport.set_content_area(areas.lower);
         viewport.set_viewport_rows(usize::from(areas.lower.height));
     }
 
-    let scroll_offset = render_project_metadata(
-        frame,
-        app,
-        app.panes().package().viewport(),
-        &context,
-        areas.lower,
-    );
-    app.panes_mut()
-        .package_mut()
-        .viewport_mut()
-        .set_scroll_offset(scroll_offset);
-    pane::render_overflow_affordance(frame, area, app.panes().package().viewport());
+    let scroll_offset = render_project_metadata(frame, pane.viewport(), &context, areas.lower);
+    pane.viewport_mut().set_scroll_offset(scroll_offset);
+    pane::render_overflow_affordance(frame, area, pane.viewport());
+}
+
+pub fn render_empty_targets_panel(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.pane_manager_mut()
+        .pane_mut(PaneId::Targets)
+        .clear_surface();
+    let empty_targets = pane::empty_pane_block(" No Targets ");
+    frame.render_widget(empty_targets, area);
 }
 
 fn render_project_description_section(
@@ -397,13 +391,11 @@ fn render_project_description_section(
 
 fn render_project_metadata(
     frame: &mut Frame,
-    app: &App,
     pane: &Viewport,
     context: &ProjectPanelRender<'_>,
     lower_area: Rect,
 ) -> usize {
     let col_ctx = PackageRenderCtx {
-        app,
         data: context.pkg_data,
         fields: context.fields,
         pane,

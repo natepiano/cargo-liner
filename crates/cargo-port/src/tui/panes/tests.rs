@@ -24,7 +24,6 @@ fn package_data(is_rust_project: bool) -> PackageData {
             "Project".to_string()
         },
         title_name:               "demo".to_string(),
-        abs_path:                 "/tmp/demo".into(),
         path:                     "~/demo".to_string(),
         version:                  "0.1.0".to_string(),
         description:              None,
@@ -42,6 +41,8 @@ fn package_data(is_rust_project: bool) -> PackageData {
         in_project_target:        None,
         in_project_non_target:    None,
         out_of_tree_target_bytes: None,
+        lint_display:             String::new(),
+        ci_display:               String::new(),
     }
 }
 

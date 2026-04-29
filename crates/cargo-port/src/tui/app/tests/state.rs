@@ -985,7 +985,6 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
             .package()
             .content()
             .unwrap_or_else(|| std::process::abort()),
-        &app,
     );
 
     assert_eq!(value, crate::constants::NO_CI_UNPUBLISHED_BRANCH);
