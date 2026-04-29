@@ -981,8 +981,9 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
     app.ensure_detail_cached();
 
     let value = DetailField::Ci.package_value(
-        app.pane_data()
+        app.panes()
             .package()
+            .content()
             .unwrap_or_else(|| std::process::abort()),
         &app,
     );
@@ -1068,8 +1069,9 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
         Some("2026-03-12T21:18:54-04:00")
     );
     assert!(
-        app.pane_data()
+        app.panes()
             .git()
+            .content()
             .and_then(|g| g.inception.as_ref())
             .is_some(),
         "detail panel should show Incept once git info arrives"
@@ -1087,8 +1089,9 @@ fn git_info_invalidates_selected_git_pane_cache() {
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.pane_data()
+        app.panes()
             .git()
+            .content()
             .and_then(|data| data.remotes.first())
             .and_then(|row| row.full_url.as_deref()),
         None
@@ -1102,8 +1105,9 @@ fn git_info_invalidates_selected_git_pane_cache() {
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.pane_data()
+        app.panes()
             .git()
+            .content()
             .and_then(|data| data.remotes.first())
             .and_then(|row| row.full_url.as_deref()),
         Some("https://github.com/natepiano/demo")

@@ -86,7 +86,7 @@ impl App {
                 let lints_started = std::time::Instant::now();
                 let lints = tui::panes::build_lints_data(self);
                 let lints_ms = perf_log::ms(lints_started.elapsed().as_millis());
-                self.pane_data_mut().set_detail_data(
+                self.panes_mut().set_detail_data(
                     key,
                     data.package,
                     data.git,
@@ -102,7 +102,7 @@ impl App {
                     "detail_build_breakdown"
                 );
             },
-            None => self.pane_data_mut().clear_detail_data(desired),
+            None => self.panes_mut().clear_detail_data(desired),
         }
     }
 

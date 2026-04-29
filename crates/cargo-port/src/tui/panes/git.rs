@@ -671,7 +671,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         chrome:         pane::default_pane_chrome(),
     };
 
-    let Some(git_data) = app.pane_data().git().cloned() else {
+    let Some(git_data) = app.panes().git().content().cloned() else {
         app.panes_mut().git_mut().viewport_mut().clear_surface();
         let empty = pane::empty_pane_block(pane::pane_title("Git", &PaneTitleCount::None));
         frame.render_widget(empty, area);

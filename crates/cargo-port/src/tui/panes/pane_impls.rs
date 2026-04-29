@@ -43,22 +43,31 @@ impl Pane for ProjectListPane {
 
 // ── Package ─────────────────────────────────────────────────────
 //
-// Phase 8.5: cursor `Viewport` migrates onto PackagePane. Package
-// content stays in `PaneDataStore`'s detail set for now.
+// Phase 8.5: cursor `Viewport` absorbed onto PackagePane.
+// Phase 8.8: `content: Option<PackageData>` absorbed (was the
+// `package` slot in `PaneDataStore`'s detail set).
 pub struct PackagePane {
     viewport: Viewport,
+    content:  Option<super::PackageData>,
 }
 
 impl PackagePane {
     pub const fn new() -> Self {
         Self {
             viewport: Viewport::new(),
+            content:  None,
         }
     }
 
     pub const fn viewport(&self) -> &Viewport { &self.viewport }
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    pub const fn content(&self) -> Option<&super::PackageData> { self.content.as_ref() }
+
+    pub fn set_content(&mut self, data: super::PackageData) { self.content = Some(data); }
+
+    pub fn clear_content(&mut self) { self.content = None; }
 }
 
 impl Pane for PackagePane {
@@ -172,24 +181,33 @@ impl Pane for CpuPane {
 
 // ── Git ─────────────────────────────────────────────────────────
 //
-// Phase 8.6: cursor `Viewport` migrates onto GitPane. Git
-// content stays in `PaneDataStore`'s detail set;
+// Phase 8.6: cursor `Viewport` absorbed onto GitPane.
+// Phase 8.8: `content: Option<GitData>` absorbed (was the `git`
+// slot in `PaneDataStore`'s detail set).
 // `worktree_summary_cache` stays on `Panes` for now per Phase 10
 // design (final home is `GitPane` per the doc).
 pub struct GitPane {
     viewport: Viewport,
+    content:  Option<super::GitData>,
 }
 
 impl GitPane {
     pub const fn new() -> Self {
         Self {
             viewport: Viewport::new(),
+            content:  None,
         }
     }
 
     pub const fn viewport(&self) -> &Viewport { &self.viewport }
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    pub const fn content(&self) -> Option<&super::GitData> { self.content.as_ref() }
+
+    pub fn set_content(&mut self, data: super::GitData) { self.content = Some(data); }
+
+    pub fn clear_content(&mut self) { self.content = None; }
 }
 
 impl Pane for GitPane {
@@ -215,25 +233,31 @@ impl Pane for TargetsPane {
 
 // ── Lints ───────────────────────────────────────────────────────
 //
-// Phase 8.3: cursor `Viewport` migrates onto LintsPane. Lints
-// content (LintsData) stays in `PaneDataStore`'s detail set for
-// now — it is set together with package/git/targets/ci via
-// `set_detail_data`, so decoupling one member alone breaks that
-// invariant. The whole detail set migrates in a later sub-phase.
+// Phase 8.3: cursor `Viewport` absorbed onto LintsPane.
+// Phase 8.8: `content: Option<LintsData>` absorbed (was the
+// `lints` slot in `PaneDataStore`'s detail set).
 pub struct LintsPane {
     viewport: Viewport,
+    content:  Option<super::LintsData>,
 }
 
 impl LintsPane {
     pub const fn new() -> Self {
         Self {
             viewport: Viewport::new(),
+            content:  None,
         }
     }
 
     pub const fn viewport(&self) -> &Viewport { &self.viewport }
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    pub const fn content(&self) -> Option<&super::LintsData> { self.content.as_ref() }
+
+    pub fn set_content(&mut self, data: super::LintsData) { self.content = Some(data); }
+
+    pub fn clear_content(&mut self) { self.content = None; }
 }
 
 impl Pane for LintsPane {
@@ -246,12 +270,12 @@ impl Pane for LintsPane {
 // ── CiRuns ──────────────────────────────────────────────────────
 //
 // Phase 8.4: cursor `Viewport` absorbed onto CiPane.
-// Phase 8.7: per-project `display_modes` (`Panes::ci_display_modes`)
-// absorbed too — it was always CI-specific. Content stays in
-// the detail set; the body migration into the trait method
-// is a later sub-phase.
+// Phase 8.7: per-project `display_modes` absorbed.
+// Phase 8.8: `content: Option<CiData>` absorbed (was the `ci`
+// slot in `PaneDataStore`'s detail set).
 pub struct CiPane {
     viewport:      Viewport,
+    content:       Option<super::CiData>,
     display_modes: HashMap<AbsolutePath, CiRunDisplayMode>,
 }
 
@@ -259,6 +283,7 @@ impl CiPane {
     pub fn new() -> Self {
         Self {
             viewport:      Viewport::new(),
+            content:       None,
             display_modes: HashMap::new(),
         }
     }
@@ -266,6 +291,23 @@ impl CiPane {
     pub const fn viewport(&self) -> &Viewport { &self.viewport }
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    pub const fn content(&self) -> Option<&super::CiData> { self.content.as_ref() }
+
+    pub fn set_content(&mut self, data: super::CiData) { self.content = Some(data); }
+
+    pub fn clear_content(&mut self) { self.content = None; }
+
+    /// Test-only: replace `content.runs` on an already-populated
+    /// detail set and drop the mode label. Mirrors what a production
+    /// rebuild would produce for fixture CI data.
+    #[cfg(test)]
+    pub fn override_runs_for_test(&mut self, runs: Vec<crate::ci::CiRun>) {
+        if let Some(ci) = self.content.as_mut() {
+            ci.runs = runs;
+            ci.mode_label = None;
+        }
+    }
 
     pub fn display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
         self.display_modes.get(path).copied().unwrap_or_default()

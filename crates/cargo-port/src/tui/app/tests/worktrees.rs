@@ -37,7 +37,7 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
         .set_pos(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
-    let root_worktrees = app.pane_data().git().map(|g| g.worktrees.clone());
+    let root_worktrees = app.panes().git().content().map(|g| g.worktrees.clone());
     assert_eq!(root_worktrees.as_ref().map(Vec::len), Some(2));
     assert_eq!(
         root_worktrees
@@ -52,7 +52,10 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
         .set_pos(1);
     app.sync_selected_project();
     app.ensure_detail_cached();
-    assert_eq!(app.pane_data().git().map(|g| g.worktrees.len()), Some(0));
+    assert_eq!(
+        app.panes().git().content().map(|g| g.worktrees.len()),
+        Some(0)
+    );
 }
 
 #[test]
@@ -109,7 +112,7 @@ fn linked_worktree_entry_builds_detail_for_selected_row() {
         Some(linked_ws.path().to_path_buf())
     );
     assert_eq!(
-        app.pane_data().package().map(|p| p.path.as_str()),
+        app.panes().package().content().map(|p| p.path.as_str()),
         Some("~/rust/cargo-port_speedup")
     );
     assert!(

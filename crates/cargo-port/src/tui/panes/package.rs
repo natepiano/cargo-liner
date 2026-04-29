@@ -217,7 +217,7 @@ struct ProjectPanelAreas {
 }
 
 pub fn render_package_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    if let Some(pkg_data) = app.pane_data().package().cloned() {
+    if let Some(pkg_data) = app.panes().package().content().cloned() {
         let styles = RenderStyles {
             readonly_label: Style::default().fg(LABEL_COLOR),
             chrome:         pane::default_pane_chrome(),

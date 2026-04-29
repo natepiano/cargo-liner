@@ -305,10 +305,6 @@ impl App {
 
     pub(super) const fn pane_data(&self) -> &PaneDataStore { self.panes.pane_data() }
 
-    pub(super) const fn pane_data_mut(&mut self) -> &mut PaneDataStore {
-        self.panes.pane_data_mut()
-    }
-
     pub(super) const fn panes_mut(&mut self) -> &mut Panes { &mut self.panes }
 
     /// Read-only view of the per-pane registry. Used by render

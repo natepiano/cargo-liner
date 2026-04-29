@@ -471,7 +471,7 @@ mod tests {
 
     fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
         app.ensure_detail_cached();
-        app.pane_data_mut().override_lints_for_test(LintsData {
+        app.panes_mut().override_lints_for_test(LintsData {
             runs:    runs.to_vec(),
             sizes:   vec![Some(0); runs.len()],
             is_rust: true,
@@ -485,7 +485,7 @@ mod tests {
 
     fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
         app.ensure_detail_cached();
-        app.pane_data_mut().override_ci_runs_for_test(runs.to_vec());
+        app.panes_mut().override_ci_runs_for_test(runs.to_vec());
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         terminal

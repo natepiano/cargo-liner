@@ -143,6 +143,53 @@ impl Panes {
     /// Mutable typed accessor for the Git pane.
     pub const fn git_mut(&mut self) -> &mut GitPane { &mut self.git }
 
+    /// Write the detail-set content across the four migrated detail
+    /// panes (Package/Git/CI/Lints) plus the targets slot in
+    /// `PaneDataStore`, and update the detail stamp. The "all five
+    /// panes coherent for this stamp" invariant is preserved by this
+    /// orchestrator: callers cannot write one detail member without
+    /// writing the others.
+    pub fn set_detail_data(
+        &mut self,
+        stamp: super::data::DetailCacheKey,
+        package: super::PackageData,
+        git: super::GitData,
+        targets: super::TargetsData,
+        ci: super::CiData,
+        lints: super::LintsData,
+    ) {
+        self.package.set_content(package);
+        self.git.set_content(git);
+        self.ci_runs.set_content(ci);
+        self.lints.set_content(lints);
+        self.data.set_targets_with_stamp(stamp, targets);
+    }
+
+    /// Clear the detail set across the four migrated detail panes plus
+    /// the targets slot, stamping with `stamp`. Mirrors `set_detail_data`'s
+    /// fan-out.
+    pub fn clear_detail_data(&mut self, stamp: Option<super::data::DetailCacheKey>) {
+        self.package.clear_content();
+        self.git.clear_content();
+        self.ci_runs.clear_content();
+        self.lints.clear_content();
+        self.data.clear_targets_with_stamp(stamp);
+    }
+
+    /// Test-only override for lints content. Mirrors the previous
+    /// `PaneDataStore::override_lints_for_test`.
+    #[cfg(test)]
+    pub fn override_lints_for_test(&mut self, data: super::LintsData) {
+        self.lints.set_content(data);
+    }
+
+    /// Test-only override for ci runs. Mirrors the previous
+    /// `PaneDataStore::override_ci_runs_for_test`.
+    #[cfg(test)]
+    pub fn override_ci_runs_for_test(&mut self, runs: Vec<crate::ci::CiRun>) {
+        self.ci_runs.override_runs_for_test(runs);
+    }
+
     /// Polymorphic read-only viewport accessor. Routes to the
     /// per-pane `Viewport` for migrated panes, falls back to the
     /// vestigial `PaneManager` slot for un-migrated panes. Used
@@ -236,8 +283,6 @@ impl Panes {
 
     pub const fn pane_data(&self) -> &PaneDataStore { &self.data }
 
-    pub const fn pane_data_mut(&mut self) -> &mut PaneDataStore { &mut self.data }
-
     pub const fn layout_cache(&self) -> &LayoutCache { &self.layout_cache }
 
     pub const fn layout_cache_mut(&mut self) -> &mut LayoutCache { &mut self.layout_cache }
@@ -323,6 +368,122 @@ impl Panes {
     /// placeholder snapshot. Delegates to
     /// `CpuPane::install_placeholder`. Used from `App::finish_new`.
     pub fn install_cpu_placeholder(&mut self) { self.cpu.install_placeholder(); }
+}
+
+#[cfg(test)]
+mod detail_set_tests {
+    //! Pin the detail-set "all five panes coherent for this stamp"
+    //! invariant on the new `Panes` orchestrators. Phase 8.8 moved
+    //! the invariant out of `PaneDataStore` (which only tracks
+    //! targets + stamp now) into `Panes::set_detail_data` /
+    //! `Panes::clear_detail_data`, which fan out across the four
+    //! migrated detail panes' content slots plus the targets slot.
+    use crate::config::CpuConfig;
+    use crate::tui::app::VisibleRow;
+    use crate::tui::panes::CiData;
+    use crate::tui::panes::CiEmptyState;
+    use crate::tui::panes::GitData;
+    use crate::tui::panes::LintsData;
+    use crate::tui::panes::PackageData;
+    use crate::tui::panes::TargetsData;
+    use crate::tui::panes::data::DetailCacheKey;
+    use crate::tui::panes::system::Panes;
+
+    fn fresh() -> Panes { Panes::new(&CpuConfig::default()) }
+
+    fn any_row() -> VisibleRow { VisibleRow::Root { node_index: 0 } }
+
+    fn other_row() -> VisibleRow {
+        VisibleRow::Member {
+            node_index:   0,
+            group_index:  0,
+            member_index: 0,
+        }
+    }
+
+    fn empty_detail() -> (PackageData, GitData, TargetsData, CiData, LintsData) {
+        (
+            PackageData::default(),
+            GitData::default(),
+            TargetsData::default(),
+            CiData {
+                runs:           Vec::new(),
+                mode_label:     None,
+                current_branch: None,
+                empty_state:    CiEmptyState::Loading,
+            },
+            LintsData::default(),
+        )
+    }
+
+    #[test]
+    fn new_panes_detail_is_current_only_with_no_selection() {
+        let panes = fresh();
+        assert!(panes.pane_data().detail_is_current(None));
+        assert!(!panes.pane_data().detail_is_current(Some(DetailCacheKey {
+            row:        any_row(),
+            generation: 0,
+        })));
+    }
+
+    #[test]
+    fn set_detail_data_writes_all_panes_and_stamps() {
+        let mut panes = fresh();
+        let key = DetailCacheKey {
+            row:        any_row(),
+            generation: 3,
+        };
+        let (pkg, git, targets, ci, lints) = empty_detail();
+        panes.set_detail_data(key, pkg, git, targets, ci, lints);
+
+        assert!(panes.pane_data().detail_is_current(Some(key)));
+        assert!(panes.package().content().is_some());
+        assert!(panes.git().content().is_some());
+        assert!(panes.ci().content().is_some());
+        assert!(panes.lints().content().is_some());
+        assert!(panes.pane_data().targets().is_some());
+
+        // Different stamps don't match.
+        assert!(!panes.pane_data().detail_is_current(None));
+        assert!(!panes.pane_data().detail_is_current(Some(DetailCacheKey {
+            row:        any_row(),
+            generation: 4,
+        })));
+        assert!(!panes.pane_data().detail_is_current(Some(DetailCacheKey {
+            row:        other_row(),
+            generation: 3,
+        })));
+    }
+
+    #[test]
+    fn clear_detail_data_clears_all_panes_and_records_stamp() {
+        let mut panes = fresh();
+        let key = DetailCacheKey {
+            row:        any_row(),
+            generation: 7,
+        };
+        let (pkg, git, targets, ci, lints) = empty_detail();
+        panes.set_detail_data(key, pkg, git, targets, ci, lints);
+
+        let clear_key = DetailCacheKey {
+            row:        other_row(),
+            generation: 7,
+        };
+        panes.clear_detail_data(Some(clear_key));
+        assert!(panes.pane_data().detail_is_current(Some(clear_key)));
+        assert!(panes.package().content().is_none());
+        assert!(panes.git().content().is_none());
+        assert!(panes.ci().content().is_none());
+        assert!(panes.lints().content().is_none());
+        assert!(panes.pane_data().targets().is_none());
+    }
+
+    #[test]
+    fn clear_detail_with_none_matches_none() {
+        let mut panes = fresh();
+        panes.clear_detail_data(None);
+        assert!(panes.pane_data().detail_is_current(None));
+    }
 }
 
 #[cfg(test)]

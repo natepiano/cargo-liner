@@ -2074,7 +2074,7 @@ impl App {
         self.reload_lint_history(&path);
         self.migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
-        self.pane_data_mut().clear_detail_data(None);
+        self.panes_mut().clear_detail_data(None);
         // Signal that derived state needs refresh (batched by caller).
         true
     }
@@ -2829,8 +2829,9 @@ impl App {
             .selected_display_path()
             .unwrap_or_else(|| abs_key.display_path());
         let name = self
-            .pane_data()
+            .panes()
             .package()
+            .content()
             .map(|d| d.title_name.clone())
             .filter(|n| n != "-");
         if self

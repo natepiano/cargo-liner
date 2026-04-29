@@ -132,7 +132,7 @@ fn build_lint_rows(
 }
 
 pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let Some(lints_data) = app.pane_data().lints().cloned() else {
+    let Some(lints_data) = app.panes().lints().content().cloned() else {
         let block = lints_panel_block(" No Lint Runs ".to_string(), false, false);
         frame.render_widget(block, area);
         return;
