@@ -259,8 +259,9 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
 
     app.ensure_detail_cached();
     let example_count = app
-        .pane_data()
+        .panes()
         .targets()
+        .content()
         .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
     assert_eq!(
         example_count,
@@ -326,8 +327,9 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
     });
     app.ensure_detail_cached();
     let example_count = app
-        .pane_data()
+        .panes()
         .targets()
+        .content()
         .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
     assert_eq!(
         example_count,
@@ -435,7 +437,7 @@ fn project_change_resets_project_dependent_panes() {
     app.focus_pane(PaneId::CiRuns);
     app.panes_mut().package_mut().viewport_mut().set_pos(3);
     app.panes_mut().git_mut().viewport_mut().set_pos(4);
-    app.pane_manager_mut().pane_mut(PaneId::Targets).set_pos(5);
+    app.panes_mut().targets_mut().viewport_mut().set_pos(5);
     app.panes_mut().ci_mut().viewport_mut().set_pos(6);
     app.pane_manager_mut()
         .pane_mut(PaneId::ProjectList)
@@ -444,7 +446,7 @@ fn project_change_resets_project_dependent_panes() {
 
     assert_eq!(app.panes().package().viewport().pos(), 0);
     assert_eq!(app.panes().git().viewport().pos(), 0);
-    assert_eq!(app.pane_manager().pane(PaneId::Targets).pos(), 0);
+    assert_eq!(app.panes().targets().viewport().pos(), 0);
     assert_eq!(app.panes().ci().viewport().pos(), 0);
     assert!(!app.remembers_selection(PaneId::Package));
     assert!(!app.remembers_selection(PaneId::Git));

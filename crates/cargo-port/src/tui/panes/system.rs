@@ -36,6 +36,7 @@ use super::pane_impls::LintsPane;
 use super::pane_impls::OutputPane;
 use super::pane_impls::PackagePane;
 use super::pane_impls::SettingsPane;
+use super::pane_impls::TargetsPane;
 use super::pane_impls::ToastsPane;
 use super::spec::PaneId;
 use super::support::WorktreeInfo;
@@ -79,6 +80,7 @@ pub struct Panes {
     settings: SettingsPane,
     finder:   FinderPane,
     output:   OutputPane,
+    targets:  TargetsPane,
 
     // ── Phase 1 grab-bag (dissolves in Phases 9–10):
     manager:                PaneManager,
@@ -108,6 +110,7 @@ impl Panes {
             settings: SettingsPane::new(),
             finder:   FinderPane::new(),
             output:   OutputPane::new(),
+            targets:  TargetsPane::new(),
 
             manager:                PaneManager::new(),
             data:                   PaneDataStore::new(),
@@ -177,6 +180,12 @@ impl Panes {
     /// Mutable typed accessor for the Finder pane.
     pub const fn finder_mut(&mut self) -> &mut FinderPane { &mut self.finder }
 
+    /// Typed accessor for the Targets pane.
+    pub const fn targets(&self) -> &TargetsPane { &self.targets }
+
+    /// Mutable typed accessor for the Targets pane.
+    pub const fn targets_mut(&mut self) -> &mut TargetsPane { &mut self.targets }
+
     /// Write the detail-set content across the four migrated detail
     /// panes (Package/Git/CI/Lints) plus the targets slot in
     /// `PaneDataStore`, and update the detail stamp. The "all five
@@ -196,18 +205,19 @@ impl Panes {
         self.git.set_content(git);
         self.ci_runs.set_content(ci);
         self.lints.set_content(lints);
-        self.data.set_targets_with_stamp(stamp, targets);
+        self.targets.set_content(targets);
+        self.data.set_detail_stamp(Some(stamp));
     }
 
-    /// Clear the detail set across the four migrated detail panes plus
-    /// the targets slot, stamping with `stamp`. Mirrors `set_detail_data`'s
-    /// fan-out.
+    /// Clear the detail set across the five migrated detail panes,
+    /// stamping with `stamp`. Mirrors `set_detail_data`'s fan-out.
     pub fn clear_detail_data(&mut self, stamp: Option<super::data::DetailCacheKey>) {
         self.package.clear_content();
         self.git.clear_content();
         self.ci_runs.clear_content();
         self.lints.clear_content();
-        self.data.clear_targets_with_stamp(stamp);
+        self.targets.clear_content();
+        self.data.set_detail_stamp(stamp);
     }
 
     /// Test-only override for lints content. Mirrors the previous
@@ -362,7 +372,8 @@ impl Panes {
             PaneId::Settings => self.settings.viewport(),
             PaneId::Finder => self.finder.viewport(),
             PaneId::Output => self.output.viewport(),
-            _ => self.manager.pane(id),
+            PaneId::Targets => self.targets.viewport(),
+            PaneId::ProjectList => self.manager.pane(id),
         }
     }
 
@@ -387,7 +398,8 @@ impl Panes {
             PaneId::Settings => self.settings.viewport_mut().set_pos(row),
             PaneId::Finder => self.finder.viewport_mut().set_pos(row),
             PaneId::Output => self.output.viewport_mut().set_pos(row),
-            _ => self.manager.pane_mut(id).set_pos(row),
+            PaneId::Targets => self.targets.viewport_mut().set_pos(row),
+            PaneId::ProjectList => self.manager.pane_mut(id).set_pos(row),
         }
     }
 
@@ -430,6 +442,7 @@ impl Panes {
         self.settings.viewport_mut().set_hovered(None);
         self.finder.viewport_mut().set_hovered(None);
         self.output.viewport_mut().set_hovered(None);
+        self.targets.viewport_mut().set_hovered(None);
         let Some(hovered) = self.hovered_row else {
             return;
         };
@@ -453,7 +466,8 @@ impl Panes {
             PaneId::Settings => self.settings.viewport_mut(),
             PaneId::Finder => self.finder.viewport_mut(),
             PaneId::Output => self.output.viewport_mut(),
-            _ => self.manager.pane_mut(id),
+            PaneId::Targets => self.targets.viewport_mut(),
+            PaneId::ProjectList => self.manager.pane_mut(id),
         }
     }
 
@@ -588,7 +602,7 @@ mod detail_set_tests {
         assert!(panes.git().content().is_some());
         assert!(panes.ci().content().is_some());
         assert!(panes.lints().content().is_some());
-        assert!(panes.pane_data().targets().is_some());
+        assert!(panes.targets().content().is_some());
 
         // Different stamps don't match.
         assert!(!panes.pane_data().detail_is_current(None));
@@ -622,7 +636,7 @@ mod detail_set_tests {
         assert!(panes.git().content().is_none());
         assert!(panes.ci().content().is_none());
         assert!(panes.lints().content().is_none());
-        assert!(panes.pane_data().targets().is_none());
+        assert!(panes.targets().content().is_none());
     }
 
     #[test]

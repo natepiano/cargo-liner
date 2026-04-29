@@ -509,7 +509,7 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
             panes::Panes::dispatch_cpu_render,
         ),
         PaneId::Targets => {
-            if let Some(targets_data) = app.pane_data().targets().cloned()
+            if let Some(targets_data) = app.panes().targets().content().cloned()
                 && targets_data.has_targets()
             {
                 panes::render_targets_panel(frame, app, &targets_data, &pane_render_styles(), area);

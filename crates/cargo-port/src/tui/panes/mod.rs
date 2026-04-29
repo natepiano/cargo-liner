@@ -13,6 +13,7 @@ mod pane_impls;
 mod spec;
 mod support;
 mod system;
+mod targets;
 
 #[cfg(test)]
 mod tests;
@@ -60,8 +61,6 @@ pub(super) use package::description_lines;
 pub(super) use package::detail_column_scroll_offset;
 #[cfg(test)]
 pub(super) use package::package_label_width;
-pub(super) use package::render_empty_targets_panel;
-pub(super) use package::render_targets_panel;
 #[cfg(test)]
 pub(super) use package::stats_column_width;
 pub(super) use spec::PaneBehavior;
@@ -103,3 +102,5 @@ pub(super) use support::git_row_at;
 pub(super) use support::package_fields_from_data;
 pub(super) use system::DispatchArgs;
 pub(super) use system::Panes;
+pub(super) use targets::render_empty_targets_panel;
+pub(super) use targets::render_targets_panel;

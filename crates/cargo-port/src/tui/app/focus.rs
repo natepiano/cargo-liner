@@ -186,8 +186,9 @@ impl App {
             },
             PaneBehavior::Cpu => self.panes().cpu().content().is_some(),
             PaneBehavior::DetailTargets => self
-                .pane_data()
+                .panes()
                 .targets()
+                .content()
                 .is_some_and(crate::tui::panes::TargetsData::has_targets),
             PaneBehavior::Lints => {
                 self.inflight.example_output_is_empty()
@@ -275,7 +276,7 @@ impl App {
     pub fn reset_project_panes(&mut self) {
         self.panes_mut().package_mut().viewport_mut().home();
         self.panes_mut().git_mut().viewport_mut().home();
-        self.pane_manager_mut().pane_mut(PaneId::Targets).home();
+        self.panes_mut().targets_mut().viewport_mut().home();
         self.panes_mut().ci_mut().viewport_mut().home();
         self.panes_mut().lints_mut().viewport_mut().home();
         self.panes_mut().toasts_mut().viewport_mut().home();

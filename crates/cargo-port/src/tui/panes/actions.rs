@@ -30,11 +30,11 @@ use crate::tui::pane::Viewport;
 use crate::tui::toasts::TrackedItem;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
-    let Some(targets_data) = app.pane_data().targets().cloned() else {
+    let Some(targets_data) = app.panes().targets().content().cloned() else {
         return;
     };
     let entries = build_target_list_from_data(&targets_data);
-    if let Some(entry) = entries.get(app.pane_manager().pane(PaneId::Targets).pos())
+    if let Some(entry) = entries.get(app.panes().targets().viewport().pos())
         && let Some(abs_path) = app.selected_project_path()
     {
         let package_name = app.panes().package().content().and_then(|d| {
@@ -121,7 +121,7 @@ fn request_clean(app: &mut App) {
 /// currently active detail column.
 fn active_detail_pane(app: &mut App) -> &mut Viewport {
     match app.base_focus() {
-        PaneId::Targets => app.pane_manager_mut().pane_mut(PaneId::Targets),
+        PaneId::Targets => app.panes_mut().targets_mut().viewport_mut(),
         PaneId::Lang => app.panes_mut().lang_mut().viewport_mut(),
         PaneId::Cpu => app.panes_mut().cpu_mut().viewport_mut(),
         PaneId::Git => app.panes_mut().git_mut().viewport_mut(),

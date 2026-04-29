@@ -388,6 +388,39 @@ impl FinderPane {
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 }
 
+// ── Targets ─────────────────────────────────────────────────────
+//
+// Phase 9.6: cursor `Viewport` and content slot absorbed onto
+// TargetsPane. The content slot was the last remaining slot in
+// `PaneDataStore` after Phase 8.8. The renderer
+// (`panes::targets::render_targets_panel` / `render_empty_targets_panel`)
+// reads `pane.content()` and `pane.viewport()`. No `Pane` trait
+// impl yet — the body still takes `&mut App` because it touches
+// `pane_focus_state` and other App-shell state during render.
+pub struct TargetsPane {
+    viewport: Viewport,
+    content:  Option<super::TargetsData>,
+}
+
+impl TargetsPane {
+    pub const fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+            content:  None,
+        }
+    }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    pub const fn content(&self) -> Option<&super::TargetsData> { self.content.as_ref() }
+
+    pub fn set_content(&mut self, data: super::TargetsData) { self.content = Some(data); }
+
+    pub fn clear_content(&mut self) { self.content = None; }
+}
+
 // ── Output ──────────────────────────────────────────────────────
 //
 // Phase 9.5: `OutputPane` lands as a per-pane struct alongside its

@@ -653,7 +653,7 @@ fn confirm_finder(app: &mut App) {
 /// to the matching target entry.
 fn navigate_to_target(app: &mut App, item: &FinderItem) {
     // Focus the targets pane (now in the left panel below the project list).
-    let Some(targets_data) = app.pane_data().targets().cloned() else {
+    let Some(targets_data) = app.panes().targets().content().cloned() else {
         return;
     };
     if targets_data.has_targets() {
@@ -673,7 +673,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
                 if entry.name == target_name
                     && std::mem::discriminant(&entry.kind) == std::mem::discriminant(&target_kind)
                 {
-                    app.pane_manager_mut().pane_mut(PaneId::Targets).set_pos(i);
+                    app.panes_mut().targets_mut().viewport_mut().set_pos(i);
                     return;
                 }
             }
