@@ -16,12 +16,16 @@
 //! produce the same answers and are pinned by the
 //! characterization tests in `panes/spec.rs`.
 
+use std::collections::HashMap;
+use std::path::Path;
 use std::time::Instant;
 
 use super::dispatch::InputContextKind;
 use super::dispatch::Pane;
 use super::spec::PaneId;
 use crate::config::CpuConfig;
+use crate::project::AbsolutePath;
+use crate::tui::app::CiRunDisplayMode;
 use crate::tui::cpu::CpuPoller;
 use crate::tui::cpu::CpuSnapshot;
 use crate::tui::pane::PaneAxisSize;
@@ -241,23 +245,39 @@ impl Pane for LintsPane {
 
 // ── CiRuns ──────────────────────────────────────────────────────
 //
-// Phase 8.4: cursor `Viewport` migrates onto CiPane. Content
-// stays in the detail set; ci_display_modes will absorb in a
-// later sub-phase.
+// Phase 8.4: cursor `Viewport` absorbed onto CiPane.
+// Phase 8.7: per-project `display_modes` (`Panes::ci_display_modes`)
+// absorbed too — it was always CI-specific. Content stays in
+// the detail set; the body migration into the trait method
+// is a later sub-phase.
 pub struct CiPane {
-    viewport: Viewport,
+    viewport:      Viewport,
+    display_modes: HashMap<AbsolutePath, CiRunDisplayMode>,
 }
 
 impl CiPane {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            viewport: Viewport::new(),
+            viewport:      Viewport::new(),
+            display_modes: HashMap::new(),
         }
     }
 
     pub const fn viewport(&self) -> &Viewport { &self.viewport }
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    pub fn display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
+        self.display_modes.get(path).copied().unwrap_or_default()
+    }
+
+    pub fn set_display_mode(&mut self, path: AbsolutePath, mode: CiRunDisplayMode) {
+        self.display_modes.insert(path, mode);
+    }
+
+    pub fn remove_display_mode(&mut self, path: &Path) { self.display_modes.remove(path); }
+
+    pub fn clear_display_modes(&mut self) { self.display_modes.clear(); }
 }
 
 impl Pane for CiPane {

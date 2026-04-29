@@ -75,7 +75,7 @@ pub struct Panes {
     /// `build_pane_data_common`, which only has `&App`.
     worktree_summary_cache: RefCell<HashMap<AbsolutePath, Vec<WorktreeInfo>>>,
     hovered_row:            Option<HoveredPaneRow>,
-    ci_display_modes:       HashMap<AbsolutePath, CiRunDisplayMode>,
+    // `ci_display_modes` was here; absorbed onto `CiPane` in Phase 8.7.
     // `cpu_poller` was here; absorbed onto `CpuPane` in Phase 8.1a.
 }
 
@@ -102,7 +102,6 @@ impl Panes {
             layout_cache:           LayoutCache::default(),
             worktree_summary_cache: RefCell::new(HashMap::new()),
             hovered_row:            None,
-            ci_display_modes:       HashMap::new(),
         }
     }
 
@@ -267,16 +266,18 @@ impl Panes {
     }
 
     pub fn ci_display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
-        self.ci_display_modes.get(path).copied().unwrap_or_default()
+        self.ci_runs.display_mode_for(path)
     }
 
     pub fn set_ci_display_mode(&mut self, path: AbsolutePath, mode: CiRunDisplayMode) {
-        self.ci_display_modes.insert(path, mode);
+        self.ci_runs.set_display_mode(path, mode);
     }
 
-    pub fn remove_ci_display_mode(&mut self, path: &Path) { self.ci_display_modes.remove(path); }
+    pub fn remove_ci_display_mode(&mut self, path: &Path) {
+        self.ci_runs.remove_display_mode(path);
+    }
 
-    pub fn clear_ci_display_modes(&mut self) { self.ci_display_modes.clear(); }
+    pub fn clear_ci_display_modes(&mut self) { self.ci_runs.clear_display_modes(); }
 
     /// Return the cached worktree-summary for `group_root` if present;
     /// otherwise compute via `compute` (the shell-out path), cache, and
