@@ -342,7 +342,7 @@ impl App {
         self.panes.set_hover(hovered_pane_row);
     }
 
-    pub(super) fn apply_hovered_pane_row(&mut self) { self.panes.apply_hovered_pane_row(); }
+    pub(super) const fn apply_hovered_pane_row(&mut self) { self.panes.apply_hovered_pane_row(); }
 
     pub(super) const fn cached_fit_widths(&self) -> &ProjectListWidths {
         self.selection.fit_widths()

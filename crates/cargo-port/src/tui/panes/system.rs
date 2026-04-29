@@ -47,7 +47,6 @@ use crate::tui::app::CiRunDisplayMode;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::config_state::Config;
 use crate::tui::pane::PaneFocusState;
-use crate::tui::pane::PaneManager;
 use crate::tui::pane::Viewport;
 use crate::tui::scan_state::Scan;
 
@@ -84,8 +83,7 @@ pub struct Panes {
     targets:      TargetsPane,
     project_list: ProjectListPane,
 
-    // ── Phase 1 grab-bag (dissolves in Phases 9–10):
-    manager:                PaneManager,
+    // ── Phase 1 grab-bag (residual after Phase 9.8):
     data:                   PaneDataStore,
     visited:                HashSet<PaneId>,
     layout_cache:           LayoutCache,
@@ -94,6 +92,8 @@ pub struct Panes {
     /// `build_pane_data_common`, which only has `&App`.
     worktree_summary_cache: RefCell<HashMap<AbsolutePath, Vec<WorktreeInfo>>>,
     hovered_row:            Option<HoveredPaneRow>,
+    // `pane_manager` was here; deleted in Phase 9.8 once every pane
+    // owned its own `Viewport`.
     // `ci_display_modes` was here; absorbed onto `CiPane` in Phase 8.7.
     // `cpu_poller` was here; absorbed onto `CpuPane` in Phase 8.1a.
 }
@@ -115,7 +115,6 @@ impl Panes {
             targets:      TargetsPane::new(),
             project_list: ProjectListPane::new(),
 
-            manager:                PaneManager::new(),
             data:                   PaneDataStore::new(),
             visited:                std::iter::once(PaneId::ProjectList).collect(),
             layout_cache:           LayoutCache::default(),
@@ -430,12 +429,10 @@ impl Panes {
 
     /// Push the current `hovered_pane_row` into the per-pane viewports.
     /// Clears any prior hover across every pane first, then sets the row
-    /// on the pane indicated by `hovered_pane_row` (if any). Migrated
-    /// panes own their own `Viewport`; un-migrated panes still live on
-    /// `PaneManager`. The polymorphic `viewport_mut_for` dispatch keeps
-    /// reads and writes on the same source.
-    pub fn apply_hovered_pane_row(&mut self) {
-        self.manager.clear_hover();
+    /// on the pane indicated by `hovered_pane_row` (if any). After Phase
+    /// 9.8 every pane owns its own `Viewport`, so the clear is a flat
+    /// fan-out across all 13 per-pane structs.
+    pub const fn apply_hovered_pane_row(&mut self) {
         self.package.viewport_mut().set_hovered(None);
         self.lang.viewport_mut().set_hovered(None);
         self.cpu.viewport_mut().set_hovered(None);

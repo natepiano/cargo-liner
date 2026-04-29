@@ -20,26 +20,6 @@ pub enum PaneId {
 }
 
 impl PaneId {
-    pub const fn index(self) -> usize {
-        match self {
-            Self::ProjectList => 0,
-            Self::Package => 1,
-            Self::Lang => 2,
-            Self::Cpu => 3,
-            Self::Git => 4,
-            Self::Targets => 5,
-            Self::Lints => 6,
-            Self::CiRuns => 7,
-            Self::Output => 8,
-            Self::Toasts => 9,
-            Self::Settings => 10,
-            Self::Finder => 11,
-            Self::Keymap => 12,
-        }
-    }
-
-    pub const fn pane_count() -> usize { Self::Keymap.index() + 1 }
-
     pub const fn is_overlay(self) -> bool { matches!(self, Self::Settings | Self::Finder) }
 }
 
