@@ -127,12 +127,6 @@ impl Viewport {
 
     pub const fn set_hovered(&mut self, hovered: Option<usize>) { self.hovered = hovered; }
 
-    #[allow(
-        dead_code,
-        reason = "Phase 7 accessor for Pane trait; consumed in Phase 8 default impls"
-    )]
-    pub const fn hovered(&self) -> Option<usize> { self.hovered }
-
     pub const fn content_area(&self) -> Rect { self.content_area }
 
     pub const fn scroll_offset(&self) -> usize { self.scroll_offset }

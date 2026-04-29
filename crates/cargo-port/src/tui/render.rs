@@ -456,7 +456,6 @@ fn dispatch_via_trait(
     frame: &mut Frame,
     dispatcher: fn(&mut panes::Panes, &mut Frame, Rect, &panes::DispatchArgs<'_>),
 ) {
-    let focused_pane = app.focused_pane();
     let focus_state = app.pane_focus_state(id);
     let is_focused = app.is_focused(id);
     let animation_elapsed = app.animation_elapsed();
@@ -466,14 +465,12 @@ fn dispatch_via_trait(
     let selected_project_path: Option<std::path::PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (panes, config, selection, scan) = app.split_panes_for_render();
+    let (panes, config, _selection, scan) = app.split_panes_for_render();
     let args = panes::DispatchArgs {
-        focused_pane,
         focus_state,
         is_focused,
         animation_elapsed,
         config,
-        selection,
         scan,
         selected_project_path: selected_project_path.as_deref(),
     };

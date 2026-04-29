@@ -160,10 +160,8 @@ pub(super) fn render_lang_pane_body(
         scan,
         selected_project_path,
         hit_sink: _hit_sink,
-        focused_pane: _,
         animation_elapsed: _,
         config: _,
-        selection: _,
     } = ctx;
 
     let lang_stats = scan

@@ -229,11 +229,9 @@ pub(super) fn render_package_pane_body(
     let PaneRenderCtx {
         focus_state,
         hit_sink: _hit_sink,
-        focused_pane: _,
         is_focused: _,
         animation_elapsed: _,
         config: _,
-        selection: _,
         scan: _,
         selected_project_path: _,
     } = ctx;

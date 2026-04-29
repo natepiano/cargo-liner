@@ -28,17 +28,10 @@ use super::dispatch::PaneRenderCtx;
 use super::layout::LayoutCache;
 use super::pane_impls::CiPane;
 use super::pane_impls::CpuPane;
-use super::pane_impls::FinderPane;
 use super::pane_impls::GitPane;
-use super::pane_impls::KeymapPane;
 use super::pane_impls::LangPane;
 use super::pane_impls::LintsPane;
-use super::pane_impls::OutputPane;
 use super::pane_impls::PackagePane;
-use super::pane_impls::ProjectListPane;
-use super::pane_impls::SettingsPane;
-use super::pane_impls::TargetsPane;
-use super::pane_impls::ToastsPane;
 use super::spec::PaneId;
 use super::support::WorktreeInfo;
 use crate::config::CpuConfig;
@@ -50,19 +43,16 @@ use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneManager;
 use crate::tui::pane::Viewport;
 use crate::tui::scan_state::Scan;
-use crate::tui::selection::Selection;
 
 /// Bundle of refs the dispatchers need to construct a
 /// `PaneRenderCtx`. Constructed at the call site from
 /// `App::split_panes_for_render` and the pane-specific focus
 /// args, then handed to the `dispatch_*_render` method.
 pub struct DispatchArgs<'a> {
-    pub focused_pane:          PaneId,
     pub focus_state:           PaneFocusState,
     pub is_focused:            bool,
     pub animation_elapsed:     std::time::Duration,
     pub config:                &'a Config,
-    pub selection:             &'a Selection,
     pub scan:                  &'a Scan,
     pub selected_project_path: Option<&'a Path>,
 }
@@ -71,25 +61,16 @@ pub struct DispatchArgs<'a> {
 /// Panes` field instead of the eight raw fields it carried before
 /// Phase 1.
 pub struct Panes {
-    // ── Phase 7: per-pane registry (unit structs today; absorb
-    //    state in Phases 8–9). Methods `pane(id)` and
-    //    `pane_mut(id)` dispatch through the trait via these
-    //    fields.
-    project_list: ProjectListPane,
-    package:      PackagePane,
-    lang:         LangPane,
-    cpu:          CpuPane,
-    git:          GitPane,
-    targets:      TargetsPane,
-    lints:        LintsPane,
-    ci_runs:      CiPane,
-    output:       OutputPane,
-    toasts:       ToastsPane,
-    settings:     SettingsPane,
-    finder:       FinderPane,
-    keymap:       KeymapPane,
+    // ── Per-pane state (Phase 8 migrated). Phase 9 brings the
+    //    remaining seven panes in alongside their state.
+    package: PackagePane,
+    lang:    LangPane,
+    cpu:     CpuPane,
+    git:     GitPane,
+    lints:   LintsPane,
+    ci_runs: CiPane,
 
-    // ── Phase 1 grab-bag (dissolves in Phases 8–10):
+    // ── Phase 1 grab-bag (dissolves in Phases 9–10):
     manager:                PaneManager,
     data:                   PaneDataStore,
     visited:                HashSet<PaneId>,
@@ -106,19 +87,12 @@ pub struct Panes {
 impl Panes {
     pub fn new(cpu_cfg: &CpuConfig) -> Self {
         Self {
-            project_list: ProjectListPane,
-            package:      PackagePane::new(),
-            lang:         LangPane::new(),
-            cpu:          CpuPane::new(cpu_cfg),
-            git:          GitPane::new(),
-            targets:      TargetsPane,
-            lints:        LintsPane::new(),
-            ci_runs:      CiPane::new(),
-            output:       OutputPane,
-            toasts:       ToastsPane,
-            settings:     SettingsPane,
-            finder:       FinderPane,
-            keymap:       KeymapPane,
+            package: PackagePane::new(),
+            lang:    LangPane::new(),
+            cpu:     CpuPane::new(cpu_cfg),
+            git:     GitPane::new(),
+            lints:   LintsPane::new(),
+            ci_runs: CiPane::new(),
 
             manager:                PaneManager::new(),
             data:                   PaneDataStore::new(),
@@ -220,12 +194,10 @@ impl Panes {
     ) {
         let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
         let ctx = PaneRenderCtx {
-            focused_pane:          args.focused_pane,
             focus_state:           args.focus_state,
             is_focused:            args.is_focused,
             animation_elapsed:     args.animation_elapsed,
             config:                args.config,
-            selection:             args.selection,
             scan:                  args.scan,
             selected_project_path: args.selected_project_path,
             hit_sink:              &mut sink,
@@ -242,12 +214,10 @@ impl Panes {
     ) {
         let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
         let ctx = PaneRenderCtx {
-            focused_pane:          args.focused_pane,
             focus_state:           args.focus_state,
             is_focused:            args.is_focused,
             animation_elapsed:     args.animation_elapsed,
             config:                args.config,
-            selection:             args.selection,
             scan:                  args.scan,
             selected_project_path: args.selected_project_path,
             hit_sink:              &mut sink,
@@ -264,12 +234,10 @@ impl Panes {
     ) {
         let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
         let ctx = PaneRenderCtx {
-            focused_pane:          args.focused_pane,
             focus_state:           args.focus_state,
             is_focused:            args.is_focused,
             animation_elapsed:     args.animation_elapsed,
             config:                args.config,
-            selection:             args.selection,
             scan:                  args.scan,
             selected_project_path: args.selected_project_path,
             hit_sink:              &mut sink,
@@ -286,12 +254,10 @@ impl Panes {
     ) {
         let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
         let ctx = PaneRenderCtx {
-            focused_pane:          args.focused_pane,
             focus_state:           args.focus_state,
             is_focused:            args.is_focused,
             animation_elapsed:     args.animation_elapsed,
             config:                args.config,
-            selection:             args.selection,
             scan:                  args.scan,
             selected_project_path: args.selected_project_path,
             hit_sink:              &mut sink,
@@ -308,12 +274,10 @@ impl Panes {
     ) {
         let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
         let ctx = PaneRenderCtx {
-            focused_pane:          args.focused_pane,
             focus_state:           args.focus_state,
             is_focused:            args.is_focused,
             animation_elapsed:     args.animation_elapsed,
             config:                args.config,
-            selection:             args.selection,
             scan:                  args.scan,
             selected_project_path: args.selected_project_path,
             hit_sink:              &mut sink,
@@ -330,12 +294,10 @@ impl Panes {
     ) {
         let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
         let ctx = PaneRenderCtx {
-            focused_pane:          args.focused_pane,
             focus_state:           args.focus_state,
             is_focused:            args.is_focused,
             animation_elapsed:     args.animation_elapsed,
             config:                args.config,
-            selection:             args.selection,
             scan:                  args.scan,
             selected_project_path: args.selected_project_path,
             hit_sink:              &mut sink,
@@ -377,56 +339,6 @@ impl Panes {
             PaneId::Package => self.package.viewport_mut().set_pos(row),
             PaneId::Git => self.git.viewport_mut().set_pos(row),
             _ => self.manager.pane_mut(id).set_pos(row),
-        }
-    }
-
-    /// Trait-dispatch entry: returns the per-pane struct for
-    /// `id` as `&dyn Pane`. Phase 7 supports only the
-    /// `PaneId`-pure trait methods (`id`, `has_row_hitboxes`,
-    /// `size_spec`, `input_context`); Phase 8/9 fill in render,
-    /// input, and viewport accessors as bodies migrate.
-    #[allow(
-        dead_code,
-        reason = "Phase 7 registry entry; first dispatch site wires up in Phase 8"
-    )]
-    pub fn pane(&self, id: PaneId) -> &dyn Pane {
-        match id {
-            PaneId::ProjectList => &self.project_list,
-            PaneId::Package => &self.package,
-            PaneId::Lang => &self.lang,
-            PaneId::Cpu => &self.cpu,
-            PaneId::Git => &self.git,
-            PaneId::Targets => &self.targets,
-            PaneId::Lints => &self.lints,
-            PaneId::CiRuns => &self.ci_runs,
-            PaneId::Output => &self.output,
-            PaneId::Toasts => &self.toasts,
-            PaneId::Settings => &self.settings,
-            PaneId::Finder => &self.finder,
-            PaneId::Keymap => &self.keymap,
-        }
-    }
-
-    /// Mutable trait-dispatch entry. See `pane`.
-    #[allow(
-        dead_code,
-        reason = "Phase 7 registry entry; first dispatch site wires up in Phase 8"
-    )]
-    pub fn pane_mut(&mut self, id: PaneId) -> &mut dyn Pane {
-        match id {
-            PaneId::ProjectList => &mut self.project_list,
-            PaneId::Package => &mut self.package,
-            PaneId::Lang => &mut self.lang,
-            PaneId::Cpu => &mut self.cpu,
-            PaneId::Git => &mut self.git,
-            PaneId::Targets => &mut self.targets,
-            PaneId::Lints => &mut self.lints,
-            PaneId::CiRuns => &mut self.ci_runs,
-            PaneId::Output => &mut self.output,
-            PaneId::Toasts => &mut self.toasts,
-            PaneId::Settings => &mut self.settings,
-            PaneId::Finder => &mut self.finder,
-            PaneId::Keymap => &mut self.keymap,
         }
     }
 
@@ -636,51 +548,5 @@ mod detail_set_tests {
         let mut panes = fresh();
         panes.clear_detail_data(None);
         assert!(panes.pane_data().detail_is_current(None));
-    }
-}
-
-#[cfg(test)]
-mod registry_tests {
-    //! Verify the registry returns the right concrete pane for every
-    //! `PaneId` variant. Pinned now so Phase 8/9 migrations cannot
-    //! silently mis-wire dispatch.
-    use crate::config::CpuConfig;
-    use crate::tui::panes::PaneId;
-    use crate::tui::panes::system::Panes;
-
-    fn fresh() -> Panes { Panes::new(&CpuConfig::default()) }
-
-    fn all_ids() -> [PaneId; 13] {
-        [
-            PaneId::ProjectList,
-            PaneId::Package,
-            PaneId::Lang,
-            PaneId::Cpu,
-            PaneId::Git,
-            PaneId::Targets,
-            PaneId::Lints,
-            PaneId::CiRuns,
-            PaneId::Output,
-            PaneId::Toasts,
-            PaneId::Settings,
-            PaneId::Finder,
-            PaneId::Keymap,
-        ]
-    }
-
-    #[test]
-    fn pane_returns_matching_id() {
-        let panes = fresh();
-        for id in all_ids() {
-            assert_eq!(panes.pane(id).id(), id, "{id:?}");
-        }
-    }
-
-    #[test]
-    fn pane_mut_returns_matching_id() {
-        let mut panes = fresh();
-        for id in all_ids() {
-            assert_eq!(panes.pane_mut(id).id(), id, "{id:?}");
-        }
     }
 }

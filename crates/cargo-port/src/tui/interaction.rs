@@ -497,7 +497,6 @@ mod tests {
         });
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
-        let focused_pane = app.focused_pane();
         let focus_state = app.pane_focus_state(PaneId::Lints);
         let is_focused = app.is_focused(PaneId::Lints);
         let animation_elapsed = app.animation_elapsed();
@@ -507,14 +506,12 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (panes, config, selection, scan) = app.split_panes_for_render();
+                let (panes, config, _selection, scan) = app.split_panes_for_render();
                 let args = panes::DispatchArgs {
-                    focused_pane,
                     focus_state,
                     is_focused,
                     animation_elapsed,
                     config,
-                    selection,
                     scan,
                     selected_project_path: selected_path.as_deref(),
                 };
@@ -528,7 +525,6 @@ mod tests {
         app.panes_mut().override_ci_runs_for_test(runs.to_vec());
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
-        let focused_pane = app.focused_pane();
         let focus_state = app.pane_focus_state(PaneId::CiRuns);
         let is_focused = app.is_focused(PaneId::CiRuns);
         let animation_elapsed = app.animation_elapsed();
@@ -538,14 +534,12 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (panes, config, selection, scan) = app.split_panes_for_render();
+                let (panes, config, _selection, scan) = app.split_panes_for_render();
                 let args = panes::DispatchArgs {
-                    focused_pane,
                     focus_state,
                     is_focused,
                     animation_elapsed,
                     config,
-                    selection,
                     scan,
                     selected_project_path: selected_path.as_deref(),
                 };
