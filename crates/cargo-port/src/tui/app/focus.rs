@@ -274,7 +274,7 @@ impl App {
         self.pane_manager_mut().pane_mut(PaneId::Git).home();
         self.pane_manager_mut().pane_mut(PaneId::Targets).home();
         self.pane_manager_mut().pane_mut(PaneId::CiRuns).home();
-        self.pane_manager_mut().pane_mut(PaneId::Lints).home();
+        self.panes_mut().lints_mut().viewport_mut().home();
         self.pane_manager_mut().pane_mut(PaneId::Toasts).home();
         self.panes.unvisit(PaneId::Package);
         self.panes.unvisit(PaneId::Git);

@@ -172,7 +172,28 @@ impl Pane for TargetsPane {
 }
 
 // ── Lints ───────────────────────────────────────────────────────
-pub struct LintsPane;
+//
+// Phase 8.3: cursor `Viewport` migrates onto LintsPane. Lints
+// content (LintsData) stays in `PaneDataStore`'s detail set for
+// now — it is set together with package/git/targets/ci via
+// `set_detail_data`, so decoupling one member alone breaks that
+// invariant. The whole detail set migrates in a later sub-phase.
+pub struct LintsPane {
+    viewport: Viewport,
+}
+
+impl LintsPane {
+    pub const fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+        }
+    }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+}
+
 impl Pane for LintsPane {
     fn id(&self) -> PaneId { PaneId::Lints }
     fn input_context(&self) -> InputContextKind { InputContextKind::Lints }
@@ -258,7 +279,7 @@ mod tests {
             PaneId::Cpu => Box::new(CpuPane::new(&CpuConfig::default())),
             PaneId::Git => Box::new(GitPane),
             PaneId::Targets => Box::new(TargetsPane),
-            PaneId::Lints => Box::new(LintsPane),
+            PaneId::Lints => Box::new(LintsPane::new()),
             PaneId::CiRuns => Box::new(CiPane),
             PaneId::Output => Box::new(OutputPane),
             PaneId::Toasts => Box::new(ToastsPane),

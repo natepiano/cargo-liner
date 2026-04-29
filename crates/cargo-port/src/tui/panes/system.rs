@@ -87,7 +87,7 @@ impl Panes {
             cpu:          CpuPane::new(cpu_cfg),
             git:          GitPane,
             targets:      TargetsPane,
-            lints:        LintsPane,
+            lints:        LintsPane::new(),
             ci_runs:      CiPane,
             output:       OutputPane,
             toasts:       ToastsPane,
@@ -118,6 +118,29 @@ impl Panes {
 
     /// Mutable typed accessor for the Lang pane.
     pub const fn lang_mut(&mut self) -> &mut LangPane { &mut self.lang }
+
+    /// Typed accessor for the Lints pane.
+    pub const fn lints(&self) -> &LintsPane { &self.lints }
+
+    /// Mutable typed accessor for the Lints pane.
+    pub const fn lints_mut(&mut self) -> &mut LintsPane { &mut self.lints }
+
+    /// Set the cursor position for `id`'s viewport, routing to
+    /// each migrated pane's per-pane `Viewport` for those that
+    /// have absorbed it, falling back to the still-vestigial
+    /// `PaneManager` slot for un-migrated panes. Used by the
+    /// generic click handler in `interaction.rs` and any other
+    /// code that needs to set a cursor position by `PaneId`.
+    /// Each Phase-8 / Phase-9 sub-commit moves one pane out of
+    /// the fallback arm.
+    pub fn set_pane_pos(&mut self, id: PaneId, row: usize) {
+        match id {
+            PaneId::Cpu => self.cpu.viewport_mut().set_pos(row),
+            PaneId::Lang => self.lang.viewport_mut().set_pos(row),
+            PaneId::Lints => self.lints.viewport_mut().set_pos(row),
+            _ => self.manager.pane_mut(id).set_pos(row),
+        }
+    }
 
     /// Trait-dispatch entry: returns the per-pane struct for
     /// `id` as `&dyn Pane`. Phase 7 supports only the

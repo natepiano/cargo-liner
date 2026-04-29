@@ -274,10 +274,10 @@ fn handle_ci_fetch_more(app: &mut App) {
 pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.pane_manager_mut().pane_mut(PaneId::Lints).up(),
-        KeyCode::Down => return app.pane_manager_mut().pane_mut(PaneId::Lints).down(),
-        KeyCode::Home => return app.pane_manager_mut().pane_mut(PaneId::Lints).home(),
-        KeyCode::End => return app.pane_manager_mut().pane_mut(PaneId::Lints).end(),
+        KeyCode::Up => return app.panes_mut().lints_mut().viewport_mut().up(),
+        KeyCode::Down => return app.panes_mut().lints_mut().viewport_mut().down(),
+        KeyCode::Home => return app.panes_mut().lints_mut().viewport_mut().home(),
+        KeyCode::End => return app.panes_mut().lints_mut().viewport_mut().end(),
         _ => {},
     }
 
@@ -328,7 +328,7 @@ fn clear_lint_history(app: &mut App) {
     if let Some(lr) = app.lint_at_path_mut(&abs_path) {
         lr.clear_runs();
     }
-    app.pane_manager_mut().pane_mut(PaneId::Lints).home();
+    app.panes_mut().lints_mut().viewport_mut().home();
     app.focus_pane(PaneId::ProjectList);
     app.refresh_lint_cache_usage_from_disk();
     app.increment_data_generation();
@@ -347,7 +347,7 @@ fn open_lint_run_output(app: &App) {
     if runs.is_empty() {
         return;
     }
-    let Some(run) = runs.get(app.pane_manager().pane(PaneId::Lints).pos()) else {
+    let Some(run) = runs.get(app.panes().lints().viewport().pos()) else {
         return;
     };
 

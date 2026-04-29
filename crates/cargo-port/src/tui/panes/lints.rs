@@ -139,28 +139,23 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let focused = app.is_focused(PaneId::Lints);
-    let title = lints_panel_title(
-        &lints_data,
-        focused,
-        app.pane_manager().pane(PaneId::Lints).pos(),
-    );
+    let title = lints_panel_title(&lints_data, focused, app.panes().lints().viewport().pos());
     let block = lints_panel_block(title, focused, !lints_data.runs.is_empty());
 
     let inner = block.inner(area);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Lints)
-        .set_content_area(inner);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Lints)
-        .set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
+    {
+        let viewport = app.panes_mut().lints_mut().viewport_mut();
+        viewport.set_content_area(inner);
+        viewport.set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
+    }
 
     if lints_data.runs.is_empty() {
         frame.render_widget(block, area);
-        app.pane_manager_mut().pane_mut(PaneId::Lints).set_len(0);
+        app.panes_mut().lints_mut().viewport_mut().set_len(0);
         return;
     }
 
-    let pane = app.pane_manager().pane(PaneId::Lints).clone();
+    let pane = app.panes().lints().viewport().clone();
     let focus = app.pane_focus_state(PaneId::Lints);
     let rows = build_lint_rows(
         &lints_data.runs,
@@ -169,8 +164,9 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         &pane,
         focus,
     );
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Lints)
+    app.panes_mut()
+        .lints_mut()
+        .viewport_mut()
         .set_len(rows.len());
 
     let col_header_style = Style::default()
@@ -204,18 +200,20 @@ pub fn render_lints_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     .row_highlight_style(Style::default());
 
     let mut table_state =
-        TableState::default().with_selected(Some(app.pane_manager().pane(PaneId::Lints).pos()));
+        TableState::default().with_selected(Some(app.panes().lints().viewport().pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Lints)
+    app.panes_mut()
+        .lints_mut()
+        .viewport_mut()
         .set_scroll_offset(table_state.offset());
-    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::Lints));
+    pane::render_overflow_affordance(frame, area, app.panes().lints().viewport());
 
     let visible_height = usize::from(inner.height.saturating_sub(1));
     let visible_start = table_state.offset();
     let visible_end = app
-        .pane_manager()
-        .pane(PaneId::Lints)
+        .panes()
+        .lints()
+        .viewport()
         .len()
         .min(visible_start.saturating_add(visible_height));
 

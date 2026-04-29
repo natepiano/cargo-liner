@@ -193,7 +193,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
     match hit.target {
         UiTarget::PaneRow { pane, row } => {
             app.focus_pane(pane);
-            app.pane_manager_mut().pane_mut(pane).set_pos(row);
+            app.panes_mut().set_pane_pos(pane, row);
             true
         },
         UiTarget::Dismiss(target) => {
@@ -569,7 +569,7 @@ mod tests {
     }
 
     fn lint_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.pane_manager().pane(PaneId::Lints).content_area();
+        let area = app.panes().lints().viewport().content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -954,7 +954,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.pane_manager().pane(PaneId::Lints).pos(),
+            app.panes().lints().viewport().pos(),
             1,
             "clicking the second rendered lint run should select run index 1, not the header-offset visual row"
         );
