@@ -26,6 +26,7 @@ use crate::tui::cpu::CpuPoller;
 use crate::tui::cpu::CpuSnapshot;
 use crate::tui::pane::PaneAxisSize;
 use crate::tui::pane::PaneSizeSpec;
+use crate::tui::pane::Viewport;
 
 // ── ProjectList ─────────────────────────────────────────────────
 pub struct ProjectListPane;
@@ -56,22 +57,27 @@ impl Pane for LangPane {
 
 // ── Cpu ─────────────────────────────────────────────────────────
 //
-// Phase 8.1a: CpuPane absorbs `cpu_poller` (was on `Panes` grab
-// bag) and `content` (was the `cpu` slot in `PaneDataStore`).
-// Cursor still lives in `PaneManager`'s `[Viewport; 13]` array;
-// migrating the cursor is Phase 8.1b. Render body remains in
-// `panes/cpu.rs::render_cpu_panel` as a free function for now —
-// Phase 8.1b moves it into the trait.
+// Phase 8.1a absorbed `cpu_poller` and `content` onto CpuPane.
+// Phase 8.1b absorbs the cursor `Viewport` (was the `Cpu` slot in
+// `PaneManager`'s array). The slot in PaneManager stays vestigial
+// until Phase 9 migrates the remaining panes; CpuPane is the only
+// reader/writer of its cursor state now.
+//
+// Render body remains in `panes/cpu.rs::render_cpu_panel` as a
+// free function. Body migration into the trait method lands in a
+// later sub-phase.
 pub struct CpuPane {
-    content: Option<CpuSnapshot>,
-    poller:  CpuPoller,
+    viewport: Viewport,
+    content:  Option<CpuSnapshot>,
+    poller:   CpuPoller,
 }
 
 impl CpuPane {
     pub fn new(cfg: &CpuConfig) -> Self {
         let mut pane = Self {
-            content: None,
-            poller:  CpuPoller::new(cfg),
+            viewport: Viewport::new(),
+            content:  None,
+            poller:   CpuPoller::new(cfg),
         };
         pane.install_placeholder();
         pane
@@ -100,6 +106,10 @@ impl CpuPane {
     }
 
     pub const fn content(&self) -> Option<&CpuSnapshot> { self.content.as_ref() }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 }
 
 impl Pane for CpuPane {

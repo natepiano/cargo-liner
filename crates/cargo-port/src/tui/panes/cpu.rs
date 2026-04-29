@@ -208,8 +208,9 @@ fn cpu_panel_title(core_count: usize, cursor: Option<usize>) -> String {
 }
 
 fn cpu_row_overlay_style(app: &App, logical_row: usize, focus: PaneFocusState) -> Style {
-    app.pane_manager()
-        .pane(PaneId::Cpu)
+    app.panes()
+        .cpu()
+        .viewport()
         .selection_state(logical_row, focus)
         .overlay_style()
 }
@@ -344,17 +345,17 @@ fn render_gpu_row(
     );
 }
 
-fn sync_cpu_pane_state(app: &mut App, inner: Rect, core_count: usize) {
-    let pane = app.pane_manager_mut().pane_mut(PaneId::Cpu);
-    pane.set_len(total_selectable_rows(core_count));
-    pane.set_content_area(inner);
-    pane.set_scroll_offset(0);
+const fn sync_cpu_pane_state(app: &mut App, inner: Rect, core_count: usize) {
+    let viewport = app.panes_mut().cpu_mut().viewport_mut();
+    viewport.set_len(total_selectable_rows(core_count));
+    viewport.set_content_area(inner);
+    viewport.set_scroll_offset(0);
 }
 
 pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles, area: Rect) {
     let focus = app.pane_focus_state(PaneId::Cpu);
-    let pane = app.pane_manager().pane(PaneId::Cpu);
-    let cursor = matches!(focus, PaneFocusState::Active).then(|| pane.pos());
+    let viewport = app.panes().cpu().viewport();
+    let cursor = matches!(focus, PaneFocusState::Active).then(|| viewport.pos());
     let title = app.panes().cpu().content().map_or_else(
         || " CPU ".to_string(),
         |snapshot| cpu_panel_title(snapshot.cores.len(), cursor),
@@ -364,7 +365,7 @@ pub fn render_cpu_panel(frame: &mut Frame, app: &mut App, styles: &RenderStyles,
     frame.render_widget(block, area);
 
     if inner.height == 0 {
-        app.pane_manager_mut().pane_mut(PaneId::Cpu).clear_surface();
+        app.panes_mut().cpu_mut().viewport_mut().clear_surface();
         return;
     }
 
