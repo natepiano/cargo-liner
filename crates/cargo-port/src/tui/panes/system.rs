@@ -28,6 +28,7 @@ use super::dispatch::PaneRenderCtx;
 use super::layout::LayoutCache;
 use super::pane_impls::CiPane;
 use super::pane_impls::CpuPane;
+use super::pane_impls::FinderPane;
 use super::pane_impls::GitPane;
 use super::pane_impls::KeymapPane;
 use super::pane_impls::LangPane;
@@ -75,6 +76,7 @@ pub struct Panes {
     toasts:   ToastsPane,
     keymap:   KeymapPane,
     settings: SettingsPane,
+    finder:   FinderPane,
 
     // ── Phase 1 grab-bag (dissolves in Phases 9–10):
     manager:                PaneManager,
@@ -102,6 +104,7 @@ impl Panes {
             toasts:   ToastsPane::new(),
             keymap:   KeymapPane::new(),
             settings: SettingsPane::new(),
+            finder:   FinderPane::new(),
 
             manager:                PaneManager::new(),
             data:                   PaneDataStore::new(),
@@ -164,6 +167,12 @@ impl Panes {
 
     /// Mutable typed accessor for the Settings pane.
     pub const fn settings_mut(&mut self) -> &mut SettingsPane { &mut self.settings }
+
+    /// Typed accessor for the Finder pane.
+    pub const fn finder(&self) -> &FinderPane { &self.finder }
+
+    /// Mutable typed accessor for the Finder pane.
+    pub const fn finder_mut(&mut self) -> &mut FinderPane { &mut self.finder }
 
     /// Write the detail-set content across the four migrated detail
     /// panes (Package/Git/CI/Lints) plus the targets slot in
@@ -348,6 +357,7 @@ impl Panes {
             PaneId::Toasts => self.toasts.viewport(),
             PaneId::Keymap => self.keymap.viewport(),
             PaneId::Settings => self.settings.viewport(),
+            PaneId::Finder => self.finder.viewport(),
             _ => self.manager.pane(id),
         }
     }
@@ -371,6 +381,7 @@ impl Panes {
             PaneId::Toasts => self.toasts.viewport_mut().set_pos(row),
             PaneId::Keymap => self.keymap.viewport_mut().set_pos(row),
             PaneId::Settings => self.settings.viewport_mut().set_pos(row),
+            PaneId::Finder => self.finder.viewport_mut().set_pos(row),
             _ => self.manager.pane_mut(id).set_pos(row),
         }
     }
@@ -412,6 +423,7 @@ impl Panes {
         self.toasts.viewport_mut().set_hovered(None);
         self.keymap.viewport_mut().set_hovered(None);
         self.settings.viewport_mut().set_hovered(None);
+        self.finder.viewport_mut().set_hovered(None);
         let Some(hovered) = self.hovered_row else {
             return;
         };
@@ -433,6 +445,7 @@ impl Panes {
             PaneId::Toasts => self.toasts.viewport_mut(),
             PaneId::Keymap => self.keymap.viewport_mut(),
             PaneId::Settings => self.settings.viewport_mut(),
+            PaneId::Finder => self.finder.viewport_mut(),
             _ => self.manager.pane_mut(id),
         }
     }

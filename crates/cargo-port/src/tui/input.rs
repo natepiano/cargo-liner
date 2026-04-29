@@ -485,7 +485,7 @@ fn open_finder(app: &mut App) {
     finder.query.clear();
     finder.results.clear();
     finder.total = 0;
-    app.pane_manager_mut().pane_mut(PaneId::Finder).home();
+    app.panes_mut().finder_mut().viewport_mut().home();
 }
 
 fn shell_escape_path(path: &Path) -> String {

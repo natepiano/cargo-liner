@@ -614,7 +614,7 @@ mod tests {
     }
 
     fn finder_result_point(app: &App, result_index: usize) -> (u16, u16) {
-        let area = app.pane_manager().pane(PaneId::Finder).content_area();
+        let area = app.panes().finder().viewport().content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -846,7 +846,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.pane_manager().pane(PaneId::Finder).pos(),
+            app.panes().finder().viewport().pos(),
             1,
             "clicking the second rendered finder result should select result index 1, not the header-offset visual row"
         );
@@ -1207,7 +1207,7 @@ mod tests {
         let (x, y) = finder_result_point(&app, 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.pane_manager().pane(PaneId::Finder).pos(), 1);
+        assert_eq!(app.panes().finder().viewport().pos(), 1);
     }
 
     #[test]

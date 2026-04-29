@@ -365,3 +365,25 @@ impl SettingsPane {
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 }
+
+// ── Finder ──────────────────────────────────────────────────────
+//
+// Phase 9.4: cursor `Viewport` absorbed onto FinderPane. The
+// finder popup renders via `finder::render_finder_popup` (overlay
+// path), so there is no `Pane` trait impl. The viewport tracks
+// cursor position over the search results list.
+pub struct FinderPane {
+    viewport: Viewport,
+}
+
+impl FinderPane {
+    pub const fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+        }
+    }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+}

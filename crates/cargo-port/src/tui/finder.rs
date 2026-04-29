@@ -571,29 +571,29 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
             app.close_finder();
             app.finder_mut().query.clear();
             app.finder_mut().results.clear();
-            app.pane_manager_mut().pane_mut(PaneId::Finder).home();
+            app.panes_mut().finder_mut().viewport_mut().home();
             app.close_overlay();
         },
         KeyCode::Enter => {
             confirm_finder(app);
         },
         KeyCode::Up => {
-            app.pane_manager_mut().pane_mut(PaneId::Finder).up();
+            app.panes_mut().finder_mut().viewport_mut().up();
         },
         KeyCode::Down => {
-            app.pane_manager_mut().pane_mut(PaneId::Finder).down();
+            app.panes_mut().finder_mut().viewport_mut().down();
         },
         KeyCode::Home => {
-            app.pane_manager_mut().pane_mut(PaneId::Finder).home();
+            app.panes_mut().finder_mut().viewport_mut().home();
         },
         KeyCode::End => {
-            app.pane_manager_mut().pane_mut(PaneId::Finder).end();
+            app.panes_mut().finder_mut().viewport_mut().end();
         },
         KeyCode::Backspace => {
             if app.finder().query.is_empty() {
                 app.close_finder();
                 app.finder_mut().results.clear();
-                app.pane_manager_mut().pane_mut(PaneId::Finder).home();
+                app.panes_mut().finder_mut().viewport_mut().home();
                 app.close_overlay();
             } else {
                 app.finder_mut().query.pop();
@@ -616,14 +616,14 @@ fn refresh_finder_results(app: &mut App) {
     let finder = app.finder_mut();
     finder.results = results;
     finder.total = total;
-    app.pane_manager_mut().pane_mut(PaneId::Finder).home();
+    app.panes_mut().finder_mut().viewport_mut().home();
 }
 
 fn confirm_finder(app: &mut App) {
     let Some(&idx) = app
         .finder()
         .results
-        .get(app.pane_manager().pane(PaneId::Finder).pos())
+        .get(app.panes().finder().viewport().pos())
     else {
         return;
     };
@@ -633,7 +633,7 @@ fn confirm_finder(app: &mut App) {
     app.close_finder();
     app.finder_mut().query.clear();
     app.finder_mut().results.clear();
-    app.pane_manager_mut().pane_mut(PaneId::Finder).home();
+    app.panes_mut().finder_mut().viewport_mut().home();
     app.close_overlay();
 
     // Navigate to the project
@@ -763,11 +763,13 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     };
 
     let result_count = app.finder().results.len();
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Finder)
+    app.panes_mut()
+        .finder_mut()
+        .viewport_mut()
         .set_len(result_count);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Finder)
+    app.panes_mut()
+        .finder_mut()
+        .viewport_mut()
         .set_content_area(results_area);
     render_finder_results(frame, app, col_widths, results_area);
 }
@@ -915,10 +917,11 @@ fn render_finder_results(
         .row_highlight_style(Style::default());
 
     let mut table_state =
-        TableState::default().with_selected(Some(app.pane_manager().pane(PaneId::Finder).pos()));
+        TableState::default().with_selected(Some(app.panes().finder().viewport().pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Finder)
+    app.panes_mut()
+        .finder_mut()
+        .viewport_mut()
         .set_scroll_offset(table_state.offset());
 
     let visible_height = usize::from(area.height.saturating_sub(1));
