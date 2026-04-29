@@ -121,8 +121,9 @@ fn build_lang_rows(
         .enumerate()
         .map(|(row_index, entry)| {
             lang_entry_row(entry, name_width).style(
-                app.pane_manager()
-                    .pane(PaneId::Lang)
+                app.panes()
+                    .lang()
+                    .viewport()
                     .selection_state(row_index, focus)
                     .overlay_style(),
             )
@@ -137,14 +138,15 @@ fn render_lang_table(
     widths: [Constraint; 7],
     body_area: Rect,
 ) {
-    let cursor = app.pane_manager().pane(PaneId::Lang).pos();
+    let cursor = app.panes().lang().viewport().pos();
     let table = Table::new(rows, widths)
         .column_spacing(1)
         .row_highlight_style(Style::default());
     let mut table_state = TableState::default().with_selected(Some(cursor));
     frame.render_stateful_widget(table, body_area, &mut table_state);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Lang)
+    app.panes_mut()
+        .lang_mut()
+        .viewport_mut()
         .set_scroll_offset(table_state.offset());
 }
 
@@ -167,7 +169,7 @@ pub fn render_lang_panel_standalone(
     let lang_count = lang_stats.as_ref().map_or(0, |s| s.entries.len());
     let lang_focus = app.pane_focus_state(PaneId::Lang);
     let cursor = matches!(lang_focus, crate::tui::pane::PaneFocusState::Active)
-        .then(|| app.pane_manager().pane(PaneId::Lang).pos());
+        .then(|| app.panes().lang().viewport().pos());
     let title = pane::pane_title(
         "Languages",
         &PaneTitleCount::Single {
@@ -180,25 +182,19 @@ pub fn render_lang_panel_standalone(
     frame.render_widget(block, area);
 
     let Some(stats) = lang_stats else {
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Lang)
-            .clear_surface();
+        app.panes_mut().lang_mut().viewport_mut().clear_surface();
         frame.render_widget(Paragraph::new("  Scanning..."), inner);
         return;
     };
 
     if stats.entries.is_empty() {
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Lang)
-            .clear_surface();
+        app.panes_mut().lang_mut().viewport_mut().clear_surface();
         frame.render_widget(Paragraph::new("  No source files detected"), inner);
         return;
     }
 
     if inner.height < 2 {
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Lang)
-            .clear_surface();
+        app.panes_mut().lang_mut().viewport_mut().clear_surface();
         return;
     }
 
@@ -230,32 +226,22 @@ pub fn render_lang_panel_standalone(
         let body_height = inner.height.saturating_sub(2);
         let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
 
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Lang)
-            .set_len(rows.len());
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Lang)
-            .set_content_area(body_area);
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Lang)
-            .set_viewport_rows(usize::from(body_area.height));
+        let viewport = app.panes_mut().lang_mut().viewport_mut();
+        viewport.set_len(rows.len());
+        viewport.set_content_area(body_area);
+        viewport.set_viewport_rows(usize::from(body_area.height));
         render_lang_table(frame, app, rows, widths, body_area);
     } else {
         rows.push(lang_footer_row(&stats));
         let body_height = inner.height.saturating_sub(1);
         let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
 
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Lang)
-            .set_len(entry_count);
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Lang)
-            .set_content_area(body_area);
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Lang)
-            .set_viewport_rows(usize::from(body_area.height));
+        let viewport = app.panes_mut().lang_mut().viewport_mut();
+        viewport.set_len(entry_count);
+        viewport.set_content_area(body_area);
+        viewport.set_viewport_rows(usize::from(body_area.height));
         render_lang_table(frame, app, rows, widths, body_area);
     }
 
-    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::Lang));
+    pane::render_overflow_affordance(frame, area, app.panes().lang().viewport());
 }

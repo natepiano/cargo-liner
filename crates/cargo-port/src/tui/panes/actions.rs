@@ -122,7 +122,7 @@ fn request_clean(app: &mut App) {
 fn active_detail_pane(app: &mut App) -> &mut Viewport {
     match app.base_focus() {
         PaneId::Targets => app.pane_manager_mut().pane_mut(PaneId::Targets),
-        PaneId::Lang => app.pane_manager_mut().pane_mut(PaneId::Lang),
+        PaneId::Lang => app.panes_mut().lang_mut().viewport_mut(),
         PaneId::Cpu => app.panes_mut().cpu_mut().viewport_mut(),
         PaneId::Git => app.pane_manager_mut().pane_mut(PaneId::Git),
         PaneId::Package

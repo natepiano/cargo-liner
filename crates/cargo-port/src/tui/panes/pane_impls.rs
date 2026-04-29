@@ -47,7 +47,28 @@ impl Pane for PackagePane {
 }
 
 // ── Lang ────────────────────────────────────────────────────────
-pub struct LangPane;
+//
+// Phase 8.2: cursor `Viewport` migrates onto LangPane. Lang has
+// no `PaneDataStore` slot today (renderer reads `language_stats`
+// directly off the project tree on every render), so there is no
+// content-slot relocation to do here. PaneManager keeps its
+// vestigial Lang slot.
+pub struct LangPane {
+    viewport: Viewport,
+}
+
+impl LangPane {
+    pub const fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+        }
+    }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+}
+
 impl Pane for LangPane {
     fn id(&self) -> PaneId { PaneId::Lang }
     fn input_context(&self) -> InputContextKind { InputContextKind::DetailFields }
@@ -233,7 +254,7 @@ mod tests {
         match id {
             PaneId::ProjectList => Box::new(ProjectListPane),
             PaneId::Package => Box::new(PackagePane),
-            PaneId::Lang => Box::new(LangPane),
+            PaneId::Lang => Box::new(LangPane::new()),
             PaneId::Cpu => Box::new(CpuPane::new(&CpuConfig::default())),
             PaneId::Git => Box::new(GitPane),
             PaneId::Targets => Box::new(TargetsPane),

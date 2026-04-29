@@ -83,7 +83,7 @@ impl Panes {
         Self {
             project_list: ProjectListPane,
             package:      PackagePane,
-            lang:         LangPane,
+            lang:         LangPane::new(),
             cpu:          CpuPane::new(cpu_cfg),
             git:          GitPane,
             targets:      TargetsPane,
@@ -111,11 +111,13 @@ impl Panes {
     pub const fn cpu(&self) -> &CpuPane { &self.cpu }
 
     /// Mutable typed accessor for the CPU pane.
-    #[allow(
-        dead_code,
-        reason = "Phase 8.1a accessor; first mutating caller wires up in 8.1b body migration"
-    )]
     pub const fn cpu_mut(&mut self) -> &mut CpuPane { &mut self.cpu }
+
+    /// Typed accessor for the Lang pane.
+    pub const fn lang(&self) -> &LangPane { &self.lang }
+
+    /// Mutable typed accessor for the Lang pane.
+    pub const fn lang_mut(&mut self) -> &mut LangPane { &mut self.lang }
 
     /// Trait-dispatch entry: returns the per-pane struct for
     /// `id` as `&dyn Pane`. Phase 7 supports only the
