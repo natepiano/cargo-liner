@@ -329,9 +329,10 @@ impl RegisteredRoots {
 }
 
 impl Default for RegisteredRoots {
-    /// An empty registered set — trivially honest (we are watching
-    /// nothing, and we claim to be watching nothing). Used by tests
-    /// that exercise watcher logic without exercising registration.
+    /// An empty registered set — trivially consistent (we are
+    /// watching nothing, and we claim to be watching nothing). Used
+    /// by tests that exercise watcher logic without exercising
+    /// registration.
     fn default() -> Self { Self { dirs: Vec::new() } }
 }
 
