@@ -449,31 +449,56 @@ fn pane_render_styles() -> panes::RenderStyles {
     }
 }
 
+fn dispatch_via_trait(
+    app: &mut App,
+    area: Rect,
+    id: PaneId,
+    frame: &mut Frame,
+    dispatcher: fn(&mut panes::Panes, &mut Frame, Rect, &panes::DispatchArgs<'_>),
+) {
+    let focused_pane = app.focused_pane();
+    let focus_state = app.pane_focus_state(id);
+    let is_focused = app.is_focused(id);
+    let animation_elapsed = app.animation_elapsed();
+    // Compute `selected_project_path` before the split-borrow — it
+    // crosses Selection + Scan via `path_for_row`, so the
+    // dispatcher's typed refs alone can't reproduce it.
+    let selected_project_path: Option<std::path::PathBuf> = app
+        .selected_project_path_for_render()
+        .map(std::path::Path::to_path_buf);
+    let (panes, config, selection, scan) = app.split_panes_for_render();
+    let args = panes::DispatchArgs {
+        focused_pane,
+        focus_state,
+        is_focused,
+        animation_elapsed,
+        config,
+        selection,
+        scan,
+        selected_project_path: selected_project_path.as_deref(),
+    };
+    dispatcher(panes, frame, area, &args);
+}
+
 fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect) {
     match pane {
         PaneId::ProjectList => render_left_panel(frame, app, area),
         PaneId::Package => panes::render_package_panel(frame, app, area),
         PaneId::Git => panes::render_git_panel(frame, app, area),
-        PaneId::Lang => {
-            panes::render_lang_panel_standalone(frame, app, &pane_render_styles(), area);
-        },
-        PaneId::Cpu => {
-            let focused_pane = app.focused_pane();
-            let focus_state = app.pane_focus_state(PaneId::Cpu);
-            let is_focused = app.is_focused(PaneId::Cpu);
-            let animation_elapsed = app.animation_elapsed();
-            // Destructure App so `panes` and `config` are disjoint borrows.
-            let (panes, config) = app.split_panes_and_config();
-            panes.dispatch_cpu_render(
-                frame,
-                area,
-                focused_pane,
-                focus_state,
-                is_focused,
-                animation_elapsed,
-                config,
-            );
-        },
+        PaneId::Lang => dispatch_via_trait(
+            app,
+            area,
+            PaneId::Lang,
+            frame,
+            panes::Panes::dispatch_lang_render,
+        ),
+        PaneId::Cpu => dispatch_via_trait(
+            app,
+            area,
+            PaneId::Cpu,
+            frame,
+            panes::Panes::dispatch_cpu_render,
+        ),
         PaneId::Targets => {
             if let Some(targets_data) = app.pane_data().targets().cloned()
                 && targets_data.has_targets()
@@ -483,38 +508,20 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
                 panes::render_empty_targets_panel(frame, app, area);
             }
         },
-        PaneId::Lints => {
-            let focused_pane = app.focused_pane();
-            let focus_state = app.pane_focus_state(PaneId::Lints);
-            let is_focused = app.is_focused(PaneId::Lints);
-            let animation_elapsed = app.animation_elapsed();
-            let (panes, config) = app.split_panes_and_config();
-            panes.dispatch_lints_render(
-                frame,
-                area,
-                focused_pane,
-                focus_state,
-                is_focused,
-                animation_elapsed,
-                config,
-            );
-        },
-        PaneId::CiRuns => {
-            let focused_pane = app.focused_pane();
-            let focus_state = app.pane_focus_state(PaneId::CiRuns);
-            let is_focused = app.is_focused(PaneId::CiRuns);
-            let animation_elapsed = app.animation_elapsed();
-            let (panes, config) = app.split_panes_and_config();
-            panes.dispatch_ci_render(
-                frame,
-                area,
-                focused_pane,
-                focus_state,
-                is_focused,
-                animation_elapsed,
-                config,
-            );
-        },
+        PaneId::Lints => dispatch_via_trait(
+            app,
+            area,
+            PaneId::Lints,
+            frame,
+            panes::Panes::dispatch_lints_render,
+        ),
+        PaneId::CiRuns => dispatch_via_trait(
+            app,
+            area,
+            PaneId::CiRuns,
+            frame,
+            panes::Panes::dispatch_ci_render,
+        ),
         PaneId::Output => render_example_output(frame, app, area),
         PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {},
     }

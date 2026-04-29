@@ -18,8 +18,13 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
+use ratatui::Frame;
+use ratatui::layout::Rect;
+
 use super::data::PaneDataStore;
+use super::dispatch::HitboxSink;
 use super::dispatch::Pane;
+use super::dispatch::PaneRenderCtx;
 use super::layout::LayoutCache;
 use super::pane_impls::CiPane;
 use super::pane_impls::CpuPane;
@@ -40,8 +45,27 @@ use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
 use crate::tui::app::CiRunDisplayMode;
 use crate::tui::app::HoveredPaneRow;
+use crate::tui::config_state::Config;
+use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneManager;
 use crate::tui::pane::Viewport;
+use crate::tui::scan_state::Scan;
+use crate::tui::selection::Selection;
+
+/// Bundle of refs the dispatchers need to construct a
+/// `PaneRenderCtx`. Constructed at the call site from
+/// `App::split_panes_for_render` and the pane-specific focus
+/// args, then handed to the `dispatch_*_render` method.
+pub struct DispatchArgs<'a> {
+    pub focused_pane:          PaneId,
+    pub focus_state:           PaneFocusState,
+    pub is_focused:            bool,
+    pub animation_elapsed:     std::time::Duration,
+    pub config:                &'a Config,
+    pub selection:             &'a Selection,
+    pub scan:                  &'a Scan,
+    pub selected_project_path: Option<&'a Path>,
+}
 
 /// Owns every pane-related piece of state. App holds a single `panes:
 /// Panes` field instead of the eight raw fields it carried before
@@ -112,9 +136,6 @@ impl Panes {
 
     /// Mutable typed accessor for the CPU pane.
     pub const fn cpu_mut(&mut self) -> &mut CpuPane { &mut self.cpu }
-
-    /// Typed accessor for the Lang pane.
-    pub const fn lang(&self) -> &LangPane { &self.lang }
 
     /// Mutable typed accessor for the Lang pane.
     pub const fn lang_mut(&mut self) -> &mut LangPane { &mut self.lang }
@@ -191,91 +212,91 @@ impl Panes {
     }
 
     /// Dispatch `CiPane`'s render through the `Pane` trait.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "ctx args; consolidating into a struct adds indirection without simplifying"
-    )]
     pub fn dispatch_ci_render(
         &mut self,
-        frame: &mut ratatui::Frame<'_>,
-        area: ratatui::layout::Rect,
-        focused_pane: PaneId,
-        focus_state: crate::tui::pane::PaneFocusState,
-        is_focused: bool,
-        animation_elapsed: std::time::Duration,
-        config: &crate::tui::config_state::Config,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        args: &DispatchArgs<'_>,
     ) {
-        let mut sink = super::dispatch::HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
-        let ctx = super::dispatch::PaneRenderCtx {
-            focused_pane,
-            focus_state,
-            is_focused,
-            animation_elapsed,
-            config,
-            hit_sink: &mut sink,
+        let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let ctx = PaneRenderCtx {
+            focused_pane:          args.focused_pane,
+            focus_state:           args.focus_state,
+            is_focused:            args.is_focused,
+            animation_elapsed:     args.animation_elapsed,
+            config:                args.config,
+            selection:             args.selection,
+            scan:                  args.scan,
+            selected_project_path: args.selected_project_path,
+            hit_sink:              &mut sink,
         };
-        super::dispatch::Pane::render(&mut self.ci_runs, frame, area, ctx);
+        Pane::render(&mut self.ci_runs, frame, area, ctx);
     }
 
     /// Dispatch `LintsPane`'s render through the `Pane` trait.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "ctx args; consolidating into a struct adds indirection without simplifying"
-    )]
     pub fn dispatch_lints_render(
         &mut self,
-        frame: &mut ratatui::Frame<'_>,
-        area: ratatui::layout::Rect,
-        focused_pane: PaneId,
-        focus_state: crate::tui::pane::PaneFocusState,
-        is_focused: bool,
-        animation_elapsed: std::time::Duration,
-        config: &crate::tui::config_state::Config,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        args: &DispatchArgs<'_>,
     ) {
-        let mut sink = super::dispatch::HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
-        let ctx = super::dispatch::PaneRenderCtx {
-            focused_pane,
-            focus_state,
-            is_focused,
-            animation_elapsed,
-            config,
-            hit_sink: &mut sink,
+        let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let ctx = PaneRenderCtx {
+            focused_pane:          args.focused_pane,
+            focus_state:           args.focus_state,
+            is_focused:            args.is_focused,
+            animation_elapsed:     args.animation_elapsed,
+            config:                args.config,
+            selection:             args.selection,
+            scan:                  args.scan,
+            selected_project_path: args.selected_project_path,
+            hit_sink:              &mut sink,
         };
-        super::dispatch::Pane::render(&mut self.lints, frame, area, ctx);
+        Pane::render(&mut self.lints, frame, area, ctx);
     }
 
     /// Dispatch `CpuPane`'s render through the `Pane` trait.
-    /// Owns the borrow split between the CPU pane and the
-    /// hitbox vec inside `layout_cache` — both live under
-    /// `&mut self.panes`, so callers outside this module can't
-    /// construct the ctx directly without help.
-    ///
-    /// Phase 8.9: first body-migrated pane. Other migrated panes
-    /// get their own `dispatch_*_render` helpers as bodies move.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "ctx args; consolidating into a struct adds indirection without simplifying"
-    )]
     pub fn dispatch_cpu_render(
         &mut self,
-        frame: &mut ratatui::Frame<'_>,
-        area: ratatui::layout::Rect,
-        focused_pane: PaneId,
-        focus_state: crate::tui::pane::PaneFocusState,
-        is_focused: bool,
-        animation_elapsed: std::time::Duration,
-        config: &crate::tui::config_state::Config,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        args: &DispatchArgs<'_>,
     ) {
-        let mut sink = super::dispatch::HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
-        let ctx = super::dispatch::PaneRenderCtx {
-            focused_pane,
-            focus_state,
-            is_focused,
-            animation_elapsed,
-            config,
-            hit_sink: &mut sink,
+        let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let ctx = PaneRenderCtx {
+            focused_pane:          args.focused_pane,
+            focus_state:           args.focus_state,
+            is_focused:            args.is_focused,
+            animation_elapsed:     args.animation_elapsed,
+            config:                args.config,
+            selection:             args.selection,
+            scan:                  args.scan,
+            selected_project_path: args.selected_project_path,
+            hit_sink:              &mut sink,
         };
-        super::dispatch::Pane::render(&mut self.cpu, frame, area, ctx);
+        Pane::render(&mut self.cpu, frame, area, ctx);
+    }
+
+    /// Dispatch `LangPane`'s render through the `Pane` trait.
+    pub fn dispatch_lang_render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        args: &DispatchArgs<'_>,
+    ) {
+        let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let ctx = PaneRenderCtx {
+            focused_pane:          args.focused_pane,
+            focus_state:           args.focus_state,
+            is_focused:            args.is_focused,
+            animation_elapsed:     args.animation_elapsed,
+            config:                args.config,
+            selection:             args.selection,
+            scan:                  args.scan,
+            selected_project_path: args.selected_project_path,
+            hit_sink:              &mut sink,
+        };
+        Pane::render(&mut self.lang, frame, area, ctx);
     }
 
     /// Polymorphic read-only viewport accessor. Routes to the

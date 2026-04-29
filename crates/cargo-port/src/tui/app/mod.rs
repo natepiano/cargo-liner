@@ -31,9 +31,9 @@
 //! added here, not scattered.
 //!
 //! - See [`App::apply_lint_config_change`] (Phase 4). Touches Inflight (respawn lint runtime, clear
-//!   in-flight paths, sync toast), the Scan state on App (clear lint state, refresh from
-//!   disk, bump `data_generation`), and Selection (recompute fit widths). New side-effects of a
-//!   lint-config change MUST be added there.
+//!   in-flight paths, sync toast), the Scan state on App (clear lint state, refresh from disk, bump
+//!   `data_generation`), and Selection (recompute fit widths). New side-effects of a lint-config
+//!   change MUST be added there.
 //!
 //! ## Generic primitive plus bespoke state
 //! When two subsystems need the same lifecycle but carry different
@@ -312,14 +312,24 @@ impl App {
     /// `app.panes().cpu().content()`).
     pub(super) const fn panes(&self) -> &Panes { &self.panes }
 
-    /// Split-borrow accessor: `&mut Panes` plus `&Config`. Used
-    /// by per-pane render dispatchers (Phase 8.9+) that need both
-    /// a mutable handle to the per-pane registry (to drive the
-    /// trait's render method) and an immutable read of config (for
-    /// rendering decisions). The two fields are disjoint, so
-    /// holding both refs simultaneously is sound.
-    pub(super) const fn split_panes_and_config(&mut self) -> (&mut Panes, &Config) {
-        (&mut self.panes, &self.config)
+    /// Split-borrow accessor for per-pane render dispatch (Phase
+    /// 8.9+). Returns `(&mut Panes, &Config, &Selection, &Scan)`
+    /// — the four refs the dispatcher passes through to construct
+    /// `PaneRenderCtx`. All four are disjoint `App` fields, so
+    /// holding them simultaneously is sound.
+    pub(super) const fn split_panes_for_render(
+        &mut self,
+    ) -> (&mut Panes, &Config, &Selection, &Scan) {
+        (&mut self.panes, &self.config, &self.selection, &self.scan)
+    }
+
+    /// Compute `selected_project_path` once for the current frame
+    /// and hand it to per-pane dispatchers via `DispatchArgs`. It
+    /// requires both `&Selection` and `&Scan` (resolves a row to
+    /// a path), so panes can't recompute it from disjoint borrows
+    /// after the dispatcher has split them.
+    pub(super) fn selected_project_path_for_render(&self) -> Option<&Path> {
+        self.selected_project_path()
     }
 
     pub(super) const fn mouse_pos(&self) -> Option<Position> { self.mouse_pos }

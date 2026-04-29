@@ -346,8 +346,7 @@ pub(super) fn render_ci_pane_body(
         .column_spacing(1)
         .row_highlight_style(Style::default());
 
-    let mut table_state =
-        TableState::default().with_selected(Some(pane.viewport().pos()));
+    let mut table_state = TableState::default().with_selected(Some(pane.viewport().pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
     pane.viewport_mut().set_scroll_offset(table_state.offset());
     pane::render_overflow_affordance(frame, area, pane.viewport());

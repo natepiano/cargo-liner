@@ -30,6 +30,8 @@ use crate::tui::interaction::UiHitbox;
 use crate::tui::interaction::UiSurface;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneSizeSpec;
+use crate::tui::scan_state::Scan;
+use crate::tui::selection::Selection;
 
 /// Hitbox-registration sink used during render. Phase 8.9 wires
 /// it up to wrap App's `layout_cache.ui_hitboxes` so per-pane
@@ -81,12 +83,15 @@ pub enum InputContextKind {
     reason = "Phase 8 ctx; subsystem refs added pane-by-pane as bodies migrate"
 )]
 pub struct PaneRenderCtx<'a, 'b> {
-    pub focused_pane:      PaneId,
-    pub focus_state:       PaneFocusState,
-    pub is_focused:        bool,
-    pub animation_elapsed: std::time::Duration,
-    pub config:            &'a Config,
-    pub hit_sink:          &'a mut HitboxSink<'b>,
+    pub focused_pane:          PaneId,
+    pub focus_state:           PaneFocusState,
+    pub is_focused:            bool,
+    pub animation_elapsed:     std::time::Duration,
+    pub config:                &'a Config,
+    pub selection:             &'a Selection,
+    pub scan:                  &'a Scan,
+    pub selected_project_path: Option<&'a std::path::Path>,
+    pub hit_sink:              &'a mut HitboxSink<'b>,
 }
 
 /// Bundle of references a pane needs at input-handling time.

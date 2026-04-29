@@ -322,6 +322,7 @@ mod tests {
     use crate::tui::input;
     use crate::tui::pane::PaneSelectionState;
     use crate::tui::pane::Viewport;
+    use crate::tui::panes;
     use crate::tui::panes::LintsData;
     use crate::tui::panes::PaneId;
     use crate::tui::render;
@@ -500,19 +501,24 @@ mod tests {
         let focus_state = app.pane_focus_state(PaneId::Lints);
         let is_focused = app.is_focused(PaneId::Lints);
         let animation_elapsed = app.animation_elapsed();
+        let selected_path = app
+            .selected_project_path_for_render()
+            .map(std::path::Path::to_path_buf);
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (panes, config) = app.split_panes_and_config();
-                panes.dispatch_lints_render(
-                    frame,
-                    area,
+                let (panes, config, selection, scan) = app.split_panes_for_render();
+                let args = panes::DispatchArgs {
                     focused_pane,
                     focus_state,
                     is_focused,
                     animation_elapsed,
                     config,
-                );
+                    selection,
+                    scan,
+                    selected_project_path: selected_path.as_deref(),
+                };
+                panes.dispatch_lints_render(frame, area, &args);
             })
             .unwrap_or_else(|_| std::process::abort());
     }
@@ -526,19 +532,24 @@ mod tests {
         let focus_state = app.pane_focus_state(PaneId::CiRuns);
         let is_focused = app.is_focused(PaneId::CiRuns);
         let animation_elapsed = app.animation_elapsed();
+        let selected_path = app
+            .selected_project_path_for_render()
+            .map(std::path::Path::to_path_buf);
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (panes, config) = app.split_panes_and_config();
-                panes.dispatch_ci_render(
-                    frame,
-                    area,
+                let (panes, config, selection, scan) = app.split_panes_for_render();
+                let args = panes::DispatchArgs {
                     focused_pane,
                     focus_state,
                     is_focused,
                     animation_elapsed,
                     config,
-                );
+                    selection,
+                    scan,
+                    selected_project_path: selected_path.as_deref(),
+                };
+                panes.dispatch_ci_render(frame, area, &args);
             })
             .unwrap_or_else(|_| std::process::abort());
     }

@@ -10,18 +10,19 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
-use super::PaneId;
+use super::dispatch::PaneRenderCtx;
 use super::package::RenderStyles;
+use super::pane_impls::LangPane;
 use crate::project;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
-use crate::tui::app::App;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::TITLE_COLOR;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneTitleCount;
+use crate::tui::pane::Viewport;
 use crate::tui::render;
 
 /// Fixed numeric column width for language stats.
@@ -110,7 +111,7 @@ fn lang_entry_row(entry: &LangEntry, name_width: usize) -> Row<'static> {
 }
 
 fn build_lang_rows(
-    app: &App,
+    viewport: &Viewport,
     stats: &LanguageStats,
     name_width: usize,
     focus: PaneFocusState,
@@ -120,56 +121,59 @@ fn build_lang_rows(
         .iter()
         .enumerate()
         .map(|(row_index, entry)| {
-            lang_entry_row(entry, name_width).style(
-                app.panes()
-                    .lang()
-                    .viewport()
-                    .selection_state(row_index, focus)
-                    .overlay_style(),
-            )
+            lang_entry_row(entry, name_width)
+                .style(viewport.selection_state(row_index, focus).overlay_style())
         })
         .collect()
 }
 
 fn render_lang_table(
     frame: &mut Frame,
-    app: &mut App,
+    pane: &mut LangPane,
     rows: Vec<Row<'static>>,
     widths: [Constraint; 7],
     body_area: Rect,
 ) {
-    let cursor = app.panes().lang().viewport().pos();
+    let cursor = pane.viewport().pos();
     let table = Table::new(rows, widths)
         .column_spacing(1)
         .row_highlight_style(Style::default());
     let mut table_state = TableState::default().with_selected(Some(cursor));
     frame.render_stateful_widget(table, body_area, &mut table_state);
-    app.panes_mut()
-        .lang_mut()
-        .viewport_mut()
-        .set_scroll_offset(table_state.offset());
+    pane.viewport_mut().set_scroll_offset(table_state.offset());
 }
 
-/// Render the Languages panel as a standalone pane.
-pub fn render_lang_panel_standalone(
+/// Body of `LangPane::render`. Same pattern as
+/// `cpu::render_cpu_pane_body`: typed parameters via `ctx`.
+pub(super) fn render_lang_pane_body(
     frame: &mut Frame,
-    app: &mut App,
-    styles: &RenderStyles,
     area: Rect,
+    pane: &mut LangPane,
+    styles: &RenderStyles,
+    ctx: PaneRenderCtx<'_, '_>,
 ) {
-    let lang_stats = app
+    // Destructure to consume ctx; lang's body doesn't write
+    // hitboxes, so move `hit_sink` into a local that we drop.
+    let PaneRenderCtx {
+        focus_state,
+        is_focused,
+        scan,
+        selected_project_path,
+        hit_sink: _hit_sink,
+        focused_pane: _,
+        animation_elapsed: _,
+        config: _,
+        selection: _,
+    } = ctx;
+
+    let lang_stats = scan
         .projects()
-        .at_path(
-            app.selected_project_path()
-                .unwrap_or_else(|| std::path::Path::new("")),
-        )
+        .at_path(selected_project_path.unwrap_or_else(|| std::path::Path::new("")))
         .and_then(|p| p.language_stats.as_ref())
         .cloned();
 
     let lang_count = lang_stats.as_ref().map_or(0, |s| s.entries.len());
-    let lang_focus = app.pane_focus_state(PaneId::Lang);
-    let cursor = matches!(lang_focus, crate::tui::pane::PaneFocusState::Active)
-        .then(|| app.panes().lang().viewport().pos());
+    let cursor = matches!(focus_state, PaneFocusState::Active).then(|| pane.viewport().pos());
     let title = pane::pane_title(
         "Languages",
         &PaneTitleCount::Single {
@@ -177,24 +181,24 @@ pub fn render_lang_panel_standalone(
             cursor,
         },
     );
-    let block = styles.chrome.block(title, app.is_focused(PaneId::Lang));
+    let block = styles.chrome.block(title, is_focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let Some(stats) = lang_stats else {
-        app.panes_mut().lang_mut().viewport_mut().clear_surface();
+        pane.viewport_mut().clear_surface();
         frame.render_widget(Paragraph::new("  Scanning..."), inner);
         return;
     };
 
     if stats.entries.is_empty() {
-        app.panes_mut().lang_mut().viewport_mut().clear_surface();
+        pane.viewport_mut().clear_surface();
         frame.render_widget(Paragraph::new("  No source files detected"), inner);
         return;
     }
 
     if inner.height < 2 {
-        app.panes_mut().lang_mut().viewport_mut().clear_surface();
+        pane.viewport_mut().clear_surface();
         return;
     }
 
@@ -214,7 +218,7 @@ pub fn render_lang_panel_standalone(
     let rows_needed = u16::try_from(entry_count + 1).unwrap_or(u16::MAX);
     let pin_footer = rows_needed > content_below_header;
 
-    let mut rows = build_lang_rows(app, &stats, name_width, lang_focus);
+    let mut rows = build_lang_rows(pane.viewport(), &stats, name_width, focus_state);
 
     if pin_footer {
         let footer_y = inner.y + inner.height.saturating_sub(1);
@@ -226,22 +230,22 @@ pub fn render_lang_panel_standalone(
         let body_height = inner.height.saturating_sub(2);
         let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
 
-        let viewport = app.panes_mut().lang_mut().viewport_mut();
+        let viewport = pane.viewport_mut();
         viewport.set_len(rows.len());
         viewport.set_content_area(body_area);
         viewport.set_viewport_rows(usize::from(body_area.height));
-        render_lang_table(frame, app, rows, widths, body_area);
+        render_lang_table(frame, pane, rows, widths, body_area);
     } else {
         rows.push(lang_footer_row(&stats));
         let body_height = inner.height.saturating_sub(1);
         let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
 
-        let viewport = app.panes_mut().lang_mut().viewport_mut();
+        let viewport = pane.viewport_mut();
         viewport.set_len(entry_count);
         viewport.set_content_area(body_area);
         viewport.set_viewport_rows(usize::from(body_area.height));
-        render_lang_table(frame, app, rows, widths, body_area);
+        render_lang_table(frame, pane, rows, widths, body_area);
     }
 
-    pane::render_overflow_affordance(frame, area, app.panes().lang().viewport());
+    pane::render_overflow_affordance(frame, area, pane.viewport());
 }

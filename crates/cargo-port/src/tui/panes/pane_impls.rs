@@ -109,6 +109,14 @@ impl Pane for LangPane {
     fn input_context(&self) -> InputContextKind { InputContextKind::DetailFields }
     fn has_row_hitboxes(&self) -> bool { true }
     fn size_spec(&self, _cpu_width: u16) -> PaneSizeSpec { PaneSizeSpec::fill() }
+
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: PaneRenderCtx<'_, '_>) {
+        let styles = super::package::RenderStyles {
+            readonly_label: ratatui::style::Style::default().fg(crate::tui::constants::LABEL_COLOR),
+            chrome:         crate::tui::pane::default_pane_chrome(),
+        };
+        super::lang::render_lang_pane_body(frame, area, self, &styles, ctx);
+    }
 }
 
 // ── Cpu ─────────────────────────────────────────────────────────

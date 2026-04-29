@@ -306,9 +306,9 @@ impl App {
     ///
     /// - **Inflight**: respawns the lint runtime, clears in-flight lint paths, refreshes the lint
     ///   toast, syncs the running project list against the new runtime.
-    /// - **Scan** state owned today by App: clears in-memory lint state on `projects`,
-    ///   refreshes lint runs from disk, bumps `data_generation` so detail panes redraw. (Phase 6
-    ///   moves this cluster into a real `Scan` subsystem; the call sites stay.)
+    /// - **Scan** state owned today by App: clears in-memory lint state on `projects`, refreshes
+    ///   lint runs from disk, bumps `data_generation` so detail panes redraw. (Phase 6 moves this
+    ///   cluster into a real `Scan` subsystem; the call sites stay.)
     /// - **Selection**: recomputes `cached_fit_widths` because the project pane's column schema
     ///   depends on whether lints are enabled.
     ///
