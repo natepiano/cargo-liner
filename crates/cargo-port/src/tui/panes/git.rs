@@ -672,7 +672,7 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let Some(git_data) = app.pane_data().git().cloned() else {
-        app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
+        app.panes_mut().git_mut().viewport_mut().clear_surface();
         let empty = pane::empty_pane_block(pane::pane_title("Git", &PaneTitleCount::None));
         frame.render_widget(empty, area);
         return;
@@ -681,15 +681,13 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let flat_fields = panes::git_fields_from_data(&git_data);
     let total_rows = flat_fields.len() + git_data.remotes.len() + git_data.worktrees.len();
     if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
-        app.pane_manager_mut().pane_mut(PaneId::Git).clear_surface();
+        app.panes_mut().git_mut().viewport_mut().clear_surface();
         let empty_git = pane::empty_pane_block(" Not a git repo ");
         frame.render_widget(empty_git, area);
         return;
     }
 
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Git)
-        .set_len(total_rows);
+    app.panes_mut().git_mut().viewport_mut().set_len(total_rows);
     let focus = app.pane_focus_state(PaneId::Git);
     let border_style = if matches!(focus, PaneFocusState::Active) {
         styles.chrome.active_border
@@ -713,25 +711,25 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         border_style,
     );
 
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Git)
-        .set_content_area(content_area);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Git)
-        .set_viewport_rows(usize::from(content_area.height));
+    {
+        let viewport = app.panes_mut().git_mut().viewport_mut();
+        viewport.set_content_area(content_area);
+        viewport.set_viewport_rows(usize::from(content_area.height));
+    }
     let git_ctx = GitRenderCtx {
         data: &git_data,
         fields: &flat_fields,
-        pane: app.pane_manager().pane(PaneId::Git),
+        pane: app.panes().git().viewport(),
         focus,
         styles: &styles,
     };
     let layout = render_git_column_inner(frame, &git_ctx, area, content_area);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Git)
+    app.panes_mut()
+        .git_mut()
+        .viewport_mut()
         .set_scroll_offset(layout.scroll_offset);
     register_git_row_hitboxes(app, content_area, &layout);
-    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::Git));
+    pane::render_overflow_affordance(frame, area, app.panes().git().viewport());
 }
 
 /// Render the About section (repo description) at the top of the Git panel,

@@ -124,7 +124,7 @@ fn active_detail_pane(app: &mut App) -> &mut Viewport {
         PaneId::Targets => app.pane_manager_mut().pane_mut(PaneId::Targets),
         PaneId::Lang => app.panes_mut().lang_mut().viewport_mut(),
         PaneId::Cpu => app.panes_mut().cpu_mut().viewport_mut(),
-        PaneId::Git => app.pane_manager_mut().pane_mut(PaneId::Git),
+        PaneId::Git => app.panes_mut().git_mut().viewport_mut(),
         PaneId::Package
         | PaneId::ProjectList
         | PaneId::Lints
@@ -152,7 +152,7 @@ fn handle_detail_enter(app: &mut App) {
             }
         }
     } else if let Some(git) = app.pane_data().git() {
-        let pos = app.pane_manager().pane(PaneId::Git).pos();
+        let pos = app.panes().git().viewport().pos();
         if let Some(GitRow::Remote(remote)) = super::git_row_at(git, pos)
             && let Some(url) = remote.full_url.as_deref()
         {

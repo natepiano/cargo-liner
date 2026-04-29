@@ -819,7 +819,7 @@ mod tests {
 
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Git), 0);
+        let (x, y) = pane_row_point(app.panes().git().viewport(), 0);
         assert_eq!(
             super::hovered_pane_row_at(&app, Position::new(x, y)),
             Some(HoveredPaneRow {
@@ -1262,11 +1262,11 @@ mod tests {
         app.handle_checkout_info(&project_dir, checkout);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Git), 1);
+        let (x, y) = pane_row_point(app.panes().git().viewport(), 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::Git);
-        assert_eq!(app.pane_manager().pane(PaneId::Git).pos(), 1);
+        assert_eq!(app.panes().git().viewport().pos(), 1);
     }
 
     // ── Confirm popup renders resolved target dir (Step 2) ─────────

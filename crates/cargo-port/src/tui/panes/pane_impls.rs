@@ -167,7 +167,27 @@ impl Pane for CpuPane {
 }
 
 // ── Git ─────────────────────────────────────────────────────────
-pub struct GitPane;
+//
+// Phase 8.6: cursor `Viewport` migrates onto GitPane. Git
+// content stays in `PaneDataStore`'s detail set;
+// `worktree_summary_cache` stays on `Panes` for now per Phase 10
+// design (final home is `GitPane` per the doc).
+pub struct GitPane {
+    viewport: Viewport,
+}
+
+impl GitPane {
+    pub const fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+        }
+    }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+}
+
 impl Pane for GitPane {
     fn id(&self) -> PaneId { PaneId::Git }
     fn input_context(&self) -> InputContextKind { InputContextKind::DetailFields }
@@ -314,7 +334,7 @@ mod tests {
             PaneId::Package => Box::new(PackagePane::new()),
             PaneId::Lang => Box::new(LangPane::new()),
             PaneId::Cpu => Box::new(CpuPane::new(&CpuConfig::default())),
-            PaneId::Git => Box::new(GitPane),
+            PaneId::Git => Box::new(GitPane::new()),
             PaneId::Targets => Box::new(TargetsPane),
             PaneId::Lints => Box::new(LintsPane::new()),
             PaneId::CiRuns => Box::new(CiPane::new()),

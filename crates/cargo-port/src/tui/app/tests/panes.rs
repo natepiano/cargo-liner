@@ -434,7 +434,7 @@ fn project_change_resets_project_dependent_panes() {
     app.focus_pane(PaneId::Targets);
     app.focus_pane(PaneId::CiRuns);
     app.panes_mut().package_mut().viewport_mut().set_pos(3);
-    app.pane_manager_mut().pane_mut(PaneId::Git).set_pos(4);
+    app.panes_mut().git_mut().viewport_mut().set_pos(4);
     app.pane_manager_mut().pane_mut(PaneId::Targets).set_pos(5);
     app.panes_mut().ci_mut().viewport_mut().set_pos(6);
     app.pane_manager_mut()
@@ -443,7 +443,7 @@ fn project_change_resets_project_dependent_panes() {
     app.sync_selected_project();
 
     assert_eq!(app.panes().package().viewport().pos(), 0);
-    assert_eq!(app.pane_manager().pane(PaneId::Git).pos(), 0);
+    assert_eq!(app.panes().git().viewport().pos(), 0);
     assert_eq!(app.pane_manager().pane(PaneId::Targets).pos(), 0);
     assert_eq!(app.panes().ci().viewport().pos(), 0);
     assert!(!app.remembers_selection(PaneId::Package));

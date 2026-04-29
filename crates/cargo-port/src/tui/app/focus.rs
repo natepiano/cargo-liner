@@ -271,7 +271,7 @@ impl App {
 
     pub fn reset_project_panes(&mut self) {
         self.panes_mut().package_mut().viewport_mut().home();
-        self.pane_manager_mut().pane_mut(PaneId::Git).home();
+        self.panes_mut().git_mut().viewport_mut().home();
         self.pane_manager_mut().pane_mut(PaneId::Targets).home();
         self.panes_mut().ci_mut().viewport_mut().home();
         self.panes_mut().lints_mut().viewport_mut().home();

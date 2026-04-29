@@ -704,7 +704,7 @@ impl App {
                     }
                 } else {
                     let git = self.pane_data().git()?;
-                    let pos = self.pane_manager().pane(PaneId::Git).pos();
+                    let pos = self.panes().git().viewport().pos();
                     match panes::git_row_at(git, pos) {
                         Some(panes::GitRow::Remote(remote)) if remote.full_url.is_some() => {
                             Some("open")

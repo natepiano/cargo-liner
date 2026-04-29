@@ -86,7 +86,7 @@ impl Panes {
             package:      PackagePane::new(),
             lang:         LangPane::new(),
             cpu:          CpuPane::new(cpu_cfg),
-            git:          GitPane,
+            git:          GitPane::new(),
             targets:      TargetsPane,
             lints:        LintsPane::new(),
             ci_runs:      CiPane::new(),
@@ -138,6 +138,12 @@ impl Panes {
     /// Mutable typed accessor for the Package pane.
     pub const fn package_mut(&mut self) -> &mut PackagePane { &mut self.package }
 
+    /// Typed accessor for the Git pane.
+    pub const fn git(&self) -> &GitPane { &self.git }
+
+    /// Mutable typed accessor for the Git pane.
+    pub const fn git_mut(&mut self) -> &mut GitPane { &mut self.git }
+
     /// Polymorphic read-only viewport accessor. Routes to the
     /// per-pane `Viewport` for migrated panes, falls back to the
     /// vestigial `PaneManager` slot for un-migrated panes. Used
@@ -150,6 +156,7 @@ impl Panes {
             PaneId::Lints => self.lints.viewport(),
             PaneId::CiRuns => self.ci_runs.viewport(),
             PaneId::Package => self.package.viewport(),
+            PaneId::Git => self.git.viewport(),
             _ => self.manager.pane(id),
         }
     }
@@ -169,6 +176,7 @@ impl Panes {
             PaneId::Lints => self.lints.viewport_mut().set_pos(row),
             PaneId::CiRuns => self.ci_runs.viewport_mut().set_pos(row),
             PaneId::Package => self.package.viewport_mut().set_pos(row),
+            PaneId::Git => self.git.viewport_mut().set_pos(row),
             _ => self.manager.pane_mut(id).set_pos(row),
         }
     }
