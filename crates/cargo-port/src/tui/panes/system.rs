@@ -190,6 +190,33 @@ impl Panes {
         self.ci_runs.override_runs_for_test(runs);
     }
 
+    /// Dispatch `CiPane`'s render through the `Pane` trait.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "ctx-shaped args; consolidating into a struct adds indirection without simplifying"
+    )]
+    pub fn dispatch_ci_render(
+        &mut self,
+        frame: &mut ratatui::Frame<'_>,
+        area: ratatui::layout::Rect,
+        focused_pane: PaneId,
+        focus_state: crate::tui::pane::PaneFocusState,
+        is_focused: bool,
+        animation_elapsed: std::time::Duration,
+        config: &crate::tui::config_state::Config,
+    ) {
+        let mut sink = super::dispatch::HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let ctx = super::dispatch::PaneRenderCtx {
+            focused_pane,
+            focus_state,
+            is_focused,
+            animation_elapsed,
+            config,
+            hit_sink: &mut sink,
+        };
+        super::dispatch::Pane::render(&mut self.ci_runs, frame, area, ctx);
+    }
+
     /// Dispatch `LintsPane`'s render through the `Pane` trait.
     #[allow(
         clippy::too_many_arguments,

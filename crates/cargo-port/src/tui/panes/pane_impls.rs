@@ -344,6 +344,10 @@ impl Pane for CiPane {
     fn input_context(&self) -> InputContextKind { InputContextKind::CiRuns }
     fn has_row_hitboxes(&self) -> bool { false }
     fn size_spec(&self, _cpu_width: u16) -> PaneSizeSpec { PaneSizeSpec::fill() }
+
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: PaneRenderCtx<'_, '_>) {
+        super::ci::render_ci_pane_body(frame, area, self, ctx);
+    }
 }
 
 // ── Output ──────────────────────────────────────────────────────

@@ -25,7 +25,8 @@ pub(super) use ci::CI_COMPACT_DURATION_WIDTH;
 pub(super) use ci::ci_table_shows_durations;
 #[cfg(test)]
 pub(super) use ci::ci_total_width;
-pub(super) use ci::render_ci_panel;
+// `render_ci_panel` removed in Phase 8.11 — CiPane::render is the
+// trait method now. `render_tiled_pane` dispatches via `panes.dispatch_ci_render`.
 #[cfg(test)]
 pub(super) use cpu::CPU_PANE_WIDTH;
 #[cfg(test)]

@@ -11,16 +11,17 @@ use unicode_width::UnicodeWidthStr;
 
 use super::CiData;
 use super::PaneId;
+use super::dispatch::HitboxSink;
+use super::dispatch::PaneRenderCtx;
+use super::pane_impls::CiPane;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
-use crate::tui::app::App;
 use crate::tui::columns::ColumnSpec;
 use crate::tui::columns::ColumnWidths;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
-use crate::tui::interaction;
 use crate::tui::interaction::UiSurface;
 use crate::tui::pane;
 use crate::tui::pane::PaneSelectionState;
@@ -266,30 +267,35 @@ fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
 
 fn empty_ci_title(data: &CiData) -> String { data.empty_state.title() }
 
-pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let Some(ci_data) = app.panes().ci().content().cloned() else {
+pub(super) fn render_ci_pane_body(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &mut CiPane,
+    ctx: PaneRenderCtx<'_, '_>,
+) {
+    let Some(ci_data) = pane.content().cloned() else {
         render_empty_ci_block(frame, " No CI Runs ", area);
         return;
     };
 
     if !ci_data.has_runs() {
-        let viewport = app.panes_mut().ci_mut().viewport_mut();
+        let viewport = pane.viewport_mut();
         viewport.set_len(0);
         viewport.set_content_area(Rect::ZERO);
         render_empty_ci_block(frame, &empty_ci_title(&ci_data), area);
         return;
     }
 
-    let ci_focused = app.is_focused(PaneId::CiRuns);
-    let ci_focus = app.pane_focus_state(PaneId::CiRuns);
-    let focused_pos = ci_focused.then(|| app.panes().ci().viewport().pos());
+    let ci_focused = ctx.is_focused;
+    let ci_focus = ctx.focus_state;
+    let focused_pos = ci_focused.then(|| pane.viewport().pos());
     let title = ci_panel_title(&ci_data, focused_pos);
 
     let ci_block = pane::default_pane_chrome().block(title, ci_focused);
 
     let inner = ci_block.inner(area);
     {
-        let viewport = app.panes_mut().ci_mut().viewport_mut();
+        let viewport = pane.viewport_mut();
         viewport.set_len(ci_data.runs.len());
         viewport.set_content_area(inner);
         viewport.set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
@@ -317,6 +323,7 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let header = build_ci_header_row(&cols);
 
+    let viewport_ref = pane.viewport();
     let rows: Vec<Row> = ci_data
         .runs
         .iter()
@@ -326,10 +333,7 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
                 ci_run,
                 &cols,
                 show_durations,
-                app.panes()
-                    .ci()
-                    .viewport()
-                    .selection_state(row_index, ci_focus),
+                viewport_ref.selection_state(row_index, ci_focus),
             )
         })
         .collect();
@@ -343,14 +347,13 @@ pub fn render_ci_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         .row_highlight_style(Style::default());
 
     let mut table_state =
-        TableState::default().with_selected(Some(app.panes().ci().viewport().pos()));
+        TableState::default().with_selected(Some(pane.viewport().pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.panes_mut()
-        .ci_mut()
-        .viewport_mut()
-        .set_scroll_offset(table_state.offset());
-    pane::render_overflow_affordance(frame, area, app.panes().ci().viewport());
-    register_ci_row_hitboxes(app, ci_data.runs.len(), inner, table_state.offset());
+    pane.viewport_mut().set_scroll_offset(table_state.offset());
+    pane::render_overflow_affordance(frame, area, pane.viewport());
+
+    let PaneRenderCtx { hit_sink, .. } = ctx;
+    register_ci_row_hitboxes(hit_sink, ci_data.runs.len(), inner, table_state.offset());
 }
 
 fn render_empty_ci_block(frame: &mut Frame, title: &str, area: Rect) {
@@ -358,7 +361,12 @@ fn render_empty_ci_block(frame: &mut Frame, title: &str, area: Rect) {
     frame.render_widget(block, area);
 }
 
-fn register_ci_row_hitboxes(app: &mut App, run_count: usize, inner: Rect, visible_start: usize) {
+fn register_ci_row_hitboxes(
+    hit_sink: &mut HitboxSink<'_>,
+    run_count: usize,
+    inner: Rect,
+    visible_start: usize,
+) {
     let visible_height = usize::from(inner.height.saturating_sub(1));
     let visible_end = run_count.min(visible_start.saturating_add(visible_height));
 
@@ -367,8 +375,7 @@ fn register_ci_row_hitboxes(app: &mut App, run_count: usize, inner: Rect, visibl
             .y
             .saturating_add(1)
             .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
-        interaction::register_pane_row_hitbox(
-            app,
+        hit_sink.push_pane_row(
             Rect::new(inner.x, row_y, inner.width, 1),
             PaneId::CiRuns,
             row_index,

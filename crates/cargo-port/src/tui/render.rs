@@ -499,7 +499,22 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
                 config,
             );
         },
-        PaneId::CiRuns => panes::render_ci_panel(frame, app, area),
+        PaneId::CiRuns => {
+            let focused_pane = app.focused_pane();
+            let focus_state = app.pane_focus_state(PaneId::CiRuns);
+            let is_focused = app.is_focused(PaneId::CiRuns);
+            let animation_elapsed = app.animation_elapsed();
+            let (panes, config) = app.split_panes_and_config();
+            panes.dispatch_ci_render(
+                frame,
+                area,
+                focused_pane,
+                focus_state,
+                is_focused,
+                animation_elapsed,
+                config,
+            );
+        },
         PaneId::Output => render_example_output(frame, app, area),
         PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {},
     }
