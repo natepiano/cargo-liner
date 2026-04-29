@@ -38,7 +38,25 @@ impl Pane for ProjectListPane {
 }
 
 // ── Package ─────────────────────────────────────────────────────
-pub struct PackagePane;
+//
+// Phase 8.5: cursor `Viewport` migrates onto PackagePane. Package
+// content stays in `PaneDataStore`'s detail set for now.
+pub struct PackagePane {
+    viewport: Viewport,
+}
+
+impl PackagePane {
+    pub const fn new() -> Self {
+        Self {
+            viewport: Viewport::new(),
+        }
+    }
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+}
+
 impl Pane for PackagePane {
     fn id(&self) -> PaneId { PaneId::Package }
     fn input_context(&self) -> InputContextKind { InputContextKind::DetailFields }
@@ -293,7 +311,7 @@ mod tests {
     fn pane_for(id: PaneId) -> Box<dyn Pane> {
         match id {
             PaneId::ProjectList => Box::new(ProjectListPane),
-            PaneId::Package => Box::new(PackagePane),
+            PaneId::Package => Box::new(PackagePane::new()),
             PaneId::Lang => Box::new(LangPane::new()),
             PaneId::Cpu => Box::new(CpuPane::new(&CpuConfig::default())),
             PaneId::Git => Box::new(GitPane),

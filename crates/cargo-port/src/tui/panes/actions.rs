@@ -133,7 +133,7 @@ fn active_detail_pane(app: &mut App) -> &mut Viewport {
         | PaneId::Toasts
         | PaneId::Settings
         | PaneId::Finder
-        | PaneId::Keymap => app.pane_manager_mut().pane_mut(PaneId::Package),
+        | PaneId::Keymap => app.panes_mut().package_mut().viewport_mut(),
     }
 }
 
@@ -145,7 +145,7 @@ fn handle_detail_enter(app: &mut App) {
         if let Some(pkg) = app.pane_data().package() {
             let fields = super::package_fields_from_data(pkg);
             if matches!(
-                fields.get(app.pane_manager().pane(PaneId::Package).pos()),
+                fields.get(app.panes().package().viewport().pos()),
                 Some(DetailField::CratesIo)
             ) {
                 open_url(&format!("https://crates.io/crates/{}", pkg.title_name));

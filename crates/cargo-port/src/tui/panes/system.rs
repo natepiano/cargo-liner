@@ -41,6 +41,7 @@ use crate::project::AbsolutePath;
 use crate::tui::app::CiRunDisplayMode;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::pane::PaneManager;
+use crate::tui::pane::Viewport;
 
 /// Owns every pane-related piece of state. App holds a single `panes:
 /// Panes` field instead of the eight raw fields it carried before
@@ -82,7 +83,7 @@ impl Panes {
     pub fn new(cpu_cfg: &CpuConfig) -> Self {
         Self {
             project_list: ProjectListPane,
-            package:      PackagePane,
+            package:      PackagePane::new(),
             lang:         LangPane::new(),
             cpu:          CpuPane::new(cpu_cfg),
             git:          GitPane,
@@ -131,6 +132,28 @@ impl Panes {
     /// Mutable typed accessor for the `CiRuns` pane.
     pub const fn ci_mut(&mut self) -> &mut CiPane { &mut self.ci_runs }
 
+    /// Typed accessor for the Package pane.
+    pub const fn package(&self) -> &PackagePane { &self.package }
+
+    /// Mutable typed accessor for the Package pane.
+    pub const fn package_mut(&mut self) -> &mut PackagePane { &mut self.package }
+
+    /// Polymorphic read-only viewport accessor. Routes to the
+    /// per-pane `Viewport` for migrated panes, falls back to the
+    /// vestigial `PaneManager` slot for un-migrated panes. Used
+    /// by hitbox registration in `render.rs::register_hitbox_for_pane`
+    /// and any code that needs a viewport by `PaneId`.
+    pub fn viewport_for(&self, id: PaneId) -> &Viewport {
+        match id {
+            PaneId::Cpu => self.cpu.viewport(),
+            PaneId::Lang => self.lang.viewport(),
+            PaneId::Lints => self.lints.viewport(),
+            PaneId::CiRuns => self.ci_runs.viewport(),
+            PaneId::Package => self.package.viewport(),
+            _ => self.manager.pane(id),
+        }
+    }
+
     /// Set the cursor position for `id`'s viewport, routing to
     /// each migrated pane's per-pane `Viewport` for those that
     /// have absorbed it, falling back to the still-vestigial
@@ -145,6 +168,7 @@ impl Panes {
             PaneId::Lang => self.lang.viewport_mut().set_pos(row),
             PaneId::Lints => self.lints.viewport_mut().set_pos(row),
             PaneId::CiRuns => self.ci_runs.viewport_mut().set_pos(row),
+            PaneId::Package => self.package.viewport_mut().set_pos(row),
             _ => self.manager.pane_mut(id).set_pos(row),
         }
     }

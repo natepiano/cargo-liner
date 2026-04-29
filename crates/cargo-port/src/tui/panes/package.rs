@@ -228,9 +228,7 @@ pub fn render_package_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         let title_style = Style::default()
             .fg(TITLE_COLOR)
             .add_modifier(Modifier::BOLD);
-        app.pane_manager_mut()
-            .pane_mut(PaneId::Package)
-            .clear_surface();
+        app.panes_mut().package_mut().viewport_mut().clear_surface();
         let empty_block = Block::default()
             .borders(Borders::ALL)
             .title(" Details ")
@@ -257,8 +255,9 @@ fn render_project_panel(
     area: Rect,
 ) {
     let fields = panes::package_fields_from_data(pkg_data);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Package)
+    app.panes_mut()
+        .package_mut()
+        .viewport_mut()
         .set_len(fields.len());
     let focus = app.pane_focus_state(PaneId::Package);
     let border_style = if matches!(focus, PaneFocusState::Active) {
@@ -282,24 +281,24 @@ fn render_project_panel(
         border_style,
     };
     let areas = render_project_description_section(frame, &context, area, project_inner);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Package)
-        .set_content_area(areas.lower);
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Package)
-        .set_viewport_rows(usize::from(areas.lower.height));
+    {
+        let viewport = app.panes_mut().package_mut().viewport_mut();
+        viewport.set_content_area(areas.lower);
+        viewport.set_viewport_rows(usize::from(areas.lower.height));
+    }
 
     let scroll_offset = render_project_metadata(
         frame,
         app,
-        app.pane_manager().pane(PaneId::Package),
+        app.panes().package().viewport(),
         &context,
         areas.lower,
     );
-    app.pane_manager_mut()
-        .pane_mut(PaneId::Package)
+    app.panes_mut()
+        .package_mut()
+        .viewport_mut()
         .set_scroll_offset(scroll_offset);
-    pane::render_overflow_affordance(frame, area, app.pane_manager().pane(PaneId::Package));
+    pane::render_overflow_affordance(frame, area, app.panes().package().viewport());
 }
 
 fn render_project_description_section(

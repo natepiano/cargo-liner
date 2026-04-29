@@ -1174,11 +1174,11 @@ mod tests {
         let mut app = make_app(&[make_package("demo", &project_dir)]);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.pane_manager().pane(PaneId::Package), 1);
+        let (x, y) = pane_row_point(app.panes().package().viewport(), 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::Package);
-        assert_eq!(app.pane_manager().pane(PaneId::Package).pos(), 1);
+        assert_eq!(app.panes().package().viewport().pos(), 1);
     }
 
     #[test]

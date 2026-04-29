@@ -696,7 +696,7 @@ impl App {
                 if self.base_focus() == PaneId::Package {
                     let pkg = self.pane_data().package()?;
                     let fields = panes::package_fields_from_data(pkg);
-                    let field = *fields.get(self.pane_manager().pane(PaneId::Package).pos())?;
+                    let field = *fields.get(self.panes().package().viewport().pos())?;
                     if field == DetailField::CratesIo && pkg.crates_version.is_some() {
                         Some("open")
                     } else {

@@ -492,7 +492,7 @@ fn sync_hovered_pane_row(app: &mut App) {
 /// whether the pane gets hitboxes.
 fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
     if panes::has_row_hitboxes(id) {
-        let pane = app.pane_manager().pane(id).clone();
+        let pane = app.panes().viewport_for(id).clone();
         interaction::register_pane_row_hitboxes(app, id, &pane, Content);
     }
 }
