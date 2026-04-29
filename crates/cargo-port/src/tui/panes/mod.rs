@@ -41,7 +41,8 @@ pub(super) use data::PaneDataStore;
 // migrate; the re-exports land then.
 #[cfg(test)]
 pub(super) use git::git_label_width;
-pub(super) use git::render_git_panel;
+// `render_git_panel` migrated to `GitPane::render` (Phase 8.13);
+// callers dispatch via `Panes::dispatch_git_render`.
 // `render_lang_panel_standalone` removed in Phase 8.12 — LangPane::render
 // is the trait method now.
 pub(super) use layout::BottomRow;

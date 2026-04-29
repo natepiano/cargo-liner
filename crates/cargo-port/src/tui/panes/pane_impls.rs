@@ -235,12 +235,20 @@ impl Pane for GitPane {
     fn id(&self) -> PaneId { PaneId::Git }
     fn input_context(&self) -> InputContextKind { InputContextKind::DetailFields }
     fn has_row_hitboxes(&self) -> bool {
-        // Git registers its own hitboxes from `render_git_panel` because
+        // Git registers its own hitboxes from `render_git_pane_body` because
         // rows don't map 1:1 to screen lines (section rules, headers,
         // spacers). Matches `spec::has_row_hitboxes(PaneId::Git)`.
         false
     }
     fn size_spec(&self, _cpu_width: u16) -> PaneSizeSpec { PaneSizeSpec::fill() }
+
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: PaneRenderCtx<'_, '_>) {
+        let styles = super::package::RenderStyles {
+            readonly_label: ratatui::style::Style::default().fg(crate::tui::constants::LABEL_COLOR),
+            chrome:         crate::tui::pane::default_pane_chrome(),
+        };
+        super::git::render_git_pane_body(frame, area, self, &styles, ctx);
+    }
 }
 
 // ── Targets ─────────────────────────────────────────────────────

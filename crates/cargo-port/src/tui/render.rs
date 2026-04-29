@@ -484,7 +484,13 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
     match pane {
         PaneId::ProjectList => render_left_panel(frame, app, area),
         PaneId::Package => panes::render_package_panel(frame, app, area),
-        PaneId::Git => panes::render_git_panel(frame, app, area),
+        PaneId::Git => dispatch_via_trait(
+            app,
+            area,
+            PaneId::Git,
+            frame,
+            panes::Panes::dispatch_git_render,
+        ),
         PaneId::Lang => dispatch_via_trait(
             app,
             area,

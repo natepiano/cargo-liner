@@ -13,20 +13,20 @@ use super::GitData;
 use super::PaneId;
 use super::RemoteRow;
 use super::WorktreeInfo;
+use super::dispatch::HitboxSink;
+use super::dispatch::PaneRenderCtx;
 use super::package;
 use super::package::RenderStyles;
+use super::pane_impls::GitPane;
 use crate::constants::GIT_LOCAL;
 use crate::constants::IN_SYNC;
-use crate::tui::app::App;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
 use crate::tui::constants::INACTIVE_TITLE_COLOR;
-use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
-use crate::tui::interaction;
 use crate::tui::interaction::UiSurface;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
@@ -170,7 +170,11 @@ fn render_git_column_inner(
 /// Register one-line hitboxes for every visible selectable row. Called
 /// after the paragraph renders because we need the scroll offset to map
 /// inner-y to absolute screen-y.
-fn register_git_row_hitboxes(app: &mut App, inner_area: Rect, layout: &GitRenderLayout) {
+fn register_git_row_hitboxes(
+    hit_sink: &mut HitboxSink<'_>,
+    inner_area: Rect,
+    layout: &GitRenderLayout,
+) {
     let scroll = layout.scroll_offset;
     let visible_top = inner_area.y;
     let visible_bottom = inner_area.y.saturating_add(inner_area.height);
@@ -185,8 +189,7 @@ fn register_git_row_hitboxes(app: &mut App, inner_area: Rect, layout: &GitRender
         if screen_y < visible_top || screen_y >= visible_bottom {
             continue;
         }
-        interaction::register_pane_row_hitbox(
-            app,
+        hit_sink.push_pane_row(
             Rect::new(inner_area.x, screen_y, inner_area.width, 1),
             PaneId::Git,
             row_index,
@@ -664,15 +667,17 @@ fn git_panel_title(data: &GitData) -> String {
     }
 }
 
-/// Render the Git info panel as a standalone pane.
-pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    let styles = RenderStyles {
-        readonly_label: Style::default().fg(LABEL_COLOR),
-        chrome:         pane::default_pane_chrome(),
-    };
-
-    let Some(git_data) = app.panes().git().content().cloned() else {
-        app.panes_mut().git_mut().viewport_mut().clear_surface();
+/// Body of `GitPane::render`. Same pattern as
+/// `cpu::render_cpu_pane_body`: typed parameters via `ctx`.
+pub(super) fn render_git_pane_body(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &mut GitPane,
+    styles: &RenderStyles,
+    ctx: PaneRenderCtx<'_, '_>,
+) {
+    let Some(git_data) = pane.content().cloned() else {
+        pane.viewport_mut().clear_surface();
         let empty = pane::empty_pane_block(pane::pane_title("Git", &PaneTitleCount::None));
         frame.render_widget(empty, area);
         return;
@@ -681,14 +686,14 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     let flat_fields = panes::git_fields_from_data(&git_data);
     let total_rows = flat_fields.len() + git_data.remotes.len() + git_data.worktrees.len();
     if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
-        app.panes_mut().git_mut().viewport_mut().clear_surface();
+        pane.viewport_mut().clear_surface();
         let empty_git = pane::empty_pane_block(" Not a git repo ");
         frame.render_widget(empty_git, area);
         return;
     }
 
-    app.panes_mut().git_mut().viewport_mut().set_len(total_rows);
-    let focus = app.pane_focus_state(PaneId::Git);
+    pane.viewport_mut().set_len(total_rows);
+    let focus = ctx.focus_state;
     let border_style = if matches!(focus, PaneFocusState::Active) {
         styles.chrome.active_border
     } else {
@@ -712,24 +717,23 @@ pub fn render_git_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     );
 
     {
-        let viewport = app.panes_mut().git_mut().viewport_mut();
+        let viewport = pane.viewport_mut();
         viewport.set_content_area(content_area);
         viewport.set_viewport_rows(usize::from(content_area.height));
     }
     let git_ctx = GitRenderCtx {
         data: &git_data,
         fields: &flat_fields,
-        pane: app.panes().git().viewport(),
+        pane: pane.viewport(),
         focus,
-        styles: &styles,
+        styles,
     };
     let layout = render_git_column_inner(frame, &git_ctx, area, content_area);
-    app.panes_mut()
-        .git_mut()
-        .viewport_mut()
-        .set_scroll_offset(layout.scroll_offset);
-    register_git_row_hitboxes(app, content_area, &layout);
-    pane::render_overflow_affordance(frame, area, app.panes().git().viewport());
+    pane.viewport_mut().set_scroll_offset(layout.scroll_offset);
+
+    let PaneRenderCtx { hit_sink, .. } = ctx;
+    register_git_row_hitboxes(hit_sink, content_area, &layout);
+    pane::render_overflow_affordance(frame, area, pane.viewport());
 }
 
 /// Render the About section (repo description) at the top of the Git panel,
