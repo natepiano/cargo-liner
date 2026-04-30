@@ -10,6 +10,7 @@ mod lints;
 mod output;
 mod package;
 mod pane_impls;
+mod project_list;
 mod spec;
 mod support;
 mod system;
@@ -63,6 +64,23 @@ pub(super) use package::detail_column_scroll_offset;
 pub(super) use package::package_label_width;
 #[cfg(test)]
 pub(super) use package::stats_column_width;
+pub(super) use project_list::PREFIX_GROUP_COLLAPSED;
+pub(super) use project_list::PREFIX_MEMBER_INLINE;
+pub(super) use project_list::PREFIX_MEMBER_NAMED;
+pub(super) use project_list::PREFIX_ROOT_COLLAPSED;
+#[cfg(test)]
+pub(super) use project_list::PREFIX_ROOT_LEAF;
+pub(super) use project_list::PREFIX_SUBMODULE;
+pub(super) use project_list::PREFIX_VENDORED;
+pub(super) use project_list::PREFIX_WT_COLLAPSED;
+pub(super) use project_list::PREFIX_WT_FLAT;
+pub(super) use project_list::PREFIX_WT_GROUP_COLLAPSED;
+pub(super) use project_list::PREFIX_WT_MEMBER_INLINE;
+pub(super) use project_list::PREFIX_WT_MEMBER_NAMED;
+pub(super) use project_list::PREFIX_WT_VENDORED;
+pub(super) use project_list::render_project_list;
+#[cfg(test)]
+pub(super) use project_list::render_tree_items;
 pub(super) use spec::PaneBehavior;
 pub(super) use spec::PaneId;
 pub(super) use spec::behavior;

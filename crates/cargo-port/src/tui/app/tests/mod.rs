@@ -61,7 +61,6 @@ use crate::scan::CiFetchResult;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PaneId;
-use crate::tui::render;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
 
@@ -171,7 +170,7 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
         .resolved_root_labels(app.include_non_rust().includes_non_rust());
     let widths =
         snapshots::build_fit_widths_snapshot(app.projects(), &labels, app.lint_enabled(), 0);
-    let items = render::render_tree_items(app, &widths);
+    let items = crate::tui::panes::render_tree_items(app, &widths);
     let area = Rect::new(
         0,
         0,
@@ -199,7 +198,7 @@ fn render_tree_buffer(app: &mut App) -> (ratatui::buffer::Buffer, ProjectListWid
         .resolved_root_labels(app.include_non_rust().includes_non_rust());
     let widths =
         snapshots::build_fit_widths_snapshot(app.projects(), &labels, app.lint_enabled(), 0);
-    let items = render::render_tree_items(app, &widths);
+    let items = crate::tui::panes::render_tree_items(app, &widths);
     let area = Rect::new(
         0,
         0,

@@ -30,18 +30,19 @@ use crate::tui::columns::COL_DISK;
 use crate::tui::columns::COL_MAIN;
 use crate::tui::columns::COL_SYNC;
 use crate::tui::columns::ProjectListWidths;
+use crate::tui::panes::PREFIX_GROUP_COLLAPSED;
+use crate::tui::panes::PREFIX_MEMBER_INLINE;
+use crate::tui::panes::PREFIX_MEMBER_NAMED;
+use crate::tui::panes::PREFIX_ROOT_COLLAPSED;
+use crate::tui::panes::PREFIX_SUBMODULE;
+use crate::tui::panes::PREFIX_VENDORED;
+use crate::tui::panes::PREFIX_WT_COLLAPSED;
+use crate::tui::panes::PREFIX_WT_FLAT;
+use crate::tui::panes::PREFIX_WT_GROUP_COLLAPSED;
+use crate::tui::panes::PREFIX_WT_MEMBER_INLINE;
+use crate::tui::panes::PREFIX_WT_MEMBER_NAMED;
+use crate::tui::panes::PREFIX_WT_VENDORED;
 use crate::tui::render;
-use crate::tui::render::PREFIX_GROUP_COLLAPSED;
-use crate::tui::render::PREFIX_MEMBER_INLINE;
-use crate::tui::render::PREFIX_MEMBER_NAMED;
-use crate::tui::render::PREFIX_SUBMODULE;
-use crate::tui::render::PREFIX_VENDORED;
-use crate::tui::render::PREFIX_WT_COLLAPSED;
-use crate::tui::render::PREFIX_WT_FLAT;
-use crate::tui::render::PREFIX_WT_GROUP_COLLAPSED;
-use crate::tui::render::PREFIX_WT_MEMBER_INLINE;
-use crate::tui::render::PREFIX_WT_MEMBER_NAMED;
-use crate::tui::render::PREFIX_WT_VENDORED;
 
 /// Build the flat list of visible rows from the project list and expansion state.
 pub fn build_visible_rows(
@@ -335,7 +336,7 @@ fn observe_item_fit_widths(widths: &mut ProjectListWidths, entry: &ProjectEntry,
         .as_ref()
         .and_then(|repo| repo.repo_info.as_ref());
 
-    App::observe_name_width(widths, dw(render::PREFIX_ROOT_COLLAPSED) + dw(root_label));
+    App::observe_name_width(widths, dw(PREFIX_ROOT_COLLAPSED) + dw(root_label));
     widths.observe(COL_DISK, dw(&formatted_disk(item.disk_usage_bytes())));
     widths.observe(COL_SYNC, dw(&git_sync_snapshot(item.git_info(), repo_info)));
     widths.observe(COL_MAIN, dw(&git_main_snapshot(item.git_info())));

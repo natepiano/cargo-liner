@@ -548,7 +548,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
 
     let item = &app.projects()[0].item;
     let row = columns::build_row_cells(ProjectRow {
-        prefix:            crate::tui::render::PREFIX_ROOT_LEAF,
+        prefix:            crate::tui::panes::PREFIX_ROOT_LEAF,
         name:              &item.root_directory_name().into_string(),
         name_segments:     None,
         git_status:        app.git_status_for(item.path()),
