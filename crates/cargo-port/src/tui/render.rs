@@ -356,7 +356,13 @@ fn dispatch_via_trait(
     area: Rect,
     id: PaneId,
     frame: &mut Frame,
-    dispatcher: fn(&mut panes::Panes, &mut Frame, Rect, &panes::DispatchArgs<'_>),
+    dispatcher: fn(
+        &mut panes::Panes,
+        &mut Vec<interaction::UiHitbox>,
+        &mut Frame,
+        Rect,
+        &panes::DispatchArgs<'_>,
+    ),
 ) {
     let focus_state = app.pane_focus_state(id);
     let is_focused = app.is_focused(id);
@@ -367,7 +373,7 @@ fn dispatch_via_trait(
     let selected_project_path: Option<std::path::PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (panes, config, _selection, scan) = app.split_panes_for_render();
+    let (panes, layout_cache, config, _selection, scan) = app.split_panes_for_render();
     let args = panes::DispatchArgs {
         focus_state,
         is_focused,
@@ -376,7 +382,7 @@ fn dispatch_via_trait(
         scan,
         selected_project_path: selected_project_path.as_deref(),
     };
-    dispatcher(panes, frame, area, &args);
+    dispatcher(panes, &mut layout_cache.ui_hitboxes, frame, area, &args);
 }
 
 fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect) {

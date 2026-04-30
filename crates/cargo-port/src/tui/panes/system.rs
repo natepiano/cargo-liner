@@ -23,7 +23,6 @@ use super::data::PaneDataStore;
 use super::dispatch::HitboxSink;
 use super::dispatch::Pane;
 use super::dispatch::PaneRenderCtx;
-use super::layout::LayoutCache;
 use super::pane_impls::CiPane;
 use super::pane_impls::CpuPane;
 use super::pane_impls::FinderPane;
@@ -81,11 +80,11 @@ pub struct Panes {
     targets:      TargetsPane,
     project_list: ProjectListPane,
 
-    // ── Phase 1 grab-bag (residual after Phase 10.1):
-    data:         PaneDataStore,
-    visited:      HashSet<PaneId>,
-    layout_cache: LayoutCache,
-    hovered_row:  Option<HoveredPaneRow>,
+    // ── Phase 1 grab-bag (residual after Phase 10.2):
+    data:        PaneDataStore,
+    visited:     HashSet<PaneId>,
+    hovered_row: Option<HoveredPaneRow>,
+    // `layout_cache` was here; absorbed onto App-shell in Phase 10.2.
     // `worktree_summary_cache` was here; absorbed onto `GitPane` in Phase 10.1.
     // `pane_manager` was here; deleted in Phase 9.8.
     // `ci_display_modes` was here; absorbed onto `CiPane` in Phase 8.7.
@@ -109,10 +108,9 @@ impl Panes {
             targets:      TargetsPane::new(),
             project_list: ProjectListPane::new(),
 
-            data:         PaneDataStore::new(),
-            visited:      std::iter::once(PaneId::ProjectList).collect(),
-            layout_cache: LayoutCache::default(),
-            hovered_row:  None,
+            data:        PaneDataStore::new(),
+            visited:     std::iter::once(PaneId::ProjectList).collect(),
+            hovered_row: None,
         }
     }
 
@@ -238,11 +236,12 @@ impl Panes {
     /// Dispatch `CiPane`'s render through the `Pane` trait.
     pub fn dispatch_ci_render(
         &mut self,
+        hitboxes: &mut Vec<crate::tui::interaction::UiHitbox>,
         frame: &mut Frame<'_>,
         area: Rect,
         args: &DispatchArgs<'_>,
     ) {
-        let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let mut sink = HitboxSink::new(hitboxes);
         let ctx = PaneRenderCtx {
             focus_state:           args.focus_state,
             is_focused:            args.is_focused,
@@ -258,11 +257,12 @@ impl Panes {
     /// Dispatch `LintsPane`'s render through the `Pane` trait.
     pub fn dispatch_lints_render(
         &mut self,
+        hitboxes: &mut Vec<crate::tui::interaction::UiHitbox>,
         frame: &mut Frame<'_>,
         area: Rect,
         args: &DispatchArgs<'_>,
     ) {
-        let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let mut sink = HitboxSink::new(hitboxes);
         let ctx = PaneRenderCtx {
             focus_state:           args.focus_state,
             is_focused:            args.is_focused,
@@ -278,11 +278,12 @@ impl Panes {
     /// Dispatch `CpuPane`'s render through the `Pane` trait.
     pub fn dispatch_cpu_render(
         &mut self,
+        hitboxes: &mut Vec<crate::tui::interaction::UiHitbox>,
         frame: &mut Frame<'_>,
         area: Rect,
         args: &DispatchArgs<'_>,
     ) {
-        let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let mut sink = HitboxSink::new(hitboxes);
         let ctx = PaneRenderCtx {
             focus_state:           args.focus_state,
             is_focused:            args.is_focused,
@@ -298,11 +299,12 @@ impl Panes {
     /// Dispatch `LangPane`'s render through the `Pane` trait.
     pub fn dispatch_lang_render(
         &mut self,
+        hitboxes: &mut Vec<crate::tui::interaction::UiHitbox>,
         frame: &mut Frame<'_>,
         area: Rect,
         args: &DispatchArgs<'_>,
     ) {
-        let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let mut sink = HitboxSink::new(hitboxes);
         let ctx = PaneRenderCtx {
             focus_state:           args.focus_state,
             is_focused:            args.is_focused,
@@ -318,11 +320,12 @@ impl Panes {
     /// Dispatch `PackagePane`'s render through the `Pane` trait.
     pub fn dispatch_package_render(
         &mut self,
+        hitboxes: &mut Vec<crate::tui::interaction::UiHitbox>,
         frame: &mut Frame<'_>,
         area: Rect,
         args: &DispatchArgs<'_>,
     ) {
-        let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let mut sink = HitboxSink::new(hitboxes);
         let ctx = PaneRenderCtx {
             focus_state:           args.focus_state,
             is_focused:            args.is_focused,
@@ -338,11 +341,12 @@ impl Panes {
     /// Dispatch `GitPane`'s render through the `Pane` trait.
     pub fn dispatch_git_render(
         &mut self,
+        hitboxes: &mut Vec<crate::tui::interaction::UiHitbox>,
         frame: &mut Frame<'_>,
         area: Rect,
         args: &DispatchArgs<'_>,
     ) {
-        let mut sink = HitboxSink::new(&mut self.layout_cache.ui_hitboxes);
+        let mut sink = HitboxSink::new(hitboxes);
         let ctx = PaneRenderCtx {
             focus_state:           args.focus_state,
             is_focused:            args.is_focused,
@@ -405,10 +409,6 @@ impl Panes {
     }
 
     pub const fn pane_data(&self) -> &PaneDataStore { &self.data }
-
-    pub const fn layout_cache(&self) -> &LayoutCache { &self.layout_cache }
-
-    pub const fn layout_cache_mut(&mut self) -> &mut LayoutCache { &mut self.layout_cache }
 
     pub fn mark_visited(&mut self, pane: PaneId) { self.visited.insert(pane); }
 

@@ -207,6 +207,12 @@ pub(super) struct App {
     toasts:            ToastManager,
     inline_error:      Option<String>,
     ui_modes:          types::UiModes,
+    /// Layout coordination cache (Phase 10.2). Computed once per
+    /// draw and shared across the render path: tile layout, project-list
+    /// body rect, and the row-hitbox map for click/hover dispatch.
+    /// Lives on App-shell because it's coordination state, not pane
+    /// state — it describes what rect each pane occupies.
+    layout_cache:      LayoutCache,
 }
 
 impl App {
@@ -296,11 +302,9 @@ impl App {
         }
     }
 
-    pub(super) const fn layout_cache(&self) -> &LayoutCache { self.panes.layout_cache() }
+    pub(super) const fn layout_cache(&self) -> &LayoutCache { &self.layout_cache }
 
-    pub(super) const fn layout_cache_mut(&mut self) -> &mut LayoutCache {
-        self.panes.layout_cache_mut()
-    }
+    pub(super) const fn layout_cache_mut(&mut self) -> &mut LayoutCache { &mut self.layout_cache }
 
     pub(super) const fn pane_data(&self) -> &PaneDataStore { self.panes.pane_data() }
 
@@ -318,8 +322,14 @@ impl App {
     /// holding them simultaneously is sound.
     pub(super) const fn split_panes_for_render(
         &mut self,
-    ) -> (&mut Panes, &Config, &Selection, &Scan) {
-        (&mut self.panes, &self.config, &self.selection, &self.scan)
+    ) -> (&mut Panes, &mut LayoutCache, &Config, &Selection, &Scan) {
+        (
+            &mut self.panes,
+            &mut self.layout_cache,
+            &self.config,
+            &self.selection,
+            &self.scan,
+        )
     }
 
     /// Compute `selected_project_path` once for the current frame

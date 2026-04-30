@@ -204,6 +204,7 @@ impl App {
             toasts: ToastManager::default(),
             inline_error: None,
             ui_modes: UiModes::default(),
+            layout_cache: crate::tui::panes::LayoutCache::default(),
         }
     }
 

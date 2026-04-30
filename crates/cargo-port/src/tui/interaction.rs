@@ -504,7 +504,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (panes, config, _selection, scan) = app.split_panes_for_render();
+                let (panes, layout_cache, config, _selection, scan) = app.split_panes_for_render();
                 let args = panes::DispatchArgs {
                     focus_state,
                     is_focused,
@@ -513,7 +513,7 @@ mod tests {
                     scan,
                     selected_project_path: selected_path.as_deref(),
                 };
-                panes.dispatch_lints_render(frame, area, &args);
+                panes.dispatch_lints_render(&mut layout_cache.ui_hitboxes, frame, area, &args);
             })
             .unwrap_or_else(|_| std::process::abort());
     }
@@ -532,7 +532,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (panes, config, _selection, scan) = app.split_panes_for_render();
+                let (panes, layout_cache, config, _selection, scan) = app.split_panes_for_render();
                 let args = panes::DispatchArgs {
                     focus_state,
                     is_focused,
@@ -541,7 +541,7 @@ mod tests {
                     scan,
                     selected_project_path: selected_path.as_deref(),
                 };
-                panes.dispatch_ci_render(frame, area, &args);
+                panes.dispatch_ci_render(&mut layout_cache.ui_hitboxes, frame, area, &args);
             })
             .unwrap_or_else(|_| std::process::abort());
     }
