@@ -165,18 +165,25 @@ impl Pane for CpuPane {
 // Phase 8.6: cursor `Viewport` absorbed onto GitPane.
 // Phase 8.8: `content: Option<GitData>` absorbed (was the `git`
 // slot in `PaneDataStore`'s detail set).
-// `worktree_summary_cache` stays on `Panes` for now per Phase 10
-// design (final home is `GitPane` per the doc).
+// Phase 10.1: `worktree_summary_cache` absorbed off `Panes`. The
+// cache feeds the Git pane's worktree section; it is git-pane
+// content. `RefCell` because `worktree_summary_or_compute` runs
+// inside `build_pane_data_common`, which only has `&App` and
+// therefore `&Panes` and `&GitPane`.
 pub struct GitPane {
-    viewport: Viewport,
-    content:  Option<super::GitData>,
+    viewport:               Viewport,
+    content:                Option<super::GitData>,
+    worktree_summary_cache: std::cell::RefCell<
+        std::collections::HashMap<crate::project::AbsolutePath, Vec<super::WorktreeInfo>>,
+    >,
 }
 
 impl GitPane {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            viewport: Viewport::new(),
-            content:  None,
+            viewport:               Viewport::new(),
+            content:                None,
+            worktree_summary_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         }
     }
 
@@ -189,6 +196,28 @@ impl GitPane {
     pub fn set_content(&mut self, data: super::GitData) { self.content = Some(data); }
 
     pub fn clear_content(&mut self) { self.content = None; }
+
+    /// Return the cached worktree-summary for `group_root` if present;
+    /// otherwise compute via `compute` (the shell-out path), cache, and
+    /// return. Cache is sticky — only `clear_worktree_summary_cache`
+    /// invalidates it, called from tree-rebuild paths.
+    pub fn worktree_summary_or_compute(
+        &self,
+        group_root: &std::path::Path,
+        compute: impl FnOnce() -> Vec<super::WorktreeInfo>,
+    ) -> Vec<super::WorktreeInfo> {
+        if let Some(infos) = self.worktree_summary_cache.borrow().get(group_root) {
+            return infos.clone();
+        }
+        let infos = compute();
+        self.worktree_summary_cache.borrow_mut().insert(
+            crate::project::AbsolutePath::from(group_root),
+            infos.clone(),
+        );
+        infos
+    }
+
+    pub fn clear_worktree_summary_cache(&self) { self.worktree_summary_cache.borrow_mut().clear(); }
 }
 
 impl Pane for GitPane {

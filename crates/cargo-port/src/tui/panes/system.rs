@@ -12,8 +12,6 @@
 //! subsystem access are not added here yet — they remain free functions
 //! taking `&mut App` until later phases.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
@@ -83,17 +81,13 @@ pub struct Panes {
     targets:      TargetsPane,
     project_list: ProjectListPane,
 
-    // ── Phase 1 grab-bag (residual after Phase 9.8):
-    data:                   PaneDataStore,
-    visited:                HashSet<PaneId>,
-    layout_cache:           LayoutCache,
-    /// See `tui::app::mod.rs` doc comment on the original field —
-    /// `RefCell` because `worktree_summary_or_compute` runs inside
-    /// `build_pane_data_common`, which only has `&App`.
-    worktree_summary_cache: RefCell<HashMap<AbsolutePath, Vec<WorktreeInfo>>>,
-    hovered_row:            Option<HoveredPaneRow>,
-    // `pane_manager` was here; deleted in Phase 9.8 once every pane
-    // owned its own `Viewport`.
+    // ── Phase 1 grab-bag (residual after Phase 10.1):
+    data:         PaneDataStore,
+    visited:      HashSet<PaneId>,
+    layout_cache: LayoutCache,
+    hovered_row:  Option<HoveredPaneRow>,
+    // `worktree_summary_cache` was here; absorbed onto `GitPane` in Phase 10.1.
+    // `pane_manager` was here; deleted in Phase 9.8.
     // `ci_display_modes` was here; absorbed onto `CiPane` in Phase 8.7.
     // `cpu_poller` was here; absorbed onto `CpuPane` in Phase 8.1a.
 }
@@ -115,11 +109,10 @@ impl Panes {
             targets:      TargetsPane::new(),
             project_list: ProjectListPane::new(),
 
-            data:                   PaneDataStore::new(),
-            visited:                std::iter::once(PaneId::ProjectList).collect(),
-            layout_cache:           LayoutCache::default(),
-            worktree_summary_cache: RefCell::new(HashMap::new()),
-            hovered_row:            None,
+            data:         PaneDataStore::new(),
+            visited:      std::iter::once(PaneId::ProjectList).collect(),
+            layout_cache: LayoutCache::default(),
+            hovered_row:  None,
         }
     }
 
@@ -491,34 +484,21 @@ impl Panes {
 
     /// Return the cached worktree-summary for `group_root` if present;
     /// otherwise compute via `compute` (the shell-out path), cache, and
-    /// return. Cache is sticky — only `clear_for_tree_change`
-    /// invalidates it, called from tree-rebuild paths.
+    /// return. Cache lives on `GitPane` (Phase 10.1) — Panes is now a
+    /// pass-through. Sticky cache; only `clear_for_tree_change`
+    /// invalidates it.
     pub fn worktree_summary_or_compute(
         &self,
         group_root: &Path,
         compute: impl FnOnce() -> Vec<WorktreeInfo>,
     ) -> Vec<WorktreeInfo> {
-        if let Some(infos) = self.worktree_summary_cache.borrow().get(group_root) {
-            return infos.clone();
-        }
-        let infos = compute();
-        self.worktree_summary_cache
-            .borrow_mut()
-            .insert(AbsolutePath::from(group_root), infos.clone());
-        infos
+        self.git.worktree_summary_or_compute(group_root, compute)
     }
 
-    /// Drop tree-derived caches owned by `Panes`. Called by
-    /// `TreeMutation::drop` (Phase 1: invoked from the existing guard
-    /// in `tui::app::mod.rs`; Phase 6 will re-wire the new fan-out
-    /// guard to call this directly). Currently clears
-    /// `worktree_summary_cache`; future tree-dependent caches
-    /// owned by `Panes` add their clear here.
-    ///
-    /// Takes `&self` because the only cache cleared today lives
-    /// behind a `RefCell`. Phase 6 may widen to `&mut self` if it
-    /// adds caches that need exclusive access.
-    pub fn clear_for_tree_change(&self) { self.worktree_summary_cache.borrow_mut().clear(); }
+    /// Drop tree-derived caches owned by per-pane structs. After
+    /// Phase 10.1 the only such cache is `GitPane`'s
+    /// worktree-summary map.
+    pub fn clear_for_tree_change(&self) { self.git.clear_worktree_summary_cache(); }
 
     /// Tick the CPU pane's poller. Delegates to `CpuPane::tick`
     /// after Phase 8.1a moved the poller and content slot onto the
