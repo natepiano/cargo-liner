@@ -16,7 +16,6 @@ use super::DetailField;
 use super::PackageData;
 use super::dispatch::PaneRenderCtx;
 use super::pane_impls::PackagePane;
-use crate::constants::NO_LINT_RUNS;
 use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
@@ -38,11 +37,18 @@ pub struct RenderStyles {
 }
 
 struct PackageRenderCtx<'a> {
-    data:   &'a PackageData,
-    fields: &'a [DetailField],
-    pane:   &'a Viewport,
-    focus:  PaneFocusState,
-    styles: &'a RenderStyles,
+    data:              &'a PackageData,
+    fields:            &'a [DetailField],
+    pane:              &'a Viewport,
+    focus:             PaneFocusState,
+    styles:            &'a RenderStyles,
+    /// Phase 11.3: threaded through so the Lint row can frame its
+    /// icon at render time (the typed `LintDisplay` carries an
+    /// unframed `LintStatus` — animation framing was previously
+    /// pre-baked into a String at assembly time, which silently
+    /// produced a stale spinner frame).
+    animation_elapsed: std::time::Duration,
+    lint_enabled:      bool,
 }
 
 /// Compute the fixed stats column width from the stat rows and language stats.
@@ -105,7 +111,11 @@ fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect
         }
         let label = field.label();
         let selection = pane.selection_state(i, focus);
-        let value = field.package_value(data);
+        let value = if *field == DetailField::Lint {
+            lint_display_to_string(&data.lint_display, ctx.animation_elapsed, ctx.lint_enabled)
+        } else {
+            field.package_value(data)
+        };
         let base_label_style = styles.readonly_label;
         let base_value_style = if *field == DetailField::Ci {
             if value == crate::constants::NO_CI_WORKFLOW
@@ -117,7 +127,7 @@ fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect
                 render::conclusion_style(data.ci)
             }
         } else if *field == DetailField::Lint {
-            lint_value_style(&value)
+            lint_display_style(&data.lint_display)
         } else {
             Style::default()
         };
@@ -194,11 +204,13 @@ const NO_DESCRIPTION_AVAILABLE: &str = "No description available";
 const STATS_TITLE: &str = "Structure";
 
 struct ProjectPanelRender<'a> {
-    pkg_data:     &'a PackageData,
-    fields:       &'a [DetailField],
-    focus:        PaneFocusState,
-    styles:       &'a RenderStyles,
-    border_style: Style,
+    pkg_data:          &'a PackageData,
+    fields:            &'a [DetailField],
+    focus:             PaneFocusState,
+    styles:            &'a RenderStyles,
+    border_style:      Style,
+    animation_elapsed: std::time::Duration,
+    lint_enabled:      bool,
 }
 
 #[derive(Clone, Copy)]
@@ -219,11 +231,12 @@ pub(super) fn render_package_pane_body(
     let PaneRenderCtx {
         focus_state,
         is_focused: _,
-        animation_elapsed: _,
-        config: _,
+        animation_elapsed,
+        config,
         scan: _,
         selected_project_path: _,
     } = ctx;
+    let lint_enabled = config.current().lint.enabled;
 
     let Some(pkg_data) = pane.content().cloned() else {
         let title_style = Style::default()
@@ -261,6 +274,8 @@ pub(super) fn render_package_pane_body(
         focus: *focus_state,
         styles,
         border_style,
+        animation_elapsed: *animation_elapsed,
+        lint_enabled,
     };
     let areas = render_project_description_section(frame, &context, area, project_inner);
     {
@@ -380,6 +395,8 @@ fn render_project_metadata(
         pane,
         focus: context.focus,
         styles: context.styles,
+        animation_elapsed: context.animation_elapsed,
+        lint_enabled: context.lint_enabled,
     };
     let has_stats = !context.pkg_data.stats_rows.is_empty();
     if has_stats {
@@ -492,23 +509,50 @@ pub fn description_lines(
         .collect()
 }
 
-/// Returns the appropriate style for the lint detail field value based on
-/// the icon: green for passed, red for failed, accent for running spinner,
-/// inactive for "no lint runs".
-fn lint_value_style(value: &str) -> Style {
-    use crate::constants::LINT_FAILED;
-    use crate::constants::LINT_PASSED;
+/// Style for the Lint row in the Package detail pane, derived
+/// from the typed [`LintDisplay`] (Phase 11.3 — replaces the
+/// stringly-typed `lint_value_style` that string-matched icon
+/// constants).
+fn lint_display_style(display: &super::LintDisplay) -> Style {
+    use super::LintDisplay;
+    use crate::lint::LintStatus;
 
-    if value.contains(LINT_PASSED) {
-        Style::default().fg(SUCCESS_COLOR)
-    } else if value.contains(LINT_FAILED) {
-        Style::default().fg(ERROR_COLOR)
-    } else if value.starts_with(NO_LINT_RUNS) {
-        Style::default().fg(INACTIVE_BORDER_COLOR)
-    } else if !value.is_empty() && value.trim() != " " {
-        Style::default().fg(ACCENT_COLOR)
-    } else {
-        Style::default()
+    match display {
+        LintDisplay::NotRust | LintDisplay::NoRuns => Style::default().fg(INACTIVE_BORDER_COLOR),
+        LintDisplay::Runs { status, .. } => match status {
+            LintStatus::Passed(_) => Style::default().fg(SUCCESS_COLOR),
+            LintStatus::Failed(_) => Style::default().fg(ERROR_COLOR),
+            LintStatus::Running(_) | LintStatus::Stale => Style::default().fg(ACCENT_COLOR),
+            LintStatus::NoLog => Style::default(),
+        },
+    }
+}
+
+/// Render a typed [`LintDisplay`] to the string shown in the
+/// Package detail row. Phase 11.3 — replaces the
+/// `format!("{lint_icon} {n}")` pre-baked at assembly time. The
+/// icon is framed at render time using the current animation
+/// tick, fixing the pre-existing stale-spinner accident where
+/// the icon was framed once at detail-cache rebuild and never
+/// updated.
+fn lint_display_to_string(
+    display: &super::LintDisplay,
+    animation_elapsed: std::time::Duration,
+    lint_enabled: bool,
+) -> String {
+    use super::LintDisplay;
+
+    match display {
+        LintDisplay::NotRust => crate::constants::NO_LINT_RUNS_NOT_RUST.to_string(),
+        LintDisplay::NoRuns => crate::constants::NO_LINT_RUNS.to_string(),
+        LintDisplay::Runs { count, status } => {
+            let icon = if lint_enabled {
+                status.icon().frame_at(animation_elapsed)
+            } else {
+                crate::constants::LINT_NO_LOG
+            };
+            format!("{icon} {count}")
+        },
     }
 }
 

@@ -122,3 +122,6 @@ pub(super) use system::DispatchArgs;
 pub(super) use system::Panes;
 pub(super) use targets::render_empty_targets_panel;
 pub(super) use targets::render_targets_panel;
+
+pub(super) use crate::tui::lint_state::Lint;
+pub(super) use crate::tui::lint_state::LintDisplay;

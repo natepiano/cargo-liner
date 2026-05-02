@@ -9,8 +9,6 @@ use crate::constants::IN_SYNC;
 use crate::constants::NO_CI_RUNS;
 use crate::constants::NO_CI_UNPUBLISHED_BRANCH;
 use crate::constants::NO_CI_WORKFLOW;
-use crate::constants::NO_LINT_RUNS;
-use crate::constants::NO_LINT_RUNS_NOT_RUST;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
@@ -506,15 +504,17 @@ impl DetailField {
     }
 
     /// Get the display value for a package field from `PackageData`.
-    /// All values are pure-on-data — Lint and Ci read from
-    /// pre-resolved `data.lint_display` / `data.ci_display` fields
-    /// populated by the assembly path (Phase 8.14).
+    /// All values are pure-on-data — Ci reads from the pre-resolved
+    /// `data.ci_display` string. The Lint row is *not* handled here
+    /// (Phase 11.3 flipped it to a typed enum) — the package
+    /// renderer matches on `data.lint_display` directly and frames
+    /// the icon at render time. Calling this with `Self::Lint`
+    /// returns an empty string.
     pub fn package_value(self, data: &PackageData) -> String {
         match self {
             Self::Path => data.path.clone(),
             Self::Disk => data.disk.clone(),
             Self::Targets => data.types.clone(),
-            Self::Lint => data.lint_display.clone(),
             Self::Ci => data.ci_display.clone(),
             Self::CratesIo => data.crates_version.as_deref().unwrap_or("").to_string(),
             Self::Downloads => data
@@ -545,7 +545,8 @@ impl DetailField {
             | Self::LastCommit
             | Self::LastFetched
             | Self::RateLimitCore
-            | Self::RateLimitGraphQl => String::new(),
+            | Self::RateLimitGraphQl
+            | Self::Lint => String::new(),
         }
     }
 
@@ -748,9 +749,13 @@ pub struct PackageData {
     /// Step 5b: everything else under the project root (source,
     /// docs, .git, vendored crates outside target, etc.).
     pub in_project_non_target:    Option<u64>,
-    /// Pre-resolved display string for the Lint field; populated
-    /// at assembly time so render can read it without `&App`.
-    pub lint_display:             String,
+    /// Typed display value for the Lint field; populated at
+    /// assembly time so render can read it without `&App`. The
+    /// renderer matches on variants and applies
+    /// `animation_elapsed` to `status.icon()` at render time.
+    /// Phase 11.3 flipped this from `String` to
+    /// [`LintDisplay`].
+    pub lint_display:             super::LintDisplay,
     /// Pre-resolved display string for the Ci field; populated at
     /// assembly time so render can read it without `&App`.
     pub ci_display:               String,
@@ -1357,8 +1362,8 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             out_of_tree_target_bytes: None,
             // Submodules don't render the Lint/Ci fields; the
             // `package_fields_from_data` filter excludes them when
-            // there's no Cargo manifest. Empty strings are safe.
-            lint_display: String::new(),
+            // there's no Cargo manifest. Default values are safe.
+            lint_display: super::LintDisplay::default(),
             ci_display: String::new(),
         },
         git:     GitData {
@@ -1578,7 +1583,7 @@ struct BuildPackageDataArgs {
     in_project_target:        Option<u64>,
     in_project_non_target:    Option<u64>,
     out_of_tree_target_bytes: Option<u64>,
-    lint_display:             String,
+    lint_display:             super::LintDisplay,
     ci_display:               String,
 }
 
@@ -1690,7 +1695,10 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let crates_version = crates_io.version;
     let crates_downloads = crates_io.downloads;
 
-    let lint_display = resolve_lint_display(app, &abs_path_owned, &package_title);
+    let is_worktree_group = package_title == "Worktree Group";
+    let is_rust = app.is_rust_at_path(abs_path_owned.as_path());
+    let lint_display =
+        super::Lint::package_display(app.projects(), &abs_path_owned, is_worktree_group, is_rust);
     let ci_display = resolve_ci_display(app, &abs_path_owned, ci);
     let package = build_package_data(BuildPackageDataArgs {
         package_title,
@@ -1758,28 +1766,6 @@ fn assemble_detail_pane_data(
         targets: snapshot_package.map_or_else(TargetsData::default, |record| {
             TargetsData::from_package_record(record, record.name.as_str())
         }),
-    }
-}
-
-/// Compute the display string for the Lint field. Used at
-/// detail-pane assembly time to pre-resolve the value into
-/// `PackageData.lint_display`, so render can read it without
-/// `&App`.
-fn resolve_lint_display(app: &App, abs_path: &AbsolutePath, package_title: &str) -> String {
-    let path = abs_path.as_path();
-    if !app.is_rust_at_path(path) {
-        return NO_LINT_RUNS_NOT_RUST.to_string();
-    }
-    let is_worktree_group = package_title == "Worktree Group";
-    let lint_icon = if is_worktree_group {
-        app.selected_lint_icon(path)
-            .unwrap_or_else(|| app.lint_icon(path))
-    } else {
-        app.lint_icon(path)
-    };
-    match lint_run_count_for(app, path, is_worktree_group) {
-        Some(0) | None => NO_LINT_RUNS.to_string(),
-        Some(n) => format!("{lint_icon} {n}"),
     }
 }
 
@@ -1897,45 +1883,6 @@ pub fn build_lints_data(app: &App) -> LintsData {
         sizes,
         is_rust: selected_path.is_some_and(|path| app.is_rust_at_path(path)),
     }
-}
-
-/// Lint run count: for worktree groups, sum across all entries; for single
-/// projects, return the run count at the given path.
-fn lint_run_count_for(app: &App, abs_path: &Path, is_worktree_group: bool) -> Option<usize> {
-    if is_worktree_group {
-        let Some(entry) = app.projects().iter().find(|entry| {
-            entry.item.path() == abs_path && matches!(&entry.item, RootItem::Worktrees(_))
-        }) else {
-            return app.lint_at_path(abs_path).map(|lr| lr.runs().len());
-        };
-        let RootItem::Worktrees(g) = &entry.item else {
-            return app.lint_at_path(abs_path).map(|lr| lr.runs().len());
-        };
-        let mut total = 0usize;
-        let paths: Vec<AbsolutePath> = match g {
-            WorktreeGroup::Workspaces {
-                primary, linked, ..
-            } => std::iter::once(primary.path())
-                .chain(linked.iter().map(ProjectFields::path))
-                .map(AbsolutePath::clone)
-                .collect(),
-            WorktreeGroup::Packages {
-                primary, linked, ..
-            } => std::iter::once(primary.path())
-                .chain(linked.iter().map(ProjectFields::path))
-                .map(AbsolutePath::clone)
-                .collect(),
-        };
-        let mut any = false;
-        for path in &paths {
-            if let Some(lr) = app.lint_at_path(path) {
-                total += lr.runs().len();
-                any = true;
-            }
-        }
-        return any.then_some(total);
-    }
-    app.lint_at_path(abs_path).map(|lr| lr.runs().len())
 }
 
 fn build_ci_runs_label(app: &App, abs_path: &Path) -> String {

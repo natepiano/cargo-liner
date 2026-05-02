@@ -41,7 +41,7 @@ fn package_data(is_rust_project: bool) -> PackageData {
         in_project_target:        None,
         in_project_non_target:    None,
         out_of_tree_target_bytes: None,
-        lint_display:             String::new(),
+        lint_display:             super::LintDisplay::default(),
         ci_display:               String::new(),
     }
 }

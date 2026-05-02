@@ -39,11 +39,18 @@ use crate::project_list::ProjectList;
 /// - `NoRuns` — Rust project, but no lint history (zero runs).
 /// - `Runs { count, status }` — Rust project with at least one lint run. `status` is unframed; the
 ///   renderer frames the icon at render time.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum LintDisplay {
+    /// Default for partial / placeholder `PackageData` (e.g.,
+    /// submodules and other non-Rust contexts where the Lint row
+    /// is excluded by `package_fields_from_data` anyway).
+    #[default]
     NotRust,
     NoRuns,
-    Runs { count: usize, status: LintStatus },
+    Runs {
+        count:  usize,
+        status: LintStatus,
+    },
 }
 
 /// The `Lint` subsystem. Phase 11.2 holds no fields; Phase 11.4
@@ -83,10 +90,15 @@ impl Lint {
     /// Build the [`LintDisplay`] for the Package detail pane row
     /// at the selected project. Phase 11.3 wires this in as the
     /// replacement for `resolve_lint_display`.
+    ///
+    /// `is_worktree_group` is true when the selected row's
+    /// `package_title` is "Worktree Group" — i.e., the detail
+    /// pane is showing a worktree-group rollup. In that case the
+    /// status aggregates across the group's checkouts and the run
+    /// count sums across them. Otherwise the lookup is per-path.
     pub fn package_display(
         projects: &ProjectList,
         abs: &AbsolutePath,
-        item: &RootItem,
         is_worktree_group: bool,
         is_rust: bool,
     ) -> LintDisplay {
@@ -95,15 +107,23 @@ impl Lint {
         }
         let path = abs.as_path();
         let (status, count) = if is_worktree_group {
-            let status = Self::status_for_root(item);
-            let count: usize = match item {
-                RootItem::Worktrees(group) => group
-                    .iter_paths()
-                    .map(|p| Self::run_count_at(projects, p.as_path()))
-                    .sum(),
-                _ => Self::run_count_at(projects, path),
-            };
-            (status, count)
+            let group_item = projects.iter().find(|entry| {
+                entry.item.path() == abs && matches!(&entry.item, RootItem::Worktrees(_))
+            });
+            match group_item.map(|entry| &entry.item) {
+                Some(item @ RootItem::Worktrees(group)) => {
+                    let status = Self::status_for_root(item);
+                    let count: usize = group
+                        .iter_paths()
+                        .map(|p| Self::run_count_at(projects, p.as_path()))
+                        .sum();
+                    (status, count)
+                },
+                _ => (
+                    Self::status_for_path(projects, path),
+                    Self::run_count_at(projects, path),
+                ),
+            }
         } else {
             (
                 Self::status_for_path(projects, path),
@@ -126,9 +146,8 @@ mod tests {
     fn package_display_returns_not_rust_when_is_rust_false() {
         let projects = ProjectList::default();
         let abs = AbsolutePath::from(Path::new("/abs/x"));
-        let item = RootItem::NonRust(crate::project::NonRustProject::new(abs.clone(), None));
         assert_eq!(
-            Lint::package_display(&projects, &abs, &item, false, false),
+            Lint::package_display(&projects, &abs, false, false),
             LintDisplay::NotRust,
         );
     }
@@ -137,9 +156,8 @@ mod tests {
     fn package_display_returns_no_runs_when_rust_with_zero_runs() {
         let projects = ProjectList::default();
         let abs = AbsolutePath::from(Path::new("/abs/x"));
-        let item = RootItem::NonRust(crate::project::NonRustProject::new(abs.clone(), None));
         assert_eq!(
-            Lint::package_display(&projects, &abs, &item, false, true),
+            Lint::package_display(&projects, &abs, false, true),
             LintDisplay::NoRuns,
         );
     }
