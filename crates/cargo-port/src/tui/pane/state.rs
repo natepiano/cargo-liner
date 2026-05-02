@@ -1,3 +1,4 @@
+use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
@@ -130,6 +131,25 @@ impl Viewport {
     pub const fn content_area(&self) -> Rect { self.content_area }
 
     pub const fn scroll_offset(&self) -> usize { self.scroll_offset }
+
+    /// Convert a screen-space position to a local row within this
+    /// viewport's content area, accounting for scroll offset and the
+    /// pane's `len`. Returns `None` if `pos` is outside the content
+    /// area or maps past the last valid row.
+    pub const fn pos_to_local_row(&self, pos: Position) -> Option<usize> {
+        if self.content_area.width == 0 || self.content_area.height == 0 {
+            return None;
+        }
+        if !self.content_area.contains(pos) {
+            return None;
+        }
+        let visual_row = pos.y.saturating_sub(self.content_area.y);
+        let row = self.scroll_offset + visual_row as usize;
+        if row >= self.len {
+            return None;
+        }
+        Some(row)
+    }
 
     pub const fn len(&self) -> usize { self.len }
 

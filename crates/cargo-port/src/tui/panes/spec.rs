@@ -50,19 +50,6 @@ pub const fn behavior(id: PaneId) -> PaneBehavior {
     }
 }
 
-pub const fn has_row_hitboxes(id: PaneId) -> bool {
-    // The Git pane registers its own hitboxes from `render_git_panel`
-    // because rows don't map 1:1 to screen lines (section rules, column
-    // headers, and spacers break the default flat mapping).
-    if matches!(id, PaneId::Git) {
-        return false;
-    }
-    matches!(
-        behavior(id),
-        PaneBehavior::DetailFields | PaneBehavior::DetailTargets
-    )
-}
-
 pub const fn size_spec(id: PaneId, cpu_width: u16) -> PaneSizeSpec {
     match id {
         PaneId::Cpu => PaneSizeSpec {
@@ -76,9 +63,7 @@ pub const fn size_spec(id: PaneId, cpu_width: u16) -> PaneSizeSpec {
 #[cfg(test)]
 mod tests {
     //! Characterization tests pinning the current `behavior` /
-    //! `has_row_hitboxes` / `size_spec` mappings. These
-    //! functions move onto the `Pane` trait in Phase 7; the
-    //! per-pane impls must produce the same answers.
+    //! `size_spec` mappings.
     use super::*;
 
     fn all_pane_ids() -> [PaneId; 13] {
@@ -114,21 +99,6 @@ mod tests {
         assert_eq!(behavior(PaneId::Settings), PaneBehavior::Overlay);
         assert_eq!(behavior(PaneId::Finder), PaneBehavior::Overlay);
         assert_eq!(behavior(PaneId::Keymap), PaneBehavior::Overlay);
-    }
-
-    #[test]
-    fn has_row_hitboxes_only_for_detail_panes_excluding_git() {
-        let with_hitboxes: Vec<PaneId> = all_pane_ids()
-            .into_iter()
-            .filter(|id| has_row_hitboxes(*id))
-            .collect();
-        assert_eq!(
-            with_hitboxes,
-            vec![PaneId::Package, PaneId::Lang, PaneId::Targets,]
-        );
-        assert!(!has_row_hitboxes(PaneId::Git));
-        assert!(!has_row_hitboxes(PaneId::CiRuns));
-        assert!(!has_row_hitboxes(PaneId::Lints));
     }
 
     #[test]

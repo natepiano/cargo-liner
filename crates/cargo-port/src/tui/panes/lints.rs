@@ -13,7 +13,6 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
 use super::LintsData;
-use super::PaneId;
 use super::dispatch::PaneRenderCtx;
 use super::pane_impls::LintsPane;
 use crate::lint::LintRun;
@@ -25,7 +24,6 @@ use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
-use crate::tui::interaction::UiSurface::Content;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneTitleCount;
@@ -138,7 +136,7 @@ pub(super) fn render_lints_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut LintsPane,
-    ctx: PaneRenderCtx<'_, '_>,
+    ctx: &PaneRenderCtx<'_>,
 ) {
     let Some(lints_data) = pane.content().cloned() else {
         let block = lints_panel_block(" No Lint Runs ".to_string(), false, false);
@@ -209,26 +207,7 @@ pub(super) fn render_lints_pane_body(
     pane.viewport_mut().set_scroll_offset(table_state.offset());
     pane::render_overflow_affordance(frame, area, pane.viewport());
 
-    let visible_height = usize::from(inner.height.saturating_sub(1));
-    let visible_start = table_state.offset();
-    let visible_end = pane
-        .viewport()
-        .len()
-        .min(visible_start.saturating_add(visible_height));
-
-    let PaneRenderCtx { hit_sink, .. } = ctx;
-    for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
-        let row_y = inner
-            .y
-            .saturating_add(1)
-            .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
-        hit_sink.push_pane_row(
-            Rect::new(inner.x, row_y, inner.width, 1),
-            PaneId::Lints,
-            row_index,
-            Content,
-        );
-    }
+    let _ = ctx;
 }
 
 #[allow(
@@ -239,7 +218,7 @@ pub(super) fn render_lints_pane_for_test(
     frame: &mut Frame,
     area: Rect,
     pane: &mut LintsPane,
-    ctx: PaneRenderCtx<'_, '_>,
+    ctx: &PaneRenderCtx<'_>,
 ) {
     render_lints_pane_body(frame, area, pane, ctx);
 }

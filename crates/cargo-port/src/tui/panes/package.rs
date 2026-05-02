@@ -214,11 +214,10 @@ pub(super) fn render_package_pane_body(
     area: Rect,
     pane: &mut PackagePane,
     styles: &RenderStyles,
-    ctx: PaneRenderCtx<'_, '_>,
+    ctx: &PaneRenderCtx<'_>,
 ) {
     let PaneRenderCtx {
         focus_state,
-        hit_sink: _hit_sink,
         is_focused: _,
         animation_elapsed: _,
         config: _,
@@ -259,7 +258,7 @@ pub(super) fn render_package_pane_body(
     let context = ProjectPanelRender {
         pkg_data: &pkg_data,
         fields: &fields,
-        focus: focus_state,
+        focus: *focus_state,
         styles,
         border_style,
     };

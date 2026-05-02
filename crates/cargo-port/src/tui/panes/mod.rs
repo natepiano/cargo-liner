@@ -38,6 +38,7 @@ pub(super) use cpu::cpu_required_pane_height;
 // trait method now. `render_tiled_pane` dispatches via `panes.cpu_mut().render`.
 pub(super) use data::DetailCacheKey;
 pub(super) use data::PaneDataStore;
+pub(super) use dispatch::HoverTarget;
 // Phase 7 foundation types live in `dispatch` and `pane_impls` and
 // stay private to this module during Phase 7. Consumers outside
 // `panes/` start wiring up in Phase 8 as render/input bodies
@@ -84,7 +85,6 @@ pub(super) use project_list::render_tree_items;
 pub(super) use spec::PaneBehavior;
 pub(super) use spec::PaneId;
 pub(super) use spec::behavior;
-pub(super) use spec::has_row_hitboxes;
 pub(super) use spec::size_spec;
 pub(super) use support::BuildMode;
 pub(super) use support::CiData;

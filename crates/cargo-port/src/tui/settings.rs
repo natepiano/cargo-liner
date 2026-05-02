@@ -20,8 +20,6 @@ use super::constants::SECTION_ITEM_INDENT;
 use super::constants::SETTINGS_POPUP_WIDTH;
 use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
-use super::interaction;
-use super::interaction::UiSurface::Overlay;
 use super::pane::PaneSelectionState;
 use super::panes::PaneId;
 use super::popup::PopupFrame;
@@ -578,21 +576,9 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
 
-    for (line_index, target) in line_targets.into_iter().enumerate() {
-        let Some(row) = target else {
-            continue;
-        };
-        let y = inner
-            .y
-            .saturating_add(u16::try_from(line_index).unwrap_or(u16::MAX));
-        interaction::register_pane_row_hitbox(
-            app,
-            ratatui::layout::Rect::new(inner.x, y, inner.width, 1),
-            PaneId::Settings,
-            row,
-            Overlay,
-        );
-    }
+    app.panes_mut()
+        .settings_mut()
+        .set_line_targets(line_targets);
 }
 
 const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {

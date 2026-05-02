@@ -150,16 +150,13 @@ pub(super) fn render_lang_pane_body(
     area: Rect,
     pane: &mut LangPane,
     styles: &RenderStyles,
-    ctx: PaneRenderCtx<'_, '_>,
+    ctx: &PaneRenderCtx<'_>,
 ) {
-    // Destructure to consume ctx; lang's body doesn't write
-    // hitboxes, so move `hit_sink` into a local that we drop.
     let PaneRenderCtx {
         focus_state,
         is_focused,
         scan,
         selected_project_path,
-        hit_sink: _hit_sink,
         animation_elapsed: _,
         config: _,
     } = ctx;
@@ -179,7 +176,7 @@ pub(super) fn render_lang_pane_body(
             cursor,
         },
     );
-    let block = styles.chrome.block(title, is_focused);
+    let block = styles.chrome.block(title, *is_focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -216,7 +213,7 @@ pub(super) fn render_lang_pane_body(
     let rows_needed = u16::try_from(entry_count + 1).unwrap_or(u16::MAX);
     let pin_footer = rows_needed > content_below_header;
 
-    let mut rows = build_lang_rows(pane.viewport(), &stats, name_width, focus_state);
+    let mut rows = build_lang_rows(pane.viewport(), &stats, name_width, *focus_state);
 
     if pin_footer {
         let footer_y = inner.y + inner.height.saturating_sub(1);

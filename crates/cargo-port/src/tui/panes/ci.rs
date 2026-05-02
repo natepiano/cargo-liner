@@ -10,8 +10,6 @@ use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiData;
-use super::PaneId;
-use super::dispatch::HitboxSink;
 use super::dispatch::PaneRenderCtx;
 use super::pane_impls::CiPane;
 use crate::ci;
@@ -22,7 +20,6 @@ use crate::tui::columns::ColumnWidths;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
-use crate::tui::interaction::UiSurface;
 use crate::tui::pane;
 use crate::tui::pane::PaneSelectionState;
 use crate::tui::pane::PaneTitleCount;
@@ -271,7 +268,7 @@ pub(super) fn render_ci_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut CiPane,
-    ctx: PaneRenderCtx<'_, '_>,
+    ctx: &PaneRenderCtx<'_>,
 ) {
     let Some(ci_data) = pane.content().cloned() else {
         render_empty_ci_block(frame, " No CI Runs ", area);
@@ -351,36 +348,12 @@ pub(super) fn render_ci_pane_body(
     pane.viewport_mut().set_scroll_offset(table_state.offset());
     pane::render_overflow_affordance(frame, area, pane.viewport());
 
-    let PaneRenderCtx { hit_sink, .. } = ctx;
-    register_ci_row_hitboxes(hit_sink, ci_data.runs.len(), inner, table_state.offset());
+    let _ = ctx;
 }
 
 fn render_empty_ci_block(frame: &mut Frame, title: &str, area: Rect) {
     let block = pane::empty_pane_block(title);
     frame.render_widget(block, area);
-}
-
-fn register_ci_row_hitboxes(
-    hit_sink: &mut HitboxSink<'_>,
-    run_count: usize,
-    inner: Rect,
-    visible_start: usize,
-) {
-    let visible_height = usize::from(inner.height.saturating_sub(1));
-    let visible_end = run_count.min(visible_start.saturating_add(visible_height));
-
-    for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
-        let row_y = inner
-            .y
-            .saturating_add(1)
-            .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
-        hit_sink.push_pane_row(
-            Rect::new(inner.x, row_y, inner.width, 1),
-            PaneId::CiRuns,
-            row_index,
-            UiSurface::Content,
-        );
-    }
 }
 
 #[cfg(test)]

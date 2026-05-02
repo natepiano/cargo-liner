@@ -10,10 +10,8 @@ use unicode_width::UnicodeWidthStr;
 
 use super::DetailField;
 use super::GitData;
-use super::PaneId;
 use super::RemoteRow;
 use super::WorktreeInfo;
-use super::dispatch::HitboxSink;
 use super::dispatch::PaneRenderCtx;
 use super::package;
 use super::package::RenderStyles;
@@ -27,7 +25,6 @@ use crate::tui::constants::INACTIVE_BORDER_COLOR;
 use crate::tui::constants::INACTIVE_TITLE_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
-use crate::tui::interaction::UiSurface;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneSelectionState;
@@ -164,37 +161,6 @@ fn render_git_column_inner(
     GitRenderLayout {
         scroll_offset: usize::from(scroll_y),
         row_line_ys,
-    }
-}
-
-/// Register one-line hitboxes for every visible selectable row. Called
-/// after the paragraph renders because we need the scroll offset to map
-/// inner-y to absolute screen-y.
-fn register_git_row_hitboxes(
-    hit_sink: &mut HitboxSink<'_>,
-    inner_area: Rect,
-    layout: &GitRenderLayout,
-) {
-    let scroll = layout.scroll_offset;
-    let visible_top = inner_area.y;
-    let visible_bottom = inner_area.y.saturating_add(inner_area.height);
-    for (row_index, &inner_y) in layout.row_line_ys.iter().enumerate() {
-        if inner_y < scroll {
-            continue;
-        }
-        let offset = inner_y - scroll;
-        let screen_y = inner_area
-            .y
-            .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
-        if screen_y < visible_top || screen_y >= visible_bottom {
-            continue;
-        }
-        hit_sink.push_pane_row(
-            Rect::new(inner_area.x, screen_y, inner_area.width, 1),
-            PaneId::Git,
-            row_index,
-            UiSurface::Content,
-        );
     }
 }
 
@@ -674,7 +640,7 @@ pub(super) fn render_git_pane_body(
     area: Rect,
     pane: &mut GitPane,
     styles: &RenderStyles,
-    ctx: PaneRenderCtx<'_, '_>,
+    ctx: &PaneRenderCtx<'_>,
 ) {
     let Some(git_data) = pane.content().cloned() else {
         pane.viewport_mut().clear_surface();
@@ -730,10 +696,9 @@ pub(super) fn render_git_pane_body(
     };
     let layout = render_git_column_inner(frame, &git_ctx, area, content_area);
     pane.viewport_mut().set_scroll_offset(layout.scroll_offset);
-
-    let PaneRenderCtx { hit_sink, .. } = ctx;
-    register_git_row_hitboxes(hit_sink, content_area, &layout);
+    pane.set_row_layout(content_area, layout.row_line_ys);
     pane::render_overflow_affordance(frame, area, pane.viewport());
+    let _ = ctx;
 }
 
 /// Render the About section (repo description) at the top of the Git panel,

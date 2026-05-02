@@ -37,7 +37,6 @@ use crate::tui::columns::ProjectRow;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::LABEL_COLOR;
-use crate::tui::interaction;
 use crate::tui::pane;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
@@ -215,13 +214,49 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .project_list_mut()
         .viewport_mut()
         .set_pos(list_state.selected().unwrap_or(0));
-    interaction::register_project_list_hitboxes(app, list_area, row_width);
+    set_project_list_dismiss_actions(app, list_area, row_width);
 
     if pin_summary && let Some(line) = summary_line {
         render_project_list_footer(frame, content_area, line);
     }
 
     pane::render_overflow_affordance(frame, area, app.panes().project_list().viewport());
+}
+
+const DISMISS_SUFFIX: &str = " [x]";
+
+fn set_project_list_dismiss_actions(app: &mut App, list_area: Rect, row_width: u16) {
+    let visible_height = usize::from(list_area.height);
+    let visible_start = app.panes().project_list().viewport().scroll_offset();
+    let visible_end = app
+        .panes()
+        .project_list()
+        .viewport()
+        .len()
+        .min(visible_start.saturating_add(visible_height));
+    let suffix_width = u16::try_from(columns::display_width(DISMISS_SUFFIX)).unwrap_or(u16::MAX);
+
+    let mut actions: Vec<(Rect, crate::tui::app::DismissTarget)> = Vec::new();
+    for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
+        let dismiss_target = app
+            .visible_rows()
+            .get(row_index)
+            .copied()
+            .and_then(|row| app.dismiss_target_for_row(row));
+        let Some(target) = dismiss_target else {
+            continue;
+        };
+        let y = list_area
+            .y
+            .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
+        let x = list_area
+            .x
+            .saturating_add(row_width.saturating_sub(suffix_width));
+        actions.push((Rect::new(x, y, suffix_width, 1), target));
+    }
+    app.panes_mut()
+        .project_list_mut()
+        .set_dismiss_actions(actions);
 }
 
 const fn clear_project_list_surface(app: &mut App) {

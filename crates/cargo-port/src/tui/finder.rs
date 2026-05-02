@@ -28,8 +28,6 @@ use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::LABEL_COLOR;
 use super::constants::MAX_FINDER_RESULTS;
 use super::constants::TITLE_COLOR;
-use super::interaction;
-use super::interaction::UiSurface::Overlay;
 use super::panes;
 use super::panes::PaneId;
 use super::panes::RunTargetKind;
@@ -925,27 +923,10 @@ fn render_finder_results(
         .viewport_mut()
         .set_scroll_offset(table_state.offset());
 
-    let visible_height = usize::from(area.height.saturating_sub(1));
-    let visible_start = table_state.offset();
-    let visible_end = app
-        .finder()
-        .results
-        .len()
-        .min(visible_start.saturating_add(visible_height));
-
-    for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
-        let row_y = area
-            .y
-            .saturating_add(1)
-            .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
-        interaction::register_pane_row_hitbox(
-            app,
-            Rect::new(area.x, row_y, area.width, 1),
-            PaneId::Finder,
-            row_index,
-            Overlay,
-        );
-    }
+    // FinderPane participates in hit-test dispatch via its
+    // viewport (content_area covers the rows-area starting at the
+    // header line; `Hittable` skips that header row internally).
+    let _ = app;
 }
 
 #[cfg(test)]

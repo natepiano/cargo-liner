@@ -9,8 +9,6 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
-use super::PaneId;
-use super::dispatch::HitboxSink;
 use super::dispatch::PaneRenderCtx;
 use super::package::RenderStyles;
 use super::pane_impls::CpuPane;
@@ -19,7 +17,6 @@ use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::cpu;
-use crate::tui::interaction::UiSurface::Content;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRule;
@@ -216,7 +213,7 @@ fn cpu_row_overlay_style(viewport: &Viewport, logical_row: usize, focus: PaneFoc
 fn render_selectable_row(
     frame: &mut Frame,
     viewport: &Viewport,
-    hit_sink: &mut HitboxSink<'_>,
+    row_rects: &mut Vec<(Rect, usize)>,
     area: Rect,
     logical_row: usize,
     focus: PaneFocusState,
@@ -226,7 +223,7 @@ fn render_selectable_row(
         paragraph.style(cpu_row_overlay_style(viewport, logical_row, focus)),
         area,
     );
-    hit_sink.push_pane_row(area, PaneId::Cpu, logical_row, Content);
+    row_rects.push((area, logical_row));
 }
 
 fn render_cpu_dividers(
@@ -264,7 +261,7 @@ fn render_cpu_dividers(
 fn render_aggregate_row(
     frame: &mut Frame,
     viewport: &Viewport,
-    hit_sink: &mut HitboxSink<'_>,
+    row_rects: &mut Vec<(Rect, usize)>,
     snapshot: &cpu::CpuSnapshot,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
@@ -273,7 +270,7 @@ fn render_aggregate_row(
     render_selectable_row(
         frame,
         viewport,
-        hit_sink,
+        row_rects,
         layout.rows[0],
         logical_row,
         focus,
@@ -284,7 +281,7 @@ fn render_aggregate_row(
 fn render_core_rows(
     frame: &mut Frame,
     viewport: &Viewport,
-    hit_sink: &mut HitboxSink<'_>,
+    row_rects: &mut Vec<(Rect, usize)>,
     cpu_cfg: &CpuConfig,
     snapshot: &cpu::CpuSnapshot,
     layout: &CpuPanelLayout,
@@ -295,7 +292,7 @@ fn render_core_rows(
         render_selectable_row(
             frame,
             viewport,
-            hit_sink,
+            row_rects,
             layout.rows[1 + core_index],
             logical_row,
             focus,
@@ -307,14 +304,14 @@ fn render_core_rows(
 fn render_breakdown_row(
     frame: &mut Frame,
     viewport: &Viewport,
-    hit_sink: &mut HitboxSink<'_>,
+    row_rects: &mut Vec<(Rect, usize)>,
     focus: PaneFocusState,
     row: BreakdownRowSpec<'_>,
 ) {
     render_selectable_row(
         frame,
         viewport,
-        hit_sink,
+        row_rects,
         row.area,
         row.logical_row,
         focus,
@@ -330,7 +327,7 @@ fn render_breakdown_row(
 fn render_gpu_row(
     frame: &mut Frame,
     viewport: &Viewport,
-    hit_sink: &mut HitboxSink<'_>,
+    row_rects: &mut Vec<(Rect, usize)>,
     cpu_cfg: &CpuConfig,
     snapshot: &cpu::CpuSnapshot,
     layout: &CpuPanelLayout,
@@ -340,7 +337,7 @@ fn render_gpu_row(
     render_selectable_row(
         frame,
         viewport,
-        hit_sink,
+        row_rects,
         layout.rows[layout.gpu_row],
         logical_row,
         focus,
@@ -369,7 +366,7 @@ pub(super) fn render_cpu_pane_body(
     area: Rect,
     pane: &mut CpuPane,
     styles: &RenderStyles,
-    ctx: PaneRenderCtx<'_, '_>,
+    ctx: &PaneRenderCtx<'_>,
 ) {
     let focus = ctx.focus_state;
     let cursor = matches!(focus, PaneFocusState::Active).then(|| pane.viewport().pos());
@@ -383,6 +380,7 @@ pub(super) fn render_cpu_pane_body(
 
     if inner.height == 0 {
         pane.viewport_mut().clear_surface();
+        pane.clear_row_rects();
         return;
     }
 
@@ -400,16 +398,22 @@ pub(super) fn render_cpu_pane_body(
     render_cpu_dividers(frame, area, &layout, border_style);
 
     let cpu_cfg = &ctx.config.current().cpu;
-    let PaneRenderCtx { hit_sink, .. } = ctx;
+    let mut row_rects: Vec<(Rect, usize)> = Vec::new();
     let viewport = pane.viewport();
-    render_aggregate_row(frame, viewport, hit_sink, &snapshot, &layout, focus);
+    render_aggregate_row(frame, viewport, &mut row_rects, &snapshot, &layout, focus);
     render_core_rows(
-        frame, viewport, hit_sink, cpu_cfg, &snapshot, &layout, focus,
+        frame,
+        viewport,
+        &mut row_rects,
+        cpu_cfg,
+        &snapshot,
+        &layout,
+        focus,
     );
     render_breakdown_row(
         frame,
         viewport,
-        hit_sink,
+        &mut row_rects,
         focus,
         BreakdownRowSpec {
             area:        layout.rows[layout.system_row],
@@ -422,7 +426,7 @@ pub(super) fn render_cpu_pane_body(
     render_breakdown_row(
         frame,
         viewport,
-        hit_sink,
+        &mut row_rects,
         focus,
         BreakdownRowSpec {
             area:        layout.rows[layout.user_row],
@@ -435,7 +439,7 @@ pub(super) fn render_cpu_pane_body(
     render_breakdown_row(
         frame,
         viewport,
-        hit_sink,
+        &mut row_rects,
         focus,
         BreakdownRowSpec {
             area:        layout.rows[layout.idle_row],
@@ -446,7 +450,14 @@ pub(super) fn render_cpu_pane_body(
         },
     );
     render_gpu_row(
-        frame, viewport, hit_sink, cpu_cfg, &snapshot, &layout, focus,
+        frame,
+        viewport,
+        &mut row_rects,
+        cpu_cfg,
+        &snapshot,
+        &layout,
+        focus,
     );
     sync_cpu_pane_state(pane.viewport_mut(), inner, snapshot.cores.len());
+    pane.set_row_rects(row_rects);
 }

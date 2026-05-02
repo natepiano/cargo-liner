@@ -28,7 +28,6 @@ use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
 use super::finder;
 use super::interaction;
-use super::interaction::UiSurface::Content;
 use super::keymap_ui;
 use super::pane;
 use super::panes;
@@ -143,7 +142,6 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     for resolved in tiled.panes() {
         render_tiled_pane(frame, app, resolved.pane, resolved.area);
     }
-    sync_layout_pane_hitboxes(app, &tiled);
     app.layout_cache_mut().tiled = tiled;
 
     render_status_bar(frame, app, outer_layout[1]);
@@ -154,7 +152,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         app.is_focused(PaneId::Toasts),
         app.focused_toast_id(),
     );
-    interaction::register_toast_hitboxes(app, &toast_result.hitboxes);
+    app.panes_mut().toasts_mut().set_hits(toast_result.hitboxes);
 
     if app.is_settings_open() {
         settings::render_settings_popup(frame, app);
@@ -356,13 +354,7 @@ fn dispatch_via_trait(
     area: Rect,
     id: PaneId,
     frame: &mut Frame,
-    dispatcher: fn(
-        &mut panes::Panes,
-        &mut Vec<interaction::UiHitbox>,
-        &mut Frame,
-        Rect,
-        &panes::DispatchArgs<'_>,
-    ),
+    dispatcher: fn(&mut panes::Panes, &mut Frame, Rect, &panes::DispatchArgs<'_>),
 ) {
     let focus_state = app.pane_focus_state(id);
     let is_focused = app.is_focused(id);
@@ -373,7 +365,7 @@ fn dispatch_via_trait(
     let selected_project_path: Option<std::path::PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (panes, layout_cache, config, _selection, scan) = app.split_panes_for_render();
+    let (panes, _layout_cache, config, _selection, scan) = app.split_panes_for_render();
     let args = panes::DispatchArgs {
         focus_state,
         is_focused,
@@ -382,7 +374,7 @@ fn dispatch_via_trait(
         scan,
         selected_project_path: selected_project_path.as_deref(),
     };
-    dispatcher(panes, &mut layout_cache.ui_hitboxes, frame, area, &args);
+    dispatcher(panes, frame, area, &args);
 }
 
 fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect) {
@@ -444,27 +436,12 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
     }
 }
 
-fn sync_layout_pane_hitboxes(app: &mut App, layout: &pane::ResolvedPaneLayout<PaneId>) {
-    for resolved in layout.panes() {
-        register_hitbox_for_pane(app, resolved.pane);
-    }
-}
-
 fn sync_hovered_pane_row(app: &mut App) {
     let hovered = app
         .mouse_pos()
         .and_then(|pos| interaction::hovered_pane_row_at(app, pos));
     app.set_hovered_pane_row(hovered);
     app.apply_hovered_pane_row();
-}
-
-/// Exhaustive match on `PaneId` — adding a variant forces you to decide
-/// whether the pane gets hitboxes.
-fn register_hitbox_for_pane(app: &mut App, id: PaneId) {
-    if panes::has_row_hitboxes(id) {
-        let pane = app.panes().viewport_for(id).clone();
-        interaction::register_pane_row_hitboxes(app, id, &pane, Content);
-    }
 }
 
 pub(super) fn truncate_to_width(text: &str, max_width: usize) -> String {

@@ -6,7 +6,6 @@ use ratatui::layout::Rect;
 use super::cpu;
 use super::cpu::CPU_PANE_WIDTH;
 use super::spec::PaneId;
-use crate::tui::interaction::UiHitbox;
 use crate::tui::pane;
 use crate::tui::pane::PaneAxisSize;
 use crate::tui::pane::PaneGridLayout;
@@ -18,7 +17,6 @@ use crate::tui::pane::ResolvedPaneLayout;
 pub struct LayoutCache {
     pub project_list_body: Rect,
     pub tiled:             ResolvedPaneLayout<PaneId>,
-    pub ui_hitboxes:       Vec<UiHitbox>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

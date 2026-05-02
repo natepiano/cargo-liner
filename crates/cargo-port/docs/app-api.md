@@ -1589,7 +1589,7 @@ follow-up. Both are now resolved or contracted into named phases:
   See "Typed display values, not pre-rendered strings" in
   Recurring patterns for the principle that drives this work.
 
-## Phase 10.3 trait-redesign decisions (in progress)
+## Phase 10.3 trait-redesign decisions (implemented)
 
 Six open design questions surfaced when starting Phase 10.3
 (`Pane::hit_test` + remove push-during-render hitboxes). Decisions

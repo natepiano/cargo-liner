@@ -1,35 +1,36 @@
-//! Per-pane unit structs and their `Pane` impls.
+//! Per-pane unit structs, their `Pane` impls, and `Hittable` impls.
 //!
-//! Phase 8 lands per-pane state (cursor `Viewport`, content slot,
-//! pane-specific extras) on the relevant struct and dispatches
-//! `render` through the `Pane` trait. Phase 9 brings the remaining
-//! seven panes (`ProjectList`, `Targets`, `Output`, `Toasts`,
-//! `Settings`, `Finder`, `Keymap`) into trait dispatch and
-//! reintroduces `handle_input` / `is_navigable` on the trait.
-//! Behavior + size mappings continue to live as `PaneId`-pure
-//! free functions in `panes/spec.rs`.
+//! Phase 10.3 introduces `Hittable: Pane` for the eleven clickable
+//! panes. Each pane records the hit-test layout it needs during
+//! render (uniform-row panes lean on `Viewport::content_area` +
+//! `scroll_offset`; non-uniform panes — `Cpu`, `Git`,
+//! `ProjectList`, `Toasts` — store explicit per-row rect lists).
+//! Click and hover dispatch then walks `HITTABLE_Z_ORDER`, asking
+//! each pane for the target at `pos`.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
 use ratatui::Frame;
+use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
+use super::PaneId;
+use super::dispatch::Hittable;
+use super::dispatch::HoverTarget;
 use super::dispatch::Pane;
 use super::dispatch::PaneRenderCtx;
 use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
 use crate::tui::app::CiRunDisplayMode;
+use crate::tui::app::DismissTarget;
 use crate::tui::cpu::CpuPoller;
 use crate::tui::cpu::CpuSnapshot;
+use crate::tui::interaction::ToastHitbox;
 use crate::tui::pane::Viewport;
 
 // ── Package ─────────────────────────────────────────────────────
-//
-// Phase 8.5: cursor `Viewport` absorbed onto PackagePane.
-// Phase 8.8: `content: Option<PackageData>` absorbed (was the
-// `package` slot in `PaneDataStore`'s detail set).
 pub struct PackagePane {
     viewport: Viewport,
     content:  Option<super::PackageData>,
@@ -55,7 +56,7 @@ impl PackagePane {
 }
 
 impl Pane for PackagePane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: PaneRenderCtx<'_, '_>) {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = super::package::RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(crate::tui::constants::LABEL_COLOR),
             chrome:         crate::tui::pane::default_pane_chrome(),
@@ -64,13 +65,17 @@ impl Pane for PackagePane {
     }
 }
 
+impl Hittable for PackagePane {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        let row = self.viewport.pos_to_local_row(pos)?;
+        Some(HoverTarget::PaneRow {
+            pane: PaneId::Package,
+            row,
+        })
+    }
+}
+
 // ── Lang ────────────────────────────────────────────────────────
-//
-// Phase 8.2: cursor `Viewport` migrates onto LangPane. Lang has
-// no `PaneDataStore` slot today (renderer reads `language_stats`
-// directly off the project tree on every render), so there is no
-// content-slot relocation to do here. PaneManager keeps its
-// vestigial Lang slot.
 pub struct LangPane {
     viewport: Viewport,
 }
@@ -88,7 +93,7 @@ impl LangPane {
 }
 
 impl Pane for LangPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: PaneRenderCtx<'_, '_>) {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = super::package::RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(crate::tui::constants::LABEL_COLOR),
             chrome:         crate::tui::pane::default_pane_chrome(),
@@ -97,48 +102,52 @@ impl Pane for LangPane {
     }
 }
 
+impl Hittable for LangPane {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        let row = self.viewport.pos_to_local_row(pos)?;
+        Some(HoverTarget::PaneRow {
+            pane: PaneId::Lang,
+            row,
+        })
+    }
+}
+
 // ── Cpu ─────────────────────────────────────────────────────────
-//
-// Phase 8.1a absorbed `cpu_poller` and `content` onto CpuPane.
-// Phase 8.1b absorbs the cursor `Viewport` (was the `Cpu` slot in
-// `PaneManager`'s array). The slot in PaneManager stays vestigial
-// until Phase 9 migrates the remaining panes; CpuPane is the only
-// reader/writer of its cursor state now.
 pub struct CpuPane {
-    viewport: Viewport,
-    content:  Option<CpuSnapshot>,
-    poller:   CpuPoller,
+    viewport:  Viewport,
+    content:   Option<CpuSnapshot>,
+    poller:    CpuPoller,
+    /// Per-rendered-row `(Rect, logical_row)` recorded each frame
+    /// so `Hittable::hit_test_at` can map `pos` back to the logical
+    /// row. CPU rows are non-uniform (aggregate, per-core,
+    /// breakdown, GPU) so a flat `viewport.pos_to_local_row` won't
+    /// work.
+    row_rects: Vec<(Rect, usize)>,
 }
 
 impl CpuPane {
     pub fn new(cfg: &CpuConfig) -> Self {
         let mut pane = Self {
-            viewport: Viewport::new(),
-            content:  None,
-            poller:   CpuPoller::new(cfg),
+            viewport:  Viewport::new(),
+            content:   None,
+            poller:    CpuPoller::new(cfg),
+            row_rects: Vec::new(),
         };
         pane.install_placeholder();
         pane
     }
 
-    /// Tick the CPU poller. If a fresh snapshot is produced, store
-    /// it as the pane's content. Called once per app tick by App.
     pub fn tick(&mut self, now: Instant) {
         if let Some(snapshot) = self.poller.poll_if_due(now) {
             self.content = Some(snapshot);
         }
     }
 
-    /// Recreate the poller for `cfg` and seed `content` with a
-    /// placeholder snapshot. Used after a config reload changes
-    /// CPU poll behavior.
     pub fn reset(&mut self, cfg: &CpuConfig) {
         self.poller = CpuPoller::new(cfg);
         self.install_placeholder();
     }
 
-    /// Seed `content` with the current poller's placeholder
-    /// snapshot without recreating the poller. Used at startup.
     pub fn install_placeholder(&mut self) {
         self.content = Some(self.poller.placeholder_snapshot());
     }
@@ -148,10 +157,14 @@ impl CpuPane {
     pub const fn viewport(&self) -> &Viewport { &self.viewport }
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    pub fn set_row_rects(&mut self, rects: Vec<(Rect, usize)>) { self.row_rects = rects; }
+
+    pub fn clear_row_rects(&mut self) { self.row_rects.clear(); }
 }
 
 impl Pane for CpuPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: PaneRenderCtx<'_, '_>) {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = super::package::RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(crate::tui::constants::LABEL_COLOR),
             chrome:         crate::tui::pane::default_pane_chrome(),
@@ -160,22 +173,39 @@ impl Pane for CpuPane {
     }
 }
 
+impl Hittable for CpuPane {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        let (_rect, row) = self
+            .row_rects
+            .iter()
+            .find(|(rect, _)| rect.contains(pos))
+            .copied()?;
+        Some(HoverTarget::PaneRow {
+            pane: PaneId::Cpu,
+            row,
+        })
+    }
+}
+
 // ── Git ─────────────────────────────────────────────────────────
-//
-// Phase 8.6: cursor `Viewport` absorbed onto GitPane.
-// Phase 8.8: `content: Option<GitData>` absorbed (was the `git`
-// slot in `PaneDataStore`'s detail set).
-// Phase 10.1: `worktree_summary_cache` absorbed off `Panes`. The
-// cache feeds the Git pane's worktree section; it is git-pane
-// content. `RefCell` because `worktree_summary_or_compute` runs
-// inside `build_pane_data_common`, which only has `&App` and
-// therefore `&Panes` and `&GitPane`.
 pub struct GitPane {
     viewport:               Viewport,
     content:                Option<super::GitData>,
     worktree_summary_cache: std::cell::RefCell<
         std::collections::HashMap<crate::project::AbsolutePath, Vec<super::WorktreeInfo>>,
     >,
+    /// Per-row `inner_y` positions recorded each frame, indexed by
+    /// logical row. `content_area` is the absolute Rect on screen.
+    /// `Hittable::hit_test_at` walks this list with the recorded
+    /// scroll offset to map `pos.y` back to a row index.
+    row_layout:             GitRowLayout,
+}
+
+#[derive(Clone, Default)]
+struct GitRowLayout {
+    content_area:  Rect,
+    scroll_offset: usize,
+    row_line_ys:   Vec<usize>,
 }
 
 impl GitPane {
@@ -184,6 +214,7 @@ impl GitPane {
             viewport:               Viewport::new(),
             content:                None,
             worktree_summary_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            row_layout:             GitRowLayout::default(),
         }
     }
 
@@ -197,10 +228,6 @@ impl GitPane {
 
     pub fn clear_content(&mut self) { self.content = None; }
 
-    /// Return the cached worktree-summary for `group_root` if present;
-    /// otherwise compute via `compute` (the shell-out path), cache, and
-    /// return. Cache is sticky — only `clear_worktree_summary_cache`
-    /// invalidates it, called from tree-rebuild paths.
     pub fn worktree_summary_or_compute(
         &self,
         group_root: &std::path::Path,
@@ -218,10 +245,18 @@ impl GitPane {
     }
 
     pub fn clear_worktree_summary_cache(&self) { self.worktree_summary_cache.borrow_mut().clear(); }
+
+    pub fn set_row_layout(&mut self, content_area: Rect, row_line_ys: Vec<usize>) {
+        self.row_layout = GitRowLayout {
+            content_area,
+            scroll_offset: self.viewport.scroll_offset(),
+            row_line_ys,
+        };
+    }
 }
 
 impl Pane for GitPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: PaneRenderCtx<'_, '_>) {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = super::package::RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(crate::tui::constants::LABEL_COLOR),
             chrome:         crate::tui::pane::default_pane_chrome(),
@@ -230,11 +265,38 @@ impl Pane for GitPane {
     }
 }
 
+impl Hittable for GitPane {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        let layout = &self.row_layout;
+        let inner = layout.content_area;
+        if !inner.contains(pos) {
+            return None;
+        }
+        let visible_top = inner.y;
+        let visible_bottom = inner.y.saturating_add(inner.height);
+        for (row_index, &inner_y) in layout.row_line_ys.iter().enumerate() {
+            if inner_y < layout.scroll_offset {
+                continue;
+            }
+            let offset = inner_y - layout.scroll_offset;
+            let screen_y = inner
+                .y
+                .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
+            if screen_y < visible_top || screen_y >= visible_bottom {
+                continue;
+            }
+            if pos.y == screen_y {
+                return Some(HoverTarget::PaneRow {
+                    pane: PaneId::Git,
+                    row:  row_index,
+                });
+            }
+        }
+        None
+    }
+}
+
 // ── Lints ───────────────────────────────────────────────────────
-//
-// Phase 8.3: cursor `Viewport` absorbed onto LintsPane.
-// Phase 8.8: `content: Option<LintsData>` absorbed (was the
-// `lints` slot in `PaneDataStore`'s detail set).
 pub struct LintsPane {
     viewport: Viewport,
     content:  Option<super::LintsData>,
@@ -260,17 +322,22 @@ impl LintsPane {
 }
 
 impl Pane for LintsPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: PaneRenderCtx<'_, '_>) {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         super::lints::render_lints_pane_body(frame, area, self, ctx);
     }
 }
 
+impl Hittable for LintsPane {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        let row = hit_test_table_row(&self.viewport, pos)?;
+        Some(HoverTarget::PaneRow {
+            pane: PaneId::Lints,
+            row,
+        })
+    }
+}
+
 // ── CiRuns ──────────────────────────────────────────────────────
-//
-// Phase 8.4: cursor `Viewport` absorbed onto CiPane.
-// Phase 8.7: per-project `display_modes` absorbed.
-// Phase 8.8: `content: Option<CiData>` absorbed (was the `ci`
-// slot in `PaneDataStore`'s detail set).
 pub struct CiPane {
     viewport:      Viewport,
     content:       Option<super::CiData>,
@@ -296,9 +363,6 @@ impl CiPane {
 
     pub fn clear_content(&mut self) { self.content = None; }
 
-    /// Test-only: replace `content.runs` on an already-populated
-    /// detail set and drop the mode label. Mirrors what a production
-    /// rebuild would produce for fixture CI data.
     #[cfg(test)]
     pub fn override_runs_for_test(&mut self, runs: Vec<crate::ci::CiRun>) {
         if let Some(ci) = self.content.as_mut() {
@@ -321,41 +385,71 @@ impl CiPane {
 }
 
 impl Pane for CiPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: PaneRenderCtx<'_, '_>) {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         super::ci::render_ci_pane_body(frame, area, self, ctx);
     }
 }
 
+impl Hittable for CiPane {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        let row = hit_test_table_row(&self.viewport, pos)?;
+        Some(HoverTarget::PaneRow {
+            pane: PaneId::CiRuns,
+            row,
+        })
+    }
+}
+
 // ── Toasts ──────────────────────────────────────────────────────
-//
-// Phase 9.1: cursor `Viewport` absorbed onto ToastsPane. Toasts
-// render via the overlay path in `render.rs` (not `render_tiled_pane`),
-// so there is no `Pane` trait impl — the trait is for tiled-render
-// dispatch only. The viewport tracks cursor position over the active
-// toast list.
 pub struct ToastsPane {
     viewport: Viewport,
+    /// Per-toast hit rects recorded each frame by `render_toasts`
+    /// (card body + close `[x]` action). Walked top-down by
+    /// `Hittable::hit_test_at`; the action region wins over the body.
+    hits:     Vec<ToastHitbox>,
 }
 
 impl ToastsPane {
     pub const fn new() -> Self {
         Self {
             viewport: Viewport::new(),
+            hits:     Vec::new(),
         }
     }
 
     pub const fn viewport(&self) -> &Viewport { &self.viewport }
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    pub fn set_hits(&mut self, hits: Vec<ToastHitbox>) { self.hits = hits; }
+
+    #[cfg(test)]
+    pub fn hits(&self) -> &[ToastHitbox] { &self.hits }
+}
+
+impl Pane for ToastsPane {
+    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {
+        // ToastsPane renders via the overlay path in `render.rs`,
+        // not through `render_tiled_pane`. The trait impl exists
+        // only so the pane can also implement `Hittable`.
+    }
+}
+
+impl Hittable for ToastsPane {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        for hit in &self.hits {
+            if hit.close_rect.contains(pos) {
+                return Some(HoverTarget::Dismiss(DismissTarget::Toast(hit.id)));
+            }
+            if hit.card_rect.contains(pos) {
+                return Some(HoverTarget::ToastCard(hit.id));
+            }
+        }
+        None
+    }
 }
 
 // ── Keymap ──────────────────────────────────────────────────────
-//
-// Phase 9.2: cursor `Viewport` absorbed onto KeymapPane. The
-// keymap popup renders via `keymap_ui::render_keymap_popup` (an
-// overlay path, not `render_tiled_pane`), so there is no `Pane`
-// trait impl. The viewport tracks cursor position over the
-// keymap-row list.
 pub struct KeymapPane {
     viewport: Viewport,
 }
@@ -372,35 +466,72 @@ impl KeymapPane {
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 }
 
+impl Pane for KeymapPane {
+    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {
+        // Overlay path in `keymap_ui::render_keymap_popup`.
+    }
+}
+
+impl Hittable for KeymapPane {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        let row = self.viewport.pos_to_local_row(pos)?;
+        Some(HoverTarget::PaneRow {
+            pane: PaneId::Keymap,
+            row,
+        })
+    }
+}
+
 // ── Settings ────────────────────────────────────────────────────
-//
-// Phase 9.3: cursor `Viewport` absorbed onto SettingsPane. The
-// settings popup renders via `settings::render_settings_popup`
-// (overlay path, not `render_tiled_pane`), so there is no `Pane`
-// trait impl. The viewport tracks cursor position over the
-// settings options list.
 pub struct SettingsPane {
-    viewport: Viewport,
+    viewport:     Viewport,
+    /// Per-rendered-line mapping from line index (relative to the
+    /// settings popup's content area) to the underlying setting row
+    /// index. Spacer / header lines are `None`. Recorded by
+    /// `settings::render_settings_popup`.
+    line_targets: Vec<Option<usize>>,
 }
 
 impl SettingsPane {
     pub const fn new() -> Self {
         Self {
-            viewport: Viewport::new(),
+            viewport:     Viewport::new(),
+            line_targets: Vec::new(),
         }
     }
 
     pub const fn viewport(&self) -> &Viewport { &self.viewport }
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    pub fn set_line_targets(&mut self, targets: Vec<Option<usize>>) { self.line_targets = targets; }
+}
+
+impl Pane for SettingsPane {
+    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {
+        // Overlay path in `settings::render_settings_popup`.
+    }
+}
+
+impl Hittable for SettingsPane {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        let inner = self.viewport.content_area();
+        if inner.width == 0 || inner.height == 0 {
+            return None;
+        }
+        if !inner.contains(pos) {
+            return None;
+        }
+        let line_index = usize::from(pos.y.saturating_sub(inner.y));
+        let row = self.line_targets.get(line_index).copied().flatten()?;
+        Some(HoverTarget::PaneRow {
+            pane: PaneId::Settings,
+            row,
+        })
+    }
 }
 
 // ── Finder ──────────────────────────────────────────────────────
-//
-// Phase 9.4: cursor `Viewport` absorbed onto FinderPane. The
-// finder popup renders via `finder::render_finder_popup` (overlay
-// path), so there is no `Pane` trait impl. The viewport tracks
-// cursor position over the search results list.
 pub struct FinderPane {
     viewport: Viewport,
 }
@@ -417,15 +548,23 @@ impl FinderPane {
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 }
 
+impl Pane for FinderPane {
+    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {
+        // Overlay path in `finder::render_finder_popup`.
+    }
+}
+
+impl Hittable for FinderPane {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        let row = hit_test_table_row(&self.viewport, pos)?;
+        Some(HoverTarget::PaneRow {
+            pane: PaneId::Finder,
+            row,
+        })
+    }
+}
+
 // ── Targets ─────────────────────────────────────────────────────
-//
-// Phase 9.6: cursor `Viewport` and content slot absorbed onto
-// TargetsPane. The content slot was the last remaining slot in
-// `PaneDataStore` after Phase 8.8. The renderer
-// (`panes::targets::render_targets_panel` / `render_empty_targets_panel`)
-// reads `pane.content()` and `pane.viewport()`. No `Pane` trait
-// impl yet — the body still takes `&mut App` because it touches
-// `pane_focus_state` and other App-shell state during render.
 pub struct TargetsPane {
     viewport: Viewport,
     content:  Option<super::TargetsData>,
@@ -450,44 +589,75 @@ impl TargetsPane {
     pub fn clear_content(&mut self) { self.content = None; }
 }
 
+impl Hittable for TargetsPane {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        let row = self.viewport.pos_to_local_row(pos)?;
+        Some(HoverTarget::PaneRow {
+            pane: PaneId::Targets,
+            row,
+        })
+    }
+}
+
+// TargetsPane is rendered by free functions in `panes/targets.rs`
+// (no `Pane` trait impl yet). To still participate in
+// `Hittable`-trait dispatch we provide a no-op `Pane` impl here so
+// `Hittable: Pane` is satisfied.
+impl Pane for TargetsPane {
+    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {
+        // Render handled by `panes::render_targets_panel` /
+        // `render_empty_targets_panel`.
+    }
+}
+
 // ── ProjectList ─────────────────────────────────────────────────
-//
-// Phase 9.7a: cursor `Viewport` absorbed onto ProjectListPane.
-// ProjectList is the largest pane by render-body line count, but
-// its only state is the viewport — there is no content slot
-// (the renderer reads off `app.projects()` and the layout cache
-// directly). Phase 9.7b relocates the ~13 render helpers from
-// `tui/render.rs` into `panes/project_list.rs`. After that the
-// last `PaneManager` slot is gone and Phase 10 deletes the
-// vestigial `manager` field on `Panes`.
 pub struct ProjectListPane {
-    viewport: Viewport,
+    viewport:        Viewport,
+    /// Per-row dismiss `[x]` rects recorded each frame, alongside
+    /// the resolved `DismissTarget`. The action region wins over
+    /// the row body in `Hittable::hit_test_at`.
+    dismiss_actions: Vec<(Rect, DismissTarget)>,
 }
 
 impl ProjectListPane {
     pub const fn new() -> Self {
         Self {
-            viewport: Viewport::new(),
+            viewport:        Viewport::new(),
+            dismiss_actions: Vec::new(),
         }
     }
 
     pub const fn viewport(&self) -> &Viewport { &self.viewport }
 
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    pub fn set_dismiss_actions(&mut self, actions: Vec<(Rect, DismissTarget)>) {
+        self.dismiss_actions = actions;
+    }
+}
+
+impl Pane for ProjectListPane {
+    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {
+        // Render handled by `panes::project_list::render_left_panel`.
+    }
+}
+
+impl Hittable for ProjectListPane {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        for (rect, target) in &self.dismiss_actions {
+            if rect.contains(pos) {
+                return Some(HoverTarget::Dismiss(target.clone()));
+            }
+        }
+        let row = self.viewport.pos_to_local_row(pos)?;
+        Some(HoverTarget::PaneRow {
+            pane: PaneId::ProjectList,
+            row,
+        })
+    }
 }
 
 // ── Output ──────────────────────────────────────────────────────
-//
-// Phase 9.5: `OutputPane` lands as a per-pane struct alongside its
-// render body, which moves into `panes/output.rs`. Output has no
-// cursor, no selection, no hover, and no content slot today — the
-// renderer auto-scrolls to the bottom of `app.example_output()`.
-// The empty `Viewport` is kept for parity with the other panes (so
-// `viewport_for(PaneId::Output)` routes here in Phase 9.8 when
-// `PaneManager` is removed). No `Pane` trait impl: the render body
-// reaches into App-shell state (`example_running`, `example_output`)
-// that doesn't fit `PaneRenderCtx`, so it stays a free function
-// called directly from `render_tiled_pane`.
 pub struct OutputPane {
     viewport: Viewport,
 }
@@ -499,7 +669,34 @@ impl OutputPane {
         }
     }
 
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+}
+
+// `OutputPane` is not `Hittable` — the output panel is read-only,
+// not click-targeted today.
+
+// ── Helpers ─────────────────────────────────────────────────────
+
+/// Hit-test a table-shaped pane (Lints, CI, Finder) where the
+/// first line of the inner area is a column header and rows start
+/// at `inner.y + 1`. `viewport.content_area` is the full inner
+/// rect (including the header); `viewport.scroll_offset` is the
+/// `TableState::offset()` recorded at render time.
+fn hit_test_table_row(viewport: &Viewport, pos: Position) -> Option<usize> {
+    let inner = viewport.content_area();
+    if inner.width == 0 || inner.height == 0 {
+        return None;
+    }
+    if !inner.contains(pos) {
+        return None;
+    }
+    if pos.y < inner.y.saturating_add(1) {
+        return None;
+    }
+    let visual_row = pos.y - inner.y - 1;
+    let row = viewport.scroll_offset() + usize::from(visual_row);
+    if row >= viewport.len() {
+        return None;
+    }
+    Some(row)
 }

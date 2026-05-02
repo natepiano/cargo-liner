@@ -2,224 +2,34 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
 use super::app::App;
-use super::app::DismissTarget;
 use super::app::HoveredPaneRow;
-use super::columns;
-use super::pane::Viewport;
 use super::panes::PaneId;
 
-const DISMISS_SUFFIX: &str = " [x]";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum UiSurface {
-    Content,
-    Overlay,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum UiRegion {
-    Body,
-    Action,
-}
-
-#[derive(Clone, Debug)]
-pub(super) enum UiTarget {
-    PaneRow { pane: PaneId, row: usize },
-    Dismiss(DismissTarget),
-    ToastCard(u64),
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct UiHitbox {
-    pub rect:    Rect,
-    pub target:  UiTarget,
-    surface:     UiSurface,
-    region:      UiRegion,
-    order_index: usize,
-}
-
-impl UiHitbox {
-    const fn new(
-        rect: Rect,
-        target: UiTarget,
-        surface: UiSurface,
-        region: UiRegion,
-        order_index: usize,
-    ) -> Self {
-        Self {
-            rect,
-            target,
-            surface,
-            region,
-            order_index,
-        }
-    }
-}
-
+/// Per-toast hit-test rects produced by `toasts::render_toasts`
+/// and stashed onto `ToastsPane` each frame. The Phase 10.3
+/// `Hittable` impl on `ToastsPane` walks the list directly.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct ToastHitbox {
+pub struct ToastHitbox {
     pub id:         u64,
     pub card_rect:  Rect,
     pub close_rect: Rect,
 }
 
-pub(super) fn register_project_list_hitboxes(app: &mut App, list_area: Rect, row_width: u16) {
-    let pane = app.panes().project_list().viewport();
-    let visible_height = usize::from(list_area.height);
-    let visible_start = pane.scroll_offset();
-    let visible_end = pane.len().min(visible_start.saturating_add(visible_height));
-    let suffix_width = u16::try_from(columns::display_width(DISMISS_SUFFIX)).unwrap_or(u16::MAX);
-
-    for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
-        let y = list_area
-            .y
-            .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
-        let body_rect = Rect::new(list_area.x, y, row_width, 1);
-        let order_index = app.layout_cache().ui_hitboxes.len();
-        app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
-            body_rect,
-            UiTarget::PaneRow {
-                pane: PaneId::ProjectList,
-                row:  row_index,
-            },
-            UiSurface::Content,
-            UiRegion::Body,
-            order_index,
-        ));
-
-        let dismiss_target = app
-            .visible_rows()
-            .get(row_index)
-            .copied()
-            .and_then(|row| app.dismiss_target_for_row(row));
-        if let Some(target) = dismiss_target {
-            let x = list_area
-                .x
-                .saturating_add(row_width.saturating_sub(suffix_width));
-            let action_rect = Rect::new(x, y, suffix_width, 1);
-            let order_index = app.layout_cache().ui_hitboxes.len();
-            app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
-                action_rect,
-                UiTarget::Dismiss(target),
-                UiSurface::Content,
-                UiRegion::Action,
-                order_index,
-            ));
-        }
-    }
-}
-
-pub(super) fn register_toast_hitboxes(app: &mut App, toasts: &[ToastHitbox]) {
-    for toast in toasts {
-        let body_order = app.layout_cache().ui_hitboxes.len();
-        app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
-            toast.card_rect,
-            UiTarget::ToastCard(toast.id),
-            UiSurface::Overlay,
-            UiRegion::Body,
-            body_order,
-        ));
-        let action_order = app.layout_cache().ui_hitboxes.len();
-        app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
-            toast.close_rect,
-            UiTarget::Dismiss(DismissTarget::Toast(toast.id)),
-            UiSurface::Overlay,
-            UiRegion::Action,
-            action_order,
-        ));
-    }
-}
-
-pub(super) fn register_pane_row_hitbox(
-    app: &mut App,
-    rect: Rect,
-    pane: PaneId,
-    row: usize,
-    surface: UiSurface,
-) {
-    push_pane_row_hitbox(
-        &mut app.layout_cache_mut().ui_hitboxes,
-        rect,
-        pane,
-        row,
-        surface,
-    );
-}
-
-/// Lower-level push: takes the hitbox vec directly. Used by the
-/// per-pane trait dispatch path (Phase 8.9+) where the trait
-/// method has access to a `HitboxSink` instead of `&mut App`.
-pub(super) fn push_pane_row_hitbox(
-    hitboxes: &mut Vec<UiHitbox>,
-    rect: Rect,
-    pane: PaneId,
-    row: usize,
-    surface: UiSurface,
-) {
-    let order_index = hitboxes.len();
-    hitboxes.push(UiHitbox::new(
-        rect,
-        UiTarget::PaneRow { pane, row },
-        surface,
-        UiRegion::Body,
-        order_index,
-    ));
-}
-
-pub(super) fn register_pane_row_hitboxes(
-    app: &mut App,
-    pane_id: PaneId,
-    pane: &Viewport,
-    surface: UiSurface,
-) {
-    let area = pane.content_area();
-    if area.width == 0 || area.height == 0 || pane.len() == 0 {
-        return;
-    }
-
-    let visible_height = usize::from(area.height);
-    let visible_start = pane.scroll_offset();
-    let visible_end = pane.len().min(visible_start.saturating_add(visible_height));
-
-    for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
-        let y = area
-            .y
-            .saturating_add(u16::try_from(screen_row).unwrap_or(u16::MAX));
-        let body_rect = Rect::new(area.x, y, area.width, 1);
-        register_pane_row_hitbox(app, body_rect, pane_id, row_index, surface);
-    }
-}
-
 pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
-    let hit = app
-        .layout_cache()
-        .ui_hitboxes
-        .iter()
-        .filter(|hitbox| hitbox.rect.contains(pos))
-        .max_by(|lhs, rhs| {
-            (lhs.surface, lhs.region, lhs.order_index).cmp(&(
-                rhs.surface,
-                rhs.region,
-                rhs.order_index,
-            ))
-        })
-        .cloned();
-
-    let Some(hit) = hit else {
+    let Some(hit) = app.panes().hit_test_at(pos) else {
         return false;
     };
-
-    match hit.target {
-        UiTarget::PaneRow { pane, row } => {
+    match hit {
+        crate::tui::panes::HoverTarget::PaneRow { pane, row } => {
             app.focus_pane(pane);
             app.panes_mut().set_pane_pos(pane, row);
             true
         },
-        UiTarget::Dismiss(target) => {
+        crate::tui::panes::HoverTarget::Dismiss(target) => {
             app.dismiss(target);
             true
         },
-        UiTarget::ToastCard(id) => {
+        crate::tui::panes::HoverTarget::ToastCard(id) => {
             let active = app.active_toasts();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
                 app.panes_mut().toasts_mut().viewport_mut().set_pos(index);
@@ -231,19 +41,11 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
 }
 
 pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPaneRow> {
-    app.layout_cache()
-        .ui_hitboxes
-        .iter()
-        .filter(|hitbox| hitbox.rect.contains(pos))
-        .filter_map(|hitbox| match hitbox.target {
-            UiTarget::PaneRow { pane, row } => Some((
-                (hitbox.surface, hitbox.region, hitbox.order_index),
-                HoveredPaneRow { pane, row },
-            )),
-            _ => None,
-        })
-        .max_by_key(|(priority, _)| *priority)
-        .map(|(_, hovered)| hovered)
+    match app.panes().hit_test_at(pos)? {
+        crate::tui::panes::HoverTarget::PaneRow { pane, row } => Some(HoveredPaneRow { pane, row }),
+        crate::tui::panes::HoverTarget::Dismiss(_)
+        | crate::tui::panes::HoverTarget::ToastCard(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -267,13 +69,8 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
-    use ratatui::layout::Rect;
 
     use super::HoveredPaneRow;
-    use super::UiHitbox;
-    use super::UiRegion;
-    use super::UiSurface;
-    use super::UiTarget;
     use crate::ci::CiJob;
     use crate::ci::CiRun;
     use crate::ci::Conclusion;
@@ -504,7 +301,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (panes, layout_cache, config, _selection, scan) = app.split_panes_for_render();
+                let (panes, _layout_cache, config, _selection, scan) = app.split_panes_for_render();
                 let args = panes::DispatchArgs {
                     focus_state,
                     is_focused,
@@ -513,7 +310,7 @@ mod tests {
                     scan,
                     selected_project_path: selected_path.as_deref(),
                 };
-                panes.dispatch_lints_render(&mut layout_cache.ui_hitboxes, frame, area, &args);
+                panes.dispatch_lints_render(frame, area, &args);
             })
             .unwrap_or_else(|_| std::process::abort());
     }
@@ -532,7 +329,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (panes, layout_cache, config, _selection, scan) = app.split_panes_for_render();
+                let (panes, _layout_cache, config, _selection, scan) = app.split_panes_for_render();
                 let args = panes::DispatchArgs {
                     focus_state,
                     is_focused,
@@ -541,7 +338,7 @@ mod tests {
                     scan,
                     selected_project_path: selected_path.as_deref(),
                 };
-                panes.dispatch_ci_render(&mut layout_cache.ui_hitboxes, frame, area, &args);
+                panes.dispatch_ci_render(frame, area, &args);
             })
             .unwrap_or_else(|_| std::process::abort());
     }
@@ -642,15 +439,16 @@ mod tests {
     }
 
     fn toast_close_point(app: &App, toast_id: u64) -> (u16, u16) {
-        let rect = app
-            .layout_cache()
-            .ui_hitboxes
+        let Some(rect) = app
+            .panes()
+            .toasts()
+            .hits()
             .iter()
-            .find_map(|hitbox| match hitbox.target {
-                UiTarget::Dismiss(DismissTarget::Toast(id)) if id == toast_id => Some(hitbox.rect),
-                _ => None,
-            })
-            .unwrap_or_else(|| std::process::abort());
+            .find(|h| h.id == toast_id)
+            .map(|h| h.close_rect)
+        else {
+            std::process::abort();
+        };
         (
             rect.x.saturating_add(rect.width.saturating_sub(1) / 2),
             rect.y.saturating_add(rect.height.saturating_sub(1) / 2),
@@ -658,15 +456,16 @@ mod tests {
     }
 
     fn toast_body_point(app: &App, toast_id: u64) -> (u16, u16) {
-        let rect = app
-            .layout_cache()
-            .ui_hitboxes
+        let Some(rect) = app
+            .panes()
+            .toasts()
+            .hits()
             .iter()
-            .find_map(|hitbox| match hitbox.target {
-                UiTarget::ToastCard(id) if id == toast_id => Some(hitbox.rect),
-                _ => None,
-            })
-            .unwrap_or_else(|| std::process::abort());
+            .find(|h| h.id == toast_id)
+            .map(|h| h.card_rect)
+        else {
+            std::process::abort();
+        };
         (
             rect.x.saturating_add(rect.width.saturating_sub(1) / 2),
             rect.y.saturating_add(rect.height.saturating_sub(1) / 2),
@@ -716,17 +515,13 @@ mod tests {
         let keyboard_target = app
             .focused_dismiss_target()
             .unwrap_or_else(|| std::process::abort());
-        let mouse_target = app
-            .layout_cache()
-            .ui_hitboxes
-            .iter()
-            .find_map(|hitbox| match &hitbox.target {
-                UiTarget::Dismiss(DismissTarget::DeletedProject(path)) if path == &deleted_dir => {
-                    Some(DismissTarget::DeletedProject(path.clone()))
-                },
-                _ => None,
-            })
-            .unwrap_or_else(|| std::process::abort());
+        let (x, y) = row_dismiss_point(&app, 0);
+        let Some(hit) = app.panes().hit_test_at(Position::new(x, y)) else {
+            std::process::abort();
+        };
+        let panes::HoverTarget::Dismiss(mouse_target) = hit else {
+            std::process::abort();
+        };
 
         let DismissTarget::DeletedProject(lhs) = keyboard_target else {
             std::process::abort();
@@ -762,38 +557,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn hovered_pane_row_prefers_pane_row_hitboxes() {
-        let mut app = make_app(&[]);
-        app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
-            Rect::new(10, 5, 20, 1),
-            UiTarget::PaneRow {
-                pane: PaneId::ProjectList,
-                row:  0,
-            },
-            UiSurface::Content,
-            UiRegion::Body,
-            0,
-        ));
-        app.layout_cache_mut().ui_hitboxes.push(UiHitbox::new(
-            Rect::new(10, 5, 20, 1),
-            UiTarget::PaneRow {
-                pane: PaneId::Git,
-                row:  2,
-            },
-            UiSurface::Overlay,
-            UiRegion::Body,
-            1,
-        ));
-
-        assert_eq!(
-            super::hovered_pane_row_at(&app, Position::new(12, 5)),
-            Some(HoveredPaneRow {
-                pane: PaneId::Git,
-                row:  2,
-            })
-        );
-    }
+    // The "overlay surface beats content surface" priority is now
+    // encoded by the order of `HITTABLE_Z_ORDER` in
+    // `panes::dispatch`. The strum-backed
+    // `z_order_covers_every_hittable_id` test pins coverage; the
+    // ordering itself is enforced by the literal constant value.
 
     #[test]
     fn hovered_pane_row_resolves_project_list_rows() {

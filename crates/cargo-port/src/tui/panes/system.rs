@@ -20,7 +20,10 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use super::data::PaneDataStore;
-use super::dispatch::HitboxSink;
+use super::dispatch::HITTABLE_Z_ORDER;
+use super::dispatch::Hittable;
+use super::dispatch::HittableId;
+use super::dispatch::HoverTarget;
 use super::dispatch::Pane;
 use super::dispatch::PaneRenderCtx;
 use super::pane_impls::CiPane;
@@ -58,6 +61,17 @@ pub struct DispatchArgs<'a> {
     pub config:                &'a Config,
     pub scan:                  &'a Scan,
     pub selected_project_path: Option<&'a Path>,
+}
+
+const fn build_ctx<'a>(args: &DispatchArgs<'a>) -> PaneRenderCtx<'a> {
+    PaneRenderCtx {
+        focus_state:           args.focus_state,
+        is_focused:            args.is_focused,
+        animation_elapsed:     args.animation_elapsed,
+        config:                args.config,
+        scan:                  args.scan,
+        selected_project_path: args.selected_project_path,
+    }
 }
 
 /// Owns every pane-related piece of state. App holds a single `panes:
@@ -236,150 +250,73 @@ impl Panes {
     /// Dispatch `CiPane`'s render through the `Pane` trait.
     pub fn dispatch_ci_render(
         &mut self,
-        hitboxes: &mut Vec<crate::tui::interaction::UiHitbox>,
         frame: &mut Frame<'_>,
         area: Rect,
         args: &DispatchArgs<'_>,
     ) {
-        let mut sink = HitboxSink::new(hitboxes);
-        let ctx = PaneRenderCtx {
-            focus_state:           args.focus_state,
-            is_focused:            args.is_focused,
-            animation_elapsed:     args.animation_elapsed,
-            config:                args.config,
-            scan:                  args.scan,
-            selected_project_path: args.selected_project_path,
-            hit_sink:              &mut sink,
-        };
+        let ctx = build_ctx(args);
+        let ctx = &ctx;
         Pane::render(&mut self.ci_runs, frame, area, ctx);
     }
 
     /// Dispatch `LintsPane`'s render through the `Pane` trait.
     pub fn dispatch_lints_render(
         &mut self,
-        hitboxes: &mut Vec<crate::tui::interaction::UiHitbox>,
         frame: &mut Frame<'_>,
         area: Rect,
         args: &DispatchArgs<'_>,
     ) {
-        let mut sink = HitboxSink::new(hitboxes);
-        let ctx = PaneRenderCtx {
-            focus_state:           args.focus_state,
-            is_focused:            args.is_focused,
-            animation_elapsed:     args.animation_elapsed,
-            config:                args.config,
-            scan:                  args.scan,
-            selected_project_path: args.selected_project_path,
-            hit_sink:              &mut sink,
-        };
+        let ctx = build_ctx(args);
+        let ctx = &ctx;
         Pane::render(&mut self.lints, frame, area, ctx);
     }
 
     /// Dispatch `CpuPane`'s render through the `Pane` trait.
     pub fn dispatch_cpu_render(
         &mut self,
-        hitboxes: &mut Vec<crate::tui::interaction::UiHitbox>,
         frame: &mut Frame<'_>,
         area: Rect,
         args: &DispatchArgs<'_>,
     ) {
-        let mut sink = HitboxSink::new(hitboxes);
-        let ctx = PaneRenderCtx {
-            focus_state:           args.focus_state,
-            is_focused:            args.is_focused,
-            animation_elapsed:     args.animation_elapsed,
-            config:                args.config,
-            scan:                  args.scan,
-            selected_project_path: args.selected_project_path,
-            hit_sink:              &mut sink,
-        };
+        let ctx = build_ctx(args);
+        let ctx = &ctx;
         Pane::render(&mut self.cpu, frame, area, ctx);
     }
 
     /// Dispatch `LangPane`'s render through the `Pane` trait.
     pub fn dispatch_lang_render(
         &mut self,
-        hitboxes: &mut Vec<crate::tui::interaction::UiHitbox>,
         frame: &mut Frame<'_>,
         area: Rect,
         args: &DispatchArgs<'_>,
     ) {
-        let mut sink = HitboxSink::new(hitboxes);
-        let ctx = PaneRenderCtx {
-            focus_state:           args.focus_state,
-            is_focused:            args.is_focused,
-            animation_elapsed:     args.animation_elapsed,
-            config:                args.config,
-            scan:                  args.scan,
-            selected_project_path: args.selected_project_path,
-            hit_sink:              &mut sink,
-        };
+        let ctx = build_ctx(args);
+        let ctx = &ctx;
         Pane::render(&mut self.lang, frame, area, ctx);
     }
 
     /// Dispatch `PackagePane`'s render through the `Pane` trait.
     pub fn dispatch_package_render(
         &mut self,
-        hitboxes: &mut Vec<crate::tui::interaction::UiHitbox>,
         frame: &mut Frame<'_>,
         area: Rect,
         args: &DispatchArgs<'_>,
     ) {
-        let mut sink = HitboxSink::new(hitboxes);
-        let ctx = PaneRenderCtx {
-            focus_state:           args.focus_state,
-            is_focused:            args.is_focused,
-            animation_elapsed:     args.animation_elapsed,
-            config:                args.config,
-            scan:                  args.scan,
-            selected_project_path: args.selected_project_path,
-            hit_sink:              &mut sink,
-        };
+        let ctx = build_ctx(args);
+        let ctx = &ctx;
         Pane::render(&mut self.package, frame, area, ctx);
     }
 
     /// Dispatch `GitPane`'s render through the `Pane` trait.
     pub fn dispatch_git_render(
         &mut self,
-        hitboxes: &mut Vec<crate::tui::interaction::UiHitbox>,
         frame: &mut Frame<'_>,
         area: Rect,
         args: &DispatchArgs<'_>,
     ) {
-        let mut sink = HitboxSink::new(hitboxes);
-        let ctx = PaneRenderCtx {
-            focus_state:           args.focus_state,
-            is_focused:            args.is_focused,
-            animation_elapsed:     args.animation_elapsed,
-            config:                args.config,
-            scan:                  args.scan,
-            selected_project_path: args.selected_project_path,
-            hit_sink:              &mut sink,
-        };
+        let ctx = build_ctx(args);
+        let ctx = &ctx;
         Pane::render(&mut self.git, frame, area, ctx);
-    }
-
-    /// Polymorphic read-only viewport accessor. Routes to the
-    /// per-pane `Viewport` for migrated panes, falls back to the
-    /// vestigial `PaneManager` slot for un-migrated panes. Used
-    /// by hitbox registration in `render.rs::register_hitbox_for_pane`
-    /// and any code that needs a viewport by `PaneId`.
-    pub const fn viewport_for(&self, id: PaneId) -> &Viewport {
-        match id {
-            PaneId::Cpu => self.cpu.viewport(),
-            PaneId::Lang => self.lang.viewport(),
-            PaneId::Lints => self.lints.viewport(),
-            PaneId::CiRuns => self.ci_runs.viewport(),
-            PaneId::Package => self.package.viewport(),
-            PaneId::Git => self.git.viewport(),
-            PaneId::Toasts => self.toasts.viewport(),
-            PaneId::Keymap => self.keymap.viewport(),
-            PaneId::Settings => self.settings.viewport(),
-            PaneId::Finder => self.finder.viewport(),
-            PaneId::Output => self.output.viewport(),
-            PaneId::Targets => self.targets.viewport(),
-            PaneId::ProjectList => self.project_list.viewport(),
-        }
     }
 
     /// Set the cursor position for `id`'s viewport, routing to
@@ -513,6 +450,32 @@ impl Panes {
     /// placeholder snapshot. Delegates to
     /// `CpuPane::install_placeholder`. Used from `App::finish_new`.
     pub fn install_cpu_placeholder(&mut self) { self.cpu.install_placeholder(); }
+
+    /// Walk `HITTABLE_Z_ORDER` top-to-bottom and return the first
+    /// pane's `hit_test_at` answer. Phase 10.3 dispatch entry
+    /// point: replaces the global `ui_hitboxes` vec walk.
+    pub fn hit_test_at(&self, pos: ratatui::layout::Position) -> Option<HoverTarget> {
+        for id in HITTABLE_Z_ORDER {
+            let pane: &dyn Hittable = match id {
+                HittableId::Toasts => &self.toasts,
+                HittableId::Finder => &self.finder,
+                HittableId::Settings => &self.settings,
+                HittableId::Keymap => &self.keymap,
+                HittableId::ProjectList => &self.project_list,
+                HittableId::Package => &self.package,
+                HittableId::Lang => &self.lang,
+                HittableId::Cpu => &self.cpu,
+                HittableId::Git => &self.git,
+                HittableId::Targets => &self.targets,
+                HittableId::Lints => &self.lints,
+                HittableId::CiRuns => &self.ci_runs,
+            };
+            if let Some(hit) = pane.hit_test_at(pos) {
+                return Some(hit);
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
