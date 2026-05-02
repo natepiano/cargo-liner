@@ -484,3 +484,124 @@ edition = "2024"
         report.findings,
     );
 }
+
+// Depth boundary for the `ShallowPrivateModule` policy: depth 1 and depth 2
+// are shallow (pub(crate) allowed), depth 3+ is nested (pub(crate) forbidden).
+// See `resolve_module_location` in src/compiler/visibility/policy.rs.
+
+#[test]
+fn pub_crate_at_depth_1_is_allowed() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "depth_1_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(temp.path().join("src/lib.rs"), "mod foo;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/foo.rs"),
+        "pub(crate) fn helper() {}\n",
+    )
+    .expect("write foo");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let forbidden: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.code == DiagnosticCode::ForbiddenPubCrate)
+        .collect();
+    assert!(
+        forbidden.is_empty(),
+        "depth-1 pub(crate) in a private module should be allowed (shallow): {forbidden:?}",
+    );
+}
+
+#[test]
+fn pub_crate_at_depth_2_is_allowed() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "depth_2_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/foo")).expect("create src/foo");
+    fs::write(temp.path().join("src/lib.rs"), "mod foo;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/foo/mod.rs"),
+        "mod bar;\npub(crate) use bar::helper;\n",
+    )
+    .expect("write foo/mod.rs");
+    fs::write(
+        temp.path().join("src/foo/bar.rs"),
+        "pub(crate) fn helper() {}\n",
+    )
+    .expect("write foo/bar.rs");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let forbidden: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.code == DiagnosticCode::ForbiddenPubCrate)
+        .collect();
+    assert!(
+        forbidden.is_empty(),
+        "depth-2 pub(crate) in a private module subtree should be allowed (shallow): {forbidden:?}",
+    );
+}
+
+#[test]
+fn pub_crate_at_depth_3_is_forbidden() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "depth_3_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/foo/bar")).expect("create src/foo/bar");
+    fs::write(temp.path().join("src/lib.rs"), "mod foo;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/foo/mod.rs"),
+        "mod bar;\npub(crate) use bar::helper;\n",
+    )
+    .expect("write foo/mod.rs");
+    fs::write(
+        temp.path().join("src/foo/bar/mod.rs"),
+        "mod baz;\npub(crate) use baz::helper;\n",
+    )
+    .expect("write foo/bar/mod.rs");
+    fs::write(
+        temp.path().join("src/foo/bar/baz.rs"),
+        "pub(crate) fn helper() {}\n",
+    )
+    .expect("write foo/bar/baz.rs");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let forbidden_count = report
+        .findings
+        .iter()
+        .filter(|f| {
+            f.code == DiagnosticCode::ForbiddenPubCrate && f.path.ends_with("src/foo/bar/baz.rs")
+        })
+        .count();
+    assert_eq!(
+        forbidden_count, 1,
+        "depth-3 pub(crate) in a nested module should be forbidden: {:?}",
+        report.findings,
+    );
+}

@@ -54,8 +54,9 @@ Hard errors:
 - `pub(crate)` is forbidden in nested modules
 - library crates may use `pub(crate)` at the crate root when the intent is to keep an item
   crate-internal rather than part of the external library API
-- top-level private modules in library crates may also use `pub(crate)` when the intent is to keep
-  an item crate-internal and prevent accidental exposure through the public library boundary
+- shallow private modules in library crates (one or two levels deep, e.g. `crate::foo` or
+  `crate::foo::bar`) may also use `pub(crate)` when the intent is to keep an item crate-internal
+  and prevent accidental exposure through the public library boundary
 - `pub(in crate::...)` is forbidden
 - `pub mod` requires an explicit allowlist entry
 
