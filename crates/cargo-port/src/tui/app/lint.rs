@@ -35,7 +35,7 @@ impl App {
     /// Phase 11.2 — replaces the per-row `lint_icon*` bodies that
     /// each duplicated the "find a status, then frame an icon"
     /// pattern.
-    pub fn frame_lint_icon(&self, status: &LintStatus) -> &'static str {
+    fn frame_lint_icon(&self, status: &LintStatus) -> &'static str {
         if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
