@@ -1589,6 +1589,259 @@ follow-up. Both are now resolved or contracted into named phases:
   See "Typed display values, not pre-rendered strings" in
   Recurring patterns for the principle that drives this work.
 
+## Phase 10.3 trait-redesign decisions (in progress)
+
+Six open design questions surfaced when starting Phase 10.3
+(`Pane::hit_test` + remove push-during-render hitboxes). Decisions
+recorded here as we walk them; implementation begins after all six
+are settled.
+
+- **Push → pull inversion scope.** _Decided: full replacement, no
+  parallel migration._ `HitboxSink` and `PaneRenderCtx::hit_sink`
+  are deleted in the same phase that introduces `Pane::hit_test`.
+  No cutover trigger needed.
+- **Action sub-regions (Body vs Action `[x]`).** _Decided: option (b)
+  — `hit_test(row) -> Option<RowHit>` returns a richer enum that
+  carries the row plus an optional list of action `Rect`s the
+  click handler resolves against `mouse_x`._
+
+  ```rust
+  fn hit_test(&self, row: u16) -> Option<RowHit>;
+
+  enum RowHit {
+      Row,
+      RowWithActions { actions: Vec<(Rect, ActionId)> },
+  }
+  ```
+
+  Tradeoffs accepted: per-call allocation for the action `Vec`
+  (small; switch to `SmallVec` or fixed-size array if it shows
+  up in profiling); two-step caller logic (ask the pane, then
+  resolve action against returned rects); pane has to either
+  retain action rects between renders or recompute them inside
+  `hit_test`.
+
+  Tradeoffs rejected: option (a) — adding `col: u16` to the
+  signature — burdens 12 panes that ignore it for one pane's
+  benefit. Option (c) — keeping action regions on a separate
+  push-during-render path — preserves a push-model exception
+  inside the inversion, which is exactly what 10.3 is removing.
+- **Z-order across panes.** _Decided: option (a) — explicit z-list
+  constant owned by the click dispatcher._
+
+  ```rust
+  const PANE_Z_ORDER: [PaneId; 13] = [
+      PaneId::Toasts,    // top
+      PaneId::Finder,
+      PaneId::Settings,
+      PaneId::Keymap,
+      // ... content panes below ...
+      PaneId::ProjectList,
+      // ...
+  ];
+
+  fn dispatch_click(panes: &Panes, mouse: Pos) -> Option<HoverTarget> {
+      for id in PANE_Z_ORDER {
+          if let Some(hit) = panes.pane(id).hit_test_at(mouse) {
+              return Some(hit);
+          }
+      }
+      None
+  }
+  ```
+
+  Picked because it's one-to-one with the concept (a list of
+  `PaneId` in stacking order), single source of truth, and the
+  dispatcher loop reads top-to-bottom matching the constant. The
+  cost — keeping `PANE_Z_ORDER` in sync with `PaneId` — is bounded
+  by a unit test that asserts each `PaneId` variant appears exactly
+  once in the constant.
+
+  Tradeoffs rejected: (b) two ordered lists invents an
+  "overlays vs content" category nothing else uses; (c) per-pane
+  `z_order()` distributes stacking across 13 impls and lets two
+  panes silently claim the same z; (d) tying z-order to
+  `LayoutCache` couples stacking to layout state that moves
+  independently.
+- **Overlay panes (Toasts/Settings/Finder/Keymap).** _Decided:
+  option (c) — single trait method takes raw position; panes
+  internally convert to whatever native unit they use._
+
+  ```rust
+  trait Pane {
+      fn render(&mut self, ...);
+      fn hit_test_at(&self, pos: Pos) -> Option<HoverTarget>;
+  }
+  ```
+
+  Row panes use a default helper on `Pane` to convert `Pos` →
+  local row (using their stored area + scroll offset), then run
+  row logic. Overlays walk their own per-widget rects. The trait
+  stays at one abstraction level — "where in your area did this
+  click land?" — and each pane answers in its own terms.
+
+  This decision pre-resolves Q6: `pos → row` lives on the pane via
+  a default helper, not in the dispatcher. The dispatcher walks
+  `PANE_Z_ORDER` and passes raw `Pos` to each pane's
+  `hit_test_at` until one returns `Some`.
+
+  Tradeoffs accepted: 12 row panes call the default helper for
+  `Pos → row` conversion (one line each, deduplicated by the
+  helper). Each pane needs access to its own area + scroll
+  offset at hit-test time — already true today via the
+  `Viewport` field plus the tiled `Rect` stored on the pane after
+  render.
+
+  Tradeoffs rejected: (a) forcing every overlay through
+  `hit_test(row)` requires fake row indices for Settings / Finder
+  / Keymap. (b) two trait methods (`hit_test_row` and
+  `hit_test_at`) with default `None` lets a pane silently forget
+  to implement either and become unclickable. (d) leaving
+  overlays outside the trait keeps a hand-rolled path in the
+  dispatcher, partially defeating the carve.
+- **Trait surface impact (default impl vs `Hittable` sub-trait).**
+  _Decided: option (c) — split into `Pane` + `Hittable: Pane`
+  sub-trait. Only clickable panes implement `Hittable`._
+
+  ```rust
+  trait Hittable: Pane {
+      fn hit_test_at(&self, pos: Pos) -> Option<HoverTarget>;
+  }
+
+  #[derive(strum::EnumIter, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+  enum HittableId {
+      Toasts, Finder, Settings, Keymap, ProjectList,
+      Package, Lang, Git, Targets, Lints, CiRuns,
+  }
+
+  const HITTABLE_Z_ORDER: [HittableId; 11] = [
+      HittableId::Toasts, HittableId::Finder,
+      HittableId::Settings, HittableId::Keymap,
+      HittableId::ProjectList, HittableId::Package,
+      HittableId::Lang, HittableId::Git, HittableId::Targets,
+      HittableId::Lints, HittableId::CiRuns,
+  ];
+
+  impl Panes {
+      fn hit_test_at(&self, pos: Pos) -> Option<HoverTarget> {
+          for id in HITTABLE_Z_ORDER {
+              let pane: &dyn Hittable = match id {
+                  HittableId::Toasts      => &self.toasts,
+                  HittableId::Finder      => &self.finder,
+                  HittableId::Settings    => &self.settings,
+                  HittableId::Keymap      => &self.keymap,
+                  HittableId::ProjectList => &self.project_list,
+                  HittableId::Package     => &self.package,
+                  HittableId::Lang        => &self.lang,
+                  HittableId::Git         => &self.git,
+                  HittableId::Targets     => &self.targets,
+                  HittableId::Lints       => &self.lints,
+                  HittableId::CiRuns      => &self.ci_runs,
+              };
+              if let Some(hit) = pane.hit_test_at(pos) { return Some(hit); }
+          }
+          None
+      }
+  }
+
+  #[test]
+  fn z_order_covers_every_hittable_id() {
+      use strum::IntoEnumIterator;
+      let in_order: HashSet<HittableId> = HITTABLE_Z_ORDER.iter().copied().collect();
+      let all: HashSet<HittableId> = HittableId::iter().collect();
+      assert_eq!(in_order, all);
+  }
+  ```
+
+  Three drift guards, two compile-time, one CI-time:
+  1. Match on `HittableId` is exhaustive — adding a variant forces
+     a match arm update at compile time.
+  2. The `&dyn Hittable` cast in each arm rejects non-Hittable
+     types at compile time — you cannot put a non-clickable pane
+     in the dispatch match.
+  3. The strum-backed unit test catches "added a `HittableId`
+     variant but forgot to put it in `HITTABLE_Z_ORDER`" at CI
+     time. Strum is already a project dependency.
+
+  Tradeoffs accepted: a sub-enum (`HittableId`) parallel to the
+  Hittable trait impls; one residual drift direction not closed by
+  the type system (impl-without-HittableId-variant) — pragmatically
+  unlikely because you only write `impl Hittable for X` when you
+  want X in dispatch.
+
+  Tradeoffs rejected: (a) default-`None` `hit_test_at` on `Pane`
+  trades a real safety property (compile-time exhaustiveness) for
+  a few keystrokes saved. (b)/(d) costs ~6 lines of explicit
+  `None` stubs but hides "is this pane clickable?" inside each
+  pane's body instead of in a single named trait. The
+  type-system-pulling-weight option costs a sub-enum and earns
+  a place to grow `Hittable` into a richer family later
+  (`tab_target`, `default_action`) without forcing every pane
+  to write stubs. Heavier alternatives (linkme/inventory crate
+  registries, custom proc macros) close the impl-without-variant
+  direction at compile time but add machinery disproportionate to
+  this codebase's size.
+- **mouse_y → row conversion ownership.** _Decided: pane owns the
+  conversion via a default helper on `Viewport`; dispatcher does
+  not precompute._
+
+  Q4's decision (raw `Pos` into `hit_test_at`) already implies
+  this. Recording explicitly:
+
+  ```rust
+  impl Viewport {
+      /// Convert a screen-space position to a local row within
+      /// this viewport's content area, accounting for scroll
+      /// offset. Returns `None` if `pos` is outside the content
+      /// area.
+      pub fn pos_to_local_row(&self, pos: Pos) -> Option<usize> {
+          if !self.content_area.contains(pos) { return None; }
+          let visual_row = pos.y.saturating_sub(self.content_area.y);
+          Some(self.scroll_offset + usize::from(visual_row))
+      }
+  }
+  ```
+
+  Row-grid Hittable panes call
+  `self.viewport.pos_to_local_row(pos)?` at the top of their
+  `hit_test_at` and run row logic. Overlays
+  (Toasts/Settings/Finder/Keymap) don't call the helper; they walk
+  their own widget rects directly.
+
+  Tradeoffs accepted: `hit_test_at` is implicitly coupled to
+  "render has run at least once" — `Viewport::content_area` and
+  `scroll_offset` are written by the render pass each frame. A
+  pane queried before its first render has `Viewport::default()`
+  and returns `None`, which is the correct silent-no-op
+  behavior.
+
+  Tradeoffs rejected: dispatcher precomputing
+  `(pane_id, local_row)` would require a `Pane::viewport()` trait
+  method and split the conversion logic between dispatcher and
+  pane — two places to change when the conversion rule changes.
+
+## End of Phase 10.3 design — implementation can begin
+
+All six design questions are settled. The implementation that
+follows is mechanical:
+
+1. Add `Hittable: Pane` sub-trait, `HittableId` enum (with
+   `strum::EnumIter`), `HITTABLE_Z_ORDER` constant.
+2. Add `Viewport::pos_to_local_row` helper.
+3. Add `Panes::hit_test_at(pos) -> Option<HoverTarget>` walking the
+   z-order list with the exhaustive `HittableId` match.
+4. Implement `Hittable` on the 11 clickable panes (row panes
+   convert `Pos` → row via the helper; overlays walk widget
+   rects).
+5. Rewrite `interaction.rs::handle_click` and
+   `hovered_pane_row_at` to call `Panes::hit_test_at` instead of
+   reading the `pane_manager` row-hitbox map.
+6. Delete `HitboxSink`, `PaneRenderCtx::hit_sink`, the four
+   `register_*_row_hitboxes` helpers, and the `pane_manager`
+   row-hitbox map.
+7. Land the strum-backed `z_order_covers_every_hittable_id`
+   unit test.
+
 - **Autonomously-added `#[allow]` markers from Phase 7 need user
   review.** *Resolved in Phase 8.15.* The Phase-7 `#[allow(dead_code)]`
   markers covered placeholder trait surface (`Pane::id`,
