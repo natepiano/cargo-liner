@@ -74,6 +74,7 @@ use crate::tui::toasts::TrackedItem;
 use crate::watcher;
 use crate::watcher::WatchRequest;
 use crate::watcher::WatcherMsg;
+use crate::perf_log;
 
 #[derive(Clone)]
 struct LegacyRootExpansion {
@@ -1098,7 +1099,7 @@ impl App {
             self.finish_task_toast(toast);
         }
         let phases = self.scan.scan_state();
-        let since_scan_ms = crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis());
+        let since_scan_ms = perf_log::ms(now.duration_since(scan_complete_at).as_millis());
         tracing::info!(
             since_scan_complete_ms = since_scan_ms,
             disk_seen = phases.startup_phases.disk.seen.len(),

@@ -4,6 +4,7 @@ use ratatui::layout::Rect;
 use super::app::App;
 use super::app::HoveredPaneRow;
 use super::panes::PaneId;
+use super::panes::HoverTarget;
 
 /// Per-toast hit-test rects produced by `toasts::render_toasts`
 /// and stashed onto `ToastsPane` each frame. The Phase 10.3
@@ -20,16 +21,16 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
         return false;
     };
     match hit {
-        crate::tui::panes::HoverTarget::PaneRow { pane, row } => {
+        HoverTarget::PaneRow { pane, row } => {
             app.focus_pane(pane);
             app.panes_mut().set_pane_pos(pane, row);
             true
         },
-        crate::tui::panes::HoverTarget::Dismiss(target) => {
+        HoverTarget::Dismiss(target) => {
             app.dismiss(target);
             true
         },
-        crate::tui::panes::HoverTarget::ToastCard(id) => {
+        HoverTarget::ToastCard(id) => {
             let active = app.active_toasts();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
                 app.panes_mut().toasts_mut().viewport_mut().set_pos(index);
@@ -42,9 +43,9 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
 
 pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPaneRow> {
     match app.panes().hit_test_at(pos)? {
-        crate::tui::panes::HoverTarget::PaneRow { pane, row } => Some(HoveredPaneRow { pane, row }),
-        crate::tui::panes::HoverTarget::Dismiss(_)
-        | crate::tui::panes::HoverTarget::ToastCard(_) => None,
+        HoverTarget::PaneRow { pane, row } => Some(HoveredPaneRow { pane, row }),
+        HoverTarget::Dismiss(_)
+        | HoverTarget::ToastCard(_) => None,
     }
 }
 

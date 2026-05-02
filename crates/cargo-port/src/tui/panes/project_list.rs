@@ -41,6 +41,7 @@ use crate::tui::pane;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
 use crate::tui::render;
+use crate::tui::app::DismissTarget;
 
 // ── Row prefix strings ───────────────────────────────────────────────
 // Single source of truth: width calc and render both reference these.
@@ -236,7 +237,7 @@ fn set_project_list_dismiss_actions(app: &mut App, list_area: Rect, row_width: u
         .min(visible_start.saturating_add(visible_height));
     let suffix_width = u16::try_from(columns::display_width(DISMISS_SUFFIX)).unwrap_or(u16::MAX);
 
-    let mut actions: Vec<(Rect, crate::tui::app::DismissTarget)> = Vec::new();
+    let mut actions: Vec<(Rect, DismissTarget)> = Vec::new();
     for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
         let dismiss_target = app
             .visible_rows()

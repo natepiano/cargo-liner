@@ -29,6 +29,14 @@ use crate::tui::cpu::CpuPoller;
 use crate::tui::cpu::CpuSnapshot;
 use crate::tui::interaction::ToastHitbox;
 use crate::tui::pane::Viewport;
+use super::package;
+use super::package::RenderStyles;
+use super::lints;
+use super::lang;
+use super::git;
+use super::cpu;
+use super::ci;
+use crate::tui::pane;
 
 // ── Package ─────────────────────────────────────────────────────
 pub struct PackagePane {
@@ -57,11 +65,11 @@ impl PackagePane {
 
 impl Pane for PackagePane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        let styles = super::package::RenderStyles {
+        let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(crate::tui::constants::LABEL_COLOR),
-            chrome:         crate::tui::pane::default_pane_chrome(),
+            chrome:         pane::default_pane_chrome(),
         };
-        super::package::render_package_pane_body(frame, area, self, &styles, ctx);
+        package::render_package_pane_body(frame, area, self, &styles, ctx);
     }
 }
 
@@ -94,11 +102,11 @@ impl LangPane {
 
 impl Pane for LangPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        let styles = super::package::RenderStyles {
+        let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(crate::tui::constants::LABEL_COLOR),
-            chrome:         crate::tui::pane::default_pane_chrome(),
+            chrome:         pane::default_pane_chrome(),
         };
-        super::lang::render_lang_pane_body(frame, area, self, &styles, ctx);
+        lang::render_lang_pane_body(frame, area, self, &styles, ctx);
     }
 }
 
@@ -165,11 +173,11 @@ impl CpuPane {
 
 impl Pane for CpuPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        let styles = super::package::RenderStyles {
+        let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(crate::tui::constants::LABEL_COLOR),
-            chrome:         crate::tui::pane::default_pane_chrome(),
+            chrome:         pane::default_pane_chrome(),
         };
-        super::cpu::render_cpu_pane_body(frame, area, self, &styles, ctx);
+        cpu::render_cpu_pane_body(frame, area, self, &styles, ctx);
     }
 }
 
@@ -192,7 +200,7 @@ pub struct GitPane {
     viewport:               Viewport,
     content:                Option<super::GitData>,
     worktree_summary_cache: std::cell::RefCell<
-        std::collections::HashMap<crate::project::AbsolutePath, Vec<super::WorktreeInfo>>,
+        std::collections::HashMap<AbsolutePath, Vec<super::WorktreeInfo>>,
     >,
     /// Per-row `inner_y` positions recorded each frame, indexed by
     /// logical row. `content_area` is the absolute Rect on screen.
@@ -257,11 +265,11 @@ impl GitPane {
 
 impl Pane for GitPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        let styles = super::package::RenderStyles {
+        let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(crate::tui::constants::LABEL_COLOR),
-            chrome:         crate::tui::pane::default_pane_chrome(),
+            chrome:         pane::default_pane_chrome(),
         };
-        super::git::render_git_pane_body(frame, area, self, &styles, ctx);
+        git::render_git_pane_body(frame, area, self, &styles, ctx);
     }
 }
 
@@ -323,7 +331,7 @@ impl LintsPane {
 
 impl Pane for LintsPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        super::lints::render_lints_pane_body(frame, area, self, ctx);
+        lints::render_lints_pane_body(frame, area, self, ctx);
     }
 }
 
@@ -364,7 +372,7 @@ impl CiPane {
     pub fn clear_content(&mut self) { self.content = None; }
 
     #[cfg(test)]
-    pub fn override_runs_for_test(&mut self, runs: Vec<crate::ci::CiRun>) {
+    pub fn override_runs_for_test(&mut self, runs: Vec<CiRun>) {
         if let Some(ci) = self.content.as_mut() {
             ci.runs = runs;
             ci.mode_label = None;
@@ -386,7 +394,7 @@ impl CiPane {
 
 impl Pane for CiPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        super::ci::render_ci_pane_body(frame, area, self, ctx);
+        ci::render_ci_pane_body(frame, area, self, ctx);
     }
 }
 
