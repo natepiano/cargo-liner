@@ -1855,7 +1855,7 @@ follows is mechanical:
   pane absorbs state and a render body — additions that are
   driven by working code, not by speculative scaffolding.
 
-## Phase 11.0 Lint subsystem design (in progress)
+## Phase 11.0 Lint subsystem design (implemented)
 
 Re-review of Phase 11 (Lint) carve plan against everything
 learned in Phases 1–10. Focus surfaced by user: the current
