@@ -1146,3 +1146,68 @@ edition = "2024"
         expected_summary.fixable_with_fix_pub_use
     );
 }
+
+#[test]
+fn fix_pub_use_rewrites_pub_super_parent_facade_in_apply_mode() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_pub_super_parent_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create src/outer/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod outer;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer mod");
+    fs::write(
+        temp.path().join("src/outer/parent.rs"),
+        "mod child;\npub(super) use child::SpawnStats;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/outer/parent/child.rs"),
+        "pub struct SpawnStats;\n",
+    )
+    .expect("write child");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-mend --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-pub-use failed unexpectedly: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
+    assert!(
+        stderr.contains("mend: applied 1 `pub use` fix(es)"),
+        "expected pub(super) parent facade to be fixed; stderr was:\n{stderr}"
+    );
+
+    let parent_after =
+        fs::read_to_string(temp.path().join("src/outer/parent.rs")).expect("read parent");
+    assert!(
+        !parent_after.contains("pub(super) use child::SpawnStats"),
+        "parent re-export should be removed after fix; got:\n{parent_after}"
+    );
+
+    let child_after =
+        fs::read_to_string(temp.path().join("src/outer/parent/child.rs")).expect("read child");
+    assert!(
+        child_after.contains("pub(super) struct SpawnStats"),
+        "child item should be narrowed to pub(super); got:\n{child_after}"
+    );
+}

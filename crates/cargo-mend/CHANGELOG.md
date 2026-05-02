@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `--fix-pub-use` now applies the fix when the re-export in the parent module is already narrowed (e.g. `pub(super)`) instead of reporting it as fixable and then skipping it
+
 ## [0.8.1] - 2026-04-26
 
 ### Fixed

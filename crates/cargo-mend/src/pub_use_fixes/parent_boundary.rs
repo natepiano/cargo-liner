@@ -35,17 +35,21 @@ pub(super) fn build_parent_pub_use_edit_for_exports(
         let Item::Use(item_use) = item else {
             continue;
         };
-        if !matches!(item_use.vis, syn::Visibility::Public(_)) {
+        let Some(use_prefix) = facade_use_prefix(&item_use.vis) else {
             continue;
-        }
+        };
         let (start, end) = item_use_byte_range(&source, &offsets, &item_use);
         if start != parent_boundary.item_start || end != parent_boundary.item_end {
             continue;
         }
 
         let local_exports = locally_used_exports(&source, &item_use, exports)?;
-        let replacement =
-            rewrite_parent_pub_use_item_for_exports(&item_use, exports, &local_exports)?;
+        let replacement = rewrite_parent_pub_use_item_for_exports(
+            &item_use,
+            exports,
+            &local_exports,
+            use_prefix,
+        )?;
         return Ok(UseFix {
             path: parent_boundary.parent_module.clone(),
             start,
@@ -75,7 +79,7 @@ pub(super) fn resolve_parent_pub_use_export(
         let Item::Use(item_use) = item else {
             continue;
         };
-        if !matches!(item_use.vis, syn::Visibility::Public(_)) {
+        if facade_use_prefix(&item_use.vis).is_none() {
             continue;
         }
         let start_line = item_use.span().start().line;
@@ -139,14 +143,28 @@ fn rewrite_parent_pub_use_item_for_exports(
     item_use: &ItemUse,
     exports: &[(String, String)],
     local_exports: &[(String, String)],
+    use_prefix: &str,
 ) -> Result<String> {
     let mut lines = Vec::new();
     if let Some(rewritten_tree) = remove_exports_from_use_tree(Vec::new(), &item_use.tree, exports)
     {
-        lines.extend(render_use_lines(&rewritten_tree, true)?);
+        lines.extend(render_use_lines(&rewritten_tree, use_prefix)?);
     }
     lines.extend(render_parent_local_use_lines(local_exports));
     Ok(lines.join("\n"))
+}
+
+fn facade_use_prefix(vis: &syn::Visibility) -> Option<&'static str> {
+    match vis {
+        syn::Visibility::Public(_) => Some("pub use"),
+        syn::Visibility::Restricted(restricted)
+            if restricted.path.segments.len() == 1
+                && restricted.path.segments[0].ident == "super" =>
+        {
+            Some("pub(super) use")
+        },
+        _ => None,
+    }
 }
 
 fn remove_exports_from_use_tree(
@@ -206,10 +224,9 @@ fn remove_exports_from_use_tree(
     }
 }
 
-fn render_use_lines(tree: &UseTree, is_public: bool) -> Result<Vec<String>> {
-    let prefix = if is_public { "pub use" } else { "use" };
+fn render_use_lines(tree: &UseTree, use_prefix: &str) -> Result<Vec<String>> {
     let mut lines = Vec::new();
-    collect_use_lines(Vec::new(), tree, prefix, &mut lines)?;
+    collect_use_lines(Vec::new(), tree, use_prefix, &mut lines)?;
     Ok(lines)
 }
 
