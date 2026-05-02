@@ -1854,3 +1854,328 @@ follows is mechanical:
   read. Phase 9 reintroduces what it needs when each remaining
   pane absorbs state and a render body — additions that are
   driven by working code, not by speculative scaffolding.
+
+## Phase 11.0 Lint subsystem design (in progress)
+
+Re-review of Phase 11 (Lint) carve plan against everything
+learned in Phases 1–10. Focus surfaced by user: the current
+`resolve_lint_display` machinery (six App accessors funneling
+into a 17-line stringifier with a duplicated worktree fan-out)
+is overly complex; pre-computation is fine, but seek
+simplifications. Decisions are recorded below as each is
+settled.
+
+- **Q1: Lint icon API surface.** _Decided: option (a) — three
+  typed functions on `Lint`, each returning unframed
+  `LintStatus`._
+
+  ```rust
+  impl Lint {
+      pub fn status_for_path(&self, projects: &ProjectList, path: &Path) -> LintStatus;
+      pub fn status_for_root(&self, item: &RootItem) -> LintStatus;
+      pub fn status_for_worktree(&self, item: &RootItem, wi: usize) -> LintStatus;
+  }
+  ```
+
+  Animation framing leaves the API entirely; callers already
+  have `animation_elapsed` via `PaneRenderCtx` after Phase 8.
+  The 30-line `VisibleRow` match in
+  `App::selected_lint_icon` deletes — call sites know which
+  row variant they're rendering and pick the matching function
+  directly.
+
+  Tradeoffs accepted: three functions instead of one, but each
+  function body is 1–2 lines and call sites read directly
+  (e.g., `lint.status_for_root(item)`).
+
+  Tradeoffs rejected: option (b) — one
+  `Lint::status(LintTarget)` function — forces every caller to
+  construct a wrapper enum with no producer-side gain (the body
+  is still an exhaustive match on three disjoint inputs).
+
+- **Q2: `LintDisplay` enum design.** _Decided: typed enum lands
+  in Phase 11 (option (i)) and carries `count: usize`._
+
+  ```rust
+  /// Display value for the Lint row in the Package detail pane.
+  /// Pattern: typed display values, not pre-rendered strings.
+  pub enum LintDisplay {
+      NotRust,
+      NoRuns,
+      Runs { count: usize, status: LintStatus },
+  }
+
+  impl Lint {
+      pub fn package_display(
+          &self,
+          projects: &ProjectList,
+          abs: &AbsolutePath,
+          is_worktree_group: bool,
+      ) -> LintDisplay;
+  }
+  ```
+
+  `PackageData.lint_display` flips from `String` to `LintDisplay`
+  inside Phase 11. The Package renderer matches on variants,
+  applying `animation_elapsed` to `status.icon()` at render
+  time. The `NO_LINT_RUNS` / `NO_LINT_RUNS_NOT_RUST` constants
+  and the `format\!("{icon} {n}")` move into the renderer. The
+  string stringifier `resolve_lint_display` is deleted.
+
+  Tradeoffs accepted: Package renderer changes in Phase 11
+  (small — one match on three variants). The `Ci` half of the
+  capstone (Phase 13.last) still has to flip
+  `PackageData.ci_display` separately, so 13.last loses the
+  "both at once" framing — but Lint's stale-spinner accident
+  goes away two phases earlier. `count: usize` keeps
+  `LintDisplay` Copy-cheap and decoupled from `LintRuns`; the
+  renderer has no use for the runs themselves.
+
+  Tradeoffs rejected: option (ii) — keep `lint_display: String`
+  on `PackageData` until 13.last — pays the cost of building
+  the typed enum then immediately throwing it away, and leaves
+  the load-bearing animation accident in place across two more
+  phases.
+
+- **Q3: Worktree-group fan-out primitive.** _Decided:
+  iterator-returning helpers on `WorktreeGroup` plus a single
+  `Lint::run_count_at` collapse._
+
+  ```rust
+  impl<Kind: ProjectFields> WorktreeGroup<Kind> {
+      /// Iterate primary + linked checkouts in canonical order.
+      pub fn iter_entries(&self) -> impl Iterator<Item = &Kind>;
+      pub fn iter_paths(&self) -> impl Iterator<Item = &Path>;
+  }
+
+  impl Lint {
+      /// Run count at `path`, or 0 when no lint history exists.
+      pub fn run_count_at(&self, path: &Path) -> usize;
+  }
+  ```
+
+  Lint call site:
+
+  ```rust
+  let count: usize = group.iter_paths().map(|p| lint.run_count_at(p)).sum();
+  ```
+
+  Single-project case: `lint.run_count_at(path)` directly.
+  `lint_run_count_for` and the open-coded `WorktreeGroup` match
+  in `panes/support.rs` are deleted.
+
+  Driving evidence: the `primary, linked, ..` destructure
+  shows up 16 times in `worktree_group.rs` alone and 30+ more
+  across `project_list.rs`, `snapshots.rs`, `root_item.rs`,
+  `scan.rs`, `finder.rs`. The iterator primitive is a single
+  source of truth for "the order in which a group's checkouts
+  are visited" and replaces existing duplication on top of
+  serving the new Lint call site. As a follow-up dividend,
+  several of the 16 internal duplications can collapse to
+  `iter_entries().any/find/...` (the index-based
+  `lint_status_for_worktree` is the exception — it stays).
+
+  Tradeoffs accepted: `impl Iterator<Item = …>` is one line of
+  API instead of a concrete `Vec`. One normal Rust idiom, no
+  allocation per call.
+
+  Tradeoffs rejected: option (a) `fold_checkouts<T>(closure)`
+  ties iteration to a single generic reduction; doesn't
+  generalize across the varied existing reductions. Option (b)
+  `checkout_paths() -> Vec<&Path>` allocates per call and
+  doesn't address the broader existing duplication. Option (c)
+  leave it inline preserves the duplication that already
+  burdens the codebase.
+
+- **Q4: `lint_runtime` ownership.** _Decided: option (a) —
+  relocate from `Inflight` into `Lint`._
+
+  ```rust
+  pub struct Lint {
+      runtime: Option<RuntimeHandle>,
+      // …
+  }
+  impl Lint {
+      pub fn respawn_runtime(&mut self, cfg: &LintConfig);
+      pub fn runtime(&self) -> Option<&RuntimeHandle>;
+      pub fn start_lint(&mut self, path: AbsolutePath, ctx: StartContext<'_>);
+  }
+  ```
+
+  `Inflight::start_lint` migrates to `Lint::start_lint`; the
+  `lint_runtime` / `lint_runtime_clone` / `set_lint_runtime`
+  trio on `Inflight` is deleted. `App::apply_lint_config_change`
+  and `refresh_lint_runtime_from_config` collapse into
+  `lint.respawn_runtime(cfg)`. `Inflight` retains only the
+  inflight-tracking fields (running paths, toasts, pending
+  queues), so its name matches its contents.
+
+  Tradeoffs accepted: this reverses the Phase 4 placement
+  decision. Justified because Phase 4 placed runtime next to
+  start (`Inflight::start_lint`) before `Lint` existed; now
+  that `Lint` is the carve target, "runtime co-located with
+  start" leads to the same conclusion with `Lint` as the home.
+
+  Tradeoffs rejected: option (b) leave on `Inflight` —
+  `Lint::start_lint` would have to reach into `Inflight` for
+  the runtime, splitting a coherent unit (spawn machinery)
+  across two subsystems for no reason except history. Option
+  (c) App-shell ownership — most plumbing, no clear winner.
+
+- **Q5: Module placement.** _Decided: option (a) — `LintStatus`
+  in `crate::lint`, `LintDisplay` in `tui::lint_state`._
+
+  | Type | Module | Reason |
+  |---|---|---|
+  | `LintStatus` (rollup state — `NoLog`/`Running`/`Passed`/`Failed`/`Mixed` etc.) | `crate::lint` | Domain concept; consumed by both project tree (`root_item::lint_rollup_status`) and `tui::lint_state`. |
+  | `LintDisplay` (typed display value for the Package row) | `tui::lint_state` | Consumer-specific; only the Package detail pane uses it. Lives next to `Lint::package_display`. |
+
+  Layering rule established: **domain types in `crate::lint`,
+  consumer-specific display types in `tui::lint_state`.** Phase
+  13 mirrors with `CiStatus` (in `crate::ci`) vs. `CiDisplay`
+  (in `tui::ci_state`).
+
+  Tradeoffs accepted: two homes for two types instead of one.
+  Aligns with the existing import direction (TUI depends on
+  domain, not the other way around).
+
+  Tradeoffs rejected: option (b) put both in `crate::lint` —
+  drags TUI display vocabulary into the domain crate. Option
+  (c) put both in `tui::lint_state` — would force
+  `crate::project::root_item` to depend on `tui::lint_state`,
+  inverting the layering.
+
+- **Q6: Per-row caller routing.** _Decided: option (a) — delete
+  `App::selected_lint_icon`. The `Lint::package_display` body
+  branches on `is_worktree_group` directly._
+
+  ```rust
+  impl Lint {
+      pub fn package_display(
+          &self,
+          projects: &ProjectList,
+          abs: &AbsolutePath,
+          item: &RootItem,
+          is_worktree_group: bool,
+      ) -> LintDisplay {
+          if \!self.is_rust_at(item) { return LintDisplay::NotRust; }
+          let status = if is_worktree_group {
+              self.status_for_root(item)
+          } else {
+              self.status_for_path(projects, abs.as_path())
+          };
+          let count = if is_worktree_group {
+              item.as_worktree_group()
+                  .map(|g| g.iter_paths().map(|p| self.run_count_at(p)).sum())
+                  .unwrap_or_else(|| self.run_count_at(abs.as_path()))
+          } else {
+              self.run_count_at(abs.as_path())
+          };
+          match (count, status) {
+              (0, _) => LintDisplay::NoRuns,
+              (n, s) => LintDisplay::Runs { count: n, status: s },
+          }
+      }
+  }
+  ```
+
+  `App::selected_lint_icon` is deleted. Its only consumer
+  (`resolve_lint_display`) is also deleted. ProjectList row
+  rendering already calls the per-row functions directly today
+  — this preserves that direct pattern and extends it to the
+  Package detail.
+
+  Tradeoffs accepted: branching on `is_worktree_group` lives
+  inside `Lint::package_display`. The caller still passes the
+  bool, but doesn't construct a routing enum.
+
+  Tradeoffs rejected: option (b) `Lint::selected_status(VisibleRow)`
+  pulls TUI-shell types (`VisibleRow`) into the lint subsystem,
+  inverting the layering for one consumer. Option (c) free
+  function in `panes/support.rs` adds a multi-hop layer with
+  no caller benefit.
+
+- **Q7: Lint field cluster.** _Decided: full cluster moves to
+  `Lint`._
+
+  ```rust
+  pub struct Lint {
+      runtime:       Option<RuntimeHandle>,
+      running_paths: HashMap<AbsolutePath, Instant>,
+      running_toast: Option<ToastTaskId>,
+      cache_usage:   CacheUsage,
+      startup_phase: CountedPhase,
+      active_phases: KeyedPhase<AbsolutePath>,
+  }
+  ```
+
+  | Field | Source | Reason |
+  |---|---|---|
+  | `runtime` | `Inflight` | Q4 decision. |
+  | `running_paths` | `Inflight` | Co-locates with `start_lint` / `finish_lint`. |
+  | `running_toast` | `Inflight` | Same; the toast is the "N lints running" indicator. |
+  | `cache_usage` | `Scan` | Field is literally `lint_cache_usage`; `refresh_lint_cache_usage_from_disk` is a lint-spawn job. |
+  | `startup_phase`, `active_phases` | App's `Phases` struct | Both fields are literally `lint*`. App's `Phases` keeps the non-lint counters. |
+
+  **Stays where it is:**
+  - Per-project `LintRuns` on `ProjectList` — tree-owned data;
+    Lint queries through `projects.lint_at_path`. Moving it
+    would invert the project-tree → lint dependency.
+  - `is_rust_at_path` — project-tree query.
+  - `selected_row_owns_lint` — selection-row query.
+  - `lint_enabled()` — config flag, already on `Config`.
+
+  Driving principle: anything literally named `lint_*` belongs
+  on `Lint`. The exception is per-project run history, which
+  the project tree owns and Lint queries.
+
+  Tradeoffs accepted: this phase relocates more fields than
+  the minimum. Justified because the alternative — leaving
+  some lint-specific fields on `Inflight`/`Scan`/`App` — is
+  just deferred work, not a design boundary, and would require
+  cross-subsystem reaches that a follow-up would un-do.
+
+## End of Phase 11.0 design — implementation can begin
+
+All seven design questions are settled. Implementation outline:
+
+1. New module `tui::lint_state` with `Lint` struct + the field
+   cluster from Q7.
+2. New types: `LintStatus` in `crate::lint` (Q5);
+   `LintDisplay` in `tui::lint_state` (Q5).
+3. New iterator helpers on `WorktreeGroup`: `iter_entries`,
+   `iter_paths` (Q3). Use the helpers to absorb internal
+   duplication in `worktree_group.rs` opportunistically.
+4. New functions on `Lint` (Q1, Q2, Q3, Q4, Q6):
+   `status_for_path` / `status_for_root` / `status_for_worktree`
+   (returning unframed `LintStatus`), `run_count_at`,
+   `package_display`, `respawn_runtime`, `start_lint`,
+   `finish_lint`, plus the relocated-from-App handlers
+   (`apply_config_change`, `refresh_runs_from_disk`,
+   `reload_history`, `refresh_cache_usage_from_disk`,
+   `lint_runtime_projects_snapshot`, `sync_runtime_projects`,
+   `register_lint_for_*`, `maybe_complete_startup_lints`,
+   `startup_toast_body_for`, `sync_running_toast`,
+   `handle_*_msg`).
+5. Delete: `App::lint_icon`, `App::lint_icon_for_root`,
+   `App::lint_icon_for_worktree`, `App::selected_lint_icon`,
+   `panes::support::resolve_lint_display`,
+   `panes::support::lint_run_count_for`,
+   `Inflight::lint_runtime` / `_clone` / `set_*`,
+   `Scan::lint_cache_usage` / `set_lint_cache_usage` (relocated).
+6. Flip `PackageData.lint_display` from `String` to
+   `LintDisplay`. Update `panes::package` renderer to match on
+   variants and apply `animation_elapsed` to `status.icon()`
+   at render time. Delete the `NO_LINT_RUNS` /
+   `NO_LINT_RUNS_NOT_RUST` string constants from the package
+   pane's render path (they may still be used elsewhere — keep
+   only if other consumers exist).
+7. Tests update: lint-related characterization tests in
+   `tui::app::tests::state` move alongside the new module or
+   stay where they are with paths updated.
+
+Per-phase workflow applies (write tests first, develop,
+validate with `cargo build` + `cargo nextest run` +
+`cargo clippy --all-targets` + `cargo +nightly fmt` +
+`cargo install --path .`, stop for review before committing).
+
