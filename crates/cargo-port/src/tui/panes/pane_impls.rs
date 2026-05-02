@@ -17,10 +17,17 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
 use super::PaneId;
+use super::ci;
+use super::cpu;
 use super::dispatch::Hittable;
 use super::dispatch::HoverTarget;
 use super::dispatch::Pane;
 use super::dispatch::PaneRenderCtx;
+use super::git;
+use super::lang;
+use super::lints;
+use super::package;
+use super::package::RenderStyles;
 use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
 use crate::tui::app::CiRunDisplayMode;
@@ -28,15 +35,8 @@ use crate::tui::app::DismissTarget;
 use crate::tui::cpu::CpuPoller;
 use crate::tui::cpu::CpuSnapshot;
 use crate::tui::interaction::ToastHitbox;
-use crate::tui::pane::Viewport;
-use super::package;
-use super::package::RenderStyles;
-use super::lints;
-use super::lang;
-use super::git;
-use super::cpu;
-use super::ci;
 use crate::tui::pane;
+use crate::tui::pane::Viewport;
 
 // ── Package ─────────────────────────────────────────────────────
 pub struct PackagePane {
@@ -199,9 +199,8 @@ impl Hittable for CpuPane {
 pub struct GitPane {
     viewport:               Viewport,
     content:                Option<super::GitData>,
-    worktree_summary_cache: std::cell::RefCell<
-        std::collections::HashMap<AbsolutePath, Vec<super::WorktreeInfo>>,
-    >,
+    worktree_summary_cache:
+        std::cell::RefCell<std::collections::HashMap<AbsolutePath, Vec<super::WorktreeInfo>>>,
     /// Per-row `inner_y` positions recorded each frame, indexed by
     /// logical row. `content_area` is the absolute Rect on screen.
     /// `Hittable::hit_test_at` walks this list with the recorded
@@ -372,7 +371,7 @@ impl CiPane {
     pub fn clear_content(&mut self) { self.content = None; }
 
     #[cfg(test)]
-    pub fn override_runs_for_test(&mut self, runs: Vec<CiRun>) {
+    pub fn override_runs_for_test(&mut self, runs: Vec<crate::ci::CiRun>) {
         if let Some(ci) = self.content.as_mut() {
             ci.runs = runs;
             ci.mode_label = None;

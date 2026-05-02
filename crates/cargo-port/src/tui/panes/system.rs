@@ -243,7 +243,7 @@ impl Panes {
     /// Test-only override for ci runs. Mirrors the previous
     /// `PaneDataStore::override_ci_runs_for_test`.
     #[cfg(test)]
-    pub fn override_ci_runs_for_test(&mut self, runs: Vec<CiRun>) {
+    pub fn override_ci_runs_for_test(&mut self, runs: Vec<crate::ci::CiRun>) {
         self.ci_runs.override_runs_for_test(runs);
     }
 
@@ -486,6 +486,7 @@ mod detail_set_tests {
     //! targets + stamp now) into `Panes::set_detail_data` /
     //! `Panes::clear_detail_data`, which fan out across the four
     //! migrated detail panes' content slots plus the targets slot.
+    use super::Panes;
     use crate::config::CpuConfig;
     use crate::tui::app::VisibleRow;
     use crate::tui::panes::CiData;
@@ -495,7 +496,6 @@ mod detail_set_tests {
     use crate::tui::panes::PackageData;
     use crate::tui::panes::TargetsData;
     use crate::tui::panes::data::DetailCacheKey;
-    use super::Panes;
 
     fn fresh() -> Panes { Panes::new(&CpuConfig::default()) }
 

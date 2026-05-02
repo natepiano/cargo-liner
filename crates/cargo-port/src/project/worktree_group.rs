@@ -60,52 +60,17 @@ impl WorktreeGroup {
     }
 
     pub(crate) fn live_entry_count(&self) -> usize {
-        match self {
-            Self::Workspaces {
-                primary, linked, ..
-            } => std::iter::once(primary.visibility())
-                .chain(linked.iter().map(Workspace::visibility))
-                .filter(|v| !matches!(v, Visibility::Dismissed))
-                .count(),
-            Self::Packages {
-                primary, linked, ..
-            } => std::iter::once(primary.visibility())
-                .chain(linked.iter().map(Package::visibility))
-                .filter(|v| !matches!(v, Visibility::Dismissed))
-                .count(),
-        }
+        self.iter_visibility()
+            .filter(|v| !matches!(v, Visibility::Dismissed))
+            .count()
     }
 
-    fn has_deleted_entry(&self) -> bool {
-        match self {
-            Self::Workspaces {
-                primary, linked, ..
-            } => std::iter::once(primary.visibility())
-                .chain(linked.iter().map(Workspace::visibility))
-                .any(|visibility| visibility == Visibility::Deleted),
-            Self::Packages {
-                primary, linked, ..
-            } => std::iter::once(primary.visibility())
-                .chain(linked.iter().map(Package::visibility))
-                .any(|visibility| visibility == Visibility::Deleted),
-        }
-    }
+    fn has_deleted_entry(&self) -> bool { self.iter_visibility().any(|v| v == Visibility::Deleted) }
 
     pub(crate) fn visible_entry_count(&self) -> usize {
-        match self {
-            Self::Workspaces {
-                primary, linked, ..
-            } => std::iter::once(primary.visibility())
-                .chain(linked.iter().map(Workspace::visibility))
-                .filter(|visibility| *visibility == Visibility::Visible)
-                .count(),
-            Self::Packages {
-                primary, linked, ..
-            } => std::iter::once(primary.visibility())
-                .chain(linked.iter().map(Package::visibility))
-                .filter(|visibility| *visibility == Visibility::Visible)
-                .count(),
-        }
+        self.iter_visibility()
+            .filter(|v| *v == Visibility::Visible)
+            .count()
     }
 
     pub(crate) fn renders_as_group(&self) -> bool { self.live_entry_count() > 1 }
@@ -170,6 +135,38 @@ impl WorktreeGroup {
         LintStatus::aggregate(statuses)
     }
 
+    /// Iterate the group's checkout paths in canonical order: primary
+    /// first, then each linked checkout. Single source of truth for
+    /// "the order in which a worktree group's checkouts are visited"
+    /// — replaces open-coded `primary` + `linked` destructures at
+    /// callers that only need the path.
+    pub(crate) fn iter_paths(&self) -> Box<dyn Iterator<Item = &AbsolutePath> + '_> {
+        match self {
+            Self::Workspaces { primary, linked } => Box::new(
+                std::iter::once(primary.path()).chain(linked.iter().map(ProjectFields::path)),
+            ),
+            Self::Packages { primary, linked } => Box::new(
+                std::iter::once(primary.path()).chain(linked.iter().map(ProjectFields::path)),
+            ),
+        }
+    }
+
+    /// Iterate the visibility of every entry (primary + linked) in
+    /// canonical order. Used by `live_entry_count`,
+    /// `visible_entry_count`, and `has_deleted_entry` — same
+    /// underlying iteration, three different reductions.
+    fn iter_visibility(&self) -> Box<dyn Iterator<Item = Visibility> + '_> {
+        match self {
+            Self::Workspaces { primary, linked } => Box::new(
+                std::iter::once(primary.visibility())
+                    .chain(linked.iter().map(Workspace::visibility)),
+            ),
+            Self::Packages { primary, linked } => Box::new(
+                std::iter::once(primary.visibility()).chain(linked.iter().map(Package::visibility)),
+            ),
+        }
+    }
+
     /// Lint status for a single worktree entry by index (0 = primary).
     pub(crate) fn lint_status_for_worktree(&self, worktree_index: usize) -> LintStatus {
         match self {
@@ -196,5 +193,61 @@ impl WorktreeGroup {
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pkg(path: &str) -> Package {
+        Package {
+            path: AbsolutePath::from(std::path::Path::new(path)),
+            ..Package::default()
+        }
+    }
+
+    fn ws(path: &str) -> Workspace {
+        Workspace {
+            path: AbsolutePath::from(std::path::Path::new(path)),
+            ..Workspace::default()
+        }
+    }
+
+    #[test]
+    fn iter_paths_packages_yields_primary_then_linked_in_order() {
+        let group = WorktreeGroup::new_packages(
+            pkg("/abs/main"),
+            vec![pkg("/abs/feat-a"), pkg("/abs/feat-b")],
+        );
+        let paths: Vec<&std::path::Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
+        assert_eq!(
+            paths,
+            vec![
+                std::path::Path::new("/abs/main"),
+                std::path::Path::new("/abs/feat-a"),
+                std::path::Path::new("/abs/feat-b"),
+            ],
+        );
+    }
+
+    #[test]
+    fn iter_paths_workspaces_yields_primary_then_linked_in_order() {
+        let group = WorktreeGroup::new_workspaces(ws("/abs/ws-main"), vec![ws("/abs/ws-feat")]);
+        let paths: Vec<&std::path::Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
+        assert_eq!(
+            paths,
+            vec![
+                std::path::Path::new("/abs/ws-main"),
+                std::path::Path::new("/abs/ws-feat"),
+            ],
+        );
+    }
+
+    #[test]
+    fn iter_paths_with_no_linked_yields_just_primary() {
+        let group = WorktreeGroup::new_packages(pkg("/abs/solo"), Vec::new());
+        let paths: Vec<&std::path::Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
+        assert_eq!(paths, vec![std::path::Path::new("/abs/solo")]);
     }
 }
