@@ -21,12 +21,16 @@
 //! deletes the `resolve_lint_display` / `lint_run_count_for`
 //! stringifiers in `panes/support.rs`.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::time::Instant;
 
 use crate::lint::LintStatus;
+use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project_list::ProjectList;
+use crate::tui::toasts::ToastTaskId;
 
 /// Display value for the Lint row in the Package detail pane.
 ///
@@ -53,13 +57,73 @@ pub enum LintDisplay {
     },
 }
 
-/// The `Lint` subsystem. Phase 11.2 holds no fields; Phase 11.4
-/// absorbs the lint-specific field cluster from `Inflight`, `Scan`,
-/// and `App`'s phase tracking.
-#[derive(Default)]
-pub struct Lint;
+/// The `Lint` subsystem.
+///
+/// Phase 11.4a absorbed the in-flight lint state from
+/// [`Inflight`](super::inflight::Inflight): the lint runtime
+/// handle, the running-paths map, and the running-toast slot.
+/// Subsequent slices (11.4b, 11.4c) absorb the disk cache stat
+/// counter from `Scan` and the lint-specific phase trackers from
+/// `ScanState::startup_phases`.
+pub struct Lint {
+    /// Tokio runtime handle that runs cargo lint commands. Spawned
+    /// at startup; replaced by [`Self::set_runtime`] when lint
+    /// config (`lint.enabled`, `lint.parallel`, `lint.cache_root`)
+    /// changes. `None` when lint is disabled.
+    runtime:       Option<RuntimeHandle>,
+    /// Paths with a lint run currently in flight, keyed by the
+    /// time the run was launched. The launch time gates the toast
+    /// "running for N seconds" indicator.
+    running_paths: HashMap<AbsolutePath, Instant>,
+    /// The single sticky toast that displays "N lints running."
+    /// `None` when no lint is running. Synced each tick by
+    /// `App::sync_running_lint_toast`.
+    running_toast: Option<ToastTaskId>,
+}
 
 impl Lint {
+    /// Construct a fresh `Lint` carrying the runtime handle. The
+    /// handle is initialized once at app startup; subsequent
+    /// config-driven respawns flow through [`Self::set_runtime`].
+    pub fn new(runtime: Option<RuntimeHandle>) -> Self {
+        Self {
+            runtime,
+            running_paths: HashMap::new(),
+            running_toast: None,
+        }
+    }
+
+    // ── runtime ─────────────────────────────────────────────────
+
+    /// The lint runtime handle, if lint is enabled.
+    pub const fn runtime(&self) -> Option<&RuntimeHandle> { self.runtime.as_ref() }
+
+    /// Clone the runtime handle. Used by spawn paths that want an
+    /// owned handle (e.g., [`crate::tui::app::App::reload_lint_history`]).
+    pub fn runtime_clone(&self) -> Option<RuntimeHandle> { self.runtime.clone() }
+
+    /// Replace the runtime handle. Called by the config-reload
+    /// path when lint settings change.
+    pub fn set_runtime(&mut self, handle: Option<RuntimeHandle>) { self.runtime = handle; }
+
+    // ── running paths ───────────────────────────────────────────
+
+    pub const fn running_paths(&self) -> &HashMap<AbsolutePath, Instant> { &self.running_paths }
+
+    pub const fn running_paths_mut(&mut self) -> &mut HashMap<AbsolutePath, Instant> {
+        &mut self.running_paths
+    }
+
+    // ── running toast ───────────────────────────────────────────
+
+    pub const fn running_toast(&self) -> Option<ToastTaskId> { self.running_toast }
+
+    pub const fn set_running_toast(&mut self, task_id: Option<ToastTaskId>) {
+        self.running_toast = task_id;
+    }
+
+    // ── read-side lookups ───────────────────────────────────────
+
     /// Lint status of the project at `path`. Returns
     /// [`LintStatus::NoLog`] when the path has no lint history.
     pub fn status_for_path(projects: &ProjectList, path: &Path) -> LintStatus {
@@ -141,6 +205,26 @@ impl Lint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_starts_with_no_runtime_and_empty_inflight() {
+        let lint = Lint::new(None);
+        assert!(lint.runtime().is_none());
+        assert!(lint.running_paths().is_empty());
+        assert!(lint.running_toast().is_none());
+    }
+
+    #[test]
+    fn running_toast_round_trip() {
+        let mut lint = Lint::new(None);
+        lint.set_running_toast(Some(crate::tui::toasts::ToastTaskId(7)));
+        assert_eq!(
+            lint.running_toast(),
+            Some(crate::tui::toasts::ToastTaskId(7))
+        );
+        lint.set_running_toast(None);
+        assert!(lint.running_toast().is_none());
+    }
 
     #[test]
     fn package_display_returns_not_rust_when_is_rust_false() {

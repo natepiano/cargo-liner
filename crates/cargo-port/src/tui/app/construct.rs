@@ -172,7 +172,8 @@ impl App {
             example:  (channels.example_tx, channels.example_rx),
             watch_tx: init.watch_tx,
         });
-        let inflight = Inflight::new(init.lint_runtime);
+        let lint = crate::tui::lint_state::Lint::new(init.lint_runtime);
+        let inflight = Inflight::new();
         let config_path_buf = init.config_path.as_ref().map(|p| p.as_path().to_path_buf());
         let config = Config::new(config_path_buf, inputs.cfg);
         let keymap_path_buf = keymap::keymap_path()
@@ -192,6 +193,7 @@ impl App {
             selection,
             background,
             inflight,
+            lint,
             config,
             keymap,
             scan,

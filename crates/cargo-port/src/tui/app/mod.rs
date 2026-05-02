@@ -174,10 +174,17 @@ pub(super) struct App {
     /// rescan via [`Background::swap_bg_channel`]; the others outlive
     /// any single rescan.
     background:        Background,
-    /// Inflight subsystem (Phase 4 of the App-API carve). Owns the
-    /// running-paths maps, toast slots, ci-fetch tracker, pending
-    /// queues, example-runner state, and `lint_runtime`.
+    /// Inflight subsystem (Phase 4 of the App-API extraction).
+    /// Owns the running-paths maps, toast slots, ci-fetch tracker,
+    /// pending queues, and example-runner state. Phase 11.4a moved
+    /// the lint-specific fields (runtime, running paths, lint
+    /// toast) onto `Lint`.
     inflight:          Inflight,
+    /// Lint subsystem (Phase 11 of the App-API extraction). Phase
+    /// 11.4a absorbed the in-flight lint state from `Inflight`.
+    /// Subsequent slices absorb the disk cache stat counter and
+    /// the lint-specific phase trackers.
+    lint:              crate::tui::lint_state::Lint,
     /// Config subsystem (Phase 5 of the App-API carve, see
     /// `docs/app-api.md`). Owns `current_config`, `config_path`,
     /// `config_last_seen`, plus the in-app settings editor's
@@ -279,6 +286,10 @@ impl App {
     }
 
     pub(super) const fn lint_cache_usage(&self) -> &CacheUsage { self.scan.lint_cache_usage() }
+
+    /// Lint subsystem accessor (Phase 11.4a). Owns the lint
+    /// runtime, running paths, and running toast.
+    pub(super) const fn lint(&self) -> &crate::tui::lint_state::Lint { &self.lint }
 
     pub(super) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
         self.projects().lint_at_path(path)

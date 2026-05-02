@@ -326,8 +326,8 @@ impl App {
     pub fn apply_lint_config_change(&mut self, cfg: &CargoPortConfig) {
         // Inflight: respawn the lint runtime + clear in-flight tracking.
         let lint_spawn = lint::spawn(cfg, self.background.bg_sender());
-        self.inflight.set_lint_runtime(lint_spawn.handle);
-        self.inflight.running_lint_paths_mut().clear();
+        self.lint.set_runtime(lint_spawn.handle);
+        self.lint.running_paths_mut().clear();
         self.sync_running_lint_toast();
         self.sync_lint_runtime_projects();
 
@@ -362,7 +362,7 @@ impl App {
             self.ci_run_count(),
             self.include_non_rust(),
             self.http_client.clone(),
-            self.inflight.lint_runtime_clone(),
+            self.lint.runtime_clone(),
             self.metadata_store_handle(),
         );
         self.background.replace_watcher_sender(new_watcher);
@@ -616,14 +616,14 @@ impl App {
     }
 
     pub fn sync_lint_runtime_projects(&self) {
-        let Some(runtime) = self.inflight.lint_runtime() else {
+        let Some(runtime) = self.lint.runtime() else {
             return;
         };
         runtime.sync_projects(self.lint_runtime_projects_snapshot());
     }
 
     fn register_lint_for_root_items(&self) -> usize {
-        let Some(runtime) = self.inflight.lint_runtime() else {
+        let Some(runtime) = self.lint.runtime() else {
             return 0;
         };
         let mut count = 0;
@@ -702,7 +702,7 @@ impl App {
             tracing::info!(reason = "workspace_member", path = %item.display_path(), "lint_register_skip");
             return;
         }
-        let Some(runtime) = self.inflight.lint_runtime() else {
+        let Some(runtime) = self.lint.runtime() else {
             tracing::info!(reason = "no_runtime", path = %item.display_path(), "lint_register_skip");
             return;
         };
@@ -1354,9 +1354,9 @@ impl App {
     }
 
     pub fn sync_running_lint_toast(&mut self) {
-        let running = self.inflight.running_lint_paths().clone();
-        let next = self.sync_tracked_path_toast(self.inflight.lint_toast(), "Lints", &running);
-        self.inflight.set_lint_toast(next);
+        let running = self.lint.running_paths().clone();
+        let next = self.sync_tracked_path_toast(self.lint.running_toast(), "Lints", &running);
+        self.lint.set_running_toast(next);
     }
 
     /// Lightweight refresh of derived state after in-place hierarchy changes
@@ -1741,7 +1741,7 @@ impl App {
             }
         }
         if lint_runtime_changed {
-            if let Some(runtime) = self.inflight.lint_runtime()
+            if let Some(runtime) = self.lint.runtime()
                 && bytes == 0
             {
                 runtime.unregister_project(AbsolutePath::from(path));
@@ -2367,15 +2367,13 @@ impl App {
             if let Some(lr) = self.scan.projects_mut().lint_at_path_mut(path) {
                 lr.clear_runs();
             }
-            self.inflight.running_lint_paths_mut().remove(path);
+            self.lint.running_paths_mut().remove(path);
         }
         if status_started {
-            self.inflight
-                .running_lint_paths_mut()
-                .insert(abs, Instant::now());
+            self.lint.running_paths_mut().insert(abs, Instant::now());
         }
         if status_is_terminal {
-            self.inflight.running_lint_paths_mut().remove(path);
+            self.lint.running_paths_mut().remove(path);
         }
         self.sync_running_lint_toast();
         if !self.is_scan_complete() {

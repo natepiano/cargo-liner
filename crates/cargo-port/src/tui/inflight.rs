@@ -1,22 +1,17 @@
 //! The `Inflight` subsystem.
 //!
-//! Phase 4 of the App-API carve (see `docs/app-api.md`). Absorbs
-//! the in-flight bookkeeping App tracked across thirteen raw
+//! Phase 4 of the App-API extraction (see `docs/app-api.md`).
+//! Absorbs the in-flight bookkeeping App tracked across raw
 //! fields:
-//! - `running_clean_paths`, `running_lint_paths`
-//! - `clean_toast`, `lint_toast`, `ci_fetch_toast`
+//! - `running_clean_paths`
+//! - `clean_toast`, `ci_fetch_toast`
 //! - `ci_fetch_tracker`
 //! - `pending_cleans`, `pending_ci_fetch`, `pending_example_run`
 //! - `example_running`, `example_child`, `example_output`
-//! - `lint_runtime` (relocated here from Background — `start_lint` is the only consumer, so
-//!   co-locating runtime with start avoids cross-subsystem reach)
 //!
-//! Phase 4 absorbs the field cluster and exposes raw accessors;
-//! the documented `start_*` / `finish_*` / `StartContext` cluster
-//! lands incrementally as call sites migrate. Today every
-//! existing call site touches multiple sub-fields directly via
-//! the accessors below, matching the doc's "Phase 4 absorbs the
-//! field cluster only" stance.
+//! Phase 11.4a relocated the lint-specific fields (`lint_runtime`,
+//! `running_lint_paths`, `lint_toast`) onto the [`Lint`](super::lint_state::Lint)
+//! subsystem, since `Lint` now owns lint lifecycle.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -29,17 +24,13 @@ use super::app::PendingClean;
 use super::panes::PendingCiFetch;
 use super::panes::PendingExampleRun;
 use super::toasts::ToastTaskId;
-use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 
-/// Owns all in-flight bookkeeping App previously held as 13
-/// separate fields. App holds a single `inflight: Inflight` after
-/// Phase 4.
+/// Owns the in-flight bookkeeping App previously held as raw
+/// fields. App holds a single `inflight: Inflight`.
 pub(super) struct Inflight {
     running_clean_paths: HashMap<AbsolutePath, Instant>,
-    running_lint_paths:  HashMap<AbsolutePath, Instant>,
     clean_toast:         Option<ToastTaskId>,
-    lint_toast:          Option<ToastTaskId>,
     ci_fetch_toast:      Option<ToastTaskId>,
     ci_fetch_tracker:    CiFetchTracker,
     pending_cleans:      VecDeque<PendingClean>,
@@ -48,25 +39,21 @@ pub(super) struct Inflight {
     example_running:     Option<String>,
     example_child:       Arc<Mutex<Option<u32>>>,
     example_output:      Vec<String>,
-    lint_runtime:        Option<RuntimeHandle>,
 }
 
 impl Inflight {
-    pub(super) fn new(lint_runtime: Option<RuntimeHandle>) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             running_clean_paths: HashMap::new(),
-            running_lint_paths: HashMap::new(),
-            clean_toast: None,
-            lint_toast: None,
-            ci_fetch_toast: None,
-            ci_fetch_tracker: CiFetchTracker::default(),
-            pending_cleans: VecDeque::new(),
-            pending_ci_fetch: None,
+            clean_toast:         None,
+            ci_fetch_toast:      None,
+            ci_fetch_tracker:    CiFetchTracker::default(),
+            pending_cleans:      VecDeque::new(),
+            pending_ci_fetch:    None,
             pending_example_run: None,
-            example_running: None,
-            example_child: Arc::new(Mutex::new(None)),
-            example_output: Vec::new(),
-            lint_runtime,
+            example_running:     None,
+            example_child:       Arc::new(Mutex::new(None)),
+            example_output:      Vec::new(),
         }
     }
 
@@ -80,26 +67,12 @@ impl Inflight {
         &mut self.running_clean_paths
     }
 
-    pub(super) const fn running_lint_paths(&self) -> &HashMap<AbsolutePath, Instant> {
-        &self.running_lint_paths
-    }
-
-    pub(super) const fn running_lint_paths_mut(&mut self) -> &mut HashMap<AbsolutePath, Instant> {
-        &mut self.running_lint_paths
-    }
-
     // ── toast slots ─────────────────────────────────────────────────
 
     pub(super) const fn clean_toast(&self) -> Option<ToastTaskId> { self.clean_toast }
 
     pub(super) const fn set_clean_toast(&mut self, task_id: Option<ToastTaskId>) {
         self.clean_toast = task_id;
-    }
-
-    pub(super) const fn lint_toast(&self) -> Option<ToastTaskId> { self.lint_toast }
-
-    pub(super) const fn set_lint_toast(&mut self, task_id: Option<ToastTaskId>) {
-        self.lint_toast = task_id;
     }
 
     /// Test-only — production paths atomically consume the slot
@@ -177,16 +150,6 @@ impl Inflight {
     }
 
     pub(super) const fn example_output_is_empty(&self) -> bool { self.example_output.is_empty() }
-
-    // ── lint runtime ────────────────────────────────────────────────
-
-    pub(super) const fn lint_runtime(&self) -> Option<&RuntimeHandle> { self.lint_runtime.as_ref() }
-
-    pub(super) fn lint_runtime_clone(&self) -> Option<RuntimeHandle> { self.lint_runtime.clone() }
-
-    pub(super) fn set_lint_runtime(&mut self, handle: Option<RuntimeHandle>) {
-        self.lint_runtime = handle;
-    }
 }
 
 #[cfg(test)]
@@ -201,7 +164,7 @@ mod tests {
     use super::*;
     use crate::tui::toasts::ToastTaskId;
 
-    fn fresh() -> Inflight { Inflight::new(None) }
+    fn fresh() -> Inflight { Inflight::new() }
 
     fn abs(p: &str) -> AbsolutePath { AbsolutePath::from(PathBuf::from(p)) }
 
@@ -209,13 +172,10 @@ mod tests {
     fn new_starts_empty() {
         let inflight = fresh();
         assert!(inflight.running_clean_paths().is_empty());
-        assert!(inflight.running_lint_paths().is_empty());
         assert!(inflight.clean_toast().is_none());
-        assert!(inflight.lint_toast().is_none());
         assert!(inflight.ci_fetch_toast().is_none());
         assert!(inflight.example_running().is_none());
         assert!(inflight.example_output_is_empty());
-        assert!(inflight.lint_runtime().is_none());
     }
 
     #[test]
@@ -235,10 +195,8 @@ mod tests {
     fn toast_slots_set_and_take() {
         let mut inflight = fresh();
         inflight.set_clean_toast(Some(ToastTaskId(7)));
-        inflight.set_lint_toast(Some(ToastTaskId(8)));
         inflight.set_ci_fetch_toast(Some(ToastTaskId(9)));
         assert_eq!(inflight.clean_toast(), Some(ToastTaskId(7)));
-        assert_eq!(inflight.lint_toast(), Some(ToastTaskId(8)));
         assert_eq!(inflight.ci_fetch_toast(), Some(ToastTaskId(9)));
 
         let taken = inflight.take_ci_fetch_toast();
