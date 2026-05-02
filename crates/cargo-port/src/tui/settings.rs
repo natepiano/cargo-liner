@@ -684,7 +684,7 @@ fn push_lint_cache_size_row(
     ctx: &SettingsLineContext<'_>,
     value: &str,
 ) {
-    let used = render::format_bytes(app.lint_cache_usage().bytes);
+    let used = render::format_bytes(app.lint().cache_usage().bytes);
     let limit = &app.current_config().lint.cache_size;
     let usage_suffix = format!("  {used} / {limit}");
     lines.push(Line::from(vec![

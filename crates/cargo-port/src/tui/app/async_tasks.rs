@@ -419,8 +419,8 @@ impl App {
             .lint
             .cache_size_bytes()
             .unwrap_or(None);
-        self.scan
-            .set_lint_cache_usage(lint::retained_cache_usage(cache_size_bytes));
+        self.lint
+            .set_cache_usage(lint::retained_cache_usage(cache_size_bytes));
     }
 
     /// Register file-system watchers for every item in the tree after a
@@ -1464,8 +1464,8 @@ impl App {
         self.inflight.ci_fetch_tracker_mut().clear();
         self.panes.clear_ci_display_modes();
         self.clear_all_lint_state();
-        self.scan
-            .set_lint_cache_usage(crate::lint::CacheUsage::default());
+        self.lint
+            .set_cache_usage(crate::lint::CacheUsage::default());
         self.github.fetch_cache = scan::new_repo_cache();
         self.github.repo_fetch_in_flight.clear();
         self.github.running_fetches.clear();

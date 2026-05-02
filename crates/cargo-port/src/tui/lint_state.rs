@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
+use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
@@ -79,6 +80,11 @@ pub struct Lint {
     /// `None` when no lint is running. Synced each tick by
     /// `App::sync_running_lint_toast`.
     running_toast: Option<ToastTaskId>,
+    /// Bytes used by the on-disk lint-log cache (`~/.cache/cargo-port/lints/`).
+    /// Refreshed by `App::refresh_lint_cache_usage_from_disk`,
+    /// displayed in the Settings popup. Phase 11.4b moved this
+    /// off [`Scan`](super::scan_state::Scan).
+    cache_usage:   CacheUsage,
 }
 
 impl Lint {
@@ -90,6 +96,7 @@ impl Lint {
             runtime,
             running_paths: HashMap::new(),
             running_toast: None,
+            cache_usage: CacheUsage::default(),
         }
     }
 
@@ -121,6 +128,12 @@ impl Lint {
     pub const fn set_running_toast(&mut self, task_id: Option<ToastTaskId>) {
         self.running_toast = task_id;
     }
+
+    // ── cache usage ─────────────────────────────────────────────
+
+    pub const fn cache_usage(&self) -> &CacheUsage { &self.cache_usage }
+
+    pub const fn set_cache_usage(&mut self, usage: CacheUsage) { self.cache_usage = usage; }
 
     // ── read-side lookups ───────────────────────────────────────
 

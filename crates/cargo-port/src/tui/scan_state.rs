@@ -16,8 +16,10 @@
 //! - `priority_fetch_path` (path the next selection-driven fetch should prefer)
 //! - `confirm_verifying` (workspace root waiting for a metadata refresh before the Clean confirm
 //!   popup unblocks)
-//! - `lint_cache_usage` (per-tick lint-cache stat counter)
 //! - `retry_spawn_mode` (test-only knob that disables retry spawning for deterministic test runs)
+//!
+//! Phase 11.4b moved `lint_cache_usage` onto the
+//! [`Lint`](super::lint_state::Lint) subsystem.
 //!
 //! Phase 6 absorbs the field cluster and rewires the existing
 //! [`crate::tui::app::TreeMutation`] guard to take direct `&mut`
@@ -35,7 +37,6 @@ use super::app::DiscoveryShimmer;
 use super::app::RetrySpawnMode;
 use super::app::ScanState;
 use super::app::TargetDirIndex;
-use crate::lint::CacheUsage;
 use crate::project::AbsolutePath;
 use crate::project::WorkspaceMetadataStore;
 use crate::project_list::ProjectList;
@@ -51,7 +52,6 @@ pub(super) struct Scan {
     target_dir_index:         TargetDirIndex,
     priority_fetch_path:      Option<AbsolutePath>,
     confirm_verifying:        Option<AbsolutePath>,
-    lint_cache_usage:         CacheUsage,
     #[cfg(test)]
     retry_spawn_mode:         RetrySpawnMode,
 }
@@ -73,7 +73,6 @@ impl Scan {
             target_dir_index: TargetDirIndex::new(),
             priority_fetch_path: None,
             confirm_verifying: None,
-            lint_cache_usage: CacheUsage::default(),
             #[cfg(test)]
             retry_spawn_mode: RetrySpawnMode::Enabled,
         }
@@ -160,14 +159,6 @@ impl Scan {
 
     pub(super) fn set_confirm_verifying(&mut self, path: Option<AbsolutePath>) {
         self.confirm_verifying = path;
-    }
-
-    // ── lint cache usage ────────────────────────────────────────────
-
-    pub(super) const fn lint_cache_usage(&self) -> &CacheUsage { &self.lint_cache_usage }
-
-    pub(super) const fn set_lint_cache_usage(&mut self, usage: CacheUsage) {
-        self.lint_cache_usage = usage;
     }
 
     // ── retry-spawn mode (test-only) ────────────────────────────────

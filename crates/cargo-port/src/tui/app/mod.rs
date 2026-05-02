@@ -90,7 +90,6 @@ use crate::config::CargoPortConfig;
 use crate::http::GitHubRateLimit;
 use crate::http::HttpClient;
 use crate::keymap::ResolvedKeymap;
-use crate::lint::CacheUsage;
 use crate::lint::LintRuns;
 use crate::project::AbsolutePath;
 use crate::project::ProjectCiData;
@@ -285,10 +284,9 @@ impl App {
         self.inflight.ci_fetch_tracker_mut().start(path);
     }
 
-    pub(super) const fn lint_cache_usage(&self) -> &CacheUsage { self.scan.lint_cache_usage() }
-
-    /// Lint subsystem accessor (Phase 11.4a). Owns the lint
-    /// runtime, running paths, and running toast.
+    /// Lint subsystem accessor (Phase 11.4a/b). Owns the lint
+    /// runtime, running paths, running toast, and disk cache
+    /// stat counter.
     pub(super) const fn lint(&self) -> &crate::tui::lint_state::Lint { &self.lint }
 
     pub(super) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
