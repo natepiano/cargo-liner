@@ -764,11 +764,7 @@ impl App {
             .startup_phases
             .repo
             .reset_with_expected(HashSet::new());
-        self.scan
-            .scan_state_mut()
-            .startup_phases
-            .lint
-            .reset_with_expected(HashSet::new());
+        self.lint.phase.reset_with_expected(HashSet::new());
         self.scan
             .scan_state_mut()
             .startup_phases
@@ -879,7 +875,7 @@ impl App {
             disk_expected = self.scan.scan_state().startup_phases.disk.expected_len(),
             git_expected = self.scan.scan_state().startup_phases.git.expected_len(),
             repo_expected = self.scan.scan_state().startup_phases.repo.expected_len(),
-            lint_expected = self.scan.scan_state().startup_phases.lint.expected_len(),
+            lint_expected = self.lint.phase.expected_len(),
             metadata_expected = self
                 .scan
                 .scan_state()
@@ -1053,7 +1049,7 @@ impl App {
         // an initialized-empty expected set stays open. This diverges from
         // the generic `PhaseCompletion::is_complete` semantics on purpose,
         // so the check stays inline rather than going through the trait.
-        let lint = &self.scan.scan_state_mut().startup_phases.lint;
+        let lint = &self.lint.phase;
         let should_complete = lint.complete_at.is_none()
             && lint
                 .expected
@@ -1062,23 +1058,23 @@ impl App {
         if !should_complete {
             return;
         }
-        self.scan.scan_state_mut().startup_phases.lint.complete_at = Some(now);
+        self.lint.phase.complete_at = Some(now);
         tracing::info!(
             phase = "lint_terminal_applied",
             since_scan_complete_ms =
                 crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-            seen = self.scan.scan_state_mut().startup_phases.lint.seen.len(),
-            expected = self
-                .scan
-                .scan_state_mut()
-                .startup_phases
-                .lint
-                .expected_len(),
+            seen = self.lint.phase.seen.len(),
+            expected = self.lint.phase.expected_len(),
             "startup_phase_complete"
         );
     }
 
     pub fn maybe_complete_startup_ready(&mut self, now: Instant, scan_complete_at: Instant) {
+        // Pull lint-startup signals first so the &mut borrow of
+        // `self.scan` below doesn't conflict with `self.lint`.
+        let lint_done = self.lint.startup_phase.complete_at.is_some();
+        let lint_seen = self.lint.phase.seen.len();
+        let lint_expected = self.lint.phase.expected_len();
         let phases = self.scan.scan_state_mut();
         if phases.startup_phases.startup_complete_at.is_some() {
             return;
@@ -1094,7 +1090,6 @@ impl App {
         // Finish the startup toast only when lint startup cache check
         // is also done, so "Lint cache" doesn't spin while the toast
         // exits.
-        let lint_done = phases.startup_phases.lint_startup.complete_at.is_some();
         if lint_done && let Some(toast) = phases.startup_phases.startup_toast.take() {
             self.finish_task_toast(toast);
         }
@@ -1108,8 +1103,8 @@ impl App {
             git_expected = phases.startup_phases.git.expected_len(),
             repo_seen = phases.startup_phases.repo.seen.len(),
             repo_expected = phases.startup_phases.repo.expected_len(),
-            lint_seen = phases.startup_phases.lint.seen.len(),
-            lint_expected = phases.startup_phases.lint.expected_len(),
+            lint_seen = lint_seen,
+            lint_expected = lint_expected,
             metadata_seen = phases.startup_phases.metadata.seen.len(),
             metadata_expected = phases.startup_phases.metadata.expected_len(),
             "startup_complete"
@@ -2276,19 +2271,13 @@ impl App {
         if let Some(lr) = self.scan.projects_mut().lint_at_path_mut(path) {
             lr.set_status(status);
         }
-        self.scan.scan_state_mut().startup_phases.lint_startup.seen += 1;
+        self.lint.startup_phase.seen += 1;
         self.maybe_complete_startup_lint_cache();
     }
 
     fn maybe_complete_startup_lint_cache(&mut self) {
         let now = Instant::now();
-        if !self
-            .scan
-            .scan_state_mut()
-            .startup_phases
-            .lint_startup
-            .complete_once(now)
-        {
+        if !self.lint.startup_phase.complete_once(now) {
             return;
         }
         // All startup lint statuses collected — compute cache size once.
@@ -2317,14 +2306,8 @@ impl App {
                 phase = "lint_startup_applied",
                 since_scan_complete_ms =
                     crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-                seen = self.scan.scan_state().startup_phases.lint_startup.seen,
-                expected = self
-                    .scan
-                    .scan_state()
-                    .startup_phases
-                    .lint_startup
-                    .expected
-                    .unwrap_or(0),
+                seen = self.lint.startup_phase.seen,
+                expected = self.lint.startup_phase.expected.unwrap_or(0),
                 "startup_phase_complete"
             );
         }
@@ -2381,33 +2364,21 @@ impl App {
         }
         if status_started {
             let abs_path = AbsolutePath::from(path);
-            let expected = self
-                .scan
-                .scan_state_mut()
-                .startup_phases
-                .lint
-                .ensure_expected();
+            let expected = self.lint.phase.ensure_expected();
             if expected.insert(abs_path) {
-                self.scan.scan_state_mut().startup_phases.lint.complete_at = None;
+                self.lint.phase.complete_at = None;
             }
         }
         if status_is_terminal {
             let abs_path = AbsolutePath::from(path);
             if self
-                .scan
-                .scan_state_mut()
-                .startup_phases
                 .lint
+                .phase
                 .expected
                 .as_ref()
                 .is_some_and(|expected| expected.contains(path))
             {
-                self.scan
-                    .scan_state_mut()
-                    .startup_phases
-                    .lint
-                    .seen
-                    .insert(abs_path);
+                self.lint.phase.seen.insert(abs_path);
             }
         }
         self.maybe_log_startup_phase_completions();
@@ -2443,17 +2414,9 @@ impl App {
         self.mutate_tree().replace_all(ProjectList::new(projects));
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();
-        self.scan
-            .scan_state_mut()
-            .startup_phases
-            .lint_startup
-            .expected = Some(lint_registered);
-        self.scan.scan_state_mut().startup_phases.lint_startup.seen = 0;
-        self.scan
-            .scan_state_mut()
-            .startup_phases
-            .lint_startup
-            .complete_at = None;
+        self.lint.startup_phase.expected = Some(lint_registered);
+        self.lint.startup_phase.seen = 0;
+        self.lint.startup_phase.complete_at = None;
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
 

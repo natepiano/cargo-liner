@@ -57,6 +57,8 @@ mod query;
 mod service_state;
 mod snapshots;
 
+pub(super) use phase_state::CountedPhase;
+pub(super) use phase_state::KeyedPhase;
 pub(super) use snapshots::build_visible_rows;
 mod target_index;
 mod types;

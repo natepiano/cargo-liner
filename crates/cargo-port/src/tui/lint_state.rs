@@ -31,6 +31,8 @@ use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project_list::ProjectList;
+use crate::tui::app::CountedPhase;
+use crate::tui::app::KeyedPhase;
 use crate::tui::toasts::ToastTaskId;
 
 /// Display value for the Lint row in the Package detail pane.
@@ -71,20 +73,29 @@ pub struct Lint {
     /// at startup; replaced by [`Self::set_runtime`] when lint
     /// config (`lint.enabled`, `lint.parallel`, `lint.cache_root`)
     /// changes. `None` when lint is disabled.
-    runtime:       Option<RuntimeHandle>,
+    runtime:           Option<RuntimeHandle>,
     /// Paths with a lint run currently in flight, keyed by the
     /// time the run was launched. The launch time gates the toast
     /// "running for N seconds" indicator.
-    running_paths: HashMap<AbsolutePath, Instant>,
+    running_paths:     HashMap<AbsolutePath, Instant>,
     /// The single sticky toast that displays "N lints running."
     /// `None` when no lint is running. Synced each tick by
     /// `App::sync_running_lint_toast`.
-    running_toast: Option<ToastTaskId>,
+    running_toast:     Option<ToastTaskId>,
     /// Bytes used by the on-disk lint-log cache (`~/.cache/cargo-port/lints/`).
     /// Refreshed by `App::refresh_lint_cache_usage_from_disk`,
     /// displayed in the Settings popup. Phase 11.4b moved this
     /// off [`Scan`](super::scan_state::Scan).
-    cache_usage:   CacheUsage,
+    cache_usage:       CacheUsage,
+    /// Tracks terminal lint events (`Passed` / `Failed`) keyed
+    /// on project path; `seen` counts only terminal arrivals.
+    /// Phase 11.4c moved this off `ScanState::startup_phases`.
+    pub phase:         KeyedPhase<AbsolutePath>,
+    /// Counts startup-time lint completions across the project
+    /// tree. Used by `App::maybe_complete_startup_lints` to decide
+    /// when the startup-lint pass is done. Phase 11.4c moved this
+    /// off `ScanState::startup_phases`.
+    pub startup_phase: CountedPhase,
 }
 
 impl Lint {
@@ -97,6 +108,8 @@ impl Lint {
             running_paths: HashMap::new(),
             running_toast: None,
             cache_usage: CacheUsage::default(),
+            phase: KeyedPhase::default(),
+            startup_phase: CountedPhase::default(),
         }
     }
 

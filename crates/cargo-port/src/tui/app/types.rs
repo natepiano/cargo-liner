@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::phase_state::CountedPhase;
 use super::phase_state::KeyedPhase;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
@@ -78,17 +77,16 @@ pub struct StartupPhaseTracker {
     pub startup_toast:       Option<ToastTaskId>,
     pub startup_complete_at: Option<Instant>,
 
-    pub disk:         KeyedPhase<AbsolutePath>,
-    pub git:          KeyedPhase<AbsolutePath>,
-    pub repo:         KeyedPhase<OwnerRepo>,
-    /// Tracks terminal lint events (`Passed` / `Failed`). `seen` counts only
-    /// terminal arrivals — transient lint-start messages do not advance it.
-    pub lint:         KeyedPhase<AbsolutePath>,
-    pub lint_startup: CountedPhase,
+    pub disk:     KeyedPhase<AbsolutePath>,
+    pub git:      KeyedPhase<AbsolutePath>,
+    pub repo:     KeyedPhase<OwnerRepo>,
     /// Keyed on workspace root; seen when a `BackgroundMsg::CargoMetadata`
     /// arrival is either merged into the store or converted into an error
     /// toast.
-    pub metadata:     KeyedPhase<AbsolutePath>,
+    pub metadata: KeyedPhase<AbsolutePath>,
+    // `lint` and `lint_startup` were here; Phase 11.4c moved
+    // them onto the `Lint` subsystem (`tui::lint_state::Lint::phase`,
+    // `Lint::startup_phase`).
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

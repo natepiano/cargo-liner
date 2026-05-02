@@ -386,13 +386,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
 
     app.initialize_startup_phase_tracker();
 
-    let expected = app
-        .scan_state()
-        .startup_phases
-        .lint
-        .expected
-        .as_ref()
-        .expect("lint expected");
+    let expected = app.lint().phase.expected.as_ref().expect("lint expected");
     assert!(expected.is_empty());
     assert!(app.lint().running_toast().is_none());
 
@@ -401,22 +395,10 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
 
-    let expected = app
-        .scan_state()
-        .startup_phases
-        .lint
-        .expected
-        .as_ref()
-        .expect("lint expected");
+    let expected = app.lint().phase.expected.as_ref().expect("lint expected");
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(project_a.path().as_path()));
-    assert!(
-        !app.scan_state()
-            .startup_phases
-            .lint
-            .seen
-            .contains(project_a.path().as_path())
-    );
+    assert!(!app.lint().phase.seen.contains(project_a.path().as_path()));
     assert!(app.lint().running_paths().contains_key(project_a.path()));
     assert!(app.lint().running_toast().is_some());
 
@@ -425,13 +407,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
 
-    assert!(
-        app.scan_state_mut()
-            .startup_phases
-            .lint
-            .complete_at
-            .is_some()
-    );
+    assert!(app.lint().phase.complete_at.is_some());
     assert!(app.lint().running_paths().is_empty());
     app.prune_toasts();
 }
