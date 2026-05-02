@@ -29,6 +29,7 @@ use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
 use crate::tui::app::App;
 use crate::tui::app::DiscoveryRowKind;
+use crate::tui::app::DismissTarget;
 use crate::tui::app::ExpandKey;
 use crate::tui::app::ProjectListWidths;
 use crate::tui::app::VisibleRow;
@@ -41,7 +42,6 @@ use crate::tui::pane;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
 use crate::tui::render;
-use crate::tui::app::DismissTarget;
 
 // ── Row prefix strings ───────────────────────────────────────────────
 // Single source of truth: width calc and render both reference these.

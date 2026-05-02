@@ -31,6 +31,7 @@ use crate::keymap::KeymapErrorReason::Parse;
 use crate::lint;
 use crate::lint::LintStatus;
 use crate::lint::RegisterProjectRequest;
+use crate::perf_log;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
@@ -74,7 +75,6 @@ use crate::tui::toasts::TrackedItem;
 use crate::watcher;
 use crate::watcher::WatchRequest;
 use crate::watcher::WatcherMsg;
-use crate::perf_log;
 
 #[derive(Clone)]
 struct LegacyRootExpansion {

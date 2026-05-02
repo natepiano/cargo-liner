@@ -3,8 +3,8 @@ use ratatui::layout::Rect;
 
 use super::app::App;
 use super::app::HoveredPaneRow;
-use super::panes::PaneId;
 use super::panes::HoverTarget;
+use super::panes::PaneId;
 
 /// Per-toast hit-test rects produced by `toasts::render_toasts`
 /// and stashed onto `ToastsPane` each frame. The Phase 10.3
@@ -44,8 +44,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
 pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPaneRow> {
     match app.panes().hit_test_at(pos)? {
         HoverTarget::PaneRow { pane, row } => Some(HoveredPaneRow { pane, row }),
-        HoverTarget::Dismiss(_)
-        | HoverTarget::ToastCard(_) => None,
+        HoverTarget::Dismiss(_) | HoverTarget::ToastCard(_) => None,
     }
 }
 

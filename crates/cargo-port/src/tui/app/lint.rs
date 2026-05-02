@@ -2,7 +2,8 @@ use std::path::Path;
 
 use super::App;
 use super::types::VisibleRow;
-use crate::project::RootItem;
+use crate::constants::LINT_NO_LOG;
+use crate::lint::LintStatus;
 
 impl App {
     /// Whether the currently selected row is a lint-owning node.
@@ -29,60 +30,62 @@ impl App {
         }
     }
 
-    /// Lint icon frame for the current animation state, or a blank space if lint is
-    /// disabled or no log exists.
-    pub fn lint_icon(&self, path: &Path) -> &'static str {
-        use crate::constants::LINT_NO_LOG;
-
+    /// Frame `status` to a static icon string for the current
+    /// animation tick, or `LINT_NO_LOG` when lint is disabled.
+    /// Phase 11.2 — replaces the per-row `lint_icon*` bodies that
+    /// each duplicated the "find a status, then frame an icon"
+    /// pattern.
+    pub fn frame_lint_icon(&self, status: &LintStatus) -> &'static str {
         if !self.lint_enabled() {
             return LINT_NO_LOG;
         }
-        let Some(lr) = self.projects().lint_at_path(path) else {
-            return LINT_NO_LOG;
-        };
-        lr.status().icon().frame_at(self.animation_elapsed())
-    }
-
-    pub fn lint_icon_for_root(&self, node_index: usize) -> &'static str {
-        use crate::constants::LINT_NO_LOG;
-
-        if !self.lint_enabled() {
-            return LINT_NO_LOG;
-        }
-        let Some(item) = self.projects().get(node_index) else {
-            return LINT_NO_LOG;
-        };
-        let status = item.lint_rollup_status();
         status.icon().frame_at(self.animation_elapsed())
     }
 
-    pub fn lint_icon_for_worktree(&self, node_index: usize, worktree_index: usize) -> &'static str {
-        use crate::constants::LINT_NO_LOG;
+    /// Lint icon for a project at `path`. Pass-through to
+    /// [`Self::frame_lint_icon`] over [`Lint::status_for_path`].
+    pub fn lint_icon(&self, path: &Path) -> &'static str {
+        let status = crate::tui::lint_state::Lint::status_for_path(self.projects(), path);
+        self.frame_lint_icon(&status)
+    }
 
-        if !self.lint_enabled() {
-            return LINT_NO_LOG;
-        }
+    /// Lint icon for the root project at `node_index`, aggregated
+    /// across worktree-group entries when applicable.
+    pub fn lint_icon_for_root(&self, node_index: usize) -> &'static str {
         let Some(entry) = self.projects().get(node_index) else {
             return LINT_NO_LOG;
         };
-        let RootItem::Worktrees(g) = &entry.item else {
-            return LINT_NO_LOG;
-        };
-        let status = g.lint_status_for_worktree(worktree_index);
-        status.icon().frame_at(self.animation_elapsed())
+        let status = crate::tui::lint_state::Lint::status_for_root(&entry.item);
+        self.frame_lint_icon(&status)
     }
 
+    /// Lint icon for a worktree entry within a worktree group;
+    /// `worktree_index` 0 is the primary checkout.
+    pub fn lint_icon_for_worktree(&self, node_index: usize, worktree_index: usize) -> &'static str {
+        let Some(entry) = self.projects().get(node_index) else {
+            return LINT_NO_LOG;
+        };
+        let status = crate::tui::lint_state::Lint::status_for_worktree(&entry.item, worktree_index);
+        self.frame_lint_icon(&status)
+    }
+
+    /// Lint icon for the currently selected row, used by the
+    /// Package detail's worktree-group title.
+    ///
+    /// Phase 11.3 deletes this — `resolve_lint_display`, the
+    /// only consumer, gets replaced by `Lint::package_display`,
+    /// which branches on `is_worktree_group` directly. Until
+    /// then this delegates to `Lint`.
     pub fn selected_lint_icon(&self, path: &Path) -> Option<&'static str> {
         if !self.lint_enabled() {
             return None;
         }
         match self.selected_row() {
             Some(VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. }) => {
-                self.projects().get(node_index).map(|item| {
-                    item.lint_rollup_status()
-                        .icon()
-                        .frame_at(self.animation_elapsed())
-                })
+                self.projects()
+                    .get(node_index)
+                    .map(|entry| crate::tui::lint_state::Lint::status_for_root(&entry.item))
+                    .map(|status| status.icon().frame_at(self.animation_elapsed()))
             },
             Some(
                 VisibleRow::WorktreeEntry {
@@ -94,13 +97,13 @@ impl App {
                     worktree_index,
                     ..
                 },
-            ) => {
-                let RootItem::Worktrees(g) = &self.projects().get(node_index)?.item else {
-                    return None;
-                };
-                let status = g.lint_status_for_worktree(worktree_index);
-                Some(status.icon().frame_at(self.animation_elapsed()))
-            },
+            ) => self
+                .projects()
+                .get(node_index)
+                .map(|entry| {
+                    crate::tui::lint_state::Lint::status_for_worktree(&entry.item, worktree_index)
+                })
+                .map(|status| status.icon().frame_at(self.animation_elapsed())),
             Some(
                 VisibleRow::Member { .. }
                 | VisibleRow::Vendored { .. }
