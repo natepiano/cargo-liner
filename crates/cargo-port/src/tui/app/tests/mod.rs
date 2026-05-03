@@ -63,6 +63,7 @@ use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PaneId;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
+use crate::test_support;
 
 mod background;
 mod discovery_shimmer;
@@ -72,7 +73,7 @@ mod state;
 mod worktrees;
 
 fn test_http_client() -> HttpClient {
-    let rt = crate::test_support::test_runtime();
+    let rt = test_support::test_runtime();
     HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
 }
 
