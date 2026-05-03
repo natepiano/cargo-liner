@@ -151,6 +151,7 @@ use super::terminal::ExampleMsg;
 use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
 use crate::project::RootItem;
+use super::ci_state::Ci;
 pub(super) struct App {
     /// Net subsystem (Phase 12.2 of the App-API extraction, see
     /// `docs/app-api.md`). Owns the shared `HttpClient`, the
@@ -195,7 +196,7 @@ pub(super) struct App {
     /// returning `CiDisplay`. Phase 13.2 absorbs the field
     /// cluster (`ci_fetch_tracker`, `ci_fetch_toast`,
     /// `display_modes`) from `Inflight` and `CiPane`.
-    ci:                crate::tui::ci_state::Ci,
+    ci:                Ci,
     /// Config subsystem (Phase 5 of the App-API carve, see
     /// `docs/app-api.md`). Owns `current_config`, `config_path`,
     /// `config_last_seen`, plus the in-app settings editor's
@@ -309,7 +310,7 @@ impl App {
 
     /// Ci subsystem accessor (Phase 13). Owns
     /// `fetch_tracker`, `fetch_toast`, and `display_modes`.
-    pub(super) const fn ci(&self) -> &crate::tui::ci_state::Ci { &self.ci }
+    pub(super) const fn ci(&self) -> &Ci { &self.ci }
 
     pub(super) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
         self.projects().lint_at_path(path)

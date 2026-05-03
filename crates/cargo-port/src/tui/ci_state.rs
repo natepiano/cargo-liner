@@ -26,9 +26,9 @@ use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ProjectCiInfo;
 use crate::project::RepoInfo;
-use crate::tui::app::CiFetchTracker;
-use crate::tui::app::CiRunDisplayMode;
-use crate::tui::toasts::ToastTaskId;
+use super::app::CiFetchTracker;
+use super::app::CiRunDisplayMode;
+use super::toasts::ToastTaskId;
 
 /// Display value for the Ci row in the Package detail pane.
 ///
