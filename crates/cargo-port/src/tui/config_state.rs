@@ -1,13 +1,10 @@
 //! The `Config` subsystem.
 //!
-//! Phase 5 of the App-API carve (see `docs/app-api.md`). Absorbs the
-//! five fields App carried for the `cargo-port.toml` config file:
-//! `current_config`, `config_path`, `config_last_seen`,
-//! `settings_edit_buf`, `settings_edit_cursor` (the last two
-//! collapse into [`SettingsEditBuffer`]). Composes
+//! Owns App's `cargo-port.toml` state: `current_config`,
+//! `config_path`, `config_last_seen`, plus the in-app settings
+//! editor's typed [`SettingsEditBuffer`]. Composes
 //! [`super::watched_file::WatchedFile<T>`] for the
-//! load-watch-reload contract; the bespoke state is the typed edit
-//! buffer the in-app settings editor mutates.
+//! load-watch-reload contract.
 
 use std::path::Path;
 use std::path::PathBuf;

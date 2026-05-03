@@ -1,48 +1,20 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use super::App;
 use super::types::ExpandKey;
 use super::types::VisibleRow;
-use crate::constants::IN_SYNC;
-use crate::constants::NO_REMOTE_SYNC;
-use crate::constants::SYNC_DOWN;
-use crate::constants::SYNC_UP;
 use crate::project::AbsolutePath;
-use crate::project::CheckoutInfo;
-use crate::project::GitOrigin;
-use crate::project::GitStatus;
 use crate::project::MemberGroup;
-use crate::project::Package;
-use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
-use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Submodule;
 use crate::project::VendoredPackage;
 use crate::project::Visibility;
-use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project_list::ProjectList;
-use crate::tui::columns;
-use crate::tui::columns::COL_DISK;
-use crate::tui::columns::COL_MAIN;
-use crate::tui::columns::COL_SYNC;
 use crate::tui::columns::ProjectListWidths;
-use crate::tui::panes::PREFIX_GROUP_COLLAPSED;
-use crate::tui::panes::PREFIX_MEMBER_INLINE;
-use crate::tui::panes::PREFIX_MEMBER_NAMED;
-use crate::tui::panes::PREFIX_ROOT_COLLAPSED;
-use crate::tui::panes::PREFIX_SUBMODULE;
-use crate::tui::panes::PREFIX_VENDORED;
-use crate::tui::panes::PREFIX_WT_COLLAPSED;
-use crate::tui::panes::PREFIX_WT_FLAT;
-use crate::tui::panes::PREFIX_WT_GROUP_COLLAPSED;
-use crate::tui::panes::PREFIX_WT_MEMBER_INLINE;
-use crate::tui::panes::PREFIX_WT_MEMBER_NAMED;
-use crate::tui::panes::PREFIX_WT_VENDORED;
-use crate::tui::render;
+use crate::tui::panes;
 
 /// Build the flat list of visible rows from the project list and expansion state.
 pub fn build_visible_rows(
@@ -270,225 +242,16 @@ fn emit_worktree_children(
     }
 }
 
-fn formatted_disk(bytes: Option<u64>) -> String {
-    bytes.map_or_else(|| render::format_bytes(0), render::format_bytes)
-}
-
-pub(super) fn git_sync_snapshot(
-    checkout: Option<&CheckoutInfo>,
-    repo: Option<&RepoInfo>,
-) -> String {
-    let Some(info) = checkout else {
-        return String::new();
-    };
-    if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
-        return String::new();
-    }
-    let primary_ab = repo.and_then(|r| info.primary_ahead_behind(r));
-    let origin = repo.map_or(GitOrigin::Local, RepoInfo::origin_kind);
-    match primary_ab {
-        Some((0, 0)) => IN_SYNC.to_string(),
-        Some((a, 0)) => format!("{SYNC_UP}{a}"),
-        Some((0, b)) => format!("{SYNC_DOWN}{b}"),
-        Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
-        None if origin != GitOrigin::Local => "-".to_string(),
-        None => NO_REMOTE_SYNC.to_string(),
-    }
-}
-
-pub(super) fn git_main_snapshot(checkout: Option<&CheckoutInfo>) -> String {
-    let Some(info) = checkout else {
-        return String::new();
-    };
-    if matches!(info.status, GitStatus::Untracked | GitStatus::Ignored) {
-        return String::new();
-    }
-    match info.ahead_behind_local {
-        Some((0, 0)) => IN_SYNC.to_string(),
-        Some((a, 0)) => format!("{SYNC_UP}{a}"),
-        Some((0, b)) => format!("{SYNC_DOWN}{b}"),
-        Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
-        None => String::new(),
-    }
-}
-
+/// Build the column-fit widths snapshot. The math lives in
+/// `panes::widths` next to the renderer it mirrors; this is the
+/// thin App-shell entry that Selection's fit-widths cache calls.
 pub(super) fn build_fit_widths_snapshot(
     entries: &ProjectList,
     root_labels: &[String],
     lint_enabled: bool,
     generation: u64,
 ) -> ProjectListWidths {
-    let mut widths = ProjectListWidths::new(lint_enabled);
-
-    for (index, entry) in entries.iter().enumerate() {
-        observe_item_fit_widths(&mut widths, entry, &root_labels[index]);
-    }
-
-    widths.generation = generation;
-    widths
-}
-
-fn observe_item_fit_widths(widths: &mut ProjectListWidths, entry: &ProjectEntry, root_label: &str) {
-    let dw = columns::display_width;
-    let item = &entry.item;
-    let repo_info = entry
-        .git_repo
-        .as_ref()
-        .and_then(|repo| repo.repo_info.as_ref());
-
-    App::observe_name_width(widths, dw(PREFIX_ROOT_COLLAPSED) + dw(root_label));
-    widths.observe(COL_DISK, dw(&formatted_disk(item.disk_usage_bytes())));
-    widths.observe(COL_SYNC, dw(&git_sync_snapshot(item.git_info(), repo_info)));
-    widths.observe(COL_MAIN, dw(&git_main_snapshot(item.git_info())));
-
-    match item {
-        RootItem::Rust(RustProject::Workspace(ws)) => {
-            observe_new_member_group_fit_widths(widths, ws.groups(), false);
-            observe_typed_vendored_fit_widths(widths, ws.vendored(), PREFIX_VENDORED);
-        },
-        RootItem::Rust(RustProject::Package(pkg)) => {
-            observe_typed_vendored_fit_widths(widths, pkg.vendored(), PREFIX_VENDORED);
-        },
-        RootItem::NonRust(_) => {},
-        RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) => {
-            observe_workspace_worktree_group_fit_widths(widths, wtg, repo_info);
-        },
-        RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. }) => {
-            observe_package_worktree_group_fit_widths(widths, wtg, repo_info);
-        },
-    }
-    for submodule in item.submodules() {
-        let label = format!("{} (s)", submodule.name);
-        observe_path_only_entry_fit_widths(widths, PREFIX_SUBMODULE, &label, submodule);
-    }
-}
-
-fn observe_path_only_entry_fit_widths(
-    widths: &mut ProjectListWidths,
-    prefix: &str,
-    label: &str,
-    entry: &impl crate::project::ProjectFields,
-) {
-    let dw = columns::display_width;
-    App::observe_name_width(widths, dw(prefix) + dw(label));
-    widths.observe(COL_DISK, dw(&formatted_disk(entry.info().disk_usage_bytes)));
-}
-
-fn observe_new_member_group_fit_widths(
-    widths: &mut ProjectListWidths,
-    groups: &[MemberGroup],
-    is_worktree: bool,
-) {
-    let dw = columns::display_width;
-    for group in groups {
-        let (inline_prefix, named_prefix, group_prefix) = if is_worktree {
-            (
-                PREFIX_WT_MEMBER_INLINE,
-                PREFIX_WT_MEMBER_NAMED,
-                PREFIX_WT_GROUP_COLLAPSED,
-            )
-        } else {
-            (
-                PREFIX_MEMBER_INLINE,
-                PREFIX_MEMBER_NAMED,
-                PREFIX_GROUP_COLLAPSED,
-            )
-        };
-        for member in group.members() {
-            let prefix = if group.is_named() {
-                named_prefix
-            } else {
-                inline_prefix
-            };
-            App::observe_name_width(widths, dw(prefix) + dw(member.package_name().as_str()));
-            widths.observe(COL_DISK, dw(&formatted_disk(member.disk_usage_bytes())));
-        }
-        if group.is_named() {
-            let label = format!("{} ({})", group.group_name(), group.members().len());
-            App::observe_name_width(widths, dw(group_prefix) + dw(&label));
-        }
-    }
-}
-
-fn observe_typed_vendored_fit_widths(
-    widths: &mut ProjectListWidths,
-    vendored: &[VendoredPackage],
-    prefix: &str,
-) {
-    let dw = columns::display_width;
-    for project in vendored {
-        let label = format!("{} (vendored)", project.package_name());
-        App::observe_name_width(widths, dw(prefix) + dw(&label));
-        widths.observe(COL_DISK, dw(&formatted_disk(project.disk_usage_bytes())));
-    }
-}
-
-fn observe_workspace_worktree_entry_fit_widths(
-    widths: &mut ProjectListWidths,
-    ws: &Workspace,
-    repo_info: Option<&RepoInfo>,
-) {
-    let dw = columns::display_width;
-    let wt_name = ws.root_directory_name().into_string();
-    let prefix = if ws.has_members() {
-        PREFIX_WT_COLLAPSED
-    } else {
-        PREFIX_WT_FLAT
-    };
-    App::observe_name_width(widths, dw(prefix) + dw(&wt_name));
-    widths.observe(COL_DISK, dw(&formatted_disk(ws.disk_usage_bytes())));
-    widths.observe(COL_SYNC, dw(&git_sync_snapshot(ws.git_info(), repo_info)));
-    widths.observe(COL_MAIN, dw(&git_main_snapshot(ws.git_info())));
-    observe_new_member_group_fit_widths(widths, ws.groups(), true);
-    observe_typed_vendored_fit_widths(widths, ws.vendored(), PREFIX_WT_VENDORED);
-}
-
-fn observe_package_worktree_entry_fit_widths(
-    widths: &mut ProjectListWidths,
-    pkg: &Package,
-    repo_info: Option<&RepoInfo>,
-) {
-    let dw = columns::display_width;
-    let wt_name = pkg.root_directory_name().into_string();
-    App::observe_name_width(widths, dw(PREFIX_WT_FLAT) + dw(&wt_name));
-    widths.observe(COL_DISK, dw(&formatted_disk(pkg.disk_usage_bytes())));
-    widths.observe(COL_SYNC, dw(&git_sync_snapshot(pkg.git_info(), repo_info)));
-    widths.observe(COL_MAIN, dw(&git_main_snapshot(pkg.git_info())));
-    observe_typed_vendored_fit_widths(widths, pkg.vendored(), PREFIX_WT_VENDORED);
-}
-
-fn observe_workspace_worktree_group_fit_widths(
-    widths: &mut ProjectListWidths,
-    wtg: &WorktreeGroup,
-    repo_info: Option<&RepoInfo>,
-) {
-    let WorktreeGroup::Workspaces {
-        primary, linked, ..
-    } = wtg
-    else {
-        return;
-    };
-    observe_workspace_worktree_entry_fit_widths(widths, primary, repo_info);
-    for ws in linked {
-        observe_workspace_worktree_entry_fit_widths(widths, ws, repo_info);
-    }
-}
-
-fn observe_package_worktree_group_fit_widths(
-    widths: &mut ProjectListWidths,
-    wtg: &WorktreeGroup,
-    repo_info: Option<&RepoInfo>,
-) {
-    let WorktreeGroup::Packages {
-        primary, linked, ..
-    } = wtg
-    else {
-        return;
-    };
-    observe_package_worktree_entry_fit_widths(widths, primary, repo_info);
-    for pkg in linked {
-        observe_package_worktree_entry_fit_widths(widths, pkg, repo_info);
-    }
+    panes::compute_project_list_widths(entries, root_labels, lint_enabled, generation)
 }
 
 pub(super) fn build_disk_cache_snapshot(

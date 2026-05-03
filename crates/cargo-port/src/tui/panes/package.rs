@@ -42,11 +42,9 @@ struct PackageRenderCtx<'a> {
     pane:              &'a Viewport,
     focus:             PaneFocusState,
     styles:            &'a RenderStyles,
-    /// Phase 11.3: threaded through so the Lint row can frame its
-    /// icon at render time (the typed `LintDisplay` carries an
-    /// unframed `LintStatus` — animation framing was previously
-    /// pre-baked into a String at assembly time, which silently
-    /// produced a stale spinner frame).
+    /// Threaded through so the Lint row can frame its icon at
+    /// render time (the typed `LintDisplay` carries an unframed
+    /// `LintStatus`).
     animation_elapsed: std::time::Duration,
     lint_enabled:      bool,
 }
@@ -505,9 +503,7 @@ pub fn description_lines(
 }
 
 /// Style for the Lint row in the Package detail pane, derived
-/// from the typed [`LintDisplay`] (Phase 11.3 — replaces the
-/// stringly-typed `lint_value_style` that string-matched icon
-/// constants).
+/// from the typed [`LintDisplay`].
 fn lint_display_style(display: &super::LintDisplay) -> Style {
     use super::LintDisplay;
     use crate::lint::LintStatus;
@@ -524,12 +520,10 @@ fn lint_display_style(display: &super::LintDisplay) -> Style {
 }
 
 /// Render a typed [`LintDisplay`] to the string shown in the
-/// Package detail row. Phase 11.3 — replaces the
-/// `format!("{lint_icon} {n}")` pre-baked at assembly time. The
-/// icon is framed at render time using the current animation
-/// tick, fixing the pre-existing stale-spinner accident where
-/// the icon was framed once at detail-cache rebuild and never
-/// updated.
+/// Package detail row. The icon is framed at render time using
+/// the current animation tick (the typed `LintDisplay` carries
+/// an unframed `LintStatus` so the icon stays in sync with the
+/// spinner animation).
 fn lint_display_to_string(
     display: &super::LintDisplay,
     animation_elapsed: std::time::Duration,
@@ -552,9 +546,7 @@ fn lint_display_to_string(
 }
 
 /// Style for the Ci row in the Package detail pane, derived
-/// from the typed [`CiDisplay`] (Phase 13.3 — replaces the
-/// stringly-typed comparison against `NO_CI_WORKFLOW` /
-/// `NO_CI_RUNS` / `NO_CI_UNPUBLISHED_BRANCH`).
+/// from the typed [`CiDisplay`].
 fn ci_display_style(display: &super::CiDisplay) -> Style {
     use super::CiDisplay;
 
@@ -567,11 +559,9 @@ fn ci_display_style(display: &super::CiDisplay) -> Style {
 }
 
 /// Render a typed [`CiDisplay`] to the string shown in the
-/// Package detail row. Phase 13.3 — replaces
-/// `resolve_ci_display` + the five `NO_CI_*` / `NO_LINT_*`
-/// string constants with a typed-enum match. The conclusion
-/// icon is read from `Conclusion::icon()` at render time, in
-/// parallel with `lint_display_to_string`.
+/// Package detail row. The conclusion icon is read from
+/// `Conclusion::icon()` at render time, in parallel with
+/// `lint_display_to_string`.
 fn ci_display_to_string(display: &super::CiDisplay) -> String {
     use super::CiDisplay;
 

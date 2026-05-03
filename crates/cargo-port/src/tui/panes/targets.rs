@@ -1,12 +1,10 @@
 //! Targets pane render bodies.
 //!
-//! Phase 9.6 relocates `render_targets_panel` and
-//! `render_empty_targets_panel` (was in `panes/package.rs`) into
-//! their own module alongside `TargetsPane`. The renderer remains
-//! a free function (no `Pane` trait impl) because it touches App
-//! shell state during render — `pane_focus_state` plus the typed
-//! `panes_mut().targets_mut().viewport_mut()` accessors. Body
-//! migration into the trait is a Phase-10 follow-up.
+//! `render_targets_panel` and `render_empty_targets_panel` live
+//! alongside `TargetsPane`. They are free functions (no `Pane`
+//! trait impl) because the body touches App shell state during
+//! render — `pane_focus_state` plus the typed
+//! `panes_mut().targets_mut().viewport_mut()` accessors.
 
 use ratatui::Frame;
 use ratatui::layout::Alignment;

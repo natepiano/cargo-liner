@@ -1,12 +1,12 @@
 //! Per-pane unit structs, their `Pane` impls, and `Hittable` impls.
 //!
-//! Phase 10.3 introduces `Hittable: Pane` for the eleven clickable
-//! panes. Each pane records the hit-test layout it needs during
-//! render (uniform-row panes lean on `Viewport::content_area` +
-//! `scroll_offset`; non-uniform panes — `Cpu`, `Git`,
-//! `ProjectList`, `Toasts` — store explicit per-row rect lists).
-//! Click and hover dispatch then walks `HITTABLE_Z_ORDER`, asking
-//! each pane for the target at `pos`.
+//! `Hittable: Pane` is the sub-trait implemented by the eleven
+//! clickable panes. Each pane records the hit-test layout it needs
+//! during render (uniform-row panes lean on
+//! `Viewport::content_area` + `scroll_offset`; non-uniform panes —
+//! `Cpu`, `Git`, `ProjectList`, `Toasts` — store explicit per-row
+//! rect lists). Click and hover dispatch walks `HITTABLE_Z_ORDER`,
+//! asking each pane for the target at `pos`.
 
 use std::time::Instant;
 
@@ -26,6 +26,8 @@ use super::lang;
 use super::lints;
 use super::package;
 use super::package::RenderStyles;
+#[cfg(test)]
+use crate::ci::CiRun;
 use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
 use crate::tui::app::DismissTarget;
@@ -343,9 +345,9 @@ impl Hittable for LintsPane {
 
 // ── CiRuns ──────────────────────────────────────────────────────
 //
-// Phase 13.2 moved the per-path `display_modes` (BranchOnly /
-// All) onto `tui::ci_state::Ci` (domain state, not UI state).
-// `CiPane` now holds only viewport + content cache.
+// Per-path `display_modes` (BranchOnly / All) live on
+// `tui::ci_state::Ci` as domain state; `CiPane` holds only the
+// viewport and content cache.
 pub struct CiPane {
     viewport: Viewport,
     content:  Option<super::CiData>,

@@ -1,18 +1,13 @@
 //! The `Inflight` subsystem.
 //!
-//! Phase 4 of the App-API extraction (see `docs/app-api.md`).
-//! Absorbs the in-flight bookkeeping App tracked across raw
-//! fields:
-//! - `running_clean_paths`
-//! - `clean_toast`
+//! Owns App's in-flight bookkeeping:
+//! - clean: in-flight cargo clean paths plus the running-clean toast slot
 //! - `pending_cleans`, `pending_ci_fetch`, `pending_example_run`
 //! - `example_running`, `example_child`, `example_output`
 //!
-//! Phase 11.4a relocated the lint-specific fields (`lint_runtime`,
-//! `running_lint_paths`, `lint_toast`) onto the [`Lint`](super::lint_state::Lint)
-//! subsystem, since `Lint` now owns lint lifecycle. Phase 13.2
-//! relocated `ci_fetch_tracker` and `ci_fetch_toast` onto
-//! [`Ci`](super::ci_state::Ci) for the same reason.
+//! Lint lifecycle (`runtime`, running paths, toast) lives on
+//! [`Lint`](super::lint_state::Lint); CI fetch lifecycle lives on
+//! [`Ci`](super::ci_state::Ci).
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -24,13 +19,10 @@ use super::panes::PendingExampleRun;
 use super::running_tracker::RunningTracker;
 use crate::project::AbsolutePath;
 
-/// Owns the in-flight bookkeeping App previously held as raw
-/// fields. App holds a single `inflight: Inflight`.
+/// Owns App's in-flight bookkeeping. App holds a single
+/// `inflight: Inflight`.
 pub(super) struct Inflight {
-    /// In-flight cargo clean state. Phase 12.3 swapped the prior
-    /// `running_clean_paths: HashMap<AbsolutePath, Instant>` +
-    /// `clean_toast: Option<ToastTaskId>` field pair for the generic
-    /// [`RunningTracker`] primitive — same lifecycle as
+    /// In-flight cargo clean state — same lifecycle as
     /// `Lint::running` and `Github::running`.
     clean:               RunningTracker<AbsolutePath>,
     pending_cleans:      VecDeque<PendingClean>,

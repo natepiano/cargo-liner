@@ -7,8 +7,8 @@ use super::panes::HoverTarget;
 use super::panes::PaneId;
 
 /// Per-toast hit-test rects produced by `toasts::render_toasts`
-/// and stashed onto `ToastsPane` each frame. The Phase 10.3
-/// `Hittable` impl on `ToastsPane` walks the list directly.
+/// and stashed onto `ToastsPane` each frame. The `Hittable` impl
+/// on `ToastsPane` walks the list directly.
 #[derive(Clone, Copy, Debug)]
 pub struct ToastHitbox {
     pub id:         u64,

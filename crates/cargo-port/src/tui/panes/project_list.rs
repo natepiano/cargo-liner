@@ -1,10 +1,8 @@
 //! `ProjectList` pane render bodies.
 //!
-//! Phase 9.7b relocates `render_project_list` and its ~13
-//! tree-row helpers (was in `tui/render.rs`) into their own
-//! module alongside `ProjectListPane`. The renderer remains a
-//! free function (no `Pane` trait impl) — Phase 10 promotes
-//! `Pane::hit_test` and reconsiders the trait surface.
+//! `render_project_list` and its tree-row helpers live alongside
+//! `ProjectListPane`. The renderer is a free function (no `Pane`
+//! trait impl).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -19,6 +17,23 @@ use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
 
+use super::constants::PREFIX_GROUP_COLLAPSED;
+use super::constants::PREFIX_GROUP_EXPANDED;
+use super::constants::PREFIX_MEMBER_INLINE;
+use super::constants::PREFIX_MEMBER_NAMED;
+use super::constants::PREFIX_ROOT_COLLAPSED;
+use super::constants::PREFIX_ROOT_EXPANDED;
+use super::constants::PREFIX_ROOT_LEAF;
+use super::constants::PREFIX_SUBMODULE;
+use super::constants::PREFIX_VENDORED;
+use super::constants::PREFIX_WT_COLLAPSED;
+use super::constants::PREFIX_WT_EXPANDED;
+use super::constants::PREFIX_WT_FLAT;
+use super::constants::PREFIX_WT_GROUP_COLLAPSED;
+use super::constants::PREFIX_WT_GROUP_EXPANDED;
+use super::constants::PREFIX_WT_MEMBER_INLINE;
+use super::constants::PREFIX_WT_MEMBER_NAMED;
+use super::constants::PREFIX_WT_VENDORED;
 use super::spec::PaneId;
 use crate::project;
 use crate::project::ProjectFields;
@@ -43,33 +58,12 @@ use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
 use crate::tui::render;
 
-// ── Row prefix strings ───────────────────────────────────────────────
-// Single source of truth: width calc and render both reference these.
-
-pub(crate) const PREFIX_ROOT_EXPANDED: &str = "▼";
-pub(crate) const PREFIX_ROOT_COLLAPSED: &str = "▶";
-pub(crate) const PREFIX_ROOT_LEAF: &str = " ";
-pub(crate) const PREFIX_MEMBER_INLINE: &str = "   ";
-pub(crate) const PREFIX_MEMBER_NAMED: &str = "       ";
-pub(crate) const PREFIX_SUBMODULE: &str = "   ";
-pub(crate) const PREFIX_VENDORED: &str = "   ";
-pub(crate) const PREFIX_GROUP_EXPANDED: &str = "   ▼";
-pub(crate) const PREFIX_GROUP_COLLAPSED: &str = "   ▶";
-pub(crate) const PREFIX_WT_EXPANDED: &str = "   ▼";
-pub(crate) const PREFIX_WT_COLLAPSED: &str = "   ▶";
-pub(crate) const PREFIX_WT_FLAT: &str = "   ";
-pub(crate) const PREFIX_WT_GROUP_EXPANDED: &str = "       ▼";
-pub(crate) const PREFIX_WT_GROUP_COLLAPSED: &str = "       ▶";
-pub(crate) const PREFIX_WT_MEMBER_INLINE: &str = "       ";
-pub(crate) const PREFIX_WT_MEMBER_NAMED: &str = "           ";
-pub(crate) const PREFIX_WT_VENDORED: &str = "       ";
-
 /// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
 #[allow(
     clippy::cast_precision_loss,
     reason = "display-only — index-to-float ratio for color interpolation"
 )]
-pub(crate) fn disk_percentile(bytes: Option<u64>, sorted_values: &[u64]) -> Option<f64> {
+fn disk_percentile(bytes: Option<u64>, sorted_values: &[u64]) -> Option<f64> {
     let bytes = bytes?;
     if sorted_values.len() <= 1 {
         return None;
@@ -87,7 +81,7 @@ pub(crate) fn disk_percentile(bytes: Option<u64>, sorted_values: &[u64]) -> Opti
     clippy::cast_sign_loss,
     reason = "values are clamped to 0.0..=255.0 before cast"
 )]
-pub(crate) fn disk_color(percentile: Option<f64>) -> Style {
+fn disk_color(percentile: Option<f64>) -> Style {
     let Some(pos) = percentile else {
         return Style::default().fg(LABEL_COLOR);
     };

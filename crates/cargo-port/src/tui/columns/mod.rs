@@ -246,10 +246,10 @@ pub(super) struct RowCells {
 // ── Resolved widths ─────────────────────────────────────────────────
 
 /// Project-list column widths. Thin wrapper around the generic
-/// [`ColumnWidths`] primitive (Phase 2 of the App-API carve, see
-/// `docs/app-api.md`) that adds the lint-enabled flag, the generation
-/// counter App uses to invalidate cached widths after tree changes,
-/// and the project-list-specific seeding from `column_defs`.
+/// [`ColumnWidths`] primitive that adds the lint-enabled flag,
+/// the generation counter App uses to invalidate cached widths
+/// after tree changes, and the project-list-specific seeding
+/// from `column_defs`.
 pub(super) struct ProjectListWidths {
     inner:          ColumnWidths,
     lint_enabled:   bool,

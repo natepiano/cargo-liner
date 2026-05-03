@@ -861,7 +861,9 @@ fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
 
     assert_eq!(
         widths.get(crate::tui::columns::COL_NAME),
-        App::name_width_with_gutter(root_width.max(primary_entry_width).max(linked_entry_width)),
+        crate::tui::panes::name_width_with_gutter(
+            root_width.max(primary_entry_width).max(linked_entry_width)
+        ),
         "fit widths should use rendered worktree labels, not the absolute primary worktree path"
     );
 }
@@ -893,7 +895,9 @@ fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
 
     assert_eq!(
         widths.get(crate::tui::columns::COL_NAME),
-        App::name_width_with_gutter(root_width.max(primary_entry_width).max(linked_entry_width)),
+        crate::tui::panes::name_width_with_gutter(
+            root_width.max(primary_entry_width).max(linked_entry_width)
+        ),
         "fit widths should use rendered worktree labels, not the absolute primary worktree path"
     );
 }

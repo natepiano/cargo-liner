@@ -68,13 +68,13 @@ pub(crate) enum WatcherMsg {
 /// Spawn a unified background watcher thread. Watches the include
 /// directories recursively and handles disk-usage updates,
 /// new-project detection, and deleted-project detection.
-// Ancestor `.cargo/` watch-set subsystem (design plan → Phase 1 →
-// "Ancestor config watching") is not yet implemented. Today we only
-// refresh cargo metadata when a `Cargo.toml` / `Cargo.lock` /
-// `rust-toolchain[.toml]` / `.cargo/config[.toml]` edit fires inside
-// an already-registered project tree. Edits to an out-of-tree
-// ancestor `.cargo/config.toml` (e.g. `~/.cargo/config.toml` when the
-// project is elsewhere) will go undetected until the subsystem lands.
+// Ancestor `.cargo/` watch-set subsystem is not yet implemented.
+// Today we only refresh cargo metadata when a `Cargo.toml` /
+// `Cargo.lock` / `rust-toolchain[.toml]` / `.cargo/config[.toml]`
+// edit fires inside an already-registered project tree. Edits to
+// an out-of-tree ancestor `.cargo/config.toml` (e.g.
+// `~/.cargo/config.toml` when the project is elsewhere) will go
+// undetected until the subsystem lands.
 // The missing piece is: walk each project root → CARGO_HOME at
 // register time, collect the ancestor `.cargo/` dirs, diff the union
 // across projects on add/remove, and register notify watches on the

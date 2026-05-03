@@ -97,9 +97,6 @@ pub(super) fn format_bytes(bytes: u64) -> String {
     }
 }
 
-// Row prefix strings, `lint_style_for`, `disk_percentile`, and
-// `disk_color` moved to `panes/project_list.rs` in Phase 9.7b.
-
 pub(super) fn conclusion_style(conclusion: Option<Conclusion>) -> Style {
     match conclusion {
         Some(Conclusion::Success) => Style::default().fg(SUCCESS_COLOR),

@@ -1,12 +1,10 @@
 //! Output pane render body.
 //!
-//! Phase 9.5 relocates `render_output_panel` (was
-//! `render_example_output` in `tui/render.rs`) into the
-//! `panes/` module so the body sits next to the other pane
-//! renderers. The renderer remains a free function — Output's
-//! data dependencies (`example_running`, `example_output`) live
-//! on App-shell rather than `PaneRenderCtx`, so it doesn't fit
-//! the trait-dispatch path used by the detail panes.
+//! `render_output_panel` is a free function rather than a `Pane`
+//! trait impl — Output's data dependencies (`example_running`,
+//! `example_output`) live on App-shell rather than
+//! `PaneRenderCtx`, so it doesn't fit the trait-dispatch path
+//! used by the detail panes.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;

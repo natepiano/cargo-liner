@@ -16,8 +16,6 @@ use crate::project::RustProject;
 use crate::project::VendoredPackage;
 use crate::project::WorktreeGroup;
 use crate::tui;
-use crate::tui::columns::COL_NAME;
-use crate::tui::columns::ProjectListWidths;
 use crate::tui::panes::DetailCacheKey;
 
 impl App {
@@ -43,16 +41,6 @@ impl App {
             0,
         );
         self.selection.set_fit_widths(widths);
-    }
-
-    pub fn observe_name_width(widths: &mut ProjectListWidths, content_width: usize) {
-        use COL_NAME;
-
-        widths.observe(COL_NAME, Self::name_width_with_gutter(content_width));
-    }
-
-    pub const fn name_width_with_gutter(content_width: usize) -> usize {
-        content_width.saturating_add(1)
     }
 
     pub fn ensure_disk_cache(&mut self) {

@@ -9,19 +9,15 @@ pub struct DetailCacheKey {
     pub generation: u64,
 }
 
-/// Tracks the detail-set coherency stamp.
-///
-/// Phase 8.1a moved `cpu` out of this store onto `CpuPane`.
-/// Phase 8.8 moved `package`/`git`/`ci`/`lints` content out onto
-/// each per-pane struct (`PackagePane`/`GitPane`/`CiPane`/`LintsPane`).
-/// Phase 9.6 moved `targets` content out onto `TargetsPane` — the
-/// store now owns only the detail-set stamp.
+/// Tracks the detail-set coherency stamp. Per-pane content
+/// (`cpu`, `package`, `git`, `ci`, `lints`, `targets`) lives on
+/// each per-pane struct; this store owns only the stamp.
 ///
 /// The detail-set "all five panes are coherent for this stamp"
 /// invariant is enforced by `Panes::set_detail_data` /
 /// `Panes::clear_detail_data` — they fan out across the five
 /// per-pane content slots and update this store's `detail_stamp`
-/// in lockstep. `PaneDataStore` itself is just the stamp keeper now.
+/// in lockstep.
 pub struct PaneDataStore {
     detail_stamp:  Option<DetailCacheKey>,
     #[cfg(test)]

@@ -1,8 +1,8 @@
 //! Typed cache of `cargo metadata` output, keyed by workspace root.
 //!
-//! Holds one [`WorkspaceSnapshot`] per detected workspace. Phase 1 of the
-//! `cargo_metadata` integration — this module defines the structure and
-//! read-side access; producers and consumers land in later steps.
+//! Holds one [`WorkspaceSnapshot`] per detected workspace. Defines
+//! the structure and read-side access for the `cargo_metadata`
+//! integration.
 
 #![allow(
     dead_code,

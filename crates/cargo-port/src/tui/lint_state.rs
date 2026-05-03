@@ -1,25 +1,17 @@
 //! The `Lint` subsystem.
 //!
-//! Phase 11 of the App-API extraction (see `docs/app-api.md`). Phase
-//! 11.2 introduces the type and the read-side lookup API; the field
-//! cluster (runtime, running paths, toasts, cache usage, phase
-//! tracking) moves in Phase 11.4. Until then `Lint` is a marker
-//! struct holding only function definitions.
+//! Owns the lint runtime, in-flight paths, the running-toast slot,
+//! the on-disk cache stat counter, and the startup-pass trackers.
 //!
 //! The four lookup functions (`status_for_path`, `status_for_root`,
-//! `status_for_worktree`, `run_count_at`) replace the four icon
-//! resolvers that previously sat on `App` (`lint_icon`,
-//! `lint_icon_for_root`, `lint_icon_for_worktree`,
-//! `selected_lint_icon`). They return unframed `LintStatus` —
-//! callers apply `animation_elapsed` to `status.icon()` at render
-//! time. Animation framing is no longer threaded through the lookup
-//! API.
+//! `status_for_worktree`, `run_count_at`) return unframed
+//! `LintStatus` — callers apply `animation_elapsed` to
+//! `status.icon()` at render time.
 //!
 //! `package_display` returns a typed [`LintDisplay`] enum for the
-//! Lint row in the Package detail pane. Phase 11.3 flips
-//! `PackageData.lint_display` from `String` to `LintDisplay` and
-//! deletes the `resolve_lint_display` / `lint_run_count_for`
-//! stringifiers in `panes/support.rs`.
+//! Lint row in the Package detail pane. The renderer matches on
+//! variants directly, so `PackageData.lint_display` carries
+//! `LintDisplay` rather than a pre-rendered string.
 
 use std::path::Path;
 
@@ -58,14 +50,9 @@ pub enum LintDisplay {
     },
 }
 
-/// The `Lint` subsystem.
-///
-/// Phase 11.4a absorbed the in-flight lint state from
-/// [`Inflight`](super::inflight::Inflight): the lint runtime
-/// handle, the running-paths map, and the running-toast slot.
-/// Subsequent slices (11.4b, 11.4c) absorb the disk cache stat
-/// counter from `Scan` and the lint-specific phase trackers from
-/// `ScanState::startup_phases`.
+/// The `Lint` subsystem. Owns the lint runtime, in-flight
+/// paths, running-toast slot, the disk cache stat counter,
+/// and the lint-specific startup-phase trackers.
 pub struct Lint {
     /// Tokio runtime handle that runs cargo lint commands. Spawned
     /// at startup; replaced by [`Self::set_runtime`] when lint
@@ -75,23 +62,18 @@ pub struct Lint {
     /// Paths with a lint run currently in flight, keyed by the
     /// time the run was launched, paired with the single sticky
     /// "N lints running" toast slot. Synced each tick by
-    /// `App::sync_running_lint_toast`. Phase 12.1 swapped the prior
-    /// `running_paths` + `running_toast` field pair for the generic
-    /// [`RunningTracker`] primitive.
+    /// `App::sync_running_lint_toast`.
     running:           RunningTracker<AbsolutePath>,
     /// Bytes used by the on-disk lint-log cache (`~/.cache/cargo-port/lints/`).
     /// Refreshed by `App::refresh_lint_cache_usage_from_disk`,
-    /// displayed in the Settings popup. Phase 11.4b moved this
-    /// off [`Scan`](super::scan_state::Scan).
+    /// displayed in the Settings popup.
     cache_usage:       CacheUsage,
     /// Tracks terminal lint events (`Passed` / `Failed`) keyed
     /// on project path; `seen` counts only terminal arrivals.
-    /// Phase 11.4c moved this off `ScanState::startup_phases`.
     pub phase:         KeyedPhase<AbsolutePath>,
     /// Counts startup-time lint completions across the project
     /// tree. Used by `App::maybe_complete_startup_lints` to decide
-    /// when the startup-lint pass is done. Phase 11.4c moved this
-    /// off `ScanState::startup_phases`.
+    /// when the startup-lint pass is done.
     pub startup_phase: CountedPhase,
 }
 
@@ -164,8 +146,7 @@ impl Lint {
     }
 
     /// Build the [`LintDisplay`] for the Package detail pane row
-    /// at the selected project. Phase 11.3 wires this in as the
-    /// replacement for `resolve_lint_display`.
+    /// at the selected project.
     ///
     /// `is_worktree_group` is true when the selected row's
     /// `package_title` is "Worktree Group" — i.e., the detail

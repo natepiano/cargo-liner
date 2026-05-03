@@ -1,30 +1,15 @@
 //! The `Scan` subsystem.
 //!
-//! Phase 6 of the App-API carve (see `docs/app-api.md`). Absorbs
-//! eleven scan-cluster fields (twelve in `#[cfg(test)]`) that
-//! previously lived on `App`:
-//! - `projects` (the [`ProjectList`])
-//! - `scan` (the [`ScanState`] state machine)
-//! - `dirty` (the [`DirtyState`] dirtiness tracker)
-//! - `data_generation` (per-tick monotonic counter; bumped explicitly so detail-relevance code can
-//!   invalidate caches)
-//! - `discovery_shimmers` (per-path shimmer animation state)
-//! - `pending_git_first_commit` (per-path first-commit string waiting for tree placement)
-//! - `metadata_store` (process-wide cargo-metadata store; the `Arc<Mutex<...>>` is shared with
-//!   spawned threads)
-//! - `target_dir_index` (workspace-target-dir index for clean planning)
-//! - `priority_fetch_path` (path the next selection-driven fetch should prefer)
-//! - `confirm_verifying` (workspace root waiting for a metadata refresh before the Clean confirm
-//!   popup unblocks)
-//! - `retry_spawn_mode` (test-only knob that disables retry spawning for deterministic test runs)
+//! Owns the scan-cluster fields: project list and tree, scan state
+//! machine, dirtiness tracker, per-tick data generation counter,
+//! discovery shimmer animations, pending first-commit strings,
+//! cargo-metadata store, workspace-target-dir index, priority-fetch
+//! path, the workspace root awaiting Clean confirm, and (in test
+//! builds) the retry-spawn knob.
 //!
-//! Phase 11.4b moved `lint_cache_usage` onto the
-//! [`Lint`](super::lint_state::Lint) subsystem.
-//!
-//! Phase 6 absorbs the field cluster and rewires the existing
-//! [`crate::tui::app::TreeMutation`] guard to take direct `&mut`
-//! references to `Scan + Panes + Selection` so the fan-out is
-//! declared at the type level (the "Mutation guard (RAII), fan-out
+//! [`crate::tui::app::TreeMutation`] takes direct `&mut` references
+//! to `Scan + Panes + Selection` so the mutation fan-out is declared
+//! at the type level (see the "Mutation guard (RAII), fan-out
 //! flavor" pattern in `src/tui/app/mod.rs`).
 
 use std::collections::HashMap;

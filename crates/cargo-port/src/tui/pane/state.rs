@@ -47,8 +47,8 @@ impl ScrollState {
 /// The shared UI-mechanics state every pane carries: cursor, scroll,
 /// viewport rows, content area, hovered row, len.
 ///
-/// Each per-pane struct (Phase 7+) embeds a `Viewport` and exposes it via
-/// the `Pane` trait's `viewport()` / `viewport_mut()` accessors. Default
+/// Each per-pane struct embeds a `Viewport` and exposes it via the
+/// `Pane` trait's `viewport()` / `viewport_mut()` accessors. Default
 /// methods on the trait (cursor moves, scroll, hover, etc.) delegate to
 /// the embedded `Viewport`, so per-pane impls only write the
 /// genuinely-different methods.

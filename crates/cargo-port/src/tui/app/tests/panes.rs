@@ -57,8 +57,8 @@ fn expand_all_preserves_selected_project_path() {
 
 #[test]
 fn name_width_with_gutter_reserves_space_before_lint() {
-    assert_eq!(App::name_width_with_gutter(0), 1);
-    assert_eq!(App::name_width_with_gutter(42), 43);
+    assert_eq!(crate::tui::panes::name_width_with_gutter(0), 1);
+    assert_eq!(crate::tui::panes::name_width_with_gutter(42), 43);
 }
 
 /// Upsert a minimal `WorkspaceSnapshot` into `app`'s metadata store

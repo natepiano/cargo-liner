@@ -1,5 +1,6 @@
 mod actions;
 mod ci;
+mod constants;
 mod cpu;
 mod data;
 mod dispatch;
@@ -15,6 +16,7 @@ mod spec;
 mod support;
 mod system;
 mod targets;
+mod widths;
 
 #[cfg(test)]
 mod tests;
@@ -28,32 +30,25 @@ pub(super) use ci::CI_COMPACT_DURATION_WIDTH;
 pub(super) use ci::ci_table_shows_durations;
 #[cfg(test)]
 pub(super) use ci::ci_total_width;
-// `render_ci_panel` removed in Phase 8.11 — CiPane::render is the
-// trait method now. `render_tiled_pane` dispatches via `panes.dispatch_ci_render`.
+#[cfg(test)]
+pub(super) use constants::PREFIX_ROOT_COLLAPSED;
+#[cfg(test)]
+pub(super) use constants::PREFIX_ROOT_LEAF;
+#[cfg(test)]
+pub(super) use constants::PREFIX_WT_FLAT;
 #[cfg(test)]
 pub(super) use cpu::CPU_PANE_WIDTH;
-
-// `render_cpu_panel` removed in Phase 8.9 — CpuPane::render is the
-// trait method now. `render_tiled_pane` dispatches via `panes.cpu_mut().render`.
+#[cfg(test)]
+pub(super) use cpu::cpu_required_pane_height;
 pub(super) use data::DetailCacheKey;
 pub(super) use data::PaneDataStore;
 pub(super) use dispatch::HoverTarget;
-// Phase 7 foundation types live in `dispatch` and `pane_impls` and
-// stay private to this module during Phase 7. Consumers outside
-// `panes/` start wiring up in Phase 8 as render/input bodies
-// migrate; the re-exports land then.
 #[cfg(test)]
 pub(super) use git::git_label_width;
-// `render_git_panel` migrated to `GitPane::render` (Phase 8.13);
-// callers dispatch via `Panes::dispatch_git_render`.
-// `render_lang_panel_standalone` removed in Phase 8.12 — LangPane::render
-// is the trait method now.
 pub(super) use layout::BottomRow;
 pub(super) use layout::LayoutCache;
 pub(super) use layout::resolve_layout;
 pub(super) use layout::tab_order;
-// `render_lints_panel` removed in Phase 8.10 — LintsPane::render is the
-// trait method now. `render_tiled_pane` dispatches via `panes.dispatch_lints_render`.
 pub(super) use output::render_output_panel;
 pub(super) use package::RenderStyles;
 #[cfg(test)]
@@ -64,20 +59,6 @@ pub(super) use package::detail_column_scroll_offset;
 pub(super) use package::package_label_width;
 #[cfg(test)]
 pub(super) use package::stats_column_width;
-pub(super) use project_list::PREFIX_GROUP_COLLAPSED;
-pub(super) use project_list::PREFIX_MEMBER_INLINE;
-pub(super) use project_list::PREFIX_MEMBER_NAMED;
-pub(super) use project_list::PREFIX_ROOT_COLLAPSED;
-#[cfg(test)]
-pub(super) use project_list::PREFIX_ROOT_LEAF;
-pub(super) use project_list::PREFIX_SUBMODULE;
-pub(super) use project_list::PREFIX_VENDORED;
-pub(super) use project_list::PREFIX_WT_COLLAPSED;
-pub(super) use project_list::PREFIX_WT_FLAT;
-pub(super) use project_list::PREFIX_WT_GROUP_COLLAPSED;
-pub(super) use project_list::PREFIX_WT_MEMBER_INLINE;
-pub(super) use project_list::PREFIX_WT_MEMBER_NAMED;
-pub(super) use project_list::PREFIX_WT_VENDORED;
 pub(super) use project_list::render_project_list;
 #[cfg(test)]
 pub(super) use project_list::render_tree_items;
@@ -121,6 +102,9 @@ pub(super) use system::DispatchArgs;
 pub(super) use system::Panes;
 pub(super) use targets::render_empty_targets_panel;
 pub(super) use targets::render_targets_panel;
+pub(super) use widths::compute_project_list_widths;
+#[cfg(test)]
+pub(super) use widths::name_width_with_gutter;
 
 pub(super) use super::ci_state::CiDisplay;
 pub(super) use super::lint_state::Lint;

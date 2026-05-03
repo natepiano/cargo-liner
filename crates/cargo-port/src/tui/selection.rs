@@ -1,7 +1,6 @@
 //! The `Selection` subsystem.
 //!
-//! Phase 3 of the App-API carve (see `docs/app-api.md`). Absorbs the
-//! eight selection-cluster fields that previously lived on `App`:
+//! Owns the eight selection-cluster fields:
 //! `cached_visible_rows`, `cached_root_sorted`, `cached_child_sorted`,
 //! `cached_fit_widths`, `selection_paths`, `selection`
 //! (`SelectionSync`), `expanded`, `finder`. Exposes both raw
@@ -34,8 +33,7 @@ use super::app::VisibleRow;
 use crate::project_list::ProjectList;
 
 /// Owns every selection-related piece of state. App holds a single
-/// `selection: Selection` field instead of the eight raw fields it
-/// carried before Phase 3.
+/// `selection: Selection` field.
 pub(super) struct Selection {
     paths:               SelectionPaths,
     sync:                SelectionSync,
@@ -79,13 +77,13 @@ impl Selection {
 
     pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { &self.expanded }
 
-    /// Mutable access to the expansion set. Phase 3 keeps this
-    /// directly accessible because most callers (rebuild paths
-    /// in `tui::app::async_tasks` and `tui::app::navigation`) need
-    /// to populate the set without triggering the per-mutation
-    /// recompute the `SelectionMutation` guard fires. The guard
-    /// covers single-key toggle paths where the recompute is the
-    /// whole point.
+    /// Mutable access to the expansion set. Kept directly
+    /// accessible because most callers (rebuild paths in
+    /// `tui::app::async_tasks` and `tui::app::navigation`)
+    /// populate the set without wanting the per-mutation recompute
+    /// the `SelectionMutation` guard fires. The guard covers
+    /// single-key toggle paths where the recompute is the whole
+    /// point.
     pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> { &mut self.expanded }
 
     // ── finder state ────────────────────────────────────────────────
@@ -158,11 +156,9 @@ impl Selection {
     /// flavor.
     #[allow(
         dead_code,
-        reason = "Phase 3 lands the guard API. Existing call sites in \
-                  tui::app::navigation (try_expand / try_collapse) still use \
-                  expanded_mut directly because they recompute via a separate \
-                  ensure_visible_rows_cached() call in the same code path; \
-                  Phase 7 migrates them to take the guard."
+        reason = "tui::app::navigation (try_expand / try_collapse) still calls \
+                  expanded_mut directly because it recomputes via a separate \
+                  ensure_visible_rows_cached() call in the same code path."
     )]
     pub(super) const fn mutate<'a>(
         &'a mut self,
@@ -183,10 +179,8 @@ impl Selection {
 /// See `src/tui/app/mod.rs` § "Recurring patterns".
 #[allow(
     dead_code,
-    reason = "Phase 3 lands the guard alongside Selection. Migration of \
-              existing call sites to take the guard happens in Phase 7; \
-              the guard ships now so the type is in place when call sites \
-              switch."
+    reason = "guard ships alongside Selection so the type is in place \
+              while call sites still use the direct accessors"
 )]
 pub(super) struct SelectionMutation<'a> {
     selection:        &'a mut Selection,
@@ -196,8 +190,8 @@ pub(super) struct SelectionMutation<'a> {
 
 #[allow(
     dead_code,
-    reason = "guard methods land in Phase 3 alongside the type; Phase 7 \
-              migrates call sites to take the guard"
+    reason = "guard methods ship alongside the type while call sites \
+              still use the direct accessors"
 )]
 impl SelectionMutation<'_> {
     /// Toggle membership of `key` in the expansion set. Returns

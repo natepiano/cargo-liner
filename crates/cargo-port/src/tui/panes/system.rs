@@ -1,16 +1,12 @@
 //! The `Panes` subsystem.
 //!
-//! Phase 1 of the App-API carve (see `docs/app-api.md`). Absorbs the
-//! eight pane-related fields that previously lived on `App`:
-//! `pane_manager`, `pane_data`, `visited_panes`, `layout_cache`,
-//! `worktree_summary_cache`, `hovered_pane_row`, `ci_display_modes`,
-//! `cpu_poller`. Exposes a small facade so App's impl-files and the
-//! `panes/` siblings stop reaching into App's private guts directly.
+//! Owns the pane-related state cluster (`pane_data`, `visited_panes`,
+//! `hovered_pane_row`, plus the per-pane structs in `pane_impls`).
+//! Exposes a facade so App's impl-files and the `panes/` siblings
+//! don't reach into App's private guts directly.
 //!
-//! Phase 1 is field-cluster absorption only. The per-pane `Pane` trait
-//! split is Phase 7. `handle_input`-style methods that need cross-
-//! subsystem access are not added here yet — they remain free functions
-//! taking `&mut App` until later phases.
+//! `handle_input`-style methods that need cross-subsystem access
+//! remain free functions taking `&mut App`.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -41,6 +37,8 @@ use super::pane_impls::TargetsPane;
 use super::pane_impls::ToastsPane;
 use super::spec::PaneId;
 use super::support::WorktreeInfo;
+#[cfg(test)]
+use crate::ci::CiRun;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::config_state::Config;
@@ -73,11 +71,8 @@ const fn build_ctx<'a>(args: &DispatchArgs<'a>) -> PaneRenderCtx<'a> {
 }
 
 /// Owns every pane-related piece of state. App holds a single `panes:
-/// Panes` field instead of the eight raw fields it carried before
-/// Phase 1.
+/// Panes` field.
 pub struct Panes {
-    // ── Per-pane state (Phase 8 migrated). Phase 9 brings the
-    //    remaining seven panes in alongside their state.
     package:      PackagePane,
     lang:         LangPane,
     cpu:          CpuPane,
@@ -92,15 +87,9 @@ pub struct Panes {
     targets:      TargetsPane,
     project_list: ProjectListPane,
 
-    // ── Phase 1 grab-bag (residual after Phase 10.2):
     data:        PaneDataStore,
     visited:     HashSet<PaneId>,
     hovered_row: Option<HoveredPaneRow>,
-    // `layout_cache` was here; absorbed onto App-shell in Phase 10.2.
-    // `worktree_summary_cache` was here; absorbed onto `GitPane` in Phase 10.1.
-    // `pane_manager` was here; deleted in Phase 9.8.
-    // `ci_display_modes` was here; absorbed onto `CiPane` in Phase 8.7.
-    // `cpu_poller` was here; absorbed onto `CpuPane` in Phase 8.1a.
 }
 
 impl Panes {
@@ -318,13 +307,9 @@ impl Panes {
     }
 
     /// Set the cursor position for `id`'s viewport, routing to
-    /// each migrated pane's per-pane `Viewport` for those that
-    /// have absorbed it, falling back to the still-vestigial
-    /// `PaneManager` slot for un-migrated panes. Used by the
-    /// generic click handler in `interaction.rs` and any other
-    /// code that needs to set a cursor position by `PaneId`.
-    /// Each Phase-8 / Phase-9 sub-commit moves one pane out of
-    /// the fallback arm.
+    /// the per-pane `Viewport`. Used by the generic click handler
+    /// in `interaction.rs` and any other code that needs to set a
+    /// cursor position by `PaneId`.
     pub const fn set_pane_pos(&mut self, id: PaneId, row: usize) {
         match id {
             PaneId::Cpu => self.cpu.viewport_mut().set_pos(row),
@@ -382,9 +367,7 @@ impl Panes {
     }
 
     /// Mutable counterpart to `viewport_for`. Routes to the per-pane
-    /// `Viewport` for migrated panes, falls back to the vestigial
-    /// `PaneManager` slot for un-migrated panes (none remain after
-    /// Phase 9.7a, but the match still covers the full `PaneId` set).
+    /// `Viewport`; the match covers the full `PaneId` set.
     pub const fn viewport_mut_for(&mut self, id: PaneId) -> &mut Viewport {
         match id {
             PaneId::Cpu => self.cpu.viewport_mut(),
@@ -405,9 +388,8 @@ impl Panes {
 
     /// Return the cached worktree-summary for `group_root` if present;
     /// otherwise compute via `compute` (the shell-out path), cache, and
-    /// return. Cache lives on `GitPane` (Phase 10.1) — Panes is now a
-    /// pass-through. Sticky cache; only `clear_for_tree_change`
-    /// invalidates it.
+    /// return. Cache lives on `GitPane`; Panes is a pass-through.
+    /// Sticky cache; only `clear_for_tree_change` invalidates it.
     pub fn worktree_summary_or_compute(
         &self,
         group_root: &Path,
@@ -416,14 +398,11 @@ impl Panes {
         self.git.worktree_summary_or_compute(group_root, compute)
     }
 
-    /// Drop tree-derived caches owned by per-pane structs. After
-    /// Phase 10.1 the only such cache is `GitPane`'s
-    /// worktree-summary map.
+    /// Drop tree-derived caches owned by per-pane structs.
+    /// Currently only `GitPane`'s worktree-summary map.
     pub fn clear_for_tree_change(&self) { self.git.clear_worktree_summary_cache(); }
 
-    /// Tick the CPU pane's poller. Delegates to `CpuPane::tick`
-    /// after Phase 8.1a moved the poller and content slot onto the
-    /// pane.
+    /// Tick the CPU pane's poller. Delegates to `CpuPane::tick`.
     pub fn cpu_tick(&mut self, now: Instant) { self.cpu.tick(now); }
 
     /// Reset the CPU pane after a config reload changes CPU poll
@@ -436,8 +415,7 @@ impl Panes {
     pub fn install_cpu_placeholder(&mut self) { self.cpu.install_placeholder(); }
 
     /// Walk `HITTABLE_Z_ORDER` top-to-bottom and return the first
-    /// pane's `hit_test_at` answer. Phase 10.3 dispatch entry
-    /// point: replaces the global `ui_hitboxes` vec walk.
+    /// pane's `hit_test_at` answer.
     pub fn hit_test_at(&self, pos: ratatui::layout::Position) -> Option<HoverTarget> {
         for id in HITTABLE_Z_ORDER {
             let pane: &dyn Hittable = match id {
@@ -465,11 +443,10 @@ impl Panes {
 #[cfg(test)]
 mod detail_set_tests {
     //! Pin the detail-set "all five panes coherent for this stamp"
-    //! invariant on the new `Panes` orchestrators. Phase 8.8 moved
-    //! the invariant out of `PaneDataStore` (which only tracks
-    //! targets + stamp now) into `Panes::set_detail_data` /
+    //! invariant on `Panes::set_detail_data` /
     //! `Panes::clear_detail_data`, which fan out across the four
-    //! migrated detail panes' content slots plus the targets slot.
+    //! detail panes' content slots plus the targets slot.
+    //! `PaneDataStore` itself only tracks the stamp.
     use super::Panes;
     use crate::config::CpuConfig;
     use crate::tui::app::VisibleRow;

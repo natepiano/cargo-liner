@@ -1,11 +1,9 @@
 //! The `Pane` trait, the `Hittable` sub-trait, and the
 //! `PaneRenderCtx` bundle.
 //!
-//! Phase 10.3 of the App-API carve (see `docs/app-api.md`)
-//! replaces the push-during-render hitbox model with a
-//! `Hittable::hit_test_at` query method. Each clickable pane
-//! retains its own hit-test layout (computed during render) and
-//! answers `hit_test_at(pos)` directly.
+//! Each clickable pane retains its own hit-test layout (computed
+//! during render) and answers `Hittable::hit_test_at(pos)`
+//! directly, rather than pushing hitboxes into a global vec.
 
 use ratatui::Frame;
 use ratatui::layout::Position;
@@ -43,9 +41,9 @@ pub enum HoverTarget {
 }
 
 /// Sub-trait implemented only by panes that participate in click /
-/// hover dispatch. Q5 of the Phase 10.3 design: keeping `Pane` and
-/// `Hittable` separate lets the dispatch match in `Panes::hit_test_at`
-/// reject non-clickable panes at compile time.
+/// hover dispatch. Keeping `Pane` and `Hittable` separate lets the
+/// dispatch match in `Panes::hit_test_at` reject non-clickable
+/// panes at compile time.
 pub trait Hittable: Pane {
     /// Return the hit target if `pos` lands inside this pane's
     /// rendered area, or `None` otherwise. Implementations rely on

@@ -1,9 +1,9 @@
 //! Generic "fit columns to content with min-width-per-column" helper.
 //!
-//! Phase 2 of the App-API carve (see `docs/app-api.md`). Two consumers
-//! today: the project list (via [`super::ProjectListWidths`]) and the
-//! CI pane (`tui::panes::ci::build_ci_widths`). New table-style panes
-//! that fit columns to content use this primitive rather than
+//! Two consumers today: the project list (via
+//! [`super::ProjectListWidths`]) and the CI pane
+//! (`tui::panes::ci::build_ci_widths`). New table-style panes that
+//! fit columns to content use this primitive rather than
 //! re-implementing the seed/observe/total pattern.
 
 use ratatui::layout::Constraint;

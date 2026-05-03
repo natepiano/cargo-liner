@@ -502,11 +502,10 @@ impl DetailField {
 
     /// Get the display value for a package field from `PackageData`.
     /// All values are pure-on-data. The Lint and Ci rows are *not*
-    /// handled here (Phase 11.3 flipped Lint to a typed enum,
-    /// Phase 13.3 flipped Ci) — the package renderer matches on
-    /// `data.lint_display` / `data.ci_display` directly and frames
-    /// the icon at render time. Calling this with `Self::Lint` or
-    /// `Self::Ci` returns an empty string.
+    /// handled here — the package renderer matches on
+    /// `data.lint_display` / `data.ci_display` (typed enums)
+    /// directly and frames the icon at render time. Calling this
+    /// with `Self::Lint` or `Self::Ci` returns an empty string.
     pub fn package_value(self, data: &PackageData) -> String {
         match self {
             Self::Path => data.path.clone(),
@@ -752,15 +751,11 @@ pub struct PackageData {
     /// assembly time so render can read it without `&App`. The
     /// renderer matches on variants and applies
     /// `animation_elapsed` to `status.icon()` at render time.
-    /// Phase 11.3 flipped this from `String` to
-    /// [`LintDisplay`].
     pub lint_display:             super::LintDisplay,
-    /// CI display value for the Ci row in the Package detail
-    /// pane (Phase 13.3 — replaces the prior `String`). Renderer
-    /// matches on variants instead of string-comparing the
-    /// `NO_CI_*` constants. Domain authority lives on
-    /// [`crate::tui::ci_state::Ci`]; produced by
-    /// `Ci::package_display`.
+    /// Typed display value for the Ci row in the Package detail
+    /// pane. Renderer matches on variants directly. Domain
+    /// authority lives on [`crate::tui::ci_state::Ci`]; produced
+    /// by `Ci::package_display`.
     pub ci_display:               super::CiDisplay,
     /// Byte size of the workspace's out-of-tree `target_directory`
     /// (when the resolved target sits outside `workspace_root`). Flows

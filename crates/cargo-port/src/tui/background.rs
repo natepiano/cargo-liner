@@ -1,21 +1,15 @@
 //! The `Background` subsystem.
 //!
-//! Phase 4 of the App-API carve (see `docs/app-api.md`). Absorbs
-//! the four mpsc channel pairs plus the watcher sender that
-//! previously lived directly on `App`:
+//! Owns the four mpsc channel pairs plus the watcher sender:
 //! - `bg_tx` / `bg_rx` (replaced wholesale on every rescan — see [`Background::swap_bg_channel`])
 //! - `ci_fetch_tx` / `ci_fetch_rx`
 //! - `clean_tx` / `clean_rx`
 //! - `example_tx` / `example_rx`
 //! - `watch_tx`
 //!
-//! Phase 4 is field-cluster absorption only. The richer "spawn_*"
-//! and "poll_*" facade methods listed in the plan stay as free
-//! orchestrating logic on `App` (and inside [`Inflight`]) for now —
-//! moving the spawn paths in this phase would require threading
-//! cross-subsystem dependencies (`Scan`, `Net`, `ToastManager`)
-//! through new context structs, which the doc explicitly defers
-//! along with the `StartContext` cluster.
+//! Spawn / poll facade methods live on `App` (and inside
+//! [`Inflight`]) because they thread cross-subsystem dependencies
+//! (`Scan`, `Net`, `ToastManager`).
 //!
 //! [`Inflight`]: super::inflight::Inflight
 
@@ -38,8 +32,7 @@ pub struct BackgroundChannels {
 }
 
 /// Owns every long-lived I/O channel App holds. App holds a single
-/// `background: Background` field instead of the nine raw channel
-/// fields it carried before Phase 4.
+/// `background: Background` field.
 pub(super) struct Background {
     bg_tx:       mpsc::Sender<BackgroundMsg>,
     bg_rx:       mpsc::Receiver<BackgroundMsg>,

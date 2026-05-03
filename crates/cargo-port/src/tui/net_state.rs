@@ -1,12 +1,10 @@
 //! The `Net` subsystem.
 //!
-//! Phase 12.2 of the App-API extraction (see `docs/app-api.md`).
-//! Owns every "talks-to-the-network" field that previously sat
-//! directly on `App`: the shared [`HttpClient`], the GitHub
-//! sub-state (availability, repo-fetch cache, in-flight set,
-//! running tracker + toast), and the crates.io sub-state
-//! (availability). App orchestration reaches in via
-//! [`Net::github`] / [`Net::github_mut`] and
+//! Owns every "talks-to-the-network" field: the shared
+//! [`HttpClient`], the GitHub sub-state (availability, repo-fetch
+//! cache, in-flight set, running tracker + toast), and the
+//! crates.io sub-state (availability). App orchestration reaches
+//! in via [`Net::github`] / [`Net::github_mut`] and
 //! [`Net::crates_io`] / [`Net::crates_io_mut`].
 //!
 //! Cross-subsystem orchestration that touches Net plus other
@@ -17,8 +15,8 @@
 //! `App::handle_repo_fetch_queued`,
 //! `App::handle_repo_fetch_complete`,
 //! `App::spawn_rate_limit_prime`. This matches the Lint
-//! precedent (Phase 11) where lookup / reset live on the
-//! subsystem and toast / runtime orchestration lives on App.
+//! pattern, where lookup / reset live on the subsystem and toast /
+//! runtime orchestration live on App.
 
 use std::collections::HashSet;
 
@@ -131,11 +129,7 @@ pub struct Github {
     fetch_cache:          RepoCache,
     repo_fetch_in_flight: HashSet<OwnerRepo>,
     /// Live cache-missed repo fetches plus the single sticky
-    /// "Retrieving GitHub repo details" toast slot. Phase 12.2
-    /// adopted [`RunningTracker`] here; pre-12.2 the field pair
-    /// was `running_fetches: HashMap<OwnerRepo, Instant>` +
-    /// `running_fetch_toast: Option<ToastTaskId>` directly on
-    /// `GitHubState`.
+    /// "Retrieving GitHub repo details" toast slot.
     running:              RunningTracker<OwnerRepo>,
 }
 

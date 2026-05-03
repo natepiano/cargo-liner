@@ -1,12 +1,10 @@
 //! The `Keymap` subsystem.
 //!
-//! Phase 5 of the App-API carve (see `docs/app-api.md`). Absorbs
-//! the four fields App carried for the keymap file:
-//! `current_keymap`, `keymap_path`, `keymap_last_seen`,
-//! `keymap_diagnostics_id`. Composes
-//! [`super::watched_file::WatchedFile<T>`] for the
-//! load-watch-reload contract; the bespoke state is the toast id
-//! used to dismiss diagnostics from a previous parse failure.
+//! Owns App's keymap-file state: `current_keymap`, `keymap_path`,
+//! `keymap_last_seen`, and `keymap_diagnostics_id` (the toast id
+//! used to dismiss diagnostics from a previous parse failure).
+//! Composes [`super::watched_file::WatchedFile<T>`] for the
+//! load-watch-reload contract.
 
 use std::path::Path;
 use std::path::PathBuf;

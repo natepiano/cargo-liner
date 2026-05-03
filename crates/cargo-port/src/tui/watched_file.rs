@@ -1,7 +1,6 @@
 //! Generic "load from disk + watch stamp + try-reload" lifecycle.
 //!
-//! Phase 5 of the App-API carve (see `docs/app-api.md`). Two consumers
-//! today: [`super::config_state::Config`] (composes
+//! Two consumers today: [`super::config_state::Config`] (composes
 //! `WatchedFile<CargoPortConfig>`) and [`super::keymap_state::Keymap`]
 //! (composes `WatchedFile<ResolvedKeymap>`).
 //!

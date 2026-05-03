@@ -84,9 +84,6 @@ pub struct StartupPhaseTracker {
     /// arrival is either merged into the store or converted into an error
     /// toast.
     pub metadata: KeyedPhase<AbsolutePath>,
-    // `lint` and `lint_startup` were here; Phase 11.4c moved
-    // them onto the `Lint` subsystem (`tui::lint_state::Lint::phase`,
-    // `Lint::startup_phase`).
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

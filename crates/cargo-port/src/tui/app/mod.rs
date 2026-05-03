@@ -30,20 +30,20 @@
 //! future maintainers that new side-effects of the same event MUST be
 //! added here, not scattered.
 //!
-//! - See [`App::apply_lint_config_change`] (Phase 4). Touches Inflight (respawn lint runtime, clear
-//!   in-flight paths, sync toast), the Scan state on App (clear lint state, refresh from disk, bump
-//!   `data_generation`), and Selection (recompute fit widths). New side-effects of a lint-config
-//!   change MUST be added there.
+//! - See [`App::apply_lint_config_change`]. Touches Inflight (respawn lint runtime, clear in-flight
+//!   paths, sync toast), Scan (clear lint state, refresh from disk, bump `data_generation`), and
+//!   Selection (recompute fit widths). New side-effects of a lint-config change MUST be added
+//!   there.
 //!
 //! ## Generic primitive plus bespoke state
 //! When two subsystems need the same lifecycle but carry different
 //! bespoke state, write the lifecycle as a generic struct and have
 //! each subsystem compose it.
 //!
-//! - See [`super::watched_file::WatchedFile<T>`] (Phase 5), composed by
-//!   [`super::config_state::Config`] (with the `SettingsEditBuffer` edit buffer) and
-//!   [`super::keymap_state::Keymap`] (with the diagnostics-toast id). The primitive captures the
-//!   load-on-disk-change contract once; the two subsystems add their bespoke state on top.
+//! - See [`super::watched_file::WatchedFile<T>`], composed by [`super::config_state::Config`] (with
+//!   the `SettingsEditBuffer` edit buffer) and [`super::keymap_state::Keymap`] (with the
+//!   diagnostics-toast id). The primitive captures the load-on-disk-change contract once; the two
+//!   subsystems add their bespoke state on top.
 
 mod async_tasks;
 mod ci;
@@ -138,6 +138,7 @@ pub(super) use types::SelectionPaths;
 pub(super) use types::SelectionSync;
 pub(super) use types::VisibleRow;
 
+use super::ci_state::Ci;
 pub(super) use super::columns::ProjectListWidths;
 use super::lint_state::Lint;
 pub(super) use super::net_state::AvailabilityStatus;
@@ -151,69 +152,54 @@ use super::terminal::ExampleMsg;
 use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
 use crate::project::RootItem;
-use super::ci_state::Ci;
 pub(super) struct App {
-    /// Net subsystem (Phase 12.2 of the App-API extraction, see
-    /// `docs/app-api.md`). Owns the shared `HttpClient`, the
-    /// GitHub sub-state (availability, repo-fetch cache,
-    /// in-flight set, running tracker), and the crates.io
-    /// sub-state (availability). App orchestration that touches
-    /// Net plus other subsystems (toast push/dismiss, retry
-    /// spawn) stays as named methods on `App`.
+    /// Net subsystem. Owns the shared `HttpClient`, the GitHub
+    /// sub-state (availability, repo-fetch cache, in-flight set,
+    /// running tracker), and the crates.io sub-state
+    /// (availability). App orchestration that touches Net plus
+    /// other subsystems (toast push/dismiss, retry spawn) stays
+    /// as named methods on `App`.
     net:               Net,
-    /// Panes subsystem (Phase 1 of the App-API carve, see
-    /// `docs/app-api.md`). Owns `pane_manager`, `pane_data`,
-    /// `visited_panes`, `layout_cache`, `worktree_summary_cache`,
-    /// `hovered_pane_row`, `ci_display_modes`, `cpu_poller`. App's
+    /// Panes subsystem. Owns `pane_manager`, `pane_data`,
+    /// `visited_panes`, `hovered_pane_row`, and `cpu_poller`. App's
     /// impl-files reach pane state through this handle.
     panes:             Panes,
-    /// Selection subsystem (Phase 3 of the App-API carve, see
-    /// `docs/app-api.md`). Owns `selection_paths`, `selection`
+    /// Selection subsystem. Owns `selection_paths`, `selection`
     /// (`SelectionSync`), `expanded`, `finder`,
     /// `cached_visible_rows`, `cached_root_sorted`,
-    /// `cached_child_sorted`, `cached_fit_widths` (now
-    /// `ProjectListWidths`).
+    /// `cached_child_sorted`, and `cached_fit_widths`
+    /// (`ProjectListWidths`).
     selection:         Selection,
-    /// Background subsystem (Phase 4 of the App-API carve, see
-    /// `docs/app-api.md`). Owns the four mpsc channel pairs plus
+    /// Background subsystem. Owns the four mpsc channel pairs plus
     /// `watch_tx`. The `bg_*` pair is replaced wholesale on every
     /// rescan via [`Background::swap_bg_channel`]; the others outlive
     /// any single rescan.
     background:        Background,
-    /// Inflight subsystem (Phase 4 of the App-API extraction).
-    /// Owns the running-paths maps, toast slots, ci-fetch tracker,
-    /// pending queues, and example-runner state. Phase 11.4a moved
-    /// the lint-specific fields (runtime, running paths, lint
-    /// toast) onto `Lint`.
+    /// Inflight subsystem. Owns the running-paths maps, toast
+    /// slots, pending queues, and example-runner state.
     inflight:          Inflight,
-    /// Lint subsystem (Phase 11 of the App-API extraction). Phase
-    /// 11.4a absorbed the in-flight lint state from `Inflight`.
-    /// Subsequent slices absorb the disk cache stat counter and
-    /// the lint-specific phase trackers.
+    /// Lint subsystem. Owns the lint runtime, in-flight lint
+    /// state, the disk cache stat counter, and the startup-pass
+    /// trackers.
     lint:              Lint,
-    /// Ci subsystem (Phase 13 of the App-API extraction). Phase
-    /// 13.1 ships an empty marker struct + `Ci::package_display`
-    /// returning `CiDisplay`. Phase 13.2 absorbs the field
-    /// cluster (`ci_fetch_tracker`, `ci_fetch_toast`,
-    /// `display_modes`) from `Inflight` and `CiPane`.
+    /// Ci subsystem. Owns `fetch_tracker`, `fetch_toast`, and
+    /// per-project `display_modes`, plus `Ci::package_display`
+    /// which returns the typed [`CiDisplay`] for the package
+    /// detail row.
     ci:                Ci,
-    /// Config subsystem (Phase 5 of the App-API carve, see
-    /// `docs/app-api.md`). Owns `current_config`, `config_path`,
+    /// Config subsystem. Owns `current_config`, `config_path`,
     /// `config_last_seen`, plus the in-app settings editor's
-    /// `SettingsEditBuffer` (the previous `settings_edit_buf` and
-    /// `settings_edit_cursor` collapsed into one typed pair).
-    /// Composes `WatchedFile<CargoPortConfig>`.
+    /// `SettingsEditBuffer`. Composes
+    /// `WatchedFile<CargoPortConfig>`.
     config:            Config,
-    /// Keymap subsystem (Phase 5 of the App-API carve). Owns
-    /// `current_keymap`, `keymap_path`, `keymap_last_seen`,
-    /// `keymap_diagnostics_id`. Composes
+    /// Keymap subsystem. Owns `current_keymap`, `keymap_path`,
+    /// `keymap_last_seen`, `keymap_diagnostics_id`. Composes
     /// `WatchedFile<ResolvedKeymap>`.
     keymap:            Keymap,
-    /// Scan subsystem (Phase 6 of the App-API carve, see
-    /// `docs/app-api.md`). Owns `projects`, `scan`
-    /// (`ScanState`), `dirty`, `data_generation`,
-    /// `discovery_shimmers`, `pending_git_first_commit`,
-    /// `metadata_store`, `target_dir_index`, `priority_fetch_path`,
+    /// Scan subsystem. Owns `projects`, `scan` (`ScanState`),
+    /// `dirty`, `data_generation`, `discovery_shimmers`,
+    /// `pending_git_first_commit`, `metadata_store`,
+    /// `target_dir_index`, `priority_fetch_path`,
     /// `confirm_verifying`, `lint_cache_usage`, and (test-only)
     /// `retry_spawn_mode`.
     scan:              Scan,
@@ -226,11 +212,11 @@ pub(super) struct App {
     toasts:            ToastManager,
     inline_error:      Option<String>,
     ui_modes:          types::UiModes,
-    /// Layout coordination cache (Phase 10.2). Computed once per
-    /// draw and shared across the render path: tile layout, project-list
-    /// body rect, and the row-hitbox map for click/hover dispatch.
-    /// Lives on App-shell because it's coordination state, not pane
-    /// state — it describes what rect each pane occupies.
+    /// Layout coordination cache. Computed once per draw and shared
+    /// across the render path: tile layout, project-list body rect,
+    /// and the row-hitbox map for click/hover dispatch. Lives on
+    /// App-shell because it's coordination state, not pane state —
+    /// it describes what rect each pane occupies.
     layout_cache:      LayoutCache,
 }
 
@@ -267,11 +253,11 @@ impl App {
 
     pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { self.net.github().fetch_cache() }
 
-    /// Net subsystem accessor (Phase 12.2). Owns `HttpClient`,
-    /// `Github`, and `CratesIo` sub-states. Test-only today;
-    /// production paths reach `Net` sub-state through targeted
-    /// methods on `App` (`http_client`, `github_status`,
-    /// `rate_limit`, `repo_fetch_cache`).
+    /// Net subsystem accessor. Owns `HttpClient`, `Github`, and
+    /// `CratesIo` sub-states. Test-only today; production paths
+    /// reach `Net` sub-state through targeted methods on `App`
+    /// (`http_client`, `github_status`, `rate_limit`,
+    /// `repo_fetch_cache`).
     #[cfg(test)]
     pub(super) const fn net(&self) -> &Net { &self.net }
 
@@ -303,13 +289,12 @@ impl App {
         self.ci.fetch_tracker_mut().start(path);
     }
 
-    /// Lint subsystem accessor (Phase 11.4a/b). Owns the lint
-    /// runtime, running paths, running toast, and disk cache
-    /// stat counter.
+    /// Lint subsystem accessor. Owns the lint runtime, running
+    /// paths, running toast, and disk cache stat counter.
     pub(super) const fn lint(&self) -> &Lint { &self.lint }
 
-    /// Ci subsystem accessor (Phase 13). Owns
-    /// `fetch_tracker`, `fetch_toast`, and `display_modes`.
+    /// Ci subsystem accessor. Owns `fetch_tracker`, `fetch_toast`,
+    /// and `display_modes`.
     pub(super) const fn ci(&self) -> &Ci { &self.ci }
 
     pub(super) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {

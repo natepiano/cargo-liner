@@ -1,34 +1,31 @@
 //! The `Ci` subsystem.
 //!
-//! Phase 13 of the App-API extraction (see `docs/app-api.md`).
-//! Phase 13.1 introduced the type and `CiDisplay`. Phase 13.2
-//! absorbs the field cluster (`ci_fetch_tracker` from `Inflight`,
-//! `ci_fetch_toast` from `Inflight`, `display_modes` from
-//! `CiPane`) and drops `Ci::package_display`'s temporary
-//! `display_mode` argument in favor of `self.display_mode_for`.
+//! Owns the CI field cluster: `fetch_tracker` (paths with
+//! in-flight fetches), `fetch_toast` (the fire-once
+//! "Retrieving CI runs" toast slot), and `display_modes`
+//! (per-project `BranchOnly` vs `All`).
 //!
 //! `package_display` returns a typed [`CiDisplay`] enum for the
-//! Ci row in the Package detail pane. Phase 13.3 (capstone) flips
-//! `PackageData.ci_display` from `String` to `CiDisplay`,
-//! updates `panes/package.rs` to match on enum variants instead
-//! of string-comparing the `NO_CI_*` constants, and deletes
-//! `resolve_ci_display` from `panes/support.rs`.
+//! Ci row in the Package detail pane. The renderer at
+//! `panes/package.rs` matches on enum variants directly, so
+//! `PackageData.ci_display` carries `CiDisplay` rather than a
+//! pre-rendered string.
 //!
 //! Pattern: typed display values, not pre-rendered strings (see
 //! "Recurring patterns" in `docs/app-api.md`). Mirrors
-//! `LintDisplay` (Phase 11.3).
+//! `LintDisplay`.
 
 use std::collections::HashMap;
 use std::path::Path;
 
+use super::app::CiFetchTracker;
+use super::app::CiRunDisplayMode;
+use super::toasts::ToastTaskId;
 use crate::ci::Conclusion;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ProjectCiInfo;
 use crate::project::RepoInfo;
-use super::app::CiFetchTracker;
-use super::app::CiRunDisplayMode;
-use super::toasts::ToastTaskId;
 
 /// Display value for the Ci row in the Package detail pane.
 ///
@@ -56,20 +53,17 @@ pub enum CiDisplay {
     },
 }
 
-/// The `Ci` subsystem.
-///
-/// Phase 13.2 absorbed three fields:
+/// The `Ci` subsystem owns three fields:
 ///
 /// - `fetch_tracker` (`HashSet<AbsolutePath>`-backed [`CiFetchTracker`]) — paths with an in-flight
-///   CI fetch. Stays as the bespoke type, **not** `RunningTracker<K>`: no toast slot, no started-at
-///   timestamp; `RunningTracker`'s shape doesn't fit. (Phase 13.0 Q2.)
+///   CI fetch. Bespoke type rather than `RunningTracker<K>`: no toast slot, no started-at
+///   timestamp.
 /// - `fetch_toast` (`Option<ToastTaskId>`) — fire-once toast slot consumed via `take_fetch_toast`
 ///   at fetch completion. Different lifecycle from `Lint::running` / `Github::running` (which are
-///   sticky-during-flight); kept as a plain field, **not** wrapped in `RunningTracker`. (Phase 13.0
-///   Q2.)
+///   sticky-during-flight), so it's a plain field rather than wrapped in `RunningTracker`.
 /// - `display_modes` (`HashMap<AbsolutePath, CiRunDisplayMode>`) — per-project `BranchOnly` vs
 ///   `All` selection. Treated as domain state (which CI runs are surfaced for this project), not UI
-///   state. Moved from `CiPane`. (Phase 13.0 Q3.)
+///   state.
 pub struct Ci {
     fetch_tracker: CiFetchTracker,
     fetch_toast:   Option<ToastTaskId>,
