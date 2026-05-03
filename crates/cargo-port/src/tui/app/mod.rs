@@ -54,7 +54,6 @@ mod lint;
 mod navigation;
 mod phase_state;
 mod query;
-mod service_state;
 mod snapshots;
 
 pub(super) use phase_state::CountedPhase;
@@ -74,8 +73,6 @@ use std::time::Instant;
 
 use ratatui::layout::Position;
 
-use self::service_state::CratesIoState;
-use self::service_state::GitHubState;
 use super::background::Background;
 use super::config_state::Config;
 use super::inflight::Inflight;
@@ -120,7 +117,6 @@ use crate::scan::RepoCache;
 mod tests;
 
 pub(super) use dismiss::DismissTarget;
-pub(super) use service_state::AvailabilityStatus;
 pub(super) use target_index::CleanSelection;
 pub(super) use target_index::MemberKind;
 pub(super) use target_index::TargetDirIndex;
@@ -143,6 +139,7 @@ pub(super) use types::SelectionSync;
 pub(super) use types::VisibleRow;
 
 pub(super) use super::columns::ProjectListWidths;
+pub(super) use super::net_state::AvailabilityStatus;
 use super::panes::PendingCiFetch;
 use super::panes::PendingExampleRun;
 use super::panes::WorktreeInfo;
@@ -152,10 +149,17 @@ use super::terminal::ExampleMsg;
 use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
 use crate::project::RootItem;
+use super::net_state::Net;
+use super::lint_state::Lint;
 pub(super) struct App {
-    http_client:       HttpClient,
-    github:            GitHubState,
-    crates_io:         CratesIoState,
+    /// Net subsystem (Phase 12.2 of the App-API extraction, see
+    /// `docs/app-api.md`). Owns the shared `HttpClient`, the
+    /// GitHub sub-state (availability, repo-fetch cache,
+    /// in-flight set, running tracker), and the crates.io
+    /// sub-state (availability). App orchestration that touches
+    /// Net plus other subsystems (toast push/dismiss, retry
+    /// spawn) stays as named methods on `App`.
+    net:               Net,
     /// Panes subsystem (Phase 1 of the App-API carve, see
     /// `docs/app-api.md`). Owns `pane_manager`, `pane_data`,
     /// `visited_panes`, `layout_cache`, `worktree_summary_cache`,
@@ -185,7 +189,7 @@ pub(super) struct App {
     /// 11.4a absorbed the in-flight lint state from `Inflight`.
     /// Subsequent slices absorb the disk cache stat counter and
     /// the lint-specific phase trackers.
-    lint:              crate::tui::lint_state::Lint,
+    lint:              Lint,
     /// Config subsystem (Phase 5 of the App-API carve, see
     /// `docs/app-api.md`). Owns `current_config`, `config_path`,
     /// `config_last_seen`, plus the in-app settings editor's
@@ -254,18 +258,24 @@ impl App {
 
     pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { self.scan.projects_mut() }
 
-    pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { &self.github.fetch_cache }
+    pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { self.net.github().fetch_cache() }
+
+    /// Net subsystem accessor (Phase 12.2). Owns `HttpClient`,
+    /// `Github`, and `CratesIo` sub-states. Test-only today;
+    /// production paths reach `Net` sub-state through targeted
+    /// methods on `App` (`http_client`, `github_status`,
+    /// `rate_limit`, `repo_fetch_cache`).
+    #[cfg(test)]
+    pub(super) const fn net(&self) -> &Net { &self.net }
 
     /// GitHub availability — `Reachable`, `Unreachable` (network
     /// failure), or `RateLimited`. Used by the Git pane to color the
     /// rate-limit rows and choose the right unavailability suffix.
-    pub(super) const fn github_status(&self) -> AvailabilityStatus {
-        self.github.availability.status()
-    }
+    pub(super) const fn github_status(&self) -> AvailabilityStatus { self.net.github_status() }
 
     /// Snapshot of GitHub's REST + GraphQL rate-limit buckets. Rebuilt
     /// from the shared `HttpClient` state every frame — not persisted.
-    pub(super) fn rate_limit(&self) -> GitHubRateLimit { self.http_client.rate_limit_snapshot() }
+    pub(super) fn rate_limit(&self) -> GitHubRateLimit { self.net.rate_limit() }
 
     pub fn complete_ci_fetch_for(&mut self, path: &Path) -> bool {
         self.inflight.ci_fetch_tracker_mut().complete(path)
@@ -289,7 +299,7 @@ impl App {
     /// Lint subsystem accessor (Phase 11.4a/b). Owns the lint
     /// runtime, running paths, running toast, and disk cache
     /// stat counter.
-    pub(super) const fn lint(&self) -> &crate::tui::lint_state::Lint { &self.lint }
+    pub(super) const fn lint(&self) -> &Lint { &self.lint }
 
     pub(super) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
         self.projects().lint_at_path(path)
@@ -518,7 +528,7 @@ impl App {
     /// fingerprint drift.
     fn clean_metadata_dispatch(&self) -> scan::MetadataDispatchContext {
         scan::MetadataDispatchContext {
-            handle:         self.http_client.handle.clone(),
+            handle:         self.net.http_client_ref().handle.clone(),
             tx:             self.background.bg_sender(),
             metadata_store: Arc::clone(self.scan.metadata_store()),
             // Use the shared scan-concurrency cap so confirm-triggered
@@ -565,7 +575,7 @@ impl App {
 
     pub(super) fn bg_tx(&self) -> mpsc::Sender<BackgroundMsg> { self.background.bg_sender() }
 
-    pub(super) fn http_client(&self) -> HttpClient { self.http_client.clone() }
+    pub(super) fn http_client(&self) -> HttpClient { self.net.http_client() }
 
     pub(super) fn ci_fetch_tx(&self) -> mpsc::Sender<CiFetchMsg> {
         self.background.ci_fetch_sender()

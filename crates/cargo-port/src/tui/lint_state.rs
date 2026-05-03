@@ -29,9 +29,9 @@ use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project_list::ProjectList;
-use crate::tui::app::CountedPhase;
-use crate::tui::app::KeyedPhase;
-use crate::tui::running_tracker::RunningTracker;
+use super::app::CountedPhase;
+use super::app::KeyedPhase;
+use super::running_tracker::RunningTracker;
 
 /// Display value for the Lint row in the Package detail pane.
 ///
@@ -217,6 +217,7 @@ impl Lint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::toasts::ToastTaskId;
 
     #[test]
     fn new_starts_with_no_runtime_and_empty_inflight() {
@@ -230,7 +231,7 @@ mod tests {
     fn running_toast_round_trip() {
         let mut lint = Lint::new(None);
         lint.running_mut()
-            .set_toast(Some(crate::tui::toasts::ToastTaskId(7)));
+            .set_toast(Some(ToastTaskId(7)));
         assert_eq!(
             lint.running().toast(),
             Some(crate::tui::toasts::ToastTaskId(7))

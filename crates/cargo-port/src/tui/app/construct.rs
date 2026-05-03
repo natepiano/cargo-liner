@@ -5,8 +5,6 @@ use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
 use super::App;
-use super::service_state::CratesIoState;
-use super::service_state::GitHubState;
 use super::types::ScanState;
 use super::types::UiModes;
 use crate::config;
@@ -186,9 +184,7 @@ impl App {
             inputs.metadata_store,
         );
         Self {
-            http_client: inputs.http_client,
-            github: GitHubState::new(),
-            crates_io: CratesIoState::new(),
+            net: crate::tui::net_state::Net::new(inputs.http_client),
             panes,
             selection,
             background,
@@ -227,7 +223,7 @@ impl App {
             self.finish_watcher_registration_batch();
         }
         self.refresh_lint_runs_from_disk();
-        self.http_client
+        self.net
             .set_force_github_rate_limit(self.config.current().debug.force_github_rate_limit);
         self.spawn_rate_limit_prime();
     }

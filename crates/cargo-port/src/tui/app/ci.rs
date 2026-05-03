@@ -125,10 +125,10 @@ impl App {
             .viewport_mut()
             .set_pos(merged.len());
         if let Some(repo) = self.owner_repo_for_path_inner(&abs) {
-            let meta = scan::load_cached_repo_data(&self.github.fetch_cache, &repo)
+            let meta = scan::load_cached_repo_data(self.net.github().fetch_cache(), &repo)
                 .and_then(|cached| cached.meta);
             scan::store_cached_repo_data(
-                &self.github.fetch_cache,
+                self.net.github().fetch_cache(),
                 &repo,
                 CachedRepoData {
                     runs: merged.clone(),

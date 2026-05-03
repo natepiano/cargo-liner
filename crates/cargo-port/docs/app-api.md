@@ -2482,7 +2482,7 @@ recorded below as each is settled.
     `App`; move `http_client`, `github`, `crates_io` fields;
     adopt the new `RunningTracker<OwnerRepo>` here from the
     start; update the ~21 caller sites; delete
-    `tui::app::service_state`.
+    `tui::app::service_state`. **Implemented.**
 
 ## End of Phase 12.0 design — implementation can begin
 
@@ -2512,4 +2512,72 @@ caller justifying the primitive).
 non-test bin only reaches the underlying map via
 `running_map()`; the gate drops in 12.2 when the helper
 retype lands.
+
+## Phase 12.2 — Net subsystem (implemented)
+
+Created `src/tui/net_state.rs` and moved `App.http_client`,
+`App.github`, `App.crates_io` (and the bespoke
+`tui::app::service_state` types) into a single `Net`
+subsystem owned by `App.net`. `tui::app::service_state` is
+deleted.
+
+Net layout matches the Phase 12.0 design:
+
+```rust
+Net { http_client: HttpClient, github: Github, crates_io: CratesIo }
+Github { availability, fetch_cache, repo_fetch_in_flight, running: RunningTracker<OwnerRepo> }
+CratesIo { availability }
+```
+
+Field cluster:
+- `App.http_client` → `Net.http_client`
+- `App.github.availability` → `Github.availability`
+- `App.github.fetch_cache` → `Github.fetch_cache`
+- `App.github.repo_fetch_in_flight` → `Github.repo_fetch_in_flight`
+- `App.github.running_fetches` + `App.github.running_fetch_toast` →
+  `Github.running: RunningTracker<OwnerRepo>` (Q4 primitive
+  adopted at field-move time, parallel to Phase 11.4a Lint
+  precedent)
+- `App.crates_io.availability` → `CratesIo.availability`
+
+Public API on `Net`: `new`, `http_client`,
+`http_client_ref`, `rate_limit`, `set_force_github_rate_limit`,
+`github` / `github_mut`, `crates_io_mut`, `github_status`,
+`clear_for_tree_change`. (`net()` and `crates_io()` getters
+are `#[cfg(test)]`-gated since production callers go through
+`*_mut` paths or named App accessors like
+`App::github_status`.) `Github` exposes
+`fetch_cache`, `repo_fetch_in_flight_mut`,
+`contains_in_flight`, `running` / `running_mut`, and
+`availability_mut`. `CratesIo` exposes `availability_mut`.
+
+Stays on `App` as cross-subsystem orchestration:
+`apply_unavailability`, `availability_for`,
+`sync_running_repo_fetch_toast`,
+`spawn_repo_fetch_for_git_info`,
+`handle_repo_fetch_queued`, `handle_repo_fetch_complete`,
+`spawn_rate_limit_prime`. These touch Net plus
+ToastManager / Background / Scan; keeping them at
+App-shell avoids a parameter cluster. Same pattern Lint
+uses (lookup / reset on the subsystem; toast orchestration
+on App).
+
+`App::rescan` no longer writes the four GitHub fields
+inline; it calls `self.net.clear_for_tree_change()`. The
+Phase 12.0 design said "Phase 12.2 retypes
+`App::sync_tracked_path_toast` to take `&RunningTracker<K>`
+directly"; that retype is deferred — `cargo clean` still
+holds its running paths as a raw `HashMap<AbsolutePath, Instant>`
+on `Inflight`, so retyping the helper would force an
+Inflight change that Phase 12 explicitly excluded. The
+GitHub repo-fetch toast helper
+(`sync_running_repo_fetch_toast`) reads
+`net.github().running().running_map()` directly without
+going through `sync_tracked_path_toast`. Helper unification
+can land alongside an Inflight change in a later phase.
+
+The `#[cfg(test)]` gate on
+`RunningTracker::is_empty` from 12.1 is **kept** for the
+same reason: no non-test caller exists yet (the helper
+retype that would be the natural caller is deferred).
 

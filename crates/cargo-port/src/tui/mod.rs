@@ -14,6 +14,7 @@ mod interaction;
 mod keymap_state;
 mod keymap_ui;
 mod lint_state;
+mod net_state;
 mod pane;
 mod panes;
 mod popup;

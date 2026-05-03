@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::time::Instant;
 
-use crate::tui::toasts::ToastTaskId;
+use super::toasts::ToastTaskId;
 
 pub struct RunningTracker<K: Eq + Hash> {
     running: HashMap<K, Instant>,

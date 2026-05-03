@@ -5,13 +5,13 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::tui::net_state::ServiceAvailability;
 use super::App;
 use super::ExpandKey::Group;
 use super::ExpandKey::Node;
 use super::ExpandKey::Worktree;
 use super::ExpandKey::WorktreeGroup;
 use super::phase_state::PhaseCompletion;
-use super::service_state::ServiceAvailability;
 use super::snapshots;
 use super::target_index::MemberKind;
 use super::target_index::TargetDirMember;
@@ -265,7 +265,7 @@ impl App {
         }
 
         if prev_force != next_force {
-            self.http_client.set_force_github_rate_limit(next_force);
+            self.net.set_force_github_rate_limit(next_force);
             // Synthesize a signal so the UI reflects the flag flip
             // immediately instead of waiting for the next natural
             // GitHub request — otherwise toggling the flag would look
@@ -361,7 +361,7 @@ impl App {
             self.background.bg_sender(),
             self.ci_run_count(),
             self.include_non_rust(),
-            self.http_client.clone(),
+            self.net.http_client(),
             self.lint.runtime_clone(),
             self.metadata_store_handle(),
         );
@@ -462,7 +462,7 @@ impl App {
     fn schedule_startup_project_details(&self) {
         let tx = self.background.bg_sender();
         let fetch_context = std::sync::Arc::new(FetchContext {
-            client: self.http_client.clone(),
+            client: self.net.http_client(),
         });
         self.projects().for_each_leaf(|item| {
             let abs_path = item.path().to_path_buf();
@@ -507,7 +507,7 @@ impl App {
     /// crates.io data for each publishable one.
     fn schedule_member_crates_io_fetches(&self) {
         let tx = self.background.bg_sender();
-        let client = self.http_client.clone();
+        let client = self.net.http_client();
         let mut targets: Vec<(AbsolutePath, String)> = Vec::new();
         for entry in self.projects() {
             collect_publishable_children(&entry.item, &mut targets);
@@ -1299,8 +1299,11 @@ impl App {
     /// new runtime fetch arrives while the prior one is still
     /// lingering.
     fn sync_running_repo_fetch_toast(&mut self) {
-        if self.github.running_fetches.is_empty() {
-            if let Some(task_id) = self.github.running_fetch_toast {
+        let github = self.net.github();
+        let toast_slot = github.running().toast();
+        let running = github.running().running_map();
+        if running.is_empty() {
+            if let Some(task_id) = toast_slot {
                 let empty: HashSet<String> = HashSet::new();
                 self.toasts.complete_missing_items(task_id, &empty);
                 if !self.toasts.is_task_finished(task_id) {
@@ -1312,9 +1315,7 @@ impl App {
             return;
         }
 
-        let running_items: Vec<TrackedItem> = self
-            .github
-            .running_fetches
+        let running_items: Vec<TrackedItem> = running
             .iter()
             .map(|(repo, &started)| TrackedItem {
                 label:        repo.to_string(),
@@ -1328,7 +1329,7 @@ impl App {
             .map(|item| item.key.to_string())
             .collect();
 
-        if let Some(task_id) = self.github.running_fetch_toast
+        if let Some(task_id) = toast_slot
             && self.toasts.reactivate_task(task_id)
         {
             self.toasts.complete_missing_items(task_id, &running_keys);
@@ -1344,7 +1345,7 @@ impl App {
         } else {
             let task_id = self.start_task_toast("Retrieving GitHub repo details", "");
             self.set_task_tracked_items(task_id, &running_items);
-            self.github.running_fetch_toast = Some(task_id);
+            self.net.github_mut().running_mut().set_toast(Some(task_id));
         }
     }
 
@@ -1461,10 +1462,7 @@ impl App {
         self.clear_all_lint_state();
         self.lint
             .set_cache_usage(crate::lint::CacheUsage::default());
-        self.github.fetch_cache = scan::new_repo_cache();
-        self.github.repo_fetch_in_flight.clear();
-        self.github.running_fetches.clear();
-        self.github.running_fetch_toast = None;
+        self.net.clear_for_tree_change();
         self.scan.discovery_shimmers_mut().clear();
         self.scan.scan_state_mut().phase = ScanPhase::Running;
         self.scan.scan_state_mut().started_at = Instant::now();
@@ -1494,7 +1492,7 @@ impl App {
             scan_dirs,
             &self.config.current().tui.inline_dirs,
             self.include_non_rust(),
-            self.http_client.clone(),
+            self.net.http_client(),
             self.metadata_store_handle(),
         );
         self.background.swap_bg_channel(tx, rx);
@@ -1755,13 +1753,18 @@ impl App {
         // running or queued. The `RepoFetchComplete` background message
         // removes the entry, so a later spawn after completion is not
         // blocked.
-        if !self.github.repo_fetch_in_flight.insert(owner_repo.clone()) {
+        if !self
+            .net
+            .github_mut()
+            .repo_fetch_in_flight_mut()
+            .insert(owner_repo.clone())
+        {
             return;
         }
 
         let tx = self.background.bg_sender();
-        let client = self.http_client.clone();
-        let repo_cache = self.github.fetch_cache.clone();
+        let client = self.net.http_client();
+        let repo_cache = self.net.github().fetch_cache().clone();
         let path: AbsolutePath = AbsolutePath::from(path);
         let repo_url = repo_url.to_string();
         let ci_run_count = self.ci_run_count();
@@ -1895,9 +1898,9 @@ impl App {
             && self.is_scan_complete()
             && let Some(url) = self.fetch_url_for(path)
             && let Some(owner_repo) = ci::parse_owner_repo(&url)
-            && !self.github.repo_fetch_in_flight.contains(&owner_repo)
+            && !self.net.github().contains_in_flight(&owner_repo)
         {
-            scan::invalidate_cached_repo_data(&self.github.fetch_cache, &owner_repo);
+            scan::invalidate_cached_repo_data(self.net.github().fetch_cache(), &owner_repo);
         }
 
         self.maybe_trigger_repo_fetch(path);
@@ -1959,7 +1962,10 @@ impl App {
             .repo
             .ensure_expected()
             .insert(repo.clone());
-        self.github.running_fetches.insert(repo, Instant::now());
+        self.net
+            .github_mut()
+            .running_mut()
+            .insert(repo, Instant::now());
         if first_repo {
             // First repo queued — add the "GitHub repos" tracked item
             // to the startup toast and reset completion so the phase
@@ -1992,8 +1998,11 @@ impl App {
     }
 
     pub fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
-        self.github.repo_fetch_in_flight.remove(&repo);
-        self.github.running_fetches.remove(&repo);
+        self.net
+            .github_mut()
+            .repo_fetch_in_flight_mut()
+            .remove(&repo);
+        self.net.github_mut().running_mut().remove(&repo);
         self.scan
             .scan_state_mut()
             .startup_phases
@@ -2136,8 +2145,8 @@ impl App {
 
     const fn availability_for(&mut self, service: ServiceKind) -> &mut ServiceAvailability {
         match service {
-            ServiceKind::GitHub => &mut self.github.availability,
-            ServiceKind::CratesIo => &mut self.crates_io.availability,
+            ServiceKind::GitHub => self.net.github_mut().availability_mut(),
+            ServiceKind::CratesIo => self.net.crates_io_mut().availability_mut(),
         }
     }
 
@@ -2163,7 +2172,7 @@ impl App {
         }
 
         let tx = self.background.bg_sender();
-        let client = self.http_client.clone();
+        let client = self.net.http_client();
         thread::spawn(move || {
             loop {
                 if client.probe_service(service) {
@@ -2181,7 +2190,7 @@ impl App {
     /// refusing other calls. Logged via `rate_limit_prime_ok` /
     /// `rate_limit_prime_failed`.
     pub fn spawn_rate_limit_prime(&self) {
-        let client = self.http_client.clone();
+        let client = self.net.http_client();
         thread::spawn(move || {
             let (snapshot, _signal) = client.fetch_rate_limit();
             if snapshot.is_some() {
@@ -2719,7 +2728,7 @@ impl App {
         }
         if needs_out_of_tree_walk {
             scan::spawn_out_of_tree_target_walk(
-                &self.http_client.handle,
+                &self.net.http_client_ref().handle,
                 self.background.bg_sender(),
                 workspace_root.clone(),
                 target_directory.clone(),
