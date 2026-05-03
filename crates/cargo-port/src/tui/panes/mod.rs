@@ -123,5 +123,6 @@ pub(super) use system::Panes;
 pub(super) use targets::render_empty_targets_panel;
 pub(super) use targets::render_targets_panel;
 
+pub(super) use super::ci_state::CiDisplay;
 pub(super) use super::lint_state::Lint;
 pub(super) use super::lint_state::LintDisplay;

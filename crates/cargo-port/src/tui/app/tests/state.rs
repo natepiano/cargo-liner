@@ -18,7 +18,6 @@ use crate::project::WorktreeStatus;
 use crate::scan::CargoMetadataError;
 use crate::tui::app::target_index::CleanSelection;
 use crate::tui::panes;
-use crate::tui::panes::DetailField;
 
 #[test]
 fn lint_runtime_waits_for_scan_completion() {
@@ -955,14 +954,14 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
     );
     app.ensure_detail_cached();
 
-    let value = DetailField::Ci.package_value(
-        app.panes()
-            .package()
-            .content()
-            .unwrap_or_else(|| std::process::abort()),
-    );
+    let display = app
+        .panes()
+        .package()
+        .content()
+        .unwrap_or_else(|| std::process::abort())
+        .ci_display;
 
-    assert_eq!(value, crate::constants::NO_CI_UNPUBLISHED_BRANCH);
+    assert_eq!(display, crate::tui::ci_state::CiDisplay::UnpublishedBranch);
 }
 
 #[test]

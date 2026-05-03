@@ -6,9 +6,6 @@ use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::constants::IN_SYNC;
-use crate::constants::NO_CI_RUNS;
-use crate::constants::NO_CI_UNPUBLISHED_BRANCH;
-use crate::constants::NO_CI_WORKFLOW;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
@@ -504,18 +501,17 @@ impl DetailField {
     }
 
     /// Get the display value for a package field from `PackageData`.
-    /// All values are pure-on-data — Ci reads from the pre-resolved
-    /// `data.ci_display` string. The Lint row is *not* handled here
-    /// (Phase 11.3 flipped it to a typed enum) — the package
-    /// renderer matches on `data.lint_display` directly and frames
-    /// the icon at render time. Calling this with `Self::Lint`
-    /// returns an empty string.
+    /// All values are pure-on-data. The Lint and Ci rows are *not*
+    /// handled here (Phase 11.3 flipped Lint to a typed enum,
+    /// Phase 13.3 flipped Ci) — the package renderer matches on
+    /// `data.lint_display` / `data.ci_display` directly and frames
+    /// the icon at render time. Calling this with `Self::Lint` or
+    /// `Self::Ci` returns an empty string.
     pub fn package_value(self, data: &PackageData) -> String {
         match self {
             Self::Path => data.path.clone(),
             Self::Disk => data.disk.clone(),
             Self::Targets => data.types.clone(),
-            Self::Ci => data.ci_display.clone(),
             Self::CratesIo => data.crates_version.as_deref().unwrap_or("").to_string(),
             Self::Downloads => data
                 .crates_downloads
@@ -535,7 +531,10 @@ impl DetailField {
             Self::Homepage => or_dash(data.homepage.as_deref()),
             Self::Repository => or_dash(data.repository.as_deref()),
             Self::WorktreeError => "broken .git — gitdir target missing".to_string(),
-            // Git fields — should not be called with package_value.
+            // Git fields, Lint, and Ci — should not be called with
+            // package_value. Lint and Ci are rendered directly from
+            // their typed-enum fields (`PackageData.lint_display` /
+            // `ci_display`) at render time.
             Self::Branch
             | Self::GitPath
             | Self::VsLocal
@@ -546,7 +545,8 @@ impl DetailField {
             | Self::LastFetched
             | Self::RateLimitCore
             | Self::RateLimitGraphQl
-            | Self::Lint => String::new(),
+            | Self::Lint
+            | Self::Ci => String::new(),
         }
     }
 
@@ -734,7 +734,6 @@ pub struct PackageData {
     pub crates_downloads:         Option<u64>,
     pub types:                    String,
     pub disk:                     String,
-    pub ci:                       Option<Conclusion>,
     pub stats_rows:               Vec<(&'static str, usize)>,
     pub has_package:              bool,
     /// Cargo edition ("2021", "2024", …) from the metadata snapshot.
@@ -756,9 +755,13 @@ pub struct PackageData {
     /// Phase 11.3 flipped this from `String` to
     /// [`LintDisplay`].
     pub lint_display:             super::LintDisplay,
-    /// Pre-resolved display string for the Ci field; populated at
-    /// assembly time so render can read it without `&App`.
-    pub ci_display:               String,
+    /// CI display value for the Ci row in the Package detail
+    /// pane (Phase 13.3 — replaces the prior `String`). Renderer
+    /// matches on variants instead of string-comparing the
+    /// `NO_CI_*` constants. Domain authority lives on
+    /// [`crate::tui::ci_state::Ci`]; produced by
+    /// `Ci::package_display`.
+    pub ci_display:               super::CiDisplay,
     /// Byte size of the workspace's out-of-tree `target_directory`
     /// (when the resolved target sits outside `workspace_root`). Flows
     /// from `WorkspaceSnapshot::out_of_tree_target_bytes` once the
@@ -1350,7 +1353,6 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             crates_downloads: None,
             types: String::new(),
             disk,
-            ci: None,
             stats_rows: Vec::new(),
             has_package: false,
             edition: None,
@@ -1364,7 +1366,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             // `package_fields_from_data` filter excludes them when
             // there's no Cargo manifest. Default values are safe.
             lint_display: super::LintDisplay::default(),
-            ci_display: String::new(),
+            ci_display: super::CiDisplay::default(),
         },
         git:     GitData {
             branch:             git_detail.branch,
@@ -1579,12 +1581,11 @@ struct BuildPackageDataArgs {
     crates_downloads:         Option<u64>,
     types_str:                String,
     disk:                     String,
-    ci:                       Option<Conclusion>,
     in_project_target:        Option<u64>,
     in_project_non_target:    Option<u64>,
     out_of_tree_target_bytes: Option<u64>,
     lint_display:             super::LintDisplay,
-    ci_display:               String,
+    ci_display:               super::CiDisplay,
 }
 
 /// Pure constructor: assemble `PackageData` from already-resolved
@@ -1609,7 +1610,6 @@ fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
         crates_downloads: args.crates_downloads,
         types: args.types_str,
         disk: args.disk,
-        ci: args.ci,
         stats_rows: args.stats_rows,
         has_package: args.has_cargo,
         edition,
@@ -1699,7 +1699,14 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let is_rust = app.is_rust_at_path(abs_path_owned.as_path());
     let lint_display =
         super::Lint::package_display(app.projects(), &abs_path_owned, is_worktree_group, is_rust);
-    let ci_display = resolve_ci_display(app, &abs_path_owned, ci);
+    let ci_display = app.ci().package_display(
+        &abs_path_owned,
+        app.repo_info_for(abs_path_owned.as_path()),
+        app.git_info_for(abs_path_owned.as_path()),
+        app.ci_info_for(abs_path_owned.as_path()),
+        ci,
+        is_worktree_group,
+    );
     let package = build_package_data(BuildPackageDataArgs {
         package_title,
         title_name,
@@ -1718,7 +1725,6 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         crates_downloads,
         types_str,
         disk,
-        ci,
         in_project_target,
         in_project_non_target,
         out_of_tree_target_bytes,
@@ -1766,36 +1772,6 @@ fn assemble_detail_pane_data(
         targets: snapshot_package.map_or_else(TargetsData::default, |record| {
             TargetsData::from_package_record(record, record.name.as_str())
         }),
-    }
-}
-
-/// Compute the display string for the Ci field. Used at
-/// detail-pane assembly time to pre-resolve the value into
-/// `PackageData.ci_display`, so render can read it without
-/// `&App`.
-fn resolve_ci_display(app: &App, abs_path: &AbsolutePath, ci: Option<Conclusion>) -> String {
-    let path = abs_path.as_path();
-    let has_workflows = app
-        .repo_info_for(path)
-        .is_some_and(|repo| repo.workflows.is_present());
-    if !has_workflows {
-        return NO_CI_WORKFLOW.to_string();
-    }
-    if app.unpublished_ci_branch_name(path).is_some() {
-        return NO_CI_UNPUBLISHED_BRANCH.to_string();
-    }
-    let icon = ci.map_or_else(String::new, |c| c.icon().to_string());
-    let ci_runs_label = build_ci_runs_label(app, path);
-    if !ci_runs_label.is_empty() {
-        if icon.is_empty() {
-            ci_runs_label
-        } else {
-            format!("{icon} {ci_runs_label}")
-        }
-    } else if icon.is_empty() {
-        NO_CI_RUNS.to_string()
-    } else {
-        icon
     }
 }
 
@@ -1886,21 +1862,6 @@ pub fn build_lints_data(app: &App) -> LintsData {
         runs,
         sizes,
         is_rust: selected_path.is_some_and(|path| app.is_rust_at_path(path)),
-    }
-}
-
-fn build_ci_runs_label(app: &App, abs_path: &Path) -> String {
-    let Some(ci_data) = app.ci_data_for(abs_path) else {
-        return String::new();
-    };
-    let local = ci_data.runs().len();
-    let github_total = ci_data.github_total();
-    if github_total > 0 {
-        format!("local {local} / github {github_total}")
-    } else if local > 0 {
-        format!("{local}")
-    } else {
-        String::new()
     }
 }
 

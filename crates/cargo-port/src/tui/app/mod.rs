@@ -307,14 +307,8 @@ impl App {
     /// stat counter.
     pub(super) const fn lint(&self) -> &Lint { &self.lint }
 
-    /// Ci subsystem accessor (Phase 13.1). Today the marker
-    /// struct holds no fields; Phase 13.2 absorbs the field
-    /// cluster and Phase 13.3 wires `Ci::package_display` into
-    /// `PackageData.ci_display`.
-    #[expect(
-        dead_code,
-        reason = "wired in Phase 13.3 capstone; ships in 13.1 alongside the old string API"
-    )]
+    /// Ci subsystem accessor (Phase 13). Owns
+    /// `fetch_tracker`, `fetch_toast`, and `display_modes`.
     pub(super) const fn ci(&self) -> &crate::tui::ci_state::Ci { &self.ci }
 
     pub(super) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {

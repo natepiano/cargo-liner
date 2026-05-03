@@ -18,11 +18,6 @@ pub(crate) const LINT_PASSED: &str = "🟢";
 pub(crate) const LINT_FAILED: &str = "🔴";
 pub(crate) const LINT_STALE: &str = "⚫";
 pub(crate) const LINT_NO_LOG: &str = " ";
-pub(crate) const NO_CI_RUNS: &str = "No CI runs";
-pub(crate) const NO_CI_UNPUBLISHED_BRANCH: &str = "unpublished branch";
-pub(crate) const NO_CI_WORKFLOW: &str = "No CI workflow configured";
-pub(crate) const NO_LINT_RUNS: &str = "No lint runs";
-pub(crate) const NO_LINT_RUNS_NOT_RUST: &str = "No lint runs — not a Rust project";
 
 // ── Git UI constants ─────────────────────────────────────────────────
 

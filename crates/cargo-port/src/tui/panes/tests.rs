@@ -31,7 +31,6 @@ fn package_data(is_rust_project: bool) -> PackageData {
         crates_downloads:         None,
         types:                    "lib".to_string(),
         disk:                     "36.3 GiB".to_string(),
-        ci:                       None,
         stats_rows:               Vec::new(),
         has_package:              true,
         edition:                  None,
@@ -42,7 +41,7 @@ fn package_data(is_rust_project: bool) -> PackageData {
         in_project_non_target:    None,
         out_of_tree_target_bytes: None,
         lint_display:             super::LintDisplay::default(),
-        ci_display:               String::new(),
+        ci_display:               super::CiDisplay::default(),
     }
 }
 

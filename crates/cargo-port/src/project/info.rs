@@ -62,8 +62,6 @@ impl ProjectCiData {
         }
     }
 
-    pub(crate) fn runs(&self) -> &[CiRun] { self.info().map_or(&[], |info| &info.runs) }
-
     pub(crate) const fn github_total(&self) -> u32 {
         match self {
             Self::Unfetched => 0,

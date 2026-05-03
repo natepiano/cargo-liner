@@ -43,10 +43,6 @@ use crate::tui::toasts::ToastTaskId;
 ///   latest run's outcome (renderer applies `Conclusion::icon()` at render time); `local` is the
 ///   count of runs after display-mode filtering; `github_total` drives the "/ github N" suffix when
 ///   > 0.
-#[allow(
-    dead_code,
-    reason = "wired in Phase 13.3 capstone; ships in 13.1 alongside the old string API"
-)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CiDisplay {
     #[default]
@@ -142,10 +138,6 @@ impl Ci {
     /// - `is_worktree_group` — kept for signature symmetry with `Lint::package_display`. Today's CI
     ///   display logic doesn't branch on it (the caller's pre-resolution of `latest_conclusion`
     ///   already handles the rollup); reserved in case future variants need group-aware text.
-    #[allow(
-        dead_code,
-        reason = "wired in Phase 13.3 capstone; ships in 13.1 alongside the old string API"
-    )]
     #[allow(
         clippy::too_many_arguments,
         reason = "wide CI dependency surface (Q6 in docs/app-api.md)"

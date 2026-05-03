@@ -2868,3 +2868,60 @@ Phases 1–12. Decisions captured below as each is settled.
 
 ## End of Phase 13.0 design — implementation can begin
 
+## Phase 13.3 — PackageData typed-display capstone (implemented)
+
+Closes the design loop opened by the Phase 11 + Phase 13 typed-display story.
+
+- Flipped `PackageData.ci_display` from `String` to `CiDisplay`
+  (matching the prior `PackageData.lint_display: LintDisplay`
+  flip from Phase 11.3). `BuildPackageDataArgs.ci_display`
+  retyped to match.
+- Wired `Ci::package_display(...)` into
+  `panes/support.rs:build_pane_data_common`. Caller pre-resolves
+  `repo_info` / `git_info` / `ci_info` (via existing
+  `App::repo_info_for` / `git_info_for` / `ci_info_for`) and
+  passes the already-resolved `ci: Option<Conclusion>` (which
+  came from `App::ci_for_item` for worktree groups,
+  `App::ci_for` otherwise) as `latest_conclusion`.
+- Removed `panes/support.rs:resolve_ci_display` and
+  `build_ci_runs_label`; their logic now lives in
+  `Ci::package_display` + the renderer-side
+  `ci_display_to_string` / `ci_display_style` helpers in
+  `panes/package.rs` (parallel to `lint_display_to_string` /
+  `lint_display_style`).
+- Removed `PackageData.ci: Option<Conclusion>` and
+  `BuildPackageDataArgs.ci`. The conclusion is now carried
+  inside `CiDisplay::Runs.conclusion`, so the duplicate field
+  was dead.
+- Renderer in `panes/package.rs` no longer string-compares
+  against `NO_CI_*` constants. The Ci row is special-cased
+  alongside the Lint row: `value` comes from
+  `ci_display_to_string(&data.ci_display)`,
+  `base_value_style` from
+  `ci_display_style(&data.ci_display)`. The
+  `DetailField::package_value` arm for `Self::Ci` now returns
+  empty (parallel to `Self::Lint`).
+- Deleted five constants from `crate::constants`:
+  `NO_CI_RUNS`, `NO_CI_UNPUBLISHED_BRANCH`, `NO_CI_WORKFLOW`,
+  `NO_LINT_RUNS`, `NO_LINT_RUNS_NOT_RUST`. The Lint pane
+  (`panes/lints.rs`) and the package renderer
+  (`lint_display_to_string`) inline the four user-facing
+  strings directly; nothing else referenced them.
+- Deleted `ProjectCiData::runs()` (dead after
+  `build_ci_runs_label` removal); call sites used
+  `info.runs` field access directly.
+- Test `unpublished_branch_in_worktree_with_ci_history_shows_unpublished_branch_in_ci_field`
+  switched from string-comparing `NO_CI_UNPUBLISHED_BRANCH`
+  to enum-comparing `CiDisplay::UnpublishedBranch`.
+- Removed unused imports (`DetailField` from
+  `app/tests/state.rs`; the `Ci` re-export in
+  `panes/mod.rs`; the three `NO_CI_*` constants from
+  `panes/support.rs`).
+- Dropped `App::ci()` and `Ci::package_display`'s
+  `dead_code` allows now that both have callers.
+
+End-of-phase status: lint and CI both produce typed
+`PackageData` fields rendered through enum matches. The
+"stringly-typed CI" pattern that motivated Phases 11 and 13
+is fully retired.
+

@@ -113,19 +113,14 @@ fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect
         let selection = pane.selection_state(i, focus);
         let value = if *field == DetailField::Lint {
             lint_display_to_string(&data.lint_display, ctx.animation_elapsed, ctx.lint_enabled)
+        } else if *field == DetailField::Ci {
+            ci_display_to_string(&data.ci_display)
         } else {
             field.package_value(data)
         };
         let base_label_style = styles.readonly_label;
         let base_value_style = if *field == DetailField::Ci {
-            if value == crate::constants::NO_CI_WORKFLOW
-                || value == crate::constants::NO_CI_RUNS
-                || value == crate::constants::NO_CI_UNPUBLISHED_BRANCH
-            {
-                Style::default().fg(INACTIVE_BORDER_COLOR)
-            } else {
-                render::conclusion_style(data.ci)
-            }
+            ci_display_style(&data.ci_display)
         } else if *field == DetailField::Lint {
             lint_display_style(&data.lint_display)
         } else {
@@ -543,8 +538,8 @@ fn lint_display_to_string(
     use super::LintDisplay;
 
     match display {
-        LintDisplay::NotRust => crate::constants::NO_LINT_RUNS_NOT_RUST.to_string(),
-        LintDisplay::NoRuns => crate::constants::NO_LINT_RUNS.to_string(),
+        LintDisplay::NotRust => "No lint runs — not a Rust project".to_string(),
+        LintDisplay::NoRuns => "No lint runs".to_string(),
         LintDisplay::Runs { count, status } => {
             let icon = if lint_enabled {
                 status.icon().frame_at(animation_elapsed)
@@ -552,6 +547,57 @@ fn lint_display_to_string(
                 crate::constants::LINT_NO_LOG
             };
             format!("{icon} {count}")
+        },
+    }
+}
+
+/// Style for the Ci row in the Package detail pane, derived
+/// from the typed [`CiDisplay`] (Phase 13.3 — replaces the
+/// stringly-typed comparison against `NO_CI_WORKFLOW` /
+/// `NO_CI_RUNS` / `NO_CI_UNPUBLISHED_BRANCH`).
+fn ci_display_style(display: &super::CiDisplay) -> Style {
+    use super::CiDisplay;
+
+    match display {
+        CiDisplay::NoWorkflow | CiDisplay::UnpublishedBranch | CiDisplay::NoRuns => {
+            Style::default().fg(INACTIVE_BORDER_COLOR)
+        },
+        CiDisplay::Runs { conclusion, .. } => render::conclusion_style(*conclusion),
+    }
+}
+
+/// Render a typed [`CiDisplay`] to the string shown in the
+/// Package detail row. Phase 13.3 — replaces
+/// `resolve_ci_display` + the five `NO_CI_*` / `NO_LINT_*`
+/// string constants with a typed-enum match. The conclusion
+/// icon is read from `Conclusion::icon()` at render time, in
+/// parallel with `lint_display_to_string`.
+fn ci_display_to_string(display: &super::CiDisplay) -> String {
+    use super::CiDisplay;
+
+    match display {
+        CiDisplay::NoWorkflow => "No CI workflow configured".to_string(),
+        CiDisplay::UnpublishedBranch => "unpublished branch".to_string(),
+        CiDisplay::NoRuns => "No CI runs".to_string(),
+        CiDisplay::Runs {
+            conclusion,
+            local,
+            github_total,
+        } => {
+            let icon = conclusion.map_or_else(String::new, |c| c.icon().to_string());
+            let count_label = if *github_total > 0 {
+                format!("local {local} / github {github_total}")
+            } else if *local > 0 {
+                format!("{local}")
+            } else {
+                String::new()
+            };
+            match (icon.is_empty(), count_label.is_empty()) {
+                (true, true) => "No CI runs".to_string(),
+                (true, false) => count_label,
+                (false, true) => icon,
+                (false, false) => format!("{icon} {count_label}"),
+            }
         },
     }
 }
