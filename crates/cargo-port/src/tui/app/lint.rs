@@ -1,9 +1,11 @@
-use std::path::Path;
+use ratatui::style::Style;
 
 use super::App;
 use super::types::VisibleRow;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::LintStatus;
+use crate::tui::columns::LintCell;
+use crate::tui::constants::ACCENT_COLOR;
 
 impl App {
     /// Whether the currently selected row is a lint-owning node.
@@ -30,42 +32,20 @@ impl App {
         }
     }
 
-    /// Frame `status` to a static icon string for the current
-    /// animation tick, or `LINT_NO_LOG` when lint is disabled.
-    /// Phase 11.2 — replaces the per-row `lint_icon*` bodies that
-    /// each duplicated the "find a status, then frame an icon"
-    /// pattern.
-    fn frame_lint_icon(&self, status: &LintStatus) -> &'static str {
+    /// Resolve a [`LintStatus`] to the [`LintCell`] (icon + style pair)
+    /// rendered in the Lint column. Single source of truth: the icon and
+    /// style cannot drift because both derive from the same status here.
+    /// Returns the `NoLog` cell when lint is disabled.
+    pub fn lint_cell(&self, status: &LintStatus) -> LintCell {
         if !self.lint_enabled() {
-            return LINT_NO_LOG;
+            return LintCell::from_parts(LINT_NO_LOG, Style::default());
         }
-        status.icon().frame_at(self.animation_elapsed())
-    }
-
-    /// Lint icon for a project at `path`. Pass-through to
-    /// [`Self::frame_lint_icon`] over [`Lint::status_for_path`].
-    pub fn lint_icon(&self, path: &Path) -> &'static str {
-        let status = crate::tui::lint_state::Lint::status_for_path(self.projects(), path);
-        self.frame_lint_icon(&status)
-    }
-
-    /// Lint icon for the root project at `node_index`, aggregated
-    /// across worktree-group entries when applicable.
-    pub fn lint_icon_for_root(&self, node_index: usize) -> &'static str {
-        let Some(entry) = self.projects().get(node_index) else {
-            return LINT_NO_LOG;
+        let icon = status.icon().frame_at(self.animation_elapsed());
+        let style = if matches!(status, LintStatus::Running(_)) {
+            Style::default().fg(ACCENT_COLOR)
+        } else {
+            Style::default()
         };
-        let status = crate::tui::lint_state::Lint::status_for_root(&entry.item);
-        self.frame_lint_icon(&status)
-    }
-
-    /// Lint icon for a worktree entry within a worktree group;
-    /// `worktree_index` 0 is the primary checkout.
-    pub fn lint_icon_for_worktree(&self, node_index: usize, worktree_index: usize) -> &'static str {
-        let Some(entry) = self.projects().get(node_index) else {
-            return LINT_NO_LOG;
-        };
-        let status = crate::tui::lint_state::Lint::status_for_worktree(&entry.item, worktree_index);
-        self.frame_lint_icon(&status)
+        LintCell::from_parts(icon, style)
     }
 }

@@ -174,14 +174,56 @@ pub(super) struct StyledSegment {
     pub style: Style,
 }
 
+/// Resolved Lint column cell — bundles the icon glyph and its style so the
+/// two cannot drift. Production code constructs one via [`App::lint_cell`]
+/// (see `tui/app/lint.rs`), which derives both fields from a single
+/// [`LintStatus`](crate::lint::LintStatus). Non-Rust child rows use
+/// [`Self::hidden`]; tests/fixtures that just need a glyph use
+/// [`Self::with_icon`].
+#[derive(Clone, Copy)]
+pub(super) struct LintCell {
+    icon:  &'static str,
+    style: Style,
+}
+
+impl LintCell {
+    /// Empty cell — used for non-Rust child rows that have no lint state.
+    pub(super) const fn hidden() -> Self {
+        Self {
+            icon:  " ",
+            style: Style::new(),
+        }
+    }
+
+    /// Test/fixture helper: a specific icon with the default style.
+    /// Production code should use [`App::lint_cell`] instead so the style
+    /// stays in sync with the status.
+    #[cfg(test)]
+    pub(super) const fn with_icon(icon: &'static str) -> Self {
+        Self {
+            icon,
+            style: Style::new(),
+        }
+    }
+
+    /// Construct from already-resolved icon + style. Visible to the App
+    /// layer so [`App::lint_cell`] can populate both fields from a single
+    /// [`LintStatus`](crate::lint::LintStatus).
+    pub(super) const fn from_parts(icon: &'static str, style: Style) -> Self {
+        Self { icon, style }
+    }
+
+    pub(super) const fn icon(&self) -> &'static str { self.icon }
+    pub(super) const fn style(&self) -> Style { self.style }
+}
+
 #[derive(Clone)]
 pub(super) struct ProjectRow<'a> {
     pub prefix:            &'a str,
     pub name:              &'a str,
     pub name_segments:     Option<Vec<StyledSegment>>,
     pub git_status:        Option<GitStatus>,
-    pub lint_icon:         &'a str,
-    pub lint_style:        Style,
+    pub lint:              LintCell,
     pub disk:              &'a str,
     pub disk_style:        Style,
     pub disk_suffix:       Option<&'a str>,
@@ -490,8 +532,8 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
         ..CellContent::default()
     };
     cells[COL_LINT] = CellContent {
-        text: String::from(row.lint_icon),
-        style: row.lint_style,
+        text: String::from(row.lint.icon()),
+        style: row.lint.style(),
         align_override: None,
         ..CellContent::default()
     };
@@ -787,8 +829,7 @@ mod tests {
             name:              "bevy_brp 🌲:2",
             name_segments:     None,
             git_status:        Some(GitStatus::Clean),
-            lint_icon:         crate::constants::LINT_PASSED,
-            lint_style:        Style::default(),
+            lint:              LintCell::with_icon(crate::constants::LINT_PASSED),
             disk:              "36.3 GiB",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -805,8 +846,7 @@ mod tests {
             name:              "bevy_mesh_outline_benchmark",
             name_segments:     None,
             git_status:        Some(GitStatus::Clean),
-            lint_icon:         crate::constants::LINT_PASSED,
-            lint_style:        Style::default(),
+            lint:              LintCell::with_icon(crate::constants::LINT_PASSED),
             disk:              "36.3 GiB",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -893,8 +933,7 @@ mod tests {
             name:              "demo",
             name_segments:     None,
             git_status:        Some(GitStatus::Clean),
-            lint_icon:         crate::constants::LINT_PASSED,
-            lint_style:        Style::default(),
+            lint:              LintCell::with_icon(crate::constants::LINT_PASSED),
             disk:              "36.3 GiB",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -923,8 +962,7 @@ mod tests {
             name:              "demo",
             name_segments:     None,
             git_status:        Some(GitStatus::Modified),
-            lint_icon:         " ",
-            lint_style:        Style::default(),
+            lint:              LintCell::hidden(),
             disk:              "—",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -947,8 +985,7 @@ mod tests {
             name:              "demo",
             name_segments:     None,
             git_status:        Some(GitStatus::Untracked),
-            lint_icon:         " ",
-            lint_style:        Style::default(),
+            lint:              LintCell::hidden(),
             disk:              "—",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -974,8 +1011,7 @@ mod tests {
             name:              "demo",
             name_segments:     None,
             git_status:        Some(GitStatus::Clean),
-            lint_icon:         " ",
-            lint_style:        Style::default(),
+            lint:              LintCell::hidden(),
             disk:              "—",
             disk_style:        Style::default(),
             disk_suffix:       None,
@@ -997,8 +1033,7 @@ mod tests {
             name:              "demo",
             name_segments:     None,
             git_status:        Some(GitStatus::Ignored),
-            lint_icon:         " ",
-            lint_style:        Style::default(),
+            lint:              LintCell::hidden(),
             disk:              "—",
             disk_style:        Style::default(),
             disk_suffix:       None,

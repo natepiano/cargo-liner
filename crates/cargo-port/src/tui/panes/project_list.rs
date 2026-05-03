@@ -64,18 +64,6 @@ pub(crate) const PREFIX_WT_MEMBER_INLINE: &str = "       ";
 pub(crate) const PREFIX_WT_MEMBER_NAMED: &str = "           ";
 pub(crate) const PREFIX_WT_VENDORED: &str = "       ";
 
-/// Returns `ACCENT_COLOR` style when lint is running (spinner), default otherwise.
-fn lint_style_for(app: &App, path: &Path) -> Style {
-    let is_running = app
-        .lint_at_path(path)
-        .is_some_and(|lr| matches!(lr.status(), crate::lint::LintStatus::Running(_)));
-    if is_running {
-        Style::default().fg(crate::tui::constants::ACCENT_COLOR)
-    } else {
-        Style::default()
-    }
-}
-
 /// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
 #[allow(
     clippy::cast_precision_loss,
@@ -354,7 +342,7 @@ fn render_root_item(
             .and_then(|ls| ls.entries.first())
             .map_or("  ", |e| project::language_icon(&e.language))
     };
-    let lint = app.lint_icon_for_root(node_index);
+    let lint_cell = app.lint_cell(&crate::tui::lint_state::Lint::status_for_root(&item.item));
     let origin_sync = app.git_sync(item.path());
     let main_sync = app.git_main(item.path());
     let git_status = app.git_status_for_item(item);
@@ -381,8 +369,7 @@ fn render_root_item(
             DiscoveryRowKind::Root,
         ),
         git_status,
-        lint_icon: lint,
-        lint_style: lint_style_for(app, item.path()),
+        lint: lint_cell,
         disk: disk_text,
         disk_style: ds,
         disk_suffix,
@@ -413,10 +400,13 @@ fn render_child_item<P: project::ProjectFields>(
     let disk_bytes = project.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project::Package::lang_icon();
-    let lint = if app.is_rust_at_path(path) {
-        app.lint_icon(path)
+    let lint_cell = if app.is_rust_at_path(path) {
+        app.lint_cell(&crate::tui::lint_state::Lint::status_for_path(
+            app.projects(),
+            path,
+        ))
     } else {
-        " "
+        crate::tui::columns::LintCell::hidden()
     };
     let ci = app.ci_for(path);
     let hide_git_status = app.is_workspace_member_path(path);
@@ -455,8 +445,7 @@ fn render_child_item<P: project::ProjectFields>(
             DiscoveryRowKind::PathOnly,
         ),
         git_status,
-        lint_icon: lint,
-        lint_style: lint_style_for(app, path),
+        lint: lint_cell,
         disk: disk_text,
         disk_style: ds,
         disk_suffix,
@@ -507,7 +496,9 @@ fn render_worktree_entry<'a>(
     let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, sorted));
     let lang = item.lang_icon();
-    let lint = app.lint_icon_for_worktree(ni, wi);
+    let lint_cell = app.lint_cell(&crate::tui::lint_state::Lint::status_for_worktree(
+        &item.item, wi,
+    ));
     let ci = app.ci_for(wt_abs);
     let origin_sync = app.git_sync(wt_abs);
     let main_sync = app.git_main(wt_abs);
@@ -526,8 +517,7 @@ fn render_worktree_entry<'a>(
             DiscoveryRowKind::WorktreeEntry,
         ),
         git_status,
-        lint_icon: lint,
-        lint_style: lint_style_for(app, wt_abs),
+        lint: lint_cell,
         disk: disk_text,
         disk_style: ds,
         disk_suffix,
@@ -893,8 +883,7 @@ fn render_path_only_entry(
             DiscoveryRowKind::PathOnly,
         ),
         git_status,
-        lint_icon: " ",
-        lint_style: Style::default(),
+        lint: crate::tui::columns::LintCell::hidden(),
         disk: disk_text,
         disk_style: ds,
         disk_suffix,
