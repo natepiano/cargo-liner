@@ -2146,13 +2146,13 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     }));
     let mut app = make_app(&[pkg_item]);
 
-    // Before snapshot arrival: Cargo::default() → publishable true but
+    // Before metadata arrival: Cargo::default() → publishable true but
     // empty types / examples / benches / test_count.
     let pre_types = app
         .projects()
         .rust_info_at_path(project_path.as_path())
         .map_or(0, |r| r.cargo().types().len());
-    assert_eq!(pre_types, 0, "pre-snapshot types stay empty");
+    assert_eq!(pre_types, 0, "pre-metadata types stay empty");
 
     let manifest_path = AbsolutePath::from(project_path.as_path().join("Cargo.toml"));
     let example_src = AbsolutePath::from(project_path.as_path().join("examples").join("hello.rs"));
@@ -2217,7 +2217,7 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
         .map_or_else(|| std::process::abort(), |r| r.cargo().clone());
     assert!(
         cargo.types().contains(&crate::project::ProjectType::Binary),
-        "Bin TargetKind → ProjectType::Binary stamped from snapshot"
+        "Bin TargetKind → ProjectType::Binary stamped from metadata"
     );
     assert_eq!(
         cargo.example_count(),
@@ -2226,7 +2226,7 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     );
     assert!(
         !cargo.publishable(),
-        "PublishPolicy::Never → Cargo.publishable false after snapshot"
+        "PublishPolicy::Never → Cargo.publishable false after metadata"
     );
 }
 

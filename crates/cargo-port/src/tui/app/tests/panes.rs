@@ -62,10 +62,10 @@ fn name_width_with_gutter_reserves_space_before_lint() {
     assert_eq!(crate::tui::panes::name_width_with_gutter(42), 43);
 }
 
-/// Upsert a minimal `WorkspaceSnapshot` into `app`'s metadata store
+/// Upsert minimal `WorkspaceMetadata` into `app`'s metadata store
 /// for `project_path`, naming a single Example target so the Targets
 /// pane becomes tabbable. Keeps the per-test setup out of line when
-/// the test's focus is pane behavior, not snapshot plumbing.
+/// the test's focus is pane behavior, not metadata plumbing.
 fn seed_single_example_snapshot(app: &App, project_path: &AbsolutePath, example_name: &str) {
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
@@ -122,7 +122,7 @@ fn seed_single_example_snapshot(app: &App, project_path: &AbsolutePath, example_
 
 #[test]
 fn tabbable_panes_follow_canonical_order() {
-    // Step 3b: Targets pane requires a snapshot.
+    // Step 3b: Targets pane requires workspace metadata.
     let project_path = test_path("~/demo");
     let project = RootItem::Rust(RustProject::Package(Package {
         path: project_path.clone(),
@@ -238,11 +238,11 @@ fn new_toasts_do_not_steal_focus() {
 #[test]
 fn snapshot_arrival_populates_selected_tree_project_targets() {
     // Step 3b: Targets pane data now comes exclusively from the
-    // `cargo metadata` snapshot — the hand-parsed Cargo fallback
-    // has been retired per the design plan's "Loading… without a
-    // snapshot" rule. This test used to exercise the old fallback
+    // `cargo metadata` result — the hand-parsed Cargo fallback
+    // has been retired per the design plan's "Loading… without
+    // metadata" rule. This test used to exercise the old fallback
     // (ExampleGroup on the Cargo struct); rewritten to confirm
-    // the snapshot-driven path: a CargoMetadata arrival with an
+    // the metadata-driven path: a CargoMetadata arrival with an
     // Example target lights up the pane.
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
@@ -263,7 +263,7 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
     assert_eq!(
         example_count,
         Some(0),
-        "pre-snapshot: Targets pane is empty"
+        "pre-metadata: Targets pane is empty"
     );
     assert!(!app.tabbable_panes().contains(&PaneId::Targets));
 
@@ -331,7 +331,7 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
     assert_eq!(
         example_count,
         Some(1),
-        "snapshot-arrival populates Targets from PackageRecord.targets"
+        "metadata-arrival populates Targets from PackageRecord.targets"
     );
     assert!(app.tabbable_panes().contains(&PaneId::Targets));
 }
