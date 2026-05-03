@@ -1,6 +1,7 @@
 mod animation;
 mod app;
 mod background;
+mod ci_state;
 mod columns;
 mod config_reload;
 mod config_state;

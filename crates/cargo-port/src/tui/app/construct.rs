@@ -190,6 +190,7 @@ impl App {
             background,
             inflight,
             lint,
+            ci: crate::tui::ci_state::Ci::new(),
             config,
             keymap,
             scan,

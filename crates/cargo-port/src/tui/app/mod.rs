@@ -190,6 +190,12 @@ pub(super) struct App {
     /// Subsequent slices absorb the disk cache stat counter and
     /// the lint-specific phase trackers.
     lint:              Lint,
+    /// Ci subsystem (Phase 13 of the App-API extraction). Phase
+    /// 13.1 ships an empty marker struct + `Ci::package_display`
+    /// returning `CiDisplay`. Phase 13.2 absorbs the field
+    /// cluster (`ci_fetch_tracker`, `ci_fetch_toast`,
+    /// `display_modes`) from `Inflight` and `CiPane`.
+    ci:                crate::tui::ci_state::Ci,
     /// Config subsystem (Phase 5 of the App-API carve, see
     /// `docs/app-api.md`). Owns `current_config`, `config_path`,
     /// `config_last_seen`, plus the in-app settings editor's
@@ -300,6 +306,16 @@ impl App {
     /// runtime, running paths, running toast, and disk cache
     /// stat counter.
     pub(super) const fn lint(&self) -> &Lint { &self.lint }
+
+    /// Ci subsystem accessor (Phase 13.1). Today the marker
+    /// struct holds no fields; Phase 13.2 absorbs the field
+    /// cluster and Phase 13.3 wires `Ci::package_display` into
+    /// `PackageData.ci_display`.
+    #[expect(
+        dead_code,
+        reason = "wired in Phase 13.3 capstone; ships in 13.1 alongside the old string API"
+    )]
+    pub(super) const fn ci(&self) -> &crate::tui::ci_state::Ci { &self.ci }
 
     pub(super) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
         self.projects().lint_at_path(path)
