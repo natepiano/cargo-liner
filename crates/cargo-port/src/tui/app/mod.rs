@@ -264,7 +264,7 @@ impl App {
     /// rate-limit rows and choose the right unavailability suffix.
     pub(super) const fn github_status(&self) -> AvailabilityStatus { self.net.github_status() }
 
-    /// Snapshot of GitHub's REST + GraphQL rate-limit buckets. Rebuilt
+    /// GitHub's REST + GraphQL rate-limit buckets. Rebuilt
     /// from the shared `HttpClient` state every frame — not persisted.
     pub(super) fn rate_limit(&self) -> GitHubRateLimit { self.net.rate_limit() }
 
@@ -507,14 +507,14 @@ impl App {
             // No metadata covers this path — nothing to verify against.
             return true;
         };
-        let Some(snapshot) = store.get(workspace_root) else {
+        let Some(metadata) = store.get(workspace_root) else {
             return true;
         };
         let Ok(current) = crate::project::ManifestFingerprint::capture(workspace_root.as_path())
         else {
             return false;
         };
-        current != snapshot.fingerprint
+        current != metadata.fingerprint
     }
 
     /// The scan's `MetadataDispatchContext` refreshed from the current

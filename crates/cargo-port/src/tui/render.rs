@@ -132,7 +132,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .panes()
         .cpu()
         .content()
-        .map_or(1, |snapshot| snapshot.cores.len());
+        .map_or(1, |usage| usage.cores.len());
     let tiled = panes::resolve_layout(outer_layout[0], left_width, core_count, bottom_row);
 
     for resolved in tiled.panes() {

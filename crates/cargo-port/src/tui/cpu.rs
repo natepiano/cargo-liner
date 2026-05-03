@@ -118,13 +118,13 @@ impl CpuPoller {
             .collect::<Vec<_>>();
 
         let total_percent = cpu_percent(self.system.global_cpu_usage());
-        let snapshot = CpuUsage {
+        let usage = CpuUsage {
             total_percent,
             cores,
             breakdown: cpu_breakdown(&mut self.last_breakdown_raw),
             gpu_percent: read_gpu_percent(),
         };
-        Some(snapshot)
+        Some(usage)
     }
 }
 

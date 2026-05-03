@@ -38,6 +38,8 @@ pub(super) use constants::PREFIX_ROOT_LEAF;
 pub(super) use constants::PREFIX_WT_FLAT;
 #[cfg(test)]
 pub(super) use cpu::CPU_PANE_WIDTH;
+#[cfg(test)]
+pub(super) use cpu::cpu_required_pane_height;
 
 pub(super) use data::DetailCacheKey;
 pub(super) use data::PaneDataStore;

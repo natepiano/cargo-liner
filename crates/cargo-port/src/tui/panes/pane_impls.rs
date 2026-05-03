@@ -145,8 +145,8 @@ impl CpuPane {
     }
 
     pub fn tick(&mut self, now: Instant) {
-        if let Some(snapshot) = self.poller.poll_if_due(now) {
-            self.content = Some(snapshot);
+        if let Some(usage) = self.poller.poll_if_due(now) {
+            self.content = Some(usage);
         }
     }
 

@@ -35,7 +35,7 @@ pub(super) fn cpu_required_inner_height(core_count: usize) -> u16 {
     CPU_STATIC_INNER_HEIGHT.saturating_add(core_rows)
 }
 
-pub(super) fn cpu_required_pane_height(core_count: usize) -> u16 {
+pub fn cpu_required_pane_height(core_count: usize) -> u16 {
     cpu_required_inner_height(core_count).saturating_add(2)
 }
 
@@ -262,7 +262,7 @@ fn render_aggregate_row(
     frame: &mut Frame,
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
-    snapshot: &cpu::CpuUsage,
+    usage: &cpu::CpuUsage,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
 ) {
@@ -274,7 +274,7 @@ fn render_aggregate_row(
         layout.rows[0],
         logical_row,
         focus,
-        Paragraph::new(aggregate_line(snapshot.total_percent, layout.rows[0].width)),
+        Paragraph::new(aggregate_line(usage.total_percent, layout.rows[0].width)),
     );
 }
 
@@ -283,11 +283,11 @@ fn render_core_rows(
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
     cpu_cfg: &CpuConfig,
-    snapshot: &cpu::CpuUsage,
+    usage: &cpu::CpuUsage,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
 ) {
-    for (core_index, core) in snapshot.cores.iter().enumerate() {
+    for (core_index, core) in usage.cores.iter().enumerate() {
         let logical_row = CpuSelectableRow::Core(core_index).logical_index(layout.core_count);
         render_selectable_row(
             frame,
@@ -329,7 +329,7 @@ fn render_gpu_row(
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
     cpu_cfg: &CpuConfig,
-    snapshot: &cpu::CpuUsage,
+    usage: &cpu::CpuUsage,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
 ) {
@@ -346,7 +346,7 @@ fn render_gpu_row(
                 Span::raw(" "),
                 Span::styled("GPU", Style::default().fg(COLUMN_HEADER_COLOR)),
             ]),
-            gpu_bar_line(snapshot.gpu_percent, cpu_cfg),
+            gpu_bar_line(usage.gpu_percent, cpu_cfg),
         ]),
     );
 }
@@ -372,7 +372,7 @@ pub(super) fn render_cpu_pane_body(
     let cursor = matches!(focus, PaneFocusState::Active).then(|| pane.viewport().pos());
     let title = pane.content().map_or_else(
         || " CPU ".to_string(),
-        |snapshot| cpu_panel_title(snapshot.cores.len(), cursor),
+        |usage| cpu_panel_title(usage.cores.len(), cursor),
     );
     let block = styles.chrome.block(title, ctx.is_focused);
     let inner = block.inner(area);
@@ -384,11 +384,11 @@ pub(super) fn render_cpu_pane_body(
         return;
     }
 
-    let snapshot = pane
+    let usage = pane
         .content()
         .cloned()
         .unwrap_or_else(|| cpu::CpuUsage::placeholder(1));
-    let layout = CpuPanelLayout::new(inner, snapshot.cores.len());
+    let layout = CpuPanelLayout::new(inner, usage.cores.len());
 
     let border_style = if matches!(focus, PaneFocusState::Active) {
         styles.chrome.active_border
@@ -400,13 +400,13 @@ pub(super) fn render_cpu_pane_body(
     let cpu_cfg = &ctx.config.current().cpu;
     let mut row_rects: Vec<(Rect, usize)> = Vec::new();
     let viewport = pane.viewport();
-    render_aggregate_row(frame, viewport, &mut row_rects, &snapshot, &layout, focus);
+    render_aggregate_row(frame, viewport, &mut row_rects, &usage, &layout, focus);
     render_core_rows(
         frame,
         viewport,
         &mut row_rects,
         cpu_cfg,
-        &snapshot,
+        &usage,
         &layout,
         focus,
     );
@@ -419,7 +419,7 @@ pub(super) fn render_cpu_pane_body(
             area:        layout.rows[layout.system_row],
             logical_row: CpuSelectableRow::System.logical_index(layout.core_count),
             label:       "System",
-            percent:     snapshot.breakdown.system,
+            percent:     usage.breakdown.system,
             color:       ERROR_COLOR,
         },
     );
@@ -432,7 +432,7 @@ pub(super) fn render_cpu_pane_body(
             area:        layout.rows[layout.user_row],
             logical_row: CpuSelectableRow::User.logical_index(layout.core_count),
             label:       "User",
-            percent:     snapshot.breakdown.user,
+            percent:     usage.breakdown.user,
             color:       ACCENT_COLOR,
         },
     );
@@ -445,7 +445,7 @@ pub(super) fn render_cpu_pane_body(
             area:        layout.rows[layout.idle_row],
             logical_row: CpuSelectableRow::Idle.logical_index(layout.core_count),
             label:       "Idle",
-            percent:     snapshot.breakdown.idle,
+            percent:     usage.breakdown.idle,
             color:       Color::White,
         },
     );
@@ -454,10 +454,10 @@ pub(super) fn render_cpu_pane_body(
         viewport,
         &mut row_rects,
         cpu_cfg,
-        &snapshot,
+        &usage,
         &layout,
         focus,
     );
-    sync_cpu_pane_state(pane.viewport_mut(), inner, snapshot.cores.len());
+    sync_cpu_pane_state(pane.viewport_mut(), inner, usage.cores.len());
     pane.set_row_rects(row_rects);
 }

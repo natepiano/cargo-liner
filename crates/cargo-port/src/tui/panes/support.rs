@@ -1550,13 +1550,13 @@ struct ManifestFields {
     description: Option<String>,
 }
 
-fn manifest_fields_from(snapshot_package: Option<&PackageRecord>) -> ManifestFields {
-    let (version, description) = version_and_description(snapshot_package);
+fn manifest_fields_from(package_record: Option<&PackageRecord>) -> ManifestFields {
+    let (version, description) = version_and_description(package_record);
     ManifestFields {
-        edition: snapshot_package.map(|pkg| pkg.edition.clone()),
-        license: snapshot_package.and_then(|pkg| pkg.license.clone()),
-        homepage: snapshot_package.and_then(|pkg| pkg.homepage.clone()),
-        repository: snapshot_package.and_then(|pkg| pkg.repository.clone()),
+        edition: package_record.map(|pkg| pkg.edition.clone()),
+        license: package_record.and_then(|pkg| pkg.license.clone()),
+        homepage: package_record.and_then(|pkg| pkg.homepage.clone()),
+        repository: package_record.and_then(|pkg| pkg.repository.clone()),
         version,
         description,
     }
@@ -1657,9 +1657,9 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 
     let abs_path_owned = AbsolutePath::from(abs_path);
     let t_meta = std::time::Instant::now();
-    let snapshot_package = lookup_package_record(app, &abs_path_owned);
+    let package_record = lookup_package_record(app, &abs_path_owned);
     let metadata_ms = perf_log::ms(t_meta.elapsed().as_millis());
-    let manifest = manifest_fields_from(snapshot_package.as_ref());
+    let manifest = manifest_fields_from(package_record.as_ref());
 
     let (in_project_target, in_project_non_target) =
         app.projects().at_path(abs_path).map_or((None, None), |pi| {
@@ -1727,7 +1727,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         ci_display,
     });
 
-    assemble_detail_pane_data(package, git_detail, worktrees, snapshot_package.as_ref())
+    assemble_detail_pane_data(package, git_detail, worktrees, package_record.as_ref())
 }
 
 /// Assemble `DetailPaneData` from already-resolved inputs.
@@ -1743,7 +1743,7 @@ fn assemble_detail_pane_data(
     package: PackageData,
     git_detail: GitDetailFields,
     worktrees: Vec<WorktreeInfo>,
-    snapshot_package: Option<&PackageRecord>,
+    package_record: Option<&PackageRecord>,
 ) -> DetailPaneData {
     DetailPaneData {
         package,
@@ -1764,7 +1764,7 @@ fn assemble_detail_pane_data(
             remotes: git_detail.remotes,
             worktrees,
         },
-        targets: snapshot_package.map_or_else(TargetsData::default, |record| {
+        targets: package_record.map_or_else(TargetsData::default, |record| {
             TargetsData::from_package_record(record, record.name.as_str())
         }),
     }

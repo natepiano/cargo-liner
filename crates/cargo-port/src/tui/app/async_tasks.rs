@@ -2729,9 +2729,9 @@ impl App {
     /// Workspaces themselves keep the empty-default `Cargo` the parser
     /// produces — they have no single `PackageRecord`; members fan out
     /// into individual packages underneath.
-    fn apply_cargo_fields_from_workspace_metadata(&mut self, snapshot: &WorkspaceMetadata) {
+    fn apply_cargo_fields_from_workspace_metadata(&mut self, metadata: &WorkspaceMetadata) {
         use crate::project::Cargo;
-        for record in snapshot.packages.values() {
+        for record in metadata.packages.values() {
             let Some(manifest_dir) = record.manifest_path.as_path().parent() else {
                 continue;
             };
