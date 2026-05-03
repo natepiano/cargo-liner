@@ -2629,3 +2629,242 @@ Stays where it is: `Inflight.ci_fetch_toast`,
 `Inflight.ci_fetch_tracker`, and the pending queues. Phase 12
 does not touch CI; that's Phase 13's scope.
 
+## Phase 13.0 Ci subsystem design (designed; subagent-reviewed)
+
+Re-review of the Phase 13 plan against everything learned in
+Phases 1–12. Decisions captured below as each is settled.
+
+- **Q1: Ci struct ownership.** _Decided: option (a) — `Ci` is a
+  real struct that owns the CI state cluster._
+
+  Mirrors the Lint (11.4a) and Net (12.2) precedents: one
+  subsystem accessor `app.ci()` reaches all CI domain state.
+  The cluster is homogeneous (tracker, toast, display_modes
+  are all CI-keyed) and CI-specific, so the endpoint is
+  inevitable; staging through a marker-struct phase (Lint
+  11.2 → 11.4a) is rejected because Phase 11 already
+  validated the pattern and the staging would just be more
+  PRs for the same destination. App holds `ci: Ci` and
+  reaches in through `app.ci()` / `app.ci_mut()`.
+
+- **Q2: ci_fetch_tracker + ci_fetch_toast relocation.**
+  _Decided: option (c) — both move to `Ci`, but
+  **neither** uses `RunningTracker<AbsolutePath>`._
+
+  CI's toast model is different from lint / clean /
+  GitHub-fetch: the user dispatches a manual CI fetch, sees
+  one toast, the toast goes away on completion. There is no
+  live "N CI fetches running" rollup synced each tick;
+  `ci_fetch_toast` is consumed via `take_ci_fetch_toast` at
+  completion (fire-once), not driven by
+  `sync_running_repo_fetch_toast`-style logic.
+  `ci_fetch_tracker` is the bespoke `CiFetchTracker` type
+  (a `HashSet<AbsolutePath>` with `start` / `complete` /
+  `is_fetching` / `clear` / `retain`, defined at
+  `tui/app/types.rs:342-358`); it has no toast slot and
+  no started-at timestamp, so it doesn't satisfy
+  `RunningTracker<K>`'s shape either. Owning both fields
+  on `Ci`:
+
+  ```rust
+  pub struct Ci {
+      ci_fetch_tracker: CiFetchTracker,
+      ci_fetch_toast:   Option<ToastTaskId>,
+      display_modes:    HashMap<AbsolutePath, CiRunDisplayMode>,
+  }
+  ```
+
+  The `running_tracker.rs` module-doc comment "Phase 13
+  may adopt it for CI" is **rejected**. CI's two state
+  pieces are intentionally bespoke; the doc comment should
+  be updated to that effect when 13.2 lands.
+
+- **Q3: ci_display_modes relocation.** _Decided: option (a) —
+  the `HashMap<AbsolutePath, CiRunDisplayMode>` and its four
+  accessors (`ci_display_mode_for`, `set_ci_display_mode`,
+  `remove_ci_display_mode`, `clear_ci_display_modes`) move
+  from `CiPane` to `Ci`._
+
+  Reframing from Phase 8.7: `display_modes` is *domain state*
+  (which CI runs are surfaced for this project), not *UI
+  state* (cursor / scroll / hover). It gates
+  `ci_runs_for_display` and `latest_ci_run_for_path`, both
+  domain queries. Phase 8.7's prior placement on `CiPane`
+  was correct given the per-pane god-object cleanup it was
+  doing, but the Phase 13 boundary is the right home: all CI
+  domain state lives on `Ci`. CiPane retains pure UI state
+  (viewport, content cache).
+
+- **Q4: CiDisplay variants.** _Decided: option (a) — four
+  variants, one-to-one with the four return paths in
+  `resolve_ci_display` today._
+
+  ```rust
+  pub enum CiDisplay {
+      NoWorkflow,
+      UnpublishedBranch,
+      NoRuns,
+      Runs {
+          conclusion:   Option<Conclusion>,
+          local:        usize,
+          github_total: u32,
+      },
+  }
+  ```
+
+  Default for partial / placeholder `PackageData` is
+  `NoWorkflow`. Asymmetry with Lint's `LintDisplay::NotRust`
+  default: Lint's `NotRust` excludes the row entirely via
+  `package_fields_from_data`, but CI doesn't have an
+  analogous exclusion (the Ci row is shown for non-Rust
+  projects too). So a placeholder `PackageData` will
+  *render* "no workflow" greyed text — matching today's
+  `NO_CI_WORKFLOW` styling at `panes/package.rs:121-125`,
+  not vanish. The renderer match has four arms; the prior
+  string-comparison against `NO_CI_WORKFLOW`,
+  `NO_CI_RUNS`, `NO_CI_UNPUBLISHED_BRANCH` becomes
+  enum-pattern matching. Constants in `crate::constants`
+  delete in Phase 13.last.
+
+  **Excluded from `CiDisplay` (intentional):**
+  `ProjectCiData::is_exhausted` — read by `ci_is_exhausted`
+  to gate "Fetch Older" availability in the CI **pane**,
+  not the Package row. Stays on `ProjectCiInfo` /
+  `Ci::ci_is_exhausted`; not part of the display enum.
+
+  Rejected: collapsing `UnpublishedBranch` into a
+  `NoRuns { reason }` sub-enum (b) loses the user-facing
+  copy distinction; splitting `Runs` by
+  conclusion-presence (c) is unneeded given
+  `Option<Conclusion>`; carrying `Option<CiRun>` instead of
+  the conclusion (d) introduces a lifetime / clone
+  tradeoff for renderer features no current code needs.
+
+- **Q5: `Runs` payload precision.** _Decided: option (a) —
+  the three summary fields proposed in Q4._
+
+  ```rust
+  Runs {
+      conclusion:   Option<Conclusion>,
+      local:        usize,
+      github_total: u32,
+  }
+  ```
+
+  - `conclusion`: latest CI run's conclusion (applied via
+    `Conclusion::icon()` at render time, parallel to Lint's
+    `LintStatus::icon()` framing).
+  - `local`: count of runs in `ProjectCiData::runs` after
+    display-mode filtering (`BranchOnly` vs `All`).
+  - `github_total`: total GitHub-reported run count for the
+    repo (drives the "/ github N" suffix when > 0).
+
+  Matches one-to-one with what
+  `resolve_ci_display` + `build_ci_runs_label` read today.
+  Rejected: carrying `Vec<CiRun>` (b) is dead weight (CI
+  pane reads runs via `ci_runs_for_display`, not via the
+  display enum); adding a `mode_label` field (c) is
+  speculation for a Package-row decoration that doesn't
+  exist today.
+
+- **Q6: `Ci::package_display` signature.** _Decided:
+  option (c) — method on `&Ci` taking pre-resolved
+  sub-state from the caller, **including a pre-resolved
+  `latest_conclusion` to handle the worktree-group rollup
+  case** (subagent review fix)._
+
+  ```rust
+  impl Ci {
+      pub fn package_display(
+          &self,
+          abs: &AbsolutePath,
+          repo_info:         Option<&RepoInfo>,
+          git_info:          Option<&CheckoutInfo>,
+          ci_info:           Option<&ProjectCiInfo>,
+          latest_conclusion: Option<Conclusion>,
+          is_worktree_group: bool,
+      ) -> CiDisplay { ... }
+  }
+  ```
+
+  Caller (`panes/support.rs:build_pane_data`) resolves:
+  - `repo_info` via `app.repo_info_for(path)`
+  - `git_info` via `app.git_info_for(path)`
+  - `ci_info` via `app.ci_info_for(path)`
+  - `latest_conclusion` via `app.ci_for_item(item)` for
+    worktree-group rollup rows; `app.ci_for(path)`
+    otherwise. (The aggregator at
+    `app/query.rs:424-452` walks all worktree paths and
+    returns `Failure` if any-red, `Success` if all-green,
+    else `None`. This rollup is not reachable from the
+    pure-input surface alone, so the caller pre-resolves
+    it.)
+
+  Ci uses `self.display_mode_for(abs)` for the
+  `BranchOnly` vs `All` filter. The function fills out
+  `Runs.conclusion = latest_conclusion`, `Runs.local =
+  ci_info.runs.len()` (after display-mode filter via
+  `latest_ci_run_for_path`-style branch matching), and
+  `Runs.github_total = ci_info.github_total`. Ci stays
+  pure over the inputs — no knowledge of
+  `entry.git_repo.repo_info` / etc. layout baked into
+  the subsystem.
+
+  Diverges from Lint's `package_display` form (Lint took
+  `&ProjectList` and reached into `lint_at_path` itself,
+  with worktree-group rollup self-contained). Lint's
+  project-tree need was a single lookup; CI needs three
+  *plus* the rollup conclusion that depends on iterating
+  the group's checkouts. Pre-resolving at the caller
+  keeps Ci pure for the broader dependency surface.
+
+- **Q7: Phase 13 sub-phasing.** _Decided: option (a) —
+  three sub-phases as proposed._
+
+  - **13.1** — Introduce `tui::ci_state::Ci` (empty
+    struct) + read-side lookup methods +
+    `Ci::package_display(...) -> CiDisplay`. Existing
+    `panes/support.rs:resolve_ci_display` continues to
+    return `String`; no `PackageData` flip yet. Ships
+    the typed API alongside the old string API. The
+    13.1 caller (`build_pane_data_common`) needs to add
+    three lookups (`repo_info_for`, `git_info_for`,
+    `ci_info_for`) plus the rollup-aware `ci_for` /
+    `ci_for_item` resolution before calling
+    `Ci::package_display`. Mirrors Phase 11.2 (Lint
+    marker + lookups, no field move).
+
+  - **13.2** — Absorb fields onto `Ci`:
+    `ci_fetch_tracker` (as `CiFetchTracker`, the bespoke
+    type) + `ci_fetch_toast` (plain `Option<ToastTaskId>`)
+    move off `Inflight`; `display_modes` moves off
+    `CiPane`. Update the ~6–8 caller sites
+    (`app/ci.rs:152`, `:173`, `:181`; `app/query.rs:308`;
+    `app/async_tasks.rs:1437` for `clear_ci_display_modes`;
+    `panes/actions.rs:198` for the toggle keybind; plus
+    test sites) to go through `app.ci()` / `app.ci_mut()`.
+    Delete the four pane-side accessors
+    (`Panes::ci_display_mode_for`, `set_ci_display_mode`,
+    `remove_ci_display_mode`, `clear_ci_display_modes`).
+    Update the `running_tracker.rs` module-doc comment to
+    drop the "Phase 13 may adopt it for CI" speculation
+    (Q2 rejected). Old string display path stays. Mirrors
+    Phase 11.4a (Lint field absorption off Inflight).
+
+  - **13.3 (capstone, Phase 13.last)** — Flip
+    `PackageData.lint_display` from `String` to
+    `LintDisplay` and `PackageData.ci_display` from
+    `String` to `CiDisplay`. Update the Package renderer
+    in `panes/package.rs` to match on enum variants
+    instead of string-comparing the five constants:
+    `NO_CI_WORKFLOW`, `NO_CI_RUNS`,
+    `NO_CI_UNPUBLISHED_BRANCH`, `NO_LINT_RUNS`,
+    `NO_LINT_RUNS_NOT_RUST` (per `constants.rs:21-25`).
+    Delete `resolve_lint_display` + `resolve_ci_display`
+    from `panes/support.rs`. Delete all five constants
+    from `crate::constants`. Mirrors the Phase 11.3
+    capstone for Lint, but bundles both Lint and CI flips
+    into one phase since they touch the same files.
+
+## End of Phase 13.0 design — implementation can begin
+
