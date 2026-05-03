@@ -209,7 +209,7 @@ impl Net {
 
     pub const fn http_client_ref(&self) -> &HttpClient { &self.http_client }
 
-    pub fn rate_limit(&self) -> GitHubRateLimit { self.http_client.rate_limit_snapshot() }
+    pub fn rate_limit(&self) -> GitHubRateLimit { self.http_client.rate_limit() }
 
     pub fn set_force_github_rate_limit(&self, on: bool) {
         self.http_client.set_force_github_rate_limit(on);

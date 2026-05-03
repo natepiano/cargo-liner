@@ -775,11 +775,7 @@ pub(crate) fn save(config: &CargoPortConfig) -> Result<(), String> {
 )]
 mod tests {
     use super::*;
-
-    fn normalize_snapshot(text: &str) -> String {
-        let normalized = text.replace("\r\n", "\n");
-        normalized.trim_end_matches(['\r', '\n']).to_string()
-    }
+    use crate::test_support;
 
     fn assert_default_config_subset(cfg: &CargoPortConfig, expected_ci_run_count: u32) {
         assert!(cfg.cache.root.is_empty());
@@ -1132,6 +1128,9 @@ mod tests {
             confique::toml::template::<CargoPortConfig>(confique::toml::FormatOptions::default());
         let expected = include_str!("../tests/assets/default-config.toml");
 
-        assert_eq!(normalize_snapshot(&template), normalize_snapshot(expected));
+        assert_eq!(
+            test_support::normalize_line_endings(&template),
+            test_support::normalize_line_endings(expected)
+        );
     }
 }

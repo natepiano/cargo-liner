@@ -54,11 +54,10 @@ mod lint;
 mod navigation;
 mod phase_state;
 mod query;
-mod snapshots;
+mod startup;
 
 pub(super) use phase_state::CountedPhase;
 pub(super) use phase_state::KeyedPhase;
-pub(super) use snapshots::build_visible_rows;
 mod target_index;
 mod types;
 
@@ -126,7 +125,6 @@ pub(super) use types::ConfirmAction;
 pub(super) use types::DirtyState;
 pub(super) use types::DiscoveryRowKind;
 pub(super) use types::DiscoveryShimmer;
-pub(super) use types::ExpandKey;
 pub(super) use types::FinderState;
 pub(super) use types::HoveredPaneRow;
 pub(super) use types::PendingClean;
@@ -136,7 +134,6 @@ pub(super) use types::RetrySpawnMode;
 pub(super) use types::ScanState;
 pub(super) use types::SelectionPaths;
 pub(super) use types::SelectionSync;
-pub(super) use types::VisibleRow;
 
 use super::ci_state::Ci;
 pub(super) use super::columns::ProjectListWidths;
@@ -152,6 +149,8 @@ use super::terminal::ExampleMsg;
 use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
 use crate::project::RootItem;
+pub(super) use crate::project_list::ExpandKey;
+pub(super) use crate::project_list::VisibleRow;
 pub(super) struct App {
     /// Net subsystem. Owns the shared `HttpClient`, the GitHub
     /// sub-state (availability, repo-fetch cache, in-flight set,

@@ -40,6 +40,8 @@ pub(super) use constants::PREFIX_WT_FLAT;
 pub(super) use cpu::CPU_PANE_WIDTH;
 #[cfg(test)]
 pub(super) use cpu::cpu_required_pane_height;
+
+
 pub(super) use data::DetailCacheKey;
 pub(super) use data::PaneDataStore;
 pub(super) use dispatch::HoverTarget;
@@ -59,6 +61,7 @@ pub(super) use package::detail_column_scroll_offset;
 pub(super) use package::package_label_width;
 #[cfg(test)]
 pub(super) use package::stats_column_width;
+pub(super) use project_list::compute_disk_cache;
 pub(super) use project_list::render_project_list;
 #[cfg(test)]
 pub(super) use project_list::render_tree_items;

@@ -1424,7 +1424,6 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
     use std::sync::Arc;
-    use std::sync::OnceLock;
     use std::time::Duration;
 
     use super::*;
@@ -1433,13 +1432,7 @@ mod tests {
     use crate::project::GitStatus::Clean;
     use crate::project::GitStatus::Modified;
     use crate::project::RustProject;
-
-    fn test_runtime() -> &'static tokio::runtime::Runtime {
-        static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-        TEST_RT.get_or_init(|| {
-            tokio::runtime::Runtime::new().unwrap_or_else(|_| std::process::abort())
-        })
-    }
+    use crate::test_support;
 
     fn test_metadata_dispatch(client: &HttpClient) -> MetadataDispatchContext {
         let (tx, _rx) = mpsc::channel();
@@ -1919,7 +1912,7 @@ mod tests {
 
         let (tx, rx) = mpsc::channel();
         let dispatch = MetadataDispatchContext {
-            handle: test_runtime().handle().clone(),
+            handle: test_support::test_runtime().handle().clone(),
             tx,
             metadata_store: Arc::new(std::sync::Mutex::new(WorkspaceMetadataStore::new())),
             metadata_limit: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -2083,7 +2076,7 @@ mod tests {
         let (watch_tx, watch_rx) = mpsc::channel();
         let (notify_tx, notify_rx) = mpsc::channel();
         let (bg_tx, _bg_rx) = mpsc::channel();
-        let client = HttpClient::new(test_runtime().handle().clone()).expect("http client");
+        let client = HttpClient::new(test_support::test_runtime().handle().clone()).expect("http client");
 
         let client_for_dispatch = client.clone();
         spawn_watcher_thread(
@@ -2421,7 +2414,7 @@ mod tests {
 
         let git_limit = Arc::new(tokio::sync::Semaphore::new(1));
         fire_git_updates(
-            test_runtime().handle(),
+            test_support::test_runtime().handle(),
             &git_limit,
             &git_done_tx,
             &bg_tx,
@@ -2586,7 +2579,7 @@ mod tests {
                 *debounce_deadline = past;
                 *max_deadline = past;
                 fire_git_updates(
-                    test_runtime().handle(),
+                    test_support::test_runtime().handle(),
                     &git_limit,
                     &git_done_tx,
                     &bg_tx,
@@ -3663,7 +3656,7 @@ edition = "2024"
         let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
         let (disk_done_tx, disk_done_rx) = mpsc::channel();
         fire_disk_updates(
-            test_runtime().handle(),
+            test_support::test_runtime().handle(),
             &disk_limit,
             &disk_done_tx,
             &tx,
@@ -3728,7 +3721,7 @@ edition = "2024"
         let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
         let (disk_done_tx, disk_done_rx) = mpsc::channel();
         fire_disk_updates(
-            test_runtime().handle(),
+            test_support::test_runtime().handle(),
             &disk_limit,
             &disk_done_tx,
             &tx,
@@ -3784,7 +3777,7 @@ edition = "2024"
             &mut discovered,
             5,
             NonRustInclusion::default(),
-            &crate::http::HttpClient::new(test_runtime().handle().clone()).expect("http client"),
+            &crate::http::HttpClient::new(test_support::test_runtime().handle().clone()).expect("http client"),
         );
 
         let BackgroundMsg::ProjectDiscovered { item } = bg_rx
@@ -3827,7 +3820,7 @@ edition = "2024"
             &mut discovered,
             5,
             NonRustInclusion::default(),
-            &crate::http::HttpClient::new(test_runtime().handle().clone()).expect("http client"),
+            &crate::http::HttpClient::new(test_support::test_runtime().handle().clone()).expect("http client"),
         );
 
         let BackgroundMsg::ProjectDiscovered { item } = bg_rx
@@ -3988,7 +3981,7 @@ edition = "2024"
         let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
         let (disk_done_tx, disk_done_rx) = mpsc::channel();
         fire_disk_updates(
-            test_runtime().handle(),
+            test_support::test_runtime().handle(),
             &disk_limit,
             &disk_done_tx,
             &bg_tx,
@@ -4068,7 +4061,7 @@ edition = "2024"
         let disk_limit = Arc::new(tokio::sync::Semaphore::new(1));
         let (disk_done_tx, disk_done_rx) = mpsc::channel();
         fire_disk_updates(
-            test_runtime().handle(),
+            test_support::test_runtime().handle(),
             &disk_limit,
             &disk_done_tx,
             &bg_tx,

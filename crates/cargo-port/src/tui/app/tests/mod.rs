@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -20,7 +19,6 @@ use ratatui::widgets::Widget;
 
 pub(super) use super::App;
 use super::DismissTarget;
-use super::snapshots;
 use super::types::*;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
@@ -54,7 +52,9 @@ use crate::project::WorkflowPresence;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
+pub(super) use crate::project_list::ExpandKey;
 use crate::project_list::ProjectList;
+pub(super) use crate::project_list::VisibleRow;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
@@ -72,9 +72,7 @@ mod state;
 mod worktrees;
 
 fn test_http_client() -> HttpClient {
-    static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    let rt = TEST_RT
-        .get_or_init(|| tokio::runtime::Runtime::new().unwrap_or_else(|_| std::process::abort()));
+    let rt = crate::test_support::test_runtime();
     HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
 }
 
@@ -168,8 +166,12 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
     let labels = app
         .projects()
         .resolved_root_labels(app.include_non_rust().includes_non_rust());
-    let widths =
-        snapshots::build_fit_widths_snapshot(app.projects(), &labels, app.lint_enabled(), 0);
+    let widths = crate::tui::panes::compute_project_list_widths(
+        app.projects(),
+        &labels,
+        app.lint_enabled(),
+        0,
+    );
     let items = crate::tui::panes::render_tree_items(app, &widths);
     let area = Rect::new(
         0,
@@ -196,8 +198,12 @@ fn render_tree_buffer(app: &mut App) -> (ratatui::buffer::Buffer, ProjectListWid
     let labels = app
         .projects()
         .resolved_root_labels(app.include_non_rust().includes_non_rust());
-    let widths =
-        snapshots::build_fit_widths_snapshot(app.projects(), &labels, app.lint_enabled(), 0);
+    let widths = crate::tui::panes::compute_project_list_widths(
+        app.projects(),
+        &labels,
+        app.lint_enabled(),
+        0,
+    );
     let items = crate::tui::panes::render_tree_items(app, &widths);
     let area = Rect::new(
         0,

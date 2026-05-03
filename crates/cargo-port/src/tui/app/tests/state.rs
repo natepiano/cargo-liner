@@ -1540,7 +1540,7 @@ fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
     assert_eq!(
         expected.len(),
         2,
-        "one expected entry per Rust leaf, matching snapshots::initial_metadata_roots"
+        "one expected entry per Rust leaf, matching crate::tui::app::startup::initial_metadata_roots"
     );
     assert!(expected.contains(project_a.path()));
     assert!(expected.contains(project_b.path()));

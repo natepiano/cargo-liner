@@ -53,7 +53,6 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::Mutex;
-    use std::sync::OnceLock;
     use std::sync::mpsc;
     use std::time::Duration;
     use std::time::Instant;
@@ -125,10 +124,7 @@ mod tests {
     use crate::tui::toasts::ToastStyle;
 
     fn test_http_client() -> HttpClient {
-        static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-        let rt = TEST_RT.get_or_init(|| {
-            tokio::runtime::Runtime::new().unwrap_or_else(|_| std::process::abort())
-        });
+        let rt = crate::test_support::test_runtime();
         HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
     }
 

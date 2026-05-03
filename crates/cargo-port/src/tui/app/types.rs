@@ -11,15 +11,6 @@ use crate::tui::panes::PaneId;
 use crate::tui::terminal;
 use crate::tui::toasts::ToastTaskId;
 
-/// An expand key: a node, group, worktree entry, or group within a worktree.
-#[derive(Hash, Eq, PartialEq, Clone)]
-pub enum ExpandKey {
-    Node(usize),
-    Group(usize, usize),
-    Worktree(usize, usize),
-    WorktreeGroup(usize, usize, usize),
-}
-
 /// An action waiting for user confirmation (y/n).
 pub enum ConfirmAction {
     /// `cargo clean` on the project at this absolute path.
@@ -278,58 +269,6 @@ pub struct PollBackgroundStats {
     pub fit_results:      usize,
     pub disk_results:     usize,
     pub needs_rebuild:    bool,
-}
-
-/// What a visible row represents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VisibleRow {
-    /// A top-level project/workspace root.
-    Root { node_index: usize },
-    /// A group header (e.g., "examples").
-    GroupHeader {
-        node_index:  usize,
-        group_index: usize,
-    },
-    /// An actual project member.
-    Member {
-        node_index:   usize,
-        group_index:  usize,
-        member_index: usize,
-    },
-    /// A vendored crate nested directly under the root project.
-    Vendored {
-        node_index:     usize,
-        vendored_index: usize,
-    },
-    /// A worktree entry shown directly under the parent node.
-    WorktreeEntry {
-        node_index:     usize,
-        worktree_index: usize,
-    },
-    /// A group header inside an expanded worktree entry.
-    WorktreeGroupHeader {
-        node_index:     usize,
-        worktree_index: usize,
-        group_index:    usize,
-    },
-    /// A member inside an expanded worktree entry.
-    WorktreeMember {
-        node_index:     usize,
-        worktree_index: usize,
-        group_index:    usize,
-        member_index:   usize,
-    },
-    /// A vendored crate nested under a worktree entry.
-    WorktreeVendored {
-        node_index:     usize,
-        worktree_index: usize,
-        vendored_index: usize,
-    },
-    /// A git submodule nested under the root project.
-    Submodule {
-        node_index:      usize,
-        submodule_index: usize,
-    },
 }
 
 /// Runtime-only CI fetch tracking. Persistent CI data lives on the project

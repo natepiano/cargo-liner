@@ -11,7 +11,7 @@ use super::ExpandKey::Node;
 use super::ExpandKey::Worktree;
 use super::ExpandKey::WorktreeGroup;
 use super::phase_state::PhaseCompletion;
-use super::snapshots;
+use super::startup;
 use super::target_index::MemberKind;
 use super::target_index::TargetDirMember;
 use super::types::PollBackgroundStats;
@@ -730,7 +730,7 @@ impl App {
     }
 
     fn reset_startup_phase_state(&mut self) {
-        let disk_expected = snapshots::initial_disk_roots(self.projects());
+        let disk_expected = startup::initial_disk_roots(self.projects());
         let git_expected = self
             .projects()
             .git_directories()
@@ -742,7 +742,7 @@ impl App {
             .filter(|entry| entry.item.git_info().is_some())
             .filter_map(|entry| entry.item.git_directory())
             .collect::<HashSet<_>>();
-        let metadata_expected = snapshots::initial_metadata_roots(self.projects());
+        let metadata_expected = startup::initial_metadata_roots(self.projects());
         self.scan.scan_state_mut().startup_phases.scan_complete_at = Some(Instant::now());
         self.scan.scan_state_mut().startup_phases.startup_toast = None;
         self.scan

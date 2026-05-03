@@ -8,6 +8,7 @@ use crate::project::WorkspaceSnapshot;
 use crate::project::WorktreeHealth::Normal;
 use crate::tui::columns;
 use crate::tui::columns::ProjectRow;
+use crate::tui::app::startup;
 
 #[test]
 fn collapse_all_anchors_member_selection_to_root() {
@@ -357,7 +358,7 @@ fn initial_disk_roots_groups_nested_projects_under_one_root() {
     .to_vec();
 
     assert_eq!(
-        snapshots::initial_disk_roots(&super::as_entries(projects)).len(),
+        crate::tui::app::startup::initial_disk_roots(&super::as_entries(projects)).len(),
         2
     );
 }
@@ -374,7 +375,7 @@ fn initial_metadata_roots_collects_every_rust_leaf() {
     ]
     .to_vec();
 
-    let roots = snapshots::initial_metadata_roots(&super::as_entries(projects));
+    let roots = startup::initial_metadata_roots(&super::as_entries(projects));
     assert_eq!(roots.len(), 3, "each Rust leaf gets its own metadata root");
 }
 
@@ -385,7 +386,8 @@ fn initial_metadata_roots_skips_non_rust_leaves() {
         Some("notes".into()),
     ));
     let pkg = make_project(Some("pkg"), "~/pkg");
-    let roots = snapshots::initial_metadata_roots(&super::as_entries(vec![non_rust, pkg]));
+    let roots =
+        startup::initial_metadata_roots(&super::as_entries(vec![non_rust, pkg]));
     assert_eq!(roots.len(), 1, "non-rust leaves are not metadata roots");
 }
 

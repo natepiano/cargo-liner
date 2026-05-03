@@ -57,6 +57,9 @@ use crate::tui::pane;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
 use crate::tui::render;
+use crate::project_list::ProjectList;
+use crate::project::VendoredPackage;
+use crate::project::MemberGroup;
 
 /// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
 #[allow(
@@ -1081,6 +1084,101 @@ fn render_tree_item(
             node_index,
             submodule_index,
         } => render_submodule_item(app, *node_index, *submodule_index, child_sorted, widths),
+    }
+}
+// ── Disk-cache snapshot ──────────────────────────────────────────────
+//
+// Builds the per-row sorted disk-usage values that `disk_color` /
+// `disk_percentile` consume to color the disk column.
+
+pub fn compute_disk_cache(
+    entries: &ProjectList,
+) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
+    let mut root_sorted = Vec::new();
+    for entry in entries {
+        if let Some(bytes) = entry.item.disk_usage_bytes() {
+            root_sorted.push(bytes);
+        }
+    }
+    root_sorted.sort_unstable();
+
+    let mut child_sorted = HashMap::new();
+    for (ni, entry) in entries.iter().enumerate() {
+        let mut values = Vec::new();
+        collect_child_disk_values(&entry.item, &mut values);
+        if !values.is_empty() {
+            values.sort_unstable();
+            child_sorted.insert(ni, values);
+        }
+    }
+
+    (root_sorted, child_sorted)
+}
+
+fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {
+    use crate::project::RootItem;
+    use crate::project::RustProject;
+    use crate::project::WorktreeGroup;
+    match item {
+        RootItem::Rust(RustProject::Workspace(ws)) => {
+            collect_member_group_disk(ws.groups(), values);
+            collect_vendored_disk(ws.vendored(), values);
+        },
+        RootItem::Rust(RustProject::Package(pkg)) => {
+            collect_vendored_disk(pkg.vendored(), values);
+        },
+        RootItem::NonRust(_) => {},
+        RootItem::Worktrees(WorktreeGroup::Workspaces {
+            primary, linked, ..
+        }) => {
+            for ws in std::iter::once(primary).chain(linked.iter()) {
+                if let Some(bytes) = ws.disk_usage_bytes() {
+                    values.push(bytes);
+                }
+                collect_member_group_disk(ws.groups(), values);
+                collect_vendored_disk(ws.vendored(), values);
+            }
+        },
+        RootItem::Worktrees(WorktreeGroup::Packages {
+            primary, linked, ..
+        }) => {
+            for pkg in std::iter::once(primary).chain(linked.iter()) {
+                if let Some(bytes) = pkg.disk_usage_bytes() {
+                    values.push(bytes);
+                }
+                collect_vendored_disk(pkg.vendored(), values);
+            }
+        },
+    }
+    collect_project_list_entry_disk(item.submodules(), values);
+}
+
+fn collect_member_group_disk(groups: &[MemberGroup], values: &mut Vec<u64>) {
+    for group in groups {
+        for member in group.members() {
+            if let Some(bytes) = member.disk_usage_bytes() {
+                values.push(bytes);
+            }
+        }
+    }
+}
+
+fn collect_vendored_disk(vendored: &[VendoredPackage], values: &mut Vec<u64>) {
+    for project in vendored {
+        if let Some(bytes) = project.disk_usage_bytes() {
+            values.push(bytes);
+        }
+    }
+}
+
+fn collect_project_list_entry_disk(
+    entries: &[impl crate::project::ProjectFields],
+    values: &mut Vec<u64>,
+) {
+    for entry in entries {
+        if let Some(bytes) = entry.info().disk_usage_bytes {
+            values.push(bytes);
+        }
     }
 }
 

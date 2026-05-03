@@ -1,6 +1,7 @@
 use super::*;
 use crate::project::Submodule;
 use crate::tui::columns;
+use crate::tui::panes;
 
 #[test]
 fn submodule_rows_render_disk_usage() {
@@ -73,7 +74,7 @@ fn visible_rows_workspace_with_worktrees() {
     ]
     .into();
 
-    let rows = snapshots::build_visible_rows(&super::as_entries(vec![root]), &expanded, true);
+    let rows = super::as_entries(vec![root]).visible_rows(&expanded, true);
 
     assert_eq!(rows.len(), 8, "expected 8 rows, got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { node_index: 0 }));
@@ -245,8 +246,7 @@ fn visible_rows_non_workspace_worktrees() {
     };
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows =
-        snapshots::build_visible_rows(&super::as_entries(vec![build_root()]), &expanded, true);
+    let rows = super::as_entries(vec![build_root()]).visible_rows(&expanded, true);
 
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -254,8 +254,7 @@ fn visible_rows_non_workspace_worktrees() {
     assert!(matches!(rows[2], VisibleRow::WorktreeEntry { .. }));
 
     let expanded2: HashSet<ExpandKey> = [ExpandKey::Node(0), ExpandKey::Worktree(0, 0)].into();
-    let rows2 =
-        snapshots::build_visible_rows(&super::as_entries(vec![build_root()]), &expanded2, true);
+    let rows2 = super::as_entries(vec![build_root()]).visible_rows(&expanded2, true);
     assert_eq!(rows2.len(), 3, "no extra rows for non-workspace worktree");
 }
 
@@ -273,7 +272,7 @@ fn worktree_section_collapses_when_one_dismissed() {
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
 
     let items = vec![root.clone()];
-    let rows = snapshots::build_visible_rows(&super::as_entries(items), &expanded, true);
+    let rows = super::as_entries(items).visible_rows(&expanded, true);
     assert_eq!(rows.len(), 3, "root + 2 worktree entries");
 
     let mut items = vec![root];
@@ -287,7 +286,7 @@ fn worktree_section_collapses_when_one_dismissed() {
         .at_path_mut(&linked_path)
         .expect("linked worktree should exist")
         .visibility = Dismissed;
-    let rows = snapshots::build_visible_rows(&super::as_entries(items), &expanded, true);
+    let rows = super::as_entries(items).visible_rows(&expanded, true);
     assert_eq!(
         rows.len(),
         1,
@@ -744,7 +743,7 @@ fn worktree_count_uses_visibility() {
 
     let items = vec![root];
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&super::as_entries(items), &expanded, true);
+    let rows = super::as_entries(items).visible_rows(&expanded, true);
     assert_eq!(rows.len(), 3, "root + 2 worktree entries");
 }
 
@@ -765,7 +764,7 @@ fn mixed_visible_and_deleted_worktree_group_stays_visible() {
         .visibility = Deleted;
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&super::as_entries(items.clone()), &expanded, true);
+    let rows = super::as_entries(items.clone()).visible_rows(&expanded, true);
 
     assert_eq!(items[0].visibility(), crate::project::Visibility::Visible);
     assert_eq!(rows.len(), 3, "deleted linked worktree should still render");
@@ -792,7 +791,7 @@ fn all_deleted_worktree_group_derives_deleted_visibility() {
         .visibility = Deleted;
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&super::as_entries(items.clone()), &expanded, true);
+    let rows = super::as_entries(items.clone()).visible_rows(&expanded, true);
 
     assert_eq!(items[0].visibility(), Deleted);
     assert_eq!(
@@ -823,7 +822,7 @@ fn all_dismissed_worktree_group_is_hidden() {
         .visibility = Dismissed;
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&super::as_entries(items.clone()), &expanded, true);
+    let rows = super::as_entries(items.clone()).visible_rows(&expanded, true);
 
     assert_eq!(items[0].visibility(), Dismissed);
     assert!(
@@ -850,8 +849,12 @@ fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
     );
     let root_label = resolved_root_label(&item);
     let entries = super::as_entries(vec![item]);
-    let widths =
-        snapshots::build_fit_widths_snapshot(&entries, std::slice::from_ref(&root_label), true, 0);
+    let widths = panes::compute_project_list_widths(
+        &entries,
+        std::slice::from_ref(&root_label),
+        true,
+        0,
+    );
     let root_width = columns::display_width(crate::tui::panes::PREFIX_ROOT_COLLAPSED)
         + columns::display_width(&root_label);
     let primary_entry_width = columns::display_width(crate::tui::panes::PREFIX_WT_FLAT)
@@ -884,8 +887,12 @@ fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
     );
     let root_label = resolved_root_label(&item);
     let entries = super::as_entries(vec![item]);
-    let widths =
-        snapshots::build_fit_widths_snapshot(&entries, std::slice::from_ref(&root_label), true, 0);
+    let widths = panes::compute_project_list_widths(
+        &entries,
+        std::slice::from_ref(&root_label),
+        true,
+        0,
+    );
     let root_width = columns::display_width(crate::tui::panes::PREFIX_ROOT_COLLAPSED)
         + columns::display_width(&root_label);
     let primary_entry_width = columns::display_width(crate::tui::panes::PREFIX_WT_FLAT)
@@ -981,7 +988,7 @@ fn visible_rows_workspace_no_worktrees() {
     );
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&super::as_entries(vec![root]), &expanded, true);
+    let rows = super::as_entries(vec![root]).visible_rows(&expanded, true);
 
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));
@@ -1018,7 +1025,7 @@ fn visible_rows_include_vendored_children() {
     let root = RootItem::Rust(RustProject::Workspace(ws));
 
     let expanded: HashSet<ExpandKey> = [ExpandKey::Node(0)].into();
-    let rows = snapshots::build_visible_rows(&super::as_entries(vec![root]), &expanded, true);
+    let rows = super::as_entries(vec![root]).visible_rows(&expanded, true);
 
     assert_eq!(rows.len(), 3, "got: {rows:?}");
     assert!(matches!(rows[0], VisibleRow::Root { .. }));

@@ -23,7 +23,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use super::app;
 use super::app::ExpandKey;
 use super::app::FinderState;
 use super::app::ProjectListWidths;
@@ -101,8 +100,7 @@ impl Selection {
     /// (via App) from `TreeMutation::drop` so externally-driven tree
     /// mutations also keep the visible-rows cache fresh.
     pub(super) fn recompute_visibility(&mut self, projects: &ProjectList, include_non_rust: bool) {
-        self.cached_visible_rows =
-            app::build_visible_rows(projects, &self.expanded, include_non_rust);
+        self.cached_visible_rows = projects.visible_rows(&self.expanded, include_non_rust);
     }
 
     // ── disk-sort caches ────────────────────────────────────────────

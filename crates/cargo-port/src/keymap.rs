@@ -1011,11 +1011,7 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
 #[allow(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
-
-    fn normalize_snapshot(text: &str) -> String {
-        let normalized = text.replace("\r\n", "\n");
-        normalized.trim_end_matches(['\r', '\n']).to_string()
-    }
+    use crate::test_support;
 
     #[test]
     fn parse_plain_char() {
@@ -1625,7 +1621,10 @@ open_keymap = "Ctrl+k"
         let generated = ResolvedKeymap::default_toml();
         let expected = include_str!("../tests/assets/default-keymap.toml");
 
-        assert_eq!(normalize_snapshot(&generated), normalize_snapshot(expected));
+        assert_eq!(
+            test_support::normalize_line_endings(&generated),
+            test_support::normalize_line_endings(expected)
+        );
     }
 
     #[test]

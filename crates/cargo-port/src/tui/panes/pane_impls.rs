@@ -32,7 +32,7 @@ use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
 use crate::tui::app::DismissTarget;
 use crate::tui::cpu::CpuPoller;
-use crate::tui::cpu::CpuSnapshot;
+use crate::tui::cpu::CpuUsage;
 use crate::tui::interaction::ToastHitbox;
 use crate::tui::pane;
 use crate::tui::pane::Viewport;
@@ -122,7 +122,7 @@ impl Hittable for LangPane {
 // ── Cpu ─────────────────────────────────────────────────────────
 pub struct CpuPane {
     viewport:  Viewport,
-    content:   Option<CpuSnapshot>,
+    content:   Option<CpuUsage>,
     poller:    CpuPoller,
     /// Per-rendered-row `(Rect, logical_row)` recorded each frame
     /// so `Hittable::hit_test_at` can map `pos` back to the logical
@@ -159,7 +159,7 @@ impl CpuPane {
         self.content = Some(self.poller.placeholder_snapshot());
     }
 
-    pub const fn content(&self) -> Option<&CpuSnapshot> { self.content.as_ref() }
+    pub const fn content(&self) -> Option<&CpuUsage> { self.content.as_ref() }
 
     pub const fn viewport(&self) -> &Viewport { &self.viewport }
 

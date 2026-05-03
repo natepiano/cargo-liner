@@ -262,7 +262,7 @@ fn render_aggregate_row(
     frame: &mut Frame,
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
-    snapshot: &cpu::CpuSnapshot,
+    snapshot: &cpu::CpuUsage,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
 ) {
@@ -283,7 +283,7 @@ fn render_core_rows(
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
     cpu_cfg: &CpuConfig,
-    snapshot: &cpu::CpuSnapshot,
+    snapshot: &cpu::CpuUsage,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
 ) {
@@ -329,7 +329,7 @@ fn render_gpu_row(
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
     cpu_cfg: &CpuConfig,
-    snapshot: &cpu::CpuSnapshot,
+    snapshot: &cpu::CpuUsage,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
 ) {
@@ -387,7 +387,7 @@ pub(super) fn render_cpu_pane_body(
     let snapshot = pane
         .content()
         .cloned()
-        .unwrap_or_else(|| cpu::CpuSnapshot::placeholder(1));
+        .unwrap_or_else(|| cpu::CpuUsage::placeholder(1));
     let layout = CpuPanelLayout::new(inner, snapshot.cores.len());
 
     let border_style = if matches!(focus, PaneFocusState::Active) {

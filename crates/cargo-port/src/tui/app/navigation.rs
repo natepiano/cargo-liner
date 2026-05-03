@@ -1,10 +1,7 @@
 use std::path::Path;
 
 use super::App;
-use super::snapshots;
 use super::target_index::CleanSelection;
-use super::types::ExpandKey;
-use super::types::VisibleRow;
 use crate::perf_log;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -16,6 +13,9 @@ use crate::project::RustProject;
 use crate::project::VendoredPackage;
 use crate::project::WorktreeGroup;
 use crate::tui;
+use super::ExpandKey;
+use super::VisibleRow;
+use crate::tui::panes;
 use crate::tui::panes::DetailCacheKey;
 
 impl App {
@@ -34,7 +34,7 @@ impl App {
         let root_labels = self
             .projects()
             .resolved_root_labels(self.include_non_rust().includes_non_rust());
-        let widths = snapshots::build_fit_widths_snapshot(
+        let widths = panes::compute_project_list_widths(
             self.projects(),
             &root_labels,
             self.lint_enabled(),
@@ -44,7 +44,7 @@ impl App {
     }
 
     pub fn ensure_disk_cache(&mut self) {
-        let (root_sorted, child_sorted) = snapshots::build_disk_cache_snapshot(self.projects());
+        let (root_sorted, child_sorted) = panes::compute_disk_cache(self.projects());
         self.selection.set_disk_caches(root_sorted, child_sorted);
     }
 

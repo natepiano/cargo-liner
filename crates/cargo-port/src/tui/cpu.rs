@@ -14,37 +14,37 @@ use super::constants::TITLE_COLOR;
 use crate::config::CpuConfig;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CpuCoreSnapshot {
+pub(super) struct CpuCoreUsage {
     pub label:   String,
     pub percent: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CpuSnapshot {
+pub(super) struct CpuUsage {
     pub total_percent: u8,
-    pub cores:         Vec<CpuCoreSnapshot>,
-    pub breakdown:     CpuBreakdownSnapshot,
+    pub cores:         Vec<CpuCoreUsage>,
+    pub breakdown:     CpuBreakdown,
     pub gpu_percent:   Option<u8>,
 }
 
-impl CpuSnapshot {
+impl CpuUsage {
     pub(super) fn placeholder(core_count: usize) -> Self {
         Self {
             total_percent: 0,
             cores:         (0..core_count)
-                .map(|index| CpuCoreSnapshot {
+                .map(|index| CpuCoreUsage {
                     label:   format!("CPU {}", index + 1),
                     percent: 0,
                 })
                 .collect(),
-            breakdown:     CpuBreakdownSnapshot::default(),
+            breakdown:     CpuBreakdown::default(),
             gpu_percent:   read_gpu_percent(),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct CpuBreakdownSnapshot {
+pub(super) struct CpuBreakdown {
     pub system: u8,
     pub user:   u8,
     pub idle:   u8,
@@ -91,11 +91,11 @@ impl CpuPoller {
 
     pub(super) fn core_count(&self) -> usize { self.system.cpus().len().max(1) }
 
-    pub(super) fn placeholder_snapshot(&self) -> CpuSnapshot {
-        CpuSnapshot::placeholder(self.core_count())
+    pub(super) fn placeholder_snapshot(&self) -> CpuUsage {
+        CpuUsage::placeholder(self.core_count())
     }
 
-    pub(super) fn poll_if_due(&mut self, now: Instant) -> Option<CpuSnapshot> {
+    pub(super) fn poll_if_due(&mut self, now: Instant) -> Option<CpuUsage> {
         if self
             .last_poll
             .is_some_and(|last| now.duration_since(last) < self.poll_interval)
@@ -111,14 +111,14 @@ impl CpuPoller {
             .cpus()
             .iter()
             .enumerate()
-            .map(|(index, cpu)| CpuCoreSnapshot {
+            .map(|(index, cpu)| CpuCoreUsage {
                 label:   normalize_cpu_label(cpu.name(), index),
                 percent: cpu_percent(cpu.cpu_usage()),
             })
             .collect::<Vec<_>>();
 
         let total_percent = cpu_percent(self.system.global_cpu_usage());
-        let snapshot = CpuSnapshot {
+        let snapshot = CpuUsage {
             total_percent,
             cores,
             breakdown: cpu_breakdown(&mut self.last_breakdown_raw),
@@ -163,7 +163,7 @@ struct CpuBreakdownRaw {
     idle:   u64,
 }
 
-fn cpu_breakdown(previous: &mut CpuBreakdownRaw) -> CpuBreakdownSnapshot {
+fn cpu_breakdown(previous: &mut CpuBreakdownRaw) -> CpuBreakdown {
     let current = read_cpu_breakdown_raw();
     let delta_system = current.system.saturating_sub(previous.system);
     let delta_user = current.user.saturating_sub(previous.user);
@@ -174,10 +174,10 @@ fn cpu_breakdown(previous: &mut CpuBreakdownRaw) -> CpuBreakdownSnapshot {
     *previous = current;
 
     if delta_total == 0 {
-        return CpuBreakdownSnapshot::default();
+        return CpuBreakdown::default();
     }
 
-    CpuBreakdownSnapshot {
+    CpuBreakdown {
         system: percent_from_parts(delta_system, delta_total),
         user:   percent_from_parts(delta_user, delta_total),
         idle:   percent_from_parts(delta_idle, delta_total),

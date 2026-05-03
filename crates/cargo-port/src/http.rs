@@ -75,7 +75,7 @@ pub(crate) enum RateLimitBucket {
     GraphQl,
 }
 
-/// Snapshot of a single rate-limit bucket. `reset_at` is a Unix epoch
+/// a single rate-limit bucket. `reset_at` is a Unix epoch
 /// timestamp; `None` means the response did not include a reset header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RateLimitQuota {
@@ -125,7 +125,7 @@ pub(crate) fn parse_rate_limit_headers(
 
 /// Parse a `/rate_limit` JSON response. Missing buckets stay `None` so
 /// the caller can merge selectively.
-pub(crate) fn parse_rate_limit_snapshot(value: &serde_json::Value) -> GitHubRateLimit {
+pub(crate) fn parse_rate_limit_response(value: &serde_json::Value) -> GitHubRateLimit {
     let resources = value.get("resources");
     let bucket = |name: &str| -> Option<RateLimitQuota> {
         let entry = resources?.get(name)?;
@@ -305,14 +305,14 @@ impl HttpClient {
         }
     }
 
-    /// Snapshot the current live rate-limit state. Returned by value —
+    /// the current live rate-limit state. Returned by value —
     /// `GitHubRateLimit` is `Copy`. While `force_github_rate_limit` is
     /// on, the `core` bucket is overridden with a synthetic `0/5000`
     /// reading whose reset timestamp is stable so the countdown ticks
     /// down instead of oscillating. `graphql` stays real so the
     /// live-refresh behaviour of the `/rate_limit` endpoint is still
     /// visible during debug.
-    pub(crate) fn rate_limit_snapshot(&self) -> GitHubRateLimit {
+    pub(crate) fn rate_limit(&self) -> GitHubRateLimit {
         let real = self
             .rate_limit
             .lock()
@@ -337,9 +337,9 @@ impl HttpClient {
         }
     }
 
-    fn store_rate_limit_snapshot(&self, snapshot: GitHubRateLimit) {
+    fn set_rate_limit(&self, github_rate_limit: GitHubRateLimit) {
         if let Ok(mut state) = self.rate_limit.lock() {
-            *state = snapshot;
+            *state = github_rate_limit;
         }
     }
 
@@ -540,7 +540,7 @@ impl HttpClient {
 
     /// Call GitHub's `/rate_limit` endpoint, which is itself exempt from
     /// the quota and therefore safe to poll while we're rate-limited.
-    /// Updates the shared live snapshot on success.
+    /// Updates the shared live `rate_limit` on success.
     pub(crate) async fn fetch_rate_limit_async(&self) -> HttpOutcome<GitHubRateLimit> {
         let Some(token) = self.github_token.as_ref() else {
             return (None, None);
@@ -570,10 +570,10 @@ impl HttpClient {
         let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) else {
             return (None, Some(ServiceSignal::Reachable(ServiceKind::GitHub)));
         };
-        let snapshot = parse_rate_limit_snapshot(&json);
-        self.store_rate_limit_snapshot(snapshot);
+        let github_rate_limit = parse_rate_limit_response(&json);
+        self.set_rate_limit(github_rate_limit);
         (
-            Some(snapshot),
+            Some(github_rate_limit),
             Some(ServiceSignal::Reachable(ServiceKind::GitHub)),
         )
     }
@@ -603,14 +603,14 @@ impl HttpClient {
     }
 
     async fn probe_github_rate_limit_async(&self) -> bool {
-        let (snapshot, _signal) = self.fetch_rate_limit_async().await;
+        let (github_rate_limit, _signal) = self.fetch_rate_limit_async().await;
         if self.github_rate_limit_forced() {
             // Forced mode: display keeps updating via /rate_limit above,
             // but never report recovery — the error toast must persist
             // for testing.
             return false;
         }
-        match snapshot {
+        match github_rate_limit {
             Some(s) => {
                 s.core.is_some_and(|q| q.remaining > 0)
                     && s.graphql.is_some_and(|q| q.remaining > 0)
@@ -739,23 +739,14 @@ mod tests {
 
     use reqwest::StatusCode;
     use reqwest::header::HeaderMap;
-    use reqwest::header::HeaderValue;
     use serde_json::json;
 
     use super::*;
-
-    fn header_map(entries: &[(&str, &str)]) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        for (name, value) in entries {
-            let name: reqwest::header::HeaderName = (*name).parse().unwrap();
-            headers.insert(name, HeaderValue::from_str(value).unwrap());
-        }
-        headers
-    }
-
+    use crate::test_support;
+    
     #[test]
     fn rate_limit_headers_core_bucket_parsed() {
-        let headers = header_map(&[
+        let headers = test_support::header_map(&[
             ("x-ratelimit-resource", "core"),
             ("x-ratelimit-limit", "5000"),
             ("x-ratelimit-used", "42"),
@@ -772,7 +763,7 @@ mod tests {
 
     #[test]
     fn rate_limit_headers_graphql_bucket_parsed() {
-        let headers = header_map(&[
+        let headers = test_support::header_map(&[
             ("x-ratelimit-resource", "graphql"),
             ("x-ratelimit-limit", "5000"),
             ("x-ratelimit-used", "12"),
@@ -785,13 +776,13 @@ mod tests {
 
     #[test]
     fn rate_limit_headers_missing_are_none() {
-        let headers = header_map(&[("x-ratelimit-resource", "core")]);
+        let headers = test_support::header_map(&[("x-ratelimit-resource", "core")]);
         assert!(parse_rate_limit_headers(&headers).is_none());
     }
 
     #[test]
     fn rate_limit_headers_unknown_bucket_is_none() {
-        let headers = header_map(&[
+        let headers = test_support::header_map(&[
             ("x-ratelimit-resource", "search"),
             ("x-ratelimit-limit", "30"),
             ("x-ratelimit-used", "0"),
@@ -801,34 +792,34 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_snapshot_parses_both_buckets() {
+    fn parse_rate_limit_response_parses_both_buckets() {
         let body = json!({
             "resources": {
                 "core":    { "limit": 5000, "used": 42,  "remaining": 4958, "reset": 1_717_000_000 },
                 "graphql": { "limit": 5000, "used": 12,  "remaining": 4988, "reset": 1_717_000_000 },
             },
         });
-        let snapshot = parse_rate_limit_snapshot(&body);
-        let core = snapshot.core.unwrap();
+        let github_rate_limit = parse_rate_limit_response(&body);
+        let core = github_rate_limit.core.unwrap();
         assert_eq!(core.limit, 5000);
         assert_eq!(core.used, 42);
         assert_eq!(core.remaining, 4958);
         assert_eq!(core.reset_at, Some(1_717_000_000));
-        let gql = snapshot.graphql.unwrap();
+        let gql = github_rate_limit.graphql.unwrap();
         assert_eq!(gql.limit, 5000);
         assert_eq!(gql.remaining, 4988);
     }
 
     #[test]
-    fn rate_limit_snapshot_missing_bucket_is_none() {
+    fn parse_rate_limit_response_missing_bucket_is_none() {
         let body = json!({
             "resources": {
                 "core": { "limit": 5000, "used": 0, "remaining": 5000 },
             },
         });
-        let snapshot = parse_rate_limit_snapshot(&body);
-        assert!(snapshot.core.is_some());
-        assert!(snapshot.graphql.is_none());
+        let github_rate_limit = parse_rate_limit_response(&body);
+        assert!(github_rate_limit.core.is_some());
+        assert!(github_rate_limit.graphql.is_none());
     }
 
     #[test]
@@ -842,19 +833,19 @@ mod tests {
 
     #[test]
     fn github_is_rate_limited_on_403_with_zero_remaining() {
-        let headers = header_map(&[("x-ratelimit-remaining", "0")]);
+        let headers = test_support::header_map(&[("x-ratelimit-remaining", "0")]);
         assert!(github_is_rate_limited(StatusCode::FORBIDDEN, &headers));
     }
 
     #[test]
     fn github_is_not_rate_limited_on_403_with_remaining() {
-        let headers = header_map(&[("x-ratelimit-remaining", "500")]);
+        let headers = test_support::header_map(&[("x-ratelimit-remaining", "500")]);
         assert!(!github_is_rate_limited(StatusCode::FORBIDDEN, &headers));
     }
 
     #[test]
     fn github_is_not_rate_limited_on_200() {
-        let headers = header_map(&[("x-ratelimit-remaining", "0")]);
+        let headers = test_support::header_map(&[("x-ratelimit-remaining", "0")]);
         assert!(!github_is_rate_limited(StatusCode::OK, &headers));
     }
 
@@ -889,7 +880,7 @@ mod tests {
 
     #[test]
     fn force_rate_limit_synthesizes_zero_core_with_future_reset() {
-        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+        let runtime = test_support::test_runtime();
         let client = test_client(runtime.handle());
         let real_graphql = RateLimitQuota {
             limit:     5000,
@@ -903,8 +894,8 @@ mod tests {
         client.set_force_github_rate_limit(true);
         let after = now_epoch_secs();
 
-        let snapshot = client.rate_limit_snapshot();
-        let core = snapshot.core.expect("synthetic core bucket");
+        let github_rate_limit = client.rate_limit();
+        let core = github_rate_limit.core.expect("synthetic core bucket");
         assert_eq!(core.limit, 5000);
         assert_eq!(core.remaining, 0);
         assert_eq!(core.used, 5000);
@@ -914,22 +905,22 @@ mod tests {
 
         // `graphql` stays real so the live-refresh path is still
         // observable during debug.
-        assert_eq!(snapshot.graphql, Some(real_graphql));
+        assert_eq!(github_rate_limit.graphql, Some(real_graphql));
 
         client.set_force_github_rate_limit(false);
-        let snapshot = client.rate_limit_snapshot();
+        let github_rate_limit = client.rate_limit();
         // Real core was never populated, so clearing force leaves it
         // at `None`.
-        assert!(snapshot.core.is_none());
-        assert_eq!(snapshot.graphql, Some(real_graphql));
+        assert!(github_rate_limit.core.is_none());
+        assert_eq!(github_rate_limit.graphql, Some(real_graphql));
     }
 
     #[test]
-    fn rate_limit_snapshot_reflects_bucket_updates() {
-        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+    fn rate_limit_reflects_bucket_updates() {
+        let runtime = test_support::test_runtime();
         let client = test_client(runtime.handle());
 
-        assert_eq!(client.rate_limit_snapshot(), GitHubRateLimit::default());
+        assert_eq!(client.rate_limit(), GitHubRateLimit::default());
 
         let core_quota = RateLimitQuota {
             limit:     5000,
@@ -938,9 +929,9 @@ mod tests {
             reset_at:  Some(1_717_000_000),
         };
         client.update_rate_limit_bucket(RateLimitBucket::Core, core_quota);
-        let snapshot = client.rate_limit_snapshot();
-        assert_eq!(snapshot.core, Some(core_quota));
-        assert!(snapshot.graphql.is_none());
+        let github_rate_limit = client.rate_limit();
+        assert_eq!(github_rate_limit.core, Some(core_quota));
+        assert!(github_rate_limit.graphql.is_none());
 
         let gql_quota = RateLimitQuota {
             limit:     5000,
@@ -949,9 +940,9 @@ mod tests {
             reset_at:  None,
         };
         client.update_rate_limit_bucket(RateLimitBucket::GraphQl, gql_quota);
-        let snapshot = client.rate_limit_snapshot();
-        assert_eq!(snapshot.core, Some(core_quota));
-        assert_eq!(snapshot.graphql, Some(gql_quota));
+        let github_rate_limit = client.rate_limit();
+        assert_eq!(github_rate_limit.core, Some(core_quota));
+        assert_eq!(github_rate_limit.graphql, Some(gql_quota));
     }
 
     #[test]
@@ -968,7 +959,7 @@ mod tests {
             request
         });
 
-        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+        let runtime = test_support::test_runtime();
         let client = build_client().expect("build http client");
         let url = format!("http://{addr}/");
         let response = runtime

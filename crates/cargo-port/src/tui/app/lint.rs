@@ -1,9 +1,9 @@
 use ratatui::style::Style;
 
 use super::App;
-use super::types::VisibleRow;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::LintStatus;
+use super::VisibleRow;
 use crate::tui::columns::LintCell;
 use crate::tui::constants::ACCENT_COLOR;
 

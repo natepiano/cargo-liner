@@ -121,7 +121,7 @@ mod tests {
         ))
     }
 
-    fn write_file(path: &Path, content: &str) {
+    fn write_synced_file(path: &Path, content: &str) {
         let mut f = std::fs::File::create(path).expect("create temp file");
         f.write_all(content.as_bytes()).expect("write temp file");
         f.sync_all().expect("sync temp file");
@@ -136,12 +136,12 @@ mod tests {
     #[test]
     fn take_stamp_change_returns_path_then_swallows_until_next_change() {
         let path = temp_path("take_stamp");
-        write_file(&path, "v0");
+        write_synced_file(&path, "v0");
         let mut wf = WatchedFile::new(Some(path.clone()), "seed".to_string());
         // No change yet.
         assert!(wf.take_stamp_change().is_none());
         std::thread::sleep(Duration::from_millis(20));
-        write_file(&path, "v1");
+        write_synced_file(&path, "v1");
         // First call after change returns the path and updates the
         // cached stamp.
         assert_eq!(wf.take_stamp_change(), Some(path.as_path()));
@@ -153,13 +153,13 @@ mod tests {
     #[test]
     fn sync_stamp_marks_caller_owned_writes_as_unchanged() {
         let path = temp_path("sync");
-        write_file(&path, "before");
+        write_synced_file(&path, "before");
         let mut wf = WatchedFile::new(Some(path.clone()), "before".to_string());
         std::thread::sleep(Duration::from_millis(20));
         // Caller writes the file itself (e.g. saving settings) and
         // updates the stamp so the next take_stamp_change doesn't
         // see its own write.
-        write_file(&path, "self-written");
+        write_synced_file(&path, "self-written");
         wf.sync_stamp();
         assert!(wf.take_stamp_change().is_none());
         std::fs::remove_file(&path).ok();
