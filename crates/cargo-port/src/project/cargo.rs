@@ -69,9 +69,9 @@ pub(crate) enum CargoParseResult {
 /// Step 3b full retirement: hand-parsing of `version`, `description`,
 /// `publish`, `[lib]` / `[[bin]]` / `[[example]]` / `[[bench]]` /
 /// `[[test]]` is dropped. The authoritative source is the
-/// `WorkspaceSnapshot` populated by `cargo metadata`; detail-pane and
-/// finder-index readers prefer the snapshot when present and silently
-/// fall back to empty data pre-snapshot — matching the Targets-pane
+/// `WorkspaceMetadata` populated by `cargo metadata`; detail-pane and
+/// finder-index readers prefer the metadata when present and silently
+/// fall back to empty data pre-metadata — matching the Targets-pane
 /// "Loading…" UX established in Step 3a. This function now only
 /// extracts the fields needed to classify a project at parse time
 /// (`[package] name`, `[workspace]` presence) and the on-disk

@@ -168,7 +168,7 @@ impl App {
     /// metadata store (design plan → **Call-site migrations → step 2**):
     /// a project redirected via `CARGO_TARGET_DIR` or
     /// `.cargo/config.toml`'s `build.target-dir` is cleaned at the real
-    /// location. Falls back to `<project>/target` when no snapshot
+    /// location. Falls back to `<project>/target` when no metadata
     /// covers `project_path` yet.
     pub fn start_clean(&mut self, project_path: &AbsolutePath) -> bool {
         let target_dir = self

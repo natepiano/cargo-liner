@@ -4,11 +4,11 @@ use crate::project::ManifestFingerprint;
 use crate::project::PackageRecord;
 use crate::project::PublishPolicy;
 use crate::project::TargetRecord;
-use crate::project::WorkspaceSnapshot;
+use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeHealth::Normal;
+use crate::tui::app::startup;
 use crate::tui::columns;
 use crate::tui::columns::ProjectRow;
-use crate::tui::app::startup;
 
 #[test]
 fn collapse_all_anchors_member_selection_to_root() {
@@ -100,7 +100,7 @@ fn seed_single_example_snapshot(app: &App, project_path: &AbsolutePath, example_
     app.metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())
-        .upsert(WorkspaceSnapshot {
+        .upsert(WorkspaceMetadata {
             workspace_root: project_path.clone(),
             target_directory: AbsolutePath::from(project_path.as_path().join("target")),
             packages,
@@ -293,7 +293,7 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
     };
     let mut packages = std::collections::HashMap::new();
     packages.insert(pkg.id.clone(), pkg);
-    let snap = WorkspaceSnapshot {
+    let workspace_metadata = WorkspaceMetadata {
         workspace_root: workspace_root.clone(),
         target_directory: AbsolutePath::from("/never-real/demo/target"),
         packages,
@@ -319,8 +319,8 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
     app.handle_bg_msg(BackgroundMsg::CargoMetadata {
         workspace_root,
         generation,
-        fingerprint: snap.fingerprint.clone(),
-        result: Ok(snap),
+        fingerprint: workspace_metadata.fingerprint.clone(),
+        result: Ok(workspace_metadata),
     });
     app.ensure_detail_cached();
     let example_count = app
@@ -386,8 +386,7 @@ fn initial_metadata_roots_skips_non_rust_leaves() {
         Some("notes".into()),
     ));
     let pkg = make_project(Some("pkg"), "~/pkg");
-    let roots =
-        startup::initial_metadata_roots(&super::as_entries(vec![non_rust, pkg]));
+    let roots = startup::initial_metadata_roots(&super::as_entries(vec![non_rust, pkg]));
     assert_eq!(roots.len(), 1, "non-rust leaves are not metadata roots");
 }
 

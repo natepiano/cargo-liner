@@ -102,7 +102,7 @@ mod tests {
     use crate::project::Visibility;
     use crate::project::WorkflowPresence;
     use crate::project::Workspace;
-    use crate::project::WorkspaceSnapshot;
+    use crate::project::WorkspaceMetadata;
     use crate::project::WorktreeGroup;
     use crate::project::WorktreeStatus;
     use crate::project_list::ProjectList;
@@ -1008,7 +1008,7 @@ mod tests {
         use cargo_metadata::TargetKind;
         use cargo_metadata::semver::Version;
         // Step 3b: Targets pane now sources its data from the
-        // `cargo metadata` snapshot; the old hand-parsed Cargo
+        // `cargo metadata` result; the old hand-parsed Cargo
         // fallback is retired. Populate two Example targets via
         // a CargoMetadata arrival so the pane has at least two
         // rows to click on.
@@ -1044,7 +1044,7 @@ mod tests {
         app.metadata_store_handle()
             .lock()
             .unwrap_or_else(|_| std::process::abort())
-            .upsert(WorkspaceSnapshot {
+            .upsert(WorkspaceMetadata {
                 workspace_root: AbsolutePath::from(project_dir.clone()),
                 target_directory: AbsolutePath::from(project_dir.join("target")),
                 packages,
@@ -1125,7 +1125,7 @@ mod tests {
         app.metadata_store_handle()
             .lock()
             .unwrap_or_else(|_| std::process::abort())
-            .upsert(WorkspaceSnapshot {
+            .upsert(WorkspaceMetadata {
                 workspace_root:           AbsolutePath::from(project_dir.clone()),
                 target_directory:         AbsolutePath::from(custom_target.clone()),
                 packages:                 std::collections::HashMap::new(),
@@ -1186,7 +1186,7 @@ mod tests {
         };
         let mut packages = std::collections::HashMap::new();
         packages.insert(pkg.id.clone(), pkg);
-        let snap = WorkspaceSnapshot {
+        let workspace_metadata = WorkspaceMetadata {
             workspace_root: root,
             target_directory: AbsolutePath::from(project_dir.join("target")),
             packages,
@@ -1207,7 +1207,7 @@ mod tests {
         app.metadata_store_handle()
             .lock()
             .unwrap_or_else(|_| std::process::abort())
-            .upsert(snap);
+            .upsert(workspace_metadata);
     }
 
     #[test]
@@ -1230,7 +1230,7 @@ mod tests {
 
         // All four Step-4 field labels must be present when their
         // corresponding value is populated (edition is always set by
-        // the fake snapshot). Value fragments are kept short to fit
+        // the fake metadata). Value fragments are kept short to fit
         // the test backend's 120-column layout once the package pane
         // has split off its allotted share.
         for label in ["Edition", "License", "Homepage", "Repository"] {
@@ -1330,7 +1330,7 @@ mod tests {
         {
             let store = app.metadata_store_handle();
             let mut guard = store.lock().unwrap_or_else(|_| std::process::abort());
-            guard.upsert(WorkspaceSnapshot {
+            guard.upsert(WorkspaceMetadata {
                 workspace_root:           root,
                 target_directory:         target,
                 packages:                 std::collections::HashMap::new(),
@@ -1362,7 +1362,7 @@ mod tests {
     }
 
     /// Helper for the shared-target popup tests: stage two project
-    /// "arrivals" whose snapshots point at the same `target_directory`,
+    /// metadata "arrivals" pointing at the same `target_directory`,
     /// so the `TargetDirIndex` reports sibling B when we confirm a
     /// clean on A.
     fn upsert_shared_target_snapshots(
@@ -1396,7 +1396,7 @@ mod tests {
             };
             let mut packages = std::collections::HashMap::new();
             packages.insert(pkg.id.clone(), pkg);
-            let snap = WorkspaceSnapshot {
+            let workspace_metadata = WorkspaceMetadata {
                 workspace_root: root.clone(),
                 target_directory: AbsolutePath::from(target_dir),
                 packages,
@@ -1424,8 +1424,8 @@ mod tests {
             app.handle_bg_msg(BackgroundMsg::CargoMetadata {
                 workspace_root: root,
                 generation,
-                fingerprint: snap.fingerprint.clone(),
-                result: Ok(snap),
+                fingerprint: workspace_metadata.fingerprint.clone(),
+                result: Ok(workspace_metadata),
             });
         }
     }

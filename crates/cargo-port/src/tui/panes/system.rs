@@ -342,9 +342,9 @@ impl Panes {
 
     /// Push the current `hovered_pane_row` into the per-pane viewports.
     /// Clears any prior hover across every pane first, then sets the row
-    /// on the pane indicated by `hovered_pane_row` (if any). After Phase
-    /// 9.8 every pane owns its own `Viewport`, so the clear is a flat
-    /// fan-out across all 13 per-pane structs.
+    /// on the pane indicated by `hovered_pane_row` (if any). Each pane
+    /// owns its own `Viewport`, so the clear is a flat fan-out across
+    /// all 13 per-pane structs.
     pub const fn apply_hovered_pane_row(&mut self) {
         self.package.viewport_mut().set_hovered(None);
         self.lang.viewport_mut().set_hovered(None);

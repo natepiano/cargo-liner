@@ -61,14 +61,14 @@ impl DerefMut for RustInfo {
 }
 
 /// Shared Cargo fields populated from the `cargo metadata`
-/// [`WorkspaceSnapshot`](super::cargo_metadata_store::WorkspaceSnapshot).
+/// [`WorkspaceMetadata`](super::cargo_metadata_store::WorkspaceMetadata).
 ///
 /// Step 3b full retirement: these fields are no longer hand-parsed out
 /// of `Cargo.toml`. `types` / `examples` / `benches` / `test_count` stay
-/// empty until the snapshot lands and gets stamped in via
+/// empty until the metadata lands and gets stamped in via
 /// `Cargo::apply_package_record`; `publishable` defaults to `true` so
 /// the crates.io scheduler continues firing for named packages
-/// pre-snapshot (matches pre-retirement behavior; the snapshot later
+/// pre-metadata (matches pre-retirement behavior; the metadata later
 /// flips it to `false` when `publish = false`).
 #[derive(Clone, Debug)]
 pub(crate) struct Cargo {
@@ -118,7 +118,7 @@ impl Cargo {
     pub(crate) const fn publishable(&self) -> bool { self.publishable }
 
     /// Derive a `Cargo` from the authoritative [`PackageRecord`] returned
-    /// by `cargo metadata`. Called on every snapshot arrival (and on
+    /// by `cargo metadata`. Called on every metadata arrival (and on
     /// vendored / workspace-member fan-out) to replace the defaults that
     /// `from_cargo_toml` leaves in place.
     ///

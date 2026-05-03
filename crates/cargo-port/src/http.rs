@@ -743,7 +743,7 @@ mod tests {
 
     use super::*;
     use crate::test_support;
-    
+
     #[test]
     fn rate_limit_headers_core_bucket_parsed() {
         let headers = test_support::header_map(&[

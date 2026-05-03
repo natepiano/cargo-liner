@@ -849,12 +849,8 @@ fn workspace_worktree_fit_widths_use_display_name_for_primary_entry() {
     );
     let root_label = resolved_root_label(&item);
     let entries = super::as_entries(vec![item]);
-    let widths = panes::compute_project_list_widths(
-        &entries,
-        std::slice::from_ref(&root_label),
-        true,
-        0,
-    );
+    let widths =
+        panes::compute_project_list_widths(&entries, std::slice::from_ref(&root_label), true, 0);
     let root_width = columns::display_width(crate::tui::panes::PREFIX_ROOT_COLLAPSED)
         + columns::display_width(&root_label);
     let primary_entry_width = columns::display_width(crate::tui::panes::PREFIX_WT_FLAT)
@@ -887,12 +883,8 @@ fn package_worktree_fit_widths_use_display_name_for_primary_entry() {
     );
     let root_label = resolved_root_label(&item);
     let entries = super::as_entries(vec![item]);
-    let widths = panes::compute_project_list_widths(
-        &entries,
-        std::slice::from_ref(&root_label),
-        true,
-        0,
-    );
+    let widths =
+        panes::compute_project_list_widths(&entries, std::slice::from_ref(&root_label), true, 0);
     let root_width = columns::display_width(crate::tui::panes::PREFIX_ROOT_COLLAPSED)
         + columns::display_width(&root_label);
     let primary_entry_width = columns::display_width(crate::tui::panes::PREFIX_WT_FLAT)

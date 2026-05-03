@@ -12,7 +12,7 @@ use crate::project::PackageRecord;
 use crate::project::PublishPolicy;
 use crate::project::RootItem;
 use crate::project::RustProject;
-use crate::project::WorkspaceSnapshot;
+use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
 use crate::scan::CargoMetadataError;
@@ -1495,8 +1495,8 @@ fn fake_fingerprint() -> ManifestFingerprint {
     }
 }
 
-fn fake_snapshot(workspace_root: &AbsolutePath) -> WorkspaceSnapshot {
-    WorkspaceSnapshot {
+fn fake_snapshot(workspace_root: &AbsolutePath) -> WorkspaceMetadata {
+    WorkspaceMetadata {
         workspace_root:           workspace_root.clone(),
         target_directory:         AbsolutePath::from(workspace_root.as_path().join("target")),
         packages:                 HashMap::new(),
@@ -1554,7 +1554,7 @@ fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
 }
 
 /// Happy path: a successful arrival at the current generation inserts
-/// the snapshot into the store, advances `metadata.seen`, and ticks the
+/// the metadata into the store, advances `metadata.seen`, and ticks the
 /// tracked item in the grouped toast.
 #[test]
 fn successful_metadata_arrival_advances_phase_and_tracked_item() {
@@ -1748,7 +1748,7 @@ fn cargo_metadata_workspace_missing_does_not_raise_toast() {
 /// `start_clean` must prefer the workspace's resolved `target_directory`
 /// (from the metadata store) over the default `<project>/target` — that
 /// is the whole point of Step 2. Exercises three scenarios on a real
-/// tempdir to catch regressions in both the snapshot lookup and the
+/// tempdir to catch regressions in both the metadata lookup and the
 /// filesystem existence check.
 #[test]
 fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
@@ -1765,11 +1765,11 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
     }));
     let mut app = make_app(&[pkg]);
 
-    // Inject a snapshot pointing the project at the out-of-tree target.
+    // Inject metadata pointing the project at the out-of-tree target.
     app.metadata_store_handle()
         .lock()
         .expect("store")
-        .upsert(WorkspaceSnapshot {
+        .upsert(WorkspaceMetadata {
             workspace_root:           project_path.clone(),
             target_directory:         custom_target,
             packages:                 HashMap::new(),
@@ -1812,7 +1812,7 @@ fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
     app.metadata_store_handle()
         .lock()
         .expect("store")
-        .upsert(WorkspaceSnapshot {
+        .upsert(WorkspaceMetadata {
             workspace_root:           project_path.clone(),
             target_directory:         custom_target,
             packages:                 HashMap::new(),
@@ -1845,7 +1845,7 @@ fn start_clean_falls_back_to_literal_target_when_no_snapshot_yet() {
 
     assert!(
         app.start_clean(&project_path),
-        "no snapshot → falls back to <project>/target, which exists → clean queued"
+        "no metadata → falls back to <project>/target, which exists → clean queued"
     );
     assert!(
         app.inflight()
@@ -2025,14 +2025,14 @@ fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
 
 #[test]
 fn request_clean_confirm_opens_ready_when_fingerprint_matches() {
-    // Step 6e: when the stored snapshot's fingerprint still matches
+    // Step 6e: when the stored metadata's fingerprint still matches
     // disk, the confirm popup opens immediately — no verifying
     // state, no extra metadata dispatch. Covers the happy path.
     let project = make_project(Some("demo"), "~/never-real/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     let workspace_root = AbsolutePath::from(project.path().as_path().to_path_buf());
 
-    // Seed a snapshot with a fingerprint the real disk can't match
+    // Seed metadata with a fingerprint the real disk can't match
     // (the project path doesn't exist). capture() will fail on the
     // non-existent path, and `should_verify_before_clean` treats
     // capture failure as "no drift" → Ready.
@@ -2052,8 +2052,8 @@ fn request_clean_confirm_opens_ready_when_fingerprint_matches() {
 
 #[test]
 fn request_clean_confirm_marks_verifying_when_no_snapshot_covers_path() {
-    // No snapshot → nothing to verify against → flag stays Verifying
-    // until a snapshot arrives. `request_clean_confirm` also spawns
+    // No metadata → nothing to verify against → flag stays Verifying
+    // until metadata arrives. `request_clean_confirm` also spawns
     // a cargo metadata refresh; we don't assert on the spawn here
     // (the async task may race), but the `confirm_verifying` flag
     // must be set synchronously.
@@ -2066,13 +2066,13 @@ fn request_clean_confirm_marks_verifying_when_no_snapshot_covers_path() {
     assert_eq!(
         app.confirm_verifying(),
         Some(&workspace_root),
-        "missing snapshot → confirm opens in Verifying state, \
+        "missing metadata → confirm opens in Verifying state, \
          pending on this workspace root"
     );
 
     // Simulate the arrival: synthetic CargoMetadata Ok arrival must
     // clear the Verifying flag (design plan → "Verifying target
-    // dir…" transitions to Ready on snapshot arrival).
+    // dir…" transitions to Ready on metadata arrival).
     let generation = app
         .metadata_store_handle()
         .lock()
@@ -2092,9 +2092,9 @@ fn request_clean_confirm_marks_verifying_when_no_snapshot_covers_path() {
 
 #[test]
 fn out_of_tree_target_size_message_stamps_snapshot() {
-    // Inject a snapshot with an out-of-tree target, then route an
+    // Inject metadata with an out-of-tree target, then route an
     // OutOfTreeTargetSize arrival through handle_bg_msg. The byte total
-    // should land on `WorkspaceSnapshot::out_of_tree_target_bytes`.
+    // should land on `WorkspaceMetadata::out_of_tree_target_bytes`.
     let workspace_root = AbsolutePath::from(PathBuf::from("/ws"));
     let target_dir = AbsolutePath::from(PathBuf::from("/elsewhere/target"));
     let pkg = RootItem::Rust(RustProject::Package(crate::project::Package {
@@ -2106,7 +2106,7 @@ fn out_of_tree_target_size_message_stamps_snapshot() {
     {
         let store = app.metadata_store_handle();
         let mut guard = store.lock().unwrap_or_else(|_| std::process::abort());
-        guard.upsert(WorkspaceSnapshot {
+        guard.upsert(WorkspaceMetadata {
             workspace_root:           workspace_root.clone(),
             target_directory:         target_dir.clone(),
             packages:                 HashMap::new(),
@@ -2190,7 +2190,7 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     let mut packages = HashMap::new();
     packages.insert(record.id.clone(), record);
 
-    let snap = WorkspaceSnapshot {
+    let workspace_metadata = WorkspaceMetadata {
         workspace_root: project_path.clone(),
         target_directory: AbsolutePath::from(project_path.as_path().join("target")),
         packages,
@@ -2207,8 +2207,8 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     app.handle_bg_msg(BackgroundMsg::CargoMetadata {
         workspace_root: project_path.clone(),
         generation,
-        fingerprint: snap.fingerprint.clone(),
-        result: Ok(snap),
+        fingerprint: workspace_metadata.fingerprint.clone(),
+        result: Ok(workspace_metadata),
     });
 
     let cargo = app

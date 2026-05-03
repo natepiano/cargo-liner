@@ -986,11 +986,11 @@ fn try_dispatch_out_of_tree_cargo_config_refresh(
 }
 
 /// Does `event_path` sit under the workspace's resolved target
-/// directory? `resolved_target = None` means we don't yet have a
-/// metadata snapshot — fall back to `<project_root>/target`, which is
+/// directory? `resolved_target = None` means we don't yet have
+/// workspace metadata — fall back to `<project_root>/target`, which is
 /// what cargo uses by default.
 ///
-/// When the snapshot *is* available (e.g. target is redirected via
+/// When the metadata *is* available (e.g. target is redirected via
 /// `CARGO_TARGET_DIR` or `.cargo/config.toml`), events under the real
 /// target dir are suppressed and events under the in-tree `target/`
 /// decoy are treated as ordinary project events. The design doc
@@ -2076,7 +2076,8 @@ mod tests {
         let (watch_tx, watch_rx) = mpsc::channel();
         let (notify_tx, notify_rx) = mpsc::channel();
         let (bg_tx, _bg_rx) = mpsc::channel();
-        let client = HttpClient::new(test_support::test_runtime().handle().clone()).expect("http client");
+        let client =
+            HttpClient::new(test_support::test_runtime().handle().clone()).expect("http client");
 
         let client_for_dispatch = client.clone();
         spawn_watcher_thread(
@@ -2684,7 +2685,7 @@ edition = "2024"
         assert_eq!(refreshed.path(), project_root.path());
         // Step 3b retirement: the refreshed `Package`'s `Cargo` no
         // longer carries hand-parsed example data — that flows from
-        // the authoritative `cargo metadata` snapshot. The contract
+        // the authoritative `cargo metadata` result. The contract
         // pinned here is the refresh-emission pattern (a `Package`
         // arriving on `BackgroundMsg::ProjectRefreshed` for the
         // watched root), not the derived target counts.
@@ -3777,7 +3778,8 @@ edition = "2024"
             &mut discovered,
             5,
             NonRustInclusion::default(),
-            &crate::http::HttpClient::new(test_support::test_runtime().handle().clone()).expect("http client"),
+            &crate::http::HttpClient::new(test_support::test_runtime().handle().clone())
+                .expect("http client"),
         );
 
         let BackgroundMsg::ProjectDiscovered { item } = bg_rx
@@ -3820,7 +3822,8 @@ edition = "2024"
             &mut discovered,
             5,
             NonRustInclusion::default(),
-            &crate::http::HttpClient::new(test_support::test_runtime().handle().clone()).expect("http client"),
+            &crate::http::HttpClient::new(test_support::test_runtime().handle().clone())
+                .expect("http client"),
         );
 
         let BackgroundMsg::ProjectDiscovered { item } = bg_rx

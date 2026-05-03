@@ -1,6 +1,6 @@
 //! Typed cache of `cargo metadata` output, keyed by workspace root.
 //!
-//! Holds one [`WorkspaceSnapshot`] per detected workspace. Defines
+//! Holds one [`WorkspaceMetadata`] per detected workspace. Defines
 //! the structure and read-side access for the `cargo_metadata`
 //! integration.
 
@@ -26,7 +26,7 @@ use sha2::Digest as _;
 
 use super::AbsolutePath;
 
-/// Process-wide cache of cargo-metadata snapshots, keyed by workspace root.
+/// Process-wide cache of `cargo metadata` results, keyed by workspace root.
 ///
 /// Populated by [`BackgroundMsg::CargoMetadata`](crate::scan::BackgroundMsg)
 /// arrivals. Callers that want read-only access should go through
@@ -34,7 +34,7 @@ use super::AbsolutePath;
 /// this type directly.
 #[derive(Debug, Default)]
 pub(crate) struct WorkspaceMetadataStore {
-    pub(crate) by_root:              HashMap<AbsolutePath, WorkspaceSnapshot>,
+    pub(crate) by_root:              HashMap<AbsolutePath, WorkspaceMetadata>,
     /// Per-workspace monotonic counter. Every dispatch bumps the counter
     /// and stamps the spawned work with the new value; arrivals only
     /// commit if their stamp still matches the current counter. This
@@ -45,12 +45,12 @@ pub(crate) struct WorkspaceMetadataStore {
 impl WorkspaceMetadataStore {
     pub(crate) fn new() -> Self { Self::default() }
 
-    /// Look up the snapshot for the workspace whose root is `workspace_root`.
-    pub(crate) fn get(&self, workspace_root: &AbsolutePath) -> Option<&WorkspaceSnapshot> {
+    /// Look up the metadata for the workspace whose root is `workspace_root`.
+    pub(crate) fn get(&self, workspace_root: &AbsolutePath) -> Option<&WorkspaceMetadata> {
         self.by_root.get(workspace_root)
     }
 
-    /// Walk `path`'s ancestors and return the first one that has a snapshot.
+    /// Walk `path`'s ancestors and return the first one that has metadata.
     /// Enables callers to resolve `target_directory` from any path inside a
     /// known workspace without having to find the workspace root themselves.
     pub(crate) fn containing_workspace_root(&self, path: &AbsolutePath) -> Option<&AbsolutePath> {
@@ -65,7 +65,7 @@ impl WorkspaceMetadataStore {
     }
 
     /// Resolve the owning workspace's `target_directory` for any `path`
-    /// inside a known workspace. Returns `None` when no snapshot covers
+    /// inside a known workspace. Returns `None` when no metadata covers
     /// `path` yet; callers should fall back to `<project_root>/target`.
     /// This is the lock-free core of [`crate::tui::App::resolve_target_dir`].
     pub(crate) fn resolved_target_dir(&self, path: &AbsolutePath) -> Option<&AbsolutePath> {
@@ -78,7 +78,7 @@ impl WorkspaceMetadataStore {
     /// `path`. Works for standalone packages (where `path` is the
     /// workspace root) and for workspace members (where `path` is a
     /// member dir under the workspace root). Returns `None` when no
-    /// snapshot covers `path` or when no package in that snapshot
+    /// metadata covers `path` or when no package in that metadata
     /// matches — the latter happens transiently when a manifest has
     /// been edited and the follow-up `cargo metadata` hasn't landed
     /// yet, so callers should treat `None` as "Loading…".
@@ -91,15 +91,17 @@ impl WorkspaceMetadataStore {
             .find(|pkg| pkg.manifest_path.as_path() == expected_manifest)
     }
 
-    /// Insert or replace the snapshot for `workspace_root`.
-    pub(crate) fn upsert(&mut self, snapshot: WorkspaceSnapshot) {
-        self.by_root
-            .insert(snapshot.workspace_root.clone(), snapshot);
+    /// Insert or replace the metadata for `workspace_root`.
+    pub(crate) fn upsert(&mut self, workspace_metadata: WorkspaceMetadata) {
+        self.by_root.insert(
+            workspace_metadata.workspace_root.clone(),
+            workspace_metadata,
+        );
     }
 
-    /// Stamp the cached out-of-tree target size onto an existing snapshot.
-    /// No-op when `workspace_root` has no snapshot (the snapshot may have
-    /// been replaced between dispatch and arrival) or when the snapshot's
+    /// Stamp the cached out-of-tree target size onto an existing metadata
+    /// entry. No-op when `workspace_root` has no metadata (it may have
+    /// been replaced between dispatch and arrival) or when the entry's
     /// current `target_directory` no longer matches `target_dir` (a follow-
     /// up `cargo metadata` redirected the target before the walk landed).
     pub(crate) fn set_out_of_tree_target_bytes(
@@ -118,7 +120,7 @@ impl WorkspaceMetadataStore {
         true
     }
 
-    /// Drop the snapshot for `workspace_root`, if any.
+    /// Drop the metadata for `workspace_root`, if any.
     pub(crate) fn remove(&mut self, workspace_root: &AbsolutePath) {
         self.by_root.remove(workspace_root);
         self.dispatch_generations.remove(workspace_root);
@@ -150,7 +152,7 @@ impl WorkspaceMetadataStore {
 
 /// A single workspace's resolved `cargo metadata` output.
 #[derive(Clone, Debug)]
-pub(crate) struct WorkspaceSnapshot {
+pub(crate) struct WorkspaceMetadata {
     pub workspace_root:           AbsolutePath,
     pub target_directory:         AbsolutePath,
     pub packages:                 HashMap<PackageId, PackageRecord>,
@@ -220,8 +222,8 @@ pub(crate) struct TargetRecord {
 }
 
 /// Cheap, cross-conversation-stable reference to a package inside a
-/// [`WorkspaceSnapshot`]. `RustInfo` and similar project-state carry this
-/// handle so the snapshot body is not duplicated across every member.
+/// [`WorkspaceMetadata`]. `RustInfo` and similar project-state carry this
+/// handle so the metadata body is not duplicated across every member.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WorkspaceMetadataHandle {
     pub workspace_root: AbsolutePath,
@@ -242,7 +244,7 @@ pub(crate) struct ManifestFingerprint {
     pub rust_toolchain: Option<FileStamp>,
     /// Every ancestor `.cargo/config[.toml]` candidate path, recorded as
     /// present (`Some`) or absent (`None`). A `None → Some` transition is
-    /// itself a diff and invalidates the snapshot.
+    /// itself a diff and invalidates the cached metadata.
     pub configs:        std::collections::BTreeMap<PathBuf, Option<FileStamp>>,
 }
 
@@ -289,7 +291,7 @@ impl ManifestFingerprint {
     ///
     /// Missing files are represented as `None` in [`Self::configs`]; a
     /// `None → Some` transition on any config slot is a real change and
-    /// invalidates the snapshot even though no tracked-file edit occurred.
+    /// invalidates the cached metadata even though no tracked-file edit occurred.
     pub(crate) fn capture(workspace_root: &Path) -> io::Result<Self> {
         let manifest = FileStamp::from_path(&workspace_root.join("Cargo.toml"))?;
         let lockfile = optional_stamp(&workspace_root.join("Cargo.lock"))?;
@@ -535,8 +537,8 @@ mod tests {
     fn fake_snapshot(
         workspace_root: AbsolutePath,
         target_directory: AbsolutePath,
-    ) -> WorkspaceSnapshot {
-        WorkspaceSnapshot {
+    ) -> WorkspaceMetadata {
+        WorkspaceMetadata {
             workspace_root,
             target_directory,
             packages: std::collections::HashMap::new(),
@@ -659,7 +661,7 @@ mod tests {
 
     #[test]
     fn package_for_path_returns_none_when_snapshot_has_no_matching_package() {
-        // Transient case: the snapshot covers this workspace but the
+        // Transient case: metadata covers this workspace but the
         // specific package-dir path doesn't match any manifest (e.g. a
         // Cargo.toml was just added and the follow-up dispatch hasn't
         // landed yet). Callers should treat None as "Loading…".
@@ -688,9 +690,9 @@ mod tests {
 
     #[test]
     fn set_out_of_tree_target_bytes_declines_stale_target_dir() {
-        // A follow-up snapshot re-pointed target_directory between the
-        // walk's dispatch and its arrival. The old walk must NOT stamp
-        // the new snapshot.
+        // A follow-up metadata arrival re-pointed target_directory between
+        // the walk's dispatch and its arrival. The old walk must NOT stamp
+        // the new metadata.
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let stale_target = AbsolutePath::from(PathBuf::from("/old/target"));

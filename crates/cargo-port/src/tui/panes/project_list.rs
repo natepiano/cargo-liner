@@ -36,12 +36,15 @@ use super::constants::PREFIX_WT_MEMBER_NAMED;
 use super::constants::PREFIX_WT_VENDORED;
 use super::spec::PaneId;
 use crate::project;
+use crate::project::MemberGroup;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
+use crate::project::VendoredPackage;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
+use crate::project_list::ProjectList;
 use crate::tui::app::App;
 use crate::tui::app::DiscoveryRowKind;
 use crate::tui::app::DismissTarget;
@@ -57,9 +60,6 @@ use crate::tui::pane;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
 use crate::tui::render;
-use crate::project_list::ProjectList;
-use crate::project::VendoredPackage;
-use crate::project::MemberGroup;
 
 /// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
 #[allow(
@@ -1091,9 +1091,7 @@ fn render_tree_item(
 // Builds the per-row sorted disk-usage values that `disk_color` /
 // `disk_percentile` consume to color the disk column.
 
-pub fn compute_disk_cache(
-    entries: &ProjectList,
-) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
+pub fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
     let mut root_sorted = Vec::new();
     for entry in entries {
         if let Some(bytes) = entry.item.disk_usage_bytes() {

@@ -23,15 +23,15 @@ pub(crate) use cargo::ExampleGroup;
 pub(crate) use cargo::ProjectType;
 pub(crate) use cargo::from_cargo_toml;
 pub(crate) use cargo::from_git_dir;
-// ── Cargo metadata snapshot cache ────────────────────────────────────
+// ── Cargo metadata cache ─────────────────────────────────────────────
 pub(crate) use cargo_metadata_store::FileStamp;
 pub(crate) use cargo_metadata_store::ManifestFingerprint;
 pub(crate) use cargo_metadata_store::PackageRecord;
 pub(crate) use cargo_metadata_store::PublishPolicy;
 pub(crate) use cargo_metadata_store::TargetRecord;
+pub(crate) use cargo_metadata_store::WorkspaceMetadata;
 pub(crate) use cargo_metadata_store::WorkspaceMetadataHandle;
 pub(crate) use cargo_metadata_store::WorkspaceMetadataStore;
-pub(crate) use cargo_metadata_store::WorkspaceSnapshot;
 // ── Git types and functions ──────────────────────────────────────────
 pub(crate) use git::CheckoutInfo;
 pub(crate) use git::GitOrigin;

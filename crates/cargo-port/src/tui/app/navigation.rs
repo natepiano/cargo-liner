@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use super::App;
+use super::ExpandKey;
+use super::VisibleRow;
 use super::target_index::CleanSelection;
 use crate::perf_log;
 use crate::project;
@@ -13,8 +15,6 @@ use crate::project::RustProject;
 use crate::project::VendoredPackage;
 use crate::project::WorktreeGroup;
 use crate::tui;
-use super::ExpandKey;
-use super::VisibleRow;
 use crate::tui::panes;
 use crate::tui::panes::DetailCacheKey;
 

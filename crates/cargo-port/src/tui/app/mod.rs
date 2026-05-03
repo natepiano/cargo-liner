@@ -91,9 +91,9 @@ use crate::keymap::ResolvedKeymap;
 use crate::lint::LintRuns;
 use crate::project::AbsolutePath;
 use crate::project::ProjectCiData;
+use crate::project::WorkspaceMetadata;
 use crate::project::WorkspaceMetadataHandle;
 use crate::project::WorkspaceMetadataStore;
-use crate::project::WorkspaceSnapshot;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -117,7 +117,6 @@ mod tests;
 
 pub(super) use dismiss::DismissTarget;
 pub(super) use target_index::CleanSelection;
-pub(super) use target_index::MemberKind;
 pub(super) use target_index::TargetDirIndex;
 pub(super) use types::CiFetchTracker;
 pub(super) use types::CiRunDisplayMode;
@@ -331,9 +330,9 @@ impl App {
     /// `app.panes().cpu().content()`).
     pub(super) const fn panes(&self) -> &Panes { &self.panes }
 
-    /// Split-borrow accessor for per-pane render dispatch (Phase
-    /// 8.9+). Returns `(&mut Panes, &Config, &Selection, &Scan)`
-    /// — the four refs the dispatcher passes through to construct
+    /// Split-borrow accessor for per-pane render dispatch.
+    /// Returns `(&mut Panes, &Config, &Selection, &Scan)` — the
+    /// four refs the dispatcher passes through to construct
     /// `PaneRenderCtx`. All four are disjoint `App` fields, so
     /// holding them simultaneously is sound.
     pub(super) const fn split_panes_for_render(
@@ -458,7 +457,7 @@ impl App {
 
     /// Open a Clean confirm popup for `project_path`, first checking
     /// whether the project's workspace manifest has drifted since the
-    /// last snapshot. On drift: dispatch a `cargo metadata` refresh,
+    /// last `cargo metadata` run. On drift: dispatch a `cargo metadata` refresh,
     /// mark the confirm as verifying (popup blocks `y` until the
     /// refresh lands). On match: open the confirm Ready immediately.
     pub fn request_clean_confirm(&mut self, project_path: AbsolutePath) {
@@ -497,15 +496,15 @@ impl App {
 
     /// Does the workspace covering `project_path` need a re-fetch
     /// before the confirm opens? True when the on-disk manifest
-    /// fingerprint differs from the stored snapshot's fingerprint
+    /// fingerprint differs from the stored metadata's fingerprint
     /// (a `.cargo/config.toml` edit, a manifest save, etc.), OR when
-    /// no snapshot covers `project_path` at all.
+    /// no metadata covers `project_path` at all.
     fn should_verify_before_clean(&self, project_path: &AbsolutePath) -> bool {
         let Ok(store) = self.scan.metadata_store().lock() else {
             return false;
         };
         let Some(workspace_root) = store.containing_workspace_root(project_path) else {
-            // No snapshot covers this path — nothing to verify against.
+            // No metadata covers this path — nothing to verify against.
             return true;
         };
         let Some(snapshot) = store.get(workspace_root) else {
@@ -731,15 +730,15 @@ impl App {
     /// through the metadata-arrival handler.
     pub const fn target_dir_index_ref(&self) -> &TargetDirIndex { self.scan.target_dir_index() }
 
-    /// Resolve a [`WorkspaceMetadataHandle`] to a cloned snapshot, or `None`
-    /// when the workspace has no snapshot yet. Callers get the snapshot by
-    /// value; the store lock is released before this returns.
+    /// Resolve a [`WorkspaceMetadataHandle`] to a cloned [`WorkspaceMetadata`],
+    /// or `None` when the workspace has no metadata yet. Callers get the
+    /// metadata by value; the store lock is released before this returns.
     #[allow(
         dead_code,
         reason = "consumed in later steps (5/6); kept now so WorkspaceMetadataHandle \
                   has a resolve path in place before handle-carrying RustInfo lands"
     )]
-    pub fn resolve_metadata(&self, handle: &WorkspaceMetadataHandle) -> Option<WorkspaceSnapshot> {
+    pub fn resolve_metadata(&self, handle: &WorkspaceMetadataHandle) -> Option<WorkspaceMetadata> {
         self.scan
             .metadata_store()
             .lock()
@@ -750,7 +749,7 @@ impl App {
     /// Resolve the owning workspace's `target_directory` for any path inside
     /// a known workspace. Accepts project roots, members, worktree entries,
     /// vendored crate roots — the store walks ancestors internally. Returns
-    /// `None` when no snapshot covers `path` yet; callers should fall back
+    /// `None` when no metadata covers `path` yet; callers should fall back
     /// to `<project>/target`.
     pub fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
         self.scan

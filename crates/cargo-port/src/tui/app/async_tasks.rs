@@ -12,7 +12,6 @@ use super::ExpandKey::Worktree;
 use super::ExpandKey::WorktreeGroup;
 use super::phase_state::PhaseCompletion;
 use super::startup;
-use super::target_index::MemberKind;
 use super::target_index::TargetDirMember;
 use super::types::PollBackgroundStats;
 use super::types::ScanPhase;
@@ -45,7 +44,7 @@ use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
-use crate::project::WorkspaceSnapshot;
+use crate::project::WorkspaceMetadata;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -2524,8 +2523,8 @@ impl App {
         false
     }
 
-    /// Merge an out-of-tree target walk result into the snapshot cache.
-    /// Declines when the snapshot's `target_directory` has since been
+    /// Merge an out-of-tree target walk result into the metadata cache.
+    /// Declines when the cached metadata's `target_directory` has since been
     /// redirected — a fresh walk is already in flight under the new dir.
     fn handle_out_of_tree_target_size(
         &self,
@@ -2576,7 +2575,7 @@ impl App {
         workspace_root: AbsolutePath,
         generation: u64,
         fingerprint: &ManifestFingerprint,
-        result: Result<WorkspaceSnapshot, CargoMetadataError>,
+        result: Result<WorkspaceMetadata, CargoMetadataError>,
     ) {
         let Some(is_current) = self
             .scan
@@ -2602,12 +2601,12 @@ impl App {
         }
 
         match result {
-            Ok(snapshot) => {
-                if !self.accept_cargo_metadata_snapshot(
+            Ok(workspace_metadata) => {
+                if !self.accept_cargo_metadata(
                     &workspace_root,
                     generation,
                     fingerprint,
-                    snapshot,
+                    workspace_metadata,
                 ) {
                     return;
                 }
@@ -2661,12 +2660,12 @@ impl App {
     /// arrival was dropped because the captured fingerprint no longer
     /// matches what's on disk — caller should skip startup-phase bookkeeping
     /// so a later dispatch can still tick it off.
-    fn accept_cargo_metadata_snapshot(
+    fn accept_cargo_metadata(
         &mut self,
         workspace_root: &AbsolutePath,
         generation: u64,
         fingerprint: &ManifestFingerprint,
-        snapshot: WorkspaceSnapshot,
+        workspace_metadata: WorkspaceMetadata,
     ) -> bool {
         let current_fp =
             crate::project::ManifestFingerprint::capture(workspace_root.as_path()).ok();
@@ -2681,8 +2680,8 @@ impl App {
             );
             return false;
         }
-        let target_directory = snapshot.target_directory.clone();
-        let member_roots = snapshot_member_roots(&snapshot);
+        let target_directory = workspace_metadata.target_directory.clone();
+        let member_roots = workspace_member_roots(&workspace_metadata);
         let needs_out_of_tree_walk = !target_directory
             .as_path()
             .starts_with(workspace_root.as_path());
@@ -2691,10 +2690,10 @@ impl App {
         // matching Package / Workspace / VendoredPackage in the
         // project list. Retires the hand-parsed defaults left in
         // place by `from_cargo_toml`; the authoritative view is the
-        // snapshot.
-        self.apply_cargo_fields_from_snapshot(&snapshot);
+        // workspace metadata.
+        self.apply_cargo_fields_from_workspace_metadata(&workspace_metadata);
         if let Ok(mut store) = self.scan.metadata_store().lock() {
-            store.upsert(snapshot);
+            store.upsert(workspace_metadata);
         }
         if needs_out_of_tree_walk {
             scan::spawn_out_of_tree_target_walk(
@@ -2708,17 +2707,13 @@ impl App {
         // lookups see the fresh membership. Every package under this
         // workspace shares `target_directory`; upsert each so a
         // subsequent clean on any member resolves to the correct dir.
-        // (Members that were in a *previous* snapshot but not this one
+        // (Members that were in *previous* metadata but not this one
         // will linger until a full scan restart — minor staleness,
         // acceptable for Step 6c.)
         for project_root in member_roots {
-            self.scan.target_dir_index_mut().upsert(
-                TargetDirMember {
-                    project_root,
-                    kind: MemberKind::Project,
-                },
-                target_directory.clone(),
-            );
+            self.scan
+                .target_dir_index_mut()
+                .upsert(TargetDirMember { project_root }, target_directory.clone());
         }
         tracing::info!(
             workspace_root = %workspace_root.as_path().display(),
@@ -2729,12 +2724,12 @@ impl App {
     }
 
     /// Step 3b: derive [`Cargo`] fields from every [`PackageRecord`] in
-    /// `snapshot` and stamp them onto the matching live project entry
-    /// (standalone package, workspace member, or vendored package).
+    /// `workspace_metadata` and stamp them onto the matching live project
+    /// entry (standalone package, workspace member, or vendored package).
     /// Workspaces themselves keep the empty-default `Cargo` the parser
     /// produces — they have no single `PackageRecord`; members fan out
     /// into individual packages underneath.
-    fn apply_cargo_fields_from_snapshot(&mut self, snapshot: &WorkspaceSnapshot) {
+    fn apply_cargo_fields_from_workspace_metadata(&mut self, snapshot: &WorkspaceMetadata) {
         use crate::project::Cargo;
         for record in snapshot.packages.values() {
             let Some(manifest_dir) = record.manifest_path.as_path().parent() else {
@@ -2884,13 +2879,13 @@ fn collect_publishable_children(item: &RootItem, out: &mut Vec<(AbsolutePath, St
     }
 }
 
-/// Project root for each package covered by a [] —
+/// Project root for each package covered by a [`WorkspaceMetadata`] —
 /// derived from each package's `manifest_path.parent()`. Feeds the
 /// `TargetDirIndex` membership update after a successful
 /// `BackgroundMsg::CargoMetadata` arrival; every package under a given
-/// workspace shares the snapshot's `target_directory`.
-fn snapshot_member_roots(snapshot: &WorkspaceSnapshot) -> Vec<AbsolutePath> {
-    snapshot
+/// workspace shares the metadata's `target_directory`.
+fn workspace_member_roots(workspace_metadata: &WorkspaceMetadata) -> Vec<AbsolutePath> {
+    workspace_metadata
         .packages
         .values()
         .filter_map(|pkg| {

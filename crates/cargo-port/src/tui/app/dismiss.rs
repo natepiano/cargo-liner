@@ -1,12 +1,12 @@
 use std::path::Path;
 
 use super::App;
+use super::VisibleRow;
 use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::Visibility::Dismissed;
 use crate::project::WorktreeGroup;
-use super::VisibleRow;
 use crate::tui::panes::PaneId;
 
 // ── Dismiss target ──────────────────────────────────────────────

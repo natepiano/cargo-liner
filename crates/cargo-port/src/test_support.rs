@@ -23,9 +23,8 @@ pub(crate) fn test_runtime() -> &'static tokio::runtime::Runtime {
 pub(crate) fn header_map(entries: &[(&str, &str)]) -> HeaderMap {
     let mut headers = HeaderMap::new();
     for (name, value) in entries {
-        let name: reqwest::header::HeaderName = (*name)
-            .parse()
-            .unwrap_or_else(|_| std::process::abort());
+        let name: reqwest::header::HeaderName =
+            (*name).parse().unwrap_or_else(|_| std::process::abort());
         let value = HeaderValue::from_str(value).unwrap_or_else(|_| std::process::abort());
         headers.insert(name, value);
     }

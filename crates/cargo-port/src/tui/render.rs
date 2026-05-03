@@ -13,7 +13,6 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
 use super::app::ConfirmAction;
-use super::app::MemberKind;
 use super::constants::ACCENT_COLOR;
 use super::constants::BLOCK_BORDER_WIDTH;
 use super::constants::BYTES_PER_GIB;
@@ -241,16 +240,8 @@ fn append_sibling_lines(
     lines: &mut Vec<String>,
 ) {
     let siblings = app.target_dir_index_ref().siblings(target, selection);
-    let mut project_siblings: Vec<&AbsolutePath> = Vec::new();
-    let mut nested_count = 0usize;
-    for member in siblings {
-        match member.kind {
-            MemberKind::Project => {
-                project_siblings.push(&member.project_root);
-            },
-            MemberKind::Submodule | MemberKind::Vendored => nested_count += 1,
-        }
-    }
+    let project_siblings: Vec<&AbsolutePath> =
+        siblings.iter().map(|member| &member.project_root).collect();
     if !project_siblings.is_empty() {
         lines.push("Also affects:".to_string());
         for sibling in project_siblings.iter().take(AFFECTED_EXTRAS_VISIBLE_CAP) {
@@ -263,12 +254,6 @@ fn append_sibling_lines(
             let extra = project_siblings.len() - AFFECTED_EXTRAS_VISIBLE_CAP;
             lines.push(format!("  +{extra} more"));
         }
-    }
-    if nested_count > 0 {
-        let noun = if nested_count == 1 { "crate" } else { "crates" };
-        lines.push(format!(
-            "  ({nested_count} nested {noun} also share this target)"
-        ));
     }
 }
 

@@ -667,7 +667,7 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     }
     // Step 4 fields: show unconditionally on Rust packages so that
     // unset values render as `—` and the UI surface matches the
-    // manifest faithfully even before a snapshot arrives.
+    // manifest faithfully even before metadata arrives.
     if data.has_package {
         fields.push(DetailField::Edition);
         fields.push(DetailField::License);
@@ -735,8 +735,8 @@ pub struct PackageData {
     pub disk:                     String,
     pub stats_rows:               Vec<(&'static str, usize)>,
     pub has_package:              bool,
-    /// Cargo edition ("2021", "2024", …) from the metadata snapshot.
-    /// `None` until a snapshot has landed or for non-Rust projects.
+    /// Cargo edition ("2021", "2024", …) from the workspace metadata.
+    /// `None` until metadata has landed or for non-Rust projects.
     pub edition:                  Option<String>,
     pub license:                  Option<String>,
     pub homepage:                 Option<String>,
@@ -759,15 +759,15 @@ pub struct PackageData {
     pub ci_display:               super::CiDisplay,
     /// Byte size of the workspace's out-of-tree `target_directory`
     /// (when the resolved target sits outside `workspace_root`). Flows
-    /// from `WorkspaceSnapshot::out_of_tree_target_bytes` once the
+    /// from `WorkspaceMetadata::out_of_tree_target_bytes` once the
     /// cached walk reports back; `None` for in-tree targets or before
     /// the walk lands.
     pub out_of_tree_target_bytes: Option<u64>,
 }
 
 /// Resolve (version, description) for the detail pane from the
-/// authoritative snapshot. Returns `("-", None)` pre-snapshot — matches
-/// the Targets pane's pre-snapshot placeholder UX.
+/// authoritative metadata. Returns `("-", None)` pre-metadata — matches
+/// the Targets pane's pre-metadata placeholder UX.
 fn snapshot_version_and_description(pkg: Option<&PackageRecord>) -> (String, Option<String>) {
     let version = pkg.map_or_else(|| "-".to_string(), |p| p.version.to_string());
     let description = pkg.and_then(|p| p.description.clone());
@@ -891,7 +891,7 @@ impl TargetsData {
         self.primary_binary.is_some() || !self.examples.is_empty() || !self.benches.is_empty()
     }
 
-    /// Build from a snapshot [`PackageRecord`]. Examples grouped by
+    /// Build from a [`PackageRecord`]. Examples grouped by
     /// subdirectory derived from `TargetRecord.src_path` relative to
     /// the package's manifest directory (design plan → Step 3, Targets
     /// pane); benches listed flat. The primary-binary name is the bin
@@ -1540,7 +1540,7 @@ fn lookup_snapshot_package(app: &App, abs_path: &AbsolutePath) -> Option<Package
         .and_then(|store| store.package_for_path(abs_path).cloned())
 }
 
-/// Manifest-derived fields pulled from the metadata snapshot.
+/// Manifest-derived fields pulled from the workspace metadata.
 struct ManifestFields {
     edition:     Option<String>,
     license:     Option<String>,
@@ -1731,13 +1731,13 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 }
 
 /// Assemble `DetailPaneData` from already-resolved inputs.
-/// Step 3a/3b: derive Targets-pane data from the snapshot when it
-/// covers this project. Without a snapshot the pane stays empty
+/// Step 3a/3b: derive Targets-pane data from workspace metadata when it
+/// covers this project. Without metadata the pane stays empty
 /// (design plan → "Workspace members + Targets pane migrate to
-/// snapshots atomically; targets show 'Loading…' without a
-/// snapshot"). The old hand-parsed fallback could disagree with
+/// metadata atomically; targets show 'Loading…' without
+/// metadata"). The old hand-parsed fallback could disagree with
 /// cargo's real discovery rules (autoexamples, required-features,
-/// excluded targets), so we'd rather render nothing pre-snapshot
+/// excluded targets), so we'd rather render nothing pre-metadata
 /// than render something misleading.
 fn assemble_detail_pane_data(
     package: PackageData,

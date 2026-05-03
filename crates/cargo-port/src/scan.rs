@@ -47,8 +47,8 @@ use super::project::Submodule;
 use super::project::TargetRecord;
 use super::project::VendoredPackage;
 use super::project::Workspace;
+use super::project::WorkspaceMetadata;
 use super::project::WorkspaceMetadataStore;
-use super::project::WorkspaceSnapshot;
 use super::project::WorktreeGroup;
 use crate::enrichment;
 
@@ -169,13 +169,13 @@ pub(crate) enum BackgroundMsg {
         workspace_root: AbsolutePath,
         generation:     u64,
         fingerprint:    ManifestFingerprint,
-        result:         Result<WorkspaceSnapshot, CargoMetadataError>,
+        result:         Result<WorkspaceMetadata, CargoMetadataError>,
     },
     /// Disk walk result for an out-of-tree `target_directory`. Emitted by
-    /// [`spawn_out_of_tree_target_walk`] when a snapshot whose
+    /// [`spawn_out_of_tree_target_walk`] when workspace metadata whose
     /// `target_directory` sits outside its `workspace_root` lands. The
-    /// receiver stamps `bytes` onto the snapshot so the detail pane can
-    /// surface sharer target sizes that the per-project walker can't see.
+    /// receiver stamps `bytes` onto the cached metadata so the detail pane
+    /// can surface sharer target sizes that the per-project walker can't see.
     OutOfTreeTargetSize {
         workspace_root: AbsolutePath,
         target_dir:     AbsolutePath,
@@ -1447,11 +1447,11 @@ pub(crate) fn spawn_cargo_metadata_refresh(
 struct CargoMetadataTaskOutput {
     generation:  u64,
     fingerprint: ManifestFingerprint,
-    result:      Result<WorkspaceSnapshot, CargoMetadataError>,
+    result:      Result<WorkspaceMetadata, CargoMetadataError>,
 }
 
 /// Walk `target_dir` on a blocking thread and emit its total byte size via
-/// [`BackgroundMsg::OutOfTreeTargetSize`]. Used when a workspace snapshot
+/// [`BackgroundMsg::OutOfTreeTargetSize`]. Used when workspace metadata
 /// reports a `target_directory` outside its `workspace_root`; the scan-time
 /// walker's per-project breakdown doesn't reach there, so this fills in the
 /// sharer target size for the detail pane.
@@ -1591,7 +1591,7 @@ fn build_workspace_snapshot(
     workspace_root: AbsolutePath,
     metadata: &cargo_metadata::Metadata,
     fingerprint: ManifestFingerprint,
-) -> WorkspaceSnapshot {
+) -> WorkspaceMetadata {
     let target_directory =
         AbsolutePath::from(PathBuf::from(metadata.target_directory.as_std_path()));
     let workspace_members = metadata.workspace_members.clone();
@@ -1627,7 +1627,7 @@ fn build_workspace_snapshot(
             (pkg.id.clone(), record)
         })
         .collect();
-    WorkspaceSnapshot {
+    WorkspaceMetadata {
         workspace_root,
         target_directory,
         packages,
