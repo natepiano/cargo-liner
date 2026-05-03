@@ -100,8 +100,7 @@ pub(super) fn load_report(
         .iter()
         .filter_map(|root| fs::canonicalize(root).ok())
         .collect();
-    let mut findings = Vec::new();
-    let mut pub_use_fix_facts = Vec::new();
+    let mut matched_reports: Vec<StoredReport> = Vec::new();
 
     for entry in fs::read_dir(findings_dir).with_context(|| {
         format!(
@@ -128,6 +127,22 @@ pub(super) fn load_report(
         ) {
             continue;
         }
+        matched_reports.push(stored);
+    }
+
+    // Apply cross-compilation intersection for narrowing-style findings.
+    // A `pub fn` flagged as narrowable to `pub(super)` by the lib
+    // compilation may have callers in the lib-test compilation that the
+    // narrowing would block; the lib-test compilation will not emit the
+    // finding in that case. Same for `internal_parent_pub_use_facade` —
+    // if the parent re-export is referenced by test code, the test
+    // compilation does not flag it. So we keep narrowing-style findings
+    // ONLY when every compilation analyzing the same crate root agrees.
+    apply_cross_compilation_intersection(&mut matched_reports);
+
+    let mut findings = Vec::new();
+    let mut pub_use_fix_facts = Vec::new();
+    for stored in matched_reports {
         extend_report_from_stored(
             &mut findings,
             &mut pub_use_fix_facts,
@@ -253,6 +268,84 @@ fn extend_report_from_stored(
             parent_line:     fact.parent_line,
             child_module:    fact.child_module,
         });
+    }
+}
+
+/// Codes whose findings propose narrowing visibility. For these, an
+/// agreement across every compilation analyzing the same crate root is
+/// required — a finding from the lib compilation is dropped if any sibling
+/// compilation (lib-test, etc.) does not flag the same item. Codes not in
+/// this set use the default union/dedup behavior.
+const fn requires_cross_compilation_agreement(code: DiagnosticCode) -> bool {
+    matches!(
+        code,
+        DiagnosticCode::SuspiciousPub | DiagnosticCode::InternalParentPubUseFacade
+    )
+}
+
+fn finding_intersection_key(finding: &StoredFinding) -> (DiagnosticCode, String, usize, usize) {
+    (
+        finding.code,
+        finding.path.clone(),
+        finding.line,
+        finding.column,
+    )
+}
+
+fn apply_cross_compilation_intersection(reports: &mut [StoredReport]) {
+    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
+
+    if reports.len() < 2 {
+        return;
+    }
+
+    // Group reports by crate-root file so the intersection is taken across
+    // sibling compilations of the same crate (lib + lib-test, etc.).
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (idx, report) in reports.iter().enumerate() {
+        groups
+            .entry(report.crate_root_file.clone())
+            .or_default()
+            .push(idx);
+    }
+
+    for (_crate_root, indices) in groups {
+        if indices.len() < 2 {
+            continue;
+        }
+
+        // Build the per-key emission count across the group, restricted to
+        // codes that require cross-compilation agreement.
+        let mut emission_count: BTreeMap<(DiagnosticCode, String, usize, usize), usize> =
+            BTreeMap::new();
+        for &idx in &indices {
+            let mut seen_in_this_report: BTreeSet<(DiagnosticCode, String, usize, usize)> =
+                BTreeSet::new();
+            for finding in &reports[idx].findings {
+                if requires_cross_compilation_agreement(finding.code) {
+                    let key = finding_intersection_key(finding);
+                    if seen_in_this_report.insert(key.clone()) {
+                        *emission_count.entry(key).or_default() += 1;
+                    }
+                }
+            }
+        }
+
+        let group_size = indices.len();
+
+        // Drop findings that did not appear in every compilation of the
+        // group. (They are false positives caused by single-compilation
+        // visibility — typically lib-only views that strip cfg(test).)
+        for &idx in &indices {
+            reports[idx].findings.retain(|finding| {
+                if !requires_cross_compilation_agreement(finding.code) {
+                    return true;
+                }
+                let key = finding_intersection_key(finding);
+                emission_count.get(&key).copied().unwrap_or(0) == group_size
+            });
+        }
     }
 }
 

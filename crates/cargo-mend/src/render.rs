@@ -71,6 +71,10 @@ pub(crate) fn render_human_report(
         }
     }
 
+    if let Some(errors_block) = errors_block(report, color) {
+        output.push_str(&errors_block);
+        output.push('\n');
+    }
     output.push_str(&summary_line(report, compiler_stats, color));
     output.push('\n');
     output
@@ -172,7 +176,9 @@ const fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a 
 struct SummaryRow {
     count:       usize,
     description: String,
-    fixable:     Option<SummaryFixable>,
+    /// One entry per applicable fix flag. The first renders inline with the
+    /// row; later entries render as continuation lines under the same row.
+    fixables:    Vec<SummaryFixable>,
 }
 
 struct SummaryFixable {
@@ -180,57 +186,74 @@ struct SummaryFixable {
     command: &'static str,
 }
 
-struct SummaryActionRow {
-    count:         usize,
-    description:   &'static str,
-    fixable_count: usize,
-    message:       &'static str,
-    command:       &'static str,
+fn errors_block(report: &Report, color: ColorMode) -> Option<String> {
+    if report.summary.errors == 0 {
+        return None;
+    }
+    let n = report.summary.errors;
+    let label = pluralize(n, "mend error", "mend errors");
+    Some(format!(
+        "{} {n} {label} (not auto-fixable; fix manually)",
+        paint("errors:", ANSI_BOLD_RED, color)
+    ))
+}
+
+/// How many fix categories have at least one fixable item.
+const fn fixable_category_count(report: &Report, compiler_stats: &CompilerStats) -> usize {
+    let mut n = 0;
+    if report.summary.fixable_with_fix > 0 {
+        n += 1;
+    }
+    if report.summary.fixable_with_fix_pub_use > 0 {
+        n += 1;
+    }
+    if compiler_stats.fixable > 0 {
+        n += 1;
+    }
+    n
 }
 
 fn summary_line(report: &Report, compiler_stats: &CompilerStats, color: ColorMode) -> String {
     let mut rows = Vec::new();
-    let mend_fixable_count =
-        report.summary.fixable_with_fix + report.summary.fixable_with_fix_pub_use;
+    let categories = fixable_category_count(report, compiler_stats);
+    let total_fixable = report.summary.fixable_with_fix
+        + report.summary.fixable_with_fix_pub_use
+        + compiler_stats.fixable;
 
-    if report.summary.errors > 0 {
-        let n = report.summary.errors;
-        rows.push(SummaryRow {
-            count:       n,
-            description: pluralize(n, "mend error", "mend errors").to_string(),
-            fixable:     None,
-        });
-    }
     if compiler_stats.warnings > 0 {
         let n = compiler_stats.warnings;
-        rows.push(SummaryRow {
-            count:       n,
-            description: pluralize(n, "compiler warning", "compiler warnings").to_string(),
-            fixable:     (compiler_stats.fixable > 0).then_some(SummaryFixable {
+        let mut fixables = Vec::new();
+        if compiler_stats.fixable > 0 {
+            fixables.push(SummaryFixable {
                 count:   compiler_stats.fixable,
                 command: "cargo mend --fix-compiler",
-            }),
+            });
+        }
+        rows.push(SummaryRow {
+            count: n,
+            description: pluralize(n, "compiler warning", "compiler warnings").to_string(),
+            fixables,
         });
     }
     if report.summary.warnings > 0 {
         let n = report.summary.warnings;
-        let command = if report.summary.fixable_with_fix_pub_use > 0
-            && report.summary.fixable_with_fix == 0
-        {
-            "cargo mend --fix-pub-use"
-        } else if report.summary.fixable_with_fix > 0 && report.summary.fixable_with_fix_pub_use > 0
-        {
-            "cargo mend --fix --fix-pub-use"
-        } else {
-            "cargo mend --fix"
-        };
+        let mut fixables = Vec::new();
+        if report.summary.fixable_with_fix > 0 {
+            fixables.push(SummaryFixable {
+                count:   report.summary.fixable_with_fix,
+                command: "cargo mend --fix",
+            });
+        }
+        if report.summary.fixable_with_fix_pub_use > 0 {
+            fixables.push(SummaryFixable {
+                count:   report.summary.fixable_with_fix_pub_use,
+                command: "cargo mend --fix-pub-use",
+            });
+        }
         rows.push(SummaryRow {
-            count:       n,
+            count: n,
             description: pluralize(n, "mend warning", "mend warnings").to_string(),
-            fixable:     (mend_fixable_count > 0).then_some(SummaryFixable {
-                count: mend_fixable_count,
-                command,
-            }),
+            fixables,
         });
     }
 
@@ -238,44 +261,48 @@ fn summary_line(report: &Report, compiler_stats: &CompilerStats, color: ColorMod
         return format!("{} no issues found", dim("summary:", color));
     }
 
-    let total_warnings = report.summary.warnings + compiler_stats.warnings;
-    let total_fixable = mend_fixable_count + compiler_stats.fixable;
-    let action_row =
-        (mend_fixable_count > 0 && compiler_stats.fixable > 0).then_some(SummaryActionRow {
-            count:         total_warnings,
-            description:   "total warnings",
-            fixable_count: total_fixable,
-            message:       "fix both mend and compiler warnings",
-            command:       "cargo mend --fix-all",
+    // When fixables span multiple flag categories, append a `--fix-all` entry
+    // to the last warning row so the single-command convergent option is
+    // always one click away.
+    if categories > 1
+        && let Some(last) = rows.last_mut()
+    {
+        last.fixables.push(SummaryFixable {
+            count:   total_fixable,
+            command: "cargo mend --fix-all",
         });
+    }
 
-    render_summary_rows(&rows, action_row.as_ref(), color)
+    render_summary_rows(&rows, color)
 }
 
-fn render_summary_rows(
-    rows: &[SummaryRow],
-    action_row: Option<&SummaryActionRow>,
-    color: ColorMode,
-) -> String {
+fn render_summary_rows(rows: &[SummaryRow], color: ColorMode) -> String {
     let count_width = rows.iter().map(|r| digit_count(r.count)).max().unwrap_or(1);
     let desc_width = rows.iter().map(|r| r.description.len()).max().unwrap_or(0);
     let fixable_count_width = rows
         .iter()
-        .filter_map(|r| r.fixable.as_ref())
+        .flat_map(|r| r.fixables.iter())
         .map(|f| digit_count(f.count))
         .max()
         .unwrap_or(0);
-    let desc_width = action_row.map_or(desc_width, |row| desc_width.max(row.description.len()));
-    let fixable_count_width = action_row.map_or(fixable_count_width, |row| {
-        fixable_count_width.max(digit_count(row.fixable_count))
-    });
     let prefix = dim("summary:", color);
     let indent = " ".repeat("summary:".len());
+    // Continuation indent fills the count + description columns so the dash
+    // aligns with the inline fixable on the parent row.
+    let cont_indent = format!(
+        "{indent} {:>cw$} {:<dw$}",
+        "",
+        "",
+        cw = count_width,
+        dw = desc_width
+    );
 
     let mut result = String::new();
+    let mut first = true;
     for (i, row) in rows.iter().enumerate() {
         let leader = if i == 0 { &prefix } else { &indent };
-        let fixable_part = row.fixable.as_ref().map_or_else(String::new, |f| {
+        let inline = row.fixables.first();
+        let inline_part = inline.map_or_else(String::new, |f| {
             format!(
                 " - {:>width$} fixable with `{}`",
                 f.count,
@@ -283,34 +310,28 @@ fn render_summary_rows(
                 width = fixable_count_width
             )
         });
-        let line = format!(
-            "{leader} {:>cw$} {:<dw$}{fixable_part}",
-            row.count,
-            row.description,
-            cw = count_width,
-            dw = desc_width,
-        );
-        if i > 0 {
+        if !first {
             result.push('\n');
         }
-        result.push_str(&line);
-    }
-    if let Some(row) = action_row {
-        if !result.is_empty() {
-            result.push('\n');
-        }
+        first = false;
         let _ = write!(
             result,
-            "{indent} {:>cw$} {:<dw$} - {:>fw$} fixable - {} with `{}`",
+            "{leader} {:>cw$} {:<dw$}{inline_part}",
             row.count,
             row.description,
-            row.fixable_count,
-            row.message,
-            row.command,
             cw = count_width,
             dw = desc_width,
-            fw = fixable_count_width,
         );
+        for f in row.fixables.iter().skip(1) {
+            result.push('\n');
+            let _ = write!(
+                result,
+                "{cont_indent} - {:>width$} fixable with `{}`",
+                f.count,
+                f.command,
+                width = fixable_count_width
+            );
+        }
     }
     result
 }
@@ -361,6 +382,10 @@ fn paint(text: &str, code: &str, color: ColorMode) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::ColorMode;
     use super::CompilerStats;
@@ -448,10 +473,10 @@ mod tests {
 
         assert!(output.contains("summary: 3 compiler warnings"));
         assert!(output.contains("1 mend warning"));
-        assert!(output.contains("4 total warnings"));
-        assert!(output.contains(
-            "- 2 fixable - fix both mend and compiler warnings with `cargo mend --fix-all`"
-        ));
+        assert!(
+            !output.contains("total warnings"),
+            "total-warnings action row should not appear; --fix-all is suggested per row instead"
+        );
     }
 
     #[test]
@@ -462,8 +487,215 @@ mod tests {
             ColorMode::Disabled,
         );
 
-        assert!(output.contains(
-            "summary: 3 compiler warnings - 1 fixable with `cargo mend --fix-compiler`\n         1 mend warning      - 1 fixable with `cargo mend --fix`\n         4 total warnings    - 2 fixable - fix both mend and compiler warnings with `cargo mend --fix-all`\n"
-        ));
+        // Compiler row gets `--fix-compiler`; mend row gets `--fix` plus the
+        // continuation `--fix-all` line because two categories are fixable.
+        assert!(
+            output.contains(
+                "summary: 3 compiler warnings - 1 fixable with `cargo mend --fix-compiler`\n"
+            ),
+            "compiler row missing/misaligned:\n{output}"
+        );
+        assert!(
+            output.contains("         1 mend warning      - 1 fixable with `cargo mend --fix`\n"),
+            "mend row missing/misaligned:\n{output}"
+        );
+        // The `--fix-all` continuation line aligns under the inline fixable
+        // (its dash sits in the same column as the mend row's dash).
+        assert!(
+            output.contains("                            - 2 fixable with `cargo mend --fix-all`"),
+            "--fix-all continuation row missing/misaligned:\n{output}"
+        );
+    }
+
+    fn pub_use_warning_report() -> Report {
+        Report {
+            root: ".".to_string(),
+            summary: ReportSummary {
+                warnings: 1,
+                fixable_with_fix_pub_use: 1,
+                ..ReportSummary::default()
+            },
+            findings: vec![Finding {
+                severity:      Severity::Warning,
+                code:          DiagnosticCode::InternalParentPubUseFacade,
+                path:          "src/lib.rs".to_string(),
+                line:          1,
+                column:        1,
+                highlight_len: 3,
+                source_line:   "pub use child::Foo;".to_string(),
+                item:          None,
+                message:       "example".to_string(),
+                suggestion:    None,
+                fixability:    FixSupport::FixPubUse,
+                related:       None,
+            }],
+            ..Report::default()
+        }
+    }
+
+    fn errors_only_report() -> Report {
+        Report {
+            root: ".".to_string(),
+            summary: ReportSummary {
+                errors: 3,
+                ..ReportSummary::default()
+            },
+            findings: vec![Finding {
+                severity:      Severity::Error,
+                code:          DiagnosticCode::ForbiddenPubCrate,
+                path:          "src/lib.rs".to_string(),
+                line:          1,
+                column:        1,
+                highlight_len: 3,
+                source_line:   "pub(crate) fn x() {}".to_string(),
+                item:          Some("x".to_string()),
+                message:       "forbidden".to_string(),
+                suggestion:    None,
+                fixability:    FixSupport::None,
+                related:       None,
+            }],
+            ..Report::default()
+        }
+    }
+
+    #[test]
+    fn summary_never_emits_combined_fix_pub_use_string() {
+        // Both mend and pub-use have fixables — should list each flag on its
+        // own line plus `--fix-all`, never `cargo mend --fix --fix-pub-use`.
+        let report = Report {
+            summary: ReportSummary {
+                warnings: 2,
+                fixable_with_fix: 1,
+                fixable_with_fix_pub_use: 1,
+                ..ReportSummary::default()
+            },
+            findings: vec![
+                mend_warning_report().findings[0].clone(),
+                pub_use_warning_report().findings[0].clone(),
+            ],
+            ..Report::default()
+        };
+        let output = render_human_report(&report, &compiler_stats(0, 0), ColorMode::Disabled);
+
+        assert!(
+            !output.contains("--fix --fix-pub-use"),
+            "combined flag string must never appear:\n{output}"
+        );
+        assert!(
+            output.contains("`cargo mend --fix`"),
+            "expected dedicated `--fix` line:\n{output}"
+        );
+        assert!(
+            output.contains("`cargo mend --fix-pub-use`"),
+            "expected dedicated `--fix-pub-use` line:\n{output}"
+        );
+        assert!(
+            output.contains("`cargo mend --fix-all`"),
+            "expected `--fix-all` continuation line:\n{output}"
+        );
+    }
+
+    #[test]
+    fn summary_lists_one_line_per_fix_flag_plus_fix_all_aggregate() {
+        // Bug-report scenario: 213 mend warnings split 1-and-1 across `--fix`
+        // and `--fix-pub-use`. Three lines required.
+        let report = Report {
+            summary: ReportSummary {
+                warnings: 213,
+                fixable_with_fix: 1,
+                fixable_with_fix_pub_use: 1,
+                ..ReportSummary::default()
+            },
+            findings: vec![
+                mend_warning_report().findings[0].clone(),
+                pub_use_warning_report().findings[0].clone(),
+            ],
+            ..Report::default()
+        };
+        let output = render_human_report(&report, &compiler_stats(0, 0), ColorMode::Disabled);
+
+        let fix_idx = output
+            .find("1 fixable with `cargo mend --fix`")
+            .expect("missing --fix line");
+        let pub_use_idx = output
+            .find("1 fixable with `cargo mend --fix-pub-use`")
+            .expect("missing --fix-pub-use line");
+        let fix_all_idx = output
+            .find("2 fixable with `cargo mend --fix-all`")
+            .expect("missing --fix-all aggregate line");
+        assert!(
+            fix_idx < pub_use_idx && pub_use_idx < fix_all_idx,
+            "expected order --fix → --fix-pub-use → --fix-all:\n{output}"
+        );
+    }
+
+    #[test]
+    fn summary_suggests_pub_use_alone_when_only_pub_use_is_fixable() {
+        let output = render_human_report(
+            &pub_use_warning_report(),
+            &compiler_stats(0, 0),
+            ColorMode::Disabled,
+        );
+
+        assert!(output.contains("`cargo mend --fix-pub-use`"));
+        // Single category → no --fix-all line.
+        assert!(!output.contains("--fix-all"));
+    }
+
+    #[test]
+    fn summary_emits_per_flag_lines_when_compiler_and_mend_are_fixable() {
+        let output = render_human_report(
+            &mend_warning_report(),
+            &compiler_stats(2, 2),
+            ColorMode::Disabled,
+        );
+
+        assert!(
+            output.contains("`cargo mend --fix-compiler`"),
+            "compiler row should still suggest --fix-compiler:\n{output}"
+        );
+        assert!(
+            output.contains("`cargo mend --fix`"),
+            "mend row should suggest --fix:\n{output}"
+        );
+        assert!(
+            output.contains("`cargo mend --fix-all`"),
+            "multi-category aggregate should appear:\n{output}"
+        );
+    }
+
+    #[test]
+    fn errors_render_in_their_own_block_above_summary() {
+        let output = render_human_report(
+            &errors_only_report(),
+            &compiler_stats(0, 0),
+            ColorMode::Disabled,
+        );
+
+        let errors_idx = output.find("errors:").expect("errors header should appear");
+        let summary_idx = output.find("summary:");
+        if let Some(s) = summary_idx {
+            assert!(
+                errors_idx < s,
+                "errors block must precede summary block:\n{output}"
+            );
+        }
+        assert!(
+            output.contains("not auto-fixable"),
+            "errors block must say errors are not auto-fixable:\n{output}"
+        );
+        // Errors must NEVER show up in the "X fixable" summary count.
+        assert!(!output.contains("mend errors -"));
+    }
+
+    #[test]
+    fn errors_block_omitted_when_no_errors_present() {
+        let output = render_human_report(
+            &mend_warning_report(),
+            &compiler_stats(0, 0),
+            ColorMode::Disabled,
+        );
+
+        assert!(!output.contains("errors:"));
     }
 }

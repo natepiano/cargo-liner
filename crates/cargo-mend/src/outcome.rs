@@ -10,11 +10,16 @@ use super::run_mode::OperationIntent;
 
 #[derive(Debug)]
 pub(crate) struct ExecutionOutcome {
-    pub report:            Report,
-    pub notice:            Option<ExecutionNotice>,
-    pub check_duration:    Duration,
-    pub compiler_warnings: usize,
-    pub compiler_fixable:  usize,
+    pub report:                     Report,
+    pub notice:                     Option<ExecutionNotice>,
+    pub check_duration:             Duration,
+    pub compiler_warnings:          usize,
+    pub compiler_fixable:           usize,
+    /// Count of `pub use` fixes actually applied (zero in dry-run / read-only).
+    pub applied_pub_use:            usize,
+    /// True when post-apply validation observed `unused import` warnings —
+    /// signals that `cargo fix` should be chained to clean up the cascade.
+    pub saw_unused_import_warnings: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +31,6 @@ pub(crate) struct ExecutionNotice {
 pub(crate) enum NoticeKind {
     ImportFixes(FixNotice),
     PubUseFixes(PubUseNotice),
-    ImportCleanupSuggested,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,10 +168,6 @@ impl NoticeKind {
         match self {
             Self::ImportFixes(notice) => notice.render(),
             Self::PubUseFixes(notice) => notice.render(),
-            Self::ImportCleanupSuggested => {
-                "some imports may now be unused; consider running cargo fix or cleaning them up manually"
-                    .to_string()
-            },
         }
     }
 }

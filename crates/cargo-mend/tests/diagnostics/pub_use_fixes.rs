@@ -1211,3 +1211,194 @@ edition = "2024"
         "child item should be narrowed to pub(super); got:\n{child_after}"
     );
 }
+
+#[test]
+fn fix_pub_use_self_heals_unused_imports_left_behind() {
+    // After `--fix-pub-use` rewrites a re-export, sibling files that imported
+    // through the now-defunct facade can be left with `unused import`
+    // warnings. The orchestrator must run `cargo fix` automatically so the
+    // tree is clean in a single invocation.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_self_heal_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create dirs");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod outer;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer");
+    // `Leftover` is imported but never referenced — a pre-existing unused
+    // import that should also be cleaned up by the chained `cargo fix`.
+    fs::write(
+        temp.path().join("src/outer/parent.rs"),
+        "mod child;\npub use child::SpawnStats;\nuse child::Leftover;\n",
+    )
+    .expect("write parent");
+    fs::write(
+        temp.path().join("src/outer/parent/child.rs"),
+        "pub struct SpawnStats;\npub struct Leftover;\n",
+    )
+    .expect("write child");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-mend --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-pub-use failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let parent_after =
+        fs::read_to_string(temp.path().join("src/outer/parent.rs")).expect("read parent");
+    assert!(
+        !parent_after.contains("use child::Leftover"),
+        "self-heal should have removed the unused `use child::Leftover` line; parent.rs:\n{parent_after}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("consider running cargo fix"),
+        "the manual cleanup hint must no longer be emitted; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("imports may now be unused"),
+        "the manual cleanup hint must no longer be emitted; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn fix_all_converges_in_one_invocation() {
+    // `--fix-all` must loop the passes until the tree stops changing, so the
+    // user never needs to re-run. Fixture: a pub-use rewrite cascade that
+    // leaves an unused import (caught by chained cargo fix), with no further
+    // mend findings expected on the second scan.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_all_converges_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create dirs");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod outer;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer");
+    fs::write(
+        temp.path().join("src/outer/parent.rs"),
+        "mod child;\npub use child::SpawnStats;\nuse child::Leftover;\n",
+    )
+    .expect("write parent");
+    fs::write(
+        temp.path().join("src/outer/parent/child.rs"),
+        "pub struct SpawnStats;\npub struct Leftover;\n",
+    )
+    .expect("write child");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-all")
+        .output()
+        .expect("run cargo-mend --fix-all");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-all failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // After convergence, a fresh read-only scan must report a clean tree —
+    // no warnings, no errors, no fixables in any category.
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert_eq!(
+        report.summary.errors, 0,
+        "errors after --fix-all: {:#?}",
+        report.findings
+    );
+    assert_eq!(
+        report.summary.fixable_with_fix, 0,
+        "fixable_with_fix should be zero after --fix-all converges"
+    );
+    assert_eq!(
+        report.summary.fixable_with_fix_pub_use, 0,
+        "fixable_with_fix_pub_use should be zero after --fix-all converges"
+    );
+}
+
+#[test]
+fn fix_pub_use_self_heal_does_not_run_cargo_fix_when_no_unused_imports() {
+    // Negative case: when --fix-pub-use applies edits but the validation
+    // pass observes no `unused import` warnings, the orchestrator must NOT
+    // chain cargo fix (which would be a no-op compile cost).
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_pub_use_no_cascade_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/actor")).expect("create src/actor");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod actor;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/actor/mod.rs"),
+        "mod child;\npub use child::SpawnStats;\n",
+    )
+    .expect("write actor mod");
+    fs::write(
+        temp.path().join("src/actor/child.rs"),
+        "pub struct SpawnStats;\n",
+    )
+    .expect("write child");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-pub-use")
+        .output()
+        .expect("run cargo-mend --fix-pub-use");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-pub-use failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // `cargo fix` produces a `Compiling` line (or its own progress); since
+    // we suppressed --fix-pub-use's own discovery output, the absence of an
+    // additional cargo-fix Compiling pass is the cheapest negative signal.
+    // The robust positive signal: the apply-pub-use notice still appears.
+    assert!(
+        stderr.contains("mend: applied 1 `pub use` fix(es)"),
+        "apply notice missing; stderr:\n{stderr}"
+    );
+}

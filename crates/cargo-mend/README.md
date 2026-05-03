@@ -129,6 +129,23 @@ Behavior:
   original files automatically
 - if there is nothing fixable, `cargo-mend` says so after the report summary
 
+### Target selection flags are display filters
+
+`--lib`, `--bin <NAME>`, `--example <NAME>`, `--test <NAME>`, `--bench <NAME>`, and
+`--all-targets` only narrow **what gets printed**. They do not change what gets analyzed —
+mend always compiles every target (lib, bins, tests, examples, benches).
+
+Why: whether a `pub fn` is "really used" depends on the whole crate. If you analyze only the
+lib, a function called solely by an integration test or a `#[cfg(test)]` helper looks dead
+and mend would suggest narrowing or removing it. That suggestion would break the test build.
+By always compiling everything, mend sees the full call graph and gives correct answers.
+
+So `cargo mend --lib` is "show me only the lib-file findings"; the analysis behind those
+findings still considered every target.
+
+Caveat: this only handles `#[cfg(test)]`. `#[cfg(feature = "x")]` items reached only under a
+non-default feature still need an explicit `--features <set>` invocation to be visible.
+
 ## Intended workflow
 
 Use this as a migration aid and CI guard:

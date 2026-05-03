@@ -10,7 +10,6 @@ use cargo_metadata::MetadataCommand;
 use cargo_metadata::Package;
 
 use super::cli::CargoCheckCli;
-use super::cli::TargetSelection;
 use super::cli::WorkspaceSelection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,50 +155,13 @@ pub(crate) fn build_cargo_check_plan(
 
     append_repeated_flag(&mut cargo_args, "--package", &cargo_cli.package);
     append_repeated_flag(&mut cargo_args, "--exclude", &cargo_cli.exclude);
-    append_bool_flag(
-        &mut cargo_args,
-        "--all-targets",
-        cargo_cli.target_selections.contains(&TargetSelection::All),
-    );
-    append_bool_flag(
-        &mut cargo_args,
-        "--lib",
-        cargo_cli
-            .target_selections
-            .contains(&TargetSelection::Library),
-    );
-    append_bool_flag(
-        &mut cargo_args,
-        "--bins",
-        cargo_cli
-            .target_selections
-            .contains(&TargetSelection::Binaries),
-    );
-    append_bool_flag(
-        &mut cargo_args,
-        "--examples",
-        cargo_cli
-            .target_selections
-            .contains(&TargetSelection::Examples),
-    );
-    append_bool_flag(
-        &mut cargo_args,
-        "--tests",
-        cargo_cli
-            .target_selections
-            .contains(&TargetSelection::Tests),
-    );
-    append_bool_flag(
-        &mut cargo_args,
-        "--benches",
-        cargo_cli
-            .target_selections
-            .contains(&TargetSelection::Benches),
-    );
-    append_repeated_flag(&mut cargo_args, "--bin", &cargo_cli.bin);
-    append_repeated_flag(&mut cargo_args, "--example", &cargo_cli.example);
-    append_repeated_flag(&mut cargo_args, "--test", &cargo_cli.test);
-    append_repeated_flag(&mut cargo_args, "--bench", &cargo_cli.bench);
+
+    // Mend's reachability/visibility analyses require seeing every target's
+    // call graph. Lib-only compilation strips `#[cfg(test)]` blocks and
+    // hides callers that exist in test or example code. Always include all
+    // targets so the analysis is sound regardless of the user's display
+    // filter (target_selections, bin/example/test/bench lists).
+    cargo_args.push(OsString::from("--all-targets"));
 
     CargoCheckPlan {
         manifest_path: selection.manifest_path.clone(),
@@ -207,12 +169,6 @@ pub(crate) fn build_cargo_check_plan(
         target_directory: selection.target_directory.clone(),
         analysis_root: selection.analysis_root.clone(),
         cargo_args,
-    }
-}
-
-fn append_bool_flag(args: &mut Vec<OsString>, flag: &'static str, enabled: bool) {
-    if enabled {
-        args.push(OsString::from(flag));
     }
 }
 
@@ -350,7 +306,9 @@ mod tests {
     }
 
     #[test]
-    fn default_workspace_plan_checks_workspace() {
+    fn default_workspace_plan_checks_workspace_with_all_targets() {
+        // Mend always passes `--all-targets` for analysis so test-only
+        // callers are visible in the call graph.
         let selection = fixture_selection(SelectionScope::Workspace);
 
         let args = cargo_args_strings(build_cargo_check_plan(
@@ -360,12 +318,17 @@ mod tests {
 
         assert_eq!(
             args,
-            vec!["--manifest-path", "/workspace/Cargo.toml", "--workspace"]
+            vec![
+                "--manifest-path",
+                "/workspace/Cargo.toml",
+                "--workspace",
+                "--all-targets",
+            ]
         );
     }
 
     #[test]
-    fn default_single_package_plan_checks_manifest_only() {
+    fn default_single_package_plan_includes_all_targets() {
         let selection = fixture_selection(SelectionScope::SinglePackage);
 
         let args = cargo_args_strings(build_cargo_check_plan(
@@ -373,11 +336,16 @@ mod tests {
             &CargoCheckCli::default(),
         ));
 
-        assert_eq!(args, vec!["--manifest-path", "/workspace/Cargo.toml"]);
+        assert_eq!(
+            args,
+            vec!["--manifest-path", "/workspace/Cargo.toml", "--all-targets"]
+        );
     }
 
     #[test]
     fn plan_includes_workspace_all_targets() {
+        // User-facing target-selection flags are now display filters and do
+        // not duplicate the always-on `--all-targets`.
         let selection = fixture_selection(SelectionScope::Workspace);
         let cargo_cli = CargoCheckCli {
             workspace_selection: WorkspaceSelection::Workspace,
@@ -416,7 +384,7 @@ mod tests {
                 "/workspace/Cargo.toml",
                 "--package",
                 "demo",
-                "--tests",
+                "--all-targets",
             ]
         );
     }
@@ -439,12 +407,15 @@ mod tests {
                 "--workspace",
                 "--exclude",
                 "demo",
+                "--all-targets",
             ]
         );
     }
 
     #[test]
     fn plan_includes_specific_named_targets() {
+        // Named-target flags are display filters; analysis still runs with
+        // `--all-targets` so the call graph stays complete.
         let selection = fixture_selection(SelectionScope::SinglePackage);
         let cargo_cli = CargoCheckCli {
             bin: vec!["cli".to_string()],
@@ -458,18 +429,7 @@ mod tests {
 
         assert_eq!(
             args,
-            vec![
-                "--manifest-path",
-                "/workspace/Cargo.toml",
-                "--bin",
-                "cli",
-                "--example",
-                "demo",
-                "--test",
-                "integration",
-                "--bench",
-                "perf",
-            ]
+            vec!["--manifest-path", "/workspace/Cargo.toml", "--all-targets",]
         );
     }
 

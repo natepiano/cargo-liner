@@ -605,3 +605,160 @@ edition = "2024"
         report.findings,
     );
 }
+
+#[test]
+fn fix_compiler_does_not_remove_reexport_used_only_by_cfg_test_code() {
+    // Regression test for the cfg(test) reachability bug. The `pub use` in
+    // lib.rs is referenced only from `#[cfg(test)] mod tests`. Under
+    // lib-only compilation rustc emits `unused_imports` because cfg(test)
+    // is stripped. Today, `cargo mend --fix-compiler` chains `cargo fix`,
+    // which deletes the re-export — and then the test target stops
+    // compiling because `crate::helper` no longer resolves.
+    //
+    // After the redesign, mend's analysis pass must compile under
+    // `--all-targets` so the test caller is visible and rustc does NOT emit
+    // the `unused_imports` warning. The re-export must survive.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "cfg_test_reach_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/inner_facade")).expect("create src/inner_facade");
+    // The `pub use` lives inside a private parent module, so its visibility
+    // is effectively private — exactly the case where rustc fires the
+    // `unused_imports` lint when the only callers are stripped by cfg.
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod inner_facade;\n\
+         pub fn entry() { inner_facade::live() }\n\
+         \n\
+         #[cfg(test)]\n\
+         mod tests {\n\
+             #[test]\n\
+             fn calls_helper() { crate::inner_facade::helper(7); }\n\
+         }\n",
+    )
+    .expect("write lib.rs");
+    fs::write(
+        temp.path().join("src/inner_facade/mod.rs"),
+        "mod child;\n\
+         pub use child::helper;\n\
+         \n\
+         pub fn live() {}\n",
+    )
+    .expect("write inner_facade/mod.rs");
+    fs::write(
+        temp.path().join("src/inner_facade/child.rs"),
+        "pub fn helper(_n: i32) {}\n",
+    )
+    .expect("write inner_facade/child.rs");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix-compiler")
+        .output()
+        .expect("run cargo-mend --fix-compiler");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix-compiler failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let facade_after = fs::read_to_string(temp.path().join("src/inner_facade/mod.rs"))
+        .expect("read inner_facade/mod.rs");
+    assert!(
+        facade_after.contains("pub use child::helper"),
+        "the re-export reached only from #[cfg(test)] must NOT be removed; inner_facade/mod.rs after:\n{facade_after}",
+    );
+
+    // And the project must still compile under `cargo test --no-run` —
+    // i.e. mend left the tree in a state where every target builds.
+    let test_build = std::process::Command::new("cargo")
+        .arg("test")
+        .arg("--no-run")
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .output()
+        .expect("run cargo test --no-run");
+    assert!(
+        test_build.status.success(),
+        "test target must still compile after --fix-compiler:\n{}\n{}",
+        String::from_utf8_lossy(&test_build.stdout),
+        String::from_utf8_lossy(&test_build.stderr)
+    );
+}
+
+#[test]
+fn fix_does_not_narrow_pub_fn_used_only_from_cfg_test_caller() {
+    // Regression for the cross-compilation merge issue: a `pub fn` whose
+    // only outside-of-parent-subtree caller lives in a `#[cfg(test)] mod
+    // tests` block must NOT be narrowed to `pub(super)`. The lib
+    // compilation strips cfg(test) and sees no external callers, so it
+    // would emit a `suspicious_pub` finding. The lib-test compilation
+    // sees the test caller and emits no finding. Mend's
+    // cross-compilation merge takes the intersection for narrowing-style
+    // findings, so the lib's finding is suppressed.
+    //
+    // Likewise, the parent re-export in `panes/mod.rs` is referenced by
+    // the test caller via `super::panes::cpu_required_pane_height(...)`,
+    // so it must NOT be flagged as a stale internal facade.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "cross_compile_merge_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/tui/panes")).expect("create src/tui/panes");
+    fs::write(temp.path().join("src/lib.rs"), "mod tui;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/tui/mod.rs"),
+        "mod panes;\nmod render;\n",
+    )
+    .expect("write tui/mod");
+    fs::write(
+        temp.path().join("src/tui/panes/mod.rs"),
+        "mod cpu;\npub use cpu::cpu_required_pane_height;\n\npub fn entry() { let _ = cpu::compute(0); }\n",
+    )
+    .expect("write panes/mod");
+    fs::write(
+        temp.path().join("src/tui/panes/cpu.rs"),
+        "pub fn cpu_required_pane_height(_n: u16) -> u16 { compute(_n) }\npub fn compute(_n: u16) -> u16 { 1 }\n",
+    )
+    .expect("write panes/cpu");
+    fs::write(
+        temp.path().join("src/tui/render.rs"),
+        "#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() { let _ = crate::tui::panes::cpu_required_pane_height(12); }\n}\n",
+    )
+    .expect("write tui/render");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+
+    let bad_findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| {
+            (f.code == DiagnosticCode::SuspiciousPub
+                && f.path.contains("panes/cpu.rs")
+                && f.item.as_deref() == Some("fn cpu_required_pane_height"))
+                || (f.code == DiagnosticCode::InternalParentPubUseFacade
+                    && f.path.contains("panes/mod.rs"))
+        })
+        .collect();
+    assert!(
+        bad_findings.is_empty(),
+        "items reachable only from #[cfg(test)] callers must not be flagged for narrowing or pub-use removal; got: {bad_findings:#?}",
+    );
+}

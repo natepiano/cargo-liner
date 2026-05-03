@@ -173,8 +173,25 @@ pub fn run_cargo_fix(cargo_plan: &CargoCheckPlan, color: ColorMode) -> Result<Du
     command
         .arg("fix")
         .arg("--allow-dirty")
-        .arg("--allow-staged")
-        .args(&cargo_plan.cargo_args);
+        .arg("--allow-staged");
+
+    // Replace `--all-targets` with `--tests` for the fix pass. Rationale:
+    // `cargo fix --all-targets` runs the lib (non-test) compilation
+    // alongside others; that compilation strips `#[cfg(test)]` blocks and
+    // emits `unused_imports` warnings for items reached only from test
+    // code. Cargo fix then deletes those imports, breaking the test build
+    // (E0425 cascade — the original bug). Running with `--tests` only
+    // compiles each target in test mode, where every cfg(test)-protected
+    // call site is live, so genuinely-needed imports are never removed.
+    // Trade-off: imports that are unused in BOTH lib and test mode (rare)
+    // won't be pruned by `--fix-compiler`; users can clean those manually.
+    for arg in &cargo_plan.cargo_args {
+        if arg == "--all-targets" {
+            command.arg("--tests");
+        } else {
+            command.arg(arg);
+        }
+    }
 
     if color.is_enabled() {
         command.env("CARGO_TERM_COLOR", "always");
@@ -438,7 +455,11 @@ pub(super) fn flush_diagnostic_block(
             // Suppressed — will be rendered in the unified summary
         },
         DiagnosticBlockKind::ForwardedDiagnostic => {
-            if !matches!(output_mode, BuildOutputMode::Json | BuildOutputMode::Quiet) {
+            // Always forward except in JSON mode. Quiet mode used to drop
+            // these too, which hid post-fix validation errors — leaving
+            // users with the opaque "compiler failed" message and no way
+            // to see what cargo actually complained about.
+            if !matches!(output_mode, BuildOutputMode::Json) {
                 for line in block.iter() {
                     eprint!("{line}");
                 }

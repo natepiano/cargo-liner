@@ -12,6 +12,7 @@ mod compiler;
 mod config;
 mod constants;
 mod diagnostics;
+mod display_filter;
 mod fix_support;
 mod imports;
 mod inline_path_qualified_type;
@@ -27,16 +28,24 @@ mod selection;
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
+use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Result;
+use cli::FixExecution;
 use config::DiagnosticsConfig;
 use constants::EXIT_CODE_ERROR;
 use constants::EXIT_CODE_WARNING;
+use display_filter::DisplayFilter;
+use outcome::ExecutionOutcome;
 use outcome::MendFailure;
 use render::OutputFormat;
 use run_mode::OperationMode;
 use runner::MendRunner;
+
+/// Maximum number of mend passes during `--fix-all`. Prevents an infinite
+/// loop if a fix oscillates; in practice convergence happens in 1–2 passes.
+const FIX_ALL_MAX_PASSES: usize = 5;
 
 fn main() -> ExitCode {
     if std::env::var_os("MEND_DRIVER").is_some() {
@@ -80,6 +89,13 @@ fn build_info_text() -> String {
     )
 }
 
+/// Sum of all fix-eligible items across the three categories.
+const fn total_fixables(outcome: &ExecutionOutcome) -> usize {
+    outcome.report.summary.fixable_with_fix
+        + outcome.report.summary.fixable_with_fix_pub_use
+        + outcome.compiler_fixable
+}
+
 fn run() -> Result<ExitCode, MendFailure> {
     let global_diagnostics = config::load_global_diagnostics();
     let after_help = build_diagnostics_help(&global_diagnostics);
@@ -106,18 +122,60 @@ fn run() -> Result<ExitCode, MendFailure> {
         OutputFormat::Human
     };
     let start = Instant::now();
-    let outcome = MendRunner::new(&selection, &cargo_plan, &loaded_config, color, output)
-        .run(operation_mode)?;
+    let runner = MendRunner::new(&selection, &cargo_plan, &loaded_config, color, output);
+    let mut outcome = runner.run(operation_mode.clone())?;
+    let mut total_compiler_fix_duration = Duration::ZERO;
+    let mut total_extra_check_duration = Duration::ZERO;
 
-    let fix_compiler_duration = if cli.fix.runs_compiler_fix() {
-        Some(compiler::run_cargo_fix(&cargo_plan, color).map_err(MendFailure::Unexpected)?)
-    } else {
-        None
-    };
+    let want_loop = matches!(cli.fix.execution, FixExecution::ApplyAll);
+    let mut passes = 1;
+
+    loop {
+        // Decide whether to chain `cargo fix`. Two trigger conditions:
+        //  1. The user explicitly asked for it (`--fix-compiler` / `--fix-all`).
+        //  2. `--fix-pub-use` (or its bundle inside `--fix-all`) just applied edits that produced
+        //     `unused import` warnings; auto-clean them.
+        let user_asked_for_compiler_fix = cli.fix.runs_compiler_fix();
+        let pub_use_self_heal = matches!(
+            cli.fix.execution,
+            FixExecution::ApplyRequested | FixExecution::ApplyAll
+        ) && outcome.applied_pub_use > 0
+            && outcome.saw_unused_import_warnings;
+
+        if user_asked_for_compiler_fix || pub_use_self_heal {
+            total_compiler_fix_duration +=
+                compiler::run_cargo_fix(&cargo_plan, color).map_err(MendFailure::Unexpected)?;
+        }
+
+        if !want_loop || passes >= FIX_ALL_MAX_PASSES {
+            break;
+        }
+
+        // For `--fix-all` convergence: re-scan and decide if another pass
+        // would strictly reduce remaining fixables.
+        let next = runner.run(operation_mode.clone())?;
+        let next_total = total_fixables(&next);
+        let prev_total = total_fixables(&outcome);
+        total_extra_check_duration += next.check_duration;
+        if next_total == 0 || next_total >= prev_total {
+            outcome = next;
+            break;
+        }
+        outcome = next;
+        passes += 1;
+    }
 
     let total_duration = start.elapsed();
-    let check_duration = outcome.check_duration + fix_compiler_duration.unwrap_or_default();
+    let check_duration =
+        outcome.check_duration + total_extra_check_duration + total_compiler_fix_duration;
     let mend_duration = total_duration.saturating_sub(check_duration);
+
+    // Apply display filter — narrows reported findings according to the
+    // user's `--lib`, `--bin`, `--example`, `--test`, `--bench` flags.
+    // Analysis already ran with `--all-targets`; the filter is purely a
+    // display narrower.
+    let display_filter = DisplayFilter::from_cli(&cli.cargo, &selection.packages);
+    display_filter.apply(&mut outcome.report);
 
     let compiler_stats = render::CompilerStats {
         warnings: outcome.compiler_warnings,

@@ -167,11 +167,17 @@ impl<'a> MendRunner<'a> {
         let compiler_fixable = planned.compiler_fixable;
         match planned.operation_mode.intent {
             OperationIntent::ReadOnly => Ok(ExecutionOutcome {
+                saw_unused_import_warnings: planned
+                    .report
+                    .facts
+                    .compiler_warnings
+                    .saw_unused_import_warnings(),
                 report: planned.report,
                 notice: None,
                 check_duration,
                 compiler_warnings,
                 compiler_fixable,
+                applied_pub_use: 0,
             }),
             OperationIntent::DryRun => {
                 let notice = Self::build_fix_notice(
@@ -180,11 +186,17 @@ impl<'a> MendRunner<'a> {
                     planned.fix_scans(),
                 );
                 Ok(ExecutionOutcome {
+                    saw_unused_import_warnings: planned
+                        .report
+                        .facts
+                        .compiler_warnings
+                        .saw_unused_import_warnings(),
                     report: planned.report,
                     notice,
                     check_duration,
                     compiler_warnings,
                     compiler_fixable,
+                    applied_pub_use: 0,
                 })
             },
             OperationIntent::Apply => self.apply(planned),
@@ -196,6 +208,7 @@ impl<'a> MendRunner<'a> {
         let compiler_warnings = planned.compiler_warnings;
         let compiler_fixable = planned.compiler_fixable;
         let fix_scans = planned.fix_scans();
+        let applied_pub_use = fix_scans.pub_use.map_or(0, |scan| scan.applied);
         let fixes = Self::combined_fixes(fix_scans)?;
         if fixes.is_empty() {
             let notice = Self::build_fix_notice(
@@ -203,12 +216,19 @@ impl<'a> MendRunner<'a> {
                 Some(&planned.report),
                 fix_scans,
             );
+            let saw_unused = planned
+                .report
+                .facts
+                .compiler_warnings
+                .saw_unused_import_warnings();
             return Ok(ExecutionOutcome {
                 report: planned.report,
                 notice,
                 check_duration: plan_check_duration,
                 compiler_warnings,
                 compiler_fixable,
+                applied_pub_use: 0,
+                saw_unused_import_warnings: saw_unused,
             });
         }
 
@@ -222,12 +242,19 @@ impl<'a> MendRunner<'a> {
                     Some(&validation.report),
                     fix_scans,
                 );
+                let saw_unused = validation
+                    .report
+                    .facts
+                    .compiler_warnings
+                    .saw_unused_import_warnings();
                 Ok(ExecutionOutcome {
                     report: validation.report,
                     notice,
                     check_duration,
                     compiler_warnings,
                     compiler_fixable,
+                    applied_pub_use,
+                    saw_unused_import_warnings: saw_unused,
                 })
             },
             Err(err) => {
@@ -319,13 +346,10 @@ impl<'a> MendRunner<'a> {
             )));
         }
 
-        if matches!(intent, OperationIntent::Apply)
-            && fix_scans.pub_use.is_some_and(|scan| scan.applied > 0)
-            && report
-                .is_some_and(|report| report.facts.compiler_warnings.saw_unused_import_warnings())
-        {
-            notices.push(NoticeKind::ImportCleanupSuggested);
-        }
+        // The historical `ImportCleanupSuggested` notice is gone; the
+        // orchestrator runs `cargo fix` automatically when `--fix-pub-use`
+        // applied edits and `unused import` warnings followed.
+        let _ = report;
 
         match notices.len() {
             0 => None,

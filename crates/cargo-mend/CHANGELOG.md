@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Target-selection flags (`--lib`, `--bin`, `--example`, `--test`, `--bench`, `--all-targets`) are now display filters. Mend always analyzes every target so the call graph is complete; the flags only narrow what gets printed. Cold runs on test-heavy crates are ~2× slower; the cache makes warm runs identical.
+- `--fix-all` loops the fix passes until the tree stops changing, so cascading fixes converge in one invocation.
+- `--fix-pub-use` runs `cargo fix` automatically when its rewrites leave unused imports. The old "consider running cargo fix" hint is gone.
+- Summary lists each fixable category on its own line, with an aggregate `--fix-all` line when fixables span ≥2 categories. The combined `--fix --fix-pub-use` suggestion is gone.
+- Mend errors render in their own block above the summary, separate from the "X fixable" warning count.
+
+### Fixed
+- `--fix-compiler` no longer deletes imports referenced only from `#[cfg(test)]` code. The chained `cargo fix` now runs against the test compilation, so cfg(test) callers are visible. Trade-off: imports unused in both lib and test mode aren't auto-removed.
+- `--fix` and `--fix-pub-use` no longer suggest narrowing `pub` to `pub(super)` or removing a parent re-export when the only outside-subtree caller lives in `#[cfg(test)]` code. Mend now intersects findings across the lib and lib-test compilations for narrowing codes; single-compilation false positives are dropped. `narrow_to_pub_crate` is unaffected since `pub(crate)` always reaches cfg(test).
+- Caveat: `#[cfg(feature = "x")]` reachability is not handled — pass `--features <set>` explicitly for non-default features.
+
 ## [0.8.2] - 2026-05-02
 
 ### Fixed

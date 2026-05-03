@@ -193,11 +193,13 @@ struct RawCargoCheckCli {
     #[command(flatten)]
     secondary_targets: RawSecondaryTargetCli,
 
-    /// Check the specified binary
+    /// Display findings only from the specified binary (analysis still
+    /// runs across all targets)
     #[arg(long = "bin", value_name = "NAME", help_heading = "Target Selection")]
     bin: Vec<String>,
 
-    /// Check the specified example
+    /// Display findings only from the specified example (analysis still
+    /// runs across all targets)
     #[arg(
         long = "example",
         value_name = "NAME",
@@ -205,11 +207,13 @@ struct RawCargoCheckCli {
     )]
     example: Vec<String>,
 
-    /// Check the specified test target
+    /// Display findings only from the specified test target (analysis
+    /// still runs across all targets)
     #[arg(long = "test", value_name = "NAME", help_heading = "Target Selection")]
     test: Vec<String>,
 
-    /// Check the specified benchmark target
+    /// Display findings only from the specified benchmark target
+    /// (analysis still runs across all targets)
     #[arg(long = "bench", value_name = "NAME", help_heading = "Target Selection")]
     bench: Vec<String>,
 }
@@ -223,30 +227,36 @@ struct RawWorkspaceCli {
 
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 struct RawPrimaryTargetCli {
-    /// Check all targets
+    /// Display findings from every target (default; mend always analyzes
+    /// across all targets regardless of selection flags)
     #[arg(long, help_heading = "Target Selection")]
     all_targets: bool,
 
-    /// Check only this package's library
+    /// Display findings only from this package's library (analysis still
+    /// runs across all targets)
     #[arg(long, help_heading = "Target Selection")]
     lib: bool,
 
-    /// Check all binary targets
+    /// Display findings only from binary targets (analysis still runs
+    /// across all targets)
     #[arg(long, help_heading = "Target Selection")]
     bins: bool,
 }
 
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 struct RawSecondaryTargetCli {
-    /// Check all example targets
+    /// Display findings only from example targets (analysis still runs
+    /// across all targets)
     #[arg(long, help_heading = "Target Selection")]
     examples: bool,
 
-    /// Check all test targets
+    /// Display findings only from test targets (analysis still runs
+    /// across all targets)
     #[arg(long, help_heading = "Target Selection")]
     tests: bool,
 
-    /// Check all benchmark targets
+    /// Display findings only from benchmark targets (analysis still runs
+    /// across all targets)
     #[arg(long, help_heading = "Target Selection")]
     benches: bool,
 }
