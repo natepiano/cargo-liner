@@ -2179,3 +2179,310 @@ validate with `cargo build` + `cargo nextest run` +
 `cargo clippy --all-targets` + `cargo +nightly fmt` +
 `cargo install --path .`, stop for review before committing).
 
+
+## Phase 12.0 Net subsystem design (in progress)
+
+Re-review of the Phase 12 Net plan against everything learned
+in Phases 1–11. Today's network state lives across three App
+fields: `http_client: HttpClient`, `github: GitHubState` (5
+sub-fields), `crates_io: CratesIoState` (1 sub-field). ~21
+caller sites in `app/` reach into these fields directly; ~12
+App methods orchestrate the network lifecycle. Decisions are
+recorded below as each is settled.
+
+- **Q1: Net struct layout.** _Decided: option (b) — nested.
+  `Net` holds `http_client`, `github: Github`, `crates_io:
+  CratesIo`._
+
+  ```rust
+  pub struct Net {
+      http_client: HttpClient,
+      github:      Github,
+      crates_io:   CratesIo,
+  }
+
+  pub struct Github {
+      availability:         ServiceAvailability,
+      fetch_cache:          RepoCache,
+      repo_fetch_in_flight: HashSet<OwnerRepo>,
+      running_fetches:      HashMap<OwnerRepo, Instant>,
+      running_fetch_toast:  Option<ToastTaskId>,
+  }
+
+  pub struct CratesIo {
+      availability: ServiceAvailability,
+  }
+  ```
+
+  Tradeoffs accepted: callers reach
+  `app.net().github().fetch_cache()` (one extra indirection)
+  rather than `app.net().fetch_cache()`. Net is a thin facade
+  over the two service inner types.
+
+  Tradeoffs rejected: option (a) flatten — the asymmetric
+  field counts (GitHub 5, CratesIo 1) make the flat layout
+  read as a grab bag rather than two distinct services. Lint
+  chose flat because lint is one service; Net is two.
+
+- **Q2: HttpClient placement.** _Decided: option (a) — Net
+  owns `HttpClient` as a field._
+
+  ```rust
+  impl Net {
+      pub fn http_client(&self) -> HttpClient { self.http_client.clone() }
+      pub fn rate_limit(&self) -> GitHubRateLimit { self.http_client.rate_limit_snapshot() }
+  }
+  ```
+
+  ~10 spawn sites in `async_tasks.rs` switch from
+  `self.http_client.clone()` to `self.net.http_client()`. The
+  rate-limit display goes through `self.net.rate_limit()`.
+  `App::http_client()` and `App::rate_limit()` either delegate
+  to Net or get deleted in favor of direct
+  `app.net().http_client()` / `app.net().rate_limit()` calls.
+
+  Tradeoffs accepted: one extra indirection at every spawn
+  site. Same cost paid by every prior subsystem extraction.
+
+  Tradeoffs rejected: option (b) leave on App-shell — leaves
+  `Net` as a bookkeeping struct that can't do network work
+  without an external `HttpClient`, contradicting the "owns
+  the lifecycle primitive" pattern Phases 4 / 11 established.
+
+- **Q3: `fetch_cache` (`RepoCache`) home.** _Decided: option
+  (a) — stays on `Net.github`._
+
+  The cache is GitHub-fetch-result data (`HashMap<OwnerRepo,
+  ...>`), populated by GitHub fetches and consumed by
+  GitHub-aware code paths. The `scan::new_repo_cache` /
+  `scan::load_cached_repo_data` /
+  `scan::invalidate_cached_repo_data` helpers stay where they
+  are in `crate::scan`; only the holder lives on `Github`.
+
+  Tradeoffs accepted: `crate::scan` continues to host the
+  cache helper functions; this is a shared-implementation
+  reach, not a shared-ownership one (same pattern as
+  `crate::lint::retained_cache_usage` returning a value that
+  lives on `Lint`).
+
+  Tradeoffs rejected: option (b) move to `Scan` — splits
+  cache from in-flight tracking and forces `Net::spawn_repo_fetch`
+  to reach into `Scan` to decide whether to skip a fetch.
+  Option (c) separate `Cache` subsystem — speculative; no
+  current pressure for it.
+
+- **Q4: `running_fetches` + `running_fetch_toast` home.**
+  _Decided: option (a-2) — extract a `RunningTracker<K>`
+  primitive, adopt in both `Lint` and `Net.github` now so
+  Phase 13 inherits a finished primitive._
+
+  ```rust
+  // tui::running_tracker (new module)
+  pub struct RunningTracker<K: Eq + Hash> {
+      running: HashMap<K, Instant>,
+      toast:   Option<ToastTaskId>,
+  }
+
+  impl<K: Eq + Hash> RunningTracker<K> {
+      pub fn new() -> Self;
+      pub fn is_empty(&self) -> bool;
+      /// Insert `k` with start time `started`. Returns `true`
+      /// iff `k` was newly inserted (matches `HashMap::insert`'s
+      /// `Option::is_none()` semantics, just inverted to a bool).
+      pub fn insert(&mut self, k: K, started: Instant) -> bool;
+      pub fn remove<Q: ?Sized + Eq + Hash>(&mut self, k: &Q) -> Option<Instant>
+        where K: std::borrow::Borrow<Q>;
+      pub fn iter_running(&self) -> impl Iterator<Item = (&K, &Instant)>;
+      /// View of the underlying running-paths map, for callers
+      /// that still take `&HashMap<K, Instant>` (e.g.,
+      /// `App::sync_tracked_path_toast`). 12.2 may update those
+      /// callers to take `&RunningTracker<K>` directly.
+      pub fn running_map(&self) -> &HashMap<K, Instant>;
+      pub fn toast(&self) -> Option<ToastTaskId>;
+      pub fn set_toast(&mut self, t: Option<ToastTaskId>);
+      pub fn clear(&mut self);
+  }
+  ```
+
+  Adoption:
+  - `Lint` swaps `running_paths` + `running_toast` for
+    `RunningTracker<AbsolutePath>` (retroactive — Phase 11.4a
+    territory). ~6 caller-site updates.
+  - `Net.github` uses `RunningTracker<OwnerRepo>` from the
+    start.
+  - `App::sync_tracked_path_toast` (the existing helper at
+    `async_tasks.rs` ~1330) keeps its `&HashMap<K, Instant>`
+    parameter; callers now pass `tracker.iter_running()` (a
+    new accessor on `RunningTracker<K>`) instead of the raw
+    field. Updating the helper itself to take
+    `&RunningTracker<K>` directly is **deferred to 12.2** so
+    12.1 stays scoped to "introduce primitive, swap Lint
+    fields."
+
+  Driving rationale: with two confirmed consumers (Lint +
+  Github fetches), the primitive earns extraction now.
+  `Inflight::ci_fetch_tracker` is a different shape today
+  (`HashSet<AbsolutePath>` with no per-path `Instant` and a
+  sibling `ci_fetch_toast` field, see `inflight.rs:34` /
+  `app/types.rs:342`); whether Phase 13 adopts
+  `RunningTracker<K>` for CI fetches depends on whether Phase
+  13 also wants per-fetch start-time tracking. Decision is
+  not held by Phase 12.
+
+  Tradeoffs accepted: one new generic type, retroactive Lint
+  refactor (~6 caller-site updates), one new module file.
+
+  Tradeoffs rejected: option (a-1) keep the pair inlined per
+  subsystem — pays the duplication cost across three
+  consumers; option (a-3) adopt only in Net — leaves Lint
+  with the inlined pair as an inconsistent precedent;
+  option (b) move to `Inflight` — cross-subsystem reach,
+  rejected for the same reason as Phase 11.4a.
+
+- **Q5: `ServiceAvailability` placement.** _Decided: option
+  (a) — private inside `tui::net_state`, alongside `Github`
+  and `CratesIo`._
+
+  ```rust
+  // tui::net_state — private to the module
+  pub(super) struct ServiceAvailability { ... }
+  ```
+
+  `AvailabilityStatus` (the public enum) stays exported at
+  `tui::net_state::AvailabilityStatus` (replacing today's
+  `tui::app::AvailabilityStatus` re-export). Status-transition
+  methods (`mark_reachable`, `mark_unreachable`,
+  `mark_rate_limited`, `mark_recovered`) stay net-internal —
+  callers use higher-level Net methods, not the inner struct
+  directly.
+
+  Tradeoffs accepted: `ServiceAvailability` becomes a
+  net_state implementation detail with no external consumer
+  today.
+
+  Tradeoffs rejected: option (b) extract to
+  `tui::service_availability` — a primitive with consumers
+  inside one module is overkill. The Q4 `RunningTracker<K>`
+  primitive earns its module-level extraction because its
+  consumers live in *different* subsystems (Lint, Net, Ci);
+  `ServiceAvailability`'s consumers all live in `Net`.
+
+- **Q6: Net public API surface.** _Decided: as proposed
+  (~10 methods on `Net`, narrow per-service accessors on
+  `Github` / `CratesIo`)._
+
+  ```rust
+  impl Net {
+      pub fn new(http_client: HttpClient) -> Self;
+
+      // HttpClient + rate limit
+      pub fn http_client(&self) -> HttpClient;
+      pub fn rate_limit(&self) -> GitHubRateLimit;
+      pub fn set_force_github_rate_limit(&mut self, on: bool);
+
+      // Service accessors
+      pub fn github(&self) -> &Github;
+      pub fn github_mut(&mut self) -> &mut Github;
+      pub fn crates_io(&self) -> &CratesIo;
+      pub fn crates_io_mut(&mut self) -> &mut CratesIo;
+
+      // Availability surfaces (exposed at Net level so callers
+      // don't reach into inner types just to read status)
+      pub fn github_status(&self) -> AvailabilityStatus;
+      pub fn crates_io_status(&self) -> AvailabilityStatus;
+
+      // Tree-rebuild reset
+      pub fn clear_for_tree_change(&mut self);
+  }
+
+  impl Github {
+      pub fn fetch_cache(&self) -> &RepoCache;
+      pub fn fetch_cache_mut(&mut self) -> &mut RepoCache;
+      pub fn repo_fetch_in_flight_mut(&mut self) -> &mut HashSet<OwnerRepo>;
+      pub fn running_tracker(&self) -> &RunningTracker<OwnerRepo>;
+      pub fn running_tracker_mut(&mut self) -> &mut RunningTracker<OwnerRepo>;
+      pub(super) fn availability_mut(&mut self) -> &mut ServiceAvailability;
+  }
+
+  impl CratesIo {
+      pub(super) fn availability_mut(&mut self) -> &mut ServiceAvailability;
+  }
+  ```
+
+  Stays on `App` (orchestration, not Net-pure):
+  `apply_unavailability`, `sync_running_repo_fetch_toast`,
+  `spawn_repo_fetch_for_git_info`,
+  `handle_repo_fetch_queued`, `handle_repo_fetch_complete`,
+  `spawn_rate_limit_prime`. These touch Net + Toasts /
+  Background / Scan; keeping them at App-shell avoids a
+  `StartContext`-style parameter cluster.
+
+  Tradeoffs accepted: `Github` and `CratesIo` expose
+  moderately wide `&mut` accessors so App orchestration can
+  reach in. Same pattern Lint uses
+  (`lint.running_paths_mut()`).
+
+  Tradeoffs rejected: putting orchestration on `Net` directly
+  forces `Net` methods to take `&mut ToastManager` /
+  `&mut Background` parameters; heavier than keeping the
+  orchestration at App-shell.
+
+- **Q7: Net field cluster summary.** _Decided: as proposed._
+
+  ```rust
+  pub struct Net {
+      http_client: HttpClient,
+      github:      Github,
+      crates_io:   CratesIo,
+  }
+
+  pub struct Github {
+      availability:         ServiceAvailability,
+      fetch_cache:          RepoCache,
+      repo_fetch_in_flight: HashSet<OwnerRepo>,
+      running:              RunningTracker<OwnerRepo>,  // Q4 primitive
+  }
+
+  pub struct CratesIo {
+      availability: ServiceAvailability,
+  }
+  ```
+
+  | Field | Source |
+  |---|---|
+  | `http_client` | `App.http_client` |
+  | `github.availability` | `App.github.availability` |
+  | `github.fetch_cache` | `App.github.fetch_cache` |
+  | `github.repo_fetch_in_flight` | `App.github.repo_fetch_in_flight` |
+  | `github.running` | `App.github.running_fetches` + `App.github.running_fetch_toast` |
+  | `crates_io.availability` | `App.crates_io.availability` |
+
+  `Net::clear_for_tree_change()` resets all four GitHub
+  fields plus the running tracker (today done inline at
+  `async_tasks.rs:1464-1467`), so the rebuild-fanout flow
+  switches from four direct field writes to one method call.
+
+  **Stays where it is:**
+  - `App.toasts` — toast-shell concern; orchestration pushes
+    availability / running-fetch toasts through it.
+  - `App.background` — owns spawn channels; Net's spawn paths
+    dispatch through it.
+  - `App.scan` — owns the project tree the network operations
+    index over.
+  - `App.inflight` — `clean_toast`, `running_clean_paths`,
+    `ci_fetch_tracker`, `ci_fetch_toast`, pending queues,
+    example-runner state. Phase 12 does not change Inflight.
+
+  **Phase 12 sub-phasing:**
+  - **12.1** — Extract `tui::running_tracker::RunningTracker<K>`
+    primitive; adopt in `Lint` (retroactive Phase 11.4a
+    update). Stand-alone, smallest sub-phase.
+  - **12.2** — Introduce `tui::net_state` with `Net`,
+    `Github`, `CratesIo`, `ServiceAvailability`. Wire onto
+    `App`; move `http_client`, `github`, `crates_io` fields;
+    adopt the new `RunningTracker<OwnerRepo>` here from the
+    start; update the ~21 caller sites; delete
+    `tui::app::service_state`.
+
+## End of Phase 12.0 design — implementation can begin
+
