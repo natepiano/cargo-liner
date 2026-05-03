@@ -66,10 +66,10 @@ fn name_width_with_gutter_reserves_space_before_lint() {
 /// for `project_path`, naming a single Example target so the Targets
 /// pane becomes tabbable. Keeps the per-test setup out of line when
 /// the test's focus is pane behavior, not metadata plumbing.
-fn seed_single_example_snapshot(app: &App, project_path: &AbsolutePath, example_name: &str) {
+fn seed_single_example_metadata(app: &App, project_path: &AbsolutePath, example_name: &str) {
+    use cargo_metadata::semver::Version;
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
-    use cargo_metadata::semver::Version;
     let pkg = PackageRecord {
         id:            PackageId {
             repr: "demo-id".into(),
@@ -130,7 +130,7 @@ fn tabbable_panes_follow_canonical_order() {
         ..Package::default()
     }));
     let mut app = make_app(std::slice::from_ref(&project));
-    seed_single_example_snapshot(&app, &project_path, "example");
+    seed_single_example_metadata(&app, &project_path, "example");
     app.toasts = ToastManager::default();
     app.panes_mut().toasts_mut().viewport_mut().set_len(0);
     app.scan_state_mut().phase = ScanPhase::Complete;
@@ -236,7 +236,7 @@ fn new_toasts_do_not_steal_focus() {
 }
 
 #[test]
-fn snapshot_arrival_populates_selected_tree_project_targets() {
+fn metadata_arrival_populates_selected_tree_project_targets() {
     // Step 3b: Targets pane data now comes exclusively from the
     // `cargo metadata` result — the hand-parsed Cargo fallback
     // has been retired per the design plan's "Loading… without
@@ -244,9 +244,9 @@ fn snapshot_arrival_populates_selected_tree_project_targets() {
     // (ExampleGroup on the Cargo struct); rewritten to confirm
     // the metadata-driven path: a CargoMetadata arrival with an
     // Example target lights up the pane.
+    use cargo_metadata::semver::Version;
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
-    use cargo_metadata::semver::Version;
 
     let project = make_project(Some("demo"), "/never-real/demo");
     let mut app = make_app(std::slice::from_ref(&project));

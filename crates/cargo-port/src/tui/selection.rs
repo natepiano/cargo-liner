@@ -124,8 +124,8 @@ impl Selection {
 
     pub(super) const fn fit_widths(&self) -> &ProjectListWidths { &self.cached_fit_widths }
 
-    /// Test-only — production paths replace the whole snapshot via
-    /// [`Self::set_fit_widths`] and never observe individual columns
+    /// Test-only — production paths replace the whole `ProjectListWidths`
+    /// via [`Self::set_fit_widths`] and never observe individual columns
     /// after seeding.
     #[cfg(test)]
     pub(super) const fn fit_widths_mut(&mut self) -> &mut ProjectListWidths {

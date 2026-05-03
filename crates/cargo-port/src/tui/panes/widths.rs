@@ -43,15 +43,15 @@ use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project_list::ProjectList;
 use crate::tui::columns;
+use crate::tui::columns::ProjectListWidths;
 use crate::tui::columns::COL_DISK;
 use crate::tui::columns::COL_MAIN;
 use crate::tui::columns::COL_NAME;
 use crate::tui::columns::COL_SYNC;
-use crate::tui::columns::ProjectListWidths;
 use crate::tui::render;
 
-/// Walk the project tree and produce a `ProjectListWidths`
-/// snapshot. Single entry point used by `App::ensure_fit_widths`.
+/// Walk the project tree and produce a `ProjectListWidths`.
+/// Single entry point used by `App::ensure_fit_widths`.
 pub fn compute_project_list_widths(
     entries: &ProjectList,
     root_labels: &[String],
@@ -87,8 +87,8 @@ fn observe_item_fit_widths(widths: &mut ProjectListWidths, entry: &ProjectEntry,
 
     observe_name_width(widths, dw(PREFIX_ROOT_COLLAPSED) + dw(root_label));
     widths.observe(COL_DISK, dw(&formatted_disk(item.disk_usage_bytes())));
-    widths.observe(COL_SYNC, dw(&git_sync_snapshot(item.git_info(), repo_info)));
-    widths.observe(COL_MAIN, dw(&git_main_snapshot(item.git_info())));
+    widths.observe(COL_SYNC, dw(&git_sync_label(item.git_info(), repo_info)));
+    widths.observe(COL_MAIN, dw(&git_main_sync_label(item.git_info())));
 
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
@@ -186,8 +186,8 @@ fn observe_workspace_worktree_entry_fit_widths(
     };
     observe_name_width(widths, dw(prefix) + dw(&wt_name));
     widths.observe(COL_DISK, dw(&formatted_disk(ws.disk_usage_bytes())));
-    widths.observe(COL_SYNC, dw(&git_sync_snapshot(ws.git_info(), repo_info)));
-    widths.observe(COL_MAIN, dw(&git_main_snapshot(ws.git_info())));
+    widths.observe(COL_SYNC, dw(&git_sync_label(ws.git_info(), repo_info)));
+    widths.observe(COL_MAIN, dw(&git_main_sync_label(ws.git_info())));
     observe_new_member_group_fit_widths(widths, ws.groups(), true);
     observe_typed_vendored_fit_widths(widths, ws.vendored(), PREFIX_WT_VENDORED);
 }
@@ -201,8 +201,8 @@ fn observe_package_worktree_entry_fit_widths(
     let wt_name = pkg.root_directory_name().into_string();
     observe_name_width(widths, dw(PREFIX_WT_FLAT) + dw(&wt_name));
     widths.observe(COL_DISK, dw(&formatted_disk(pkg.disk_usage_bytes())));
-    widths.observe(COL_SYNC, dw(&git_sync_snapshot(pkg.git_info(), repo_info)));
-    widths.observe(COL_MAIN, dw(&git_main_snapshot(pkg.git_info())));
+    widths.observe(COL_SYNC, dw(&git_sync_label(pkg.git_info(), repo_info)));
+    widths.observe(COL_MAIN, dw(&git_main_sync_label(pkg.git_info())));
     observe_typed_vendored_fit_widths(widths, pkg.vendored(), PREFIX_WT_VENDORED);
 }
 
@@ -244,7 +244,7 @@ fn formatted_disk(bytes: Option<u64>) -> String {
     bytes.map_or_else(|| render::format_bytes(0), render::format_bytes)
 }
 
-fn git_sync_snapshot(checkout: Option<&CheckoutInfo>, repo: Option<&RepoInfo>) -> String {
+fn git_sync_label(checkout: Option<&CheckoutInfo>, repo: Option<&RepoInfo>) -> String {
     let Some(info) = checkout else {
         return String::new();
     };
@@ -263,7 +263,7 @@ fn git_sync_snapshot(checkout: Option<&CheckoutInfo>, repo: Option<&RepoInfo>) -
     }
 }
 
-fn git_main_snapshot(checkout: Option<&CheckoutInfo>) -> String {
+fn git_main_sync_label(checkout: Option<&CheckoutInfo>) -> String {
     let Some(info) = checkout else {
         return String::new();
     };

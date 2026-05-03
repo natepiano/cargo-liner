@@ -116,7 +116,7 @@ impl Panes {
     }
 
     /// Typed accessor for the CPU pane. Used by callers that
-    /// need to read CPU-pane state (content snapshot, etc.) —
+    /// need to read CPU-pane state (content `CpuUsage`, etc.) —
     /// e.g., the render path and `is_pane_tabbable`.
     pub const fn cpu(&self) -> &CpuPane { &self.cpu }
 
@@ -410,7 +410,7 @@ impl Panes {
     pub fn reset_cpu(&mut self, cfg: &CpuConfig) { self.cpu.reset(cfg); }
 
     /// Seed the CPU pane's content with the current poller's
-    /// placeholder snapshot. Delegates to
+    /// placeholder `CpuUsage`. Delegates to
     /// `CpuPane::install_placeholder`. Used from `App::finish_new`.
     pub fn install_cpu_placeholder(&mut self) { self.cpu.install_placeholder(); }
 

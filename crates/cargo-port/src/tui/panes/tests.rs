@@ -301,7 +301,7 @@ fn ci_table_keeps_durations_when_fixed_columns_fit() {
 // ── TargetsData::from_package_record ──────────────────────────────────
 
 #[cfg(test)]
-mod targets_from_snapshot {
+mod targets_from_metadata {
     use std::path::PathBuf;
 
     use cargo_metadata::PackageId;

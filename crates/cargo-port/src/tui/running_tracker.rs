@@ -39,8 +39,8 @@ impl<K: Eq + Hash> RunningTracker<K> {
         }
     }
 
-    /// Test-only today; non-test callers materialize a snapshot
-    /// (`Vec<TrackedItem>`) and check that for emptiness instead.
+    /// Test-only today; non-test callers materialize a
+    /// `Vec<TrackedItem>` and check that for emptiness instead.
     #[cfg(test)]
     pub fn is_empty(&self) -> bool { self.running.is_empty() }
 
@@ -63,8 +63,8 @@ impl<K: Eq + Hash> RunningTracker<K> {
 
     /// Borrow the underlying map. Test-only today (`contains_key`
     /// assertions); production callers iterate via
-    /// [`Self::iter_running`] or read the snapshot built by the
-    /// caller.
+    /// [`Self::iter_running`] or read the `Vec<TrackedItem>` built
+    /// by the caller.
     #[cfg(test)]
     pub const fn running_map(&self) -> &HashMap<K, Instant> { &self.running }
 

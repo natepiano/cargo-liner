@@ -1086,7 +1086,7 @@ fn render_tree_item(
         } => render_submodule_item(app, *node_index, *submodule_index, child_sorted, widths),
     }
 }
-// ── Disk-cache snapshot ──────────────────────────────────────────────
+// ── Disk-cache ───────────────────────────────────────────────────────
 //
 // Builds the per-row sorted disk-usage values that `disk_color` /
 // `disk_percentile` consume to color the disk column.

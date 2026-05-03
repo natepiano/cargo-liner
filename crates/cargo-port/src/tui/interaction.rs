@@ -51,9 +51,9 @@ pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPan
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::mpsc;
     use std::sync::Arc;
     use std::sync::Mutex;
-    use std::sync::mpsc;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -65,9 +65,9 @@ mod tests {
     use crossterm::event::MouseButton;
     use crossterm::event::MouseEvent;
     use crossterm::event::MouseEventKind;
-    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
+    use ratatui::Terminal;
 
     use super::HoveredPaneRow;
     use crate::ci::CiJob;
@@ -1004,9 +1004,9 @@ mod tests {
 
     #[test]
     fn targets_pane_row_click_selects_target() {
+        use cargo_metadata::semver::Version;
         use cargo_metadata::PackageId;
         use cargo_metadata::TargetKind;
-        use cargo_metadata::semver::Version;
         // Step 3b: Targets pane now sources its data from the
         // `cargo metadata` result; the old hand-parsed Cargo
         // fallback is retired. Populate two Example targets via
@@ -1158,15 +1158,15 @@ mod tests {
         );
     }
 
-    fn upsert_fake_package_snapshot(
+    fn upsert_fake_package_metadata(
         app: &App,
         project_dir: &Path,
         license: Option<&str>,
         homepage: Option<&str>,
         repository: Option<&str>,
     ) {
-        use cargo_metadata::PackageId;
         use cargo_metadata::semver::Version;
+        use cargo_metadata::PackageId;
         let root = AbsolutePath::from(project_dir);
         let manifest = AbsolutePath::from(project_dir.join("Cargo.toml"));
         let pkg = PackageRecord {
@@ -1211,12 +1211,12 @@ mod tests {
     }
 
     #[test]
-    fn package_pane_renders_snapshot_edition_license_homepage_repository() {
+    fn package_pane_renders_metadata_edition_license_homepage_repository() {
         let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
         let project_dir = tmp.path().join("demo");
         std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
         let mut app = make_app(&[make_package("demo", &project_dir)]);
-        upsert_fake_package_snapshot(
+        upsert_fake_package_metadata(
             &app,
             &project_dir,
             Some("MIT"),
@@ -1246,12 +1246,12 @@ mod tests {
     }
 
     #[test]
-    fn package_pane_renders_em_dash_for_missing_snapshot_fields() {
+    fn package_pane_renders_em_dash_for_missing_metadata_fields() {
         let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
         let project_dir = tmp.path().join("demo");
         std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
         let mut app = make_app(&[make_package("demo", &project_dir)]);
-        upsert_fake_package_snapshot(&app, &project_dir, None, None, None);
+        upsert_fake_package_metadata(&app, &project_dir, None, None, None);
         // Taller backend so the full field list fits — see the sibling
         // test for why the default 120×40 isn't enough here.
         let rendered = buffer_text_sized(&mut app, 120, 80);
@@ -1365,14 +1365,14 @@ mod tests {
     /// metadata "arrivals" pointing at the same `target_directory`,
     /// so the `TargetDirIndex` reports sibling B when we confirm a
     /// clean on A.
-    fn upsert_shared_target_snapshots(
+    fn upsert_shared_target_metadata(
         app: &mut App,
         primary_dir: &Path,
         sibling_dirs: &[&Path],
         target_dir: &Path,
     ) {
-        use cargo_metadata::PackageId;
         use cargo_metadata::semver::Version;
+        use cargo_metadata::PackageId;
         for dir in std::iter::once(primary_dir).chain(sibling_dirs.iter().copied()) {
             let root = AbsolutePath::from(dir);
             let manifest = AbsolutePath::from(dir.join("Cargo.toml"));
@@ -1445,7 +1445,7 @@ mod tests {
             make_package("main", &primary_dir),
             make_package("feat", &sibling_dir),
         ]);
-        upsert_shared_target_snapshots(
+        upsert_shared_target_metadata(
             &mut app,
             &primary_dir,
             &[sibling_dir.as_path()],
@@ -1467,7 +1467,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_confirm_popup_falls_back_to_in_tree_target_without_snapshot() {
+    fn clean_confirm_popup_falls_back_to_in_tree_target_without_metadata() {
         let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
         let project_dir = tmp.path().join("demo");
         std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
@@ -1482,7 +1482,7 @@ mod tests {
         let expected = crate::project::home_relative_path(fallback_target.as_path());
         assert!(
             rendered.contains(&expected),
-            "without a snapshot, popup shows the default <project>/target (expected {expected:?})"
+            "without metadata, popup shows the default <project>/target (expected {expected:?})"
         );
     }
 

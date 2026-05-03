@@ -1937,7 +1937,7 @@ mod tests {
     // ── is_target_event_for ──────────────────────────────────────────
 
     #[test]
-    fn is_target_event_for_uses_in_tree_default_without_snapshot() {
+    fn is_target_event_for_uses_in_tree_default_without_metadata() {
         let root = Path::new("/home/u/proj");
         let in_tree = root.join("target/debug/foo");
         assert!(

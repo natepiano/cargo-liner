@@ -236,7 +236,7 @@ fn resolved_root_label(item: &RootItem) -> String {
 }
 
 /// Wrap owned `RootItem`s in a `ProjectList` for test helpers that pass
-/// them to snapshot/finder functions.
+/// them to finder/widths functions.
 pub(super) fn as_entries(items: Vec<RootItem>) -> ProjectList {
     crate::project_list::ProjectList::new(items)
 }

@@ -768,7 +768,7 @@ pub struct PackageData {
 /// Resolve (version, description) for the detail pane from the
 /// authoritative metadata. Returns `("-", None)` pre-metadata — matches
 /// the Targets pane's pre-metadata placeholder UX.
-fn snapshot_version_and_description(pkg: Option<&PackageRecord>) -> (String, Option<String>) {
+fn version_and_description(pkg: Option<&PackageRecord>) -> (String, Option<String>) {
     let version = pkg.map_or_else(|| "-".to_string(), |p| p.version.to_string());
     let description = pkg.and_then(|p| p.description.clone());
     (version, description)
@@ -1533,7 +1533,7 @@ fn resolve_disk_and_ci(
     )
 }
 
-fn lookup_snapshot_package(app: &App, abs_path: &AbsolutePath) -> Option<PackageRecord> {
+fn lookup_package_record(app: &App, abs_path: &AbsolutePath) -> Option<PackageRecord> {
     app.metadata_store_handle()
         .lock()
         .ok()
@@ -1551,7 +1551,7 @@ struct ManifestFields {
 }
 
 fn manifest_fields_from(snapshot_package: Option<&PackageRecord>) -> ManifestFields {
-    let (version, description) = snapshot_version_and_description(snapshot_package);
+    let (version, description) = version_and_description(snapshot_package);
     ManifestFields {
         edition: snapshot_package.map(|pkg| pkg.edition.clone()),
         license: snapshot_package.and_then(|pkg| pkg.license.clone()),
@@ -1657,7 +1657,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 
     let abs_path_owned = AbsolutePath::from(abs_path);
     let t_meta = std::time::Instant::now();
-    let snapshot_package = lookup_snapshot_package(app, &abs_path_owned);
+    let snapshot_package = lookup_package_record(app, &abs_path_owned);
     let metadata_ms = perf_log::ms(t_meta.elapsed().as_millis());
     let manifest = manifest_fields_from(snapshot_package.as_ref());
 

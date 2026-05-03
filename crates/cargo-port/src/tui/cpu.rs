@@ -91,7 +91,7 @@ impl CpuPoller {
 
     pub(super) fn core_count(&self) -> usize { self.system.cpus().len().max(1) }
 
-    pub(super) fn placeholder_snapshot(&self) -> CpuUsage {
+    pub(super) fn placeholder_cpu_usage(&self) -> CpuUsage {
         CpuUsage::placeholder(self.core_count())
     }
 

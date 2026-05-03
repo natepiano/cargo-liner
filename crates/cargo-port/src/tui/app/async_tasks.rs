@@ -600,7 +600,7 @@ impl App {
         entries
     }
 
-    pub fn lint_runtime_projects_snapshot(&self) -> Vec<RegisterProjectRequest> {
+    pub fn lint_runtime_projects(&self) -> Vec<RegisterProjectRequest> {
         if !self.is_scan_complete() {
             return Vec::new();
         }
@@ -619,7 +619,7 @@ impl App {
         let Some(runtime) = self.lint.runtime() else {
             return;
         };
-        runtime.sync_projects(self.lint_runtime_projects_snapshot());
+        runtime.sync_projects(self.lint_runtime_projects());
     }
 
     fn register_lint_for_root_items(&self) -> usize {
@@ -1226,7 +1226,7 @@ impl App {
     }
 
     pub fn sync_running_clean_toast(&mut self) {
-        let (toast_slot, items) = Self::tracker_snapshot(self.inflight.clean(), |p| {
+        let (toast_slot, items) = Self::running_items_for_toast(self.inflight.clean(), |p| {
             project::home_relative_path(p.as_path())
         });
         let next = self.sync_running_toast(toast_slot, "cargo clean", &items[..]);
@@ -1234,7 +1234,7 @@ impl App {
     }
 
     pub fn sync_running_lint_toast(&mut self) {
-        let (toast_slot, items) = Self::tracker_snapshot(self.lint.running(), |p| {
+        let (toast_slot, items) = Self::running_items_for_toast(self.lint.running(), |p| {
             project::home_relative_path(p.as_path())
         });
         let next = self.sync_running_toast(toast_slot, "Lints", &items);
@@ -1245,18 +1245,18 @@ impl App {
     /// with the live in-flight repo fetches.
     fn sync_running_repo_fetch_toast(&mut self) {
         let (toast_slot, items) =
-            Self::tracker_snapshot(self.net.github().running(), ToString::to_string);
+            Self::running_items_for_toast(self.net.github().running(), ToString::to_string);
         let next = self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &items);
         self.net.github_mut().running_mut().set_toast(next);
     }
 
-    /// Snapshot a `RunningTracker<K>` into the data the toast helper
+    /// Collect a `RunningTracker<K>` into the data the toast helper
     /// needs: the current toast slot plus a `TrackedItem` per running
     /// key. Done as a `&self`-free helper so the borrow on the
     /// subsystem-owned tracker is released before the caller hands
-    /// the snapshot to [`Self::sync_running_toast`] (which takes
+    /// the items to [`Self::sync_running_toast`] (which takes
     /// `&mut self`).
-    fn tracker_snapshot<K, F>(
+    fn running_items_for_toast<K, F>(
         tracker: &RunningTracker<K>,
         label_fn: F,
     ) -> (Option<ToastTaskId>, Vec<TrackedItem>)
@@ -1281,7 +1281,7 @@ impl App {
     /// marks items completed (freezing elapsed + starting strikethrough)
     /// as items disappear, and begins the toast-level linger
     /// countdown once the tracker drains. Used by lint, clean, and
-    /// GitHub repo-fetch flows via [`Self::tracker_snapshot`].
+    /// GitHub repo-fetch flows via [`Self::running_items_for_toast`].
     fn sync_running_toast(
         &mut self,
         toast_slot: Option<ToastTaskId>,
@@ -2154,15 +2154,15 @@ impl App {
     }
 
     /// One-shot: hit GitHub's `/rate_limit` endpoint so the shared
-    /// snapshot is populated before any real request. The endpoint is
-    /// quota-exempt, so this is safe to run even when GitHub is
+    /// rate-limit cache is populated before any real request. The endpoint
+    /// is quota-exempt, so this is safe to run even when GitHub is
     /// refusing other calls. Logged via `rate_limit_prime_ok` /
     /// `rate_limit_prime_failed`.
     pub fn spawn_rate_limit_prime(&self) {
         let client = self.net.http_client();
         thread::spawn(move || {
-            let (snapshot, _signal) = client.fetch_rate_limit();
-            if snapshot.is_some() {
+            let (rate_limit, _signal) = client.fetch_rate_limit();
+            if rate_limit.is_some() {
                 tracing::info!("rate_limit_prime_ok");
             } else {
                 tracing::info!("rate_limit_prime_failed");

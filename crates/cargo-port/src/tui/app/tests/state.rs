@@ -25,10 +25,10 @@ fn lint_runtime_waits_for_scan_completion() {
     let abs_path = test_path("~/demo");
     let mut app = make_app(&[project]);
 
-    assert!(app.lint_runtime_projects_snapshot().is_empty());
+    assert!(app.lint_runtime_projects().is_empty());
 
     app.scan_state_mut().phase = ScanPhase::Complete;
-    let projects = app.lint_runtime_projects_snapshot();
+    let projects = app.lint_runtime_projects();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].abs_path, abs_path);
     assert_eq!(
@@ -398,12 +398,11 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(project_a.path().as_path()));
     assert!(!app.lint().phase.seen.contains(project_a.path().as_path()));
-    assert!(
-        app.lint()
-            .running()
-            .running_map()
-            .contains_key(project_a.path())
-    );
+    assert!(app
+        .lint()
+        .running()
+        .running_map()
+        .contains_key(project_a.path()));
     assert!(app.lint().running().toast().is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
@@ -525,13 +524,12 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 
     apply_git_info(&mut app, member_dir.as_path(), make_git_info(None));
 
-    assert!(
-        app.scan_state()
-            .startup_phases
-            .git
-            .seen
-            .contains(workspace_dir.join(".git").as_path())
-    );
+    assert!(app
+        .scan_state()
+        .startup_phases
+        .git
+        .seen
+        .contains(workspace_dir.join(".git").as_path()));
 }
 
 #[test]
@@ -561,7 +559,7 @@ fn lint_toast_reuses_existing_on_restart() {
 }
 
 #[test]
-fn lint_runtime_snapshot_uses_workspace_root_not_members() {
+fn lint_runtime_projects_uses_workspace_root_not_members() {
     let workspace = make_workspace_project(Some("hana"), "~/rust/hana");
     let member_a = make_project(Some("hana_core"), "~/rust/hana/crates/hana_core");
     let member_b = make_project(Some("hana_ui"), "~/rust/hana/crates/hana_ui");
@@ -578,7 +576,7 @@ fn lint_runtime_snapshot_uses_workspace_root_not_members() {
     apply_items(&mut app, &[root]);
     app.scan_state_mut().phase = ScanPhase::Complete;
 
-    let projects = app.lint_runtime_projects_snapshot();
+    let projects = app.lint_runtime_projects();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].abs_path, test_path("~/rust/hana"));
     assert_eq!(
@@ -588,7 +586,7 @@ fn lint_runtime_snapshot_uses_workspace_root_not_members() {
 }
 
 #[test]
-fn lint_runtime_snapshot_deduplicates_primary_worktree_path() {
+fn lint_runtime_projects_deduplicates_primary_worktree_path() {
     let root_item = make_package_worktrees_item(
         make_package_raw(Some("ws"), "~/ws", None),
         vec![make_package_raw(
@@ -603,7 +601,7 @@ fn lint_runtime_snapshot_deduplicates_primary_worktree_path() {
     apply_items(&mut app, &[root_item]);
     app.scan_state_mut().phase = ScanPhase::Complete;
 
-    let projects = app.lint_runtime_projects_snapshot();
+    let projects = app.lint_runtime_projects();
     assert_eq!(projects.len(), 2);
     assert_eq!(projects[0].abs_path, test_path("~/ws"));
     assert_eq!(projects[1].abs_path, test_path("~/ws_feat"));
@@ -1495,7 +1493,7 @@ fn fake_fingerprint() -> ManifestFingerprint {
     }
 }
 
-fn fake_snapshot(workspace_root: &AbsolutePath) -> WorkspaceMetadata {
+fn fake_metadata(workspace_root: &AbsolutePath) -> WorkspaceMetadata {
     WorkspaceMetadata {
         workspace_root:           workspace_root.clone(),
         target_directory:         AbsolutePath::from(workspace_root.as_path().join("target")),
@@ -1574,7 +1572,7 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
         workspace_root: workspace_root.clone(),
         generation,
         fingerprint: fake_fingerprint(),
-        result: Ok(fake_snapshot(&workspace_root)),
+        result: Ok(fake_metadata(&workspace_root)),
     });
 
     assert!(
@@ -1591,7 +1589,7 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
             .expect("store lock")
             .get(&workspace_root)
             .is_some(),
-        "successful snapshot was upserted into the store"
+        "successful metadata was upserted into the store"
     );
     assert!(
         app.scan_state_mut()
@@ -1631,7 +1629,7 @@ fn stale_generation_metadata_arrival_is_dropped() {
         workspace_root: workspace_root.clone(),
         generation:     stale_gen,
         fingerprint:    fake_fingerprint(),
-        result:         Ok(fake_snapshot(&workspace_root)),
+        result:         Ok(fake_metadata(&workspace_root)),
     });
 
     assert!(
@@ -1783,12 +1781,11 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
         app.start_clean(&project_path),
         "out-of-tree target dir exists → clean is queued (would have missed with join(\"target\"))"
     );
-    assert!(
-        app.inflight()
-            .clean()
-            .running_map()
-            .contains_key(project_path.as_path())
-    );
+    assert!(app
+        .inflight()
+        .clean()
+        .running_map()
+        .contains_key(project_path.as_path()));
 }
 
 #[test]
@@ -1830,7 +1827,7 @@ fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
 }
 
 #[test]
-fn start_clean_falls_back_to_literal_target_when_no_snapshot_yet() {
+fn start_clean_falls_back_to_literal_target_when_no_metadata_yet() {
     let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
     let project_path = AbsolutePath::from(tmp.path().join("proj"));
     std::fs::create_dir_all(project_path.as_path().join("target"))
@@ -1847,12 +1844,11 @@ fn start_clean_falls_back_to_literal_target_when_no_snapshot_yet() {
         app.start_clean(&project_path),
         "no metadata → falls back to <project>/target, which exists → clean queued"
     );
-    assert!(
-        app.inflight()
-            .clean()
-            .running_map()
-            .contains_key(project_path.as_path())
-    );
+    assert!(app
+        .inflight()
+        .clean()
+        .running_map()
+        .contains_key(project_path.as_path()));
 }
 
 /// The metadata phase gates `startup_complete_at`: with disk, git, repo
@@ -1929,7 +1925,7 @@ fn startup_ready_waits_on_metadata_phase() {
         workspace_root: workspace_root.clone(),
         generation,
         fingerprint: fake_fingerprint(),
-        result: Ok(fake_snapshot(&workspace_root)),
+        result: Ok(fake_metadata(&workspace_root)),
     });
 
     assert!(
@@ -2039,7 +2035,7 @@ fn request_clean_confirm_opens_ready_when_fingerprint_matches() {
     app.metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())
-        .upsert(fake_snapshot(&workspace_root));
+        .upsert(fake_metadata(&workspace_root));
 
     app.request_clean_confirm(workspace_root);
 
@@ -2051,7 +2047,7 @@ fn request_clean_confirm_opens_ready_when_fingerprint_matches() {
 }
 
 #[test]
-fn request_clean_confirm_marks_verifying_when_no_snapshot_covers_path() {
+fn request_clean_confirm_marks_verifying_when_no_metadata_covers_path() {
     // No metadata → nothing to verify against → flag stays Verifying
     // until metadata arrives. `request_clean_confirm` also spawns
     // a cargo metadata refresh; we don't assert on the spawn here
@@ -2082,7 +2078,7 @@ fn request_clean_confirm_marks_verifying_when_no_snapshot_covers_path() {
         workspace_root: workspace_root.clone(),
         generation,
         fingerprint: fake_fingerprint(),
-        result: Ok(fake_snapshot(&workspace_root)),
+        result: Ok(fake_metadata(&workspace_root)),
     });
     assert!(
         app.confirm_verifying().is_none(),
@@ -2091,7 +2087,7 @@ fn request_clean_confirm_marks_verifying_when_no_snapshot_covers_path() {
 }
 
 #[test]
-fn out_of_tree_target_size_message_stamps_snapshot() {
+fn out_of_tree_target_size_message_stamps_metadata() {
     // Inject metadata with an out-of-tree target, then route an
     // OutOfTreeTargetSize arrival through handle_bg_msg. The byte total
     // should land on `WorkspaceMetadata::out_of_tree_target_bytes`.
@@ -2134,9 +2130,9 @@ fn out_of_tree_target_size_message_stamps_snapshot() {
 
 #[test]
 fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
+    use cargo_metadata::semver::Version;
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
-    use cargo_metadata::semver::Version;
 
     let project_path = AbsolutePath::from(PathBuf::from("/abs/demo"));
     let pkg_item = RootItem::Rust(RustProject::Package(crate::project::Package {

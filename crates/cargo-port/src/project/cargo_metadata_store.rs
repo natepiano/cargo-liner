@@ -530,11 +530,11 @@ mod tests {
         store.remove(&root);
         assert!(
             !store.dispatch_generations.contains_key(&root),
-            "generation counter is dropped with the snapshot"
+            "generation counter is dropped with the metadata"
         );
     }
 
-    fn fake_snapshot(
+    fn fake_metadata(
         workspace_root: AbsolutePath,
         target_directory: AbsolutePath,
     ) -> WorkspaceMetadata {
@@ -559,21 +559,21 @@ mod tests {
     }
 
     #[test]
-    fn resolved_target_dir_is_none_without_a_snapshot() {
+    fn resolved_target_dir_is_none_without_metadata() {
         let store = WorkspaceMetadataStore::new();
         let path = AbsolutePath::from(PathBuf::from("/ws/src/lib.rs"));
         assert!(
             store.resolved_target_dir(&path).is_none(),
-            "no snapshot → None; callers fall back to <project>/target"
+            "no metadata → None; callers fall back to <project>/target"
         );
     }
 
     #[test]
-    fn resolved_target_dir_returns_snapshot_target_for_workspace_root() {
+    fn resolved_target_dir_returns_target_for_workspace_root() {
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/tmp/out-of-tree-target"));
-        store.upsert(fake_snapshot(root.clone(), target.clone()));
+        store.upsert(fake_metadata(root.clone(), target.clone()));
 
         assert_eq!(
             store.resolved_target_dir(&root).cloned(),
@@ -587,7 +587,7 @@ mod tests {
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/tmp/out-of-tree-target"));
-        store.upsert(fake_snapshot(root, target.clone()));
+        store.upsert(fake_metadata(root, target.clone()));
 
         let member = AbsolutePath::from(PathBuf::from("/ws/crates/core/src/lib.rs"));
         assert_eq!(
@@ -616,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn package_for_path_is_none_without_snapshot() {
+    fn package_for_path_is_none_without_metadata() {
         let store = WorkspaceMetadataStore::new();
         let path = AbsolutePath::from(PathBuf::from("/ws"));
         assert!(store.package_for_path(&path).is_none());
@@ -627,7 +627,7 @@ mod tests {
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/ws/target"));
-        let mut snap = fake_snapshot(root.clone(), target);
+        let mut snap = fake_metadata(root.clone(), target);
         let pkg = fake_package_record("demo", AbsolutePath::from(PathBuf::from("/ws/Cargo.toml")));
         snap.packages.insert(pkg.id.clone(), pkg);
         store.upsert(snap);
@@ -642,7 +642,7 @@ mod tests {
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/ws/target"));
-        let mut snap = fake_snapshot(root, target);
+        let mut snap = fake_metadata(root, target);
         let member_root = AbsolutePath::from(PathBuf::from("/ws/crates/core"));
         let pkg = fake_package_record(
             "core",
@@ -660,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn package_for_path_returns_none_when_snapshot_has_no_matching_package() {
+    fn package_for_path_returns_none_when_metadata_has_no_matching_package() {
         // Transient case: metadata covers this workspace but the
         // specific package-dir path doesn't match any manifest (e.g. a
         // Cargo.toml was just added and the follow-up dispatch hasn't
@@ -668,17 +668,17 @@ mod tests {
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/ws/target"));
-        store.upsert(fake_snapshot(root, target));
+        store.upsert(fake_metadata(root, target));
         let phantom_member = AbsolutePath::from(PathBuf::from("/ws/crates/never"));
         assert!(store.package_for_path(&phantom_member).is_none());
     }
 
     #[test]
-    fn set_out_of_tree_target_bytes_stamps_matching_snapshot() {
+    fn set_out_of_tree_target_bytes_stamps_matching_metadata() {
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/elsewhere/target"));
-        store.upsert(fake_snapshot(root.clone(), target.clone()));
+        store.upsert(fake_metadata(root.clone(), target.clone()));
 
         let applied = store.set_out_of_tree_target_bytes(&root, &target, 42_000);
         assert!(applied, "matching target_directory accepts the stamp");
@@ -697,7 +697,7 @@ mod tests {
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let stale_target = AbsolutePath::from(PathBuf::from("/old/target"));
         let current_target = AbsolutePath::from(PathBuf::from("/new/target"));
-        store.upsert(fake_snapshot(root.clone(), current_target));
+        store.upsert(fake_metadata(root.clone(), current_target));
 
         let applied = store.set_out_of_tree_target_bytes(&root, &stale_target, 999);
         assert!(
@@ -713,11 +713,11 @@ mod tests {
     }
 
     #[test]
-    fn set_out_of_tree_target_bytes_noop_without_snapshot() {
+    fn set_out_of_tree_target_bytes_noop_without_metadata() {
         let mut store = WorkspaceMetadataStore::new();
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/elsewhere/target"));
         let applied = store.set_out_of_tree_target_bytes(&root, &target, 1);
-        assert!(!applied, "no snapshot → nothing to stamp");
+        assert!(!applied, "no metadata → nothing to stamp");
     }
 }

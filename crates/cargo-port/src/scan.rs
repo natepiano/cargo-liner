@@ -1532,7 +1532,7 @@ fn run_cargo_metadata_for_root(
     let manifest_path = workspace_root.as_path().join("Cargo.toml");
     let started_at = std::time::Instant::now();
     let result = match execute_cargo_metadata(&manifest_path) {
-        Ok(metadata) => Ok(build_workspace_snapshot(
+        Ok(metadata) => Ok(build_workspace_metadata(
             workspace_root.clone(),
             &metadata,
             fingerprint.clone(),
@@ -1587,7 +1587,7 @@ fn synthetic_fingerprint() -> ManifestFingerprint {
     }
 }
 
-fn build_workspace_snapshot(
+fn build_workspace_metadata(
     workspace_root: AbsolutePath,
     metadata: &cargo_metadata::Metadata,
     fingerprint: ManifestFingerprint,
