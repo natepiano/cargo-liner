@@ -34,7 +34,7 @@ impl App {
                 exhausted,
             });
         } else {
-            self.inflight.ci_fetch_tracker_mut().complete(path);
+            self.ci.fetch_tracker_mut().complete(path);
         }
     }
 
@@ -137,7 +137,7 @@ impl App {
                 },
             );
         }
-        self.inflight.ci_fetch_tracker_mut().complete(abs.as_path());
+        self.ci.fetch_tracker_mut().complete(abs.as_path());
         if let Some(entry) = self.scan.projects_mut().entry_containing_mut(abs.as_path()) {
             let repo = entry.git_repo.get_or_insert_with(Default::default);
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
@@ -150,7 +150,7 @@ impl App {
     }
 
     pub(super) fn ci_display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
-        self.panes.ci_display_mode_for(path)
+        self.ci.display_mode_for(path)
     }
 
     pub(super) fn ci_display_mode_label_for_inner(&self, path: &Path) -> &'static str {
@@ -170,15 +170,14 @@ impl App {
 
     pub(super) fn toggle_ci_display_mode_for_inner(&mut self, path: &Path) {
         if !self.ci_toggle_available_for_inner(path) {
-            self.panes.remove_ci_display_mode(path);
+            self.ci.remove_display_mode(path);
             return;
         }
         let new_mode = match self.ci_display_mode_for(path) {
             CiRunDisplayMode::BranchOnly => CiRunDisplayMode::All,
             CiRunDisplayMode::All => CiRunDisplayMode::BranchOnly,
         };
-        self.panes
-            .set_ci_display_mode(AbsolutePath::from(path), new_mode);
+        self.ci.set_display_mode(AbsolutePath::from(path), new_mode);
         self.panes_mut().ci_mut().viewport_mut().home();
         self.scan.bump_generation();
     }

@@ -1,11 +1,11 @@
 //! The `Ci` subsystem.
 //!
 //! Phase 13 of the App-API extraction (see `docs/app-api.md`).
-//! Phase 13.1 introduces the type and the read-side display API;
-//! the field cluster (`ci_fetch_tracker`, `ci_fetch_toast`,
-//! `display_modes`) moves in Phase 13.2. Until then `Ci` is a
-//! marker struct with no fields, parallel to Phase 11.2's
-//! pre-field-move `Lint`.
+//! Phase 13.1 introduced the type and `CiDisplay`. Phase 13.2
+//! absorbs the field cluster (`ci_fetch_tracker` from `Inflight`,
+//! `ci_fetch_toast` from `Inflight`, `display_modes` from
+//! `CiPane`) and drops `Ci::package_display`'s temporary
+//! `display_mode` argument in favor of `self.display_mode_for`.
 //!
 //! `package_display` returns a typed [`CiDisplay`] enum for the
 //! Ci row in the Package detail pane. Phase 13.3 (capstone) flips
@@ -18,12 +18,17 @@
 //! "Recurring patterns" in `docs/app-api.md`). Mirrors
 //! `LintDisplay` (Phase 11.3).
 
+use std::collections::HashMap;
+use std::path::Path;
+
 use crate::ci::Conclusion;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ProjectCiInfo;
 use crate::project::RepoInfo;
+use crate::tui::app::CiFetchTracker;
 use crate::tui::app::CiRunDisplayMode;
+use crate::tui::toasts::ToastTaskId;
 
 /// Display value for the Ci row in the Package detail pane.
 ///
@@ -57,13 +62,60 @@ pub enum CiDisplay {
 
 /// The `Ci` subsystem.
 ///
-/// Phase 13.1 marker struct: holds no fields. Phase 13.2 absorbs
-/// the field cluster (`ci_fetch_tracker`, `ci_fetch_toast`,
-/// `display_modes`) from `Inflight` and `CiPane`.
-pub struct Ci;
+/// Phase 13.2 absorbed three fields:
+///
+/// - `fetch_tracker` (`HashSet<AbsolutePath>`-backed [`CiFetchTracker`]) — paths with an in-flight
+///   CI fetch. Stays as the bespoke type, **not** `RunningTracker<K>`: no toast slot, no started-at
+///   timestamp; `RunningTracker`'s shape doesn't fit. (Phase 13.0 Q2.)
+/// - `fetch_toast` (`Option<ToastTaskId>`) — fire-once toast slot consumed via `take_fetch_toast`
+///   at fetch completion. Different lifecycle from `Lint::running` / `Github::running` (which are
+///   sticky-during-flight); kept as a plain field, **not** wrapped in `RunningTracker`. (Phase 13.0
+///   Q2.)
+/// - `display_modes` (`HashMap<AbsolutePath, CiRunDisplayMode>`) — per-project `BranchOnly` vs
+///   `All` selection. Treated as domain state (which CI runs are surfaced for this project), not UI
+///   state. Moved from `CiPane`. (Phase 13.0 Q3.)
+pub struct Ci {
+    fetch_tracker: CiFetchTracker,
+    fetch_toast:   Option<ToastTaskId>,
+    display_modes: HashMap<AbsolutePath, CiRunDisplayMode>,
+}
 
 impl Ci {
-    pub const fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self {
+            fetch_tracker: CiFetchTracker::default(),
+            fetch_toast:   None,
+            display_modes: HashMap::new(),
+        }
+    }
+
+    // ── fetch tracker ───────────────────────────────────────────
+
+    pub const fn fetch_tracker(&self) -> &CiFetchTracker { &self.fetch_tracker }
+
+    pub const fn fetch_tracker_mut(&mut self) -> &mut CiFetchTracker { &mut self.fetch_tracker }
+
+    // ── fetch toast ─────────────────────────────────────────────
+
+    pub const fn set_fetch_toast(&mut self, task_id: Option<ToastTaskId>) {
+        self.fetch_toast = task_id;
+    }
+
+    pub const fn take_fetch_toast(&mut self) -> Option<ToastTaskId> { self.fetch_toast.take() }
+
+    // ── display modes ───────────────────────────────────────────
+
+    pub fn display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
+        self.display_modes.get(path).copied().unwrap_or_default()
+    }
+
+    pub fn set_display_mode(&mut self, path: AbsolutePath, mode: CiRunDisplayMode) {
+        self.display_modes.insert(path, mode);
+    }
+
+    pub fn remove_display_mode(&mut self, path: &Path) { self.display_modes.remove(path); }
+
+    pub fn clear_display_modes(&mut self) { self.display_modes.clear(); }
 
     /// Build the [`CiDisplay`] for the Ci row in the Package
     /// detail pane at the selected project (or worktree-group
@@ -87,9 +139,6 @@ impl Ci {
     ///   `app/query.rs:424-452` walks all worktree paths and returns `Failure` if any-red,
     ///   `Success` if all-green, else `None`. The rollup is the only group-level distinction;
     ///   everything else is primary-checkout data.
-    /// - `display_mode` — temporary parameter shipped in 13.1 while `display_modes` still lives on
-    ///   `CiPane`. Phase 13.2 drops this parameter and reads `self.display_mode_for(abs)` from the
-    ///   absorbed field on `Ci`.
     /// - `is_worktree_group` — kept for signature symmetry with `Lint::package_display`. Today's CI
     ///   display logic doesn't branch on it (the caller's pre-resolution of `latest_conclusion`
     ///   already handles the rollup); reserved in case future variants need group-aware text.
@@ -98,12 +147,8 @@ impl Ci {
         reason = "wired in Phase 13.3 capstone; ships in 13.1 alongside the old string API"
     )]
     #[allow(
-        clippy::unused_self,
-        reason = "Phase 13.2 reads display_modes from self; the parameter goes away then"
-    )]
-    #[allow(
         clippy::too_many_arguments,
-        reason = "wide CI dependency surface (Q6 in docs/app-api.md); display_mode arg drops in 13.2 to 7 — the absolute limit"
+        reason = "wide CI dependency surface (Q6 in docs/app-api.md)"
     )]
     pub fn package_display(
         &self,
@@ -112,10 +157,9 @@ impl Ci {
         git_info: Option<&CheckoutInfo>,
         ci_info: Option<&ProjectCiInfo>,
         latest_conclusion: Option<Conclusion>,
-        display_mode: CiRunDisplayMode,
         is_worktree_group: bool,
     ) -> CiDisplay {
-        let _ = (abs, is_worktree_group);
+        let _ = is_worktree_group;
         let has_workflows = repo_info.is_some_and(|r| r.workflows.is_present());
         if !has_workflows {
             return CiDisplay::NoWorkflow;
@@ -126,6 +170,7 @@ impl Ci {
         let Some(info) = ci_info else {
             return CiDisplay::NoRuns;
         };
+        let display_mode = self.display_mode_for(abs.as_path());
         let local = Self::filtered_run_count(info, git_info, display_mode);
         let github_total = info.github_total;
         if local == 0 && github_total == 0 {
@@ -182,15 +227,7 @@ mod tests {
     fn no_workflow_when_repo_info_missing() {
         let ci = Ci::new();
         let abs = AbsolutePath::from(std::path::Path::new("/abs/x"));
-        let display = ci.package_display(
-            &abs,
-            None,
-            None,
-            None,
-            None,
-            CiRunDisplayMode::default(),
-            false,
-        );
+        let display = ci.package_display(&abs, None, None, None, None, false);
         assert_eq!(display, CiDisplay::NoWorkflow);
     }
 

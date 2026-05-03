@@ -42,8 +42,6 @@ use super::pane_impls::ToastsPane;
 use super::spec::PaneId;
 use super::support::WorktreeInfo;
 use crate::config::CpuConfig;
-use crate::project::AbsolutePath;
-use crate::tui::app::CiRunDisplayMode;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::config_state::Config;
 use crate::tui::pane::PaneFocusState;
@@ -404,20 +402,6 @@ impl Panes {
             PaneId::ProjectList => self.project_list.viewport_mut(),
         }
     }
-
-    pub fn ci_display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
-        self.ci_runs.display_mode_for(path)
-    }
-
-    pub fn set_ci_display_mode(&mut self, path: AbsolutePath, mode: CiRunDisplayMode) {
-        self.ci_runs.set_display_mode(path, mode);
-    }
-
-    pub fn remove_ci_display_mode(&mut self, path: &Path) {
-        self.ci_runs.remove_display_mode(path);
-    }
-
-    pub fn clear_ci_display_modes(&mut self) { self.ci_runs.clear_display_modes(); }
 
     /// Return the cached worktree-summary for `group_root` if present;
     /// otherwise compute via `compute` (the shell-out path), cache, and

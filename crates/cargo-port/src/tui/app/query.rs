@@ -304,8 +304,8 @@ impl App {
 
     pub fn ci_is_fetching(&self, path: &Path) -> bool {
         self.projects().entry_containing(path).is_some_and(|entry| {
-            self.inflight
-                .ci_fetch_tracker()
+            self.ci
+                .fetch_tracker()
                 .is_fetching(entry.item.path().as_path())
         })
     }
@@ -651,8 +651,8 @@ impl App {
         self.scan
             .pending_git_first_commit_mut()
             .retain(|path, _| all_paths.contains(path));
-        self.inflight
-            .ci_fetch_tracker_mut()
+        self.ci
+            .fetch_tracker_mut()
             .retain(|path| all_paths.contains(path));
     }
 

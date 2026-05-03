@@ -1433,8 +1433,8 @@ impl App {
     pub fn rescan(&mut self) {
         self.scan.projects_mut().clear();
         // disk_usage lives on project items — cleared with projects above
-        self.inflight.ci_fetch_tracker_mut().clear();
-        self.panes.clear_ci_display_modes();
+        self.ci.fetch_tracker_mut().clear();
+        self.ci.clear_display_modes();
         self.clear_all_lint_state();
         self.lint
             .set_cache_usage(crate::lint::CacheUsage::default());
@@ -1587,7 +1587,7 @@ impl App {
                         .ci_info_for(Path::new(&path))
                         .map_or(0, |info| info.runs.len());
                     let new_runs = after.saturating_sub(before);
-                    if let Some(task_id) = self.inflight.take_ci_fetch_toast() {
+                    if let Some(task_id) = self.ci.take_fetch_toast() {
                         let empty: std::collections::HashSet<String> =
                             std::collections::HashSet::new();
                         self.toasts.complete_missing_items(task_id, &empty);

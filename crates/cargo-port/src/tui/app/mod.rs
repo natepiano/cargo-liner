@@ -284,7 +284,7 @@ impl App {
     pub(super) fn rate_limit(&self) -> GitHubRateLimit { self.net.rate_limit() }
 
     pub fn complete_ci_fetch_for(&mut self, path: &Path) -> bool {
-        self.inflight.ci_fetch_tracker_mut().complete(path)
+        self.ci.fetch_tracker_mut().complete(path)
     }
 
     pub fn replace_ci_data_for_path(&mut self, path: &Path, ci_data: ProjectCiData) {
@@ -299,7 +299,7 @@ impl App {
     }
 
     pub fn start_ci_fetch_for(&mut self, path: AbsolutePath) {
-        self.inflight.ci_fetch_tracker_mut().start(path);
+        self.ci.fetch_tracker_mut().start(path);
     }
 
     /// Lint subsystem accessor (Phase 11.4a/b). Owns the lint
@@ -446,7 +446,7 @@ impl App {
     }
 
     pub(super) const fn set_ci_fetch_toast(&mut self, task_id: ToastTaskId) {
-        self.inflight.set_ci_fetch_toast(Some(task_id));
+        self.ci.set_fetch_toast(Some(task_id));
     }
 
     pub(super) const fn take_pending_ci_fetch(&mut self) -> Option<PendingCiFetch> {

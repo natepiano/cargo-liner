@@ -8,8 +8,6 @@
 //! Click and hover dispatch then walks `HITTABLE_Z_ORDER`, asking
 //! each pane for the target at `pos`.
 
-use std::collections::HashMap;
-use std::path::Path;
 use std::time::Instant;
 
 use ratatui::Frame;
@@ -30,7 +28,6 @@ use super::package;
 use super::package::RenderStyles;
 use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
-use crate::tui::app::CiRunDisplayMode;
 use crate::tui::app::DismissTarget;
 use crate::tui::cpu::CpuPoller;
 use crate::tui::cpu::CpuSnapshot;
@@ -345,18 +342,20 @@ impl Hittable for LintsPane {
 }
 
 // ── CiRuns ──────────────────────────────────────────────────────
+//
+// Phase 13.2 moved the per-path `display_modes` (BranchOnly /
+// All) onto `tui::ci_state::Ci` (domain state, not UI state).
+// `CiPane` now holds only viewport + content cache.
 pub struct CiPane {
-    viewport:      Viewport,
-    content:       Option<super::CiData>,
-    display_modes: HashMap<AbsolutePath, CiRunDisplayMode>,
+    viewport: Viewport,
+    content:  Option<super::CiData>,
 }
 
 impl CiPane {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
-            viewport:      Viewport::new(),
-            content:       None,
-            display_modes: HashMap::new(),
+            viewport: Viewport::new(),
+            content:  None,
         }
     }
 
@@ -377,18 +376,6 @@ impl CiPane {
             ci.mode_label = None;
         }
     }
-
-    pub fn display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
-        self.display_modes.get(path).copied().unwrap_or_default()
-    }
-
-    pub fn set_display_mode(&mut self, path: AbsolutePath, mode: CiRunDisplayMode) {
-        self.display_modes.insert(path, mode);
-    }
-
-    pub fn remove_display_mode(&mut self, path: &Path) { self.display_modes.remove(path); }
-
-    pub fn clear_display_modes(&mut self) { self.display_modes.clear(); }
 }
 
 impl Pane for CiPane {

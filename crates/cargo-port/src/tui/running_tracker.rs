@@ -5,8 +5,14 @@
 //! Phase 12.1 of the App-API extraction (see `docs/app-api.md`).
 //! Extracted from the `running_paths` / `running_toast` field pair
 //! that the [`Lint`](super::lint_state::Lint) subsystem held
-//! after Phase 11.4a. Phase 12.2 adopts it for GitHub repo fetches
-//! (`RunningTracker<OwnerRepo>`); Phase 13 may adopt it for CI.
+//! after Phase 11.4a. Phase 12.2 adopted it for GitHub repo
+//! fetches (`RunningTracker<OwnerRepo>`); Phase 12.3 adopted it
+//! for `Inflight.clean`. Phase 13.0 Q2 explicitly **rejected**
+//! adoption for CI: `Ci.fetch_toast` is fire-once (consumed via
+//! `take_fetch_toast` at fetch completion) rather than
+//! sticky-during-flight, and `Ci.fetch_tracker` is a bare
+//! `HashSet<AbsolutePath>` with no started-at timestamp, so the
+//! primitive's shape doesn't fit either field.
 //!
 //! The tracker only owns state — it does not drive the toast itself.
 //! Callers sync the toast via `App::sync_tracked_path_toast` (and its

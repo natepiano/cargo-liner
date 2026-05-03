@@ -4,25 +4,24 @@
 //! Absorbs the in-flight bookkeeping App tracked across raw
 //! fields:
 //! - `running_clean_paths`
-//! - `clean_toast`, `ci_fetch_toast`
-//! - `ci_fetch_tracker`
+//! - `clean_toast`
 //! - `pending_cleans`, `pending_ci_fetch`, `pending_example_run`
 //! - `example_running`, `example_child`, `example_output`
 //!
 //! Phase 11.4a relocated the lint-specific fields (`lint_runtime`,
 //! `running_lint_paths`, `lint_toast`) onto the [`Lint`](super::lint_state::Lint)
-//! subsystem, since `Lint` now owns lint lifecycle.
+//! subsystem, since `Lint` now owns lint lifecycle. Phase 13.2
+//! relocated `ci_fetch_tracker` and `ci_fetch_toast` onto
+//! [`Ci`](super::ci_state::Ci) for the same reason.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use super::app::CiFetchTracker;
 use super::app::PendingClean;
 use super::panes::PendingCiFetch;
 use super::panes::PendingExampleRun;
 use super::running_tracker::RunningTracker;
-use super::toasts::ToastTaskId;
 use crate::project::AbsolutePath;
 
 /// Owns the in-flight bookkeeping App previously held as raw
@@ -34,8 +33,6 @@ pub(super) struct Inflight {
     /// [`RunningTracker`] primitive — same lifecycle as
     /// `Lint::running` and `Github::running`.
     clean:               RunningTracker<AbsolutePath>,
-    ci_fetch_toast:      Option<ToastTaskId>,
-    ci_fetch_tracker:    CiFetchTracker,
     pending_cleans:      VecDeque<PendingClean>,
     pending_ci_fetch:    Option<PendingCiFetch>,
     pending_example_run: Option<PendingExampleRun>,
@@ -48,8 +45,6 @@ impl Inflight {
     pub(super) fn new() -> Self {
         Self {
             clean:               RunningTracker::new(),
-            ci_fetch_toast:      None,
-            ci_fetch_tracker:    CiFetchTracker::default(),
             pending_cleans:      VecDeque::new(),
             pending_ci_fetch:    None,
             pending_example_run: None,
@@ -65,27 +60,6 @@ impl Inflight {
 
     pub(super) const fn clean_mut(&mut self) -> &mut RunningTracker<AbsolutePath> {
         &mut self.clean
-    }
-
-    /// Test-only — production paths atomically consume the slot
-    /// via [`Self::take_ci_fetch_toast`].
-    #[cfg(test)]
-    pub(super) const fn ci_fetch_toast(&self) -> Option<ToastTaskId> { self.ci_fetch_toast }
-
-    pub(super) const fn set_ci_fetch_toast(&mut self, task_id: Option<ToastTaskId>) {
-        self.ci_fetch_toast = task_id;
-    }
-
-    pub(super) const fn take_ci_fetch_toast(&mut self) -> Option<ToastTaskId> {
-        self.ci_fetch_toast.take()
-    }
-
-    // ── ci fetch tracker ────────────────────────────────────────────
-
-    pub(super) const fn ci_fetch_tracker(&self) -> &CiFetchTracker { &self.ci_fetch_tracker }
-
-    pub(super) const fn ci_fetch_tracker_mut(&mut self) -> &mut CiFetchTracker {
-        &mut self.ci_fetch_tracker
     }
 
     // ── pending queues ──────────────────────────────────────────────
@@ -166,7 +140,6 @@ mod tests {
         let inflight = fresh();
         assert!(inflight.clean().is_empty());
         assert!(inflight.clean().toast().is_none());
-        assert!(inflight.ci_fetch_toast().is_none());
         assert!(inflight.example_running().is_none());
         assert!(inflight.example_output_is_empty());
     }
@@ -183,21 +156,12 @@ mod tests {
     }
 
     #[test]
-    fn toast_slots_set_and_take() {
+    fn clean_toast_round_trip() {
         let mut inflight = fresh();
         inflight.clean_mut().set_toast(Some(ToastTaskId(7)));
-        inflight.set_ci_fetch_toast(Some(ToastTaskId(9)));
         assert_eq!(inflight.clean().toast(), Some(ToastTaskId(7)));
-        assert_eq!(inflight.ci_fetch_toast(), Some(ToastTaskId(9)));
-
-        let taken = inflight.take_ci_fetch_toast();
-        assert_eq!(taken, Some(ToastTaskId(9)));
-        assert!(inflight.ci_fetch_toast().is_none());
-        assert_eq!(
-            inflight.clean().toast(),
-            Some(ToastTaskId(7)),
-            "take on ci_fetch slot must not affect siblings"
-        );
+        inflight.clean_mut().set_toast(None);
+        assert!(inflight.clean().toast().is_none());
     }
 
     #[test]
