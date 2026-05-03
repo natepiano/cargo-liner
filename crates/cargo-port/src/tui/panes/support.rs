@@ -1787,7 +1787,11 @@ fn resolve_ci_display(app: &App, abs_path: &AbsolutePath, ci: Option<Conclusion>
     let icon = ci.map_or_else(String::new, |c| c.icon().to_string());
     let ci_runs_label = build_ci_runs_label(app, path);
     if !ci_runs_label.is_empty() {
-        format!("{icon} {ci_runs_label}")
+        if icon.is_empty() {
+            ci_runs_label
+        } else {
+            format!("{icon} {ci_runs_label}")
+        }
     } else if icon.is_empty() {
         NO_CI_RUNS.to_string()
     } else {
