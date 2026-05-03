@@ -18,6 +18,7 @@ mod pane;
 mod panes;
 mod popup;
 mod render;
+mod running_tracker;
 mod scan_state;
 mod selection;
 mod settings;

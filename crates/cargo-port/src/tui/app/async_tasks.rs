@@ -327,7 +327,7 @@ impl App {
         // Inflight: respawn the lint runtime + clear in-flight tracking.
         let lint_spawn = lint::spawn(cfg, self.background.bg_sender());
         self.lint.set_runtime(lint_spawn.handle);
-        self.lint.running_paths_mut().clear();
+        self.lint.running_mut().clear();
         self.sync_running_lint_toast();
         self.sync_lint_runtime_projects();
 
@@ -1349,9 +1349,9 @@ impl App {
     }
 
     pub fn sync_running_lint_toast(&mut self) {
-        let running = self.lint.running_paths().clone();
-        let next = self.sync_tracked_path_toast(self.lint.running_toast(), "Lints", &running);
-        self.lint.set_running_toast(next);
+        let running = self.lint.running().running_map().clone();
+        let next = self.sync_tracked_path_toast(self.lint.running().toast(), "Lints", &running);
+        self.lint.running_mut().set_toast(next);
     }
 
     /// Lightweight refresh of derived state after in-place hierarchy changes
@@ -2350,13 +2350,13 @@ impl App {
             if let Some(lr) = self.scan.projects_mut().lint_at_path_mut(path) {
                 lr.clear_runs();
             }
-            self.lint.running_paths_mut().remove(path);
+            self.lint.running_mut().remove(path);
         }
         if status_started {
-            self.lint.running_paths_mut().insert(abs, Instant::now());
+            self.lint.running_mut().insert(abs, Instant::now());
         }
         if status_is_terminal {
-            self.lint.running_paths_mut().remove(path);
+            self.lint.running_mut().remove(path);
         }
         self.sync_running_lint_toast();
         if !self.is_scan_complete() {

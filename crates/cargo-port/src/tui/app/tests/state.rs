@@ -388,7 +388,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
 
     let expected = app.lint().phase.expected.as_ref().expect("lint expected");
     assert!(expected.is_empty());
-    assert!(app.lint().running_toast().is_none());
+    assert!(app.lint().running().toast().is_none());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_a.path().to_path_buf().into(),
@@ -399,8 +399,13 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(project_a.path().as_path()));
     assert!(!app.lint().phase.seen.contains(project_a.path().as_path()));
-    assert!(app.lint().running_paths().contains_key(project_a.path()));
-    assert!(app.lint().running_toast().is_some());
+    assert!(
+        app.lint()
+            .running()
+            .running_map()
+            .contains_key(project_a.path())
+    );
+    assert!(app.lint().running().toast().is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_a.path().to_path_buf().into(),
@@ -408,7 +413,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     });
 
     assert!(app.lint().phase.complete_at.is_some());
-    assert!(app.lint().running_paths().is_empty());
+    assert!(app.lint().running().is_empty());
     app.prune_toasts();
 }
 
@@ -540,20 +545,20 @@ fn lint_toast_reuses_existing_on_restart() {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
-    let first_toast = app.lint().running_toast();
+    let first_toast = app.lint().running().toast();
     assert!(first_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
-    assert_eq!(app.lint().running_toast(), first_toast);
+    assert_eq!(app.lint().running().toast(), first_toast);
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
     });
-    assert_eq!(app.lint().running_toast(), first_toast);
+    assert_eq!(app.lint().running().toast(), first_toast);
 }
 
 #[test]
@@ -2234,9 +2239,9 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     // Inflight: pre-seed a stale running-lint path so we can prove
     // the orchestrator clears it.
     app.lint
-        .running_paths_mut()
+        .running_mut()
         .insert(test_path("~/demo"), Instant::now());
-    assert!(!app.lint().running_paths().is_empty());
+    assert!(!app.lint().running().is_empty());
 
     // App-shell scan state: capture the pre-call generation.
     let gen_before = app.data_generation_for_test();
@@ -2256,7 +2261,7 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     // Inflight: running-lint paths cleared, lint runtime present
     // (re-spawned).
     assert!(
-        app.lint().running_paths().is_empty(),
+        app.lint().running().is_empty(),
         "apply_lint_config_change must clear in-flight lint paths"
     );
     // Scan: data_generation bumped exactly once.

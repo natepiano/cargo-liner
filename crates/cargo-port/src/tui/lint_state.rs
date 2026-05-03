@@ -21,9 +21,7 @@
 //! deletes the `resolve_lint_display` / `lint_run_count_for`
 //! stringifiers in `panes/support.rs`.
 
-use std::collections::HashMap;
 use std::path::Path;
-use std::time::Instant;
 
 use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
@@ -33,7 +31,7 @@ use crate::project::RootItem;
 use crate::project_list::ProjectList;
 use crate::tui::app::CountedPhase;
 use crate::tui::app::KeyedPhase;
-use crate::tui::toasts::ToastTaskId;
+use crate::tui::running_tracker::RunningTracker;
 
 /// Display value for the Lint row in the Package detail pane.
 ///
@@ -75,13 +73,12 @@ pub struct Lint {
     /// changes. `None` when lint is disabled.
     runtime:           Option<RuntimeHandle>,
     /// Paths with a lint run currently in flight, keyed by the
-    /// time the run was launched. The launch time gates the toast
-    /// "running for N seconds" indicator.
-    running_paths:     HashMap<AbsolutePath, Instant>,
-    /// The single sticky toast that displays "N lints running."
-    /// `None` when no lint is running. Synced each tick by
-    /// `App::sync_running_lint_toast`.
-    running_toast:     Option<ToastTaskId>,
+    /// time the run was launched, paired with the single sticky
+    /// "N lints running" toast slot. Synced each tick by
+    /// `App::sync_running_lint_toast`. Phase 12.1 swapped the prior
+    /// `running_paths` + `running_toast` field pair for the generic
+    /// [`RunningTracker`] primitive.
+    running:           RunningTracker<AbsolutePath>,
     /// Bytes used by the on-disk lint-log cache (`~/.cache/cargo-port/lints/`).
     /// Refreshed by `App::refresh_lint_cache_usage_from_disk`,
     /// displayed in the Settings popup. Phase 11.4b moved this
@@ -105,8 +102,7 @@ impl Lint {
     pub fn new(runtime: Option<RuntimeHandle>) -> Self {
         Self {
             runtime,
-            running_paths: HashMap::new(),
-            running_toast: None,
+            running: RunningTracker::new(),
             cache_usage: CacheUsage::default(),
             phase: KeyedPhase::default(),
             startup_phase: CountedPhase::default(),
@@ -126,21 +122,11 @@ impl Lint {
     /// path when lint settings change.
     pub fn set_runtime(&mut self, handle: Option<RuntimeHandle>) { self.runtime = handle; }
 
-    // ── running paths ───────────────────────────────────────────
+    // ── running tracker ─────────────────────────────────────────
 
-    pub const fn running_paths(&self) -> &HashMap<AbsolutePath, Instant> { &self.running_paths }
+    pub const fn running(&self) -> &RunningTracker<AbsolutePath> { &self.running }
 
-    pub const fn running_paths_mut(&mut self) -> &mut HashMap<AbsolutePath, Instant> {
-        &mut self.running_paths
-    }
-
-    // ── running toast ───────────────────────────────────────────
-
-    pub const fn running_toast(&self) -> Option<ToastTaskId> { self.running_toast }
-
-    pub const fn set_running_toast(&mut self, task_id: Option<ToastTaskId>) {
-        self.running_toast = task_id;
-    }
+    pub const fn running_mut(&mut self) -> &mut RunningTracker<AbsolutePath> { &mut self.running }
 
     // ── cache usage ─────────────────────────────────────────────
 
@@ -236,20 +222,21 @@ mod tests {
     fn new_starts_with_no_runtime_and_empty_inflight() {
         let lint = Lint::new(None);
         assert!(lint.runtime().is_none());
-        assert!(lint.running_paths().is_empty());
-        assert!(lint.running_toast().is_none());
+        assert!(lint.running().is_empty());
+        assert!(lint.running().toast().is_none());
     }
 
     #[test]
     fn running_toast_round_trip() {
         let mut lint = Lint::new(None);
-        lint.set_running_toast(Some(crate::tui::toasts::ToastTaskId(7)));
+        lint.running_mut()
+            .set_toast(Some(crate::tui::toasts::ToastTaskId(7)));
         assert_eq!(
-            lint.running_toast(),
+            lint.running().toast(),
             Some(crate::tui::toasts::ToastTaskId(7))
         );
-        lint.set_running_toast(None);
-        assert!(lint.running_toast().is_none());
+        lint.running_mut().set_toast(None);
+        assert!(lint.running().toast().is_none());
     }
 
     #[test]

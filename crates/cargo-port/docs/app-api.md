@@ -2476,7 +2476,7 @@ recorded below as each is settled.
   **Phase 12 sub-phasing:**
   - **12.1** — Extract `tui::running_tracker::RunningTracker<K>`
     primitive; adopt in `Lint` (retroactive Phase 11.4a
-    update). Stand-alone, smallest sub-phase.
+    update). Stand-alone, smallest sub-phase. **Implemented.**
   - **12.2** — Introduce `tui::net_state` with `Net`,
     `Github`, `CratesIo`, `ServiceAvailability`. Wire onto
     `App`; move `http_client`, `github`, `crates_io` fields;
@@ -2485,4 +2485,31 @@ recorded below as each is settled.
     `tui::app::service_state`.
 
 ## End of Phase 12.0 design — implementation can begin
+
+## Phase 12.1 — RunningTracker primitive (implemented)
+
+Created `src/tui/running_tracker.rs` with the generic
+`RunningTracker<K: Eq + Hash>` primitive (running map +
+sticky toast slot). Retrofitted `Lint` to swap the
+`running_paths: HashMap<AbsolutePath, Instant>` +
+`running_toast: Option<ToastTaskId>` field pair for a
+single `running: RunningTracker<AbsolutePath>` field, with
+`running()` / `running_mut()` accessors replacing the prior
+four (`running_paths`, `running_paths_mut`,
+`running_toast`, `set_running_toast`). Caller sites updated
+in `App::apply_lint_config_change`,
+`App::sync_running_lint_toast`, the lint-status background
+handler, and the `apply_lint_config_change` test.
+
+`App::sync_tracked_path_toast` keeps its
+`&HashMap<K, Instant>` parameter through 12.1; callers pass
+`self.lint.running().running_map().clone()`. Phase 12.2
+retypes the helper to take `&RunningTracker<K>` directly
+once GitHub adopts the same primitive (the second concrete
+caller justifying the primitive).
+
+`Self::is_empty` is `#[cfg(test)]`-gated for now since the
+non-test bin only reaches the underlying map via
+`running_map()`; the gate drops in 12.2 when the helper
+retype lands.
 
