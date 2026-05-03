@@ -50,7 +50,6 @@ mod ci;
 mod construct;
 mod dismiss;
 mod focus;
-mod lint;
 mod navigation;
 mod phase_state;
 mod query;
@@ -89,6 +88,8 @@ use crate::http::GitHubRateLimit;
 use crate::http::HttpClient;
 use crate::keymap::ResolvedKeymap;
 use crate::lint::LintRuns;
+use crate::lint::LintStatus;
+use super::columns::LintCell;
 use crate::project::AbsolutePath;
 use crate::project::ProjectCiData;
 use crate::project::WorkspaceMetadata;
@@ -219,6 +220,82 @@ pub(super) struct App {
 }
 
 impl App {
+    /// Constructor entry — declared here in `mod.rs` so `pub(super)`
+    /// reaches `tui` (its parent module), satisfying callers in
+    /// sibling modules `tui::terminal` and `tui::interaction`. The
+    /// real construction logic is the `AppBuilder<S>` typestate
+    /// pipeline in `construct.rs`; this shim drives the chain
+    /// end-to-end and is visibility-anchored to `tui::app::mod`.
+    pub(super) fn new(
+        projects: &[RootItem],
+        bg_tx: mpsc::Sender<BackgroundMsg>,
+        bg_rx: mpsc::Receiver<BackgroundMsg>,
+        cfg: &CargoPortConfig,
+        http_client: HttpClient,
+        scan_started_at: Instant,
+        metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+    ) -> Self {
+        construct::AppBuilder::new(
+            projects,
+            bg_tx,
+            bg_rx,
+            cfg,
+            http_client,
+            scan_started_at,
+            metadata_store,
+        )
+        .open_channels()
+        .run_startup()
+        .build()
+    }
+
+    /// Whether the currently selected row is a lint-owning node.
+    /// Only roots and worktree entries own lint state. Members,
+    /// vendored packages, and group headers do not — the match is
+    /// exhaustive so new variants must be classified.
+    ///
+    /// Declared in `mod.rs` (not `lint.rs`) so `pub(super)` reaches
+    /// `tui` and satisfies the caller in `tui/panes/actions.rs`.
+    pub(super) fn selected_row_owns_lint(&self) -> bool {
+        match self.selected_row() {
+            Some(
+                VisibleRow::Root { .. }
+                | VisibleRow::WorktreeEntry { .. }
+                | VisibleRow::WorktreeGroupHeader { .. },
+            ) => true,
+            Some(
+                VisibleRow::GroupHeader { .. }
+                | VisibleRow::Member { .. }
+                | VisibleRow::Vendored { .. }
+                | VisibleRow::Submodule { .. }
+                | VisibleRow::WorktreeMember { .. }
+                | VisibleRow::WorktreeVendored { .. },
+            )
+            | None => false,
+        }
+    }
+
+    /// Resolve a [`LintStatus`] to the [`LintCell`] (icon + style
+    /// pair) rendered in the Lint column. Single source of truth:
+    /// the icon and style cannot drift because both derive from
+    /// the same status here. Returns the `NoLog` cell when lint
+    /// is disabled.
+    ///
+    /// Declared in `mod.rs` (not `lint.rs`) so `pub(super)` reaches
+    /// `tui` and satisfies callers in `tui/panes/project_list.rs`.
+    pub(super) fn lint_cell(&self, status: &LintStatus) -> LintCell {
+        if !self.lint_enabled() {
+            return LintCell::from_parts(crate::constants::LINT_NO_LOG, ratatui::style::Style::default());
+        }
+        let icon = status.icon().frame_at(self.animation_elapsed());
+        let style = if matches!(status, LintStatus::Running(_)) {
+            ratatui::style::Style::default().fg(crate::tui::constants::ACCENT_COLOR)
+        } else {
+            ratatui::style::Style::default()
+        };
+        LintCell::from_parts(icon, style)
+    }
+
     pub(super) const fn current_config(&self) -> &CargoPortConfig { self.config.current() }
 
     /// Test-only mutable access to the active config. Production

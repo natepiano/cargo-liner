@@ -398,11 +398,12 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(project_a.path().as_path()));
     assert!(!app.lint().phase.seen.contains(project_a.path().as_path()));
-    assert!(app
-        .lint()
-        .running()
-        .running_map()
-        .contains_key(project_a.path()));
+    assert!(
+        app.lint()
+            .running()
+            .running_map()
+            .contains_key(project_a.path())
+    );
     assert!(app.lint().running().toast().is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
@@ -524,12 +525,13 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 
     apply_git_info(&mut app, member_dir.as_path(), make_git_info(None));
 
-    assert!(app
-        .scan_state()
-        .startup_phases
-        .git
-        .seen
-        .contains(workspace_dir.join(".git").as_path()));
+    assert!(
+        app.scan_state()
+            .startup_phases
+            .git
+            .seen
+            .contains(workspace_dir.join(".git").as_path())
+    );
 }
 
 #[test]
@@ -1781,11 +1783,12 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
         app.start_clean(&project_path),
         "out-of-tree target dir exists → clean is queued (would have missed with join(\"target\"))"
     );
-    assert!(app
-        .inflight()
-        .clean()
-        .running_map()
-        .contains_key(project_path.as_path()));
+    assert!(
+        app.inflight()
+            .clean()
+            .running_map()
+            .contains_key(project_path.as_path())
+    );
 }
 
 #[test]
@@ -1844,11 +1847,12 @@ fn start_clean_falls_back_to_literal_target_when_no_metadata_yet() {
         app.start_clean(&project_path),
         "no metadata → falls back to <project>/target, which exists → clean queued"
     );
-    assert!(app
-        .inflight()
-        .clean()
-        .running_map()
-        .contains_key(project_path.as_path()));
+    assert!(
+        app.inflight()
+            .clean()
+            .running_map()
+            .contains_key(project_path.as_path())
+    );
 }
 
 /// The metadata phase gates `startup_complete_at`: with disk, git, repo
@@ -2130,9 +2134,9 @@ fn out_of_tree_target_size_message_stamps_metadata() {
 
 #[test]
 fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
-    use cargo_metadata::semver::Version;
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
+    use cargo_metadata::semver::Version;
 
     let project_path = AbsolutePath::from(PathBuf::from("/abs/demo"));
     let pkg_item = RootItem::Rust(RustProject::Package(crate::project::Package {

@@ -1,3 +1,18 @@
+//! `App` construction pipeline as a typestate builder.
+//!
+//! Three phases, enforced at the type level:
+//!
+//! 1. [`AppBuilder<Inputs>`] — caller's raw arguments only. No I/O run yet.
+//! 2. [`AppBuilder<Channeled>`] — internal mpsc channel pairs created.
+//! 3. [`AppBuilder<Started>`] — startup I/O complete: lint runtime spawned, watcher thread spawned,
+//!    project tree built, config loaded.
+//!
+//! Each transition consumes the previous state and produces the next, so the
+//! steps can't be skipped or reordered. `build()` is callable only on
+//! `AppBuilder<Started>`. The thin shim `App::new` in `mod.rs` runs the chain
+//! end-to-end and is the only `pub(super)` entry point — siblings in `tui/*`
+//! reach construction through that one method.
+
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -35,7 +50,23 @@ use crate::tui::toasts::ToastManager;
 use crate::watcher;
 use crate::watcher::WatcherMsg;
 
-pub(super) struct AppChannels {
+/// Phase 1: caller's raw arguments. Held by value (the slice and config
+/// reference are cloned at the entry point so the builder can outlive its
+/// caller's stack frame).
+pub(super) struct Inputs {
+    bg_tx:           mpsc::Sender<BackgroundMsg>,
+    bg_rx:           Receiver<BackgroundMsg>,
+    cfg:             CargoPortConfig,
+    http_client:     HttpClient,
+    scan_started_at: Instant,
+    metadata_store:  Arc<Mutex<WorkspaceMetadataStore>>,
+    raw_projects:    Vec<RootItem>,
+}
+
+/// Phase 2: phase 1 plus the three internal mpsc channel pairs (example,
+/// CI fetch, clean) routed through `Background`.
+pub(super) struct Channeled {
+    inputs:      Inputs,
     example_tx:  mpsc::Sender<ExampleMsg>,
     example_rx:  mpsc::Receiver<ExampleMsg>,
     ci_fetch_tx: mpsc::Sender<CiFetchMsg>,
@@ -44,23 +75,10 @@ pub(super) struct AppChannels {
     clean_rx:    mpsc::Receiver<CleanMsg>,
 }
 
-impl AppChannels {
-    fn new() -> Self {
-        let (example_tx, example_rx) = mpsc::channel();
-        let (ci_fetch_tx, ci_fetch_rx) = mpsc::channel();
-        let (clean_tx, clean_rx) = mpsc::channel();
-        Self {
-            example_tx,
-            example_rx,
-            ci_fetch_tx,
-            ci_fetch_rx,
-            clean_tx,
-            clean_rx,
-        }
-    }
-}
-
-struct AppInit {
+/// Phase 3: phase 2 plus the startup I/O products. Replaces the prior
+/// `AppInit` scaffolding struct.
+pub(super) struct Started {
+    channeled:    Channeled,
     config_path:  Option<AbsolutePath>,
     lint_warning: Option<String>,
     lint_runtime: Option<RuntimeHandle>,
@@ -68,64 +86,14 @@ struct AppInit {
     projects:     ProjectList,
 }
 
-impl AppInit {
-    fn new(
-        projects: &[RootItem],
-        bg_tx: &mpsc::Sender<BackgroundMsg>,
-        cfg: &CargoPortConfig,
-        http_client: &HttpClient,
-        metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
-    ) -> Self {
-        config::set_active_config(cfg);
-        let config_path = config::config_path();
-        let lint_spawn = lint::spawn(cfg, bg_tx.clone());
-        let watch_roots = scan::resolve_include_dirs(&cfg.tui.include_dirs);
-        let watch_tx = watcher::spawn_watcher(
-            &watch_roots,
-            bg_tx.clone(),
-            cfg.tui.ci_run_count,
-            cfg.tui.include_non_rust,
-            http_client.clone(),
-            lint_spawn.handle.clone(),
-            metadata_store,
-        );
-        let built = scan::build_tree(projects, &cfg.tui.inline_dirs);
-        let projects = crate::project_list::ProjectList::new(built);
-
-        Self {
-            config_path,
-            lint_warning: lint_spawn.warning,
-            lint_runtime: lint_spawn.handle,
-            watch_tx,
-            projects,
-        }
-    }
+/// Builder progressing through the three phases. The phase parameter is the
+/// state struct itself (not a marker), so each phase carries its own data.
+pub(super) struct AppBuilder<S> {
+    state: S,
 }
 
-struct CoreInputs {
-    http_client:     HttpClient,
-    bg_tx:           mpsc::Sender<BackgroundMsg>,
-    bg_rx:           Receiver<BackgroundMsg>,
-    cfg:             CargoPortConfig,
-    scan_started_at: Instant,
-    channels:        AppChannels,
-    init:            AppInit,
-    status_flash:    Option<(String, Instant)>,
-    metadata_store:  Arc<Mutex<WorkspaceMetadataStore>>,
-}
-
-impl App {
-    pub fn has_cached_non_rust_projects(&self) -> bool {
-        let mut found = false;
-        self.projects().for_each_leaf(|item| {
-            if !item.is_rust() {
-                found = true;
-            }
-        });
-        found
-    }
-
-    pub fn new(
+impl AppBuilder<Inputs> {
+    pub(super) fn new(
         projects: &[RootItem],
         bg_tx: mpsc::Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
@@ -134,56 +102,100 @@ impl App {
         scan_started_at: Instant,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
     ) -> Self {
-        let channels = AppChannels::new();
-        let init = AppInit::new(
-            projects,
-            &bg_tx,
-            cfg,
-            &http_client,
-            Arc::clone(&metadata_store),
-        );
-        let status_flash = init.lint_warning.clone().map(|w| (w, Instant::now()));
-        let mut app = Self::build_core(CoreInputs {
-            http_client,
-            bg_tx,
-            bg_rx,
-            cfg: cfg.clone(),
-            scan_started_at,
-            channels,
-            init,
-            status_flash,
-            metadata_store,
-        });
-        app.finish_new();
-        app
+        Self {
+            state: Inputs {
+                bg_tx,
+                bg_rx,
+                cfg: cfg.clone(),
+                http_client,
+                scan_started_at,
+                metadata_store,
+                raw_projects: projects.to_vec(),
+            },
+        }
     }
 
-    fn build_core(inputs: CoreInputs) -> Self {
-        let init = inputs.init;
-        let channels = inputs.channels;
+    pub(super) fn open_channels(self) -> AppBuilder<Channeled> {
+        let (example_tx, example_rx) = mpsc::channel();
+        let (ci_fetch_tx, ci_fetch_rx) = mpsc::channel();
+        let (clean_tx, clean_rx) = mpsc::channel();
+        AppBuilder {
+            state: Channeled {
+                inputs: self.state,
+                example_tx,
+                example_rx,
+                ci_fetch_tx,
+                ci_fetch_rx,
+                clean_tx,
+                clean_rx,
+            },
+        }
+    }
+}
+
+impl AppBuilder<Channeled> {
+    pub(super) fn run_startup(self) -> AppBuilder<Started> {
+        let inputs = &self.state.inputs;
+        config::set_active_config(&inputs.cfg);
+        let config_path = config::config_path();
+        let lint_spawn = lint::spawn(&inputs.cfg, inputs.bg_tx.clone());
+        let watch_roots = scan::resolve_include_dirs(&inputs.cfg.tui.include_dirs);
+        let watch_tx = watcher::spawn_watcher(
+            &watch_roots,
+            inputs.bg_tx.clone(),
+            inputs.cfg.tui.ci_run_count,
+            inputs.cfg.tui.include_non_rust,
+            inputs.http_client.clone(),
+            lint_spawn.handle.clone(),
+            Arc::clone(&inputs.metadata_store),
+        );
+        let built = scan::build_tree(&inputs.raw_projects, &inputs.cfg.tui.inline_dirs);
+        let projects = ProjectList::new(built);
+        AppBuilder {
+            state: Started {
+                channeled: self.state,
+                config_path,
+                lint_warning: lint_spawn.warning,
+                lint_runtime: lint_spawn.handle,
+                watch_tx,
+                projects,
+            },
+        }
+    }
+}
+
+impl AppBuilder<Started> {
+    pub(super) fn build(self) -> App {
+        let started = self.state;
+        let channeled = started.channeled;
+        let inputs = channeled.inputs;
         let panes = Panes::new(&inputs.cfg.cpu);
         let selection = Selection::new(inputs.cfg.lint.enabled);
         let background = Background::new(BackgroundChannels {
             bg:       (inputs.bg_tx, inputs.bg_rx),
-            ci_fetch: (channels.ci_fetch_tx, channels.ci_fetch_rx),
-            clean:    (channels.clean_tx, channels.clean_rx),
-            example:  (channels.example_tx, channels.example_rx),
-            watch_tx: init.watch_tx,
+            ci_fetch: (channeled.ci_fetch_tx, channeled.ci_fetch_rx),
+            clean:    (channeled.clean_tx, channeled.clean_rx),
+            example:  (channeled.example_tx, channeled.example_rx),
+            watch_tx: started.watch_tx,
         });
-        let lint = crate::tui::lint_state::Lint::new(init.lint_runtime);
+        let lint = crate::tui::lint_state::Lint::new(started.lint_runtime);
         let inflight = Inflight::new();
-        let config_path_buf = init.config_path.as_ref().map(|p| p.as_path().to_path_buf());
+        let config_path_buf = started
+            .config_path
+            .as_ref()
+            .map(|p| p.as_path().to_path_buf());
         let config = Config::new(config_path_buf, inputs.cfg);
         let keymap_path_buf = keymap::keymap_path()
             .as_ref()
             .map(|p| p.as_path().to_path_buf());
         let keymap = Keymap::new(keymap_path_buf, keymap::ResolvedKeymap::defaults());
         let scan = Scan::new(
-            init.projects,
+            started.projects,
             ScanState::new(inputs.scan_started_at),
             inputs.metadata_store,
         );
-        Self {
+        let status_flash = started.lint_warning.map(|w| (w, Instant::now()));
+        let mut app = App {
             net: crate::tui::net_state::Net::new(inputs.http_client),
             panes,
             selection,
@@ -199,12 +211,26 @@ impl App {
             confirm: None,
             animation_started: Instant::now(),
             mouse_pos: None,
-            status_flash: inputs.status_flash,
+            status_flash,
             toasts: ToastManager::default(),
             inline_error: None,
             ui_modes: UiModes::default(),
             layout_cache: crate::tui::panes::LayoutCache::default(),
-        }
+        };
+        app.finish_new();
+        app
+    }
+}
+
+impl App {
+    pub(super) fn has_cached_non_rust_projects(&self) -> bool {
+        let mut found = false;
+        self.projects().for_each_leaf(|item| {
+            if !item.is_rust() {
+                found = true;
+            }
+        });
+        found
     }
 
     fn finish_new(&mut self) {

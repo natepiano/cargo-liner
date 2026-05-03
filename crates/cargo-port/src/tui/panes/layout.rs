@@ -25,7 +25,7 @@ pub enum BottomRow {
     Output,
 }
 
-pub fn derived_layout(bottom_row: BottomRow) -> PaneGridLayout<PaneId> {
+pub(super) fn derived_layout(bottom_row: BottomRow) -> PaneGridLayout<PaneId> {
     let mut placements = vec![
         PanePlacement {
             pane:     PaneId::ProjectList,

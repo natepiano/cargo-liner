@@ -61,7 +61,7 @@ pub struct CountedPhase {
 /// implementations — the minimum that justifies a trait under the style
 /// guide. Having the trait lets callers write `phase.complete_once(now)`
 /// without caring which kind of phase they hold.
-pub trait PhaseCompletion {
+pub(super) trait PhaseCompletion {
     /// `true` once `expected` is set and `seen` has caught up to it.
     fn is_complete(&self) -> bool;
 

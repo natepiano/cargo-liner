@@ -51,9 +51,9 @@ pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPan
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::sync::mpsc;
     use std::sync::Arc;
     use std::sync::Mutex;
+    use std::sync::mpsc;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -65,9 +65,9 @@ mod tests {
     use crossterm::event::MouseButton;
     use crossterm::event::MouseEvent;
     use crossterm::event::MouseEventKind;
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
-    use ratatui::Terminal;
 
     use super::HoveredPaneRow;
     use crate::ci::CiJob;
@@ -1004,9 +1004,9 @@ mod tests {
 
     #[test]
     fn targets_pane_row_click_selects_target() {
-        use cargo_metadata::semver::Version;
         use cargo_metadata::PackageId;
         use cargo_metadata::TargetKind;
+        use cargo_metadata::semver::Version;
         // Step 3b: Targets pane now sources its data from the
         // `cargo metadata` result; the old hand-parsed Cargo
         // fallback is retired. Populate two Example targets via
@@ -1165,8 +1165,8 @@ mod tests {
         homepage: Option<&str>,
         repository: Option<&str>,
     ) {
-        use cargo_metadata::semver::Version;
         use cargo_metadata::PackageId;
+        use cargo_metadata::semver::Version;
         let root = AbsolutePath::from(project_dir);
         let manifest = AbsolutePath::from(project_dir.join("Cargo.toml"));
         let pkg = PackageRecord {
@@ -1371,8 +1371,8 @@ mod tests {
         sibling_dirs: &[&Path],
         target_dir: &Path,
     ) {
-        use cargo_metadata::semver::Version;
         use cargo_metadata::PackageId;
+        use cargo_metadata::semver::Version;
         for dir in std::iter::once(primary_dir).chain(sibling_dirs.iter().copied()) {
             let root = AbsolutePath::from(dir);
             let manifest = AbsolutePath::from(dir.join("Cargo.toml"));

@@ -10,10 +10,11 @@
 
 use std::time::Instant;
 
+use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
-use ratatui::Frame;
 
+use super::PaneId;
 use super::ci;
 use super::cpu;
 use super::dispatch::Hittable;
@@ -25,7 +26,6 @@ use super::lang;
 use super::lints;
 use super::package;
 use super::package::RenderStyles;
-use super::PaneId;
 #[cfg(test)]
 use crate::ci::CiRun;
 use crate::config::CpuConfig;
