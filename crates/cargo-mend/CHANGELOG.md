@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] - 2026-05-03
 
 ### Changed
 - Target-selection flags (`--lib`, `--bin`, `--example`, `--test`, `--bench`, `--all-targets`) are now display filters. Mend always analyzes every target so the call graph is complete; the flags only narrow what gets printed. Cold runs on test-heavy crates are ~2× slower; the cache makes warm runs identical.
