@@ -180,16 +180,14 @@ impl App {
             return false;
         }
         self.inflight
-            .running_clean_paths_mut()
+            .clean_mut()
             .insert(project_path.clone(), Instant::now());
         self.sync_running_clean_toast();
         true
     }
 
     pub fn clean_spawn_failed(&mut self, project_path: &AbsolutePath) {
-        self.inflight
-            .running_clean_paths_mut()
-            .remove(project_path.as_path());
+        self.inflight.clean_mut().remove(project_path.as_path());
         self.sync_running_clean_toast();
     }
 

@@ -2581,3 +2581,51 @@ The `#[cfg(test)]` gate on
 same reason: no non-test caller exists yet (the helper
 retype that would be the natural caller is deferred).
 
+## Phase 12.3 — Inflight clean → RunningTracker, helper unification (implemented)
+
+Closes the helper-retype loop deferred in 12.2.
+
+- `Inflight.running_clean_paths: HashMap<AbsolutePath, Instant>`
+  + `Inflight.clean_toast: Option<ToastTaskId>` collapse to a
+  single `Inflight.clean: RunningTracker<AbsolutePath>` field;
+  the four prior accessors collapse to `clean()` /
+  `clean_mut()`. Same pattern as `Lint.running` (Phase 12.1) and
+  `Github.running` (Phase 12.2).
+- `App::sync_tracked_path_toast` (the lint+clean helper from
+  earlier phases) splits into:
+  - `Self::tracker_snapshot<K, F>(&RunningTracker<K>, F) ->
+    (Option<ToastTaskId>, Vec<TrackedItem>)` — a `&self`-free
+    helper that materializes the snapshot the toast helper
+    needs. Generic over K with a `label_fn: Fn(&K) -> String`,
+    and bounded by `for<'a> &'a K: Into<TrackedItemKey>`.
+  - `Self::sync_running_toast(&mut self, Option<ToastTaskId>,
+    &str, &[TrackedItem]) -> Option<ToastTaskId>` — a
+    monomorphic helper that consumes the snapshot and drives
+    the toast manager.
+- The split exists because the toast helper needs `&mut self`
+  for `self.toasts.*`, but a generic taking `&RunningTracker<K>`
+  would conflict with the `&mut self` borrow when the tracker
+  lives on a subsystem owned by `self`. Snapshot-then-sync
+  releases the immutable subsystem borrow before the mutable
+  toast borrow.
+- `sync_running_repo_fetch_toast` collapses into the same two
+  helpers (label fn `ToString::to_string` for `OwnerRepo`).
+  Three flows (lint, clean, GitHub) now share one toast
+  pipeline.
+- Drops the `#[cfg(test)]` gate on `RunningTracker::is_empty`
+  is **not** done — the production toast helper now operates on
+  `&[TrackedItem]` (the snapshot), so neither
+  `is_empty` nor `running_map` has a non-test caller. Both
+  remain `#[cfg(test)]`-gated; the doc claim from 12.1/12.2 about
+  dropping the gate at "the helper retype" is **superseded** by
+  this design.
+- `TrackedItemKey` is re-exported from `tui::toasts::mod` so
+  the generic helper bound resolves at App-shell.
+- Caller-site updates: ~7 in `async_tasks.rs`, 2 in
+  `query.rs`, 3 in `tests/state.rs`, plus inflight's own
+  internal tests.
+
+Stays where it is: `Inflight.ci_fetch_toast`,
+`Inflight.ci_fetch_tracker`, and the pending queues. Phase 12
+does not touch CI; that's Phase 13's scope.
+

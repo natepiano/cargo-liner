@@ -22,12 +22,12 @@
 
 use std::collections::HashSet;
 
+use super::running_tracker::RunningTracker;
 use crate::ci::OwnerRepo;
 use crate::http::GitHubRateLimit;
 use crate::http::HttpClient;
 use crate::scan;
 use crate::scan::RepoCache;
-use super::running_tracker::RunningTracker;
 
 /// Three-way availability for a single service. `Unreachable` means
 /// the network layer can't talk to the service at all; `RateLimited`

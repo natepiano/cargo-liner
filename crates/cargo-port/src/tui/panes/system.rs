@@ -243,7 +243,7 @@ impl Panes {
     /// Test-only override for ci runs. Mirrors the previous
     /// `PaneDataStore::override_ci_runs_for_test`.
     #[cfg(test)]
-    pub fn override_ci_runs_for_test(&mut self, runs: Vec<CiRun>) {
+    pub fn override_ci_runs_for_test(&mut self, runs: Vec<crate::ci::CiRun>) {
         self.ci_runs.override_runs_for_test(runs);
     }
 

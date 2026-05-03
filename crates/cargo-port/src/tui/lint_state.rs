@@ -23,15 +23,15 @@
 
 use std::path::Path;
 
+use super::app::CountedPhase;
+use super::app::KeyedPhase;
+use super::running_tracker::RunningTracker;
 use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project_list::ProjectList;
-use super::app::CountedPhase;
-use super::app::KeyedPhase;
-use super::running_tracker::RunningTracker;
 
 /// Display value for the Lint row in the Package detail pane.
 ///
@@ -230,8 +230,7 @@ mod tests {
     #[test]
     fn running_toast_round_trip() {
         let mut lint = Lint::new(None);
-        lint.running_mut()
-            .set_toast(Some(ToastTaskId(7)));
+        lint.running_mut().set_toast(Some(ToastTaskId(7)));
         assert_eq!(
             lint.running().toast(),
             Some(crate::tui::toasts::ToastTaskId(7))

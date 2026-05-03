@@ -5,7 +5,6 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::tui::net_state::ServiceAvailability;
 use super::App;
 use super::ExpandKey::Group;
 use super::ExpandKey::Node;
@@ -62,7 +61,9 @@ use crate::tui::constants::STARTUP_PHASE_GIT;
 use crate::tui::constants::STARTUP_PHASE_GITHUB;
 use crate::tui::constants::STARTUP_PHASE_LINT;
 use crate::tui::constants::STARTUP_PHASE_METADATA;
+use crate::tui::net_state::ServiceAvailability;
 use crate::tui::panes::PaneId;
+use crate::tui::running_tracker::RunningTracker;
 use crate::tui::terminal;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
@@ -72,6 +73,7 @@ use crate::tui::toasts::ToastStyle::Error;
 use crate::tui::toasts::ToastStyle::Warning;
 use crate::tui::toasts::ToastTaskId;
 use crate::tui::toasts::TrackedItem;
+use crate::tui::toasts::TrackedItemKey;
 use crate::watcher;
 use crate::watcher::WatchRequest;
 use crate::watcher::WatcherMsg;
@@ -1226,23 +1228,69 @@ impl App {
     }
 
     pub fn sync_running_clean_toast(&mut self) {
-        let running = self.inflight.running_clean_paths().clone();
-        let next =
-            self.sync_tracked_path_toast(self.inflight.clean_toast(), "cargo clean", &running);
-        self.inflight.set_clean_toast(next);
+        let (toast_slot, items) = Self::tracker_snapshot(self.inflight.clean(), |p| {
+            project::home_relative_path(p.as_path())
+        });
+        let next = self.sync_running_toast(toast_slot, "cargo clean", &items[..]);
+        self.inflight.clean_mut().set_toast(next);
     }
 
-    /// Shared per-path task toast sync: grows as new paths start,
+    pub fn sync_running_lint_toast(&mut self) {
+        let (toast_slot, items) = Self::tracker_snapshot(self.lint.running(), |p| {
+            project::home_relative_path(p.as_path())
+        });
+        let next = self.sync_running_toast(toast_slot, "Lints", &items);
+        self.lint.running_mut().set_toast(next);
+    }
+
+    /// Keep a single "Retrieving GitHub repo details" toast in sync
+    /// with the live in-flight repo fetches.
+    fn sync_running_repo_fetch_toast(&mut self) {
+        let (toast_slot, items) =
+            Self::tracker_snapshot(self.net.github().running(), ToString::to_string);
+        let next = self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &items);
+        self.net.github_mut().running_mut().set_toast(next);
+    }
+
+    /// Snapshot a `RunningTracker<K>` into the data the toast helper
+    /// needs: the current toast slot plus a `TrackedItem` per running
+    /// key. Done as a `&self`-free helper so the borrow on the
+    /// subsystem-owned tracker is released before the caller hands
+    /// the snapshot to [`Self::sync_running_toast`] (which takes
+    /// `&mut self`).
+    fn tracker_snapshot<K, F>(
+        tracker: &RunningTracker<K>,
+        label_fn: F,
+    ) -> (Option<ToastTaskId>, Vec<TrackedItem>)
+    where
+        K: Eq + std::hash::Hash,
+        for<'a> &'a K: Into<TrackedItemKey>,
+        F: Fn(&K) -> String,
+    {
+        let items = tracker
+            .iter_running()
+            .map(|(k, &started)| TrackedItem {
+                label:        label_fn(k),
+                key:          k.into(),
+                started_at:   Some(started),
+                completed_at: None,
+            })
+            .collect();
+        (tracker.toast(), items)
+    }
+
+    /// Shared tracked-task toast sync. Grows as new items appear,
     /// marks items completed (freezing elapsed + starting strikethrough)
-    /// as paths finish, and begins the toast-level linger countdown once
-    /// all paths are done. Used by both lint and clean flows.
-    fn sync_tracked_path_toast(
+    /// as items disappear, and begins the toast-level linger
+    /// countdown once the tracker drains. Used by lint, clean, and
+    /// GitHub repo-fetch flows via [`Self::tracker_snapshot`].
+    fn sync_running_toast(
         &mut self,
         toast_slot: Option<ToastTaskId>,
         title: &str,
-        running_paths: &HashMap<AbsolutePath, Instant>,
+        running_items: &[TrackedItem],
     ) -> Option<ToastTaskId> {
-        if running_paths.is_empty() {
+        if running_items.is_empty() {
             if let Some(task_id) = toast_slot {
                 let empty: HashSet<String> = HashSet::new();
                 self.toasts.complete_missing_items(task_id, &empty);
@@ -1255,15 +1303,6 @@ impl App {
             return toast_slot;
         }
 
-        let running_items: Vec<TrackedItem> = running_paths
-            .iter()
-            .map(|(p, &started)| TrackedItem {
-                label:        project::home_relative_path(p.as_path()),
-                key:          p.clone().into(),
-                started_at:   Some(started),
-                completed_at: None,
-            })
-            .collect();
         let running_keys: HashSet<String> = running_items
             .iter()
             .map(|item| item.key.to_string())
@@ -1275,8 +1314,8 @@ impl App {
             self.toasts.complete_missing_items(task_id, &running_keys);
             let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
             self.toasts
-                .add_new_tracked_items(task_id, &running_items, linger);
-            for item in &running_items {
+                .add_new_tracked_items(task_id, running_items, linger);
+            for item in running_items {
                 if let Some(started) = item.started_at {
                     self.toasts
                         .restart_tracked_item(task_id, &item.key, started);
@@ -1287,72 +1326,9 @@ impl App {
             let labels: Vec<&str> = running_items.iter().map(|i| i.label.as_str()).collect();
             let body = toasts::format_toast_items(&labels, toasts::toast_body_width());
             let task_id = self.start_task_toast(title, body);
-            self.set_task_tracked_items(task_id, &running_items);
+            self.set_task_tracked_items(task_id, running_items);
             Some(task_id)
         }
-    }
-
-    /// Keep a single "Retrieving GitHub repo details" toast in sync
-    /// with the live in-flight repo fetches — mirrors
-    /// `sync_running_lint_toast`. Grows as new fetches queue, strikes
-    /// through as they complete, and reactivates the same toast when a
-    /// new runtime fetch arrives while the prior one is still
-    /// lingering.
-    fn sync_running_repo_fetch_toast(&mut self) {
-        let github = self.net.github();
-        let toast_slot = github.running().toast();
-        let running = github.running().running_map();
-        if running.is_empty() {
-            if let Some(task_id) = toast_slot {
-                let empty: HashSet<String> = HashSet::new();
-                self.toasts.complete_missing_items(task_id, &empty);
-                if !self.toasts.is_task_finished(task_id) {
-                    let linger =
-                        Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
-                    self.toasts.finish_task(task_id, linger);
-                }
-            }
-            return;
-        }
-
-        let running_items: Vec<TrackedItem> = running
-            .iter()
-            .map(|(repo, &started)| TrackedItem {
-                label:        repo.to_string(),
-                key:          repo.into(),
-                started_at:   Some(started),
-                completed_at: None,
-            })
-            .collect();
-        let running_keys: HashSet<String> = running_items
-            .iter()
-            .map(|item| item.key.to_string())
-            .collect();
-
-        if let Some(task_id) = toast_slot
-            && self.toasts.reactivate_task(task_id)
-        {
-            self.toasts.complete_missing_items(task_id, &running_keys);
-            let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
-            self.toasts
-                .add_new_tracked_items(task_id, &running_items, linger);
-            for item in &running_items {
-                if let Some(started) = item.started_at {
-                    self.toasts
-                        .restart_tracked_item(task_id, &item.key, started);
-                }
-            }
-        } else {
-            let task_id = self.start_task_toast("Retrieving GitHub repo details", "");
-            self.set_task_tracked_items(task_id, &running_items);
-            self.net.github_mut().running_mut().set_toast(Some(task_id));
-        }
-    }
-
-    pub fn sync_running_lint_toast(&mut self) {
-        let running = self.lint.running().running_map().clone();
-        let next = self.sync_tracked_path_toast(self.lint.running().toast(), "Lints", &running);
-        self.lint.running_mut().set_toast(next);
     }
 
     /// Lightweight refresh of derived state after in-place hierarchy changes
@@ -1679,7 +1655,7 @@ impl App {
                     // update arrives.
                     if self
                         .inflight
-                        .running_clean_paths_mut()
+                        .clean_mut()
                         .remove(abs_path.as_path())
                         .is_some()
                     {
@@ -1691,12 +1667,7 @@ impl App {
     }
 
     pub fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
-        if self
-            .inflight
-            .running_clean_paths_mut()
-            .remove(path)
-            .is_some()
-        {
+        if self.inflight.clean_mut().remove(path).is_some() {
             self.sync_running_clean_toast();
         }
         self.apply_disk_usage(path, bytes);

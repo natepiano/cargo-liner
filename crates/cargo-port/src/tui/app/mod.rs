@@ -139,7 +139,9 @@ pub(super) use types::SelectionSync;
 pub(super) use types::VisibleRow;
 
 pub(super) use super::columns::ProjectListWidths;
+use super::lint_state::Lint;
 pub(super) use super::net_state::AvailabilityStatus;
+use super::net_state::Net;
 use super::panes::PendingCiFetch;
 use super::panes::PendingExampleRun;
 use super::panes::WorktreeInfo;
@@ -149,8 +151,6 @@ use super::terminal::ExampleMsg;
 use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
 use crate::project::RootItem;
-use super::net_state::Net;
-use super::lint_state::Lint;
 pub(super) struct App {
     /// Net subsystem (Phase 12.2 of the App-API extraction, see
     /// `docs/app-api.md`). Owns the shared `HttpClient`, the

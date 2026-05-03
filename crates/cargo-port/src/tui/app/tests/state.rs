@@ -1786,7 +1786,8 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
     );
     assert!(
         app.inflight()
-            .running_clean_paths()
+            .clean()
+            .running_map()
             .contains_key(project_path.as_path())
     );
 }
@@ -1826,7 +1827,7 @@ fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
         !app.start_clean(&project_path),
         "resolved target doesn't exist → already clean; in-tree target/ decoy must not trip it"
     );
-    assert!(app.inflight().running_clean_paths().is_empty());
+    assert!(app.inflight().clean().is_empty());
 }
 
 #[test]
@@ -1849,7 +1850,8 @@ fn start_clean_falls_back_to_literal_target_when_no_snapshot_yet() {
     );
     assert!(
         app.inflight()
-            .running_clean_paths()
+            .clean()
+            .running_map()
             .contains_key(project_path.as_path())
     );
 }

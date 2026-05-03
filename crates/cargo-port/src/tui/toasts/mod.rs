@@ -8,6 +8,7 @@ pub(super) use manager::ToastStyle;
 pub(super) use manager::ToastTaskId;
 pub(super) use manager::ToastView;
 pub(super) use manager::TrackedItem;
+pub(super) use manager::TrackedItemKey;
 pub(super) use render::render_toasts;
 
 use super::constants::TOAST_WIDTH;

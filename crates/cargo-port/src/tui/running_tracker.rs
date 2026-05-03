@@ -39,10 +39,8 @@ impl<K: Eq + Hash> RunningTracker<K> {
         }
     }
 
-    /// Cfg-test today; non-test callers use [`Self::running_map`] +
-    /// `HashMap::is_empty`. Phase 12.2 retypes
-    /// `App::sync_tracked_path_toast` to take `&RunningTracker<K>`
-    /// directly and drops the `#[cfg(test)]` gate.
+    /// Test-only today; non-test callers materialize a snapshot
+    /// (`Vec<TrackedItem>`) and check that for emptiness instead.
     #[cfg(test)]
     pub fn is_empty(&self) -> bool { self.running.is_empty() }
 
@@ -61,9 +59,13 @@ impl<K: Eq + Hash> RunningTracker<K> {
         self.running.remove(k)
     }
 
-    /// Borrow the underlying map. Required by
-    /// `App::sync_tracked_path_toast` until Phase 12.2 retypes the
-    /// helper to take `&RunningTracker<K>` directly.
+    pub fn iter_running(&self) -> impl Iterator<Item = (&K, &Instant)> { self.running.iter() }
+
+    /// Borrow the underlying map. Test-only today (`contains_key`
+    /// assertions); production callers iterate via
+    /// [`Self::iter_running`] or read the snapshot built by the
+    /// caller.
+    #[cfg(test)]
     pub const fn running_map(&self) -> &HashMap<K, Instant> { &self.running }
 
     pub const fn toast(&self) -> Option<ToastTaskId> { self.toast }

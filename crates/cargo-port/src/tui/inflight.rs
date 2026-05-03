@@ -13,24 +13,27 @@
 //! `running_lint_paths`, `lint_toast`) onto the [`Lint`](super::lint_state::Lint)
 //! subsystem, since `Lint` now owns lint lifecycle.
 
-use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Instant;
 
 use super::app::CiFetchTracker;
 use super::app::PendingClean;
 use super::panes::PendingCiFetch;
 use super::panes::PendingExampleRun;
+use super::running_tracker::RunningTracker;
 use super::toasts::ToastTaskId;
 use crate::project::AbsolutePath;
 
 /// Owns the in-flight bookkeeping App previously held as raw
 /// fields. App holds a single `inflight: Inflight`.
 pub(super) struct Inflight {
-    running_clean_paths: HashMap<AbsolutePath, Instant>,
-    clean_toast:         Option<ToastTaskId>,
+    /// In-flight cargo clean state. Phase 12.3 swapped the prior
+    /// `running_clean_paths: HashMap<AbsolutePath, Instant>` +
+    /// `clean_toast: Option<ToastTaskId>` field pair for the generic
+    /// [`RunningTracker`] primitive — same lifecycle as
+    /// `Lint::running` and `Github::running`.
+    clean:               RunningTracker<AbsolutePath>,
     ci_fetch_toast:      Option<ToastTaskId>,
     ci_fetch_tracker:    CiFetchTracker,
     pending_cleans:      VecDeque<PendingClean>,
@@ -44,8 +47,7 @@ pub(super) struct Inflight {
 impl Inflight {
     pub(super) fn new() -> Self {
         Self {
-            running_clean_paths: HashMap::new(),
-            clean_toast:         None,
+            clean:               RunningTracker::new(),
             ci_fetch_toast:      None,
             ci_fetch_tracker:    CiFetchTracker::default(),
             pending_cleans:      VecDeque::new(),
@@ -57,22 +59,12 @@ impl Inflight {
         }
     }
 
-    // ── running paths ───────────────────────────────────────────────
+    // ── running clean tracker ───────────────────────────────────────
 
-    pub(super) const fn running_clean_paths(&self) -> &HashMap<AbsolutePath, Instant> {
-        &self.running_clean_paths
-    }
+    pub(super) const fn clean(&self) -> &RunningTracker<AbsolutePath> { &self.clean }
 
-    pub(super) const fn running_clean_paths_mut(&mut self) -> &mut HashMap<AbsolutePath, Instant> {
-        &mut self.running_clean_paths
-    }
-
-    // ── toast slots ─────────────────────────────────────────────────
-
-    pub(super) const fn clean_toast(&self) -> Option<ToastTaskId> { self.clean_toast }
-
-    pub(super) const fn set_clean_toast(&mut self, task_id: Option<ToastTaskId>) {
-        self.clean_toast = task_id;
+    pub(super) const fn clean_mut(&mut self) -> &mut RunningTracker<AbsolutePath> {
+        &mut self.clean
     }
 
     /// Test-only — production paths atomically consume the slot
@@ -160,6 +152,7 @@ impl Inflight {
 )]
 mod tests {
     use std::path::PathBuf;
+    use std::time::Instant;
 
     use super::*;
     use crate::tui::toasts::ToastTaskId;
@@ -171,8 +164,8 @@ mod tests {
     #[test]
     fn new_starts_empty() {
         let inflight = fresh();
-        assert!(inflight.running_clean_paths().is_empty());
-        assert!(inflight.clean_toast().is_none());
+        assert!(inflight.clean().is_empty());
+        assert!(inflight.clean().toast().is_none());
         assert!(inflight.ci_fetch_toast().is_none());
         assert!(inflight.example_running().is_none());
         assert!(inflight.example_output_is_empty());
@@ -182,28 +175,26 @@ mod tests {
     fn running_clean_paths_round_trip() {
         let mut inflight = fresh();
         let p = abs("/tmp/foo");
-        inflight
-            .running_clean_paths_mut()
-            .insert(p.clone(), Instant::now());
-        assert!(inflight.running_clean_paths().contains_key(&p));
-        let removed = inflight.running_clean_paths_mut().remove(&p);
+        inflight.clean_mut().insert(p.clone(), Instant::now());
+        assert!(inflight.clean().running_map().contains_key(&p));
+        let removed = inflight.clean_mut().remove(&p);
         assert!(removed.is_some());
-        assert!(inflight.running_clean_paths().is_empty());
+        assert!(inflight.clean().is_empty());
     }
 
     #[test]
     fn toast_slots_set_and_take() {
         let mut inflight = fresh();
-        inflight.set_clean_toast(Some(ToastTaskId(7)));
+        inflight.clean_mut().set_toast(Some(ToastTaskId(7)));
         inflight.set_ci_fetch_toast(Some(ToastTaskId(9)));
-        assert_eq!(inflight.clean_toast(), Some(ToastTaskId(7)));
+        assert_eq!(inflight.clean().toast(), Some(ToastTaskId(7)));
         assert_eq!(inflight.ci_fetch_toast(), Some(ToastTaskId(9)));
 
         let taken = inflight.take_ci_fetch_toast();
         assert_eq!(taken, Some(ToastTaskId(9)));
         assert!(inflight.ci_fetch_toast().is_none());
         assert_eq!(
-            inflight.clean_toast(),
+            inflight.clean().toast(),
             Some(ToastTaskId(7)),
             "take on ci_fetch slot must not affect siblings"
         );

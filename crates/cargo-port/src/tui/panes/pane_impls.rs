@@ -371,7 +371,7 @@ impl CiPane {
     pub fn clear_content(&mut self) { self.content = None; }
 
     #[cfg(test)]
-    pub fn override_runs_for_test(&mut self, runs: Vec<CiRun>) {
+    pub fn override_runs_for_test(&mut self, runs: Vec<crate::ci::CiRun>) {
         if let Some(ci) = self.content.as_mut() {
             ci.runs = runs;
             ci.mode_label = None;
