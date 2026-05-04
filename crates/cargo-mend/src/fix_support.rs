@@ -13,6 +13,7 @@ pub(crate) enum FixSupport {
     NeedsManualPubUseCleanup,
     InternalParentFacade,
     NarrowToPubCrate,
+    FixFieldVisibility,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +29,8 @@ impl FixSupport {
             Self::ShortenImport
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
-            | Self::NarrowToPubCrate => {
+            | Self::NarrowToPubCrate
+            | Self::FixFieldVisibility => {
                 Some("this warning is auto-fixable with `cargo mend --fix`")
             },
             Self::FixPubUse => Some("this warning is auto-fixable with `cargo mend --fix-pub-use`"),
@@ -41,7 +43,8 @@ impl FixSupport {
             Self::ShortenImport
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
-            | Self::NarrowToPubCrate => Some(FixSummaryBucket::Fix),
+            | Self::NarrowToPubCrate
+            | Self::FixFieldVisibility => Some(FixSummaryBucket::Fix),
             Self::FixPubUse => Some(FixSummaryBucket::FixPubUse),
         }
     }

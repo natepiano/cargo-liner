@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Add `field_visibility_wider_than_type` lint that flags `pub` field annotations on fully-private types (auto-fixable with `cargo mend --fix`)
+
 ### Fixed
 - Fix incorrect `pub(super)` suggestions for `pub` items reached only via method calls or struct literals
 

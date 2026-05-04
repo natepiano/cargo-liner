@@ -15,6 +15,7 @@
 mod allowances;
 #[path = "../common/mod.rs"]
 mod common;
+mod field_visibility_wider_than_type;
 mod import_fixes;
 mod inline_path_fixes;
 mod narrow_pub_crate;

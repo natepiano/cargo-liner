@@ -10,6 +10,7 @@ pub(crate) enum FixKind {
     PreferModuleImport,
     InlinePathQualifiedType,
     NarrowToPubCrate,
+    FixFieldVisibility,
     FixPubUse,
 }
 
@@ -30,6 +31,7 @@ impl From<&FixCli> for FixSelection {
                     fix_kinds.insert(FixKind::PreferModuleImport);
                     fix_kinds.insert(FixKind::InlinePathQualifiedType);
                     fix_kinds.insert(FixKind::NarrowToPubCrate);
+                    fix_kinds.insert(FixKind::FixFieldVisibility);
                 }
                 if fix_cli.includes(FixRequest::PubUse) {
                     fix_kinds.insert(FixKind::FixPubUse);
@@ -47,6 +49,7 @@ impl FixSelection {
         fix_kinds.insert(FixKind::PreferModuleImport);
         fix_kinds.insert(FixKind::InlinePathQualifiedType);
         fix_kinds.insert(FixKind::NarrowToPubCrate);
+        fix_kinds.insert(FixKind::FixFieldVisibility);
         fix_kinds.insert(FixKind::FixPubUse);
         Self { fix_kinds }
     }

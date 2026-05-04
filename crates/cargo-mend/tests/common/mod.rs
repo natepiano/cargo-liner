@@ -63,6 +63,7 @@ pub(super) enum DiagnosticCode {
     WildcardParentPubUse,
     InternalParentPubUseFacade,
     NarrowToPubCrate,
+    FieldVisibilityWiderThanType,
 }
 
 impl DiagnosticCode {
@@ -78,6 +79,7 @@ impl DiagnosticCode {
         Self::WildcardParentPubUse,
         Self::InternalParentPubUseFacade,
         Self::NarrowToPubCrate,
+        Self::FieldVisibilityWiderThanType,
     ];
 
     pub(super) const fn as_str(self) -> &'static str {
@@ -93,6 +95,7 @@ impl DiagnosticCode {
             Self::WildcardParentPubUse => "wildcard_parent_pub_use",
             Self::InternalParentPubUseFacade => "internal_parent_pub_use_facade",
             Self::NarrowToPubCrate => "narrow_to_pub_crate",
+            Self::FieldVisibilityWiderThanType => "field_visibility_wider_than_type",
         }
     }
 }
@@ -109,6 +112,7 @@ pub(super) enum FixSupport {
     NeedsManualPubUseCleanup,
     InternalParentFacade,
     NarrowToPubCrate,
+    FixFieldVisibility,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +128,8 @@ impl FixSupport {
             Self::ShortenImport
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
-            | Self::NarrowToPubCrate => {
+            | Self::NarrowToPubCrate
+            | Self::FixFieldVisibility => {
                 Some("this warning is auto-fixable with `cargo mend --fix`")
             },
             Self::FixPubUse => Some("this warning is auto-fixable with `cargo mend --fix-pub-use`"),
@@ -137,7 +142,8 @@ impl FixSupport {
             Self::ShortenImport
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
-            | Self::NarrowToPubCrate => Some(FixSummaryBucket::Fix),
+            | Self::NarrowToPubCrate
+            | Self::FixFieldVisibility => Some(FixSummaryBucket::Fix),
             Self::FixPubUse => Some(FixSummaryBucket::FixPubUse),
         }
     }
@@ -206,6 +212,11 @@ pub(super) const fn diagnostic_spec(code: DiagnosticCode) -> &'static Diagnostic
         help_anchor: "narrow-to-pub-crate",
         fix_support: FixSupport::NarrowToPubCrate,
     };
+    const FIELD_VISIBILITY_WIDER_THAN_TYPE: DiagnosticSpec = DiagnosticSpec {
+        headline:    "field visibility is wider than its containing type",
+        help_anchor: "field-visibility-wider-than-type",
+        fix_support: FixSupport::FixFieldVisibility,
+    };
 
     match code {
         DiagnosticCode::ForbiddenPubCrate => &FORBIDDEN_PUB_CRATE,
@@ -219,5 +230,6 @@ pub(super) const fn diagnostic_spec(code: DiagnosticCode) -> &'static Diagnostic
         DiagnosticCode::WildcardParentPubUse => &WILDCARD_PARENT_PUB_USE,
         DiagnosticCode::InternalParentPubUseFacade => &INTERNAL_PARENT_PUB_USE_FACADE,
         DiagnosticCode::NarrowToPubCrate => &NARROW_TO_PUB_CRATE,
+        DiagnosticCode::FieldVisibilityWiderThanType => &FIELD_VISIBILITY_WIDER_THAN_TYPE,
     }
 }

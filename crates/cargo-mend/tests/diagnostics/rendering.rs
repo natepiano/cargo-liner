@@ -32,6 +32,7 @@ fn create_all_diagnostics_fixture() -> tempfile::TempDir {
         "src/func_parent",
         "src/internal_parent",
         "src/deep_parent/nested",
+        "src/field_vis_parent",
     ] {
         fs::create_dir_all(temp.path().join(dir)).expect("create fixture dir");
     }
@@ -56,6 +57,7 @@ mod func_parent;
 mod type_parent;
 mod deep_parent;
 mod narrow_mod;
+mod field_vis_parent;
 pub mod review_mod;
 pub use private_parent::PublicContainer;
 
@@ -175,6 +177,17 @@ pub struct Suspicious;
         "use super::super::DeepTarget;\n\nfn use_it(_target: DeepTarget) {}\n",
     )
     .expect("write deep leaf");
+    write_field_vis_fixture(root);
+}
+
+fn write_field_vis_fixture(root: &std::path::Path) {
+    fs::write(root.join("src/field_vis_parent.rs"), "mod hidden;\n")
+        .expect("write field-vis parent");
+    fs::write(
+        root.join("src/field_vis_parent/hidden.rs"),
+        "struct Hidden {\n    pub leaked: u32,\n}\n",
+    )
+    .expect("write field-vis fixture");
 }
 
 fn assert_rendered_diagnostics(report: &Report, rendered: &str) {
@@ -260,7 +273,7 @@ fn fixture_renders_every_current_diagnostic() {
         codes, expected_codes,
         "fixture should trigger every diagnostic at least once"
     );
-    assert_eq!(report.findings.len(), 13);
+    assert_eq!(report.findings.len(), 14);
     assert_summary_matches_findings(&report);
 
     let rendered_output = mend_command()
@@ -376,7 +389,7 @@ fn successive_json_runs_reuse_cached_findings_for_same_scope() {
     let first_codes: BTreeSet<_> = first.findings.iter().map(|finding| finding.code).collect();
     let second_codes: BTreeSet<_> = second.findings.iter().map(|finding| finding.code).collect();
 
-    assert_eq!(first.findings.len(), 13);
+    assert_eq!(first.findings.len(), 14);
     assert_eq!(second.findings.len(), first.findings.len());
     assert_eq!(second_codes, first_codes);
     assert_eq!(second.summary.errors, first.summary.errors);

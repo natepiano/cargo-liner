@@ -1,3 +1,4 @@
+mod field_visibility;
 mod policy;
 mod source;
 mod use_sites;
@@ -182,7 +183,9 @@ pub(super) fn collect_and_store_findings(
     };
 
     for item_id in crate_items.free_items() {
-        analyze_item(&ctx, tcx.hir_item(item_id), &mut sink)?;
+        let item = tcx.hir_item(item_id);
+        analyze_item(&ctx, item, &mut sink)?;
+        field_visibility::check_item(&ctx, item, &mut sink)?;
     }
 
     for item_id in crate_items.impl_items() {

@@ -107,6 +107,13 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         detail_mode: DetailMode::MessageRelatedAndFix,
         fixability:  FixSupport::NarrowToPubCrate,
     };
+    static FIELD_VISIBILITY_WIDER_THAN_TYPE: DiagnosticSpec = DiagnosticSpec {
+        headline:    "field visibility is wider than its containing type",
+        inline_help: None,
+        help_anchor: "field-visibility-wider-than-type",
+        detail_mode: DetailMode::MessageRelatedAndFix,
+        fixability:  FixSupport::FixFieldVisibility,
+    };
 
     match code {
         DiagnosticCode::ForbiddenPubCrate => &FORBIDDEN_PUB_CRATE,
@@ -120,6 +127,7 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         DiagnosticCode::InternalParentPubUseFacade => &INTERNAL_PARENT_PUB_USE_FACADE,
         DiagnosticCode::SuspiciousPub => &SUSPICIOUS_PUB,
         DiagnosticCode::NarrowToPubCrate => &NARROW_TO_PUB_CRATE,
+        DiagnosticCode::FieldVisibilityWiderThanType => &FIELD_VISIBILITY_WIDER_THAN_TYPE,
     }
 }
 

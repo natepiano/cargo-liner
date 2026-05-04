@@ -623,6 +623,48 @@ pub fn internal_fn() {}           // NOT re-exported → should be `pub(crate)`
 
 Run `cargo mend --fix` to auto-fix these items to `pub(crate)`.
 
+<a id="field-visibility-wider-than-type"></a>
+### Field visibility wider than type
+
+This warning flags struct, union, or enum-variant fields with a `pub` or `pub(crate)` annotation
+on a **fully private type** (a type with no `pub` annotation of its own). The field annotation
+cannot grant any access because the containing type itself isn't visible — the annotation is
+dead.
+
+The lint deliberately does **not** fire on the conventional pattern of `pub` fields on
+`pub(crate)` or `pub(super)` structs:
+
+```rust
+// Allowed — `pub` on fields of a `pub(crate)` struct is idiomatic Rust shorthand
+pub(crate) struct GhRun {
+    pub id:        u64,
+    pub node_id:   String,
+}
+```
+
+Most large Rust codebases (rustc, cargo, tokio, serde, ratatui) write `pub` fields on
+`pub(crate)` types and rely on the type to cap the reach. Flagging that pattern would push
+toward a less idiomatic style.
+
+What does get flagged: a `pub` field on a struct that has no visibility annotation at all.
+
+```rust
+// inside a private module
+struct Hidden {
+    pub leaked: u32,   // dead — Hidden is private, `pub` grants nothing
+}
+```
+
+After `cargo mend --fix`:
+
+```rust
+struct Hidden {
+    leaked: u32,
+}
+```
+
+Run `cargo mend --fix` to auto-remove dead field annotations.
+
 ## License
 
 Licensed under either of

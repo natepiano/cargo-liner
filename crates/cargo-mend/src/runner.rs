@@ -8,6 +8,8 @@ use super::compiler::SelectionResult;
 use super::config::DiagnosticCode;
 use super::config::LoadedConfig;
 use super::diagnostics::Report;
+use super::field_visibility_fix;
+use super::field_visibility_fix::FieldVisibilityFixScan;
 use super::imports;
 use super::imports::ImportScan;
 use super::imports::ValidatedFixSet;
@@ -50,6 +52,7 @@ struct RunPlan {
     prefer_module_import_scan: Option<PreferModuleImportScan>,
     inline_path_scan:          Option<InlinePathScan>,
     narrow_pub_crate_scan:     Option<NarrowPubCrateScan>,
+    field_visibility_fix_scan: Option<FieldVisibilityFixScan>,
     pub_use_scan:              Option<PubUseFixScan>,
     check_duration:            Duration,
     compiler_warnings:         usize,
@@ -58,21 +61,23 @@ struct RunPlan {
 
 #[derive(Clone, Copy)]
 struct FixScans<'a> {
-    imports:        Option<&'a ImportScan>,
-    module_imports: Option<&'a PreferModuleImportScan>,
-    inline_types:   Option<&'a InlinePathScan>,
-    narrowed_pub:   Option<&'a NarrowPubCrateScan>,
-    pub_use:        Option<&'a PubUseFixScan>,
+    imports:          Option<&'a ImportScan>,
+    module_imports:   Option<&'a PreferModuleImportScan>,
+    inline_types:     Option<&'a InlinePathScan>,
+    narrowed_pub:     Option<&'a NarrowPubCrateScan>,
+    field_visibility: Option<&'a FieldVisibilityFixScan>,
+    pub_use:          Option<&'a PubUseFixScan>,
 }
 
 impl RunPlan {
     const fn fix_scans(&self) -> FixScans<'_> {
         FixScans {
-            imports:        self.import_scan.as_ref(),
-            module_imports: self.prefer_module_import_scan.as_ref(),
-            inline_types:   self.inline_path_scan.as_ref(),
-            narrowed_pub:   self.narrow_pub_crate_scan.as_ref(),
-            pub_use:        self.pub_use_scan.as_ref(),
+            imports:          self.import_scan.as_ref(),
+            module_imports:   self.prefer_module_import_scan.as_ref(),
+            inline_types:     self.inline_path_scan.as_ref(),
+            narrowed_pub:     self.narrow_pub_crate_scan.as_ref(),
+            field_visibility: self.field_visibility_fix_scan.as_ref(),
+            pub_use:          self.pub_use_scan.as_ref(),
         }
     }
 }
@@ -140,6 +145,12 @@ impl<'a> MendRunner<'a> {
         .then(|| narrow_pub_crate::scan_from_report(&report))
         .transpose()
         .map_err(MendFailure::Unexpected)?;
+        let field_visibility_fix_scan =
+            (operation_mode.fixes.contains(FixKind::FixFieldVisibility)
+                && diagnostics_config.is_enabled(DiagnosticCode::FieldVisibilityWiderThanType))
+            .then(|| field_visibility_fix::scan_from_report(&report))
+            .transpose()
+            .map_err(MendFailure::Unexpected)?;
         let pub_use_scan = operation_mode
             .fixes
             .contains(FixKind::FixPubUse)
@@ -154,6 +165,7 @@ impl<'a> MendRunner<'a> {
             prefer_module_import_scan,
             inline_path_scan,
             narrow_pub_crate_scan,
+            field_visibility_fix_scan,
             pub_use_scan,
             check_duration,
             compiler_warnings,
@@ -306,6 +318,9 @@ impl<'a> MendRunner<'a> {
         if let Some(scan) = fix_scans.narrowed_pub {
             fixes.extend(scan.fixes.iter().cloned());
         }
+        if let Some(scan) = fix_scans.field_visibility {
+            fixes.extend(scan.fixes.iter().cloned());
+        }
         if let Some(scan) = fix_scans.pub_use {
             fixes.extend(scan.fixes.iter().cloned());
         }
@@ -326,7 +341,10 @@ impl<'a> MendRunner<'a> {
                 .module_imports
                 .map_or(0, |scan| scan.findings.len())
             + fix_scans.inline_types.map_or(0, |scan| scan.findings.len())
-            + fix_scans.narrowed_pub.map_or(0, |scan| scan.fixes.len());
+            + fix_scans.narrowed_pub.map_or(0, |scan| scan.fixes.len())
+            + fix_scans
+                .field_visibility
+                .map_or(0, |scan| scan.fixes.len());
         if fix_scans.imports.is_some()
             || fix_scans.module_imports.is_some()
             || fix_scans.inline_types.is_some()

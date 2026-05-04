@@ -13,6 +13,7 @@ mod config;
 mod constants;
 mod diagnostics;
 mod display_filter;
+mod field_visibility_fix;
 mod fix_support;
 mod imports;
 mod inline_path_qualified_type;

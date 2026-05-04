@@ -29,6 +29,7 @@ pub(crate) enum DiagnosticCode {
     WildcardParentPubUse,
     InternalParentPubUseFacade,
     NarrowToPubCrate,
+    FieldVisibilityWiderThanType,
 }
 
 impl DiagnosticCode {
@@ -44,6 +45,7 @@ impl DiagnosticCode {
         Self::WildcardParentPubUse,
         Self::InternalParentPubUseFacade,
         Self::NarrowToPubCrate,
+        Self::FieldVisibilityWiderThanType,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -59,6 +61,7 @@ impl DiagnosticCode {
             Self::WildcardParentPubUse => "wildcard_parent_pub_use",
             Self::InternalParentPubUseFacade => "internal_parent_pub_use_facade",
             Self::NarrowToPubCrate => "narrow_to_pub_crate",
+            Self::FieldVisibilityWiderThanType => "field_visibility_wider_than_type",
         }
     }
 }
@@ -146,6 +149,7 @@ replace_deep_super_import = true
 wildcard_parent_pub_use = true
 internal_parent_pub_use_facade = true
 narrow_to_pub_crate = true
+field_visibility_wider_than_type = true
 ";
 
 fn create_default_global_config(path: &Path) -> Result<()> {
