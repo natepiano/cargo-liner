@@ -5,10 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.1] - 2026-05-03
 
 ### Fixed
 - Cross-compilation cfg(test) suppression now works on binary crates. The bin and bin-test compilations were sharing a cache file; one overwrote the other and intersection had nothing to compare. Cache filename now distinguishes them, with fix-fact dedup so a real fix isn't applied twice.
+- `build.rs` now declares `rerun-if-changed=.git/HEAD`, so post-commit installs link a fresh `MEND_GIT_HASH`/`MEND_BUILD_ID`. Previously cargo cached the build-script env output and new commits shipped binaries that self-identified as the previous commit, causing mend's per-project findings cache to silently replay stale results.
 
 ## [0.9.0] - 2026-05-03
 
