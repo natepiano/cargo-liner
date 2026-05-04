@@ -60,7 +60,7 @@ impl App {
         })
     }
 
-    pub fn ci_is_exhausted(&self, path: &Path) -> bool {
+    pub(super) fn ci_is_exhausted(&self, path: &Path) -> bool {
         self.ci_data_for(path)
             .is_some_and(ProjectCiData::is_exhausted)
     }

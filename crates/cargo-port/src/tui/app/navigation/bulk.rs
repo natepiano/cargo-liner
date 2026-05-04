@@ -80,7 +80,7 @@ impl App {
         }
     }
 
-    pub fn expand_path_in_tree(&mut self, target_path: &Path) {
+    pub(super) fn expand_path_in_tree(&mut self, target_path: &Path) {
         let Self {
             scan, selection, ..
         } = self;
@@ -158,12 +158,12 @@ impl App {
         }
     }
 
-    pub fn row_matches_project_path(&self, row: VisibleRow, target_path: &Path) -> bool {
+    pub(super) fn row_matches_project_path(&self, row: VisibleRow, target_path: &Path) -> bool {
         self.path_for_row(row)
             .is_some_and(|path| path == target_path)
     }
 
-    pub fn select_matching_visible_row(&mut self, target_path: &Path) {
+    pub(super) fn select_matching_visible_row(&mut self, target_path: &Path) {
         self.ensure_visible_rows_cached();
         let selected_index = self
             .visible_rows()

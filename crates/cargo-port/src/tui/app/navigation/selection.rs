@@ -67,7 +67,7 @@ impl App {
 
     /// Given a `VisibleRow`, resolve the absolute `&Path` borrowed from
     /// `project_list_items`.
-    pub fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
+    pub(super) fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 Some(self.projects().get(node_index)?.path().as_path())

@@ -93,7 +93,7 @@ impl Selection {
 
     // ── cached visible rows ─────────────────────────────────────────
 
-    pub(super) fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
+    pub fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
 
     /// Recompute `cached_visible_rows` from the current `expanded`
     /// set and `projects`. Called by [`SelectionMutation::drop`] and
@@ -206,13 +206,11 @@ impl SelectionMutation<'_> {
 
     /// Insert `key` into the expansion set. Returns `true` if the
     /// key was newly inserted.
-    pub(super) fn expand(&mut self, key: ExpandKey) -> bool { self.selection.expanded.insert(key) }
+    pub fn expand(&mut self, key: ExpandKey) -> bool { self.selection.expanded.insert(key) }
 
     /// Remove `key` from the expansion set. Returns `true` if the
     /// key was present.
-    pub(super) fn collapse(&mut self, key: &ExpandKey) -> bool {
-        self.selection.expanded.remove(key)
-    }
+    pub fn collapse(&mut self, key: &ExpandKey) -> bool { self.selection.expanded.remove(key) }
 
     /// Mutable access to the underlying expansion set, for bulk
     /// operations (e.g. `clear`, multi-key inserts) that still want

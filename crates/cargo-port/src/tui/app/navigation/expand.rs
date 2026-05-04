@@ -5,7 +5,7 @@ use crate::tui::app::ExpandKey;
 use crate::tui::app::VisibleRow;
 
 impl App {
-    pub fn selected_is_expandable(&self) -> bool {
+    pub(super) fn selected_is_expandable(&self) -> bool {
         let selected = self.panes().project_list().viewport().pos();
         self.visible_rows()
             .get(selected)
@@ -14,7 +14,7 @@ impl App {
             .is_some()
     }
 
-    pub fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {
+    pub(super) fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {
         match row {
             VisibleRow::Root { node_index } => self
                 .projects()
@@ -79,7 +79,7 @@ impl App {
     }
 
     /// Remove `key` from expanded, recompute rows, and move cursor to `target`.
-    pub fn collapse_to(&mut self, key: &ExpandKey, target: VisibleRow) {
+    pub(super) fn collapse_to(&mut self, key: &ExpandKey, target: VisibleRow) {
         self.selection.expanded_mut().remove(key);
         self.ensure_visible_rows_cached();
         if let Some(pos) = self.visible_rows().iter().position(|r| *r == target) {
@@ -92,7 +92,7 @@ impl App {
 
     /// Try to remove `key` from expanded. If present, mark dirty and return `true`.
     /// Otherwise return `false` (caller should cascade to parent).
-    pub fn try_collapse(&mut self, key: &ExpandKey) -> bool {
+    pub(super) fn try_collapse(&mut self, key: &ExpandKey) -> bool {
         self.selection.expanded_mut().remove(key)
     }
 
@@ -108,7 +108,7 @@ impl App {
             || self.panes().project_list().viewport().pos() != selected_before
     }
 
-    pub fn collapse_row(&mut self, row: VisibleRow) {
+    pub(super) fn collapse_row(&mut self, row: VisibleRow) {
         match row {
             VisibleRow::Root { node_index: ni } => {
                 self.try_collapse(&ExpandKey::Node(ni));

@@ -194,7 +194,7 @@ impl App {
         };
         self.spawn_repo_fetch_for_git_info(path, &url);
     }
-    pub fn handle_git_first_commit(&mut self, path: &Path, first_commit: Option<&str>) {
+    pub(super) fn handle_git_first_commit(&mut self, path: &Path, first_commit: Option<&str>) {
         let first_commit = first_commit.map(String::from);
         // first_commit is per-repo, so it lands on the entry's
         // `RepoInfo`. If the entry's `repo_info` slot doesn't exist yet
@@ -267,7 +267,7 @@ impl App {
         }
         self.sync_running_repo_fetch_toast();
     }
-    pub fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
+    pub(super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
         self.net
             .github_mut()
             .repo_fetch_in_flight_mut()
@@ -353,5 +353,12 @@ impl App {
         self.panes_mut().clear_detail_data(None);
         // Signal that derived state needs refresh (batched by caller).
         true
+    }
+
+    fn startup_git_directory_for_path(&self, path: &Path) -> Option<AbsolutePath> {
+        self.projects()
+            .iter()
+            .find(|entry| entry.item.at_path(path).is_some())
+            .and_then(|entry| entry.item.git_directory())
     }
 }

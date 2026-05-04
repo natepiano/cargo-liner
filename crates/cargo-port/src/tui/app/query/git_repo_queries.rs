@@ -41,7 +41,7 @@ impl App {
 
     /// Convenience: the primary remote's ahead/behind for the checkout
     /// at `path`.
-    pub fn primary_ahead_behind_for(&self, path: &Path) -> Option<(usize, usize)> {
+    pub(super) fn primary_ahead_behind_for(&self, path: &Path) -> Option<(usize, usize)> {
         let checkout = self.git_info_for(path)?;
         let repo = self.repo_info_for(path)?;
         checkout.primary_ahead_behind(repo)

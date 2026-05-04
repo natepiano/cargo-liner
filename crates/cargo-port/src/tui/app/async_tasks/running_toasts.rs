@@ -17,7 +17,7 @@ impl App {
         let next = self.sync_running_toast(toast_slot, "cargo clean", &items[..]);
         self.inflight.clean_mut().set_toast(next);
     }
-    pub fn sync_running_lint_toast(&mut self) {
+    pub(super) fn sync_running_lint_toast(&mut self) {
         let (toast_slot, items) = Self::running_items_for_toast(self.lint.running(), |p| {
             project::home_relative_path(p.as_path())
         });

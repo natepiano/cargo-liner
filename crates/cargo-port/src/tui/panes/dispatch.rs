@@ -28,7 +28,7 @@ pub struct PaneRenderCtx<'a> {
 
 /// Per-pane render dispatch. `Hittable` is a separate sub-trait
 /// for panes that participate in click/hover dispatch.
-pub trait Pane {
+pub(super) trait Pane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>);
 }
 
@@ -44,7 +44,7 @@ pub enum HoverTarget {
 /// hover dispatch. Keeping `Pane` and `Hittable` separate lets the
 /// dispatch match in `Panes::hit_test_at` reject non-clickable
 /// panes at compile time.
-pub trait Hittable: Pane {
+pub(super) trait Hittable: Pane {
     /// Return the hit target if `pos` lands inside this pane's
     /// rendered area, or `None` otherwise. Implementations rely on
     /// state recorded during render (viewport content area + scroll
@@ -58,7 +58,7 @@ pub trait Hittable: Pane {
 /// `hit_test_tests` walk all variants and assert each one appears
 /// in `HITTABLE_Z_ORDER`.
 #[derive(EnumIter, Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum HittableId {
+pub(super) enum HittableId {
     Toasts,
     Finder,
     Settings,
@@ -77,7 +77,7 @@ pub enum HittableId {
 /// Overlays sit above tiled panes; within a category the order
 /// matches how panes are drawn (later-drawn overlays occlude earlier
 /// ones on the screen).
-pub const HITTABLE_Z_ORDER: [HittableId; 12] = [
+pub(super) const HITTABLE_Z_ORDER: [HittableId; 12] = [
     HittableId::Toasts,
     HittableId::Finder,
     HittableId::Settings,

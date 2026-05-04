@@ -13,7 +13,7 @@ impl App {
         }
         self.apply_disk_usage(path, bytes);
     }
-    pub fn handle_disk_usage_batch(&mut self, entries: Vec<(AbsolutePath, DirSizes)>) {
+    pub(super) fn handle_disk_usage_batch(&mut self, entries: Vec<(AbsolutePath, DirSizes)>) {
         for (path, sizes) in entries {
             self.apply_disk_usage_breakdown(path.as_path(), sizes);
         }
@@ -29,7 +29,7 @@ impl App {
         }
         self.apply_disk_usage(path, sizes.total);
     }
-    pub fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
+    pub(super) fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
         // Set disk usage on the matching project item and update visibility.
         let mut lint_runtime_changed = false;
         if let Some(project) = self.projects_mut().at_path_mut(path) {

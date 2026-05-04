@@ -59,7 +59,10 @@ impl App {
         }
         stats
     }
-    pub const fn record_background_msg_kind(stats: &mut PollBackgroundStats, msg: &BackgroundMsg) {
+    pub(super) const fn record_background_msg_kind(
+        stats: &mut PollBackgroundStats,
+        msg: &BackgroundMsg,
+    ) {
         match msg {
             BackgroundMsg::DiskUsage { .. } | BackgroundMsg::DiskUsageBatch { .. } => {
                 stats.disk_usage_msgs += 1;
@@ -91,7 +94,7 @@ impl App {
             | BackgroundMsg::OutOfTreeTargetSize { .. } => {},
         }
     }
-    pub fn log_saturated_background_batch(stats: &PollBackgroundStats) {
+    pub(super) fn log_saturated_background_batch(stats: &PollBackgroundStats) {
         const MAX_MSGS_PER_FRAME: usize = 50;
         if stats.bg_msgs != MAX_MSGS_PER_FRAME {
             return;
@@ -105,7 +108,7 @@ impl App {
             "poll_background_saturated"
         );
     }
-    pub fn poll_ci_fetches(&mut self) -> usize {
+    pub(super) fn poll_ci_fetches(&mut self) -> usize {
         let mut count = 0;
         while let Ok(msg) = self.background.ci_fetch_rx().try_recv() {
             match msg {
@@ -146,7 +149,7 @@ impl App {
         }
         count
     }
-    pub fn poll_example_msgs(&mut self) -> usize {
+    pub(super) fn poll_example_msgs(&mut self) -> usize {
         let mut count = 0;
         while let Ok(msg) = self.background.example_rx().try_recv() {
             match msg {
@@ -158,21 +161,21 @@ impl App {
         }
         count
     }
-    pub fn apply_example_progress(&mut self, line: String) {
+    pub(super) fn apply_example_progress(&mut self, line: String) {
         if let Some(last) = self.inflight.example_output_mut().last_mut() {
             *last = line;
         } else {
             self.inflight.example_output_mut().push(line);
         }
     }
-    pub fn finish_example_run(&mut self) {
+    pub(super) fn finish_example_run(&mut self) {
         self.inflight.set_example_running(None);
         self.inflight
             .example_output_mut()
             .push("── done ──".to_string());
         self.mark_terminal_dirty();
     }
-    pub fn poll_clean_msgs(&mut self) {
+    pub(super) fn poll_clean_msgs(&mut self) {
         while let Ok(msg) = self.background.clean_rx().try_recv() {
             match msg {
                 CleanMsg::Finished(abs_path) => {

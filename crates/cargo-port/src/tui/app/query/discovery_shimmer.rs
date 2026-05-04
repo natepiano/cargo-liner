@@ -22,7 +22,7 @@ impl App {
         self.config.current().tui.discovery_shimmer_secs > 0.0
     }
 
-    pub fn discovery_shimmer_duration(&self) -> Duration {
+    pub(super) fn discovery_shimmer_duration(&self) -> Duration {
         Duration::from_secs_f64(self.config.current().tui.discovery_shimmer_secs)
     }
 

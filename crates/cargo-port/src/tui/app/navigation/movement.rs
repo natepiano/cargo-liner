@@ -49,7 +49,7 @@ impl App {
         }
     }
 
-    pub const fn collapse_anchor_row(row: VisibleRow) -> VisibleRow {
+    pub(super) const fn collapse_anchor_row(row: VisibleRow) -> VisibleRow {
         match row {
             VisibleRow::GroupHeader { node_index, .. }
             | VisibleRow::Member { node_index, .. }

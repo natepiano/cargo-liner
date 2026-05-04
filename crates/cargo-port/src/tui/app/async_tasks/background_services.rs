@@ -30,7 +30,7 @@ impl App {
             "register_background_services_for_tree"
         );
     }
-    pub fn register_item_background_services(&self, item: &RootItem) {
+    pub(super) fn register_item_background_services(&self, item: &RootItem) {
         let started = Instant::now();
         let abs_path = AbsolutePath::from(item.path().to_path_buf());
         let repo_root = project::git_repo_root(&abs_path);
@@ -118,7 +118,7 @@ impl App {
             }
         });
     }
-    pub fn schedule_git_first_commit_refreshes(&self) {
+    pub(super) fn schedule_git_first_commit_refreshes(&self) {
         let tx = self.background.bg_sender();
         let mut projects_by_repo: HashMap<AbsolutePath, Vec<AbsolutePath>> = HashMap::new();
         self.projects().for_each_leaf_path(|path, _| {

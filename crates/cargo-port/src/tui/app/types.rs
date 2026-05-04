@@ -100,7 +100,7 @@ pub enum FinderMode {
 }
 
 impl FinderMode {
-    pub const fn is_visible(self) -> bool { matches!(self, Self::Visible) }
+    pub(super) const fn is_visible(self) -> bool { matches!(self, Self::Visible) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -112,9 +112,9 @@ pub enum SettingsMode {
 }
 
 impl SettingsMode {
-    pub const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
+    pub(super) const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
 
-    pub const fn is_editing(self) -> bool { matches!(self, Self::Editing) }
+    pub(super) const fn is_editing(self) -> bool { matches!(self, Self::Editing) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -126,7 +126,7 @@ pub enum KeymapMode {
 }
 
 impl KeymapMode {
-    pub const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
+    pub(super) const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
 
     pub const fn is_awaiting_key(self) -> bool { matches!(self, Self::AwaitingKey) }
 }

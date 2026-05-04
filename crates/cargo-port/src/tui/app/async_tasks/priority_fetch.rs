@@ -5,7 +5,7 @@ use crate::tui::app::App;
 use crate::tui::terminal;
 
 impl App {
-    pub fn detail_path_is_affected(&self, path: &Path) -> bool {
+    pub(super) fn detail_path_is_affected(&self, path: &Path) -> bool {
         let Some(selected_path) = self.selected_project_path() else {
             return false;
         };

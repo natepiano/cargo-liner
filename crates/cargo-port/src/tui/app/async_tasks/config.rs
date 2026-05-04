@@ -14,7 +14,7 @@ use crate::tui::config_reload;
 use crate::tui::toasts::ToastStyle::Error;
 
 impl App {
-    pub fn record_config_reload_failure(&mut self, err: &str) {
+    pub(super) fn record_config_reload_failure(&mut self, err: &str) {
         self.status_flash = Some((
             "Config reload failed; keeping previous settings".to_string(),
             Instant::now(),
@@ -240,7 +240,7 @@ impl App {
     /// Backwards-compatible shim. Existing callers (rescan, config
     /// reload) still call `refresh_lint_runtime_from_config`; the
     /// real orchestration lives in [`Self::apply_lint_config_change`].
-    pub fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
+    pub(super) fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
         self.apply_lint_config_change(cfg);
     }
 }

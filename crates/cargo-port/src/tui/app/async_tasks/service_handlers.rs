@@ -10,7 +10,7 @@ use crate::tui::net_state::ServiceAvailability;
 use crate::tui::toasts::ToastStyle::Warning;
 
 impl App {
-    pub fn apply_service_signal(&mut self, signal: ServiceSignal) {
+    pub(super) fn apply_service_signal(&mut self, signal: ServiceSignal) {
         match signal {
             ServiceSignal::Reachable(service) => {
                 self.handle_service_reachable(service);
@@ -85,7 +85,7 @@ impl App {
             .set_len(toast_len);
         id
     }
-    pub fn spawn_service_retry(&self, service: ServiceKind) {
+    pub(super) fn spawn_service_retry(&self, service: ServiceKind) {
         #[cfg(test)]
         if !self.scan.retry_spawn_mode().is_enabled() {
             return;
@@ -119,7 +119,7 @@ impl App {
             }
         });
     }
-    pub fn mark_service_recovered(&mut self, service: ServiceKind) {
+    pub(super) fn mark_service_recovered(&mut self, service: ServiceKind) {
         let Some(toast_id) = self.availability_for(service).mark_recovered() else {
             return;
         };

@@ -290,7 +290,7 @@ impl ProjectListWidths {
         total
     }
 
-    pub(super) const fn lint_enabled(&self) -> bool { self.lint_enabled }
+    pub const fn lint_enabled(&self) -> bool { self.lint_enabled }
 }
 
 /// Map the project-list `column_defs` into [`ColumnSpec`]s for

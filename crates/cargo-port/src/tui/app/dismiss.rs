@@ -21,7 +21,7 @@ pub enum DismissTarget {
 // ── Resolution + dispatch ───────────────────────────────────────
 
 impl App {
-    pub fn dismiss_target_for_row_inner(&self, row: VisibleRow) -> Option<DismissTarget> {
+    pub(super) fn dismiss_target_for_row_inner(&self, row: VisibleRow) -> Option<DismissTarget> {
         let dismiss_path = match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => self
                 .projects()

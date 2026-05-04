@@ -29,7 +29,7 @@ impl App {
 
     pub const fn selection_changed(&self) -> bool { self.selection.sync().is_changed() }
 
-    pub const fn mark_selection_changed(&mut self) { self.selection.mark_sync_changed(); }
+    pub(super) const fn mark_selection_changed(&mut self) { self.selection.mark_sync_changed(); }
 
     pub const fn clear_selection_changed(&mut self) { self.selection.mark_sync_stable(); }
 
@@ -50,7 +50,7 @@ impl App {
 
     /// Open the settings overlay and position the cursor on `IncludeDirs`
     /// when no include directories are configured.
-    pub fn force_settings_if_unconfigured(&mut self) {
+    pub(super) fn force_settings_if_unconfigured(&mut self) {
         if !self.config.current().tui.include_dirs.is_empty() {
             return;
         }
@@ -166,7 +166,7 @@ impl App {
         self.return_focus = None;
     }
 
-    pub fn is_pane_tabbable(&self, pane: PaneId) -> bool {
+    pub(super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
         match panes::behavior(pane) {
             PaneBehavior::ProjectList => true,
             PaneBehavior::DetailFields => match pane {
@@ -210,7 +210,7 @@ impl App {
         }
     }
 
-    pub fn tabbable_panes(&self) -> Vec<PaneId> {
+    pub(super) fn tabbable_panes(&self) -> Vec<PaneId> {
         panes::tab_order(if self.inflight.example_output_is_empty() {
             panes::BottomRow::Diagnostics
         } else {
@@ -271,7 +271,7 @@ impl App {
         }
     }
 
-    pub fn reset_project_panes(&mut self) {
+    pub(super) fn reset_project_panes(&mut self) {
         self.panes_mut().package_mut().viewport_mut().home();
         self.panes_mut().git_mut().viewport_mut().home();
         self.panes_mut().targets_mut().viewport_mut().home();
@@ -284,5 +284,7 @@ impl App {
         self.panes.unvisit(PaneId::CiRuns);
     }
 
-    pub fn remembers_selection(&self, pane: PaneId) -> bool { self.panes.remembers_visited(pane) }
+    pub(super) fn remembers_selection(&self, pane: PaneId) -> bool {
+        self.panes.remembers_visited(pane)
+    }
 }

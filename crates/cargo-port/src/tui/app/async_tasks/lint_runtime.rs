@@ -15,7 +15,7 @@ use crate::watcher;
 use crate::watcher::WatcherMsg;
 
 impl App {
-    pub fn respawn_watcher(&mut self) {
+    pub(super) fn respawn_watcher(&mut self) {
         let watch_roots = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
         let new_watcher = watcher::spawn_watcher(
             &watch_roots,
@@ -58,7 +58,7 @@ impl App {
         }
         self.refresh_lint_cache_usage_from_disk();
     }
-    pub fn reload_lint_history(&mut self, project_path: &Path) {
+    pub(super) fn reload_lint_history(&mut self, project_path: &Path) {
         if !self.is_rust_at_path(project_path) {
             return;
         }
@@ -122,7 +122,7 @@ impl App {
             })
             .collect()
     }
-    pub fn sync_lint_runtime_projects(&self) {
+    pub(super) fn sync_lint_runtime_projects(&self) {
         let Some(runtime) = self.lint.runtime() else {
             return;
         };

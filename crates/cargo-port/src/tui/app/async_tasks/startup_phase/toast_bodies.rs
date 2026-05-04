@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::Path;
 use std::time::Instant;
 
 use crate::project;
@@ -9,7 +8,7 @@ use crate::tui::toasts;
 use crate::tui::toasts::TrackedItem;
 
 impl App {
-    pub fn startup_disk_toast_body(&self) -> String {
+    pub(super) fn startup_disk_toast_body(&self) -> String {
         let empty = HashSet::new();
         let expected = self
             .scan
@@ -24,7 +23,7 @@ impl App {
             &self.scan.scan_state().startup_phases.disk.seen,
         )
     }
-    pub fn startup_git_toast_body(&self) -> String {
+    pub(super) fn startup_git_toast_body(&self) -> String {
         let empty = HashSet::new();
         let expected = self
             .scan
@@ -39,7 +38,7 @@ impl App {
             &self.scan.scan_state().startup_phases.git.seen,
         )
     }
-    pub fn startup_metadata_toast_body(&self) -> String {
+    pub(super) fn startup_metadata_toast_body(&self) -> String {
         let empty = HashSet::new();
         let expected = self
             .scan
@@ -59,7 +58,7 @@ impl App {
     /// Pending items get `started_at = now` so they render with a live
     /// spinner + ticking duration that freezes when the item completes —
     /// matching the GitHub repo-fetch toast.
-    pub fn tracked_items_for_startup(
+    pub(super) fn tracked_items_for_startup(
         expected: &HashSet<AbsolutePath>,
         seen: &HashSet<AbsolutePath>,
     ) -> Vec<TrackedItem> {
@@ -78,7 +77,7 @@ impl App {
             })
             .collect()
     }
-    pub fn startup_remaining_toast_body(
+    pub(super) fn startup_remaining_toast_body(
         expected: &HashSet<AbsolutePath>,
         seen: &HashSet<AbsolutePath>,
     ) -> String {
@@ -92,12 +91,6 @@ impl App {
             return "Complete".to_string();
         }
         toasts::format_toast_items(&refs, toasts::toast_body_width())
-    }
-    pub(crate) fn startup_git_directory_for_path(&self, path: &Path) -> Option<AbsolutePath> {
-        self.projects()
-            .iter()
-            .find(|entry| entry.item.at_path(path).is_some())
-            .and_then(|entry| entry.item.git_directory())
     }
     #[cfg(test)]
     pub fn startup_lint_toast_body_for(

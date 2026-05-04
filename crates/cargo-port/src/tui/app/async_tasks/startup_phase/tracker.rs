@@ -284,7 +284,11 @@ impl App {
             "startup_phase_complete"
         );
     }
-    pub fn maybe_complete_startup_metadata(&mut self, now: Instant, scan_complete_at: Instant) {
+    pub(super) fn maybe_complete_startup_metadata(
+        &mut self,
+        now: Instant,
+        scan_complete_at: Instant,
+    ) {
         if !self
             .scan
             .scan_state_mut()
@@ -326,7 +330,7 @@ impl App {
             "startup_phase_complete"
         );
     }
-    pub fn maybe_complete_startup_lints(&mut self, now: Instant, scan_complete_at: Instant) {
+    pub(super) fn maybe_complete_startup_lints(&mut self, now: Instant, scan_complete_at: Instant) {
         // Lint is only "complete" once real lint work has been registered —
         // an initialized-empty expected set stays open. This diverges from
         // the generic `PhaseCompletion::is_complete` semantics on purpose,
