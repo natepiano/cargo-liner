@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Suspicious-pub suppression now uses HIR-level use sites instead of source-level path matching, catching macro-expanded and proc-macro-generated callers. Replaces the source-level macro walker from 0.9.2.
 
+### Fixed
+- Fix `--fix` emitting invalid `use super;` when `prefer_module_import` rewrote a call whose target module was the file's own parent — calls are now rewritten to `super::fn(...)` with no import, and parent-module function imports are dropped
+
 ## [0.9.2] - 2026-05-03
 
 ### Fixed

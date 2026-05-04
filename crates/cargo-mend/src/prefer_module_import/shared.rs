@@ -183,6 +183,40 @@ pub(super) fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
 #[cfg(test)]
 mod tests {
     use super::is_snake_case_function_name;
+    use super::shorten_module_path;
+
+    #[test]
+    fn shorten_super_returns_for_sibling() {
+        let current = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let module = vec![
+            "crate".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+            "sib".to_string(),
+        ];
+        assert_eq!(shorten_module_path(&current, &module), vec!["super", "sib"]);
+    }
+
+    #[test]
+    fn shorten_to_bare_super_when_target_is_parent() {
+        // current_module_path = a::b::c (file is a/b/c.rs)
+        // target module = a::b (the file's own parent)
+        // shortening collapses to bare ["super"] — the caller treats this as the
+        // parent-module case and rewrites calls to `super::fn(...)` with no `use`.
+        let current = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let module = vec!["crate".to_string(), "a".to_string(), "b".to_string()];
+        assert_eq!(shorten_module_path(&current, &module), vec!["super"]);
+    }
+
+    #[test]
+    fn shorten_keeps_absolute_when_no_common_prefix() {
+        let current = vec!["a".to_string(), "b".to_string()];
+        let module = vec!["crate".to_string(), "x".to_string(), "y".to_string()];
+        assert_eq!(
+            shorten_module_path(&current, &module),
+            vec!["crate", "x", "y"]
+        );
+    }
 
     #[test]
     fn snake_case_detects_functions() {

@@ -55,7 +55,7 @@ impl ScanFileContext<'_> {
 
 struct ImportFindingInputs<'a> {
     module_to_functions: &'a BTreeMap<String, Vec<RawCandidate>>,
-    func_to_module:      &'a BTreeMap<&'a str, &'a str>,
+    func_to_module:      &'a BTreeMap<&'a str, (&'a str, bool)>,
     references:          &'a [BareReference],
 }
 
@@ -160,12 +160,12 @@ fn scan_file(
     let mut collector = ReferenceCollector::new(&offsets, &imported_names);
     syn::visit::Visit::visit_file(&mut collector, &syntax);
 
-    let mut func_to_module: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut func_to_module: BTreeMap<&str, (&str, bool)> = BTreeMap::new();
     for functions in module_to_functions.values() {
         for function in functions {
             func_to_module.insert(
                 function.function_name.as_str(),
-                function.module_name.as_str(),
+                (function.module_name.as_str(), function.is_parent_module),
             );
         }
     }
@@ -269,73 +269,132 @@ fn build_findings_and_fixes(
     import_inputs: &ImportFindingInputs<'_>,
 ) -> (Vec<Finding>, Vec<UseFix>) {
     let display_path = file_context.display_path();
-
     let mut findings = Vec::new();
     let mut fixes = Vec::new();
     let mut rewritten_modules: BTreeSet<String> = BTreeSet::new();
 
     for functions in import_inputs.module_to_functions.values() {
         for function in functions {
-            let byte_start = shared::offset(file_context.offsets, function.span_start);
-            let byte_end = shared::offset(file_context.offsets, function.span_end);
-            let byte_end_with_newline =
-                if file_context.text.as_bytes().get(byte_end) == Some(&b'\n') {
-                    byte_end + 1
-                } else {
-                    byte_end
-                };
-
-            let source_line = file_context
-                .text
-                .lines()
-                .nth(function.span_start.line.saturating_sub(1))
-                .unwrap_or_default()
-                .to_string();
-
-            findings.push(Finding {
-                severity: Severity::Warning,
-                code: DiagnosticCode::PreferModuleImport,
-                path: display_path.clone(),
-                line: function.span_start.line,
-                column: function.span_start.column + 1,
-                highlight_len: function.function_name.len().max(1),
-                source_line,
-                item: None,
-                message: format!(
-                    "import the module `{}` instead of the function `{}`",
-                    function.module_name, function.function_name
-                ),
-                suggestion: Some(format!("consider using: `{}`", function.replacement_use)),
-                fixability: FixSupport::PreferModuleImport,
-                related: None,
-            });
-
-            let group = Some(ImportGroup {
-                bare_name: function.module_name.clone(),
-                full_path: function.absolute_module.join("::"),
-            });
-            if rewritten_modules.insert(function.module_path.clone()) {
-                fixes.push(UseFix {
-                    path:         file_context.path.to_path_buf(),
-                    start:        byte_start,
-                    end:          byte_end,
-                    replacement:  function.replacement_use.clone(),
-                    import_group: group,
-                });
-            } else {
-                fixes.push(UseFix {
-                    path:         file_context.path.to_path_buf(),
-                    start:        byte_start,
-                    end:          byte_end_with_newline,
-                    replacement:  String::new(),
-                    import_group: group,
-                });
-            }
+            findings.push(build_function_finding(
+                function,
+                &display_path,
+                file_context,
+            ));
+            fixes.push(build_function_use_fix(
+                function,
+                file_context,
+                &mut rewritten_modules,
+            ));
         }
     }
 
+    fixes.extend(build_reference_fixes(file_context, import_inputs));
+
+    (findings, fixes)
+}
+
+fn build_function_finding(
+    function: &RawCandidate,
+    display_path: &str,
+    file_context: &ScanFileContext<'_>,
+) -> Finding {
+    let source_line = file_context
+        .text
+        .lines()
+        .nth(function.span_start.line.saturating_sub(1))
+        .unwrap_or_default()
+        .to_string();
+
+    let (message, suggestion) = if function.is_parent_module {
+        (
+            format!(
+                "drop the import and call `super::{}` directly",
+                function.function_name
+            ),
+            Some(format!(
+                "remove this `use` and call `super::{}` at the use sites",
+                function.function_name
+            )),
+        )
+    } else {
+        (
+            format!(
+                "import the module `{}` instead of the function `{}`",
+                function.module_name, function.function_name
+            ),
+            Some(format!("consider using: `{}`", function.replacement_use)),
+        )
+    };
+
+    Finding {
+        severity: Severity::Warning,
+        code: DiagnosticCode::PreferModuleImport,
+        path: display_path.to_string(),
+        line: function.span_start.line,
+        column: function.span_start.column + 1,
+        highlight_len: function.function_name.len().max(1),
+        source_line,
+        item: None,
+        message,
+        suggestion,
+        fixability: FixSupport::PreferModuleImport,
+        related: None,
+    }
+}
+
+fn build_function_use_fix(
+    function: &RawCandidate,
+    file_context: &ScanFileContext<'_>,
+    rewritten_modules: &mut BTreeSet<String>,
+) -> UseFix {
+    let byte_start = shared::offset(file_context.offsets, function.span_start);
+    let byte_end = shared::offset(file_context.offsets, function.span_end);
+    let byte_end_with_newline = if file_context.text.as_bytes().get(byte_end) == Some(&b'\n') {
+        byte_end + 1
+    } else {
+        byte_end
+    };
+    let group = Some(ImportGroup {
+        bare_name: function.module_name.clone(),
+        full_path: function.absolute_module.join("::"),
+    });
+
+    if function.is_parent_module {
+        UseFix {
+            path:         file_context.path.to_path_buf(),
+            start:        byte_start,
+            end:          byte_end_with_newline,
+            replacement:  String::new(),
+            import_group: group,
+        }
+    } else if rewritten_modules.insert(function.module_path.clone()) {
+        UseFix {
+            path:         file_context.path.to_path_buf(),
+            start:        byte_start,
+            end:          byte_end,
+            replacement:  function.replacement_use.clone(),
+            import_group: group,
+        }
+    } else {
+        UseFix {
+            path:         file_context.path.to_path_buf(),
+            start:        byte_start,
+            end:          byte_end_with_newline,
+            replacement:  String::new(),
+            import_group: group,
+        }
+    }
+}
+
+fn build_reference_fixes(
+    file_context: &ScanFileContext<'_>,
+    import_inputs: &ImportFindingInputs<'_>,
+) -> Vec<UseFix> {
+    let mut fixes = Vec::new();
     for reference in import_inputs.references {
-        if let Some(&module_name) = import_inputs.func_to_module.get(reference.name.as_str()) {
+        if let Some(&(module_name, is_parent_module)) =
+            import_inputs.func_to_module.get(reference.name.as_str())
+        {
             let group = import_inputs
                 .module_to_functions
                 .values()
@@ -345,15 +404,19 @@ fn build_findings_and_fixes(
                     bare_name: function.module_name.clone(),
                     full_path: function.absolute_module.join("::"),
                 });
+            let prefix = if is_parent_module {
+                "super"
+            } else {
+                module_name
+            };
             fixes.push(UseFix {
                 path:         file_context.path.to_path_buf(),
                 start:        reference.byte_start,
                 end:          reference.byte_end,
-                replacement:  format!("{module_name}::{}", reference.name),
+                replacement:  format!("{prefix}::{}", reference.name),
                 import_group: group,
             });
         }
     }
-
-    (findings, fixes)
+    fixes
 }

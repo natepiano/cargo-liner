@@ -1580,3 +1580,327 @@ fn build(font_size: f32, scale: f32, origin_y: f32) -> ArrowGeometry {
         "let RHS function call should be qualified, got:\n{consumer}"
     );
 }
+
+/// Inline call where the target module IS the file's own parent.
+///
+/// `parent/child.rs` calling `crate::parent::do_thing(...)` would shorten to a
+/// degenerate `use super;` — invalid Rust. The fix instead rewrites the call
+/// to `super::do_thing(...)` and emits no `use` statement.
+#[test]
+fn inline_call_to_parent_module_uses_super() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "parent_inline_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod source;\npub(crate) use source::do_thing;\nmod child;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/source.rs"),
+        "pub fn do_thing() -> i32 { 42 }\n",
+    )
+    .expect("write source");
+    fs::write(
+        temp.path().join("src/parent/child.rs"),
+        r#"fn example() -> i32 {
+    crate::parent::do_thing()
+}
+"#,
+    )
+    .expect("write child");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let child =
+        fs::read_to_string(temp.path().join("src/parent/child.rs")).expect("read fixed file");
+    assert!(
+        child.contains("super::do_thing()"),
+        "expected `super::do_thing()`, got:\n{child}"
+    );
+    assert!(
+        !child.contains("use super;"),
+        "must not insert invalid `use super;`, got:\n{child}"
+    );
+    assert!(
+        !child.contains("use crate::parent;") && !child.contains("use super::parent;"),
+        "must not insert an import for the file's own parent, got:\n{child}"
+    );
+    assert!(
+        !child.contains("crate::parent::do_thing"),
+        "fully-qualified call should be rewritten, got:\n{child}"
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
+        "fix should be idempotent — second run should have no prefer_module_import findings"
+    );
+}
+
+/// Existing `use crate::parent::do_thing;` import inside `parent/child.rs`:
+/// the import is dropped entirely and bare `do_thing(...)` calls become
+/// `super::do_thing(...)`.
+#[test]
+fn function_import_from_parent_module_drops_use() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "parent_use_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod source;\npub(crate) use source::do_thing;\nmod child;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/source.rs"),
+        "pub fn do_thing() -> i32 { 42 }\n",
+    )
+    .expect("write source");
+    fs::write(
+        temp.path().join("src/parent/child.rs"),
+        r#"use crate::parent::do_thing;
+
+fn first() -> i32 { do_thing() }
+fn second() -> i32 { do_thing() + 1 }
+"#,
+    )
+    .expect("write child");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let child =
+        fs::read_to_string(temp.path().join("src/parent/child.rs")).expect("read fixed file");
+    assert!(
+        !child.contains("use crate::parent::do_thing"),
+        "function-import line should be deleted, got:\n{child}"
+    );
+    assert!(
+        !child.contains("use super;") && !child.contains("use crate::parent;"),
+        "must not insert a parent-module import, got:\n{child}"
+    );
+    assert!(
+        child.contains("super::do_thing()"),
+        "first reference should become `super::do_thing()`, got:\n{child}"
+    );
+    assert!(
+        child.matches("super::do_thing()").count() >= 2,
+        "both references should be rewritten, got:\n{child}"
+    );
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
+        "fix should be idempotent — second run should have no prefer_module_import findings"
+    );
+}
+
+/// Two separate parent-module function imports in the same file. Both `use`
+/// lines must be deleted and every reference rewritten to `super::fn(...)`.
+#[test]
+fn parent_module_multiple_function_imports() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "parent_multi_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod source;\npub(crate) use source::do_thing;\npub(crate) use source::other_thing;\nmod child;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/source.rs"),
+        "pub fn do_thing() -> i32 { 42 }\npub fn other_thing() -> i32 { 7 }\n",
+    )
+    .expect("write source");
+    fs::write(
+        temp.path().join("src/parent/child.rs"),
+        r#"use crate::parent::do_thing;
+use crate::parent::other_thing;
+
+fn example() -> i32 { do_thing() + other_thing() }
+"#,
+    )
+    .expect("write child");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let child =
+        fs::read_to_string(temp.path().join("src/parent/child.rs")).expect("read fixed file");
+    assert!(
+        !child.contains("use crate::parent::do_thing")
+            && !child.contains("use crate::parent::other_thing"),
+        "both function-import lines should be deleted, got:\n{child}"
+    );
+    assert!(
+        !child.contains("use super;") && !child.contains("use crate::parent;"),
+        "must not insert a parent-module import, got:\n{child}"
+    );
+    assert!(
+        child.contains("super::do_thing()") && child.contains("super::other_thing()"),
+        "every reference should be rewritten with `super::`, got:\n{child}"
+    );
+}
+
+/// In the same file, mix one parent-module call and one sibling-module call.
+/// The parent target gets `super::fn(...)` with no `use`. The sibling target
+/// follows the standard treatment: a sibling `use` import + module-prefixed call.
+#[test]
+fn parent_and_sibling_inline_calls_in_same_file() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "parent_sibling_mix_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod source;\npub(crate) use source::parent_fn;\nmod sibling;\nmod child;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/source.rs"),
+        "pub fn parent_fn() -> i32 { 1 }\n",
+    )
+    .expect("write source");
+    fs::write(
+        temp.path().join("src/parent/sibling.rs"),
+        "pub fn sibling_fn() -> i32 { 2 }\n",
+    )
+    .expect("write sibling");
+    fs::write(
+        temp.path().join("src/parent/child.rs"),
+        r#"fn example() -> i32 {
+    crate::parent::parent_fn() + crate::parent::sibling::sibling_fn()
+}
+"#,
+    )
+    .expect("write child");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let child =
+        fs::read_to_string(temp.path().join("src/parent/child.rs")).expect("read fixed file");
+    assert!(
+        child.contains("super::parent_fn()"),
+        "parent-target call should become `super::parent_fn()`, got:\n{child}"
+    );
+    assert!(
+        child.contains("use super::sibling;") || child.contains("use crate::parent::sibling;"),
+        "sibling target should add a sibling module import, got:\n{child}"
+    );
+    assert!(
+        child.contains("sibling::sibling_fn()"),
+        "sibling target should be rewritten with module prefix, got:\n{child}"
+    );
+    assert!(
+        !child.contains("use super;"),
+        "must not insert invalid `use super;`, got:\n{child}"
+    );
+    assert!(
+        !child.contains("crate::parent::parent_fn")
+            && !child.contains("crate::parent::sibling::sibling_fn"),
+        "fully-qualified calls should be rewritten, got:\n{child}"
+    );
+}

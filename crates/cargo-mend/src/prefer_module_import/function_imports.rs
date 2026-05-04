@@ -8,13 +8,16 @@ use syn::visit::Visit;
 use super::shared;
 
 pub(super) struct RawCandidate {
-    pub(super) function_name:   String,
-    pub(super) module_name:     String,
-    pub(super) module_path:     String,
-    pub(super) absolute_module: Vec<String>,
-    pub(super) replacement_use: String,
-    pub(super) span_start:      proc_macro2::LineColumn,
-    pub(super) span_end:        proc_macro2::LineColumn,
+    pub(super) function_name:    String,
+    pub(super) module_name:      String,
+    pub(super) module_path:      String,
+    pub(super) absolute_module:  Vec<String>,
+    pub(super) replacement_use:  String,
+    pub(super) span_start:       proc_macro2::LineColumn,
+    pub(super) span_end:         proc_macro2::LineColumn,
+    /// True when the target module is the file's own parent module.
+    /// The use statement should be deleted and references rewritten as `super::fn(...)`.
+    pub(super) is_parent_module: bool,
 }
 
 pub(super) struct ImportDetector<'a> {
@@ -82,9 +85,14 @@ fn analyze_function_import(
 
     let shortened_module_segments =
         shared::shorten_module_path(current_module_path, module_segments);
+    let is_parent_module = shortened_module_segments.as_slice() == ["super"];
     let module_path = shortened_module_segments.join("::");
-    let vis_prefix = shared::extract_visibility_prefix(node);
-    let replacement_use = format!("{vis_prefix}use {module_path};");
+    let replacement_use = if is_parent_module {
+        String::new()
+    } else {
+        let vis_prefix = shared::extract_visibility_prefix(node);
+        format!("{vis_prefix}use {module_path};")
+    };
     let span = node.span();
     let absolute_module = absolute_segments[..absolute_segments.len() - 1].to_vec();
 
@@ -96,5 +104,6 @@ fn analyze_function_import(
         replacement_use,
         span_start: span.start(),
         span_end: span.end(),
+        is_parent_module,
     })
 }

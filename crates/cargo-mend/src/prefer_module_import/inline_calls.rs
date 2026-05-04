@@ -17,14 +17,17 @@ use crate::imports::ImportGroup;
 use crate::imports::UseFix;
 
 pub(super) struct InlineCallCandidate {
-    pub(super) function_name:   String,
-    pub(super) module_name:     String,
-    pub(super) module_path:     String,
-    pub(super) absolute_module: Vec<String>,
-    pub(super) prefix_start:    proc_macro2::LineColumn,
-    pub(super) leaf_start:      proc_macro2::LineColumn,
-    pub(super) full_span_start: proc_macro2::LineColumn,
-    pub(super) full_span_end:   proc_macro2::LineColumn,
+    pub(super) function_name:    String,
+    pub(super) module_name:      String,
+    pub(super) module_path:      String,
+    pub(super) absolute_module:  Vec<String>,
+    pub(super) prefix_start:     proc_macro2::LineColumn,
+    pub(super) leaf_start:       proc_macro2::LineColumn,
+    pub(super) full_span_start:  proc_macro2::LineColumn,
+    pub(super) full_span_end:    proc_macro2::LineColumn,
+    /// True when the target module is the file's own parent module.
+    /// Rewrite the call to `super::function_name(...)` and add no `use`.
+    pub(super) is_parent_module: bool,
 }
 
 pub(super) struct InlineCallDetector<'a> {
@@ -92,6 +95,30 @@ pub(super) fn build_inline_call_findings_and_fixes(
             .unwrap_or_default()
             .to_string();
 
+        let (message, suggestion) = if candidate.is_parent_module {
+            (
+                format!(
+                    "use `super::{}` instead of the fully-qualified path",
+                    candidate.function_name
+                ),
+                Some(format!(
+                    "rewrite the call as `super::{}`",
+                    candidate.function_name
+                )),
+            )
+        } else {
+            (
+                format!(
+                    "import the module `{}` instead of using the fully-qualified path for `{}`",
+                    candidate.module_name, candidate.function_name
+                ),
+                Some(format!(
+                    "add `use {};` and call `{}::{}`",
+                    candidate.module_path, candidate.module_name, candidate.function_name
+                )),
+            )
+        };
+
         findings.push(Finding {
             severity: Severity::Warning,
             code: DiagnosticCode::PreferModuleImport,
@@ -101,14 +128,8 @@ pub(super) fn build_inline_call_findings_and_fixes(
             highlight_len: full_path_text.len().max(1),
             source_line,
             item: None,
-            message: format!(
-                "import the module `{}` instead of using the fully-qualified path for `{}`",
-                candidate.module_name, candidate.function_name
-            ),
-            suggestion: Some(format!(
-                "add `use {};` and call `{}::{}`",
-                candidate.module_path, candidate.module_name, candidate.function_name
-            )),
+            message,
+            suggestion,
             fixability: FixSupport::PreferModuleImport,
             related: None,
         });
@@ -118,14 +139,22 @@ pub(super) fn build_inline_call_findings_and_fixes(
             full_path: candidate.absolute_module.join("::"),
         });
 
+        let call_prefix = if candidate.is_parent_module {
+            "super::".to_string()
+        } else {
+            format!("{}::", candidate.module_name)
+        };
         fixes.push(UseFix {
             path:         file_context.path.to_path_buf(),
             start:        prefix_start_byte,
             end:          leaf_start_byte,
-            replacement:  format!("{}::", candidate.module_name),
+            replacement:  call_prefix,
             import_group: group.clone(),
         });
 
+        if candidate.is_parent_module {
+            continue;
+        }
         if inline_inputs
             .will_import_modules
             .contains(&candidate.absolute_module)
@@ -199,6 +228,7 @@ fn analyze_inline_call(
 
     let module_segments = &segments[..segments.len() - 1];
     let shortened = shared::shorten_module_path(current_module_path, module_segments);
+    let is_parent_module = shortened.as_slice() == ["super"];
     let module_path = shortened.join("::");
 
     let first_seg = path.segments.first()?;
@@ -213,5 +243,6 @@ fn analyze_inline_call(
         leaf_start: leaf_seg.ident.span().start(),
         full_span_start: path.span().start(),
         full_span_end: path.span().end(),
+        is_parent_module,
     })
 }
