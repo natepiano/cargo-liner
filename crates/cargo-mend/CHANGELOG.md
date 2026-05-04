@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] - 2026-05-04
 
 ### Changed
 - Suspicious-pub suppression now uses HIR-level use sites instead of source-level path matching, catching macro-expanded and proc-macro-generated callers. Replaces the source-level macro walker from 0.9.2.
