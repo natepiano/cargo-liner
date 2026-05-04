@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 
+use super::pane::PaneFocusState;
 use super::panes::PaneId;
 
 #[derive(Debug)]
@@ -82,4 +83,16 @@ impl Focus {
     pub(crate) fn unvisit(&mut self, pane: PaneId) { self.visited.remove(&pane); }
 
     pub(crate) fn remembers_visited(&self, pane: PaneId) -> bool { self.visited.contains(&pane) }
+
+    /// Resolve a pane to its [`PaneFocusState`] — `Active` if currently
+    /// focused, `Remembered` if previously visited, otherwise `Inactive`.
+    pub(crate) fn pane_state(&self, pane: PaneId) -> PaneFocusState {
+        if self.is(pane) {
+            PaneFocusState::Active
+        } else if self.remembers_visited(pane) {
+            PaneFocusState::Remembered
+        } else {
+            PaneFocusState::Inactive
+        }
+    }
 }

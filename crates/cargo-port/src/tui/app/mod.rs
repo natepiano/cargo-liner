@@ -49,7 +49,6 @@ mod async_tasks;
 mod ci;
 mod construct;
 mod dismiss;
-mod focus;
 mod navigation;
 mod phase_state;
 mod query;
@@ -71,6 +70,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::layout::Position;
+use strum::IntoEnumIterator;
 
 use super::background::Background;
 use super::columns;
@@ -80,6 +80,7 @@ use super::config_state::Config;
 use super::focus::Focus;
 use super::inflight::Inflight;
 use super::keymap_state::Keymap;
+use super::overlays::Overlays;
 use super::panes::LayoutCache;
 use super::panes::PaneDataStore;
 use super::panes::PaneId;
@@ -150,9 +151,12 @@ pub(super) use super::columns::ProjectListWidths;
 use super::lint_state::Lint;
 pub(super) use super::net_state::AvailabilityStatus;
 use super::net_state::Net;
+use super::panes;
 use super::panes::PendingCiFetch;
 use super::panes::PendingExampleRun;
 use super::panes::WorktreeInfo;
+use super::settings::SettingOption;
+use super::shortcuts::InputContext;
 use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
 use super::terminal::ExampleMsg;
@@ -171,7 +175,7 @@ pub(super) struct App {
     /// as named methods on `App`.
     net:               Net,
     /// Panes subsystem. Owns `pane_manager`, `pane_data`,
-    /// `visited_panes`, `hovered_pane_row`, and `cpu_poller`. App's
+    /// `hovered_pane_row`, and `cpu_poller`. App's
     /// impl-files reach pane state through this handle.
     panes:             Panes,
     /// Selection subsystem. Owns `selection_paths`, `selection`
@@ -214,13 +218,15 @@ pub(super) struct App {
     /// `retry_spawn_mode`.
     scan:              Scan,
     focus:             Focus,
+    /// Overlays subsystem. Owns the four overlay-mode enums
+    /// (`FinderMode`, `SettingsMode`, `KeymapMode`, `ExitMode`),
+    /// the transient `inline_error` UI feedback, and the
+    /// `status_flash` slot.
+    overlays:          Overlays,
     confirm:           Option<ConfirmAction>,
     animation_started: Instant,
     mouse_pos:         Option<Position>,
-    status_flash:      Option<(String, std::time::Instant)>,
     toasts:            ToastManager,
-    inline_error:      Option<String>,
-    ui_modes:          types::UiModes,
     /// Layout coordination cache. Computed once per draw and shared
     /// across the render path: tile layout, project-list body rect,
     /// and the row-hitbox map for click/hover dispatch. Lives on
@@ -584,7 +590,7 @@ impl App {
     pub(super) fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
 
     pub(super) fn register_discovery_shimmer(&mut self, path: &Path) {
-        if !self.is_scan_complete() || !self.config().discovery_shimmer_enabled() {
+        if !self.scan.is_complete() || !self.config().discovery_shimmer_enabled() {
             return;
         }
         let shimmer = types::DiscoveryShimmer::new(
@@ -806,17 +812,10 @@ impl App {
         self.selection.finder_mut()
     }
 
-    /// Read-only handle to the [`Selection`] subsystem. Used by
-    /// callers that need access to multiple sub-fields in one
-    /// Test-only — production paths reach individual sub-fields
-    /// through the existing top-level App accessors.
-    #[cfg(test)]
+    /// Read-only handle to the [`Selection`] subsystem.
     pub(super) const fn selection(&self) -> &Selection { &self.selection }
 
-    /// Test-only — production paths use the documented top-level
-    /// accessors. Tests use this to drive `Selection::mutate(...)`
-    /// and to inspect inflight-only Selection state.
-    #[cfg(test)]
+    /// Mutable handle to the [`Selection`] subsystem.
     pub(super) const fn selection_mut(&mut self) -> &mut Selection { &mut self.selection }
 
     pub(super) const fn last_selected_path(&self) -> Option<&AbsolutePath> {
@@ -957,13 +956,9 @@ impl App {
         self.config.edit_buffer_mut().set(value, cursor);
     }
 
-    pub(super) const fn inline_error(&self) -> Option<&String> { self.inline_error.as_ref() }
+    pub(super) const fn overlays(&self) -> &Overlays { &self.overlays }
 
-    pub(super) fn set_inline_error(&mut self, error: impl Into<String>) {
-        self.inline_error = Some(error.into());
-    }
-
-    pub(super) fn clear_inline_error(&mut self) { self.inline_error = None; }
+    pub(super) const fn overlays_mut(&mut self) -> &mut Overlays { &mut self.overlays }
 
     pub(super) fn bg_tx(&self) -> mpsc::Sender<BackgroundMsg> { self.background.bg_sender() }
 
@@ -1048,8 +1043,6 @@ impl App {
 
     pub(super) fn config_path(&self) -> Option<&Path> { self.config.path() }
 
-    pub(super) const fn ui_modes(&self) -> &types::UiModes { &self.ui_modes }
-
     pub(super) const fn take_confirm(&mut self) -> Option<ConfirmAction> { self.confirm.take() }
 
     #[cfg(test)]
@@ -1108,6 +1101,187 @@ impl App {
 
     pub(super) fn reset_cpu_placeholder(&mut self) {
         self.panes.reset_cpu(&self.config.current().cpu);
+    }
+
+    // ── Group 3 cross-subsystem orchestrators (post-Phase-9) ────────
+    //
+    // These read or mutate two or more subsystems and have no single
+    // subsystem they belong to. They live in `mod.rs` so `pub(super)`
+    // reaches `crate::tui` and external callers (`tui/input.rs`,
+    // `tui/render.rs`, `tui/finder.rs`, etc.) can reach them.
+
+    /// Open the settings overlay and position the cursor on `IncludeDirs`
+    /// when no include directories are configured. Touches Config +
+    /// Focus + Overlays + Panes + inline_error.
+    pub(super) fn force_settings_if_unconfigured(&mut self) {
+        if !self.config.current().tui.include_dirs.is_empty() {
+            return;
+        }
+        self.focus.open_overlay(PaneId::Settings);
+        self.overlays.open_settings();
+        if let Some(idx) = crate::tui::settings::SettingOption::iter()
+            .position(|s| s == SettingOption::IncludeDirs)
+        {
+            self.panes_mut().settings_mut().viewport_mut().set_pos(idx);
+        }
+        self.overlays
+            .set_inline_error("Configure at least one include directory before continuing");
+    }
+
+    /// Derive the current input context from app state. Reads
+    /// Overlays + Focus + Panes (via `panes::behavior`).
+    pub(super) fn input_context(&self) -> InputContext {
+        use super::panes::PaneBehavior;
+        use super::shortcuts::InputContext;
+        let overlays = &self.overlays;
+        if overlays.keymap_is_awaiting() && overlays.inline_error().is_some() {
+            InputContext::KeymapConflict
+        } else if overlays.keymap_is_awaiting() {
+            InputContext::KeymapAwaiting
+        } else if overlays.is_keymap_open() {
+            InputContext::Keymap
+        } else if overlays.is_finder_open() {
+            InputContext::Finder
+        } else if overlays.is_settings_editing() {
+            InputContext::SettingsEditing
+        } else if overlays.is_settings_open() {
+            InputContext::Settings
+        } else {
+            match panes::behavior(self.focus.current()) {
+                PaneBehavior::ProjectList | PaneBehavior::Overlay => InputContext::ProjectList,
+                PaneBehavior::DetailFields => InputContext::DetailFields,
+                PaneBehavior::DetailTargets | PaneBehavior::Cpu => InputContext::DetailTargets,
+                PaneBehavior::Lints => InputContext::Lints,
+                PaneBehavior::CiRuns => InputContext::CiRuns,
+                PaneBehavior::Output => InputContext::Output,
+                PaneBehavior::Toasts => InputContext::Toasts,
+            }
+        }
+    }
+
+    /// Whether `pane` is reachable via Tab/Shift-Tab in the current
+    /// app state. Reads Selection (cursor → project), Scan (project
+    /// data), Panes (pane content), Inflight (example output).
+    pub(super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
+        use super::panes;
+        use super::panes::PaneBehavior;
+        match panes::behavior(pane) {
+            PaneBehavior::ProjectList => true,
+            PaneBehavior::DetailFields => match pane {
+                PaneId::Package => self.selected_project_path().is_some(),
+                PaneId::Lang => self.selected_project_path().is_some_and(|path| {
+                    self.projects()
+                        .at_path(path)
+                        .and_then(|p| p.language_stats.as_ref())
+                        .is_some_and(|ls| !ls.entries.is_empty())
+                }),
+                PaneId::Git => self.panes().git().content().is_some_and(|g| {
+                    g.branch.is_some() || !g.remotes.is_empty() || !g.worktrees.is_empty()
+                }),
+                _ => false,
+            },
+            PaneBehavior::Cpu => self.panes().cpu().content().is_some(),
+            PaneBehavior::DetailTargets => self
+                .panes()
+                .targets()
+                .content()
+                .is_some_and(panes::TargetsData::has_targets),
+            PaneBehavior::Lints => {
+                self.inflight.example_output_is_empty()
+                    && self
+                        .panes()
+                        .lints()
+                        .content()
+                        .is_some_and(panes::LintsData::has_runs)
+            },
+            PaneBehavior::CiRuns => {
+                self.inflight.example_output_is_empty()
+                    && self
+                        .panes()
+                        .ci()
+                        .content()
+                        .is_some_and(panes::CiData::has_runs)
+            },
+            PaneBehavior::Output => !self.inflight.example_output_is_empty(),
+            PaneBehavior::Toasts => !self.toasts.active_now().is_empty(),
+            PaneBehavior::Overlay => false,
+        }
+    }
+
+    /// All currently-tabbable panes, in tab order.
+    pub(super) fn tabbable_panes(&self) -> Vec<PaneId> {
+        use super::panes;
+        panes::tab_order(if self.inflight.example_output_is_empty() {
+            panes::BottomRow::Diagnostics
+        } else {
+            panes::BottomRow::Output
+        })
+        .into_iter()
+        .filter(|pane| self.is_pane_tabbable(*pane))
+        .chain(
+            self.is_pane_tabbable(PaneId::Toasts)
+                .then_some(PaneId::Toasts),
+        )
+        .collect()
+    }
+
+    pub(super) fn focus_next_pane(&mut self) {
+        self.prune_toasts();
+        let panes = self.tabbable_panes();
+        if panes.is_empty() {
+            return;
+        }
+        let current = self.focus.base();
+        if current == PaneId::Toasts
+            && self.panes().toasts().viewport().pos() + 1 < self.toasts.active_now().len()
+        {
+            self.panes_mut().toasts_mut().viewport_mut().down();
+            self.focus.set(PaneId::Toasts);
+            return;
+        }
+        let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
+        let next = panes[(index + 1) % panes.len()];
+        self.focus.set(next);
+        if next == PaneId::Toasts {
+            self.panes_mut().toasts_mut().viewport_mut().home();
+        }
+    }
+
+    pub(super) fn focus_previous_pane(&mut self) {
+        self.prune_toasts();
+        let panes = self.tabbable_panes();
+        if panes.is_empty() {
+            return;
+        }
+        let current = self.focus.base();
+        if current == PaneId::Toasts && self.panes().toasts().viewport().pos() > 0 {
+            self.panes_mut().toasts_mut().viewport_mut().up();
+            self.focus.set(PaneId::Toasts);
+            return;
+        }
+        let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
+        let prev = panes[(index + panes.len() - 1) % panes.len()];
+        self.focus.set(prev);
+        if prev == PaneId::Toasts {
+            let last_index = self.toasts.active_now().len().saturating_sub(1);
+            self.panes_mut()
+                .toasts_mut()
+                .viewport_mut()
+                .set_pos(last_index);
+        }
+    }
+
+    pub(super) fn reset_project_panes(&mut self) {
+        self.panes_mut().package_mut().viewport_mut().home();
+        self.panes_mut().git_mut().viewport_mut().home();
+        self.panes_mut().targets_mut().viewport_mut().home();
+        self.panes_mut().ci_mut().viewport_mut().home();
+        self.panes_mut().lints_mut().viewport_mut().home();
+        self.panes_mut().toasts_mut().viewport_mut().home();
+        self.focus.unvisit(PaneId::Package);
+        self.focus.unvisit(PaneId::Git);
+        self.focus.unvisit(PaneId::Targets);
+        self.focus.unvisit(PaneId::CiRuns);
     }
 }
 

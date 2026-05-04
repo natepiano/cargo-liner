@@ -160,8 +160,8 @@ impl App {
         );
         self.scan.set_priority_fetch_path(None);
         self.focus.set(PaneId::ProjectList);
-        self.close_settings();
-        self.close_finder();
+        self.overlays.close_settings();
+        self.overlays.close_finder();
         self.reset_project_panes();
         self.selection.paths_mut().selected_project = None;
         self.inflight.clear_pending_ci_fetch();

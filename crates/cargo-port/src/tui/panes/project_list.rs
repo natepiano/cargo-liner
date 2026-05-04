@@ -995,7 +995,7 @@ pub fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<ListItem<
     let root_labels = app
         .projects()
         .resolved_root_labels(app.config().include_non_rust().includes_non_rust());
-    let focus = app.pane_focus_state(PaneId::ProjectList);
+    let focus = app.focus().pane_state(PaneId::ProjectList);
     let pane = app.panes().project_list().viewport();
 
     let rows = app.visible_rows();

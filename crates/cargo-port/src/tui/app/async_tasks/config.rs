@@ -15,10 +15,10 @@ use crate::tui::toasts::ToastStyle::Error;
 
 impl App {
     pub(super) fn record_config_reload_failure(&mut self, err: &str) {
-        self.status_flash = Some((
+        self.overlays.set_status_flash(
             "Config reload failed; keeping previous settings".to_string(),
             Instant::now(),
-        ));
+        );
         self.show_timed_toast("Config reload failed", err.to_string());
     }
     pub fn load_initial_keymap(&mut self) {
@@ -147,7 +147,7 @@ impl App {
             self.config.current(),
             cfg,
             config_reload::ReloadContext {
-                scan_complete:       self.is_scan_complete(),
+                scan_complete:       self.scan.is_complete(),
                 has_cached_non_rust: self.has_cached_non_rust_projects(),
             },
         );
@@ -234,7 +234,8 @@ impl App {
             .reset_fit_widths(self.config().lint_enabled());
 
         if let Some(warning) = lint_spawn.warning {
-            self.status_flash = Some((warning.clone(), Instant::now()));
+            self.overlays
+                .set_status_flash(warning.clone(), Instant::now());
             self.show_timed_toast("Lint runtime", warning);
         }
     }

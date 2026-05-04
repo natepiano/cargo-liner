@@ -93,8 +93,10 @@ impl App {
                     }
                     false
                 } else {
-                    self.status_flash =
-                        Some(("no new runs found".to_string(), std::time::Instant::now()));
+                    self.overlays.set_status_flash(
+                        "no new runs found".to_string(),
+                        std::time::Instant::now(),
+                    );
                     self.show_timed_warning_toast("CI", "No new runs found".to_string());
                     // Preserve current exhaustion state.
                     prev_exhausted
@@ -114,8 +116,10 @@ impl App {
                     {
                         scan::mark_exhausted(owner_repo.owner(), owner_repo.repo());
                     }
-                    self.status_flash =
-                        Some(("no older runs found".to_string(), std::time::Instant::now()));
+                    self.overlays.set_status_flash(
+                        "no older runs found".to_string(),
+                        std::time::Instant::now(),
+                    );
                     self.show_timed_warning_toast("CI", "No older runs found".to_string());
                     true
                 }

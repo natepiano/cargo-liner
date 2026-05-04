@@ -399,11 +399,11 @@ fn overlays_restore_prior_focus() {
     app.focus_mut().set(PaneId::Git);
 
     app.focus_mut().open_overlay(PaneId::Settings);
-    app.open_settings();
+    app.overlays_mut().open_settings();
     assert_eq!(app.focused_pane(), PaneId::Settings);
     assert_eq!(app.focus().overlay_return(), Some(PaneId::Git));
 
-    app.close_settings();
+    app.overlays_mut().close_settings();
     app.focus_mut().close_overlay();
     assert_eq!(app.focused_pane(), PaneId::Git);
     assert!(app.focus().overlay_return().is_none());

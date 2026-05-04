@@ -150,13 +150,13 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     );
     app.panes_mut().toasts_mut().set_hits(toast_result.hitboxes);
 
-    if app.is_settings_open() {
+    if app.overlays().is_settings_open() {
         settings::render_settings_popup(frame, app);
     }
-    if app.is_keymap_open() {
+    if app.overlays().is_keymap_open() {
         keymap_ui::render_keymap_popup(frame, app);
     }
-    if app.is_finder_open() {
+    if app.overlays().is_finder_open() {
         finder::render_finder_popup(frame, app);
     }
     if let Some(action) = app.confirm() {
@@ -340,7 +340,7 @@ fn dispatch_via_trait(
     frame: &mut Frame,
     dispatcher: fn(&mut panes::Panes, &mut Frame, Rect, &panes::DispatchArgs<'_>),
 ) {
-    let focus_state = app.pane_focus_state(id);
+    let focus_state = app.focus().pane_state(id);
     let is_focused = app.focus().is(id);
     let animation_elapsed = app.animation_elapsed();
     // Compute `selected_project_path` before the split-borrow — it
@@ -528,7 +528,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let mut left_spans = Vec::new();
-    if !app.is_scan_complete() {
+    if !app.scan().is_complete() {
         let key_style = Style::default()
             .fg(ACCENT_COLOR)
             .add_modifier(Modifier::BOLD);

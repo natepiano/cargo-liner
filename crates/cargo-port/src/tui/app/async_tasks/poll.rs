@@ -175,7 +175,7 @@ impl App {
         self.inflight
             .example_output_mut()
             .push("── done ──".to_string());
-        self.mark_terminal_dirty();
+        self.scan.mark_terminal_dirty();
     }
     pub(super) fn poll_clean_msgs(&mut self) {
         while let Ok(msg) = self.background.clean_rx().try_recv() {

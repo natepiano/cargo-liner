@@ -1813,7 +1813,7 @@ pub fn build_ci_data(app: &App) -> CiData {
         CiEmptyState::NoWorkflowConfigured
     } else if is_fetching {
         CiEmptyState::Fetching
-    } else if ci_info.is_none() || !app.is_scan_complete() {
+    } else if ci_info.is_none() || !app.scan().is_complete() {
         CiEmptyState::Loading
     } else if branch_filtered_empty {
         unpublished_branch_name.map_or_else(

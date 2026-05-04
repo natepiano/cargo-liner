@@ -288,7 +288,7 @@ mod tests {
         });
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
-        let focus_state = app.pane_focus_state(PaneId::Lints);
+        let focus_state = app.focus().pane_state(PaneId::Lints);
         let is_focused = app.focus().is(PaneId::Lints);
         let animation_elapsed = app.animation_elapsed();
         let selected_path = app
@@ -316,7 +316,7 @@ mod tests {
         app.panes_mut().override_ci_runs_for_test(runs.to_vec());
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
-        let focus_state = app.pane_focus_state(PaneId::CiRuns);
+        let focus_state = app.focus().pane_state(PaneId::CiRuns);
         let is_focused = app.focus().is(PaneId::CiRuns);
         let animation_elapsed = app.animation_elapsed();
         let selected_path = app
@@ -599,7 +599,7 @@ mod tests {
         finder.results = vec![0, 1];
         finder.total = 2;
         app.focus_mut().open_overlay(PaneId::Finder);
-        app.open_finder();
+        app.overlays_mut().open_finder();
         render_ui(&mut app);
 
         let (x, y) = finder_result_point(&app, 1);
@@ -648,7 +648,7 @@ mod tests {
     fn settings_row_click_uses_setting_index_not_visual_line() {
         let mut app = make_app(&[]);
         app.focus_mut().open_overlay(PaneId::Settings);
-        app.open_settings();
+        app.overlays_mut().open_settings();
         render_ui(&mut app);
 
         let (x, y) = pane_row_point(app.panes().settings().viewport(), 5);
@@ -665,7 +665,7 @@ mod tests {
     fn keyboard_navigation_clears_stale_settings_hover() {
         let mut app = make_app(&[]);
         app.focus_mut().open_overlay(PaneId::Settings);
-        app.open_settings();
+        app.overlays_mut().open_settings();
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
@@ -677,7 +677,7 @@ mod tests {
             app.panes()
                 .settings()
                 .viewport()
-                .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
+                .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
             PaneSelectionState::Hovered,
         );
 
@@ -689,14 +689,14 @@ mod tests {
             app.panes()
                 .settings()
                 .viewport()
-                .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
+                .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
             PaneSelectionState::Unselected,
         );
         assert_eq!(
             app.panes()
                 .settings()
                 .viewport()
-                .selection_state(1, app.pane_focus_state(PaneId::Settings)),
+                .selection_state(1, app.focus().pane_state(PaneId::Settings)),
             PaneSelectionState::Active,
         );
     }
@@ -705,7 +705,7 @@ mod tests {
     fn mouse_move_restores_hover_after_keyboard_navigation() {
         let mut app = make_app(&[]);
         app.focus_mut().open_overlay(PaneId::Settings);
-        app.open_settings();
+        app.overlays_mut().open_settings();
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
@@ -719,7 +719,7 @@ mod tests {
             app.panes()
                 .settings()
                 .viewport()
-                .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
+                .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
             PaneSelectionState::Unselected,
         );
 
@@ -730,7 +730,7 @@ mod tests {
             app.panes()
                 .settings()
                 .viewport()
-                .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
+                .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
             PaneSelectionState::Hovered,
         );
     }
@@ -739,7 +739,7 @@ mod tests {
     fn focus_gained_restores_selection_from_last_mouse_position() {
         let mut app = make_app(&[]);
         app.focus_mut().open_overlay(PaneId::Settings);
-        app.open_settings();
+        app.overlays_mut().open_settings();
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
@@ -753,7 +753,7 @@ mod tests {
             app.panes()
                 .settings()
                 .viewport()
-                .selection_state(hovered_row, app.pane_focus_state(PaneId::Settings)),
+                .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
             PaneSelectionState::Active,
         );
     }
@@ -961,7 +961,7 @@ mod tests {
         finder.results = vec![0, 1];
         finder.total = 2;
         app.focus_mut().open_overlay(PaneId::Finder);
-        app.open_finder();
+        app.overlays_mut().open_finder();
         render_ui(&mut app);
 
         let (x, y) = finder_result_point(&app, 1);
@@ -974,7 +974,7 @@ mod tests {
     fn settings_row_click_selects_setting() {
         let mut app = make_app(&[]);
         app.focus_mut().open_overlay(PaneId::Settings);
-        app.open_settings();
+        app.overlays_mut().open_settings();
         render_ui(&mut app);
 
         let (x, y) = pane_row_point(app.panes().settings().viewport(), 2);

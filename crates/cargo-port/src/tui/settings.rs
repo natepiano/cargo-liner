@@ -515,7 +515,7 @@ fn toggle_vim_mode(app: &mut App) {
                 "Cannot enable vim mode — these bindings use h/j/k/l:\n{}",
                 conflicts.join(", ")
             );
-            app.set_inline_error(msg);
+            app.overlays_mut().set_inline_error(msg);
             return;
         }
     }
@@ -531,7 +531,7 @@ fn save_updated_config(app: &mut App, config: &config::CargoPortConfig) -> bool 
             true
         },
         Err(err) => {
-            app.set_inline_error(err);
+            app.overlays_mut().set_inline_error(err);
             false
         },
     }
@@ -659,7 +659,7 @@ fn nav_keys_toggle_suffix(
 ) -> Option<&'static str> {
     if setting == Some(SettingOption::NavigationKeys)
         && selection != PaneSelectionState::Unselected
-        && !app.is_settings_editing()
+        && !app.overlays().is_settings_editing()
     {
         Some("  maps h/j/k/l to arrow navigation")
     } else {
@@ -716,7 +716,9 @@ fn push_setting_row(
             &error,
             ctx.selection.patch(Style::default().fg(INLINE_ERROR_COLOR)),
         );
-    } else if app.is_settings_editing() && ctx.selection != PaneSelectionState::Unselected {
+    } else if app.overlays().is_settings_editing()
+        && ctx.selection != PaneSelectionState::Unselected
+    {
         let edit_buffer = render_edit_buffer(app.settings_edit_buf(), app.settings_edit_cursor());
         push_wrapped_setting_value(
             lines,
@@ -735,7 +737,7 @@ fn push_setting_row(
         );
     } else if setting == Some(SettingOption::CiRunCount)
         && ctx.selection != PaneSelectionState::Unselected
-        && !app.is_settings_editing()
+        && !app.overlays().is_settings_editing()
     {
         push_ci_run_count_row(lines, line_targets, ctx, value);
     } else if setting == Some(SettingOption::TerminalCommand)
@@ -791,7 +793,7 @@ pub(super) fn build_settings_lines(
             .panes()
             .settings()
             .viewport()
-            .selection_state(selection_index, app.pane_focus_state(PaneId::Settings));
+            .selection_state(selection_index, app.focus().pane_state(PaneId::Settings));
         let setting = *setting;
         let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
         let ctx = SettingsLineContext {
@@ -824,13 +826,13 @@ fn push_settings_header(
 }
 
 fn selected_inline_error(app: &App, selection: PaneSelectionState) -> Option<String> {
-    (selection != PaneSelectionState::Unselected && !app.is_settings_editing())
-        .then(|| app.inline_error().cloned())
+    (selection != PaneSelectionState::Unselected && !app.overlays().is_settings_editing())
+        .then(|| app.overlays().inline_error().cloned())
         .flatten()
 }
 
 pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
-    if app.is_settings_editing() {
+    if app.overlays().is_settings_editing() {
         handle_settings_edit_key(app, key);
         return;
     }
@@ -840,26 +842,27 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
             if app.current_config().tui.include_dirs.is_empty() {
-                app.set_inline_error("Configure at least one include directory before continuing");
+                app.overlays_mut()
+                    .set_inline_error("Configure at least one include directory before continuing");
                 return;
             }
-            app.close_settings();
+            app.overlays_mut().close_settings();
             app.focus_mut().close_overlay();
         },
         KeyCode::Up => {
-            app.clear_inline_error();
+            app.overlays_mut().clear_inline_error();
             app.panes_mut().settings_mut().viewport_mut().up();
         },
         KeyCode::Down => {
-            app.clear_inline_error();
+            app.overlays_mut().clear_inline_error();
             app.panes_mut().settings_mut().viewport_mut().down();
         },
         KeyCode::Left | KeyCode::Right => {
-            app.clear_inline_error();
+            app.overlays_mut().clear_inline_error();
             handle_settings_adjust_key(app, key, setting);
         },
         KeyCode::Enter | KeyCode::Char(' ') => {
-            app.clear_inline_error();
+            app.overlays_mut().clear_inline_error();
             handle_settings_activate_key(app, setting);
         },
         _ => {},
@@ -920,13 +923,13 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
 }
 
 fn finish_settings_edit_with_error(app: &mut App, error: impl Into<String>) {
-    app.end_settings_editing();
+    app.overlays_mut().end_settings_editing();
     app.set_settings_edit_state(String::new(), 0);
-    app.set_inline_error(error.into());
+    app.overlays_mut().set_inline_error(error.into());
 }
 
 fn begin_settings_edit(app: &mut App, value: String) {
-    app.begin_settings_editing();
+    app.overlays_mut().begin_settings_editing();
     let cursor = value.len();
     app.set_settings_edit_state(value, cursor);
 }
@@ -1019,7 +1022,7 @@ fn apply_settings_edit(app: &mut App) {
         finish_settings_edit_with_error(app, err);
         return;
     }
-    app.end_settings_editing();
+    app.overlays_mut().end_settings_editing();
     app.set_settings_edit_state(String::new(), 0);
 }
 
@@ -1136,7 +1139,7 @@ fn apply_lint_settings_edit(
     match setting {
         SettingOption::LintProjects => {
             save_sorted_list_setting(app, value, |config, dirs| config.lint.include = dirs);
-            if app.inline_error().is_none() {
+            if app.overlays().inline_error().is_none() {
                 app.show_timed_toast("Settings", "Lint projects updated");
             }
         },
@@ -1166,7 +1169,7 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
             apply_settings_edit(app);
         },
         KeyCode::Esc => {
-            app.end_settings_editing();
+            app.overlays_mut().end_settings_editing();
             app.set_settings_edit_state(String::new(), 0);
         },
         KeyCode::Left => {

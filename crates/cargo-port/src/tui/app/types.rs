@@ -112,45 +112,6 @@ impl Dirtiness {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum FinderMode {
-    #[default]
-    Hidden,
-    Visible,
-}
-
-impl FinderMode {
-    pub(super) const fn is_visible(self) -> bool { matches!(self, Self::Visible) }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SettingsMode {
-    #[default]
-    Hidden,
-    Browsing,
-    Editing,
-}
-
-impl SettingsMode {
-    pub(super) const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
-
-    pub(super) const fn is_editing(self) -> bool { matches!(self, Self::Editing) }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum KeymapMode {
-    #[default]
-    Hidden,
-    Browsing,
-    AwaitingKey,
-}
-
-impl KeymapMode {
-    pub(super) const fn is_visible(self) -> bool { !matches!(self, Self::Hidden) }
-
-    pub const fn is_awaiting_key(self) -> bool { matches!(self, Self::AwaitingKey) }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ScanPhase {
     #[default]
     Running,
@@ -159,20 +120,6 @@ pub enum ScanPhase {
 
 impl ScanPhase {
     pub const fn is_complete(self) -> bool { matches!(self, Self::Complete) }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ExitMode {
-    #[default]
-    Continue,
-    Quit,
-    Restart,
-}
-
-impl ExitMode {
-    pub(super) const fn should_quit(self) -> bool { matches!(self, Self::Quit | Self::Restart) }
-
-    pub(super) const fn should_restart(self) -> bool { matches!(self, Self::Restart) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -210,14 +157,6 @@ impl DirtyState {
             terminal: Dirtiness::Clean,
         }
     }
-}
-
-#[derive(Debug, Default)]
-pub struct UiModes {
-    pub finder:   FinderMode,
-    pub settings: SettingsMode,
-    pub keymap:   KeymapMode,
-    pub exit:     ExitMode,
 }
 
 #[derive(Debug)]

@@ -566,7 +566,7 @@ pub(super) fn search_finder(
 pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc => {
-            app.close_finder();
+            app.overlays_mut().close_finder();
             app.finder_mut().query.clear();
             app.finder_mut().results.clear();
             app.panes_mut().finder_mut().viewport_mut().home();
@@ -589,7 +589,7 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Backspace => {
             if app.finder().query.is_empty() {
-                app.close_finder();
+                app.overlays_mut().close_finder();
                 app.finder_mut().results.clear();
                 app.panes_mut().finder_mut().viewport_mut().home();
                 app.focus_mut().close_overlay();
@@ -628,7 +628,7 @@ fn confirm_finder(app: &mut App) {
     let item = app.finder().index[idx].clone();
 
     // Close finder
-    app.close_finder();
+    app.overlays_mut().close_finder();
     app.finder_mut().query.clear();
     app.finder_mut().results.clear();
     app.panes_mut().finder_mut().viewport_mut().home();
@@ -893,7 +893,7 @@ fn render_finder_results(
                 app.panes()
                     .finder()
                     .viewport()
-                    .selection_state(row_index, app.pane_focus_state(PaneId::Finder))
+                    .selection_state(row_index, app.focus().pane_state(PaneId::Finder))
                     .overlay_style(),
             )
         })

@@ -194,7 +194,7 @@ moves derived from the post-Phase-9 review (see end of doc).
 | 6 of 16 | Phase 6 — Discovery shimmer + project predicates | **Done** |
 | 7 of 16 | Phase 7 — Mechanical `pub(super)` sweep | **Done** (-2; predicted -25–30 — major miss; lesson captured below) |
 | 8 of 16 | Phase 8 — Focus subsystem (lives at `tui/focus.rs`) | **Done** (0 net mend; architectural progress — overlay warnings deferred to Phase 9) |
-| 9 of 16 | Phase 9 — Overlays subsystem (lives at `tui/overlays.rs`) | Ready |
+| 9 of 16 | Phase 9 — Overlays subsystem (lives at `tui/overlays.rs`) | **Done** (architectural extraction; mend 0 → 0) |
 | 10 of 16 | Phase 10 — Tighten internal-helper visibility (residue after Phases 7 + 8) | Ready |
 | 11 of 16 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` (absorbs movement mutators + path resolution from earlier drafts) | Ready |
 | 12 of 16 | Phase 12 — Subsystems implement `Pane` | Ready |
@@ -775,6 +775,72 @@ belonging with overlays.
 
 **Risk:** low-medium — `inline_error` callers from outside Overlays need
 re-routing to `app.overlays().inline_error()`. Audit before commit.
+
+### Phase 9 retrospective
+
+**Outcome:** architectural extraction landed cleanly. New module
+`crate::tui::overlays` owns the four overlay-mode enums (`FinderMode`,
+`SettingsMode`, `KeymapMode`, `ExitMode`), the `inline_error` slot, and
+the `status_flash` slot. App lost three fields (`ui_modes`, `inline_error`,
+`status_flash`) and gained one (`overlays: Overlays`).
+
+**Numbers:**
+- Mend warnings: **0 → 0** (clean). The 8 incidental import-tidy
+  findings introduced by the new orchestrator hosting in `app/mod.rs`
+  (`crate-relative import can be shortened`, `inline path-qualified type
+  should use a use import`, `function import should use module-qualified
+  form`) were auto-fixed via `cargo mend --fix`.
+- Tests: 597 / 597 pass.
+- Net +151 / -276 lines across 30+ files (mostly mechanical caller
+  rewrites; `app/focus.rs` deleted entirely).
+
+**Lessons:**
+1. **Group 2 redirects are cheaper than Group 1 absorptions.** Group 1
+   moved ~14 methods into Overlays (each is a real method; each adds a
+   visibility surface). Group 2 redirected three small selection-sync
+   methods through existing `Selection` methods (`sync().is_changed()`,
+   `mark_sync_changed`, `mark_sync_stable`) — no new method bodies on
+   Selection, just call-site rewrites. Group 3 (six Group 3
+   orchestrators) stayed on App but moved from `app/focus.rs` to
+   `app/mod.rs` to widen their `pub(super)` reach to `crate::tui` per
+   Phase 4 lesson 3 (involuntary mod.rs hosting). **Apply:** when a
+   subsystem exposes most of its surface via existing methods, prefer
+   redirect (Group 2) over absorption (Group 1) — it adds zero
+   visibility surface.
+2. **`#[cfg(test)] pub(super) selection_mut()` had to widen.**
+   `terminal.rs`'s `clear_selection_changed` and `mark_selection_changed`
+   need a mutable Selection handle from outside `tui/app/`. The plan
+   assumed Selection's existing methods were enough and routed through
+   `app.selection_mut().mark_sync_changed()`. That required dropping
+   the `#[cfg(test)]` gate on `selection_mut`. The wide handle is fine
+   here because Selection's mutable surface is already gated by the
+   `SelectionMutation` guard for visibility-changing ops. **Apply to
+   Phase 11:** when moving cursor to Selection, callers reach mutators
+   via `selection_mut()` — same pattern, already in place.
+3. **Hosting Group 3 in `app/mod.rs` triggered fresh import-tidy
+   findings.** Moving `force_settings_if_unconfigured`, `input_context`,
+   `is_pane_tabbable`, etc. into `app/mod.rs` brought their `crate::tui::*`
+   path-qualified references into a module that already had `use`
+   imports for the same paths. Mend caught the redundancy and the
+   `cargo mend --fix` shortened them mechanically. **Apply:** when
+   moving impl blocks into `mod.rs`, run `cargo mend --fix` after the
+   move to clean up imports rather than hand-editing them during the
+   move.
+
+**File-level changes:**
+- *Created:* `src/tui/overlays.rs` (~145 lines).
+- *Deleted:* `src/tui/app/focus.rs` (Group 1 → Overlays, Group 2 →
+  Scan/Selection, Group 3 → `app/mod.rs`).
+- *Modified:* `src/tui/app/mod.rs` (added Group 3 orchestrators,
+  added `overlays()`/`overlays_mut()`, dropped `ui_modes()`,
+  `inline_error()`, `set_inline_error`, `clear_inline_error`,
+  widened `selection_mut` to non-test, fixed `panes:` doc drift),
+  `src/tui/app/types.rs` (deleted `UiModes`, `FinderMode`, `SettingsMode`,
+  `KeymapMode`, `ExitMode`), `src/tui/scan_state.rs` (added
+  `is_complete`, `terminal_is_dirty`, `mark_terminal_dirty`,
+  `clear_terminal_dirty`), `src/tui/focus.rs` (added `pane_state`),
+  ~25 caller files across `tui/` (mechanical `app.X()` →
+  `app.overlays().X()` / `app.scan().X()` rewrites).
 
 ## Path resolution — earlier-draft phase, absorbed into Phase 11 by post-Phase-6 review *(retained as historical pointer)*
 

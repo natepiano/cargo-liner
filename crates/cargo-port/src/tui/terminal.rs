@@ -174,7 +174,7 @@ pub fn run() -> ExitCode {
 
     let result = event_loop(&mut terminal, &mut app, &input_rx);
 
-    let should_restart = app.should_restart();
+    let should_restart = app.overlays().should_restart();
     let _ = restore_terminal(&mut terminal);
 
     if should_restart {
@@ -237,7 +237,7 @@ fn event_loop(
         let frame_started = Instant::now();
 
         let (input_count, input_elapsed) = process_input_frame(app, input_rx);
-        if app.should_quit() {
+        if app.overlays().should_quit() {
             return Ok(());
         }
 
@@ -256,7 +256,7 @@ fn event_loop(
             rearmed_after_first_draw = true;
         }
 
-        if app.should_quit() {
+        if app.overlays().should_quit() {
             flush_pending_selection(app);
             break;
         }
@@ -290,7 +290,7 @@ fn process_input_frame(app: &mut App, input_rx: &mpsc::Receiver<Event>) -> (usiz
         input_count += 1;
         tracing::info!(event = %input::event_label(&event), "input_event_received");
         input::handle_event(app, &event);
-        if app.should_quit() {
+        if app.overlays().should_quit() {
             break;
         }
     }
@@ -301,16 +301,16 @@ fn process_input_frame(app: &mut App, input_rx: &mpsc::Receiver<Event>) -> (usiz
 }
 
 fn flush_deferred_selection(app: &mut App) {
-    if app.selection_changed()
+    if app.selection().sync().is_changed()
         && let Some(path) = app.last_selected_path()
     {
         save_last_selected(path);
-        app.clear_selection_changed();
+        app.selection_mut().mark_sync_stable();
     }
 }
 
 fn flush_pending_selection(app: &App) {
-    if app.selection_changed()
+    if app.selection().sync().is_changed()
         && let Some(path) = app.last_selected_path()
     {
         save_last_selected(path);
@@ -329,8 +329,8 @@ fn clear_terminal_if_dirty(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
 ) -> io::Result<()> {
-    if app.terminal_is_dirty() {
-        app.clear_terminal_dirty();
+    if app.scan().terminal_is_dirty() {
+        app.scan_mut().clear_terminal_dirty();
         execute!(terminal.backend_mut(), Clear(ClearType::All))?;
         terminal.clear()?;
     }
@@ -405,7 +405,7 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         disk_results = bg_stats.disk_results,
         needs_rebuild = bg_stats.needs_rebuild,
         items = app.projects().len(),
-        scan_complete = app.is_scan_complete(),
+        scan_complete = app.scan().is_complete(),
         "slow_frame"
     );
 }

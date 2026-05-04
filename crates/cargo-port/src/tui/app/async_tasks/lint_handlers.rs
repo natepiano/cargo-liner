@@ -116,7 +116,7 @@ impl App {
             self.lint.running_mut().remove(path);
         }
         self.sync_running_lint_toast();
-        if !self.is_scan_complete() {
+        if !self.scan.is_complete() {
             return;
         }
         if status_started {

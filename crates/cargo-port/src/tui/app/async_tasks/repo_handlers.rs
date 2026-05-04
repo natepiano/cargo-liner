@@ -111,7 +111,7 @@ impl App {
             entry.git_repo.get_or_insert_with(Default::default);
         }
 
-        if self.is_scan_complete() {
+        if self.scan.is_complete() {
             let git_dir = self
                 .startup_git_directory_for_path(path)
                 .unwrap_or_else(|| AbsolutePath::from(path));
@@ -171,7 +171,7 @@ impl App {
         }
 
         if fetch_head_advanced
-            && self.is_scan_complete()
+            && self.scan.is_complete()
             && let Some(url) = self.projects().fetch_url_for(path)
             && let Some(owner_repo) = ci::parse_owner_repo(&url)
             && !self.net.github().contains_in_flight(&owner_repo)

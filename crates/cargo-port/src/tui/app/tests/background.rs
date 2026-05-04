@@ -145,7 +145,7 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
     assert_eq!(app.config().editor(), "zed");
     assert_eq!(app.current_config().tui.editor, "zed");
     assert!(matches!(
-        app.status_flash.as_ref(),
+        app.overlays().status_flash(),
         Some((msg, _)) if msg.contains("Config reload failed")
     ));
 }
@@ -167,7 +167,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     app.apply_config(&hide_cfg);
     wait_for_tree_build(&mut app);
 
-    assert!(app.is_scan_complete());
+    assert!(app.scan().is_complete());
     assert_eq!(app.projects().len(), 2);
     app.ensure_visible_rows_cached();
     let visible: Vec<_> = app
@@ -184,7 +184,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     app.apply_config(&cfg);
     wait_for_tree_build(&mut app);
 
-    assert!(app.is_scan_complete());
+    assert!(app.scan().is_complete());
     assert_eq!(app.projects().len(), 2);
     assert!(
         app.projects()
@@ -204,7 +204,7 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
     app.apply_config(&cfg);
 
     assert!(app.projects().is_empty());
-    assert!(!app.is_scan_complete());
+    assert!(!app.scan().is_complete());
 }
 
 #[test]

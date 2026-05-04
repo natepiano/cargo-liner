@@ -21,7 +21,6 @@ use std::time::Instant;
 
 use super::App;
 use super::types::ScanState;
-use super::types::UiModes;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
@@ -194,7 +193,10 @@ impl AppBuilder<Started> {
             ScanState::new(inputs.scan_started_at),
             inputs.metadata_store,
         );
-        let status_flash = started.lint_warning.map(|w| (w, Instant::now()));
+        let mut overlays = crate::tui::overlays::Overlays::new();
+        if let Some(warning) = started.lint_warning {
+            overlays.set_status_flash(warning, Instant::now());
+        }
         let mut app = App {
             net: crate::tui::net_state::Net::new(inputs.http_client),
             panes,
@@ -207,13 +209,11 @@ impl AppBuilder<Started> {
             keymap,
             scan,
             focus: crate::tui::focus::Focus::new(PaneId::ProjectList),
+            overlays,
             confirm: None,
             animation_started: Instant::now(),
             mouse_pos: None,
-            status_flash,
             toasts: ToastManager::default(),
-            inline_error: None,
-            ui_modes: UiModes::default(),
             layout_cache: crate::tui::panes::LayoutCache::default(),
         };
         app.finish_new();
@@ -236,8 +236,8 @@ impl App {
         self.panes_mut().install_cpu_placeholder();
         self.load_initial_keymap();
         if let Some(warning) = self
-            .status_flash
-            .as_ref()
+            .overlays
+            .status_flash()
             .map(|(warning, _)| warning.clone())
         {
             self.show_timed_toast("Lint runtime", warning);

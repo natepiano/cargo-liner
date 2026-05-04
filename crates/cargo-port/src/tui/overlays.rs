@@ -1,0 +1,146 @@
+//! `Overlays` subsystem — owns `UiModes` (finder / settings / keymap /
+//! exit modes), the transient `inline_error` UI feedback, and the
+//! transient `status_flash` slot.
+//!
+//! Hosting at `crate::tui::overlays` (outside `tui/app/`) lets methods
+//! be `pub(crate)` per the post-Phase-4 location decision; mend's
+//! `pub(crate)` policy forbids that visibility inside `tui/app/`.
+
+use std::time::Instant;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum FinderMode {
+    #[default]
+    Hidden,
+    Visible,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SettingsMode {
+    #[default]
+    Hidden,
+    Browsing,
+    Editing,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum KeymapMode {
+    #[default]
+    Hidden,
+    Browsing,
+    AwaitingKey,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ExitMode {
+    #[default]
+    Continue,
+    Quit,
+    Restart,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct Overlays {
+    finder:       FinderMode,
+    settings:     SettingsMode,
+    keymap:       KeymapMode,
+    exit:         ExitMode,
+    inline_error: Option<String>,
+    status_flash: Option<(String, Instant)>,
+}
+
+impl Overlays {
+    pub(crate) fn new() -> Self { Self::default() }
+
+    // ── finder ──────────────────────────────────────────────────────
+
+    pub(crate) const fn is_finder_open(&self) -> bool { matches!(self.finder, FinderMode::Visible) }
+
+    pub(crate) const fn open_finder(&mut self) { self.finder = FinderMode::Visible; }
+
+    pub(crate) const fn close_finder(&mut self) { self.finder = FinderMode::Hidden; }
+
+    // ── settings ────────────────────────────────────────────────────
+
+    pub(crate) const fn is_settings_open(&self) -> bool {
+        !matches!(self.settings, SettingsMode::Hidden)
+    }
+
+    pub(crate) const fn is_settings_editing(&self) -> bool {
+        matches!(self.settings, SettingsMode::Editing)
+    }
+
+    pub(crate) const fn open_settings(&mut self) { self.settings = SettingsMode::Browsing; }
+
+    pub(crate) fn close_settings(&mut self) {
+        self.settings = SettingsMode::Hidden;
+        self.inline_error = None;
+    }
+
+    pub(crate) fn begin_settings_editing(&mut self) {
+        self.settings = SettingsMode::Editing;
+        self.inline_error = None;
+    }
+
+    pub(crate) fn end_settings_editing(&mut self) {
+        self.settings = SettingsMode::Browsing;
+        self.inline_error = None;
+    }
+
+    // ── keymap ──────────────────────────────────────────────────────
+
+    pub(crate) const fn is_keymap_open(&self) -> bool { !matches!(self.keymap, KeymapMode::Hidden) }
+
+    pub(crate) const fn keymap_is_awaiting(&self) -> bool {
+        matches!(self.keymap, KeymapMode::AwaitingKey)
+    }
+
+    pub(crate) const fn open_keymap(&mut self) { self.keymap = KeymapMode::Browsing; }
+
+    pub(crate) fn close_keymap(&mut self) {
+        self.keymap = KeymapMode::Hidden;
+        self.inline_error = None;
+    }
+
+    pub(crate) fn keymap_begin_awaiting(&mut self) {
+        self.keymap = KeymapMode::AwaitingKey;
+        self.inline_error = None;
+    }
+
+    pub(crate) fn keymap_end_awaiting(&mut self) {
+        self.keymap = KeymapMode::Browsing;
+        self.inline_error = None;
+    }
+
+    // ── exit ────────────────────────────────────────────────────────
+
+    pub(crate) const fn should_quit(&self) -> bool {
+        matches!(self.exit, ExitMode::Quit | ExitMode::Restart)
+    }
+
+    pub(crate) const fn should_restart(&self) -> bool { matches!(self.exit, ExitMode::Restart) }
+
+    pub(crate) const fn request_quit(&mut self) { self.exit = ExitMode::Quit; }
+
+    pub(crate) const fn request_restart(&mut self) { self.exit = ExitMode::Restart; }
+
+    // ── inline error ────────────────────────────────────────────────
+
+    pub(crate) const fn inline_error(&self) -> Option<&String> { self.inline_error.as_ref() }
+
+    pub(crate) fn set_inline_error(&mut self, error: impl Into<String>) {
+        self.inline_error = Some(error.into());
+    }
+
+    pub(crate) fn clear_inline_error(&mut self) { self.inline_error = None; }
+
+    // ── status flash ────────────────────────────────────────────────
+
+    pub(crate) const fn status_flash(&self) -> Option<&(String, Instant)> {
+        self.status_flash.as_ref()
+    }
+
+    pub(crate) fn set_status_flash(&mut self, message: String, at: Instant) {
+        self.status_flash = Some((message, at));
+    }
+}

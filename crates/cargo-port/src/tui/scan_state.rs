@@ -77,11 +77,15 @@ impl Scan {
 
     pub(super) const fn scan_state_mut(&mut self) -> &mut ScanState { &mut self.state }
 
+    pub(super) const fn is_complete(&self) -> bool { self.state.phase.is_complete() }
+
     // ── dirty tracker ───────────────────────────────────────────────
 
-    pub(super) const fn dirty(&self) -> &DirtyState { &self.dirty }
+    pub(super) const fn terminal_is_dirty(&self) -> bool { self.dirty.terminal.is_dirty() }
 
-    pub(super) const fn dirty_mut(&mut self) -> &mut DirtyState { &mut self.dirty }
+    pub(super) const fn mark_terminal_dirty(&mut self) { self.dirty.terminal.mark_dirty(); }
+
+    pub(super) const fn clear_terminal_dirty(&mut self) { self.dirty.terminal.mark_clean(); }
 
     // ── data generation ─────────────────────────────────────────────
 

@@ -109,7 +109,7 @@ impl App {
         entries
     }
     pub fn lint_runtime_projects(&self) -> Vec<RegisterProjectRequest> {
-        if !self.is_scan_complete() {
+        if !self.scan.is_complete() {
             return Vec::new();
         }
         self.lint_runtime_root_entries()

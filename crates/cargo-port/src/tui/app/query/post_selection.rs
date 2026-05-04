@@ -43,7 +43,7 @@ impl App {
         {
             self.scan.bump_generation();
             self.selection.paths_mut().last_selected = Some(abs_path);
-            self.mark_selection_changed();
+            self.selection.mark_sync_changed();
             self.maybe_priority_fetch();
         }
     }

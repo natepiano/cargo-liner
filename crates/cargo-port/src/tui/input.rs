@@ -74,7 +74,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
             kind = %event_label(event),
             focus = pane_label(app.focused_pane()),
-            scan_complete = app.is_scan_complete(),
+            scan_complete = app.scan().is_complete(),
             selected = %app.selected_project_path()
                 .map_or_else(|| "-".to_string(), |path| path.display().to_string()),
             "input_event"
@@ -101,7 +101,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         }
         app.set_example_running(None);
         app.example_output_mut().push("── killed ──".to_string());
-        app.mark_terminal_dirty();
+        app.scan_mut().mark_terminal_dirty();
         return;
     }
     if code == KeyCode::Esc && !app.example_output().is_empty() {
@@ -118,15 +118,15 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     if handle_overlay_editor_key(app, &normalized) {
         return;
     }
-    if app.is_keymap_open() {
+    if app.overlays().is_keymap_open() {
         keymap_ui::handle_keymap_key(app, raw, &normalized);
         return;
     }
-    if app.is_finder_open() {
+    if app.overlays().is_finder_open() {
         finder::handle_finder_key(app, code);
         return;
     }
-    if app.is_settings_open() {
+    if app.overlays().is_settings_open() {
         settings::handle_settings_key(app, code);
         return;
     }
@@ -155,7 +155,7 @@ fn bind_from(event: &KeyEvent) -> KeyBind { KeyBind::new(event.code, event.modif
 /// no modifiers are held (so `Ctrl+k` is never eaten by vim mode).
 /// Arrow remapping in list panes also only applies to bare arrows.
 fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
-    if app.is_finder_open() || app.is_settings_editing() {
+    if app.overlays().is_finder_open() || app.overlays().is_settings_editing() {
         return *raw;
     }
 
@@ -480,7 +480,7 @@ fn open_finder(app: &mut App) {
     finder.index = index;
     finder.col_widths = col_widths;
     app.focus_mut().open_overlay(PaneId::Finder);
-    app.open_finder();
+    app.overlays_mut().open_finder();
     let finder = app.finder_mut();
     finder.query.clear();
     finder.results.clear();
@@ -502,7 +502,7 @@ fn terminal_shell_command(command: &str, selected_path: &Path) -> String {
 
 fn open_settings_to_terminal_command(app: &mut App) {
     app.focus_mut().open_overlay(PaneId::Settings);
-    app.open_settings();
+    app.overlays_mut().open_settings();
     settings::focus_terminal_command(app);
 }
 
@@ -559,20 +559,20 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
         return false;
     };
     match action {
-        GlobalAction::Quit => app.request_quit(),
-        GlobalAction::Restart => app.request_restart(),
+        GlobalAction::Quit => app.overlays_mut().request_quit(),
+        GlobalAction::Restart => app.overlays_mut().request_restart(),
         GlobalAction::Find => open_finder(app),
         GlobalAction::OpenEditor => open_in_editor(app),
         GlobalAction::OpenTerminal => open_terminal(app),
         GlobalAction::Settings => {
             app.focus_mut().open_overlay(PaneId::Settings);
-            app.open_settings();
+            app.overlays_mut().open_settings();
         },
         GlobalAction::NextPane => app.focus_next_pane(),
         GlobalAction::PrevPane => app.focus_previous_pane(),
         GlobalAction::OpenKeymap => {
             app.focus_mut().open_overlay(PaneId::Keymap);
-            app.open_keymap();
+            app.overlays_mut().open_keymap();
             app.panes_mut()
                 .keymap_mut()
                 .viewport_mut()
