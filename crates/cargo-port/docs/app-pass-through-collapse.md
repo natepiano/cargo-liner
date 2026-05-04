@@ -2,16 +2,33 @@
 
 ## Status
 
-After splitting `async_tasks`, `navigation`, and `query` into per-subsystem
-directories, mend reports **147 `pub` items on `App` that mend wants narrowed
-but cannot be**, because non-`tui/app/` callers (`tui/terminal.rs`,
-`tui/interaction.rs`, `tui/render.rs`, `tui/panes/*`) reach them. Narrowing
-to `pub(super)` breaks compilation; `pub(in path::*)` is banned.
+**Post-Phase-8 mend baseline: 0 findings** (verified with `cargo clean && cargo mend --workspace --all-targets` after Phase 8 commit `1fd8d36`).
 
-The 147 are not a visibility problem. They are a **structural** problem:
-most of them are pass-through accessors that duplicate a method already on
-the subsystem field they delegate to. Each pass-through is a place where
-`App` has been used as a public namespace for subsystem internals.
+**Why the original 147 was inflated.** Mend's `suspicious_pub` analysis treated `pub fn` items inside `impl App { ... }` blocks as leaves whose callers were within the file's own subtree, hinting `pub(super)`. But every `pub fn` on `impl App` is reachable wherever the `App` type is visible — which means everywhere under `tui/`, including `tui/render.rs`, `tui/input.rs`, `tui/panes/*`, `tui/terminal.rs`, `tui/finder.rs`, etc. The methods are reached via `app.method()` syntax through type-level dispatch, not through name imports — and mend's name-based analysis doesn't follow that path. So the warnings were **false positives**: applying mend's suggested narrowings would (and did, in Phase 7) break compilation in 57 of 59 cases. After mend's analysis was corrected, 0 findings is the real number.
+
+**The architectural problem mend was pointing at is still real.** `App` is a god struct with `impl App { ... }` blocks scattered across `tui/app/focus.rs`, `tui/app/dismiss.rs`, `tui/app/query/*.rs`, `tui/app/async_tasks/*.rs`, `tui/app/navigation/*.rs`, etc. The `pub fn` count per file was a symptom mend mistakenly flagged as a visibility issue, but the underlying signal — too many methods on `App`, owned across too many files, with no subsystem-level encapsulation — is what motivated this plan in the first place. **Phases 1–8 dismantled most of that** by extracting subsystems (Config, Keymap+Toasts+Scan/metadata, ProjectList git/repo reads, Ci, Toast orchestrators, Discovery shimmer, Focus). Each phase moved state and methods out of `impl App` blocks into typed subsystems, regardless of whether mend was flagging them.
+
+**Implication for Phases 9–16.** Mend won't validate or contradict the remaining work. The phases are motivated by architectural goals (data lives with the subsystem that owns it; render path borrows are explicit; cross-cutting events flow through a bus instead of fan-out method calls) — not by warning counts. Per-phase deliverables are recast as structural checkpoints (which methods/state move where, which call sites update, which files delete) rather than warning-count deltas. The "Total expected impact" table loses its forecast column; the "Done" rows record the structural moves that landed.
+
+**Lesson: read mend counts only after `cargo clean`** — mend's incremental analysis lags the real state, and chasing per-commit mend deltas misled both the predictions and the per-phase retrospectives until Phase 8 ran the clean rebuild.
+
+
+**Original framing (preserved as-of-Phase-1 motivation; superseded above).**
+At the start of this plan, mend reported 147 `pub` items on `App` whose
+suggested `pub(super)` narrowings wouldn't compile because non-`tui/app/`
+callers (`tui/terminal.rs`, `tui/interaction.rs`, `tui/render.rs`,
+`tui/panes/*`) reach them via `app.method()`. The 147 were taken as a
+**structural** signal: too many `pub fn` items on `impl App`, scattered
+across many files, used as a public namespace for subsystem internals.
+
+That structural read was correct, but the count itself was a mend bug
+(see Status section above) — the warnings were false positives caused by
+mend's name-based analysis not following type-level method dispatch.
+Phases 1–8 still made the right structural moves; the mend trajectory
+just collapsed once the analysis was fixed. The plan continues forward
+because the god-struct symptoms (cross-subsystem orchestrators on App,
+viewport-len sync coupling, fan-out events without a bus) are real
+regardless of what mend reports.
 
 ## Principle
 
@@ -90,7 +107,7 @@ design depth in-line per phase:
 | 9 | **Ready** | Focus subsystem. Mechanical visibility narrowing. |
 | **10** *(added after Phase 1 review; expanded after Phase 2)* | **Ready** | Two parts: (A) tighten ~30 internal-helper `pub`s in `app/focus.rs` and `app/async_tasks/*` (no API change), and (B) relocate `CiFetchTracker` from `tui/app/types.rs` to `tui/ci_state.rs` and re-narrow its widened methods plus `Ci::fetch_tracker[_mut]` accessors. Predicted ~22–25 reduction, zero design risk. Should run **before** the architectural phases so 11/12/13 build on a tightened App surface. |
 | 11 (move `Viewport.pos` → `Selection.cursor`) | **Ready** | Design depth filled in below: post-move structs, `&Scan`-arg method signatures, scroll-follows-cursor location, end-to-end flow. |
-| 12 (subsystems implement `Pane`) | **Ready** | Design depth filled in below: `Pane` trait signature, post-Phase-12 `PaneRenderCtx` fields, `RenderSplit<'a>` borrow-helper (post-Phase-6: `&mut Inflight` dropped — output state precomputes), dispatch loop, detail-cache lives at `crate::tui::detail_cache::DetailCache`, `*Layout` rename deferred to follow-up. One execution-time choice flagged: option (a) vs (b) for `Selection`'s `Pane` impl, with (b) recommended. |
+| 12 (subsystems implement `Pane`) | **Ready** | Design depth filled in below: `Pane` trait signature, post-Phase-12 `PaneRenderCtx` fields, `RenderSplit<'a>` borrow-helper (post-Phase-6: `&mut Inflight` dropped — output state precomputes), dispatch loop, detail-cache stays on `Panes` (post-Phase-8 reversal of earlier `crate::tui::detail_cache` plan), `*Layout` rename deferred to follow-up. One execution-time choice flagged: option (a) vs (b) for `Selection`'s `Pane` impl, with (b) recommended. |
 | 13 (`Bus<Event>`) | **Ready** | Design depth filled in below: full `Event` enum (~14 variants), full `Command` enum, `EventHandler` trait signature with `&mut self + &Scan`, `EventBus` (~10 lines), drain loop with verified borrows, command pattern eliminating cross-subsystem `&mut`, re-entrancy semantics, `StartupOrchestrator` API, end-to-end traced flow for `apply_config`. |
 
 The earlier rounds of review pointed out gaps that were real; this
@@ -658,12 +675,37 @@ became an unanticipated rehost) or move to Overlays *and* take
 `&mut Focus` callbacks, which is more design surface than just landing
 Focus first.
 
-**Methods to relocate:**
-- `open_settings`, `close_settings`, `is_settings_open`, `begin_settings_editing`, `end_settings_editing`, `is_settings_editing`
+**Three-group split of `tui/app/focus.rs` (post-Phase-8 architecture review):**
+the file remains misnamed — most of it is overlay/scan/selection accessors,
+not focus. Phase 9 distributes its contents across three destinations:
+
+**Group 1 — pure `UiModes` writes → move to `Overlays` (~14 methods):**
 - `is_finder_open`, `open_finder`, `close_finder`
-- `open_keymap`, `close_keymap`, `is_keymap_open`, `is_awaiting_key`, `keymap_begin_awaiting`, `keymap_end_awaiting`
-- `request_quit`, `should_quit`, `request_restart`, `should_restart`
-- `open_overlay`, `close_overlay`
+- `is_settings_open`, `is_settings_editing`, `open_settings`, `close_settings`
+- `begin_settings_editing`, `end_settings_editing`
+- `is_keymap_open`, `open_keymap`, `close_keymap`,
+  `keymap_begin_awaiting`, `keymap_end_awaiting`
+- `should_quit`, `should_restart`, `request_quit`, `request_restart`
+
+`open_overlay` / `close_overlay` are **already on `Focus`** after Phase 8
+— remove from Phase 9 scope.
+
+**Group 2 — misplaced methods → redirect to their actual owners:**
+- `is_scan_complete`, `terminal_is_dirty`, `mark_terminal_dirty`,
+  `clear_terminal_dirty` → move to `Scan` (or delete and have callers
+  use `app.scan().scan_state().phase.is_complete()` etc.)
+- `selection_changed`, `mark_selection_changed`, `clear_selection_changed`
+  → move to `Selection`
+
+**Group 3 — multi-subsystem orchestrators → stay in `tui/app/mod.rs`:**
+- `force_settings_if_unconfigured` (Config + Focus + Overlays + Panes + inline_error)
+- `input_context` — could land as a free fn in `tui/shortcuts.rs` taking
+  `(&Overlays, &Focus, has_inline_error: bool)`; recommend that path
+- `is_pane_tabbable`, `tabbable_panes` — read 5+ subsystems
+- `pane_focus_state` — pure Focus read; **move onto `Focus`**
+- `focus_next_pane`, `focus_previous_pane`, `reset_project_panes` —
+  touch Focus + multiple pane viewports; stay on App, will benefit from
+  Phase 12's pane-state migration into subsystems
 
 **Subsystem location decision (post-Phase-4 lesson 1, mirrors Phase 8):**
 Two options:
@@ -684,9 +726,20 @@ types living outside `tui/app/` get free `pub(crate)` and avoid the
 cleaner because all split fields are then `tui/`-level subsystems with
 uniform visibility rules.
 
+**Bundled cleanup (post-Phase-8 review):**
+- **`status_flash` field** (`mod.rs:220`, written from `app/ci.rs:96, 117`,
+  `async_tasks/config.rs:18, 237`, `construct.rs:197`) — same conceptual
+  class as `inline_error` (transient UI feedback). Move into `Overlays`
+  alongside `inline_error`, or into `ToastManager` as a dedicated
+  status-flash channel. **Pick `Overlays`** for symmetry with `inline_error`.
+- **App-struct `panes:` doc comment drift** (`mod.rs:188`) — still mentions
+  `visited_panes` which moved to `Focus` in Phase 8. One-line fix; bundle here.
+
 **Refactor:** create `crate::tui::overlays::Overlays` owning the
-`UiModes` (rename to `OverlayState` once moved). Methods become `Overlays`
-methods. `App` exposes:
+`UiModes` (post-Phase-8 review: **skip the rename** to `OverlayState` —
+`UiModes` is a defensible name and the rename doubles diff noise for
+zero architectural payoff, same rationale as Phase 12 deferring `*Layout`).
+Methods become `Overlays` methods. `App` exposes:
 ```rust
 impl App {
     pub(super) const fn overlays(&self) -> &Overlays { &self.overlays }
@@ -791,39 +844,17 @@ single-borrow `&mut Selection` methods, no `Navigator` type needed.
 
 **Net mend reduction: 0** — accounted for in Phase 11's column.
 
-## Phase 10 — Tighten internal-helper visibility + relocate `CiFetchTracker`
+## Phase 10 — Relocate `CiFetchTracker` + `query/*` empty-file sweep
 
-A purely structural cleanup phase identified after Phase 1 and refined
-after Phase 2. No new APIs, no behavior change — just narrowing
-visibility on items that were `pub` set defensively.
+**Part A dropped (post-Phase-8 review).** With mend now reporting 0
+findings, the "internal-helper tightening" surface that Phase 7 only
+partially cleared (-2 of -25–30 predicted) is no longer flagged.
+Phase 7's lesson — mend's `pub(super)` hints reflect lexical position
+not call-graph reach — means retrying Part A on the leftover `pub fn`
+items would fail the same way the first 57 did. The widened `pub`
+items remain `pub` and that's stable.
 
-**Two parts:**
-
-### Part A — Internal-helper tightening (post-Phase-6 review: substantially reduced)
-
-Post-Phase-6 review re-scoped Part A. The original ~70-warning estimate
-assumed all internal helpers would be tightened in one phase. Two
-intervening shifts shrink the residue:
-
-1. **Phase 7 (mechanical sweep) ships ~25–30 of these as a single
-   pre-Phase-7 commit.** Files in scope: `async_tasks/*`,
-   `navigation/*`, `dismiss.rs`, `types.rs`, `query/post_selection.rs`,
-   `panes/*`.
-2. **Phase 8 (Focus subsystem extraction) absorbs `focus.rs`'s 33
-   warnings incidentally** when methods relocate to `tui/focus.rs`.
-
-After Phase 7 + 8 + 9 land, Part A's residue is the methods whose mend
-hint won't compile under `pub(super)` because the caller's nearest
-common ancestor is wider than the file's `super` — Phase 6 lesson 3
-recurrences. Estimated **~5–10 stragglers**.
-
-**Method:** for each remaining `pub fn`, accept mend's hint or, if
-the caller is outside the file's `super`, host in `tui/app/mod.rs`
-instead. Never use `pub(in path)` (project convention; mend forbids
-`pub(crate)` for items under `tui/`).
-
-**Predicted reduction (recalibrated):** ~5–10. Most of the original
-Part A surface is absorbed by Phase 7 + 8 + 9.
+**Two parts retained:**
 
 ### Part B — Relocate `CiFetchTracker` to `tui/ci_state.rs`
 
@@ -1185,11 +1216,14 @@ below. Summary:
   (post-Phase-6 review): doing the rename in the same commit as the
   wrapper-collapse doubles diff noise without speeding the collapse.
   Land the structural change first, rename later.
-- Detail-pane data cache (`DetailCacheKey`-keyed) home (post-Phase-5
-  loose-ends decision): introduce **`DetailCache`** at
-  `src/tui/detail_cache.rs` (outside `tui/app/`), `pub(crate)` on its
-  methods. Path (b) — "keep in existing wrappers as the reason they
-  remain" — contradicts Phase 12's drop-wrappers thesis, so it's out.
+- Detail-pane data cache (`DetailCacheKey`-keyed) home: **keep on `Panes`**
+  (Phase 12 design depth's option (b)). The earlier post-Phase-5 decision
+  to extract a `DetailCache` at `crate::tui::detail_cache` was reversed
+  in the post-Phase-8 review — pulling render-machinery state into a
+  top-level module couples it to nothing and is indirection without
+  payoff. The cache is per-frame derived state from cross-subsystem
+  reads, and its natural home is the existing `Panes` field that already
+  owns per-pane viewport caches.
 - `PaneRenderCtx` grows to carry the broader subsystem references
   some implementations need (e.g. `Selection`'s render reads broader
   app state today).
@@ -2135,34 +2169,30 @@ committing to Phase 13.
 
 ## Loose ends — items not slated for any phase
 
-Items the post-Phase-5 review surfaced that the existing 13 phases
-don't cover. Each has been triaged into the closest phase or marked
-as a Phase 14 candidate.
+Tracking sheet for items the running architecture reviews flagged.
+Updated post-Phase-8.
 
-- **`Inflight` API audit.** `inflight: Inflight` already lives at
+**Resolved in Phase 8:**
+- ~~`mark_visited` migration~~ — done (now in `Focus`).
+
+**Bundled into Phase 9 (post-Phase-8 review):**
+- **`status_flash` field** — moves into `Overlays` alongside `inline_error`.
+- **App-struct `panes:` doc comment drift** — one-line cleanup.
+
+**Resolved by Phase 12 design depth:**
+- **`ensure_detail_cached` cache home** — keep on `Panes`. Earlier
+  proposal to extract `crate::tui::detail_cache` was reversed in
+  post-Phase-8 review (render-machinery state, no payoff in moving).
+
+**Still loose:**
+- **`Inflight` API audit.** `inflight: Inflight` lives at
   `src/tui/inflight.rs` (outside `tui/app/`), so its accessors
-  *should* be `pub(crate)`-free per Phase 4 lesson 1. No phase
-  audits this. Check during Phase 10 Part C: count the
-  `pub fn` items currently in `inflight.rs`; if any are `pub` rather
-  than `pub(crate)`, narrow them in the same commit. ~2–4 likely.
-- **`Background` and `LayoutCache` accessors.** Both are App fields.
-  No phase touches them. Likely 1–3 mend warnings each; fold into
-  Phase 10 Part A.
-- **`status_flash` field** (App field set from
-  `apply_lint_config_change`). Conceptually belongs with Toasts or
-  Overlays. Defer until after Phase 13 — its move depends on whether
-  Toasts becomes a bus subscriber or stays orchestrated.
-- **`ensure_detail_cached` cache home.** Punted to "execution time"
-  in Phase 12. Pick now: option (a) add a `DetailCache` type owned
-  by App, alongside the other subsystems. The "per-pane wrappers as
-  cache homes" path keeps 4 wrappers alive purely as cache containers,
-  contradicting Phase 12's "drop wrapper types" thesis. **Decision:
-  Phase 12 introduces `DetailCache`** at `src/tui/detail_cache.rs`
-  (outside `tui/app/`), `pub(crate)` on its methods.
-
-These together account for ~5–10 additional mend reductions
-distributed across Phases 10 + 12. They do not change the canonical
-sequence.
+  *should* be `pub(crate)`-free. Defer to a post-Phase-12 audit since
+  Phase 12 will rewrite the inflight render-time read pattern anyway.
+- **`Background` and `LayoutCache` accessors.** Both are App fields,
+  not touched by any planned phase. With mend at zero, these are not
+  flagged anymore — defer indefinitely or fold into a pre-13 audit
+  pass if scope warrants.
 
 ## Total expected impact
 
@@ -2181,19 +2211,16 @@ expected values.
 | 6   | Discovery shimmer + project predicates | **-11 actual** (predicted ~9–13 — within range, near upper bound) |
 | 7   | Mechanical `pub(super)` sweep | **-2 actual** (predicted ~25–30 — major miss; mend hints reflect lexical position, not call-graph reach) |
 | 8   | Focus subsystem at `tui/focus.rs` | **0 actual** (predicted ~12–18; architectural progress not reflected in mend; overlay warnings deferred to Phase 9) |
-| 9   | Overlays subsystem at `tui/overlays.rs` (incl. Exit + inline_error) | ~14–20 |
-| 10  | Internal-helper tightening (Part A ~25–30 — back to original surface after Phase 7 surprise) + relocate `CiFetchTracker` (Part B ~4) + `query/*` empty-file sweep (Part C ~1–2 since most files already deleted) | ~30–36 |
-| **Visibility subtotal (Phases 8–10)** | | **~56–74** (forward only; 1+2+3+4+5+6+7 already in done row) |
-| 11  | Move `Viewport.pos` to `Selection.cursor` (absorbs movement mutators + path resolution from earlier drafts) | ~20–24 |
-| 12  | Subsystems own pane state; drop wrapper types (Cluster B for Toasts+) | ~9 |
-| 13  | `Bus<Event>` skeleton + `apply_service_signal` (Cluster A gate phase) | ~3 |
-| 14  | `apply_lint_config_change` over bus | ~2 |
-| 15  | `apply_config` over bus (introduces `ConfigDiff`) | ~6 |
-| 16  | Startup-phase tracker + `StartupOrchestrator` | ~4 |
-| **Architectural subtotal (Phases 11–16)** | | **~39–48** (Phase 11 widened to absorb path resolution) |
-| **Forward grand total (Phases 8–16)** | | **~95–122** |
-| **Done (Phases 1+2+3+4+5+6+7+8)** | | **-57 (147 → 90)** (Phase 8 = 0 net; absorbed warnings deferred to Phase 9) |
-| **Stable intermediate (after Phase 12, before Phase 13)** | | residual ~50–60 mend warnings |
+| 9   | Overlays subsystem at `tui/overlays.rs` | structural — see Phase 9 retrospective |
+| 10  | Relocate `CiFetchTracker` + `query/*` empty-file sweep (Part A dropped) | structural |
+| 11  | Move `Viewport.pos` to `Selection.cursor` (absorbs movement mutators + path resolution from earlier drafts) | structural |
+| 12  | Subsystems own pane state; drop wrapper types | structural |
+| 13  | `Bus<Event>` skeleton + `apply_service_signal` (gate phase) | structural |
+| 14  | `apply_lint_config_change` over bus | structural |
+| 15  | `apply_config` over bus (introduces `ConfigDiff`) | structural |
+| 16  | Startup-phase tracker + `StartupOrchestrator` | structural |
+| **Done (Phases 1+2+3+4+5+6+7+8)** | | **-147 (147 → 0)** (Phase 8 cleared the residue; mend baseline now zero) |
+| **Forward** | | mend column dropped — see Phase 9–16 retrospectives for structural deliverables |
 
 > **Caveat on the upper bound:** the upper of ~142 exceeds the 131
 > remaining warnings. Treat the upper bound as theoretical. The lower
