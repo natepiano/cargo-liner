@@ -170,9 +170,9 @@ pub enum ExitMode {
 }
 
 impl ExitMode {
-    pub const fn should_quit(self) -> bool { matches!(self, Self::Quit | Self::Restart) }
+    pub(super) const fn should_quit(self) -> bool { matches!(self, Self::Quit | Self::Restart) }
 
-    pub const fn should_restart(self) -> bool { matches!(self, Self::Restart) }
+    pub(super) const fn should_restart(self) -> bool { matches!(self, Self::Restart) }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

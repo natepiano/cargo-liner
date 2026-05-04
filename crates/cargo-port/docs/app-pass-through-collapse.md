@@ -175,7 +175,7 @@ moves derived from the post-Phase-9 review (see end of doc).
 | 4 of 16 | Phase 4 — Ci pass-throughs | **Done** |
 | 5 of 16 | Phase 5 — Toast orchestrator relocation | **Done** |
 | 6 of 16 | Phase 6 — Discovery shimmer + project predicates | **Done** |
-| 7 of 16 | Phase 7 — Mechanical `pub(super)` sweep | Ready |
+| 7 of 16 | Phase 7 — Mechanical `pub(super)` sweep | **Done** (-2; predicted -25–30 — major miss; lesson captured below) |
 | 8 of 16 | Phase 8 — Focus subsystem (lives at `tui/focus.rs`) | Ready |
 | 9 of 16 | Phase 9 — Overlays subsystem (lives at `tui/overlays.rs`) | Ready |
 | 10 of 16 | Phase 10 — Tighten internal-helper visibility (residue after Phases 7 + 8) | Ready |
@@ -572,44 +572,40 @@ as a Ci+Toasts orchestrator; only the pure `Ci`-only mutators move.
 
 5. **Phase-5-pattern audit (viewport-len sync) held: shimmer mutations are clean.** `Scan::prune_shimmers(&mut self, now)` is single-borrow `&mut self.discovery_shimmers`. No Panes coupling, no transitive viewport-len sync. The (a)-into-subsystem path was open exactly as the audit predicted. Phase 5's coupling pattern is genuinely narrow; don't read it as universal.
 
-## Phase 7 — Mechanical `pub(super)` sweep (post-Phase-6 review surfaced this)
+## Phase 7 — Mechanical `pub(super)` sweep — **DONE** (massive prediction miss)
 
-**Context:** post-Phase-6 mend audit found 92 remaining warnings, **all
-hinting `pub(super)`**. ~50 of those sit in files that no architectural
-phase will touch: `src/tui/app/async_tasks/*` (~25), `tui/app/navigation/*`
-(~14), `tui/app/dismiss.rs` (2), `tui/app/types.rs` (3),
-`tui/app/query/post_selection.rs` (2), `tui/panes/*` (3). They are
-internal helpers that were `pub` set defensively and are pinpointed by
-mend with no design risk.
+**Results:**
+- Mend warnings: **92 → 90** (-2 actual; predicted **~25–30**).
+- 597/597 tests pass; clippy clean; smoke-tested via `cargo install --path .`.
+- 2 narrowings landed: `ExitMode::should_quit`, `ExitMode::should_restart` (pure-leaf enum methods on `tui/app/types.rs`).
+- 57 of 59 candidates failed `cargo check` under `pub(super)` and were reverted (Phase 6 lesson 3 recurrences — callers exist outside the file's `super`).
 
-**Strategy:** for each warning, accept mend's `pub(super)` hint and
-verify compilation. Skip anything that doesn't compile cleanly under
-`pub(super)` from its current location — those go to Phase 10.
+**Lesson — Phase 7 was an architectural error.** The premise that "~25
+internal helpers are mechanically narrow-able" was wrong. **Mend's
+`pub(super)` hints reflect lexical position, not actual call-graph
+reach.** When mend says "fn is not used outside its parent module
+subtree," it means within mend's per-file analysis — but those methods
+are reached from `tui/render.rs`, `tui/input.rs`, `tui/terminal.rs`,
+etc. via the `App` impl block, paths mend's analysis doesn't follow.
 
-**Files in scope:**
-- `tui/app/async_tasks/config.rs`, `lint_runtime.rs`, `repo_handlers.rs`,
-  `metadata_handlers.rs`, `disk_handlers.rs`, `service_handlers.rs`,
-  `startup_phase/tracker.rs`, `tree.rs`, `poll.rs`
-- `tui/app/navigation/cache.rs`, `selection.rs`, `movement.rs`,
-  `expand.rs`, `bulk.rs`
-- `tui/app/dismiss.rs`, `tui/app/types.rs`, `tui/app/query/post_selection.rs`
-- `tui/panes/support.rs`, `tui/panes/project_list.rs`
+**Process used (per-line revert harness):** a Python script
+(`/tmp/sweep_safe.py`) iterated each of the 59 mend-flagged locations,
+applied the `pub(super)` change, ran `cargo check`, and reverted on
+failure. Outcome: 2 successes, 57 reverts. The harness itself was
+sound; the mend-warning surface was misclassified.
 
-**Why ship this before Phase 9:** with ~25 internal-helper warnings
-cleared, Phase 9s/9/11/12 reductions become measurable rather than
-buried in the mend signal. Also forecloses the Phase 10 Part A "pile
-of disconnected tightenings" risk — the sweep is mechanical and ships
-green in one commit, not a multi-phase trickle.
+**Implications for Phase 10 Part A:** Part A's residue is back to
+~25–30, not the ~5–10 originally re-scoped. The "pre-cleared by Phase 7"
+discount doesn't apply. Phase 10 will absorb most of these incidentally
+when methods relocate to `mod.rs` or move to `tui/<subsys>.rs`
+(Phase 6 lesson 1 — `pub(crate)` free outside `tui/`).
 
-**Expected mend reduction:** ~25–30 (target: 92 → ~62–67).
-
-**Risk:** very low — every fix is mend-pinpointed and verified by
-`cargo check`. Reverts are per-line.
-
-**Sequencing:** runs as a single mid-stream commit, before Phase 9.
-Phase 10 Part A then covers only the residue (~5–10 stragglers, methods
-that don't accept `pub(super)` from their current file because callers
-sit outside the file's `super` — Phase 6 lesson 3 recurrences).
+**Updated mend trajectory:** all 90 remaining warnings are architectural,
+not mechanical. Phase 8 (Focus) will absorb ~33 (`focus.rs`),
+Phase 9 (Overlays) absorbs the overlays-related orchestrators that
+currently sit in `mod.rs` already as `pub(super)` and will move to
+`tui/overlays.rs` as `pub(crate)`. Phase 10 Part A handles whatever
+remains.
 
 ## Phase 8 — `Focus` subsystem
 
@@ -2230,21 +2226,20 @@ expected values.
 | 4   | Ci (3 methods → ProjectList; 5 orchestrators relocated to `mod.rs`) + pulled-forward `app.config()` cleanup | **-9 actual** (predicted ~6–7 — overshoot from involuntary -1 on `mod.rs` rehosts) |
 | 5   | Toast orchestrator relocation (orphan from Phase 2 surfaced by post-Phase-4 review) | **-11 actual** (predicted ~8–11 — hit upper bound; range methodology held) |
 | 6   | Discovery shimmer + project predicates | **-11 actual** (predicted ~9–13 — within range, near upper bound) |
-| Phase 7 | Mechanical `pub(super)` sweep on `async_tasks/*`, `navigation/*`, `dismiss.rs`, `types.rs`, `query/post_selection.rs`, `panes/*` | ~25–30 |
-| 7   | Overlays subsystem at `tui/overlays.rs` (incl. Exit + inline_error) | ~14–20 |
-| 8   | *Absorbed into Phase 11* (path resolution; was ~12–16) | n/a |
-| 9   | Focus subsystem at `tui/focus.rs` (runs **before** Phase 9 per post-Phase-6 review) | ~12–18 |
-| 10  | Internal-helper tightening (Part A residue ~5–10 after Phases 7 + 8 + 9) + relocate `CiFetchTracker` (Part B ~4) + `query/*` empty-file sweep (Part C ~1–2 since most files already deleted) | ~10–16 |
-| **Visibility subtotal (Phases Phase 7–10)** | | **~61–84** (forward only; 1+2+3+4+5+6 already in done row) |
-| 11  | Move `Viewport.pos` to `Selection.cursor` (absorbs original Phase 8 movement mutators **and** new Phase 8 path resolution) | ~20–24 |
+| 7   | Mechanical `pub(super)` sweep | **-2 actual** (predicted ~25–30 — major miss; mend hints reflect lexical position, not call-graph reach) |
+| 8   | Focus subsystem at `tui/focus.rs` | ~12–18 |
+| 9   | Overlays subsystem at `tui/overlays.rs` (incl. Exit + inline_error) | ~14–20 |
+| 10  | Internal-helper tightening (Part A ~25–30 — back to original surface after Phase 7 surprise) + relocate `CiFetchTracker` (Part B ~4) + `query/*` empty-file sweep (Part C ~1–2 since most files already deleted) | ~30–36 |
+| **Visibility subtotal (Phases 8–10)** | | **~56–74** (forward only; 1+2+3+4+5+6+7 already in done row) |
+| 11  | Move `Viewport.pos` to `Selection.cursor` (absorbs movement mutators + path resolution from earlier drafts) | ~20–24 |
 | 12  | Subsystems own pane state; drop wrapper types (Cluster B for Toasts+) | ~9 |
 | 13  | `Bus<Event>` skeleton + `apply_service_signal` (Cluster A gate phase) | ~3 |
 | 14  | `apply_lint_config_change` over bus | ~2 |
 | 15  | `apply_config` over bus (introduces `ConfigDiff`) | ~6 |
 | 16  | Startup-phase tracker + `StartupOrchestrator` | ~4 |
 | **Architectural subtotal (Phases 11–16)** | | **~39–48** (Phase 11 widened to absorb path resolution) |
-| **Forward grand total (Phases Phase 7–16)** | | **~100–132** |
-| **Done (Phases 1+2+3+4+5+6)** | | **-55 (147 → 92)** |
+| **Forward grand total (Phases 8–16)** | | **~95–122** |
+| **Done (Phases 1+2+3+4+5+6+7)** | | **-57 (147 → 90)** |
 | **Stable intermediate (after Phase 12, before Phase 13)** | | residual ~50–60 mend warnings |
 
 > **Caveat on the upper bound:** the upper of ~142 exceeds the 131
