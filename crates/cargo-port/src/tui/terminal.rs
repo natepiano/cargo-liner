@@ -205,7 +205,10 @@ fn restart_self() {
 
     #[cfg(windows)]
     {
-        match std::process::Command::new(exe.as_path()).args(&args).spawn() {
+        match std::process::Command::new(exe.as_path())
+            .args(&args)
+            .spawn()
+        {
             Ok(_) => std::process::exit(0),
             Err(err) => tracing::error!("Failed to restart: {err}"),
         }
