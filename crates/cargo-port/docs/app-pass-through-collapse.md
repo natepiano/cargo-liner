@@ -126,7 +126,22 @@ Per-phase steps:
 4. Remove the now-unused `App::foo_method` pass-throughs.
 5. `cargo mend` after each phase — confirm the warning count drops.
 
-## Phase 1 — `Config` (smallest)
+## Phase 1 — `Config` (smallest) — **DONE** (`7160e04`)
+
+**Results:**
+- Mend warnings: 147 → 133 (-14 actual vs -10 predicted; overshoot
+  came from secondary warnings clearing when self-callers inside
+  App impls also went away).
+- 17 files changed, 90 insertions / 72 deletions.
+- 597/597 tests pass.
+- `Config` and all 10 new flag methods stayed `pub(super)`. No
+  widening required — all callers live inside `tui/`.
+- The `pub(super)` items (`current_config*`, `settings_edit_*`)
+  were correctly NOT relocated; the doc's earlier draft listing
+  them was overscope.
+- Smoke-tested locally after `cargo install --path .`.
+
+
 
 **Subsystem:** `crate::config::ConfigState` (the `App.config: ConfigState` field).
 
