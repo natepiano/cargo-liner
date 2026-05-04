@@ -190,9 +190,11 @@ pub(super) fn collect_and_store_findings(
         analyze_foreign_item(&ctx, tcx.hir_foreign_item(item_id), &mut sink)?;
     }
 
+    let is_test_build = tcx.sess.opts.test;
     let output_path = settings.findings_dir.join(persistence::cache_filename_for(
         &settings.package_root,
         &crate_root_file,
+        is_test_build,
     ));
     let stored_crate_root = if crate_root_file.is_absolute() {
         crate_root_file.clone()

@@ -169,6 +169,37 @@ pub(super) fn load_report(
             && a.item == b.item
     });
 
+    // Dedup pub-use fix facts the same way: with bin + bin-test now
+    // writing separate cache files, the same fact can be emitted twice
+    // and would otherwise cause `--fix-pub-use` to attempt the same
+    // rewrite from two compilations.
+    pub_use_fix_facts.sort_by(|a, b| {
+        (
+            &a.child_path,
+            a.child_line,
+            &a.child_item_name,
+            &a.parent_path,
+            a.parent_line,
+            &a.child_module,
+        )
+            .cmp(&(
+                &b.child_path,
+                b.child_line,
+                &b.child_item_name,
+                &b.parent_path,
+                b.parent_line,
+                &b.child_module,
+            ))
+    });
+    pub_use_fix_facts.dedup_by(|a, b| {
+        a.child_path == b.child_path
+            && a.child_line == b.child_line
+            && a.child_item_name == b.child_item_name
+            && a.parent_path == b.parent_path
+            && a.parent_line == b.parent_line
+            && a.child_module == b.child_module
+    });
+
     Ok(Report {
         root: selection_root_string(selection.analysis_root.as_path()),
         summary: ReportSummary::default(),
@@ -359,9 +390,19 @@ fn relativize_path(path: &str, analysis_root: &Path) -> String {
     )
 }
 
-pub(super) fn cache_filename_for(package_root: &Path, crate_root_file: &Path) -> String {
+pub(super) fn cache_filename_for(
+    package_root: &Path,
+    crate_root_file: &Path,
+    is_test_build: bool,
+) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     package_root.hash(&mut hasher);
     crate_root_file.hash(&mut hasher);
+    // Without this byte, the bin (non-test) and bin-test compilations of a
+    // binary crate share the same `crate_root_file` and overwrite each
+    // other's findings — leaving the cross-compilation intersection in
+    // `load_report` with only one report to consult, so it can't detect
+    // findings the other compilation would contradict.
+    is_test_build.hash(&mut hasher);
     format!("{:016x}.json", hasher.finish())
 }

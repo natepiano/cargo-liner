@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Cross-compilation cfg(test) suppression now works on binary crates. The bin and bin-test compilations were sharing a cache file; one overwrote the other and intersection had nothing to compare. Cache filename now distinguishes them, with fix-fact dedup so a real fix isn't applied twice.
+
 ## [0.9.0] - 2026-05-03
 
 ### Changed
