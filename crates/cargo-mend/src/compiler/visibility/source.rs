@@ -32,18 +32,20 @@ pub(super) fn build_finding(
 ) -> Result<StoredFinding> {
     let display = line_display(tcx, file_path, highlight_span)?;
     Ok(StoredFinding {
-        severity:      params.severity,
-        code:          params.code,
-        path:          file_path.to_string_lossy().into_owned(),
-        line:          display.line,
-        column:        display.column,
-        highlight_len: display.highlight_len,
-        source_line:   display.source_line,
-        item:          params.item,
-        message:       params.message,
-        suggestion:    params.suggestion,
-        fixability:    params.fixability,
-        related:       params.related,
+        severity:                params.severity,
+        code:                    params.code,
+        path:                    file_path.to_string_lossy().into_owned(),
+        line:                    display.line,
+        column:                  display.column,
+        highlight_len:           display.highlight_len,
+        source_line:             display.source_line,
+        item:                    params.item,
+        message:                 params.message,
+        suggestion:              params.suggestion,
+        fixability:              params.fixability,
+        related:                 params.related,
+        item_def_path:           params.item_def_path,
+        narrower_scope_def_path: params.narrower_scope_def_path,
     })
 }
 
@@ -79,6 +81,8 @@ pub(super) fn build_line_finding(
         suggestion: params.suggestion,
         fixability: params.fixability,
         related: params.related,
+        item_def_path: params.item_def_path,
+        narrower_scope_def_path: params.narrower_scope_def_path,
     })
 }
 

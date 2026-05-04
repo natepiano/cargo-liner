@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Suspicious-pub suppression now uses HIR-level use sites instead of source-level path matching, catching macro-expanded and proc-macro-generated callers. Replaces the source-level macro walker from 0.9.2.
+
 ## [0.9.2] - 2026-05-03
 
 ### Fixed

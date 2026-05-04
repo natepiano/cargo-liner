@@ -39,24 +39,48 @@ pub(super) struct StoredReport {
     pub pub_use_fix_facts:    Vec<StoredPubUseFixFact>,
     #[serde(default)]
     pub compiler_warnings:    CompilerWarningFacts,
+    #[serde(default)]
+    pub use_sites:            Vec<UseSite>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct UseSite {
+    /// Canonical def-path of the referenced item, e.g.
+    /// `crate::tui::panes::cpu::cpu_required_pane_height`.
+    pub target_def_path:        String,
+    /// Canonical def-path of the module containing the call site, e.g.
+    /// `crate::tui::render::tests`.
+    pub caller_module_def_path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct StoredFinding {
-    pub severity:      Severity,
-    pub code:          DiagnosticCode,
-    pub path:          String,
-    pub line:          usize,
-    pub column:        usize,
-    pub highlight_len: usize,
-    pub source_line:   String,
-    pub item:          Option<String>,
-    pub message:       String,
-    pub suggestion:    Option<String>,
+    pub severity:                Severity,
+    pub code:                    DiagnosticCode,
+    pub path:                    String,
+    pub line:                    usize,
+    pub column:                  usize,
+    pub highlight_len:           usize,
+    pub source_line:             String,
+    pub item:                    Option<String>,
+    pub message:                 String,
+    pub suggestion:              Option<String>,
     #[serde(default)]
-    pub fixability:    FixSupport,
+    pub fixability:              FixSupport,
     #[serde(default)]
-    pub related:       Option<String>,
+    pub related:                 Option<String>,
+    /// Canonical def-path of the item this finding is about. Set on
+    /// narrowing-style findings so cross-compilation merge can look up the
+    /// item's callers post-hoc and suppress findings that would break the
+    /// build under the proposed narrower visibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_def_path:           Option<String>,
+    /// Canonical def-path of the proposed narrower scope. For a finding
+    /// suggesting `pub(super)`, this is the parent module's def-path. The
+    /// finding is suppressed if any caller's module is not a descendant of
+    /// this scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrower_scope_def_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -73,6 +97,7 @@ pub(super) struct StoredPubUseFixFact {
 pub(super) struct FindingsSink {
     pub findings:          Vec<StoredFinding>,
     pub pub_use_fix_facts: Vec<StoredPubUseFixFact>,
+    pub use_sites:         Vec<UseSite>,
 }
 
 pub(super) fn prepare_findings_dir(target_directory: &Path) -> Result<PathBuf> {
@@ -139,6 +164,13 @@ pub(super) fn load_report(
     // compilation does not flag it. So we keep narrowing-style findings
     // ONLY when every compilation analyzing the same crate root agrees.
     apply_cross_compilation_intersection(&mut matched_reports);
+    // Caller-aware suppression: for suspicious_pub findings that carry a
+    // structured item_def_path / narrower_scope_def_path, consult the
+    // union of HIR-collected use sites across all compilations. If any
+    // caller (including ones inside macro expansions or proc-macro
+    // output) lives outside the proposed narrower scope, drop the
+    // finding — the proposed narrowing would break a real call site.
+    apply_caller_aware_suppression(&mut matched_reports);
 
     let mut findings = Vec::new();
     let mut pub_use_fix_facts = Vec::new();
@@ -300,6 +332,63 @@ fn extend_report_from_stored(
             child_module:    fact.child_module,
         });
     }
+}
+
+fn apply_caller_aware_suppression(reports: &mut [StoredReport]) {
+    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
+
+    // Build the union map: target item def-path -> set of caller modules.
+    // Cloned into owned strings so we can release the immutable borrow on
+    // `reports` before iterating mutably.
+    let mut callers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for report in reports.iter() {
+        for site in &report.use_sites {
+            callers
+                .entry(site.target_def_path.clone())
+                .or_default()
+                .insert(site.caller_module_def_path.clone());
+        }
+    }
+
+    for report in reports.iter_mut() {
+        report.findings.retain(|finding| {
+            // Only narrowing-style findings carry the structured fields.
+            // Everything else passes through unchanged.
+            let Some(item_path) = finding.item_def_path.as_deref() else {
+                return true;
+            };
+            let Some(narrower_scope) = finding.narrower_scope_def_path.as_deref() else {
+                return true;
+            };
+            let Some(caller_set) = callers.get(item_path) else {
+                // No callers seen anywhere — finding is correct, retain.
+                return true;
+            };
+            // Keep the finding only if every caller's module is a
+            // descendant of the proposed narrower scope. If any caller
+            // lives outside, the narrowing would break that call site.
+            caller_set
+                .iter()
+                .all(|caller| def_path_is_descendant(caller, narrower_scope))
+        });
+    }
+}
+
+/// True when `caller_path` lives within the module subtree rooted at
+/// `narrower_scope`. Both arguments come from `tcx.def_path_str`, so they
+/// share the rendering convention (`crate::a::b`). Equality and prefix
+/// match (with `::` boundary) are both considered descendants.
+fn def_path_is_descendant(caller_path: &str, narrower_scope: &str) -> bool {
+    if caller_path == narrower_scope {
+        return true;
+    }
+    if let Some(rest) = caller_path.strip_prefix(narrower_scope)
+        && rest.starts_with("::")
+    {
+        return true;
+    }
+    false
 }
 
 /// Codes whose findings propose narrowing visibility. For these, an

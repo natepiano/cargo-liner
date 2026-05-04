@@ -6,8 +6,6 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
-use proc_macro2::TokenStream;
-use proc_macro2::TokenTree;
 use syn::UseTree;
 use syn::visit::Visit;
 
@@ -253,101 +251,6 @@ impl<'ast> Visit<'ast> for PathExtractor {
         }
         syn::visit::visit_path(self, path);
     }
-
-    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
-        // syn parses the macro's path itself, but its token-stream argument
-        // is opaque. Without descending into the tokens, every reference
-        // inside `assert_eq!`, `format!`, `dbg!`, `panic!`, etc. is
-        // invisible to the visibility analyzer — items called only from
-        // such macros look unreachable and get incorrectly flagged for
-        // narrowing or re-export removal. Walk the tokens explicitly and
-        // synthesize path candidates from `IDENT (:: IDENT)+` runs.
-        extract_macro_paths(mac.tokens.clone(), &mut self.expr_paths);
-        syn::visit::visit_macro(self, mac);
-    }
-}
-
-fn extract_macro_paths(tokens: TokenStream, out: &mut Vec<(Vec<String>, PathOrigin)>) {
-    let mut iter = tokens.into_iter().peekable();
-    while let Some(tt) = iter.next() {
-        match tt {
-            TokenTree::Group(group) => {
-                extract_macro_paths(group.stream(), out);
-            },
-            TokenTree::Ident(ident) => {
-                let first = ident.to_string();
-                if !looks_like_path_root(&first) {
-                    continue;
-                }
-                let mut segments = vec![first];
-                while let Some(TokenTree::Punct(p1)) = iter.peek() {
-                    if p1.as_char() != ':' || p1.spacing() != proc_macro2::Spacing::Joint {
-                        break;
-                    }
-                    let mut lookahead = iter.clone();
-                    lookahead.next(); // consume first ':'
-                    let Some(TokenTree::Punct(p2)) = lookahead.next() else {
-                        break;
-                    };
-                    if p2.as_char() != ':' {
-                        break;
-                    }
-                    let Some(TokenTree::Ident(next_ident)) = lookahead.next() else {
-                        break;
-                    };
-                    iter = lookahead;
-                    segments.push(next_ident.to_string());
-                }
-                if segments.len() >= 2 {
-                    let origin = path_origin(&segments);
-                    out.push((segments, origin));
-                }
-            },
-            TokenTree::Punct(_) | TokenTree::Literal(_) => {},
-        }
-    }
-}
-
-/// Bare identifiers that can syntactically begin a path. Excludes Rust
-/// keywords that never appear as a path root in expression position.
-fn looks_like_path_root(ident: &str) -> bool {
-    !matches!(
-        ident,
-        "as" | "async"
-            | "await"
-            | "break"
-            | "const"
-            | "continue"
-            | "dyn"
-            | "else"
-            | "enum"
-            | "extern"
-            | "false"
-            | "fn"
-            | "for"
-            | "if"
-            | "impl"
-            | "in"
-            | "let"
-            | "loop"
-            | "match"
-            | "mod"
-            | "move"
-            | "mut"
-            | "pub"
-            | "ref"
-            | "return"
-            | "static"
-            | "struct"
-            | "trait"
-            | "true"
-            | "type"
-            | "unsafe"
-            | "use"
-            | "where"
-            | "while"
-            | "yield"
-    )
 }
 
 pub(super) fn extract_paths(file: &syn::File) -> ExtractedPaths {

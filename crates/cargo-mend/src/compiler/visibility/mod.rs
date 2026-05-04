@@ -1,5 +1,6 @@
 mod policy;
 mod source;
+mod use_sites;
 
 use std::ffi::OsStr;
 use std::fs;
@@ -109,13 +110,15 @@ pub(super) struct SuspiciousPubInput<'a> {
 }
 
 pub(super) struct FindingParams {
-    severity:   Severity,
-    code:       DiagnosticCode,
-    item:       Option<String>,
-    message:    String,
-    suggestion: Option<String>,
-    fixability: FixSupport,
-    related:    Option<String>,
+    severity:                Severity,
+    code:                    DiagnosticCode,
+    item:                    Option<String>,
+    message:                 String,
+    suggestion:              Option<String>,
+    fixability:              FixSupport,
+    related:                 Option<String>,
+    item_def_path:           Option<String>,
+    narrower_scope_def_path: Option<String>,
 }
 
 struct VisibilityFindingContext {
@@ -190,6 +193,8 @@ pub(super) fn collect_and_store_findings(
         analyze_foreign_item(&ctx, tcx.hir_foreign_item(item_id), &mut sink)?;
     }
 
+    use_sites::collect_use_sites(tcx, &mut sink.use_sites);
+
     let is_test_build = tcx.sess.opts.test;
     let output_path = settings.findings_dir.join(persistence::cache_filename_for(
         &settings.package_root,
@@ -226,6 +231,7 @@ pub(super) fn collect_and_store_findings(
         findings:             sink.findings,
         pub_use_fix_facts:    sink.pub_use_fix_facts,
         compiler_warnings:    CompilerWarningFacts::None,
+        use_sites:            sink.use_sites,
     };
     fs::write(&output_path, serde_json::to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write findings file {}", output_path.display()))?;
@@ -259,13 +265,15 @@ fn analyze_item(
             &file_path,
             item.span,
             FindingParams {
-                severity:   Severity::Warning,
-                code:       DiagnosticCode::WildcardParentPubUse,
-                item:       None,
-                message:    String::new(),
-                suggestion: None,
-                fixability: FixSupport::None,
-                related:    None,
+                severity:                Severity::Warning,
+                code:                    DiagnosticCode::WildcardParentPubUse,
+                item:                    None,
+                message:                 String::new(),
+                suggestion:              None,
+                fixability:              FixSupport::None,
+                related:                 None,
+                item_def_path:           None,
+                narrower_scope_def_path: None,
             },
         )?);
     }
@@ -370,76 +378,9 @@ fn record_visibility_findings(
 ) -> Result<()> {
     let finding_context = visibility_finding_context(ctx, item);
 
-    if matches!(item.vis_text, "pub(crate)")
-        && !allow_pub_crate_by_policy(
-            finding_context.crate_kind,
-            finding_context.module_location,
-            finding_context.parent_visibility,
-        )
-    {
-        sink.findings.push(build_finding(
-            ctx.tcx,
-            item.file_path,
-            item.highlight_span,
-            FindingParams {
-                severity:   Severity::Error,
-                code:       DiagnosticCode::ForbiddenPubCrate,
-                item:       None,
-                message:    "use of `pub(crate)` is forbidden by policy".to_string(),
-                suggestion: Some(
-                    forbidden_pub_crate_help(finding_context.module_location).to_string(),
-                ),
-                fixability: FixSupport::None,
-                related:    None,
-            },
-        )?);
-    }
-
-    if item.vis_text.starts_with("pub(in crate::") {
-        sink.findings.push(build_finding(
-            ctx.tcx,
-            item.file_path,
-            item.highlight_span,
-            FindingParams {
-                severity:   Severity::Error,
-                code:       DiagnosticCode::ForbiddenPubInCrate,
-                item:       None,
-                message:    "use of `pub(in crate::...)` is forbidden by policy".to_string(),
-                suggestion: None,
-                fixability: FixSupport::None,
-                related:    None,
-            },
-        )?);
-    }
-
-    if item.category == ItemCategory::Module && item.vis_text.starts_with("pub") {
-        let allowlisted = finding_context
-            .config_rel_path
-            .as_ref()
-            .is_some_and(|path| {
-                ctx.settings
-                    .visibility_config
-                    .allow_pub_mod
-                    .iter()
-                    .any(|allowed| allowed == path)
-            });
-        if !allowlisted {
-            sink.findings.push(build_finding(
-                ctx.tcx,
-                item.file_path,
-                item.highlight_span,
-                FindingParams {
-                    severity:   Severity::Error,
-                    code:       DiagnosticCode::ReviewPubMod,
-                    item:       item.name.map(str::to_owned),
-                    message:    "`pub mod` requires explicit review or allowlisting".to_string(),
-                    suggestion: None,
-                    fixability: FixSupport::None,
-                    related:    None,
-                },
-            )?);
-        }
-    }
+    record_forbidden_pub_crate(ctx, item, &finding_context, sink)?;
+    record_forbidden_pub_in_crate(ctx, item, sink)?;
+    record_review_pub_mod(ctx, item, &finding_context, sink)?;
 
     if item.vis_text == "pub"
         && finding_context.parent_visibility == ParentVisibility::Private
@@ -471,6 +412,113 @@ fn record_visibility_findings(
             sink,
         )?;
     }
+    Ok(())
+}
+
+fn record_forbidden_pub_crate(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    finding_context: &VisibilityFindingContext,
+    sink: &mut FindingsSink,
+) -> Result<()> {
+    if !matches!(item.vis_text, "pub(crate)") {
+        return Ok(());
+    }
+    if allow_pub_crate_by_policy(
+        finding_context.crate_kind,
+        finding_context.module_location,
+        finding_context.parent_visibility,
+    ) {
+        return Ok(());
+    }
+    sink.findings.push(build_finding(
+        ctx.tcx,
+        item.file_path,
+        item.highlight_span,
+        FindingParams {
+            severity:                Severity::Error,
+            code:                    DiagnosticCode::ForbiddenPubCrate,
+            item:                    None,
+            message:                 "use of `pub(crate)` is forbidden by policy".to_string(),
+            suggestion:              Some(
+                forbidden_pub_crate_help(finding_context.module_location).to_string(),
+            ),
+            fixability:              FixSupport::None,
+            related:                 None,
+            item_def_path:           None,
+            narrower_scope_def_path: None,
+        },
+    )?);
+    Ok(())
+}
+
+fn record_forbidden_pub_in_crate(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    sink: &mut FindingsSink,
+) -> Result<()> {
+    if !item.vis_text.starts_with("pub(in crate::") {
+        return Ok(());
+    }
+    sink.findings.push(build_finding(
+        ctx.tcx,
+        item.file_path,
+        item.highlight_span,
+        FindingParams {
+            severity:                Severity::Error,
+            code:                    DiagnosticCode::ForbiddenPubInCrate,
+            item:                    None,
+            message:                 "use of `pub(in crate::...)` is forbidden by policy"
+                .to_string(),
+            suggestion:              None,
+            fixability:              FixSupport::None,
+            related:                 None,
+            item_def_path:           None,
+            narrower_scope_def_path: None,
+        },
+    )?);
+    Ok(())
+}
+
+fn record_review_pub_mod(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    finding_context: &VisibilityFindingContext,
+    sink: &mut FindingsSink,
+) -> Result<()> {
+    if item.category != ItemCategory::Module || !item.vis_text.starts_with("pub") {
+        return Ok(());
+    }
+    let allowlisted = finding_context
+        .config_rel_path
+        .as_ref()
+        .is_some_and(|path| {
+            ctx.settings
+                .visibility_config
+                .allow_pub_mod
+                .iter()
+                .any(|allowed| allowed == path)
+        });
+    if allowlisted {
+        return Ok(());
+    }
+    sink.findings.push(build_finding(
+        ctx.tcx,
+        item.file_path,
+        item.highlight_span,
+        FindingParams {
+            severity:                Severity::Error,
+            code:                    DiagnosticCode::ReviewPubMod,
+            item:                    item.name.map(str::to_owned),
+            message:                 "`pub mod` requires explicit review or allowlisting"
+                .to_string(),
+            suggestion:              None,
+            fixability:              FixSupport::None,
+            related:                 None,
+            item_def_path:           None,
+            narrower_scope_def_path: None,
+        },
+    )?);
     Ok(())
 }
 
@@ -526,15 +574,17 @@ fn maybe_record_narrow_to_pub_crate(
         item.file_path,
         item.highlight_span,
         FindingParams {
-            severity:   Severity::Warning,
-            code:       DiagnosticCode::NarrowToPubCrate,
-            item:       Some(format!("{kind_label} {name}")),
-            message:    String::from(
+            severity:                Severity::Warning,
+            code:                    DiagnosticCode::NarrowToPubCrate,
+            item:                    Some(format!("{kind_label} {name}")),
+            message:                 String::from(
                 "item is not re-exported by the crate root — use `pub(crate)`",
             ),
-            suggestion: Some(String::from("consider using: `pub(crate)`")),
-            fixability: FixSupport::NarrowToPubCrate,
-            related:    None,
+            suggestion:              Some(String::from("consider using: `pub(crate)`")),
+            fixability:              FixSupport::NarrowToPubCrate,
+            related:                 None,
+            item_def_path:           None,
+            narrower_scope_def_path: None,
         },
     )?);
     Ok(())
@@ -582,6 +632,8 @@ fn maybe_record_suspicious_pub(
                     suggestion: None,
                     fixability: FixSupport::InternalParentFacade,
                     related,
+                    item_def_path: None,
+                    narrower_scope_def_path: None,
                 },
             )?);
         },
@@ -590,6 +642,14 @@ fn maybe_record_suspicious_pub(
             related,
             stale_parent_pub_use,
         } => {
+            // For suspicious_pub, expose the item's canonical def-path and
+            // the parent module's def-path. Cross-compilation merge in
+            // load_report uses these to suppress the finding when any
+            // caller (across all compilations) lives outside the proposed
+            // narrower scope.
+            let item_def_path = Some(use_sites::def_path_string(ctx.tcx, input.def_id));
+            let narrower_scope_def_path =
+                Some(use_sites::parent_module_def_path(ctx.tcx, input.def_id));
             sink.findings.push(build_finding(
                 ctx.tcx,
                 input.file_path,
@@ -602,6 +662,8 @@ fn maybe_record_suspicious_pub(
                     suggestion: None,
                     fixability,
                     related,
+                    item_def_path,
+                    narrower_scope_def_path,
                 },
             )?);
             if let (Some(status), Some(item_name)) = (stale_parent_pub_use, input.name)
