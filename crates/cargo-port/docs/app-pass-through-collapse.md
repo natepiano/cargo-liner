@@ -79,7 +79,8 @@ design depth in-line per phase:
 
 | Phases | Readiness | Notes |
 | ------ | --------- | ----- |
-| 1, 1b, 2, 3, 4, 4b, 5, 6, 7a, 7b, 8 | **Ready** | Mechanical visibility narrowings; one new accessor + call-site updates per phase. Risk is schedule, not design. |
+| 1 | **Done** (commit `7160e04`) | Config pass-through accessors collapsed. 10 flag methods moved to `Config`, `app.config()` accessor added, ~50 call sites updated. Mend warnings: **147 → 133** (-14, predicted -10 — overshoot due to secondary warnings clearing when self-callers inside App impls also went away; treat per-phase predictions as conservative). `Config` stayed `pub(super)`; no widening needed. The `pub(super)` "relocate but no mend change" items (`current_config*`, `settings_edit_*`) were dropped from scope. 597/597 tests pass. |
+| 1b, 2, 3, 4, 4b, 5, 6, 7a, 7b, 8 | **Ready** | Mechanical visibility narrowings; one new accessor + call-site updates per phase. Risk is schedule, not design. |
 | 9 (move `Viewport.pos` → `Selection.cursor`) | **Ready** | Design depth filled in below: post-move structs, `&Scan`-arg method signatures, scroll-follows-cursor location, end-to-end flow. |
 | 10 (subsystems implement `Pane`) | **Ready** | Design depth filled in below: `Pane` trait signature, post-Phase-10 `PaneRenderCtx` fields, `RenderSplit<'a>` borrow-helper, dispatch loop, detail-cache decision (option b — keeps cache on `Panes`), `*Layout` type module locations. One execution-time choice flagged: option (a) vs (b) for `Selection`'s `Pane` impl, with (b) recommended. |
 | 11 (`Bus<Event>`) | **Ready** | Design depth filled in below: full `Event` enum (~14 variants), full `Command` enum, `EventHandler` trait signature with `&mut self + &Scan`, `EventBus` (~10 lines), drain loop with verified borrows, command pattern eliminating cross-subsystem `&mut`, re-entrancy semantics, `StartupOrchestrator` API, end-to-end traced flow for `apply_config`. |
@@ -134,11 +135,16 @@ Per-phase steps:
 - `lint_enabled`, `invert_scroll`, `include_non_rust`, `ci_run_count`, `navigation_keys`
 - `discovery_shimmer_enabled`, `discovery_shimmer_duration`
 
-**Already `pub(super)` — relocate but no mend count change:**
-- `current_config`, `current_config_mut`, `config_path`
-- `settings_edit_buf`, `settings_edit_cursor`, `settings_edit_parts_mut`, `set_settings_edit_state`
-
 **Already private `fn` (does not need to move):** `toast_timeout`
+
+**Out of Phase 1 scope** (despite earlier drafts listing them):
+`current_config`, `current_config_mut`, `config_path`,
+`settings_edit_buf`, `settings_edit_cursor`,
+`settings_edit_parts_mut`, `set_settings_edit_state` are already
+`pub(super)`. Relocating them would not change the mend count and
+would require touching ~10 callers for zero gain. They stay on App
+unless a future cleanup phase rolls them into a focused
+relocation. Phase 1 does not move them.
 
 **Accessor to add:**
 ```rust
@@ -161,12 +167,17 @@ impl App {
 **Expected mend reduction:** ~10 (the `pub` ones; `pub(super)` ones are
 clean-up only).
 
-**Side-channel widening:** the `pub(super)` methods listed today are reachable
-from inside `tui/app/`. After relocating into `ConfigState`, the underlying
-`ConfigState` methods need to be `pub` (because callers cross modules). This
-is a real visibility widening; `ConfigState` becomes part of `App`'s public
-contract via `app.config()`. Acceptable because `ConfigState` is the public
-config subsystem.
+**No widening required (verified at execution time):** `Config` lives at
+`crate::tui::config_state::Config`. Its callers — `tui/render.rs`,
+`tui/panes/*`, `tui/settings.rs`, `tui/input.rs`, `tui/keymap_ui.rs`,
+plus the new `tui/app/query/config_accessors.rs` — all live inside
+`tui/`. `pub(super)` from `config_state.rs` reaches the entire
+`tui/` subtree, so the new flag-accessor methods stay `pub(super)`.
+The earlier draft's "side-channel widening" framing was wrong: it
+conflated "non-`tui/app/`" with "non-`tui/`". For Phases 1b, 2, 3,
+4, 4b, 5 the same reasoning likely applies — the new accessor
+methods on `KeymapState`, `ToastManager`, `ProjectList`, `Ci`,
+`Scan` should default to `pub(super)`, not `pub`. Verify per-phase.
 
 **Risk:** none — 1-line read methods.
 
