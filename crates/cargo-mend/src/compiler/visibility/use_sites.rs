@@ -115,8 +115,21 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
     }
 
     fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
-        if let ExprKind::Path(qpath) = &expr.kind {
-            self.record_qpath(qpath, expr.hir_id);
+        match &expr.kind {
+            ExprKind::Path(qpath) => self.record_qpath(qpath, expr.hir_id),
+            ExprKind::MethodCall(..) => {
+                // Method-call dispatch is type-dependent, not path-based.
+                // The callee def-id lives in TypeckResults, not in any
+                // QPath the visitor descends into.
+                let owner = expr.hir_id.owner.def_id;
+                if self.tcx.has_typeck_results(owner)
+                    && let Some(def_id) = self.tcx.typeck(owner).type_dependent_def_id(expr.hir_id)
+                {
+                    self.record_target(def_id);
+                }
+            },
+            ExprKind::Struct(qpath, ..) => self.record_qpath(qpath, expr.hir_id),
+            _ => {},
         }
         walk_expr(self, expr);
     }
