@@ -1,0 +1,246 @@
+use std::time::Instant;
+
+use crate::config;
+use crate::config::CargoPortConfig;
+use crate::http::ServiceKind;
+use crate::http::ServiceSignal;
+use crate::keymap;
+use crate::keymap::KeymapError;
+use crate::keymap::KeymapErrorReason::Parse;
+use crate::lint;
+use crate::project::AbsolutePath;
+use crate::tui::app::App;
+use crate::tui::config_reload;
+use crate::tui::toasts::ToastStyle::Error;
+
+impl App {
+    pub fn record_config_reload_failure(&mut self, err: &str) {
+        self.status_flash = Some((
+            "Config reload failed; keeping previous settings".to_string(),
+            Instant::now(),
+        ));
+        self.show_timed_toast("Config reload failed", err.to_string());
+    }
+    pub fn load_initial_keymap(&mut self) {
+        let vim_mode = self.config.current().tui.navigation_keys;
+        let result = keymap::load_keymap(vim_mode);
+        self.keymap.replace_current(result.keymap);
+        self.keymap.sync_stamp();
+        if !result.errors.is_empty() {
+            self.show_keymap_diagnostics(&result.errors);
+        }
+        if !result.missing_actions.is_empty() {
+            self.show_timed_toast(
+                "Keymap updated",
+                format!(
+                    "Defaults written for missing entries:\n{}",
+                    result.missing_actions.join(", ")
+                ),
+            );
+        }
+    }
+    pub fn maybe_reload_keymap_from_disk(&mut self) {
+        let Some(path) = self.keymap.take_stamp_change() else {
+            return;
+        };
+        let path = path.to_path_buf();
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                self.show_keymap_diagnostics(&[KeymapError {
+                    scope:  String::new(),
+                    action: String::new(),
+                    key:    String::new(),
+                    reason: Parse(format!("read error: {e}")),
+                }]);
+                return;
+            },
+        };
+
+        let vim_mode = self.config.current().tui.navigation_keys;
+        let result = keymap::load_keymap_from_str(&contents, vim_mode);
+        self.keymap.replace_current(result.keymap);
+
+        if result.errors.is_empty() {
+            self.dismiss_keymap_diagnostics();
+        } else {
+            self.show_keymap_diagnostics(&result.errors);
+        }
+
+        if !result.missing_actions.is_empty() {
+            let content = crate::keymap::ResolvedKeymap::default_toml_from(self.keymap.current());
+            let _ = std::fs::write(&path, content);
+            self.keymap.sync_stamp();
+            self.show_timed_toast(
+                "Keymap updated",
+                format!(
+                    "Defaults written for missing entries:\n{}",
+                    result.missing_actions.join(", ")
+                ),
+            );
+        }
+    }
+    pub fn sync_keymap_stamp(&mut self) { self.keymap.sync_stamp(); }
+    pub(super) fn show_keymap_diagnostics(&mut self, errors: &[KeymapError]) {
+        // Dismiss previous diagnostics toast if any.
+        self.dismiss_keymap_diagnostics();
+
+        let body = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let action_path = self
+            .keymap
+            .path()
+            .map(|p| AbsolutePath::from(p.to_path_buf()));
+
+        let id = self.toasts.push_persistent(
+            "Keymap errors (using defaults)",
+            body,
+            Error,
+            action_path,
+            1,
+        );
+        self.keymap.set_diagnostics_id(Some(id));
+        let toast_len = self.active_toasts().len();
+        self.panes_mut()
+            .toasts_mut()
+            .viewport_mut()
+            .set_len(toast_len);
+    }
+    pub(super) fn dismiss_keymap_diagnostics(&mut self) {
+        if let Some(id) = self.keymap.take_diagnostics_id() {
+            self.toasts.dismiss(id);
+        }
+    }
+    pub fn maybe_reload_config_from_disk(&mut self) {
+        let Some(path) = self.config.take_stamp_change() else {
+            return;
+        };
+        let path_buf = path.to_path_buf();
+        let reload_result = config::try_load_from_path(&path_buf);
+        match reload_result {
+            Ok(cfg) => {
+                self.apply_config(&cfg);
+                self.config.sync_stamp();
+                self.show_timed_toast("Settings", "Reloaded from disk");
+            },
+            Err(err) => self.record_config_reload_failure(&err),
+        }
+    }
+    pub fn save_and_apply_config(&mut self, cfg: &CargoPortConfig) -> Result<(), String> {
+        config::save(cfg)?;
+        self.apply_config(cfg);
+        self.config.sync_stamp();
+        Ok(())
+    }
+    pub fn apply_config(&mut self, cfg: &CargoPortConfig) {
+        if self.config.current() == cfg {
+            return;
+        }
+
+        let prev_force = self.config.current().debug.force_github_rate_limit;
+        let next_force = cfg.debug.force_github_rate_limit;
+
+        let actions = config_reload::collect_reload_actions(
+            self.config.current(),
+            cfg,
+            config_reload::ReloadContext {
+                scan_complete:       self.is_scan_complete(),
+                has_cached_non_rust: self.has_cached_non_rust_projects(),
+            },
+        );
+        config::set_active_config(cfg);
+        *self.config.current_mut() = cfg.clone();
+        if !self.discovery_shimmer_enabled() {
+            self.scan.discovery_shimmers_mut().clear();
+        }
+
+        if prev_force != next_force {
+            self.net.set_force_github_rate_limit(next_force);
+            // Synthesize a signal so the UI reflects the flag flip
+            // immediately instead of waiting for the next natural
+            // GitHub request — otherwise toggling the flag would look
+            // broken until the next refresh. The force flag simulates a
+            // rate-limit (not a network outage), so emit `RateLimited`.
+            if next_force {
+                self.apply_service_signal(ServiceSignal::RateLimited(ServiceKind::GitHub));
+            } else {
+                self.mark_service_recovered(ServiceKind::GitHub);
+            }
+        }
+        if actions.refresh_cpu.should_apply() {
+            self.reset_cpu_placeholder();
+        }
+
+        if actions.refresh_lint_runtime.should_apply() {
+            self.refresh_lint_runtime_from_config(cfg);
+        }
+
+        if actions.rescan.should_apply() {
+            self.rescan();
+            self.force_settings_if_unconfigured();
+        } else {
+            if actions.refresh_lint_runtime.should_apply() {
+                self.respawn_watcher_and_register_existing_projects();
+            }
+            if actions.rebuild_tree.should_apply() {
+                // Regroup workspace members in-place based on updated
+                // inline_dirs, then refresh derived state.
+                self.scan
+                    .projects_mut()
+                    .regroup_members(&self.config.current().tui.inline_dirs);
+                self.refresh_derived_state();
+            }
+        }
+    }
+    /// Apply a lint configuration change. Cross-subsystem
+    /// orchestration — not a method on any single subsystem because
+    /// lint config changes fan out across three areas:
+    ///
+    /// - **Inflight**: respawns the lint runtime, clears in-flight lint paths, refreshes the lint
+    ///   toast, syncs the running project list against the new runtime.
+    /// - **Scan**: clears in-memory lint state on `projects`, refreshes lint runs from disk, bumps
+    ///   `data_generation` so detail panes redraw.
+    /// - **Selection**: recomputes `cached_fit_widths` because the project pane's column schema
+    ///   depends on whether lints are enabled.
+    ///
+    /// Called from the per-tick config-reload handler (today via the
+    /// `refresh_lint_runtime_from_config` shim below). New side-
+    /// effects of a lint-config change MUST be added here (or in
+    /// the relevant subsystem method this function calls), not in
+    /// random callers — that's the point of having a single
+    /// orchestrator. See "Recurring patterns" in
+    /// `src/tui/app/mod.rs` for the cross-subsystem orchestrator
+    /// pattern.
+    pub fn apply_lint_config_change(&mut self, cfg: &CargoPortConfig) {
+        // Inflight: respawn the lint runtime + clear in-flight tracking.
+        let lint_spawn = lint::spawn(cfg, self.background.bg_sender());
+        self.lint.set_runtime(lint_spawn.handle);
+        self.lint.running_mut().clear();
+        self.sync_running_lint_toast();
+        self.sync_lint_runtime_projects();
+
+        // Scan state on App: clear lint state, refresh from
+        // disk, bump generation.
+        self.clear_all_lint_state();
+        self.refresh_lint_runs_from_disk();
+        self.scan.bump_generation();
+
+        // Selection: recompute fit widths (column schema differs
+        // with lint enabled / disabled).
+        self.selection.reset_fit_widths(self.lint_enabled());
+
+        if let Some(warning) = lint_spawn.warning {
+            self.status_flash = Some((warning.clone(), Instant::now()));
+            self.show_timed_toast("Lint runtime", warning);
+        }
+    }
+    /// Backwards-compatible shim. Existing callers (rescan, config
+    /// reload) still call `refresh_lint_runtime_from_config`; the
+    /// real orchestration lives in [`Self::apply_lint_config_change`].
+    pub fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
+        self.apply_lint_config_change(cfg);
+    }
+}

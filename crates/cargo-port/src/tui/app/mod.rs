@@ -72,6 +72,7 @@ use std::time::Instant;
 use ratatui::layout::Position;
 
 use super::background::Background;
+use super::columns::LintCell;
 use super::config_state::Config;
 use super::inflight::Inflight;
 use super::keymap_state::Keymap;
@@ -89,7 +90,6 @@ use crate::http::HttpClient;
 use crate::keymap::ResolvedKeymap;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
-use super::columns::LintCell;
 use crate::project::AbsolutePath;
 use crate::project::ProjectCiData;
 use crate::project::WorkspaceMetadata;
@@ -285,7 +285,10 @@ impl App {
     /// `tui` and satisfies callers in `tui/panes/project_list.rs`.
     pub(super) fn lint_cell(&self, status: &LintStatus) -> LintCell {
         if !self.lint_enabled() {
-            return LintCell::from_parts(crate::constants::LINT_NO_LOG, ratatui::style::Style::default());
+            return LintCell::from_parts(
+                crate::constants::LINT_NO_LOG,
+                ratatui::style::Style::default(),
+            );
         }
         let icon = status.icon().frame_at(self.animation_elapsed());
         let style = if matches!(status, LintStatus::Running(_)) {
