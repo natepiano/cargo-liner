@@ -2,6 +2,8 @@ use std::io;
 use std::io::BufReader;
 use std::io::Read;
 use std::io::Stdout;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::ExitCode;
 use std::process::Stdio;
@@ -190,13 +192,24 @@ pub fn run() -> ExitCode {
 
 /// Replace the current process with a fresh instance of the same binary.
 fn restart_self() {
-    use std::os::unix::process::CommandExt;
     let exe = AbsolutePath::from(
         std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("cargo-port")),
     );
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let err = std::process::Command::new(exe.as_path()).args(&args).exec();
-    tracing::error!("Failed to restart: {err}");
+
+    #[cfg(unix)]
+    {
+        let err = std::process::Command::new(exe.as_path()).args(&args).exec();
+        tracing::error!("Failed to restart: {err}");
+    }
+
+    #[cfg(windows)]
+    {
+        match std::process::Command::new(exe.as_path()).args(&args).spawn() {
+            Ok(_) => std::process::exit(0),
+            Err(err) => tracing::error!("Failed to restart: {err}"),
+        }
+    }
 }
 
 fn spawn_input_thread() -> mpsc::Receiver<Event> {

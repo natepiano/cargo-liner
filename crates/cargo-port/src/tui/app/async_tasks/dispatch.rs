@@ -62,6 +62,12 @@ impl App {
         self.lint.startup_phase.expected = Some(lint_registered);
         self.lint.startup_phase.seen = 0;
         self.lint.startup_phase.complete_at = None;
+        // When nothing will ever increment `seen` (lint runtime disabled or no
+        // eligible projects), nothing else will drive completion — finish the
+        // phase here so the startup toast can finish.
+        if lint_registered == 0 {
+            self.maybe_complete_startup_lint_cache();
+        }
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
 
