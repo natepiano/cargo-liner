@@ -67,6 +67,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
+use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::layout::Position;
@@ -82,6 +83,9 @@ use super::panes::PaneId;
 use super::panes::Panes;
 use super::scan_state::Scan;
 use super::selection::Selection;
+use super::toasts::ToastStyle::Warning;
+use super::toasts::ToastView;
+use super::toasts::TrackedItem;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::OwnerRepo;
@@ -147,6 +151,7 @@ use super::terminal::CleanMsg;
 use super::terminal::ExampleMsg;
 use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
+use crate::project;
 use crate::project::RootItem;
 pub(super) use crate::project_list::ExpandKey;
 pub(super) use crate::project_list::VisibleRow;
@@ -325,6 +330,129 @@ impl App {
     pub(super) const fn keymap_mut(&mut self) -> &mut Keymap { &mut self.keymap }
 
     pub(super) const fn toasts(&self) -> &ToastManager { &self.toasts }
+
+    fn toast_timeout(&self) -> Duration {
+        Duration::from_secs_f64(self.config.current().tui.status_flash_secs)
+    }
+
+    pub(super) fn focused_toast_id(&self) -> Option<u64> {
+        let active = self.toasts.active_now();
+        active
+            .get(self.panes().toasts().viewport().pos())
+            .map(ToastView::id)
+    }
+
+    pub(super) fn prune_toasts(&mut self) {
+        let now = Instant::now();
+        let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
+        self.toasts.prune_tracked_items(now, linger);
+        self.toasts.prune(now);
+        let toast_len = self.toasts.active_now().len();
+        self.panes_mut()
+            .toasts_mut()
+            .viewport_mut()
+            .set_len(toast_len);
+        if self.base_focus() == PaneId::Toasts && self.toasts.active_now().is_empty() {
+            self.focus_pane(PaneId::ProjectList);
+        }
+    }
+
+    pub(super) fn show_timed_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {
+        self.toasts.push_timed(title, body, self.toast_timeout(), 1);
+        let toast_len = self.toasts.active_now().len();
+        self.panes_mut()
+            .toasts_mut()
+            .viewport_mut()
+            .set_len(toast_len);
+    }
+
+    pub(super) fn show_timed_warning_toast(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) {
+        self.toasts
+            .push_timed_styled(title, body, self.toast_timeout(), 1, Warning);
+        let toast_len = self.toasts.active_now().len();
+        self.panes_mut()
+            .toasts_mut()
+            .viewport_mut()
+            .set_len(toast_len);
+    }
+
+    pub(super) fn start_task_toast(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> ToastTaskId {
+        let task_id = self.toasts.push_task(title, body, 1);
+        let toast_len = self.toasts.active_now().len();
+        self.panes_mut()
+            .toasts_mut()
+            .viewport_mut()
+            .set_len(toast_len);
+        task_id
+    }
+
+    pub(super) fn finish_task_toast(&mut self, task_id: ToastTaskId) {
+        let linger = if self.toasts.tracked_item_count(task_id) > 0 {
+            Duration::from_secs_f64(self.config.current().tui.task_linger_secs)
+        } else {
+            Duration::ZERO
+        };
+        self.toasts.finish_task(task_id, linger);
+        self.prune_toasts();
+    }
+
+    pub(super) fn set_task_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) {
+        let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
+        self.toasts.set_tracked_items(task_id, items, linger);
+        let toast_len = self.toasts.active_now().len();
+        self.panes_mut()
+            .toasts_mut()
+            .viewport_mut()
+            .set_len(toast_len);
+    }
+
+    pub(super) fn mark_tracked_item_completed(&mut self, task_id: ToastTaskId, key: &str) {
+        self.toasts.mark_item_completed(task_id, key);
+        let toast_len = self.toasts.active_now().len();
+        self.panes_mut()
+            .toasts_mut()
+            .viewport_mut()
+            .set_len(toast_len);
+    }
+
+    /// Begin a clean for `project_path`. Returns `true` if a cargo clean
+    /// should be spawned; `false` when the project is already clean,
+    /// in which case a timed "Already clean" toast is shown and no
+    /// spinner is started.
+    pub(super) fn start_clean(&mut self, project_path: &AbsolutePath) -> bool {
+        let target_dir = self
+            .scan
+            .resolve_target_dir(project_path)
+            .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join("target")));
+        if !target_dir.as_path().exists() {
+            let name = project::home_relative_path(project_path.as_path());
+            self.show_timed_toast("Already clean", name);
+            return false;
+        }
+        self.inflight
+            .clean_mut()
+            .insert(project_path.clone(), Instant::now());
+        self.sync_running_clean_toast();
+        true
+    }
+
+    pub(super) fn clean_spawn_failed(&mut self, project_path: &AbsolutePath) {
+        self.inflight.clean_mut().remove(project_path.as_path());
+        self.sync_running_clean_toast();
+    }
+
+    pub(super) fn dismiss_toast(&mut self, id: u64) {
+        self.toasts.dismiss(id);
+        self.prune_toasts();
+    }
 
     pub(super) const fn projects(&self) -> &ProjectList { self.scan.projects() }
 

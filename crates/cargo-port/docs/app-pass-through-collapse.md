@@ -99,7 +99,7 @@ borrow-composition sketches, and traced flows. All three
 architectural phases (9, 10, 11) now have enough design to sit down
 and implement.
 
-## Lessons from Phases 1 + 2 + 3 + 4 (applied to remaining phases)
+## Lessons from Phases 1 + 2 + 3 + 4 + 5 (applied to remaining phases)
 
 **See also:** Phase 2's section below has 5 lessons on subsystem-helper
 widening, accessor placement, and prediction calibration. Phase 3's
@@ -109,7 +109,11 @@ the `pub(crate)`-is-free finding (for `ProjectList` only). Phase 4's
 section adds 5 more on the `pub(crate)` mend policy inside `tui/app/`,
 involuntary -1 from hosting orchestrators in `mod.rs`, helper migration
 when methods move up, the empty-file refinement, and the pull-forward
-sub-task pattern.
+sub-task pattern. Phase 5's section adds 5 more on the viewport-len
+sync coupling that broke the "ToastManager-only" prediction, mass-move
+as the right pattern for mono-coupled files, third confirmation of the
+range methodology, the `mend --fix` post-fmt sequence for inline paths,
+and the renumbering payoff.
 
 1. **`pub(super)` from `tui/<subsystem>.rs` reaches the entire `tui/`
    subtree.** No subsystem under `tui/` needs `pub` for its
@@ -163,21 +167,24 @@ moves derived from the post-Phase-9 review (see end of doc).
 
 **Sequence after merges and additions:**
 
-| # of 13 | Phase | Status |
+| # of 16 | Phase | Status |
 | ------- | ----- | ------ |
-| 1 of 13 | Phase 1 — Config | **Done** (`7160e04`) |
-| 2 of 13 | Phase 2 — Trivial subsystems (Keymap + Toasts + Scan/metadata) | **Done** |
-| 3 of 13 | Phase 3 — Git/Repo reads → ProjectList | **Done** |
-| 4 of 13 | Phase 4 — Ci pass-throughs | **Done** |
-| 5 of 13 | Phase 5 — Toast orchestrator relocation | Ready |
-| 6 of 13 | Phase 6 — Discovery shimmer + project predicates | Ready |
-| 7 of 13 | Phase 7 — Overlays subsystem extraction (lives at `tui/overlays.rs`) | Ready |
-| 8 of 13 | Phase 8 — Path resolution (clean) | Ready |
-| 9 of 13 | Phase 9 — Focus subsystem (lives at `tui/focus.rs`) | Ready |
-| 10 of 13 | Phase 10 — Tighten internal-helper visibility | Ready |
-| 11 of 13 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` (absorbs original Phase 8) | Ready |
-| 12 of 13 | Phase 12 — Subsystems implement `Pane` | Ready |
-| 13 of 13 | Phase 13 — `Bus<Event>` for cross-cutting events | Ready |
+| 1 of 16 | Phase 1 — Config | **Done** (`7160e04`) |
+| 2 of 16 | Phase 2 — Trivial subsystems (Keymap + Toasts + Scan/metadata) | **Done** |
+| 3 of 16 | Phase 3 — Git/Repo reads → ProjectList | **Done** |
+| 4 of 16 | Phase 4 — Ci pass-throughs | **Done** |
+| 5 of 16 | Phase 5 — Toast orchestrator relocation | **Done** |
+| 6 of 16 | Phase 6 — Discovery shimmer + project predicates | Ready |
+| 7 of 16 | Phase 7 — Overlays subsystem extraction (lives at `tui/overlays.rs`) | Ready |
+| 8 of 16 | Phase 8 — Path resolution (clean) | Ready |
+| 9 of 16 | Phase 9 — Focus subsystem (lives at `tui/focus.rs`) | Ready |
+| 10 of 16 | Phase 10 — Tighten internal-helper visibility | Ready |
+| 11 of 16 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` (absorbs original Phase 8) | Ready |
+| 12 of 16 | Phase 12 — Subsystems implement `Pane` | Ready |
+| 13 of 16 | Phase 13 — `Bus<Event>` skeleton + `apply_service_signal` (gate) | Ready |
+| 14 of 16 | Phase 14 — `apply_lint_config_change` over bus | Ready |
+| 15 of 16 | Phase 15 — `apply_config` over bus (introduces `ConfigDiff`) | Ready |
+| 16 of 16 | Phase 16 — Startup-phase tracker + `StartupOrchestrator` | Ready |
 
 History: earlier drafts used `1b`, `4b`, `7a`, `7b`, `8b` letter suffixes;
 those were resequenced into a 1–13 numeric scheme. Post-Phase-4 review
@@ -187,19 +194,26 @@ identified 11 unclaimed mend warnings in `query/toasts.rs`) and
 Phase 11, since Phase 11's viewport-cursor relocation makes the
 `Navigator { Selection + Panes }` borrow problem disappear. The
 original Phase 8 section is retained below as a historical pointer.
+Post-Phase-5 review split the original Phase 13 (`Bus<Event>`) across
+four phases (13–16): the architectural risk of converting every
+cross-cutting orchestrator at once was untested. Phase 13 is now the
+gate (skeleton + smallest case); Phases 14–16 widen subscriber surface
+incrementally.
 
 **Phase 11 must execute before Phase 8** because Phase 11 supersedes
 Phase 8's `NavRead { panes }` design and absorbs the original Phase 8
 work. Execution order:
 
 ```
-1 → 2 → 3 → 4 → 5 → 6 → 7 → 11 → 8 → 9 → 10 → 12 → 13
+1 → 2 → 3 → 4 → 5 → 6 → 7 → 11 → 8 → 9 → 10 → 12 → 13 → 14 → 15 → 16
                             ^^^^^^^ Phase 11 before Phase 8
 ```
 
-Phase 11 lives in the architectural cluster (Phases 11–13) for the
-narrative grouping, but executes mid-sequence so its viewport-cursor
-relocation is in place before Phase 8 reads cursor state.
+Phase 11 lives in the architectural cluster for the narrative grouping
+but executes mid-sequence so its viewport-cursor relocation is in place
+before Phase 8 reads cursor state. Phases 13–16 run sequentially at the
+end; Phase 13 is the architectural gate — if its bus skeleton doesn't
+compile cleanly, Phases 14–16 need rethinking.
 
 Per-phase steps:
 1. Add the subsystem accessor on `App`.
@@ -510,45 +524,28 @@ as a Ci+Toasts orchestrator; only the pure `Ci`-only mutators move.
 
 **Risk:** low.
 
-## Phase 5 — Toast orchestrator relocation (post-Phase-4 review surfaced this)
+## Phase 5 — Toast orchestrator relocation — **DONE**
 
-**Context:** Post-Phase-4 architecture review found 11 mend warnings in
-`src/tui/app/query/toasts.rs` that **no current phase claims**. Phase 2
-"merged trivial subsystems including Toasts" but only added the
-`toasts()` accessor — it did not relocate the toast orchestrators
-that live as `impl App` blocks in `query/toasts.rs`. They were
-correctly out-of-scope for Phase 2 (which was about subsystem merges,
-not orchestrator relocation), but no later phase picks them up either.
+**Results:**
+- Mend warnings: **114 → 103** (-11; predicted ~8–11 — within range, hit upper bound).
+- 13 files changed (estimated; from `git diff --stat` at execution).
+- 597/597 tests pass; clippy clean; smoke-tested via `cargo install --path .`.
+- All 11 `pub` methods moved from `query/toasts.rs` to `tui/app/mod.rs` as `pub(super)`: `focused_toast_id`, `prune_toasts`, `show_timed_toast`, `show_timed_warning_toast`, `start_task_toast`, `finish_task_toast`, `set_task_tracked_items`, `mark_tracked_item_completed`, `start_clean`, `clean_spawn_failed`, `dismiss_toast`. Plus the private `toast_timeout` helper.
+- `query/toasts.rs` deleted; `mod toasts;` removed from `query/mod.rs`.
+- Imports hoisted into `mod.rs`: `Duration`, `Warning`, `ToastView`, `TrackedItem`. Mend `--fix` auto-hoisted `crate::project::home_relative_path` after fmt (1 import-fix applied).
+- All 11 methods touched **at least two subsystems** (Toasts + Panes for `viewport.set_len(toast_len)` sync after every mutation). Pre-execution review predicted "most touch only ToastManager"; that turned out wrong — every mutator path syncs the pane viewport-len, so every method is a Toasts+Panes orchestrator. No methods moved into `ToastManager` (path (a) of the original strategy was vacant).
 
-**Methods (line refs in `src/tui/app/query/toasts.rs`):**
-- 18, 25, 40, 49, 59, 73, 83, 93, 106, 123, 128 — 11 `pub fn` items, all
-  hint `pub(super)` from mend.
+**Lessons (apply to remaining phases):**
 
-These are toast-orchestration methods (push/dismiss/complete on the
-shared `ToastManager`). Most read or mutate only `App.toasts`; a few
-also touch `App.inflight` (toast slots tracking) or `App.ci`
-(`ci.fetch_toast` slot) — those stay on `App` as orchestrators in
-`mod.rs`.
+1. **The "ToastManager-only" prediction was wrong because of the viewport-len sync.** Every toast-mutation method ends with `self.panes_mut().toasts_mut().viewport_mut().set_len(toast_len)` — a Panes write. That coupling is invisible from a method-list scan; only reading the bodies surfaces it. **Apply to Phase 7+:** for any "move method into subsystem X" prediction, audit body for cross-subsystem writes (especially viewport/cache invalidation) before locking in the (a)-into-subsystem path. **Caveat (post-Phase-5 architecture review):** this pattern is narrower than it first appears. Most pane `viewport_mut().set_len(rows.len())` calls happen inside *render bodies* (`src/tui/panes/package.rs:250`, `git.rs:661`, `lints.rs:160,173`) — those are not cross-subsystem writes from mutators; the render fn already holds `&mut Pane`. The genuine recurrences are: (i) `focus_next_pane`/`focus_previous_pane` in `focus.rs:228-272` (collapses cleanly after Phase 12 moves the toast viewport into `ToastManager`), and (ii) `reset_project_panes` in `focus.rs:274-285` (six pane viewport mutations from one orchestrator). Phase 6 (shimmer) does NOT have this pattern — shimmer mutations are `Scan`-only. Phase 9 has a transitive instance: `focus_pane → self.panes.mark_visited`, which the new "migrate `mark_visited` into `Focus`" sub-task in Phase 9 eliminates.
 
-**Strategy:**
-- Methods touching only `ToastManager`: move bodies onto `ToastManager`
-  itself (in `tui/toasts.rs`) as `pub(crate) fn` (free — `ToastManager`
-  lives at `crate::tui::toasts`, *outside* `tui/app/`, per Phase 4
-  lesson 1).
-- Methods touching multiple subsystems (Toasts + Inflight, Toasts + Ci):
-  host in `tui/app/mod.rs` as `pub(super)` orchestrators.
+2. **Mechanical mass-move was the right call.** All 11 methods sat in one file with the same coupling, and all 11 had external callers. Moving them as a block to `mod.rs` was one perl pass + one delete. Time-to-green: ~5 minutes of editing + one mend `--fix` for the inline-path import. **Pattern:** when an entire `query/*.rs` file's methods share the same "external callers + multi-subsystem touch" property, move the block, don't triage method-by-method.
 
-**Expected mend reduction:**
-- 11 file-resident warnings drop to 0
-- `tui/app/mod.rs` gains ~3 `pub(super)` orchestrators (free)
-- `ToastManager` gains ~8 `pub(crate)` methods (free)
-- `query/toasts.rs` deletes; `mod toasts;` removed from `query/mod.rs`
-- net: **~8–11**
+3. **Range methodology held a third time.** Phase 2 lesson 1 (count `pub` removed minus `pub` added) predicted 8–11 with 11 being the upper-bound when zero new `pub` items needed adding. Hit -11 exactly because `pub(super)` accessors don't add mend warnings. Forward phases should treat the upper end of `pub`-removed minus `pub`-added as the realistic target when no new subsystem types are introduced.
 
-**Risk:** very low — toast orchestrators are leaf-call and well-isolated.
-Sequencing: run before Phase 6 to keep `query/` clean as Phase 6 churns
-through it. Optional pull-forward of Phase 10 Part B (`CiFetchTracker`
-relocate, ~4) into the same commit if context allows.
+4. **`mend --fix` after `fmt` is the canonical sequence for inline-path cleanups.** Phase 5 used `crate::project::home_relative_path` inline (because `home_relative_path` wasn't already imported). Mend's `prefer-module-import` lint flagged it as auto-fixable; one `cargo mend --fix` resolved it. **Apply:** after any phase that introduces a method body referencing crate paths, run `cargo mend --fix` once before final validation.
+
+5. **Phase 4.5 → Phase 5 renumbering paid off immediately.** The retrospective sits cleanly at slot 5 in the canonical sequence with no "see also Phase 4.5" footnotes. Worth the 51-reference sed pass that landed in commit `e97f7c3`.
 
 ## Phase 6 — Discovery shimmer + project predicates
 
@@ -610,6 +607,20 @@ keep this method on `App` for now and revisit.
 
 **Source:** `App.ui_modes: UiModes` (struct in `tui/app/types.rs`) and the
 `KeymapMode`, `FinderMode`, `SettingsMode`, `ExitMode` enums.
+
+**Ordering coupling with Phase 9 (post-Phase-5 review correction):** earlier
+drafts justified Phase 7 → Phase 9 ordering by `tabbable_panes` taking
+`&Overlays`. Audit of `src/tui/app/focus.rs:213-285` showed
+`tabbable_panes` and `is_pane_tabbable` do **not** read `ui_modes` at
+all — they read `Inflight`, `Panes`, `ToastManager`. The genuine
+coupling is at `open_overlay`/`close_overlay` (`focus.rs:155-167`), which
+own `return_focus` AND set `focused_pane` — that's Focus state, not
+Overlay state. Once Focus exists (Phase 9), Overlays can take a
+`&mut Focus` callback for the focus-restore on close. Either run
+Phase 7 → Phase 9 (Overlays first; `open_overlay`/`close_overlay` stay
+as App orchestrators until Focus exists) or run Phase 9 → Phase 7
+(Focus first; Overlays takes `&mut Focus`). Both work; the doc's prior
+"must" was a misread.
 
 **Methods to relocate:**
 - `open_settings`, `close_settings`, `is_settings_open`, `begin_settings_editing`, `end_settings_editing`, `is_settings_editing`
@@ -762,6 +773,23 @@ overlay-aware focus computations.
 `terminal_dirty`, plus the methods listed. Tabbable pane computation needs
 `Overlays` (some panes hide while overlays are open) — the method takes
 `overlays: &Overlays` as an arg.
+
+**Migrate `Panes::mark_visited`/`unvisit` state into `Focus` (post-Phase-5
+review):** `focus.rs:147,150,281-284` calls `self.panes.mark_visited(...)`
+and `self.panes.unvisit(...)` from focus-cluster code. The visited-pane
+set is Focus state living in Panes. Phase 9 should pull it across:
+`Focus` owns a `visited_panes: HashSet<PaneId>` field; `Panes` drops the
+duplicate. This is the same anti-pattern Phase 5 found with the toast
+viewport-len sync — state living on the wrong subsystem because the
+mutation pathway goes through it. Captured here so it lands with Phase 9
+rather than as a Phase 14 follow-up.
+
+**Phase-5-pattern audit for Focus:** `focus_pane` (`focus.rs:147-153`)
+calls `self.panes.mark_visited(pane)` — a Focus mutation that writes to
+`Panes`. After the `mark_visited` migration above, this becomes
+`self.visited.insert(pane)` (single-borrow `&mut Focus`). Without the
+migration, `focus_pane` is a Focus+Panes orchestrator that must stay
+on App as `pub(super)` glue.
 
 **Subsystem location decision (post-Phase-4 lesson 1):**
 Two options for where `Focus` lives in the module tree:
@@ -916,17 +944,31 @@ below. Summary:
 design. Land Phase 11 before Phase 8, or skip Phase 8 and let Phase 11
 absorb its work.
 
-**Sync obligation between Phase 11 and Phase 13:** Phase 11 introduces an
-`include_non_rust` cache field on `Selection` (so visibility recomputation
-doesn't re-read `Config` every frame). Until Phase 13's `Bus<Event>` lands
-with `Command::SetIncludeNonRust`, the cache must stay synced with
-`Config.current().tui.include_non_rust` via the existing
-`apply_config` / `apply_lint_config_change` orchestrators on App — i.e.,
-add one line that copies the new value into `Selection.include_non_rust`
-every time `Config` writes. Phase 13 replaces that line with a `Bus`
-publish; until then, `apply_config` is the chokepoint that keeps the
-mirror correct. Document the obligation at the field declaration so a
-future maintainer doesn't introduce a third write path.
+**No `include_non_rust` cache field on `Selection` (post-Phase-5 review
+correction):** earlier drafts proposed caching `include_non_rust` on
+`Selection` to avoid re-reading `Config` per frame, with a sync
+obligation routed through `apply_config`. That design has been dropped.
+Reasons:
+- The cache field creates a synchronization invariant maintained by
+  code review, not by types — exactly the failure mode that already
+  exists for `cached_fit_widths` (kept current only by
+  `apply_lint_config_change` writing it explicitly,
+  `async_tasks/config.rs:233-234`). Adding a second mirror doubles the
+  surface.
+- The 3 methods that need cross-subsystem reads already take a `&Scan`
+  arg; adding `include_non_rust: bool` (or `&Config`) to those
+  signatures has the same call-site cost as today's
+  `recompute_visibility(scan.projects(), include_non_rust)`.
+- `ProjectList::visible_rows(&expanded, include_non_rust)` already
+  takes the bool. Threading it through the new `Selection` methods
+  matches the existing pattern.
+
+**Replacement design:** `Selection::expand`, `collapse_all`, etc. take
+`(&mut self, scan: &Scan, include_non_rust: bool)`. `apply_config`
+recomputes visibility *via* `Selection`'s methods rather than mirroring
+the bool into `Selection`'s state. Phase 13's `ConfigChanged` event
+carries the bool in its payload; subscribers read it from the event,
+not from a cached field.
 
 **Phase 8 absorption:** the original Phase 8 method list (~16 movement /
 selection mutators) lands inside Phase 11's `&mut Selection`-only group
@@ -1405,7 +1447,7 @@ defined. One execution-time choice remains: option (a) vs (b) for
 - Module locations for the renamed `*Layout` types.
 - Enumeration of wrapper-deletion call-site changes.
 
-## Phase 13 — `Bus<Event>` for cross-cutting events (Cluster A)
+## Phase 13 — `Bus<Event>` skeleton + `apply_service_signal` (Cluster A, gate phase)
 
 Source of truth: see "Item 6" in the post-Phase-9 review section
 below. Summary:
@@ -1422,7 +1464,52 @@ below. Summary:
   `StartupPhaseAdvanced(...)` events in the dependency order today
   encoded in `maybe_log_startup_phase_completions`.
 
-**Ordering:** Phase 13 lands last among the architectural phases.
+**Phase 13 is the bus skeleton + smallest case (post-Phase-5 review):**
+the original "all-at-once" framing put every cross-cutting orchestrator
+on the line at once. The architectural risk is that `EventBus` shape
+doesn't fit Rust's borrow checker against a real subscriber set;
+discovering that after `apply_config` is converted is expensive. Cluster
+A is now spread across Phases 13–16 so each ship lands green:
+
+- **Phase 13 — Bus skeleton + smallest case.** Introduce `EventBus`,
+  `Event`, `Command`, `EventHandler`, `HandlerCtx`. Convert
+  `apply_service_signal` only (single event variant, 1–2 subscribers).
+  Validate the drain-loop pattern compiles and behaves identically.
+  ~3 mend reduction. **This is the architectural gate.** If this
+  phase doesn't compile cleanly, Phases 14–16 need rethinking.
+- **Phase 14 — `apply_lint_config_change`.** Three subsystems (Inflight,
+  Scan, Selection), all already orchestrated through one method.
+  Clean conversion to one `Event::LintConfigChanged` with three
+  subscribers. ~2 mend reduction.
+- **Phase 15 — `apply_config`.** Highest fan-out (6 branches) and
+  requires `ConfigDiff`. Wait until Phases 13–14 are stable. ~6 mend
+  reduction.
+- **Phase 16 — Startup-phase tracker + `StartupOrchestrator`.** Largest
+  body but most isolated — it's already a state-machine adapter.
+  ~4 mend reduction plus the file relocation.
+
+Each phase ships green and is independently revertible. The
+all-or-nothing framing was the real risk.
+
+**Realistic mend reduction across Phases 13–16 (revised down from ~25):**
+body counting from `apply_config` (`async_tasks/config.rs:138-197` —
+6 fan-out branches) plus `apply_service_signal`,
+`mark_service_recovered`, `apply_lint_config_change`, and the 6
+`maybe_complete_startup_*` family yields ~15 methods that genuinely
+collapse, not 25. The other ~10 in Cluster A are sub-helpers
+(`sync_running_lint_toast`, `clear_all_lint_state`, etc.) that become
+Commands — they don't disappear from the codebase, they migrate from
+`impl App` to `apply_command` arms. Mend count drops ~10–15 across the
+four phases, not 25.
+
+**`apply_command` is itself a god-table.** A 21-arm match on App
+mirrors the orchestrator-method count we removed. Phases 13–16's "App
+becomes thin" claim is half-true: bodies of orchestrator methods move
+out, but a comparably-sized dispatch table moves in. The mend benefit
+is real (each method drops a `pub`); the line-count of `mod.rs` may
+not fall as much as advertised.
+
+**Ordering:** Phases 13–16 run last among the architectural phases.
 Subsystems need their pane state already moved (Phase 12) so their
 `handle()` bodies can mutate self plus update their own pane.
 
@@ -1435,15 +1522,68 @@ second write is what Phase 12 eliminates by moving the toasts
 viewport into `ToastManager`. If Phase 12 lands without that
 relocation, `HandlerCtx` for `ServiceSignal` subscribers must carry
 both `&mut Toasts` AND `&mut Panes`, re-enacting through the ctx
-struct the multi-borrow chain Phase 13 was supposed to remove. The
-bus only works if Phase 12 has actually moved each pane's state
-into its data subsystem.
+struct the bus was supposed to remove. The bus only works if
+Phase 12 has actually moved each pane's state into its data subsystem.
 
-**Expected mend reduction:** ~25 — the largest single drop.
+**Phase 13 mend reduction:** ~3 (skeleton + `apply_service_signal`).
 
-**Risk:** highest of all phases — touches startup-phase ordering,
-service-signal handling, and the existing `apply_config` / `rescan`
-fan-out logic.
+**Risk:** highest of all phases — Phase 13 introduces the bus
+skeleton; Phases 14–16 widen its subscriber surface incrementally.
+
+## Phase 14 — `apply_lint_config_change` over `Bus<Event>`
+
+Convert `apply_lint_config_change` (`async_tasks/config.rs:217-240`)
+into one `Event::LintConfigChanged` with three subscribers (Inflight,
+Scan, Selection). All three are already orchestrated through the
+existing single method, so the conversion is mechanical: each
+subscriber's `handle()` runs the body fragment that today lives
+inline in `apply_lint_config_change`.
+
+**Pre-requisite:** Phase 13's bus skeleton must compile cleanly.
+
+**Expected mend reduction:** ~2.
+
+**Risk:** low — mechanical conversion of an already-orchestrated method.
+
+## Phase 15 — `apply_config` over `Bus<Event>`
+
+Convert `apply_config` (`async_tasks/config.rs:138-197`) into
+`Event::ConfigChanged(ConfigDiff)`. Six fan-out branches become six
+subscribers (or fewer if related branches share a handler). Requires
+designing `ConfigDiff` — what fields the diff carries, what fields
+subscribers read.
+
+**Pre-requisite:** Phases 13–14 stable (bus skeleton plus one widened
+subscriber set).
+
+**Special case — `force_settings_if_unconfigured` (`config.rs:183`):**
+this is a *pane-mutating* side-effect inside the rescan branch. Under
+Phase 15 it becomes `Command::ForceSettingsIfUnconfigured` — but this
+command writes to `Overlays` AND `Panes` (settings viewport pos).
+After Phase 12 it's clean (Overlays owns the settings viewport pos);
+before Phase 12 it's the same multi-borrow it always was, which is
+why Phase 12 → Phase 15 ordering is hard.
+
+**Expected mend reduction:** ~6.
+
+**Risk:** medium — `ConfigDiff` design is the load-bearing decision;
+the rest is mechanical fan-out.
+
+## Phase 16 — Startup-phase tracker + `StartupOrchestrator`
+
+Add `StartupOrchestrator` at
+`src/tui/app/async_tasks/startup_phase/orchestrator.rs` to publish
+`StartupPhaseAdvanced(...)` events in the dependency order today
+encoded in `maybe_log_startup_phase_completions`. Convert the 6
+`maybe_complete_startup_*` family methods into subscribers that
+publish their advancement events to the bus.
+
+**Pre-requisite:** Phases 13–15 stable.
+
+**Expected mend reduction:** ~4 plus the file relocation.
+
+**Risk:** low — startup-phase logic is already a state-machine adapter;
+the orchestrator extraction is structural rather than semantic.
 
 ### Phase 13 design depth
 
@@ -1982,6 +2122,55 @@ API, end-to-end flow. Open items at execution time:
   refresh after config write, keymap reload trigger, etc.) cannot
   be verified to map onto the new design.
 
+## Stable intermediate state — between Phase 12 and Phase 13
+
+After Phase 12 lands and before Phase 13 starts, the codebase is in a
+defensible shipping state: clean subsystem ownership, every method
+single-borrow against subsystems, no event bus. App still has its ~21
+orchestrator surface — but every orchestrator is now thin glue, not a
+body of work. Mend count lands around ~50–60.
+
+This is a valid endpoint if Phase 13's bus introduction turns out to be
+disruptive in ways the design depth doesn't model (subscriber-borrow
+shape, drain-loop interaction with the existing `mutate_tree` guard,
+`HandlerCtx` ergonomics). If Phase 13 (the architectural gate) reveals the
+bus pattern doesn't fit, parking at this point ships ~85% of the
+intended work without the architectural risk.
+
+Recommend a deliberate pause after Phase 12 to evaluate before
+committing to Phase 13.
+
+## Loose ends — items not slated for any phase
+
+Items the post-Phase-5 review surfaced that the existing 13 phases
+don't cover. Each has been triaged into the closest phase or marked
+as a Phase 14 candidate.
+
+- **`Inflight` API audit.** `inflight: Inflight` already lives at
+  `src/tui/inflight.rs` (outside `tui/app/`), so its accessors
+  *should* be `pub(crate)`-free per Phase 4 lesson 1. No phase
+  audits this. Check during Phase 10 Part C: count the
+  `pub fn` items currently in `inflight.rs`; if any are `pub` rather
+  than `pub(crate)`, narrow them in the same commit. ~2–4 likely.
+- **`Background` and `LayoutCache` accessors.** Both are App fields.
+  No phase touches them. Likely 1–3 mend warnings each; fold into
+  Phase 10 Part A.
+- **`status_flash` field** (App field set from
+  `apply_lint_config_change`). Conceptually belongs with Toasts or
+  Overlays. Defer until after Phase 13 — its move depends on whether
+  Toasts becomes a bus subscriber or stays orchestrated.
+- **`ensure_detail_cached` cache home.** Punted to "execution time"
+  in Phase 12. Pick now: option (a) add a `DetailCache` type owned
+  by App, alongside the other subsystems. The "per-pane wrappers as
+  cache homes" path keeps 4 wrappers alive purely as cache containers,
+  contradicting Phase 12's "drop wrapper types" thesis. **Decision:
+  Phase 12 introduces `DetailCache`** at `src/tui/detail_cache.rs`
+  (outside `tui/app/`), `pub(crate)` on its methods.
+
+These together account for ~5–10 additional mend reductions
+distributed across Phases 10 + 12. They do not change the canonical
+sequence.
+
 ## Total expected impact
 
 Updated post-Phase-2 with actuals and revised forward predictions. Phase
@@ -1995,19 +2184,23 @@ expected values.
 | 2   | Trivial subsystems (Keymap + Toasts + Scan/metadata) | **-2 actual** (predicted ~10–15) |
 | 3   | Git/Repo extract → ProjectList | **-8 actual** (predicted ~5–9 — within range) |
 | 4   | Ci (3 methods → ProjectList; 5 orchestrators relocated to `mod.rs`) + pulled-forward `app.config()` cleanup | **-9 actual** (predicted ~6–7 — overshoot from involuntary -1 on `mod.rs` rehosts) |
-| 5   | Toast orchestrator relocation (orphan from Phase 2 surfaced by post-Phase-4 review) | ~8–11 |
+| 5   | Toast orchestrator relocation (orphan from Phase 2 surfaced by post-Phase-4 review) | **-11 actual** (predicted ~8–11 — hit upper bound; range methodology held) |
 | 6   | Discovery shimmer + project predicates (recalibrated with Phase 4 lesson 3 — 2 involuntary `mod.rs` rehosts) | ~9–13 |
 | 7   | Overlays subsystem at `tui/overlays.rs` (incl. Exit + inline_error) | ~14–20 |
 | 8   | Path-resolution NavRead (post-Phase-11 rewrite) | ~12–16 |
 | 9   | Focus subsystem at `tui/focus.rs` (Phase 4 lesson 1) | ~12–18 |
 | 10  | Internal-helper tightening (Part A ~18–30 — Phase 9 will eat ~10 first) + relocate `CiFetchTracker` (Part B ~4) + `query/*` empty-file sweep (Part C ~3–5; `config_accessors.rs` already deleted in Phase 4) | ~25–39 |
-| **Visibility subtotal (Phases 5–10)** | | **~80–117** (forward only; 1+2+3+4 already in done row) |
+| **Visibility subtotal (Phases 6–10)** | | **~72–106** (forward only; 1+2+3+4+5 already in done row) |
 | 11  | Move `Viewport.pos` to `Selection.cursor` (Cluster C; absorbs original Phase 8) | ~12 |
 | 12  | Subsystems own pane state; drop wrapper types (Cluster B for Toasts+) | ~9 |
-| 13  | `Bus<Event>` for cross-cutting events (Cluster A) | ~25 |
-| **Architectural subtotal (Phases 11–13)** | | **~46** |
-| **Forward grand total (Phases 5–13)** | | **~126–163** |
-| **Done (Phases 1+2+3+4)** | | **-33 (147 → 114)** |
+| 13  | `Bus<Event>` skeleton + `apply_service_signal` (Cluster A gate phase) | ~3 |
+| 14  | `apply_lint_config_change` over bus | ~2 |
+| 15  | `apply_config` over bus (introduces `ConfigDiff`) | ~6 |
+| 16  | Startup-phase tracker + `StartupOrchestrator` | ~4 |
+| **Architectural subtotal (Phases 11–16)** | | **~31–36** (revised down from ~46 after Cluster A body audit) |
+| **Forward grand total (Phases 6–16)** | | **~103–142** |
+| **Done (Phases 1+2+3+4+5)** | | **-44 (147 → 103)** |
+| **Stable intermediate (after Phase 12, before Phase 13)** | | residual ~50–60 mend warnings |
 
 > **Caveat on the upper bound:** the upper of ~142 exceeds the 131
 > remaining warnings. Treat the upper bound as theoretical. The lower
