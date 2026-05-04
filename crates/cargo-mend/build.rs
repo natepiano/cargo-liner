@@ -6,6 +6,15 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 fn main() {
+    // Without these `rerun-if-changed` directives cargo treats build.rs as
+    // an opaque dependency-free script and reuses the previous run's env
+    // output. New commits then ship with stale `MEND_GIT_HASH` / driver
+    // build_id values — the binary works, but mend's findings cache is
+    // keyed on the build_id and silently reuses stale results.
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs/heads");
+    println!("cargo:rerun-if-changed=build.rs");
+
     if let Some(git_hash) = git_commit_hash() {
         println!("cargo:rustc-env=MEND_GIT_HASH={git_hash}");
     }
