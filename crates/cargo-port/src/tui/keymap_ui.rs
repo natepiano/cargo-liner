@@ -198,7 +198,7 @@ pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyE
     match normalized.code {
         KeyCode::Esc => {
             app.close_keymap();
-            app.close_overlay();
+            app.focus_mut().close_overlay();
         },
         KeyCode::Up => app.panes_mut().keymap_mut().viewport_mut().up(),
         KeyCode::Down => app.panes_mut().keymap_mut().viewport_mut().down(),

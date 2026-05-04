@@ -570,7 +570,7 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
             app.finder_mut().query.clear();
             app.finder_mut().results.clear();
             app.panes_mut().finder_mut().viewport_mut().home();
-            app.close_overlay();
+            app.focus_mut().close_overlay();
         },
         KeyCode::Enter => {
             confirm_finder(app);
@@ -592,7 +592,7 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
                 app.close_finder();
                 app.finder_mut().results.clear();
                 app.panes_mut().finder_mut().viewport_mut().home();
-                app.close_overlay();
+                app.focus_mut().close_overlay();
             } else {
                 app.finder_mut().query.pop();
                 refresh_finder_results(app);
@@ -632,7 +632,7 @@ fn confirm_finder(app: &mut App) {
     app.finder_mut().query.clear();
     app.finder_mut().results.clear();
     app.panes_mut().finder_mut().viewport_mut().home();
-    app.close_overlay();
+    app.focus_mut().close_overlay();
 
     // Navigate to the project
     app.select_project_in_tree(item.project_path.as_path());
@@ -655,7 +655,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
         return;
     };
     if targets_data.has_targets() {
-        app.focus_pane(PaneId::Targets);
+        app.focus_mut().set(PaneId::Targets);
 
         // Build target list and find the matching entry index
         {

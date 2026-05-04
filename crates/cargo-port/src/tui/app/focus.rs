@@ -29,7 +29,7 @@ impl App {
 
     pub const fn selection_changed(&self) -> bool { self.selection.sync().is_changed() }
 
-    pub(super) const fn mark_selection_changed(&mut self) { self.selection.mark_sync_changed(); }
+    pub const fn mark_selection_changed(&mut self) { self.selection.mark_sync_changed(); }
 
     pub const fn clear_selection_changed(&mut self) { self.selection.mark_sync_stable(); }
 
@@ -50,11 +50,11 @@ impl App {
 
     /// Open the settings overlay and position the cursor on `IncludeDirs`
     /// when no include directories are configured.
-    pub(super) fn force_settings_if_unconfigured(&mut self) {
+    pub fn force_settings_if_unconfigured(&mut self) {
         if !self.config.current().tui.include_dirs.is_empty() {
             return;
         }
-        self.open_overlay(Settings);
+        self.focus.open_overlay(Settings);
         self.open_settings();
         if let Some(idx) = SettingOption::iter().position(|s| s == IncludeDirs) {
             self.panes_mut().settings_mut().viewport_mut().set_pos(idx);
@@ -112,7 +112,7 @@ impl App {
         } else if self.ui_modes.settings.is_visible() {
             InputContext::Settings
         } else {
-            match panes::behavior(self.focused_pane) {
+            match panes::behavior(self.focus.current()) {
                 PaneBehavior::ProjectList | PaneBehavior::Overlay => InputContext::ProjectList,
                 PaneBehavior::DetailFields => InputContext::DetailFields,
                 PaneBehavior::DetailTargets | PaneBehavior::Cpu => InputContext::DetailTargets,
@@ -124,49 +124,17 @@ impl App {
         }
     }
 
-    pub fn is_focused(&self, pane: PaneId) -> bool { self.focused_pane == pane }
-
     pub fn pane_focus_state(&self, pane: PaneId) -> PaneFocusState {
-        if self.is_focused(pane) {
+        if self.focus.is(pane) {
             PaneFocusState::Active
-        } else if self.remembers_selection(pane) {
+        } else if self.focus.remembers_visited(pane) {
             PaneFocusState::Remembered
         } else {
             PaneFocusState::Inactive
         }
     }
 
-    pub fn base_focus(&self) -> PaneId {
-        if self.focused_pane.is_overlay() {
-            self.return_focus.unwrap_or(PaneId::ProjectList)
-        } else {
-            self.focused_pane
-        }
-    }
-
-    pub fn focus_pane(&mut self, pane: PaneId) {
-        self.focused_pane = pane;
-        if !pane.is_overlay() {
-            self.panes.mark_visited(pane);
-            self.return_focus = None;
-        }
-    }
-
-    pub fn open_overlay(&mut self, pane: PaneId) {
-        if !pane.is_overlay() {
-            self.focus_pane(pane);
-            return;
-        }
-        self.return_focus = Some(self.base_focus());
-        self.focused_pane = pane;
-    }
-
-    pub fn close_overlay(&mut self) {
-        self.focused_pane = self.return_focus.unwrap_or(PaneId::ProjectList);
-        self.return_focus = None;
-    }
-
-    pub(super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
+    pub fn is_pane_tabbable(&self, pane: PaneId) -> bool {
         match panes::behavior(pane) {
             PaneBehavior::ProjectList => true,
             PaneBehavior::DetailFields => match pane {
@@ -210,7 +178,7 @@ impl App {
         }
     }
 
-    pub(super) fn tabbable_panes(&self) -> Vec<PaneId> {
+    pub fn tabbable_panes(&self) -> Vec<PaneId> {
         panes::tab_order(if self.inflight.example_output_is_empty() {
             panes::BottomRow::Diagnostics
         } else {
@@ -231,17 +199,17 @@ impl App {
         if panes.is_empty() {
             return;
         }
-        let current = self.base_focus();
+        let current = self.focus.base();
         if current == PaneId::Toasts
             && self.panes().toasts().viewport().pos() + 1 < self.toasts.active_now().len()
         {
             self.panes_mut().toasts_mut().viewport_mut().down();
-            self.focus_pane(PaneId::Toasts);
+            self.focus.set(PaneId::Toasts);
             return;
         }
         let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
         let next = panes[(index + 1) % panes.len()];
-        self.focus_pane(next);
+        self.focus.set(next);
         if next == PaneId::Toasts {
             self.panes_mut().toasts_mut().viewport_mut().home();
         }
@@ -253,15 +221,15 @@ impl App {
         if panes.is_empty() {
             return;
         }
-        let current = self.base_focus();
+        let current = self.focus.base();
         if current == PaneId::Toasts && self.panes().toasts().viewport().pos() > 0 {
             self.panes_mut().toasts_mut().viewport_mut().up();
-            self.focus_pane(PaneId::Toasts);
+            self.focus.set(PaneId::Toasts);
             return;
         }
         let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
         let prev = panes[(index + panes.len() - 1) % panes.len()];
-        self.focus_pane(prev);
+        self.focus.set(prev);
         if prev == PaneId::Toasts {
             let last_index = self.toasts.active_now().len().saturating_sub(1);
             self.panes_mut()
@@ -271,20 +239,16 @@ impl App {
         }
     }
 
-    pub(super) fn reset_project_panes(&mut self) {
+    pub fn reset_project_panes(&mut self) {
         self.panes_mut().package_mut().viewport_mut().home();
         self.panes_mut().git_mut().viewport_mut().home();
         self.panes_mut().targets_mut().viewport_mut().home();
         self.panes_mut().ci_mut().viewport_mut().home();
         self.panes_mut().lints_mut().viewport_mut().home();
         self.panes_mut().toasts_mut().viewport_mut().home();
-        self.panes.unvisit(PaneId::Package);
-        self.panes.unvisit(PaneId::Git);
-        self.panes.unvisit(PaneId::Targets);
-        self.panes.unvisit(PaneId::CiRuns);
-    }
-
-    pub(super) fn remembers_selection(&self, pane: PaneId) -> bool {
-        self.panes.remembers_visited(pane)
+        self.focus.unvisit(PaneId::Package);
+        self.focus.unvisit(PaneId::Git);
+        self.focus.unvisit(PaneId::Targets);
+        self.focus.unvisit(PaneId::CiRuns);
     }
 }

@@ -176,7 +176,7 @@ moves derived from the post-Phase-9 review (see end of doc).
 | 5 of 16 | Phase 5 — Toast orchestrator relocation | **Done** |
 | 6 of 16 | Phase 6 — Discovery shimmer + project predicates | **Done** |
 | 7 of 16 | Phase 7 — Mechanical `pub(super)` sweep | **Done** (-2; predicted -25–30 — major miss; lesson captured below) |
-| 8 of 16 | Phase 8 — Focus subsystem (lives at `tui/focus.rs`) | Ready |
+| 8 of 16 | Phase 8 — Focus subsystem (lives at `tui/focus.rs`) | **Done** (0 net mend; architectural progress — overlay warnings deferred to Phase 9) |
 | 9 of 16 | Phase 9 — Overlays subsystem (lives at `tui/overlays.rs`) | Ready |
 | 10 of 16 | Phase 10 — Tighten internal-helper visibility (residue after Phases 7 + 8) | Ready |
 | 11 of 16 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` (absorbs movement mutators + path resolution from earlier drafts) | Ready |
@@ -607,79 +607,32 @@ currently sit in `mod.rs` already as `pub(super)` and will move to
 `tui/overlays.rs` as `pub(crate)`. Phase 10 Part A handles whatever
 remains.
 
-## Phase 8 — `Focus` subsystem
+## Phase 8 — `Focus` subsystem — **DONE** (architectural success, mend-count miss)
 
-**Source:** scattered `App` fields (`base_focus`, `return_focus`, etc.) plus
-overlay-aware focus computations.
+**Results:**
+- Mend warnings: **90 → 90** (0 net; predicted ~12–18). Architectural extraction succeeded; mend-count miss because `tui/app/focus.rs` retains its 33 warnings on overlay/scan/selection methods that Phase 9 will absorb.
+- 597/597 tests pass; clippy clean; smoke-tested via `cargo install --path .`.
+- New `Focus` subsystem at `src/tui/focus.rs` (location (b) — outside `tui/app/`, `pub(crate)` methods are free).
+- `App` struct fields `focused_pane: PaneId` and `return_focus: Option<PaneId>` removed; replaced with `focus: Focus`. Field `visited: HashSet<PaneId>` removed from `Panes`; ownership moves to `Focus`.
+- `Focus` owns: `focused_pane`, `overlay_return` (renamed from `return_focus` to satisfy clippy's `field-name-ends-with-struct-name` lint), `visited`. Methods: `new`, `current`, `is`, `base`, `set`, `open_overlay`, `close_overlay`, `overlay_return`, `retarget_overlay_return`, `overlay_return_is_in`, `unvisit`, `remembers_visited`.
+- Wrapper methods deleted from `tui/app/focus.rs` impl App: `is_focused`, `base_focus`, `focus_pane`, `open_overlay`, `close_overlay`, `remembers_selection` (6 deletions).
+- `mark_visited`/`unvisit`/`remembers_visited` removed from `Panes` (3 deletions).
+- ~30 caller rewrites: `app.is_focused(p)` → `app.focus().is(p)`, `app.focus_pane(p)` → `app.focus_mut().set(p)`, etc., across `render.rs`, `interaction.rs`, `input.rs`, `finder.rs`, `settings.rs`, `panes/*`, `tests/*`.
+- `input_context` narrowed from `pub fn` to `pub const fn` (clippy hint).
 
-**Methods to relocate (currently `pub`):**
-- `base_focus`, `focus_pane`, `focus_next_pane`, `focus_previous_pane`
-- `is_focused`, `pane_focus_state`, `focused_dismiss_target`
-- `selection_changed`, `clear_selection_changed`
-- `mark_terminal_dirty`, `clear_terminal_dirty`, `terminal_is_dirty`
-- `input_context`
+**Why mend stayed flat:** the 9 deleted `pub fn` items (6 wrappers + 3 Panes methods) cleared 9 mend warnings. But `tui/app/focus.rs` still has ~30 `pub fn` items covering overlay state (`is_finder_open`, `open_settings`, `close_keymap`, etc.) and multi-subsystem orchestrators (`input_context`, `is_pane_tabbable`, `tabbable_panes`, `focus_next_pane`, `focus_previous_pane`, `reset_project_panes`). Those weren't in Phase 8's scope — they're Phase 9's (Overlays extraction) and Phase 10's (orchestrator narrowing) work.
 
-**Methods staying on `App` after re-evaluation:**
-- `tabbable_panes` — does **not** read `ui_modes`; depends on `Inflight`,
-  `Panes` (across multiple panes), `ProjectList`, `Selection`, `ToastManager`.
-  This is a 5+ subsystem orchestrator, not a focus-state method. Already
-  `pub(super)` (no mend count contribution), stays as-is.
-- `mark_selection_changed` — already `pub(super)`, no mend count
-  contribution. Stays where it is.
+**Lessons (apply to remaining phases):**
 
-**Refactor:** the focus state already partially lives on `App`. Extract a
-`Focus` subsystem owning `base_focus`, `return_focus`, `selection_dirty`,
-`terminal_dirty`, plus the methods listed. Tabbable pane computation needs
-`Overlays` (some panes hide while overlays are open) — the method takes
-`overlays: &Overlays` as an arg.
+1. **Architectural progress and mend-count progress are different metrics.** Phase 8 delivered real architectural improvement: `Focus` is encapsulated, `Panes::visited` anti-pattern is fixed (Phase 5 lesson 5 recurrence eliminated), App struct has 2 fewer fields. But mend count didn't move because the file `tui/app/focus.rs` is misnamed — it's the ALL of "App-level UI flag accessors," not just focus state. Phase 9 will rename half of it (overlays) into `tui/overlays.rs`. **Apply to Phase 9 prediction:** Phase 9 will absorb the ~25 overlay warnings in `tui/app/focus.rs` (currently ~33 total minus ~5 multi-subsystem orchestrators that stay as App orchestrators in `mod.rs`).
 
-**Migrate `Panes::mark_visited`/`unvisit` state into `Focus` (post-Phase-5
-review):** `focus.rs:147,150,281-284` calls `self.panes.mark_visited(...)`
-and `self.panes.unvisit(...)` from focus-cluster code. The visited-pane
-set is Focus state living in Panes. Phase 8 should pull it across:
-`Focus` owns a `visited_panes: HashSet<PaneId>` field; `Panes` drops the
-duplicate. This is the same anti-pattern Phase 5 found with the toast
-viewport-len sync — state living on the wrong subsystem because the
-mutation pathway goes through it. Captured here so it lands with Phase 8
-rather than as a Phase 14 follow-up.
+2. **`pub(crate)` field-name rules are stricter than mend's.** Clippy's `field-name-ends-with-struct-name` rejected `Focus.return_focus` and `Focus.focused_pane` would have triggered too if I'd used the same name. Renamed to `overlay_return`. **Apply to future subsystem extractions:** when designing field names for new subsystem structs, avoid the struct-name suffix or prefix (use semantic names — `overlay_return` instead of `return_focus`, `current` instead of `focused_pane`).
 
-**Phase-5-pattern audit for Focus:** `focus_pane` (`focus.rs:147-153`)
-calls `self.panes.mark_visited(pane)` — a Focus mutation that writes to
-`Panes`. After the `mark_visited` migration above, this becomes
-`self.visited.insert(pane)` (single-borrow `&mut Focus`). Without the
-migration, `focus_pane` is a Focus+Panes orchestrator that must stay
-on App as `pub(super)` glue.
+3. **State migration vs method migration are different scopes.** Phase 8 migrated state (`focused_pane`, `return_focus`, `visited` off App; ownership consolidated in `Focus`). It did NOT migrate the entire `tui/app/focus.rs` file — that requires Phase 9 (overlays) to land first, since most of `focus.rs` is overlay-state methods. **Apply:** future subsystem extractions should explicitly list which state moves (the data) and which methods move (the surface). The two scopes can decouple cleanly.
 
-**Subsystem location decision (post-Phase-4 lesson 1):**
-Two options for where `Focus` lives in the module tree:
-- **(a) `tui/app/focus.rs`** (today's location) — `pub(super)` from Focus
-  methods reaches only `tui/app/`, NOT `tui/panes/`, `tui/render.rs`, etc.
-  Every Focus method called externally is forced to also live in
-  `tui/app/mod.rs` as a `pub(super)` orchestrator (Phase 4 lesson 3).
-- **(b) `tui/focus.rs`** — mirrors `tui/selection.rs`, `tui/ci_state.rs`,
-  `tui/toasts.rs`. `Focus` becomes a `tui`-level subsystem; methods can be
-  `pub(crate)` (free per Phase 4 lesson 1, since `crate::tui::focus` is
-  outside `tui/app/`). External callers reach methods directly via
-  `app.focus().method()`.
+4. **Clippy's `const fn` hint requires explicit attention.** Three of the new methods needed `const fn` for clippy: `current`, `overlay_return`, `retarget_overlay_return`. Run clippy after every state-method addition; clippy doesn't run as part of the basic cargo check loop.
 
-**Pick (b).** Phase 4's confirmation that subsystem types living outside
-`tui/app/` get free `pub(crate)` makes (b) save ~6 mend warnings vs (a)
-that would otherwise become involuntary `mod.rs` rehosts. The relocation
-itself is mechanical — same as Phase 4's `app.config()` cleanup pattern.
-
-**Tradeoff:** this is the deepest entanglement of the bunch — focus depends
-on overlays which depend on selection which depends on projects. Doing this
-last lets the prior phases land first so dependencies are exposed as proper
-subsystem reads, not as field reaches. Doing it first would force premature
-abstractions.
-
-**Expected mend reduction (post-Phase-4 calibration):**
-- removed: ~16 App methods
-- added: ~3 (Focus accessor + helpers — `pub(crate)` on `tui/focus.rs` is free per Phase 4 lesson 1)
-- saved: ~6 from picking location (b) over (a)
-- net: **~12–18** (revised up from ~10–16)
-
-**Risk:** highest — touches every keyboard handler.
+5. **App struct documentation drifts.** The doc comment on `App.panes:` field still says "Owns `pane_manager`, `pane_data`, `visited_panes`, ..." — but `visited_panes` no longer lives on `Panes`. Future subsystem extractions should grep the App-struct doc comments for stale field references. (Captured for next-phase cleanup.)
 
 ## Phase 9 — `Overlays` subsystem extraction
 
@@ -2227,7 +2180,7 @@ expected values.
 | 5   | Toast orchestrator relocation (orphan from Phase 2 surfaced by post-Phase-4 review) | **-11 actual** (predicted ~8–11 — hit upper bound; range methodology held) |
 | 6   | Discovery shimmer + project predicates | **-11 actual** (predicted ~9–13 — within range, near upper bound) |
 | 7   | Mechanical `pub(super)` sweep | **-2 actual** (predicted ~25–30 — major miss; mend hints reflect lexical position, not call-graph reach) |
-| 8   | Focus subsystem at `tui/focus.rs` | ~12–18 |
+| 8   | Focus subsystem at `tui/focus.rs` | **0 actual** (predicted ~12–18; architectural progress not reflected in mend; overlay warnings deferred to Phase 9) |
 | 9   | Overlays subsystem at `tui/overlays.rs` (incl. Exit + inline_error) | ~14–20 |
 | 10  | Internal-helper tightening (Part A ~25–30 — back to original surface after Phase 7 surprise) + relocate `CiFetchTracker` (Part B ~4) + `query/*` empty-file sweep (Part C ~1–2 since most files already deleted) | ~30–36 |
 | **Visibility subtotal (Phases 8–10)** | | **~56–74** (forward only; 1+2+3+4+5+6+7 already in done row) |
@@ -2239,7 +2192,7 @@ expected values.
 | 16  | Startup-phase tracker + `StartupOrchestrator` | ~4 |
 | **Architectural subtotal (Phases 11–16)** | | **~39–48** (Phase 11 widened to absorb path resolution) |
 | **Forward grand total (Phases 8–16)** | | **~95–122** |
-| **Done (Phases 1+2+3+4+5+6+7)** | | **-57 (147 → 90)** |
+| **Done (Phases 1+2+3+4+5+6+7+8)** | | **-57 (147 → 90)** (Phase 8 = 0 net; absorbed warnings deferred to Phase 9) |
 | **Stable intermediate (after Phase 12, before Phase 13)** | | residual ~50–60 mend warnings |
 
 > **Caveat on the upper bound:** the upper of ~142 exceeds the 131

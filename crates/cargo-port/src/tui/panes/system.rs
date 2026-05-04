@@ -8,7 +8,6 @@
 //! `handle_input`-style methods that need cross-subsystem access
 //! remain free functions taking `&mut App`.
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
@@ -88,7 +87,6 @@ pub struct Panes {
     project_list: ProjectListPane,
 
     data:        PaneDataStore,
-    visited:     HashSet<PaneId>,
     hovered_row: Option<HoveredPaneRow>,
 }
 
@@ -110,7 +108,6 @@ impl Panes {
             project_list: ProjectListPane::new(),
 
             data:        PaneDataStore::new(),
-            visited:     std::iter::once(PaneId::ProjectList).collect(),
             hovered_row: None,
         }
     }
@@ -329,12 +326,6 @@ impl Panes {
     }
 
     pub const fn pane_data(&self) -> &PaneDataStore { &self.data }
-
-    pub fn mark_visited(&mut self, pane: PaneId) { self.visited.insert(pane); }
-
-    pub fn unvisit(&mut self, pane: PaneId) { self.visited.remove(&pane); }
-
-    pub fn remembers_visited(&self, pane: PaneId) -> bool { self.visited.contains(&pane) }
 
     pub const fn set_hover(&mut self, hovered: Option<HoveredPaneRow>) {
         self.hovered_row = hovered;

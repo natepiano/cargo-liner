@@ -145,7 +145,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         frame,
         outer_layout[0],
         &app.toasts().active_now(),
-        app.is_focused(PaneId::Toasts),
+        app.focus().is(PaneId::Toasts),
         app.focused_toast_id(),
     );
     app.panes_mut().toasts_mut().set_hits(toast_result.hitboxes);
@@ -341,7 +341,7 @@ fn dispatch_via_trait(
     dispatcher: fn(&mut panes::Panes, &mut Frame, Rect, &panes::DispatchArgs<'_>),
 ) {
     let focus_state = app.pane_focus_state(id);
-    let is_focused = app.is_focused(id);
+    let is_focused = app.focus().is(id);
     let animation_elapsed = app.animation_elapsed();
     // Compute `selected_project_path` before the split-borrow — it
     // crosses Selection + Scan via `path_for_row`, so the

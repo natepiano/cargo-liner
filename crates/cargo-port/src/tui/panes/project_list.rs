@@ -142,7 +142,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let total_project_rows = items.len();
 
     let title = project_panel_title_with_counts(app, area.width.saturating_sub(2).into());
-    let block = pane::default_pane_chrome().block(title, app.is_focused(PaneId::ProjectList));
+    let block = pane::default_pane_chrome().block(title, app.focus().is(PaneId::ProjectList));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
@@ -277,7 +277,7 @@ fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<
 }
 
 fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
-    let focused = app.is_focused(PaneId::ProjectList);
+    let focused = app.focus().is(PaneId::ProjectList);
     let cursor = app.panes().project_list().viewport().pos();
     let roots = app.resolved_dirs();
 

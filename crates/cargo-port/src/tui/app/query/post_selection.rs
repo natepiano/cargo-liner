@@ -30,12 +30,12 @@ impl App {
         self.reset_project_panes();
 
         let panes = self.tabbable_panes();
-        if !panes.contains(&self.base_focus()) {
-            self.focus_pane(PaneId::ProjectList);
+        if !panes.contains(&self.focus.base()) {
+            self.focus.set(PaneId::ProjectList);
         }
 
-        if self.return_focus.is_some() && !panes.contains(&self.return_focus.unwrap_or_default()) {
-            self.return_focus = Some(PaneId::ProjectList);
+        if self.focus.overlay_return().is_some() && !self.focus.overlay_return_is_in(&panes) {
+            self.focus.retarget_overlay_return(PaneId::ProjectList);
         }
 
         if let Some(abs_path) = current
@@ -55,7 +55,7 @@ impl App {
         match self.input_context() {
             InputContext::DetailTargets => Some("run"),
             InputContext::DetailFields => {
-                if self.base_focus() == PaneId::Package {
+                if self.focus.base() == PaneId::Package {
                     let pkg = self.panes().package().content()?;
                     let fields = panes::package_fields_from_data(pkg);
                     let field = *fields.get(self.panes().package().viewport().pos())?;

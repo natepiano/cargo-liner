@@ -40,7 +40,7 @@ impl App {
                 .set_pos(0);
         }
         if should_focus_project_list {
-            self.focus_pane(PaneId::ProjectList);
+            self.focus.set(PaneId::ProjectList);
         }
         self.sync_selected_project();
     }
@@ -159,7 +159,7 @@ impl App {
             "scan_start"
         );
         self.scan.set_priority_fetch_path(None);
-        self.focus_pane(PaneId::ProjectList);
+        self.focus.set(PaneId::ProjectList);
         self.close_settings();
         self.close_finder();
         self.reset_project_panes();

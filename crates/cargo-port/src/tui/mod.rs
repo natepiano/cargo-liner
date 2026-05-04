@@ -9,6 +9,7 @@ mod constants;
 mod cpu;
 mod duration_fmt;
 mod finder;
+mod focus;
 mod inflight;
 mod input;
 mod interaction;

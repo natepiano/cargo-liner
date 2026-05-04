@@ -77,6 +77,7 @@ use super::columns;
 use super::columns::LintCell;
 use super::columns::StyledSegment;
 use super::config_state::Config;
+use super::focus::Focus;
 use super::inflight::Inflight;
 use super::keymap_state::Keymap;
 use super::panes::LayoutCache;
@@ -212,8 +213,7 @@ pub(super) struct App {
     /// `confirm_verifying`, `lint_cache_usage`, and (test-only)
     /// `retry_spawn_mode`.
     scan:              Scan,
-    focused_pane:      PaneId,
-    return_focus:      Option<PaneId>,
+    focus:             Focus,
     confirm:           Option<ConfirmAction>,
     animation_started: Instant,
     mouse_pos:         Option<Position>,
@@ -358,8 +358,8 @@ impl App {
             .toasts_mut()
             .viewport_mut()
             .set_len(toast_len);
-        if self.base_focus() == PaneId::Toasts && self.toasts.active_now().is_empty() {
-            self.focus_pane(PaneId::ProjectList);
+        if self.focus.base() == PaneId::Toasts && self.toasts.active_now().is_empty() {
+            self.focus.set(PaneId::ProjectList);
         }
     }
 
@@ -787,7 +787,11 @@ impl App {
         self.selection.cached_child_sorted()
     }
 
-    pub(super) const fn focused_pane(&self) -> PaneId { self.focused_pane }
+    pub(super) const fn focused_pane(&self) -> PaneId { self.focus.current() }
+
+    pub(super) const fn focus(&self) -> &Focus { &self.focus }
+
+    pub(super) const fn focus_mut(&mut self) -> &mut Focus { &mut self.focus }
 
     pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { self.selection.expanded() }
 
@@ -981,7 +985,7 @@ impl App {
         let was_empty = self.inflight.example_output_is_empty();
         self.inflight.set_example_output(output);
         if was_empty && !self.inflight.example_output_is_empty() {
-            self.focus_pane(PaneId::Output);
+            self.focus.set(PaneId::Output);
         }
     }
 

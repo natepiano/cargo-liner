@@ -105,10 +105,10 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
     if code == KeyCode::Esc && !app.example_output().is_empty() {
-        let was_on_output = app.is_focused(PaneId::Output);
+        let was_on_output = app.focus().is(PaneId::Output);
         app.example_output_mut().clear();
         if was_on_output {
-            app.focus_pane(PaneId::Targets);
+            app.focus_mut().set(PaneId::Targets);
         }
         return;
     }
@@ -341,13 +341,13 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         .collect::<Vec<_>>();
 
     if project_list.contains(pos) {
-        app.focus_pane(PaneId::ProjectList);
+        app.focus_mut().set(PaneId::ProjectList);
         return;
     }
 
     for (pane_id, pane_rect) in pane_regions {
         if pane_id != PaneId::ProjectList && pane_rect.contains(pos) {
-            app.focus_pane(pane_id);
+            app.focus_mut().set(pane_id);
             return;
         }
     }
@@ -479,7 +479,7 @@ fn open_finder(app: &mut App) {
     let finder = app.finder_mut();
     finder.index = index;
     finder.col_widths = col_widths;
-    app.open_overlay(PaneId::Finder);
+    app.focus_mut().open_overlay(PaneId::Finder);
     app.open_finder();
     let finder = app.finder_mut();
     finder.query.clear();
@@ -501,7 +501,7 @@ fn terminal_shell_command(command: &str, selected_path: &Path) -> String {
 }
 
 fn open_settings_to_terminal_command(app: &mut App) {
-    app.open_overlay(PaneId::Settings);
+    app.focus_mut().open_overlay(PaneId::Settings);
     app.open_settings();
     settings::focus_terminal_command(app);
 }
@@ -565,13 +565,13 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
         GlobalAction::OpenEditor => open_in_editor(app),
         GlobalAction::OpenTerminal => open_terminal(app),
         GlobalAction::Settings => {
-            app.open_overlay(PaneId::Settings);
+            app.focus_mut().open_overlay(PaneId::Settings);
             app.open_settings();
         },
         GlobalAction::NextPane => app.focus_next_pane(),
         GlobalAction::PrevPane => app.focus_previous_pane(),
         GlobalAction::OpenKeymap => {
-            app.open_overlay(PaneId::Keymap);
+            app.focus_mut().open_overlay(PaneId::Keymap);
             app.open_keymap();
             app.panes_mut()
                 .keymap_mut()

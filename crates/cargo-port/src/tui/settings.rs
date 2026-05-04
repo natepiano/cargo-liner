@@ -844,7 +844,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 return;
             }
             app.close_settings();
-            app.close_overlay();
+            app.focus_mut().close_overlay();
         },
         KeyCode::Up => {
             app.clear_inline_error();
