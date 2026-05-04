@@ -61,17 +61,21 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
         Some(Conclusion::Success)
     );
     assert!(matches!(
-        app.ci_data_for(test_path("~/ws").as_path()),
+        app.projects().ci_data_for(test_path("~/ws").as_path()),
         Some(crate::project::ProjectCiData::Loaded(_))
     ));
     assert_eq!(
         app.ci_for(test_path("~/ws/core").as_path()),
         Some(Conclusion::Success)
     );
-    assert!(app.ci_info_for(test_path("~/ws/core").as_path()).is_some());
+    assert!(
+        app.projects()
+            .ci_info_for(test_path("~/ws/core").as_path())
+            .is_some()
+    );
     // Member resolves to the same entry-level ci_data as the workspace root.
     assert!(matches!(
-        app.ci_data_for(test_path("~/ws/core").as_path()),
+        app.projects().ci_data_for(test_path("~/ws/core").as_path()),
         Some(crate::project::ProjectCiData::Loaded(_))
     ));
 }
@@ -185,11 +189,11 @@ fn worktree_group_shares_ci_data_across_primary_and_linked() {
 
     // Linked worktree resolves to the same per-repo ci_data slot.
     assert!(matches!(
-        app.ci_data_for(feature_path.as_path()),
+        app.projects().ci_data_for(feature_path.as_path()),
         Some(crate::project::ProjectCiData::Loaded(_))
     ));
     // Member inside the workspace also shares the entry-level ci_data.
-    assert!(app.ci_info_for(member.path()).is_some());
+    assert!(app.projects().ci_info_for(member.path()).is_some());
 }
 
 #[test]

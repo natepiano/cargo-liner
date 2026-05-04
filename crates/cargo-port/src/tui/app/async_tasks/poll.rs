@@ -114,10 +114,12 @@ impl App {
             match msg {
                 CiFetchMsg::Complete { path, result, kind } => {
                     let before = self
+                        .projects()
                         .ci_info_for(Path::new(&path))
                         .map_or(0, |info| info.runs.len());
                     self.handle_ci_fetch_complete(&path, result, kind);
                     let after = self
+                        .projects()
                         .ci_info_for(Path::new(&path))
                         .map_or(0, |info| info.runs.len());
                     let new_runs = after.saturating_sub(before);

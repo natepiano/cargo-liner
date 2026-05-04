@@ -1700,7 +1700,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         &abs_path_owned,
         app.projects().repo_info_for(abs_path_owned.as_path()),
         app.projects().git_info_for(abs_path_owned.as_path()),
-        app.ci_info_for(abs_path_owned.as_path()),
+        app.projects().ci_info_for(abs_path_owned.as_path()),
         ci,
         is_worktree_group,
     );
@@ -1777,14 +1777,14 @@ pub fn build_ci_data(app: &App) -> CiData {
     let has_ci_owner = app.selected_ci_path().is_some();
     let git_info = selected_path.and_then(|path| app.projects().git_info_for(path));
     let repo_info = selected_path.and_then(|path| app.projects().repo_info_for(path));
-    let ci_info = selected_path.and_then(|path| app.ci_info_for(path));
+    let ci_info = selected_path.and_then(|path| app.projects().ci_info_for(path));
     let current_branch = selected_path.and_then(|path| {
         app.projects()
             .git_info_for(path)
             .and_then(|git| git.branch.clone())
     });
     let unpublished_branch_name =
-        selected_path.and_then(|path| app.unpublished_ci_branch_name(path));
+        selected_path.and_then(|path| app.projects().unpublished_ci_branch_name(path));
     let runs = app.selected_ci_runs();
     let is_fetching = selected_path.is_some_and(|path| app.ci_is_fetching(path));
     let branch_filtered_empty = selected_path.is_some_and(|path| {

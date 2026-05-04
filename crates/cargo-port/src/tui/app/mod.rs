@@ -83,6 +83,7 @@ use super::panes::Panes;
 use super::scan_state::Scan;
 use super::selection::Selection;
 use crate::ci::CiRun;
+use crate::ci::Conclusion;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
 use crate::http::GitHubRateLimit;
@@ -90,7 +91,9 @@ use crate::http::HttpClient;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
 use crate::project::AbsolutePath;
+use crate::project::ProjectFields;
 use crate::project::WorkspaceMetadataStore;
+use crate::project::WorktreeGroup;
 use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -295,6 +298,8 @@ impl App {
         LintCell::from_parts(icon, style)
     }
 
+    pub(super) const fn config(&self) -> &Config { &self.config }
+
     pub(super) const fn current_config(&self) -> &CargoPortConfig { self.config.current() }
 
     /// Test-only mutable access to the active config. Production
@@ -353,6 +358,94 @@ impl App {
     pub(super) const fn ci(&self) -> &Ci { &self.ci }
 
     pub(super) const fn ci_mut(&mut self) -> &mut Ci { &mut self.ci }
+
+    pub(super) fn selected_ci_path(&self) -> Option<AbsolutePath> {
+        let path = self.selected_project_path()?;
+        let entry = self.projects().entry_containing(path)?;
+        Some(entry.item.path().clone())
+    }
+
+    pub(super) fn selected_ci_runs(&self) -> Vec<CiRun> {
+        self.selected_project_path()
+            .map_or_else(Vec::new, |path| self.ci_runs_for_display(path))
+    }
+
+    pub(super) fn ci_for(&self, path: &Path) -> Option<Conclusion> {
+        // A branch with no upstream tracking can't have CI runs — don't
+        // show the parent repo's result for an unpushed worktree branch.
+        if self.projects().unpublished_ci_branch_name(path).is_some() {
+            return None;
+        }
+        self.projects()
+            .ci_info_for(path)
+            .and_then(|_| self.latest_ci_run_for_path(path))
+            .map(|run| run.conclusion)
+    }
+
+    pub(super) fn ci_is_fetching(&self, path: &Path) -> bool {
+        self.projects().entry_containing(path).is_some_and(|entry| {
+            self.ci
+                .fetch_tracker()
+                .is_fetching(entry.item.path().as_path())
+        })
+    }
+
+    /// All absolute paths for a `RootItem` (root + worktrees).
+    fn unique_item_paths(item: &RootItem) -> Vec<AbsolutePath> {
+        let mut paths = Vec::new();
+        paths.push(item.path().clone());
+        match item {
+            RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) => {
+                for l in linked {
+                    let p = l.path().clone();
+                    if !paths.contains(&p) {
+                        paths.push(p);
+                    }
+                }
+            },
+            RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }) => {
+                for l in linked {
+                    let p = l.path().clone();
+                    if !paths.contains(&p) {
+                        paths.push(p);
+                    }
+                }
+            },
+            _ => {},
+        }
+        paths
+    }
+
+    /// Aggregate CI for a `RootItem`.
+    pub(super) fn ci_for_item(&self, item: &RootItem) -> Option<Conclusion> {
+        let paths = Self::unique_item_paths(item);
+        if paths.len() == 1 {
+            return self.ci_for(&paths[0]);
+        }
+        let mut any_red = false;
+        let mut all_green = true;
+        let mut any_data = false;
+        for path in &paths {
+            if let Some(run) = self.latest_ci_run_for_path(path) {
+                any_data = true;
+                if run.conclusion.is_failure() {
+                    any_red = true;
+                    all_green = false;
+                } else if !run.conclusion.is_success() {
+                    all_green = false;
+                }
+            }
+        }
+        if !any_data {
+            None
+        } else if any_red {
+            Some(Conclusion::Failure)
+        } else if all_green {
+            Some(Conclusion::Success)
+        } else {
+            None
+        }
+    }
 
     pub(super) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
         self.projects().lint_at_path(path)

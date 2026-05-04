@@ -17,6 +17,7 @@ use crate::project::GitStatus;
 use crate::project::MemberGroup;
 use crate::project::Package;
 use crate::project::ProjectCiData;
+use crate::project::ProjectCiInfo;
 use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
 use crate::project::ProjectInfo;
@@ -422,6 +423,30 @@ impl ProjectList {
             Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
             None => NO_REMOTE_SYNC.to_string(),
         }
+    }
+
+    pub(crate) fn ci_data_for(&self, path: &Path) -> Option<&ProjectCiData> {
+        self.entry_containing(path)
+            .and_then(|entry| entry.git_repo.as_ref())
+            .map(|repo| &repo.ci_data)
+    }
+
+    pub(crate) fn ci_info_for(&self, path: &Path) -> Option<&ProjectCiInfo> {
+        self.ci_data_for(path).and_then(ProjectCiData::info)
+    }
+
+    /// Branch name for a checkout whose CI cannot be inferred from the
+    /// parent repo's default-branch runs: an unpushed (no-upstream) branch
+    /// that also isn't the default. Used to suppress stale parent-repo CI
+    /// status for unpublished worktree branches.
+    pub(crate) fn unpublished_ci_branch_name(&self, path: &Path) -> Option<String> {
+        let git = self.git_info_for(path)?;
+        let default_branch = self
+            .repo_info_for(path)
+            .and_then(|repo| repo.default_branch.as_deref());
+        (git.primary_tracked_ref().is_none() && git.branch.as_deref() != default_branch)
+            .then(|| git.branch.clone())
+            .flatten()
     }
 
     pub(crate) fn git_main(&self, path: &Path) -> String {

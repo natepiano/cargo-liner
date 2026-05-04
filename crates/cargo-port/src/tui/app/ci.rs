@@ -49,7 +49,7 @@ impl App {
     ) {
         let abs = AbsolutePath::from(Path::new(path));
 
-        let prev_info = self.ci_info_for(abs.as_path());
+        let prev_info = self.projects().ci_info_for(abs.as_path());
         let prev_count = prev_info.map_or(0, |info| info.runs.len());
         let prev_exhausted = prev_info.is_some_and(|info| info.exhausted);
         let prev_github_total = prev_info.map_or(0, |info| info.github_total);
@@ -185,7 +185,7 @@ impl App {
     }
 
     pub(super) fn ci_runs_for_display_inner(&self, path: &Path) -> Vec<CiRun> {
-        let Some(info) = self.ci_info_for(path) else {
+        let Some(info) = self.projects().ci_info_for(path) else {
             return Vec::new();
         };
         let Some(branch) = self.current_branch_for(path) else {
@@ -202,7 +202,7 @@ impl App {
     }
 
     pub(super) fn latest_ci_run_for_path(&self, path: &Path) -> Option<&CiRun> {
-        let info = self.ci_info_for(path)?;
+        let info = self.projects().ci_info_for(path)?;
         let runs = info.runs.as_slice();
         let Some(branch) = self.current_branch_for(path) else {
             return runs.first();

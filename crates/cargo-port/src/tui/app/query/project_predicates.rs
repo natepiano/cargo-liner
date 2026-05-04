@@ -34,32 +34,6 @@ impl App {
         })
     }
 
-    /// All absolute paths for a `RootItem` (root + worktrees).
-    pub(super) fn unique_item_paths(item: &RootItem) -> Vec<AbsolutePath> {
-        let mut paths = Vec::new();
-        paths.push(item.path().clone());
-        match item {
-            RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) => {
-                for l in linked {
-                    let p = l.path().clone();
-                    if !paths.contains(&p) {
-                        paths.push(p);
-                    }
-                }
-            },
-            RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }) => {
-                for l in linked {
-                    let p = l.path().clone();
-                    if !paths.contains(&p) {
-                        paths.push(p);
-                    }
-                }
-            },
-            _ => {},
-        }
-        paths
-    }
-
     pub fn is_vendored_path(&self, path: &Path) -> bool {
         self.projects().iter().any(|item| match &item.item {
             RootItem::Rust(RustProject::Workspace(ws)) => {
