@@ -80,7 +80,9 @@ design depth in-line per phase:
 | Phases | Readiness | Notes |
 | ------ | --------- | ----- |
 | 1 | **Done** (commit `7160e04`) | Config pass-through accessors collapsed. 10 flag methods moved to `Config`, `app.config()` accessor added, ~50 call sites updated. Mend warnings: **147 → 133** (-14, predicted -10 — overshoot due to secondary warnings clearing when self-callers inside App impls also went away; treat per-phase predictions as conservative). `Config` stayed `pub(super)`; no widening needed. The `pub(super)` "relocate but no mend change" items (`current_config*`, `settings_edit_*`) were dropped from scope. 597/597 tests pass. |
-| 1b, 2, 3, 4, 4b, 5, 6, 7a, 7b, 8 | **Ready** | Mechanical visibility narrowings; one new accessor + call-site updates per phase. Risk is schedule, not design. |
+| **1b+2+4b** *(merged after Phase 1 review)* | **Ready** | Combined "trivial subsystems" phase: Keymap (`sync_keymap_stamp`), Toasts (`active_toasts`, `toasts_is_alive_for_test`), Scan/metadata (`metadata_store_handle` etc.). Predicted total: ~10–15. Single commit, low blast radius. |
+| 3, 4, 5, 6, 7a, 7b, 8 | **Ready** | Mechanical visibility narrowings. |
+| **8b** *(new — added after Phase 1 review)* | **Ready** | Tighten `app/` internal-helper visibility. ~30 of the remaining 133 warnings live in `app/focus.rs` and `app/async_tasks/*` — these are not pass-throughs, they're internal helpers `pub` was set on defensively. Pure module-level `pub` → `pub(super)`/`pub(crate)` with no API change. Predicted -25, zero design risk. Should run **before** the architectural phases so 9/10/11 build on a tightened App surface. |
 | 9 (move `Viewport.pos` → `Selection.cursor`) | **Ready** | Design depth filled in below: post-move structs, `&Scan`-arg method signatures, scroll-follows-cursor location, end-to-end flow. |
 | 10 (subsystems implement `Pane`) | **Ready** | Design depth filled in below: `Pane` trait signature, post-Phase-10 `PaneRenderCtx` fields, `RenderSplit<'a>` borrow-helper, dispatch loop, detail-cache decision (option b — keeps cache on `Panes`), `*Layout` type module locations. One execution-time choice flagged: option (a) vs (b) for `Selection`'s `Pane` impl, with (b) recommended. |
 | 11 (`Bus<Event>`) | **Ready** | Design depth filled in below: full `Event` enum (~14 variants), full `Command` enum, `EventHandler` trait signature with `&mut self + &Scan`, `EventBus` (~10 lines), drain loop with verified borrows, command pattern eliminating cross-subsystem `&mut`, re-entrancy semantics, `StartupOrchestrator` API, end-to-end traced flow for `apply_config`. |
@@ -90,6 +92,49 @@ pass produced concrete trait signatures, struct definitions,
 borrow-composition sketches, and traced flows. All three
 architectural phases (9, 10, 11) now have enough design to sit down
 and implement.
+
+## Lessons from Phase 1 (applied to remaining phases)
+
+1. **`pub(super)` from `tui/<subsystem>.rs` reaches the entire `tui/`
+   subtree.** No subsystem under `tui/` needs `pub` for its
+   methods — `pub(super)` is sufficient. Drop "side-channel widening"
+   discussion from Phases 1b, 2, 3, 4, 4b, 5.
+
+2. **The multiplier effect is structural.** Removing a `pub` wrapper
+   clears its own warning *and* secondary "only used inside subtree"
+   warnings on adjacent self-callers (Phase 1: -14 vs -10 predicted,
+   ~40% overshoot). All downstream phase predictions should be read
+   as conservative; the visibility-narrowing total (~89-92) is more
+   likely 120+, the architectural total (~46) more likely 60+.
+
+3. **Drop the "relocate-but-no-mend-change" items from per-phase
+   scopes.** `pub(super)` items aren't visibility hazards; relocating
+   them is pure churn. Phase 1 correctly skipped them.
+
+4. **Small phases combine.** Phases 1b, 2, and 4b are each predicted
+   1-3 reductions. They combined into a single "trivial subsystems"
+   phase (now `1b+2+4b` in the table) — one commit, all of them at
+   once.
+
+5. **App's internal helpers are their own cluster.** ~30 of the 133
+   remaining warnings are in `app/focus.rs` and `app/async_tasks/*`
+   internal helpers — not pass-throughs to subsystems. They're
+   helpers that were `pub` set defensively. Adding **Phase 8b** (new)
+   to handle these as a pure tightening pass before the architectural
+   phases.
+
+6. **Open question — wrapper accessors vs. exposed `current()`.**
+   Phase 1 added 10 one-line wrappers on `Config` (e.g.
+   `lint_enabled()` returning `self.current().lint.enabled`). The
+   alternative — drop the wrappers, let callers write
+   `app.config().current().lint.enabled` — is cleaner per the doc's
+   own "expose subsystems, don't re-export their methods" principle.
+   Phase 1 violated that principle; the wrappers shipped because they
+   read marginally better at call sites. **Decision for Phases
+   1b/2/3/4 onward: prefer exposing `current()` / accessors to
+   subsystem-owned data, rather than wrapping each field with a
+   one-liner.** Don't retroactively undo Phase 1 (working code,
+   smoke-tested), but don't repeat the pattern.
 
 ## Phase order
 
