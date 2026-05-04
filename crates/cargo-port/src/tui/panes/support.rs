@@ -1043,7 +1043,7 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
     if !item.is_rust() {
         return "Project".to_string();
     }
-    if app.is_vendored_path(item.path()) {
+    if app.projects().is_vendored_path(item.path()) {
         return "Vendored Crate".to_string();
     }
     if matches!(item, RootItem::Worktrees(_)) {
@@ -1052,7 +1052,7 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
     if matches!(item, RootItem::Rust(RustProject::Workspace(_))) {
         return "Workspace".to_string();
     }
-    if app.is_workspace_member_path(item.path()) {
+    if app.projects().is_workspace_member_path(item.path()) {
         "Workspace Member".to_string()
     } else {
         "Package".to_string()
@@ -1061,9 +1061,9 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
 
 /// Resolve the package title for a non-root package (member or vendored).
 fn resolve_package_title_for_package(app: &App, pkg: &Package) -> String {
-    if app.is_vendored_path(pkg.path()) {
+    if app.projects().is_vendored_path(pkg.path()) {
         "Vendored Crate".to_string()
-    } else if app.is_workspace_member_path(pkg.path()) {
+    } else if app.projects().is_workspace_member_path(pkg.path()) {
         "Workspace Member".to_string()
     } else {
         "Package".to_string()
@@ -1523,14 +1523,14 @@ fn resolve_disk_and_ci(
 ) -> (String, Option<Conclusion>) {
     wt_item.map_or_else(
         || {
-            let ci = if app.is_rust_at_path(abs_path) {
+            let ci = if app.projects().is_rust_at_path(abs_path) {
                 app.ci_for(abs_path)
             } else {
                 None
             };
-            (app.formatted_disk(abs_path), ci)
+            (super::formatted_disk(app, abs_path), ci)
         },
-        |item| (App::formatted_disk_for_item(item), app.ci_for_item(item)),
+        |item| (super::formatted_disk_for_item(item), app.ci_for_item(item)),
     )
 }
 
@@ -1693,7 +1693,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let crates_downloads = crates_io.downloads;
 
     let is_worktree_group = package_title == "Worktree Group";
-    let is_rust = app.is_rust_at_path(abs_path_owned.as_path());
+    let is_rust = app.projects().is_rust_at_path(abs_path_owned.as_path());
     let lint_display =
         super::Lint::package_display(app.projects(), &abs_path_owned, is_worktree_group, is_rust);
     let ci_display = app.ci().package_display(
@@ -1861,7 +1861,7 @@ pub fn build_lints_data(app: &App) -> LintsData {
     LintsData {
         runs,
         sizes,
-        is_rust: selected_path.is_some_and(|path| app.is_rust_at_path(path)),
+        is_rust: selected_path.is_some_and(|path| app.projects().is_rust_at_path(path)),
     }
 }
 

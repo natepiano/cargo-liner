@@ -449,6 +449,63 @@ impl ProjectList {
             .flatten()
     }
 
+    pub(crate) fn is_deleted(&self, path: &Path) -> bool {
+        self.at_path(path)
+            .is_some_and(|project| project.visibility == Visibility::Deleted)
+    }
+
+    pub(crate) fn is_rust_at_path(&self, path: &Path) -> bool {
+        self.iter().any(|item| {
+            if item
+                .submodules()
+                .iter()
+                .any(|submodule| submodule.path.as_path() == path)
+            {
+                return false;
+            }
+            (item.path() == path || item.at_path(path).is_some()) && item.is_rust()
+        })
+    }
+
+    pub(crate) fn is_vendored_path(&self, path: &Path) -> bool {
+        self.iter().any(|item| match &item.item {
+            RootItem::Rust(RustProject::Workspace(ws)) => {
+                ws.vendored().iter().any(|v| v.path() == path)
+            },
+            RootItem::Rust(RustProject::Package(pkg)) => {
+                pkg.vendored().iter().any(|v| v.path() == path)
+            },
+            RootItem::Worktrees(WorktreeGroup::Workspaces {
+                primary, linked, ..
+            }) => std::iter::once(primary)
+                .chain(linked.iter())
+                .any(|ws| ws.vendored().iter().any(|v| v.path() == path)),
+            RootItem::Worktrees(WorktreeGroup::Packages {
+                primary, linked, ..
+            }) => std::iter::once(primary)
+                .chain(linked.iter())
+                .any(|pkg| pkg.vendored().iter().any(|v| v.path() == path)),
+            RootItem::NonRust(_) => false,
+        })
+    }
+
+    pub(crate) fn is_workspace_member_path(&self, path: &Path) -> bool {
+        self.iter().any(|item| match &item.item {
+            RootItem::Rust(RustProject::Workspace(ws)) => ws
+                .groups()
+                .iter()
+                .any(|g| g.members().iter().any(|m| m.path() == path)),
+            RootItem::Worktrees(WorktreeGroup::Workspaces {
+                primary, linked, ..
+            }) => std::iter::once(primary).chain(linked.iter()).any(|ws| {
+                ws.groups()
+                    .iter()
+                    .any(|g| g.members().iter().any(|m| m.path() == path))
+            }),
+            _ => false,
+        })
+    }
+
     pub(crate) fn git_main(&self, path: &Path) -> String {
         let Some(info) = self.git_info_for(path) else {
             return String::new();

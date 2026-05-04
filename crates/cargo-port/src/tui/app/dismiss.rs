@@ -74,7 +74,7 @@ impl App {
             },
         }?;
 
-        if self.is_deleted(&dismiss_path) {
+        if self.projects().is_deleted(&dismiss_path) {
             Some(DismissTarget::DeletedProject(dismiss_path))
         } else {
             None

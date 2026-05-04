@@ -108,6 +108,20 @@ fn disk_color(percentile: Option<f64>) -> Style {
     Style::default().fg(Color::Rgb(r, g, b))
 }
 
+pub fn formatted_disk(app: &App, path: &Path) -> String {
+    let bytes = app
+        .projects()
+        .at_path(path)
+        .and_then(|project| project.disk_usage_bytes)
+        .unwrap_or(0);
+    render::format_bytes(bytes)
+}
+
+pub fn formatted_disk_for_item(item: &RootItem) -> String {
+    item.disk_usage_bytes()
+        .map_or_else(|| render::format_bytes(0), render::format_bytes)
+}
+
 pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let (mut items, header, summary_line, row_width) = {
         let widths = app.cached_fit_widths();
@@ -326,7 +340,7 @@ fn render_root_item(
 ) -> ListItem<'static> {
     let item = &app.projects()[node_index];
     let name = &root_labels[node_index];
-    let disk = App::formatted_disk_for_item(item);
+    let disk = formatted_disk_for_item(item);
     let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
     let ci = app.ci_for_item(item);
@@ -352,7 +366,7 @@ fn render_root_item(
     } else {
         PREFIX_ROOT_LEAF
     };
-    let deleted = app.is_deleted(item.path());
+    let deleted = app.projects().is_deleted(item.path());
     let wt_health = item.worktree_health();
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, wt_health);
@@ -393,11 +407,11 @@ fn render_child_item<P: project::ProjectFields>(
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let path = project.path();
-    let disk = app.formatted_disk(path);
+    let disk = formatted_disk(app, path);
     let disk_bytes = project.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project::Package::lang_icon();
-    let lint_cell = if app.is_rust_at_path(path) {
+    let lint_cell = if app.projects().is_rust_at_path(path) {
         app.lint_cell(&crate::tui::lint_state::Lint::status_for_path(
             app.projects(),
             path,
@@ -406,7 +420,7 @@ fn render_child_item<P: project::ProjectFields>(
         crate::tui::columns::LintCell::hidden()
     };
     let ci = app.ci_for(path);
-    let hide_git_status = app.is_workspace_member_path(path);
+    let hide_git_status = app.projects().is_workspace_member_path(path);
     let origin_sync = if hide_git_status
         || matches!(
             app.projects().git_status_for(path),
@@ -425,7 +439,7 @@ fn render_child_item<P: project::ProjectFields>(
     } else {
         app.projects().git_main(path)
     };
-    let deleted = inherited_deleted || app.is_deleted(project.path());
+    let deleted = inherited_deleted || app.projects().is_deleted(project.path());
     let git_status = app.projects().git_status_for(path);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
@@ -489,7 +503,7 @@ fn render_worktree_entry<'a>(
         PREFIX_WT_FLAT
     };
     let wt_abs = abs_path.as_deref().unwrap_or_else(|| Path::new(""));
-    let disk = app.formatted_disk(wt_abs);
+    let disk = formatted_disk(app, wt_abs);
     let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, sorted));
     let lang = item.lang_icon();
@@ -499,7 +513,7 @@ fn render_worktree_entry<'a>(
     let ci = app.ci_for(wt_abs);
     let origin_sync = app.projects().git_sync(wt_abs);
     let main_sync = app.projects().git_main(wt_abs);
-    let deleted = app.is_deleted(wt_abs);
+    let deleted = app.projects().is_deleted(wt_abs);
     let git_status = app.projects().git_status_for(wt_abs);
     let wt_health = worktree_health_for_entry(item, wi);
     let (disk_text, disk_suffix, disk_suffix_style) =
@@ -704,7 +718,7 @@ fn render_wt_member<'a>(
                     } else {
                         linked.get(wi - 1).unwrap_or(primary)
                     };
-                    app.is_deleted(ws.path())
+                    app.projects().is_deleted(ws.path())
                 },
                 _ => false,
             };
@@ -759,7 +773,7 @@ fn render_member_item(
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |m| {
-            let inherited_deleted = app.is_deleted(item.path());
+            let inherited_deleted = app.projects().is_deleted(item.path());
             render_child_item(
                 app,
                 m,
@@ -815,7 +829,7 @@ fn render_vendored_item(
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |v| {
-            let inherited_deleted = app.is_deleted(item.path());
+            let inherited_deleted = app.projects().is_deleted(item.path());
             render_child_item(
                 app,
                 v,
@@ -864,10 +878,11 @@ fn render_path_only_entry(
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let path = entry.path().as_path();
-    let disk = app.formatted_disk(path);
+    let disk = formatted_disk(app, path);
     let ds = disk_color(disk_percentile(entry.info().disk_usage_bytes, sorted));
     let git_status = app.projects().git_status_for(path);
-    let deleted = app.is_deleted(inherited_deleted_path) || app.is_deleted(path);
+    let deleted =
+        app.projects().is_deleted(inherited_deleted_path) || app.projects().is_deleted(path);
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, entry.info().worktree_health);
     let row = columns::build_row_cells(ProjectRow {
@@ -947,7 +962,7 @@ fn render_wt_vendored_item(
                     } else {
                         linked.get(worktree_index - 1).unwrap_or(primary)
                     };
-                    app.is_deleted(ws.path())
+                    app.projects().is_deleted(ws.path())
                 },
                 RootItem::Worktrees(WorktreeGroup::Packages {
                     primary, linked, ..
@@ -957,7 +972,7 @@ fn render_wt_vendored_item(
                     } else {
                         linked.get(worktree_index - 1).unwrap_or(primary)
                     };
-                    app.is_deleted(pkg.path())
+                    app.projects().is_deleted(pkg.path())
                 },
                 _ => false,
             };

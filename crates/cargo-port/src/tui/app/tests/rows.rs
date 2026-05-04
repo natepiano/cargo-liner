@@ -325,7 +325,7 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
 
     let linked_abs = AbsolutePath::from(linked_path.clone());
     assert!(
-        app.is_deleted(&linked_abs),
+        app.projects().is_deleted(&linked_abs),
         "linked worktree should be deleted"
     );
 
@@ -412,7 +412,7 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
 
     let linked_abs = AbsolutePath::from(linked_path);
     assert!(
-        app.is_deleted(&linked_abs),
+        app.projects().is_deleted(&linked_abs),
         "linked workspace should be deleted"
     );
     assert_eq!(
@@ -639,7 +639,7 @@ fn deleted_linked_workspace_children_render_crossed_out_before_dismiss() {
     );
 
     assert!(
-        app.is_deleted(Path::new(&linked_path)),
+        app.projects().is_deleted(Path::new(&linked_path)),
         "linked workspace should be marked deleted"
     );
     assert!(

@@ -101,6 +101,11 @@ impl Scan {
         &mut self.discovery_shimmers
     }
 
+    pub(super) fn prune_shimmers(&mut self, now: std::time::Instant) {
+        self.discovery_shimmers
+            .retain(|_, shimmer| shimmer.is_active_at(now));
+    }
+
     // ── pending git first-commit cache ──────────────────────────────
 
     #[cfg(test)]

@@ -640,7 +640,7 @@ fn vendored_path_dependency_becomes_ci_owner() {
     let mut app = make_app(&[make_project(Some("app"), "~/app"), vendored.clone()]);
     apply_items(&mut app, &[root_item]);
 
-    assert!(app.is_vendored_path(vendored.path()));
+    assert!(app.projects().is_vendored_path(vendored.path()));
     assert!(
         app.projects().entry_containing(vendored.path()).is_some(),
         "vendored path should resolve to an owning ProjectEntry"

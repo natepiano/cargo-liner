@@ -1015,7 +1015,7 @@ fn assert_deleted_linked_worktree_dismisses_to_root(app: &mut App, linked_dir: &
             bytes: 0,
         },
     );
-    assert!(app.is_deleted(linked_dir));
+    assert!(app.projects().is_deleted(linked_dir));
     app.panes_mut().project_list_mut().viewport_mut().set_pos(2);
     let target = app
         .focused_dismiss_target()

@@ -62,6 +62,25 @@ pub enum DiscoveryRowKind {
     PathOnly,
 }
 
+impl DiscoveryRowKind {
+    pub(super) const fn allows_parent_kind(self, kind: Self) -> bool {
+        matches!(
+            (self, kind),
+            (Self::Root, Self::Root)
+                | (Self::WorktreeEntry, Self::WorktreeEntry)
+                | (Self::PathOnly, Self::PathOnly)
+        )
+    }
+
+    pub(super) const fn discriminant(self) -> u8 {
+        match self {
+            Self::Root => 0,
+            Self::WorktreeEntry => 1,
+            Self::PathOnly => 2,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct StartupPhaseTracker {
     pub scan_complete_at:    Option<Instant>,

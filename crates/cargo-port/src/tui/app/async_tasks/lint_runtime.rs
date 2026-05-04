@@ -59,7 +59,7 @@ impl App {
         self.refresh_lint_cache_usage_from_disk();
     }
     pub(super) fn reload_lint_history(&mut self, project_path: &Path) {
-        if !self.is_rust_at_path(project_path) {
+        if !self.projects().is_rust_at_path(project_path) {
             return;
         }
         let runs = lint::read_history(project_path);
@@ -114,7 +114,7 @@ impl App {
         }
         self.lint_runtime_root_entries()
             .into_iter()
-            .filter(|(path, _)| !self.is_deleted(path))
+            .filter(|(path, _)| !self.projects().is_deleted(path))
             .map(|(abs_path, is_rust)| RegisterProjectRequest {
                 project_label: project::home_relative_path(&abs_path),
                 abs_path,

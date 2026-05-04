@@ -65,7 +65,7 @@ they are App's actual contract surface):
 
 `request_quit`, `should_quit`, `request_restart`, `should_restart` are *not*
 in this list — they are trivial state writes on `ExitMode` and move in
-Phase 7 (Overlays).
+Phase 9 (Overlays).
 
 These stay on `App` because each one touches at least two subsystems and
 encapsulates a cross-cutting decision.
@@ -90,7 +90,7 @@ design depth in-line per phase:
 | 9 | **Ready** | Focus subsystem. Mechanical visibility narrowing. |
 | **10** *(added after Phase 1 review; expanded after Phase 2)* | **Ready** | Two parts: (A) tighten ~30 internal-helper `pub`s in `app/focus.rs` and `app/async_tasks/*` (no API change), and (B) relocate `CiFetchTracker` from `tui/app/types.rs` to `tui/ci_state.rs` and re-narrow its widened methods plus `Ci::fetch_tracker[_mut]` accessors. Predicted ~22–25 reduction, zero design risk. Should run **before** the architectural phases so 11/12/13 build on a tightened App surface. |
 | 11 (move `Viewport.pos` → `Selection.cursor`) | **Ready** | Design depth filled in below: post-move structs, `&Scan`-arg method signatures, scroll-follows-cursor location, end-to-end flow. |
-| 12 (subsystems implement `Pane`) | **Ready** | Design depth filled in below: `Pane` trait signature, post-Phase-12 `PaneRenderCtx` fields, `RenderSplit<'a>` borrow-helper, dispatch loop, detail-cache decision (option b — keeps cache on `Panes`), `*Layout` type module locations. One execution-time choice flagged: option (a) vs (b) for `Selection`'s `Pane` impl, with (b) recommended. |
+| 12 (subsystems implement `Pane`) | **Ready** | Design depth filled in below: `Pane` trait signature, post-Phase-12 `PaneRenderCtx` fields, `RenderSplit<'a>` borrow-helper (post-Phase-6: `&mut Inflight` dropped — output state precomputes), dispatch loop, detail-cache lives at `crate::tui::detail_cache::DetailCache`, `*Layout` rename deferred to follow-up. One execution-time choice flagged: option (a) vs (b) for `Selection`'s `Pane` impl, with (b) recommended. |
 | 13 (`Bus<Event>`) | **Ready** | Design depth filled in below: full `Event` enum (~14 variants), full `Command` enum, `EventHandler` trait signature with `&mut self + &Scan`, `EventBus` (~10 lines), drain loop with verified borrows, command pattern eliminating cross-subsystem `&mut`, re-entrancy semantics, `StartupOrchestrator` API, end-to-end traced flow for `apply_config`. |
 
 The earlier rounds of review pointed out gaps that were real; this
@@ -174,12 +174,12 @@ moves derived from the post-Phase-9 review (see end of doc).
 | 3 of 16 | Phase 3 — Git/Repo reads → ProjectList | **Done** |
 | 4 of 16 | Phase 4 — Ci pass-throughs | **Done** |
 | 5 of 16 | Phase 5 — Toast orchestrator relocation | **Done** |
-| 6 of 16 | Phase 6 — Discovery shimmer + project predicates | Ready |
-| 7 of 16 | Phase 7 — Overlays subsystem extraction (lives at `tui/overlays.rs`) | Ready |
-| 8 of 16 | Phase 8 — Path resolution (clean) | Ready |
-| 9 of 16 | Phase 9 — Focus subsystem (lives at `tui/focus.rs`) | Ready |
-| 10 of 16 | Phase 10 — Tighten internal-helper visibility | Ready |
-| 11 of 16 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` (absorbs original Phase 8) | Ready |
+| 6 of 16 | Phase 6 — Discovery shimmer + project predicates | **Done** |
+| 7 of 16 | Phase 7 — Mechanical `pub(super)` sweep | Ready |
+| 8 of 16 | Phase 8 — Focus subsystem (lives at `tui/focus.rs`) | Ready |
+| 9 of 16 | Phase 9 — Overlays subsystem (lives at `tui/overlays.rs`) | Ready |
+| 10 of 16 | Phase 10 — Tighten internal-helper visibility (residue after Phases 7 + 8) | Ready |
+| 11 of 16 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` (absorbs movement mutators + path resolution from earlier drafts) | Ready |
 | 12 of 16 | Phase 12 — Subsystems implement `Pane` | Ready |
 | 13 of 16 | Phase 13 — `Bus<Event>` skeleton + `apply_service_signal` (gate) | Ready |
 | 14 of 16 | Phase 14 — `apply_lint_config_change` over bus | Ready |
@@ -190,30 +190,29 @@ History: earlier drafts used `1b`, `4b`, `7a`, `7b`, `8b` letter suffixes;
 those were resequenced into a 1–13 numeric scheme. Post-Phase-4 review
 (a) inserted a Toasts phase as new Phase 5 (orphan from Phase 2 review
 identified 11 unclaimed mend warnings in `query/toasts.rs`) and
-(b) absorbed the original Phase 8 (movement / selection mutators) into
-Phase 11, since Phase 11's viewport-cursor relocation makes the
-`Navigator { Selection + Panes }` borrow problem disappear. The
-original Phase 8 section is retained below as a historical pointer.
-Post-Phase-5 review split the original Phase 13 (`Bus<Event>`) across
-four phases (13–16): the architectural risk of converting every
-cross-cutting orchestrator at once was untested. Phase 13 is now the
-gate (skeleton + smallest case); Phases 14–16 widen subscriber surface
+(b) absorbed an earlier-draft "movement / selection mutators" phase
+into Phase 11. Post-Phase-5 review split the original `Bus<Event>` phase
+across four phases (13–16) so each ship lands green; Phase 13 is the
+gate (skeleton + smallest case), Phases 14–16 widen subscriber surface
 incrementally.
 
-**Phase 11 must execute before Phase 8** because Phase 11 supersedes
-Phase 8's `NavRead { panes }` design and absorbs the original Phase 8
-work. Execution order:
+Post-Phase-6 review made three structural changes that triggered the
+final 1–16 renumbering: (i) inserted a mechanical `pub(super)` sweep
+phase (now Phase 7); (ii) put Focus before Overlays (Phase 8 then
+Phase 9) — `open_overlay`/`close_overlay` are pure Focus mutations,
+so running Focus first lets Overlays be a clean state-only extraction;
+(iii) absorbed the earlier-draft "path resolution" phase into Phase 11,
+since path-resolution methods don't need `&Panes` after Phase 11's
+cursor relocation. Execution order now matches numeric order:
 
 ```
-1 → 2 → 3 → 4 → 5 → 6 → 7 → 11 → 8 → 9 → 10 → 12 → 13 → 14 → 15 → 16
-                            ^^^^^^^ Phase 11 before Phase 8
+1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12 → 13 → 14 → 15 → 16
 ```
 
-Phase 11 lives in the architectural cluster for the narrative grouping
-but executes mid-sequence so its viewport-cursor relocation is in place
-before Phase 8 reads cursor state. Phases 13–16 run sequentially at the
-end; Phase 13 is the architectural gate — if its bus skeleton doesn't
-compile cleanly, Phases 14–16 need rethinking.
+Phase 7 is a mechanical sweep — ~25–30 warnings cleared as a single
+commit before architectural work resumes. Phases 13–16 run sequentially
+at the end; Phase 13 is the architectural gate — if its bus skeleton
+doesn't compile cleanly, Phases 14–16 need rethinking.
 
 Per-phase steps:
 1. Add the subsystem accessor on `App`.
@@ -354,7 +353,7 @@ impl App {
 `keymap_begin_awaiting`, `keymap_end_awaiting`, `is_awaiting_key`,
 `is_keymap_open`, `open_keymap`, `close_keymap` are not pass-throughs —
 they touch toasts (diagnostics), overlays (open/close/awaiting), or do
-file I/O. They stay on `App` (or move to Overlays in Phase 7) — not
+file I/O. They stay on `App` (or move to Overlays in Phase 9) — not
 this phase.
 
 **Expected mend reduction:** ~1.
@@ -415,7 +414,7 @@ becomes a problem.
 
 1. **Phase 2 lesson 1's range methodology held.** Predicted ~5–9, hit -8 — first phase with calibrated predictions matching reality. Continue applying `pub removed minus pub added` to all forward phases.
 
-2. **Empty-file deletion is one extra step worth doing inside the same phase.** When a file's entire contents move out, delete the file and unregister it from `query/mod.rs` (or wherever) in the same commit. Phase 3's `git_repo_queries.rs` deletion saved the follow-up "remove empty module" commit the original retrospective scaffolding had reserved. **Apply to:** Phase 4 (Ci queries may collapse `query/ci_queries.rs` similarly), Phase 6 (`query/discovery_shimmer.rs` and/or `query/project_predicates.rs`), Phase 9 (`app/focus.rs`).
+2. **Empty-file deletion is one extra step worth doing inside the same phase.** When a file's entire contents move out, delete the file and unregister it from `query/mod.rs` (or wherever) in the same commit. Phase 3's `git_repo_queries.rs` deletion saved the follow-up "remove empty module" commit the original retrospective scaffolding had reserved. **Apply to:** Phase 4 (Ci queries may collapse `query/ci_queries.rs` similarly), Phase 6 (`query/discovery_shimmer.rs` and/or `query/project_predicates.rs`), Phase 8 (`app/focus.rs`).
 
 3. **Multi-line `app\n.method(` callers are not caught by simple `sed`.** Phase 3 needed a fallback `perl -0pe` pass for the chained-call sites in `tui/app/async_tasks/repo_handlers.rs`, `tui/app/ci.rs`, etc. Future phases should run the perl pass eagerly, not as a fallback. Pattern:
    ```bash
@@ -537,7 +536,7 @@ as a Ci+Toasts orchestrator; only the pure `Ci`-only mutators move.
 
 **Lessons (apply to remaining phases):**
 
-1. **The "ToastManager-only" prediction was wrong because of the viewport-len sync.** Every toast-mutation method ends with `self.panes_mut().toasts_mut().viewport_mut().set_len(toast_len)` — a Panes write. That coupling is invisible from a method-list scan; only reading the bodies surfaces it. **Apply to Phase 7+:** for any "move method into subsystem X" prediction, audit body for cross-subsystem writes (especially viewport/cache invalidation) before locking in the (a)-into-subsystem path. **Caveat (post-Phase-5 architecture review):** this pattern is narrower than it first appears. Most pane `viewport_mut().set_len(rows.len())` calls happen inside *render bodies* (`src/tui/panes/package.rs:250`, `git.rs:661`, `lints.rs:160,173`) — those are not cross-subsystem writes from mutators; the render fn already holds `&mut Pane`. The genuine recurrences are: (i) `focus_next_pane`/`focus_previous_pane` in `focus.rs:228-272` (collapses cleanly after Phase 12 moves the toast viewport into `ToastManager`), and (ii) `reset_project_panes` in `focus.rs:274-285` (six pane viewport mutations from one orchestrator). Phase 6 (shimmer) does NOT have this pattern — shimmer mutations are `Scan`-only. Phase 9 has a transitive instance: `focus_pane → self.panes.mark_visited`, which the new "migrate `mark_visited` into `Focus`" sub-task in Phase 9 eliminates.
+1. **The "ToastManager-only" prediction was wrong because of the viewport-len sync.** Every toast-mutation method ends with `self.panes_mut().toasts_mut().viewport_mut().set_len(toast_len)` — a Panes write. That coupling is invisible from a method-list scan; only reading the bodies surfaces it. **Apply to Phase 9+:** for any "move method into subsystem X" prediction, audit body for cross-subsystem writes (especially viewport/cache invalidation) before locking in the (a)-into-subsystem path. **Caveat (post-Phase-5 architecture review):** this pattern is narrower than it first appears. Most pane `viewport_mut().set_len(rows.len())` calls happen inside *render bodies* (`src/tui/panes/package.rs:250`, `git.rs:661`, `lints.rs:160,173`) — those are not cross-subsystem writes from mutators; the render fn already holds `&mut Pane`. The genuine recurrences are: (i) `focus_next_pane`/`focus_previous_pane` in `focus.rs:228-272` (collapses cleanly after Phase 12 moves the toast viewport into `ToastManager`), and (ii) `reset_project_panes` in `focus.rs:274-285` (six pane viewport mutations from one orchestrator). Phase 6 (shimmer) does NOT have this pattern — shimmer mutations are `Scan`-only. Phase 8 has a transitive instance: `focus_pane → self.panes.mark_visited`, which the new "migrate `mark_visited` into `Focus`" sub-task in Phase 8 eliminates.
 
 2. **Mechanical mass-move was the right call.** All 11 methods sat in one file with the same coupling, and all 11 had external callers. Moving them as a block to `mod.rs` was one perl pass + one delete. Time-to-green: ~5 minutes of editing + one mend `--fix` for the inline-path import. **Pattern:** when an entire `query/*.rs` file's methods share the same "external callers + multi-subsystem touch" property, move the block, don't triage method-by-method.
 
@@ -547,208 +546,72 @@ as a Ci+Toasts orchestrator; only the pure `Ci`-only mutators move.
 
 5. **Phase 4.5 → Phase 5 renumbering paid off immediately.** The retrospective sits cleanly at slot 5 in the canonical sequence with no "see also Phase 4.5" footnotes. Worth the 51-reference sed pass that landed in commit `e97f7c3`.
 
-## Phase 6 — Discovery shimmer + project predicates
+## Phase 6 — Discovery shimmer + project predicates — **DONE**
 
-**Subsystem:** `crate::tui::app::Scan` (the `App.scan` field), specifically the
-discovery shimmer map already on it.
+**Results:**
+- Mend warnings: **103 → 92** (-11; predicted ~9–13 — within range, near upper bound).
+- 597/597 tests pass; clippy clean; smoke-tested via `cargo install --path .`.
+- 4 read methods moved to `ProjectList` as `pub(crate)` (free per Phase 3 lesson 5): `is_deleted`, `is_rust_at_path`, `is_vendored_path`, `is_workspace_member_path`.
+- 1 method moved to `Scan` as `pub(super)` (free, outside `tui/app/`): `prune_shimmers` (renamed from `prune_discovery_shimmers`).
+- 5 orchestrators relocated to `tui/app/mod.rs` as `pub(super)`: `animation_elapsed`, `register_discovery_shimmer`, `discovery_name_segments_for_path`, `selected_project_is_deleted`, `prune_inactive_project_state`. The first three were involuntary `mod.rs` rehosts per Phase 4 lesson 3; `prune_inactive_project_state` was an unanticipated rehost (its only caller is in `tui/app/construct.rs`, which `pub(super)` from `query/` doesn't reach).
+- 2 view-formatting helpers moved to `panes/project_list.rs` as free fns (re-exported from `panes/mod.rs` as `pub(super)`): `formatted_disk`, `formatted_disk_for_item`. Path (a) chosen — pass `&App` to the helper rather than introduce a `DiscoveryShimmerView<'a>` type.
+- ~12 private helper fns travelled with `discovery_name_segments_for_path` into `mod.rs` (Phase 4 lesson 4): `discovery_shimmer_session_for_path`, `discovery_shimmer_session_matches`, `discovery_scope_contains`, `discovery_parent_row`, `discovery_shimmer_window_len`, `discovery_shimmer_step_millis`, `discovery_shimmer_phase_offset`, `DiscoveryParentRow` struct, `package_contains_path`, `workspace_contains_path`, `root_item_scope_contains`, `workspace_scope_contains`, `package_scope_contains`, `root_item_parent_row`, `workspace_parent_row`, `package_parent_row`. The two methods on `DiscoveryRowKind` (`allows_parent_kind`, `discriminant`) moved to `tui/app/types.rs` next to the enum, as `pub(super)`.
+- 3 files deleted: `query/discovery_shimmer.rs`, `query/project_predicates.rs`, `query/disk.rs`. `query/mod.rs` now lists only `ci_queries` and `post_selection`.
+- ~25 call-site rewrites across `panes/project_list.rs`, `panes/support.rs`, `terminal.rs`, `dismiss.rs`, `tests/rows.rs`, `tests/panes.rs`, `tests/state.rs`, `tests/worktrees.rs`, `tests/discovery_shimmer.rs`, `tests/mod.rs`, `async_tasks/lint_handlers.rs`, `async_tasks/lint_runtime.rs`.
+- Mend `--fix` auto-applied 8 of 11 inline-path-import fixes after the move; 3 fixes failed mid-run (mend's transform produced non-compiling code for `crate::tui::panes::formatted_disk` — Phase 4 lesson 4's "imports auto-fixed" pattern doesn't extend to module-qualified paths) and were applied by hand.
 
-**Pass-throughs to remove from `App`:**
-- `register_discovery_shimmer`, `prune_discovery_shimmers`
-- `discovery_name_segments_for_path` *(this one builds styled segments — view logic)*
-- `is_deleted`, `selected_project_is_deleted`
-- `is_rust_at_path`, `is_vendored_path`, `is_workspace_member_path`
-- `formatted_disk`, `formatted_disk_for_item`
+**Lessons (apply to remaining phases):**
 
-**Accessor strategy:**
-- Project predicates (`is_deleted`, `is_rust_at_path`, etc.) become methods on
-  `ProjectList` and are reached via `app.projects().is_deleted(path)`.
-- `selected_project_is_deleted` stays on `App` (combines selection + projects).
-- Shimmer methods become methods on a `DiscoveryShimmers` accessor on `Scan`.
-  `register_discovery_shimmer` reads both `is_scan_complete()` (Scan) *and*
-  `discovery_shimmer_enabled()` (Config) before mutating `Scan`. Hoist the
-  config check to the caller; `Scan::register_shimmer` becomes
-  `if scan_complete { shimmers.insert(path) }` and the caller checks the
-  config flag first. ~3 caller updates.
-- `formatted_disk` is view formatting — move to a render helper.
-- `discovery_name_segments_for_path` is view formatting — move to render.
+1. **`mend --fix` is not a drop-in for inline-module-path imports across module boundaries.** When a moved function lives behind a `pub(super) use` re-export (here, `panes/project_list.rs::formatted_disk` re-exported via `panes/mod.rs`), mend's auto-fix transforms `crate::tui::panes::project_list::formatted_disk` into a `use` import that doesn't compile (the source module is private). It rolled back cleanly. **Apply:** when moving methods that callers reach via re-exports, expect 2–3 inline-path fixes will need manual application. Run `cargo mend --fix` first, capture any rollback, fix the residue by hand. The `super::formatted_disk` form (when the caller is also under `panes/`) is the cleanest replacement.
 
-**Tradeoff:** `discovery_name_segments_for_path` reads from both `Config`
-(for shimmer enable + duration) and `Scan` (for the shimmer state). Building
-it inside render means render needs both reads. Either:
+2. **`pub(crate)` is forbidden in `tui/panes/` too, not just `tui/app/`.** Phase 4 lesson 1 said "outside `tui/app/`, `pub(crate)` is fine." Phase 6 found a counter-example: `pub(crate) fn formatted_disk` in `tui/panes/project_list.rs` triggered the same "use of `pub(crate)` is forbidden by policy" mend error. The rule is broader than originally captured — `pub(crate)` is forbidden across all of `tui/`, not just `tui/app/`. Outside `tui/` (e.g., `crate::project_list`, `crate::scan_state` if it lived at crate root) is where `pub(crate)` is free. The corrected pattern: `pub fn` from a private module + `pub(super) use` re-export from the parent. **Apply to Phase 8 (Focus at `tui/focus.rs`) and Phase 9 (Overlays at `tui/overlays.rs`):** subsystem types directly at `crate::tui::*` get `pub(crate)` free, but their *internal helpers* in private submodules need the `pub fn + pub(super) use` re-export pattern.
 
-- **(a) Pass `&App` to the render helper** — keeps `App` available, doesn't
-  collapse the `pub fn` count materially.
-- **(b) Build a `DiscoveryShimmerView<'a>` once per frame** and pass that to
-  render — explicit dependencies, but a new type.
+3. **`prune_inactive_project_state` was a missed prediction.** The plan said this method "stays in `query/project_predicates.rs` narrowed to `pub(super)`." But its caller is `tui/app/construct.rs`, and `pub(super)` from `query/project_predicates.rs` reaches only `query/` — not `construct.rs` which is a sibling of `query/` under `tui/app/`. So this method had to move to `mod.rs` too. **Apply:** for any method "narrowed in place" decision, audit the caller's module path against the file's `super`. If the nearest common ancestor is wider than the file's `super`, it's a `mod.rs` rehost.
 
-Pick (b) only if Phase 7/7 (frame-prep view types) lands first; otherwise
-keep this method on `App` for now and revisit.
+4. **3-file deletion in one phase is the upper bound seen so far.** Phases 3 and 4 each deleted 1 file; Phase 5 deleted 1; Phase 6 deleted 3 (`discovery_shimmer.rs`, `project_predicates.rs`, `disk.rs`). The pattern: when `query/*.rs` files have only `pub fn` items with external callers, all three fall together once the orchestrators move to `mod.rs`. **Apply to Phase 10 Part C:** the `query/*` empty-file sweep is real but already mostly done by this point — only `query/ci_queries.rs` (one method left) and `query/post_selection.rs` (one method) remain after Phase 6. Part C's prediction of ~3-5 sweep wins shrinks to ~1-2.
 
-**Expected mend reduction (post-Phase-4 calibration with lesson 3):**
-- file warnings in scope: `query/discovery_shimmer.rs` (4) + `query/project_predicates.rs` (6) + `query/disk.rs` (1) = 11 candidates
-- **involuntary `mod.rs` rehosts (Phase 4 lesson 3):**
-  - `discovery_name_segments_for_path` — orchestrator (Config + Scan + ProjectList), called from `panes/project_list.rs:362,438` → host in `mod.rs` (-1)
-  - `selected_project_is_deleted` — Selection + ProjectList orchestrator, called from `input.rs`, `render.rs` → host in `mod.rs` (-1)
-  - private helpers travel with `discovery_name_segments_for_path` per Phase 4 lesson 4 (`discovery_shimmer_session_for_path`, `discovery_scope_contains`, `discovery_parent_row`, etc. — fns in `mod.rs`, not `impl App`)
-- **`ProjectList` moves (free per Phase 3 lesson 5):** `is_deleted`, `is_rust_at_path`, `is_vendored_path`, `is_workspace_member_path` (-4)
-- **render-helper moves (free):** `formatted_disk`, `formatted_disk_for_item` → free fns in `panes/project_list.rs` (-2)
-- **`Scan` shimmer moves:** `register_shimmer`, `prune_shimmers` `pub(super)` (-2)
-- **in-place narrowing:** `prune_inactive_project_state` → `pub(super)` in `query/project_predicates.rs` (-1)
-- net: **~9–13** (revised up from ~7–9 — Phase 4 lesson 3 forces 2 mod.rs rehosts not in original prediction)
+5. **Phase-5-pattern audit (viewport-len sync) held: shimmer mutations are clean.** `Scan::prune_shimmers(&mut self, now)` is single-borrow `&mut self.discovery_shimmers`. No Panes coupling, no transitive viewport-len sync. The (a)-into-subsystem path was open exactly as the audit predicted. Phase 5's coupling pattern is genuinely narrow; don't read it as universal.
 
-**Empty-file deletion candidates (Phase 3 lesson 2):**
-- `query/discovery_shimmer.rs` likely deletes after move (only private session-helpers remain).
-- `query/project_predicates.rs` — `prune_inactive_project_state` is a Scan+Ci orchestrator and stays on App; file may not delete fully. Decision at execution time.
-- `query/disk.rs` (1 warning, 2 methods) — both formatting helpers; move alongside or to a render helper. File deletes.
+## Phase 7 — Mechanical `pub(super)` sweep (post-Phase-6 review surfaced this)
 
-**Risk:** medium-high — touches render path and a multi-borrow read.
+**Context:** post-Phase-6 mend audit found 92 remaining warnings, **all
+hinting `pub(super)`**. ~50 of those sit in files that no architectural
+phase will touch: `src/tui/app/async_tasks/*` (~25), `tui/app/navigation/*`
+(~14), `tui/app/dismiss.rs` (2), `tui/app/types.rs` (3),
+`tui/app/query/post_selection.rs` (2), `tui/panes/*` (3). They are
+internal helpers that were `pub` set defensively and are pinpointed by
+mend with no design risk.
 
-## Phase 7 — `Overlays` subsystem extraction
+**Strategy:** for each warning, accept mend's `pub(super)` hint and
+verify compilation. Skip anything that doesn't compile cleanly under
+`pub(super)` from its current location — those go to Phase 10.
 
-**Source:** `App.ui_modes: UiModes` (struct in `tui/app/types.rs`) and the
-`KeymapMode`, `FinderMode`, `SettingsMode`, `ExitMode` enums.
+**Files in scope:**
+- `tui/app/async_tasks/config.rs`, `lint_runtime.rs`, `repo_handlers.rs`,
+  `metadata_handlers.rs`, `disk_handlers.rs`, `service_handlers.rs`,
+  `startup_phase/tracker.rs`, `tree.rs`, `poll.rs`
+- `tui/app/navigation/cache.rs`, `selection.rs`, `movement.rs`,
+  `expand.rs`, `bulk.rs`
+- `tui/app/dismiss.rs`, `tui/app/types.rs`, `tui/app/query/post_selection.rs`
+- `tui/panes/support.rs`, `tui/panes/project_list.rs`
 
-**Ordering coupling with Phase 9 (post-Phase-5 review correction):** earlier
-drafts justified Phase 7 → Phase 9 ordering by `tabbable_panes` taking
-`&Overlays`. Audit of `src/tui/app/focus.rs:213-285` showed
-`tabbable_panes` and `is_pane_tabbable` do **not** read `ui_modes` at
-all — they read `Inflight`, `Panes`, `ToastManager`. The genuine
-coupling is at `open_overlay`/`close_overlay` (`focus.rs:155-167`), which
-own `return_focus` AND set `focused_pane` — that's Focus state, not
-Overlay state. Once Focus exists (Phase 9), Overlays can take a
-`&mut Focus` callback for the focus-restore on close. Either run
-Phase 7 → Phase 9 (Overlays first; `open_overlay`/`close_overlay` stay
-as App orchestrators until Focus exists) or run Phase 9 → Phase 7
-(Focus first; Overlays takes `&mut Focus`). Both work; the doc's prior
-"must" was a misread.
+**Why ship this before Phase 9:** with ~25 internal-helper warnings
+cleared, Phase 9s/9/11/12 reductions become measurable rather than
+buried in the mend signal. Also forecloses the Phase 10 Part A "pile
+of disconnected tightenings" risk — the sweep is mechanical and ships
+green in one commit, not a multi-phase trickle.
 
-**Methods to relocate:**
-- `open_settings`, `close_settings`, `is_settings_open`, `begin_settings_editing`, `end_settings_editing`, `is_settings_editing`
-- `is_finder_open`, `open_finder`, `close_finder`
-- `open_keymap`, `close_keymap`, `is_keymap_open`, `is_awaiting_key`, `keymap_begin_awaiting`, `keymap_end_awaiting`
-- `request_quit`, `should_quit`, `request_restart`, `should_restart`
-- `open_overlay`, `close_overlay`
+**Expected mend reduction:** ~25–30 (target: 92 → ~62–67).
 
-**Subsystem location decision (post-Phase-4 lesson 1, mirrors Phase 9):**
-Two options:
-- **(a) `crate::tui::app::overlays::Overlays`** — `pub(super)` reaches only
-  `tui/app/`. Every Overlays method called from `tui/settings.rs`,
-  `tui/keymap_ui.rs`, `tui/finder.rs`, `tui/interaction.rs`, `tui/render.rs`,
-  `tui/terminal.rs` is forced to also live in `tui/app/mod.rs` as a
-  `pub(super)` orchestrator (Phase 4 lesson 3). Estimated ~6 involuntary
-  rehosts.
-- **(b) `crate::tui::overlays::Overlays`** — mirrors `tui/selection.rs`,
-  `tui/ci_state.rs`, `tui/toasts.rs`, `tui/focus.rs` (Phase 9 decision).
-  Methods are `pub(crate)` (free per Phase 4 lesson 1). External callers
-  reach `Overlays` directly via `app.overlays().method()`.
+**Risk:** very low — every fix is mend-pinpointed and verified by
+`cargo check`. Reverts are per-line.
 
-**Pick (b).** Same reasoning as Phase 9's location decision: subsystem
-types living outside `tui/app/` get free `pub(crate)` and avoid the
-`mod.rs` rehost cascade. Bonus: Phase 12's `RenderSplit` borrow becomes
-cleaner because all split fields are then `tui/`-level subsystems with
-uniform visibility rules.
+**Sequencing:** runs as a single mid-stream commit, before Phase 9.
+Phase 10 Part A then covers only the residue (~5–10 stragglers, methods
+that don't accept `pub(super)` from their current file because callers
+sit outside the file's `super` — Phase 6 lesson 3 recurrences).
 
-**Refactor:** create `crate::tui::overlays::Overlays` owning the
-`UiModes` (rename to `OverlayState` once moved). Methods become `Overlays`
-methods. `App` exposes:
-```rust
-impl App {
-    pub(super) const fn overlays(&self) -> &Overlays { &self.overlays }
-    pub(super) const fn overlays_mut(&mut self) -> &mut Overlays { &mut self.overlays }
-}
-```
-
-**Tradeoff 1 — focus coupling:** `open_overlay`/`close_overlay` orchestrate
-focus changes too (setting `return_focus`). Keep those two on `App`, move
-the rest. `request_quit` and `request_restart` are simple state writes
-on `OverlayState.exit` — trivially relocate.
-
-**Tradeoff 2 — `inline_error`:** `close_settings`, `close_keymap`,
-`begin_settings_editing`, `end_settings_editing`, `keymap_begin_awaiting`,
-`keymap_end_awaiting` each clear `App.inline_error` (an App field, not on
-`UiModes`). Two paths:
-- **(a) Move `inline_error` into `OverlayState`.** Clean; methods relocate
-  cleanly. Cost: every read of `inline_error` outside Overlays now goes
-  through `app.overlays().inline_error()`.
-- **(b) Keep `inline_error` on `App`.** These 6 methods stay on `App` as
-  Overlays+InlineError orchestrators; only the simpler open/state-query
-  methods move (~12 instead of ~18).
-
-Pick (a). `inline_error` is a UI-mode-level state already, conceptually
-belonging with overlays.
-
-**Expected mend reduction (post-Phase-4 calibration):**
-- removed: ~18 App methods (with `inline_error` path (a))
-- added: ~2 (`overlays()` / `overlays_mut()` accessors on App, `pub(super)`)
-- saved: ~6 from picking location (b) over (a) — avoids `mod.rs` rehosts for external callers
-- net: **~14–20** (revised up from ~12–18)
-
-**Risk:** low-medium — `inline_error` callers from outside Overlays need
-re-routing to `app.overlays().inline_error()`. Audit before commit.
-
-## Phase 8 — Path resolution (clean)
-
-**Source:** `App.scan: Scan` (read) + `App.selection: Selection` (read).
-
-**Methods to relocate** (pure path/display resolution, no viewport mutation):
-- `selected_row`, `selected_item`, `selected_project_path`, `selected_display_path`
-- `clean_selection`, `path_for_row`, `display_path_for_row`, `abs_path_for_row`
-- `expand_key_for_row`, `selected_is_expandable`, `row_count`, `visible_rows`
-- `row_matches_project_path`
-- The worktree path helpers (`worktree_path_ref`, `worktree_member_abs_path`,
-  `worktree_display_path`, etc.) — currently `Self::` static methods on
-  `App`. These move to **free fns on `RootItem` / `WorktreeGroup`** in
-  `crate::project` — they don't need any `App` field.
-
-**Refactor (revised after Phase 11 lands):** introduce
-`NavRead<'a> { selection: &'a Selection, scan: &'a Scan }` returned
-by `app.nav_read()`. **The `panes` field is dropped** because Phase 11
-moves the project-list cursor onto `Selection` — `selected_row` /
-`selected_is_expandable` read it from `Selection` directly. If
-Phase 11 has not landed when Phase 8 runs, fall back to
-`NavRead { selection, scan, panes }` and rewrite at Phase 11; or
-reorder to land Phase 11 first.
-
-**Expected mend reduction (post-Phase-2 lesson 1):**
-- removed: ~12 App methods
-- added: ~2–4 (`NavRead` and any new helpers flagged)
-- net: ~8–12
-
-**Risk:** medium — touches many call sites but all reads.
-
-## Phase 8 (original) — Movement / selection mutators *(superseded by Phase 11 in post-Phase-4 review — kept for historical reference)*
-
-**Status:** the original Phase 8 had net mend reduction of **0** by design —
-it documented methods that "stay on App." Post-Phase-4 review concluded
-that since Phase 11 moves the project-list cursor onto `Selection`, every
-method in the original Phase 8 list either becomes a `Selection` method
-(collapse/expand/movement mutators) or stays on App as an orchestrator.
-There is no independent Phase 8 work. The list below moves into Phase 11's
-prose; this section remains only as a navigation aid for readers of older
-drafts. **In the renumbered sequence, slot 8 is now Path resolution
-(formerly Phase 7).**
-
-**Original Phase 8 list (now distributed across Phase 11 and "stays as orchestrator"):**
-
-*Move to `Selection` (under Phase 11):*
-- `move_up`, `move_down`, `move_to_top`, `move_to_bottom`, `collapse_anchor_row`
-- `expand`, `collapse`, `expand_all`, `collapse_all`, `try_collapse`, `collapse_to`, `collapse_row`
-- `select_project_in_tree`, `select_matching_visible_row`, `expand_path_in_tree`
-- `sync_selected_project`
-
-*Stays on `App` as orchestrator (multi-subsystem reads):*
-- `ensure_visible_rows_cached`, `ensure_fit_widths_cached`, `ensure_disk_cache`
-- `ensure_detail_cached` — reads `Ci`, `Lint`, `Scan.generation()` to decide whether to rebuild
-
-**Why the original "stays on App" framing was wrong:** Phase 8's argument was
-that mutators touch both `Selection.expanded` and `Panes::project_list().viewport().pos()`,
-so a separate `Navigator` type can't own them. Phase 11 invalidates this by
-moving the viewport cursor onto `Selection` itself — the mutators become
-single-borrow `&mut Selection` methods, no `Navigator` type needed.
-
-**Net mend reduction: 0** — accounted for in Phase 11's column.
-
-## Phase 9 — `Focus` subsystem
+## Phase 8 — `Focus` subsystem
 
 **Source:** scattered `App` fields (`base_focus`, `return_focus`, etc.) plus
 overlay-aware focus computations.
@@ -777,11 +640,11 @@ overlay-aware focus computations.
 **Migrate `Panes::mark_visited`/`unvisit` state into `Focus` (post-Phase-5
 review):** `focus.rs:147,150,281-284` calls `self.panes.mark_visited(...)`
 and `self.panes.unvisit(...)` from focus-cluster code. The visited-pane
-set is Focus state living in Panes. Phase 9 should pull it across:
+set is Focus state living in Panes. Phase 8 should pull it across:
 `Focus` owns a `visited_panes: HashSet<PaneId>` field; `Panes` drops the
 duplicate. This is the same anti-pattern Phase 5 found with the toast
 viewport-len sync — state living on the wrong subsystem because the
-mutation pathway goes through it. Captured here so it lands with Phase 9
+mutation pathway goes through it. Captured here so it lands with Phase 8
 rather than as a Phase 14 follow-up.
 
 **Phase-5-pattern audit for Focus:** `focus_pane` (`focus.rs:147-153`)
@@ -822,6 +685,163 @@ abstractions.
 
 **Risk:** highest — touches every keyboard handler.
 
+## Phase 9 — `Overlays` subsystem extraction
+
+**Source:** `App.ui_modes: UiModes` (struct in `tui/app/types.rs`) and the
+`KeymapMode`, `FinderMode`, `SettingsMode`, `ExitMode` enums.
+
+**Ordering: Phase 8 before Phase 9 (post-Phase-6 architecture review).**
+`open_overlay` (`focus.rs:155-162`) does two writes: `return_focus =
+Some(self.base_focus())` and `focused_pane = pane`. Both are pure Focus
+state; **neither touches `ui_modes`**. `close_overlay` (`focus.rs:164-167`)
+is symmetric. `tabbable_panes` and `is_pane_tabbable` (`focus.rs:213-285`)
+also don't read `ui_modes`. Plus `query/post_selection.rs:37-38` —
+`sync_selected_project` writes `self.return_focus` directly, also a
+Focus field.
+
+Run **Phase 8 first**. After Focus is extracted, `open_overlay` /
+`close_overlay` live on `Focus` as pure focus mutations, and Phase 9
+(Overlays) becomes a clean state-only extraction with zero focus
+entanglement. Doing Phase 9 first forces those two methods to either
+stay on App as orchestrators (involuntary `mod.rs` rehost — exactly
+the anti-pattern Phase 6 found, where `prune_inactive_project_state`
+became an unanticipated rehost) or move to Overlays *and* take
+`&mut Focus` callbacks, which is more design surface than just landing
+Focus first.
+
+**Methods to relocate:**
+- `open_settings`, `close_settings`, `is_settings_open`, `begin_settings_editing`, `end_settings_editing`, `is_settings_editing`
+- `is_finder_open`, `open_finder`, `close_finder`
+- `open_keymap`, `close_keymap`, `is_keymap_open`, `is_awaiting_key`, `keymap_begin_awaiting`, `keymap_end_awaiting`
+- `request_quit`, `should_quit`, `request_restart`, `should_restart`
+- `open_overlay`, `close_overlay`
+
+**Subsystem location decision (post-Phase-4 lesson 1, mirrors Phase 8):**
+Two options:
+- **(a) `crate::tui::app::overlays::Overlays`** — `pub(super)` reaches only
+  `tui/app/`. Every Overlays method called from `tui/settings.rs`,
+  `tui/keymap_ui.rs`, `tui/finder.rs`, `tui/interaction.rs`, `tui/render.rs`,
+  `tui/terminal.rs` is forced to also live in `tui/app/mod.rs` as a
+  `pub(super)` orchestrator (Phase 4 lesson 3). Estimated ~6 involuntary
+  rehosts.
+- **(b) `crate::tui::overlays::Overlays`** — mirrors `tui/selection.rs`,
+  `tui/ci_state.rs`, `tui/toasts.rs`, `tui/focus.rs` (Phase 8 decision).
+  Methods are `pub(crate)` (free per Phase 4 lesson 1). External callers
+  reach `Overlays` directly via `app.overlays().method()`.
+
+**Pick (b).** Same reasoning as Phase 8's location decision: subsystem
+types living outside `tui/app/` get free `pub(crate)` and avoid the
+`mod.rs` rehost cascade. Bonus: Phase 12's `RenderSplit` borrow becomes
+cleaner because all split fields are then `tui/`-level subsystems with
+uniform visibility rules.
+
+**Refactor:** create `crate::tui::overlays::Overlays` owning the
+`UiModes` (rename to `OverlayState` once moved). Methods become `Overlays`
+methods. `App` exposes:
+```rust
+impl App {
+    pub(super) const fn overlays(&self) -> &Overlays { &self.overlays }
+    pub(super) const fn overlays_mut(&mut self) -> &mut Overlays { &mut self.overlays }
+}
+```
+
+**Tradeoff 1 — focus coupling:** *resolved by running Phase 8 first* (see
+"Ordering" above). `open_overlay`/`close_overlay` move to `Focus` as pure
+focus mutations; they don't appear in Overlays at all. `request_quit` and
+`request_restart` are simple state writes on `OverlayState.exit` —
+trivially relocate.
+
+**Tradeoff 2 — `inline_error`:** `close_settings`, `close_keymap`,
+`begin_settings_editing`, `end_settings_editing`, `keymap_begin_awaiting`,
+`keymap_end_awaiting` each clear `App.inline_error` (an App field, not on
+`UiModes`). Two paths:
+- **(a) Move `inline_error` into `OverlayState`.** Clean; methods relocate
+  cleanly. Cost: every read of `inline_error` outside Overlays now goes
+  through `app.overlays().inline_error()`.
+- **(b) Keep `inline_error` on `App`.** These 6 methods stay on `App` as
+  Overlays+InlineError orchestrators; only the simpler open/state-query
+  methods move (~12 instead of ~18).
+
+Pick (a). `inline_error` is a UI-mode-level state already, conceptually
+belonging with overlays.
+
+**Expected mend reduction (post-Phase-4 calibration):**
+- removed: ~18 App methods (with `inline_error` path (a))
+- added: ~2 (`overlays()` / `overlays_mut()` accessors on App, `pub(super)`)
+- saved: ~6 from picking location (b) over (a) — avoids `mod.rs` rehosts for external callers
+- net: **~14–20** (revised up from ~12–18)
+
+**Risk:** low-medium — `inline_error` callers from outside Overlays need
+re-routing to `app.overlays().inline_error()`. Audit before commit.
+
+## Path resolution — earlier-draft phase, absorbed into Phase 11 by post-Phase-6 review *(retained as historical pointer)*
+
+**Status:** the post-Phase-6 architecture review traced every path-resolution
+method through the code. Each one reads `panes` exactly once —
+`self.panes().project_list().viewport().pos()` in `selected_row` and
+`selected_display_path`. After Phase 11 moves the cursor to `Selection`,
+both reads become `self.selection.cursor()` and there's nothing left
+that needs `&Panes`. The remaining bodies are pure `RootItem` /
+`WorktreeGroup` walks. Each method becomes either a `Selection` method
+taking `&Scan` as an arg, or a free fn on `RootItem`. The `NavRead<'a>`
+wrapper struct the original Phase 8 design proposed is unneeded — Phase 11
+already provides the structural answer.
+
+**Distributed across:**
+
+*Move to `Selection` (under Phase 11):*
+- `selected_row` → `Selection::selected_visible_row(&self) -> Option<VisibleRow>`
+- `selected_item`, `selected_project_path`, `selected_display_path`,
+  `clean_selection`, `selected_is_expandable`
+
+*Move to free fns on `RootItem` / `WorktreeGroup` in `crate::project`:*
+- `path_for_row`, `display_path_for_row`, `abs_path_for_row`,
+  `expand_key_for_row`, `row_matches_project_path`
+- The worktree path helpers (`worktree_path_ref`, `worktree_member_abs_path`,
+  `worktree_display_path`, etc.) — they don't need any `App` field
+
+*Stays as App orchestrator (cross-frame coordination):*
+- `row_count`, `visible_rows` — both read `cached_visible_rows` from
+  `Selection`; collapse to `app.selection().cached_visible_rows().len()` /
+  call sites and remove the wrappers
+
+**Net mend reduction: 0 as a standalone phase** — accounted for in
+Phase 11's column. Original ~8–12 estimate stays, just attributed to
+Phase 11 instead.
+
+## Movement / selection mutators — earlier-draft phase, superseded by Phase 11 in post-Phase-4 review *(kept for historical reference)*
+
+**Status:** the original Phase 8 had net mend reduction of **0** by design —
+it documented methods that "stay on App." Post-Phase-4 review concluded
+that since Phase 11 moves the project-list cursor onto `Selection`, every
+method in the original Phase 8 list either becomes a `Selection` method
+(collapse/expand/movement mutators) or stays on App as an orchestrator.
+There is no independent work in this earlier-draft phase. The list below
+moves into Phase 11's prose; this section remains only as a navigation
+aid for readers of older drafts. **In the post-Phase-6 sequence, slot 8
+is now the Focus subsystem; movement mutators and path resolution are
+both inside Phase 11.**
+
+**Original Phase 8 list (now distributed across Phase 11 and "stays as orchestrator"):**
+
+*Move to `Selection` (under Phase 11):*
+- `move_up`, `move_down`, `move_to_top`, `move_to_bottom`, `collapse_anchor_row`
+- `expand`, `collapse`, `expand_all`, `collapse_all`, `try_collapse`, `collapse_to`, `collapse_row`
+- `select_project_in_tree`, `select_matching_visible_row`, `expand_path_in_tree`
+- `sync_selected_project`
+
+*Stays on `App` as orchestrator (multi-subsystem reads):*
+- `ensure_visible_rows_cached`, `ensure_fit_widths_cached`, `ensure_disk_cache`
+- `ensure_detail_cached` — reads `Ci`, `Lint`, `Scan.generation()` to decide whether to rebuild
+
+**Why the original "stays on App" framing was wrong:** Phase 8's argument was
+that mutators touch both `Selection.expanded` and `Panes::project_list().viewport().pos()`,
+so a separate `Navigator` type can't own them. Phase 11 invalidates this by
+moving the viewport cursor onto `Selection` itself — the mutators become
+single-borrow `&mut Selection` methods, no `Navigator` type needed.
+
+**Net mend reduction: 0** — accounted for in Phase 11's column.
+
 ## Phase 10 — Tighten internal-helper visibility + relocate `CiFetchTracker`
 
 A purely structural cleanup phase identified after Phase 1 and refined
@@ -830,38 +850,31 @@ visibility on items that were `pub` set defensively.
 
 **Two parts:**
 
-### Part A — Internal-helper tightening (post-Phase-3 calibration: ~70 warnings, not 30)
+### Part A — Internal-helper tightening (post-Phase-6 review: substantially reduced)
 
-Post-Phase-3 review found Phase 10 Part A is bigger than originally
-scoped. Of the 123 remaining mend warnings, **~70 are internal helpers**
-(not pass-throughs to subsystems) that fall to Part A:
+Post-Phase-6 review re-scoped Part A. The original ~70-warning estimate
+assumed all internal helpers would be tightened in one phase. Two
+intervening shifts shrink the residue:
 
-**Files in scope** (counts from post-Phase-3 mend output):
-- `src/tui/app/focus.rs` — 33 warnings (largest concentration; touched by Phase 9 too — overlap expected)
-- `src/tui/app/navigation/selection.rs` — 7
-- `src/tui/app/async_tasks/startup_phase/tracker.rs` — 6
-- `src/tui/app/async_tasks/config.rs` — 6
-- `src/tui/app/async_tasks/repo_handlers.rs` — 5
-- `src/tui/app/async_tasks/lint_runtime.rs` — 5
-- `src/tui/app/navigation/cache.rs` — 5
-- `src/tui/app/navigation/movement.rs` — 4
-- `src/tui/app/types.rs` — 3
-- `src/tui/app/navigation/expand.rs` — 3
-- `src/tui/app/navigation/bulk.rs` — 3
-- `src/tui/app/dismiss.rs` — 2
-- `src/tui/app/async_tasks/tree.rs` — 2
+1. **Phase 7 (mechanical sweep) ships ~25–30 of these as a single
+   pre-Phase-7 commit.** Files in scope: `async_tasks/*`,
+   `navigation/*`, `dismiss.rs`, `types.rs`, `query/post_selection.rs`,
+   `panes/*`.
+2. **Phase 8 (Focus subsystem extraction) absorbs `focus.rs`'s 33
+   warnings incidentally** when methods relocate to `tui/focus.rs`.
 
-Total candidates ≈ 84; deducting ones that Phases 4–9 will pick up
-incidentally (~14) leaves ~70 surviving for Phase 10.
+After Phase 7 + 8 + 9 land, Part A's residue is the methods whose mend
+hint won't compile under `pub(super)` because the caller's nearest
+common ancestor is wider than the file's `super` — Phase 6 lesson 3
+recurrences. Estimated **~5–10 stragglers**.
 
-**Method:** for each `pub fn`, run mend's "consider using:" hint.
-Verify the suggested visibility compiles (run `cargo check`). If a
-caller breaks, narrow to the next-broader visibility (`pub(super)` →
-`pub(crate)` → `pub`) until it compiles. Never use `pub(in path)` (per
-project convention).
+**Method:** for each remaining `pub fn`, accept mend's hint or, if
+the caller is outside the file's `super`, host in `tui/app/mod.rs`
+instead. Never use `pub(in path)` (project convention; mend forbids
+`pub(crate)` for items under `tui/`).
 
-**Predicted reduction (recalibrated):** ~25–40 (was ~20–25; widened
-because Part A's surface is larger than the original scope estimated).
+**Predicted reduction (recalibrated):** ~5–10. Most of the original
+Part A surface is absorbed by Phase 7 + 8 + 9.
 
 ### Part B — Relocate `CiFetchTracker` to `tui/ci_state.rs`
 
@@ -971,10 +984,35 @@ carries the bool in its payload; subscribers read it from the event,
 not from a cached field.
 
 **Phase 8 absorption:** the original Phase 8 method list (~16 movement /
-selection mutators) lands inside Phase 11's `&mut Selection`-only group
-above. No separate work; counted in Phase 11's reduction.
+selection mutators) **plus** the renamed Phase 8 (path resolution,
+~12 methods) both land inside Phase 11. Path-resolution methods become
+`Selection` methods or free fns on `RootItem`; movement mutators become
+`&mut Selection` methods. No separate phase; counted in Phase 11's
+reduction.
 
-**Expected mend reduction:** ~12.
+**Acceptance criteria (post-Phase-6 architecture review):**
+- **Cursor clamp lives inside `recompute_visibility`, not at every
+  caller.** Today's `try_collapse` / `try_expand` paths in
+  `tui/app/navigation/expand.rs` skip the `SelectionMutation` guard and
+  call `ensure_visible_rows_cached()` separately. After Phase 11, those
+  paths must not be allowed to leave cursor pointing past
+  `cached_visible_rows.len()` — fold the clamp into
+  `recompute_visibility` itself so every recompute path is consistent.
+  Single point of truth.
+- **`SelectionMutation::mutate` signature change is a call-site sweep.**
+  Today's signature is `mutate(projects, include_non_rust)`; Phase 11
+  drops `include_non_rust` and threads the bool via method args
+  instead. Update every `mutate(...)` caller in
+  `tui/app/navigation/expand.rs`, `bulk.rs`. Listed here so it's not
+  forgotten.
+- **`selected_project_path_for_render` (`mod.rs:763-765`) deletes.**
+  It's a one-line wrapper over `selected_project_path()` that exists
+  only so render can name a `pub(super)` accessor. After Phase 8
+  (Focus extraction) and Phase 11 (Selection cursor),
+  `selected_project_path` becomes `pub(crate)` on `Selection` and the
+  wrapper is dead.
+
+**Expected mend reduction:** ~12 + ~8–12 (path resolution) = **~20–24**.
 
 **Risk:** medium — touches navigation peer code and render scroll
 logic.
@@ -1190,24 +1228,27 @@ below. Summary:
   `tui/panes/dispatch.rs`.
 - Move `viewport: Viewport` (and absorbed payload, e.g. `CiData`,
   `LintsData`) into the data subsystems: `ToastManager`, `Ci`, `Lint`,
-  `Selection`, `Overlays` (per Phase 7).
+  `Selection`, `Overlays` (per Phase 9).
 - Each of those subsystems implements `Pane` directly.
 - Slim render-side wrappers retain only per-frame layout (`hits`,
   `row_rects`, `dismiss_actions`, `worktree_summary_cache`,
-  `line_targets`). Rename to `*Layout` to make the layout/domain
-  separation visible.
-- Detail-pane data cache (`DetailCacheKey`-keyed) gets its own home
-  — pick option (a) `DetailCache` type owned by App, or (b) keep in
-  the existing wrappers as the documented reason they remain.
-  Decision deferred to execution time.
+  `line_targets`). The `*Layout` rename **defers to a follow-up pass**
+  (post-Phase-6 review): doing the rename in the same commit as the
+  wrapper-collapse doubles diff noise without speeding the collapse.
+  Land the structural change first, rename later.
+- Detail-pane data cache (`DetailCacheKey`-keyed) home (post-Phase-5
+  loose-ends decision): introduce **`DetailCache`** at
+  `src/tui/detail_cache.rs` (outside `tui/app/`), `pub(crate)` on its
+  methods. Path (b) — "keep in existing wrappers as the reason they
+  remain" — contradicts Phase 12's drop-wrappers thesis, so it's out.
 - `PaneRenderCtx` grows to carry the broader subsystem references
   some implementations need (e.g. `Selection`'s render reads broader
   app state today).
 - `Panes` shrinks to a render-dispatch registry of `&dyn Pane` + the
   cross-pane state (focus, hover dispatch, layout cache).
 
-**Ordering:** Phase 12 lands after **both** Phase 7 and Phase 11.
-Phase 7 introduces the `Overlays` subsystem that absorbs `KeymapPane`,
+**Ordering:** Phase 12 lands after **both** Phase 9 and Phase 11.
+Phase 9 introduces the `Overlays` subsystem that absorbs `KeymapPane`,
 `SettingsPane`, `FinderPane`'s domain state — Phase 12 needs
 `Overlays` to exist before it can have `Overlays` implement `Pane`.
 Phase 11 moves the project-list cursor onto `Selection`, which
@@ -1282,12 +1323,16 @@ back-compat with detail-pane render bodies.
 implement `Pane`:
 ```rust
 pub(super) fn split_for_render(&mut self) -> RenderSplit<'_> {
+    // Post-Phase-6 review: precompute Inflight reads here (output_lines /
+    // output_visible) and stash on PaneRenderCtx — same pattern as today's
+    // selected_project_path precompute. Don't carry &mut Inflight in the
+    // split — it's over-broad for the actual render need.
     RenderSplit {
         toasts:    &mut self.toasts,
         ci:        &mut self.ci,
         lint:      &mut self.lint,
-        overlays:  &mut self.overlays,    // from Phase 7
-        selection: &mut self.selection,   // owns project-list pane post-Phase-11
+        overlays:  &mut self.overlays,    // from Phase 9
+        selection: &self.selection,       // shared borrow — render reads only
         panes:     &mut self.panes,       // shrinks to layout cache + detail-pane wrappers
         layout_cache: &mut self.layout_cache,
         config:    &self.config,
@@ -1300,8 +1345,7 @@ pub(super) struct RenderSplit<'a> {
     pub ci:        &'a mut Ci,
     pub lint:      &'a mut Lint,
     pub overlays:  &'a mut Overlays,
-    pub selection: &'a mut Selection,
-    pub inflight:  &'a mut Inflight,        // OutputPane reads example output
+    pub selection: &'a Selection,           // shared — render reads cursor and visible rows
     pub panes:     &'a mut Panes,
     pub layout_cache: &'a mut LayoutCache,
     pub config:    &'a Config,
@@ -1362,9 +1406,9 @@ mend-warning difference; saves one design contortion.
 | `ToastsPane` | **collapse** — viewport into ToastManager | Pure pass-through wrapper |
 | `CiPane` | **collapse** — viewport into Ci, content moves to Ci | Pure pass-through wrapper |
 | `LintsPane` | **collapse** — viewport into Lint, content moves to Lint | Pure pass-through wrapper |
-| `KeymapPane` | **collapse** — into Overlays (Phase 7) | Phase 7 dependency |
-| `SettingsPane` | **collapse** — into Overlays | Phase 7 dependency |
-| `FinderPane` | **collapse** — into Overlays | Phase 7 dependency |
+| `KeymapPane` | **collapse** — into Overlays (Phase 9) | Phase 9 dependency |
+| `SettingsPane` | **collapse** — into Overlays | Phase 9 dependency |
+| `FinderPane` | **collapse** — into Overlays | Phase 9 dependency |
 | `ProjectListPane` | **survives (slim)** — wraps `&mut Selection` | Borrow-cell pattern (option b) |
 | `PackagePane` | **survives** — holds `DetailPaneData` cache | Detail-pane cache home |
 | `LangPane` | **survives** — same as Package (cached detail data) | Detail-pane cache home |
@@ -2185,21 +2229,22 @@ expected values.
 | 3   | Git/Repo extract → ProjectList | **-8 actual** (predicted ~5–9 — within range) |
 | 4   | Ci (3 methods → ProjectList; 5 orchestrators relocated to `mod.rs`) + pulled-forward `app.config()` cleanup | **-9 actual** (predicted ~6–7 — overshoot from involuntary -1 on `mod.rs` rehosts) |
 | 5   | Toast orchestrator relocation (orphan from Phase 2 surfaced by post-Phase-4 review) | **-11 actual** (predicted ~8–11 — hit upper bound; range methodology held) |
-| 6   | Discovery shimmer + project predicates (recalibrated with Phase 4 lesson 3 — 2 involuntary `mod.rs` rehosts) | ~9–13 |
+| 6   | Discovery shimmer + project predicates | **-11 actual** (predicted ~9–13 — within range, near upper bound) |
+| Phase 7 | Mechanical `pub(super)` sweep on `async_tasks/*`, `navigation/*`, `dismiss.rs`, `types.rs`, `query/post_selection.rs`, `panes/*` | ~25–30 |
 | 7   | Overlays subsystem at `tui/overlays.rs` (incl. Exit + inline_error) | ~14–20 |
-| 8   | Path-resolution NavRead (post-Phase-11 rewrite) | ~12–16 |
-| 9   | Focus subsystem at `tui/focus.rs` (Phase 4 lesson 1) | ~12–18 |
-| 10  | Internal-helper tightening (Part A ~18–30 — Phase 9 will eat ~10 first) + relocate `CiFetchTracker` (Part B ~4) + `query/*` empty-file sweep (Part C ~3–5; `config_accessors.rs` already deleted in Phase 4) | ~25–39 |
-| **Visibility subtotal (Phases 6–10)** | | **~72–106** (forward only; 1+2+3+4+5 already in done row) |
-| 11  | Move `Viewport.pos` to `Selection.cursor` (Cluster C; absorbs original Phase 8) | ~12 |
+| 8   | *Absorbed into Phase 11* (path resolution; was ~12–16) | n/a |
+| 9   | Focus subsystem at `tui/focus.rs` (runs **before** Phase 9 per post-Phase-6 review) | ~12–18 |
+| 10  | Internal-helper tightening (Part A residue ~5–10 after Phases 7 + 8 + 9) + relocate `CiFetchTracker` (Part B ~4) + `query/*` empty-file sweep (Part C ~1–2 since most files already deleted) | ~10–16 |
+| **Visibility subtotal (Phases Phase 7–10)** | | **~61–84** (forward only; 1+2+3+4+5+6 already in done row) |
+| 11  | Move `Viewport.pos` to `Selection.cursor` (absorbs original Phase 8 movement mutators **and** new Phase 8 path resolution) | ~20–24 |
 | 12  | Subsystems own pane state; drop wrapper types (Cluster B for Toasts+) | ~9 |
 | 13  | `Bus<Event>` skeleton + `apply_service_signal` (Cluster A gate phase) | ~3 |
 | 14  | `apply_lint_config_change` over bus | ~2 |
 | 15  | `apply_config` over bus (introduces `ConfigDiff`) | ~6 |
 | 16  | Startup-phase tracker + `StartupOrchestrator` | ~4 |
-| **Architectural subtotal (Phases 11–16)** | | **~31–36** (revised down from ~46 after Cluster A body audit) |
-| **Forward grand total (Phases 6–16)** | | **~103–142** |
-| **Done (Phases 1+2+3+4+5)** | | **-44 (147 → 103)** |
+| **Architectural subtotal (Phases 11–16)** | | **~39–48** (Phase 11 widened to absorb path resolution) |
+| **Forward grand total (Phases Phase 7–16)** | | **~100–132** |
+| **Done (Phases 1+2+3+4+5+6)** | | **-55 (147 → 92)** |
 | **Stable intermediate (after Phase 12, before Phase 13)** | | residual ~50–60 mend warnings |
 
 > **Caveat on the upper bound:** the upper of ~142 exceeds the 131
@@ -2354,7 +2399,7 @@ lives:
   `Pane`.
 - `Selection` (with the cursor from Item 4) absorbs the
   `ProjectListPane` state, implements `Pane`.
-- Overlays (Phase 7 subsystem) absorb `KeymapPane`, `SettingsPane`,
+- Overlays (Phase 9 subsystem) absorb `KeymapPane`, `SettingsPane`,
   `FinderPane`.
 - Detail panes (`Package`, `Lang`, `Git`, `Targets`) — built per-frame
   from existing data; if there's no clear data owner, keep the
@@ -2524,10 +2569,10 @@ with an event bus.
 
 ## Sequencing risk
 
-Phase 7 (Overlays) and Phase 9 (Focus) interact. If Phase 7 lands first with
-clean boundaries, Phase 9's `tabbable_panes` migration takes a clean
-`&Overlays` arg. If Phase 9 lands first, Focus has to read `App.ui_modes`
-directly and Phase 7 retraces. Order is fixed: Phase 7 before Phase 9.
+Phase 9 (Overlays) and Phase 8 (Focus) interact. If Phase 9 lands first with
+clean boundaries, Phase 8's `tabbable_panes` migration takes a clean
+`&Overlays` arg. If Phase 8 lands first, Focus has to read `App.ui_modes`
+directly and Phase 9 retraces. Order is fixed: Phase 9 before Phase 8.
 
 The Navigator change (originally one phase) is now split across Phase 8
 (read accessors: `selected_*`, `path_for_row`, `display_path_for_row`,

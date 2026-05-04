@@ -525,7 +525,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
 
     let abs_path = AbsolutePath::from(project_path.clone());
     assert!(
-        app.is_deleted(&abs_path),
+        app.projects().is_deleted(&abs_path),
         "top-level project should be deleted"
     );
     assert_eq!(
@@ -614,7 +614,7 @@ fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
 
     let abs_path = AbsolutePath::from(project_path.clone());
     assert!(
-        app.is_deleted(&abs_path),
+        app.projects().is_deleted(&abs_path),
         "top-level project should be deleted"
     );
     assert_eq!(

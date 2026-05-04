@@ -129,7 +129,7 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
 
     assert_eq!(app.projects()[0].disk_usage_bytes(), Some(36));
     assert_eq!(
-        App::formatted_disk_for_item(&app.projects()[0].item),
+        crate::tui::panes::formatted_disk_for_item(&app.projects()[0].item),
         crate::tui::render::format_bytes(36)
     );
 }
@@ -656,7 +656,7 @@ fn is_deleted_does_not_allocate_display_paths() {
         .visibility = Deleted;
     let start = std::time::Instant::now();
     for _ in 0..1000 {
-        let _ = app.is_deleted(&target);
+        let _ = app.projects().is_deleted(&target);
     }
     let elapsed = start.elapsed();
     assert!(

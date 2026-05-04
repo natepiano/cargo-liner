@@ -462,7 +462,7 @@ fn prune_discovery_shimmers_removes_expired_entries() {
         ),
     );
 
-    app.prune_discovery_shimmers(Instant::now());
+    app.scan_mut().prune_shimmers(Instant::now());
 
     assert!(
         !app.scan_mut()

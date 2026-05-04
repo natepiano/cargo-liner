@@ -78,7 +78,7 @@ impl App {
             status,
             LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog
         );
-        if !self.is_rust_at_path(path) {
+        if !self.projects().is_rust_at_path(path) {
             if let Some(lr) = self.scan.projects_mut().lint_at_path_mut(path) {
                 lr.clear_runs();
             }
