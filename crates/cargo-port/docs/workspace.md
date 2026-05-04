@@ -56,8 +56,8 @@ Subtree: `pane/{chrome, layout, mod, rules, state, title}` (uses only chrome col
 |---|---|---|
 | `tui/columns/widths.rs` | none | Truly generic — moves to `pane_kit::columns::Widths`. |
 | `tui/toasts/manager.rs` | `super::constants::{TOAST_*}` chrome plus cargo-port git-status constants for some toast styling | Move chrome into `Theme`; toast content is caller-pre-rendered `Span`s. After this fix, `toasts/manager.rs` is moveable. |
-| `tui/running_tracker.rs` | `super::toasts::ToastTaskId` | Either extract `ToastTaskId` into `pane_kit::toasts` (it's a thin newtype) and `running_tracker` follows, or leave both in cargo-port. Default: extract `ToastTaskId`, move both. |
-| `tui/popup.rs` | `super::render`, `super::constants::TITLE_COLOR` | Inline or extract the small `render` helper popup uses (likely a few lines), then popup moves. `TITLE_COLOR` becomes a `Theme` slot. |
+| `tui/running_tracker.rs` | `super::toasts::ToastTaskId` | Extract `ToastTaskId` (thin newtype) into `pane_kit::toasts`; `running_tracker` follows. |
+| `tui/popup.rs` | `super::render`, `super::constants::TITLE_COLOR` | Inline the small `super::render` helper popup uses (a few lines). `TITLE_COLOR` becomes a `Theme` slot. |
 | `tui/keymap_state.rs`, `tui/shortcuts.rs` | `keymap::*Action` enums | Generic over an `Action` trait (`toml_key()`, `description()`, `ALL: &[Self]`, scope name). Concrete enums stay in cargo-port's `keymap.rs`. |
 | `tui/background.rs` | `scan::BackgroundMsg`, `watcher::WatcherMsg` | **Reclassify as Stays.** It's a thin channel multiplexer for cargo-port's two specific message types; the generic primitive (an `mpsc::Receiver` select) is already in `tokio`. No need to re-export. |
 
@@ -98,7 +98,7 @@ What `pane_kit` exports:
 - Chrome and layout: `pane::{Chrome, Layout, Rules, Title, State}`, `columns::Widths`
 - Standalone widgets: `popup`, `animation`, `running_tracker`, `watched_file`, `toasts` (after the `manager.rs` boundary fix)
 - Generic primitives: `RunningTracker<K>` (inside `running_tracker`), `fuzzy::{search, highlight_spans}` (extracted from `finder.rs`; generic over `T: AsRef<str>`)
-- Theming: `Theme` (see "Color handling" below)
+- Theming: `Theme` struct with `Default` impl matching cargo-port's current palette (see "Color handling" below)
 - Keymap machinery: `Action` trait + `ScopeMap<A>` + `ResolvedKeymap<A>` + `keymap_state` + `shortcuts` (generic over `A: Action`)
 - Optional run loop: `App` trait + `run<A: App>` function
 
@@ -107,7 +107,7 @@ Per-file disposition:
 | File | Disposition |
 |---|---|
 | `tui/render.rs` | **Stays** in `cargo-port`. Imports `super::settings`, `super::finder`, `super::interaction`, `super::panes::*`, `super::app::*` — every one is app-side. Cargo-port's render code is what its `App::draw` impl calls. |
-| `tui/terminal.rs` | **Stays** in `cargo-port`. Cargo-port's loop has unusual needs (HttpClient, perf_log, multiplexed scan/watcher channels, signal handling) and is the wrong shape to force through `pane_kit::run`. The generic `pane_kit::run` exists for new consumers; cargo-port keeps its bespoke loop. |
+| `tui/terminal.rs` | **Stays** in `cargo-port`. Cargo-port's loop has unusual needs (HttpClient, perf_log, multiplexed scan/watcher channels, signal handling) that don't fit the three-method `App` trait `pane_kit::run` expects. The generic `pane_kit::run` exists for new consumers; cargo-port keeps its bespoke loop. |
 | `tui/input.rs` | **Stays.** Imports `super::panes::*` and project types directly. |
 | `tui/interaction.rs` (1529 lines) | **Stays.** Reaches into `app::{ConfirmAction, ExpandKey, DismissTarget}` and `settings::SettingOption`. |
 | `tui/background.rs` | **Stays.** Multiplexes `scan::BackgroundMsg` + `watcher::WatcherMsg`. |
@@ -116,7 +116,7 @@ Per-file disposition:
 | `tui/keymap_ui.rs` | **Stays.** Imports `super::app::App` directly for ~9 different concerns (selection state, `current_keymap`, `keymap_path`, `inline_error`, `sync_keymap_stamp`, viewport, focus state, mode flags). The `Action` trait alone doesn't address this; only `ScopeMap`/`ResolvedKeymap` move to `pane_kit`, and `keymap_ui` becomes a cargo-port file that uses them. |
 | `tui/selection.rs` | **Stays.** Imports six app types (`ExpandKey`, `FinderState`, `ProjectListWidths`, `SelectionPaths`, `SelectionSync`, `VisibleRow`) plus `crate::project_list::ProjectList`. Genericizing this is a months-of-design undertaking; not in scope. |
 | `tui/inflight.rs` | **Stays.** Imports `app::PendingClean`, `panes::PendingCiFetch`, `panes::PendingExampleRun`, plus `RunningTracker<AbsolutePath>`. Same conclusion as `selection.rs`: not a small boundary fix. The generic `RunningTracker<K>` it depends on does move to `pane_kit` (via `running_tracker.rs`). |
-| `tui/mod.rs` | Rewritten: `pub use pane_kit::{Icon, LINT_SPINNER}` (re-exported for cargo-port-side callers that haven't migrated their imports yet) and removes `pub use terminal::run` (terminal stays — `cargo-port::tui::run` is unchanged). |
+| `tui/mod.rs` | Updated: `pub use pane_kit::{Icon, LINT_SPINNER}` re-exported for cargo-port-side callers that haven't migrated their imports yet. `pub use terminal::run` stays — `cargo-port::tui::run` is the binary's entry point and remains unchanged. |
 
 Cargo-port itself does *not* implement `pane_kit::App` — it keeps its own loop. The `App` trait and `run` function are part of `pane_kit`'s public API for the benefit of future consumers, not for cargo-port. (If, after the split lands, cargo-port's loop turns out to be reshapable through the generic `run`, that's a follow-up.)
 
@@ -175,7 +175,7 @@ Verify: finder open/close/search/select/highlight unchanged.
 ### Phase 0c — Boundary work for moveable files
 
 Refactor:
-- `popup.rs`: inline the small `super::render` helper it depends on (or extract that helper to a sibling module that moves with popup).
+- `popup.rs`: inline the small `super::render` helper it depends on.
 - `running_tracker.rs`: extract `ToastTaskId` (a thin newtype currently in `toasts/manager.rs`) into a place both files can share post-split.
 - `toasts/manager.rs`: switch from importing chrome constants directly to taking colors from a `Theme` reference; toast content becomes caller-pre-rendered `Span`s.
 - Define the `Action` trait in `tui/keymap.rs`-side and implement for every `*Action` enum. Rewrite `keymap_state.rs` and `shortcuts.rs` generic over `A: Action`. (`keymap_ui.rs` is *not* genericized — it stays cargo-port-side per the disposition table.)
@@ -212,15 +212,13 @@ Add rustdoc to every `pub` item in `pane_kit`. Promote `[lints.rust]` (including
 
 ## Risks and open questions
 
-1. **App seam decision: locked.** `pane_kit` is a toolkit of primitives plus a thin three-method `App` trait and a `run<A: App>` helper. No associated types on the trait. Cargo-port keeps its own loop and does not implement `App` itself.
-2. **`tui/app/tests/`** — those tests reach into both halves. They stay in `cargo-port` (testing the composed app). Anything that ends up needing to test `pane_kit` primitives in isolation gets a unit test inside `pane_kit/src/<file>.rs` instead of moving from `app/tests/`.
-3. **`test_support.rs`** is `#[cfg(test)] mod test_support;` in `main.rs` (verified). If `pane_kit` needs test helpers, give it its own private `test_support`; do not try to share across crates without a third `*-test-support` crate. Defer that decision until something actually needs to be shared.
-4. **`missing_docs` timing.** Inside the one big change, defer promoting `missing_docs = "deny"` to workspace lints until the documentation pass at the end. Until then, `pane_kit`'s `[lints]` block uses cargo-port's strict set minus `missing_docs`. Don't drop `missing_docs` enforcement entirely — public library code should have docs.
-5. **`cargo install --path .`** convention changes to `cargo install --path crates/cargo-port`. Update the auto-memory entry `feedback_cargo_install.md` after Phase 1.
-6. **`cargo-mend` workspace behavior.** CI runs `cargo install cargo-mend` then `cargo mend --fail-on-warn` from the workspace root. Verify cargo-mend handles a workspace with the bin member at `crates/cargo-port/` before merging Phase 1, or pin its invocation to the member directory.
-7. **`perf_log` coupling to `terminal`.** Resolved by the App-seam decision: `terminal.rs` stays in cargo-port and keeps its `crate::perf_log` import unchanged. `perf_log` itself stays at the cargo-port crate root.
-8. **Doctests.** Once `pane_kit` is a lib crate, every `///` example becomes a doctest. Plan accordingly when writing rustdoc in Phase 6 — examples that need a running terminal are not realistic doctests; use `no_run` or `ignore` annotations.
-9. **Shared `target/` and `Cargo.lock`.** Workspace members share `target/` and `Cargo.lock` at the workspace root by default. Both desirable; just confirm CI cache keys still hit (they probably do — the lockfile path is unchanged from the workspace-root perspective).
+1. **`tui/app/tests/`** — those tests reach into both halves. They stay in `cargo-port` (testing the composed app). Anything that needs to test `pane_kit` primitives in isolation gets a unit test inside `pane_kit/src/<file>.rs` instead of moving from `app/tests/`.
+2. **`test_support.rs`** is `#[cfg(test)] mod test_support;` in `main.rs` (verified). If `pane_kit` needs test helpers, give it its own private `test_support`; do not try to share across crates without a third `*-test-support` crate. Defer that decision until something actually needs to be shared.
+3. **`missing_docs` timing.** Inside the one big change, defer promoting `missing_docs = "deny"` to workspace lints until the documentation pass at the end. Until then, `pane_kit`'s `[lints]` block uses cargo-port's strict set minus `missing_docs`. Don't drop `missing_docs` enforcement entirely — public library code should have docs.
+4. **`cargo install --path .`** convention changes to `cargo install --path crates/cargo-port`. Update the auto-memory entry `feedback_cargo_install.md` after Phase 1.
+5. **`cargo-mend` workspace behavior.** CI runs `cargo install cargo-mend` then `cargo mend --fail-on-warn` from the workspace root. Verify cargo-mend handles a workspace with the bin member at `crates/cargo-port/` before merging Phase 1, or pin its invocation to the member directory.
+6. **Doctests.** Once `pane_kit` is a lib crate, every `///` example becomes a doctest. Plan accordingly when writing rustdoc in Phase 6 — examples that need a running terminal are not realistic doctests; use `no_run` or `ignore` annotations.
+7. **Shared `target/` and `Cargo.lock`.** Workspace members share `target/` and `Cargo.lock` at the workspace root by default. Both desirable; just confirm CI cache keys still hit (the lockfile path is unchanged from the workspace-root perspective).
 
 ## Out of band
 
