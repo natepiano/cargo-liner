@@ -70,6 +70,26 @@ Phase 6 (Overlays).
 These stay on `App` because each one touches at least two subsystems and
 encapsulates a cross-cutting decision.
 
+## Plan readiness (architecture review)
+
+A depth-focused architecture review evaluated whether each phase has
+enough concrete design to implement, vs. enough framing to discuss.
+After incorporating the review's feedback by writing the missing
+design depth in-line per phase:
+
+| Phases | Readiness | Notes |
+| ------ | --------- | ----- |
+| 1, 1b, 2, 3, 4, 4b, 5, 6, 7a, 7b, 8 | **Ready** | Mechanical visibility narrowings; one new accessor + call-site updates per phase. Risk is schedule, not design. |
+| 9 (move `Viewport.pos` → `Selection.cursor`) | **Ready** | Design depth filled in below: post-move structs, `&Scan`-arg method signatures, scroll-follows-cursor location, end-to-end flow. |
+| 10 (subsystems implement `Pane`) | **Ready** | Design depth filled in below: `Pane` trait signature, post-Phase-10 `PaneRenderCtx` fields, `RenderSplit<'a>` borrow-helper, dispatch loop, detail-cache decision (option b — keeps cache on `Panes`), `*Layout` type module locations. One execution-time choice flagged: option (a) vs (b) for `Selection`'s `Pane` impl, with (b) recommended. |
+| 11 (`Bus<Event>`) | **Ready** | Design depth filled in below: full `Event` enum (~14 variants), full `Command` enum, `EventHandler` trait signature with `&mut self + &Scan`, `EventBus` (~10 lines), drain loop with verified borrows, command pattern eliminating cross-subsystem `&mut`, re-entrancy semantics, `StartupOrchestrator` API, end-to-end traced flow for `apply_config`. |
+
+The earlier rounds of review pointed out gaps that were real; this
+pass produced concrete trait signatures, struct definitions,
+borrow-composition sketches, and traced flows. All three
+architectural phases (9, 10, 11) now have enough design to sit down
+and implement.
+
 ## Phase order
 
 Phases run smallest blast radius first. Each phase is one commit, gated by
@@ -77,9 +97,25 @@ Phases run smallest blast radius first. Each phase is one commit, gated by
 Each phase must independently leave the tree green.
 
 Phases 1–8 are visibility narrowings. Phases 9–11 are architectural
-moves derived from the post-Phase-8 review (see end of doc). Phase 9
-must precede Phase 7a (Item 4 supersedes Phase 7a's `NavRead { panes }`
-design).
+moves derived from the post-Phase-8 review (see end of doc).
+
+**Effective execution order** (resolves Phase 9 vs Phase 7a
+contradiction): the canonical numbered list reads
+`1, 1b, 2, 3, 4, 4b, 5, 6, 7a, 7b, 8, 9, 10, 11` for narrative
+clarity, but Phase 9 must precede Phase 7a because Phase 9
+supersedes Phase 7a's `NavRead { panes }` design. Recommended
+**actual** execution sequence:
+
+```
+1, 1b, 2, 3, 4, 4b, 5, 6, 9, 7a, 7b, 8, 10, 11
+                       ^^^^^^^ swap — Phase 9 before 7a
+```
+
+Why the doc keeps the canonical list as-numbered: Phase 7a/7b are
+"navigator" group and Phase 9 is "borrow-cell mutator fix" —
+narratively grouping them differently helps the reader understand
+the cluster framing. The execution order is what matters at
+implementation time.
 
 Per-phase steps:
 1. Add the subsystem accessor on `App`.
@@ -401,7 +437,14 @@ re-routing to `app.overlays().inline_error()`. Audit before commit.
   `App`. These move to **free fns on `RootItem` / `WorktreeGroup`** in
   `crate::project` — they don't need any `App` field.
 
-**Refactor:** introduce `NavRead<'a> { selection: &'a Selection, scan: &'a Scan, panes: &'a Panes }` returned by `app.nav_read()`. `&panes` is needed because `selected_row` / `selected_is_expandable` read `panes().project_list().viewport().pos()`. All three are `&` borrows, so cohabitation is fine.
+**Refactor (revised after Phase 9 lands):** introduce
+`NavRead<'a> { selection: &'a Selection, scan: &'a Scan }` returned
+by `app.nav_read()`. **The `panes` field is dropped** because Phase 9
+moves the project-list cursor onto `Selection` — `selected_row` /
+`selected_is_expandable` read it from `Selection` directly. If
+Phase 9 has not landed when Phase 7a runs, fall back to
+`NavRead { selection, scan, panes }` and rewrite at Phase 9; or
+reorder to land Phase 9 first.
 
 **Expected mend reduction:** ~12.
 
@@ -474,12 +517,23 @@ below. Summary:
 
 - Relocate one field: `Viewport.pos: usize` from `Panes::project_list().viewport()`
   into `Selection.cursor: usize`.
-- 12 Cluster-C methods (`move_up`, `move_down`, `move_to_top`,
-  `move_to_bottom`, `expand`, `collapse`, `expand_all`, `collapse_all`,
-  `select_project_in_tree`, `select_matching_visible_row`,
-  `expand_path_in_tree`, `try_collapse`) become methods on `Selection`.
+- The 12 Cluster-C methods split into two groups by signature:
+  - **`&mut Selection`-only (~10 methods):** `move_up`, `move_down`,
+    `move_to_top`, `move_to_bottom`, `expand`, `collapse`,
+    `collapse_all`, `try_collapse`, `select_matching_visible_row`,
+    `row_count`-equivalents. Become plain methods on `Selection`.
+  - **`&mut Selection` + `&Scan` (~2 methods):** `expand_path_in_tree`
+    and `select_project_in_tree` (which calls `expand_path_in_tree`).
+    These iterate `scan.projects()` while mutating
+    `selection.expanded_mut()`. Become methods on `Selection` with
+    `scan: &Scan` as an arg: `Selection::expand_path_in_tree(&mut self, scan: &Scan, target_path)`.
+  - **`expand_all`** also iterates `scan.projects()` — same
+    `&mut self, scan: &Scan` signature.
 - ~30 call-site updates in `tui/app/navigation/*` and the render path
-  (read cursor from `Selection`, scroll from `Panes`).
+  (read cursor from `Selection`, scroll from `Panes`). The render
+  scroll-follows-cursor logic continues to live in render code; it
+  reads cursor from `Selection` and updates scroll on `Panes` —
+  same logic as today, just split across two reads.
 
 **Ordering constraint:** Phase 9 supersedes Phase 7a's `NavRead { panes }`
 design. Land Phase 9 before Phase 7a, or skip Phase 7a and let Phase 9
@@ -489,6 +543,208 @@ absorb its work.
 
 **Risk:** medium — touches navigation peer code and render scroll
 logic.
+
+### Phase 9 design depth
+
+**Today's `Viewport` struct** (`src/tui/pane/state.rs:55-63`):
+```rust
+pub struct Viewport {
+    cursor:        ScrollState,      // <-- moves to Selection
+    hovered:       Option<usize>,    // stays — render-only hover state
+    len:           usize,            // stays — derived per-frame from data length
+    content_area:  Rect,             // stays — recorded each frame by render
+    scroll_offset: usize,            // stays — render-only scroll state
+    visible_rows:  usize,            // stays — visible row count for overflow indicator
+}
+```
+
+`ScrollState` is a one-field wrapper (`pos: usize`) with bounds-checked
+mutators (`up`, `down`, `set`, `clamp`, `jump_home`, `jump_end`).
+
+**Post-Phase-9 `Viewport`:**
+```rust
+pub struct Viewport {
+    hovered:       Option<usize>,
+    len:           usize,
+    content_area:  Rect,
+    scroll_offset: usize,
+    visible_rows:  usize,
+}
+```
+
+`ScrollState` deletes (or moves to Selection if reused).
+
+**Post-Phase-9 `Selection`** (current at `src/tui/selection.rs:36-45`):
+```rust
+pub(super) struct Selection {
+    paths:               SelectionPaths,
+    sync:                SelectionSync,
+    expanded:            HashSet<ExpandKey>,
+    finder:              FinderState,
+    cached_visible_rows: Vec<VisibleRow>,
+    cached_root_sorted:  Vec<u64>,
+    cached_child_sorted: HashMap<usize, Vec<u64>>,
+    cached_fit_widths:   ProjectListWidths,
+    cursor:              usize,        // <-- new: project-list row cursor
+}
+```
+
+Just one new field. The cursor lives next to `cached_visible_rows` —
+the same `Vec<VisibleRow>` it indexes into.
+
+**New methods on `Selection`** (Phase 9 surface):
+```rust
+impl Selection {
+    pub fn cursor(&self) -> usize { self.cursor }
+    pub fn move_up(&mut self) {
+        if self.cursor > 0 { self.cursor -= 1; }
+    }
+    pub fn move_down(&mut self) {
+        let len = self.cached_visible_rows.len();
+        if len > 0 && self.cursor < len - 1 { self.cursor += 1; }
+    }
+    pub fn move_to_top(&mut self) { self.cursor = 0; }
+    pub fn move_to_bottom(&mut self) {
+        self.cursor = self.cached_visible_rows.len().saturating_sub(1);
+    }
+    pub fn try_collapse(&mut self, key: &ExpandKey) -> bool { self.expanded.remove(key) }
+    pub fn collapse(&mut self) -> bool { /* uses self.cursor + self.cached_visible_rows */ }
+    pub fn collapse_all(&mut self) { /* clears self.expanded, recomputes */ }
+    pub fn select_matching_visible_row(&mut self, target_path: &Path) {
+        if let Some(i) = self.cached_visible_rows.iter().position(|r| /* ... */) {
+            self.cursor = i;
+        }
+    }
+}
+```
+
+`row_count` is `self.cached_visible_rows.len()` — `Selection` already
+owns this data; no `&Scan` needed.
+
+**Methods that need `&Scan`** (the 3 exceptions):
+```rust
+impl Selection {
+    pub fn expand(&mut self, scan: &Scan) -> bool { /* reads scan.projects() */ }
+    pub fn expand_all(&mut self, scan: &Scan) {
+        for (ni, entry) in scan.projects().iter().enumerate() {
+            if entry.item.has_children() {
+                self.expanded.insert(ExpandKey::Node(ni));
+            }
+            // ... per-RootItem traversal
+        }
+    }
+    pub fn expand_path_in_tree(&mut self, scan: &Scan, target: &Path) {
+        // reads scan.projects(), writes self.expanded
+    }
+    pub fn select_project_in_tree(&mut self, scan: &Scan, target: &Path) {
+        self.expand_path_in_tree(scan, target);
+        self.select_matching_visible_row(target);
+    }
+}
+```
+
+**Visibility-cache recompute design.** Today's
+`recompute_visibility(&mut self, projects: &ProjectList, include_non_rust: bool)`
+takes `&ProjectList` (not `&Scan`) and `include_non_rust: bool`.
+Phase 9's new methods that mutate `self.expanded` need both
+arguments. Two choices:
+
+- **(a) Methods take `&Scan, include_non_rust`** — pass through:
+  `pub fn expand_all(&mut self, scan: &Scan, include_non_rust: bool)`.
+  Caller threads `include_non_rust` from `app.config().current().tui.include_non_rust.includes_non_rust()`.
+- **(b) Selection holds `include_non_rust` as a cached field**, set
+  at config-change time. Methods take `&Scan` only. Adds one field
+  to Selection.
+
+**Pick (b).** `Selection` already caches config-derived state
+(`cached_fit_widths` is computed from `lint_enabled`); a
+`include_non_rust: bool` field updated at the same time keeps the
+visibility recompute self-contained. The Phase 11 `ConfigDiff`
+helper already inspects `include_non_rust`-equivalent fields, so
+keeping Selection's flag in sync is a one-line `Command::SetIncludeNonRust(bool)`.
+
+After (b):
+- The `&mut self`-only methods (`move_*`, `select_matching_visible_row`)
+  only mutate `cursor`. No recompute needed — cursor doesn't change
+  visibility.
+- `try_collapse`, `collapse_to`, `collapse_row`, `collapse`,
+  `collapse_all` mutate `expanded`. They call
+  `self.recompute_visibility(projects)` (taking `&ProjectList`,
+  with `include_non_rust` read from `self.include_non_rust`). The
+  caller passes `&ProjectList`. Since `Selection` doesn't own
+  `ProjectList`, these methods take `projects: &ProjectList` as
+  arg, not `&Scan` (caller does `app.scan.projects()` to get it).
+- `expand`, `expand_all`, `expand_path_in_tree`,
+  `select_project_in_tree` mutate `expanded` and need `scan` for
+  iteration. They take `scan: &Scan` and call
+  `self.recompute_visibility(scan.projects())` at the tail.
+
+**Cursor clamp on shrink.** `recompute_visibility` may shrink
+`cached_visible_rows`. After recompute, `Selection` clamps
+`self.cursor` to the new length:
+```rust
+fn recompute_visibility(&mut self, projects: &ProjectList) {
+    // ... existing body that rebuilds cached_visible_rows
+    let len = self.cached_visible_rows.len();
+    if len == 0 {
+        self.cursor = 0;
+    } else if self.cursor >= len {
+        self.cursor = len - 1;
+    }
+}
+```
+This replaces today's `Viewport::set_len`-driven clamp.
+
+The existing `SelectionMutation` guard pattern is **not extended**
+to the new methods — it exists for single-key toggle paths
+(`toggle_expand`, `apply_finder`). The Phase 9 bulk-mutation methods
+call `recompute_visibility` explicitly at the tail.
+
+**Scroll-follows-cursor mechanism** (corrected): today's
+`render_project_list` (`src/tui/panes/project_list.rs:111-210`) does
+not contain explicit scroll-follow code — ratatui's `ListState`
+computes the scroll internally based on its `selected` index and
+the prior `offset`. Today the code reads `viewport.scroll_offset()`,
+hands it + the cursor `pos` to `ListState`, lets ratatui decide the
+new offset, and writes the result back via `*list_state.offset_mut()`.
+
+After Phase 9: same flow, just two reads. Render reads cursor from
+`selection.cursor()` and offset from `panes.project_list().viewport().scroll_offset()`,
+hands both to `ListState`, writes the new offset back to
+`panes.project_list_mut().viewport_mut().set_scroll_offset(...)`.
+ratatui still does the math; the change is purely about where the
+two inputs come from.
+
+**End-to-end flow (user presses Down arrow):**
+1. Event handler in `tui/interaction.rs` (or wherever key dispatch
+   lives) calls `app.selection_mut().move_down()`.
+2. `Selection::move_down` increments `self.cursor` if not at end.
+3. App's main loop ticks; render runs.
+4. Render reads `app.selection().cursor()` and
+   `app.panes().project_list().viewport().scroll_offset()`. Computes
+   whether cursor is visible; if not, updates scroll offset.
+5. Render draws rows from `app.selection().visible_rows()` using
+   cursor and scroll offset for highlight + scroll.
+
+No subsystem holds a borrow on the other during the flow. App
+provides `&mut Selection` for step 2 and `&Selection` + `&mut Panes`
+for step 4–5; both are sequential.
+
+**Call-site updates (~30):**
+- `src/tui/app/navigation/movement.rs`: 5 methods become thin
+  delegations to `Selection` (or move outright). Body changes from
+  `self.panes_mut().project_list_mut().viewport_mut().up()` to
+  `self.selection.move_up()`.
+- `src/tui/app/navigation/expand.rs`: similar — 8 methods.
+- `src/tui/app/navigation/bulk.rs`: 4 methods, two of which take
+  `&Scan` arg.
+- `src/tui/app/navigation/selection.rs`: `selected_row` reads
+  `self.selection.cursor()` instead of `self.panes().project_list().viewport().pos()`.
+- `src/tui/render.rs`: scroll-follows-cursor logic relocates from
+  inline `Viewport` self-mutation to an explicit scroll-update step
+  reading `selection.cursor()`.
+
+**Status: ready to execute.**
 
 ## Phase 10 — Subsystems own pane state; drop wrapper types (Cluster B for panes)
 
@@ -515,9 +771,13 @@ below. Summary:
 - `Panes` shrinks to a render-dispatch registry of `&dyn Pane` + the
   cross-pane state (focus, hover dispatch, layout cache).
 
-**Ordering:** Phase 10 lands after Phase 9 (because Phase 9 affects
-where the project-list cursor lives, which Phase 10 places into
-`Selection`'s `Pane` impl).
+**Ordering:** Phase 10 lands after **both** Phase 6 and Phase 9.
+Phase 6 introduces the `Overlays` subsystem that absorbs `KeymapPane`,
+`SettingsPane`, `FinderPane`'s domain state — Phase 10 needs
+`Overlays` to exist before it can have `Overlays` implement `Pane`.
+Phase 9 moves the project-list cursor onto `Selection`, which
+Phase 10 needs in place before Selection's `Pane` impl owns the
+project-list viewport.
 
 **Expected mend reduction:** ~9 (the Toast+Panes orchestrators that
 become `ToastManager` methods naturally; symmetric wins for `Ci`,
@@ -525,6 +785,232 @@ become `ToastManager` methods naturally; symmetric wins for `Ci`,
 
 **Risk:** highest of the architectural phases — touches the render
 path, the `Pane` trait, every subsystem with a screen presence.
+
+### Phase 10 design depth
+
+**Today's `Pane` trait** (`src/tui/panes/dispatch.rs:31`):
+```rust
+pub(super) trait Pane {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>);
+}
+```
+
+**Today's `PaneRenderCtx`** (`src/tui/panes/dispatch.rs:20-27`):
+```rust
+pub struct PaneRenderCtx<'a> {
+    pub focus_state:           PaneFocusState,
+    pub is_focused:            bool,
+    pub animation_elapsed:     std::time::Duration,
+    pub config:                &'a Config,
+    pub scan:                  &'a Scan,
+    pub selected_project_path: Option<&'a std::path::Path>,
+}
+```
+
+**Today's split-borrow** (`src/tui/app/mod.rs:418-428`):
+```rust
+pub(super) fn split_panes_for_render(&mut self)
+    -> (&mut Panes, &mut LayoutCache, &Config, &Selection, &Scan);
+```
+
+This is the lever Phase 10 uses. The codebase already splits App
+into disjoint borrows for render. Phase 10 widens the split.
+
+**Post-Phase-10 `Pane` trait** (visibility widened to `pub(crate)`):
+```rust
+pub(crate) trait Pane {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>);
+}
+```
+
+Same signature; only the visibility changes.
+
+**Post-Phase-10 `PaneRenderCtx`** (carries the references that
+`Pane` impls reach today via `app.<x>()` accessors):
+```rust
+pub struct PaneRenderCtx<'a> {
+    pub focus_state:           PaneFocusState,
+    pub is_focused:            bool,
+    pub animation_elapsed:     std::time::Duration,
+    pub config:                &'a Config,
+    pub scan:                  &'a Scan,
+    pub selection:             &'a Selection,    // NEW (replaces app.selection() reach)
+    pub selected_project_path: Option<&'a std::path::Path>,
+}
+```
+
+Three new fields. `selection` replaces today's
+`selected_row` / `cursor` reaches into App; the others stay for
+back-compat with detail-pane render bodies.
+
+**Post-Phase-10 split-borrow** widens to all subsystems that
+implement `Pane`:
+```rust
+pub(super) fn split_for_render(&mut self) -> RenderSplit<'_> {
+    RenderSplit {
+        toasts:    &mut self.toasts,
+        ci:        &mut self.ci,
+        lint:      &mut self.lint,
+        overlays:  &mut self.overlays,    // from Phase 6
+        selection: &mut self.selection,   // owns project-list pane post-Phase-9
+        panes:     &mut self.panes,       // shrinks to layout cache + detail-pane wrappers
+        layout_cache: &mut self.layout_cache,
+        config:    &self.config,
+        scan:      &self.scan,
+    }
+}
+
+pub(super) struct RenderSplit<'a> {
+    pub toasts:    &'a mut ToastManager,
+    pub ci:        &'a mut Ci,
+    pub lint:      &'a mut Lint,
+    pub overlays:  &'a mut Overlays,
+    pub selection: &'a mut Selection,
+    pub inflight:  &'a mut Inflight,        // OutputPane reads example output
+    pub panes:     &'a mut Panes,
+    pub layout_cache: &'a mut LayoutCache,
+    pub config:    &'a Config,
+    pub scan:      &'a Scan,
+}
+```
+
+All disjoint App fields → split-borrow is sound.
+
+**Render dispatch loop** in `src/tui/render.rs`:
+```rust
+fn render_frame(frame: &mut Frame, app: &mut App) {
+    let split = app.split_for_render();
+    // Build ctx once; reborrow individual fields for each pane render.
+    let ctx_template = |selection: &Selection| PaneRenderCtx {
+        focus_state: /* ... */,
+        is_focused:  /* ... */,
+        animation_elapsed: /* ... */,
+        config:      split.config,
+        scan:        split.scan,
+        selection,
+        selected_project_path: /* ... */,
+    };
+
+    // Each call uses `split.<x>` mutably, with `split.selection` borrowed
+    // immutably alongside (sound — disjoint vs. shared).
+    split.toasts.render(frame, area, &ctx_template(split.selection));
+    split.ci.render    (frame, area, &ctx_template(split.selection));
+    split.lint.render  (frame, area, &ctx_template(split.selection));
+
+    // Selection renders itself for project list. Inside its render it
+    // reads &mut self; ctx omits selection (would alias with &mut self).
+    let ctx_for_self = PaneRenderCtxNoSelection { /* same minus `selection` */ };
+    split.selection.render(frame, area, &ctx_for_self);
+}
+```
+
+There's the one wrinkle: when `Selection` renders itself, `ctx.selection`
+would alias with `&mut self`. Two paths:
+
+- **(a) Two `PaneRenderCtx` variants**: one with `selection`, one
+  without. `Selection::render` takes the without-variant.
+- **(b) `Selection` does not implement `Pane`** — keep the
+  project-list render path on a thin `ProjectListPane` wrapper that
+  borrows `&mut Selection` from the split. Same destination, less
+  trait-alignment pressure.
+
+Pick **(b)**. The pattern "subsystem implements Pane" works for the
+clean cases (ToastManager, Ci, Lint, Overlays); for `Selection` the
+project-list render keeps a thin wrapper that borrows. Worth ~0
+mend-warning difference; saves one design contortion.
+
+**Thesis exception (full enumeration):** Phase 10's headline says
+"drop the wrapper types," but the actual outcome is mixed.
+
+| Original wrapper | Fate | Reason |
+|---|---|---|
+| `ToastsPane` | **collapse** — viewport into ToastManager | Pure pass-through wrapper |
+| `CiPane` | **collapse** — viewport into Ci, content moves to Ci | Pure pass-through wrapper |
+| `LintsPane` | **collapse** — viewport into Lint, content moves to Lint | Pure pass-through wrapper |
+| `KeymapPane` | **collapse** — into Overlays (Phase 6) | Phase 6 dependency |
+| `SettingsPane` | **collapse** — into Overlays | Phase 6 dependency |
+| `FinderPane` | **collapse** — into Overlays | Phase 6 dependency |
+| `ProjectListPane` | **survives (slim)** — wraps `&mut Selection` | Borrow-cell pattern (option b) |
+| `PackagePane` | **survives** — holds `DetailPaneData` cache | Detail-pane cache home |
+| `LangPane` | **survives** — same as Package (cached detail data) | Detail-pane cache home |
+| `GitPane` | **survives** — holds `worktree_summary_cache` + cached detail | Detail-pane cache + per-frame layout |
+| `TargetsPane` | **survives** — cached targets data | Detail-pane cache home |
+| `CpuPane` | **survives** — owns `CpuPoller` (background thread state) | Real subsystem state, not a wrapper |
+| `OutputPane` | **survives (or absorbed into Inflight)** — example output buffer | Open question: Inflight already owns example state; OutputPane could collapse if Inflight gets a viewport. Decision deferred to execution. |
+
+Net: **6 wrappers collapse, 7 survive (or 8 if OutputPane stays).**
+Mend reduction stays ~9 because the collapsed 6 are the
+toast/Ci/Lint/Overlays group whose orchestrator methods on App
+go away.
+
+**Detail-pane cache decision:** `ensure_detail_cached` builds and
+caches `Package` / `Git` / `Targets` / `Lints` / `Ci` data per
+`DetailCacheKey { row, generation }`. Today the cache is stored on
+`Panes::set_detail_data`. **Decision: keep this cache on `Panes`
+(option b).** Reasoning: the cache's owner is the render machinery
+(detail panes are built per-frame from cross-subsystem reads, not
+per-subsystem); moving it to any one data subsystem would couple
+that subsystem to the rendering layer. The wrappers that today hold
+the cached data (`PackagePane`, `GitPane`, `TargetsPane`, etc.) stay
+as **`*DetailPane`** wrappers, with the documented reason: per-row
+cross-subsystem render-input cache.
+
+**`*Layout` types** for the per-frame hit-test state move to
+`src/tui/panes/layout.rs` (new file, or extend the existing
+`tui/panes/layout.rs` if it's render layout). Names:
+- `ToastsLayout` (was `ToastsPane.hits`)
+- `CpuLayout` (was `CpuPane.row_rects`)
+- `GitLayout` (was `GitPane.worktree_summary_cache` + `GitRowLayout`)
+- `SettingsLayout` (was `SettingsPane.line_targets`)
+- `ProjectListLayout` (was `ProjectListPane.dismiss_actions`)
+
+These live alongside `Panes` (or on a smaller layout-only registry)
+because they're written each render frame and read by the next
+hit-test cycle — they belong with the render dispatch, not with
+domain data.
+
+**Wrapper-deletion call-site changes:**
+- `tui/render.rs` switches from `app.panes_mut()` reach into pane
+  state to `split.<subsystem>` reach.
+- `tui/panes/system.rs` `dispatch_*_render` helpers either inline
+  into the new render loop, or take the `RenderSplit` directly
+  instead of `&mut Panes`.
+- ~50 call sites that read `panes.toasts()` / `panes.ci()` /
+  `panes.lints()` etc. become `app.toasts()` / `app.ci()` / etc.
+- ~14 wrapper struct definitions (in `pane_impls.rs`) collapse to
+  ~7 (the 4 detail panes + CpuPane + ProjectListPane + the
+  layout-only types after rename).
+- **`build_ci_data`** (`src/tui/panes/support.rs:1773`) and
+  **`build_lints_data`** today take `&App` and read ~12 accessors
+  spanning Selection, Net, Ci, Scan, and git state. After Phase 10,
+  these signatures change to `build_ci_data(split: &RenderSplit<'_>)`
+  (or similar disjoint-borrow tuple). All ~3 callers update. This
+  is the largest signature change in the call-site set.
+
+**Status: ready to execute** — all load-bearing artifacts are now
+defined. One execution-time choice remains: option (a) vs (b) for
+`Selection`'s `Pane` impl, with (b) recommended.
+
+---
+
+**Earlier review notes (superseded by the design depth above):**
+- The `Pane` trait signature (today `pub(super) trait Pane { fn
+  render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx:
+  &PaneRenderCtx<'_>); }` — the post-Phase-10 version may need
+  different args).
+- `PaneRenderCtx`'s post-Phase-10 field list (which subsystem
+  references it carries beyond the current `Config`, `Scan`,
+  `selected_project_path`).
+- Render-loop pseudo-Rust showing how `Panes` dispatches through
+  trait-objects whose owning data lives in App fields. Specifically:
+  who holds the `&dyn Pane` references, when, and how they compose
+  with `&mut App` at the call site.
+- Post-Phase-10 `Selection` struct definition (with both Phase 9's
+  `cursor` and Phase 10's project-list viewport).
+- Detail-pane cache home: pick option (a) `DetailCache` type owned
+  by App, or (b) keep wrappers as the documented reason.
+- Module locations for the renamed `*Layout` types.
+- Enumeration of wrapper-deletion call-site changes.
 
 ## Phase 11 — `Bus<Event>` for cross-cutting events (Cluster A)
 
@@ -547,11 +1033,561 @@ below. Summary:
 Subsystems need their pane state already moved (Phase 10) so their
 `handle()` bodies can mutate self plus update their own pane.
 
+**Why Phase 10 must be done correctly first, not just "land first."**
+`apply_service_signal`'s reaction body today calls
+`push_service_unavailable_toast`, which writes both
+`self.toasts.push_persistent(...)` and
+`self.panes_mut().toasts_mut().viewport_mut().set_len(...)`. That
+second write is what Phase 10 eliminates by moving the toasts
+viewport into `ToastManager`. If Phase 10 lands without that
+relocation, `HandlerCtx` for `ServiceSignal` subscribers must carry
+both `&mut Toasts` AND `&mut Panes`, re-enacting through the ctx
+struct the multi-borrow chain Phase 11 was supposed to remove. The
+bus only works if Phase 10 has actually moved each pane's state
+into its data subsystem.
+
 **Expected mend reduction:** ~25 — the largest single drop.
 
 **Risk:** highest of all phases — touches startup-phase ordering,
 service-signal handling, and the existing `apply_config` / `rescan`
 fan-out logic.
+
+### Phase 11 design depth
+
+The design uses a **command pattern layered on top of pub/sub**.
+Subscribers don't get cross-subsystem `&mut` references during
+event handling; they return a list of `Command`s describing the
+side-effects they want, and App applies the commands sequentially
+after gathering them. This sidesteps all borrow-checker conflicts
+that a traditional bus would hit.
+
+**`StartupPhase` enum** (must be defined; not present in source today):
+```rust
+pub enum StartupPhase {
+    Disk,      // disk-usage scan complete for all expected roots
+    Git,       // local git state populated for all expected dirs
+    Repo,      // GitHub repo info fetched for all queued repos
+    Metadata,  // cargo metadata complete for all expected workspaces
+    Lints,     // lint-cache check complete
+    Ready,     // overall startup complete
+}
+```
+Variants mirror today's `maybe_complete_startup_*` family
+(`disk`/`git`/`repo`/`metadata`/`lints`/`ready`). Lives at
+`src/tui/app/async_tasks/startup_phase/orchestrator.rs`.
+
+**`ConfigChanged` payload — Arc decision.** Today, neither `Config`
+nor `CargoPortConfig` is wrapped in `Arc`. Three options for the
+event payload:
+- **(a) `prev: CargoPortConfig, next: CargoPortConfig`** — clones the
+  whole config per event (~hundreds of bytes). Simplest. Acceptable
+  given ConfigChanged is rare (user-driven save).
+- **(b) Add `Arc<CargoPortConfig>` to `ConfigState`** as a precursor
+  step in Phase 11. Bus events carry `Arc<CargoPortConfig>` cheaply.
+  Adds one sub-step to Phase 11.
+- **(c) Reference variant `ConfigChanged<'a> { prev: &'a Config, next: &'a Config }`**
+  forces a lifetime onto `Event`, which prevents the bus owning
+  `VecDeque<Event>`. Rejected.
+
+Pick **(a)** — clone per ConfigChanged event. The frequency is low
+(~once per save action), and adding `Arc` everywhere `Config` is
+read (option b) is a separate refactor with broader fallout. Revisit
+if ConfigChanged ever becomes frequent.
+
+**Full `Event` enum** (~14 variants):
+```rust
+pub enum Event {
+    // Config flow — payload cloned per (a) above
+    ConfigChanged { prev: CargoPortConfig, next: CargoPortConfig },
+    LintConfigChanged,
+
+    // Service signals (one variant per service state)
+    ServiceReachable(ServiceKind),
+    ServiceUnreachable(ServiceKind),
+    ServiceRateLimited(ServiceKind),
+    ServiceRecovered(ServiceKind),
+
+    // Startup phases
+    StartupPhaseAdvanced(StartupPhase),
+    StartupReady,
+
+    // Tree mutation
+    RescanRequested,
+    ScanRestarted,
+    TreeRebuilt,
+    ProjectDiscovered(AbsolutePath),
+    ProjectRefreshed(AbsolutePath),
+
+    // Selection
+    SelectionChanged(Option<AbsolutePath>),
+}
+```
+
+**`Command` enum** — derived mechanically from today's orchestrator
+bodies (`apply_config`, `apply_service_signal`,
+`maybe_complete_startup_*`):
+```rust
+pub enum Command {
+    // Toast side-effects
+    PushToast { title: String, body: String, style: ToastStyle },
+    DismissToast(u64),
+    SyncRunningLintToast,
+    SyncRunningCleanToast,
+    MarkStartupPhaseCompleted(StartupPhase),
+
+    // Service / network
+    ScheduleServiceRetry(ServiceKind, Duration),
+    SetServiceAvailability(ServiceKind, ServiceAvailability),
+    MarkServiceRecovered(ServiceKind),
+
+    // Inflight tracking
+    MarkInflightClean(AbsolutePath),
+
+    // Lint runtime
+    RestartLintRuntime,        // spawn new runtime + swap in
+    ClearAllLintState,         // clears in-memory lint state on projects
+    RefreshLintRunsFromDisk,   // re-read lint history per project
+    SyncLintRuntimeProjects,   // sync registered set with live tree
+
+    // Selection / panes
+    ResetFitWidths { lint_enabled: bool },
+    ResetCpuPlaceholder,
+    RegroupWorkspaceMembers,   // tree-level regroup based on inline_dirs
+
+    // Scan / discovery
+    ClearShimmers,
+    BumpScanGeneration,
+    RefreshDerivedState,       // marks caches dirty without full rebuild
+    RespawnWatcherAndRegisterExisting,
+
+    // Tree
+    ForceSettingsIfUnconfigured,
+
+    // Re-entrant publish
+    PublishEvent(Event),
+}
+```
+
+This enumerates ~21 commands derived from `apply_config`'s body
+(`src/tui/app/async_tasks/config.rs`), the service-signal handlers,
+and the startup-phase tracker. Final count may shift by a few during
+execution as exact granularity is decided (e.g. `RestartLintRuntime`
+vs splitting into `SpawnLintRuntime` + `SwapLintRuntime`), but the
+side-effect surface is now fully accounted for. The `apply_config`
+body has nothing left that isn't covered by some command.
+
+**`EventHandler` trait** (concrete signature):
+```rust
+pub(crate) trait EventHandler {
+    /// Examine `event`. Read whatever's needed via `&self` plus the
+    /// shared `&Scan` reference for cross-cutting reads. Return the
+    /// commands you want App to apply on your behalf.
+    ///
+    /// **Two-channel rule:**
+    /// - In-place `&mut self` mutation is permitted ONLY for the
+    ///   subsystem's own private state (e.g. `Lint::runtime` swap,
+    ///   `Inflight::clean_mut().insert`). Anything cross-subsystem
+    ///   goes through `Command`.
+    /// - Cross-subsystem effects MUST return as `Command` variants.
+    fn handle(&mut self, event: &Event, scan: &Scan) -> Vec<Command>;
+}
+```
+
+**`ConfigDiff` helper** (prevents per-subscriber field-by-field
+re-derivation of `prev` vs `next`):
+```rust
+pub struct ConfigDiff<'a> {
+    pub prev: &'a CargoPortConfig,
+    pub next: &'a CargoPortConfig,
+}
+
+impl<'a> ConfigDiff<'a> {
+    pub fn lint_enabled_flipped(&self) -> bool {
+        self.prev.lint.enabled != self.next.lint.enabled
+    }
+    pub fn force_github_rate_limit_flipped(&self) -> Option<bool> {
+        if self.prev.debug.force_github_rate_limit != self.next.debug.force_github_rate_limit {
+            Some(self.next.debug.force_github_rate_limit)
+        } else {
+            None
+        }
+    }
+    pub fn include_dirs_changed(&self) -> bool { /* ... */ }
+    pub fn inline_dirs_changed(&self) -> bool { /* ... */ }
+    pub fn navigation_keys_changed(&self) -> bool { /* ... */ }
+    pub fn discovery_shimmer_enabled_flipped(&self) -> Option<bool> { /* ... */ }
+    pub fn lint_cargo_args_changed(&self) -> bool { /* ... */ }
+    // ... one accessor per field a subscriber asks about
+}
+```
+
+`Event::ConfigChanged` carries `prev: CargoPortConfig, next: CargoPortConfig`
+(per the Arc decision above); each subscriber's `handle()` constructs
+`ConfigDiff { prev, next }` once and queries the fields it cares
+about. This prevents the field-diff logic from being duplicated
+across subscribers and keeps `handle()` bodies readable rather than
+becoming god-methods that re-derive the diff inline.
+
+Lives in `src/tui/app/bus.rs` next to `Event` and `Command`.
+
+No `HandlerCtx` struct needed. The trait carries `&mut self` (the
+subsystem's own state, mutable) and `&Scan` (cross-cutting read).
+That's it.
+
+**`Scan` itself is not a subscriber** — Rust would reject
+`self.scan.handle(&event, &self.scan)` as same-field aliasing.
+Reactions that today fire from `Scan`-related config changes are
+dispatched directly by App in `apply_command` (specifically via the
+`RescanRequested` event re-publish path: a non-Scan subscriber
+inspects the new config and emits `Command::PublishEvent(Event::RescanRequested)`).
+The `RescanRequested` event then drives App's own `apply_command`
+arm to clear scan state and respawn the watcher — App is the one
+holding `&mut self.scan` and `&mut self.background` for those
+mutations, no subsystem-level handler needed. No separate
+`RescanWatcher` type — App owns the dispatch.
+
+**Module locations** for the bus types: define `Event`, `Command`,
+`EventBus`, `EventHandler` in a new `src/tui/app/bus.rs` module.
+`StartupOrchestrator` lives at
+`src/tui/app/async_tasks/startup_phase/orchestrator.rs` (already
+specified earlier). `EventHandler` impls live next to each
+subscriber's existing struct definition: `Lint` in
+`src/tui/lint_state.rs`, `Ci` in `src/tui/ci_state.rs`, `Net` in
+`src/tui/net_state.rs`, `ToastManager` in `src/tui/toasts/`,
+`Selection` in `src/tui/selection.rs`, `Inflight` in
+`src/tui/inflight.rs` (or wherever it lives).
+
+**`EventBus` (~10 lines):**
+```rust
+pub struct EventBus {
+    queue: VecDeque<Event>,
+}
+
+impl EventBus {
+    pub fn new() -> Self { Self { queue: VecDeque::new() } }
+    pub fn publish(&mut self, event: Event) { self.queue.push_back(event); }
+    pub fn pop(&mut self) -> Option<Event> { self.queue.pop_front() }
+    pub fn is_empty(&self) -> bool { self.queue.is_empty() }
+}
+```
+
+**Drain loop on App** — explicitly names each subscriber. This is
+not a missed abstraction; it's the natural fit for Rust's ownership
+model. App owns every subsystem; only App can hand out `&mut` to
+each one in turn.
+
+```rust
+impl App {
+    fn drain_events(&mut self) {
+        while let Some(event) = self.bus.pop() {
+            let mut cmds = Vec::new();
+            // Each subscriber: &mut its own subsystem field, &Scan as shared.
+            cmds.extend(self.lint.handle(&event, &self.scan));
+            cmds.extend(self.net.handle(&event, &self.scan));
+            cmds.extend(self.ci.handle(&event, &self.scan));
+            cmds.extend(self.toasts.handle(&event, &self.scan));
+            cmds.extend(self.selection.handle(&event, &self.scan));
+            cmds.extend(self.inflight.handle(&event, &self.scan));
+            cmds.extend(self.startup_orchestrator.handle(&event, &self.scan));
+            // 7 subscribers above. `Scan` is NOT a subscriber
+            // (self-aliasing); `Background`'s only reaction
+            // (watcher channel rebuild on tui.include_dirs change)
+            // is dispatched directly by App from the
+            // `RescanRequested` arm of `apply_command`, not via
+            // `EventHandler`.
+
+            for cmd in cmds { self.apply_command(cmd); }
+        }
+    }
+
+    fn apply_command(&mut self, cmd: Command) {
+        match cmd {
+            Command::PushToast { title, body, style } => {
+                self.toasts.push_styled(title, body, style);
+            }
+            Command::PublishEvent(ev) => self.bus.publish(ev),
+            Command::SetServiceAvailability(kind, avail) => {
+                self.net.set_service_availability(kind, avail);
+            }
+            Command::RestartLintRuntime => { /* spawn + swap */ }
+            // ... arm per Command variant (21 total)
+        }
+    }
+}
+```
+
+**Where `apply_command` lives.** On App. Each arm is a 1-3 line
+mutation against the target subsystem (`self.toasts.push_styled(...)`,
+`self.net.set_service_availability(...)`, etc.). 21 arms total.
+Yes, this technically creates a "god-of-commands" — but it is a
+deliberate tradeoff:
+
+- **What App still owns:** the dispatch table (which command goes
+  where). That's mechanical routing, not orchestration logic. Each
+  arm is a function call into the target subsystem. The arm body
+  contains no business logic — that lives in the subsystem method
+  the arm calls.
+- **What App no longer owns:** the *fan-out decisions*. Today,
+  `apply_config` knows that a config change should fire 6
+  reactions in 6 different subsystems. After Phase 11, App's
+  `apply_config` doesn't know which subsystems react — it only
+  knows `bus.publish(Event::ConfigChanged); drain_events()`. The
+  fan-out lives in each subscriber's `handle()` body.
+
+`apply_command` could be split across subsystems via a `Reducer`
+trait (`trait Reducer { fn reduce(&mut self, cmd: Command); }`,
+each subsystem implements it for its own command variants), but
+that adds indirection without removing the god-table — App still
+has to dispatch each command to the right Reducer. Not worth the
+complexity. **Decision: keep `apply_command` on App as a flat
+21-arm match.** The match is mechanical; the orchestration is in
+the handlers.
+
+**Re-entrancy semantics:** subscriber A handles `ConfigChanged`,
+returns `Command::PublishEvent(RescanRequested)`. App's
+`apply_command` calls `self.bus.publish(RescanRequested)`, which
+pushes onto the back of `bus.queue`. The outer `while let Some(event)
+= self.bus.pop()` loop sees it on the next iteration.
+
+**Command ordering within one event's drain:** if a handler
+returns `[Cmd::PushToast, Cmd::PublishEvent(Foo), Cmd::ScheduleServiceRetry(...)]`,
+App's loop is `for cmd in cmds { self.apply_command(cmd); }` — so
+`PushToast` runs, then `PublishEvent(Foo)` (which appends to the
+queue), then `ScheduleServiceRetry`. **All commands from the
+current event finish applying before any newly-published event is
+drained.** The newly-published `Foo` is processed only after every
+subscriber has finished `handle(current_event)` AND every command
+from those handlers has been applied. Subscribers writing handlers
+can rely on this: ordering within their own returned `Vec<Command>`
+is preserved; ordering between their commands and downstream
+subscribers' reactions to a re-published event is "subscribers
+first, downstream later."
+
+**Termination invariant** (must hold per-subscriber, enforced by
+review):
+
+1. **No subscriber publishes the event it is currently handling.**
+   `Lint::handle(ConfigChanged)` may not return
+   `Command::PublishEvent(Event::ConfigChanged { ... })`.
+2. **`Event::ConfigChanged` is published only from `App::apply_config`.**
+   Subscribers may not synthesize it from any other event.
+3. **`Event::RescanRequested` only triggers `Event::ScanRestarted` (via
+   App's `apply_command` arm), never `ConfigChanged`.**
+4. **Subscribers that emit `Command::PublishEvent(...)` MUST emit a
+   downstream event in the dependency DAG**, never an upstream one.
+   The DAG (verifiable in `bus.rs`):
+   `ConfigChanged → {LintConfigChanged, ServiceRateLimited,
+   ServiceRecovered, RescanRequested}`,
+   `RescanRequested → ScanRestarted → TreeRebuilt → SelectionChanged`,
+   etc. No back-edges.
+
+**Debug-build cycle detection** (cheap insurance): drain loop
+maintains a counter, hard-asserts at e.g. 1000 events per drain.
+Catches infinite loops in dev without slowing production.
+
+```rust
+fn drain_events(&mut self) {
+    let mut iter = 0;
+    while let Some(event) = self.bus.pop() {
+        iter += 1;
+        debug_assert!(iter < 1000, "event bus runaway: {:?}", event);
+        // ... rest of drain
+    }
+}
+```
+
+**Borrow-checker check:** in `drain_events`, the loop iteration
+borrows `self.bus` *temporarily* via `pop()` (returns `Option<Event>`,
+borrow released). Then each `self.<subsystem>.handle(...)` reborrows
+a single subsystem field mutably alongside `&self.scan` (shared) —
+disjoint, sound. Each `apply_command` reborrows whichever subsystem
+the command targets. No two `&mut` at the same time. **Compiles.**
+
+**`StartupOrchestrator`** (`src/tui/app/async_tasks/startup_phase/orchestrator.rs`):
+```rust
+pub(crate) struct StartupOrchestrator {
+    phase: StartupPhaseTracker,  // existing tracker state moves here
+}
+
+impl StartupOrchestrator {
+    pub fn new() -> Self { /* ... */ }
+
+    /// Called once per tick. Examines tracker state, publishes
+    /// StartupPhaseAdvanced events in dependency order (disk → git
+    /// → repo → metadata → lints → ready).
+    pub fn advance(&mut self, bus: &mut EventBus, now: Instant, scan: &Scan, lint: &Lint) {
+        if self.phase.disk_complete_at.is_none() && self.disk_done(scan) {
+            self.phase.disk_complete_at = Some(now);
+            bus.publish(Event::StartupPhaseAdvanced(StartupPhase::Disk));
+        }
+        if self.phase.disk_complete_at.is_some()
+            && self.phase.git_complete_at.is_none()
+            && self.git_done(scan)
+        {
+            self.phase.git_complete_at = Some(now);
+            bus.publish(Event::StartupPhaseAdvanced(StartupPhase::Git));
+        }
+        // ... per-phase rules in dependency order; ready_phase last
+    }
+}
+
+impl EventHandler for StartupOrchestrator {
+    fn handle(&mut self, event: &Event, _scan: &Scan) -> Vec<Command> {
+        match event {
+            Event::StartupPhaseAdvanced(phase) => {
+                // Update tracked-item completion in toasts via Command.
+                vec![Command::MarkStartupPhaseCompleted(*phase)]
+            }
+            _ => vec![],
+        }
+    }
+}
+```
+
+The orchestrator does **not** orchestrate via App method calls; it
+publishes events. Phase ordering rules live in `advance()`'s body.
+Subscribers (Toasts, etc.) react via `handle()` + commands.
+
+**Where `advance` is invoked.** App's main poll loop already calls
+`maybe_log_startup_phase_completions` every tick (today, in
+`tick_once` or equivalent). After Phase 11, that call becomes:
+```rust
+fn tick_once(&mut self) {
+    // ... existing per-tick work
+    self.startup_orchestrator.advance(
+        &mut self.bus, Instant::now(), &self.scan, &self.lint
+    );
+    self.drain_events();
+}
+```
+`advance` examines tracker state and publishes `StartupPhaseAdvanced`
+events; `drain_events` delivers them to subscribers.
+
+**End-to-end traced flow — user saves config:**
+
+1. Settings overlay closes; calls `app.apply_config(new_cfg)`.
+2. `apply_config` (now thin):
+   ```rust
+   let prev = self.config.current().clone();
+   self.config.replace(new_cfg);
+   let next = self.config.current().clone();
+   self.bus.publish(Event::ConfigChanged { prev, next });
+   self.drain_events();
+   ```
+3. `drain_events` pops `ConfigChanged`. Calls each subscriber:
+   - `Lint::handle(ConfigChanged)` → if `lint.enabled` flipped or
+     `lint.cargo_args` changed, returns `[Command::RestartLintRuntime,
+     Command::PushToast { title: "Lint runtime", body: warning, style: Warning }]`
+   - `Net::handle(ConfigChanged)` → if `force_github_rate_limit`
+     toggled, returns `[Command::PublishEvent(Event::ServiceRateLimited(ServiceKind::GitHub))]`
+     (or `Recovered`).
+   - `Selection::handle(ConfigChanged)` → if `lint.enabled` flipped,
+     returns `[Command::ResetFitWidths { lint_enabled: next.lint.enabled }]`.
+   - **Scan does NOT subscribe directly.** The `tui.include_dirs`-
+     changed reaction comes from a non-Scan subscriber (e.g. Lint
+     reads the new config and notices the dirs differ from the
+     prior scan), which emits
+     `Command::PublishEvent(Event::RescanRequested)`. App's
+     `apply_command` arm for `RescanRequested` does the actual scan
+     state mutation directly (`self.scan.projects_mut().clear()`,
+     `self.background.swap_bg_channel(...)`, etc.) — App holds
+     `&mut self.scan` and `&mut self.background` together with no
+     subscriber-level borrow conflict.
+4. App applies each command:
+   - `RestartLintRuntime` → spawns new runtime, swaps in.
+   - `PushToast` → `self.toasts.push_styled(...)`.
+   - `PublishEvent(ServiceRateLimited(GitHub))` → adds to queue.
+   - `ResetFitWidths { lint_enabled }` → `self.selection.reset_fit_widths(lint_enabled)`.
+   - `PublishEvent(RescanRequested)` → adds to queue.
+5. Loop iterates. Pops `ServiceRateLimited(GitHub)`. Subscribers
+   handle (Net updates availability, Toasts pushes "GitHub rate-limited"
+   toast). Drains.
+6. Loop iterates. Pops `RescanRequested`. **No subscriber handles it
+   via the `EventHandler` trait** (Scan can't, per the self-aliasing
+   constraint). Instead, App's `apply_command` arm for the implicit
+   "rescan request" handles it directly with `&mut self.scan` and
+   `&mut self.background` in scope: clears scan state, swaps the bg
+   channel, respawns the watcher, registers projects, fires
+   `Event::ScanRestarted` via `bus.publish` for downstream
+   subscribers. App is the one subsystem with all the borrows it
+   needs to do this in one place.
+7. Queue empties; `drain_events` returns. `apply_config` returns.
+
+App's `apply_config` body shrinks from ~50 lines (today's per-subsystem
+fan-out) to ~5 lines (publish + drain). The fan-out logic moves into
+each subsystem's `handle()` body. Ordering rules that today are
+encoded by call sequence become explicit through event chaining.
+
+**`apply_service_signal`** similarly shrinks to:
+```rust
+pub fn apply_service_signal(&mut self, signal: ServiceSignal) {
+    self.bus.publish(match signal {
+        ServiceSignal::Reachable(k)    => Event::ServiceReachable(k),
+        ServiceSignal::Unreachable(k)  => Event::ServiceUnreachable(k),
+        ServiceSignal::RateLimited(k)  => Event::ServiceRateLimited(k),
+    });
+    self.drain_events();
+}
+```
+
+**`mark_service_recovered`** today is a separate App method that
+fires when the user clears the force-rate-limit flag (called
+directly from `apply_config`'s force-flag branch). Under the bus
+design it becomes:
+```rust
+pub fn mark_service_recovered(&mut self, kind: ServiceKind) {
+    self.bus.publish(Event::ServiceRecovered(kind));
+    self.drain_events();
+}
+```
+Net's `handle(ServiceRecovered)` returns
+`[Command::MarkServiceRecovered(kind), Command::DismissToast(prev_toast_id)]`.
+
+`apply_config`'s force-flag branch (today calling
+`self.apply_service_signal(...)` and `self.mark_service_recovered(...)`
+directly) instead returns from Net's `handle(ConfigChanged)` body:
+- if force flipped to true:  `[Command::PublishEvent(Event::ServiceRateLimited(GitHub))]`
+- if force flipped to false: `[Command::PublishEvent(Event::ServiceRecovered(GitHub))]`
+
+No special-case App method needed.
+
+**Status: ready to execute.** All load-bearing artifacts defined:
+trait signature, 21-variant command set, drain loop with verified
+borrows, re-entrancy semantics with termination invariant, orchestrator
+API, end-to-end flow. Open items at execution time:
+- Whether `BackgroundMsg` dispatch (handle_bg_msg) becomes a single
+  `Event::BackgroundMsgReceived` or stays as direct dispatch
+  (recommended: stays direct — it's pattern-match dispatch, not
+  fan-out).
+- `Inflight` module path — verify before writing the impl.
+
+---
+
+**Earlier review notes (superseded by the design depth above):**
+- Full `enum Event` variant list (~10–15 named, only ~4 in doc
+  today).
+- `HandlerCtx` definition — likely per-event-family rather than
+  monolithic, but the design isn't decided. A monolithic ctx that
+  carries `&mut` to every subsystem re-creates the original
+  multi-borrow problem; a per-family ctx requires deciding the
+  families.
+- `trait EventHandler` complete signature including ctx parameter.
+- Drain-loop pseudo-Rust. Specifically: re-entrancy semantics — when
+  subscriber A handles `ConfigChanged` and during handling publishes
+  `RescanRequested`, does that get drained in the same drain pass,
+  queued for next tick, or rejected? This is the central question
+  of any event bus and is currently unaddressed.
+- Borrow-checker demonstration (not just claim). The bus owning a
+  `VecDeque<Event>` while App walks subscribers per event with
+  `&mut self.<subsystem>` is the likely design but not in the doc.
+- `StartupOrchestrator`'s struct definition: what state does it
+  carry, what's its API surface beyond `advance(&mut bus, now)`?
+- One end-to-end traced flow: user saves config →
+  `publish(Event::ConfigChanged(...))` → drain → each subscriber's
+  `handle()` body sketched → final state. Without this, the
+  existing `apply_config` body's ordering needs (lint runtime
+  refresh after config write, keymap reload trigger, etc.) cannot
+  be verified to map onto the new design.
 
 ## Total expected impact
 
@@ -882,12 +1918,14 @@ codebase. The right tools are: (Item 4) move misplaced data, (Item 5)
 let subsystems own their pane, (Item 6) replace fan-out call chains
 with an event bus.
 
-## Out-of-scope
+## Not in this plan
 
-- No new tests added or modified.
-- No public API changes visible outside `crate::tui` (callers in `bin/` etc.
-  still see `App::run`, `App::new`, etc.).
-- No subsystem internal reorganization beyond what each phase requires.
+- New tests are not added or modified by these phases. If a test exists today
+  it stays; if a phase needs new test coverage, that's a follow-up commit.
+- The public API visible outside `crate::tui` is unchanged. Callers in `bin/`
+  still see `App::run`, `App::new`, etc.
+- Subsystem-internal reorganization beyond what a given phase requires is a
+  separate follow-up. Each phase's body lists exactly what it touches.
 
 ## Sequencing risk
 
