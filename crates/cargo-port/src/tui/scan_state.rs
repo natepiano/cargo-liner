@@ -23,6 +23,8 @@ use super::app::RetrySpawnMode;
 use super::app::ScanState;
 use super::app::TargetDirIndex;
 use crate::project::AbsolutePath;
+use crate::project::WorkspaceMetadata;
+use crate::project::WorkspaceMetadataHandle;
 use crate::project::WorkspaceMetadataStore;
 use crate::project_list::ProjectList;
 
@@ -118,6 +120,40 @@ impl Scan {
         &self.metadata_store
     }
 
+    /// Clone of the process-wide metadata store handle. Used by scan
+    /// dispatchers and async-task spawners that need a `Send` handle
+    /// independent of the borrow on `Scan`.
+    pub(super) fn metadata_store_handle(&self) -> Arc<Mutex<WorkspaceMetadataStore>> {
+        Arc::clone(&self.metadata_store)
+    }
+
+    /// Resolve a [`WorkspaceMetadataHandle`] to a cloned
+    /// [`WorkspaceMetadata`], or `None` when the workspace has no
+    /// metadata yet. Locks the store, releases before return.
+    #[allow(
+        dead_code,
+        reason = "consumed in later steps; kept now so WorkspaceMetadataHandle has a resolve path \
+                  in place before handle-carrying RustInfo lands"
+    )]
+    pub(super) fn resolve_metadata(
+        &self,
+        handle: &WorkspaceMetadataHandle,
+    ) -> Option<WorkspaceMetadata> {
+        self.metadata_store
+            .lock()
+            .ok()
+            .and_then(|store| store.get(&handle.workspace_root).cloned())
+    }
+
+    /// Resolve the owning workspace's `target_directory` for any path
+    /// inside a known workspace.
+    pub(super) fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
+        self.metadata_store
+            .lock()
+            .ok()
+            .and_then(|store| store.resolved_target_dir(path).cloned())
+    }
+
     // ── target-dir index ────────────────────────────────────────────
 
     pub(super) const fn target_dir_index(&self) -> &TargetDirIndex { &self.target_dir_index }
@@ -144,6 +180,15 @@ impl Scan {
 
     pub(super) fn set_confirm_verifying(&mut self, path: Option<AbsolutePath>) {
         self.confirm_verifying = path;
+    }
+
+    /// Clear `confirm_verifying` if it currently points to
+    /// `workspace_root`. Called when a verifying clean for that
+    /// workspace finishes (regardless of outcome).
+    pub(super) fn clear_confirm_verifying_for(&mut self, workspace_root: &AbsolutePath) {
+        if self.confirm_verifying.as_ref() == Some(workspace_root) {
+            self.confirm_verifying = None;
+        }
     }
 
     // ── retry-spawn mode (test-only) ────────────────────────────────

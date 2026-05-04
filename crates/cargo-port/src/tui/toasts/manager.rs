@@ -573,6 +573,8 @@ impl ToastManager {
         self.toasts.retain(|toast| toast.is_alive(now));
     }
 
+    pub fn active_now(&self) -> Vec<ToastView<'_>> { self.active(Instant::now()) }
+
     pub fn active(&self, now: Instant) -> Vec<ToastView<'_>> {
         self.toasts
             .iter()

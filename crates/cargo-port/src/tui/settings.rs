@@ -509,7 +509,7 @@ fn parse_lint_cache_size(value: &str) -> Result<String, String> {
 fn toggle_vim_mode(app: &mut App) {
     if !app.config().navigation_keys().uses_vim() {
         // Enabling vim mode — check for hjkl conflicts.
-        let conflicts = keymap::vim_mode_conflicts(app.current_keymap());
+        let conflicts = keymap::vim_mode_conflicts(app.keymap().current());
         if !conflicts.is_empty() {
             let msg = format!(
                 "Cannot enable vim mode — these bindings use h/j/k/l:\n{}",

@@ -144,7 +144,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let toast_result = toasts::render_toasts(
         frame,
         outer_layout[0],
-        &app.active_toasts(),
+        &app.toasts().active_now(),
         app.is_focused(PaneId::Toasts),
         app.focused_toast_id(),
     );
@@ -161,7 +161,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     }
     if let Some(action) = app.confirm() {
         let body = confirm_action_body(app, action);
-        let verifying = app.confirm_verifying().is_some();
+        let verifying = app.scan().confirm_verifying().is_some();
         render_confirm_popup(frame, action, &body, verifying);
     }
 
@@ -181,6 +181,7 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
     match action {
         ConfirmAction::Clean(project_path) => {
             let target = app
+                .scan()
                 .resolve_target_dir(project_path)
                 .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join("target")));
             let mut lines = vec![project::home_relative_path(target.as_path())];
@@ -218,6 +219,7 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
                 std::collections::HashSet::new();
             for path in &all_paths {
                 let target = app
+                    .scan()
                     .resolve_target_dir(path)
                     .unwrap_or_else(|| AbsolutePath::from(path.as_path().join("target")));
                 if seen_targets.insert(target.clone()) {
@@ -239,7 +241,7 @@ fn append_sibling_lines(
     selection: &[AbsolutePath],
     lines: &mut Vec<String>,
 ) {
-    let siblings = app.target_dir_index_ref().siblings(target, selection);
+    let siblings = app.scan().target_dir_index().siblings(target, selection);
     let project_siblings: Vec<&AbsolutePath> =
         siblings.iter().map(|member| &member.project_root).collect();
     if !project_siblings.is_empty() {
@@ -520,7 +522,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         enter_action,
         clean_enabled,
         clear_lint_action,
-        app.current_keymap(),
+        app.keymap().current(),
         app.config().terminal_command_configured(),
         app.selected_project_is_deleted(),
     );

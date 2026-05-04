@@ -208,7 +208,7 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
     // re-fetch, `y` is disabled — the plan isn't trustworthy yet.
     // `n` cancels regardless, so we let the Ignore path fall through
     // to take_confirm().
-    if key == KeyCode::Char('y') && app.confirm_verifying().is_some() {
+    if key == KeyCode::Char('y') && app.scan().confirm_verifying().is_some() {
         return true;
     }
     let Some(action) = app.take_confirm() else {
@@ -453,12 +453,12 @@ fn open_paths_via_editor_command(editor: &str, paths: &[&Path]) -> std::io::Resu
 
 fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
     let bind = bind_from(event);
-    let Some(GlobalAction::OpenEditor) = app.current_keymap().global.action_for(&bind) else {
+    let Some(GlobalAction::OpenEditor) = app.keymap().current().global.action_for(&bind) else {
         return false;
     };
 
     let context = app.input_context();
-    let Some(path) = overlay_editor_target_path(context, app.config_path(), app.keymap_path())
+    let Some(path) = overlay_editor_target_path(context, app.config_path(), app.keymap().path())
     else {
         return false;
     };
@@ -555,7 +555,7 @@ fn open_terminal(app: &mut App) {
 
 fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
     let bind = bind_from(event);
-    let Some(action) = app.current_keymap().global.action_for(&bind) else {
+    let Some(action) = app.keymap().current().global.action_for(&bind) else {
         return false;
     };
     match action {
@@ -612,7 +612,7 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
 
     // Action keys through keymap.
     let bind = bind_from(event);
-    let Some(action) = app.current_keymap().project_list.action_for(&bind) else {
+    let Some(action) = app.keymap().current().project_list.action_for(&bind) else {
         return;
     };
     match action {
@@ -648,7 +648,7 @@ fn handle_toast_key(app: &mut App, event: &KeyEvent) {
         KeyCode::Down => app.panes_mut().toasts_mut().viewport_mut().down(),
         KeyCode::Home => app.panes_mut().toasts_mut().viewport_mut().home(),
         KeyCode::End => {
-            let last_index = app.active_toasts().len().saturating_sub(1);
+            let last_index = app.toasts().active_now().len().saturating_sub(1);
             app.panes_mut()
                 .toasts_mut()
                 .viewport_mut()
@@ -657,7 +657,8 @@ fn handle_toast_key(app: &mut App, event: &KeyEvent) {
         KeyCode::Enter => {
             // Open action_path if the focused toast has one.
             if let Some(toast) = app
-                .active_toasts()
+                .toasts()
+                .active_now()
                 .into_iter()
                 .nth(app.panes().toasts().viewport().pos())
                 && let Some(path) = toast.action_path()

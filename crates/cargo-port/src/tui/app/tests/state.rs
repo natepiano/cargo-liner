@@ -1508,7 +1508,8 @@ fn fake_metadata(workspace_root: &AbsolutePath) -> WorkspaceMetadata {
 }
 
 fn metadata_toast_items(app: &App) -> Vec<String> {
-    app.active_toasts()
+    app.toasts()
+        .active_now()
         .iter()
         .find(|toast| toast.title() == "Running cargo metadata")
         .map(|toast| {
@@ -1565,6 +1566,7 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
 
     let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
     let generation = app
+        .scan()
         .metadata_store_handle()
         .lock()
         .expect("store lock")
@@ -1586,7 +1588,8 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
         "metadata.seen records the arrived workspace"
     );
     assert!(
-        app.metadata_store_handle()
+        app.scan()
+            .metadata_store_handle()
             .lock()
             .expect("store lock")
             .get(&workspace_root)
@@ -1615,7 +1618,7 @@ fn stale_generation_metadata_arrival_is_dropped() {
     app.initialize_startup_phase_tracker();
 
     let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
-    let store = app.metadata_store_handle();
+    let store = app.scan().metadata_store_handle();
     let stale_gen = store
         .lock()
         .expect("store")
@@ -1643,7 +1646,8 @@ fn stale_generation_metadata_arrival_is_dropped() {
         "stale-generation arrival does not advance metadata.seen"
     );
     assert!(
-        app.metadata_store_handle()
+        app.scan()
+            .metadata_store_handle()
             .lock()
             .expect("store")
             .get(&workspace_root)
@@ -1664,6 +1668,7 @@ fn failed_metadata_arrival_surfaces_error_toast() {
 
     let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
     let generation = app
+        .scan()
         .metadata_store_handle()
         .lock()
         .expect("store")
@@ -1679,7 +1684,8 @@ fn failed_metadata_arrival_surfaces_error_toast() {
     });
 
     let error_toast_present = app
-        .active_toasts()
+        .toasts()
+        .active_now()
         .iter()
         .any(|toast| toast.title().starts_with("cargo metadata failed"));
     assert!(
@@ -1717,12 +1723,13 @@ fn cargo_metadata_workspace_missing_does_not_raise_toast() {
         .reset_with_expected(std::iter::once(workspace_root.clone()).collect());
 
     let generation = app
+        .scan()
         .metadata_store_handle()
         .lock()
         .expect("store")
         .next_generation(&workspace_root);
 
-    let toasts_before = app.active_toasts().len();
+    let toasts_before = app.toasts().active_now().len();
     app.handle_bg_msg(BackgroundMsg::CargoMetadata {
         workspace_root: workspace_root.clone(),
         generation,
@@ -1731,7 +1738,7 @@ fn cargo_metadata_workspace_missing_does_not_raise_toast() {
     });
 
     assert_eq!(
-        app.active_toasts().len(),
+        app.toasts().active_now().len(),
         toasts_before,
         "WorkspaceMissing must not add any toast"
     );
@@ -1766,7 +1773,8 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
     let mut app = make_app(&[pkg]);
 
     // Inject metadata pointing the project at the out-of-tree target.
-    app.metadata_store_handle()
+    app.scan()
+        .metadata_store_handle()
         .lock()
         .expect("store")
         .upsert(WorkspaceMetadata {
@@ -1809,7 +1817,8 @@ fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
         ..crate::project::Package::default()
     }));
     let mut app = make_app(&[pkg]);
-    app.metadata_store_handle()
+    app.scan()
+        .metadata_store_handle()
         .lock()
         .expect("store")
         .upsert(WorkspaceMetadata {
@@ -1921,6 +1930,7 @@ fn startup_ready_waits_on_metadata_phase() {
     // Dispatch the metadata arrival → phase completes → startup ready.
     let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
     let generation = app
+        .scan()
         .metadata_store_handle()
         .lock()
         .expect("store")
@@ -2036,7 +2046,8 @@ fn request_clean_confirm_opens_ready_when_fingerprint_matches() {
     // (the project path doesn't exist). capture() will fail on the
     // non-existent path, and `should_verify_before_clean` treats
     // capture failure as "no drift" → Ready.
-    app.metadata_store_handle()
+    app.scan()
+        .metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())
         .upsert(fake_metadata(&workspace_root));
@@ -2044,7 +2055,7 @@ fn request_clean_confirm_opens_ready_when_fingerprint_matches() {
     app.request_clean_confirm(workspace_root);
 
     assert!(
-        app.confirm_verifying().is_none(),
+        app.scan().confirm_verifying().is_none(),
         "capture failure (test path doesn't exist) → no verifying state"
     );
     assert!(app.confirm().is_some(), "popup opens immediately in Ready");
@@ -2064,7 +2075,7 @@ fn request_clean_confirm_marks_verifying_when_no_metadata_covers_path() {
     app.request_clean_confirm(workspace_root.clone());
 
     assert_eq!(
-        app.confirm_verifying(),
+        app.scan().confirm_verifying(),
         Some(&workspace_root),
         "missing metadata → confirm opens in Verifying state, \
          pending on this workspace root"
@@ -2074,6 +2085,7 @@ fn request_clean_confirm_marks_verifying_when_no_metadata_covers_path() {
     // clear the Verifying flag (design plan → "Verifying target
     // dir…" transitions to Ready on metadata arrival).
     let generation = app
+        .scan()
         .metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())
@@ -2085,7 +2097,7 @@ fn request_clean_confirm_marks_verifying_when_no_metadata_covers_path() {
         result: Ok(fake_metadata(&workspace_root)),
     });
     assert!(
-        app.confirm_verifying().is_none(),
+        app.scan().confirm_verifying().is_none(),
         "successful arrival clears the Verifying flag"
     );
 }
@@ -2104,7 +2116,7 @@ fn out_of_tree_target_size_message_stamps_metadata() {
     }));
     let mut app = make_app(&[pkg]);
     {
-        let store = app.metadata_store_handle();
+        let store = app.scan().metadata_store_handle();
         let mut guard = store.lock().unwrap_or_else(|_| std::process::abort());
         guard.upsert(WorkspaceMetadata {
             workspace_root:           workspace_root.clone(),
@@ -2124,6 +2136,7 @@ fn out_of_tree_target_size_message_stamps_metadata() {
     });
 
     let stamped = app
+        .scan()
         .metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())
@@ -2200,6 +2213,7 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
         out_of_tree_target_bytes: None,
     };
     let generation = app
+        .scan()
         .metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())

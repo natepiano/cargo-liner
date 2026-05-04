@@ -178,7 +178,7 @@ impl App {
             &self.config.current().tui.inline_dirs,
             self.config().include_non_rust(),
             self.net.http_client(),
-            self.metadata_store_handle(),
+            self.scan.metadata_store_handle(),
         );
         self.background.swap_bg_channel(tx, rx);
         self.respawn_watcher();

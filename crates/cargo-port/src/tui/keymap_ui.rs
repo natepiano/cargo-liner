@@ -226,7 +226,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     }
 
     let bind = KeyBind::new(event.code, event.modifiers);
-    let rows = build_rows(app.current_keymap());
+    let rows = build_rows(app.keymap().current());
     let selectable: Vec<&KeymapRow> = rows.iter().filter(|r| !r.is_header).collect();
     let Some(row) = selectable.get(app.panes().keymap().viewport().pos()) else {
         return;
@@ -262,7 +262,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
 
     // Check global conflict (if pane scope).
     if row.scope != "global"
-        && let Some(global_action) = app.current_keymap().global.action_for(&bind)
+        && let Some(global_action) = app.keymap().current().global.action_for(&bind)
     {
         app.set_inline_error(format!(
             "\"{}\" used by Global → {}",
@@ -275,14 +275,14 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     // Check pane conflicts (if global scope) — a global key that
     // shadows a pane binding would silently steal the key.
     if row.scope == "global"
-        && let Some(msg) = check_pane_conflict(app.current_keymap(), &bind)
+        && let Some(msg) = check_pane_conflict(app.keymap().current(), &bind)
     {
         app.set_inline_error(msg);
         return;
     }
 
     // Check intra-scope conflict.
-    let conflict = check_scope_conflict(app.current_keymap(), row.scope, row.action, &bind);
+    let conflict = check_scope_conflict(app.keymap().current(), row.scope, row.action, &bind);
     if let Some(msg) = conflict {
         app.set_inline_error(msg);
         return;
@@ -418,43 +418,43 @@ fn apply_rebind(app: &mut App, scope: &str, action: &str, bind: KeyBind) {
 
     match scope {
         "global" => rebind(
-            &mut app.current_keymap_mut().global,
+            &mut app.keymap_mut().current_mut().global,
             action,
             bind,
             GlobalAction::from_toml_key,
         ),
         "project_list" => rebind(
-            &mut app.current_keymap_mut().project_list,
+            &mut app.keymap_mut().current_mut().project_list,
             action,
             bind,
             ProjectListAction::from_toml_key,
         ),
         "package" => rebind(
-            &mut app.current_keymap_mut().package,
+            &mut app.keymap_mut().current_mut().package,
             action,
             bind,
             PackageAction::from_toml_key,
         ),
         "git" => rebind(
-            &mut app.current_keymap_mut().git,
+            &mut app.keymap_mut().current_mut().git,
             action,
             bind,
             GitAction::from_toml_key,
         ),
         "targets" => rebind(
-            &mut app.current_keymap_mut().targets,
+            &mut app.keymap_mut().current_mut().targets,
             action,
             bind,
             TargetsAction::from_toml_key,
         ),
         "ci_runs" => rebind(
-            &mut app.current_keymap_mut().ci_runs,
+            &mut app.keymap_mut().current_mut().ci_runs,
             action,
             bind,
             CiRunsAction::from_toml_key,
         ),
         "lints" => rebind(
-            &mut app.current_keymap_mut().lints,
+            &mut app.keymap_mut().current_mut().lints,
             action,
             bind,
             LintsAction::from_toml_key,
@@ -467,15 +467,15 @@ fn apply_rebind(app: &mut App, scope: &str, action: &str, bind: KeyBind) {
 }
 
 fn save_keymap_to_disk(app: &mut App) {
-    let Some(path) = app.keymap_path() else {
+    let Some(path) = app.keymap().path() else {
         return;
     };
     // Write full TOML with current bindings.
     // TODO(toml_edit): use toml_edit for targeted updates preserving comments.
-    let content = ResolvedKeymap::default_toml_from(app.current_keymap());
+    let content = ResolvedKeymap::default_toml_from(app.keymap().current());
     let _ = std::fs::write(path, &content);
     // Update stamp so hot-reload skips this write.
-    app.sync_keymap_stamp();
+    app.keymap_mut().sync_stamp();
 }
 
 // ── Rendering ────────────────────────────────────────────────────────
@@ -564,7 +564,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
 
 pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let rows = build_rows(app.current_keymap());
+    let rows = build_rows(app.keymap().current());
 
     // Dynamic width: base fits all normal keys, expands for conflict messages.
     let content_width = app.inline_error().map_or(BASE_POPUP_WIDTH, |msg| {

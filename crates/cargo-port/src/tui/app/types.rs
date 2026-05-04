@@ -280,9 +280,9 @@ pub struct CiFetchTracker {
 }
 
 impl CiFetchTracker {
-    pub(super) fn start(&mut self, path: AbsolutePath) { self.inner.insert(path); }
+    pub fn start(&mut self, path: AbsolutePath) { self.inner.insert(path); }
 
-    pub(super) fn complete(&mut self, path: &std::path::Path) -> bool { self.inner.remove(path) }
+    pub fn complete(&mut self, path: &std::path::Path) -> bool { self.inner.remove(path) }
 
     pub(super) fn is_fetching(&self, path: &std::path::Path) -> bool { self.inner.contains(path) }
 

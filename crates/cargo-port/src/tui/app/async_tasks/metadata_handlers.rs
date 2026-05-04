@@ -121,7 +121,7 @@ impl App {
         // Step 6e: if the user had a confirm popup waiting on this
         // workspace's re-fingerprint, clear the Verifying flag so
         // the next render shows Ready and 'y' starts working again.
-        self.clear_confirm_verifying_for(&workspace_root);
+        self.scan.clear_confirm_verifying_for(&workspace_root);
         self.scan
             .scan_state_mut()
             .startup_phases

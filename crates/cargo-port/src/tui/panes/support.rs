@@ -779,7 +779,7 @@ fn version_and_description(pkg: Option<&PackageRecord>) -> (String, Option<Strin
 /// `None` for in-tree targets (already reflected in `DiskTarget`) or
 /// before the walk has landed.
 fn lookup_out_of_tree_target_bytes(app: &App, abs_path: &AbsolutePath) -> Option<u64> {
-    let store = app.metadata_store_handle();
+    let store = app.scan().metadata_store_handle();
     let guard = store.lock().ok()?;
     let snap = guard
         .containing_workspace_root(abs_path)
@@ -1534,7 +1534,8 @@ fn resolve_disk_and_ci(
 }
 
 fn lookup_package_record(app: &App, abs_path: &AbsolutePath) -> Option<PackageRecord> {
-    app.metadata_store_handle()
+    app.scan()
+        .metadata_store_handle()
         .lock()
         .ok()
         .and_then(|store| store.package_for_path(abs_path).cloned())

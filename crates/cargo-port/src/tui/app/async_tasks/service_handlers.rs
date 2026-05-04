@@ -78,7 +78,7 @@ impl App {
     ) -> u64 {
         let (title, body) = service_unavailable_message(service, kind);
         let id = self.toasts.push_persistent(title, body, Warning, None, 1);
-        let toast_len = self.active_toasts().len();
+        let toast_len = self.toasts.active_now().len();
         self.panes_mut()
             .toasts_mut()
             .viewport_mut()

@@ -9,6 +9,7 @@ use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::MemberGroup;
 use crate::project::Package;
+use crate::project::ProjectCiData;
 use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
 use crate::project::ProjectInfo;
@@ -289,6 +290,18 @@ impl ProjectList {
         self.roots
             .values_mut()
             .find(|entry| project::entry_contains(entry, target))
+    }
+
+    /// Replace `git_repo.ci_data` on the entry containing `path`.
+    /// Silently no-ops when no entry contains `path` or the entry
+    /// has no git repo.
+    pub(crate) fn replace_ci_data_for_path(&mut self, path: &Path, ci_data: ProjectCiData) {
+        if let Some(repo) = self
+            .entry_containing_mut(path)
+            .and_then(|entry| entry.git_repo.as_mut())
+        {
+            repo.ci_data = ci_data;
+        }
     }
 
     // -- Hierarchy mutations ----------------------------------------------

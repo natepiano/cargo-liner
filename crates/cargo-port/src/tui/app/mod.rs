@@ -87,13 +87,9 @@ use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
 use crate::http::GitHubRateLimit;
 use crate::http::HttpClient;
-use crate::keymap::ResolvedKeymap;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
 use crate::project::AbsolutePath;
-use crate::project::ProjectCiData;
-use crate::project::WorkspaceMetadata;
-use crate::project::WorkspaceMetadataHandle;
 use crate::project::WorkspaceMetadataStore;
 use crate::project_list::ProjectList;
 use crate::scan;
@@ -309,12 +305,6 @@ impl App {
         self.config.current_mut()
     }
 
-    pub(super) const fn current_keymap(&self) -> &ResolvedKeymap { self.keymap.current() }
-
-    pub(super) const fn current_keymap_mut(&mut self) -> &mut ResolvedKeymap {
-        self.keymap.current_mut()
-    }
-
     /// Test-only — production paths reach Config sub-fields via
     /// the top-level App accessors (`current_config`, `config_path`,
     /// `settings_edit_*`).
@@ -324,6 +314,12 @@ impl App {
     pub(super) fn resolved_dirs(&self) -> Vec<AbsolutePath> {
         scan::resolve_include_dirs(&self.config.current().tui.include_dirs)
     }
+
+    pub(super) const fn keymap(&self) -> &Keymap { &self.keymap }
+
+    pub(super) const fn keymap_mut(&mut self) -> &mut Keymap { &mut self.keymap }
+
+    pub(super) const fn toasts(&self) -> &ToastManager { &self.toasts }
 
     pub(super) const fn projects(&self) -> &ProjectList { self.scan.projects() }
 
@@ -348,25 +344,6 @@ impl App {
     /// from the shared `HttpClient` state every frame — not persisted.
     pub(super) fn rate_limit(&self) -> GitHubRateLimit { self.net.rate_limit() }
 
-    pub fn complete_ci_fetch_for(&mut self, path: &Path) -> bool {
-        self.ci.fetch_tracker_mut().complete(path)
-    }
-
-    pub fn replace_ci_data_for_path(&mut self, path: &Path, ci_data: ProjectCiData) {
-        if let Some(repo) = self
-            .scan
-            .projects_mut()
-            .entry_containing_mut(path)
-            .and_then(|entry| entry.git_repo.as_mut())
-        {
-            repo.ci_data = ci_data;
-        }
-    }
-
-    pub fn start_ci_fetch_for(&mut self, path: AbsolutePath) {
-        self.ci.fetch_tracker_mut().start(path);
-    }
-
     /// Lint subsystem accessor. Owns the lint runtime, running
     /// paths, running toast, and disk cache stat counter.
     pub(super) const fn lint(&self) -> &Lint { &self.lint }
@@ -374,6 +351,8 @@ impl App {
     /// Ci subsystem accessor. Owns `fetch_tracker`, `fetch_toast`,
     /// and `display_modes`.
     pub(super) const fn ci(&self) -> &Ci { &self.ci }
+
+    pub(super) const fn ci_mut(&mut self) -> &mut Ci { &mut self.ci }
 
     pub(super) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
         self.projects().lint_at_path(path)
@@ -533,8 +512,6 @@ impl App {
     /// `cargo metadata` refresh to land (design plan → "Per-worktree
     /// clean, Step 6e"). Callers that gate `y` on a settled plan
     /// consult this.
-    pub const fn confirm_verifying(&self) -> Option<&AbsolutePath> { self.scan.confirm_verifying() }
-
     /// Open a Clean confirm popup for `project_path`, first checking
     /// whether the project's workspace manifest has drifted since the
     /// last `cargo metadata` run. On drift: dispatch a `cargo metadata` refresh,
@@ -610,18 +587,6 @@ impl App {
             metadata_limit: Arc::new(tokio::sync::Semaphore::new(
                 crate::constants::SCAN_METADATA_CONCURRENCY,
             )),
-        }
-    }
-
-    /// Clear the verifying flag — called by `handle_cargo_metadata_msg`
-    /// when a refresh for the pending workspace lands.
-    pub fn clear_confirm_verifying_for(&mut self, workspace_root: &AbsolutePath) {
-        if self
-            .scan
-            .confirm_verifying()
-            .is_some_and(|pending| pending == workspace_root)
-        {
-            self.scan.set_confirm_verifying(None);
         }
     }
 
@@ -730,8 +695,6 @@ impl App {
 
     pub(super) fn config_path(&self) -> Option<&Path> { self.config.path() }
 
-    pub(super) fn keymap_path(&self) -> Option<&Path> { self.keymap.path() }
-
     pub(super) const fn ui_modes(&self) -> &types::UiModes { &self.ui_modes }
 
     pub(super) const fn take_confirm(&mut self) -> Option<ConfirmAction> { self.confirm.take() }
@@ -746,12 +709,8 @@ impl App {
         self.scan.set_retry_spawn_mode(mode);
     }
 
-    /// Test-only — production paths reach Scan sub-fields via the
-    /// top-level App accessors (`projects`, `current_config`, etc.).
-    #[cfg(test)]
     pub(super) const fn scan(&self) -> &Scan { &self.scan }
 
-    #[cfg(test)]
     pub(super) const fn scan_mut(&mut self) -> &mut Scan { &mut self.scan }
 
     #[cfg(test)]
@@ -796,47 +755,6 @@ impl App {
 
     pub(super) fn reset_cpu_placeholder(&mut self) {
         self.panes.reset_cpu(&self.config.current().cpu);
-    }
-
-    /// Clone of the process-wide cargo-metadata store. The scan thread and
-    /// future refresh paths stamp dispatches with a generation pulled from
-    /// this handle, and the main loop merges arrivals back into it.
-    pub fn metadata_store_handle(&self) -> Arc<Mutex<WorkspaceMetadataStore>> {
-        Arc::clone(self.scan.metadata_store())
-    }
-
-    /// Borrow the [`TargetDirIndex`] for read-only lookups (e.g.
-    /// confirm-dialog "also affects" listings). Mutation flows only
-    /// through the metadata-arrival handler.
-    pub const fn target_dir_index_ref(&self) -> &TargetDirIndex { self.scan.target_dir_index() }
-
-    /// Resolve a [`WorkspaceMetadataHandle`] to a cloned [`WorkspaceMetadata`],
-    /// or `None` when the workspace has no metadata yet. Callers get the
-    /// metadata by value; the store lock is released before this returns.
-    #[allow(
-        dead_code,
-        reason = "consumed in later steps (5/6); kept now so WorkspaceMetadataHandle \
-                  has a resolve path in place before handle-carrying RustInfo lands"
-    )]
-    pub fn resolve_metadata(&self, handle: &WorkspaceMetadataHandle) -> Option<WorkspaceMetadata> {
-        self.scan
-            .metadata_store()
-            .lock()
-            .ok()
-            .and_then(|store| store.get(&handle.workspace_root).cloned())
-    }
-
-    /// Resolve the owning workspace's `target_directory` for any path inside
-    /// a known workspace. Accepts project roots, members, worktree entries,
-    /// vendored crate roots — the store walks ancestors internally. Returns
-    /// `None` when no metadata covers `path` yet; callers should fall back
-    /// to `<project>/target`.
-    pub fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
-        self.scan
-            .metadata_store()
-            .lock()
-            .ok()
-            .and_then(|store| store.resolved_target_dir(path).cloned())
     }
 }
 

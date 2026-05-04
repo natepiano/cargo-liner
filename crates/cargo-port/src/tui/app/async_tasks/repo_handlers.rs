@@ -258,7 +258,7 @@ impl App {
                     }],
                     linger,
                 );
-                let toast_len = self.active_toasts().len();
+                let toast_len = self.toasts.active_now().len();
                 self.panes_mut()
                     .toasts_mut()
                     .viewport_mut()

@@ -205,7 +205,7 @@ impl App {
                         .is_some_and(crate::tui::panes::CiData::has_runs)
             },
             PaneBehavior::Output => !self.inflight.example_output_is_empty(),
-            PaneBehavior::Toasts => !self.active_toasts().is_empty(),
+            PaneBehavior::Toasts => !self.toasts.active_now().is_empty(),
             PaneBehavior::Overlay => false,
         }
     }
@@ -233,7 +233,7 @@ impl App {
         }
         let current = self.base_focus();
         if current == PaneId::Toasts
-            && self.panes().toasts().viewport().pos() + 1 < self.active_toasts().len()
+            && self.panes().toasts().viewport().pos() + 1 < self.toasts.active_now().len()
         {
             self.panes_mut().toasts_mut().viewport_mut().down();
             self.focus_pane(PaneId::Toasts);
@@ -263,7 +263,7 @@ impl App {
         let prev = panes[(index + panes.len() - 1) % panes.len()];
         self.focus_pane(prev);
         if prev == PaneId::Toasts {
-            let last_index = self.active_toasts().len().saturating_sub(1);
+            let last_index = self.toasts.active_now().len().saturating_sub(1);
             self.panes_mut()
                 .toasts_mut()
                 .viewport_mut()

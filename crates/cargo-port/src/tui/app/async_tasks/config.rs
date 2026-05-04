@@ -80,7 +80,7 @@ impl App {
             );
         }
     }
-    pub fn sync_keymap_stamp(&mut self) { self.keymap.sync_stamp(); }
+
     pub(super) fn show_keymap_diagnostics(&mut self, errors: &[KeymapError]) {
         // Dismiss previous diagnostics toast if any.
         self.dismiss_keymap_diagnostics();
@@ -103,7 +103,7 @@ impl App {
             1,
         );
         self.keymap.set_diagnostics_id(Some(id));
-        let toast_len = self.active_toasts().len();
+        let toast_len = self.toasts.active_now().len();
         self.panes_mut()
             .toasts_mut()
             .viewport_mut()

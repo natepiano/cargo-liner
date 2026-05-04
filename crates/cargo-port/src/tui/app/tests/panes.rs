@@ -97,7 +97,8 @@ fn seed_single_example_metadata(app: &App, project_path: &AbsolutePath, example_
     };
     let mut packages = std::collections::HashMap::new();
     packages.insert(pkg.id.clone(), pkg);
-    app.metadata_store_handle()
+    app.scan()
+        .metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())
         .upsert(WorkspaceMetadata {
@@ -312,6 +313,7 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
         out_of_tree_target_bytes: None,
     };
     let generation = app
+        .scan()
         .metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())

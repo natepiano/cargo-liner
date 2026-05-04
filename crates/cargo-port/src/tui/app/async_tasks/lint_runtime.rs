@@ -24,7 +24,7 @@ impl App {
             self.config().include_non_rust(),
             self.net.http_client(),
             self.lint.runtime_clone(),
-            self.metadata_store_handle(),
+            self.scan.metadata_store_handle(),
         );
         self.background.replace_watcher_sender(new_watcher);
     }

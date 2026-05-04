@@ -31,7 +31,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
             true
         },
         HoverTarget::ToastCard(id) => {
-            let active = app.active_toasts();
+            let active = app.toasts().active_now();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
                 app.panes_mut().toasts_mut().viewport_mut().set_pos(index);
                 app.focus_pane(PaneId::Toasts);
@@ -896,7 +896,7 @@ mod tests {
         let toast_id =
             app.toasts_mut()
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
-        let toast_len = app.active_toasts().len();
+        let toast_len = app.toasts().active_now().len();
         app.panes_mut()
             .toasts_mut()
             .viewport_mut()
@@ -927,7 +927,7 @@ mod tests {
         let toast_id =
             app.toasts_mut()
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
-        let toast_len = app.active_toasts().len();
+        let toast_len = app.toasts().active_now().len();
         app.panes_mut()
             .toasts_mut()
             .viewport_mut()
@@ -1041,7 +1041,8 @@ mod tests {
         };
         let mut packages = std::collections::HashMap::new();
         packages.insert(pkg.id.clone(), pkg);
-        app.metadata_store_handle()
+        app.scan()
+            .metadata_store_handle()
             .lock()
             .unwrap_or_else(|_| std::process::abort())
             .upsert(WorkspaceMetadata {
@@ -1122,7 +1123,8 @@ mod tests {
         let mut app = make_app(&[make_package("demo", &project_dir)]);
 
         let custom_target = tmp.path().join("out-of-tree-target");
-        app.metadata_store_handle()
+        app.scan()
+            .metadata_store_handle()
             .lock()
             .unwrap_or_else(|_| std::process::abort())
             .upsert(WorkspaceMetadata {
@@ -1204,7 +1206,8 @@ mod tests {
             },
             out_of_tree_target_bytes: None,
         };
-        app.metadata_store_handle()
+        app.scan()
+            .metadata_store_handle()
             .lock()
             .unwrap_or_else(|_| std::process::abort())
             .upsert(workspace_metadata);
@@ -1328,7 +1331,7 @@ mod tests {
         let root = AbsolutePath::from(project_dir);
         let target = AbsolutePath::from(shared_target);
         {
-            let store = app.metadata_store_handle();
+            let store = app.scan().metadata_store_handle();
             let mut guard = store.lock().unwrap_or_else(|_| std::process::abort());
             guard.upsert(WorkspaceMetadata {
                 workspace_root:           root,
@@ -1416,7 +1419,7 @@ mod tests {
             };
             // Route through handle_bg_msg so the TargetDirIndex gets
             // refreshed alongside the store (Step 6c handler path).
-            let store = app.metadata_store_handle();
+            let store = app.scan().metadata_store_handle();
             let generation = store
                 .lock()
                 .unwrap_or_else(|_| std::process::abort())
