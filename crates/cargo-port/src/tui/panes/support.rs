@@ -1123,7 +1123,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let entry = app.projects().entry_containing(abs_path);
     let git_repo = entry.and_then(|entry| entry.git_repo.as_ref());
     let repo_info = git_repo.and_then(|repo| repo.repo_info.as_ref());
-    let checkout = app.git_info_for(abs_path);
+    let checkout = app.projects().git_info_for(abs_path);
 
     let branch = checkout.and_then(|info| info.branch.clone());
     let vs_local = checkout
@@ -1148,7 +1148,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let rate_limit = app.rate_limit();
     GitDetailFields {
         branch,
-        path: app.git_status_for(abs_path),
+        path: app.projects().git_status_for(abs_path),
         vs_local,
         local_main_branch,
         main_branch_label,
@@ -1245,6 +1245,7 @@ fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
         .into_iter()
         .map(|(path, name)| {
             let branch = app
+                .projects()
                 .git_info_for(path.as_path())
                 .and_then(|info| info.branch.clone());
             let ahead_behind = if path.as_path() == primary_path.as_path() {
@@ -1697,8 +1698,8 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         super::Lint::package_display(app.projects(), &abs_path_owned, is_worktree_group, is_rust);
     let ci_display = app.ci().package_display(
         &abs_path_owned,
-        app.repo_info_for(abs_path_owned.as_path()),
-        app.git_info_for(abs_path_owned.as_path()),
+        app.projects().repo_info_for(abs_path_owned.as_path()),
+        app.projects().git_info_for(abs_path_owned.as_path()),
         app.ci_info_for(abs_path_owned.as_path()),
         ci,
         is_worktree_group,
@@ -1774,11 +1775,14 @@ fn assemble_detail_pane_data(
 pub fn build_ci_data(app: &App) -> CiData {
     let selected_path = app.selected_project_path();
     let has_ci_owner = app.selected_ci_path().is_some();
-    let git_info = selected_path.and_then(|path| app.git_info_for(path));
-    let repo_info = selected_path.and_then(|path| app.repo_info_for(path));
+    let git_info = selected_path.and_then(|path| app.projects().git_info_for(path));
+    let repo_info = selected_path.and_then(|path| app.projects().repo_info_for(path));
     let ci_info = selected_path.and_then(|path| app.ci_info_for(path));
-    let current_branch =
-        selected_path.and_then(|path| app.git_info_for(path).and_then(|git| git.branch.clone()));
+    let current_branch = selected_path.and_then(|path| {
+        app.projects()
+            .git_info_for(path)
+            .and_then(|git| git.branch.clone())
+    });
     let unpublished_branch_name =
         selected_path.and_then(|path| app.unpublished_ci_branch_name(path));
     let runs = app.selected_ci_runs();

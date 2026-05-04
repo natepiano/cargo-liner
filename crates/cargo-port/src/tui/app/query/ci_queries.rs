@@ -21,8 +21,9 @@ impl App {
     }
 
     pub fn unpublished_ci_branch_name(&self, path: &Path) -> Option<String> {
-        let git = self.git_info_for(path)?;
+        let git = self.projects().git_info_for(path)?;
         let default_branch = self
+            .projects()
             .repo_info_for(path)
             .and_then(|repo| repo.default_branch.as_deref());
         (git.primary_tracked_ref().is_none() && git.branch.as_deref() != default_branch)

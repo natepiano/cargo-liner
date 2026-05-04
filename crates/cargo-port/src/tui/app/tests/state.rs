@@ -683,14 +683,14 @@ fn git_status_suppresses_sync_for_untracked_and_ignored() {
         info.0.status = GitStatus::Untracked;
         info
     });
-    assert!(app.git_sync(project.path()).is_empty());
+    assert!(app.projects().git_sync(project.path()).is_empty());
 
     apply_git_info(&mut app, project.path(), {
         let mut info = base_info();
         info.0.status = GitStatus::Ignored;
         info
     });
-    assert!(app.git_sync(project.path()).is_empty());
+    assert!(app.projects().git_sync(project.path()).is_empty());
 }
 
 #[test]
@@ -735,7 +735,7 @@ fn background_git_info_updates_rendered_git_status() {
         },
     );
     assert_eq!(
-        app.git_status_for(project.path()),
+        app.projects().git_status_for(project.path()),
         Some(GitStatus::Modified)
     );
 
@@ -774,7 +774,10 @@ fn background_git_info_updates_rendered_git_status() {
             },
         },
     );
-    assert_eq!(app.git_status_for(project.path()), Some(GitStatus::Clean));
+    assert_eq!(
+        app.projects().git_status_for(project.path()),
+        Some(GitStatus::Clean)
+    );
 }
 
 #[test]
@@ -812,7 +815,7 @@ fn git_sync_shows_ascii_fill_for_local_only_branch() {
         ),
     );
 
-    assert_eq!(app.git_sync(project.path()), NO_REMOTE_SYNC);
+    assert_eq!(app.projects().git_sync(project.path()), NO_REMOTE_SYNC);
 }
 
 #[test]
@@ -850,7 +853,7 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
         ),
     );
 
-    assert_eq!(app.git_sync(project.path()), NO_REMOTE_SYNC);
+    assert_eq!(app.projects().git_sync(project.path()), NO_REMOTE_SYNC);
 }
 
 #[test]
@@ -999,7 +1002,7 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
         ),
     );
 
-    assert_eq!(app.git_main(project.path()), IN_SYNC);
+    assert_eq!(app.projects().git_main(project.path()), IN_SYNC);
 }
 
 #[test]
@@ -1035,7 +1038,8 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.repo_info_for(test_path("~/demo").as_path())
+        app.projects()
+            .repo_info_for(test_path("~/demo").as_path())
             .and_then(|repo| repo.first_commit.as_deref()),
         Some("2026-03-12T21:18:54-04:00")
     );

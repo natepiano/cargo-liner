@@ -141,6 +141,7 @@ impl App {
         // filled in either by a prior `handle_git_first_commit` write
         // or via the `pending_git_first_commit` map below.
         let preserved_first_commit = self
+            .projects()
             .repo_info_for(path)
             .and_then(|existing| existing.first_commit.clone());
         if info.first_commit.is_none() {
@@ -154,6 +155,7 @@ impl App {
         // burning REST quota. ISO 8601 strings compare lexically in
         // chronological order, so `!=` captures advance reliably.
         let previous_last_fetched = self
+            .projects()
             .repo_info_for(path)
             .and_then(|existing| existing.last_fetched.clone());
         let fetch_head_advanced =
@@ -170,7 +172,7 @@ impl App {
 
         if fetch_head_advanced
             && self.is_scan_complete()
-            && let Some(url) = self.fetch_url_for(path)
+            && let Some(url) = self.projects().fetch_url_for(path)
             && let Some(owner_repo) = ci::parse_owner_repo(&url)
             && !self.net.github().contains_in_flight(&owner_repo)
         {
@@ -189,7 +191,7 @@ impl App {
         if self.projects().is_submodule_path(path) {
             return;
         }
-        let Some(url) = self.fetch_url_for(path) else {
+        let Some(url) = self.projects().fetch_url_for(path) else {
             return;
         };
         self.spawn_repo_fetch_for_git_info(path, &url);

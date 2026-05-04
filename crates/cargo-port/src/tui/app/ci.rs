@@ -16,13 +16,15 @@ use crate::tui::panes::CiFetchKind;
 impl App {
     pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<ci::OwnerRepo> {
         let entry_path = self.projects().entry_containing(path)?.item.path().clone();
-        self.primary_url_for(entry_path.as_path())
+        self.projects()
+            .primary_url_for(entry_path.as_path())
             .and_then(ci::parse_owner_repo)
     }
 
     /// Insert CI runs from the initial scan for the entry containing `path`.
     pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>, github_total: u32) {
         let exhausted = self
+            .projects()
             .primary_url_for(path)
             .and_then(ci::parse_owner_repo)
             .is_some_and(|owner_repo| scan::is_exhausted(owner_repo.owner(), owner_repo.repo()));
@@ -84,7 +86,7 @@ impl App {
         let exhausted = match kind {
             CiFetchKind::Sync => {
                 if found_new {
-                    if let Some(url) = self.primary_url_for(&abs)
+                    if let Some(url) = self.projects().primary_url_for(&abs)
                         && let Some(owner_repo) = ci::parse_owner_repo(url)
                     {
                         scan::clear_exhausted(owner_repo.owner(), owner_repo.repo());
@@ -100,14 +102,14 @@ impl App {
             },
             CiFetchKind::FetchOlder => {
                 if found_new {
-                    if let Some(url) = self.primary_url_for(&abs)
+                    if let Some(url) = self.projects().primary_url_for(&abs)
                         && let Some(owner_repo) = ci::parse_owner_repo(url)
                     {
                         scan::clear_exhausted(owner_repo.owner(), owner_repo.repo());
                     }
                     false
                 } else {
-                    if let Some(url) = self.primary_url_for(&abs)
+                    if let Some(url) = self.projects().primary_url_for(&abs)
                         && let Some(owner_repo) = ci::parse_owner_repo(url)
                     {
                         scan::mark_exhausted(owner_repo.owner(), owner_repo.repo());
@@ -161,7 +163,7 @@ impl App {
     }
 
     fn current_branch_for(&self, path: &Path) -> Option<&str> {
-        self.git_info_for(path)?.branch.as_deref()
+        self.projects().git_info_for(path)?.branch.as_deref()
     }
 
     pub(super) fn ci_toggle_available_for_inner(&self, path: &Path) -> bool {

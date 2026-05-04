@@ -340,9 +340,9 @@ fn render_root_item(
             .map_or("  ", |e| project::language_icon(&e.language))
     };
     let lint_cell = app.lint_cell(&crate::tui::lint_state::Lint::status_for_root(&item.item));
-    let origin_sync = app.git_sync(item.path());
-    let main_sync = app.git_main(item.path());
-    let git_status = app.git_status_for_item(item);
+    let origin_sync = app.projects().git_sync(item.path());
+    let main_sync = app.projects().git_main(item.path());
+    let git_status = app.projects().git_status_for_item(item);
     let prefix = if item.has_children() {
         if app.expanded().contains(&ExpandKey::Node(node_index)) {
             PREFIX_ROOT_EXPANDED
@@ -409,24 +409,24 @@ fn render_child_item<P: project::ProjectFields>(
     let hide_git_status = app.is_workspace_member_path(path);
     let origin_sync = if hide_git_status
         || matches!(
-            app.git_status_for(path),
+            app.projects().git_status_for(path),
             Some(crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored)
         ) {
         String::new()
     } else {
-        app.git_sync(path)
+        app.projects().git_sync(path)
     };
     let main_sync = if hide_git_status
         || matches!(
-            app.git_status_for(path),
+            app.projects().git_status_for(path),
             Some(crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored)
         ) {
         String::new()
     } else {
-        app.git_main(path)
+        app.projects().git_main(path)
     };
     let deleted = inherited_deleted || app.is_deleted(project.path());
-    let git_status = app.git_status_for(path);
+    let git_status = app.projects().git_status_for(path);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
     } else {
@@ -497,10 +497,10 @@ fn render_worktree_entry<'a>(
         &item.item, wi,
     ));
     let ci = app.ci_for(wt_abs);
-    let origin_sync = app.git_sync(wt_abs);
-    let main_sync = app.git_main(wt_abs);
+    let origin_sync = app.projects().git_sync(wt_abs);
+    let main_sync = app.projects().git_main(wt_abs);
     let deleted = app.is_deleted(wt_abs);
-    let git_status = app.git_status_for(wt_abs);
+    let git_status = app.projects().git_status_for(wt_abs);
     let wt_health = worktree_health_for_entry(item, wi);
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, wt_health);
@@ -866,7 +866,7 @@ fn render_path_only_entry(
     let path = entry.path().as_path();
     let disk = app.formatted_disk(path);
     let ds = disk_color(disk_percentile(entry.info().disk_usage_bytes, sorted));
-    let git_status = app.git_status_for(path);
+    let git_status = app.projects().git_status_for(path);
     let deleted = app.is_deleted(inherited_deleted_path) || app.is_deleted(path);
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, entry.info().worktree_health);

@@ -81,7 +81,7 @@ design depth in-line per phase:
 | ------ | --------- | ----- |
 | 1 | **Done** (commit `7160e04`) | Config pass-through accessors collapsed. 10 flag methods moved to `Config`, `app.config()` accessor added, ~50 call sites updated. Mend warnings: **147 → 133** (-14, predicted -10 — overshoot due to secondary warnings clearing when self-callers inside App impls also went away; treat per-phase predictions as conservative). `Config` stayed `pub(super)`; no widening needed. The `pub(super)` "relocate but no mend change" items (`current_config*`, `settings_edit_*`) were dropped from scope. 597/597 tests pass. |
 | 2 (merged 1b+2+4b) | **Done** | Trivial subsystems collapsed in one commit. App methods removed: `sync_keymap_stamp`, `current_keymap[_mut]`, `keymap_path`, `active_toasts`, `toasts_is_alive_for_test`, `confirm_verifying`, `clear_confirm_verifying_for`, `metadata_store_handle`, `target_dir_index_ref`, `resolve_metadata`, `resolve_target_dir`, `complete_ci_fetch_for`, `start_ci_fetch_for`, `replace_ci_data_for_path` (15 total). Accessors added on App (all `pub(super)` per Phase 1 lesson 1): `keymap()`, `keymap_mut()`, `toasts()`, `scan()`, `scan_mut()`, `ci_mut()`. Mend: **133 → 131** (-2 actual vs ~10–15 predicted; see Phase 2 lessons below). 597/597 tests pass. |
-| 3 | **Ready** | Git/Repo reads → ProjectList. Mechanical visibility narrowing. |
+| 3 | **Done** | Git/Repo reads relocated to `ProjectList`. 9 methods moved (`git_info_for`, `repo_info_for`, `primary_url_for`, `primary_ahead_behind_for`, `fetch_url_for`, `git_status_for`, `git_status_for_item`, `git_sync`, `git_main`) plus `worst_git_status` helper. `tui/app/query/git_repo_queries.rs` deleted. ~44 call sites rewritten. Mend: **131 → 123** (-8, within predicted ~5–9). 597/597 tests pass. Path (a) chosen (kept formatted strings on ProjectList; typed-enum split deferred). |
 | 4 | **Ready** | Ci pass-throughs. Mechanical visibility narrowing. |
 | 5 | **Ready** | Discovery shimmer + project predicates. Mechanical visibility narrowing. |
 | 6 | **Ready** | Overlays subsystem extraction (incl. Exit + inline_error). |
@@ -99,10 +99,13 @@ borrow-composition sketches, and traced flows. All three
 architectural phases (9, 10, 11) now have enough design to sit down
 and implement.
 
-## Lessons from Phases 1 + 2 (applied to remaining phases)
+## Lessons from Phases 1 + 2 + 3 (applied to remaining phases)
 
-**See also:** Phase 2's section below has 5 additional lessons specific
-to subsystem-helper widening, accessor placement, and prediction calibration.
+**See also:** Phase 2's section below has 5 lessons on subsystem-helper
+widening, accessor placement, and prediction calibration. Phase 3's
+section adds 5 more on prediction calibration confirmation, empty-file
+deletion, multi-line caller rewrites, the path-(a)-vs-(b) default, and
+the `pub(crate)`-is-free finding.
 
 1. **`pub(super)` from `tui/<subsystem>.rs` reaches the entire `tui/`
    subtree.** No subsystem under `tui/` needs `pub` for its
@@ -160,7 +163,7 @@ moves derived from the post-Phase-9 review (see end of doc).
 | ------- | ----- | ------ |
 | 1 of 13 | Phase 1 — Config | **Done** (`7160e04`) |
 | 2 of 13 | Phase 2 — Trivial subsystems (Keymap + Toasts + Scan/metadata) | **Done** |
-| 3 of 13 | Phase 3 — Git/Repo reads → ProjectList | Ready |
+| 3 of 13 | Phase 3 — Git/Repo reads → ProjectList | **Done** |
 | 4 of 13 | Phase 4 — Ci pass-throughs | Ready |
 | 5 of 13 | Phase 5 — Discovery shimmer + project predicates | Ready |
 | 6 of 13 | Phase 6 — Overlays subsystem extraction | Ready |
@@ -373,7 +376,35 @@ becomes a problem.
 
 **Risk:** none — only two methods touched.
 
-## Phase 3 — Git/Repo reads (extract into `ProjectList`)
+## Phase 3 — Git/Repo reads (extract into `ProjectList`) — **DONE**
+
+**Results:**
+- Mend warnings: **131 → 123** (-8, within predicted ~5–9 from Phase 2 lesson 1).
+- 11 files changed, 203 insertions / 202 deletions.
+- 597/597 tests pass; clippy clean; smoke-tested via `cargo install --path .`.
+- 9 read methods moved from `App` to `ProjectList`: `git_info_for`, `repo_info_for`, `primary_url_for`, `primary_ahead_behind_for`, `fetch_url_for`, `git_status_for`, `git_status_for_item`, `git_sync`, `git_main`.
+- `worst_git_status` helper relocated alongside as a free function in `project_list.rs`.
+- `tui/app/query/git_repo_queries.rs` deleted entirely; `mod git_repo_queries` removed from `query/mod.rs`.
+- ~44 call sites rewritten as `app.projects().<method>(path)` across 11 files.
+- New `ProjectList` methods all `pub(crate)`. No new `pub` items flagged by mend.
+- Path chosen: **(a)** — kept formatted strings (`git_sync`, `git_main`) as `pub(crate) fn` on `ProjectList` with the existing format logic. Path (b) (typed `SyncDisplay` enum + render-side format) deferred; revisit only if cross-cluster format reuse appears.
+
+**Lessons (apply to remaining phases):**
+
+1. **Phase 2 lesson 1's range methodology held.** Predicted ~5–9, hit -8 — first phase with calibrated predictions matching reality. Continue applying `pub removed minus pub added` to all forward phases.
+
+2. **Empty-file deletion is one extra step worth doing inside the same phase.** When a file's entire contents move out, delete the file and unregister it from `query/mod.rs` (or wherever) in the same commit. Phase 3's `git_repo_queries.rs` deletion saved the follow-up "remove empty module" commit the original retrospective scaffolding had reserved. **Apply to:** Phase 4 (Ci queries may collapse `query/ci_queries.rs` similarly), Phase 5 (`query/discovery_shimmer.rs` and/or `query/project_predicates.rs`), Phase 9 (`app/focus.rs`).
+
+3. **Multi-line `app\n.method(` callers are not caught by simple `sed`.** Phase 3 needed a fallback `perl -0pe` pass for the chained-call sites in `tui/app/async_tasks/repo_handlers.rs`, `tui/app/ci.rs`, etc. Future phases should run the perl pass eagerly, not as a fallback. Pattern:
+   ```bash
+   perl -i -0pe 's/(\bself|\bapp)\n(\s+)\.(<method1>|<method2>|...)\(/$1\n$2.<accessor>()\n$2.$3(/g' <files>
+   ```
+
+4. **Path-(a)-vs-(b) tradeoff: default to (a) when no caller benefits from the typed return.** Phase 3's `git_sync`/`git_main` produce strings consumed only by the project-list pane render. Path (b) (typed enum + render-side format) introduces a new pub type and a format helper for *no caller* that needs the typed form. Path (a) keeps the model layer with one extra string-formatting method but spends zero new public surface. The "model layer stays formatting-free" argument is real but only pays off when ≥2 callers branch on the typed state. **Default for future phases: (a) unless you can name two callers that need the structural information.**
+
+5. **The `pub(crate)` items on `ProjectList` were free.** No mend warnings added — `pub(crate)` is the existing convention on `ProjectList` and not flagged by `suspicious_pub`. Confirms Phase 2 lesson 2's framing: subsystem helpers default to whatever the subsystem's existing visibility convention is, not `pub`.
+
+
 
 **Source:** `App.scan.projects()` (a `ProjectList`) — git state lives inside
 `ProjectInfo.local_git_state` and `Entry.git_repo.repo_info`.
@@ -421,36 +452,64 @@ than re-implementing it.
 
 ## Phase 4 — `Ci` (depends on Phase 3)
 
-**Subsystem:** `crate::ci::Ci` (the `App.ci` field).
+**Calibration update (post-Phase-3 review):** Phase 3 moved `git_info_for`
+and `repo_info_for` to `ProjectList`, which changed several Phase 4
+classifications. Original method list and orchestrator boundary are
+revised below.
 
-**Pass-throughs to remove from `App`:**
-- `ci_data_for`, `ci_info_for`
-- `ci_is_fetching`, `ci_is_exhausted`
-- `selected_ci_path`, `selected_ci_runs`
+**Subsystem:** `crate::ci::Ci` (the `App.ci` field) and (newly) `ProjectList`
+for the data-only methods that walk `entry.git_repo.ci_data`.
 
-**Stays on `App` as orchestrator** (each crosses Ci + ProjectList + git state):
-- `ci_for` (calls `unpublished_ci_branch_name` which needs `git_info_for` + `repo_info_for`)
-- `ci_for_item`
-- `unpublished_ci_branch_name`
+**Move to `ProjectList`** (pure project-data reads — `entry.git_repo.ci_data`):
+- `ci_data_for` — was on App, but body is `entry_containing(path).git_repo.as_ref().map(|r| &r.ci_data)`
+- `ci_info_for` — calls `ci_data_for` then `ProjectCiData::info`
+- `unpublished_ci_branch_name` — body now reads only from `self.projects().git_info_for/repo_info_for` after Phase 3; zero `Ci` dependency
 
-**Accessor to add:**
+**Move to `Ci` (or stay on App as Ci-only)** (touch only `App.ci`):
+- `ci_is_fetching` — reads `self.ci.fetch_tracker().is_fetching(...)` plus `entry_containing` (Ci-dominant; needs ProjectList for entry-path resolution). Two paths:
+  - **(a)** Move to App as a Ci+ProjectList orchestrator (1-line glue, stays `pub(super)` on App).
+  - **(b)** Move to `Ci::is_fetching_for_entry(&self, projects: &ProjectList, path: &Path)` — adds a `&ProjectList` arg to a `Ci` method, which crosses the boundary the original Phase 4 plan tried to avoid. Pick (a).
+
+**Stays on `App` as orchestrator** (each crosses ≥2 subsystems even after Phase 3):
+- `ci_for` — calls `unpublished_ci_branch_name` (now ProjectList) + `latest_ci_run_for_path` (Ci/Inflight) → ProjectList + Ci/Inflight orchestrator
+- `ci_for_item` — same as `ci_for` plus `unique_item_paths`
+- `selected_ci_path` — Selection + ProjectList
+- `selected_ci_runs` — Selection + Ci
+
+**Already narrowed (skip — not in the mend-warning count):**
+- `ci_is_exhausted` is already `pub(super)` (`src/tui/app/query/ci_queries.rs:64`); not flagged.
+
+**Accessors to add:**
 ```rust
 impl App {
-    pub fn ci(&self) -> &Ci { &self.ci }
+    pub(super) const fn ci(&self) -> &Ci { &self.ci }
 }
 ```
+(`ci_mut()` already exists from Phase 2.)
 
-**Tradeoff:** the original draft proposed pushing `ProjectList` as an arg
-into `Ci::for_path`. That makes `Ci` depend on `ProjectList` in its
-signature, which is a worse boundary than keeping the orchestrator on
-`App`. Path chosen: keep cross-subsystem methods on `App`.
+**Pull-forward sub-task (`app.config()` cleanup, deferred from Phase 1):**
+Per Phase 2 lesson 2, `app.config()` is currently `pub fn` in
+`src/tui/app/query/config_accessors.rs:8` — flagged by mend AND clippy
+(`missing_const_for_fn`). Every caller is under `tui/`, so re-narrowing
+to `pub(super)` works. Move the body into `tui/app/mod.rs` next to the
+other subsystem accessors, delete `config_accessors.rs`, remove
+`mod config_accessors;` from `query/mod.rs`. **Saves 1 mend warning** (the
+clippy `missing_const_for_fn` was fixed in Phase 2's commit by adding
+`const`). 5-minute change, ships with Phase 4 to clean the Phase 1 debt.
 
-**Expected mend reduction (post-Phase-2 lesson 1):**
-- removed: ~6 App methods
-- added: 0–3 (Ci accessor itself is `pub(super)` and free; some `Ci::*` helpers may already be flagged)
-- net: ~3–6
+**Empty-file deletion candidate (Phase 3 lesson 2):** if Phase 4 drains
+`query/ci_queries.rs` of all `pub` items (`selected_ci_path` and
+`selected_ci_runs` may stay as orchestrators, but they're already
+flagged, so leaving them keeps the file alive), evaluate whether to
+delete. Decision at execution time based on what survives.
 
-**Risk:** low — pure pass-throughs.
+**Expected mend reduction (post-Phase-3 calibration):**
+- removed: 5 from App (`ci_data_for`, `ci_info_for`, `ci_is_fetching`, `selected_ci_path`, `selected_ci_runs` — `unpublished_ci_branch_name` is `pub` on App today, so also -1)
+- added: 0 on `ProjectList` (`pub(crate)` — Phase 3 lesson 5 confirmed `pub(crate)` is free)
+- pulled forward: `-1` for `app.config()` cleanup
+- net: **~6–7**
+
+**Risk:** low — mechanical relocation; all bodies are short.
 
 ## Phase 4b — Scan / metadata pass-throughs *(superseded by Phase 2 merge — kept for historical reference)*
 
@@ -517,10 +576,17 @@ it inside render means render needs both reads. Either:
 Pick (b) only if Phase 6/7 (frame-prep view types) lands first; otherwise
 keep this method on `App` for now and revisit.
 
-**Expected mend reduction (post-Phase-2 lesson 1):**
-- removed: ~10 App methods
-- added: ~2–4 (`Scan` discovery-shimmer helpers if any are reachable from outside `tui/`)
-- net: ~6–10
+**Expected mend reduction (post-Phase-3 calibration):**
+- file warnings in scope: `query/discovery_shimmer.rs` (4) + `query/project_predicates.rs` (6) + `query/disk.rs` (1) = 11 candidates
+- non-movable items: `selected_project_is_deleted` stays on App (Selection + ProjectList orchestrator, ~1)
+- removed: ~9 (the 10 listed minus `selected_project_is_deleted`)
+- added: ~2 (`Scan::register_shimmer` and `Scan::prune_shimmers` are `pub(super)`-eligible — free; `ProjectList::is_deleted` etc. are `pub(crate)` — also free per Phase 3 lesson 5; net 0–2 from `discovery_name_segments_for_path` if it widens)
+- net: **~7–9**
+
+**Empty-file deletion candidates (Phase 3 lesson 2):**
+- `query/discovery_shimmer.rs` likely deletes after move (only private session-helpers remain).
+- `query/project_predicates.rs` — `prune_inactive_project_state` is a Scan+Ci orchestrator and stays on App; file may not delete fully. Decision at execution time.
+- `query/disk.rs` (1 warning, 2 methods) — both formatting helpers; move alongside or to a render helper. File deletes.
 
 **Risk:** medium-high — touches render path and a multi-borrow read.
 
@@ -674,23 +740,29 @@ visibility on items that were `pub` set defensively.
 
 **Two parts:**
 
-### Part A — Internal-helper tightening (~30 warnings)
+### Part A — Internal-helper tightening (post-Phase-3 calibration: ~70 warnings, not 30)
 
-Roughly 30 of the remaining 131 mend warnings live in `app/focus.rs` and
-`app/async_tasks/*`. They are not pass-throughs to subsystems — they're
-helpers internal to `App` whose callers all live inside `app/` (or
-inside their own submodule subtree). Pure module-level
-`pub` → `pub(super)` / `pub(crate)`. No call-site changes; just remove
-unwanted visibility.
+Post-Phase-3 review found Phase 10 Part A is bigger than originally
+scoped. Of the 123 remaining mend warnings, **~70 are internal helpers**
+(not pass-throughs to subsystems) that fall to Part A:
 
-**Files in scope** (counts from post-Phase-2 mend output):
-- `src/tui/app/focus.rs` — 33 warnings
-- `src/tui/app/async_tasks/startup_phase/tracker.rs` — 6 warnings
-- `src/tui/app/async_tasks/config.rs` — 6 warnings
-- `src/tui/app/async_tasks/repo_handlers.rs` — 5 warnings
-- `src/tui/app/async_tasks/lint_runtime.rs` — 5 warnings
-- `src/tui/app/async_tasks/tree.rs` — 2 warnings
-- Several smaller files in `app/` (~5–8 more total)
+**Files in scope** (counts from post-Phase-3 mend output):
+- `src/tui/app/focus.rs` — 33 warnings (largest concentration; touched by Phase 9 too — overlap expected)
+- `src/tui/app/navigation/selection.rs` — 7
+- `src/tui/app/async_tasks/startup_phase/tracker.rs` — 6
+- `src/tui/app/async_tasks/config.rs` — 6
+- `src/tui/app/async_tasks/repo_handlers.rs` — 5
+- `src/tui/app/async_tasks/lint_runtime.rs` — 5
+- `src/tui/app/navigation/cache.rs` — 5
+- `src/tui/app/navigation/movement.rs` — 4
+- `src/tui/app/types.rs` — 3
+- `src/tui/app/navigation/expand.rs` — 3
+- `src/tui/app/navigation/bulk.rs` — 3
+- `src/tui/app/dismiss.rs` — 2
+- `src/tui/app/async_tasks/tree.rs` — 2
+
+Total candidates ≈ 84; deducting ones that Phases 4–9 will pick up
+incidentally (~14) leaves ~70 surviving for Phase 10.
 
 **Method:** for each `pub fn`, run mend's "consider using:" hint.
 Verify the suggested visibility compiles (run `cargo check`). If a
@@ -698,7 +770,8 @@ caller breaks, narrow to the next-broader visibility (`pub(super)` →
 `pub(crate)` → `pub`) until it compiles. Never use `pub(in path)` (per
 project convention).
 
-**Predicted reduction:** ~20–25.
+**Predicted reduction (recalibrated):** ~25–40 (was ~20–25; widened
+because Part A's surface is larger than the original scope estimated).
 
 ### Part B — Relocate `CiFetchTracker` to `tui/ci_state.rs`
 
@@ -729,7 +802,24 @@ candidates — they're scan-cluster types currently in App's bag.)
 Move them only if it saves additional widening; relocation that
 doesn't change the mend count is churn and stays out of scope.
 
-**Predicted reduction (Parts A + B):** ~22–25.
+### Part C — `query/*` empty-file sweep (Phase 3 lesson 2 applied)
+
+After Phases 3, 4, 5 run, several `tui/app/query/<file>.rs` modules
+will be drained of all `pub` items. Phase 3 set the precedent
+(deleted `git_repo_queries.rs`); Phase 10 Part C is the catch-all
+sweep for the rest:
+
+- `query/disk.rs` — formatting helpers; move to a render-side helper or `ProjectList`. **Likely deletes** after Phase 5.
+- `query/ci_queries.rs` — most contents move to `ProjectList` or `Ci` in Phase 4. **Likely deletes** if `selected_ci_*` orchestrators relocate to a `selection`-related module.
+- `query/discovery_shimmer.rs` — only private session-helpers remain after Phase 5. **Likely deletes.**
+- `query/project_predicates.rs` — `prune_inactive_project_state` is a Scan+Ci orchestrator and stays on App. File survives but shrinks.
+- `query/post_selection.rs` — `sync_selected_project` and `enter_action` are real orchestrators (touch ≥3 subsystems each). **Stays.** Do not drain.
+- `query/toasts.rs` — orchestrator methods (`prune_toasts`, `show_timed_toast`, etc.) stay per Phase 2 plan. **Stays.**
+- `query/config_accessors.rs` — emptied in Phase 4 by the pull-forward sub-task. **Deletes** during Phase 4, not Phase 10.
+
+**Net from Part C:** -3 to -5 (each empty-file deletion clears 0–2 stragglers; main savings is structural, not warning count).
+
+**Predicted reduction (Parts A + B + C):** **~32–48** (was ~22–25; widened by Part A recalibration and added Part C).
 
 **Risk:** zero design risk — every change is local. Some risk that a
 narrower visibility doesn't compile and forces a partial widening; in
@@ -1825,21 +1915,21 @@ expected values.
 | ----- | ------- | --------- |
 | 1   | Config (pub items only) | **-14 actual** (predicted -10) |
 | 2   | Trivial subsystems (Keymap + Toasts + Scan/metadata) | **-2 actual** (predicted ~10–15) |
-| 3   | Git/Repo extract → ProjectList | ~5–9 (predicted; lessons applied) |
-| 4   | Ci (pure only; cross-subsystem stays on App) | ~3–6 |
-| 5   | Discovery shimmer + project predicates | ~6–10 |
+| 3   | Git/Repo extract → ProjectList | **-8 actual** (predicted ~5–9 — within range) |
+| 4   | Ci (post-Phase-3 calibration: ProjectList absorbs ci_data_for, ci_info_for, unpublished_ci_branch_name) + pulled-forward `app.config()` cleanup | ~6–7 |
+| 5   | Discovery shimmer + project predicates | ~7–9 |
 | 6   | Overlays subsystem (incl. Exit + inline_error) | ~12–18 |
 | 7   | Path-resolution NavRead (rewritten by Phase 11) | ~8–12 |
 | 8   | Movement/selection mutators stay on App (replaced by Phase 11) | 0 (subsumed by Phase 11; phase becomes a no-op if Phase 11 runs first) |
 | 9   | Focus subsystem | ~10–16 |
-| 10  | Internal-helper tightening + relocate `CiFetchTracker` | ~22–25 |
-| **Visibility subtotal (Phases 1–10)** | | **~66–96** (forward only; 1+2 already in done row) |
+| 10  | Internal-helper tightening (Part A ~25–40) + relocate `CiFetchTracker` (Part B ~4) + `query/*` empty-file sweep (Part C ~3–5) | ~32–48 |
+| **Visibility subtotal (Phases 4–10)** | | **~75–110** (forward only; 1+2+3 already in done row) |
 | 11  | Move `Viewport.pos` to `Selection.cursor` (Cluster C) | ~12 |
 | 12  | Subsystems own pane state; drop wrapper types (Cluster B for Toasts+) | ~9 |
 | 13  | `Bus<Event>` for cross-cutting events (Cluster A) | ~25 |
 | **Architectural subtotal (Phases 11–13)** | | **~46** |
-| **Forward grand total (Phases 3–13)** | | **~112–142** |
-| **Done (Phases 1+2)** | | **-16 (147 → 131)** |
+| **Forward grand total (Phases 4–13)** | | **~121–156** |
+| **Done (Phases 1+2+3)** | | **-24 (147 → 123)** |
 
 > **Caveat on the upper bound:** the upper of ~142 exceeds the 131
 > remaining warnings. Treat the upper bound as theoretical. The lower
