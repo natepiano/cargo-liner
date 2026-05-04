@@ -18,19 +18,12 @@ use crate::tui::columns;
 impl App {
     pub fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
 
-    pub fn discovery_shimmer_enabled(&self) -> bool {
-        self.config.current().tui.discovery_shimmer_secs > 0.0
-    }
-
-    pub(super) fn discovery_shimmer_duration(&self) -> Duration {
-        Duration::from_secs_f64(self.config.current().tui.discovery_shimmer_secs)
-    }
-
     pub fn register_discovery_shimmer(&mut self, path: &Path) {
-        if !self.is_scan_complete() || !self.discovery_shimmer_enabled() {
+        if !self.is_scan_complete() || !self.config().discovery_shimmer_enabled() {
             return;
         }
-        let shimmer = DiscoveryShimmer::new(Instant::now(), self.discovery_shimmer_duration());
+        let shimmer =
+            DiscoveryShimmer::new(Instant::now(), self.config().discovery_shimmer_duration());
         self.scan
             .discovery_shimmers_mut()
             .insert(AbsolutePath::from(path), shimmer);
@@ -49,7 +42,7 @@ impl App {
         git_status: Option<GitStatus>,
         row_kind: DiscoveryRowKind,
     ) -> Option<Vec<columns::StyledSegment>> {
-        if !self.discovery_shimmer_enabled() {
+        if !self.config().discovery_shimmer_enabled() {
             return None;
         }
         let now = Instant::now();

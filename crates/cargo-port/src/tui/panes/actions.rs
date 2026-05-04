@@ -257,7 +257,7 @@ fn handle_ci_fetch_more(app: &mut App) {
     };
     app.set_pending_ci_fetch(PendingCiFetch {
         project_path: ci_path.display().to_string(),
-        ci_run_count: app.ci_run_count(),
+        ci_run_count: app.config().ci_run_count(),
         oldest_created_at,
         kind,
     });
@@ -370,7 +370,7 @@ fn open_lint_run_output(app: &App) {
     }
 
     let _ = input::open_paths_in_editor(
-        app.editor(),
+        app.config().editor(),
         std::iter::once(abs_path).chain(log_paths.iter().map(AbsolutePath::as_path)),
     );
 }

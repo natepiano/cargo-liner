@@ -153,7 +153,7 @@ impl App {
         );
         config::set_active_config(cfg);
         *self.config.current_mut() = cfg.clone();
-        if !self.discovery_shimmer_enabled() {
+        if !self.config().discovery_shimmer_enabled() {
             self.scan.discovery_shimmers_mut().clear();
         }
 
@@ -230,7 +230,8 @@ impl App {
 
         // Selection: recompute fit widths (column schema differs
         // with lint enabled / disabled).
-        self.selection.reset_fit_widths(self.lint_enabled());
+        self.selection
+            .reset_fit_widths(self.config().lint_enabled());
 
         if let Some(warning) = lint_spawn.warning {
             self.status_flash = Some((warning.clone(), Instant::now()));

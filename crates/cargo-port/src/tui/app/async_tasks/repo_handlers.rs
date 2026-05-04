@@ -43,7 +43,7 @@ impl App {
         let repo_cache = self.net.github().fetch_cache().clone();
         let path: AbsolutePath = AbsolutePath::from(path);
         let repo_url = repo_url.to_string();
-        let ci_run_count = self.ci_run_count();
+        let ci_run_count = self.config().ci_run_count();
         thread::spawn(move || {
             let data = scan::load_cached_repo_data(&repo_cache, &owner_repo).unwrap_or_else(|| {
                 let _ = tx.send(BackgroundMsg::RepoFetchQueued {

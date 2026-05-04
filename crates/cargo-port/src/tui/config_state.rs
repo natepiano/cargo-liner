@@ -8,9 +8,13 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use super::watched_file::WatchedFile;
 use crate::config::CargoPortConfig;
+use crate::config::NavigationKeys;
+use crate::config::NonRustInclusion;
+use crate::config::ScrollDirection;
 
 /// Typed pair of edit buffer + cursor. Collapsing the two raw
 /// fields prevents cursor drift past the buffer's byte length —
@@ -93,6 +97,40 @@ impl Config {
 
     pub(super) const fn edit_buffer_mut(&mut self) -> &mut SettingsEditBuffer {
         &mut self.edit_buffer
+    }
+
+    // ── flag accessors (Phase 1 of pass-through collapse) ───────────
+
+    pub(super) const fn lint_enabled(&self) -> bool { self.current().lint.enabled }
+
+    pub(super) const fn invert_scroll(&self) -> ScrollDirection {
+        self.current().mouse.invert_scroll
+    }
+
+    pub(super) const fn include_non_rust(&self) -> NonRustInclusion {
+        self.current().tui.include_non_rust
+    }
+
+    pub(super) const fn ci_run_count(&self) -> u32 { self.current().tui.ci_run_count }
+
+    pub(super) const fn navigation_keys(&self) -> NavigationKeys {
+        self.current().tui.navigation_keys
+    }
+
+    pub(super) fn editor(&self) -> &str { &self.current().tui.editor }
+
+    pub(super) fn terminal_command(&self) -> &str { &self.current().tui.terminal_command }
+
+    pub(super) fn terminal_command_configured(&self) -> bool {
+        !self.terminal_command().trim().is_empty()
+    }
+
+    pub(super) fn discovery_shimmer_enabled(&self) -> bool {
+        self.current().tui.discovery_shimmer_secs > 0.0
+    }
+
+    pub(super) fn discovery_shimmer_duration(&self) -> Duration {
+        Duration::from_secs_f64(self.current().tui.discovery_shimmer_secs)
     }
 
     /// Test-only — point the watch at a new path and clear the

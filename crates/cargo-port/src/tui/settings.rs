@@ -218,7 +218,7 @@ fn general_settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<Set
         (
             Some(SettingOption::InvertScroll),
             "Invert scroll",
-            if app.invert_scroll().is_inverted() {
+            if app.config().invert_scroll().is_inverted() {
                 "ON"
             } else {
                 "OFF"
@@ -228,7 +228,7 @@ fn general_settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<Set
         (
             Some(SettingOption::IncludeNonRust),
             "Non-Rust projects",
-            if app.include_non_rust().includes_non_rust() {
+            if app.config().include_non_rust().includes_non_rust() {
                 "ON"
             } else {
                 "OFF"
@@ -238,7 +238,7 @@ fn general_settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<Set
         (
             Some(SettingOption::NavigationKeys),
             "Vim nav keys",
-            if app.navigation_keys().uses_vim() {
+            if app.config().navigation_keys().uses_vim() {
                 "ON"
             } else {
                 "OFF"
@@ -253,7 +253,7 @@ fn general_settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<Set
         (
             Some(SettingOption::Editor),
             "Editor",
-            app.editor().to_string(),
+            app.config().editor().to_string(),
         ),
         (
             Some(SettingOption::TerminalCommand),
@@ -331,7 +331,12 @@ fn lint_settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<Settin
         (
             Some(SettingOption::LintsEnabled),
             "Enabled",
-            if app.lint_enabled() { "ON" } else { "OFF" }.to_string(),
+            if app.config().lint_enabled() {
+                "ON"
+            } else {
+                "OFF"
+            }
+            .to_string(),
         ),
         (
             Some(SettingOption::LintOnDiscovery),
@@ -502,7 +507,7 @@ fn parse_lint_cache_size(value: &str) -> Result<String, String> {
 }
 
 fn toggle_vim_mode(app: &mut App) {
-    if !app.navigation_keys().uses_vim() {
+    if !app.config().navigation_keys().uses_vim() {
         // Enabling vim mode — check for hjkl conflicts.
         let conflicts = keymap::vim_mode_conflicts(app.current_keymap());
         if !conflicts.is_empty() {
@@ -986,7 +991,7 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
             let _ = save_updated_config(app, &config);
         },
         Some(SettingOption::Editor) => {
-            begin_settings_edit(app, app.editor().to_string());
+            begin_settings_edit(app, app.config().editor().to_string());
         },
         Some(SettingOption::TerminalCommand) => {
             begin_settings_edit(app, app.current_config().tui.terminal_command.clone());

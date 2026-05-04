@@ -113,10 +113,10 @@ fn external_config_reload_applies_valid_changes() {
     app.config_mut().force_reload_from(path);
     app.maybe_reload_config_from_disk();
 
-    assert_eq!(app.editor(), "helix");
-    assert_eq!(app.ci_run_count(), 9);
+    assert_eq!(app.config().editor(), "helix");
+    assert_eq!(app.config().ci_run_count(), 9);
     assert_eq!(app.current_config().cpu.poll_ms, 1500);
-    assert_eq!(app.invert_scroll(), ScrollDirection::Normal);
+    assert_eq!(app.config().invert_scroll(), ScrollDirection::Normal);
     assert_eq!(app.current_config().tui.editor, "helix");
     assert_eq!(app.current_config().tui.ci_run_count, 9);
 }
@@ -142,7 +142,7 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
     app.config_mut().force_reload_from(path);
     app.maybe_reload_config_from_disk();
 
-    assert_eq!(app.editor(), "zed");
+    assert_eq!(app.config().editor(), "zed");
     assert_eq!(app.current_config().tui.editor, "zed");
     assert!(matches!(
         app.status_flash.as_ref(),

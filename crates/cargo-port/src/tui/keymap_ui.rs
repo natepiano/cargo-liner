@@ -249,7 +249,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     }
 
     // Check vim reservation.
-    if app.navigation_keys().uses_vim()
+    if app.config().navigation_keys().uses_vim()
         && bind.modifiers == KeyModifiers::NONE
         && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l'))
     {

@@ -979,7 +979,7 @@ pub fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<ListItem<
     let child_sorted = app.cached_child_sorted();
     let root_labels = app
         .projects()
-        .resolved_root_labels(app.include_non_rust().includes_non_rust());
+        .resolved_root_labels(app.config().include_non_rust().includes_non_rust());
     let focus = app.pane_focus_state(PaneId::ProjectList);
     let pane = app.panes().project_list().viewport();
 

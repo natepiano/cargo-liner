@@ -521,7 +521,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         clean_enabled,
         clear_lint_action,
         app.current_keymap(),
-        app.terminal_command_configured(),
+        app.config().terminal_command_configured(),
         app.selected_project_is_deleted(),
     );
 

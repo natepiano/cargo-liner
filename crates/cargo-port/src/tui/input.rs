@@ -159,7 +159,7 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
         return *raw;
     }
 
-    let code = if raw.modifiers == KeyModifiers::NONE && app.navigation_keys().uses_vim() {
+    let code = if raw.modifiers == KeyModifiers::NONE && app.config().navigation_keys().uses_vim() {
         match panes::behavior(app.focused_pane()) {
             PaneBehavior::DetailFields
             | PaneBehavior::DetailTargets
@@ -254,7 +254,7 @@ fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16
 }
 
 fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
-    let up = scroll_up ^ app.invert_scroll().is_inverted();
+    let up = scroll_up ^ app.config().invert_scroll().is_inverted();
     let pos = Position::new(column, row);
 
     if app.layout_cache().project_list_body.contains(pos) {
@@ -397,7 +397,7 @@ fn open_in_editor(app: &mut App) {
         })
         .unwrap_or(selected_path);
 
-    let _ = open_paths_in_editor(app.editor(), [&abs_path]);
+    let _ = open_paths_in_editor(app.config().editor(), [&abs_path]);
 }
 
 fn overlay_editor_target_path(
@@ -463,7 +463,7 @@ fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
         return false;
     };
 
-    if let Err(err) = open_path_in_editor(app.editor(), &path) {
+    if let Err(err) = open_path_in_editor(app.config().editor(), &path) {
         let title = match context {
             InputContext::Settings => "Settings editor failed",
             InputContext::Keymap => "Keymap editor failed",
@@ -533,7 +533,7 @@ fn open_terminal(app: &mut App) {
         );
         return;
     }
-    let command = app.terminal_command().trim();
+    let command = app.config().terminal_command().trim();
     if command.is_empty() {
         open_settings_to_terminal_command(app);
         return;
@@ -662,7 +662,7 @@ fn handle_toast_key(app: &mut App, event: &KeyEvent) {
                 .nth(app.panes().toasts().viewport().pos())
                 && let Some(path) = toast.action_path()
             {
-                let editor = app.editor().to_string();
+                let editor = app.config().editor().to_string();
                 let path = path.to_path_buf();
                 std::thread::spawn(move || {
                     let _ = open_path_in_editor(&editor, &path);

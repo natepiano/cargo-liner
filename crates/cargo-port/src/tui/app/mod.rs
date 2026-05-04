@@ -284,7 +284,7 @@ impl App {
     /// Declared in `mod.rs` (not `lint.rs`) so `pub(super)` reaches
     /// `tui` and satisfies callers in `tui/panes/project_list.rs`.
     pub(super) fn lint_cell(&self, status: &LintStatus) -> LintCell {
-        if !self.lint_enabled() {
+        if !self.config().lint_enabled() {
             return LintCell::from_parts(
                 crate::constants::LINT_NO_LOG,
                 ratatui::style::Style::default(),

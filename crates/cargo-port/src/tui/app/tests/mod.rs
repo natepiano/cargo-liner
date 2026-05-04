@@ -166,11 +166,11 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
     app.ensure_visible_rows_cached();
     let labels = app
         .projects()
-        .resolved_root_labels(app.include_non_rust().includes_non_rust());
+        .resolved_root_labels(app.config().include_non_rust().includes_non_rust());
     let widths = crate::tui::panes::compute_project_list_widths(
         app.projects(),
         &labels,
-        app.lint_enabled(),
+        app.config().lint_enabled(),
         0,
     );
     let items = crate::tui::panes::render_tree_items(app, &widths);
@@ -198,11 +198,11 @@ fn render_tree_buffer(app: &mut App) -> (ratatui::buffer::Buffer, ProjectListWid
     app.ensure_visible_rows_cached();
     let labels = app
         .projects()
-        .resolved_root_labels(app.include_non_rust().includes_non_rust());
+        .resolved_root_labels(app.config().include_non_rust().includes_non_rust());
     let widths = crate::tui::panes::compute_project_list_widths(
         app.projects(),
         &labels,
-        app.lint_enabled(),
+        app.config().lint_enabled(),
         0,
     );
     let items = crate::tui::panes::render_tree_items(app, &widths);
