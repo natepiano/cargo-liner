@@ -826,3 +826,69 @@ edition = "2024"
         "items reachable only from #[cfg(test)] callers must not be flagged for narrowing or pub-use removal; got: {bad_findings:#?}",
     );
 }
+
+#[test]
+fn fix_does_not_narrow_pub_fn_called_only_from_cfg_test_assert_macro() {
+    // The hard case: the cfg(test) test caller invokes the function
+    // *inside* an `assert_eq!` macro. syn's AST walker doesn't descend
+    // into macro tokens, so without macro-aware analysis the source-level
+    // facade scanner reports the re-export as "unused" and the analyzer
+    // proposes narrowing the function plus removing the re-export. That
+    // fix breaks the test build (E0425).
+    //
+    // This test passes when either (a) the source-level scanner walks
+    // macro token streams, or (b) HIR-level reachability is used.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "macro_caller_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/tui/panes")).expect("create dirs");
+    fs::write(temp.path().join("src/main.rs"), "mod tui;\nfn main() {}\n").expect("write main");
+    fs::write(
+        temp.path().join("src/tui/mod.rs"),
+        "mod panes;\nmod render;\n",
+    )
+    .expect("write tui/mod");
+    fs::write(
+        temp.path().join("src/tui/panes/mod.rs"),
+        "mod cpu;\n#[cfg(test)]\npub(super) use cpu::cpu_required_pane_height;\n\npub fn entry() { let _ = cpu::compute(0); }\n",
+    )
+    .expect("write panes/mod");
+    fs::write(
+        temp.path().join("src/tui/panes/cpu.rs"),
+        "pub fn cpu_required_pane_height(_n: u16) -> u16 { compute(_n) }\npub fn compute(_n: u16) -> u16 { 1 }\n",
+    )
+    .expect("write panes/cpu");
+    // Caller invokes the function inside an assert_eq! — the path lives
+    // in the macro token stream, not in the parsed AST.
+    fs::write(
+        temp.path().join("src/tui/render.rs"),
+        "#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() { assert_eq!(crate::tui::panes::cpu_required_pane_height(12), 1); }\n}\n",
+    )
+    .expect("write tui/render");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+
+    let bad_findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| {
+            (f.code == DiagnosticCode::SuspiciousPub
+                && f.path.contains("panes/cpu.rs")
+                && f.item.as_deref() == Some("fn cpu_required_pane_height"))
+                || (f.code == DiagnosticCode::InternalParentPubUseFacade
+                    && f.path.contains("panes/mod.rs"))
+        })
+        .collect();
+    assert!(
+        bad_findings.is_empty(),
+        "items reachable only via a macro-wrapped #[cfg(test)] caller must not be flagged for narrowing or pub-use removal; got: {bad_findings:#?}",
+    );
+}

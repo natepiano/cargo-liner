@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Path extractor now walks macro token streams. Items called only from inside `assert_eq!`, `format!`, etc. were previously invisible to the facade scanner and got incorrectly flagged for narrowing/re-export removal.
+
 ## [0.9.1] - 2026-05-03
 
 ### Fixed
