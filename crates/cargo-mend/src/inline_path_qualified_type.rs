@@ -12,6 +12,7 @@ use syn::ExprPath;
 use syn::ExprStruct;
 use syn::GenericParam;
 use syn::Generics;
+use syn::ImplItemFn;
 use syn::Item;
 use syn::ItemConst;
 use syn::ItemEnum;
@@ -25,7 +26,7 @@ use syn::ItemType;
 use syn::ItemUse;
 use syn::PatStruct;
 use syn::PatTupleStruct;
-use syn::Signature;
+use syn::TraitItemFn;
 use syn::TypePath;
 use syn::UseTree;
 use syn::spanned::Spanned;
@@ -768,22 +769,28 @@ impl Visit<'_> for InlinePathVisitor {
     }
 
     fn visit_item_fn(&mut self, node: &ItemFn) {
-        // A free function with a PascalCase name would also collide with an
-        // imported type of the same name. Rare, but cheap to track. Function
-        // generics are pushed by `visit_signature` further down — don't push
-        // them here too, or they'd be on the stack twice.
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.sig.ident.to_string());
         }
+        // Push the fn's generics around the entire item — signature AND body.
+        // Bodies contain closure parameter types and locals that may reference
+        // these generics (e.g. `let f = |x: &T::Item| ...` inside `fn foo<T>`).
+        // A `visit_signature`-only push pops before the body is visited, so
+        // those references would be misread as crate paths.
+        self.push_generics(&node.sig.generics);
         syn::visit::visit_item_fn(self, node);
+        self.pop_generics();
     }
 
-    fn visit_signature(&mut self, node: &Signature) {
-        // Covers free fn signatures, impl-method signatures, and trait-method
-        // signatures uniformly. Adds the function's own generics on top of
-        // any enclosing impl/trait generics already on the stack.
-        self.push_generics(&node.generics);
-        syn::visit::visit_signature(self, node);
+    fn visit_impl_item_fn(&mut self, node: &ImplItemFn) {
+        self.push_generics(&node.sig.generics);
+        syn::visit::visit_impl_item_fn(self, node);
+        self.pop_generics();
+    }
+
+    fn visit_trait_item_fn(&mut self, node: &TraitItemFn) {
+        self.push_generics(&node.sig.generics);
+        syn::visit::visit_trait_item_fn(self, node);
         self.pop_generics();
     }
 

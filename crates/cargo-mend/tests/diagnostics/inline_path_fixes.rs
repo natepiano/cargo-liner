@@ -1447,6 +1447,75 @@ fn main() {}
     );
 }
 
+/// Generic params used inside the *body* of a function (closure parameter
+/// types, `let` annotations, etc.) must not be flagged. Regression test —
+/// `visit_signature` previously pushed/popped generics around the signature
+/// only, leaving the body visited without them, so `|x: &T::Item| ...`
+/// inside `fn foo<T>(...)` was misread as a crate-qualified path.
+#[test]
+fn generic_type_param_in_fn_body_is_not_flagged() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_generic_body_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"pub trait Bucket {
+    type Item;
+}
+
+// Closure parameter type uses the fn's generic — used to be flagged because
+// the generic was popped before the body was visited.
+pub fn drive<A: Bucket>(_items: &[A::Item]) -> usize {
+    let _count = |_x: &A::Item, acc: &mut usize| {
+        *acc += 1;
+    };
+    0
+}
+
+// Same situation inside an impl method.
+pub struct Wrap<T>(pub T);
+impl<T: Bucket> Wrap<T> {
+    pub fn run(&self, _items: &[T::Item]) -> usize {
+        let _take = |_x: &T::Item| {};
+        0
+    }
+}
+
+// Trait method body referencing the impl's generic.
+pub trait Driver<T: Bucket> {
+    fn drive(&self, items: &[T::Item]) -> usize {
+        let _take = |_x: &T::Item| {};
+        items.len()
+    }
+}
+
+fn main() {}
+"#,
+    )
+    .expect("write main");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let inline_findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.code == DiagnosticCode::InlinePathQualifiedType)
+        .collect();
+    assert!(
+        inline_findings.is_empty(),
+        "generic-param associated items in fn bodies must not be flagged, got: \
+         {inline_findings:?}"
+    );
+}
+
 /// `Type::Variant` (enum variant patterns / associated items) must not be
 /// treated as a crate-qualified path. The first segment is `PascalCase`,
 /// which means it's a type — suggesting `use Type;` is wrong.

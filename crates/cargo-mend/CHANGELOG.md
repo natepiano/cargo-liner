@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `inline_path_qualified_type` no longer flags generic type parameters used inside fn bodies (closure parameter types, locals). The generic scope now spans the entire fn/method, not just the signature.
+
 ## [0.12.0] - 2026-05-05
 
 ### Changed
