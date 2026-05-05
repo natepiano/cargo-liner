@@ -60,21 +60,46 @@ pub(super) enum HeaderMode {
 
 #[derive(Clone, Copy)]
 pub(super) struct ColumnDef {
-    pub header:      &'static str,
-    pub width:       ColumnWidth,
-    pub align:       Align,
-    pub gap:         usize,
-    pub header_mode: HeaderMode,
+    /// Header labels in ascending width order. The renderer picks the longest
+    /// label whose display width fits the resolved column. Single-element
+    /// slices behave like a static header.
+    pub header_levels: &'static [&'static str],
+    pub width:         ColumnWidth,
+    pub align:         Align,
+    pub gap:           usize,
+    pub header_mode:   HeaderMode,
 }
 
 impl ColumnDef {
+    /// Shortest label — defines the column's minimum header footprint.
+    pub(super) fn header_min(&self) -> &'static str {
+        self.header_levels.first().copied().unwrap_or("")
+    }
+
+    /// Longest label — used by `BorrowLeft` columns when computing how much
+    /// space to borrow from neighbors.
+    pub(super) fn header_max(&self) -> &'static str {
+        self.header_levels.last().copied().unwrap_or("")
+    }
+
+    /// Pick the longest label whose display width fits `width`. Falls back to
+    /// the shortest label so the header is never empty when a label exists.
+    pub(super) fn header_for_width(&self, width: usize) -> &'static str {
+        self.header_levels
+            .iter()
+            .rev()
+            .copied()
+            .find(|label| display_width(label) <= width)
+            .unwrap_or_else(|| self.header_min())
+    }
+
     pub(super) fn seed_width(&self) -> usize {
         let base = match self.width {
             ColumnWidth::Fixed(width) | ColumnWidth::Fit { min: width } => width,
         };
         if matches!(self.width, ColumnWidth::Fit { .. }) && self.header_mode == HeaderMode::Standard
         {
-            base.max(display_width(self.header))
+            base.max(display_width(self.header_min()))
         } else {
             base
         }
@@ -86,19 +111,19 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
     [
         // 0: Name
         ColumnDef {
-            header:      "",
-            width:       ColumnWidth::Fit { min: 10 },
-            align:       Align::Left,
-            gap:         0,
-            header_mode: HeaderMode::Standard,
+            header_levels: &[""],
+            width:         ColumnWidth::Fit { min: 10 },
+            align:         Align::Left,
+            gap:           0,
+            header_mode:   HeaderMode::Standard,
         },
         // 1: Lint — borrows "Li" from Name padding
         ColumnDef {
-            header:      if lint_enabled { "Lint" } else { "" },
-            width:       ColumnWidth::Fixed(if lint_enabled { 2 } else { 0 }),
-            align:       Align::Left,
-            gap:         0,
-            header_mode: if lint_enabled {
+            header_levels: if lint_enabled { &["Lint"] } else { &[""] },
+            width:         ColumnWidth::Fixed(if lint_enabled { 2 } else { 0 }),
+            align:         Align::Left,
+            gap:           0,
+            header_mode:   if lint_enabled {
                 HeaderMode::BorrowLeft
             } else {
                 HeaderMode::Hidden
@@ -106,52 +131,53 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
         },
         // 2: CI
         ColumnDef {
-            header:      "CI",
-            width:       ColumnWidth::Fixed(2),
-            align:       Align::Left,
-            gap:         1,
-            header_mode: HeaderMode::Standard,
+            header_levels: &["CI"],
+            width:         ColumnWidth::Fixed(2),
+            align:         Align::Left,
+            gap:           1,
+            header_mode:   HeaderMode::Standard,
         },
         // 3: Lang
         ColumnDef {
-            header:      "",
-            width:       ColumnWidth::Fixed(2),
-            align:       Align::Left,
-            gap:         1,
-            header_mode: HeaderMode::Hidden,
+            header_levels: &[""],
+            width:         ColumnWidth::Fixed(2),
+            align:         Align::Left,
+            gap:           1,
+            header_mode:   HeaderMode::Hidden,
         },
         // 4: Git path status glyph, labeled as Git in the header.
         // Right-align so "t" sits above the right edge of the 2-wide emoji.
         ColumnDef {
-            header:      "Git",
-            width:       ColumnWidth::Fixed(2),
-            align:       Align::Right,
-            gap:         1,
-            header_mode: HeaderMode::BorrowLeft,
+            header_levels: &["Git"],
+            width:         ColumnWidth::Fixed(2),
+            align:         Align::Right,
+            gap:           1,
+            header_mode:   HeaderMode::BorrowLeft,
         },
-        // 5: Origin/upstream sync status
+        // 5: Origin/upstream sync status — promotes Og → Orig → Origin
+        // as the column widens to fit cell content.
         ColumnDef {
-            header:      "Og",
-            width:       ColumnWidth::Fit { min: 0 },
-            align:       Align::Right,
-            gap:         1,
-            header_mode: HeaderMode::Standard,
+            header_levels: &["Og", "Orig", "Origin"],
+            width:         ColumnWidth::Fit { min: 0 },
+            align:         Align::Right,
+            gap:           1,
+            header_mode:   HeaderMode::Standard,
         },
-        // 6: Local main delta
+        // 6: Local main delta — promotes M → Mn → Main as the column widens.
         ColumnDef {
-            header:      "M",
-            width:       ColumnWidth::Fit { min: 0 },
-            align:       Align::Right,
-            gap:         1,
-            header_mode: HeaderMode::Standard,
+            header_levels: &["M", "Mn", "Main"],
+            width:         ColumnWidth::Fit { min: 0 },
+            align:         Align::Right,
+            gap:           1,
+            header_mode:   HeaderMode::Standard,
         },
         // 7: Disk
         ColumnDef {
-            header:      "Disk",
-            width:       ColumnWidth::Fit { min: 4 },
-            align:       Align::Right,
-            gap:         0,
-            header_mode: HeaderMode::Standard,
+            header_levels: &["Disk"],
+            width:         ColumnWidth::Fit { min: 4 },
+            align:         Align::Right,
+            gap:           0,
+            header_mode:   HeaderMode::Standard,
         },
     ]
 }
@@ -446,7 +472,7 @@ pub(super) fn header_line(widths: &ProjectListWidths, name_text: &str) -> Line<'
 
         // Borrow overflow from the nearest columns on the left so headers can
         // stretch without shifting unrelated columns further left.
-        let mut borrow_needed = display_width(def.header).saturating_sub(widths.get(i));
+        let mut borrow_needed = display_width(def.header_max()).saturating_sub(widths.get(i));
         let mut donor = i;
         while borrow_needed > 0 && donor > 0 {
             donor -= 1;
@@ -458,12 +484,12 @@ pub(super) fn header_line(widths: &ProjectListWidths, name_text: &str) -> Line<'
     }
 
     for (i, def) in defs.iter().enumerate() {
-        let header = def.header;
         let slot_width = slot_widths[i];
 
         let content = if i == COL_NAME {
             pad_right(name_text, slot_width)
         } else if def.header_mode == HeaderMode::BorrowLeft {
+            let header = def.header_for_width(slot_width);
             match def.align {
                 Align::Left => pad_right(header, slot_width),
                 Align::Right => pad_left(header, slot_width),
@@ -474,6 +500,7 @@ pub(super) fn header_line(widths: &ProjectListWidths, name_text: &str) -> Line<'
         } else {
             let gap = def.gap.min(slot_width);
             let content_width = slot_width.saturating_sub(gap);
+            let header = def.header_for_width(content_width);
             let padded = match def.align {
                 Align::Left => pad_right(header, content_width),
                 Align::Right => pad_left(header, content_width),
@@ -775,7 +802,7 @@ mod tests {
         assert_eq!(line.spans[COL_CI].content.as_ref(), " CI");
         assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), " Git");
         assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Og");
-        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  M");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), " Mn");
         assert_eq!(line.spans[COL_DISK].content.as_ref(), "    Disk");
         assert_eq!(line.width(), widths.total_width());
     }
@@ -794,8 +821,54 @@ mod tests {
         assert_eq!(display_width(line.spans[COL_LANG].content.as_ref()), 2);
         assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), " Git");
         assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Og");
-        assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  M");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), " Mn");
         assert_eq!(line.width(), widths.total_width());
+    }
+
+    #[test]
+    fn header_levels_promote_with_observed_width() {
+        // Empty: only the seed (1) for COL_MAIN, (2) for COL_SYNC.
+        let widths = ProjectListWidths::new(true);
+        let defs = column_defs(true);
+        assert_eq!(defs[COL_MAIN].header_for_width(widths.get(COL_MAIN)), "M");
+        assert_eq!(defs[COL_SYNC].header_for_width(widths.get(COL_SYNC)), "Og");
+
+        // Mid widths promote to the 2nd level.
+        let mut widths = ProjectListWidths::new(true);
+        widths.observe(COL_MAIN, 3);
+        widths.observe(COL_SYNC, 5);
+        assert_eq!(defs[COL_MAIN].header_for_width(widths.get(COL_MAIN)), "Mn");
+        assert_eq!(
+            defs[COL_SYNC].header_for_width(widths.get(COL_SYNC)),
+            "Orig"
+        );
+
+        // Wide enough for the longest level.
+        let mut widths = ProjectListWidths::new(true);
+        widths.observe(COL_MAIN, 4);
+        widths.observe(COL_SYNC, 6);
+        assert_eq!(
+            defs[COL_MAIN].header_for_width(widths.get(COL_MAIN)),
+            "Main"
+        );
+        assert_eq!(
+            defs[COL_SYNC].header_for_width(widths.get(COL_SYNC)),
+            "Origin"
+        );
+    }
+
+    #[test]
+    fn header_line_uses_widest_label_that_fits() {
+        let mut widths = ProjectListWidths::new(true);
+        widths.observe(COL_NAME, 30);
+        widths.observe(COL_DISK, 8);
+        widths.observe(COL_SYNC, 6);
+        widths.observe(COL_MAIN, 4);
+
+        let line = header_line(&widths, "Projects");
+
+        assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Origin");
+        assert_eq!(line.spans[COL_MAIN].content.as_ref(), " Main");
     }
 
     #[test]
@@ -911,10 +984,10 @@ mod tests {
         let row = build_summary_cells(&widths, "36.3 GiB");
         let line = row_to_line(&row, &widths);
 
-        assert_eq!(defs[COL_LINT].header, "");
+        assert_eq!(defs[COL_LINT].header_max(), "");
         assert_eq!(widths.get(COL_LINT), 0);
         assert_eq!(display_width(header.spans[COL_LINT].content.as_ref()), 0);
-        assert_eq!(defs[COL_CI].header, "CI");
+        assert_eq!(defs[COL_CI].header_max(), "CI");
         assert_eq!(widths.get(COL_CI), 2);
         assert!(header.spans[COL_CI].content.as_ref().ends_with("CI"));
         assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Σ");
