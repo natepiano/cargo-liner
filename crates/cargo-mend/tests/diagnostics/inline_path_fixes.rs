@@ -1368,6 +1368,85 @@ fn main() {
     );
 }
 
+/// Associated items on a generic type parameter (`S::Ok`, `B::Item`,
+/// `Idx::Output`, even an unconventional lowercase `t::Item`) must not be
+/// treated as crate-qualified paths. The visitor tracks generics via
+/// `syn::Generics::params` rather than guessing from naming, so any name
+/// the surrounding scope introduces as a type parameter is recognized.
+#[test]
+fn generic_type_param_associated_items_are_not_flagged() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_generic_assoc_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"pub trait Sink {
+    type Ok;
+    type Error;
+    fn finish(self) -> Result<Self::Ok, Self::Error>;
+}
+
+pub fn run<S: Sink>(s: S) -> Result<S::Ok, S::Error> {
+    s.finish()
+}
+
+pub trait Bucket {
+    type Item;
+}
+
+pub fn first<B: Bucket>(_b: &B) -> Option<B::Item> {
+    None
+}
+
+// PascalCase generic name — already covered by the PascalCase-first-segment
+// filter, but exercise the generics-tracker path too.
+pub fn next_idx<Idx: Iterator>(it: &mut Idx) -> Option<Idx::Item> {
+    it.next()
+}
+
+// Non-idiomatic lowercase generic. `non_camel_case_types` warns but the
+// compiler accepts it; the lint must not trip.
+#[allow(non_camel_case_types)]
+pub fn lower<t: Bucket>(_b: &t) -> Option<t::Item> {
+    None
+}
+
+// Generic on an impl block flows down into method bodies via the impl's
+// generic scope; the method's own signature can add additional generics.
+pub struct Wrap<T>(pub T);
+impl<T: Bucket> Wrap<T> {
+    pub fn nested<R: Sink>(_r: R) -> Option<(T::Item, R::Ok, R::Error)> {
+        None
+    }
+}
+
+fn main() {}
+"#,
+    )
+    .expect("write main");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let inline_findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.code == DiagnosticCode::InlinePathQualifiedType)
+        .collect();
+    assert!(
+        inline_findings.is_empty(),
+        "associated items on generic params must not be flagged, got: \
+         {inline_findings:?}"
+    );
+}
+
 /// `Type::Variant` (enum variant patterns / associated items) must not be
 /// treated as a crate-qualified path. The first segment is `PascalCase`,
 /// which means it's a type — suggesting `use Type;` is wrong.

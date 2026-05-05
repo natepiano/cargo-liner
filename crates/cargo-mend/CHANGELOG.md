@@ -8,14 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- `inline_path_qualified_type` now also flags inline paths from other crates (e.g. `ratatui::Frame`, `std::collections::BTreeMap`) and the trait in `impl SomeTrait for Type`. Previously only `crate::` and `super::` paths were flagged.
+- `inline_path_qualified_type` also flags inline paths from other crates (e.g. `ratatui::Frame`, `std::collections::BTreeMap`) and the trait in `impl SomeTrait for Type`. Previously only `crate::` and `super::` paths.
 
 ### Fixed
-- `inline_path_qualified_type` no longer suggests imports that would shadow a prelude name (`Result`, `Option`, `Vec`, `Box`, etc.). Even when the file currently doesn't write the bare name, an added `use io::Result;` silently changes what every future `Result<T, E>` resolves to.
-- `inline_path_qualified_type` now emits absolute import paths. If the file already has `use std::fmt;` and writes `fmt::Display` inline, the new import is `use std::fmt::Display;`, not `use fmt::Display;` — partial-path imports break silently if the parent import is later removed or reordered.
-- `--fix` could garble a file when two fixes touched the same spot (for example, adding a `use` line at the top while another fix rewrote the first line). The fixes are now applied in the right order.
-- `--fix` could corrupt a line that contained a multi-byte UTF-8 character (em-dash, accented letter, etc.) earlier on the same line as a path being rewritten. The replacement window is now computed from byte offsets, not character columns.
-- `--fix` could introduce an import that silently shadowed a prelude name still used elsewhere in the file (for example, adding `use io::Result;` while the file still relied on the prelude `Result` via `Result::ok`). The shadow check now considers multi-segment usages like `Result::ok`, not just bare `Result`.
+- `inline_path_qualified_type` skips associated items on a generic type parameter (`S::Ok`, `B::Item`). Active generics are now tracked from `syn::Generics::params` on the enclosing fn/impl/trait/struct/enum/type.
+- `inline_path_qualified_type` skips imports that would shadow a prelude name (`Result`, `Option`, `Vec`, `Box`, etc.).
+- `inline_path_qualified_type` emits absolute import paths: `use std::fmt::Display;`, not `use fmt::Display;` resolved through an in-scope `use std::fmt;`.
+- `--fix` no longer garbles files when an insertion and a replacement target the same offset; the wider replacement runs first.
+- `--fix` no longer corrupts lines containing multi-byte UTF-8 characters; replacement windows now use byte offsets, not character columns.
+- Shadow detection now considers multi-segment uses like `Result::ok`, not just bare `Result`.
 
 ## [0.11.0] - 2026-05-04
 

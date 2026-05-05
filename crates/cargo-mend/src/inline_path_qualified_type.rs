@@ -10,6 +10,8 @@ use anyhow::Result;
 use proc_macro2::LineColumn;
 use syn::ExprPath;
 use syn::ExprStruct;
+use syn::GenericParam;
+use syn::Generics;
 use syn::Item;
 use syn::ItemConst;
 use syn::ItemEnum;
@@ -23,6 +25,7 @@ use syn::ItemType;
 use syn::ItemUse;
 use syn::PatStruct;
 use syn::PatTupleStruct;
+use syn::Signature;
 use syn::TypePath;
 use syn::UseTree;
 use syn::spanned::Spanned;
@@ -321,6 +324,7 @@ fn scan_file(
         occurrences:     Vec::new(),
         bare_type_names: BTreeSet::new(),
         mod_depth:       0,
+        generic_scopes:  Vec::new(),
     };
     visitor.visit_file(&syntax);
 
@@ -533,6 +537,29 @@ struct InlinePathVisitor {
     occurrences:     Vec<InlinePathOccurrence>,
     bare_type_names: BTreeSet<String>,
     mod_depth:       usize,
+    /// Stack of generic type-parameter names that are in scope at the
+    /// current point of traversal. A path whose first segment matches an
+    /// active generic (`S::Ok` inside `fn serialize<S>(...)`) is an
+    /// associated-item reference, not a crate-qualified path — skip it.
+    generic_scopes:  Vec<BTreeSet<String>>,
+}
+
+impl InlinePathVisitor {
+    fn push_generics(&mut self, generics: &Generics) {
+        let mut params = BTreeSet::new();
+        for param in &generics.params {
+            if let GenericParam::Type(type_param) = param {
+                params.insert(type_param.ident.to_string());
+            }
+        }
+        self.generic_scopes.push(params);
+    }
+
+    fn pop_generics(&mut self) { self.generic_scopes.pop(); }
+
+    fn is_active_generic(&self, name: &str) -> bool {
+        self.generic_scopes.iter().any(|scope| scope.contains(name))
+    }
 }
 
 impl InlinePathVisitor {
@@ -567,6 +594,16 @@ impl InlinePathVisitor {
         // `Type::CONST` — not a crate-qualified path. Suggesting `use Type;`
         // for those cases is wrong and confusing.
         if !is_intra_crate && is_pascal_case(first) {
+            return;
+        }
+
+        // Associated-item references on a generic type parameter in scope
+        // (`S::Ok` inside `fn serialize<S>(...)`, `B::Item` inside
+        // `impl<B: Bucket>`) are not crate paths — `use S::Ok;` would be
+        // nonsense. Skip if the first segment matches a generic param visible
+        // at this point of the traversal. This is robust regardless of the
+        // generic's naming convention (`T`, `B`, `Idx`, lowercase, etc.).
+        if !is_intra_crate && self.is_active_generic(first) {
             return;
         }
 
@@ -698,37 +735,56 @@ impl Visit<'_> for InlinePathVisitor {
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
+        self.push_generics(&node.generics);
         syn::visit::visit_item_struct(self, node);
+        self.pop_generics();
     }
 
     fn visit_item_enum(&mut self, node: &ItemEnum) {
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
+        self.push_generics(&node.generics);
         syn::visit::visit_item_enum(self, node);
+        self.pop_generics();
     }
 
     fn visit_item_type(&mut self, node: &ItemType) {
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
+        self.push_generics(&node.generics);
         syn::visit::visit_item_type(self, node);
+        self.pop_generics();
     }
 
     fn visit_item_trait(&mut self, node: &ItemTrait) {
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
+        self.push_generics(&node.generics);
         syn::visit::visit_item_trait(self, node);
+        self.pop_generics();
     }
 
     fn visit_item_fn(&mut self, node: &ItemFn) {
         // A free function with a PascalCase name would also collide with an
-        // imported type of the same name. Rare, but cheap to track.
+        // imported type of the same name. Rare, but cheap to track. Function
+        // generics are pushed by `visit_signature` further down — don't push
+        // them here too, or they'd be on the stack twice.
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.sig.ident.to_string());
         }
         syn::visit::visit_item_fn(self, node);
+    }
+
+    fn visit_signature(&mut self, node: &Signature) {
+        // Covers free fn signatures, impl-method signatures, and trait-method
+        // signatures uniformly. Adds the function's own generics on top of
+        // any enclosing impl/trait generics already on the stack.
+        self.push_generics(&node.generics);
+        syn::visit::visit_signature(self, node);
+        self.pop_generics();
     }
 
     fn visit_item_const(&mut self, node: &ItemConst) {
@@ -748,6 +804,7 @@ impl Visit<'_> for InlinePathVisitor {
     fn visit_item_impl(&mut self, node: &ItemImpl) {
         // `impl Trait for Type` — the trait path is `ItemImpl::trait_`, a bare
         // `syn::Path` not visited as a `TypePath`. Inspect it directly.
+        self.push_generics(&node.generics);
         if let Some((_, trait_path, _)) = &node.trait_ {
             self.check_path(trait_path);
             if trait_path.segments.len() == 1 {
@@ -758,6 +815,7 @@ impl Visit<'_> for InlinePathVisitor {
             }
         }
         syn::visit::visit_item_impl(self, node);
+        self.pop_generics();
     }
 
     fn visit_pat_tuple_struct(&mut self, node: &PatTupleStruct) {
