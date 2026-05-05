@@ -479,10 +479,16 @@ fn relativize_path(path: &str, analysis_root: &Path) -> String {
     )
 }
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub(super) enum CacheBuildKind {
+    Library,
+    Test,
+}
+
 pub(super) fn cache_filename_for(
     package_root: &Path,
     crate_root_file: &Path,
-    is_test_build: bool,
+    build_kind: CacheBuildKind,
 ) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     package_root.hash(&mut hasher);
@@ -492,6 +498,6 @@ pub(super) fn cache_filename_for(
     // other's findings — leaving the cross-compilation intersection in
     // `load_report` with only one report to consult, so it can't detect
     // findings the other compilation would contradict.
-    is_test_build.hash(&mut hasher);
+    build_kind.hash(&mut hasher);
     format!("{:016x}.json", hasher.finish())
 }

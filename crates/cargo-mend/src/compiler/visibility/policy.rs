@@ -8,18 +8,19 @@ use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 
-use super::AllowanceReason;
-use super::CrateKind;
-use super::ModuleLocation;
-use super::ParentVisibility;
-use super::SuspiciousPubAssessment;
-use super::SuspiciousPubInput;
-use super::VisibilityContext;
-use super::facade;
-use super::facade::ParentFacadeExportStatus;
-use super::facade::ParentFacadeUsage;
-use super::facade::ParentFacadeVisibility;
+use super::scan::AllowanceReason;
+use super::scan::CrateKind;
+use super::scan::ModuleLocation;
+use super::scan::ParentVisibility;
+use super::scan::SuspiciousPubAssessment;
+use super::scan::SuspiciousPubInput;
+use super::scan::VisibilityContext;
 use crate::compiler::exposure;
+use crate::compiler::facade;
+use crate::compiler::facade::ParentFacadeExportStatus;
+use crate::compiler::facade::ParentFacadeFixSupport;
+use crate::compiler::facade::ParentFacadeUsage;
+use crate::compiler::facade::ParentFacadeVisibility;
 use crate::fix_support::FixSupport;
 
 pub(super) fn classify_suspicious_pub(
@@ -87,7 +88,7 @@ pub(super) fn classify_suspicious_pub(
 
     let (related, fixability, stale_parent_pub_use) = match stale_result {
         Some((message, status)) => {
-            let fixability = if status.fix_supported {
+            let fixability = if status.fix_supported == ParentFacadeFixSupport::Supported {
                 FixSupport::FixPubUse
             } else {
                 FixSupport::NeedsManualPubUseCleanup

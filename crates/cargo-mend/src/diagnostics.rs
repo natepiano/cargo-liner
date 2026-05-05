@@ -210,12 +210,6 @@ pub(crate) enum CompilerWarningFacts {
     UnusedImportWarnings,
 }
 
-impl CompilerWarningFacts {
-    pub(crate) const fn saw_unused_import_warnings(self) -> bool {
-        matches!(self, Self::UnusedImportWarnings)
-    }
-}
-
 impl Report {
     pub(crate) const fn has_errors(&self) -> bool { self.summary.errors > 0 }
 

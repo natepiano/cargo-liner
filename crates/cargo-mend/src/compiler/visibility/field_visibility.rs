@@ -23,8 +23,8 @@ use rustc_span::def_id::LocalDefId;
 
 type DefIdVisibility = Visibility<DefId>;
 
-use super::FindingParams;
-use super::VisibilityContext;
+use super::scan::FindingParams;
+use super::scan::VisibilityContext;
 use super::source;
 use crate::compiler::persistence::FindingsSink;
 use crate::config::DiagnosticCode;

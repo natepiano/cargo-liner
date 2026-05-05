@@ -7,21 +7,22 @@ use std::time::Duration;
 use anyhow::Error;
 
 use super::constants::EXIT_CODE_WARNING;
+use super::diagnostics::CompilerWarningFacts;
 use super::diagnostics::Report;
 use super::run_mode::OperationIntent;
 
 #[derive(Debug)]
 pub(crate) struct ExecutionOutcome {
-    pub report:                     Report,
-    pub notice:                     Option<ExecutionNotice>,
-    pub check_duration:             Duration,
-    pub compiler_warnings:          usize,
-    pub compiler_fixable:           usize,
+    pub report:                 Report,
+    pub notice:                 Option<ExecutionNotice>,
+    pub check_duration:         Duration,
+    pub compiler_warnings:      usize,
+    pub compiler_fixable:       usize,
     /// Count of `pub use` fixes actually applied (zero in dry-run / read-only).
-    pub applied_pub_use:            usize,
-    /// True when post-apply validation observed `unused import` warnings —
+    pub applied_pub_use:        usize,
+    /// Post-apply validation's compiler-warning summary — `UnusedImportWarnings`
     /// signals that `cargo fix` should be chained to clean up the cascade.
-    pub saw_unused_import_warnings: bool,
+    pub compiler_warning_facts: CompilerWarningFacts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

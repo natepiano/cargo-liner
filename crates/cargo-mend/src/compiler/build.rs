@@ -257,6 +257,13 @@ struct StderrObservation {
     fixable_count: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum SuppressionNotice {
+    #[default]
+    Pending,
+    Printed,
+}
+
 fn stream_cargo_stderr(
     stderr: ChildStderr,
     output_mode: BuildOutputMode,
@@ -264,7 +271,7 @@ fn stream_cargo_stderr(
     let mut reader = BufReader::new(stderr);
     let mut line = String::new();
     let mut block = Vec::new();
-    let mut printed_suppression_notice = false;
+    let mut suppression_notice = SuppressionNotice::Pending;
     let mut compiler_warnings = CompilerWarningFacts::None;
     let mut compiler_warning_count: usize = 0;
     let mut compiler_fixable_count: usize = 0;
@@ -275,7 +282,7 @@ fn stream_cargo_stderr(
         if bytes == 0 {
             flush_diagnostic_block(
                 &mut block,
-                &mut printed_suppression_notice,
+                &mut suppression_notice,
                 &mut compiler_warnings,
                 &mut compiler_warning_count,
                 &mut compiler_fixable_count,
@@ -288,7 +295,7 @@ fn stream_cargo_stderr(
         if is_progress_line(&current) {
             flush_diagnostic_block(
                 &mut block,
-                &mut printed_suppression_notice,
+                &mut suppression_notice,
                 &mut compiler_warnings,
                 &mut compiler_warning_count,
                 &mut compiler_fixable_count,
@@ -307,7 +314,7 @@ fn stream_cargo_stderr(
             block.push(current);
             flush_diagnostic_block(
                 &mut block,
-                &mut printed_suppression_notice,
+                &mut suppression_notice,
                 &mut compiler_warnings,
                 &mut compiler_warning_count,
                 &mut compiler_fixable_count,
@@ -416,9 +423,9 @@ pub(super) fn classify_diagnostic_block(block: &[String]) -> DiagnosticBlockKind
     })
 }
 
-pub(super) fn flush_diagnostic_block(
+fn flush_diagnostic_block(
     block: &mut Vec<String>,
-    printed_suppression_notice: &mut bool,
+    suppression_notice: &mut SuppressionNotice,
     compiler_warnings: &mut CompilerWarningFacts,
     compiler_warning_count: &mut usize,
     compiler_fixable_count: &mut usize,
@@ -432,12 +439,14 @@ pub(super) fn flush_diagnostic_block(
         DiagnosticBlockKind::SuppressedUnusedImport => {
             *compiler_warnings = CompilerWarningFacts::UnusedImportWarnings;
             match output_mode {
-                BuildOutputMode::SuppressUnusedImportWarnings if !*printed_suppression_notice => {
+                BuildOutputMode::SuppressUnusedImportWarnings
+                    if *suppression_notice == SuppressionNotice::Pending =>
+                {
                     eprintln!(
                         "mend: suppressing `unused import` warning during `--fix-pub-use` \
                          discovery"
                     );
-                    *printed_suppression_notice = true;
+                    *suppression_notice = SuppressionNotice::Printed;
                 },
                 BuildOutputMode::Full => {
                     for line in block.iter() {
@@ -480,6 +489,7 @@ mod tests {
     use super::BuildOutputMode;
     use super::CompilerWarningFacts;
     use super::DiagnosticBlockKind;
+    use super::SuppressionNotice;
     use super::classify_diagnostic_block;
     use super::flush_diagnostic_block;
     use super::is_progress_line;
@@ -521,14 +531,14 @@ mod tests {
                 .to_string(),
             "\n".to_string(),
         ];
-        let mut printed_suppression_notice = false;
+        let mut suppression_notice = SuppressionNotice::Pending;
         let mut compiler_warnings = CompilerWarningFacts::None;
         let mut compiler_warning_count = 0;
         let mut compiler_fixable_count = 0;
 
         flush_diagnostic_block(
             &mut block,
-            &mut printed_suppression_notice,
+            &mut suppression_notice,
             &mut compiler_warnings,
             &mut compiler_warning_count,
             &mut compiler_fixable_count,

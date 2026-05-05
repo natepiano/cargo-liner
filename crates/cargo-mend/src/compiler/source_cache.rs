@@ -224,7 +224,13 @@ struct PathExtractor {
     use_paths:       Vec<(Vec<String>, PathOrigin)>,
     expr_paths:      Vec<(Vec<String>, PathOrigin)>,
     use_renames:     Vec<UseRename>,
-    inside_use_item: bool,
+    inside_use_item: UseItemPosition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UseItemPosition {
+    Outside,
+    Inside,
 }
 
 impl<'ast> Visit<'ast> for PathExtractor {
@@ -236,13 +242,13 @@ impl<'ast> Visit<'ast> for PathExtractor {
             self.use_paths.push((raw, origin));
         }
         extract_use_renames(Vec::new(), &item_use.tree, &mut self.use_renames);
-        self.inside_use_item = true;
+        self.inside_use_item = UseItemPosition::Inside;
         syn::visit::visit_item_use(self, item_use);
-        self.inside_use_item = false;
+        self.inside_use_item = UseItemPosition::Outside;
     }
 
     fn visit_path(&mut self, path: &'ast syn::Path) {
-        if !self.inside_use_item {
+        if self.inside_use_item == UseItemPosition::Outside {
             let segments: Vec<String> = path
                 .segments
                 .iter()
@@ -260,7 +266,7 @@ pub(super) fn extract_paths(file: &File) -> ExtractedPaths {
         use_paths:       Vec::new(),
         expr_paths:      Vec::new(),
         use_renames:     Vec::new(),
-        inside_use_item: false,
+        inside_use_item: UseItemPosition::Outside,
     };
     extractor.visit_file(file);
 

@@ -9,6 +9,7 @@ use super::compiler;
 use super::compiler::BuildOutputMode;
 use super::compiler::SelectionResult;
 use super::config::DiagnosticCode;
+use super::config::DiagnosticStatus;
 use super::config::LoadedConfig;
 use super::diagnostics::Report;
 use super::field_visibility_fix;
@@ -126,34 +127,40 @@ impl<'a> MendRunner<'a> {
         let diagnostics_config = &self.loaded_config.diagnostics_config;
         let import_scan = (operation_mode.fixes.contains(FixKind::ShortenImport)
             && (diagnostics_config.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
-                || diagnostics_config.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)))
-        .then(|| imports::scan_selection(self.selection))
-        .transpose()
-        .map_err(MendFailure::Unexpected)?;
-        let prefer_module_import_scan =
-            (operation_mode.fixes.contains(FixKind::PreferModuleImport)
-                && diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport))
-            .then(|| prefer_module_import::scan_selection(self.selection))
+                == DiagnosticStatus::Enabled
+                || diagnostics_config.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)
+                    == DiagnosticStatus::Enabled))
+            .then(|| imports::scan_selection(self.selection))
             .transpose()
             .map_err(MendFailure::Unexpected)?;
+        let prefer_module_import_scan =
+            (operation_mode.fixes.contains(FixKind::PreferModuleImport)
+                && diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport)
+                    == DiagnosticStatus::Enabled)
+                .then(|| prefer_module_import::scan_selection(self.selection))
+                .transpose()
+                .map_err(MendFailure::Unexpected)?;
         let inline_path_scan = (operation_mode
             .fixes
             .contains(FixKind::InlinePathQualifiedType)
-            && diagnostics_config.is_enabled(DiagnosticCode::InlinePathQualifiedType))
-        .then(|| inline_path_qualified_type::scan_selection(self.selection))
-        .transpose()
-        .map_err(MendFailure::Unexpected)?;
-        let narrow_pub_crate_scan = (operation_mode.fixes.contains(FixKind::NarrowToPubCrate)
-            && diagnostics_config.is_enabled(DiagnosticCode::NarrowToPubCrate))
-        .then(|| narrow_pub_crate::scan_from_report(&report))
-        .transpose()
-        .map_err(MendFailure::Unexpected)?;
-        let field_visibility_fix_scan =
-            (operation_mode.fixes.contains(FixKind::FixFieldVisibility)
-                && diagnostics_config.is_enabled(DiagnosticCode::FieldVisibilityWiderThanType))
-            .then(|| field_visibility_fix::scan_from_report(&report))
+            && diagnostics_config.is_enabled(DiagnosticCode::InlinePathQualifiedType)
+                == DiagnosticStatus::Enabled)
+            .then(|| inline_path_qualified_type::scan_selection(self.selection))
             .transpose()
             .map_err(MendFailure::Unexpected)?;
+        let narrow_pub_crate_scan = (operation_mode.fixes.contains(FixKind::NarrowToPubCrate)
+            && diagnostics_config.is_enabled(DiagnosticCode::NarrowToPubCrate)
+                == DiagnosticStatus::Enabled)
+            .then(|| narrow_pub_crate::scan_from_report(&report))
+            .transpose()
+            .map_err(MendFailure::Unexpected)?;
+        let field_visibility_fix_scan =
+            (operation_mode.fixes.contains(FixKind::FixFieldVisibility)
+                && diagnostics_config.is_enabled(DiagnosticCode::FieldVisibilityWiderThanType)
+                    == DiagnosticStatus::Enabled)
+                .then(|| field_visibility_fix::scan_from_report(&report))
+                .transpose()
+                .map_err(MendFailure::Unexpected)?;
         let pub_use_scan = operation_mode
             .fixes
             .contains(FixKind::FixPubUse)
@@ -182,11 +189,7 @@ impl<'a> MendRunner<'a> {
         let compiler_fixable = planned.compiler_fixable;
         match planned.operation_mode.intent {
             OperationIntent::ReadOnly => Ok(ExecutionOutcome {
-                saw_unused_import_warnings: planned
-                    .report
-                    .facts
-                    .compiler_warnings
-                    .saw_unused_import_warnings(),
+                compiler_warning_facts: planned.report.facts.compiler_warnings,
                 report: planned.report,
                 notice: None,
                 check_duration,
@@ -201,11 +204,7 @@ impl<'a> MendRunner<'a> {
                     planned.fix_scans(),
                 );
                 Ok(ExecutionOutcome {
-                    saw_unused_import_warnings: planned
-                        .report
-                        .facts
-                        .compiler_warnings
-                        .saw_unused_import_warnings(),
+                    compiler_warning_facts: planned.report.facts.compiler_warnings,
                     report: planned.report,
                     notice,
                     check_duration,
@@ -231,11 +230,7 @@ impl<'a> MendRunner<'a> {
                 Some(&planned.report),
                 fix_scans,
             );
-            let saw_unused = planned
-                .report
-                .facts
-                .compiler_warnings
-                .saw_unused_import_warnings();
+            let warning_facts = planned.report.facts.compiler_warnings;
             return Ok(ExecutionOutcome {
                 report: planned.report,
                 notice,
@@ -243,7 +238,7 @@ impl<'a> MendRunner<'a> {
                 compiler_warnings,
                 compiler_fixable,
                 applied_pub_use: 0,
-                saw_unused_import_warnings: saw_unused,
+                compiler_warning_facts: warning_facts,
             });
         }
 
@@ -257,11 +252,7 @@ impl<'a> MendRunner<'a> {
                     Some(&validation.report),
                     fix_scans,
                 );
-                let saw_unused = validation
-                    .report
-                    .facts
-                    .compiler_warnings
-                    .saw_unused_import_warnings();
+                let warning_facts = validation.report.facts.compiler_warnings;
                 Ok(ExecutionOutcome {
                     report: validation.report,
                     notice,
@@ -269,7 +260,7 @@ impl<'a> MendRunner<'a> {
                     compiler_warnings,
                     compiler_fixable,
                     applied_pub_use,
-                    saw_unused_import_warnings: saw_unused,
+                    compiler_warning_facts: warning_facts,
                 })
             },
             Err(err) => {
@@ -393,18 +384,24 @@ impl<'a> MendRunner<'a> {
         let report = &mut result.report;
         let diagnostics_config = &self.loaded_config.diagnostics_config;
         if diagnostics_config.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
+            == DiagnosticStatus::Enabled
             || diagnostics_config.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)
+                == DiagnosticStatus::Enabled
         {
             let import_scan =
                 imports::scan_selection(self.selection).map_err(MendFailure::Unexpected)?;
             report.findings.extend(import_scan.findings);
         }
-        if diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport) {
+        if diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport)
+            == DiagnosticStatus::Enabled
+        {
             let prefer_module_import_scan = prefer_module_import::scan_selection(self.selection)
                 .map_err(MendFailure::Unexpected)?;
             report.findings.extend(prefer_module_import_scan.findings);
         }
-        if diagnostics_config.is_enabled(DiagnosticCode::InlinePathQualifiedType) {
+        if diagnostics_config.is_enabled(DiagnosticCode::InlinePathQualifiedType)
+            == DiagnosticStatus::Enabled
+        {
             let inline_path_scan = inline_path_qualified_type::scan_selection(self.selection)
                 .map_err(MendFailure::Unexpected)?;
             report.findings.extend(inline_path_scan.findings);
@@ -442,9 +439,9 @@ impl<'a> MendRunner<'a> {
                 && a.suggestion == b.suggestion
         });
         // Filter out disabled diagnostics
-        report
-            .findings
-            .retain(|f| self.loaded_config.diagnostics_config.is_enabled(f.code));
+        report.findings.retain(|f| {
+            self.loaded_config.diagnostics_config.is_enabled(f.code) == DiagnosticStatus::Enabled
+        });
         report.refresh_summary();
         Ok(result)
     }

@@ -8,17 +8,23 @@ use syn::visit::Visit;
 
 use super::shared;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ImportTarget {
+    ParentModule,
+    OtherModule,
+}
+
 pub(super) struct RawCandidate {
-    pub(super) function_name:    String,
-    pub(super) module_name:      String,
-    pub(super) module_path:      String,
-    pub(super) absolute_module:  Vec<String>,
-    pub(super) replacement_use:  String,
-    pub(super) span_start:       LineColumn,
-    pub(super) span_end:         LineColumn,
+    pub(super) function_name:   String,
+    pub(super) module_name:     String,
+    pub(super) module_path:     String,
+    pub(super) absolute_module: Vec<String>,
+    pub(super) replacement_use: String,
+    pub(super) span_start:      LineColumn,
+    pub(super) span_end:        LineColumn,
     /// True when the target module is the file's own parent module.
     /// The use statement should be deleted and references rewritten as `super::fn(...)`.
-    pub(super) is_parent_module: bool,
+    pub(super) import_target:   ImportTarget,
 }
 
 pub(super) struct ImportDetector<'a> {
@@ -86,9 +92,13 @@ fn analyze_function_import(
 
     let shortened_module_segments =
         shared::shorten_module_path(current_module_path, module_segments);
-    let is_parent_module = shortened_module_segments.as_slice() == ["super"];
+    let import_target = if shortened_module_segments.as_slice() == ["super"] {
+        ImportTarget::ParentModule
+    } else {
+        ImportTarget::OtherModule
+    };
     let module_path = shortened_module_segments.join("::");
-    let replacement_use = if is_parent_module {
+    let replacement_use = if import_target == ImportTarget::ParentModule {
         String::new()
     } else {
         let vis_prefix = shared::extract_visibility_prefix(node);
@@ -105,6 +115,6 @@ fn analyze_function_import(
         replacement_use,
         span_start: span.start(),
         span_end: span.end(),
-        is_parent_module,
+        import_target,
     })
 }

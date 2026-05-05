@@ -43,6 +43,7 @@ use constants::CLICOLOR_FORCE_ENV;
 use constants::DRIVER_ENV;
 use constants::EXIT_CODE_ERROR;
 use constants::EXIT_CODE_WARNING;
+use diagnostics::CompilerWarningFacts;
 use display_filter::DisplayFilter;
 use outcome::ExecutionOutcome;
 use outcome::MendFailure;
@@ -77,7 +78,7 @@ fn build_diagnostics_help(diagnostics: &DiagnosticsConfig) -> String {
     let mut lines = vec![String::new(), "Diagnostics:".to_string()];
     for (code, enabled) in diagnostics.entries() {
         let name = code.as_str();
-        let status = if enabled { "enabled" } else { "disabled" };
+        let status = enabled.label();
         lines.push(format!("  {name:<40} {status}"));
     }
     lines.push(String::new());
@@ -149,7 +150,10 @@ fn run() -> Result<ExitCode, MendFailure> {
             cli.fix.execution,
             FixExecution::ApplyRequested | FixExecution::ApplyAll
         ) && outcome.applied_pub_use > 0
-            && outcome.saw_unused_import_warnings;
+            && matches!(
+                outcome.compiler_warning_facts,
+                CompilerWarningFacts::UnusedImportWarnings
+            );
 
         if user_asked_for_compiler_fix || pub_use_self_heal {
             total_compiler_fix_duration +=

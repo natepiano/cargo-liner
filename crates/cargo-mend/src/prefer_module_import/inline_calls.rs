@@ -8,8 +8,9 @@ use syn::ItemUse;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
-use super::InlineCallFindingInputs;
-use super::ScanFileContext;
+use super::function_imports::ImportTarget;
+use super::scan::InlineCallFindingInputs;
+use super::scan::ScanFileContext;
 use super::shared;
 use crate::config::DiagnosticCode;
 use crate::diagnostics::Finding;
@@ -19,17 +20,17 @@ use crate::imports::ImportGroup;
 use crate::imports::UseFix;
 
 pub(super) struct InlineCallCandidate {
-    pub(super) function_name:    String,
-    pub(super) module_name:      String,
-    pub(super) module_path:      String,
-    pub(super) absolute_module:  Vec<String>,
-    pub(super) prefix_start:     LineColumn,
-    pub(super) leaf_start:       LineColumn,
-    pub(super) full_span_start:  LineColumn,
-    pub(super) full_span_end:    LineColumn,
+    pub(super) function_name:   String,
+    pub(super) module_name:     String,
+    pub(super) module_path:     String,
+    pub(super) absolute_module: Vec<String>,
+    pub(super) prefix_start:    LineColumn,
+    pub(super) leaf_start:      LineColumn,
+    pub(super) full_span_start: LineColumn,
+    pub(super) full_span_end:   LineColumn,
     /// True when the target module is the file's own parent module.
     /// Rewrite the call to `super::function_name(...)` and add no `use`.
-    pub(super) is_parent_module: bool,
+    pub(super) import_target:   ImportTarget,
 }
 
 pub(super) struct InlineCallDetector<'a> {
@@ -97,7 +98,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
             .unwrap_or_default()
             .to_string();
 
-        let (message, suggestion) = if candidate.is_parent_module {
+        let (message, suggestion) = if candidate.import_target == ImportTarget::ParentModule {
             (
                 format!(
                     "use `super::{}` instead of the fully-qualified path",
@@ -141,7 +142,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
             full_path: candidate.absolute_module.join("::"),
         });
 
-        let call_prefix = if candidate.is_parent_module {
+        let call_prefix = if candidate.import_target == ImportTarget::ParentModule {
             "super::".to_string()
         } else {
             format!("{}::", candidate.module_name)
@@ -154,7 +155,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
             import_group: group.clone(),
         });
 
-        if candidate.is_parent_module {
+        if candidate.import_target == ImportTarget::ParentModule {
             continue;
         }
         if inline_inputs
@@ -230,7 +231,11 @@ fn analyze_inline_call(
 
     let module_segments = &segments[..segments.len() - 1];
     let shortened = shared::shorten_module_path(current_module_path, module_segments);
-    let is_parent_module = shortened.as_slice() == ["super"];
+    let import_target = if shortened.as_slice() == ["super"] {
+        ImportTarget::ParentModule
+    } else {
+        ImportTarget::OtherModule
+    };
     let module_path = shortened.join("::");
 
     let first_seg = path.segments.first()?;
@@ -245,6 +250,6 @@ fn analyze_inline_call(
         leaf_start: leaf_seg.ident.span().start(),
         full_span_start: path.span().start(),
         full_span_end: path.span().end(),
-        is_parent_module,
+        import_target,
     })
 }

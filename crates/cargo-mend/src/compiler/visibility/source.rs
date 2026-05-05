@@ -15,9 +15,9 @@ use rustc_span::FileName;
 use rustc_span::Span;
 use rustc_span::def_id::LocalDefId;
 
-use super::FindingParams;
-use super::source_cache::SourceCache;
+use super::scan::FindingParams;
 use crate::compiler::persistence::StoredFinding;
+use crate::compiler::source_cache::SourceCache;
 
 #[derive(Debug)]
 struct LineDisplay {

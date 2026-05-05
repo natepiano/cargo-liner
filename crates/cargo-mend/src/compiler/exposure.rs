@@ -483,7 +483,7 @@ pub(super) fn public_item_surface_mentions_name(item: &Item, item_name: &str) ->
         },
         _ => {},
     }
-    visitor.found
+    visitor.found == SurfaceReferenceMatch::Found
 }
 
 pub(super) fn impl_self_type_name(item_impl: &ItemImpl) -> Option<String> {
@@ -532,7 +532,7 @@ pub(super) fn outward_impl_surface_mentions_name(item_impl: &ItemImpl, item_name
         }
     }
 
-    found_public_surface && visitor.found
+    found_public_surface && visitor.found == SurfaceReferenceMatch::Found
 }
 
 fn attributes_mention_name(attrs: &[Attribute], item_name: &str) -> bool {
@@ -569,21 +569,27 @@ fn attribute_tokens_mention_name(attr: &Attribute, item_name: &str) -> bool {
 
 struct ItemSurfaceReferenceVisitor<'a> {
     item_name: &'a str,
-    found:     bool,
+    found:     SurfaceReferenceMatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceReferenceMatch {
+    Missing,
+    Found,
 }
 
 impl<'a> ItemSurfaceReferenceVisitor<'a> {
     const fn new(item_name: &'a str) -> Self {
         Self {
             item_name,
-            found: false,
+            found: SurfaceReferenceMatch::Missing,
         }
     }
 }
 
 impl<'ast> Visit<'ast> for ItemSurfaceReferenceVisitor<'_> {
     fn visit_path(&mut self, path: &'ast syn::Path) {
-        if self.found {
+        if self.found == SurfaceReferenceMatch::Found {
             return;
         }
         if path
@@ -591,7 +597,7 @@ impl<'ast> Visit<'ast> for ItemSurfaceReferenceVisitor<'_> {
             .last()
             .is_some_and(|segment| segment.ident == self.item_name)
         {
-            self.found = true;
+            self.found = SurfaceReferenceMatch::Found;
             return;
         }
         syn::visit::visit_path(self, path);
