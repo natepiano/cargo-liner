@@ -6,53 +6,13 @@ use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
 use crate::scan;
 use crate::tui::app::App;
-use crate::tui::app::bus::Command;
-use crate::tui::app::bus::Event;
 use crate::tui::net_state::ServiceAvailability;
 use crate::tui::toasts::ToastStyle::Warning;
 
 impl App {
     pub(super) fn apply_service_signal(&mut self, signal: ServiceSignal) {
-        self.bus.publish(Event::ServiceSignal(signal));
-        self.drain_bus();
-    }
-
-    /// Drain the event bus to fixed point. Events drain first; each
-    /// event handler may dispatch commands or publish further events.
-    /// Commands then drain. The outer loop alternates so commands can
-    /// publish events and vice versa, which keeps both queues empty
-    /// before returning to the caller.
-    fn drain_bus(&mut self) {
-        loop {
-            if let Some(ev) = self.bus.pop_event() {
-                self.deliver_event(ev);
-                continue;
-            }
-            if let Some(cmd) = self.bus.pop_command() {
-                self.execute_command(cmd);
-                continue;
-            }
-            break;
-        }
-    }
-
-    fn deliver_event(&mut self, ev: Event) {
-        match ev {
-            Event::ServiceSignal(signal) => self.handle_service_signal_event(signal),
-        }
-    }
-
-    fn execute_command(&self, cmd: Command) {
-        match cmd {
-            Command::SpawnServiceRetry(service) => self.spawn_service_retry(service),
-        }
-    }
-
-    fn handle_service_signal_event(&mut self, signal: ServiceSignal) {
         match signal {
-            ServiceSignal::Reachable(service) => {
-                self.handle_service_reachable(service);
-            },
+            ServiceSignal::Reachable(service) => self.handle_service_reachable(service),
             ServiceSignal::Unreachable(service) => {
                 self.apply_unavailability(service, AvailabilityKind::Unreachable);
             },
@@ -86,7 +46,7 @@ impl App {
             (spawn_retry, avail.toast_id())
         };
         if spawn_retry {
-            self.bus.dispatch(Command::SpawnServiceRetry(service));
+            self.spawn_service_retry(service);
         }
         // The tracked toast id can go stale if the user dismissed the
         // toast while the service was still unavailable — the toast

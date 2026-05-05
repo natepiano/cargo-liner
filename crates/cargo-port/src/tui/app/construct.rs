@@ -211,7 +211,6 @@ impl AppBuilder<Started> {
             scan,
             focus: crate::tui::focus::Focus::new(PaneId::ProjectList),
             overlays,
-            bus: super::bus::EventBus::new(),
             confirm: None,
             animation_started: Instant::now(),
             mouse_pos: None,

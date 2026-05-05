@@ -2,15 +2,7 @@
 
 ## Status
 
-Phases 1–19 done. Phases 20–22 remain.
-
-**Phase 20 — Rip out the event bus.** Revert Phase 18. The
-architectural review found the bus pattern doesn't fit this
-codebase; the cross-subsystem orchestrators on `App` are
-themselves the fan-out point, and a queue-and-dispatch layer
-adds dispatch indirection without architectural value. After
-Phase 20, no bus types exist; `apply_service_signal` is a
-direct method call.
+Phases 1–20 done. Phases 21–22 remain.
 
 **Phase 21 — `TreeReaction` enum cleanup of `ReloadActions`.**
 Replace mutually-exclusive `rescan` / `rebuild_tree` booleans
@@ -177,13 +169,12 @@ Phases 11–16 are the remaining architectural moves.
 | 17 of 22 | Phase 17 — `KeymapPane` + `SettingsPane` + `FinderPane` → `Overlays` absorption | **Done** |
 | 18 of 22 | Phase 18 — Event-bus skeleton + `apply_service_signal` smoke test | **Done** *(reverted in Phase 20)* |
 | 19 of 22 | Phase 19 — Move `row_count` + 4 cursor-movement methods onto `Selection` | **Done** |
-| 20 of 22 | Phase 20 — Rip out the event bus (revert Phase 18) | Ready |
+| 20 of 22 | Phase 20 — Rip out the event bus (revert Phase 18) | **Done** |
 | 21 of 22 | Phase 21 — `TreeReaction` enum cleanup of `ReloadActions` | Ready (reorderable) |
 | 22 of 22 | Phase 22 — Extract `StartupOrchestrator` (state-owning subsystem) | Ready (reorderable) |
 
-Execution order: numeric, except Phase 21 may land at any point
-— it has no source dependency on the bus conversion or its
-preambles.
+Execution order: numeric. Phases 21 and 22 are reorderable —
+neither has a source dependency on the other.
 
 Per-phase steps:
 1. Add the subsystem accessor on `App`.
@@ -2224,69 +2215,89 @@ patterns") explicitly assigns to `App`. They stay on `App`.
 **Goal.** Revert Phase 18's bus introduction. After Phase 20,
 the codebase has no `EventBus`, `Event`, `Command`,
 `EventHandler`, or `HandlerCtx` types. `apply_service_signal`
-becomes a direct method call on `App` again; the
-`service_handlers.rs` body returns to its pre-Phase-18 shape.
+is a direct method call on `App` again; `service_handlers.rs`
+returns to its pre-Phase-18 shape.
 
 **Why this phase exists.** The architectural review after
 Phase 19 found the bus pattern doesn't fit this codebase. The
 cross-subsystem orchestrators on `App` (`apply_config`,
 `apply_lint_config_change`, `apply_service_signal`, `rescan`,
-etc.) are themselves the fan-out point. Replacing direct
-method dispatch with publish-event + drain +
-return-`Vec<Command>` + execute is more dispatch layers, same
-logic. Two of the bus's five types (`HandlerCtx`,
-`EventHandler`) shipped as dead-code scaffolding waiting for an
-expansion that wasn't going to deliver architectural value
-proportional to its cost. Removing the bus makes the codebase
-self-consistent: one orchestrator pattern (named methods on
-`App`) used everywhere.
+etc.) are themselves the fan-out point. Replacing direct method
+dispatch with publish-event + drain + return-`Vec<Command>` +
+execute is more dispatch layers, same logic. Two of the bus's
+five types (`HandlerCtx`, `EventHandler`) shipped as dead-code
+scaffolding waiting for an expansion that wasn't going to
+deliver architectural value proportional to its cost. Removing
+the bus makes the codebase self-consistent: one orchestrator
+pattern (named methods on `App`) used everywhere.
 
-This is also why Phase 18's "smoke test" wasn't a real
-borrow-checker stress test. The `apply_service_signal` reactor
-took `&mut self` on App rather than typed `&mut Subsystem`
-parameters, so `HandlerCtx`'s typed-borrow surface never got
-exercised. That made the bus skeleton load-bearing only for the
-`Command::SpawnServiceRetry` deferral — and that deferral can
-be replaced with a direct call inside `apply_unavailability`
-since the pre-Phase-18 code already did exactly that.
+**Status: done.**
 
-**Files affected.**
-- *Delete:* `src/tui/app/bus.rs`.
-- *Modify `src/tui/app/mod.rs`:* remove `mod bus;`, remove the
-  `bus: EventBus` field, remove `use bus::EventBus;`.
-- *Modify `src/tui/app/construct.rs`:* remove
-  `bus: EventBus::new()` from the App struct initializer.
-- *Modify `src/tui/app/async_tasks/service_handlers.rs`:*
-  - `apply_service_signal` body returns to a direct match on
-    the `ServiceSignal` variants, calling
+### Phase 20 retrospective
+
+**What was reverted.**
+- *Deleted:* `src/tui/app/bus.rs` (the `EventBus`, `Event`,
+  `Command`, `EventHandler`, `HandlerCtx` types).
+- *`src/tui/app/mod.rs`:* removed `mod bus;`, removed
+  `use bus::EventBus;`, removed the `bus: EventBus` field on
+  `App` (and its doc comment).
+- *`src/tui/app/construct.rs`:* dropped `bus: EventBus::new()`
+  from the `App` struct initializer.
+- *`src/tui/app/async_tasks/service_handlers.rs`:*
+  - `apply_service_signal` body now matches on the
+    `ServiceSignal` variants directly, calling
     `handle_service_reachable` / `apply_unavailability`
-    directly (the pre-Phase-18 shape).
-  - Delete `drain_bus`, `deliver_event`, `execute_command`, and
-    `handle_service_signal_event` (the Phase 18 routing
-    methods — `handle_service_signal_event`'s body folds back
-    into `apply_service_signal`).
-  - `apply_unavailability`'s retry-spawn path goes back to a
-    direct `self.spawn_service_retry(service)` call, dropping
-    the `Command::SpawnServiceRetry` indirection.
-- *Remove imports of `Command` and `Event`* from
-  `service_handlers.rs`.
+    inline (the pre-Phase-18 shape).
+  - Deleted `drain_bus`, `deliver_event`, `execute_command`,
+    and `handle_service_signal_event` (Phase 18 routing
+    methods — the last folded back into
+    `apply_service_signal`).
+  - `apply_unavailability`'s retry-spawn path is back to
+    `self.spawn_service_retry(service)` directly, dropping the
+    `Command::SpawnServiceRetry` indirection.
+  - Removed imports of `bus::Command` and `bus::Event`.
 
-**Pre-requisites:** none. Phase 20 has no source dependency on
-Phase 21 or 22.
+**Behavior preservation.** All 599 tests pass unchanged from
+Phase 19 — the bus had no observable behavior beyond what its
+direct-call replacement now does. clippy clean (no Copy /
+needless_pass_by_value warnings to drop, since the offending
+types are gone). cargo mend reports no findings.
 
-**Risk:** low. Phase 18's retrospective documented that no
-command publishes an event and no event handler publishes a
-follow-up event in the smoke-test surface — the drain loop
-never exercised any non-trivial behavior. Reverting it returns
-the code to a known-good prior shape (the test suite from
-pre-Phase-18 verifies the revert; today's 599-test count drops
-back to 597 if the two Phase-18-added bus-related tests
-existed, otherwise stays at 599).
+**What about the lessons from Phase 18?** The Phase 18
+retrospective listed three lessons:
+1. *`impl App` blocks belong in the file that defines the
+   methods, not adjacent to the type they dispatch on.* This
+   lesson survives — it's a general rule about where to put
+   reactor methods, independent of whether dispatch goes
+   through a bus.
+2. *Multi-line perl substitutions for chained call-site
+   rewrites.* Survives — used in reverse during Phase 20 to
+   strip the call sites we introduced.
+3. *Small dispatch enums need `#[derive(Copy, Clone)]` or
+   clippy fires `needless_pass_by_value` /
+   `pass_by_ref_mut`.* Survives as a clippy hygiene rule for
+   any future small enum dispatch — the offending types are
+   just gone from this codebase now.
 
-**Apply the cross-phase lessons in reverse:**
-- The bulk-rewrite tooling (multi-line perl, etc.) used to
-  introduce bus call sites in Phase 18 applies to removing
-  them.
+**Why the revert was cheap.** Phase 18's "smoke test" wasn't a
+real borrow-checker stress test. The `apply_service_signal`
+reactor took `&mut self` on `App` rather than typed
+`&mut Subsystem` parameters, so `HandlerCtx`'s typed-borrow
+surface never got exercised. The bus skeleton was load-bearing
+only for the `Command::SpawnServiceRetry` deferral — and the
+pre-Phase-18 code already did that as a direct call. Reverting
+to that shape is mechanical, not redesign.
+
+**Lesson — when a generic mechanism is "scaffolding waiting for
+expansion," the expansion has to be in-flight in the same PR or
+the scaffolding gets cut.** Phase 18 shipped types
+(`HandlerCtx`, `EventHandler`) marked dead-code that were
+supposed to come alive in a later phase. The architectural
+review concluded the later phase wouldn't deliver value
+proportional to its cost; the scaffolding was then pure
+overhead. If a future phase ever genuinely needs typed-borrow
+fan-out across subsystems, the introduction goes alongside the
+first non-trivial caller, not ahead of it.
 
 ## Phase 21 — `TreeReaction` enum cleanup of `ReloadActions`
 
@@ -2740,23 +2751,24 @@ Updated post-Phase-8.
 | 17  | Keymap + Settings + Finder → `Overlays` absorption | Done |
 | 18  | Event-bus skeleton + `apply_service_signal` smoke test | Done |
 | 19  | Move `row_count` + 4 cursor-movement methods onto `Selection` | Done |
-| 20  | Rip out the event bus (revert Phase 18) | Ready |
+| 20  | Rip out the event bus (revert Phase 18) | Done |
 | 21  | `TreeReaction` enum cleanup of `ReloadActions` | Ready (reorderable) |
 | 22  | Extract `StartupOrchestrator` (state-owning subsystem) | Ready (reorderable) |
 
-After Phases 19–21, App's struct surface drops to roughly:
-`new`, `run`, the bus-publishing entry points (`apply_config`,
-`rescan`, `handle_bg_msg`, `apply_service_signal`,
-`mark_service_recovered`), the keystroke-driven group flagged
-in Phase 18 (`input_context`, `tabbable_panes`,
-`focus_next_pane`, `force_settings_if_unconfigured`, etc.),
-and a small set of multi-subsystem helpers
-(`ensure_detail_cached`, `ci_for`, `sync_selected_project`).
+After Phases 21–22, App's struct surface drops to roughly:
+`new`, `run`, the cross-subsystem orchestrators
+(`apply_config`, `apply_lint_config_change`, `rescan`,
+`handle_bg_msg`, `apply_service_signal`,
+`mark_service_recovered`), the keystroke-driven group
+(`input_context`, `tabbable_panes`, `focus_next_pane`,
+`force_settings_if_unconfigured`, etc.), and a small set of
+multi-subsystem helpers (`ensure_detail_cached`, `ci_for`,
+`sync_selected_project`).
 
-The coupling direction shifts: subscribers pull the events they
-care about; App pushes commands subscribers ask for.
-`apply_command` becomes a flat dispatch table — the count of arms
-tracks the side-effect surface, not the orchestrator surface.
+Each orchestrator on `App` is a named method that calls into
+the subsystems it touches directly. There is no dispatch
+indirection, no queue, no broker — one architectural pattern
+end-to-end.
 
 ## Post-Phase-9 architecture review
 
