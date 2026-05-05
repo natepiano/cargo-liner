@@ -2,20 +2,12 @@
 
 ## Status
 
-Phases 1–20 done. Phases 21–22 remain.
-
-**Phase 21 — `TreeReaction` enum cleanup of `ReloadActions`.**
-Replace mutually-exclusive `rescan` / `rebuild_tree` booleans
-with a `TreeReaction` enum. Type system refuses combinations
-that today rely on runtime branching to stay correct.
+Phases 1–21 done. Phase 22 remains.
 
 **Phase 22 — Extract `StartupOrchestrator` (state-owning).**
 Move the startup-phase state machine into its own subsystem.
 Phase-tracking state migrates off `scan_state` and `lint` (it
 isn't scan data; it isn't lint data) into the orchestrator.
-
-All three remaining phases are reorderable — none has a source
-dependency on the others.
 
 **End state.** The codebase has one architectural pattern: `App`
 owns named subsystems by reference; cross-subsystem reactions
@@ -2299,64 +2291,84 @@ overhead. If a future phase ever genuinely needs typed-borrow
 fan-out across subsystems, the introduction goes alongside the
 first non-trivial caller, not ahead of it.
 
-## Phase 21 — `TreeReaction` enum cleanup of `ReloadActions`
+## Phase 21 — `TreeReaction` enum cleanup of `ReloadActions` — **DONE**
 
-**Goal.** Replace the mutually-exclusive `rescan` /
-`rebuild_tree` boolean fields in `ReloadActions`
-(`src/tui/config_reload.rs`) with a single `TreeReaction` enum.
-The type system then refuses combinations that today rely on
-runtime branching to stay correct.
+**Outcome.** `ReloadActions` lost its `rescan: ReloadDecision`
+and `rebuild_tree: ReloadDecision` fields and gained a single
+`tree: TreeReaction` field. The consumer's two-step `if rescan
+{ ... } else if rebuild_tree { ... }` chain became an
+exhaustive `match actions.tree`. All 599 tests still pass;
+clippy and `cargo mend` clean.
 
 ```rust
-pub enum TreeReaction {
-    None,            // no tree change
-    RegroupMembers,  // in-place regroup_members + refresh_derived_state
-    FullRescan,      // wholesale rescan + force_settings_if_unconfigured
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum TreeReaction {
+    #[default]
+    None,
+    RegroupMembers,
+    FullRescan,
 }
 
-pub struct ReloadActions {
-    pub tree:                 TreeReaction,
-    pub refresh_lint_runtime: bool,
-    pub refresh_cpu:          bool,
-    pub force_rate_limit:     Option<bool>,
+impl TreeReaction {
+    const fn escalate(&mut self, to: Self) {
+        if (to as u8) > (*self as u8) {
+            *self = to;
+        }
+    }
 }
 ```
 
-**Producer.** `collect_reload_actions`
-(`src/tui/config_reload.rs:130-184`) currently calls
-`mark_rescan(...)` and `mark_rebuild_tree(...)` on independent
-methods that each set one boolean. The enum collapse means
-`collect_reload_actions` returns
-`tree: TreeReaction::FullRescan` or `RegroupMembers` directly;
-`mark_*` helpers either return the variant or are inlined.
+**Producer.** `mark_rebuild_tree` and `mark_rescan` became
+`mark_regroup_members` and `mark_full_rescan`; both call
+`actions.tree.escalate(...)` so multiple keys changing in one
+edit (e.g. `InlineDirs` + `CiRunCount`) produce the higher-
+precedence reaction. Discriminant-ordering on the enum makes
+the precedence rule a one-line comparison rather than a match
+table — `FullRescan` has the largest discriminant, `None` the
+smallest.
 
-**Consumer.** `apply_config`'s existing
-`if actions.rescan.should_apply() { ... } else if
-actions.rebuild_tree.should_apply() { ... }` collapses into
-`match actions.tree { TreeReaction::FullRescan => ...,
-TreeReaction::RegroupMembers => ..., TreeReaction::None => ... }`.
+**Consumer.** `apply_config` now uses an exhaustive
+`match actions.tree`. The `RegroupMembers` and `None` arms both
+honor `refresh_lint_runtime` (orthogonal to tree action), so
+the watcher-respawn step lives in both arms; only `FullRescan`
+skips it because the wholesale rescan supersedes it.
 
-**Cross-field interactions to preserve.** `refresh_lint_runtime`
-and `refresh_cpu` stay independent booleans. The non-rescan
-branch in `apply_config:182-194` runs
-`respawn_watcher_and_register_existing_projects` (gated on
-`refresh_lint_runtime.should_apply()`) and `regroup_members`
-(gated on `rebuild_tree.should_apply()`). The match arm for
-`TreeReaction::RegroupMembers` must coexist with
-`refresh_lint_runtime: true` — they are orthogonal in the new
-type as they are in the old.
+**Behavior preservation.** Three places where the boolean form
+allowed combinations the new enum forbids:
 
-**`force_settings_if_unconfigured` stays a direct method call.**
-Called from startup (`construct.rs:246`) and from
-`apply_config`'s rescan branch (`config.rs:181`); both ask "if
-no roots, open settings." Already correctly placed as an
-orchestrator on App; the `TreeReaction::FullRescan` match arm
-calls it directly.
+1. `mark_include_non_rust` previously set `rescan = Apply` *or*
+   `rebuild_tree = Apply` based on `scan_complete` and
+   `has_cached_non_rust`; both branches translate one-for-one
+   to enum variants.
+2. The `else` arm of the old `if rescan { } else { ... }`
+   contained `if rebuild_tree { regroup_members; ... }`. With
+   the enum, `RegroupMembers` always means "regroup members" —
+   no inner conditional. Cleaner because the bool-pair ruled
+   out impossible combinations only at runtime; the enum rules
+   them out structurally.
+3. The two existing tests that exercised "multiple rescan keys
+   coalesce" continue to assert `tree: FullRescan`. The
+   precedence rule survives the type change because of the
+   discriminant ordering.
 
-**Pre-requisites:** none. Reorderable with Phase 20 and Phase 22.
+**Lesson — discriminant-ordered enums make precedence
+declarative.** Initial sketch of `escalate` was a 3×3 match
+table. Reordering variants so `None < RegroupMembers <
+FullRescan` and casting to `u8` made the rule a single
+comparison. Works because the variants are total-ordered
+*by intent*; if a future variant doesn't fit in that ordering
+(e.g. an orthogonal "RefreshOnly" reaction), the helper has
+to switch to a match — but that's exactly the point at which
+the helper should be reconsidered anyway.
 
-**Risk:** low. Mechanical type tightening with an
-exhaustively-checked match. Tests verify no behavior change.
+**Lesson — type-system mutual exclusion is cheap when the
+producers already cooperate.** The bool-pair was already
+mutually exclusive at runtime by convention; the enum just
+turned that convention into a compile-time guarantee. No
+producer or consumer code outside the file pair changed. When
+a refactor is purely structural with no behavioral component,
+"low risk" actually means it: 4 file edits, ~30 lines net,
+zero test failures, no debugging.
 
 ## Phase 22 — Extract `StartupOrchestrator` (state-owning subsystem)
 
@@ -2752,10 +2764,10 @@ Updated post-Phase-8.
 | 18  | Event-bus skeleton + `apply_service_signal` smoke test | Done |
 | 19  | Move `row_count` + 4 cursor-movement methods onto `Selection` | Done |
 | 20  | Rip out the event bus (revert Phase 18) | Done |
-| 21  | `TreeReaction` enum cleanup of `ReloadActions` | Ready (reorderable) |
-| 22  | Extract `StartupOrchestrator` (state-owning subsystem) | Ready (reorderable) |
+| 21  | `TreeReaction` enum cleanup of `ReloadActions` | Done |
+| 22  | Extract `StartupOrchestrator` (state-owning subsystem) | Ready |
 
-After Phases 21–22, App's struct surface drops to roughly:
+After Phase 22, App's struct surface drops to roughly:
 `new`, `run`, the cross-subsystem orchestrators
 (`apply_config`, `apply_lint_config_change`, `rescan`,
 `handle_bg_msg`, `apply_service_signal`,

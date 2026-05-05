@@ -36,11 +36,32 @@ impl ReloadDecision {
     pub(super) const fn should_apply(self) -> bool { matches!(self, Self::Apply) }
 }
 
+/// What the config reload should do to the project tree. The three
+/// variants are ordered by escalation precedence: `FullRescan` wins
+/// over `RegroupMembers`, which wins over `None`. The consumer
+/// previously expressed this with an `if rescan { .. } else if
+/// rebuild_tree { .. }` chain over two booleans; the enum makes the
+/// mutual exclusion exhaustive at the type level.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum TreeReaction {
+    #[default]
+    None,
+    RegroupMembers,
+    FullRescan,
+}
+
+impl TreeReaction {
+    const fn escalate(&mut self, to: Self) {
+        if (to as u8) > (*self as u8) {
+            *self = to;
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct ReloadActions {
-    pub rebuild_tree:         ReloadDecision,
+    pub tree:                 TreeReaction,
     pub refresh_cpu:          ReloadDecision,
-    pub rescan:               ReloadDecision,
     pub refresh_lint_runtime: ReloadDecision,
 }
 
@@ -71,7 +92,7 @@ const CONFIG_HANDLERS: &[ConfigHandler] = &[
     },
     ConfigHandler {
         key:  ConfigKey::InlineDirs,
-        mark: mark_rebuild_tree,
+        mark: mark_regroup_members,
     },
     ConfigHandler {
         key:  ConfigKey::IncludeNonRust,
@@ -79,23 +100,23 @@ const CONFIG_HANDLERS: &[ConfigHandler] = &[
     },
     ConfigHandler {
         key:  ConfigKey::CiRunCount,
-        mark: mark_rescan,
+        mark: mark_full_rescan,
     },
     ConfigHandler {
         key:  ConfigKey::MainBranch,
-        mark: mark_rescan,
+        mark: mark_full_rescan,
     },
     ConfigHandler {
         key:  ConfigKey::OtherPrimaryBranches,
-        mark: mark_rescan,
+        mark: mark_full_rescan,
     },
     ConfigHandler {
         key:  ConfigKey::IncludeDirs,
-        mark: mark_rescan,
+        mark: mark_full_rescan,
     },
     ConfigHandler {
         key:  ConfigKey::CacheRoot,
-        mark: mark_rescan,
+        mark: mark_full_rescan,
     },
     ConfigHandler {
         key:  ConfigKey::CacheRoot,
@@ -127,22 +148,22 @@ const CONFIG_HANDLERS: &[ConfigHandler] = &[
     },
 ];
 
-const fn mark_rebuild_tree(
+const fn mark_regroup_members(
     actions: &mut ReloadActions,
     _old: &CargoPortConfig,
     _new: &CargoPortConfig,
     _context: ReloadContext,
 ) {
-    actions.rebuild_tree = ReloadDecision::Apply;
+    actions.tree.escalate(TreeReaction::RegroupMembers);
 }
 
-const fn mark_rescan(
+const fn mark_full_rescan(
     actions: &mut ReloadActions,
     _old: &CargoPortConfig,
     _new: &CargoPortConfig,
     _context: ReloadContext,
 ) {
-    actions.rescan = ReloadDecision::Apply;
+    actions.tree.escalate(TreeReaction::FullRescan);
 }
 
 const fn mark_refresh_lint_runtime(
@@ -170,16 +191,16 @@ const fn mark_include_non_rust(
     context: ReloadContext,
 ) {
     if !context.scan_complete {
-        actions.rescan = ReloadDecision::Apply;
+        actions.tree.escalate(TreeReaction::FullRescan);
         return;
     }
 
     let enabling_non_rust = !old.tui.include_non_rust.includes_non_rust()
         && new.tui.include_non_rust.includes_non_rust();
     if enabling_non_rust && !context.has_cached_non_rust {
-        actions.rescan = ReloadDecision::Apply;
+        actions.tree.escalate(TreeReaction::FullRescan);
     } else {
-        actions.rebuild_tree = ReloadDecision::Apply;
+        actions.tree.escalate(TreeReaction::RegroupMembers);
     }
 }
 
@@ -305,9 +326,8 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
-                rebuild_tree:         ReloadDecision::Skip,
+                tree:                 TreeReaction::FullRescan,
                 refresh_cpu:          ReloadDecision::Skip,
-                rescan:               ReloadDecision::Apply,
                 refresh_lint_runtime: ReloadDecision::Skip,
             }
         );
@@ -330,9 +350,8 @@ mod tests {
                 },
             ),
             ReloadActions {
-                rebuild_tree:         ReloadDecision::Apply,
+                tree:                 TreeReaction::RegroupMembers,
                 refresh_cpu:          ReloadDecision::Skip,
-                rescan:               ReloadDecision::Skip,
                 refresh_lint_runtime: ReloadDecision::Skip,
             }
         );
@@ -353,9 +372,8 @@ mod tests {
                 },
             ),
             ReloadActions {
-                rebuild_tree:         ReloadDecision::Skip,
+                tree:                 TreeReaction::FullRescan,
                 refresh_cpu:          ReloadDecision::Skip,
-                rescan:               ReloadDecision::Apply,
                 refresh_lint_runtime: ReloadDecision::Skip,
             }
         );
@@ -371,9 +389,8 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
-                rebuild_tree:         ReloadDecision::Skip,
+                tree:                 TreeReaction::None,
                 refresh_cpu:          ReloadDecision::Skip,
-                rescan:               ReloadDecision::Skip,
                 refresh_lint_runtime: ReloadDecision::Apply,
             }
         );
@@ -387,9 +404,8 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
-                rebuild_tree:         ReloadDecision::Skip,
+                tree:                 TreeReaction::FullRescan,
                 refresh_cpu:          ReloadDecision::Skip,
-                rescan:               ReloadDecision::Apply,
                 refresh_lint_runtime: ReloadDecision::Apply,
             }
         );
@@ -404,9 +420,8 @@ mod tests {
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
             ReloadActions {
-                rebuild_tree:         ReloadDecision::Skip,
+                tree:                 TreeReaction::None,
                 refresh_cpu:          ReloadDecision::Apply,
-                rescan:               ReloadDecision::Skip,
                 refresh_lint_runtime: ReloadDecision::Skip,
             }
         );

@@ -12,6 +12,7 @@ use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::config_reload;
 use crate::tui::config_reload::ReloadContext;
+use crate::tui::config_reload::TreeReaction;
 use crate::tui::toasts::ToastStyle::Error;
 
 impl App {
@@ -176,21 +177,25 @@ impl App {
             self.refresh_lint_runtime_from_config(cfg);
         }
 
-        if actions.rescan.should_apply() {
-            self.rescan();
-            self.force_settings_if_unconfigured();
-        } else {
-            if actions.refresh_lint_runtime.should_apply() {
-                self.respawn_watcher_and_register_existing_projects();
-            }
-            if actions.rebuild_tree.should_apply() {
-                // Regroup workspace members in-place based on updated
-                // inline_dirs, then refresh derived state.
+        match actions.tree {
+            TreeReaction::FullRescan => {
+                self.rescan();
+                self.force_settings_if_unconfigured();
+            },
+            TreeReaction::RegroupMembers => {
+                if actions.refresh_lint_runtime.should_apply() {
+                    self.respawn_watcher_and_register_existing_projects();
+                }
                 self.scan
                     .projects_mut()
                     .regroup_members(&self.config.current().tui.inline_dirs);
                 self.refresh_derived_state();
-            }
+            },
+            TreeReaction::None => {
+                if actions.refresh_lint_runtime.should_apply() {
+                    self.respawn_watcher_and_register_existing_projects();
+                }
+            },
         }
     }
     /// Apply a lint configuration change. Cross-subsystem
