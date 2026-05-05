@@ -305,8 +305,10 @@ impl Panes {
 
     /// Set the cursor position for `id`'s viewport, routing to
     /// the per-pane `Viewport`. Used by the generic click handler
-    /// in `interaction.rs` and any other code that needs to set a
-    /// cursor position by `PaneId`.
+    /// in `interaction.rs` for any non-`ProjectList` pane.
+    /// `ProjectList`'s cursor lives on `Selection.cursor`, so callers
+    /// must route project-list cursor writes through
+    /// `app.selection_mut().set_cursor(row)`, not this method.
     pub const fn set_pane_pos(&mut self, id: PaneId, row: usize) {
         match id {
             PaneId::Cpu => self.cpu.viewport_mut().set_pos(row),
@@ -321,7 +323,7 @@ impl Panes {
             PaneId::Finder => self.finder.viewport_mut().set_pos(row),
             PaneId::Output => self.output.viewport_mut().set_pos(row),
             PaneId::Targets => self.targets.viewport_mut().set_pos(row),
-            PaneId::ProjectList => self.project_list.viewport_mut().set_pos(row),
+            PaneId::ProjectList => {},
         }
     }
 

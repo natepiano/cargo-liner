@@ -97,7 +97,7 @@ design depth in-line per phase:
 | 8 | **Done** | Focus subsystem extracted to `tui/focus.rs`. |
 | 9 | **Done** | Overlays subsystem extracted to `tui/overlays.rs`. |
 | 10 | **Done** | `CiFetchTracker` relocated from `tui/app/types.rs` to `tui/ci_state.rs`; methods re-narrowed to `pub(super)`. |
-| 11 (move `Viewport.pos` → `Selection.cursor`) | **Ready** | Design depth filled in below: post-move structs, `&Scan`-arg method signatures, scroll-follows-cursor location, end-to-end flow. |
+| 11 (move `Viewport.pos` → `Selection.cursor`) | **Done** (foundational field move) | Cursor lives on `Selection`; render reads it and writes back ratatui's adjustments. Group 1/2 method absorption (movement / expand / path-resolution into `Selection`) deferred to a follow-up. |
 | 12 (subsystems implement `Pane`) | **Ready** | Design depth filled in below: `Pane` trait signature, post-Phase-12 `PaneRenderCtx` fields, `RenderSplit<'a>` borrow-helper, dispatch loop, detail-cache stays on `Panes`. |
 | 13 (`Bus<Event>`) | **Ready** | Design depth filled in below: full `Event` enum, full `Command` enum, `EventHandler` trait signature, `EventBus`, drain loop, re-entrancy semantics, `StartupOrchestrator` API, traced flow for `apply_config`. |
 
@@ -176,7 +176,7 @@ Phases 11–16 are the remaining architectural moves.
 | 8 of 16 | Phase 8 — Focus subsystem (lives at `tui/focus.rs`) | **Done** |
 | 9 of 16 | Phase 9 — Overlays subsystem (lives at `tui/overlays.rs`) | **Done** |
 | 10 of 16 | Phase 10 — `CiFetchTracker` relocation prep for Phase 11 | **Done** |
-| 11 of 16 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` (absorbs movement mutators + path resolution from earlier drafts) | Ready |
+| 11 of 16 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` | **Done** (cursor field move; Group 1/2 method absorption deferred) |
 | 12 of 16 | Phase 12 — Subsystems implement `Pane` | Ready |
 | 13 of 16 | Phase 13 — `Bus<Event>` skeleton + `apply_service_signal` (gate) | Ready |
 | 14 of 16 | Phase 14 — `apply_lint_config_change` over bus | Ready |
@@ -1181,9 +1181,95 @@ for step 4–5; both are sequential.
   inline `Viewport` self-mutation to an explicit scroll-update step
   reading `selection.cursor()`.
 
-**Status: ready to execute.**
+### Phase 11 retrospective (foundational field move)
+
+**Outcome:** the foundational field move landed cleanly. `Selection`
+now owns `cursor: usize`. The project-list pane's `Viewport.pos`
+field is no longer the source of truth — render reads
+`selection().cursor()` and writes back ratatui's adjustments via
+`selection_mut().set_cursor(...)`. Scroll offset stays on
+`Panes::project_list().viewport().scroll_offset()` per the plan
+("read cursor from `Selection`, scroll from `Panes`").
+
+**Numbers:**
+- Tests: 597 / 597 pass.
+- ~58 call-site rewrites across `src/tui/app/navigation/*`,
+  `src/tui/app/dismiss.rs`, `src/tui/app/async_tasks/tree.rs`,
+  `src/tui/panes/project_list.rs`, `src/tui/interaction.rs`, and
+  ~6 test files. Two perl passes — one single-line, one multi-line
+  — caught everything except one chained `viewport_mut().home()`
+  on `tree.rs` that was hand-edited.
+
+**Lessons:**
+1. **`set_pane_pos(PaneId, row)` was a hidden coupling.** The generic
+   click handler in `interaction.rs:handle_click` called
+   `app.panes_mut().set_pane_pos(pane, row)` — which routed
+   `PaneId::ProjectList` to `project_list.viewport_mut().set_pos(row)`.
+   That bypassed `Selection.cursor` and silently broke a click test
+   (`expanded_tree_rebuild_refreshes_clickable_rows`). **Fix:**
+   special-case `PaneId::ProjectList` in `handle_click` to route
+   through `app.selection_mut().set_cursor(row)`. Left the
+   `ProjectList` arm in `set_pane_pos` as a no-op with a doc comment
+   so future callers can't bypass `Selection`.
+2. **Cursor clamping in `recompute_visibility` is the right place.**
+   The plan's design (see doc:1202-1214) called for clamping cursor
+   inside `Selection::recompute_visibility` so external tree
+   mutations and config changes that shrink the visible row count
+   can't leave cursor pointing past the end. Confirmed: every test
+   passes with a 4-line clamp.
+3. **Group 1/2 method absorption deferred.** The plan called for
+   moving the ~12 movement/expand methods into `Selection` (Group 1)
+   and ~6 path-resolution methods (Group 2). This commit moves the
+   field only; the methods stay on `App` for now (their bodies
+   already read `self.selection.cursor()` directly, so they're
+   single-borrow `&mut self` against multiple subsystems and don't
+   block any further phase). Group 1/2 absorption can land as a
+   follow-up commit when the call-site benefit is concrete.
+4. **Per-row styling reads `viewport.pos()` separately from the
+   ListState path.** The first build looked correct (tests passed,
+   detail panes updated), but the *visible* highlighted row in the
+   project list stayed on row 0 while detail panes followed the
+   real cursor. Cause: `panes/project_list.rs:build_styled_items`
+   calls `pane.selection_state(row_index, focus)`, which compares
+   each row against `viewport.pos()` to choose the highlight overlay
+   style. With cursor now on `Selection`, `viewport.pos` for the
+   project-list pane was never updated and stuck at 0. **Fix:**
+   sync `viewport.pos` from `selection.cursor()` at the top of
+   `render_project_list` — a writeback to a now-derived field. The
+   real cleanup (drop the `viewport.pos` mirror entirely; rewrite
+   `selection_state` or `build_styled_items` to take a cursor arg)
+   belongs in Group 1/2 absorption. **Apply:** when relocating a
+   field that other code reads directly (not via the moved owner),
+   audit *all* readers of the original location, not just the
+   write-side.
+
+**File-level changes:**
+- *Modified:* `src/tui/selection.rs` (added `cursor` field +
+  `cursor()`/`set_cursor()` accessors + cursor clamp in
+  `recompute_visibility`), `src/tui/panes/system.rs`
+  (`set_pane_pos`'s `ProjectList` arm now no-op + doc),
+  `src/tui/interaction.rs` (click handler routes ProjectList
+  through `selection_mut().set_cursor`), and ~58 call sites across
+  `src/tui/`.
+
+**Group 1/2 absorption folds into Phase 12, not a separate
+follow-up.** The `viewport.pos` writeback at
+`src/tui/panes/project_list.rs:130-134` is the technical cost of
+deferral, and Phase 12 is the natural home for its removal:
+`build_styled_items` takes a `cursor: usize` arg (or
+`pane.selection_state` is rewritten to do the same), the
+writeback deletes, and the Phase-11 styling-pass bug class can't
+recur. Don't carry the writeback past Phase 12.
+
+**Status: done.**
 
 ## Phase 12 — Subsystems own pane state; drop wrapper types (Cluster B for panes)
+
+**Cluster naming (post-Phase-11 review).** Phase 12 is *Cluster B for
+panes*: multi-part state where each part has a rightful owner —
+domain state moves into the subsystem, per-frame layout stays on the
+render side, detail cache stays where it's read. The Cluster A/B/C
+taxonomy (Phase 13 = A, Phase 11 = C) extends here for consistency.
 
 Source of truth: see "Item 5" in the post-Phase-9 review section
 below. Summary:
@@ -1391,7 +1477,7 @@ design contortion.
 | `FinderPane` | **collapse** — into Overlays | Phase 9 dependency |
 | `ProjectListPane` | **survives (slim)** — wraps `&mut Selection` | Borrow-cell pattern (option b) |
 | `PackagePane` | **survives** — holds `DetailPaneData` cache | Detail-pane cache home |
-| `LangPane` | **survives** — same as Package (cached detail data) | Detail-pane cache home |
+| `LangPane` | **survives** — holds only `viewport: Viewport`; lang content is computed per-frame from `Scan`. Survives because there's no `Lang` subsystem to absorb it. | No domain owner |
 | `GitPane` | **survives** — holds `worktree_summary_cache` + cached detail | Detail-pane cache + per-frame layout |
 | `TargetsPane` | **survives** — cached targets data | Detail-pane cache home |
 | `CpuPane` | **survives** — owns `CpuPoller` (background thread state) | Real subsystem state, not a wrapper |

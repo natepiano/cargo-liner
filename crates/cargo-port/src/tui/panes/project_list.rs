@@ -123,6 +123,15 @@ pub fn formatted_disk_for_item(item: &RootItem) -> String {
 }
 
 pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
+    // Mirror the cursor onto the project_list viewport's `pos` so the
+    // per-row styling pass (`pane.selection_state(row, focus)` in
+    // `build_styled_items`) and any other reader of `viewport().pos()`
+    // see the current cursor.
+    let cursor = app.selection().cursor();
+    app.panes_mut()
+        .project_list_mut()
+        .viewport_mut()
+        .set_pos(cursor);
     let (mut items, header, summary_line, row_width) = {
         let widths = app.cached_fit_widths();
         let items: Vec<ListItem> = render_tree_items(app, widths);
@@ -201,8 +210,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .viewport_mut()
         .set_viewport_rows(usize::from(list_area.height));
     let project_list = List::new(items);
-    let mut list_state =
-        ListState::default().with_selected(Some(app.panes().project_list().viewport().pos()));
+    let mut list_state = ListState::default().with_selected(Some(app.selection().cursor()));
     *list_state.offset_mut() = app.panes().project_list().viewport().scroll_offset();
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
     app.layout_cache_mut().project_list_body = list_area;
@@ -210,10 +218,8 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .project_list_mut()
         .viewport_mut()
         .set_scroll_offset(list_state.offset());
-    app.panes_mut()
-        .project_list_mut()
-        .viewport_mut()
-        .set_pos(list_state.selected().unwrap_or(0));
+    app.selection_mut()
+        .set_cursor(list_state.selected().unwrap_or(0));
     set_project_list_dismiss_actions(app, list_area, row_width);
 
     if pin_summary && let Some(line) = summary_line {
@@ -278,7 +284,7 @@ fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<
 
 fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
     let focused = app.focus().is(PaneId::ProjectList);
-    let cursor = app.panes().project_list().viewport().pos();
+    let cursor = app.selection().cursor();
     let roots = app.resolved_dirs();
 
     // Count visible rows per root directory and determine which root the

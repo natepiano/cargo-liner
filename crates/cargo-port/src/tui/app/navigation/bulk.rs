@@ -65,10 +65,7 @@ impl App {
         if let Some(anchor) = anchor
             && let Some(pos) = self.visible_rows().iter().position(|row| *row == anchor)
         {
-            self.panes_mut()
-                .project_list_mut()
-                .viewport_mut()
-                .set_pos(pos);
+            self.selection.set_cursor(pos);
         }
         let anchor_path = self.selected_project_path().map(AbsolutePath::from);
         if selected_path == anchor_path {
@@ -170,10 +167,7 @@ impl App {
             .iter()
             .position(|row| self.row_matches_project_path(*row, target_path));
         if let Some(selected_index) = selected_index {
-            self.panes_mut()
-                .project_list_mut()
-                .viewport_mut()
-                .set_pos(selected_index);
+            self.selection.set_cursor(selected_index);
         }
     }
 

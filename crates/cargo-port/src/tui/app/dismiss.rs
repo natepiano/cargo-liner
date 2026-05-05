@@ -106,12 +106,9 @@ impl App {
                     self.select_root_row(ni);
                 } else {
                     let count = self.row_count();
-                    let selected = self.panes().project_list().viewport().pos();
+                    let selected = self.selection.cursor();
                     if selected >= count {
-                        self.panes_mut()
-                            .project_list_mut()
-                            .viewport_mut()
-                            .set_pos(count.saturating_sub(1));
+                        self.selection.set_cursor(count.saturating_sub(1));
                     }
                 }
             },
@@ -150,10 +147,7 @@ impl App {
             .iter()
             .position(|row| matches!(row, VisibleRow::Root { node_index: ni } if *ni == node_index))
         {
-            self.panes_mut()
-                .project_list_mut()
-                .viewport_mut()
-                .set_pos(pos);
+            self.selection.set_cursor(pos);
         }
     }
 }

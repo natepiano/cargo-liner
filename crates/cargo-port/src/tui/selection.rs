@@ -42,6 +42,7 @@ pub(super) struct Selection {
     cached_root_sorted:  Vec<u64>,
     cached_child_sorted: HashMap<usize, Vec<u64>>,
     cached_fit_widths:   ProjectListWidths,
+    cursor:              usize,
 }
 
 impl Selection {
@@ -55,8 +56,15 @@ impl Selection {
             cached_root_sorted:  Vec::new(),
             cached_child_sorted: HashMap::new(),
             cached_fit_widths:   ProjectListWidths::new(lint_enabled),
+            cursor:              0,
         }
     }
+
+    // ── project-list cursor ─────────────────────────────────────────
+
+    pub(super) const fn cursor(&self) -> usize { self.cursor }
+
+    pub(super) const fn set_cursor(&mut self, cursor: usize) { self.cursor = cursor; }
 
     // ── path tracking ───────────────────────────────────────────────
 
@@ -101,6 +109,12 @@ impl Selection {
     /// mutations also keep the visible-rows cache fresh.
     pub(super) fn recompute_visibility(&mut self, projects: &ProjectList, include_non_rust: bool) {
         self.cached_visible_rows = projects.visible_rows(&self.expanded, include_non_rust);
+        let len = self.cached_visible_rows.len();
+        if len == 0 {
+            self.cursor = 0;
+        } else if self.cursor >= len {
+            self.cursor = len - 1;
+        }
     }
 
     // ── disk-sort caches ────────────────────────────────────────────

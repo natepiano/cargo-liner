@@ -6,7 +6,7 @@ use crate::tui::app::VisibleRow;
 
 impl App {
     pub(super) fn selected_is_expandable(&self) -> bool {
-        let selected = self.panes().project_list().viewport().pos();
+        let selected = self.selection.cursor();
         self.visible_rows()
             .get(selected)
             .copied()
@@ -68,7 +68,7 @@ impl App {
         if !self.selected_is_expandable() {
             return false;
         }
-        let selected = self.panes().project_list().viewport().pos();
+        let selected = self.selection.cursor();
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
         };
@@ -83,10 +83,7 @@ impl App {
         self.selection.expanded_mut().remove(key);
         self.ensure_visible_rows_cached();
         if let Some(pos) = self.visible_rows().iter().position(|r| *r == target) {
-            self.panes_mut()
-                .project_list_mut()
-                .viewport_mut()
-                .set_pos(pos);
+            self.selection.set_cursor(pos);
         }
     }
 
@@ -97,15 +94,15 @@ impl App {
     }
 
     pub fn collapse(&mut self) -> bool {
-        let selected = self.panes().project_list().viewport().pos();
+        let selected = self.selection.cursor();
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
         };
         let expanded_before = self.selection.expanded().len();
-        let selected_before = self.panes().project_list().viewport().pos();
+        let selected_before = self.selection.cursor();
         self.collapse_row(row);
         self.selection.expanded().len() != expanded_before
-            || self.panes().project_list().viewport().pos() != selected_before
+            || self.selection.cursor() != selected_before
     }
 
     pub(super) fn collapse_row(&mut self, row: VisibleRow) {

@@ -34,10 +34,7 @@ impl App {
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
         } else if !self.projects().is_empty() {
-            self.panes_mut()
-                .project_list_mut()
-                .viewport_mut()
-                .set_pos(0);
+            self.selection.set_cursor(0);
         }
         if should_focus_project_list {
             self.focus.set(PaneId::ProjectList);
@@ -166,7 +163,7 @@ impl App {
         self.selection.paths_mut().selected_project = None;
         self.inflight.clear_pending_ci_fetch();
         self.selection.expanded_mut().clear();
-        self.panes_mut().project_list_mut().viewport_mut().home();
+        self.selection.set_cursor(0);
         self.panes_mut()
             .project_list_mut()
             .viewport_mut()

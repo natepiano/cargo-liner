@@ -7,12 +7,9 @@ impl App {
         if count == 0 {
             return;
         }
-        let current = self.panes().project_list().viewport().pos();
+        let current = self.selection.cursor();
         if current > 0 {
-            self.panes_mut()
-                .project_list_mut()
-                .viewport_mut()
-                .set_pos(current - 1);
+            self.selection.set_cursor(current - 1);
         }
     }
 
@@ -21,31 +18,22 @@ impl App {
         if count == 0 {
             return;
         }
-        let current = self.panes().project_list().viewport().pos();
+        let current = self.selection.cursor();
         if current < count - 1 {
-            self.panes_mut()
-                .project_list_mut()
-                .viewport_mut()
-                .set_pos(current + 1);
+            self.selection.set_cursor(current + 1);
         }
     }
 
     pub fn move_to_top(&mut self) {
         if self.row_count() > 0 {
-            self.panes_mut()
-                .project_list_mut()
-                .viewport_mut()
-                .set_pos(0);
+            self.selection.set_cursor(0);
         }
     }
 
     pub fn move_to_bottom(&mut self) {
         let count = self.row_count();
         if count > 0 {
-            self.panes_mut()
-                .project_list_mut()
-                .viewport_mut()
-                .set_pos(count - 1);
+            self.selection.set_cursor(count - 1);
         }
     }
 

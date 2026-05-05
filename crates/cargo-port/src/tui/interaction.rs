@@ -23,7 +23,11 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
     match hit {
         HoverTarget::PaneRow { pane, row } => {
             app.focus_mut().set(pane);
-            app.panes_mut().set_pane_pos(pane, row);
+            if pane == PaneId::ProjectList {
+                app.selection_mut().set_cursor(row);
+            } else {
+                app.panes_mut().set_pane_pos(pane, row);
+            }
             true
         },
         HoverTarget::Dismiss(target) => {
@@ -505,7 +509,7 @@ mod tests {
 
         let mut app = make_app(&[make_package("deleted", &deleted_dir)]);
         mark_deleted(&mut app, &deleted_dir);
-        app.panes_mut().project_list_mut().viewport_mut().set_pos(0);
+        app.selection_mut().set_cursor(0);
         render_ui(&mut app);
 
         let keyboard_target = app
@@ -546,7 +550,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::ProjectList);
-        assert_eq!(app.panes().project_list().viewport().pos(), 1);
+        assert_eq!(app.selection().cursor(), 1);
         assert_eq!(
             app.selected_project_path().map(Path::to_path_buf),
             Some(second),
@@ -867,7 +871,7 @@ mod tests {
         render_ui(&mut app);
         let stale_click = row_dismiss_point(&app, 0);
 
-        app.panes_mut().project_list_mut().viewport_mut().set_pos(0);
+        app.selection_mut().set_cursor(0);
         let target = app
             .focused_dismiss_target()
             .unwrap_or_else(|| std::process::abort());

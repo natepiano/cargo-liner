@@ -75,10 +75,7 @@ impl App {
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
         } else if !self.projects().is_empty() {
-            self.panes_mut()
-                .project_list_mut()
-                .viewport_mut()
-                .set_pos(0);
+            self.selection.set_cursor(0);
         }
         self.sync_selected_project();
 
