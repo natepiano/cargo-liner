@@ -29,6 +29,7 @@ pub(super) use ci::CI_COMPACT_DURATION_WIDTH;
 pub(super) use ci::ci_table_shows_durations;
 #[cfg(test)]
 pub(super) use ci::ci_total_width;
+pub(super) use ci::render_ci_pane_body;
 #[cfg(test)]
 pub(super) use constants::PREFIX_ROOT_COLLAPSED;
 #[cfg(test)]
@@ -47,6 +48,7 @@ pub(super) use layout::BottomRow;
 pub(super) use layout::LayoutCache;
 pub(super) use layout::resolve_layout;
 pub(super) use layout::tab_order;
+pub(super) use lints::render_lints_pane_body;
 pub(super) use output::render_output_panel;
 pub(super) use package::RenderStyles;
 #[cfg(test)]
@@ -57,6 +59,7 @@ pub(super) use package::detail_column_scroll_offset;
 pub(super) use package::package_label_width;
 #[cfg(test)]
 pub(super) use package::stats_column_width;
+pub(super) use pane_impls::hit_test_table_row;
 pub(super) use project_list::compute_disk_cache;
 pub(super) use project_list::formatted_disk;
 pub(super) use project_list::formatted_disk_for_item;

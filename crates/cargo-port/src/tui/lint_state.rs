@@ -15,8 +15,13 @@
 
 use std::path::Path;
 
+use ratatui::Frame;
+use ratatui::layout::Position;
+use ratatui::layout::Rect;
+
 use super::app::CountedPhase;
 use super::app::KeyedPhase;
+use super::panes;
 use super::running_tracker::RunningTracker;
 use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
@@ -24,6 +29,13 @@ use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project_list::ProjectList;
+use crate::tui::pane::Hittable;
+use crate::tui::pane::HoverTarget;
+use crate::tui::pane::Pane;
+use crate::tui::pane::PaneRenderCtx;
+use crate::tui::pane::Viewport;
+use crate::tui::panes::LintsData;
+use crate::tui::panes::PaneId;
 
 /// Display value for the Lint row in the Package detail pane.
 ///
@@ -75,6 +87,11 @@ pub struct Lint {
     /// tree. Used by `App::maybe_complete_startup_lints` to decide
     /// when the startup-lint pass is done.
     pub startup_phase: CountedPhase,
+    /// Per-pane cursor for the Lints pane.
+    viewport:          Viewport,
+    /// Cached Lints table content built per-frame in
+    /// `panes::build_lints_data`.
+    content:           Option<LintsData>,
 }
 
 impl Lint {
@@ -88,8 +105,24 @@ impl Lint {
             cache_usage: CacheUsage::default(),
             phase: KeyedPhase::default(),
             startup_phase: CountedPhase::default(),
+            viewport: Viewport::new(),
+            content: None,
         }
     }
+
+    // ── viewport ────────────────────────────────────────────────
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    // ── content ─────────────────────────────────────────────────
+
+    pub const fn content(&self) -> Option<&LintsData> { self.content.as_ref() }
+
+    pub fn set_content(&mut self, data: LintsData) { self.content = Some(data); }
+
+    pub fn clear_content(&mut self) { self.content = None; }
 
     // ── runtime ─────────────────────────────────────────────────
 
@@ -192,6 +225,22 @@ impl Lint {
         } else {
             LintDisplay::Runs { count, status }
         }
+    }
+}
+
+impl Pane for Lint {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
+        panes::render_lints_pane_body(frame, area, self, ctx);
+    }
+}
+
+impl Hittable for Lint {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        let row = panes::hit_test_table_row(&self.viewport, pos)?;
+        Some(HoverTarget::PaneRow {
+            pane: PaneId::Lints,
+            row,
+        })
     }
 }
 

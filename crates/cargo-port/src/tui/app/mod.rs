@@ -477,6 +477,8 @@ impl App {
     /// paths, running toast, and disk cache stat counter.
     pub(super) const fn lint(&self) -> &Lint { &self.lint }
 
+    pub(super) const fn lint_mut(&mut self) -> &mut Lint { &mut self.lint }
+
     /// Ci subsystem accessor. Owns `fetch_tracker`, `fetch_toast`,
     /// and `display_modes`.
     pub(super) const fn ci(&self) -> &Ci { &self.ci }
@@ -743,6 +745,19 @@ impl App {
             &self.selection,
             &self.scan,
         )
+    }
+
+    /// Split-borrow accessor for the CI pane render path. CI content
+    /// lives on the `Ci` subsystem (not `Panes`), so it has its own
+    /// split.
+    pub(super) const fn split_ci_for_render(&mut self) -> (&mut Ci, &Config, &Scan) {
+        (&mut self.ci, &self.config, &self.scan)
+    }
+
+    /// Split-borrow accessor for the Lints pane render path. Lints
+    /// content lives on the `Lint` subsystem (not `Panes`).
+    pub(super) const fn split_lint_for_render(&mut self) -> (&mut Lint, &Config, &Scan) {
+        (&mut self.lint, &self.config, &self.scan)
     }
 
     /// Compute `selected_project_path` once for the current frame
@@ -1165,18 +1180,13 @@ impl App {
             PaneBehavior::Lints => {
                 self.inflight.example_output_is_empty()
                     && self
-                        .panes()
-                        .lints()
+                        .lint()
                         .content()
                         .is_some_and(panes::LintsData::has_runs)
             },
             PaneBehavior::CiRuns => {
                 self.inflight.example_output_is_empty()
-                    && self
-                        .panes()
-                        .ci()
-                        .content()
-                        .is_some_and(panes::CiData::has_runs)
+                    && self.ci().content().is_some_and(panes::CiData::has_runs)
             },
             PaneBehavior::Output => !self.inflight.example_output_is_empty(),
             PaneBehavior::Toasts => !self.toasts.active_now().is_empty(),
@@ -1248,8 +1258,8 @@ impl App {
         self.panes_mut().package_mut().viewport_mut().home();
         self.panes_mut().git_mut().viewport_mut().home();
         self.panes_mut().targets_mut().viewport_mut().home();
-        self.panes_mut().ci_mut().viewport_mut().home();
-        self.panes_mut().lints_mut().viewport_mut().home();
+        self.ci.viewport_mut().home();
+        self.lint.viewport_mut().home();
         self.toasts.viewport_mut().home();
         self.focus.unvisit(PaneId::Package);
         self.focus.unvisit(PaneId::Git);

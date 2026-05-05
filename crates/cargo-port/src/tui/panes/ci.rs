@@ -11,10 +11,10 @@ use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiData;
-use super::pane_impls::CiPane;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
+use crate::tui::ci_state::Ci;
 use crate::tui::columns::ColumnSpec;
 use crate::tui::columns::ColumnWidths;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
@@ -261,12 +261,7 @@ fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
 
 fn empty_ci_title(data: &CiData) -> String { data.empty_state.title() }
 
-pub(super) fn render_ci_pane_body(
-    frame: &mut Frame,
-    area: Rect,
-    pane: &mut CiPane,
-    ctx: &PaneRenderCtx<'_>,
-) {
+pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &PaneRenderCtx<'_>) {
     let Some(ci_data) = pane.content().cloned() else {
         render_empty_ci_block(frame, " No CI Runs ", area);
         return;

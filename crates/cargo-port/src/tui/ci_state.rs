@@ -19,13 +19,27 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 
+use ratatui::Frame;
+use ratatui::layout::Position;
+use ratatui::layout::Rect;
+
 use super::app::CiRunDisplayMode;
+use super::panes;
 use super::toasts::ToastTaskId;
+#[cfg(test)]
+use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ProjectCiInfo;
 use crate::project::RepoInfo;
+use crate::tui::pane::Hittable;
+use crate::tui::pane::HoverTarget;
+use crate::tui::pane::Pane;
+use crate::tui::pane::PaneRenderCtx;
+use crate::tui::pane::Viewport;
+use crate::tui::panes::CiData;
+use crate::tui::panes::PaneId;
 
 /// Display value for the Ci row in the Package detail pane.
 ///
@@ -68,6 +82,11 @@ pub struct Ci {
     fetch_tracker: CiFetchTracker,
     fetch_toast:   Option<ToastTaskId>,
     display_modes: HashMap<AbsolutePath, CiRunDisplayMode>,
+    /// Per-pane cursor for the CI runs pane.
+    viewport:      Viewport,
+    /// Cached CI table content built per-frame in
+    /// `panes::build_ci_data`.
+    content:       Option<CiData>,
 }
 
 impl Ci {
@@ -76,6 +95,30 @@ impl Ci {
             fetch_tracker: CiFetchTracker::default(),
             fetch_toast:   None,
             display_modes: HashMap::new(),
+            viewport:      Viewport::new(),
+            content:       None,
+        }
+    }
+
+    // ── viewport ────────────────────────────────────────────────
+
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    // ── content ─────────────────────────────────────────────────
+
+    pub const fn content(&self) -> Option<&CiData> { self.content.as_ref() }
+
+    pub fn set_content(&mut self, data: CiData) { self.content = Some(data); }
+
+    pub fn clear_content(&mut self) { self.content = None; }
+
+    #[cfg(test)]
+    pub fn override_runs_for_test(&mut self, runs: Vec<CiRun>) {
+        if let Some(ci) = self.content.as_mut() {
+            ci.runs = runs;
+            ci.mode_label = None;
         }
     }
 
@@ -224,6 +267,22 @@ impl CiFetchTracker {
 
     pub(super) fn retain(&mut self, mut keep: impl FnMut(&AbsolutePath) -> bool) {
         self.inner.retain(|path| keep(path));
+    }
+}
+
+impl Pane for Ci {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
+        panes::render_ci_pane_body(frame, area, self, ctx);
+    }
+}
+
+impl Hittable for Ci {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
+        let row = panes::hit_test_table_row(&self.viewport, pos)?;
+        Some(HoverTarget::PaneRow {
+            pane: PaneId::CiRuns,
+            row,
+        })
     }
 }
 

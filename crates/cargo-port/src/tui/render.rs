@@ -32,6 +32,7 @@ use super::finder;
 use super::interaction;
 use super::keymap_ui;
 use super::pane;
+use super::pane::PaneRenderCtx;
 use super::panes;
 use super::panes::DispatchArgs;
 use super::panes::LayoutCache;
@@ -366,6 +367,44 @@ fn dispatch_via_trait(
     dispatcher(panes, frame, area, &args);
 }
 
+fn render_lints_pane(app: &mut App, frame: &mut Frame, area: Rect) {
+    let focus_state = app.focus().pane_state(PaneId::Lints);
+    let is_focused = app.focus().is(PaneId::Lints);
+    let animation_elapsed = app.animation_elapsed();
+    let selected_project_path: Option<PathBuf> = app
+        .selected_project_path_for_render()
+        .map(std::path::Path::to_path_buf);
+    let (lint, config, scan) = app.split_lint_for_render();
+    let ctx = PaneRenderCtx {
+        focus_state,
+        is_focused,
+        animation_elapsed,
+        config,
+        scan,
+        selected_project_path: selected_project_path.as_deref(),
+    };
+    panes::render_lints_pane_body(frame, area, lint, &ctx);
+}
+
+fn render_ci_pane(app: &mut App, frame: &mut Frame, area: Rect) {
+    let focus_state = app.focus().pane_state(PaneId::CiRuns);
+    let is_focused = app.focus().is(PaneId::CiRuns);
+    let animation_elapsed = app.animation_elapsed();
+    let selected_project_path: Option<PathBuf> = app
+        .selected_project_path_for_render()
+        .map(std::path::Path::to_path_buf);
+    let (ci, config, scan) = app.split_ci_for_render();
+    let ctx = PaneRenderCtx {
+        focus_state,
+        is_focused,
+        animation_elapsed,
+        config,
+        scan,
+        selected_project_path: selected_project_path.as_deref(),
+    };
+    panes::render_ci_pane_body(frame, area, ci, &ctx);
+}
+
 fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect) {
     match pane {
         PaneId::ProjectList => render_left_panel(frame, app, area),
@@ -406,20 +445,8 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
                 panes::render_empty_targets_panel(frame, app, area);
             }
         },
-        PaneId::Lints => dispatch_via_trait(
-            app,
-            area,
-            PaneId::Lints,
-            frame,
-            panes::Panes::dispatch_lints_render,
-        ),
-        PaneId::CiRuns => dispatch_via_trait(
-            app,
-            area,
-            PaneId::CiRuns,
-            frame,
-            panes::Panes::dispatch_ci_render,
-        ),
+        PaneId::Lints => render_lints_pane(app, frame, area),
+        PaneId::CiRuns => render_ci_pane(app, frame, area),
         PaneId::Output => panes::render_output_panel(frame, app, area),
         PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {},
     }

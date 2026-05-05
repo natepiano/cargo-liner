@@ -18,15 +18,11 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
 use super::PaneId;
-use super::ci;
 use super::cpu;
 use super::git;
 use super::lang;
-use super::lints;
 use super::package;
 use super::package::RenderStyles;
-#[cfg(test)]
-use crate::ci::CiRun;
 use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
 use crate::tui::app::DismissTarget;
@@ -303,104 +299,6 @@ impl Hittable for GitPane {
     }
 }
 
-// ── Lints ───────────────────────────────────────────────────────
-pub struct LintsPane {
-    viewport: Viewport,
-    content:  Option<super::LintsData>,
-}
-
-impl LintsPane {
-    pub const fn new() -> Self {
-        Self {
-            viewport: Viewport::new(),
-            content:  None,
-        }
-    }
-
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
-
-    pub const fn content(&self) -> Option<&super::LintsData> { self.content.as_ref() }
-
-    pub fn set_content(&mut self, data: super::LintsData) { self.content = Some(data); }
-
-    pub fn clear_content(&mut self) { self.content = None; }
-}
-
-impl Pane for LintsPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        lints::render_lints_pane_body(frame, area, self, ctx);
-    }
-}
-
-impl Hittable for LintsPane {
-    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        let row = hit_test_table_row(&self.viewport, pos)?;
-        Some(HoverTarget::PaneRow {
-            pane: PaneId::Lints,
-            row,
-        })
-    }
-}
-
-// ── CiRuns ──────────────────────────────────────────────────────
-//
-// Per-path `display_modes` (BranchOnly / All) live on
-// `tui::ci_state::Ci` as domain state; `CiPane` holds only the
-// viewport and content cache.
-pub struct CiPane {
-    viewport: Viewport,
-    content:  Option<super::CiData>,
-}
-
-impl CiPane {
-    pub const fn new() -> Self {
-        Self {
-            viewport: Viewport::new(),
-            content:  None,
-        }
-    }
-
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
-
-    pub const fn content(&self) -> Option<&super::CiData> { self.content.as_ref() }
-
-    pub fn set_content(&mut self, data: super::CiData) { self.content = Some(data); }
-
-    pub fn clear_content(&mut self) { self.content = None; }
-
-    #[cfg(test)]
-    pub fn override_runs_for_test(&mut self, runs: Vec<CiRun>) {
-        if let Some(ci) = self.content.as_mut() {
-            ci.runs = runs;
-            ci.mode_label = None;
-        }
-    }
-}
-
-impl Pane for CiPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        ci::render_ci_pane_body(frame, area, self, ctx);
-    }
-}
-
-impl Hittable for CiPane {
-    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        let row = hit_test_table_row(&self.viewport, pos)?;
-        Some(HoverTarget::PaneRow {
-            pane: PaneId::CiRuns,
-            row,
-        })
-    }
-}
-
-// Phase 14 absorption: `ToastsPane` was deleted. The toasts viewport
-// and hit rects now live on `ToastManager` itself, which directly
-// `impl Pane` and `impl Hittable` (see `tui/toasts/manager.rs`).
-
 // ── Keymap ──────────────────────────────────────────────────────
 pub struct KeymapPane {
     viewport: Viewport,
@@ -634,7 +532,7 @@ impl OutputPane {
 /// at `inner.y + 1`. `viewport.content_area` is the full inner
 /// rect (including the header); `viewport.scroll_offset` is the
 /// `TableState::offset()` recorded at render time.
-fn hit_test_table_row(viewport: &Viewport, pos: Position) -> Option<usize> {
+pub fn hit_test_table_row(viewport: &Viewport, pos: Position) -> Option<usize> {
     let inner = viewport.content_area();
     if inner.width == 0 || inner.height == 0 {
         return None;

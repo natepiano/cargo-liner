@@ -178,10 +178,10 @@ fn open_url(url: &str) {
 pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.panes_mut().ci_mut().viewport_mut().up(),
-        KeyCode::Down => return app.panes_mut().ci_mut().viewport_mut().down(),
-        KeyCode::Home => return app.panes_mut().ci_mut().viewport_mut().home(),
-        KeyCode::End => return app.panes_mut().ci_mut().viewport_mut().end(),
+        KeyCode::Up => return app.ci_mut().viewport_mut().up(),
+        KeyCode::Down => return app.ci_mut().viewport_mut().down(),
+        KeyCode::Home => return app.ci_mut().viewport_mut().home(),
+        KeyCode::End => return app.ci_mut().viewport_mut().end(),
         _ => {},
     }
 
@@ -208,12 +208,11 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
 
 fn handle_ci_enter(app: &App) {
     let visible_runs = app
-        .panes()
         .ci()
         .content()
         .map(|data| data.runs.clone())
         .unwrap_or_default();
-    let cursor_pos = app.panes().ci().viewport().pos();
+    let cursor_pos = app.ci().viewport().pos();
     if let Some(run) = visible_runs.get(cursor_pos) {
         open_url(&run.url);
     }
@@ -275,10 +274,10 @@ fn handle_ci_fetch_more(app: &mut App) {
 pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.panes_mut().lints_mut().viewport_mut().up(),
-        KeyCode::Down => return app.panes_mut().lints_mut().viewport_mut().down(),
-        KeyCode::Home => return app.panes_mut().lints_mut().viewport_mut().home(),
-        KeyCode::End => return app.panes_mut().lints_mut().viewport_mut().end(),
+        KeyCode::Up => return app.lint_mut().viewport_mut().up(),
+        KeyCode::Down => return app.lint_mut().viewport_mut().down(),
+        KeyCode::Home => return app.lint_mut().viewport_mut().home(),
+        KeyCode::End => return app.lint_mut().viewport_mut().end(),
         _ => {},
     }
 
@@ -315,7 +314,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
         }),
     );
     app.ci_mut().fetch_tracker_mut().complete(abs);
-    app.panes_mut().ci_mut().viewport_mut().home();
+    app.ci_mut().viewport_mut().home();
     app.increment_data_generation();
 }
 
@@ -332,7 +331,7 @@ fn clear_lint_history(app: &mut App) {
     if let Some(lr) = app.lint_at_path_mut(&abs_path) {
         lr.clear_runs();
     }
-    app.panes_mut().lints_mut().viewport_mut().home();
+    app.lint_mut().viewport_mut().home();
     app.focus_mut().set(PaneId::ProjectList);
     app.refresh_lint_cache_usage_from_disk();
     app.increment_data_generation();
@@ -345,18 +344,13 @@ fn open_lint_run_output(app: &App) {
     let Some(abs_path) = app.selected_project_path() else {
         return;
     };
-    let Some(runs) = app
-        .panes()
-        .lints()
-        .content()
-        .map(|data| data.runs.as_slice())
-    else {
+    let Some(runs) = app.lint().content().map(|data| data.runs.as_slice()) else {
         return;
     };
     if runs.is_empty() {
         return;
     }
-    let Some(run) = runs.get(app.panes().lints().viewport().pos()) else {
+    let Some(run) = runs.get(app.lint().viewport().pos()) else {
         return;
     };
 

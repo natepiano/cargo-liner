@@ -437,14 +437,14 @@ fn project_change_resets_project_dependent_panes() {
     app.panes_mut().package_mut().viewport_mut().set_pos(3);
     app.panes_mut().git_mut().viewport_mut().set_pos(4);
     app.panes_mut().targets_mut().viewport_mut().set_pos(5);
-    app.panes_mut().ci_mut().viewport_mut().set_pos(6);
+    app.ci_mut().viewport_mut().set_pos(6);
     app.selection_mut().set_cursor(1);
     app.sync_selected_project();
 
     assert_eq!(app.panes().package().viewport().pos(), 0);
     assert_eq!(app.panes().git().viewport().pos(), 0);
     assert_eq!(app.panes().targets().viewport().pos(), 0);
-    assert_eq!(app.panes().ci().viewport().pos(), 0);
+    assert_eq!(app.ci().viewport().pos(), 0);
     assert!(!app.focus().remembers_visited(PaneId::Package));
     assert!(!app.focus().remembers_visited(PaneId::Git));
     assert!(!app.focus().remembers_visited(PaneId::Targets));

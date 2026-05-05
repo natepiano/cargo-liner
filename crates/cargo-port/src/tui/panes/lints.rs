@@ -15,7 +15,6 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
 use super::LintsData;
-use super::pane_impls::LintsPane;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::tui::LINT_SPINNER;
@@ -25,6 +24,7 @@ use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
+use crate::tui::lint_state::Lint;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
@@ -134,10 +134,10 @@ fn build_lint_rows(
 /// Body of `LintsPane::render`. Same as
 /// `cpu::render_cpu_pane_body`: typed parameters instead of
 /// `&mut App`. Helpers above already operate on `&Viewport`.
-pub(super) fn render_lints_pane_body(
+pub fn render_lints_pane_body(
     frame: &mut Frame,
     area: Rect,
-    pane: &mut LintsPane,
+    pane: &mut Lint,
     ctx: &PaneRenderCtx<'_>,
 ) {
     let Some(lints_data) = pane.content().cloned() else {
@@ -210,17 +210,4 @@ pub(super) fn render_lints_pane_body(
     pane::render_overflow_affordance(frame, area, pane.viewport());
 
     let _ = ctx;
-}
-
-#[allow(
-    dead_code,
-    reason = "test-only helper for fixtures that pre-populate via App; will be inlined or removed once tests use trait dispatch directly"
-)]
-pub(super) fn render_lints_pane_for_test(
-    frame: &mut Frame,
-    area: Rect,
-    pane: &mut LintsPane,
-    ctx: &PaneRenderCtx<'_>,
-) {
-    render_lints_pane_body(frame, area, pane, ctx);
 }

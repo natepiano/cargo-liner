@@ -2,7 +2,17 @@
 
 ## Status
 
-Phases 1–9 done. Phases 10–16 remain.
+Phases 1–16 done. Phases 17–21 remain.
+
+**Resequenced (post-Phase-15+16 review).** Phase 18 (`build_*_data`
+caller cleanup) was folded into Phase 17's "tests still green"
+gate — its work is already done and proven by the 597-test pass
+after Phase 15/16. Phase 21 (`apply_lint_config_change` over bus)
+was bundled with Phase 22 (`apply_config` over bus) into a single
+phase, since they share `ConfigDiff` and an overlapping subscriber
+set. Phase 11's deferred Selection method absorption splits off as
+a separable preamble that can land on its own commit before the
+bus-conversion work. Total phase count drops from 23 to 21.
 
 **Why this plan exists.** `App` was a god struct with `impl App { ... }`
 blocks scattered across `tui/app/focus.rs`, `tui/app/dismiss.rs`,
@@ -97,12 +107,12 @@ design depth in-line per phase:
 | 8 | **Done** | Focus subsystem extracted to `tui/focus.rs`. |
 | 9 | **Done** | Overlays subsystem extracted to `tui/overlays.rs`. |
 | 10 | **Done** | `CiFetchTracker` relocated from `tui/app/types.rs` to `tui/ci_state.rs`; methods re-narrowed to `pub(super)`. |
-| 11 (move `Viewport.pos` → `Selection.cursor`) | **Done** (foundational field move) | Cursor lives on `Selection`; render reads it and writes back ratatui's adjustments. Group 1/2 method absorption deferred to **Phase 21**. |
+| 11 (move `Viewport.pos` → `Selection.cursor`) | **Done** (foundational field move) | Cursor lives on `Selection`; render reads it and writes back ratatui's adjustments. Group 1/2 method absorption pulled out as a separable preamble to **Phase 20**. |
 | 12 (Pane trait foundations) | **Done** | Cursor-mirror cleanup landed (`selection_state_for`); `Pane` trait + supporting items relocated from `tui/panes/dispatch.rs` to `tui/pane/dispatch.rs` so any subsystem can impl it via `pub(super)` reach. |
 | 13 (Panes dispatch → App-level) | **Ready** | Move `set_pane_pos`, `viewport_mut_for`, `apply_hovered_pane_row`, `hit_test_at` from `Panes` to free fns in `tui/interaction.rs` taking `&mut App`. Mechanical, ~50 LOC. |
-| 14 (`ToastsPane` → `ToastManager`) | **Ready** | First wrapper absorption. Smallest blast radius: viewport + `hits` Vec only. Phase 20 has a hard dependency on this specific absorption. |
-| 15 (`CiPane` → `Ci`) | **Ready** | Viewport + content. `set_detail_data` plumbing changes — orchestrator on `Panes` gains `&mut Ci`. |
-| 16 (`LintsPane` → `Lint`) | **Ready** | Same pattern as Phase 15. |
+| 14 (`ToastsPane` → `ToastManager`) | **Done** | First wrapper absorption. Smallest blast radius: viewport + `hits` Vec only. Phase 19 has a hard dependency on this specific absorption. |
+| 15 (`CiPane` → `Ci`) | **Done** | Viewport + content absorbed; `set_detail_data` shed `ci`/`lints` parameters; CI/Lint render through new `App::split_ci_for_render` / `split_lint_for_render` accessors. |
+| 16 (`LintsPane` → `Lint`) | **Done** | Bundled with Phase 15 in one commit (shared `set_detail_data` signature). |
 | 17 (Keymap+Settings+Finder → `Overlays`) | **Ready** | Three viewports land in `Overlays` together; one commit. |
 | 18 (`RenderSplit<'_>` + `build_*_data`) | **Ready** | Migrate `build_ci_data`/`build_lints_data` from `&App` to `&RenderSplit<'_>`. Confirm split exposes everything builders read. |
 | 19 (survivors + deferred decisions) | **Ready** | `OutputPane` decision (collapse into `Inflight`?). `*Layout` rename. |
@@ -168,58 +178,64 @@ Phases 11–16 are the remaining architectural moves.
 
 **Sequence after merges and additions:**
 
-| # of 23 | Phase | Status |
+| # of 21 | Phase | Status |
 | ------- | ----- | ------ |
-| 1 of 23 | Phase 1 — Config | **Done** |
-| 2 of 23 | Phase 2 — Trivial subsystems (Keymap + Toasts + Scan/metadata) | **Done** |
-| 3 of 23 | Phase 3 — Git/Repo reads → ProjectList | **Done** |
-| 4 of 23 | Phase 4 — Ci pass-throughs | **Done** |
-| 5 of 23 | Phase 5 — Toast orchestrator relocation | **Done** |
-| 6 of 23 | Phase 6 — Discovery shimmer + project predicates | **Done** |
-| 7 of 23 | Phase 7 — Internal-helper visibility narrowing pass | **Done** |
-| 8 of 23 | Phase 8 — Focus subsystem (lives at `tui/focus.rs`) | **Done** |
-| 9 of 23 | Phase 9 — Overlays subsystem (lives at `tui/overlays.rs`) | **Done** |
-| 10 of 23 | Phase 10 — `CiFetchTracker` relocation prep for Phase 11 | **Done** |
-| 11 of 23 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` | **Done** (cursor field move; Group 1/2 method absorption deferred to Phase 21) |
-| 12 of 23 | Phase 12 — Pane trait foundations (cursor-mirror cleanup + `Pane` trait relocation) | **Done** |
-| 13 of 23 | Phase 13 — Relocate Panes' dispatch methods to App-level | **Done** |
-| 14 of 23 | Phase 14 — `ToastsPane` → `ToastManager` absorption | **Done** |
-| 15 of 23 | Phase 15 — `CiPane` → `Ci` absorption | Ready |
-| 16 of 23 | Phase 16 — `LintsPane` → `Lint` absorption | Ready |
-| 17 of 23 | Phase 17 — `KeymapPane` + `SettingsPane` + `FinderPane` → `Overlays` absorption | Ready |
-| 18 of 23 | Phase 18 — `RenderSplit<'_>` + `build_*_data` signature changes | Ready |
-| 19 of 23 | Phase 19 — Pane-wrapper survivors + deferred decisions (`OutputPane`, `*Layout` rename) | Ready |
-| 20 of 23 | Phase 20 — `Bus<Event>` skeleton + `apply_service_signal` (skeleton + smoke test) | Ready (depends on Phase 14 specifically) |
-| 21 of 23 | Phase 21 — `apply_lint_config_change` over bus + Phase 11 Group 1/2 Selection absorption | Ready (borrow-checker gate) |
-| 22 of 23 | Phase 22 — `apply_config` over bus (introduces `ConfigDiff`) | Ready |
-| 23 of 23 | Phase 23 — Startup-phase tracker + `StartupOrchestrator` | Ready |
+| 1 of 21 | Phase 1 — Config | **Done** |
+| 2 of 21 | Phase 2 — Trivial subsystems (Keymap + Toasts + Scan/metadata) | **Done** |
+| 3 of 21 | Phase 3 — Git/Repo reads → ProjectList | **Done** |
+| 4 of 21 | Phase 4 — Ci pass-throughs | **Done** |
+| 5 of 21 | Phase 5 — Toast orchestrator relocation | **Done** |
+| 6 of 21 | Phase 6 — Discovery shimmer + project predicates | **Done** |
+| 7 of 21 | Phase 7 — Internal-helper visibility narrowing pass | **Done** |
+| 8 of 21 | Phase 8 — Focus subsystem (lives at `tui/focus.rs`) | **Done** |
+| 9 of 21 | Phase 9 — Overlays subsystem (lives at `tui/overlays.rs`) | **Done** |
+| 10 of 21 | Phase 10 — `CiFetchTracker` relocation prep for Phase 11 | **Done** |
+| 11 of 21 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` | **Done** (cursor field move; Group 1/2 method absorption pulled out as a separable preamble to new Phase 20) |
+| 12 of 21 | Phase 12 — Pane trait foundations (cursor-mirror cleanup + `Pane` trait relocation) | **Done** |
+| 13 of 21 | Phase 13 — Relocate Panes' dispatch methods to App-level | **Done** |
+| 14 of 21 | Phase 14 — `ToastsPane` → `ToastManager` absorption | **Done** |
+| 15 of 21 | Phase 15 — `CiPane` → `Ci` absorption | **Done** |
+| 16 of 21 | Phase 16 — `LintsPane` → `Lint` absorption | **Done** |
+| 17 of 21 | Phase 17 — `KeymapPane` + `SettingsPane` + `FinderPane` → `Overlays` absorption (folds in former Phase 18 `build_*_data` verification as a "tests still green" gate item) | Ready |
+| 18 of 21 | Phase 18 — Pane-wrapper survivors + deferred decisions (`OutputPane`, `*Layout` rename) *(was Phase 19)* | Ready |
+| 19 of 21 | Phase 19 — `Bus<Event>` skeleton + `apply_service_signal` (skeleton + smoke test) *(was Phase 20)* | Ready (depends on Phase 14 specifically) |
+| 20 of 21 | Phase 20 — `apply_lint_config_change` + `apply_config` over bus (bundled, introduces `ConfigDiff`); preceded by separable Phase 11 Group 1/2 Selection absorption preamble *(was Phases 21 + 22)* | Ready (borrow-checker gate) |
+| 21 of 21 | Phase 21 — Startup-phase tracker + `StartupOrchestrator` *(was Phase 23)* | Ready |
 
 History: earlier drafts used `1b`, `4b`, `7a`, `7b`, `8b` letter suffixes;
 those were resequenced into a 1–13 numeric scheme. Post-Phase-4 review
 inserted a Toasts phase as Phase 5 and absorbed an earlier-draft
-"movement / selection mutators" phase into Phase 21 (originally
+"movement / selection mutators" phase into the bus phases (originally
 Phase 11). Post-Phase-5 review split the original `Bus<Event>` phase
-across four phases (now 20–23) so each ship lands green.
+across four phases (then 20–23) so each ship lands green.
 
 Post-Phase-6 review made three structural changes: (i) inserted an
 internal-helper visibility narrowing pass (now Phase 7); (ii) put
 Focus before Overlays (Phase 8 then Phase 9); (iii) absorbed the
-earlier-draft "path resolution" phase into Phase 21.
+earlier-draft "path resolution" phase into the bus phases.
 
 Post-Phase-12-stage-2 review (the architectural review at commit
 `59352c8`) split what had been a multi-stage Phase 12 into integer
 phases 13–19, surfaced the dispatch-relocation prerequisite as its
 own Phase 13, and renumbered the original `Bus<Event>` phases from
-13–16 to 20–23. Execution order matches numeric order:
+13–16 to 20–23.
+
+Post-Phase-15+16 review folded former Phase 18 (`build_*_data`
+caller cleanup) into Phase 17's tests-green gate (the work was
+already done) and bundled former Phases 21 and 22 (lint config
+change + apply_config over the bus) into a single new Phase 20,
+since both depend on the same `ConfigDiff` design and overlapping
+subscriber sets. Total phase count dropped from 23 to 21.
+Execution order matches numeric order:
 
 ```
 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12 →
-13 → 14 → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23
+13 → 14 → 15 → 16 → 17 → 18 → 19 → 20 → 21
 ```
 
-Phases 20–23 run sequentially at the end; Phase 21 is the
-borrow-checker gate — if `HandlerCtx`'s shape doesn't fit Phase 21's
-six-subsystem fan-out, Phase 20's bus skeleton needs revision.
+Phases 19–21 run sequentially at the end; Phase 20 is the
+borrow-checker gate — if `HandlerCtx`'s shape doesn't fit Phase
+20's six-subsystem fan-out, Phase 19's bus skeleton needs revision.
 
 Per-phase steps:
 1. Add the subsystem accessor on `App`.
@@ -956,9 +972,9 @@ design has been dropped. Reasons:
 **Replacement design:** `Selection::expand`, `collapse_all`, etc. take
 `(&mut self, scan: &Scan, include_non_rust: bool)`. `apply_config`
 recomputes visibility *via* `Selection`'s methods rather than mirroring
-the bool into `Selection`'s state. Phase 22's `ConfigChanged` event
-carries the bool in its payload; subscribers read it from the event,
-not from a cached field.
+the bool into `Selection`'s state. The bundled Phase 20's
+`ConfigChanged` event carries the bool in its payload; subscribers
+read it from the event, not from a cached field.
 
 **Phase 8 absorption:** the original Phase 8 method list (~16 movement /
 selection mutators) **plus** the renamed Phase 8 (path resolution,
@@ -1780,7 +1796,7 @@ First wrapper absorption. Smallest blast radius:
 
 **Risk:** medium — touches the click/hover/render paths for toasts.
 
-**Phase 20 has a hard dependency on this specific absorption** —
+**Phase 19 has a hard dependency on this specific absorption** —
 `apply_service_signal`'s `set_len(toast_len)` write only
 disappears once the toasts viewport lives on `ToastManager`.
 
@@ -1895,10 +1911,130 @@ together.
 
 **Risk:** medium — mirrors Phase 15; same `set_detail_data` change.
 
+### Phase 15 + 16 retrospective (bundled)
+
+**Outcome:** `CiPane` and `LintsPane` are gone. `Ci` (`crate::tui::ci_state`)
+and `Lint` (`crate::tui::lint_state`) each own their own
+`viewport: Viewport` and `Option<CiData>` / `Option<LintsData>`
+content slot, and impl `Pane` + `Hittable` directly. Phase 13's
+dispatch free fns route `PaneId::Lints` / `PaneId::CiRuns` /
+`HittableId::Lints` / `HittableId::CiRuns` through
+`app.ci()` / `app.ci_mut()` / `app.lint()` / `app.lint_mut()`.
+`Panes::set_detail_data` and `Panes::clear_detail_data` shed the
+`ci` and `lints` parameters; the only production caller
+(`navigation/cache.rs`) now writes to the subsystems directly with
+fresh `app` borrows.
+
+**Numbers:**
+- Tests: 597 / 597 pass.
+- 41 mend import-tidy fixes (auto-applied).
+- Removed: `CiPane` + `LintsPane` structs and impls
+  (`pane_impls.rs`), `Panes::ci_runs` and `Panes::lints` fields +
+  accessors (`system.rs`), `Panes::dispatch_ci_render` and
+  `dispatch_lints_render` methods, `Panes::override_lints_for_test`
+  and `override_ci_runs_for_test`, the dead
+  `render_lints_pane_for_test` test helper.
+- Render path: a new `App::split_ci_for_render` and
+  `App::split_lint_for_render` give the render dispatcher its own
+  split-borrow tuple `(&mut Ci/Lint, &Config, &Scan)` since CI and
+  Lint content no longer live on `Panes`. `render.rs` calls
+  `panes::render_ci_pane_body` and `render_lints_pane_body`
+  directly (not through `dispatch_via_trait`).
+- `set_detail_data` signature went from 6 args to 4
+  (`(stamp, package, git, targets)`), and its tests in
+  `panes/system.rs` lost the now-irrelevant CI/Lints assertions.
+
+**Lessons:**
+1. **Subsystems that ship their own render/hit dispatch need their
+   own split-borrow.** Phase 14's toasts absorption fit through
+   `app.toasts_mut()` calls inside the Phase-13 free fns and the
+   existing `dispatch_via_trait` plumbing. CI/Lints don't: their
+   render bodies (`render_ci_pane_body`, `render_lints_pane_body`)
+   want `&mut Ci` / `&mut Lint` plus `&Config` + `&Scan` for
+   `PaneRenderCtx`, and `Ci` / `Lint` are not on `Panes`. Solution:
+   add `split_ci_for_render` / `split_lint_for_render` accessors
+   on `App` and call the render bodies directly from
+   `render.rs`'s tile match arm. **Apply to Phase 17:** Keymap +
+   Settings + Finder absorption into `Overlays` will need its own
+   split-borrow if the overlay rendering touches `Config` / `Scan`.
+2. **Drop orchestrator parameters instead of re-threading them.**
+   The earlier draft of Phase 15 said `set_detail_data` would gain
+   `&mut Ci` / `&mut Lint` parameters. The post-Phase-14 review
+   caught that this re-creates the orchestrator with new types. The
+   correct pattern (per Phase 14 lesson 1): drop the `ci`/`lints`
+   parameters entirely; the lone caller writes to each subsystem
+   with a fresh `app.ci_mut()` / `app.lint_mut()` borrow before the
+   `app.panes_mut().set_detail_data(...)` call. The compiler proves
+   the borrows don't overlap because each statement is independent.
+3. **Bundling phases is correct when they share a load-bearing
+   signature.** Splitting Phase 15 from Phase 16 would have left
+   `set_detail_data` taking `(stamp, package, git, targets, lints)`
+   for one commit — an awkward intermediate that exists only to be
+   deleted. One commit, both absorptions, signature shrinks once.
+4. **Test helpers absorb too.** `render_lints_pane_for_test` was a
+   leftover scaffold from Phase 12; once `Lint` impls `Pane`
+   directly, the helper had no callers and was deleted rather than
+   re-typed. **Apply:** when a phase removes the wrapper a test
+   helper was scaffolded around, check whether the helper is still
+   reachable rather than mechanically updating its signature.
+5. **`override_runs_for_test` belongs on the subsystem, not on
+   `Panes`.** Test-only writes that previously routed through
+   `Panes::override_ci_runs_for_test` now sit on `Ci` directly
+   (`app.ci_mut().override_runs_for_test(...)`). The `Panes`
+   wrapper version is gone. Tests update accordingly. **Apply:**
+   when an absorption removes a wrapper, check `#[cfg(test)]`
+   helpers on the wrapper too — they belong on the new owner.
+
+**File-level changes:**
+- *Modified:* `src/tui/ci_state.rs` (added `viewport`/`content`
+  fields, accessors, `Pane`/`Hittable` impls,
+  `override_runs_for_test`), `src/tui/lint_state.rs` (same),
+  `src/tui/app/mod.rs` (added `lint_mut`, `split_ci_for_render`,
+  `split_lint_for_render`; updated `is_satisfied` to read CI/Lints
+  through subsystems), `src/tui/render.rs` (new
+  `render_lints_pane`/`render_ci_pane` helpers replace
+  `dispatch_via_trait` for these two panes),
+  `src/tui/interaction.rs` (Lints/CiRuns arms in dispatch fns +
+  test render helpers route through subsystems),
+  `src/tui/app/navigation/cache.rs` (caller writes Ci/Lint
+  directly, narrows `set_detail_data` call),
+  `src/tui/app/async_tasks/repo_handlers.rs` (clears Ci/Lint
+  alongside `clear_detail_data`),
+  `src/tui/panes/system.rs` (removed `ci_runs`/`lints` fields +
+  accessors + dispatch + override fns; `set_detail_data` /
+  `clear_detail_data` narrowed; tests updated),
+  `src/tui/panes/pane_impls.rs` (removed `CiPane`/`LintsPane`),
+  `src/tui/panes/ci.rs`, `src/tui/panes/lints.rs` (render bodies
+  take `&mut Ci` / `&mut Lint`; dead test helper removed),
+  `src/tui/panes/actions.rs`, `src/tui/panes/mod.rs` (re-exports).
+
+**Status: done.**
+
 ## Phase 17 — Keymap + Settings + Finder → `Overlays` absorption
 
 Three viewports land in `Overlays` (`crate::tui::overlays`) together
 — single commit since they all move to the same destination.
+
+**File-layout precondition (post-Phase-15+16 review correction).**
+Today `Overlays` is a single flat struct in one file
+(`src/tui/overlays.rs`) holding mode-state (`FinderMode`,
+`SettingsMode`, `KeymapMode`). Adding three `Viewport` fields plus
+`line_targets: Vec<Option<usize>>` plus six accessors plus three
+`Pane`/`Hittable` impl pairs to that file mixes mode-state with
+render-side viewport plumbing and roughly doubles its size.
+Phase 14's `ToastManager` precedent the absorption pattern keeps
+citing lives in a separate `tui/toasts/` directory. Before Phase 17
+starts, **promote `overlays.rs` to `overlays/mod.rs`** with
+sibling files:
+- `overlays/mod.rs` — `Overlays` struct + mode-state methods
+  (current contents).
+- `overlays/render_state.rs` — the three `Viewport` fields,
+  `line_targets`, and the viewport accessors.
+- `overlays/pane_impls.rs` — the three `Pane` + `Hittable` impl
+  pairs.
+
+This mirrors `tui/toasts/{mod.rs, manager.rs, ...}`. Don't bolt the
+new state onto `overlays.rs` directly.
 
 - Move `viewport: Viewport` from each of `KeymapPane`,
   `SettingsPane`, `FinderPane` into `Overlays` as **three
@@ -1907,15 +2043,16 @@ Three viewports land in `Overlays` (`crate::tui::overlays`) together
   conflate cursors when overlays are reopened — they have
   independent cursor state.
 - **`SettingsPane.line_targets: Vec<Option<usize>>`** must move
-  alongside (`pane_impls.rs:442`) — this is per-frame layout state
-  analogous to `ToastManager.hits` from Phase 14. Decide: live on
-  `Overlays` next to `settings_viewport`, or extracted to a
-  render-side layout cache. Recommend: on `Overlays` (matching
-  the Phase 14 ToastManager precedent).
+  alongside (`pane_impls.rs:442`). This is **ephemeral per-frame
+  layout state** — render writes it, hit-test reads it, sibling of
+  `viewport`. Same pattern as `CpuPane.row_rects` and
+  `GitPane.row_layout`. Put it on `Overlays` next to
+  `settings_viewport` (in `overlays/render_state.rs`); call it out
+  as ephemeral layout state, not "settings state."
 - Add `Overlays::keymap_viewport()`, `keymap_viewport_mut()`, and
   parallel pairs for settings + finder. Stay `pub(crate)` —
-  `Overlays` already lives at `crate::tui::overlays`, so the
-  `pub(crate)`-allowed-at-top-level rule applies.
+  `Overlays` lives at `crate::tui::overlays` (top-level under
+  `tui/`), so the `pub(crate)`-allowed-at-top-level rule applies.
 - Implement `Pane` and `Hittable` three times for `Overlays` — no
   way around the per-`PaneId` dispatch needing per-pane handlers.
   Render impls are no-ops (overlay path in `keymap_ui.rs`,
@@ -1925,38 +2062,42 @@ Three viewports land in `Overlays` (`crate::tui::overlays`) together
   three fields from `Panes`.
 - Update Phase 13 dispatch arms for the three.
 
+**Split-borrow accessor (per Phase 15+16 lesson 1).** Settings
+render touches `Config` (`src/tui/settings.rs:787` reads
+`app.panes().settings().viewport().pos()`, and the popup body reads
+config fields per row). Once `Overlays` owns the viewport, the
+render path needs `(&mut Overlays, &Config, &Scan)`. **Add
+`App::split_overlays_for_render(&mut self) -> (&mut Overlays, &Config, &Scan)`**
+parallel to `split_ci_for_render` / `split_lint_for_render`, and
+call the settings/keymap/finder render bodies through it directly
+rather than through `dispatch_via_trait`. Same recipe Phase 15+16
+followed; do not skip this step.
+
 **Risk:** medium — three panes in one commit means larger blast
 radius, but identical pattern to Phase 14 × 3.
 
-## Phase 18 — `build_*_data` caller cleanup
+**Tests-still-green gate** (absorbed from former Phase 18): verify
+that all `build_*_data` callers compile and the `cache.rs` rebuild
+path uses the fresh-borrow pattern (`app.ci_mut().set_content(ci);
+app.lint_mut().set_content(lints); app.panes_mut().set_detail_data(...)`).
+Phase 15/16 already shipped this destination-borrow change; this
+gate just confirms Phase 17's overlay absorption hasn't regressed
+it.
 
-**Reduced scope (post-Phase-14 review).** With Phase 15/16's
-`set_detail_data` change above (drops `ci`/`lints` params),
-`RenderSplit<'_>` is no longer load-bearing — the destination
-borrow conflict that justified it disappears. `build_ci_data` /
-`build_lints_data` keep their `&App` signatures because they read
-*across* many subsystems (`Selection` cursor, `Scan`, `Net`, project
-git state) — the data is *not* co-located on `Ci` / `Lint`, so
-making them subsystem methods doesn't fit either.
-
-**Phase 18 scope:** sanity-check that all `build_*_data` callers
-still compile after Phases 15/16's destination change. Verify the
-`cache.rs` rebuild path uses the fresh-borrow pattern correctly.
-No new types, no signature changes.
-
-**Risk:** low — verification phase, no architectural change.
-
-## Phase 19 — Pane-wrapper survivors + deferred decisions
+## Phase 18 — Pane-wrapper survivors + deferred decisions *(was Phase 19)*
 
 Cleanup pass. Resolve the deferred questions:
 
-- **`OutputPane` — keep as survivor.** Today `OutputPane` carries
-  only `viewport` (`pane_impls.rs:611-626`). Buffer content already
-  lives on `Inflight` (`inflight.rs:102` `example_output_mut`). The
-  pane's only role is owning the render-side viewport. Collapsing
-  into `Inflight` would force `Inflight` (a cross-cutting subsystem
-  touched by `poll.rs`, `input.rs`) to grow a TUI viewport field —
-  wrong direction. Keep as survivor with documented rationale.
+- **`OutputPane` — keep as survivor.** `OutputPane` carries only
+  `viewport` (`pane_impls.rs:611-626`) and is **not `Hittable`** —
+  no trait dispatch goes through it; it's a viewport holder. Since
+  it pays no cost from staying and its only role is owning the
+  render-side viewport, keep it as a survivor. (Buffer content
+  lives on `Inflight` already, but that's not the load-bearing
+  argument; the "no `Hittable` cost" framing is.) Collapsing into
+  `Inflight` would force a cross-cutting subsystem touched by
+  `poll.rs` / `input.rs` to grow a TUI viewport field — wrong
+  direction.
 - **`LangPane` — keep as survivor.** No `Lang` subsystem exists;
   introducing one to host a single viewport is yak-shaving.
 - **Detail-pane caches stay on `Panes`.** `PaneDataStore`
@@ -1969,7 +2110,7 @@ Cleanup pass. Resolve the deferred questions:
 
 **Risk:** low — decisions, no load-bearing refactors.
 
-## Phase 20 — `Bus<Event>` skeleton + `apply_service_signal` (Cluster A, smoke test)
+## Phase 19 — `Bus<Event>` skeleton + `apply_service_signal` (Cluster A, smoke test) *(was Phase 20)*
 
 **Gate-framing correction (post-Phase-11 review).** Earlier drafts
 labeled the bus skeleton phase as "the architectural gate." The
@@ -1977,25 +2118,26 @@ labeled the bus skeleton phase as "the architectural gate." The
 two-subsystem fan-out into Net + ToastManager — and after Phase 14
 absorbs the toasts viewport, the `&mut Panes` borrow goes away
 entirely). Any naive `HandlerCtx` shape will compile against it.
-The *actual* borrow-checker stress test is **Phase 21's
-`apply_lint_config_change`**: six subsystems (Lint, Inflight, Scan,
-Selection, Overlays, ToastManager) with intermixed reads and writes.
+The *actual* borrow-checker stress test is **Phase 20's
+`apply_lint_config_change` + `apply_config` bundle**: six
+subsystems (Lint, Inflight, Scan, Selection, Overlays,
+ToastManager) with intermixed reads and writes.
 
 **Revised role:**
-- **Phase 20** — *skeleton + smoke test*. Wires up `EventBus`,
+- **Phase 19** — *skeleton + smoke test*. Wires up `EventBus`,
   `EventHandler`, `HandlerCtx`, and the drain loop; routes one
   event end-to-end via `apply_service_signal` to confirm the
   skeleton compiles and behaves identically.
-- **Phase 21** — *borrow-checker gate*. The `HandlerCtx` shape is
-  what stress-tests the bus pattern. If Phase 21's six-subsystem
-  fan-out doesn't fit the `HandlerCtx` skeleton Phase 20 chose,
-  that's a Phase 21 finding that forces a Phase 20 redesign.
+- **Phase 20** — *borrow-checker gate*. The `HandlerCtx` shape is
+  what stress-tests the bus pattern. If Phase 20's six-subsystem
+  fan-out doesn't fit the `HandlerCtx` skeleton Phase 19 chose,
+  that's a Phase 20 finding that forces a Phase 19 redesign.
 
-**Risk-mitigation step (load-bearing):** before declaring Phase 20
-green, prototype Phase 21's `apply_lint_config_change` handler-set
+**Risk-mitigation step (load-bearing):** before declaring Phase 19
+green, prototype Phase 20's `apply_lint_config_change` handler-set
 against the same `EventBus` skeleton in a scratch branch. If the
 prototype doesn't compile, the skeleton needs revision before
-merging Phase 20 — otherwise Phase 21 inherits a skeleton that
+merging Phase 19 — otherwise Phase 20 inherits a skeleton that
 can't fit it.
 
 Source of truth: see "Item 6" in the post-Phase-9 review section
@@ -2013,27 +2155,31 @@ below. Summary:
   `StartupPhaseAdvanced(...)` events in the dependency order today
   encoded in `maybe_log_startup_phase_completions`.
 
-**Bus phases split across Phases 20–23 (post-Phase-5 review,
-renumbered post-Phase-12-stage-2):** the original "all-at-once"
+**Bus phases split across Phases 19–21 (post-Phase-5 review,
+renumbered post-Phase-15+16):** the original "all-at-once"
 framing put every cross-cutting orchestrator on the line at once.
 The architectural risk is that `EventBus` shape doesn't fit Rust's
 borrow checker against a real subscriber set; discovering that after
 `apply_config` is converted is expensive. Cluster A is now spread
-across four phases so each ship lands green:
+across three phases so each ship lands green:
 
-- **Phase 20 — Bus skeleton + smoke test.** Introduce `EventBus`,
+- **Phase 19 — Bus skeleton + smoke test.** Introduce `EventBus`,
   `Event`, `Command`, `EventHandler`, `HandlerCtx`. Convert
   `apply_service_signal` only (single event variant, 1–2
   subscribers). Validates the drain-loop pattern compiles. **Hard
   prerequisite: Phase 14 (ToastsPane absorption).**
-- **Phase 21 — `apply_lint_config_change` + Phase 11 Group 1/2.**
-  Six-subsystem fan-out (Lint, Inflight, Scan, Selection, Overlays,
-  ToastManager). **The borrow-checker gate** — this is where
-  `HandlerCtx` is actually stress-tested. Folds in Phase 11's
-  deferred Selection method absorption.
-- **Phase 22 — `apply_config`.** Highest fan-out (6 branches) and
-  requires `ConfigDiff`. Wait until Phases 20–21 are stable.
-- **Phase 23 — Startup-phase tracker + `StartupOrchestrator`.**
+- **Phase 20 — `apply_lint_config_change` + `apply_config` (bundled),
+  preceded by Phase 11 Group 1/2 Selection preamble.** Six-subsystem
+  fan-out (Lint, Inflight, Scan, Selection, Overlays, ToastManager).
+  **The borrow-checker gate** — this is where `HandlerCtx` is
+  actually stress-tested. Bundled because `apply_config` shares
+  `ConfigDiff` and an overlapping subscriber set with
+  `apply_lint_config_change`; splitting them leaves an awkward
+  intermediate where Lint reads raw `prev`/`next` while Config gets
+  the helper. Phase 11's deferred Selection method absorption lands
+  as a separable preamble commit (no bus dependency) before the bus
+  conversion.
+- **Phase 21 — Startup-phase tracker + `StartupOrchestrator`.**
   Largest body but most isolated — it's already a state-machine
   adapter.
 
@@ -2050,7 +2196,7 @@ disappear from the codebase, they migrate from `impl App` to
 `apply_command` arms.
 
 **`apply_command` is itself a god-table.** A 21-arm match on App
-mirrors the orchestrator-method count we removed. Phases 20–23's "App
+mirrors the orchestrator-method count we removed. Phases 19–21's "App
 becomes thin" claim is half-true: the App **struct** thins (fewer
 fields, fewer wrapper methods); the App **module** keeps a flat
 dispatch table. `mod.rs` grew during Phase 9 when six Group 3
@@ -2073,11 +2219,11 @@ orchestrators are explicitly excluded from bus migration:
 - `reset_project_panes` — single-shot pane-cursor reset. Called from
   one site (`sync_selected_project`) with a known full effect.
 - `force_settings_if_unconfigured` — half-exception. Called from
-  `apply_config`'s rescan branch (Phase 15 territory). Phase 15
-  introduces a `Command::ForceSettingsIfUnconfigured` arm that
-  delegates to the existing App method — the App method stays for
-  direct callers; the Command arm exists for bus dispatch. Both
-  coexist post-Phase-15.
+  `apply_config`'s rescan branch. The bundled Phase 20 introduces
+  a `Command::ForceSettingsIfUnconfigured` arm that delegates to
+  the existing App method — the App method stays for direct
+  callers; the Command arm exists for bus dispatch. Both coexist
+  post-Phase-20.
 
 The shared property: all are synchronous reads or single-shot direct
 writes triggered by a known caller. The bus exists to fan out an event
@@ -2085,7 +2231,7 @@ writes triggered by a known caller. The bus exists to fan out an event
 emitter doesn't know — that pattern doesn't apply to keystroke-driven
 read paths.
 
-**Ordering:** Phases 20–23 run last among the architectural phases.
+**Ordering:** Phases 19–21 run last among the architectural phases.
 Subsystems need their pane state already moved (Phases 14–17) so
 their `handle()` bodies can mutate self plus update their own pane.
 
@@ -2093,67 +2239,98 @@ their `handle()` bodies can mutate self plus update their own pane.
 reaction body called `push_service_unavailable_toast`, which used
 to write both `self.toasts.push_persistent(...)` and
 `self.panes_mut().toasts_mut().viewport_mut().set_len(...)`. The
-second write was the load-bearing reason Phase 20 needed Phase 14
+second write was the load-bearing reason Phase 19 needed Phase 14
 done first. Verified post-Phase-14 (commit at HEAD): `app/mod.rs`
 toast-orchestrator paths now route `set_len(toast_len)` through
 `self.toasts.viewport_mut()` directly (no `&mut Panes`), and
-`interaction.rs:102` routes the dispatch arm through
-`app.toasts_mut()`. `HandlerCtx` for `ServiceSignal` subscribers
-needs only `&mut Net + &mut ToastManager` — no `&mut Panes`.
+`interaction.rs` routes the toast dispatch arm through
+`app.toasts_mut()`.
 
-**Risk:** Phase 20 introduces the bus skeleton; Phases 21–23 widen
+**Subscriber surface — actual scope (post-Phase-15+16 review
+correction).** The earlier draft said `HandlerCtx` for
+`ServiceSignal` subscribers needs only `&mut Net + &mut
+ToastManager` — that's wrong. Reading
+`async_tasks/service_handlers.rs:33–63`, `handle_service_reachable`
+and `apply_unavailability` both call `self.show_timed_toast(...)`
+**and** `self.spawn_service_retry(service)`; the latter reads
+`&self.background` (`bg_sender`) and `&self.scan` (retry-spawn
+mode). The real subscriber surface for the smoke test is:
+
+- `&mut Net`
+- `&mut ToastManager`
+- `&Background` (or a `Command::SpawnServiceRetry(ServiceKind)`
+  arm that reaches `bg_sender`)
+- `&Scan` (read-only, for retry mode)
+
+Add `Command::SpawnServiceRetry(ServiceKind)` to the smoke-test
+surface so the retry path doesn't need a `&mut Background` borrow
+inside the handler. Don't bill Phase 19 as "borderline mechanical,
+12 lines" — it's a four-subsystem touch even at smoke-test scope.
+
+**Risk:** Phase 19 introduces the bus skeleton; Phases 20–21 widen
 its subscriber surface incrementally.
 
-## Phase 21 — `apply_lint_config_change` over `Bus<Event>` + Phase 11 Group 1/2 Selection absorption
+## Phase 20 — `apply_lint_config_change` + `apply_config` over `Bus<Event>` (bundled), preceded by Phase 11 Group 1/2 Selection preamble *(was Phases 21 + 22)*
 
 This is the **borrow-checker gate.** Six-subsystem fan-out (Lint,
 Inflight, Scan, Selection, Overlays, ToastManager) is the real
 stress test of the bus pattern's `HandlerCtx` shape. If
-`HandlerCtx` doesn't fit here, Phase 20's skeleton needs revision.
+`HandlerCtx` doesn't fit here, Phase 19's skeleton needs revision.
 
-**Two pieces:**
+**Bundling rationale (post-Phase-15+16 review).** Former Phases
+21 and 22 share `ConfigDiff` and an overlapping subscriber set
+(the six listed above plus `Config` itself). Building former
+Phase 21's `HandlerCtx` and immediately re-deriving `ConfigDiff`
+for former Phase 22 would leave an awkward intermediate where Lint
+reads raw `prev`/`next` while Config gets the helper. This is the
+same "shared load-bearing signature" reason Phase 15 was bundled
+with Phase 16. The two land in one commit; Phase 11's Selection
+absorption splits off as a **separable preamble** that can land on
+its own commit (it has no `HandlerCtx` dependency — it's pure
+method relocation).
 
-1. Convert `apply_lint_config_change` (`async_tasks/config.rs:217-240`)
-   into one `Event::LintConfigChanged` with subscribers across the
-   six subsystems. Each subscriber's `handle()` runs the body
-   fragment that today lives inline.
+**Three pieces, two commits:**
 
-2. **Fold in Phase 11's deferred Group 1/2 Selection method
-   absorption.** ~12 movement / expand methods + ~6 path-resolution
-   methods move from `App` into `Selection`. Phase 21's
-   `recompute_visibility` borrow surface makes this the natural
-   home — all Selection-mutation work consolidates here.
+1. **Phase 11 preamble (separable, lands first).** ~12 movement /
+   expand methods + ~6 path-resolution methods move from `App` into
+   `Selection`. No bus dependency. Lands as its own commit so the
+   bus-conversion commit only does bus work.
 
-**Pre-requisite:** Phase 20's bus skeleton must compile cleanly.
+2. **Bus-conversion commit (combined former 21 + 22).**
+   - Convert `apply_lint_config_change`
+     (`async_tasks/config.rs:217-240`) into
+     `Event::LintConfigChanged` with subscribers across the six
+     subsystems. Each subscriber's `handle()` runs the body
+     fragment that today lives inline.
+   - Convert `apply_config` (`async_tasks/config.rs:138-197`) into
+     `Event::ConfigChanged(ConfigDiff)`. Six fan-out branches
+     become subscribers (or fewer if related branches share a
+     handler). Design `ConfigDiff` once and consume it from both
+     subscriber sets.
+
+**`ConfigDiff` design.** What fields the diff carries, what fields
+subscribers read. Build it once for the lint subscribers; reuse
+verbatim for the config subscribers.
+
+**Special case — `force_settings_if_unconfigured` (`config.rs:183`).**
+This is a pane-mutating side-effect inside `apply_config`'s rescan
+branch. Under this phase it becomes
+`Command::ForceSettingsIfUnconfigured`, which writes to `Overlays`
+AND `Panes` (settings viewport pos). Post-Phase-17 it's clean
+(Overlays owns the settings viewport pos once Phase 17 absorbs
+`SettingsPane`); without Phase 17 first landing, the multi-borrow
+problem stays. Phase 17 → Phase 20 ordering is therefore
+load-bearing.
+
+**Pre-requisite:** Phase 19's bus skeleton must compile cleanly,
+and Phase 17's overlay absorption must be in.
 
 **Risk:** highest of the bus phases — this is where the bus
-pattern's `HandlerCtx` shape is actually tested.
+pattern's `HandlerCtx` shape is actually tested. `ConfigDiff`
+design is the second load-bearing decision; the rest is mechanical
+fan-out.
 
-## Phase 22 — `apply_config` over `Bus<Event>`
-
-Convert `apply_config` (`async_tasks/config.rs:138-197`) into
-`Event::ConfigChanged(ConfigDiff)`. Six fan-out branches become six
-subscribers (or fewer if related branches share a handler). Requires
-designing `ConfigDiff` — what fields the diff carries, what fields
-subscribers read.
-
-**Pre-requisite:** Phases 20–21 stable (bus skeleton plus one
-widened subscriber set).
-
-**Special case — `force_settings_if_unconfigured` (`config.rs:183`):**
-this is a *pane-mutating* side-effect inside the rescan branch.
-Under Phase 22 it becomes `Command::ForceSettingsIfUnconfigured` —
-but this command writes to `Overlays` AND `Panes` (settings
-viewport pos).
-After Phase 12 it's clean (Overlays owns the settings viewport pos);
-before Phase 12 it's the same multi-borrow it always was, which is
-why Phase 12 → Phase 15 ordering is hard.
-
-
-**Risk:** medium — `ConfigDiff` design is the load-bearing decision;
-the rest is mechanical fan-out.
-
-## Phase 23 — Startup-phase tracker + `StartupOrchestrator`
+## Phase 21 — Startup-phase tracker + `StartupOrchestrator` *(was Phase 23)*
 
 Add `StartupOrchestrator` at
 `src/tui/app/async_tasks/startup_phase/orchestrator.rs` to publish
@@ -2162,7 +2339,7 @@ encoded in `maybe_log_startup_phase_completions`. Convert the 6
 `maybe_complete_startup_*` family methods into subscribers that
 publish their advancement events to the bus.
 
-**Pre-requisite:** Phases 20–22 stable.
+**Pre-requisite:** Phases 19–20 stable.
 
 **Visibility note (Phase 12 lesson 1).** `StartupOrchestrator`'s
 location at `src/tui/app/async_tasks/startup_phase/orchestrator.rs`
@@ -2380,6 +2557,17 @@ subscriber's existing struct definition: `Lint` in
 `src/tui/net_state.rs`, `ToastManager` in `src/tui/toasts/`,
 `Selection` in `src/tui/selection.rs`, `Inflight` in
 `src/tui/inflight.rs` (or wherever it lives).
+
+**Visibility on bus types.** Both `bus.rs` and `orchestrator.rs`
+live under `tui/app/`, so the nested-module `pub(crate)` ban
+applies. Declare `Event`, `Command`, `EventBus`, `EventHandler` as
+`pub(super)` (their `tui/app/` parent re-exports as needed). If a
+type ends up needing visibility outside `tui/app/`, **relocate it
+to a top-level module under `tui/`** (e.g. `src/tui/bus.rs`)
+rather than widening to `pub(crate)` from inside `tui/app/`. Same
+recipe used for the `Pane` trait in Phase 12 (relocated from
+`tui/panes/dispatch.rs` to `tui/pane/dispatch.rs` to satisfy
+`pub(super)` reach).
 
 **`EventBus` (~10 lines):**
 ```rust
@@ -2713,23 +2901,23 @@ API, end-to-end flow. Open items at execution time:
   refresh after config write, keymap reload trigger, etc.) cannot
   be verified to map onto the new design.
 
-## Stable intermediate state — between Phase 19 and Phase 20
+## Stable intermediate state — between Phase 18 and Phase 19
 
-After Phase 19 lands and before Phase 20 starts, the codebase is in
+After Phase 18 lands and before Phase 19 starts, the codebase is in
 a defensible shipping state: clean subsystem ownership, every method
 single-borrow against subsystems, no event bus. App still has its
 ~21 orchestrator surface — but every orchestrator is now thin glue,
 not a body of work.
 
-This is a valid endpoint if Phase 20's bus introduction turns out to
+This is a valid endpoint if Phase 19's bus introduction turns out to
 be disruptive in ways the design depth doesn't model
 (subscriber-borrow composition, drain-loop interaction with the
-existing `mutate_tree` guard, `HandlerCtx` ergonomics — see Phase 21
+existing `mutate_tree` guard, `HandlerCtx` ergonomics — see Phase 20
 gate framing). If the bus pattern doesn't fit, parking at this point
 ships the pane-ownership work without the architectural risk.
 
-Recommend a deliberate pause after Phase 19 to evaluate before
-committing to Phase 20.
+Recommend a deliberate pause after Phase 18 to evaluate before
+committing to Phase 19.
 
 ## Loose ends — items not slated for any phase
 
@@ -2773,19 +2961,17 @@ Updated post-Phase-8.
 | 10  | `CiFetchTracker` relocation | Done |
 | 11  | `Viewport.pos` → `Selection.cursor` (cursor field) | Done |
 | 12  | Pane trait foundations (cursor-mirror cleanup + trait relocation) | Done |
-| 13  | Relocate Panes' dispatch methods to App-level | Ready |
-| 14  | `ToastsPane` → `ToastManager` absorption | Ready |
-| 15  | `CiPane` → `Ci` absorption | Ready |
-| 16  | `LintsPane` → `Lint` absorption | Ready |
-| 17  | Keymap + Settings + Finder → `Overlays` absorption | Ready |
-| 18  | `RenderSplit<'_>` + `build_*_data` signature changes | Ready |
-| 19  | Pane-wrapper survivors + deferred decisions | Ready |
-| 20  | `Bus<Event>` skeleton + `apply_service_signal` (smoke test) | Ready |
-| 21  | `apply_lint_config_change` over bus + Phase 11 Group 1/2 (gate) | Ready |
-| 22  | `apply_config` over bus (introduces `ConfigDiff`) | Ready |
-| 23  | Startup-phase tracker + `StartupOrchestrator` | Ready |
+| 13  | Relocate Panes' dispatch methods to App-level | Done |
+| 14  | `ToastsPane` → `ToastManager` absorption | Done |
+| 15  | `CiPane` → `Ci` absorption | Done |
+| 16  | `LintsPane` → `Lint` absorption | Done |
+| 17  | Keymap + Settings + Finder → `Overlays` absorption (folds in former Phase 18 `build_*_data` verification as a tests-still-green gate item) | Ready |
+| 18  | Pane-wrapper survivors + deferred decisions *(was Phase 19)* | Ready |
+| 19  | `Bus<Event>` skeleton + `apply_service_signal` (smoke test) *(was Phase 20)* | Ready |
+| 20  | `apply_lint_config_change` + `apply_config` over bus (bundled, introduces `ConfigDiff`); separable Phase 11 Group 1/2 Selection preamble lands first *(was Phases 21 + 22)* | Ready (borrow-checker gate) |
+| 21  | Startup-phase tracker + `StartupOrchestrator` *(was Phase 23)* | Ready |
 
-After Phase 23, App is down to ~10–12 methods: `new`, `run`,
+After Phase 21, App is down to ~10–12 methods: `new`, `run`,
 top-level event entry points (`apply_config`, `rescan`,
 `handle_bg_msg`) that publish to the bus, plus a few items that
 genuinely have no other home. That's the destination — App as a

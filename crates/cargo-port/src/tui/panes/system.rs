@@ -16,21 +16,17 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use super::data::PaneDataStore;
-use super::pane_impls::CiPane;
 use super::pane_impls::CpuPane;
 use super::pane_impls::FinderPane;
 use super::pane_impls::GitPane;
 use super::pane_impls::KeymapPane;
 use super::pane_impls::LangPane;
-use super::pane_impls::LintsPane;
 use super::pane_impls::OutputPane;
 use super::pane_impls::PackagePane;
 use super::pane_impls::ProjectListPane;
 use super::pane_impls::SettingsPane;
 use super::pane_impls::TargetsPane;
 use super::support::WorktreeInfo;
-#[cfg(test)]
-use crate::ci::CiRun;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::config_state::Config;
@@ -70,8 +66,6 @@ pub struct Panes {
     lang:         LangPane,
     cpu:          CpuPane,
     git:          GitPane,
-    lints:        LintsPane,
-    ci_runs:      CiPane,
     keymap:       KeymapPane,
     settings:     SettingsPane,
     finder:       FinderPane,
@@ -90,8 +84,6 @@ impl Panes {
             lang:         LangPane::new(),
             cpu:          CpuPane::new(cpu_cfg),
             git:          GitPane::new(),
-            lints:        LintsPane::new(),
-            ci_runs:      CiPane::new(),
             keymap:       KeymapPane::new(),
             settings:     SettingsPane::new(),
             finder:       FinderPane::new(),
@@ -117,18 +109,6 @@ impl Panes {
 
     /// Mutable typed accessor for the Lang pane.
     pub const fn lang_mut(&mut self) -> &mut LangPane { &mut self.lang }
-
-    /// Typed accessor for the Lints pane.
-    pub const fn lints(&self) -> &LintsPane { &self.lints }
-
-    /// Mutable typed accessor for the Lints pane.
-    pub const fn lints_mut(&mut self) -> &mut LintsPane { &mut self.lints }
-
-    /// Typed accessor for the `CiRuns` pane.
-    pub const fn ci(&self) -> &CiPane { &self.ci_runs }
-
-    /// Mutable typed accessor for the `CiRuns` pane.
-    pub const fn ci_mut(&mut self) -> &mut CiPane { &mut self.ci_runs }
 
     /// Typed accessor for the Package pane.
     pub const fn package(&self) -> &PackagePane { &self.package }
@@ -191,64 +171,21 @@ impl Panes {
         package: super::PackageData,
         git: super::GitData,
         targets: super::TargetsData,
-        ci: super::CiData,
-        lints: super::LintsData,
     ) {
         self.package.set_content(package);
         self.git.set_content(git);
-        self.ci_runs.set_content(ci);
-        self.lints.set_content(lints);
         self.targets.set_content(targets);
         self.data.set_detail_stamp(Some(stamp));
     }
 
-    /// Clear the detail set across the five migrated detail panes,
-    /// stamping with `stamp`. Mirrors `set_detail_data`'s fan-out.
+    /// Clear the detail set across the migrated detail panes owned by `Panes`,
+    /// stamping with `stamp`. Mirrors `set_detail_data`'s fan-out. CI and lint
+    /// content live on their own subsystems and are cleared by the caller.
     pub fn clear_detail_data(&mut self, stamp: Option<super::data::DetailCacheKey>) {
         self.package.clear_content();
         self.git.clear_content();
-        self.ci_runs.clear_content();
-        self.lints.clear_content();
         self.targets.clear_content();
         self.data.set_detail_stamp(stamp);
-    }
-
-    /// Test-only override for lints content. Mirrors the previous
-    /// `PaneDataStore::override_lints_for_test`.
-    #[cfg(test)]
-    pub fn override_lints_for_test(&mut self, data: super::LintsData) {
-        self.lints.set_content(data);
-    }
-
-    /// Test-only override for ci runs. Mirrors the previous
-    /// `PaneDataStore::override_ci_runs_for_test`.
-    #[cfg(test)]
-    pub fn override_ci_runs_for_test(&mut self, runs: Vec<CiRun>) {
-        self.ci_runs.override_runs_for_test(runs);
-    }
-
-    /// Dispatch `CiPane`'s render through the `Pane` trait.
-    pub fn dispatch_ci_render(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        args: &DispatchArgs<'_>,
-    ) {
-        let ctx = build_ctx(args);
-        let ctx = &ctx;
-        Pane::render(&mut self.ci_runs, frame, area, ctx);
-    }
-
-    /// Dispatch `LintsPane`'s render through the `Pane` trait.
-    pub fn dispatch_lints_render(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        args: &DispatchArgs<'_>,
-    ) {
-        let ctx = build_ctx(args);
-        let ctx = &ctx;
-        Pane::render(&mut self.lints, frame, area, ctx);
     }
 
     /// Dispatch `CpuPane`'s render through the `Pane` trait.
@@ -344,10 +281,7 @@ mod detail_set_tests {
     use super::Panes;
     use crate::config::CpuConfig;
     use crate::tui::app::VisibleRow;
-    use crate::tui::panes::CiData;
-    use crate::tui::panes::CiEmptyState;
     use crate::tui::panes::GitData;
-    use crate::tui::panes::LintsData;
     use crate::tui::panes::PackageData;
     use crate::tui::panes::TargetsData;
     use crate::tui::panes::data::DetailCacheKey;
@@ -364,18 +298,11 @@ mod detail_set_tests {
         }
     }
 
-    fn empty_detail() -> (PackageData, GitData, TargetsData, CiData, LintsData) {
+    fn empty_detail() -> (PackageData, GitData, TargetsData) {
         (
             PackageData::default(),
             GitData::default(),
             TargetsData::default(),
-            CiData {
-                runs:           Vec::new(),
-                mode_label:     None,
-                current_branch: None,
-                empty_state:    CiEmptyState::Loading,
-            },
-            LintsData::default(),
         )
     }
 
@@ -396,14 +323,12 @@ mod detail_set_tests {
             row:        any_row(),
             generation: 3,
         };
-        let (pkg, git, targets, ci, lints) = empty_detail();
-        panes.set_detail_data(key, pkg, git, targets, ci, lints);
+        let (pkg, git, targets) = empty_detail();
+        panes.set_detail_data(key, pkg, git, targets);
 
         assert!(panes.pane_data().detail_is_current(Some(key)));
         assert!(panes.package().content().is_some());
         assert!(panes.git().content().is_some());
-        assert!(panes.ci().content().is_some());
-        assert!(panes.lints().content().is_some());
         assert!(panes.targets().content().is_some());
 
         // Different stamps don't match.
@@ -425,8 +350,8 @@ mod detail_set_tests {
             row:        any_row(),
             generation: 7,
         };
-        let (pkg, git, targets, ci, lints) = empty_detail();
-        panes.set_detail_data(key, pkg, git, targets, ci, lints);
+        let (pkg, git, targets) = empty_detail();
+        panes.set_detail_data(key, pkg, git, targets);
 
         let clear_key = DetailCacheKey {
             row:        other_row(),
@@ -436,8 +361,6 @@ mod detail_set_tests {
         assert!(panes.pane_data().detail_is_current(Some(clear_key)));
         assert!(panes.package().content().is_none());
         assert!(panes.git().content().is_none());
-        assert!(panes.ci().content().is_none());
-        assert!(panes.lints().content().is_none());
         assert!(panes.targets().content().is_none());
     }
 

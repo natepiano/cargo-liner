@@ -73,8 +73,8 @@ pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
             HittableId::Cpu => app.panes().cpu(),
             HittableId::Git => app.panes().git(),
             HittableId::Targets => app.panes().targets(),
-            HittableId::Lints => app.panes().lints(),
-            HittableId::CiRuns => app.panes().ci(),
+            HittableId::Lints => app.lint(),
+            HittableId::CiRuns => app.ci(),
         };
         if let Some(hit) = pane.hit_test_at(pos) {
             return Some(hit);
@@ -102,8 +102,8 @@ pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> &mut Viewport
         PaneId::Toasts => app.toasts_mut().viewport_mut(),
         PaneId::Cpu => app.panes_mut().cpu_mut().viewport_mut(),
         PaneId::Lang => app.panes_mut().lang_mut().viewport_mut(),
-        PaneId::Lints => app.panes_mut().lints_mut().viewport_mut(),
-        PaneId::CiRuns => app.panes_mut().ci_mut().viewport_mut(),
+        PaneId::Lints => app.lint_mut().viewport_mut(),
+        PaneId::CiRuns => app.ci_mut().viewport_mut(),
         PaneId::Package => app.panes_mut().package_mut().viewport_mut(),
         PaneId::Git => app.panes_mut().git_mut().viewport_mut(),
         PaneId::Keymap => app.panes_mut().keymap_mut().viewport_mut(),
@@ -127,13 +127,13 @@ pub(super) const fn apply_hovered_pane_row(app: &mut App) {
 
 const fn clear_all_hover(app: &mut App) {
     app.toasts_mut().viewport_mut().set_hovered(None);
+    app.ci_mut().viewport_mut().set_hovered(None);
+    app.lint_mut().viewport_mut().set_hovered(None);
     let panes = app.panes_mut();
     panes.package_mut().viewport_mut().set_hovered(None);
     panes.lang_mut().viewport_mut().set_hovered(None);
     panes.cpu_mut().viewport_mut().set_hovered(None);
     panes.git_mut().viewport_mut().set_hovered(None);
-    panes.lints_mut().viewport_mut().set_hovered(None);
-    panes.ci_mut().viewport_mut().set_hovered(None);
     panes.keymap_mut().viewport_mut().set_hovered(None);
     panes.settings_mut().viewport_mut().set_hovered(None);
     panes.finder_mut().viewport_mut().set_hovered(None);
@@ -159,7 +159,6 @@ mod tests {
     use crossterm::event::MouseButton;
     use crossterm::event::MouseEvent;
     use crossterm::event::MouseEventKind;
-    use panes::DispatchArgs;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
@@ -210,6 +209,7 @@ mod tests {
     use crate::tui::finder;
     use crate::tui::input;
     use crate::tui::pane::HoverTarget;
+    use crate::tui::pane::PaneRenderCtx;
     use crate::tui::pane::PaneSelectionState;
     use crate::tui::pane::Viewport;
     use crate::tui::panes;
@@ -377,7 +377,7 @@ mod tests {
 
     fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
         app.ensure_detail_cached();
-        app.panes_mut().override_lints_for_test(LintsData {
+        app.lint_mut().set_content(LintsData {
             runs:    runs.to_vec(),
             sizes:   vec![Some(0); runs.len()],
             is_rust: true,
@@ -393,8 +393,8 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (panes, _layout_cache, config, _selection, scan) = app.split_panes_for_render();
-                let args = DispatchArgs {
+                let (lint, config, scan) = app.split_lint_for_render();
+                let ctx = PaneRenderCtx {
                     focus_state,
                     is_focused,
                     animation_elapsed,
@@ -402,14 +402,14 @@ mod tests {
                     scan,
                     selected_project_path: selected_path.as_deref(),
                 };
-                panes.dispatch_lints_render(frame, area, &args);
+                panes::render_lints_pane_body(frame, area, lint, &ctx);
             })
             .unwrap_or_else(|_| std::process::abort());
     }
 
     fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
         app.ensure_detail_cached();
-        app.panes_mut().override_ci_runs_for_test(runs.to_vec());
+        app.ci_mut().override_runs_for_test(runs.to_vec());
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         let focus_state = app.focus().pane_state(PaneId::CiRuns);
@@ -421,8 +421,8 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (panes, _layout_cache, config, _selection, scan) = app.split_panes_for_render();
-                let args = DispatchArgs {
+                let (ci, config, scan) = app.split_ci_for_render();
+                let ctx = PaneRenderCtx {
                     focus_state,
                     is_focused,
                     animation_elapsed,
@@ -430,7 +430,7 @@ mod tests {
                     scan,
                     selected_project_path: selected_path.as_deref(),
                 };
-                panes.dispatch_ci_render(frame, area, &args);
+                panes::render_ci_pane_body(frame, area, ci, &ctx);
             })
             .unwrap_or_else(|_| std::process::abort());
     }
@@ -511,7 +511,7 @@ mod tests {
     }
 
     fn lint_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.panes().lints().viewport().content_area();
+        let area = app.lint().viewport().content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -521,7 +521,7 @@ mod tests {
     }
 
     fn ci_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.panes().ci().viewport().content_area();
+        let area = app.ci().viewport().content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -869,7 +869,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.panes().lints().viewport().pos(),
+            app.lint().viewport().pos(),
             1,
             "clicking the second rendered lint run should select run index 1, not the header-offset visual row"
         );
@@ -903,7 +903,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.panes().ci().viewport().pos(),
+            app.ci().viewport().pos(),
             1,
             "clicking the second rendered CI run should select run index 1, not the header-offset visual row"
         );

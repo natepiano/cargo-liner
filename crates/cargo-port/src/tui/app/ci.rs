@@ -128,10 +128,7 @@ impl App {
             },
         };
 
-        self.panes_mut()
-            .ci_mut()
-            .viewport_mut()
-            .set_pos(merged.len());
+        self.ci.viewport_mut().set_pos(merged.len());
         if let Some(repo) = self.owner_repo_for_path_inner(&abs) {
             let meta = scan::load_cached_repo_data(self.net.github().fetch_cache(), &repo)
                 .and_then(|cached| cached.meta);
@@ -186,7 +183,7 @@ impl App {
             CiRunDisplayMode::All => CiRunDisplayMode::BranchOnly,
         };
         self.ci.set_display_mode(AbsolutePath::from(path), new_mode);
-        self.panes_mut().ci_mut().viewport_mut().home();
+        self.ci.viewport_mut().home();
         self.scan.bump_generation();
     }
 

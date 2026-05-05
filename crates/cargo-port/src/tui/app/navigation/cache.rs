@@ -52,31 +52,28 @@ impl App {
         let pane_started = std::time::Instant::now();
         let pane = desired.and_then(|key| self.build_selected_pane_data().map(|data| (key, data)));
         let pane_ms = perf_log::ms(pane_started.elapsed().as_millis());
-        match pane {
-            Some((key, data)) => {
-                let ci_started = std::time::Instant::now();
-                let ci = tui::panes::build_ci_data(self);
-                let ci_ms = perf_log::ms(ci_started.elapsed().as_millis());
-                let lints_started = std::time::Instant::now();
-                let lints = tui::panes::build_lints_data(self);
-                let lints_ms = perf_log::ms(lints_started.elapsed().as_millis());
-                self.panes_mut().set_detail_data(
-                    key,
-                    data.package,
-                    data.git,
-                    data.targets,
-                    ci,
-                    lints,
-                );
-                tracing::info!(
-                    total_ms = perf_log::ms(started.elapsed().as_millis()),
-                    pane_ms,
-                    ci_ms,
-                    lints_ms,
-                    "detail_build_breakdown"
-                );
-            },
-            None => self.panes_mut().clear_detail_data(desired),
+        if let Some((key, data)) = pane {
+            let ci_started = std::time::Instant::now();
+            let ci = tui::panes::build_ci_data(self);
+            let ci_ms = perf_log::ms(ci_started.elapsed().as_millis());
+            let lints_started = std::time::Instant::now();
+            let lints = tui::panes::build_lints_data(self);
+            let lints_ms = perf_log::ms(lints_started.elapsed().as_millis());
+            self.ci_mut().set_content(ci);
+            self.lint_mut().set_content(lints);
+            self.panes_mut()
+                .set_detail_data(key, data.package, data.git, data.targets);
+            tracing::info!(
+                total_ms = perf_log::ms(started.elapsed().as_millis()),
+                pane_ms,
+                ci_ms,
+                lints_ms,
+                "detail_build_breakdown"
+            );
+        } else {
+            self.ci_mut().clear_content();
+            self.lint_mut().clear_content();
+            self.panes_mut().clear_detail_data(desired);
         }
     }
 }
