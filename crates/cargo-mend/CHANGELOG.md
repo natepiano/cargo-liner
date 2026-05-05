@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `inline_path_qualified_type` now also flags inline paths from other crates (e.g. `ratatui::Frame`, `std::collections::BTreeMap`) and the trait in `impl SomeTrait for Type`. Previously only `crate::` and `super::` paths were flagged.
 
 ### Fixed
+- `inline_path_qualified_type` no longer suggests imports that would shadow a prelude name (`Result`, `Option`, `Vec`, `Box`, etc.). Even when the file currently doesn't write the bare name, an added `use io::Result;` silently changes what every future `Result<T, E>` resolves to.
+- `inline_path_qualified_type` now emits absolute import paths. If the file already has `use std::fmt;` and writes `fmt::Display` inline, the new import is `use std::fmt::Display;`, not `use fmt::Display;` — partial-path imports break silently if the parent import is later removed or reordered.
 - `--fix` could garble a file when two fixes touched the same spot (for example, adding a `use` line at the top while another fix rewrote the first line). The fixes are now applied in the right order.
 - `--fix` could corrupt a line that contained a multi-byte UTF-8 character (em-dash, accented letter, etc.) earlier on the same line as a path being rewritten. The replacement window is now computed from byte offsets, not character columns.
 - `--fix` could introduce an import that silently shadowed a prelude name still used elsewhere in the file (for example, adding `use io::Result;` while the file still relied on the prelude `Result` via `Result::ok`). The shadow check now considers multi-segment usages like `Result::ok`, not just bare `Result`.

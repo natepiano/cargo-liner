@@ -1251,6 +1251,123 @@ impl crate::pane::Hittable for Manager {
     );
 }
 
+/// Importing a name that has prelude meaning (`Result`, `Box`, `Option`, ...)
+/// silently changes what every future bare reference to that name resolves
+/// to. The lint must skip these — even when the file currently doesn't write
+/// bare `Result<T, E>` and the shadow-detection heuristic alone would clear
+/// it.
+#[test]
+fn does_not_import_prelude_names() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_prelude_skip_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        // `std::fmt::Result` is the type alias for `Result<(), fmt::Error>`.
+        // Bringing it in as plain `Result` would shadow the prelude generic.
+        r#"use std::fmt;
+
+pub struct Marker;
+
+impl fmt::Display for Marker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("marker")
+    }
+}
+
+fn main() {}
+"#,
+    )
+    .expect("write main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed file");
+    assert!(
+        !main_rs.contains("use fmt::Result;") && !main_rs.contains("use std::fmt::Result;"),
+        "must not import a name that shadows prelude `Result`, got:\n{main_rs}"
+    );
+}
+
+/// When a file already has `use std::fmt;` (or any other parent module) and
+/// writes `fmt::Display` inline, the new import the lint adds must be
+/// absolute (`use std::fmt::Display;`), not partial (`use fmt::Display;`).
+/// Partial imports look fine but break silently if the parent import is
+/// later reordered or removed.
+#[test]
+fn partial_path_import_is_resolved_to_absolute() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_partial_path_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"use std::sync::mpsc;
+
+pub fn make() -> mpsc::Sender<i32> {
+    let (tx, _) = mpsc::channel();
+    tx
+}
+
+fn main() {
+    let _ = make();
+}
+"#,
+    )
+    .expect("write main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed file");
+    assert!(
+        main_rs.contains("use std::sync::mpsc::Sender;"),
+        "expected absolute `use std::sync::mpsc::Sender;`, got:\n{main_rs}"
+    );
+    assert!(
+        !main_rs.contains("use mpsc::Sender;"),
+        "partial-path import is brittle — must be absolute, got:\n{main_rs}"
+    );
+}
+
 /// `Type::Variant` (enum variant patterns / associated items) must not be
 /// treated as a crate-qualified path. The first segment is `PascalCase`,
 /// which means it's a type — suggesting `use Type;` is wrong.

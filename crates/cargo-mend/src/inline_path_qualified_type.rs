@@ -139,8 +139,30 @@ fn process_occurrence(
         return;
     }
 
+    // Importing a name that already has prelude meaning (`Result`, `Option`,
+    // `Vec`, ...) at the top of a file silently changes what every future
+    // bare reference to that name resolves to. Even when nothing in the file
+    // currently writes bare `Result<T, E>`, adding `use io::Result;` is a
+    // correctness footgun the moment anyone edits the file. Skip these
+    // outright rather than rely on shadow detection.
+    if shadows_prelude(&occ.import_name) {
+        return;
+    }
+
     let byte_start = offset(ctx.text, ctx.offsets, occ.span_start);
     let byte_end = offset(ctx.text, ctx.offsets, occ.span_end);
+
+    let scope_id = find_innermost_scope(ctx.scopes, byte_start);
+    let scope = scope_id.map(|id| &ctx.scopes[id]);
+
+    // Resolve a partial path (`fmt::Display` written because `use std::fmt;`
+    // is in scope) to its absolute form (`std::fmt::Display`) so the inserted
+    // `use` is self-contained — i.e. it doesn't silently break if the parent
+    // module import is later removed or reordered.
+    let import_path = scope.map_or_else(
+        || occ.import_path.clone(),
+        |scope| absolutize_import_path(&occ.import_path, &scope.existing_imports),
+    );
 
     let source_line = ctx
         .text
@@ -162,7 +184,7 @@ fn process_occurrence(
             "use a `use` import for `{}` instead of inline path",
             occ.import_name
         ),
-        suggestion: Some(format!("consider adding: `use {};`", occ.import_path)),
+        suggestion: Some(format!("consider adding: `use {import_path};`")),
         fixability: FixSupport::InlinePathQualifiedType,
         related: None,
     });
@@ -171,7 +193,7 @@ fn process_occurrence(
     // layer can drop them together on cross-pass name collisions.
     let group = Some(ImportGroup {
         bare_name: occ.import_name.clone(),
-        full_path: occ.import_path.clone(),
+        full_path: import_path.clone(),
     });
 
     fixes.push(UseFix {
@@ -182,15 +204,15 @@ fn process_occurrence(
         import_group: group.clone(),
     });
 
-    let Some(scope_id) = find_innermost_scope(ctx.scopes, byte_start) else {
+    let Some(scope_id) = scope_id else {
         return;
     };
     let scope = &ctx.scopes[scope_id];
 
-    if !scope.existing_imports.contains(&occ.import_path)
-        && inserted_use_paths.insert((scope_id, occ.import_path.clone()))
+    if !scope.existing_imports.contains(&import_path)
+        && inserted_use_paths.insert((scope_id, import_path.clone()))
     {
-        let use_path = canonicalize_inserted_use_path(scope, &occ.import_path);
+        let use_path = canonicalize_inserted_use_path(scope, &import_path);
         let use_text = format!("{}use {use_path};\n", scope.indent);
         fixes.push(UseFix {
             path:         ctx.path.to_path_buf(),
@@ -200,6 +222,73 @@ fn process_occurrence(
             import_group: group,
         });
     }
+}
+
+/// Names with prelude meaning. Importing any of these from a non-prelude
+/// path silently shadows the prelude binding for the rest of the file —
+/// `use io::Result;` makes future `Result<T, E>` references resolve to the
+/// `std::io::Result<T>` type alias instead of the generic prelude `Result`.
+/// Conservative list: prelude types and the most commonly-derived prelude
+/// traits, all from std prelude v1 / 2021 / 2024.
+fn shadows_prelude(name: &str) -> bool {
+    matches!(
+        name,
+        "Box"
+            | "Option"
+            | "Result"
+            | "String"
+            | "Vec"
+            | "Clone"
+            | "Copy"
+            | "Debug"
+            | "Default"
+            | "Drop"
+            | "Eq"
+            | "Fn"
+            | "FnMut"
+            | "FnOnce"
+            | "From"
+            | "Hash"
+            | "Into"
+            | "IntoIterator"
+            | "Iterator"
+            | "PartialEq"
+            | "PartialOrd"
+            | "Send"
+            | "Sized"
+            | "Sync"
+            | "ToOwned"
+            | "ToString"
+            | "TryFrom"
+            | "TryInto"
+            | "Unpin"
+    )
+}
+
+/// Resolve a partial path like `fmt::Display` against the file's existing
+/// imports. If `use std::fmt;` is already in scope, `fmt::Display` becomes
+/// `std::fmt::Display`. The returned import is self-contained — it doesn't
+/// rely on a sibling module import staying in place.
+fn absolutize_import_path(import_path: &str, existing_imports: &BTreeSet<String>) -> String {
+    let Some((leading, rest)) = import_path.split_once("::") else {
+        return import_path.to_string();
+    };
+    if leading == "crate" || leading == "super" || leading == "self" {
+        return import_path.to_string();
+    }
+    // Look for an existing `use a::b::<leading>;` (i.e. an import whose final
+    // segment matches `leading` and which has at least one parent segment).
+    // Without a parent segment, the existing import is itself a top-level
+    // crate name — already absolute.
+    for existing in existing_imports {
+        let Some((parent, last)) = existing.rsplit_once("::") else {
+            continue;
+        };
+        if last == leading {
+            return format!("{parent}::{leading}::{rest}");
+        }
+    }
+    import_path.to_string()
 }
 
 fn scan_file(
