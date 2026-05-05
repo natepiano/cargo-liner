@@ -20,6 +20,7 @@ use walkdir::WalkDir;
 use super::config::DiagnosticCode;
 use super::constants::PATH_KEYWORD_CRATE;
 use super::constants::PATH_KEYWORD_SUPER;
+use super::constants::RUST_SOURCE_FILE_EXTENSION;
 use super::constants::SOURCE_DIR_SRC;
 use super::diagnostics::Finding;
 use super::diagnostics::Severity;
@@ -242,7 +243,7 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
         {
             let path = entry.path();
             if !entry.file_type().is_file()
-                || path.extension().and_then(OsStr::to_str) != Some("rs")
+                || path.extension().and_then(OsStr::to_str) != Some(RUST_SOURCE_FILE_EXTENSION)
             {
                 continue;
             }

@@ -31,6 +31,9 @@ use crate::compiler::source_cache;
 use crate::compiler::source_cache::SourceCache;
 use crate::config::DiagnosticCode;
 use crate::constants::FINDINGS_SCHEMA_VERSION;
+use crate::constants::PUB_CRATE_VISIBILITY;
+use crate::constants::PUB_IN_CRATE_VISIBILITY_PREFIX;
+use crate::constants::PUB_VISIBILITY_TOKEN;
 use crate::diagnostics::CompilerWarningFacts;
 use crate::diagnostics::Severity;
 use crate::fix_support::FixSupport;
@@ -245,7 +248,7 @@ fn analyze_item(
 
     let name = item.kind.ident().as_ref().map(ToString::to_string);
 
-    if vis_text == "pub"
+    if vis_text == PUB_VISIBILITY_TOKEN
         && policy::is_boundary_file(ctx.source_root, ctx.root_module, &file_path)
         && matches!(item.kind, ItemKind::Use(..))
         && source::use_item_contains_glob(ctx.tcx, item.span)?
@@ -372,7 +375,7 @@ fn record_visibility_findings(
     record_forbidden_pub_in_crate(ctx, item, sink)?;
     record_review_pub_mod(ctx, item, &finding_context, sink)?;
 
-    if item.vis_text == "pub"
+    if item.vis_text == PUB_VISIBILITY_TOKEN
         && finding_context.parent_visibility == ParentVisibility::Private
         && policy::is_top_level_module_file(ctx.source_root, ctx.root_module, item.file_path)
         && policy::allow_pub_crate_by_policy(
@@ -384,7 +387,7 @@ fn record_visibility_findings(
         maybe_record_narrow_to_pub_crate(ctx, item, sink)?;
     }
 
-    if item.vis_text == "pub"
+    if item.vis_text == PUB_VISIBILITY_TOKEN
         && !policy::is_boundary_file(ctx.source_root, ctx.root_module, item.file_path)
     {
         maybe_record_suspicious_pub(
@@ -412,7 +415,7 @@ fn record_forbidden_pub_crate(
     finding_context: &VisibilityFindingContext,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if !matches!(item.vis_text, "pub(crate)") {
+    if !matches!(item.vis_text, PUB_CRATE_VISIBILITY) {
         return Ok(());
     }
     if policy::allow_pub_crate_by_policy(
@@ -448,7 +451,7 @@ fn record_forbidden_pub_in_crate(
     item: &ItemInfo<'_>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if !item.vis_text.starts_with("pub(in crate::") {
+    if !item.vis_text.starts_with(PUB_IN_CRATE_VISIBILITY_PREFIX) {
         return Ok(());
     }
     sink.findings.push(source::build_finding(
@@ -477,7 +480,7 @@ fn record_review_pub_mod(
     finding_context: &VisibilityFindingContext,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    if item.category != ItemCategory::Module || !item.vis_text.starts_with("pub") {
+    if item.category != ItemCategory::Module || !item.vis_text.starts_with(PUB_VISIBILITY_TOKEN) {
         return Ok(());
     }
     let allowlisted = finding_context

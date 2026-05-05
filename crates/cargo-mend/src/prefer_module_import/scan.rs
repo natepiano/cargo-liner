@@ -21,6 +21,7 @@ use super::references::ReferenceCollector;
 use super::shared;
 use crate::config::DiagnosticCode;
 use crate::constants::PATH_KEYWORD_SUPER;
+use crate::constants::RUST_SOURCE_FILE_EXTENSION;
 use crate::constants::SOURCE_DIR_SRC;
 use crate::diagnostics::Finding;
 use crate::diagnostics::Severity;
@@ -79,7 +80,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImport
         {
             let path = entry.path();
             if !entry.file_type().is_file()
-                || path.extension().and_then(OsStr::to_str) != Some("rs")
+                || path.extension().and_then(OsStr::to_str) != Some(RUST_SOURCE_FILE_EXTENSION)
             {
                 continue;
             }

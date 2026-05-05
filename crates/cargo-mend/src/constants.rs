@@ -22,9 +22,12 @@ pub(crate) const CARGO_SUBCOMMAND_CHECK: &str = "check";
 pub(crate) const CARGO_SUBCOMMAND_FIX: &str = "fix";
 
 // cargo target kinds
+pub(crate) const CARGO_TARGET_KIND_BENCH: &str = "bench";
 pub(crate) const CARGO_TARGET_KIND_BIN: &str = "bin";
+pub(crate) const CARGO_TARGET_KIND_EXAMPLE: &str = "example";
 pub(crate) const CARGO_TARGET_KIND_LIB: &str = "lib";
 pub(crate) const CARGO_TARGET_KIND_MAIN: &str = "main";
+pub(crate) const CARGO_TARGET_KIND_TEST: &str = "test";
 
 // color mode
 pub(crate) const CARGO_TERM_COLOR_ALWAYS: &str = "always";
@@ -72,6 +75,10 @@ pub(crate) const PATH_KEYWORD_CRATE: &str = "crate";
 pub(crate) const PATH_KEYWORD_SELF: &str = "self";
 pub(crate) const PATH_KEYWORD_SUPER: &str = "super";
 
+// rust source files
+pub(crate) const RUST_SOURCE_FILE_EXTENSION: &str = "rs";
+pub(crate) const RUST_SOURCE_FILE_SUFFIX: &str = ".rs";
+
 // source-tree directories
 pub(crate) const SOURCE_DIR_BENCHES: &str = "benches";
 pub(crate) const SOURCE_DIR_EXAMPLES: &str = "examples";
@@ -79,4 +86,7 @@ pub(crate) const SOURCE_DIR_SRC: &str = "src";
 pub(crate) const SOURCE_DIR_TESTS: &str = "tests";
 
 // visibility
+pub(crate) const PUB_CRATE_VISIBILITY: &str = "pub(crate)";
+pub(crate) const PUB_IN_CRATE_VISIBILITY_PREFIX: &str = "pub(in crate::";
 pub(crate) const PUB_VISIBILITY_PREFIX: &str = "pub ";
+pub(crate) const PUB_VISIBILITY_TOKEN: &str = "pub";

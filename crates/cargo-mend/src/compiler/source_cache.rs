@@ -15,6 +15,8 @@ use crate::constants::CARGO_TARGET_KIND_LIB;
 use crate::constants::CARGO_TARGET_KIND_MAIN;
 use crate::constants::PATH_KEYWORD_CRATE;
 use crate::constants::RUST_MODULE_FILE;
+use crate::constants::RUST_SOURCE_FILE_EXTENSION;
+use crate::constants::RUST_SOURCE_FILE_SUFFIX;
 use crate::constants::SOURCE_DIR_BENCHES;
 use crate::constants::SOURCE_DIR_EXAMPLES;
 use crate::constants::SOURCE_DIR_SRC;
@@ -141,7 +143,7 @@ pub(super) fn module_path_from_boundary_file(
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     let last = components.last_mut()?;
-    *last = last.strip_suffix(".rs")?.to_string();
+    *last = last.strip_suffix(RUST_SOURCE_FILE_SUFFIX)?.to_string();
     if matches!(
         components.as_slice(),
         [name] if name == CARGO_TARGET_KIND_LIB || name == CARGO_TARGET_KIND_MAIN
@@ -224,7 +226,7 @@ fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()>
         let path = entry.path();
         if path.is_dir() {
             collect_rust_source_files(&path, files)?;
-        } else if path.extension().and_then(OsStr::to_str) == Some("rs") {
+        } else if path.extension().and_then(OsStr::to_str) == Some(RUST_SOURCE_FILE_EXTENSION) {
             files.push(path);
         }
     }

@@ -5,6 +5,7 @@ use anyhow::Context;
 use anyhow::Result;
 
 use super::config::DiagnosticCode;
+use super::constants::PUB_VISIBILITY_TOKEN;
 use super::diagnostics::Report;
 use super::imports::UseFix;
 
@@ -85,17 +86,17 @@ fn parse_replacement_from_suggestion(suggestion: Option<&str>) -> Option<String>
 /// or `pub(in <path>)` annotation at the start of `text`. Returns None when
 /// `text` does not begin with `pub`.
 fn vis_annotation_byte_len(text: &str) -> Option<usize> {
-    let rest = text.strip_prefix("pub")?;
+    let rest = text.strip_prefix(PUB_VISIBILITY_TOKEN)?;
     let mut chars = rest.char_indices();
     match chars.next() {
         Some((_, '(')) => {
             // Walk to the matching `)`. `pub(in crate::foo)` may contain
             // colons and identifiers but never nested parens.
             let close = rest.find(')')?;
-            Some("pub".len() + close + 1)
+            Some(PUB_VISIBILITY_TOKEN.len() + close + 1)
         },
-        Some((_, c)) if c.is_whitespace() || c == ':' => Some("pub".len()),
-        None => Some("pub".len()),
+        Some((_, c)) if c.is_whitespace() || c == ':' => Some(PUB_VISIBILITY_TOKEN.len()),
+        None => Some(PUB_VISIBILITY_TOKEN.len()),
         _ => None,
     }
 }

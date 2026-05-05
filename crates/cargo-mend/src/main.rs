@@ -58,6 +58,7 @@ use render::CompilerStats;
 use render::OutputFormat;
 use run_mode::OperationMode;
 use runner::MendRunner;
+use selection::Selection;
 
 /// Maximum number of mend passes during `--fix-all`. Prevents an infinite
 /// loop if a fix oscillates; in practice convergence happens in 1–2 passes.
@@ -134,14 +135,19 @@ fn run() -> Result<ExitCode, MendFailure> {
     .map_err(MendFailure::Unexpected)?;
     let operation_mode = OperationMode::from(&cli.fix);
     let color = color_mode();
-    let output = cli.output;
+    let output_format = cli.output_format;
     let start = Instant::now();
-    let runner = MendRunner::new(&selection, &cargo_plan, &loaded_config, color, output);
+    let runner = MendRunner::new(
+        &selection,
+        &cargo_plan,
+        &loaded_config,
+        color,
+        output_format,
+    );
     let mut outcome = runner.run(operation_mode.clone())?;
     let mut total_compiler_fix_duration = Duration::ZERO;
     let mut total_extra_check_duration = Duration::ZERO;
 
-    let want_loop = matches!(cli.fix.execution, FixExecution::ApplyAll);
     let mut passes = 1;
 
     loop {
@@ -164,7 +170,7 @@ fn run() -> Result<ExitCode, MendFailure> {
                 compiler::run_cargo_fix(&cargo_plan, color).map_err(MendFailure::Unexpected)?;
         }
 
-        if !want_loop || passes >= FIX_ALL_MAX_PASSES {
+        if !matches!(cli.fix.execution, FixExecution::ApplyAll) || passes >= FIX_ALL_MAX_PASSES {
             break;
         }
 
@@ -185,7 +191,6 @@ fn run() -> Result<ExitCode, MendFailure> {
     let total_duration = start.elapsed();
     let check_duration =
         outcome.check_duration + total_extra_check_duration + total_compiler_fix_duration;
-    let mend_duration = total_duration.saturating_sub(check_duration);
 
     // Apply display filter — narrows reported findings according to the
     // user's `--lib`, `--bin`, `--example`, `--test`, `--bench` flags.
@@ -194,16 +199,42 @@ fn run() -> Result<ExitCode, MendFailure> {
     let display_filter = DisplayFilter::from_cli(&cli.cargo, &selection.packages);
     display_filter.apply(&mut outcome.report);
 
+    render_outcome(
+        &outcome,
+        &selection,
+        output_format,
+        color,
+        total_duration,
+        check_duration,
+    )?;
+
+    if outcome.report.has_errors() {
+        return Ok(ExitCode::from(EXIT_CODE_ERROR));
+    }
+    if cli.warning_policy == WarningPolicy::Fail && outcome.report.has_warnings() {
+        return Ok(ExitCode::from(EXIT_CODE_WARNING));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn render_outcome(
+    outcome: &ExecutionOutcome,
+    selection: &Selection,
+    output_format: OutputFormat,
+    color: ColorMode,
+    total_duration: Duration,
+    check_duration: Duration,
+) -> Result<(), MendFailure> {
     let compiler_stats = CompilerStats {
         warnings: outcome.compiler_warnings,
         fixable:  outcome.compiler_fixable,
     };
 
-    match output {
+    match output_format {
         OutputFormat::Json => {
             print!(
                 "{}",
-                cargo_json::render_report(&outcome.report, &selection)
+                cargo_json::render_report(&outcome.report, selection)
                     .map_err(MendFailure::Unexpected)?
             );
         },
@@ -215,26 +246,19 @@ fn run() -> Result<ExitCode, MendFailure> {
         },
     }
 
-    if output == OutputFormat::Human {
+    if output_format == OutputFormat::Human {
+        let mend_duration = total_duration.saturating_sub(check_duration);
         eprintln!(
             "{}",
             render::render_timing(total_duration, check_duration, mend_duration, color)
         );
     }
 
-    if let Some(notice) = outcome.notice {
+    if let Some(notice) = outcome.notice.as_ref() {
         eprintln!("{}", notice.render());
     }
 
-    if outcome.report.has_errors() {
-        return Ok(ExitCode::from(EXIT_CODE_ERROR));
-    }
-
-    if cli.warning_policy == WarningPolicy::Fail && outcome.report.has_warnings() {
-        return Ok(ExitCode::from(EXIT_CODE_WARNING));
-    }
-
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 fn color_mode() -> ColorMode {

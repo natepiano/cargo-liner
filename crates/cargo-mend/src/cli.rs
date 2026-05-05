@@ -26,7 +26,7 @@ pub(crate) enum WarningPolicy {
 pub(crate) struct Cli {
     pub build_info: BuildInfoMode,
 
-    pub output: OutputFormat,
+    pub output_format: OutputFormat,
 
     pub warning_policy: WarningPolicy,
 
@@ -320,7 +320,7 @@ impl From<RawCli> for Cli {
             } else {
                 BuildInfoMode::Run
             },
-            output:         if raw.json {
+            output_format:  if raw.json {
                 OutputFormat::Json
             } else {
                 OutputFormat::Human

@@ -3,6 +3,11 @@ use std::path::PathBuf;
 
 use super::cli::CargoCheckCli;
 use super::cli::TargetSelection;
+use super::constants::CARGO_TARGET_KIND_BENCH;
+use super::constants::CARGO_TARGET_KIND_BIN;
+use super::constants::CARGO_TARGET_KIND_EXAMPLE;
+use super::constants::CARGO_TARGET_KIND_LIB;
+use super::constants::CARGO_TARGET_KIND_TEST;
 use super::constants::SOURCE_DIR_SRC;
 use super::diagnostics::Report;
 use super::selection::PackageMetadata;
@@ -49,7 +54,7 @@ impl DisplayFilter {
                 let dir = target_directory(target);
                 if cli_includes_target(cli, target) {
                     allowed.push(dir.clone());
-                    if target.kind.iter().any(|k| k == "lib") {
+                    if target.kind.iter().any(|k| k == CARGO_TARGET_KIND_LIB) {
                         lib_included = true;
                     }
                 }
@@ -59,7 +64,7 @@ impl DisplayFilter {
             // the lib's allow set.
             if lib_included {
                 for target in &package.targets {
-                    if !target.kind.iter().any(|k| k == "lib") {
+                    if !target.kind.iter().any(|k| k == CARGO_TARGET_KIND_LIB) {
                         let dir = target_directory(target);
                         if dir.starts_with(&package.root) {
                             excluded_dirs.push(dir);
@@ -139,20 +144,20 @@ fn target_directory(target: &TargetMetadata) -> PathBuf {
 fn cli_includes_target(cli: &CargoCheckCli, target: &TargetMetadata) -> bool {
     let kind = target.kind.first().map_or("", String::as_str);
     match kind {
-        "lib" => cli.target_selections.contains(&TargetSelection::Library),
-        "bin" => {
+        CARGO_TARGET_KIND_LIB => cli.target_selections.contains(&TargetSelection::Library),
+        CARGO_TARGET_KIND_BIN => {
             cli.target_selections.contains(&TargetSelection::Binaries)
                 || cli.bin.iter().any(|name| name == &target.name)
         },
-        "example" => {
+        CARGO_TARGET_KIND_EXAMPLE => {
             cli.target_selections.contains(&TargetSelection::Examples)
                 || cli.example.iter().any(|name| name == &target.name)
         },
-        "test" => {
+        CARGO_TARGET_KIND_TEST => {
             cli.target_selections.contains(&TargetSelection::Tests)
                 || cli.test.iter().any(|name| name == &target.name)
         },
-        "bench" => {
+        CARGO_TARGET_KIND_BENCH => {
             cli.target_selections.contains(&TargetSelection::Benches)
                 || cli.bench.iter().any(|name| name == &target.name)
         },

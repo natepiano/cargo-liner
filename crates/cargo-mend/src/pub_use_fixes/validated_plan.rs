@@ -18,6 +18,7 @@ use super::parent_boundary::ParentBoundaryKey;
 use crate::constants::PATH_KEYWORD_CRATE;
 use crate::constants::PATH_KEYWORD_SELF;
 use crate::constants::PATH_KEYWORD_SUPER;
+use crate::constants::RUST_SOURCE_FILE_EXTENSION;
 use crate::constants::SOURCE_DIR_SRC;
 use crate::imports::UseFix;
 use crate::module_paths;
@@ -475,7 +476,7 @@ fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()>
         let path = entry.path();
         if path.is_dir() {
             collect_rust_source_files(&path, files)?;
-        } else if path.extension().and_then(OsStr::to_str) == Some("rs") {
+        } else if path.extension().and_then(OsStr::to_str) == Some(RUST_SOURCE_FILE_EXTENSION) {
             files.push(path);
         }
     }
