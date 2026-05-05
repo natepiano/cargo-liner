@@ -4,20 +4,24 @@
 //! Each clickable pane retains its own hit-test layout (computed
 //! during render) and answers `Hittable::hit_test_at(pos)`
 //! directly, rather than pushing hitboxes into a global vec.
+//!
+//! Lives at `crate::tui::pane::dispatch` (not `crate::tui::panes::dispatch`)
+//! so `pub(super)` reaches `crate::tui` — every subsystem under `tui/`
+//! can `impl Pane` without widening the trait's visibility.
 
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use strum::EnumIter;
 
-use super::PaneId;
 use crate::tui::app::DismissTarget;
 use crate::tui::config_state::Config;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::panes::PaneId;
 use crate::tui::scan_state::Scan;
 
 /// Bundle of references a pane needs at render time.
-pub struct PaneRenderCtx<'a> {
+pub(in crate::tui) struct PaneRenderCtx<'a> {
     pub focus_state:           PaneFocusState,
     pub is_focused:            bool,
     pub animation_elapsed:     std::time::Duration,
@@ -28,13 +32,13 @@ pub struct PaneRenderCtx<'a> {
 
 /// Per-pane render dispatch. `Hittable` is a separate sub-trait
 /// for panes that participate in click/hover dispatch.
-pub(super) trait Pane {
+pub(in crate::tui) trait Pane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>);
 }
 
 /// Result of a single pane's hit-test at a screen position.
 #[derive(Clone, Debug)]
-pub enum HoverTarget {
+pub(in crate::tui) enum HoverTarget {
     PaneRow { pane: PaneId, row: usize },
     Dismiss(DismissTarget),
     ToastCard(u64),
@@ -44,7 +48,7 @@ pub enum HoverTarget {
 /// hover dispatch. Keeping `Pane` and `Hittable` separate lets the
 /// dispatch match in `Panes::hit_test_at` reject non-clickable
 /// panes at compile time.
-pub(super) trait Hittable: Pane {
+pub(in crate::tui) trait Hittable: Pane {
     /// Return the hit target if `pos` lands inside this pane's
     /// rendered area, or `None` otherwise. Implementations rely on
     /// state recorded during render (viewport content area + scroll
@@ -58,7 +62,7 @@ pub(super) trait Hittable: Pane {
 /// `hit_test_tests` walk all variants and assert each one appears
 /// in `HITTABLE_Z_ORDER`.
 #[derive(EnumIter, Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(super) enum HittableId {
+pub(in crate::tui) enum HittableId {
     Toasts,
     Finder,
     Settings,
@@ -77,7 +81,7 @@ pub(super) enum HittableId {
 /// Overlays sit above tiled panes; within a category the order
 /// matches how panes are drawn (later-drawn overlays occlude earlier
 /// ones on the screen).
-pub(super) const HITTABLE_Z_ORDER: [HittableId; 12] = [
+pub(in crate::tui) const HITTABLE_Z_ORDER: [HittableId; 12] = [
     HittableId::Toasts,
     HittableId::Finder,
     HittableId::Settings,

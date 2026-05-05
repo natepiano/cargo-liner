@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 
 use super::app::App;
 use super::app::HoveredPaneRow;
-use super::panes::HoverTarget;
+use super::pane::HoverTarget;
 use super::panes::PaneId;
 
 /// Per-toast hit-test rects produced by `toasts::render_toasts`
@@ -118,6 +118,7 @@ mod tests {
     use crate::tui::app::ExpandKey;
     use crate::tui::finder;
     use crate::tui::input;
+    use crate::tui::pane::HoverTarget;
     use crate::tui::pane::PaneSelectionState;
     use crate::tui::pane::Viewport;
     use crate::tui::panes;
@@ -519,7 +520,7 @@ mod tests {
         let Some(hit) = app.panes().hit_test_at(Position::new(x, y)) else {
             std::process::abort();
         };
-        let panes::HoverTarget::Dismiss(mouse_target) = hit else {
+        let HoverTarget::Dismiss(mouse_target) = hit else {
             std::process::abort();
         };
 

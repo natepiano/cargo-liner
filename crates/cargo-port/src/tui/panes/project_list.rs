@@ -123,15 +123,6 @@ pub fn formatted_disk_for_item(item: &RootItem) -> String {
 }
 
 pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
-    // Mirror the cursor onto the project_list viewport's `pos` so the
-    // per-row styling pass (`pane.selection_state(row, focus)` in
-    // `build_styled_items`) and any other reader of `viewport().pos()`
-    // see the current cursor.
-    let cursor = app.selection().cursor();
-    app.panes_mut()
-        .project_list_mut()
-        .viewport_mut()
-        .set_pos(cursor);
     let (mut items, header, summary_line, row_width) = {
         let widths = app.cached_fit_widths();
         let items: Vec<ListItem> = render_tree_items(app, widths);
@@ -1003,13 +994,17 @@ pub fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<ListItem<
         .resolved_root_labels(app.config().include_non_rust().includes_non_rust());
     let focus = app.focus().pane_state(PaneId::ProjectList);
     let pane = app.panes().project_list().viewport();
+    let cursor = app.selection().cursor();
 
     let rows = app.visible_rows();
     rows.iter()
         .enumerate()
         .map(|(row_index, row)| {
             let item = render_tree_item(app, row, &root_labels, root_sorted, child_sorted, widths);
-            item.style(pane.selection_state(row_index, focus).overlay_style())
+            item.style(
+                pane.selection_state_for(cursor, row_index, focus)
+                    .overlay_style(),
+            )
         })
         .collect()
 }

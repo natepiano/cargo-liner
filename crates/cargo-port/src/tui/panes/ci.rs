@@ -10,7 +10,6 @@ use ratatui::widgets::TableState;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiData;
-use super::dispatch::PaneRenderCtx;
 use super::pane_impls::CiPane;
 use crate::ci;
 use crate::ci::CiRun;
@@ -21,6 +20,7 @@ use crate::tui::constants::CI_TIMESTAMP_WIDTH;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::pane;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneSelectionState;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::render;

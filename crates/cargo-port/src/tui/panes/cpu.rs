@@ -9,7 +9,6 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
-use super::dispatch::PaneRenderCtx;
 use super::package::RenderStyles;
 use super::pane_impls::CpuPane;
 use crate::config::CpuConfig;
@@ -19,6 +18,7 @@ use crate::tui::constants::ERROR_COLOR;
 use crate::tui::cpu;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneRule;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::Viewport;

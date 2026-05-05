@@ -15,12 +15,6 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use super::data::PaneDataStore;
-use super::dispatch::HITTABLE_Z_ORDER;
-use super::dispatch::Hittable;
-use super::dispatch::HittableId;
-use super::dispatch::HoverTarget;
-use super::dispatch::Pane;
-use super::dispatch::PaneRenderCtx;
 use super::pane_impls::CiPane;
 use super::pane_impls::CpuPane;
 use super::pane_impls::FinderPane;
@@ -41,7 +35,13 @@ use crate::ci::CiRun;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::config_state::Config;
+use crate::tui::pane::HITTABLE_Z_ORDER;
+use crate::tui::pane::Hittable;
+use crate::tui::pane::HittableId;
+use crate::tui::pane::HoverTarget;
+use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::Viewport;
 use crate::tui::scan_state::Scan;
 

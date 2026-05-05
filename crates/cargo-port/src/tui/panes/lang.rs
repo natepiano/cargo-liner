@@ -10,7 +10,6 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
-use super::dispatch::PaneRenderCtx;
 use super::package::RenderStyles;
 use super::pane_impls::LangPane;
 use crate::project;
@@ -21,6 +20,7 @@ use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::TITLE_COLOR;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::Viewport;
 use crate::tui::render;

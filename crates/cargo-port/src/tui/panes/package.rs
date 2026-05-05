@@ -14,7 +14,6 @@ use unicode_width::UnicodeWidthStr;
 
 use super::DetailField;
 use super::PackageData;
-use super::dispatch::PaneRenderCtx;
 use super::pane_impls::PackagePane;
 use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::ERROR_COLOR;
@@ -25,6 +24,7 @@ use crate::tui::constants::TITLE_COLOR;
 use crate::tui::pane;
 use crate::tui::pane::PaneChrome;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneRule;
 use crate::tui::pane::Viewport;
 use crate::tui::panes;

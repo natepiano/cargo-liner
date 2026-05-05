@@ -3,7 +3,6 @@ mod ci;
 mod constants;
 mod cpu;
 mod data;
-mod dispatch;
 mod git;
 mod lang;
 mod layout;
@@ -42,7 +41,6 @@ pub(super) use cpu::CPU_PANE_WIDTH;
 pub(super) use cpu::cpu_required_pane_height;
 pub(super) use data::DetailCacheKey;
 pub(super) use data::PaneDataStore;
-pub(super) use dispatch::HoverTarget;
 #[cfg(test)]
 pub(super) use git::git_label_width;
 pub(super) use layout::BottomRow;

@@ -1,4 +1,5 @@
 mod chrome;
+mod dispatch;
 mod layout;
 mod rules;
 mod state;
@@ -8,6 +9,12 @@ pub(super) use chrome::PaneChrome;
 pub(super) use chrome::default_pane_chrome;
 pub(super) use chrome::empty_pane_block;
 pub(super) use chrome::render_overflow_affordance;
+pub(super) use dispatch::HITTABLE_Z_ORDER;
+pub(super) use dispatch::Hittable;
+pub(super) use dispatch::HittableId;
+pub(super) use dispatch::HoverTarget;
+pub(super) use dispatch::Pane;
+pub(super) use dispatch::PaneRenderCtx;
 pub(super) use layout::PaneAxisSize;
 pub(super) use layout::PaneGridLayout;
 pub(super) use layout::PanePlacement;

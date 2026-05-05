@@ -13,7 +13,6 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 
 use super::LintsData;
-use super::dispatch::PaneRenderCtx;
 use super::pane_impls::LintsPane;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
@@ -26,6 +25,7 @@ use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::Viewport;
 use crate::tui::render;

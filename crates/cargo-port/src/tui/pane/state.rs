@@ -170,11 +170,25 @@ impl Viewport {
     }
 
     pub const fn selection_state(&self, row: usize, focus: PaneFocusState) -> PaneSelectionState {
-        if row == self.pos() && matches!(focus, PaneFocusState::Active) {
+        self.selection_state_for(self.pos(), row, focus)
+    }
+
+    /// `selection_state` variant that takes the cursor explicitly,
+    /// for callers whose cursor lives outside this viewport (e.g.,
+    /// the project-list cursor lives on `Selection.cursor`). The
+    /// hovered-row check still reads the viewport's own `hovered`
+    /// field — hover is always per-pane.
+    pub const fn selection_state_for(
+        &self,
+        cursor: usize,
+        row: usize,
+        focus: PaneFocusState,
+    ) -> PaneSelectionState {
+        if row == cursor && matches!(focus, PaneFocusState::Active) {
             PaneSelectionState::Active
         } else if matches!(self.hovered, Some(hovered_row) if hovered_row == row) {
             PaneSelectionState::Hovered
-        } else if row == self.pos() && matches!(focus, PaneFocusState::Remembered) {
+        } else if row == cursor && matches!(focus, PaneFocusState::Remembered) {
             PaneSelectionState::Remembered
         } else {
             PaneSelectionState::Unselected

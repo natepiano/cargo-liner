@@ -17,10 +17,6 @@ use ratatui::layout::Rect;
 use super::PaneId;
 use super::ci;
 use super::cpu;
-use super::dispatch::Hittable;
-use super::dispatch::HoverTarget;
-use super::dispatch::Pane;
-use super::dispatch::PaneRenderCtx;
 use super::git;
 use super::lang;
 use super::lints;
@@ -35,6 +31,10 @@ use crate::tui::cpu::CpuPoller;
 use crate::tui::cpu::CpuUsage;
 use crate::tui::interaction::ToastHitbox;
 use crate::tui::pane;
+use crate::tui::pane::Hittable;
+use crate::tui::pane::HoverTarget;
+use crate::tui::pane::Pane;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::Viewport;
 
 // ── Package ─────────────────────────────────────────────────────

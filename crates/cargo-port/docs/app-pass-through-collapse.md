@@ -177,7 +177,7 @@ Phases 11–16 are the remaining architectural moves.
 | 9 of 16 | Phase 9 — Overlays subsystem (lives at `tui/overlays.rs`) | **Done** |
 | 10 of 16 | Phase 10 — `CiFetchTracker` relocation prep for Phase 11 | **Done** |
 | 11 of 16 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` | **Done** (cursor field move; Group 1/2 method absorption deferred) |
-| 12 of 16 | Phase 12 — Subsystems implement `Pane` | Ready |
+| 12 of 16 | Phase 12 — Subsystems implement `Pane` | **In progress** (stage 1: foundational changes done; wrapper absorptions pending) |
 | 13 of 16 | Phase 13 — `Bus<Event>` skeleton + `apply_service_signal` (gate) | Ready |
 | 14 of 16 | Phase 14 — `apply_lint_config_change` over bus | Ready |
 | 15 of 16 | Phase 15 — `apply_config` over bus (introduces `ConfigDiff`) | Ready |
@@ -1265,17 +1265,16 @@ recur. Don't carry the writeback past Phase 12.
 
 ## Phase 12 — Subsystems own pane state; drop wrapper types (Cluster B for panes)
 
-**Cluster naming (post-Phase-11 review).** Phase 12 is *Cluster B for
-panes*: multi-part state where each part has a rightful owner —
-domain state moves into the subsystem, per-frame layout stays on the
-render side, detail cache stays where it's read. The Cluster A/B/C
-taxonomy (Phase 13 = A, Phase 11 = C) extends here for consistency.
-
 Source of truth: see "Item 5" in the post-Phase-9 review section
 below. Summary:
 
-- Widen `Pane` trait visibility from `pub(super)` to `pub(crate)` in
-  `tui/panes/dispatch.rs`.
+- Relocate the `Pane` trait from `tui/panes/dispatch.rs` to
+  `tui/pane/` (top-level subsystem module under `tui/`). At that
+  location `pub(super)` reaches `crate::tui` — sufficient for any
+  subsystem (`tui/toasts/`, `tui/ci_state.rs`, etc.) to impl it.
+  No `pub(crate)` widening — `pub(crate)` is forbidden inside
+  nested `tui/` modules, so the visibility comes from relocation,
+  not from widening.
 - Move `viewport: Viewport` (and absorbed payload, e.g. `CiData`,
   `LintsData`) into the data subsystems: `ToastManager`, `Ci`, `Lint`,
   `Selection`, `Overlays` (per Phase 9).
@@ -1344,28 +1343,30 @@ pub(super) fn split_panes_for_render(&mut self)
 This is the lever Phase 12 uses. The codebase already splits App
 into disjoint borrows for render. Phase 12 widens the split.
 
-**Post-Phase-12 `Pane` trait** (visibility widened to `pub(crate)`):
+**Post-Phase-12 `Pane` trait** (relocated from `tui/panes/dispatch.rs`
+to `tui/pane/` — same signature, visibility stays `pub(super)`,
+reach widens via location):
 ```rust
-pub(crate) trait Pane {
+pub(super) trait Pane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>);
 }
 ```
 
-Same signature; only the visibility changes.
+`pub(super)` from `tui/pane/` reaches `crate::tui` — every subsystem
+under `tui/` (`tui/toasts/`, `tui/ci_state.rs`, `tui/lint_state.rs`,
+`tui/overlays.rs`) can impl it without widening. **Do not** widen
+to `pub(crate)`: `pub(crate)` is forbidden inside nested `tui/`
+modules per the project rule, and the relocation makes widening
+unnecessary.
 
-**Visibility-tier note (post-Phase-9 clarification):** widening only
-the *trait* to `pub(crate)` does **not** require widening the
-subsystem types that `impl Pane`. `Selection`, `Scan`, `Lint`, `Net`,
-`Inflight`, `ToastManager` stay at their current `pub(super)` or
-`pub` visibility — Rust's coherence rules allow a `pub(crate)` trait
-impl on a `pub(super)` type without escalating the type itself. The
-post-Phase-8 `crate::tui::<subsystem>` location pattern firms this:
-each subsystem keeps the narrowest visibility that compiles
-(`Focus`/`Overlays` are `pub(crate)` because external panes reach
-them through `app.focus()`/`app.overlays()` from `tui/panes/`;
-`Selection`/`Scan` are `pub(super)` because nothing outside `tui/`
-reaches them by type name). Phase 12 leaves these visibility tiers
-untouched.
+**Visibility-tier note (post-Phase-9 clarification, post-Phase-11
+correction):** subsystem types that `impl Pane` keep their current
+visibility. `Selection`, `Scan`, `Lint`, `Net`, `Inflight`,
+`ToastManager` stay at `pub(super)` or `pub` (whatever they are
+today). `Focus` and `Overlays` are `pub(crate)` because they live
+at `crate::tui::*` (top-level under `tui/`) where the project rule
+allows it. Phase 12 leaves these visibility tiers untouched —
+relocating the trait is the only structural change.
 
 **Post-Phase-12 `PaneRenderCtx`** (carries the references that
 `Pane` impls reach today via `app.<x>()` accessors):
@@ -1529,11 +1530,89 @@ domain data.
   spanning Selection, Net, Ci, Scan, and git state. After Phase 12,
   these signatures change to `build_ci_data(split: &RenderSplit<'_>)`
   (or similar disjoint-borrow tuple). All ~3 callers update. This
-  is the largest signature change in the call-site set.
+  is the largest signature change in the call-site set. **Sanity
+  check before commit:** confirm `RenderSplit<'_>` exposes every
+  field these functions read; the current design-depth example
+  (~5 fields) doesn't yet enumerate the full set the builders need.
+- **`build_styled_items`** (`src/tui/panes/project_list.rs`, called
+  from `render_tree_items`) calls
+  `pane.selection_state(row_index, focus)`, which compares each row
+  against `viewport.pos()` to choose the highlight overlay. After
+  Phase 12, **rewrite `selection_state` to take `cursor: usize` as
+  an arg** (or have `build_styled_items` accept the cursor and pass
+  it down) and **delete the `viewport.pos` writeback at
+  `render_project_list`'s top** (Phase 11 left it as a temporary
+  mirror). This is the planned removal of the Phase 11 styling-pass
+  workaround — Phase 12 owns this cleanup, not a separate phase.
+  ~5 LOC of changes, but load-bearing for not letting the mirror
+  rot.
 
-**Status: ready to execute** — all load-bearing artifacts are now
-defined. One execution-time choice remains: option (a) vs (b) for
-`Selection`'s `Pane` impl, with (b) recommended.
+**Status: in progress.**
+
+### Phase 12 staging
+
+Phase 12 is multi-commit work. The foundational changes that don't
+touch wrapper structure land first; wrapper absorptions land per
+subsystem afterward.
+
+**Stage 1 — foundational changes (done).**
+- Phase 11 styling-pass cleanup landed: added
+  `Viewport::selection_state_for(cursor, row, focus)` so callers can
+  pass an explicit cursor; rewrote `panes/project_list.rs:render_tree_items`
+  to use it; deleted the `viewport.pos` writeback at the top of
+  `render_project_list`. The Phase 11 mirror is gone.
+
+**Stage 2 — relocate `Pane` trait (pending).**
+The earlier draft said "widen `Pane` trait from `pub(super)` to
+`pub(crate)`." That violates the project's `pub(crate)`-forbidden-in-
+nested-modules rule (the trait lives in `tui/panes/dispatch.rs`,
+which is nested under `tui/panes/`). The structural fix:
+**relocate** the `Pane` trait from `tui/panes/dispatch.rs` to
+`tui/pane/` (already a top-level subsystem module under `tui/`).
+At that location `pub(super)` reaches `crate::tui` — sufficient for
+any subsystem (`tui/toasts/`, `tui/ci_state.rs`, `tui/lint_state.rs`,
+`tui/overlays.rs`) to impl it. No visibility widening required.
+
+`PaneRenderCtx`, `Hittable`, `HoverTarget`, `HittableId`, and
+`HITTABLE_Z_ORDER` move alongside (they're tied to the trait's
+contract). Imports update across `tui/panes/*.rs`.
+
+**Stage 3 — wrapper absorption per subsystem (pending).**
+- `ToastsPane` → `ToastManager` (viewport into `ToastManager`; `hits`
+  Vec to a render-side layout cache).
+- `CiPane` → `Ci` (viewport + content into `Ci`).
+- `LintsPane` → `Lint` (viewport + content into `Lint`).
+- `KeymapPane` / `SettingsPane` / `FinderPane` → `Overlays`.
+
+**Pre-stage-3 finding (post-Phase-12 stage-2 attempt at ToastsPane):**
+absorbing the viewport into a subsystem requires central pane
+dispatch (`Panes::set_pane_pos`, `Panes::viewport_mut_for`,
+`Panes::apply_hovered_pane_row`, `Panes::hit_test_at`) to reach the
+subsystem's viewport — which Panes can't reach from `&mut self`
+because the subsystem is on App, not on Panes. Two options:
+1. Move dispatch up to App-level (each Panes-dispatch method becomes
+   a free fn taking `&mut App`).
+2. Mirror viewport on both the wrapper and the subsystem (returns
+   the Phase 11 mirror anti-pattern Phase 12 just removed).
+Option 1 is right; option 2 is forbidden. Stage 3 is therefore
+"relocate Panes' dispatch methods to free functions on App-level"
+*before* the first wrapper absorption. Estimate: meaningful refactor
+worth its own commit, separate from any single absorption.
+
+**Stage 4 — `RenderSplit<'_>` and `build_*_data` signature changes.**
+- `build_ci_data` / `build_lints_data` migrate from `&App` to
+  `&RenderSplit<'_>`. Sanity check the split exposes everything
+  these builders read before locking in its fields.
+
+**Stage 5 — survivors and deferred decisions.**
+- `ProjectListPane` survives as thin `&mut Selection` wrapper.
+- `PackagePane`, `GitPane`, `TargetsPane` survive as detail-pane
+  cache homes.
+- `CpuPane` survives — owns `CpuPoller` background-thread state.
+- `LangPane` survives — no `Lang` subsystem to absorb it.
+- `OutputPane` decision deferred (could collapse into `Inflight`).
+
+Each stage 2/3 commit ships green and is independently revertible.
 
 ---
 
@@ -1556,7 +1635,34 @@ defined. One execution-time choice remains: option (a) vs (b) for
 - Module locations for the renamed `*Layout` types.
 - Enumeration of wrapper-deletion call-site changes.
 
-## Phase 13 — `Bus<Event>` skeleton + `apply_service_signal` (Cluster A, gate phase)
+## Phase 13 — `Bus<Event>` skeleton + `apply_service_signal` (Cluster A, smoke test)
+
+**Gate-framing correction (post-Phase-11 review).** Earlier drafts
+labeled Phase 13 as "the architectural gate." The
+`apply_service_signal` body is borderline mechanical (12 lines, a
+two-subsystem fan-out into Net + ToastManager — and after Phase 12
+the `&mut Panes` borrow goes away entirely). Any naive `HandlerCtx`
+shape will compile against it. The *actual* borrow-checker stress
+test is **Phase 14's `apply_lint_config_change`**: six subsystems
+(Lint, Inflight, Scan, Selection, Overlays, ToastManager) with
+intermixed reads and writes.
+
+**Revised role:**
+- **Phase 13** — *skeleton + smoke test*. Wires up `EventBus`,
+  `EventHandler`, `HandlerCtx`, and the drain loop; routes one event
+  end-to-end via `apply_service_signal` to confirm the skeleton
+  compiles and behaves identically.
+- **Phase 14** — *borrow-checker gate*. The `HandlerCtx` shape is
+  what stress-tests the bus pattern. If Phase 14's six-subsystem
+  fan-out doesn't fit the `HandlerCtx` skeleton Phase 13 chose,
+  that's a Phase 14 finding that forces a Phase 13 redesign.
+
+**Risk-mitigation step (load-bearing):** before declaring Phase 13
+green, prototype Phase 14's `apply_lint_config_change` handler-set
+against the same `EventBus` skeleton in a scratch branch. If the
+prototype doesn't compile, the skeleton needs revision before
+merging Phase 13 — otherwise Phase 14 inherits a skeleton that
+can't fit it.
 
 Source of truth: see "Item 6" in the post-Phase-9 review section
 below. Summary:
@@ -2264,9 +2370,9 @@ body of work.
 This is a valid endpoint if Phase 13's bus introduction turns out to be
 disruptive in ways the design depth doesn't model (subscriber-borrow
 shape, drain-loop interaction with the existing `mutate_tree` guard,
-`HandlerCtx` ergonomics). If Phase 13 (the architectural gate) reveals the
-bus pattern doesn't fit, parking at this point ships ~85% of the
-intended work without the architectural risk.
+`HandlerCtx` ergonomics — see Phase 14 gate framing). If the bus
+pattern doesn't fit, parking at this point ships the pane-ownership
+work without the architectural risk.
 
 Recommend a deliberate pause after Phase 12 to evaluate before
 committing to Phase 13.
