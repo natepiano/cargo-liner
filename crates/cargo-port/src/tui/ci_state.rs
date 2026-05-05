@@ -16,9 +16,9 @@
 //! `LintDisplay`.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 
-use super::app::CiFetchTracker;
 use super::app::CiRunDisplayMode;
 use super::toasts::ToastTaskId;
 use crate::ci::Conclusion;
@@ -202,6 +202,28 @@ impl Ci {
             return info.runs.len();
         }
         info.runs.iter().filter(|run| run.branch == branch).count()
+    }
+}
+
+/// Runtime-only CI fetch tracking. Persistent CI data lives on the project
+/// hierarchy; this only records which owner paths currently have a request
+/// in flight.
+#[derive(Default)]
+pub(super) struct CiFetchTracker {
+    inner: HashSet<AbsolutePath>,
+}
+
+impl CiFetchTracker {
+    pub(super) fn start(&mut self, path: AbsolutePath) { self.inner.insert(path); }
+
+    pub(super) fn complete(&mut self, path: &Path) -> bool { self.inner.remove(path) }
+
+    pub(super) fn is_fetching(&self, path: &Path) -> bool { self.inner.contains(path) }
+
+    pub(super) fn clear(&mut self) { self.inner.clear(); }
+
+    pub(super) fn retain(&mut self, mut keep: impl FnMut(&AbsolutePath) -> bool) {
+        self.inner.retain(|path| keep(path));
     }
 }
 

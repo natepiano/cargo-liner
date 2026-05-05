@@ -130,7 +130,6 @@ mod tests;
 pub(super) use dismiss::DismissTarget;
 pub(super) use target_index::CleanSelection;
 pub(super) use target_index::TargetDirIndex;
-pub(super) use types::CiFetchTracker;
 pub(super) use types::CiRunDisplayMode;
 pub(super) use types::ConfirmAction;
 pub(super) use types::DirtyState;
@@ -1112,7 +1111,7 @@ impl App {
 
     /// Open the settings overlay and position the cursor on `IncludeDirs`
     /// when no include directories are configured. Touches Config +
-    /// Focus + Overlays + Panes + inline_error.
+    /// Focus + Overlays + Panes + `inline_error`.
     pub(super) fn force_settings_if_unconfigured(&mut self) {
         if !self.config.current().tui.include_dirs.is_empty() {
             return;
@@ -1130,7 +1129,7 @@ impl App {
 
     /// Derive the current input context from app state. Reads
     /// Overlays + Focus + Panes (via `panes::behavior`).
-    pub(super) fn input_context(&self) -> InputContext {
+    pub(super) const fn input_context(&self) -> InputContext {
         use super::panes::PaneBehavior;
         use super::shortcuts::InputContext;
         let overlays = &self.overlays;

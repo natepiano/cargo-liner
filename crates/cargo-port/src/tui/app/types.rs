@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -227,28 +226,6 @@ pub struct PollBackgroundStats {
     pub fit_results:      usize,
     pub disk_results:     usize,
     pub needs_rebuild:    bool,
-}
-
-/// Runtime-only CI fetch tracking. Persistent CI data lives on the project
-/// hierarchy; this only records which owner paths currently have a request
-/// in flight.
-#[derive(Default)]
-pub struct CiFetchTracker {
-    inner: HashSet<AbsolutePath>,
-}
-
-impl CiFetchTracker {
-    pub fn start(&mut self, path: AbsolutePath) { self.inner.insert(path); }
-
-    pub fn complete(&mut self, path: &std::path::Path) -> bool { self.inner.remove(path) }
-
-    pub(super) fn is_fetching(&self, path: &std::path::Path) -> bool { self.inner.contains(path) }
-
-    pub(super) fn clear(&mut self) { self.inner.clear(); }
-
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&AbsolutePath) -> bool) {
-        self.inner.retain(|path| keep(path));
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
