@@ -16,7 +16,13 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use reqwest::Client;
+use reqwest::Error;
+use reqwest::StatusCode;
+use reqwest::header::HeaderMap;
 use serde::Deserialize;
+use serde_json::Value;
+use tokio::runtime::Handle;
 
 use super::ci::GhRun;
 use super::ci::GqlCheckRun;
@@ -99,7 +105,7 @@ pub(crate) struct GitHubRateLimit {
 /// header is missing or names a resource we don't track (`search`,
 /// `integration_manifest`, etc.).
 pub(crate) fn parse_rate_limit_headers(
-    headers: &reqwest::header::HeaderMap,
+    headers: &HeaderMap,
 ) -> Option<(RateLimitBucket, RateLimitQuota)> {
     let resource = headers.get("x-ratelimit-resource")?.to_str().ok()?;
     let bucket = match resource {
@@ -125,7 +131,7 @@ pub(crate) fn parse_rate_limit_headers(
 
 /// Parse a `/rate_limit` JSON response. Missing buckets stay `None` so
 /// the caller can merge selectively.
-pub(crate) fn parse_rate_limit_response(value: &serde_json::Value) -> GitHubRateLimit {
+pub(crate) fn parse_rate_limit_response(value: &Value) -> GitHubRateLimit {
     let resources = value.get("resources");
     let bucket = |name: &str| -> Option<RateLimitQuota> {
         let entry = resources?.get(name)?;
@@ -146,10 +152,7 @@ pub(crate) fn parse_rate_limit_response(value: &serde_json::Value) -> GitHubRate
 /// `429 Too Many Requests`, or `403 Forbidden` with
 /// `X-RateLimit-Remaining: 0` (the secondary-rate-limit / abuse-detection
 /// form). A bare 403 is auth-related and not rate-limit.
-pub(crate) fn github_is_rate_limited(
-    status: reqwest::StatusCode,
-    headers: &reqwest::header::HeaderMap,
-) -> bool {
+pub(crate) fn github_is_rate_limited(status: StatusCode, headers: &HeaderMap) -> bool {
     if status.as_u16() == 429 {
         return true;
     }
@@ -166,7 +169,7 @@ pub(crate) fn github_is_rate_limited(
 /// True when a GraphQL response body carries an `errors[].type` of
 /// `RATE_LIMITED`. GraphQL returns HTTP 200 on rate-limit, so
 /// status-based detection alone is not enough for that endpoint.
-pub(crate) fn graphql_body_is_rate_limited(body: &serde_json::Value) -> bool {
+pub(crate) fn graphql_body_is_rate_limited(body: &Value) -> bool {
     body.get("errors")
         .and_then(serde_json::Value::as_array)
         .is_some_and(|errors| {
@@ -178,7 +181,7 @@ pub(crate) fn graphql_body_is_rate_limited(body: &serde_json::Value) -> bool {
         })
 }
 
-fn classify_network_error(service: ServiceKind, error: &reqwest::Error) -> Option<ServiceSignal> {
+fn classify_network_error(service: ServiceKind, error: &Error) -> Option<ServiceSignal> {
     if error.is_connect() || error.is_timeout() {
         Some(ServiceSignal::Unreachable(service))
     } else {
@@ -237,7 +240,7 @@ struct GqlCheckRunConnection {
 /// dispatch async work via `block_on`.
 #[derive(Clone)]
 pub(crate) struct HttpClient {
-    client:                  reqwest::Client,
+    client:                  Client,
     github_token:            Option<String>,
     rate_limit:              Arc<Mutex<GitHubRateLimit>>,
     /// When true, every GitHub REST + GraphQL call (and the recovery
@@ -250,14 +253,14 @@ pub(crate) struct HttpClient {
     /// means "not set". Rebased on every off→on transition so the
     /// countdown starts at `00:59:59` and ticks down from there.
     force_reset_at:          Arc<AtomicU64>,
-    pub(crate) handle:       tokio::runtime::Handle,
+    pub(crate) handle:       Handle,
 }
 
 impl HttpClient {
     /// Build a new client. Obtains the GitHub auth token from `gh auth
     /// token` (single subprocess call). If `gh` is unavailable or not
     /// authenticated, GitHub API methods degrade gracefully.
-    pub(crate) fn new(handle: tokio::runtime::Handle) -> Option<Self> {
+    pub(crate) fn new(handle: Handle) -> Option<Self> {
         let client = build_client().ok()?;
         let github_token = Command::new("gh")
             .args(["auth", "token"])
@@ -715,7 +718,7 @@ impl HttpClient {
     }
 }
 
-fn build_client() -> Result<reqwest::Client, reqwest::Error> {
+fn build_client() -> Result<Client, Error> {
     reqwest::Client::builder()
         .timeout(GH_TIMEOUT)
         .user_agent(APP_NAME)
@@ -740,6 +743,7 @@ mod tests {
     use reqwest::StatusCode;
     use reqwest::header::HeaderMap;
     use serde_json::json;
+    use tokio::runtime::Handle;
 
     use super::*;
     use crate::test_support;
@@ -867,7 +871,7 @@ mod tests {
         assert!(!graphql_body_is_rate_limited(&body));
     }
 
-    fn test_client(handle: &tokio::runtime::Handle) -> HttpClient {
+    fn test_client(handle: &Handle) -> HttpClient {
         HttpClient {
             client:                  build_client().expect("build http client"),
             github_token:            None,

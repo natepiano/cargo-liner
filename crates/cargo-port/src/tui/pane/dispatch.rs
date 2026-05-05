@@ -9,6 +9,9 @@
 //! so `pub(super)` reaches `crate::tui` — every subsystem under `tui/`
 //! can `impl Pane` without widening the trait's visibility.
 
+use std::path::Path;
+use std::time::Duration;
+
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
@@ -24,10 +27,10 @@ use crate::tui::scan_state::Scan;
 pub struct PaneRenderCtx<'a> {
     pub focus_state:           PaneFocusState,
     pub is_focused:            bool,
-    pub animation_elapsed:     std::time::Duration,
+    pub animation_elapsed:     Duration,
     pub config:                &'a Config,
     pub scan:                  &'a Scan,
-    pub selected_project_path: Option<&'a std::path::Path>,
+    pub selected_project_path: Option<&'a Path>,
 }
 
 /// Per-pane render dispatch. `Hittable` is a separate sub-trait

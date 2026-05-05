@@ -7,6 +7,9 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::Sender;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -61,7 +64,7 @@ pub fn project_is_eligible(
 
 #[derive(Clone)]
 pub struct RuntimeHandle {
-    tx: mpsc::Sender<SupervisorMsg>,
+    tx: Sender<SupervisorMsg>,
 }
 
 impl RuntimeHandle {
@@ -104,11 +107,11 @@ enum SupervisorMsg {
 
 struct ProjectWorker {
     stop:       Arc<AtomicBool>,
-    trigger_tx: mpsc::Sender<LintTriggerEvent>,
+    trigger_tx: Sender<LintTriggerEvent>,
     handle:     JoinHandle<()>,
 }
 
-pub fn spawn(config: &CargoPortConfig, bg_tx: mpsc::Sender<BackgroundMsg>) -> SpawnResult {
+pub fn spawn(config: &CargoPortConfig, bg_tx: Sender<BackgroundMsg>) -> SpawnResult {
     if !config.lint.enabled {
         return SpawnResult {
             handle:  None,
@@ -132,11 +135,11 @@ pub fn spawn(config: &CargoPortConfig, bg_tx: mpsc::Sender<BackgroundMsg>) -> Sp
     reason = "supervisor owns its queue and worker map for the lifetime of the runtime"
 )]
 fn supervisor_loop(
-    rx: mpsc::Receiver<SupervisorMsg>,
+    rx: Receiver<SupervisorMsg>,
     cache_root: AbsolutePath,
     lint: LintConfig,
     cache_size_bytes: Option<u64>,
-    bg_tx: mpsc::Sender<BackgroundMsg>,
+    bg_tx: Sender<BackgroundMsg>,
 ) {
     let mut workers: HashMap<AbsolutePath, ProjectWorker> = HashMap::new();
     let _ = read_write::clear_running_latest_files_under(&cache_root);
@@ -227,7 +230,7 @@ fn hydrate_status_cache(cache_root: &Path) -> HashMap<String, LintStatus> {
 fn emit_current_statuses(
     desired: &HashMap<AbsolutePath, RegisterProjectRequest>,
     status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    bg_tx: &Sender<BackgroundMsg>,
 ) {
     for request in desired.values() {
         let _ = bg_tx.send(BackgroundMsg::LintStartupStatus {
@@ -272,7 +275,7 @@ fn reconcile_workers(
     workers: &mut HashMap<AbsolutePath, ProjectWorker>,
     desired: HashMap<AbsolutePath, RegisterProjectRequest>,
     config: &WorkerConfig,
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    bg_tx: &Sender<BackgroundMsg>,
 ) {
     let stale: Vec<AbsolutePath> = workers
         .keys()
@@ -310,7 +313,7 @@ fn spawn_project_worker(
     project_label: String,
     project_root: AbsolutePath,
     config: &WorkerConfig,
-    bg_tx: mpsc::Sender<BackgroundMsg>,
+    bg_tx: Sender<BackgroundMsg>,
 ) -> ProjectWorker {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::clone(&stop);
@@ -348,8 +351,8 @@ fn spawn_project_worker(
                         |current| current.max(Instant::now() + trigger.debounce()),
                     ));
                 },
-                Err(mpsc::RecvTimeoutError::Timeout) => {},
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Timeout) => {},
+                Err(RecvTimeoutError::Disconnected) => return,
             }
 
             if let Some(deadline) = next_run_at
@@ -447,7 +450,7 @@ pub fn run_commands_for_project(
     commands: &[LintCommandConfig],
     cache_size_bytes: Option<u64>,
     status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    bg_tx: &Sender<BackgroundMsg>,
 ) -> io::Result<()> {
     if !project_still_runnable(project_root) {
         return Ok(());
@@ -586,7 +589,7 @@ fn publish_status(
     status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
     project_root: &Path,
     status: LintStatus,
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    bg_tx: &Sender<BackgroundMsg>,
 ) {
     if let Ok(mut statuses) = status_cache.lock() {
         let key = paths::project_key(project_root);
@@ -684,6 +687,13 @@ fn sanitize_name(name: &str) -> String {
 )]
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
+    use mpsc::RecvTimeoutError;
+    use notify::Event;
+    use notify::event::DataChange;
+    use notify::event::EventKind;
+    use notify::event::ModifyKind;
+    use notify::event::RemoveKind;
+
     use super::*;
     use crate::config::CargoPortConfig;
     use crate::lint::trigger::LintEventKind::CreateOrModify;
@@ -769,9 +779,7 @@ mod tests {
     #[test]
     fn relevant_changes_ignore_git_and_target_paths() {
         let project_dir = tempfile::tempdir().expect("tempdir");
-        let modify_kind = notify::event::EventKind::Modify(notify::event::ModifyKind::Data(
-            notify::event::DataChange::Any,
-        ));
+        let modify_kind = EventKind::Modify(ModifyKind::Data(DataChange::Any));
 
         assert!(
             crate::lint::classify_event_path(
@@ -883,15 +891,13 @@ mod tests {
     fn remove_events_use_longer_debounce() {
         let project_dir = tempfile::tempdir().expect("tempdir");
         let source_path = project_dir.path().join("src/lib.rs");
-        let remove_event = notify::Event {
-            kind:  notify::event::EventKind::Remove(notify::event::RemoveKind::File),
+        let remove_event = Event {
+            kind:  EventKind::Remove(RemoveKind::File),
             paths: vec![source_path.clone()],
             attrs: notify::event::EventAttributes::default(),
         };
-        let modify_event = notify::Event {
-            kind:  notify::event::EventKind::Modify(notify::event::ModifyKind::Data(
-                notify::event::DataChange::Any,
-            )),
+        let modify_event = Event {
+            kind:  EventKind::Modify(ModifyKind::Data(DataChange::Any)),
             paths: vec![source_path],
             attrs: notify::event::EventAttributes::default(),
         };
@@ -958,7 +964,7 @@ mod tests {
                     break;
                 },
                 Ok(_) => {},
-                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
                     break;
                 },
             }

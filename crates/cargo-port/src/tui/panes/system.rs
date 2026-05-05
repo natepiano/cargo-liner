@@ -9,6 +9,7 @@
 //! remain free functions taking `&mut App`.
 
 use std::path::Path;
+use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::Frame;
@@ -45,7 +46,7 @@ use crate::tui::scan_state::Scan;
 pub struct DispatchArgs<'a> {
     pub focus_state:           PaneFocusState,
     pub is_focused:            bool,
-    pub animation_elapsed:     std::time::Duration,
+    pub animation_elapsed:     Duration,
     pub config:                &'a Config,
     pub scan:                  &'a Scan,
     pub selected_project_path: Option<&'a Path>,

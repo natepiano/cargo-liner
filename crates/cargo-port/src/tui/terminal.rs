@@ -10,6 +10,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -215,7 +217,7 @@ fn restart_self() {
     }
 }
 
-fn spawn_input_thread() -> mpsc::Receiver<Event> {
+fn spawn_input_thread() -> Receiver<Event> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         while let Ok(event) = crossterm::event::read() {
@@ -230,7 +232,7 @@ fn spawn_input_thread() -> mpsc::Receiver<Event> {
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
-    input_rx: &mpsc::Receiver<Event>,
+    input_rx: &Receiver<Event>,
 ) -> io::Result<()> {
     let mut rearmed_after_first_draw = false;
     loop {
@@ -283,7 +285,7 @@ fn event_loop(
     Ok(())
 }
 
-fn process_input_frame(app: &mut App, input_rx: &mpsc::Receiver<Event>) -> (usize, Duration) {
+fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> (usize, Duration) {
     let started = Instant::now();
     let mut input_count = 0usize;
     while let Ok(event) = input_rx.try_recv() {
@@ -483,7 +485,7 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
 
 /// Read a stream byte-by-byte, splitting on `\n` (new line) and `\r` (progress update).
 /// `\r`-terminated chunks are sent as `Progress` so the UI replaces the last line.
-fn read_with_progress(tx: &std::sync::mpsc::Sender<ExampleMsg>, stream: impl io::Read) {
+fn read_with_progress(tx: &Sender<ExampleMsg>, stream: impl io::Read) {
     let mut reader = BufReader::new(stream);
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];

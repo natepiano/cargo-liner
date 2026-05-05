@@ -161,14 +161,16 @@ pub fn classify_event_path(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use notify::event::DataChange;
+    use notify::event::ModifyKind;
+    use notify::event::RemoveKind;
+
     use super::*;
 
     #[test]
     fn relevant_changes_ignore_git_and_target_paths() {
         let project_dir = tempfile::tempdir().expect("tempdir");
-        let modify_kind = EventKind::Modify(notify::event::ModifyKind::Data(
-            notify::event::DataChange::Any,
-        ));
+        let modify_kind = EventKind::Modify(ModifyKind::Data(DataChange::Any));
 
         assert_eq!(
             classify_event_path(
@@ -330,14 +332,12 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("tempdir");
         let source_path = project_dir.path().join("src/lib.rs");
         let remove_event = Event {
-            kind:  EventKind::Remove(notify::event::RemoveKind::File),
+            kind:  EventKind::Remove(RemoveKind::File),
             paths: vec![source_path.clone()],
             attrs: notify::event::EventAttributes::default(),
         };
         let modify_event = Event {
-            kind:  EventKind::Modify(notify::event::ModifyKind::Data(
-                notify::event::DataChange::Any,
-            )),
+            kind:  EventKind::Modify(ModifyKind::Data(DataChange::Any)),
             paths: vec![source_path],
             attrs: notify::event::EventAttributes::default(),
         };

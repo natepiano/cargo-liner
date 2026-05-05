@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
 use super::*;
@@ -134,7 +136,7 @@ fn linked_worktree_shares_github_metadata_with_primary_after_repo_meta_fetch() {
 
     app.handle_repo_meta(primary_path.as_path(), 42, Some("a great repo".to_string()));
 
-    let read_description = |p: &std::path::Path| {
+    let read_description = |p: &Path| {
         app.projects()
             .entry_containing(p)
             .and_then(|entry| entry.git_repo.as_ref())
@@ -1152,11 +1154,11 @@ fn worktree_summary_or_compute_caches_until_tree_mutation() {
     let counter = std::sync::atomic::AtomicUsize::new(0);
 
     let _ = app.worktree_summary_or_compute(group_root.as_path(), || {
-        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        counter.fetch_add(1, Ordering::SeqCst);
         Vec::new()
     });
     let _ = app.worktree_summary_or_compute(group_root.as_path(), || {
-        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        counter.fetch_add(1, Ordering::SeqCst);
         Vec::new()
     });
     assert_eq!(
@@ -1175,7 +1177,7 @@ fn worktree_summary_or_compute_caches_until_tree_mutation() {
     }
 
     let _ = app.worktree_summary_or_compute(group_root.as_path(), || {
-        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        counter.fetch_add(1, Ordering::SeqCst);
         Vec::new()
     });
     assert_eq!(

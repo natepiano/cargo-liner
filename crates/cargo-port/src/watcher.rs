@@ -13,16 +13,26 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+use std::sync::mpsc::TryRecvError;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use notify::Error;
+use notify::Event;
 use notify::RecursiveMode;
 use notify::Watcher;
+use tokio::runtime::Handle;
+use tokio::sync::Semaphore;
 
 use super::config::NonRustInclusion;
 use super::constants::DEBOUNCE_DURATION;
@@ -49,6 +59,8 @@ use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project::RootItem::NonRust;
 use crate::project::WorkspaceMetadataStore;
+use crate::scan::FetchContext;
+use crate::scan::ProjectDetailRequest;
 
 /// Request to register an already-known project with the watcher.
 pub(crate) struct WatchRequest {
@@ -81,13 +93,13 @@ pub(crate) enum WatcherMsg {
 // diff. Tracked for Step 1b follow-up.
 pub(crate) fn spawn_watcher(
     watch_roots: &[AbsolutePath],
-    bg_tx: mpsc::Sender<BackgroundMsg>,
+    bg_tx: Sender<BackgroundMsg>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
     client: HttpClient,
     lint_runtime: Option<RuntimeHandle>,
-    metadata_store: Arc<std::sync::Mutex<WorkspaceMetadataStore>>,
-) -> mpsc::Sender<WatcherMsg> {
+    metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
+) -> Sender<WatcherMsg> {
     let (watch_tx, watch_rx) = mpsc::channel();
     let (notify_tx, notify_rx) = mpsc::channel();
     let handler = move |res| {
@@ -136,7 +148,7 @@ pub(crate) fn spawn_watcher(
 
 struct WatcherLoopContext {
     watch_roots:       RegisteredRoots,
-    bg_tx:             mpsc::Sender<BackgroundMsg>,
+    bg_tx:             Sender<BackgroundMsg>,
     ci_run_count:      u32,
     non_rust:          NonRustInclusion,
     client:            HttpClient,
@@ -146,8 +158,8 @@ struct WatcherLoopContext {
 
 fn spawn_watcher_thread<W: Watcher + Send + 'static>(
     ctx: WatcherLoopContext,
-    watch_rx: mpsc::Receiver<WatcherMsg>,
-    notify_rx: mpsc::Receiver<notify::Result<notify::Event>>,
+    watch_rx: Receiver<WatcherMsg>,
+    notify_rx: Receiver<notify::Result<Event>>,
     watcher_guard: W,
 ) {
     thread::spawn(move || {
@@ -201,7 +213,7 @@ struct WatcherLoopState {
     pending_new:     HashMap<AbsolutePath, Instant>,
     discovered:      HashSet<AbsolutePath>,
     initializing:    bool,
-    buffered_events: Vec<notify::Event>,
+    buffered_events: Vec<Event>,
 }
 
 impl WatcherLoopState {
@@ -221,8 +233,8 @@ impl WatcherLoopState {
 
 fn watcher_loop<W: Watcher + Send + 'static>(
     ctx: &WatcherLoopContext,
-    watch_rx: &mpsc::Receiver<WatcherMsg>,
-    notify_rx: &mpsc::Receiver<notify::Result<notify::Event>>,
+    watch_rx: &Receiver<WatcherMsg>,
+    notify_rx: &Receiver<notify::Result<Event>>,
     mut watcher: W,
 ) {
     let WatcherLoopContext {
@@ -343,11 +355,11 @@ pub(crate) struct WatchRootRegistrationFailure {
 
 pub(crate) enum WatchRootRegistrationFailureReason {
     NotADirectory,
-    Notify(notify::Error),
+    Notify(Error),
 }
 
-impl std::fmt::Display for WatchRootRegistrationFailureReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for WatchRootRegistrationFailureReason {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotADirectory => f.write_str("path is not a directory"),
             Self::Notify(err) => write!(f, "notify watch failed: {err}"),
@@ -432,7 +444,7 @@ struct WatchDrainResult {
 }
 
 fn drain_watch_messages(
-    watch_rx: &mpsc::Receiver<WatcherMsg>,
+    watch_rx: &Receiver<WatcherMsg>,
     state: &mut WatcherLoopState,
     _watcher: &mut impl Watcher,
 ) -> WatchDrainResult {
@@ -449,8 +461,8 @@ fn drain_watch_messages(
                 state.initializing = false;
                 result.registration_completed = true;
             },
-            Err(mpsc::TryRecvError::Empty) => return result,
-            Err(mpsc::TryRecvError::Disconnected) => {
+            Err(TryRecvError::Empty) => return result,
+            Err(TryRecvError::Disconnected) => {
                 result.disconnected = true;
                 return result;
             },
@@ -483,7 +495,7 @@ fn apply_watch_request(req: WatchRequest, state: &mut WatcherLoopState) {
 /// `process_notify_events` stays under the clippy `too_many_arguments`
 /// threshold as more dispatch targets get added.
 struct WatcherBackgroundSinks<'a> {
-    bg_tx:             &'a mpsc::Sender<BackgroundMsg>,
+    bg_tx:             &'a Sender<BackgroundMsg>,
     lint_runtime:      Option<&'a RuntimeHandle>,
     metadata_dispatch: Option<&'a MetadataDispatchContext>,
 }
@@ -491,7 +503,7 @@ struct WatcherBackgroundSinks<'a> {
 fn process_notify_events(
     tick: u64,
     watch_drain: &WatchDrainResult,
-    notify_events: Vec<notify::Event>,
+    notify_events: Vec<Event>,
     watch_roots: &[AbsolutePath],
     sinks: &WatcherBackgroundSinks<'_>,
     state: &mut WatcherLoopState,
@@ -561,9 +573,7 @@ fn process_notify_events(
     }
 }
 
-fn drain_notify_events(
-    notify_rx: &mpsc::Receiver<notify::Result<notify::Event>>,
-) -> Vec<notify::Event> {
+fn drain_notify_events(notify_rx: &Receiver<notify::Result<Event>>) -> Vec<Event> {
     let mut events = Vec::new();
     while let Ok(result) = notify_rx.try_recv() {
         match result {
@@ -577,7 +587,7 @@ fn drain_notify_events(
 }
 
 fn replay_buffered_events(
-    events: &[notify::Event],
+    events: &[Event],
     ctx: &WatcherDispatchContext<'_>,
     pending_disk: &mut HashMap<String, WatchState>,
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
@@ -601,8 +611,8 @@ fn replay_buffered_events(
 }
 
 fn drain_completed_refreshes(
-    disk_done_rx: &mpsc::Receiver<String>,
-    git_done_rx: &mpsc::Receiver<AbsolutePath>,
+    disk_done_rx: &Receiver<String>,
+    git_done_rx: &Receiver<AbsolutePath>,
     pending_disk: &mut HashMap<String, WatchState>,
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
 ) {
@@ -625,7 +635,7 @@ struct EventContext<'a> {
 
 struct WatcherDispatchContext<'a> {
     event:             EventContext<'a>,
-    bg_tx:             &'a mpsc::Sender<BackgroundMsg>,
+    bg_tx:             &'a Sender<BackgroundMsg>,
     lint_runtime:      Option<&'a RuntimeHandle>,
     /// `None` in test harnesses that do not provide a tokio runtime;
     /// disables the metadata refresh branch rather than panicking.
@@ -638,9 +648,9 @@ struct WatcherDispatchContext<'a> {
 )]
 fn handle_notify_event(
     event_path: &Path,
-    event: Option<&notify::Event>,
+    event: Option<&Event>,
     ctx: &EventContext<'_>,
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    bg_tx: &Sender<BackgroundMsg>,
     lint_runtime: Option<&RuntimeHandle>,
     metadata_dispatch: Option<&MetadataDispatchContext>,
     pending_disk: &mut HashMap<String, WatchState>,
@@ -746,7 +756,7 @@ fn handle_notify_event(
 fn handle_event(
     event_path: &Path,
     ctx: &EventContext<'_>,
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    bg_tx: &Sender<BackgroundMsg>,
     pending_disk: &mut HashMap<String, WatchState>,
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
@@ -1023,7 +1033,7 @@ fn is_target_metadata_event(event_path: &Path, project_root: &Path) -> bool {
         || event_path.starts_with(tests)
 }
 
-fn spawn_project_refresh(bg_tx: mpsc::Sender<BackgroundMsg>, project_root: AbsolutePath) {
+fn spawn_project_refresh(bg_tx: Sender<BackgroundMsg>, project_root: AbsolutePath) {
     rayon::spawn(move || {
         let Some(item) = scan::discover_project_item(&project_root).or_else(|| {
             let cargo_toml = project_root.join("Cargo.toml");
@@ -1044,7 +1054,7 @@ fn spawn_project_refresh(bg_tx: mpsc::Sender<BackgroundMsg>, project_root: Absol
 }
 
 fn spawn_project_refresh_after(
-    bg_tx: mpsc::Sender<BackgroundMsg>,
+    bg_tx: Sender<BackgroundMsg>,
     project_root: AbsolutePath,
     delay: Duration,
 ) {
@@ -1056,7 +1066,7 @@ fn spawn_project_refresh_after(
     });
 }
 
-fn emit_root_git_info_refresh(bg_tx: &mpsc::Sender<BackgroundMsg>, entry: &ProjectEntry) {
+fn emit_root_git_info_refresh(bg_tx: &Sender<BackgroundMsg>, entry: &ProjectEntry) {
     let started = Instant::now();
     let Some(repo) = RepoInfo::get(entry.abs_path.as_path()) else {
         return;
@@ -1081,10 +1091,10 @@ fn emit_root_git_info_refresh(bg_tx: &mpsc::Sender<BackgroundMsg>, entry: &Proje
 }
 
 fn fire_git_updates(
-    handle: &tokio::runtime::Handle,
-    git_limit: &Arc<tokio::sync::Semaphore>,
-    git_done_tx: &mpsc::Sender<AbsolutePath>,
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    handle: &Handle,
+    git_limit: &Arc<Semaphore>,
+    git_done_tx: &Sender<AbsolutePath>,
+    bg_tx: &Sender<BackgroundMsg>,
     projects: &HashMap<AbsolutePath, ProjectEntry>,
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
 ) {
@@ -1139,10 +1149,10 @@ fn fire_git_updates(
 }
 
 fn spawn_git_refresh(
-    handle: &tokio::runtime::Handle,
-    git_limit: &Arc<tokio::sync::Semaphore>,
-    git_done_tx: mpsc::Sender<AbsolutePath>,
-    bg_tx: mpsc::Sender<BackgroundMsg>,
+    handle: &Handle,
+    git_limit: &Arc<Semaphore>,
+    git_done_tx: Sender<AbsolutePath>,
+    bg_tx: Sender<BackgroundMsg>,
     refresh_key: AbsolutePath,
     primary_path: AbsolutePath,
     affected: Vec<AbsolutePath>,
@@ -1210,10 +1220,10 @@ fn spawn_git_refresh(
 }
 
 fn fire_disk_updates(
-    handle: &tokio::runtime::Handle,
-    disk_limit: &Arc<tokio::sync::Semaphore>,
-    disk_done_tx: &mpsc::Sender<String>,
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    handle: &Handle,
+    disk_limit: &Arc<Semaphore>,
+    disk_done_tx: &Sender<String>,
+    bg_tx: &Sender<BackgroundMsg>,
     projects: &HashMap<AbsolutePath, ProjectEntry>,
     pending_disk: &mut HashMap<String, WatchState>,
 ) {
@@ -1246,10 +1256,10 @@ fn fire_disk_updates(
 }
 
 fn spawn_disk_update(
-    handle: &tokio::runtime::Handle,
-    disk_limit: &Arc<tokio::sync::Semaphore>,
-    disk_done_tx: mpsc::Sender<String>,
-    bg_tx: mpsc::Sender<BackgroundMsg>,
+    handle: &Handle,
+    disk_limit: &Arc<Semaphore>,
+    disk_done_tx: Sender<String>,
+    bg_tx: Sender<BackgroundMsg>,
     project_label: String,
     abs_path: AbsolutePath,
 ) {
@@ -1288,7 +1298,7 @@ fn spawn_disk_update(
 }
 
 fn probe_new_projects(
-    bg_tx: &mpsc::Sender<BackgroundMsg>,
+    bg_tx: &Sender<BackgroundMsg>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
     discovered: &mut HashSet<AbsolutePath>,
     _ci_run_count: u32,
@@ -1343,12 +1353,12 @@ fn probe_new_projects(
                 spawn_project_refresh_after(bg_tx.clone(), abs_path.clone(), NEW_PROJECT_DEBOUNCE);
             }
             let tx = bg_tx.clone();
-            let fetch_context = scan::FetchContext {
+            let fetch_context = FetchContext {
                 client: client.clone(),
             };
             enrichment::spawn_language_scan(abs_path.clone(), bg_tx.clone());
             rayon::spawn(move || {
-                let request = scan::ProjectDetailRequest {
+                let request = ProjectDetailRequest {
                     tx: &tx,
                     fetch_context: &fetch_context,
                     _project_path: display_path.as_str(),
@@ -1424,7 +1434,22 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
     use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
+
+    use lint::RegisterProjectRequest;
+    use mpsc::Receiver;
+    use mpsc::RecvTimeoutError;
+    use notify::Config;
+    use notify::Event;
+    use notify::Watcher;
+    use notify::WatcherKind;
+    use notify::event::DataChange;
+    use notify::event::EventKind;
+    use notify::event::ModifyKind;
+    use tempfile::TempDir;
 
     use super::*;
     use crate::lint;
@@ -1454,11 +1479,8 @@ mod tests {
     /// by the tests.
     struct NoopWatcher;
 
-    impl notify::Watcher for NoopWatcher {
-        fn new<F: notify::EventHandler>(
-            _event_handler: F,
-            _config: notify::Config,
-        ) -> notify::Result<Self>
+    impl Watcher for NoopWatcher {
+        fn new<F: notify::EventHandler>(_event_handler: F, _config: Config) -> notify::Result<Self>
         where
             Self: Sized,
         {
@@ -1469,13 +1491,13 @@ mod tests {
 
         fn unwatch(&mut self, _path: &Path) -> notify::Result<()> { Ok(()) }
 
-        fn configure(&mut self, _config: notify::Config) -> notify::Result<bool> { Ok(true) }
+        fn configure(&mut self, _config: Config) -> notify::Result<bool> { Ok(true) }
 
-        fn kind() -> notify::WatcherKind
+        fn kind() -> WatcherKind
         where
             Self: Sized,
         {
-            notify::WatcherKind::NullWatcher
+            WatcherKind::NullWatcher
         }
     }
 
@@ -1486,11 +1508,8 @@ mod tests {
         fail_on: PathBuf,
     }
 
-    impl notify::Watcher for SelectiveFailWatcher {
-        fn new<F: notify::EventHandler>(
-            _event_handler: F,
-            _config: notify::Config,
-        ) -> notify::Result<Self>
+    impl Watcher for SelectiveFailWatcher {
+        fn new<F: notify::EventHandler>(_event_handler: F, _config: Config) -> notify::Result<Self>
         where
             Self: Sized,
         {
@@ -1509,13 +1528,13 @@ mod tests {
 
         fn unwatch(&mut self, _path: &Path) -> notify::Result<()> { Ok(()) }
 
-        fn configure(&mut self, _config: notify::Config) -> notify::Result<bool> { Ok(true) }
+        fn configure(&mut self, _config: Config) -> notify::Result<bool> { Ok(true) }
 
-        fn kind() -> notify::WatcherKind
+        fn kind() -> WatcherKind
         where
             Self: Sized,
         {
-            notify::WatcherKind::NullWatcher
+            WatcherKind::NullWatcher
         }
     }
 
@@ -1571,15 +1590,12 @@ mod tests {
     /// assert that the watcher API was (or was not) touched for a
     /// given path. Every call returns `Ok` regardless of mode.
     struct RecordingWatcher {
-        watched:   Arc<std::sync::Mutex<Vec<(PathBuf, RecursiveMode)>>>,
-        unwatched: Arc<std::sync::Mutex<Vec<PathBuf>>>,
+        watched:   Arc<Mutex<Vec<(PathBuf, RecursiveMode)>>>,
+        unwatched: Arc<Mutex<Vec<PathBuf>>>,
     }
 
-    impl notify::Watcher for RecordingWatcher {
-        fn new<F: notify::EventHandler>(
-            _event_handler: F,
-            _config: notify::Config,
-        ) -> notify::Result<Self>
+    impl Watcher for RecordingWatcher {
+        fn new<F: notify::EventHandler>(_event_handler: F, _config: Config) -> notify::Result<Self>
         where
             Self: Sized,
         {
@@ -1605,13 +1621,13 @@ mod tests {
             Ok(())
         }
 
-        fn configure(&mut self, _config: notify::Config) -> notify::Result<bool> { Ok(true) }
+        fn configure(&mut self, _config: Config) -> notify::Result<bool> { Ok(true) }
 
-        fn kind() -> notify::WatcherKind
+        fn kind() -> WatcherKind
         where
             Self: Sized,
         {
-            notify::WatcherKind::NullWatcher
+            WatcherKind::NullWatcher
         }
     }
 
@@ -1682,8 +1698,8 @@ mod tests {
         }
     }
 
-    impl<W: notify::Watcher> notify::Watcher for GuardedWatcher<W> {
-        fn new<F: notify::EventHandler>(_eh: F, _cfg: notify::Config) -> notify::Result<Self>
+    impl<W: notify::Watcher> Watcher for GuardedWatcher<W> {
+        fn new<F: notify::EventHandler>(_eh: F, _cfg: Config) -> notify::Result<Self>
         where
             Self: Sized,
         {
@@ -1724,11 +1740,11 @@ mod tests {
             result
         }
 
-        fn configure(&mut self, config: notify::Config) -> notify::Result<bool> {
+        fn configure(&mut self, config: Config) -> notify::Result<bool> {
             self.inner.configure(config)
         }
 
-        fn kind() -> notify::WatcherKind
+        fn kind() -> WatcherKind
         where
             Self: Sized,
         {
@@ -2026,18 +2042,18 @@ mod tests {
         /// delegate the trait to the inner watcher and use Drop on
         /// the outer type to prove the guard outlives the thread.
         struct DropSignal {
-            flag:  std::sync::Arc<std::sync::atomic::AtomicBool>,
+            flag:  Arc<AtomicBool>,
             inner: NoopWatcher,
         }
 
         impl Drop for DropSignal {
-            fn drop(&mut self) { self.flag.store(true, std::sync::atomic::Ordering::SeqCst); }
+            fn drop(&mut self) { self.flag.store(true, Ordering::SeqCst); }
         }
 
-        impl notify::Watcher for DropSignal {
+        impl Watcher for DropSignal {
             fn new<F: notify::EventHandler>(
                 _event_handler: F,
-                _config: notify::Config,
+                _config: Config,
             ) -> notify::Result<Self>
             where
                 Self: Sized,
@@ -2056,15 +2072,15 @@ mod tests {
 
             fn unwatch(&mut self, path: &Path) -> notify::Result<()> { self.inner.unwatch(path) }
 
-            fn configure(&mut self, config: notify::Config) -> notify::Result<bool> {
+            fn configure(&mut self, config: Config) -> notify::Result<bool> {
                 self.inner.configure(config)
             }
 
-            fn kind() -> notify::WatcherKind
+            fn kind() -> WatcherKind
             where
                 Self: Sized,
             {
-                notify::WatcherKind::NullWatcher
+                WatcherKind::NullWatcher
             }
         }
 
@@ -2110,20 +2126,20 @@ mod tests {
         );
     }
 
-    fn wait_for_completion<T>(rx: &mpsc::Receiver<T>) {
+    fn wait_for_completion<T>(rx: &Receiver<T>) {
         rx.recv_timeout(Duration::from_secs(1))
             .unwrap_or_else(|_| panic!("timed out waiting for background completion"));
     }
 
     fn collect_messages_until(
-        rx: &mpsc::Receiver<BackgroundMsg>,
+        rx: &Receiver<BackgroundMsg>,
         predicate: impl Fn(&BackgroundMsg) -> bool,
     ) -> Vec<BackgroundMsg> {
         collect_messages_until_with_timeout(rx, Duration::from_secs(1), predicate)
     }
 
     fn collect_messages_until_with_timeout(
-        rx: &mpsc::Receiver<BackgroundMsg>,
+        rx: &Receiver<BackgroundMsg>,
         timeout: Duration,
         predicate: impl Fn(&BackgroundMsg) -> bool,
     ) -> Vec<BackgroundMsg> {
@@ -2325,9 +2341,9 @@ mod tests {
         ));
     }
 
-    fn event_with_path(path: &AbsolutePath) -> notify::Event {
-        notify::Event {
-            kind:  notify::event::EventKind::Any,
+    fn event_with_path(path: &AbsolutePath) -> Event {
+        Event {
+            kind:  EventKind::Any,
             paths: vec![path.to_path_buf()],
             attrs: notify::event::EventAttributes::default(),
         }
@@ -2338,7 +2354,7 @@ mod tests {
         reason = "test fixture returning multiple setup values"
     )]
     fn repo_with_member_event_context(
-        tmp: &tempfile::TempDir,
+        tmp: &TempDir,
     ) -> (
         AbsolutePath,
         AbsolutePath,
@@ -2449,7 +2465,7 @@ mod tests {
         reason = "test fixture returning multiple setup values"
     )]
     fn worktree_git_event_context(
-        tmp: &tempfile::TempDir,
+        tmp: &TempDir,
     ) -> (
         AbsolutePath,
         AbsolutePath,
@@ -3246,7 +3262,7 @@ edition = "2024"
         let runtime = lint::spawn(&cfg, bg_tx.clone())
             .handle
             .expect("runtime handle");
-        let request = lint::RegisterProjectRequest {
+        let request = RegisterProjectRequest {
             project_label: "~/rust/demo".to_string(),
             abs_path:      AbsolutePath::from(project_dir.path()),
             is_rust:       true,
@@ -3269,10 +3285,8 @@ edition = "2024"
         let mut pending_disk = HashMap::new();
         let mut pending_git = HashMap::new();
         let mut pending_new = HashMap::new();
-        let event = notify::Event {
-            kind:  notify::event::EventKind::Modify(notify::event::ModifyKind::Data(
-                notify::event::DataChange::Any,
-            )),
+        let event = Event {
+            kind:  EventKind::Modify(ModifyKind::Data(DataChange::Any)),
             paths: vec![source_path.clone()],
             attrs: notify::event::EventAttributes::default(),
         };
@@ -3302,7 +3316,7 @@ edition = "2024"
                     break;
                 },
                 Ok(_) => {},
-                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
                     break;
                 },
             }

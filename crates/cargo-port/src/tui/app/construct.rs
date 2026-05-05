@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use super::App;
@@ -53,7 +54,7 @@ use crate::watcher::WatcherMsg;
 /// reference are cloned at the entry point so the builder can outlive its
 /// caller's stack frame).
 pub(super) struct Inputs {
-    bg_tx:           mpsc::Sender<BackgroundMsg>,
+    bg_tx:           Sender<BackgroundMsg>,
     bg_rx:           Receiver<BackgroundMsg>,
     cfg:             CargoPortConfig,
     http_client:     HttpClient,
@@ -66,11 +67,11 @@ pub(super) struct Inputs {
 /// CI fetch, clean) routed through `Background`.
 pub(super) struct Channeled {
     inputs:      Inputs,
-    example_tx:  mpsc::Sender<ExampleMsg>,
+    example_tx:  Sender<ExampleMsg>,
     example_rx:  mpsc::Receiver<ExampleMsg>,
-    ci_fetch_tx: mpsc::Sender<CiFetchMsg>,
+    ci_fetch_tx: Sender<CiFetchMsg>,
     ci_fetch_rx: mpsc::Receiver<CiFetchMsg>,
-    clean_tx:    mpsc::Sender<CleanMsg>,
+    clean_tx:    Sender<CleanMsg>,
     clean_rx:    mpsc::Receiver<CleanMsg>,
 }
 
@@ -81,7 +82,7 @@ pub(super) struct Started {
     config_path:  Option<AbsolutePath>,
     lint_warning: Option<String>,
     lint_runtime: Option<RuntimeHandle>,
-    watch_tx:     mpsc::Sender<WatcherMsg>,
+    watch_tx:     Sender<WatcherMsg>,
     projects:     ProjectList,
 }
 
@@ -94,7 +95,7 @@ pub(super) struct AppBuilder<S> {
 impl AppBuilder<Inputs> {
     pub(super) fn new(
         projects: &[RootItem],
-        bg_tx: mpsc::Sender<BackgroundMsg>,
+        bg_tx: Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
         cfg: &CargoPortConfig,
         http_client: HttpClient,

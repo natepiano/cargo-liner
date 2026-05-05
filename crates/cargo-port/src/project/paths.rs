@@ -1,5 +1,7 @@
 use std::borrow::Borrow;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
@@ -73,8 +75,8 @@ impl Borrow<Path> for AbsolutePath {
     fn borrow(&self) -> &Path { &self.0 }
 }
 
-impl fmt::Display for AbsolutePath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.display().fmt(f) }
+impl Display for AbsolutePath {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result { self.0.display().fmt(f) }
 }
 
 impl From<PathBuf> for AbsolutePath {
@@ -134,8 +136,8 @@ impl DisplayPath {
     pub(crate) fn into_string(self) -> String { self.0 }
 }
 
-impl fmt::Display for DisplayPath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
+impl Display for DisplayPath {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
 }
 
 impl AsRef<str> for DisplayPath {
@@ -154,8 +156,8 @@ impl RootDirectoryName {
     pub(crate) fn into_string(self) -> String { self.0 }
 }
 
-impl fmt::Display for RootDirectoryName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
+impl Display for RootDirectoryName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
 }
 
 impl AsRef<str> for RootDirectoryName {
@@ -174,8 +176,8 @@ impl PackageName {
     pub(crate) fn into_string(self) -> String { self.0 }
 }
 
-impl fmt::Display for PackageName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
+impl Display for PackageName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
 }
 
 impl AsRef<str> for PackageName {

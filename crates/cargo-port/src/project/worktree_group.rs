@@ -198,6 +198,8 @@ impl WorktreeGroup {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     fn pkg(path: &str) -> Package {
@@ -220,7 +222,7 @@ mod tests {
             pkg("/abs/main"),
             vec![pkg("/abs/feat-a"), pkg("/abs/feat-b")],
         );
-        let paths: Vec<&std::path::Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
+        let paths: Vec<&Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
         assert_eq!(
             paths,
             vec![
@@ -234,7 +236,7 @@ mod tests {
     #[test]
     fn iter_paths_workspaces_yields_primary_then_linked_in_order() {
         let group = WorktreeGroup::new_workspaces(ws("/abs/ws-main"), vec![ws("/abs/ws-feat")]);
-        let paths: Vec<&std::path::Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
+        let paths: Vec<&Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
         assert_eq!(
             paths,
             vec![
@@ -247,7 +249,7 @@ mod tests {
     #[test]
     fn iter_paths_with_no_linked_yields_just_primary() {
         let group = WorktreeGroup::new_packages(pkg("/abs/solo"), Vec::new());
-        let paths: Vec<&std::path::Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
+        let paths: Vec<&Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
         assert_eq!(paths, vec![std::path::Path::new("/abs/solo")]);
     }
 }

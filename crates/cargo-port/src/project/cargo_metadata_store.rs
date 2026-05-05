@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -245,7 +246,7 @@ pub(crate) struct ManifestFingerprint {
     /// Every ancestor `.cargo/config[.toml]` candidate path, recorded as
     /// present (`Some`) or absent (`None`). A `None → Some` transition is
     /// itself a diff and invalidates the cached metadata.
-    pub configs:        std::collections::BTreeMap<PathBuf, Option<FileStamp>>,
+    pub configs:        BTreeMap<PathBuf, Option<FileStamp>>,
 }
 
 /// Fingerprint for a single file. Equality uses `content_hash` only;
@@ -309,7 +310,7 @@ impl ManifestFingerprint {
 fn optional_stamp(path: &Path) -> io::Result<Option<FileStamp>> {
     match FileStamp::from_path(path) {
         Ok(stamp) => Ok(Some(stamp)),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err),
     }
 }

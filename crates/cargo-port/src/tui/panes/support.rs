@@ -1,6 +1,10 @@
+use std::cmp::Ordering;
+use std::path::Component;
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
+
+use ratatui::style::Color;
 
 use crate::ci;
 use crate::ci::CiRun;
@@ -23,6 +27,8 @@ use crate::project::Package;
 use crate::project::PackageRecord;
 use crate::project::ProjectFields;
 use crate::project::ProjectType;
+use crate::project::RemoteKind;
+use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::RustInfo;
 use crate::project::RustProject;
@@ -285,11 +291,11 @@ pub enum RunTargetKind {
 }
 
 impl RunTargetKind {
-    pub const BINARY_COLOR: ratatui::style::Color = crate::tui::constants::SUCCESS_COLOR;
-    pub const EXAMPLE_COLOR: ratatui::style::Color = crate::tui::constants::ACCENT_COLOR;
-    pub const BENCH_COLOR: ratatui::style::Color = crate::tui::constants::TARGET_BENCH_COLOR;
+    pub const BINARY_COLOR: Color = crate::tui::constants::SUCCESS_COLOR;
+    pub const EXAMPLE_COLOR: Color = crate::tui::constants::ACCENT_COLOR;
+    pub const BENCH_COLOR: Color = crate::tui::constants::TARGET_BENCH_COLOR;
 
-    pub const fn color(self) -> ratatui::style::Color {
+    pub const fn color(self) -> Color {
         match self {
             Self::Binary => Self::BINARY_COLOR,
             Self::Example => Self::EXAMPLE_COLOR,
@@ -377,8 +383,8 @@ pub fn build_target_list_from_data(data: &TargetsData) -> Vec<TargetEntry> {
         let a_has_cat = a.1.contains('/');
         let b_has_cat = b.1.contains('/');
         match (a_has_cat, b_has_cat) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
             _ => a.1.cmp(&b.1),
         }
     });
@@ -916,9 +922,7 @@ impl TargetsData {
                         let parts: Vec<_> = rel
                             .components()
                             .filter_map(|c| match c {
-                                std::path::Component::Normal(seg) => {
-                                    Some(seg.to_string_lossy().into_owned())
-                                },
+                                Component::Normal(seg) => Some(seg.to_string_lossy().into_owned()),
                                 _ => None,
                             })
                             .collect();
@@ -958,8 +962,8 @@ impl TargetsData {
             let a_root = a.category.is_empty();
             let b_root = b.category.is_empty();
             match (a_root, b_root) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
                 _ => a.category.cmp(&b.category),
             }
         });
@@ -1167,13 +1171,13 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
 /// Convert each `RemoteInfo` into a render-ready `RemoteRow`, shortening
 /// the URL when it begins with `default_host` and collapsing missing
 /// tracked refs / ahead-behind values to placeholder runes.
-fn build_remote_rows(repo: &project::RepoInfo, default_host: &str) -> Vec<RemoteRow> {
+fn build_remote_rows(repo: &RepoInfo, default_host: &str) -> Vec<RemoteRow> {
     repo.remotes
         .iter()
         .map(|remote| {
             let icon = match remote.kind {
-                project::RemoteKind::Fork => crate::constants::GIT_FORK,
-                project::RemoteKind::Clone => crate::constants::GIT_CLONE,
+                RemoteKind::Fork => crate::constants::GIT_FORK,
+                RemoteKind::Clone => crate::constants::GIT_CLONE,
             };
             let display_url = remote
                 .url

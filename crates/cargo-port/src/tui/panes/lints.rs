@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
@@ -59,7 +61,7 @@ fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'sta
 fn build_lint_rows(
     runs: &[LintRun],
     sizes: &[Option<u64>],
-    animation_elapsed: std::time::Duration,
+    animation_elapsed: Duration,
     pane: &Viewport,
     focus: PaneFocusState,
 ) -> Vec<Row<'static>> {

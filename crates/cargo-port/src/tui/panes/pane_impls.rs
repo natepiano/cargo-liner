@@ -8,6 +8,9 @@
 //! rect lists). Click and hover dispatch walks `HITTABLE_Z_ORDER`,
 //! asking each pane for the target at `pos`.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::Path;
 use std::time::Instant;
 
 use ratatui::Frame;
@@ -197,8 +200,7 @@ impl Hittable for CpuPane {
 pub struct GitPane {
     viewport:               Viewport,
     content:                Option<super::GitData>,
-    worktree_summary_cache:
-        std::cell::RefCell<std::collections::HashMap<AbsolutePath, Vec<super::WorktreeInfo>>>,
+    worktree_summary_cache: RefCell<HashMap<AbsolutePath, Vec<super::WorktreeInfo>>>,
     /// Per-row `inner_y` positions recorded each frame, indexed by
     /// logical row. `content_area` is the absolute Rect on screen.
     /// `Hittable::hit_test_at` walks this list with the recorded
@@ -235,7 +237,7 @@ impl GitPane {
 
     pub fn worktree_summary_or_compute(
         &self,
-        group_root: &std::path::Path,
+        group_root: &Path,
         compute: impl FnOnce() -> Vec<super::WorktreeInfo>,
     ) -> Vec<super::WorktreeInfo> {
         if let Some(infos) = self.worktree_summary_cache.borrow().get(group_root) {

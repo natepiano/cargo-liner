@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use super::git;
@@ -136,7 +137,7 @@ fn parse_key_value(line: &str) -> Option<(&str, &str)> {
 /// Run `git ls-tree HEAD` to get pinned commit SHAs for submodule paths.
 ///
 /// Returns a map of `relative_path` → short SHA.
-fn ls_tree_submodule_commits(project_root: &Path) -> std::collections::HashMap<String, String> {
+fn ls_tree_submodule_commits(project_root: &Path) -> HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     let output = git::git_command(project_root)
         .args(["ls-tree", "HEAD"])

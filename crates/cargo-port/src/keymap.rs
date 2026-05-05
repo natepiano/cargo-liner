@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fmt::Write as _;
 use std::str::FromStr;
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
+use toml::Table;
 
 use crate::config::NavigationKeys;
 use crate::project::AbsolutePath;
@@ -84,8 +87,8 @@ impl KeyBind {
     }
 }
 
-impl fmt::Display for KeyBind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.display()) }
+impl Display for KeyBind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result { f.write_str(&self.display()) }
 }
 
 impl FromStr for KeyBind {
@@ -575,8 +578,8 @@ pub(crate) struct KeymapError {
     pub reason: KeymapErrorReason,
 }
 
-impl fmt::Display for KeymapError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for KeymapError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{}.{}: \"{}\" — {}",
@@ -594,8 +597,8 @@ pub(crate) enum KeymapErrorReason {
     UnknownAction,
 }
 
-impl fmt::Display for KeymapErrorReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for KeymapErrorReason {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Parse(msg) => write!(f, "parse error: {msg}"),
             Self::ConflictWithGlobal(action) => write!(f, "conflicts with global.{action}"),
@@ -654,7 +657,7 @@ pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
         },
     };
 
-    let table: toml::Table = match contents.parse() {
+    let table: Table = match contents.parse() {
         Ok(t) => t,
         Err(e) => {
             return KeymapLoadResult {
@@ -683,7 +686,7 @@ pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
 
 /// Load keymap from a TOML string (for testing and hot-reload).
 pub(crate) fn load_keymap_from_str(toml_str: &str, vim_mode: NavigationKeys) -> KeymapLoadResult {
-    let table: toml::Table = match toml_str.parse() {
+    let table: Table = match toml_str.parse() {
         Ok(t) => t,
         Err(e) => {
             return KeymapLoadResult {
@@ -809,7 +812,7 @@ fn is_legacy_removed_action(scope_name: &str, action: &str) -> bool {
     scope_name == "project_list" && matches!(action, "open_editor" | "rescan")
 }
 
-fn resolve_from_table(table: &toml::Table, vim_mode: NavigationKeys) -> KeymapLoadResult {
+fn resolve_from_table(table: &Table, vim_mode: NavigationKeys) -> KeymapLoadResult {
     let defaults = ResolvedKeymap::defaults();
     let mut keymap = ResolvedKeymap::default();
     let mut errors = Vec::new();
@@ -913,7 +916,7 @@ fn resolve_pane_scopes(
 }
 
 struct ScopeResolveContext<'a> {
-    table:           &'a toml::Table,
+    table:           &'a Table,
     errors:          &'a mut Vec<KeymapError>,
     missing_actions: &'a mut Vec<String>,
     global_keys:     &'a HashMap<KeyBind, String>,
@@ -1010,6 +1013,8 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests")]
 mod tests {
+    use toml::Table;
+
     use super::*;
     use crate::test_support;
 
@@ -1209,7 +1214,7 @@ mod tests {
     #[test]
     fn default_toml_is_parseable() {
         let toml_str = ResolvedKeymap::default_toml();
-        let table: toml::Table = toml_str.parse().unwrap();
+        let table: Table = toml_str.parse().unwrap();
         assert!(table.contains_key("global"));
         assert!(table.contains_key("project_list"));
         assert!(table.contains_key("package"));

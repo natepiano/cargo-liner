@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::path::Path;
 
 use crossterm::event::KeyCode;
@@ -552,7 +553,7 @@ pub(super) fn search_finder(
         .collect();
 
     let total = scored.len();
-    scored.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+    scored.sort_by_key(|entry| Reverse(entry.1));
     let indices = scored
         .into_iter()
         .take(max_results)

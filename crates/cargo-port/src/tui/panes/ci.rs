@@ -1,4 +1,5 @@
 use ratatui::Frame;
+use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -37,15 +38,13 @@ fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
     ];
     for col in cols {
         header_cells.push(
-            Cell::from(
-                ratatui::text::Line::from(col.label()).alignment(ratatui::layout::Alignment::Right),
-            )
-            .style(right_aligned),
+            Cell::from(ratatui::text::Line::from(col.label()).alignment(Alignment::Right))
+                .style(right_aligned),
         );
         header_cells.push(Cell::from(""));
     }
     header_cells.push(
-        Cell::from(ratatui::text::Line::from("Total").alignment(ratatui::layout::Alignment::Right))
+        Cell::from(ratatui::text::Line::from("Total").alignment(Alignment::Right))
             .style(right_aligned),
     );
     header_cells.push(Cell::from(""));
@@ -84,17 +83,15 @@ fn build_ci_data_row(
                     } else {
                         String::new()
                     })
-                    .alignment(ratatui::layout::Alignment::Right),
+                    .alignment(Alignment::Right),
                 )
                 .style(style),
             );
             cells.push(Cell::from(job.conclusion.icon().to_string()).style(style));
         } else {
             cells.push(
-                Cell::from(
-                    ratatui::text::Line::from("—").alignment(ratatui::layout::Alignment::Right),
-                )
-                .style(Style::default().fg(LABEL_COLOR)),
+                Cell::from(ratatui::text::Line::from("—").alignment(Alignment::Right))
+                    .style(Style::default().fg(LABEL_COLOR)),
             );
             cells.push(Cell::from(""));
         }
@@ -108,7 +105,7 @@ fn build_ci_data_row(
             } else {
                 String::new()
             })
-            .alignment(ratatui::layout::Alignment::Right),
+            .alignment(Alignment::Right),
         )
         .style(total_style),
     );

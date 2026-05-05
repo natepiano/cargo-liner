@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -5,6 +6,7 @@ use super::App;
 use super::types::CiRunDisplayMode;
 use crate::ci;
 use crate::ci::CiRun;
+use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
@@ -14,7 +16,7 @@ use crate::scan::CiFetchResult;
 use crate::tui::panes::CiFetchKind;
 
 impl App {
-    pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<ci::OwnerRepo> {
+    pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<OwnerRepo> {
         let entry_path = self.projects().entry_containing(path)?.item.path().clone();
         self.projects()
             .primary_url_for(entry_path.as_path())
@@ -77,7 +79,7 @@ impl App {
                 merged.push(run);
             }
         }
-        merged.sort_by_key(|run| std::cmp::Reverse(run.run_id));
+        merged.sort_by_key(|run| Reverse(run.run_id));
 
         let found_new = merged.len() > prev_count;
         // Only FetchOlder marks/clears exhaustion.  Sync clears it when

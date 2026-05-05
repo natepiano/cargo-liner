@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
@@ -124,8 +125,7 @@ impl App {
                         .map_or(0, |info| info.runs.len());
                     let new_runs = after.saturating_sub(before);
                     if let Some(task_id) = self.ci.take_fetch_toast() {
-                        let empty: std::collections::HashSet<String> =
-                            std::collections::HashSet::new();
+                        let empty: HashSet<String> = std::collections::HashSet::new();
                         self.toasts.complete_missing_items(task_id, &empty);
                         let label = if new_runs > 0 {
                             format!("{new_runs} new runs fetched")

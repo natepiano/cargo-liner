@@ -16,6 +16,7 @@ use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::cpu;
+use crate::tui::cpu::CpuUsage;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
@@ -262,7 +263,7 @@ fn render_aggregate_row(
     frame: &mut Frame,
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
-    usage: &cpu::CpuUsage,
+    usage: &CpuUsage,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
 ) {
@@ -283,7 +284,7 @@ fn render_core_rows(
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
     cpu_cfg: &CpuConfig,
-    usage: &cpu::CpuUsage,
+    usage: &CpuUsage,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
 ) {
@@ -329,7 +330,7 @@ fn render_gpu_row(
     viewport: &Viewport,
     row_rects: &mut Vec<(Rect, usize)>,
     cpu_cfg: &CpuConfig,
-    usage: &cpu::CpuUsage,
+    usage: &CpuUsage,
     layout: &CpuPanelLayout,
     focus: PaneFocusState,
 ) {

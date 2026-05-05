@@ -25,6 +25,8 @@ use super::panes::PaneId;
 use super::popup::PopupFrame;
 use super::render;
 use crate::config;
+use crate::config::CargoPortConfig;
+use crate::config::LintCommandConfig;
 use crate::keymap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::EnumCount, strum::EnumIter)]
@@ -66,7 +68,7 @@ fn parse_dir_list(value: &str) -> Vec<String> {
 
 type SettingsRow = (Option<SettingOption>, &'static str, String);
 
-fn format_lint_projects(config: &config::CargoPortConfig) -> String {
+fn format_lint_projects(config: &CargoPortConfig) -> String {
     if config.lint.include.is_empty() {
         "—".to_string()
     } else {
@@ -89,7 +91,7 @@ fn normalize_sorted_list(value: &str) -> Vec<String> {
 fn save_number_setting(
     app: &mut App,
     value: &str,
-    apply: impl FnOnce(&mut config::CargoPortConfig, f64),
+    apply: impl FnOnce(&mut CargoPortConfig, f64),
 ) -> bool {
     let Ok(number) = value.parse::<f64>() else {
         finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
@@ -104,7 +106,7 @@ fn save_number_setting(
 fn save_sorted_list_setting(
     app: &mut App,
     value: &str,
-    apply: impl FnOnce(&mut config::CargoPortConfig, Vec<String>),
+    apply: impl FnOnce(&mut CargoPortConfig, Vec<String>),
 ) {
     let mut config = app.current_config().clone();
     apply(&mut config, normalize_sorted_list(value));
@@ -114,7 +116,7 @@ fn save_sorted_list_setting(
 fn save_u32_setting(
     app: &mut App,
     value: &str,
-    apply: impl FnOnce(&mut config::CargoPortConfig, u32),
+    apply: impl FnOnce(&mut CargoPortConfig, u32),
 ) -> bool {
     let Ok(number) = value.parse::<u32>() else {
         finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
@@ -133,14 +135,14 @@ fn bounded_u8_from_u32(value: u32) -> u8 {
 fn save_string_setting(
     app: &mut App,
     value: &str,
-    apply: impl FnOnce(&mut config::CargoPortConfig, String),
+    apply: impl FnOnce(&mut CargoPortConfig, String),
 ) {
     let mut config = app.current_config().clone();
     apply(&mut config, value.trim().to_string());
     let _ = save_updated_config(app, &config);
 }
 
-fn format_lint_commands(config: &config::CargoPortConfig) -> String {
+fn format_lint_commands(config: &CargoPortConfig) -> String {
     let commands = if config.lint.commands.is_empty() {
         config.lint.resolved_commands()
     } else {
@@ -153,11 +155,9 @@ fn format_lint_commands(config: &config::CargoPortConfig) -> String {
         .join(", ")
 }
 
-fn format_lint_cache_size(config: &config::CargoPortConfig) -> String {
-    config.lint.cache_size.clone()
-}
+fn format_lint_cache_size(config: &CargoPortConfig) -> String { config.lint.cache_size.clone() }
 
-fn format_terminal_command(config: &config::CargoPortConfig) -> String {
+fn format_terminal_command(config: &CargoPortConfig) -> String {
     if config.tui.terminal_command.trim().is_empty() {
         "Not configured. Set this command to enable the global terminal shortcut.".to_string()
     } else {
@@ -165,7 +165,7 @@ fn format_terminal_command(config: &config::CargoPortConfig) -> String {
     }
 }
 
-fn format_other_primary_branches(config: &config::CargoPortConfig) -> String {
+fn format_other_primary_branches(config: &CargoPortConfig) -> String {
     if config.tui.other_primary_branches.is_empty() {
         "—".to_string()
     } else {
@@ -182,29 +182,29 @@ fn format_secs(secs: f64) -> String {
     }
 }
 
-fn format_flash_secs(config: &config::CargoPortConfig) -> String {
+fn format_flash_secs(config: &CargoPortConfig) -> String {
     format_secs(config.tui.status_flash_secs)
 }
 
-fn format_linger_secs(config: &config::CargoPortConfig) -> String {
+fn format_linger_secs(config: &CargoPortConfig) -> String {
     format_secs(config.tui.task_linger_secs)
 }
 
-fn format_discovery_shimmer_secs(config: &config::CargoPortConfig) -> String {
+fn format_discovery_shimmer_secs(config: &CargoPortConfig) -> String {
     format_secs(config.tui.discovery_shimmer_secs)
 }
 
-fn format_cpu_poll_ms(config: &config::CargoPortConfig) -> String { config.cpu.poll_ms.to_string() }
+fn format_cpu_poll_ms(config: &CargoPortConfig) -> String { config.cpu.poll_ms.to_string() }
 
-fn format_cpu_green_max(config: &config::CargoPortConfig) -> String {
+fn format_cpu_green_max(config: &CargoPortConfig) -> String {
     config.cpu.green_max_percent.to_string()
 }
 
-fn format_cpu_yellow_max(config: &config::CargoPortConfig) -> String {
+fn format_cpu_yellow_max(config: &CargoPortConfig) -> String {
     config.cpu.yellow_max_percent.to_string()
 }
 
-fn settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<SettingsRow> {
+fn settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow> {
     let mut rows = general_settings_rows(app, config);
     rows.extend(toast_settings_rows(config));
     rows.extend(cpu_settings_rows(config));
@@ -212,7 +212,7 @@ fn settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<SettingsRow
     rows
 }
 
-fn general_settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<SettingsRow> {
+fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow> {
     vec![
         (None, "General", String::new()),
         (
@@ -283,7 +283,7 @@ fn general_settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<Set
     ]
 }
 
-fn toast_settings_rows(config: &config::CargoPortConfig) -> Vec<SettingsRow> {
+fn toast_settings_rows(config: &CargoPortConfig) -> Vec<SettingsRow> {
     vec![
         (None, "Toasts", String::new()),
         (
@@ -304,7 +304,7 @@ fn toast_settings_rows(config: &config::CargoPortConfig) -> Vec<SettingsRow> {
     ]
 }
 
-fn cpu_settings_rows(config: &config::CargoPortConfig) -> Vec<SettingsRow> {
+fn cpu_settings_rows(config: &CargoPortConfig) -> Vec<SettingsRow> {
     vec![
         (None, "CPU", String::new()),
         (
@@ -325,7 +325,7 @@ fn cpu_settings_rows(config: &config::CargoPortConfig) -> Vec<SettingsRow> {
     ]
 }
 
-fn lint_settings_rows(app: &App, config: &config::CargoPortConfig) -> Vec<SettingsRow> {
+fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow> {
     vec![
         (None, "Lints", String::new()),
         (
@@ -490,11 +490,11 @@ fn delete_at_cursor(buf: &mut String, cursor: usize) {
     buf.drain(cursor..next);
 }
 
-fn parse_lint_commands(value: &str) -> Vec<config::LintCommandConfig> {
+fn parse_lint_commands(value: &str) -> Vec<LintCommandConfig> {
     config::normalize_lint_commands(
         &parse_dir_list(value)
             .into_iter()
-            .map(|command| config::LintCommandConfig {
+            .map(|command| LintCommandConfig {
                 name: String::new(),
                 command,
             })
@@ -524,7 +524,7 @@ fn toggle_vim_mode(app: &mut App) {
     let _ = save_updated_config(app, &config);
 }
 
-fn save_updated_config(app: &mut App, config: &config::CargoPortConfig) -> bool {
+fn save_updated_config(app: &mut App, config: &CargoPortConfig) -> bool {
     match app.save_and_apply_config(config) {
         Ok(()) => {
             app.show_timed_toast("Settings", "Saved");

@@ -3,7 +3,9 @@
 use std::sync::OnceLock;
 
 use reqwest::header::HeaderMap;
+use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
+use tokio::runtime::Runtime;
 
 pub(crate) fn normalize_line_endings(text: &str) -> String {
     let normalized = text.replace("\r\n", "\n");
@@ -13,8 +15,8 @@ pub(crate) fn normalize_line_endings(text: &str) -> String {
 /// Process-wide tokio runtime for tests that need a `Handle` or
 /// `block_on`. Created once on first use and shared thereafter so each
 /// test isn't paying for runtime startup.
-pub(crate) fn test_runtime() -> &'static tokio::runtime::Runtime {
-    static TEST_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+pub(crate) fn test_runtime() -> &'static Runtime {
+    static TEST_RT: OnceLock<Runtime> = OnceLock::new();
     TEST_RT.get_or_init(|| tokio::runtime::Runtime::new().unwrap_or_else(|_| std::process::abort()))
 }
 
@@ -23,8 +25,7 @@ pub(crate) fn test_runtime() -> &'static tokio::runtime::Runtime {
 pub(crate) fn header_map(entries: &[(&str, &str)]) -> HeaderMap {
     let mut headers = HeaderMap::new();
     for (name, value) in entries {
-        let name: reqwest::header::HeaderName =
-            (*name).parse().unwrap_or_else(|_| std::process::abort());
+        let name: HeaderName = (*name).parse().unwrap_or_else(|_| std::process::abort());
         let value = HeaderValue::from_str(value).unwrap_or_else(|_| std::process::abort());
         headers.insert(name, value);
     }

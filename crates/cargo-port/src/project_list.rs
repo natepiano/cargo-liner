@@ -1,8 +1,12 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ops::Index;
 use std::path::Path;
 
 use indexmap::IndexMap;
+use indexmap::map::Values;
+use indexmap::map::ValuesMut;
 
 use crate::ci;
 use crate::constants::IN_SYNC;
@@ -25,6 +29,7 @@ use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::RustInfo;
 use crate::project::RustProject;
+use crate::project::Submodule;
 use crate::project::VendoredPackage;
 use crate::project::Visibility;
 use crate::project::Workspace;
@@ -68,9 +73,7 @@ impl ProjectList {
 
     pub(crate) fn is_empty(&self) -> bool { self.roots.is_empty() }
 
-    pub(crate) fn iter(&self) -> indexmap::map::Values<'_, AbsolutePath, ProjectEntry> {
-        self.roots.values()
-    }
+    pub(crate) fn iter(&self) -> Values<'_, AbsolutePath, ProjectEntry> { self.roots.values() }
 
     #[cfg(test)]
     pub(crate) fn first(&self) -> Option<&ProjectEntry> {
@@ -871,7 +874,7 @@ fn find_matching_worktree_container(
 
 // -- Index<usize> so call sites can do `projects[i]` like a slice.
 
-impl std::ops::Index<usize> for ProjectList {
+impl Index<usize> for ProjectList {
     type Output = ProjectEntry;
 
     fn index(&self, index: usize) -> &ProjectEntry { &self.roots[index] }
@@ -880,14 +883,14 @@ impl std::ops::Index<usize> for ProjectList {
 // -- IntoIterator for `for entry in &projects` / `for entry in &mut projects`
 
 impl<'a> IntoIterator for &'a ProjectList {
-    type IntoIter = indexmap::map::Values<'a, AbsolutePath, ProjectEntry>;
+    type IntoIter = Values<'a, AbsolutePath, ProjectEntry>;
     type Item = &'a ProjectEntry;
 
     fn into_iter(self) -> Self::IntoIter { self.roots.values() }
 }
 
 impl<'a> IntoIterator for &'a mut ProjectList {
-    type IntoIter = indexmap::map::ValuesMut<'a, AbsolutePath, ProjectEntry>;
+    type IntoIter = ValuesMut<'a, AbsolutePath, ProjectEntry>;
     type Item = &'a mut ProjectEntry;
 
     fn into_iter(self) -> Self::IntoIter { self.roots.values_mut() }
@@ -904,8 +907,7 @@ fn regroup_workspace(ws: &mut Workspace, inline_dirs: &[String]) {
         .collect();
 
     // Re-sort into groups based on subdirectory and inline_dirs.
-    let mut group_map: std::collections::HashMap<String, Vec<Package>> =
-        std::collections::HashMap::new();
+    let mut group_map: HashMap<String, Vec<Package>> = std::collections::HashMap::new();
     for member in members {
         let relative = member
             .path()
@@ -936,8 +938,8 @@ fn regroup_workspace(ws: &mut Workspace, inline_dirs: &[String]) {
         let a_inline = a.group_name().is_empty();
         let b_inline = b.group_name().is_empty();
         match (a_inline, b_inline) {
-            (true, false) => std::cmp::Ordering::Greater,
-            (false, true) => std::cmp::Ordering::Less,
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
             _ => a.group_name().cmp(b.group_name()),
         }
     });
@@ -1136,7 +1138,7 @@ fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[Vendore
     }
 }
 
-fn emit_submodule_rows(rows: &mut Vec<VisibleRow>, ni: usize, submodules: &[project::Submodule]) {
+fn emit_submodule_rows(rows: &mut Vec<VisibleRow>, ni: usize, submodules: &[Submodule]) {
     for (si, _) in submodules.iter().enumerate() {
         rows.push(VisibleRow::Submodule {
             node_index:      ni,

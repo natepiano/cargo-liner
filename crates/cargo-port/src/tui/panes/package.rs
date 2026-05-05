@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
@@ -26,6 +28,7 @@ use crate::tui::pane::PaneChrome;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneRule;
+use crate::tui::pane::RuleTitle;
 use crate::tui::pane::Viewport;
 use crate::tui::panes;
 use crate::tui::render;
@@ -45,7 +48,7 @@ struct PackageRenderCtx<'a> {
     /// Threaded through so the Lint row can frame its icon at
     /// render time (the typed `LintDisplay` carries an unframed
     /// `LintStatus`).
-    animation_elapsed: std::time::Duration,
+    animation_elapsed: Duration,
     lint_enabled:      bool,
 }
 
@@ -202,7 +205,7 @@ struct ProjectPanelRender<'a> {
     focus:             PaneFocusState,
     styles:            &'a RenderStyles,
     border_style:      Style,
-    animation_elapsed: std::time::Duration,
+    animation_elapsed: Duration,
     lint_enabled:      bool,
 }
 
@@ -334,7 +337,7 @@ fn render_project_description_section(
             width:  area.width,
             height: 1,
         };
-        let title = stats_connector_x.map(|_| pane::RuleTitle {
+        let title = stats_connector_x.map(|_| RuleTitle {
             text:  STATS_TITLE,
             style: context
                 .styles
@@ -526,7 +529,7 @@ fn lint_display_style(display: &super::LintDisplay) -> Style {
 /// spinner animation).
 fn lint_display_to_string(
     display: &super::LintDisplay,
-    animation_elapsed: std::time::Duration,
+    animation_elapsed: Duration,
     lint_enabled: bool,
 ) -> String {
     use super::LintDisplay;

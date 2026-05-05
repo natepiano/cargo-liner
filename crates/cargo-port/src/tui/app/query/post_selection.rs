@@ -2,6 +2,7 @@ use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::panes;
 use crate::tui::panes::DetailField;
+use crate::tui::panes::GitRow;
 use crate::tui::panes::PaneId;
 use crate::tui::shortcuts::InputContext;
 
@@ -68,9 +69,7 @@ impl App {
                     let git = self.panes().git().content()?;
                     let pos = self.panes().git().viewport().pos();
                     match panes::git_row_at(git, pos) {
-                        Some(panes::GitRow::Remote(remote)) if remote.full_url.is_some() => {
-                            Some("open")
-                        },
+                        Some(GitRow::Remote(remote)) if remote.full_url.is_some() => Some("open"),
                         _ => None,
                     }
                 }

@@ -13,7 +13,11 @@
 //!
 //! [`Inflight`]: super::inflight::Inflight
 
+#[cfg(test)]
 use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::SendError;
+use std::sync::mpsc::Sender;
 
 use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
@@ -24,25 +28,25 @@ use crate::watcher::WatcherMsg;
 /// Bundle the four channel pairs plus the watcher sender that
 /// [`Background`] owns. Single argument to [`Background::new`].
 pub struct BackgroundChannels {
-    pub bg:       (mpsc::Sender<BackgroundMsg>, mpsc::Receiver<BackgroundMsg>),
-    pub ci_fetch: (mpsc::Sender<CiFetchMsg>, mpsc::Receiver<CiFetchMsg>),
-    pub clean:    (mpsc::Sender<CleanMsg>, mpsc::Receiver<CleanMsg>),
-    pub example:  (mpsc::Sender<ExampleMsg>, mpsc::Receiver<ExampleMsg>),
-    pub watch_tx: mpsc::Sender<WatcherMsg>,
+    pub bg:       (Sender<BackgroundMsg>, Receiver<BackgroundMsg>),
+    pub ci_fetch: (Sender<CiFetchMsg>, Receiver<CiFetchMsg>),
+    pub clean:    (Sender<CleanMsg>, Receiver<CleanMsg>),
+    pub example:  (Sender<ExampleMsg>, Receiver<ExampleMsg>),
+    pub watch_tx: Sender<WatcherMsg>,
 }
 
 /// Owns every long-lived I/O channel App holds. App holds a single
 /// `background: Background` field.
 pub(super) struct Background {
-    bg_tx:       mpsc::Sender<BackgroundMsg>,
-    bg_rx:       mpsc::Receiver<BackgroundMsg>,
-    ci_fetch_tx: mpsc::Sender<CiFetchMsg>,
-    ci_fetch_rx: mpsc::Receiver<CiFetchMsg>,
-    clean_tx:    mpsc::Sender<CleanMsg>,
-    clean_rx:    mpsc::Receiver<CleanMsg>,
-    example_tx:  mpsc::Sender<ExampleMsg>,
-    example_rx:  mpsc::Receiver<ExampleMsg>,
-    watch_tx:    mpsc::Sender<WatcherMsg>,
+    bg_tx:       Sender<BackgroundMsg>,
+    bg_rx:       Receiver<BackgroundMsg>,
+    ci_fetch_tx: Sender<CiFetchMsg>,
+    ci_fetch_rx: Receiver<CiFetchMsg>,
+    clean_tx:    Sender<CleanMsg>,
+    clean_rx:    Receiver<CleanMsg>,
+    example_tx:  Sender<ExampleMsg>,
+    example_rx:  Receiver<ExampleMsg>,
+    watch_tx:    Sender<WatcherMsg>,
 }
 
 impl Background {
@@ -69,27 +73,27 @@ impl Background {
 
     // ── Senders (cloned by spawn paths) ──────────────────────────────
 
-    pub(super) fn bg_sender(&self) -> mpsc::Sender<BackgroundMsg> { self.bg_tx.clone() }
+    pub(super) fn bg_sender(&self) -> Sender<BackgroundMsg> { self.bg_tx.clone() }
 
-    pub(super) fn ci_fetch_sender(&self) -> mpsc::Sender<CiFetchMsg> { self.ci_fetch_tx.clone() }
+    pub(super) fn ci_fetch_sender(&self) -> Sender<CiFetchMsg> { self.ci_fetch_tx.clone() }
 
-    pub(super) fn clean_sender(&self) -> mpsc::Sender<CleanMsg> { self.clean_tx.clone() }
+    pub(super) fn clean_sender(&self) -> Sender<CleanMsg> { self.clean_tx.clone() }
 
-    pub(super) fn example_sender(&self) -> mpsc::Sender<ExampleMsg> { self.example_tx.clone() }
+    pub(super) fn example_sender(&self) -> Sender<ExampleMsg> { self.example_tx.clone() }
 
     // ── Receiver access ──────────────────────────────────────────────
 
-    pub(super) const fn bg_rx(&self) -> &mpsc::Receiver<BackgroundMsg> { &self.bg_rx }
+    pub(super) const fn bg_rx(&self) -> &Receiver<BackgroundMsg> { &self.bg_rx }
 
-    pub(super) const fn ci_fetch_rx(&self) -> &mpsc::Receiver<CiFetchMsg> { &self.ci_fetch_rx }
+    pub(super) const fn ci_fetch_rx(&self) -> &Receiver<CiFetchMsg> { &self.ci_fetch_rx }
 
-    pub(super) const fn clean_rx(&self) -> &mpsc::Receiver<CleanMsg> { &self.clean_rx }
+    pub(super) const fn clean_rx(&self) -> &Receiver<CleanMsg> { &self.clean_rx }
 
-    pub(super) const fn example_rx(&self) -> &mpsc::Receiver<ExampleMsg> { &self.example_rx }
+    pub(super) const fn example_rx(&self) -> &Receiver<ExampleMsg> { &self.example_rx }
 
     /// Send `msg` on the watcher channel. Convenience for the
     /// common `watch_tx.send(...)` pattern.
-    pub(super) fn send_watcher(&self, msg: WatcherMsg) -> Result<(), mpsc::SendError<WatcherMsg>> {
+    pub(super) fn send_watcher(&self, msg: WatcherMsg) -> Result<(), SendError<WatcherMsg>> {
         self.watch_tx.send(msg)
     }
 
@@ -101,8 +105,8 @@ impl Background {
     /// rescan caveat").
     pub(super) fn swap_bg_channel(
         &mut self,
-        tx: mpsc::Sender<BackgroundMsg>,
-        rx: mpsc::Receiver<BackgroundMsg>,
+        tx: Sender<BackgroundMsg>,
+        rx: Receiver<BackgroundMsg>,
     ) {
         self.bg_tx = tx;
         self.bg_rx = rx;
@@ -110,9 +114,7 @@ impl Background {
 
     /// Replace the watcher sender, used by `App::respawn_watcher`
     /// after a config reload changes the watch roots.
-    pub(super) fn replace_watcher_sender(&mut self, tx: mpsc::Sender<WatcherMsg>) {
-        self.watch_tx = tx;
-    }
+    pub(super) fn replace_watcher_sender(&mut self, tx: Sender<WatcherMsg>) { self.watch_tx = tx; }
 }
 
 #[cfg(test)]

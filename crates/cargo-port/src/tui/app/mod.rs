@@ -65,7 +65,6 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::mpsc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -127,6 +126,9 @@ use crate::scan::RepoCache;
 )]
 mod tests;
 
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+
 pub(super) use dismiss::DismissTarget;
 pub(super) use target_index::CleanSelection;
 pub(super) use target_index::TargetDirIndex;
@@ -152,6 +154,7 @@ use super::lint_state::Lint;
 pub(super) use super::net_state::AvailabilityStatus;
 use super::net_state::Net;
 use super::panes;
+use super::panes::BottomRow;
 use super::panes::PendingCiFetch;
 use super::panes::PendingExampleRun;
 use super::panes::WorktreeInfo;
@@ -166,6 +169,7 @@ use crate::project;
 use crate::project::RootItem;
 pub(super) use crate::project_list::ExpandKey;
 pub(super) use crate::project_list::VisibleRow;
+use crate::scan::MetadataDispatchContext;
 pub(super) struct App {
     /// Net subsystem. Owns the shared `HttpClient`, the GitHub
     /// sub-state (availability, repo-fetch cache, in-flight set,
@@ -244,8 +248,8 @@ impl App {
     /// end-to-end and is visibility-anchored to `tui::app::mod`.
     pub(super) fn new(
         projects: &[RootItem],
-        bg_tx: mpsc::Sender<BackgroundMsg>,
-        bg_rx: mpsc::Receiver<BackgroundMsg>,
+        bg_tx: Sender<BackgroundMsg>,
+        bg_rx: Receiver<BackgroundMsg>,
         cfg: &CargoPortConfig,
         http_client: HttpClient,
         scan_started_at: Instant,
@@ -587,7 +591,7 @@ impl App {
         row_path: &Path,
         name: &str,
         git_status: Option<GitStatus>,
-        row_kind: types::DiscoveryRowKind,
+        row_kind: DiscoveryRowKind,
     ) -> Option<Vec<StyledSegment>> {
         if !self.config().discovery_shimmer_enabled() {
             return None;
@@ -628,8 +632,8 @@ impl App {
         &self,
         row_path: &Path,
         now: Instant,
-        row_kind: types::DiscoveryRowKind,
-    ) -> Option<(AbsolutePath, types::DiscoveryShimmer)> {
+        row_kind: DiscoveryRowKind,
+    ) -> Option<(AbsolutePath, DiscoveryShimmer)> {
         self.scan
             .discovery_shimmers()
             .iter()
@@ -649,7 +653,7 @@ impl App {
         &self,
         session_path: &Path,
         row_path: &Path,
-        row_kind: types::DiscoveryRowKind,
+        row_kind: DiscoveryRowKind,
     ) -> bool {
         self.discovery_scope_contains(session_path, row_path)
             || self
@@ -754,10 +758,7 @@ impl App {
 
     pub(super) const fn set_mouse_pos(&mut self, pos: Option<Position>) { self.mouse_pos = pos; }
 
-    pub(super) const fn set_hovered_pane_row(
-        &mut self,
-        hovered_pane_row: Option<types::HoveredPaneRow>,
-    ) {
+    pub(super) const fn set_hovered_pane_row(&mut self, hovered_pane_row: Option<HoveredPaneRow>) {
         self.panes.set_hover(hovered_pane_row);
     }
 
@@ -788,11 +789,9 @@ impl App {
         self.selection.expanded_mut()
     }
 
-    pub(super) const fn finder(&self) -> &types::FinderState { self.selection.finder() }
+    pub(super) const fn finder(&self) -> &FinderState { self.selection.finder() }
 
-    pub(super) const fn finder_mut(&mut self) -> &mut types::FinderState {
-        self.selection.finder_mut()
-    }
+    pub(super) const fn finder_mut(&mut self) -> &mut FinderState { self.selection.finder_mut() }
 
     /// Read-only handle to the [`Selection`] subsystem.
     pub(super) const fn selection(&self) -> &Selection { &self.selection }
@@ -911,8 +910,8 @@ impl App {
     /// The scan's `MetadataDispatchContext` refreshed from the current
     /// App state. Used by `request_clean_confirm` to re-dispatch on
     /// fingerprint drift.
-    fn clean_metadata_dispatch(&self) -> scan::MetadataDispatchContext {
-        scan::MetadataDispatchContext {
+    fn clean_metadata_dispatch(&self) -> MetadataDispatchContext {
+        MetadataDispatchContext {
             handle:         self.net.http_client_ref().handle.clone(),
             tx:             self.background.bg_sender(),
             metadata_store: Arc::clone(self.scan.metadata_store()),
@@ -942,17 +941,15 @@ impl App {
 
     pub(super) const fn overlays_mut(&mut self) -> &mut Overlays { &mut self.overlays }
 
-    pub(super) fn bg_tx(&self) -> mpsc::Sender<BackgroundMsg> { self.background.bg_sender() }
+    pub(super) fn bg_tx(&self) -> Sender<BackgroundMsg> { self.background.bg_sender() }
 
     pub(super) fn http_client(&self) -> HttpClient { self.net.http_client() }
 
-    pub(super) fn ci_fetch_tx(&self) -> mpsc::Sender<CiFetchMsg> {
-        self.background.ci_fetch_sender()
-    }
+    pub(super) fn ci_fetch_tx(&self) -> Sender<CiFetchMsg> { self.background.ci_fetch_sender() }
 
-    pub(super) fn clean_tx(&self) -> mpsc::Sender<CleanMsg> { self.background.clean_sender() }
+    pub(super) fn clean_tx(&self) -> Sender<CleanMsg> { self.background.clean_sender() }
 
-    pub(super) fn example_tx(&self) -> mpsc::Sender<ExampleMsg> { self.background.example_sender() }
+    pub(super) fn example_tx(&self) -> Sender<ExampleMsg> { self.background.example_sender() }
 
     pub(super) fn example_child(&self) -> Arc<Mutex<Option<u32>>> { self.inflight.example_child() }
 
@@ -1033,7 +1030,7 @@ impl App {
     }
 
     #[cfg(test)]
-    pub(super) const fn set_retry_spawn_mode_for_test(&mut self, mode: types::RetrySpawnMode) {
+    pub(super) const fn set_retry_spawn_mode_for_test(&mut self, mode: RetrySpawnMode) {
         self.scan.set_retry_spawn_mode(mode);
     }
 
@@ -1042,12 +1039,10 @@ impl App {
     pub(super) const fn scan_mut(&mut self) -> &mut Scan { &mut self.scan }
 
     #[cfg(test)]
-    pub(super) const fn scan_state(&self) -> &types::ScanState { self.scan.scan_state() }
+    pub(super) const fn scan_state(&self) -> &ScanState { self.scan.scan_state() }
 
     #[cfg(test)]
-    pub(super) const fn scan_state_mut(&mut self) -> &mut types::ScanState {
-        self.scan.scan_state_mut()
-    }
+    pub(super) const fn scan_state_mut(&mut self) -> &mut ScanState { self.scan.scan_state_mut() }
 
     #[cfg(test)]
     pub(super) const fn data_generation_for_test(&self) -> u64 { self.scan.generation() }
@@ -1058,23 +1053,23 @@ impl App {
         self.dismiss_target_for_row_inner(row)
     }
 
-    pub(super) fn owner_repo_for_path(&self, path: &std::path::Path) -> Option<OwnerRepo> {
+    pub(super) fn owner_repo_for_path(&self, path: &Path) -> Option<OwnerRepo> {
         self.owner_repo_for_path_inner(path)
     }
 
-    pub(super) fn ci_display_mode_label_for(&self, path: &std::path::Path) -> &'static str {
+    pub(super) fn ci_display_mode_label_for(&self, path: &Path) -> &'static str {
         self.ci_display_mode_label_for_inner(path)
     }
 
-    pub(super) fn ci_toggle_available_for(&self, path: &std::path::Path) -> bool {
+    pub(super) fn ci_toggle_available_for(&self, path: &Path) -> bool {
         self.ci_toggle_available_for_inner(path)
     }
 
-    pub(super) fn toggle_ci_display_mode_for(&mut self, path: &std::path::Path) {
+    pub(super) fn toggle_ci_display_mode_for(&mut self, path: &Path) {
         self.toggle_ci_display_mode_for_inner(path);
     }
 
-    pub(super) fn ci_runs_for_display(&self, path: &std::path::Path) -> Vec<CiRun> {
+    pub(super) fn ci_runs_for_display(&self, path: &Path) -> Vec<CiRun> {
         self.ci_runs_for_display_inner(path)
     }
 
@@ -1193,9 +1188,9 @@ impl App {
     pub(super) fn tabbable_panes(&self) -> Vec<PaneId> {
         use super::panes;
         panes::tab_order(if self.inflight.example_output_is_empty() {
-            panes::BottomRow::Diagnostics
+            BottomRow::Diagnostics
         } else {
-            panes::BottomRow::Output
+            BottomRow::Output
         })
         .into_iter()
         .filter(|pane| self.is_pane_tabbable(*pane))
@@ -1342,7 +1337,7 @@ const fn discovery_shimmer_step_millis() -> usize { 85 }
 fn discovery_shimmer_phase_offset(
     session_path: &Path,
     row_path: &Path,
-    row_kind: types::DiscoveryRowKind,
+    row_kind: DiscoveryRowKind,
     char_count: usize,
 ) -> usize {
     if char_count == 0 {
@@ -1365,7 +1360,7 @@ fn discovery_shimmer_phase_offset(
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DiscoveryParentRow {
     path: AbsolutePath,
-    kind: types::DiscoveryRowKind,
+    kind: DiscoveryRowKind,
 }
 
 fn package_contains_path(pkg: &Package, row_path: &Path) -> bool {
@@ -1449,10 +1444,10 @@ fn package_scope_contains(pkg: &Package, session_path: &Path, row_path: &Path) -
 fn root_item_parent_row(item: &RootItem, session_path: &Path) -> Option<DiscoveryParentRow> {
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
-            workspace_parent_row(ws, session_path, types::DiscoveryRowKind::Root)
+            workspace_parent_row(ws, session_path, DiscoveryRowKind::Root)
         },
         RootItem::Rust(RustProject::Package(pkg)) => {
-            package_parent_row(pkg, session_path, types::DiscoveryRowKind::Root)
+            package_parent_row(pkg, session_path, DiscoveryRowKind::Root)
         },
         RootItem::NonRust(_) => None,
         RootItem::Worktrees(WorktreeGroup::Workspaces {
@@ -1464,19 +1459,16 @@ fn root_item_parent_row(item: &RootItem, session_path: &Path) -> Option<Discover
             if linked.iter().any(|l| l.path() == session_path) {
                 return Some(DiscoveryParentRow {
                     path: primary.path().clone(),
-                    kind: types::DiscoveryRowKind::Root,
+                    kind: DiscoveryRowKind::Root,
                 });
             }
-            workspace_parent_row(
-                primary,
-                session_path,
-                types::DiscoveryRowKind::WorktreeEntry,
+            workspace_parent_row(primary, session_path, DiscoveryRowKind::WorktreeEntry).or_else(
+                || {
+                    linked.iter().find_map(|l| {
+                        workspace_parent_row(l, session_path, DiscoveryRowKind::WorktreeEntry)
+                    })
+                },
             )
-            .or_else(|| {
-                linked.iter().find_map(|l| {
-                    workspace_parent_row(l, session_path, types::DiscoveryRowKind::WorktreeEntry)
-                })
-            })
         },
         RootItem::Worktrees(WorktreeGroup::Packages {
             primary, linked, ..
@@ -1487,19 +1479,16 @@ fn root_item_parent_row(item: &RootItem, session_path: &Path) -> Option<Discover
             if linked.iter().any(|l| l.path() == session_path) {
                 return Some(DiscoveryParentRow {
                     path: primary.path().clone(),
-                    kind: types::DiscoveryRowKind::Root,
+                    kind: DiscoveryRowKind::Root,
                 });
             }
-            package_parent_row(
-                primary,
-                session_path,
-                types::DiscoveryRowKind::WorktreeEntry,
+            package_parent_row(primary, session_path, DiscoveryRowKind::WorktreeEntry).or_else(
+                || {
+                    linked.iter().find_map(|l| {
+                        package_parent_row(l, session_path, DiscoveryRowKind::WorktreeEntry)
+                    })
+                },
             )
-            .or_else(|| {
-                linked.iter().find_map(|l| {
-                    package_parent_row(l, session_path, types::DiscoveryRowKind::WorktreeEntry)
-                })
-            })
         },
     }
 }
@@ -1507,7 +1496,7 @@ fn root_item_parent_row(item: &RootItem, session_path: &Path) -> Option<Discover
 fn workspace_parent_row(
     ws: &Workspace,
     session_path: &Path,
-    parent_kind: types::DiscoveryRowKind,
+    parent_kind: DiscoveryRowKind,
 ) -> Option<DiscoveryParentRow> {
     if ws.path() == session_path {
         return None;
@@ -1531,7 +1520,7 @@ fn workspace_parent_row(
                 });
             }
             if let Some(parent) =
-                package_parent_row(member, session_path, types::DiscoveryRowKind::PathOnly)
+                package_parent_row(member, session_path, DiscoveryRowKind::PathOnly)
             {
                 return Some(parent);
             }
@@ -1543,7 +1532,7 @@ fn workspace_parent_row(
 fn package_parent_row(
     pkg: &Package,
     session_path: &Path,
-    parent_kind: types::DiscoveryRowKind,
+    parent_kind: DiscoveryRowKind,
 ) -> Option<DiscoveryParentRow> {
     if pkg.path() == session_path {
         return None;

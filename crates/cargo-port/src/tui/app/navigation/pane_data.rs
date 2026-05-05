@@ -7,11 +7,12 @@ use crate::project::WorktreeGroup;
 use crate::tui;
 use crate::tui::app::App;
 use crate::tui::app::VisibleRow;
+use crate::tui::panes::DetailPaneData;
 
 impl App {
     /// Build per-pane data for the currently selected row, resolving through
     /// the `project_list_items` hierarchy.
-    pub(super) fn build_selected_pane_data(&self) -> Option<tui::panes::DetailPaneData> {
+    pub(super) fn build_selected_pane_data(&self) -> Option<DetailPaneData> {
         let row = self.selected_row()?;
         match row {
             VisibleRow::Root { node_index } => {
@@ -183,7 +184,7 @@ impl App {
         &self,
         item: &RootItem,
         worktree_index: usize,
-    ) -> Option<tui::panes::DetailPaneData> {
+    ) -> Option<DetailPaneData> {
         match item {
             RootItem::Worktrees(WorktreeGroup::Workspaces {
                 primary, linked, ..

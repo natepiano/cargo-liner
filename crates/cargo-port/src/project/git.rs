@@ -1,12 +1,17 @@
 use std::io;
+use std::path::Component;
 use std::path::Path;
 use std::process::Command;
+use std::process::Output;
+use std::time::SystemTime;
 
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::info::WorktreeHealth;
 use super::paths::AbsolutePath;
 use crate::config;
+use crate::config::CargoPortConfig;
 use crate::constants::GIT_STATUS_CLEAN;
 use crate::constants::GIT_STATUS_MODIFIED;
 use crate::constants::GIT_STATUS_UNTRACKED;
@@ -289,7 +294,7 @@ fn build_remote_info(
     current_upstream: Option<&str>,
     default_branch: Option<&str>,
     current_branch: Option<&str>,
-    cfg: &config::CargoPortConfig,
+    cfg: &CargoPortConfig,
 ) -> RemoteInfo {
     let (owner, url, repo) = remote_url_info(repo_root, name);
     let tracked_ref = resolve_tracked_ref(
@@ -353,7 +358,7 @@ fn resolve_tracked_ref(
     current_upstream: Option<&str>,
     default_branch: Option<&str>,
     current_branch: Option<&str>,
-    cfg: &config::CargoPortConfig,
+    cfg: &CargoPortConfig,
 ) -> Option<String> {
     let prefix = format!("{remote_name}/");
     if let Some(us) = current_upstream
@@ -502,7 +507,7 @@ fn git_output_logged<const N: usize>(
     repo_root: &Path,
     op: &str,
     args: [&str; N],
-) -> io::Result<std::process::Output> {
+) -> io::Result<Output> {
     let started = std::time::Instant::now();
     let output = git_command(repo_root).args(args).output();
     let status = output
@@ -699,7 +704,7 @@ fn get_last_fetched(repo_root: &Path) -> Option<String> {
     system_time_to_iso8601_utc(modified)
 }
 
-fn system_time_to_iso8601_utc(t: std::time::SystemTime) -> Option<String> {
+fn system_time_to_iso8601_utc(t: SystemTime) -> Option<String> {
     let secs = i64::try_from(
         t.duration_since(std::time::SystemTime::UNIX_EPOCH)
             .ok()?
@@ -746,9 +751,7 @@ fn relative_git_path(repo_root: &Path, project_dir: &Path) -> String {
             let normalized = path
                 .components()
                 .filter_map(|component| match component {
-                    std::path::Component::Normal(segment) => {
-                        Some(segment.to_string_lossy().to_string())
-                    },
+                    Component::Normal(segment) => Some(segment.to_string_lossy().to_string()),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -927,8 +930,6 @@ fn linked_status_from_gitfile(git_path: &Path, dir: &Path) -> WorktreeStatus {
         primary: AbsolutePath::from(primary_root.to_path_buf()),
     }
 }
-
-use super::info::WorktreeHealth;
 
 #[cfg(test)]
 #[allow(

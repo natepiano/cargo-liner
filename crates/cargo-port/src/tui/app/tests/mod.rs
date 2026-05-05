@@ -8,6 +8,7 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use chrono::DateTime;
+use chrono::FixedOffset;
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -194,7 +195,7 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
         .collect()
 }
 
-fn render_tree_buffer(app: &mut App) -> (ratatui::buffer::Buffer, ProjectListWidths) {
+fn render_tree_buffer(app: &mut App) -> (Buffer, ProjectListWidths) {
     app.ensure_visible_rows_cached();
     let labels = app
         .projects()
@@ -217,11 +218,7 @@ fn render_tree_buffer(app: &mut App) -> (ratatui::buffer::Buffer, ProjectListWid
     (buffer, widths)
 }
 
-fn row_has_crossed_out_content(
-    buffer: &ratatui::buffer::Buffer,
-    widths: &ProjectListWidths,
-    row: usize,
-) -> bool {
+fn row_has_crossed_out_content(buffer: &Buffer, widths: &ProjectListWidths, row: usize) -> bool {
     (0..widths.total_width()).any(|x| {
         let cell = &buffer[(
             u16::try_from(x).unwrap_or(u16::MAX),
@@ -498,7 +495,7 @@ fn apply_items(app: &mut App, items: &[RootItem]) {
     app.ensure_visible_rows_cached();
 }
 
-fn parse_ts(ts: &str) -> DateTime<chrono::FixedOffset> {
+fn parse_ts(ts: &str) -> DateTime<FixedOffset> {
     DateTime::parse_from_rfc3339(ts).unwrap_or_else(|_| std::process::abort())
 }
 

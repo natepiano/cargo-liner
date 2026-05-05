@@ -1,6 +1,8 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::path::Component;
 use std::path::Path;
 
 use cargo_metadata::TargetKind;
@@ -180,8 +182,8 @@ impl Cargo {
             let a_root = a.category.is_empty();
             let b_root = b.category.is_empty();
             match (a_root, b_root) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
                 _ => a.category.cmp(&b.category),
             }
         });
@@ -213,7 +215,7 @@ fn example_category(manifest_dir: Option<&Path>, src_path: &Path) -> String {
     let parts: Vec<String> = rel
         .components()
         .filter_map(|c| match c {
-            std::path::Component::Normal(seg) => Some(seg.to_string_lossy().into_owned()),
+            Component::Normal(seg) => Some(seg.to_string_lossy().into_owned()),
             _ => None,
         })
         .collect();

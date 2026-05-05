@@ -159,6 +159,7 @@ mod tests {
     use crossterm::event::MouseButton;
     use crossterm::event::MouseEvent;
     use crossterm::event::MouseEventKind;
+    use panes::DispatchArgs;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
@@ -393,7 +394,7 @@ mod tests {
             .draw(|frame| {
                 let area = frame.area();
                 let (panes, _layout_cache, config, _selection, scan) = app.split_panes_for_render();
-                let args = panes::DispatchArgs {
+                let args = DispatchArgs {
                     focus_state,
                     is_focused,
                     animation_elapsed,
@@ -421,7 +422,7 @@ mod tests {
             .draw(|frame| {
                 let area = frame.area();
                 let (panes, _layout_cache, config, _selection, scan) = app.split_panes_for_render();
-                let args = panes::DispatchArgs {
+                let args = DispatchArgs {
                     focus_state,
                     is_focused,
                     animation_elapsed,

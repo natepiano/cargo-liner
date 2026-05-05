@@ -1,4 +1,6 @@
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::io;
 use std::path::Path;
 
@@ -25,8 +27,8 @@ pub(crate) enum ProjectType {
     ProcMacro,
 }
 
-impl fmt::Display for ProjectType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ProjectType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Workspace => write!(f, "workspace"),
             Self::Binary => write!(f, "binary"),
@@ -49,8 +51,8 @@ pub(crate) enum ProjectParseError {
     Parse(toml::de::Error),
 }
 
-impl fmt::Display for ProjectParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ProjectParseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Read(e) => write!(f, "read error: {e}"),
             Self::Parse(e) => write!(f, "parse error: {e}"),

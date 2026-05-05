@@ -4,6 +4,7 @@ use chrono::DateTime;
 use chrono::Utc;
 
 use super::history;
+use super::history::PruneStats;
 use super::paths;
 use super::read_write;
 use super::status;
@@ -370,7 +371,7 @@ fn append_archived_run(
     project_root: &Path,
     run: &LintRun,
     cache_size: Option<u64>,
-) -> history::PruneStats {
+) -> PruneStats {
     history::append_history_under(cache_root, project_root, run, cache_size).expect("append run")
 }
 

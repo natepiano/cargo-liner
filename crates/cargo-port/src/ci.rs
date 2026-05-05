@@ -1,3 +1,6 @@
+use std::fmt::Display;
+use std::fmt::Formatter;
+
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -24,8 +27,8 @@ impl OwnerRepo {
     pub(crate) fn repo(&self) -> &str { &self.repo }
 }
 
-impl std::fmt::Display for OwnerRepo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for OwnerRepo {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.owner, self.repo)
     }
 }
@@ -82,8 +85,8 @@ impl Conclusion {
     pub(crate) const fn is_failure(self) -> bool { matches!(self, Self::Failure) }
 }
 
-impl std::fmt::Display for Conclusion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.icon()) }
+impl Display for Conclusion {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { f.write_str(self.icon()) }
 }
 
 #[derive(Serialize, Deserialize, Clone)]

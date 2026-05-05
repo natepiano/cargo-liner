@@ -1,13 +1,24 @@
+use std::cmp::Ordering;
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::io::ErrorKind;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
 use std::thread;
 
+use cargo_metadata::Error;
+use cargo_metadata::Metadata;
+use tokei::Config;
+use tokei::Languages;
+use tokio::runtime::Handle;
+use tokio::sync::Semaphore;
 use toml::Table;
 use toml::Value;
 use walkdir::WalkDir;
@@ -298,7 +309,7 @@ const fn combine_service_signal(
     }
 }
 
-pub(crate) fn emit_service_signal(tx: &mpsc::Sender<BackgroundMsg>, signal: Option<ServiceSignal>) {
+pub(crate) fn emit_service_signal(tx: &Sender<BackgroundMsg>, signal: Option<ServiceSignal>) {
     let msg = match signal {
         Some(ServiceSignal::Reachable(service)) => BackgroundMsg::ServiceReachable { service },
         Some(ServiceSignal::Unreachable(service)) => BackgroundMsg::ServiceUnreachable { service },
@@ -308,7 +319,7 @@ pub(crate) fn emit_service_signal(tx: &mpsc::Sender<BackgroundMsg>, signal: Opti
     let _ = tx.send(msg);
 }
 
-pub(crate) fn emit_service_recovered(tx: &mpsc::Sender<BackgroundMsg>, service: ServiceKind) {
+pub(crate) fn emit_service_recovered(tx: &Sender<BackgroundMsg>, service: ServiceKind) {
     let _ = tx.send(BackgroundMsg::ServiceRecovered { service });
 }
 
@@ -318,7 +329,7 @@ pub(crate) fn emit_service_recovered(tx: &mpsc::Sender<BackgroundMsg>, service: 
 /// independently. The watcher's refresh path uses a smarter
 /// orchestration that probes `RepoInfo` once per repo and reuses it
 /// across sibling worktrees.
-pub(crate) fn emit_git_info(tx: &mpsc::Sender<BackgroundMsg>, path: &AbsolutePath) {
+pub(crate) fn emit_git_info(tx: &Sender<BackgroundMsg>, path: &AbsolutePath) {
     let Some(repo) = RepoInfo::get(path.as_path()) else {
         return;
     };
@@ -480,7 +491,7 @@ fn merge_runs(fetched: Vec<CiRun>, cached: Vec<CiRun>) -> Vec<CiRun> {
         }
     }
 
-    merged.sort_by_key(|run| std::cmp::Reverse(run.run_id));
+    merged.sort_by_key(|run| Reverse(run.run_id));
     merged
 }
 
@@ -536,7 +547,7 @@ pub(crate) fn fetch_older_runs(
         fetch_recent_runs(client, repo_url, owner, repo, &gh_runs);
 
     let mut result = fetched;
-    result.sort_by_key(|run| std::cmp::Reverse(run.run_id));
+    result.sort_by_key(|run| Reverse(run.run_id));
 
     let result = if gh_runs.is_empty() {
         CiFetchResult::CacheOnly(result)
@@ -725,7 +736,7 @@ fn workspace_member_patterns(manifest_path: &Path) -> Option<(Vec<String>, Vec<S
 pub(crate) fn normalize_workspace_path(path: &Path) -> String {
     path.components()
         .filter_map(|component| match component {
-            std::path::Component::Normal(segment) => Some(segment.to_string_lossy().to_string()),
+            Component::Normal(segment) => Some(segment.to_string_lossy().to_string()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -834,7 +845,7 @@ fn merge_worktrees_new(items: &mut Vec<RootItem>) {
             Some((wi, id))
         })
         .collect();
-    moves.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+    moves.sort_by_key(|entry| Reverse(entry.0));
 
     let mut extracted: Vec<(RootItem, AbsolutePath)> = Vec::new();
     for (wi, id) in moves {
@@ -1043,8 +1054,8 @@ fn group_members_new(
         let a_inline = a.group_name().is_empty();
         let b_inline = b.group_name().is_empty();
         match (a_inline, b_inline) {
-            (true, false) => std::cmp::Ordering::Greater,
-            (false, true) => std::cmp::Ordering::Less,
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
             _ => a.group_name().cmp(b.group_name()),
         }
     });
@@ -1097,7 +1108,7 @@ pub(crate) struct FetchContext {
 }
 
 pub(crate) struct ProjectDetailRequest<'a> {
-    pub tx:            &'a mpsc::Sender<BackgroundMsg>,
+    pub tx:            &'a Sender<BackgroundMsg>,
     pub fetch_context: &'a FetchContext,
     pub _project_path: &'a str,
     pub abs_path:      &'a Path,
@@ -1237,10 +1248,10 @@ fn expand_home_path(raw: &str) -> PathBuf {
 #[derive(Clone)]
 struct StreamingScanContext {
     client:         HttpClient,
-    tx:             mpsc::Sender<BackgroundMsg>,
-    disk_limit:     Arc<tokio::sync::Semaphore>,
+    tx:             Sender<BackgroundMsg>,
+    disk_limit:     Arc<Semaphore>,
     metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
-    metadata_limit: Arc<tokio::sync::Semaphore>,
+    metadata_limit: Arc<Semaphore>,
 }
 
 /// Spawn a streaming scan using a hybrid approach:
@@ -1262,7 +1273,7 @@ pub(crate) fn spawn_streaming_scan(
     non_rust: NonRustInclusion,
     client: HttpClient,
     metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
-) -> (mpsc::Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
+) -> (Sender<BackgroundMsg>, Receiver<BackgroundMsg>) {
     let (tx, rx) = mpsc::channel();
     let inline_dirs = inline_dirs.to_vec();
 
@@ -1362,10 +1373,10 @@ fn spawn_cargo_metadata_tree(scan_context: &StreamingScanContext, roots: Vec<Abs
 /// to re-run on manifest/config edits.
 #[derive(Clone)]
 pub(crate) struct MetadataDispatchContext {
-    pub handle:         tokio::runtime::Handle,
-    pub tx:             mpsc::Sender<BackgroundMsg>,
+    pub handle:         Handle,
+    pub tx:             Sender<BackgroundMsg>,
     pub metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
-    pub metadata_limit: Arc<tokio::sync::Semaphore>,
+    pub metadata_limit: Arc<Semaphore>,
 }
 
 impl MetadataDispatchContext {
@@ -1456,8 +1467,8 @@ struct CargoMetadataTaskOutput {
 /// walker's per-project breakdown doesn't reach there, so this fills in the
 /// sharer target size for the detail pane.
 pub(crate) fn spawn_out_of_tree_target_walk(
-    handle: &tokio::runtime::Handle,
-    tx: mpsc::Sender<BackgroundMsg>,
+    handle: &Handle,
+    tx: Sender<BackgroundMsg>,
     workspace_root: AbsolutePath,
     target_dir: AbsolutePath,
 ) {
@@ -1514,7 +1525,7 @@ fn run_cargo_metadata_for_root(
             // similar race. Classify it as `WorkspaceMissing` so the
             // handler can suppress the toast at the type level. All other
             // I/O errors (permissions, etc.) flow into `Other`.
-            let result = if err.kind() == std::io::ErrorKind::NotFound {
+            let result = if err.kind() == ErrorKind::NotFound {
                 Err(CargoMetadataError::WorkspaceMissing)
             } else {
                 Err(CargoMetadataError::Other(format!(
@@ -1553,9 +1564,7 @@ fn run_cargo_metadata_for_root(
     }
 }
 
-fn execute_cargo_metadata(
-    manifest_path: &Path,
-) -> Result<cargo_metadata::Metadata, CargoMetadataError> {
+fn execute_cargo_metadata(manifest_path: &Path) -> Result<Metadata, CargoMetadataError> {
     // Wall-clock cap lives on the caller via `tokio::time::timeout`;
     // `MetadataCommand::exec` itself has no timeout knob.
     let mut cmd = cargo_metadata::MetadataCommand::new();
@@ -1565,7 +1574,7 @@ fn execute_cargo_metadata(
         .map_err(|err| CargoMetadataError::Other(format_cargo_metadata_error(&err)))
 }
 
-fn format_cargo_metadata_error(err: &cargo_metadata::Error) -> String {
+fn format_cargo_metadata_error(err: &Error) -> String {
     let text = err.to_string();
     text.lines().next().unwrap_or(&text).to_string()
 }
@@ -1589,7 +1598,7 @@ fn synthetic_fingerprint() -> ManifestFingerprint {
 
 fn build_workspace_metadata(
     workspace_root: AbsolutePath,
-    metadata: &cargo_metadata::Metadata,
+    metadata: &Metadata,
     fingerprint: ManifestFingerprint,
 ) -> WorkspaceMetadata {
     let target_directory =
@@ -1774,7 +1783,7 @@ fn spawn_language_stats_tree(scan_context: &StreamingScanContext, tree: DiskUsag
 }
 
 fn collect_language_stats_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, LanguageStats)> {
-    let config = tokei::Config {
+    let config = Config {
         hidden: Some(false),
         ..tokei::Config::default()
     };
@@ -1805,7 +1814,7 @@ fn collect_language_stats_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, L
     results
 }
 
-fn build_language_stats(languages: &tokei::Languages) -> LanguageStats {
+fn build_language_stats(languages: &Languages) -> LanguageStats {
     let mut entries: Vec<LangEntry> = languages
         .iter()
         .filter(|(_, lang)| lang.code > 0 || !lang.reports.is_empty())
@@ -1832,13 +1841,13 @@ fn build_language_stats(languages: &tokei::Languages) -> LanguageStats {
             }
         })
         .collect();
-    entries.sort_by_key(|entry| std::cmp::Reverse(entry.code));
+    entries.sort_by_key(|entry| Reverse(entry.code));
     LanguageStats { entries }
 }
 
 /// Collect language stats for a single project path (watcher discovery).
 pub(crate) fn collect_language_stats_single(path: &Path) -> LanguageStats {
-    let config = tokei::Config {
+    let config = Config {
         hidden: Some(false),
         ..tokei::Config::default()
     };

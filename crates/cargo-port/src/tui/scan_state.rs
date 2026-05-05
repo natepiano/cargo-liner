@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use super::app::DirtyState;
 use super::app::DiscoveryShimmer;
@@ -105,7 +106,7 @@ impl Scan {
         &mut self.discovery_shimmers
     }
 
-    pub(super) fn prune_shimmers(&mut self, now: std::time::Instant) {
+    pub(super) fn prune_shimmers(&mut self, now: Instant) {
         self.discovery_shimmers
             .retain(|_, shimmer| shimmer.is_active_at(now));
     }

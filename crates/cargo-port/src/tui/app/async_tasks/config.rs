@@ -11,6 +11,7 @@ use crate::lint;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::config_reload;
+use crate::tui::config_reload::ReloadContext;
 use crate::tui::toasts::ToastStyle::Error;
 
 impl App {
@@ -143,7 +144,7 @@ impl App {
         let actions = config_reload::collect_reload_actions(
             self.config.current(),
             cfg,
-            config_reload::ReloadContext {
+            ReloadContext {
                 scan_complete:       self.scan.is_complete(),
                 has_cached_non_rust: self.has_cached_non_rust_projects(),
             },

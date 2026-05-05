@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -366,7 +368,7 @@ fn body_lines_tracked<'a>(
 }
 
 /// Format an elapsed duration as a compact string (e.g. "842µs", "3s", "1m 23s").
-fn format_elapsed(elapsed: std::time::Duration) -> String {
+fn format_elapsed(elapsed: Duration) -> String {
     let ms = elapsed.as_millis();
     if ms >= 60_000 {
         let secs = elapsed.as_secs();

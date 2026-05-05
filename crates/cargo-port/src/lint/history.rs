@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 
@@ -103,8 +105,8 @@ pub fn append_history_under(
         .create(true)
         .append(true)
         .open(&path)?;
-    let json = serde_json::to_string(run)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let json =
+        serde_json::to_string(run).map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
     writeln!(file, "{json}")?;
     enforce_cache_size_under(cache_root, cache_size_bytes, Some((&path, &run.run_id)))
 }
@@ -318,8 +320,7 @@ fn prune_runs_under(
         let reader = BufReader::new(file);
         let line_count = reader.lines().count();
 
-        let removed_set: std::collections::HashSet<usize> =
-            removed_indices.iter().copied().collect();
+        let removed_set: HashSet<usize> = removed_indices.iter().copied().collect();
         let kept: Vec<usize> = (0..line_count)
             .filter(|index| !removed_set.contains(index))
             .collect();

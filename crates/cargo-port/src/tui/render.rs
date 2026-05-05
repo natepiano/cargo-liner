@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
+
 use ratatui::Frame;
 use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
@@ -30,8 +33,11 @@ use super::interaction;
 use super::keymap_ui;
 use super::pane;
 use super::panes;
+use super::panes::DispatchArgs;
 use super::panes::LayoutCache;
 use super::panes::PaneId;
+use super::panes::Panes;
+use super::panes::RenderStyles;
 use super::popup::PopupFrame;
 use super::settings;
 use super::shortcuts;
@@ -215,8 +221,7 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
             // a group clean can affect sibling projects outside the
             // selection just like a single-project clean can.
             let selection: Vec<AbsolutePath> = all_paths.iter().copied().cloned().collect();
-            let mut seen_targets: std::collections::HashSet<AbsolutePath> =
-                std::collections::HashSet::new();
+            let mut seen_targets: HashSet<AbsolutePath> = std::collections::HashSet::new();
             for path in &all_paths {
                 let target = app
                     .scan()
@@ -326,8 +331,8 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     panes::render_project_list(frame, app, area);
 }
 
-fn pane_render_styles() -> panes::RenderStyles {
-    panes::RenderStyles {
+fn pane_render_styles() -> RenderStyles {
+    RenderStyles {
         readonly_label: Style::default().fg(LABEL_COLOR),
         chrome:         pane::default_pane_chrome(),
     }
@@ -338,7 +343,7 @@ fn dispatch_via_trait(
     area: Rect,
     id: PaneId,
     frame: &mut Frame,
-    dispatcher: fn(&mut panes::Panes, &mut Frame, Rect, &panes::DispatchArgs<'_>),
+    dispatcher: fn(&mut Panes, &mut Frame, Rect, &DispatchArgs<'_>),
 ) {
     let focus_state = app.focus().pane_state(id);
     let is_focused = app.focus().is(id);
@@ -346,11 +351,11 @@ fn dispatch_via_trait(
     // Compute `selected_project_path` before the split-borrow — it
     // crosses Selection + Scan via `path_for_row`, so the
     // dispatcher's typed refs alone can't reproduce it.
-    let selected_project_path: Option<std::path::PathBuf> = app
+    let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
     let (panes, _layout_cache, config, _selection, scan) = app.split_panes_for_render();
-    let args = panes::DispatchArgs {
+    let args = DispatchArgs {
         focus_state,
         is_focused,
         animation_elapsed,

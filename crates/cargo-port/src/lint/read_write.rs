@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use super::paths;
@@ -16,7 +17,7 @@ pub fn write_latest_under(cache_root: &Path, project_root: &Path, run: &LintRun)
         std::fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_vec_pretty(run)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
     let tmp_path = path.with_extension("json.tmp");
     std::fs::write(&tmp_path, json)?;
     std::fs::rename(tmp_path, path)
@@ -26,7 +27,7 @@ pub fn clear_latest_under(cache_root: &Path, project_root: &Path) -> io::Result<
     let path = paths::latest_path_under(cache_root, project_root);
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
 }
@@ -47,7 +48,7 @@ pub fn clear_latest_if_running_under(cache_root: &Path, project_root: &Path) -> 
 pub fn clear_running_latest_files_under(cache_root: &Path) -> io::Result<usize> {
     let entries = match std::fs::read_dir(cache_root) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(0),
         Err(err) => return Err(err),
     };
 
@@ -81,7 +82,7 @@ pub fn clear_running_latest_files_under(cache_root: &Path) -> io::Result<usize> 
             .find(|r| !matches!(r.status, LintRunStatus::Running));
         if let Some(run) = last_completed {
             let json = serde_json::to_vec_pretty(&run)
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+                .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
             let tmp_path = latest_path.with_extension("json.tmp");
             std::fs::write(&tmp_path, json)?;
             std::fs::rename(tmp_path, &latest_path)?;
@@ -89,7 +90,7 @@ pub fn clear_running_latest_files_under(cache_root: &Path) -> io::Result<usize> 
         } else {
             match std::fs::remove_file(&latest_path) {
                 Ok(()) => cleared += 1,
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {},
+                Err(err) if err.kind() == ErrorKind::NotFound => {},
                 Err(err) => return Err(err),
             }
         }

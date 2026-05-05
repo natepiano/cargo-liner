@@ -1,8 +1,13 @@
 use std::collections::HashSet;
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::fmt::Result;
 use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
 
+use ratatui::Frame;
+use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
 use crate::ci::OwnerRepo;
@@ -11,7 +16,9 @@ use crate::tui::app::DismissTarget;
 use crate::tui::constants::TOAST_LINE_REVEAL_MS;
 use crate::tui::constants::TOAST_WIDTH;
 use crate::tui::interaction::ToastHitbox;
+use crate::tui::pane::Hittable;
 use crate::tui::pane::HoverTarget;
+use crate::tui::pane::Pane;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::Viewport;
 
@@ -65,8 +72,8 @@ impl TrackedItemKey {
     pub fn as_str(&self) -> &str { &self.0 }
 }
 
-impl std::fmt::Display for TrackedItemKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.0.fmt(f) }
+impl Display for TrackedItemKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result { self.0.fmt(f) }
 }
 
 impl From<AbsolutePath> for TrackedItemKey {
@@ -150,11 +157,7 @@ fn exit_lines(now: Instant, exit_start: Instant, target_height: u16) -> u16 {
             target_height.saturating_sub(elapsed_line_count(now.duration_since(exit_start)));
         // Skip height=1: a single-line Block renders a stray corner glyph
         // that clashes with the window border. Jump from 2 → 0.
-        if remaining == 1 {
-            0
-        } else {
-            remaining
-        }
+        if remaining == 1 { 0 } else { remaining }
     } else {
         target_height
     }
@@ -740,12 +743,12 @@ fn wrapped_line_count(line: &str, width: usize) -> usize {
 // directly. Pane render is a no-op (toasts render via the overlay
 // path in `render.rs`); Hittable walks the recorded hit rects.
 
-impl crate::tui::pane::Pane for ToastManager {
-    fn render(&mut self, _frame: &mut ratatui::Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
+impl Pane for ToastManager {
+    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
 }
 
-impl crate::tui::pane::Hittable for ToastManager {
-    fn hit_test_at(&self, pos: ratatui::layout::Position) -> Option<HoverTarget> {
+impl Hittable for ToastManager {
+    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
         for hit in &self.hits {
             if hit.close_rect.contains(pos) {
                 return Some(HoverTarget::Dismiss(DismissTarget::Toast(hit.id)));

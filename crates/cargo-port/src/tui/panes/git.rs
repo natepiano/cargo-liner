@@ -27,8 +27,10 @@ use crate::tui::constants::TITLE_COLOR;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
+use crate::tui::pane::PaneRule;
 use crate::tui::pane::PaneSelectionState;
 use crate::tui::pane::PaneTitleCount;
+use crate::tui::pane::RuleTitle;
 use crate::tui::pane::Viewport;
 use crate::tui::panes;
 
@@ -289,7 +291,7 @@ fn render_section_overlays(
                 height: 1,
             },
             rule_style,
-            Some(pane::RuleTitle {
+            Some(RuleTitle {
                 text:  &rule.title,
                 style: title_style,
             }),
@@ -770,7 +772,7 @@ fn render_git_about_section(
 
     pane::render_rules(
         frame,
-        &[pane::PaneRule::Horizontal {
+        &[PaneRule::Horizontal {
             area:        Rect {
                 x:      outer_area.x,
                 y:      separator_y,

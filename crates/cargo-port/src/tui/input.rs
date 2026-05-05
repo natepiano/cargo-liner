@@ -1,4 +1,7 @@
+use std::io::Result;
 use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use crossterm::event::Event;
@@ -34,7 +37,7 @@ use crate::project::RustProject;
 /// Last known mouse position, updated from every mouse event. Used to
 /// synthesize a click when `FocusGained` arrives because iTerm2 eats the
 /// mouse-down event that caused the focus change.
-static LAST_MOUSE_POS: std::sync::Mutex<Option<(u16, u16)>> = std::sync::Mutex::new(None);
+static LAST_MOUSE_POS: Mutex<Option<(u16, u16)>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 pub(super) fn set_last_mouse_pos_for_test(pos: Option<(u16, u16)>) {
@@ -412,18 +415,18 @@ fn overlay_editor_target_path(
     }
 }
 
-fn open_path_in_editor(editor: &str, path: &Path) -> std::io::Result<()> {
+fn open_path_in_editor(editor: &str, path: &Path) -> Result<()> {
     open_paths_in_editor(editor, [path])
 }
 
 pub(super) fn open_paths_in_editor<P>(
     editor: &str,
     paths: impl IntoIterator<Item = P>,
-) -> std::io::Result<()>
+) -> Result<()>
 where
     P: AsRef<Path>,
 {
-    let owned_paths: Vec<std::path::PathBuf> = paths
+    let owned_paths: Vec<PathBuf> = paths
         .into_iter()
         .map(|path| path.as_ref().to_path_buf())
         .collect();
@@ -434,7 +437,7 @@ where
     open_paths_via_editor_command(editor, &paths)
 }
 
-fn open_paths_via_editor_command(editor: &str, paths: &[&Path]) -> std::io::Result<()> {
+fn open_paths_via_editor_command(editor: &str, paths: &[&Path]) -> Result<()> {
     let mut command = std::process::Command::new(editor);
     if let Some(path) = paths.first()
         && let Some(parent) = path.parent()
@@ -506,7 +509,7 @@ fn open_settings_to_terminal_command(app: &mut App) {
     settings::focus_terminal_command(app);
 }
 
-fn spawn_terminal_command(command: &str, cwd: &Path) -> std::io::Result<()> {
+fn spawn_terminal_command(command: &str, cwd: &Path) -> Result<()> {
     let mut process = if cfg!(windows) {
         let mut process = std::process::Command::new("cmd");
         process.arg("/C").arg(command);
