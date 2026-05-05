@@ -14,6 +14,12 @@ use super::source_cache::ExtractedPaths;
 use super::source_cache::PathOrigin;
 use super::source_cache::SourceCache;
 use super::source_cache::UseRename;
+use crate::constants::PATH_KEYWORD_CRATE;
+use crate::constants::PATH_KEYWORD_SELF;
+use crate::constants::PATH_KEYWORD_SUPER;
+use crate::constants::RUST_LIB_FILE;
+use crate::constants::RUST_MAIN_FILE;
+use crate::constants::RUST_MODULE_FILE;
 use crate::module_paths;
 
 #[derive(Debug, Clone)]
@@ -282,7 +288,7 @@ pub(super) fn parent_boundary_for_child(
     child_file: &Path,
 ) -> Option<ParentBoundary> {
     let parent_dir = child_file.parent()?;
-    let parent_module_rs = parent_dir.join("mod.rs");
+    let parent_module_rs = parent_dir.join(RUST_MODULE_FILE);
     if parent_module_rs.is_file() {
         return Some(ParentBoundary {
             boundary_file: parent_module_rs,
@@ -312,7 +318,7 @@ pub(super) fn parent_of_boundary(
     source_root: &Path,
     boundary_file: &Path,
 ) -> Option<ParentBoundary> {
-    if boundary_file.file_name()?.to_str() != Some("mod.rs") {
+    if boundary_file.file_name()?.to_str() != Some(RUST_MODULE_FILE) {
         return parent_boundary_for_child(source_root, boundary_file);
     }
 
@@ -320,7 +326,7 @@ pub(super) fn parent_of_boundary(
     // level to reach the parent module's directory.
     let container_dir = boundary_file.parent()?.parent()?;
 
-    let module_rs = container_dir.join("mod.rs");
+    let module_rs = container_dir.join(RUST_MODULE_FILE);
     if module_rs.is_file() {
         return Some(ParentBoundary {
             boundary_file: module_rs,
@@ -338,7 +344,7 @@ pub(super) fn parent_of_boundary(
         });
     }
 
-    for name in ["lib.rs", "main.rs"] {
+    for name in [RUST_LIB_FILE, RUST_MAIN_FILE] {
         let root = container_dir.join(name);
         if root.is_file() {
             return Some(ParentBoundary {
@@ -385,7 +391,10 @@ fn collect_matching_pub_use_exports(
     let mut paths = Vec::new();
     source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
     for path in paths {
-        let normalized = if path.first().is_some_and(|segment| segment == "self") {
+        let normalized = if path
+            .first()
+            .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
+        {
             &path[1..]
         } else {
             &path[..]
@@ -417,7 +426,10 @@ fn pub_use_is_fix_supported_with_prefix(
             pub_use_is_fix_supported_with_prefix(next, &path.tree, child_module_name, item_name)
         },
         UseTree::Name(name) => {
-            let normalized = if prefix.first().is_some_and(|segment| segment == "self") {
+            let normalized = if prefix
+                .first()
+                .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
+            {
                 &prefix[1..]
             } else {
                 &prefix[..]
@@ -436,7 +448,7 @@ pub(super) fn parent_facade_visibility(vis: &Visibility) -> Option<ParentFacadeV
         Visibility::Public(_) => Some(ParentFacadeVisibility::Public),
         Visibility::Restricted(restricted)
             if restricted.path.segments.len() == 1
-                && restricted.path.segments[0].ident == "super" =>
+                && restricted.path.segments[0].ident == PATH_KEYWORD_SUPER =>
         {
             Some(ParentFacadeVisibility::Super)
         },
@@ -535,26 +547,32 @@ pub(super) fn resolve_module_relative_paths(
         return Vec::new();
     }
 
-    if raw.first().map(String::as_str) == Some("crate") {
+    if raw.first().map(String::as_str) == Some(PATH_KEYWORD_CRATE) {
         return vec![raw[1..].to_vec()];
     }
 
-    if raw.first().map(String::as_str) == Some("self") {
+    if raw.first().map(String::as_str) == Some(PATH_KEYWORD_SELF) {
         let mut resolved = current_module_path.to_vec();
         resolved.extend(raw[1..].iter().cloned());
         return vec![resolved];
     }
 
-    if raw.first().map(String::as_str) == Some("super") {
+    if raw.first().map(String::as_str) == Some(PATH_KEYWORD_SUPER) {
         let mut index = 0usize;
         let mut resolved = current_module_path.to_vec();
-        while raw.get(index).is_some_and(|segment| segment == "super") {
+        while raw
+            .get(index)
+            .is_some_and(|segment| segment == PATH_KEYWORD_SUPER)
+        {
             if resolved.pop().is_none() {
                 return Vec::new();
             }
             index += 1;
         }
-        if raw.get(index).is_some_and(|segment| segment == "self") {
+        if raw
+            .get(index)
+            .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
+        {
             index += 1;
         }
         resolved.extend(raw[index..].iter().cloned());

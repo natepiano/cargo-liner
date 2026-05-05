@@ -11,6 +11,15 @@ use syn::ItemUse;
 use syn::UseTree;
 use syn::visit::Visit;
 
+use crate::constants::CARGO_TARGET_KIND_LIB;
+use crate::constants::CARGO_TARGET_KIND_MAIN;
+use crate::constants::PATH_KEYWORD_CRATE;
+use crate::constants::RUST_MODULE_FILE;
+use crate::constants::SOURCE_DIR_BENCHES;
+use crate::constants::SOURCE_DIR_EXAMPLES;
+use crate::constants::SOURCE_DIR_SRC;
+use crate::constants::SOURCE_DIR_TESTS;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PathOrigin {
     Relative,
@@ -112,7 +121,14 @@ pub(super) fn analysis_source_root_for(
         .strip_prefix(&canonical_package_root)
         .ok()?;
     let first_component = relative.components().next()?.as_os_str().to_str()?;
-    matches!(first_component, "src" | "examples" | "tests" | "benches").then_some(source_root)
+    [
+        SOURCE_DIR_SRC,
+        SOURCE_DIR_EXAMPLES,
+        SOURCE_DIR_TESTS,
+        SOURCE_DIR_BENCHES,
+    ]
+    .contains(&first_component)
+    .then_some(source_root)
 }
 
 pub(super) fn module_path_from_boundary_file(
@@ -126,7 +142,10 @@ pub(super) fn module_path_from_boundary_file(
         .collect::<Vec<_>>();
     let last = components.last_mut()?;
     *last = last.strip_suffix(".rs")?.to_string();
-    if matches!(components.as_slice(), [name] if name == "lib" || name == "main") {
+    if matches!(
+        components.as_slice(),
+        [name] if name == CARGO_TARGET_KIND_LIB || name == CARGO_TARGET_KIND_MAIN
+    ) {
         Some(Vec::new())
     } else {
         Some(components)
@@ -137,7 +156,7 @@ pub(super) fn module_path_from_source_file(
     source_root: &Path,
     source_file: &Path,
 ) -> Option<Vec<String>> {
-    if source_file.file_name().and_then(OsStr::to_str) == Some("mod.rs") {
+    if source_file.file_name().and_then(OsStr::to_str) == Some(RUST_MODULE_FILE) {
         module_path_from_dir(source_root, source_file.parent()?)
     } else {
         module_path_from_boundary_file(source_root, source_file)
@@ -213,7 +232,7 @@ fn collect_rust_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()>
 }
 
 pub(super) fn path_origin(raw: &[String]) -> PathOrigin {
-    if raw.first().map(String::as_str) == Some("crate") {
+    if raw.first().map(String::as_str) == Some(PATH_KEYWORD_CRATE) {
         PathOrigin::Crate
     } else {
         PathOrigin::Relative

@@ -33,7 +33,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Result;
+use cli::BuildInfoMode;
 use cli::FixExecution;
+use cli::WarningPolicy;
 use config::DiagnosticsConfig;
 use constants::CARGO_TERM_COLOR_ALWAYS;
 use constants::CARGO_TERM_COLOR_ENV;
@@ -116,7 +118,7 @@ fn run() -> Result<ExitCode, MendFailure> {
     let global_diagnostics = config::load_global_diagnostics();
     let after_help = build_diagnostics_help(&global_diagnostics);
     let cli = cli::parse(&after_help);
-    if cli.build_info {
+    if cli.build_info == BuildInfoMode::Show {
         println!("{}", build_info_text());
         return Ok(ExitCode::SUCCESS);
     }
@@ -132,11 +134,7 @@ fn run() -> Result<ExitCode, MendFailure> {
     .map_err(MendFailure::Unexpected)?;
     let operation_mode = OperationMode::from(&cli.fix);
     let color = color_mode();
-    let output = if cli.json {
-        OutputFormat::Json
-    } else {
-        OutputFormat::Human
-    };
+    let output = cli.output;
     let start = Instant::now();
     let runner = MendRunner::new(&selection, &cargo_plan, &loaded_config, color, output);
     let mut outcome = runner.run(operation_mode.clone())?;
@@ -232,7 +230,7 @@ fn run() -> Result<ExitCode, MendFailure> {
         return Ok(ExitCode::from(EXIT_CODE_ERROR));
     }
 
-    if cli.fail_on_warn && outcome.report.has_warnings() {
+    if cli.warning_policy == WarningPolicy::Fail && outcome.report.has_warnings() {
         return Ok(ExitCode::from(EXIT_CODE_WARNING));
     }
 

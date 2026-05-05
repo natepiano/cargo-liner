@@ -13,6 +13,8 @@ use syn::Visibility;
 use syn::spanned::Spanned;
 
 use super::validated_plan;
+use crate::constants::PATH_KEYWORD_SELF;
+use crate::constants::PATH_KEYWORD_SUPER;
 use crate::imports::UseFix;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -124,7 +126,10 @@ fn parent_pub_use_exports_item_with_prefix(
             parent_pub_use_exports_item_with_prefix(next, &path.tree, child_module_name, item_name)
         },
         UseTree::Name(name) => {
-            let normalized = if prefix.first().is_some_and(|segment| segment == "self") {
+            let normalized = if prefix
+                .first()
+                .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
+            {
                 &prefix[1..]
             } else {
                 &prefix[..]
@@ -163,7 +168,7 @@ fn facade_use_prefix(vis: &Visibility) -> Option<&'static str> {
         Visibility::Public(_) => Some("pub use"),
         Visibility::Restricted(restricted)
             if restricted.path.segments.len() == 1
-                && restricted.path.segments[0].ident == "super" =>
+                && restricted.path.segments[0].ident == PATH_KEYWORD_SUPER =>
         {
             Some("pub(super) use")
         },
@@ -188,7 +193,10 @@ fn remove_exports_from_use_tree(
             }))
         },
         UseTree::Name(name) => {
-            let normalized = if prefix.first().is_some_and(|segment| segment == "self") {
+            let normalized = if prefix
+                .first()
+                .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
+            {
                 &prefix[1..]
             } else {
                 &prefix[..]

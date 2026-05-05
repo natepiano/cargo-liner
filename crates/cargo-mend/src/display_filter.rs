@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use super::cli::CargoCheckCli;
 use super::cli::TargetSelection;
+use super::constants::SOURCE_DIR_SRC;
 use super::diagnostics::Report;
 use super::selection::PackageMetadata;
 use super::selection::TargetMetadata;
@@ -107,7 +108,7 @@ impl DisplayFilter {
                 // also explicitly included (its dir is in `allowed`).
                 let in_excluded_dir = excluded_dirs.iter().any(|dir| absolute.starts_with(dir));
                 if in_excluded_dir {
-                    let lib_dir = package_root.join("src");
+                    let lib_dir = package_root.join(SOURCE_DIR_SRC);
                     return allowed
                         .iter()
                         .any(|dir| absolute.starts_with(dir) && *dir != lib_dir);

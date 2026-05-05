@@ -6,6 +6,11 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 
+use super::constants::CARGO_TARGET_KIND_BIN;
+use super::constants::CARGO_TARGET_KIND_LIB;
+use super::constants::RUST_LIB_FILE;
+use super::constants::RUST_MAIN_FILE;
+use super::constants::SOURCE_DIR_SRC;
 use super::diagnostics;
 use super::diagnostics::Finding;
 use super::diagnostics::Report;
@@ -305,16 +310,29 @@ fn preferred_package_target<'a>(
     path: &Path,
 ) -> Option<&'a TargetMetadata> {
     let relative = path.strip_prefix(package.root.as_path()).ok()?;
-    if relative.starts_with("src") {
+    if relative.starts_with(SOURCE_DIR_SRC) {
         if let Some(target) = package.targets.iter().find(|target| {
-            target.kind.iter().any(|kind| kind == "lib")
-                && target.src_path.ends_with(Path::new("src/lib.rs"))
+            target.kind.iter().any(|kind| kind == CARGO_TARGET_KIND_LIB)
+                && target.src_path.file_name().and_then(|name| name.to_str()) == Some(RUST_LIB_FILE)
+                && target
+                    .src_path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    == Some(SOURCE_DIR_SRC)
         }) {
             return Some(target);
         }
         return package.targets.iter().find(|target| {
-            target.kind.iter().any(|kind| kind == "bin")
-                && target.src_path.ends_with(Path::new("src/main.rs"))
+            target.kind.iter().any(|kind| kind == CARGO_TARGET_KIND_BIN)
+                && target.src_path.file_name().and_then(|name| name.to_str())
+                    == Some(RUST_MAIN_FILE)
+                && target
+                    .src_path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    == Some(SOURCE_DIR_SRC)
         });
     }
 

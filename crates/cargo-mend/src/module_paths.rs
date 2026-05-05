@@ -1,6 +1,10 @@
 use std::ffi::OsStr;
 use std::path::Path;
 
+use crate::constants::RUST_LIB_FILE;
+use crate::constants::RUST_MAIN_FILE;
+use crate::constants::RUST_MODULE_FILE;
+
 pub(crate) fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<String>> {
     let relative = path.strip_prefix(source_root).ok()?;
     let mut result: Vec<String> = relative
@@ -31,17 +35,23 @@ enum BoundaryModuleName<'a> {
 
 fn module_name_for_boundary_file(path: &Path) -> Option<BoundaryModuleName<'_>> {
     match path.file_name().and_then(OsStr::to_str) {
-        Some("mod.rs") => Some(BoundaryModuleName::Named(
+        Some(name) if name == RUST_MODULE_FILE => Some(BoundaryModuleName::Named(
             path.parent()?.file_name()?.to_str()?,
         )),
-        Some("lib.rs" | "main.rs") => Some(BoundaryModuleName::Root),
+        Some(name) if name == RUST_LIB_FILE || name == RUST_MAIN_FILE => {
+            Some(BoundaryModuleName::Root)
+        },
         _ => Some(BoundaryModuleName::Named(path.file_stem()?.to_str()?)),
     }
 }
 
 fn module_name_for_file_module_path(path: &Path) -> Option<&str> {
     match path.file_name().and_then(OsStr::to_str) {
-        Some("mod.rs" | "lib.rs" | "main.rs") => None,
+        Some(name)
+            if name == RUST_MODULE_FILE || name == RUST_LIB_FILE || name == RUST_MAIN_FILE =>
+        {
+            None
+        },
         _ => path.file_stem()?.to_str(),
     }
 }

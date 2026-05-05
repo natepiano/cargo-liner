@@ -7,6 +7,8 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 
 use super::shared;
+use crate::constants::PATH_KEYWORD_CRATE;
+use crate::constants::PATH_KEYWORD_SUPER;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ImportTarget {
@@ -60,7 +62,7 @@ fn analyze_function_import(
     }
 
     let first = flat.segments.first()?;
-    if first != "crate" && first != "super" {
+    if first != PATH_KEYWORD_CRATE && first != PATH_KEYWORD_SUPER {
         return None;
     }
 
@@ -80,7 +82,7 @@ fn analyze_function_import(
 
     let module_segments = &flat.segments[..flat.segments.len() - 1];
     let module_name = flat.segments[flat.segments.len() - 2].clone();
-    if module_name == "super" || module_name == "crate" {
+    if module_name == PATH_KEYWORD_SUPER || module_name == PATH_KEYWORD_CRATE {
         return None;
     }
     if !shared::is_snake_case_module_name(&module_name) {
@@ -92,7 +94,7 @@ fn analyze_function_import(
 
     let shortened_module_segments =
         shared::shorten_module_path(current_module_path, module_segments);
-    let import_target = if shortened_module_segments.as_slice() == ["super"] {
+    let import_target = if shortened_module_segments.as_slice() == [PATH_KEYWORD_SUPER] {
         ImportTarget::ParentModule
     } else {
         ImportTarget::OtherModule

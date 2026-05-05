@@ -5,7 +5,10 @@ use syn::ItemUse;
 use syn::UseTree;
 use syn::Visibility;
 
+use crate::constants::PATH_KEYWORD_CRATE;
+use crate::constants::PATH_KEYWORD_SUPER;
 use crate::constants::PUB_VISIBILITY_PREFIX;
+use crate::constants::RUST_MODULE_FILE;
 
 pub(super) struct FlattenedImport {
     pub(super) segments: Vec<String>,
@@ -17,12 +20,12 @@ pub(super) fn resolve_to_absolute(
     current_module_path: &[String],
 ) -> Option<Vec<String>> {
     let first = segments.first()?;
-    if first == "crate" {
+    if first == PATH_KEYWORD_CRATE {
         Some(segments[1..].to_vec())
-    } else if first == "super" {
+    } else if first == PATH_KEYWORD_SUPER {
         let super_count = segments
             .iter()
-            .take_while(|segment| *segment == "super")
+            .take_while(|segment| *segment == PATH_KEYWORD_SUPER)
             .count();
         if super_count > current_module_path.len() {
             return None;
@@ -49,7 +52,7 @@ pub(super) fn leaf_is_module(source_root: &Path, absolute_segments: &[String]) -
     }
 
     parent_dir.join(format!("{leaf}.rs")).is_file()
-        || parent_dir.join(leaf).join("mod.rs").is_file()
+        || parent_dir.join(leaf).join(RUST_MODULE_FILE).is_file()
 }
 
 pub(super) fn shorten_module_path(
@@ -58,7 +61,7 @@ pub(super) fn shorten_module_path(
 ) -> Vec<String> {
     if module_segments
         .first()
-        .is_some_and(|segment| segment == "super")
+        .is_some_and(|segment| segment == PATH_KEYWORD_SUPER)
     {
         return module_segments.to_vec();
     }
@@ -66,7 +69,7 @@ pub(super) fn shorten_module_path(
     let Some(first) = module_segments.first() else {
         return module_segments.to_vec();
     };
-    if first != "crate" {
+    if first != PATH_KEYWORD_CRATE {
         return module_segments.to_vec();
     }
 
@@ -87,7 +90,7 @@ pub(super) fn shorten_module_path(
 
     let mut relative = Vec::new();
     if up_count == 1 {
-        relative.push("super".to_string());
+        relative.push(PATH_KEYWORD_SUPER.to_string());
     }
     relative.extend(target[common..].iter().cloned());
 

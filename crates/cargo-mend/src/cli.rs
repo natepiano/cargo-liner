@@ -8,13 +8,27 @@ use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
 
+use crate::render::OutputFormat;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BuildInfoMode {
+    Run,
+    Show,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WarningPolicy {
+    Allow,
+    Fail,
+}
+
 #[derive(Debug)]
 pub(crate) struct Cli {
-    pub build_info: bool,
+    pub build_info: BuildInfoMode,
 
-    pub json: bool,
+    pub output: OutputFormat,
 
-    pub fail_on_warn: bool,
+    pub warning_policy: WarningPolicy,
 
     pub cargo: CargoCheckCli,
 
@@ -301,12 +315,24 @@ struct RawFixExecutionCli {
 impl From<RawCli> for Cli {
     fn from(raw: RawCli) -> Self {
         Self {
-            build_info:   raw.build_info,
-            json:         raw.json,
-            fail_on_warn: raw.fail_on_warn,
-            cargo:        raw.cargo.into(),
-            manifest:     raw.manifest,
-            fix:          raw.fix.into(),
+            build_info:     if raw.build_info {
+                BuildInfoMode::Show
+            } else {
+                BuildInfoMode::Run
+            },
+            output:         if raw.json {
+                OutputFormat::Json
+            } else {
+                OutputFormat::Human
+            },
+            warning_policy: if raw.fail_on_warn {
+                WarningPolicy::Fail
+            } else {
+                WarningPolicy::Allow
+            },
+            cargo:          raw.cargo.into(),
+            manifest:       raw.manifest,
+            fix:            raw.fix.into(),
         }
     }
 }

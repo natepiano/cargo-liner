@@ -16,12 +16,20 @@ use anyhow::Result;
 
 use super::persistence;
 use crate::config::LoadedConfig;
+use crate::constants::CARGO_BIN;
+use crate::constants::CARGO_FLAG_ALL_TARGETS;
+use crate::constants::CARGO_FLAG_ALLOW_DIRTY;
+use crate::constants::CARGO_FLAG_ALLOW_STAGED;
+use crate::constants::CARGO_FLAG_TESTS;
+use crate::constants::CARGO_SUBCOMMAND_CHECK;
+use crate::constants::CARGO_SUBCOMMAND_FIX;
 use crate::constants::CARGO_TERM_COLOR_ALWAYS;
 use crate::constants::CARGO_TERM_COLOR_ENV;
 use crate::constants::CONFIG_FINGERPRINT_ENV;
 use crate::constants::CONFIG_JSON_ENV;
 use crate::constants::CONFIG_ROOT_ENV;
 use crate::constants::DRIVER_ENV;
+use crate::constants::DRIVER_ENV_ENABLED;
 use crate::constants::FINDINGS_DIR_ENV;
 use crate::constants::RUSTC_WORKSPACE_WRAPPER_ENV;
 use crate::constants::SCOPE_FINGERPRINT_ENV;
@@ -141,13 +149,13 @@ fn run_cargo_check(
     color_mode: ColorMode,
 ) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
-    let mut command = Command::new("cargo");
-    command.arg("check");
+    let mut command = Command::new(CARGO_BIN);
+    command.arg(CARGO_SUBCOMMAND_CHECK);
     command.args(&cargo_plan.cargo_args);
 
     command
         .env(RUSTC_WORKSPACE_WRAPPER_ENV, &current_exe)
-        .env(DRIVER_ENV, "1")
+        .env(DRIVER_ENV, DRIVER_ENV_ENABLED)
         .env(CONFIG_ROOT_ENV, &loaded_config.root)
         .env(
             CONFIG_JSON_ENV,
@@ -174,11 +182,11 @@ fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {
 
 pub fn run_cargo_fix(cargo_plan: &CargoCheckPlan, color_mode: ColorMode) -> Result<Duration> {
     let start = Instant::now();
-    let mut command = Command::new("cargo");
+    let mut command = Command::new(CARGO_BIN);
     command
-        .arg("fix")
-        .arg("--allow-dirty")
-        .arg("--allow-staged");
+        .arg(CARGO_SUBCOMMAND_FIX)
+        .arg(CARGO_FLAG_ALLOW_DIRTY)
+        .arg(CARGO_FLAG_ALLOW_STAGED);
 
     // Replace `--all-targets` with `--tests` for the fix pass. Rationale:
     // `cargo fix --all-targets` runs the lib (non-test) compilation
@@ -191,8 +199,8 @@ pub fn run_cargo_fix(cargo_plan: &CargoCheckPlan, color_mode: ColorMode) -> Resu
     // Trade-off: imports that are unused in BOTH lib and test mode (rare)
     // won't be pruned by `--fix-compiler`; users can clean those manually.
     for arg in &cargo_plan.cargo_args {
-        if arg == "--all-targets" {
-            command.arg("--tests");
+        if arg == CARGO_FLAG_ALL_TARGETS {
+            command.arg(CARGO_FLAG_TESTS);
         } else {
             command.arg(arg);
         }

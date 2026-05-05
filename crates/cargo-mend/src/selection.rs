@@ -12,6 +12,12 @@ use cargo_metadata::Target;
 
 use super::cli::CargoCheckCli;
 use super::cli::WorkspaceSelection;
+use super::constants::CARGO_FLAG_ALL_TARGETS;
+use super::constants::CARGO_FLAG_EXCLUDE;
+use super::constants::CARGO_FLAG_MANIFEST_PATH;
+use super::constants::CARGO_FLAG_PACKAGE;
+use super::constants::CARGO_FLAG_WORKSPACE;
+use super::constants::CARGO_MANIFEST_FILE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectionScope {
@@ -74,7 +80,7 @@ pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> 
         .parent()
         .context("manifest path had no parent directory")?
         .to_path_buf();
-    let workspace_manifest = workspace_root.join("Cargo.toml");
+    let workspace_manifest = workspace_root.join(CARGO_MANIFEST_FILE);
     let manifest_is_workspace_root = manifest_path == workspace_manifest;
     let manifest_matches_package = metadata
         .packages
@@ -140,7 +146,7 @@ pub(crate) fn build_cargo_check_plan(
     cargo_cli: &CargoCheckCli,
 ) -> CargoCheckPlan {
     let mut cargo_args = vec![
-        OsString::from("--manifest-path"),
+        OsString::from(CARGO_FLAG_MANIFEST_PATH),
         selection.manifest_path.as_os_str().to_owned(),
     ];
 
@@ -151,18 +157,18 @@ pub(crate) fn build_cargo_check_plan(
         || !cargo_cli.exclude.is_empty()
         || default_workspace;
     if use_workspace {
-        cargo_args.push(OsString::from("--workspace"));
+        cargo_args.push(OsString::from(CARGO_FLAG_WORKSPACE));
     }
 
-    append_repeated_flag(&mut cargo_args, "--package", &cargo_cli.package);
-    append_repeated_flag(&mut cargo_args, "--exclude", &cargo_cli.exclude);
+    append_repeated_flag(&mut cargo_args, CARGO_FLAG_PACKAGE, &cargo_cli.package);
+    append_repeated_flag(&mut cargo_args, CARGO_FLAG_EXCLUDE, &cargo_cli.exclude);
 
     // Mend's reachability/visibility analyses require seeing every target's
     // call graph. Lib-only compilation strips `#[cfg(test)]` blocks and
     // hides callers that exist in test or example code. Always include all
     // targets so the analysis is sound regardless of the user's display
     // filter (target_selections, bin/example/test/bench lists).
-    cargo_args.push(OsString::from("--all-targets"));
+    cargo_args.push(OsString::from(CARGO_FLAG_ALL_TARGETS));
 
     CargoCheckPlan {
         manifest_path: selection.manifest_path.clone(),
@@ -227,9 +233,12 @@ fn cargo_metadata_for(manifest_path: &Path) -> Result<Metadata> {
 
 fn normalize_explicit_manifest_path(path: &Path) -> Result<PathBuf> {
     if path.is_dir() {
-        let manifest_path = path.join("Cargo.toml");
+        let manifest_path = path.join(CARGO_MANIFEST_FILE);
         if !manifest_path.is_file() {
-            bail!("directory {} does not contain Cargo.toml", path.display());
+            bail!(
+                "directory {} does not contain {CARGO_MANIFEST_FILE}",
+                path.display()
+            );
         }
 
         return manifest_path
@@ -243,7 +252,7 @@ fn normalize_explicit_manifest_path(path: &Path) -> Result<PathBuf> {
 
 fn find_nearest_manifest(start: &Path) -> Result<PathBuf> {
     for dir in start.ancestors() {
-        let candidate = dir.join("Cargo.toml");
+        let candidate = dir.join(CARGO_MANIFEST_FILE);
         if candidate.is_file() {
             return candidate
                 .canonicalize()
@@ -251,7 +260,7 @@ fn find_nearest_manifest(start: &Path) -> Result<PathBuf> {
         }
     }
 
-    bail!("could not find Cargo.toml in current directory or any parent")
+    bail!("could not find {CARGO_MANIFEST_FILE} in current directory or any parent")
 }
 
 #[cfg(test)]

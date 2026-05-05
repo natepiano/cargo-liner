@@ -18,6 +18,9 @@ use syn::visit::Visit;
 use walkdir::WalkDir;
 
 use super::config::DiagnosticCode;
+use super::constants::PATH_KEYWORD_CRATE;
+use super::constants::PATH_KEYWORD_SUPER;
+use super::constants::SOURCE_DIR_SRC;
 use super::diagnostics::Finding;
 use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
@@ -229,7 +232,7 @@ pub(crate) fn restore_files(snapshots: &[(PathBuf, String)]) -> Result<()> {
 fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>> {
     let mut findings = Vec::new();
     for package_root in &selection.package_roots {
-        let source_root = package_root.join("src");
+        let source_root = package_root.join(SOURCE_DIR_SRC);
         if !source_root.is_dir() {
             continue;
         }
@@ -360,7 +363,7 @@ struct ImportCandidate {
 
 fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<ImportCandidate> {
     let import = flatten_use_tree(tree)?;
-    if import.segments.first()? != "crate" {
+    if import.segments.first()? != PATH_KEYWORD_CRATE {
         return None;
     }
 
@@ -396,7 +399,11 @@ fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<Im
 
 fn analyze_deep_super(current_module_path: &[String], tree: &UseTree) -> Option<ImportCandidate> {
     let import = flatten_use_tree(tree)?;
-    let super_count = import.segments.iter().take_while(|s| *s == "super").count();
+    let super_count = import
+        .segments
+        .iter()
+        .take_while(|s| *s == PATH_KEYWORD_SUPER)
+        .count();
     if super_count < 2 {
         return None;
     }
@@ -406,7 +413,7 @@ fn analyze_deep_super(current_module_path: &[String], tree: &UseTree) -> Option<
 
     let ancestor_path = &current_module_path[..current_module_path.len() - super_count];
     let remaining = &import.segments[super_count..];
-    let mut replacement_segments = vec!["crate".to_string()];
+    let mut replacement_segments = vec![PATH_KEYWORD_CRATE.to_string()];
     replacement_segments.extend(ancestor_path.iter().cloned());
     replacement_segments.extend(remaining.iter().cloned());
     let replacement = format_path(&replacement_segments, import.rename.as_deref());
@@ -470,7 +477,7 @@ fn build_relative_path(
         return None;
     }
     if up_count == 1 {
-        relative_segments.push("super".to_string());
+        relative_segments.push(PATH_KEYWORD_SUPER.to_string());
     }
     relative_segments.extend(target_segments[common..].iter().cloned());
     Some(format_path(&relative_segments, import.rename.as_deref()))

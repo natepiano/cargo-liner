@@ -12,6 +12,7 @@ use super::parent_boundary::ParentBoundaryKey;
 use super::validated_plan;
 use super::validated_plan::ValidatedPubUsePlan;
 use crate::constants::PUB_VISIBILITY_PREFIX;
+use crate::constants::RUST_MODULE_FILE;
 use crate::diagnostics::Report;
 use crate::imports::UseFix;
 use crate::imports::ValidatedFixSet;
@@ -264,7 +265,7 @@ fn module_path_from_dir(source_root: &Path, module_dir: &Path) -> Option<Vec<Str
 }
 
 fn module_path_from_boundary_file(source_root: &Path, boundary_file: &Path) -> Option<Vec<String>> {
-    if boundary_file.file_name().and_then(OsStr::to_str) == Some("mod.rs") {
+    if boundary_file.file_name().and_then(OsStr::to_str) == Some(RUST_MODULE_FILE) {
         return module_path_from_dir(source_root, boundary_file.parent()?);
     }
 

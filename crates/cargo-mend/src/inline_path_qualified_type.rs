@@ -34,6 +34,10 @@ use syn::visit::Visit;
 use walkdir::WalkDir;
 
 use super::config::DiagnosticCode;
+use super::constants::PATH_KEYWORD_CRATE;
+use super::constants::PATH_KEYWORD_SELF;
+use super::constants::PATH_KEYWORD_SUPER;
+use super::constants::SOURCE_DIR_SRC;
 use super::diagnostics::Finding;
 use super::diagnostics::Severity;
 use super::fix_support::FixSupport;
@@ -52,7 +56,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<InlinePathScan> {
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
     for package_root in &selection.package_roots {
-        let source_root = package_root.join("src");
+        let source_root = package_root.join(SOURCE_DIR_SRC);
         if !source_root.is_dir() {
             continue;
         }
@@ -277,7 +281,10 @@ fn absolutize_import_path(import_path: &str, existing_imports: &BTreeSet<String>
     let Some((leading, rest)) = import_path.split_once("::") else {
         return import_path.to_string();
     };
-    if leading == "crate" || leading == "super" || leading == "self" {
+    if leading == PATH_KEYWORD_CRATE
+        || leading == PATH_KEYWORD_SUPER
+        || leading == PATH_KEYWORD_SELF
+    {
         return import_path.to_string();
     }
     // Look for an existing `use a::b::<leading>;` (i.e. an import whose final
@@ -475,14 +482,14 @@ fn canonicalize_inserted_use_path(scope: &ScopeInfo, full_path: &str) -> String 
     let segments: Vec<&str> = full_path.split("::").collect();
     let super_count = segments
         .iter()
-        .take_while(|segment| **segment == "super")
+        .take_while(|segment| **segment == PATH_KEYWORD_SUPER)
         .count();
     if super_count < 2 || super_count > scope.module_path.len() {
         return full_path.to_string();
     }
 
     let mut absolute_segments = Vec::with_capacity(1 + scope.module_path.len() + segments.len());
-    absolute_segments.push("crate".to_string());
+    absolute_segments.push(PATH_KEYWORD_CRATE.to_string());
     absolute_segments.extend(
         scope.module_path[..scope.module_path.len() - super_count]
             .iter()
@@ -572,7 +579,7 @@ impl InlinePathVisitor {
         }
 
         let first = &segments[0];
-        let is_intra_crate = first == "crate" || first == "super";
+        let is_intra_crate = first == PATH_KEYWORD_CRATE || first == PATH_KEYWORD_SUPER;
 
         // For intra-crate paths, require at least 3 segments — `crate::Foo` /
         // `super::Foo` are already short enough that hoisting them to a `use`
@@ -585,7 +592,7 @@ impl InlinePathVisitor {
 
         // Filter obvious non-crate roots. `self::` is a same-module reference,
         // not a candidate for a `use`.
-        if first == "self" || first == "Self" {
+        if first == PATH_KEYWORD_SELF || first == "Self" {
             return;
         }
 

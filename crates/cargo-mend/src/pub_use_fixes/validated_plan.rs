@@ -15,6 +15,10 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 
 use super::parent_boundary::ParentBoundaryKey;
+use crate::constants::PATH_KEYWORD_CRATE;
+use crate::constants::PATH_KEYWORD_SELF;
+use crate::constants::PATH_KEYWORD_SUPER;
+use crate::constants::SOURCE_DIR_SRC;
 use crate::imports::UseFix;
 use crate::module_paths;
 use crate::selection::Selection;
@@ -344,18 +348,21 @@ fn rewrite_leaf_under_base(
 fn absolute_use_path(current_module_path: &[String], segments: &[String]) -> Option<Vec<String>> {
     let first = segments.first()?.as_str();
     match first {
-        "crate" => Some(segments[1..].to_vec()),
-        "self" => Some(
+        PATH_KEYWORD_CRATE => Some(segments[1..].to_vec()),
+        PATH_KEYWORD_SELF => Some(
             current_module_path
                 .iter()
                 .cloned()
                 .chain(segments[1..].iter().cloned())
                 .collect(),
         ),
-        "super" => {
+        PATH_KEYWORD_SUPER => {
             let mut module = current_module_path.to_vec();
             let mut index = 0usize;
-            while segments.get(index).is_some_and(|seg| seg == "super") {
+            while segments
+                .get(index)
+                .is_some_and(|seg| seg == PATH_KEYWORD_SUPER)
+            {
                 module.pop()?;
                 index += 1;
             }
@@ -385,7 +392,7 @@ fn relative_path_from_module(
     let up_count = current_module_path.len().saturating_sub(common);
     let mut segments = Vec::new();
     for _ in 0..up_count {
-        segments.push("super".to_string());
+        segments.push(PATH_KEYWORD_SUPER.to_string());
     }
     segments.extend(target_path[common..].iter().cloned());
     format_path(&segments, rename)
@@ -450,7 +457,7 @@ pub(super) fn line_span(source: &str, line: usize) -> Option<(usize, usize)> {
 
 pub(super) fn find_source_root(path: &Path) -> Option<PathBuf> {
     path.ancestors()
-        .find(|ancestor| ancestor.file_name().and_then(OsStr::to_str) == Some("src"))
+        .find(|ancestor| ancestor.file_name().and_then(OsStr::to_str) == Some(SOURCE_DIR_SRC))
         .map(Path::to_path_buf)
 }
 

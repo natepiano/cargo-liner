@@ -21,6 +21,11 @@ use crate::compiler::facade::ParentFacadeExportStatus;
 use crate::compiler::facade::ParentFacadeFixSupport;
 use crate::compiler::facade::ParentFacadeUsage;
 use crate::compiler::facade::ParentFacadeVisibility;
+use crate::constants::RUST_LIB_FILE;
+use crate::constants::RUST_MODULE_FILE;
+use crate::constants::SOURCE_DIR_BENCHES;
+use crate::constants::SOURCE_DIR_EXAMPLES;
+use crate::constants::SOURCE_DIR_TESTS;
 use crate::fix_support::FixSupport;
 
 pub(super) fn classify_suspicious_pub(
@@ -146,7 +151,7 @@ pub(super) const fn allow_pub_crate_by_policy(
 }
 
 pub(super) fn crate_kind_for_root(root_module: &Path, package_root: &Path) -> CrateKind {
-    if root_module.file_name().and_then(OsStr::to_str) == Some("lib.rs") {
+    if root_module.file_name().and_then(OsStr::to_str) == Some(RUST_LIB_FILE) {
         return CrateKind::Library;
     }
     let canonical_root =
@@ -161,7 +166,7 @@ pub(super) fn crate_kind_for_root(root_module: &Path, package_root: &Path) -> Cr
         [first, _]
             if matches!(
                 first.as_os_str().to_str(),
-                Some("tests" | "examples" | "benches")
+                Some(SOURCE_DIR_TESTS | SOURCE_DIR_EXAMPLES | SOURCE_DIR_BENCHES)
             ) =>
         {
             CrateKind::IntegrationTest
@@ -196,12 +201,12 @@ pub(super) fn is_top_level_module_file(
     if count == 1 {
         return true;
     }
-    count == 2 && relative.file_name().and_then(OsStr::to_str) == Some("mod.rs")
+    count == 2 && relative.file_name().and_then(OsStr::to_str) == Some(RUST_MODULE_FILE)
 }
 
 pub(super) fn is_boundary_file(source_root: &Path, root_module: &Path, file: &Path) -> bool {
     let is_root_file = file == root_module;
-    let is_module_rs = file.file_name().and_then(OsStr::to_str) == Some("mod.rs");
+    let is_module_rs = file.file_name().and_then(OsStr::to_str) == Some(RUST_MODULE_FILE);
     let is_top_level_file = file
         .strip_prefix(source_root)
         .ok()
@@ -328,6 +333,9 @@ mod tests {
     use super::crate_kind_for_root;
     use super::forbidden_pub_crate_help;
     use super::suspicious_pub_note;
+    use crate::constants::SOURCE_DIR_BENCHES;
+    use crate::constants::SOURCE_DIR_EXAMPLES;
+    use crate::constants::SOURCE_DIR_TESTS;
 
     #[test]
     fn allow_pub_crate_allows_library_crate_root_items() {
@@ -426,7 +434,7 @@ mod tests {
     #[test]
     fn crate_kind_for_root_detects_integration_test_roots() {
         let package_root = Path::new("/tmp/pkg");
-        for sub in ["tests", "examples", "benches"] {
+        for sub in [SOURCE_DIR_TESTS, SOURCE_DIR_EXAMPLES, SOURCE_DIR_BENCHES] {
             let root = package_root.join(sub).join("support.rs");
             assert_eq!(
                 crate_kind_for_root(&root, package_root),

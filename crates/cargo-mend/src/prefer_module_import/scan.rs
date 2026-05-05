@@ -20,6 +20,8 @@ use super::references::BareReference;
 use super::references::ReferenceCollector;
 use super::shared;
 use crate::config::DiagnosticCode;
+use crate::constants::PATH_KEYWORD_SUPER;
+use crate::constants::SOURCE_DIR_SRC;
 use crate::diagnostics::Finding;
 use crate::diagnostics::Severity;
 use crate::fix_support::FixSupport;
@@ -67,7 +69,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImport
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
     for package_root in &selection.package_roots {
-        let source_root = package_root.join("src");
+        let source_root = package_root.join(SOURCE_DIR_SRC);
         if !source_root.is_dir() {
             continue;
         }
@@ -403,7 +405,7 @@ fn build_reference_fixes(
                     full_path: function.absolute_module.join("::"),
                 });
             let prefix = if import_target == ImportTarget::ParentModule {
-                "super"
+                PATH_KEYWORD_SUPER
             } else {
                 module_name
             };

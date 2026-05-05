@@ -13,6 +13,8 @@ use super::scan::InlineCallFindingInputs;
 use super::scan::ScanFileContext;
 use super::shared;
 use crate::config::DiagnosticCode;
+use crate::constants::PATH_KEYWORD_CRATE;
+use crate::constants::PATH_KEYWORD_SUPER;
 use crate::diagnostics::Finding;
 use crate::diagnostics::Severity;
 use crate::fix_support::FixSupport;
@@ -196,7 +198,7 @@ fn analyze_inline_call(
     }
 
     let first = segments.first()?;
-    if first != "crate" && first != "super" {
+    if first != PATH_KEYWORD_CRATE && first != PATH_KEYWORD_SUPER {
         return None;
     }
 
@@ -219,7 +221,7 @@ fn analyze_inline_call(
     }
 
     let module_name = segments[segments.len() - 2].clone();
-    if module_name == "super" || module_name == "crate" {
+    if module_name == PATH_KEYWORD_SUPER || module_name == PATH_KEYWORD_CRATE {
         return None;
     }
     if !shared::is_snake_case_module_name(&module_name) {
@@ -231,7 +233,7 @@ fn analyze_inline_call(
 
     let module_segments = &segments[..segments.len() - 1];
     let shortened = shared::shorten_module_path(current_module_path, module_segments);
-    let import_target = if shortened.as_slice() == ["super"] {
+    let import_target = if shortened.as_slice() == [PATH_KEYWORD_SUPER] {
         ImportTarget::ParentModule
     } else {
         ImportTarget::OtherModule
