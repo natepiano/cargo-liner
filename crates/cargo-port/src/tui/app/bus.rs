@@ -10,7 +10,7 @@
 //! event end-to-end (`Event::ServiceSignal`). Subscribers take
 //! `&mut App` for now (Phase 17 lesson 4 — defer `HandlerCtx`
 //! typed parameters until a borrow conflict forces them). The
-//! `EventHandler` / `HandlerCtx` types are scaffolding: Phase 19's
+//! `EventHandler` / `HandlerCtx` types are scaffolding: Phase 21's
 //! `apply_lint_config_change` + `apply_config` bundle is the
 //! actual borrow-checker stress test that will exercise them.
 //!
@@ -55,12 +55,12 @@ impl EventBus {
 /// Borrowed view passed to subscribers that take typed subsystem
 /// borrows instead of `&mut App`. Phase 18 doesn't use this — its
 /// reactor takes `&mut self` on App and reaches the bus via
-/// `self.bus.dispatch(...)` directly. Phase 19 is the upgrade
+/// `self.bus.dispatch(...)` directly. Phase 21 is the upgrade
 /// site if a five-subsystem borrow conflict forces typed
 /// parameters.
 #[allow(
     dead_code,
-    reason = "Phase 19 scaffolding — exercised when apply_lint_config_change + apply_config land on the bus"
+    reason = "Phase 21 scaffolding — exercised when apply_lint_config_change + apply_config land on the bus"
 )]
 pub(super) struct HandlerCtx<'a> {
     pub(super) commands: &'a mut VecDeque<Command>,
@@ -68,7 +68,7 @@ pub(super) struct HandlerCtx<'a> {
 
 #[allow(
     dead_code,
-    reason = "Phase 19 scaffolding — exercised when apply_lint_config_change + apply_config land on the bus"
+    reason = "Phase 21 scaffolding — exercised when apply_lint_config_change + apply_config land on the bus"
 )]
 impl HandlerCtx<'_> {
     pub(super) fn dispatch(&mut self, cmd: Command) { self.commands.push_back(cmd); }
@@ -76,7 +76,7 @@ impl HandlerCtx<'_> {
 
 #[allow(
     dead_code,
-    reason = "Phase 19 scaffolding — exercised when apply_lint_config_change + apply_config land on the bus"
+    reason = "Phase 21 scaffolding — exercised when apply_lint_config_change + apply_config land on the bus"
 )]
 pub(super) trait EventHandler {
     fn handle(&mut self, ev: Event, ctx: &mut HandlerCtx<'_>);
