@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.12.1] - 2026-05-05
 
 ### Fixed
 - `inline_path_qualified_type` no longer flags generic type parameters used inside fn bodies (closure parameter types, locals). The generic scope now spans the entire fn/method, not just the signature.
