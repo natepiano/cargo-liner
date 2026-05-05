@@ -2,6 +2,14 @@ use crate::common::*;
 
 #[test]
 fn fix_pub_use_reports_import_cleanup_suggestion_after_summary() {
+    if std::env::var_os("CARGO_MEND_SKIP_NETWORK_TESTS").is_some() {
+        eprintln!(
+            "skipping fix_pub_use_reports_import_cleanup_suggestion_after_summary: \
+             CARGO_MEND_SKIP_NETWORK_TESTS is set"
+        );
+        return;
+    }
+
     let temp = tempdir().expect("create temp fixture dir");
 
     fs::write(
@@ -1214,6 +1222,14 @@ edition = "2024"
 
 #[test]
 fn fix_pub_use_self_heals_unused_imports_left_behind() {
+    if std::env::var_os("CARGO_MEND_SKIP_NETWORK_TESTS").is_some() {
+        eprintln!(
+            "skipping fix_pub_use_self_heals_unused_imports_left_behind: \
+             CARGO_MEND_SKIP_NETWORK_TESTS is set"
+        );
+        return;
+    }
+
     // After `--fix-pub-use` rewrites a re-export, sibling files that imported
     // through the now-defunct facade can be left with `unused import`
     // warnings. The orchestrator must run `cargo fix` automatically so the
@@ -1282,6 +1298,14 @@ edition = "2024"
 
 #[test]
 fn fix_all_converges_in_one_invocation() {
+    if std::env::var_os("CARGO_MEND_SKIP_NETWORK_TESTS").is_some() {
+        eprintln!(
+            "skipping fix_all_converges_in_one_invocation: \
+             CARGO_MEND_SKIP_NETWORK_TESTS is set"
+        );
+        return;
+    }
+
     // `--fix-all` must loop the passes until the tree stops changing, so the
     // user never needs to re-run. Fixture: a pub-use rewrite cascade that
     // leaves an unused import (caught by chained cargo fix), with no further

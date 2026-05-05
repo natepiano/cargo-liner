@@ -16,6 +16,9 @@ pub(crate) const TERM_DUMB_VALUE: &str = "dumb";
 pub(crate) const APP_NAME: &str = "cargo-mend";
 pub(crate) const GLOBAL_CONFIG_FILE: &str = "config.toml";
 
+// diagnostics help
+pub(crate) const DIAGNOSTICS_HELP_NAME_COLUMN_WIDTH: usize = 40;
+
 // Environment variables
 pub(crate) const CARGO_TERM_COLOR_ENV: &str = "CARGO_TERM_COLOR";
 pub(crate) const CLICOLOR_ENV: &str = "CLICOLOR";

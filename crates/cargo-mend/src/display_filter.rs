@@ -17,12 +17,12 @@ use super::selection::TargetMetadata;
 pub(crate) enum DisplayFilter {
     AllowAll,
     AllowDirs {
-        allowed:      Vec<PathBuf>,
+        allowed:       Vec<PathBuf>,
         /// Other-target roots inside `src/`. Used to subtract files owned
         /// by other targets when the lib target is included (e.g. exclude
         /// `src/bin/foo.rs` from a `--lib` filter).
-        carve_outs:   Vec<PathBuf>,
-        package_root: PathBuf,
+        excluded_dirs: Vec<PathBuf>,
+        package_root:  PathBuf,
     },
 }
 
@@ -39,7 +39,7 @@ impl DisplayFilter {
         }
 
         let mut allowed = Vec::new();
-        let mut carve_outs = Vec::new();
+        let mut excluded_dirs = Vec::new();
         let mut package_root = PathBuf::new();
         let mut lib_included = false;
         for package in packages {
@@ -53,15 +53,15 @@ impl DisplayFilter {
                     }
                 }
             }
-            // Carve-outs: when lib is included, subtract every other
-            // target's directory that lives under the package root, so
-            // `src/bin/foo.rs` etc. don't bleed into the lib's allow set.
+            // When lib is included, subtract every other target directory
+            // under the package root so `src/bin/foo.rs` etc. stay out of
+            // the lib's allow set.
             if lib_included {
                 for target in &package.targets {
                     if !target.kind.iter().any(|k| k == "lib") {
                         let dir = target_directory(target);
                         if dir.starts_with(&package.root) {
-                            carve_outs.push(dir);
+                            excluded_dirs.push(dir);
                         }
                     }
                 }
@@ -72,14 +72,14 @@ impl DisplayFilter {
             // User asked for filtering but no targets matched — show
             // nothing rather than misreport.
             Self::AllowDirs {
-                allowed:      Vec::new(),
-                carve_outs:   Vec::new(),
-                package_root: PathBuf::new(),
+                allowed:       Vec::new(),
+                excluded_dirs: Vec::new(),
+                package_root:  PathBuf::new(),
             }
         } else {
             Self::AllowDirs {
                 allowed,
-                carve_outs,
+                excluded_dirs,
                 package_root,
             }
         }
@@ -90,7 +90,7 @@ impl DisplayFilter {
             Self::AllowAll => true,
             Self::AllowDirs {
                 allowed,
-                carve_outs,
+                excluded_dirs,
                 package_root,
             } => {
                 let absolute = if finding_path.is_absolute() {
@@ -102,11 +102,11 @@ impl DisplayFilter {
                 if !in_allowed {
                     return false;
                 }
-                // If a carve-out matches, the finding belongs to a
-                // narrower target — exclude unless that target was also
-                // explicitly included (i.e. its dir is in `allowed`).
-                let in_carve_out = carve_outs.iter().any(|dir| absolute.starts_with(dir));
-                if in_carve_out {
+                // If a subtracted directory matches, the finding belongs
+                // to a narrower target. Exclude it unless that target was
+                // also explicitly included (its dir is in `allowed`).
+                let in_excluded_dir = excluded_dirs.iter().any(|dir| absolute.starts_with(dir));
+                if in_excluded_dir {
                     let lib_dir = package_root.join("src");
                     return allowed
                         .iter()
@@ -229,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn lib_flag_carves_out_src_bin_subdirectory() {
+    fn lib_flag_excludes_src_bin_subdirectory() {
         let pkg = PackageMetadata {
             id:            "pkg".to_string(),
             manifest_path: PathBuf::from("/proj/Cargo.toml"),

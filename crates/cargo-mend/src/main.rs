@@ -41,6 +41,7 @@ use constants::CARGO_TERM_COLOR_NEVER;
 use constants::CLICOLOR_DISABLED_VALUE;
 use constants::CLICOLOR_ENV;
 use constants::CLICOLOR_FORCE_ENV;
+use constants::DIAGNOSTICS_HELP_NAME_COLUMN_WIDTH;
 use constants::DRIVER_ENV;
 use constants::EXIT_CODE_ERROR;
 use constants::EXIT_CODE_WARNING;
@@ -82,7 +83,9 @@ fn build_diagnostics_help(diagnostics: &DiagnosticsConfig) -> String {
     for (code, enabled) in diagnostics.entries() {
         let name = code.as_str();
         let status = enabled.label();
-        lines.push(format!("  {name:<40} {status}"));
+        lines.push(format!(
+            "  {name:<DIAGNOSTICS_HELP_NAME_COLUMN_WIDTH$} {status}"
+        ));
     }
     lines.push(String::new());
     lines.push(format!("Config: {config_path}"));
