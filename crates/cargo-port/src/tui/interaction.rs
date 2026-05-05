@@ -730,7 +730,7 @@ mod tests {
         let mut app = make_app(&[root]);
         app.expanded_mut().insert(ExpandKey::Node(0));
         app.ensure_visible_rows_cached();
-        app.move_down();
+        app.selection_mut().move_down();
         let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
         app.handle_repo_info(&workspace, repo);
         app.handle_checkout_info(&workspace, checkout);

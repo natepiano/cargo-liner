@@ -2,41 +2,6 @@ use crate::tui::app::App;
 use crate::tui::app::VisibleRow;
 
 impl App {
-    pub fn move_up(&mut self) {
-        let count = self.row_count();
-        if count == 0 {
-            return;
-        }
-        let current = self.selection.cursor();
-        if current > 0 {
-            self.selection.set_cursor(current - 1);
-        }
-    }
-
-    pub fn move_down(&mut self) {
-        let count = self.row_count();
-        if count == 0 {
-            return;
-        }
-        let current = self.selection.cursor();
-        if current < count - 1 {
-            self.selection.set_cursor(current + 1);
-        }
-    }
-
-    pub fn move_to_top(&mut self) {
-        if self.row_count() > 0 {
-            self.selection.set_cursor(0);
-        }
-    }
-
-    pub fn move_to_bottom(&mut self) {
-        let count = self.row_count();
-        if count > 0 {
-            self.selection.set_cursor(count - 1);
-        }
-    }
-
     pub(super) const fn collapse_anchor_row(row: VisibleRow) -> VisibleRow {
         match row {
             VisibleRow::GroupHeader { node_index, .. }

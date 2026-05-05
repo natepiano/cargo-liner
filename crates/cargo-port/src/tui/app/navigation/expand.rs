@@ -202,6 +202,4 @@ impl App {
             },
         }
     }
-
-    pub fn row_count(&self) -> usize { self.visible_rows().len() }
 }

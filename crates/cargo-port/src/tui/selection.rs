@@ -103,6 +103,45 @@ impl Selection {
 
     pub fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
 
+    pub const fn row_count(&self) -> usize { self.cached_visible_rows.len() }
+
+    // ── cursor movement ─────────────────────────────────────────────
+
+    pub const fn move_up(&mut self) {
+        let count = self.row_count();
+        if count == 0 {
+            return;
+        }
+        let current = self.cursor;
+        if current > 0 {
+            self.cursor = current - 1;
+        }
+    }
+
+    pub const fn move_down(&mut self) {
+        let count = self.row_count();
+        if count == 0 {
+            return;
+        }
+        let current = self.cursor;
+        if current < count - 1 {
+            self.cursor = current + 1;
+        }
+    }
+
+    pub const fn move_to_top(&mut self) {
+        if self.row_count() > 0 {
+            self.cursor = 0;
+        }
+    }
+
+    pub const fn move_to_bottom(&mut self) {
+        let count = self.row_count();
+        if count > 0 {
+            self.cursor = count - 1;
+        }
+    }
+
     /// Recompute `cached_visible_rows` from the current `expanded`
     /// set and `projects`. Called by [`SelectionMutation::drop`] and
     /// (via App) from `TreeMutation::drop` so externally-driven tree

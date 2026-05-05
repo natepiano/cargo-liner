@@ -2,21 +2,9 @@
 
 ## Status
 
-Phases 1–18 done. Phases 19–22 remain.
+Phases 1–19 done. Phases 20–21 remain.
 
-**Phase 19 — Move `row_count` + movement methods onto `Selection`.**
-`row_count` lands on `Selection` first as a prerequisite (it
-composes the `&Scan` read inside `Selection`'s impl); then the
-~12 movement methods (`move_up`, `move_down`, `expand`,
-`collapse`, etc.) follow. Single substantive commit.
-
-**Phase 20 — Move path-resolution methods onto `Selection`.**
-~6 path-to-row-index resolution methods relocate from `App` to
-`Selection`. Conceptually distinct from cursor movement (resolve
-a path string vs. navigate the cursor); ships as a separate
-substantive commit.
-
-**Phase 21 — `TreeReaction` enum + bus conversion (borrow-checker
+**Phase 20 — `TreeReaction` enum + bus conversion (borrow-checker
 gate).** Two-step body of work in one commit: (a) replace the
 mutually-exclusive `rescan` / `rebuild_tree` booleans in
 `ReloadActions` with a `TreeReaction` enum; (b) move
@@ -27,11 +15,11 @@ bus. Six App fields fan out from one orchestrator body (`lint`,
 conversion's first consumer (`Command::ApplyTreeReaction`), so
 both land together.
 
-**Phase 22 — `StartupOrchestrator`.** Extract the startup-phase
+**Phase 21 — `StartupOrchestrator`.** Extract the startup-phase
 state machine into its own subsystem. Structural relocation, no
 bus involvement (no cross-subsystem subscribers exist for
-startup-phase advancement). Phase 22 has no source dependency on
-Phases 19–21 and may land in any order.
+startup-phase advancement). Phase 21 has no source dependency on
+Phase 20 and may land in either order.
 
 **Why this plan exists.** `App` was a god struct with `impl App { ... }`
 blocks scattered across `tui/app/focus.rs`, `tui/app/dismiss.rs`,
@@ -164,32 +152,31 @@ Phases 11–16 are the remaining architectural moves.
 
 **Sequence after merges and additions:**
 
-| # of 22 | Phase | Status |
+| # of 21 | Phase | Status |
 | ------- | ----- | ------ |
-| 1 of 22 | Phase 1 — Config | **Done** |
-| 2 of 22 | Phase 2 — Trivial subsystems (Keymap + Toasts + Scan/metadata) | **Done** |
-| 3 of 22 | Phase 3 — Git/Repo reads → ProjectList | **Done** |
-| 4 of 22 | Phase 4 — Ci pass-throughs | **Done** |
-| 5 of 22 | Phase 5 — Toast orchestrator relocation | **Done** |
-| 6 of 22 | Phase 6 — Discovery shimmer + project predicates | **Done** |
-| 7 of 22 | Phase 7 — Internal-helper visibility narrowing pass | **Done** |
-| 8 of 22 | Phase 8 — Focus subsystem (lives at `tui/focus.rs`) | **Done** |
-| 9 of 22 | Phase 9 — Overlays subsystem (lives at `tui/overlays/`) | **Done** |
-| 10 of 22 | Phase 10 — `CiFetchTracker` relocation prep for Phase 11 | **Done** |
-| 11 of 22 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` | **Done** (cursor field move; Group 1/2 method absorption pulled out as Phase 19) |
-| 12 of 22 | Phase 12 — Pane trait foundations (cursor-mirror cleanup + `Pane` trait relocation) | **Done** |
-| 13 of 22 | Phase 13 — Relocate Panes' dispatch methods to App-level | **Done** |
-| 14 of 22 | Phase 14 — `ToastsPane` → `ToastManager` absorption | **Done** |
-| 15 of 22 | Phase 15 — `CiPane` → `Ci` absorption | **Done** |
-| 16 of 22 | Phase 16 — `LintsPane` → `Lint` absorption | **Done** |
-| 17 of 22 | Phase 17 — `KeymapPane` + `SettingsPane` + `FinderPane` → `Overlays` absorption | **Done** |
-| 18 of 22 | Phase 18 — Event-bus skeleton + `apply_service_signal` smoke test | **Done** |
-| 19 of 22 | Phase 19 — Move `row_count` + ~12 movement methods onto `Selection` | Ready |
-| 20 of 22 | Phase 20 — Move ~6 path-resolution methods onto `Selection` | Ready |
-| 21 of 22 | Phase 21 — `TreeReaction` enum + bus conversion of `apply_config` + `apply_lint_config_change` | Ready (borrow-checker gate) |
-| 22 of 22 | Phase 22 — Extract `StartupOrchestrator` (structural relocation, no bus) | Ready (reorderable — no source dependency on 19–21) |
+| 1 of 21 | Phase 1 — Config | **Done** |
+| 2 of 21 | Phase 2 — Trivial subsystems (Keymap + Toasts + Scan/metadata) | **Done** |
+| 3 of 21 | Phase 3 — Git/Repo reads → ProjectList | **Done** |
+| 4 of 21 | Phase 4 — Ci pass-throughs | **Done** |
+| 5 of 21 | Phase 5 — Toast orchestrator relocation | **Done** |
+| 6 of 21 | Phase 6 — Discovery shimmer + project predicates | **Done** |
+| 7 of 21 | Phase 7 — Internal-helper visibility narrowing pass | **Done** |
+| 8 of 21 | Phase 8 — Focus subsystem (lives at `tui/focus.rs`) | **Done** |
+| 9 of 21 | Phase 9 — Overlays subsystem (lives at `tui/overlays/`) | **Done** |
+| 10 of 21 | Phase 10 — `CiFetchTracker` relocation prep for Phase 11 | **Done** |
+| 11 of 21 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` | **Done** |
+| 12 of 21 | Phase 12 — Pane trait foundations (cursor-mirror cleanup + `Pane` trait relocation) | **Done** |
+| 13 of 21 | Phase 13 — Relocate Panes' dispatch methods to App-level | **Done** |
+| 14 of 21 | Phase 14 — `ToastsPane` → `ToastManager` absorption | **Done** |
+| 15 of 21 | Phase 15 — `CiPane` → `Ci` absorption | **Done** |
+| 16 of 21 | Phase 16 — `LintsPane` → `Lint` absorption | **Done** |
+| 17 of 21 | Phase 17 — `KeymapPane` + `SettingsPane` + `FinderPane` → `Overlays` absorption | **Done** |
+| 18 of 21 | Phase 18 — Event-bus skeleton + `apply_service_signal` smoke test | **Done** |
+| 19 of 21 | Phase 19 — Move `row_count` + 4 cursor-movement methods onto `Selection` | **Done** |
+| 20 of 21 | Phase 20 — `TreeReaction` enum + bus conversion of `apply_config` + `apply_lint_config_change` | Ready (borrow-checker gate) |
+| 21 of 21 | Phase 21 — Extract `StartupOrchestrator` (structural relocation, no bus) | Ready (reorderable — no source dependency on 19–20) |
 
-Execution order: numeric, except Phase 22 may land at any point
+Execution order: numeric, except Phase 21 may land at any point
 — it has no source dependency on the bus conversion or its
 preambles.
 
@@ -928,7 +915,7 @@ design has been dropped. Reasons:
 **Replacement design:** `Selection::expand`, `collapse_all`, etc. take
 `(&mut self, scan: &Scan, include_non_rust: bool)`. `apply_config`
 recomputes visibility *via* `Selection`'s methods rather than mirroring
-the bool into `Selection`'s state. Phase 21's `ConfigChanged` event
+the bool into `Selection`'s state. Phase 20's `ConfigChanged` event
 carries the bool in its payload; subscribers read it from the event,
 not from a cached field.
 
@@ -1080,7 +1067,7 @@ arguments. Two choices:
 **Pick (b).** `Selection` already caches config-derived state
 (`cached_fit_widths` is computed from `lint_enabled`); a
 `include_non_rust: bool` field updated at the same time keeps the
-visibility recompute self-contained. Phase 21's extended
+visibility recompute self-contained. Phase 20's extended
 `ReloadActions` carries the `include_non_rust` decision, so
 keeping Selection's flag in sync is a one-line `Command::SetIncludeNonRust(bool)`.
 
@@ -2082,7 +2069,7 @@ no borrow split was forced.
    Declaring `pub(crate)` items there fails mend's policy. Fix:
    types and methods inside nested submodules use plain `pub`,
    and the top-level `mod.rs` widens via `pub(crate) use` if
-   crate-wide visibility is needed. **Apply to Phase 21+:** any
+   crate-wide visibility is needed. **Apply to Phase 20+:** any
    bus types that end up in `tui/app/bus.rs` (deeper than
    `tui/`) face the same constraint — declare `pub(super)` and
    re-export upward, never `pub(crate)` from inside `tui/app/`.
@@ -2155,7 +2142,7 @@ behaves identically to the prior direct-call version.
 **What landed:**
 - `src/tui/app/bus.rs` (new) defines `Event`, `Command`,
   `EventBus`, `EventHandler`, `HandlerCtx`. The trait and ctx
-  types are scaffolding — Phase 21 is where they get exercised.
+  types are scaffolding — Phase 20 is where they get exercised.
 - `App` gets a `bus: EventBus` field.
 - `apply_service_signal(signal)` becomes
   `self.bus.publish(Event::ServiceSignal(signal)); self.drain_bus();`.
@@ -2213,9 +2200,9 @@ first, then OS thread spawn) with no observable effect.
    widen those methods to `pub(crate)`, or move the dispatch impl
    into `service_handlers.rs` next to its callees. The second was
    cleaner (no widened visibility on a private method) and is the
-   pattern to repeat in Phase 21 — keep the bus *types* in
+   pattern to repeat in Phase 20 — keep the bus *types* in
    `bus.rs`, but put `impl App` dispatch arms in the same file as
-   the handler bodies they call. **Apply to Phase 21:** the bus
+   the handler bodies they call. **Apply to Phase 20:** the bus
    types stay alone in `bus.rs`; the per-event reactor lives next
    to the methods it calls (e.g. `apply_lint_config_change`'s
    reactor in `async_tasks/lint_config.rs` or wherever the
@@ -2228,9 +2215,9 @@ first, then OS thread spawn) with no observable effect.
    `ev: &Event` (borrow of a 2-byte type below the 8-byte limit).
    Adding the derives plus passing both by value (Event in
    `deliver_event` and `EventHandler::handle`) cleared both
-   lints. **Apply to Phase 21:** when adding new `Event` or
+   lints. **Apply to Phase 20:** when adding new `Event` or
    `Command` variants, derive `Copy`/`Clone`/`Debug` on the enums
-   from the start; Phase 21's variants will likely carry owned
+   from the start; Phase 20's variants will likely carry owned
    data (`CargoPortConfig` in `ConfigChanged`) and won't be `Copy`, at which point pass
    by reference is correct again — the derive is the right
    default, the by-value/ref decision follows the variant data.
@@ -2239,7 +2226,7 @@ first, then OS thread spawn) with no observable effect.
    `deliver_event`, but the only Phase-18 variant
    (`SpawnServiceRetry`) calls `spawn_service_retry` which is
    `&self`. Clippy's `needless_pass_by_ref_mut` rejected the
-   unused mut. Demoted to `&self`; Phase 21 will promote back
+   unused mut. Demoted to `&self`; Phase 20 will promote back
    when the first command needs `&mut self`. **Apply to Phase
    21:** start each new dispatch fn at the minimum mut-level the
    current variants require, not the level a future variant
@@ -2271,10 +2258,10 @@ first, then OS thread spawn) with no observable effect.
    the typed-borrow split that `HandlerCtx` provides. The plan
    called this out (Phase 17 lesson 4) and the result confirms it:
    `HandlerCtx` and `EventHandler` are scaffolding marked
-   `#[allow(dead_code, reason = "Phase 21 scaffolding")]` —
-   they stay until Phase 21 wires them up. Phase 21's
+   `#[allow(dead_code, reason = "Phase 20 scaffolding")]` —
+   they stay until Phase 20 wires them up. Phase 20's
    six-subscriber fan-out is the upgrade trigger. **Apply to
-   Phase 21:** if `apply_lint_config_change`'s reactor compiles
+   Phase 20:** if `apply_lint_config_change`'s reactor compiles
    while taking `&mut App`, the typed `HandlerCtx` stays unused;
    it's only needed when Rust's borrow checker rejects the naive
    `&mut App` shape (e.g. concurrent `&mut Lint` + `&mut Scan` +
@@ -2296,57 +2283,86 @@ first, then OS thread spawn) with no observable effect.
 
 **Status: done.**
 
-## Phase 19 — Move `row_count` + movement methods onto `Selection`
+## Phase 19 — Move `row_count` + cursor-movement methods onto `Selection` — **DONE**
 
-**Goal.** Move `row_count` from `App` onto `Selection` (as a
-prerequisite step), then move the ~12 movement methods
-(`move_up`, `move_down`, `move_to_top`, `move_to_bottom`,
-`expand`, `collapse`, `expand_all`, `collapse_all`,
+Five methods relocated from `App` onto `Selection`:
+- `row_count` — pure read of the cached visible-rows length.
+- `move_up`, `move_down`, `move_to_top`, `move_to_bottom` —
+  cursor-only mutations with no scan dependency.
+
+Call sites at `dismiss.rs:108`, `interaction.rs:733`, and
+`input.rs:265-609` updated to `app.selection_mut().move_down()`
+etc. (chained form compiled cleanly; no split-borrow accessor
+needed).
+
+### Phase 19 retrospective
+
+**Outcome:** clean relocation of the cursor-navigation surface.
+`Selection` now owns `row_count` and the four directional
+movement methods; `App::row_count` is gone, `movement.rs` keeps
+only the `collapse_anchor_row` helper (used by `App::collapse_all`
+which stayed on App). `selection.rs` gained ~30 lines (one
+`row_count` + four `const fn move_*` definitions); App lost ~40
+lines across `expand.rs` and `movement.rs`. All 599 tests pass,
+clippy clean (after `const fn` upgrades), mend clean.
+
+**Plan-vs-reality scope correction.** The plan listed 12 methods
+under "movement methods": `move_up/down/top/bottom`, `expand`,
+`collapse`, `expand_all`, `collapse_all`,
 `select_project_in_tree`, `select_matching_visible_row`,
-`expand_path_in_tree`, `try_collapse`) onto `Selection`. Phase
-11 moved the cursor field; Phase 19 moves the methods that
-operate on it.
+`expand_path_in_tree`, `try_collapse`. Reading the actual
+bodies, only the four directional movers and `row_count` are
+single-subsystem (cursor + visible_rows length, both already on
+`Selection`). The other eight methods orchestrate Selection
+mutations together with `ProjectList` reads, calls to
+`ensure_visible_rows_cached` (which itself reads
+`config.include_non_rust` and `scan.projects()`), and
+inline-group helpers. Moving them to `Selection` would push
+`projects: &ProjectList` and `include_non_rust: bool` parameters
+through every method signature — pollution of `Selection`'s API
+for no architectural win, because these methods *are* the
+cross-subsystem orchestration the plan's "Cross-subsystem
+orchestrator on App" pattern (see `mod.rs` § "Recurring
+patterns") explicitly assigns to `App`. They stay on `App`.
 
-**Order inside the phase:**
+**Lessons:**
+1. **"Movement methods" was an over-broad category.** The plan
+   conflated cursor navigation (single-subsystem,
+   `Selection`-owned) with tree-shape mutations (cross-subsystem,
+   App-orchestrator-owned). The former relocate cleanly; the
+   latter don't, and shouldn't. Future phase planning: when
+   listing methods to relocate, classify each by data ownership
+   first (does the body touch one subsystem or many?), not by
+   verb similarity (`move_up` and `expand` are both "navigation"
+   but live at different architectural layers).
+2. **`#[allow(dead_code)]` warnings during partial relocation.**
+   Adding the four movement methods to `Selection` triggered
+   "method is never used" warnings until the call-site rewrite
+   landed. Order: add to destination, run `perl -i` to rewrite
+   call sites, then delete from source — kept the build green
+   the whole time. Clippy also forced `const fn` on the
+   directional movers (they don't actually mutate anything that
+   isn't a primitive). Standard Phase-15+16 lesson recurred.
+3. **Call-site rewrite chain compiled without split-borrow
+   accessor.** `app.selection_mut().move_down()` works because
+   `selection_mut` returns `&mut Selection` and `move_down`
+   needs only that — no other subsystem read involved. The plan
+   reserved a fallback (`split_for_movement` accessor), unused.
 
-1. Move `row_count` from `App` to `Selection`. The current
-   implementation reads from both `scan` and `selection`, so
-   the relocated method composes the cross-subsystem read
-   inside `Selection`'s impl by taking `&Scan` as a parameter:
-   `Selection::row_count(&self, scan: &Scan) -> usize`.
-2. Move the movement methods. Each gains a `&Scan` parameter
-   for the row-count read.
-3. Update call sites: `app.move_down()` →
-   `app.selection_mut().move_down(app.scan())` (or via a
-   split-borrow accessor if the borrow checker rejects the
-   chained form).
+**File-level changes:**
+- *Modified:* `src/tui/selection.rs` (added `row_count` +
+  `move_up` / `move_down` / `move_to_top` / `move_to_bottom`),
+  `src/tui/app/navigation/expand.rs` (removed `App::row_count`),
+  `src/tui/app/navigation/movement.rs` (removed four
+  movement methods; `collapse_anchor_row` helper kept),
+  `src/tui/app/dismiss.rs` (one `self.row_count()` →
+  `self.selection.row_count()` rewrite),
+  `src/tui/interaction.rs` (one call-site rewrite),
+  `src/tui/input.rs` (eight call-site rewrites).
 
-**No bus dependency.** Lands cleanly before any bus work.
+**Status: done.**
 
-**Risk:** medium. The borrow-checker behavior at call sites
-needs to compile cleanly — if `app.selection_mut().move_down(app.scan())`
-fails to borrow-check, a split-borrow accessor on App
-(`app.split_for_movement(&mut self) -> (&mut Selection, &Scan)`)
-is the fallback.
-
-## Phase 20 — Move path-resolution methods onto `Selection`
-
-**Goal.** Move ~6 path-to-row-index resolution methods from
-`App` onto `Selection`. Conceptually distinct from Phase 19's
-cursor-navigation methods: these resolve a path string (e.g. a
-project's absolute path) to a visible-row index, used by
-operations like "select this project after a tree rebuild" or
-"expand the row at this path."
-
-**No bus dependency.** Lands after Phase 19 (path resolution
-likely calls `row_count` internally for bounds checking) but
-before the bus conversion.
-
-**Risk:** low–medium. Smaller surface than Phase 19. Same
-borrow-checker concern at call sites; same fallback (split-borrow
-accessor) if needed.
-
-## Phase 21 — `TreeReaction` enum + bus conversion of `apply_config` + `apply_lint_config_change`
+## Phase 20 — `TreeReaction` enum + bus conversion of `apply_config` + `apply_lint_config_change`
 
 **Two-step body of work in one commit.** First, tighten
 `ReloadActions` with a `TreeReaction` enum; then convert
@@ -2423,9 +2439,9 @@ It is a post-bootstrap check called from startup
 keeps calling this App method directly, same as startup does.
 No `Command` variant, no event subscription.
 
-**Pre-requisites:** Phases 19 + 20 (Selection methods
-relocated). The `TreeReaction` enum lands as Step 1 of this
-phase.
+**Pre-requisites:** Phase 19 (cursor-movement methods on
+`Selection`) is in. The `TreeReaction` enum lands as Step 1 of
+this phase.
 
 **The conversion.** Both orchestrator methods publish events:
 
@@ -2483,7 +2499,7 @@ match.
 behavior under six concurrent subscribers is the load-bearing
 unknown.
 
-## Phase 22 — Extract `StartupOrchestrator` (structural relocation, no bus)
+## Phase 21 — Extract `StartupOrchestrator` (structural relocation, no bus)
 
 **Goal.** Move the startup-phase state machine — today embedded
 in `App` as the chain of six `maybe_complete_startup_*` methods
@@ -2506,9 +2522,9 @@ extract a struct, move methods, update call sites.
 existing `tracker.rs` content moves into the orchestrator as a
 private field; the public surface is the new orchestrator type.
 
-**Reorderable.** Phase 22 has no source dependency on Phases
+**Reorderable.** Phase 20 has no source dependency on Phases
 19–21. The startup-phase tracker is single-borrow `&mut self`
-with no borrow conflict. Phase 22 may land at any point in the
+with no borrow conflict. Phase 20 may land at any point in the
 sequence.
 
 **Per Phase 17 lesson 5:** the six `maybe_complete_startup_*`
@@ -2534,7 +2550,7 @@ side-effects they want, and App applies the commands sequentially
 after gathering them. This sidesteps all borrow-checker conflicts
 that a traditional bus would hit.
 
-**`Event` enum** (Phase 21's full surface):
+**`Event` enum** (Phase 20's full surface):
 
 ```rust
 #[derive(Clone, Debug)]
@@ -2546,7 +2562,7 @@ pub(super) enum Event {
     /// or the retry probe succeeds.
     ServiceRecovered(ServiceKind),                      // Copy
 
-    /// Lint config changed — six-subscriber fan-out (Phase 21).
+    /// Lint config changed — six-subscriber fan-out (Phase 20).
     LintConfigChanged,                                  // Copy
 
     /// Full config changed. Carries the resolved `ReloadActions`
@@ -2566,7 +2582,7 @@ pub(super) enum Event {
 `prev`/`next` directly; the high-level reactions are already
 resolved into `actions`.
 
-**`ReloadActions` (extended in Phase 21 step 1, lives in
+**`ReloadActions` (extended in Phase 20 step 1, lives in
 `src/tui/config_reload.rs`).** The existing helper gets the
 `TreeReaction` enum replacing the mutually-exclusive `rescan` /
 `rebuild_tree` booleans:
@@ -2597,7 +2613,7 @@ raw `prev`/`next` for the rare field-level read. One diff helper,
 not two.
 
 **`Command` enum** — derived from the actual side-effects needed
-by Phase 18 + Phase 21's subscriber set. Final granularity decided
+by Phase 18 + Phase 20's subscriber set. Final granularity decided
 at implementation time.
 
 ```rust
@@ -2606,31 +2622,31 @@ pub(super) enum Command {
     // Phase 18 (already implemented)
     SpawnServiceRetry(ServiceKind),
 
-    // Phase 21 — service / network
+    // Phase 20 — service / network
     DismissToast(ToastTaskId),
     MarkServiceRecovered(ServiceKind),
 
-    // Phase 21 — lint runtime
+    // Phase 20 — lint runtime
     RestartLintRuntime,
     RefreshLintFromDisk,
     BumpScanGeneration,
 
-    // Phase 21 — selection / panes
+    // Phase 20 — selection / panes
     ResetFitWidths(bool),
     ResetCpuPlaceholder,
 
-    // Phase 21 — tree mutation (App-owned because Scan can't subscribe)
+    // Phase 20 — tree mutation (App-owned because Scan can't subscribe)
     ApplyTreeReaction(TreeReaction),
 
-    // Phase 21 — toasts (cross-subsystem effect from any subscriber)
+    // Phase 20 — toasts (cross-subsystem effect from any subscriber)
     PushToast { title: String, body: String, style: ToastStyle },
 
-    // Phase 21 — re-entrant publish
+    // Phase 20 — re-entrant publish
     PublishEvent(Event),
 }
 ```
 
-Phase 18 ships only `SpawnServiceRetry`. Phase 21 adds the rest.
+Phase 18 ships only `SpawnServiceRetry`. Phase 20 adds the rest.
 
 **`EventHandler` trait** (concrete signature):
 
@@ -2670,7 +2686,7 @@ subscriber's struct definition: `Lint` in `src/tui/lint_state.rs`,
 **Visibility on bus types.** `bus.rs` lives under `tui/app/`, so
 the nested-module `pub(crate)` ban applies. Declare types
 `pub(super)` and re-export upward as needed. Phase 18 already
-follows this — Phase 21 extends without changing the visibility
+follows this — Phase 20 extends without changing the visibility
 discipline.
 
 **Drain loop on App** — Phase 18 already implemented this:
@@ -2692,7 +2708,7 @@ impl App {
     }
 
     fn deliver_event(&mut self, ev: Event) {
-        // Phase 21: explicit per-subscriber dispatch lives here.
+        // Phase 20: explicit per-subscriber dispatch lives here.
         let cmds = match &ev {
             Event::ServiceSignal(s)    => self.handle_service_signal_event(*s),
             Event::ServiceRecovered(k) => self.handle_service_recovered_event(*k),
@@ -2709,7 +2725,7 @@ impl App {
 Per Phase 18 lesson 1, `deliver_event` and `execute_command` live
 next to the methods they dispatch to (in
 `async_tasks/service_handlers.rs` for the Phase 18 surface, in
-`async_tasks/config.rs` for the Phase 21 surface). Bus *types*
+`async_tasks/config.rs` for the Phase 20 surface). Bus *types*
 stay alone in `bus.rs`.
 
 **Subscriber dispatch under App's borrow.** Each
@@ -2749,7 +2765,7 @@ is released before each subscriber dispatch. `deliver_event` and
 subsystem fields disjointly. No two `&mut` to the same field at
 the same time. **Compiles.**
 
-**End-to-end traced flow — user saves config (Phase 21):**
+**End-to-end traced flow — user saves config (Phase 20):**
 
 1. Settings overlay closes; calls `app.apply_config(new_cfg)`.
 2. `apply_config` (now thin):
@@ -2787,7 +2803,7 @@ Per-subsystem fan-out logic moves into each subscriber's `handle()`
 body.
 
 **Status: ready to execute.** Phase 18 already proved the
-skeleton. Open items at Phase 21 execution time:
+skeleton. Open items at Phase 20 execution time:
 - Confirm `clear_all_lint_state` and `refresh_lint_runs_from_disk`
   borrow patterns by inlining them.
 - Pick whether `BackgroundMsg` dispatch (handle_bg_msg) becomes a
@@ -2842,12 +2858,11 @@ Updated post-Phase-8.
 | 16  | `LintsPane` → `Lint` absorption | Done |
 | 17  | Keymap + Settings + Finder → `Overlays` absorption | Done |
 | 18  | Event-bus skeleton + `apply_service_signal` smoke test | Done |
-| 19  | Move `row_count` + ~12 movement methods onto `Selection` | Ready |
-| 20  | Move ~6 path-resolution methods onto `Selection` | Ready |
-| 21  | `TreeReaction` enum + bus conversion of `apply_config` + `apply_lint_config_change` | Ready (borrow-checker gate) |
-| 22  | Extract `StartupOrchestrator` (structural relocation, no bus) | Ready (reorderable — no source dependency on 19–21) |
+| 19  | Move `row_count` + 4 cursor-movement methods onto `Selection` | Done |
+| 20  | `TreeReaction` enum + bus conversion of `apply_config` + `apply_lint_config_change` | Ready (borrow-checker gate) |
+| 21  | Extract `StartupOrchestrator` (structural relocation, no bus) | Ready (reorderable — no source dependency on 20) |
 
-After Phases 19–22, App's struct surface drops to roughly:
+After Phases 19–21, App's struct surface drops to roughly:
 `new`, `run`, the bus-publishing entry points (`apply_config`,
 `rescan`, `handle_bg_msg`, `apply_service_signal`,
 `mark_service_recovered`), the keystroke-driven group flagged
@@ -3073,7 +3088,7 @@ trait EventHandler {
 
 (Phase 18 + 21 final design — see "Bus design" section above for
 the full detail. The startup-phase tracker does not publish bus
-events; see Phase 22.)
+events; see Phase 20.)
 
 Each subsystem subscribes to the events it cares about. App
 publishes events when raw triggers fire (config save, bg msg
@@ -3098,7 +3113,7 @@ small dispatch root). Subsystems own their own reactions.
 `_lints` → `_ready` in that exact order. Repo-phase gates on
 git-phase complete; ready-phase gates on all four prior.
 
-**Where the sequencing layer lives** — see Phase 22 above.
+**Where the sequencing layer lives** — see Phase 20 above.
 A `StartupOrchestrator` at
 `src/tui/app/async_tasks/startup_phase/orchestrator.rs` owns the
 sequencing rules. It does **not** publish bus events — there are

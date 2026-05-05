@@ -105,7 +105,7 @@ impl App {
                 if let Some(ni) = parent_node_index {
                     self.select_root_row(ni);
                 } else {
-                    let count = self.row_count();
+                    let count = self.selection.row_count();
                     let selected = self.selection.cursor();
                     if selected >= count {
                         self.selection.set_cursor(count.saturating_sub(1));
