@@ -3,11 +3,16 @@ use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
 
+use ratatui::layout::Rect;
+
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
+use crate::tui::app::DismissTarget;
 use crate::tui::constants::TOAST_LINE_REVEAL_MS;
 use crate::tui::constants::TOAST_WIDTH;
 use crate::tui::interaction::ToastHitbox;
+use crate::tui::pane::HoverTarget;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::Viewport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -145,7 +150,11 @@ fn exit_lines(now: Instant, exit_start: Instant, target_height: u16) -> u16 {
             target_height.saturating_sub(elapsed_line_count(now.duration_since(exit_start)));
         // Skip height=1: a single-line Block renders a stray corner glyph
         // that clashes with the window border. Jump from 2 → 0.
-        if remaining == 1 { 0 } else { remaining }
+        if remaining == 1 {
+            0
+        } else {
+            remaining
+        }
     } else {
         target_height
     }
@@ -732,25 +741,17 @@ fn wrapped_line_count(line: &str, width: usize) -> usize {
 // path in `render.rs`); Hittable walks the recorded hit rects.
 
 impl crate::tui::pane::Pane for ToastManager {
-    fn render(
-        &mut self,
-        _frame: &mut ratatui::Frame<'_>,
-        _area: ratatui::layout::Rect,
-        _ctx: &crate::tui::pane::PaneRenderCtx<'_>,
-    ) {
-    }
+    fn render(&mut self, _frame: &mut ratatui::Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
 }
 
 impl crate::tui::pane::Hittable for ToastManager {
-    fn hit_test_at(&self, pos: ratatui::layout::Position) -> Option<crate::tui::pane::HoverTarget> {
+    fn hit_test_at(&self, pos: ratatui::layout::Position) -> Option<HoverTarget> {
         for hit in &self.hits {
             if hit.close_rect.contains(pos) {
-                return Some(crate::tui::pane::HoverTarget::Dismiss(
-                    crate::tui::app::DismissTarget::Toast(hit.id),
-                ));
+                return Some(HoverTarget::Dismiss(DismissTarget::Toast(hit.id)));
             }
             if hit.card_rect.contains(pos) {
-                return Some(crate::tui::pane::HoverTarget::ToastCard(hit.id));
+                return Some(HoverTarget::ToastCard(hit.id));
             }
         }
         None
