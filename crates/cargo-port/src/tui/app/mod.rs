@@ -46,6 +46,7 @@
 //!   subsystems add their bespoke state on top.
 
 mod async_tasks;
+mod bus;
 mod ci;
 mod construct;
 mod dismiss;
@@ -129,6 +130,7 @@ mod tests;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 
+use bus::EventBus;
 pub(super) use dismiss::DismissTarget;
 pub(super) use target_index::CleanSelection;
 pub(super) use target_index::TargetDirIndex;
@@ -227,6 +229,13 @@ pub(super) struct App {
     /// the transient `inline_error` UI feedback, and the
     /// `status_flash` slot.
     overlays:          Overlays,
+    /// Cross-cutting event bus (Phase 18 — smoke test). Holds two
+    /// queues (events for fan-out triggers, commands for single
+    /// targeted actions). Phase 18 routes only
+    /// [`Event::ServiceSignal`] through it; Phase 19's
+    /// `apply_lint_config_change` + `apply_config` bundle is the
+    /// borrow-checker stress test.
+    bus:               EventBus,
     confirm:           Option<ConfirmAction>,
     animation_started: Instant,
     mouse_pos:         Option<Position>,

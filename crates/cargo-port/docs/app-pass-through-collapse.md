@@ -2,7 +2,7 @@
 
 ## Status
 
-Phases 1–17 done. Phases 18–20 remain.
+Phases 1–18 done. Phases 19–20 remain.
 
 **Resequenced (post-Phase-15+16 review).** Phase 18 (`build_*_data`
 caller cleanup) was folded into Phase 17's "tests still green"
@@ -22,6 +22,22 @@ and no `*Layout` rename target emerged. Folded its decisions into
 Phase 19's preamble paragraph. Phases 19→18 (bus skeleton),
 20→19 (config bundle), 21→20 (startup orchestrator). Total drops
 to 20.
+
+**Subagent review post-Phase-18 (corrections folded in).** The
+five-subsystem framing for Phase 19 was wrong — it counted a
+non-existent `Inflight` subsystem and missed `overlays`,
+`background`, and `config`. Re-derived from
+`src/tui/app/async_tasks/config.rs:215-238`: six fields plus a
+`config` read. Also: `apply_config` is a sequenced body with
+branching, not a parallel fan-out — Phase 19 picks between
+"single subscriber owns the body" and "publish `ReloadActions`."
+`ReloadActions` (already in `config_reload.rs`) is the existing
+diff helper; Phase 19 renames or extends it rather than inventing
+a parallel `ConfigDiff`. Phase 20 is **reorderable** — it doesn't
+need the bus and can land before or independently of Phase 19;
+the only sensible bus framing for Phase 20 is dropped unless a
+real cross-subsystem subscriber for `StartupPhaseAdvanced`
+emerges during Phase 19.
 
 Also corrected post-Phase-17: when a config change happens,
 **five subsystems** all need to react independently (Lint,
@@ -2395,20 +2411,168 @@ inside the handler. Don't bill Phase 18 as "borderline mechanical,
 **Risk:** Phase 18 introduces the bus skeleton; Phases 19–20 widen
 its subscriber surface incrementally.
 
+### Phase 18 retrospective
+
+**Outcome:** clean smoke test. `EventBus`, `Event`, `Command`,
+`HandlerCtx`, `EventHandler` live in `src/tui/app/bus.rs` (new);
+the `bus: EventBus` field sits on `App` next to the other
+subsystems; `apply_service_signal` now publishes
+`Event::ServiceSignal(signal)` and immediately calls
+`drain_bus`, which alternates events→commands until both queues
+are empty. The original signal-routing body moved to
+`handle_service_signal_event` (still on `App`, called via
+`deliver_event`'s match arm). The retry path now goes through
+`Command::SpawnServiceRetry(service)` instead of calling
+`spawn_service_retry` inline, which means the retry dispatch
+runs in the command-drain phase after the toast push — a
+trivial reorder relative to the prior sequence (toast push
+first, then OS thread spawn) with no observable effect.
+
+**Numbers:**
+- Tests: 597 / 597 pass.
+- 1 mend import-tidy fix (auto-applied: `use bus::EventBus;`).
+- 1 new file (`src/tui/app/bus.rs`, ~80 lines).
+- 3 modified files (`src/tui/app/mod.rs` — `mod bus;` +
+  field + import; `src/tui/app/construct.rs` — field init;
+  `src/tui/app/async_tasks/service_handlers.rs` —
+  publish/drain/deliver/execute, plus the renamed
+  `handle_service_signal_event` body).
+
+**Lessons:**
+1. **`pub(super)` on App methods doesn't reach sibling submodules
+   of `app`.** The first attempt put `drain_bus`, `deliver_event`,
+   and `execute_command` as an `impl App` block inside
+   `app/bus.rs`. They needed to call
+   `handle_service_signal_event` and `spawn_service_retry`,
+   which are `pub(super)` from inside
+   `app/async_tasks/service_handlers.rs` — so visible to
+   `async_tasks` only, not to `app/bus.rs`. Two paths fixed this:
+   widen those methods to `pub(crate)`, or move the dispatch impl
+   into `service_handlers.rs` next to its callees. The second was
+   cleaner (no widened visibility on a private method) and is the
+   pattern to repeat in Phase 19 — keep the bus *types* in
+   `bus.rs`, but put `impl App` dispatch arms in the same file as
+   the handler bodies they call. **Apply to Phase 19:** the bus
+   types stay alone in `bus.rs`; the per-event reactor lives next
+   to the methods it calls (e.g. `apply_lint_config_change`'s
+   reactor in `async_tasks/lint_config.rs` or wherever the
+   handler body sits).
+2. **Clippy forces `Copy` derives + by-value passing for small
+   enums.** `Event` and `Command` started without `derive(Copy,
+   Clone, Debug)`. Clippy's `needless_pass_by_value` and
+   `trivially_copy_pass_by_ref` then complained about both
+   `cmd: Command` (pass-by-value but matched, not consumed) and
+   `ev: &Event` (borrow of a 2-byte type below the 8-byte limit).
+   Adding the derives plus passing both by value (Event in
+   `deliver_event` and `EventHandler::handle`) cleared both
+   lints. **Apply to Phase 19:** when adding new `Event` or
+   `Command` variants, derive `Copy`/`Clone`/`Debug` on the enums
+   from the start; Phase 19's variants will likely carry owned
+   data (`ConfigDiff`) and won't be `Copy`, at which point pass
+   by reference is correct again — the derive is the right
+   default, the by-value/ref decision follows the variant data.
+3. **`&mut self` on commands that don't need it loses to clippy.**
+   `execute_command` initially took `&mut self` for symmetry with
+   `deliver_event`, but the only Phase-18 variant
+   (`SpawnServiceRetry`) calls `spawn_service_retry` which is
+   `&self`. Clippy's `needless_pass_by_ref_mut` rejected the
+   unused mut. Demoted to `&self`; Phase 19 will promote back
+   when the first command needs `&mut self`. **Apply to Phase
+   19:** start each new dispatch fn at the minimum mut-level the
+   current variants require, not the level a future variant
+   might need.
+4. **Drain alternates events ↔ commands until both queues are
+   empty.** A single forward pass would miss events that commands
+   publish (and vice versa). The drain loop is therefore:
+   ```
+   loop {
+       if let Some(ev) = self.bus.pop_event() {
+           self.deliver_event(ev);
+           continue;
+       }
+       if let Some(cmd) = self.bus.pop_command() {
+           self.execute_command(cmd);
+           continue;
+       }
+       break;
+   }
+   ```
+   In Phase 18 no command publishes an event and no event handler
+   publishes a follow-up event, so the loop terminates after a
+   single pass each — but the alternation is what protects Phase
+   19+ where a `Command::SpawnRescan` may publish a
+   `RescanStarted` event downstream.
+5. **`HandlerCtx` and `EventHandler` weren't needed for the smoke
+   test.** Subscribers in Phase 18 take `&mut self` (App), reach
+   the bus via `self.bus.dispatch(...)` directly, and don't need
+   the typed-borrow split that `HandlerCtx` provides. The plan
+   called this out (Phase 17 lesson 4) and the result confirms it:
+   `HandlerCtx` and `EventHandler` are scaffolding marked
+   `#[allow(dead_code, reason = "Phase 19 scaffolding")]`. Phase
+   19's five-subsystem fan-out is the upgrade trigger. **Apply to
+   Phase 19:** if `apply_lint_config_change`'s reactor compiles
+   while taking `&mut App`, the typed `HandlerCtx` stays unused;
+   it's only needed when Rust's borrow checker rejects the naive
+   `&mut App` shape (e.g. concurrent `&mut Lint` + `&mut Scan` +
+   `&mut Selection` + `&mut Inflight` + `&mut ToastManager`
+   borrows on a single event).
+
+**File-level changes:**
+- *New:* `src/tui/app/bus.rs` (`EventBus`, `Event`, `Command`,
+  `HandlerCtx`, `EventHandler` — types only, no `impl App`
+  block).
+- *Modified:* `src/tui/app/mod.rs` (added `mod bus;` and
+  `bus: EventBus` field with import via `use bus::EventBus;`),
+  `src/tui/app/construct.rs` (`bus: EventBus::new()` in the
+  builder), `src/tui/app/async_tasks/service_handlers.rs`
+  (`apply_service_signal` body replaced with publish+drain;
+  added `drain_bus`, `deliver_event`, `execute_command`;
+  renamed signal-routing body to `handle_service_signal_event`;
+  routed retry through `Command::SpawnServiceRetry`).
+
+**Status: done** (commit pending — user may stage as desired).
+
 ## Phase 19 — `apply_lint_config_change` + `apply_config` over `Bus<Event>` (bundled), preceded by Phase 11 Group 1/2 Selection preamble *(was Phase 20; was Phases 21 + 22 before that)*
 
-This is the **borrow-checker gate.** When a config change happens,
-five subsystems all need to react independently — Lint, Inflight,
-Scan, Selection, and ToastManager. "Independently" means each one
+This is the **borrow-checker gate.** When a lint-config change
+happens, six subsystem fields on `App` all get touched in one
+orchestrator body — `lint`, `scan`, `selection`, `overlays`,
+`toasts`, and a read of `background.bg_sender()`. (Subagent
+review correction post-Phase-18: earlier drafts said
+"Lint, Inflight, Scan, Selection, ToastManager" — there is **no
+`Inflight` field touched** by `apply_lint_config_change`. The
+"in-flight lint paths" doc-comment at `config.rs:200` refers to
+`self.lint.running_mut()`, which lives on `Lint`, not on a
+separate `Inflight` subsystem. Re-derive subsystem counts from
+source, not from earlier drafts.) "Independently" means each one
 grabs its own mutable reference to do its work, and they're all
-trying to do it at once. That's the hard problem the bus design
-has to solve cleanly: can the borrow checker accept a
-`HandlerCtx` shape that hands each reactor what it needs without
-conflicts? If `HandlerCtx` can't make the five-reactor case work,
-Phase 18's skeleton needs revision.
+trying to do it during one event reactor. That's the hard problem
+the bus design has to solve cleanly: can the borrow checker
+accept a `HandlerCtx` shape that hands each reactor what it needs
+without conflicts? If `HandlerCtx` can't make the six-reactor
+case work, Phase 18's skeleton needs revision.
 
-**Why "five" rather than "six":** earlier drafts counted
-`force_settings_if_unconfigured` as a sixth reactor (writing to
+**Subsystem map for `apply_lint_config_change`** (source-of-truth
+re-derivation from `src/tui/app/async_tasks/config.rs:215-238`):
+
+| Field | Mode | Operation |
+| --- | --- | --- |
+| `lint` | `&mut` | `set_runtime`, `running_mut().clear()` |
+| `background` | `&` | `bg_sender()` for the spawn call |
+| `scan` | `&mut` (transitive) | via `clear_all_lint_state`, `refresh_lint_runs_from_disk`, `bump_generation` |
+| `selection` | `&mut` | `reset_fit_widths(lint_enabled)` |
+| `overlays` | `&mut` (conditional) | `set_status_flash` on warning |
+| `toasts` | `&mut` (conditional) | `show_timed_toast` on warning |
+| `config` | `&` | `lint_enabled()` query |
+
+The `clear_all_lint_state` and `refresh_lint_runs_from_disk` calls
+need to be inlined to count their actual borrows — both touch
+`scan.projects_mut()` and may also borrow `lint`. **Open
+question for Phase 19 implementer:** confirm the transitive
+borrows before designing the reactor signature.
+
+**Why "force_settings_if_unconfigured" is not in the list:**
+earlier drafts counted it as an extra reactor (writing to
 `Overlays`). That was wrong on two counts. First, it's not really
 a reaction to a config change — it's a post-bootstrap check
 ("after the project list has settled, do we have any roots? If
@@ -2419,40 +2583,103 @@ bus event, the rescan subscriber can just call the App method
 directly the way startup does. No `Command`, no extra event,
 no extra reactor in the gate count.
 
+**Per Phase 18 lesson 1:** the `impl App` reactor block lives
+next to the handler body it dispatches to —
+`lint_config_change`'s reactor in `async_tasks/config.rs`, *not*
+in `bus.rs`. The bus types stay alone in `bus.rs`. Repeat the
+Phase 18 split: types-only in `bus.rs`, dispatch arms next to
+their callees.
+
+**Per Phase 18 lesson 2:** new `Event` and `Command` variants
+should derive `Clone, Debug` from the start, with `Copy` only
+when all variant data is `Copy`. Phase 19's
+`Event::ConfigChanged { prev, next }` carries owned
+`CargoPortConfig` values (not `Copy`), so pass by reference in
+handlers. `Event::LintConfigChanged` is unit and stays `Copy`.
+
 **Bundling rationale (post-Phase-15+16 review).** Former Phases
 21 and 22 share `ConfigDiff` and an overlapping subscriber set
-(the five listed above plus `Config` itself). Building former
+(the six listed above plus `Config` itself). Building former
 Phase 21's `HandlerCtx` and immediately re-deriving `ConfigDiff`
 for former Phase 22 would leave an awkward intermediate where Lint
 reads raw `prev`/`next` while Config gets the helper. This is the
 same "shared load-bearing signature" reason Phase 15 was bundled
 with Phase 16. The two land in one commit; Phase 11's Selection
 absorption splits off as a **separable preamble** that can land on
-its own commit (it has no `HandlerCtx` dependency — it's pure
-method relocation).
+its own commit (see preamble-cost note below).
+
+**`ConfigDiff` is `ReloadActions` extended, not invented (subagent
+review correction).** `src/tui/config_reload.rs::collect_reload_actions`
+already returns a `ReloadActions` struct that encodes which
+high-level reactions (`refresh_lint_runtime`, `rescan`, `rebuild_tree`,
+`refresh_cpu`) a config-change should fire. This **is** the
+`ConfigDiff`. Phase 19 should rename or extend `ReloadActions`
+into the `ConfigDiff` shape subscribers consume — not introduce
+a parallel structure. Two diff helpers (`ReloadActions` and
+`ConfigDiff`) coexisting is a code smell; pick one.
+
+**Ordering constraint inside `apply_config` (subagent review
+correction).** `apply_config`
+(`src/tui/app/async_tasks/config.rs:136-195`) is **not** a
+parallel fan-out. It is a sequenced body with branching control
+flow: rate-limit-flag flip → optional cpu reset → optional lint
+runtime refresh → either `rescan` + `force_settings_if_unconfigured`
+**or** `respawn_watcher_and_register_existing_projects` +
+optional `regroup_members` + `refresh_derived_state`. A naive
+`for sub in subscribers { sub.handle(...) }` model loses the
+`if actions.rescan.should_apply() { ... } else { ... }` branching.
+Two paths address this:
+1. **Single subscriber owns the whole body.** App publishes
+   `Event::ConfigChanged`; one reactor (Config or App itself)
+   consumes the event and calls the existing branching code
+   verbatim. The bus is the entry shim, not the dispatch model.
+   Smallest diff, smallest risk.
+2. **`ReloadActions` is what gets published.** App calls
+   `collect_reload_actions` first, packages the result into
+   `Event::ConfigChanged(ReloadActions, &CargoPortConfig)`, and
+   subscribers pattern-match on which actions they care about.
+   This keeps fan-out semantics but moves the branching out of
+   the reactor and into the publish step.
+
+Phase 19 implementer picks the model after measuring against
+the borrow checker. The plan should not pre-commit to "six fan-out
+branches become subscribers" without resolving this.
 
 **Three pieces, two commits:**
 
-1. **Phase 11 preamble (separable, lands first).** ~12 movement /
-   expand methods + ~6 path-resolution methods move from `App` into
-   `Selection`. No bus dependency. Lands as its own commit so the
-   bus-conversion commit only does bus work.
+1. **Phase 11 preamble (separable, lands first — but re-cost
+   first).** Originally framed as "pure method relocation" of
+   ~12 movement / expand methods + ~6 path-resolution methods
+   from `App` into `Selection`. **Subagent review correction:**
+   the methods (`src/tui/app/navigation/movement.rs:5-38`) call
+   `self.row_count()`, which today reads from `scan` + `selection`
+   together. Moving the movers to `Selection` either requires
+   passing `row_count` in or moving `row_count` itself first —
+   it is no longer "pure relocation." Phase 11 retrospective
+   already concluded the methods don't block any further phase
+   (single-borrow `&mut self` over multiple subsystems compiles
+   fine). **Implementer decision before starting Phase 19:**
+   either (a) drop the preamble entirely (the Phase 11
+   retrospective justifies leaving the methods on `App`), or
+   (b) re-cost it explicitly: list the methods, identify
+   `row_count`'s borrow pattern, decide whether `row_count`
+   itself needs to move first.
 
 2. **Bus-conversion commit (combined former 21 + 22).**
    - Convert `apply_lint_config_change`
-     (`async_tasks/config.rs:217-240`) into
-     `Event::LintConfigChanged` with subscribers across the five
-     subsystems. Each subscriber's `handle()` runs the body
-     fragment that today lives inline.
-   - Convert `apply_config` (`async_tasks/config.rs:138-197`) into
-     `Event::ConfigChanged(ConfigDiff)`. Six fan-out branches
-     become subscribers (or fewer if related branches share a
-     handler). Design `ConfigDiff` once and consume it from both
-     subscriber sets.
+     (`async_tasks/config.rs:215-238`) into
+     `Event::LintConfigChanged` with subscribers across the
+     subsystems mapped above. Each subscriber's `handle()` runs
+     the body fragment that today lives inline.
+   - Convert `apply_config` (`async_tasks/config.rs:136-195`) per
+     the ordering-constraint resolution above (single subscriber
+     owns the body, OR `ReloadActions` gets published). Reuse
+     `ReloadActions` (renamed/extended into `ConfigDiff`) once.
 
-**`ConfigDiff` design.** What fields the diff carries, what fields
-subscribers read. Build it once for the lint subscribers; reuse
-verbatim for the config subscribers.
+**`ConfigDiff` design.** Start from `ReloadActions` (config_reload.rs)
+and add only what subscribers need beyond the existing high-level
+flags. Build it once at publish time; subscribers query the fields
+they care about.
 
 **Note on `force_settings_if_unconfigured` (`config.rs:181`).**
 This is *not* a bus event or command. It's a post-bootstrap check
@@ -2476,18 +2703,45 @@ fan-out.
 
 ## Phase 20 — Startup-phase tracker + `StartupOrchestrator` *(was Phase 21; was Phase 23 before that)*
 
-Add `StartupOrchestrator` at
-`src/tui/app/async_tasks/startup_phase/orchestrator.rs` to publish
-`StartupPhaseAdvanced(...)` events in the dependency order today
-encoded in `maybe_log_startup_phase_completions`. Convert the 6
-`maybe_complete_startup_*` family methods into subscribers that
-publish their advancement events to the bus.
+**Reorderable: may land before Phase 19 (subagent review,
+post-Phase-18).** The original "Pre-requisite: Phases 18–19
+stable" framing was wrong. Phase 20 does not need the bus to land
+— `StartupOrchestrator` can be a struct relocation under the
+Phase 11/12 patterns. The existing
+`src/tui/app/async_tasks/startup_phase/tracker.rs:176-188` chain
+of six `maybe_complete_startup_*` methods is single-borrow
+`&mut self` and has no borrow conflict that would force a bus.
+If the implementer wants to land Phase 20 before Phase 19, do so;
+mark Phase 19 as the gate (it is) and Phase 20 as ordering-free.
 
-**Pre-requisite:** Phases 18–19 stable.
+**Bus framing — keep or drop?** Earlier drafts had the
+orchestrator publish `Event::StartupPhaseAdvanced(...)` and have
+the orchestrator itself subscribe via
+`Command::MarkStartupPhaseCompleted(StartupPhase)`. Subagent
+review found no other subscribers — the only consumer of the
+event is the orchestrator that emits it. **An event with one
+self-subscriber is a method call wearing a costume.** Two
+revised paths for Phase 20:
+1. **Drop the bus from Phase 20 entirely.** Make
+   `StartupOrchestrator::advance(&mut self, phase: StartupPhase)`
+   a direct method. The 6 `maybe_complete_startup_*` family
+   methods still relocate; they just call
+   `self.startup.advance(phase)` instead of publishing an event.
+   Cleanest, smallest diff, follows Phase 18 lesson 5
+   (`HandlerCtx` is the upgrade path, not the default).
+2. **Keep the bus only if a real cross-subsystem subscriber
+   emerges.** If, during Phase 19, a non-orchestrator subscriber
+   genuinely needs to react to `StartupPhaseAdvanced` (e.g. a
+   toast emitter or a CI fetcher), then the bus framing pays its
+   weight. Otherwise drop it.
 
-**Phase 17 lesson 5 applies here:** the 6 `maybe_complete_startup_*`
-methods will have chained call sites; bulk rewrites need both
-single-line and multi-line perl substitutions to catch every site.
+Default to path 1 unless Phase 19 produces a concrete
+cross-subsystem subscriber.
+
+**Phase 17 lesson 5 applies regardless:** the 6
+`maybe_complete_startup_*` methods will have chained call sites;
+bulk rewrites need both single-line and multi-line perl
+substitutions to catch every site.
 
 **Visibility note (Phase 12 lesson 1).** `StartupOrchestrator`'s
 location at `src/tui/app/async_tasks/startup_phase/orchestrator.rs`
