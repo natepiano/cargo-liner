@@ -44,7 +44,7 @@ pub(crate) const LINTS_CACHE_DIR: &str = "lint-runs";
 // ── Scan constants ────────────────────────────────────────────────────
 
 pub(crate) const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";
-pub(crate) const SCAN_DISK_CONCURRENCY: usize = 2;
+pub(crate) const SCAN_DISK_CONCURRENCY: usize = 6;
 /// `cargo metadata --no-deps` per workspace root, capped so a large multi-
 /// workspace tree doesn't monopolize the blocking pool. Runs briefly —
 /// milliseconds per invocation on typical workspaces — so a small cap is
