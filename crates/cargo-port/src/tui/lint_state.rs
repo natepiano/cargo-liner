@@ -21,7 +21,14 @@ use ratatui::layout::Rect;
 
 use super::app::CountedPhase;
 use super::app::KeyedPhase;
+use super::pane::Hittable;
+use super::pane::HoverTarget;
+use super::pane::Pane;
+use super::pane::PaneRenderCtx;
+use super::pane::Viewport;
 use super::panes;
+use super::panes::LintsData;
+use super::panes::PaneId;
 use super::running_tracker::RunningTracker;
 use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
@@ -29,13 +36,6 @@ use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project_list::ProjectList;
-use crate::tui::pane::Hittable;
-use crate::tui::pane::HoverTarget;
-use crate::tui::pane::Pane;
-use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::Viewport;
-use crate::tui::panes::LintsData;
-use crate::tui::panes::PaneId;
 
 /// Display value for the Lint row in the Package detail pane.
 ///

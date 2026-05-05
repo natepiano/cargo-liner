@@ -200,12 +200,12 @@ pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyE
             app.overlays_mut().close_keymap();
             app.focus_mut().close_overlay();
         },
-        KeyCode::Up => app.panes_mut().keymap_mut().viewport_mut().up(),
-        KeyCode::Down => app.panes_mut().keymap_mut().viewport_mut().down(),
-        KeyCode::Home => app.panes_mut().keymap_mut().viewport_mut().home(),
+        KeyCode::Up => app.overlays_mut().keymap_pane_mut().viewport_mut().up(),
+        KeyCode::Down => app.overlays_mut().keymap_pane_mut().viewport_mut().down(),
+        KeyCode::Home => app.overlays_mut().keymap_pane_mut().viewport_mut().home(),
         KeyCode::End => app
-            .panes_mut()
-            .keymap_mut()
+            .overlays_mut()
+            .keymap_pane_mut()
             .viewport_mut()
             .set_pos(selectable_row_count().saturating_sub(1)),
         KeyCode::Enter => app.overlays_mut().keymap_begin_awaiting(),
@@ -228,7 +228,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     let bind = KeyBind::new(event.code, event.modifiers);
     let rows = build_rows(app.keymap().current());
     let selectable: Vec<&KeymapRow> = rows.iter().filter(|r| !r.is_header).collect();
-    let Some(row) = selectable.get(app.panes().keymap().viewport().pos()) else {
+    let Some(row) = selectable.get(app.overlays().keymap_pane().viewport().pos()) else {
         return;
     };
 
@@ -502,8 +502,8 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
         }
 
         let selection = app
-            .panes()
-            .keymap()
+            .overlays()
+            .keymap_pane()
             .viewport()
             .selection_state(selectable_index, app.focus().pane_state(PaneId::Keymap));
         let key_text = if selection != PaneSelectionState::Unselected && is_awaiting {
@@ -592,7 +592,7 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     }
     .render(frame);
 
-    let selected_pos = app.panes().keymap().viewport().pos();
+    let selected_pos = app.overlays().keymap_pane().viewport().pos();
     let is_awaiting = app.overlays().keymap_is_awaiting();
     let lines = build_lines(&rows, app, is_awaiting);
 

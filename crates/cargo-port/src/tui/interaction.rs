@@ -64,9 +64,9 @@ pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
     for id in HITTABLE_Z_ORDER {
         let pane: &dyn Hittable = match id {
             HittableId::Toasts => app.toasts(),
-            HittableId::Finder => app.panes().finder(),
-            HittableId::Settings => app.panes().settings(),
-            HittableId::Keymap => app.panes().keymap(),
+            HittableId::Finder => app.overlays().finder_pane(),
+            HittableId::Settings => app.overlays().settings_pane(),
+            HittableId::Keymap => app.overlays().keymap_pane(),
             HittableId::ProjectList => app.panes().project_list(),
             HittableId::Package => app.panes().package(),
             HittableId::Lang => app.panes().lang(),
@@ -106,9 +106,9 @@ pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> &mut Viewport
         PaneId::CiRuns => app.ci_mut().viewport_mut(),
         PaneId::Package => app.panes_mut().package_mut().viewport_mut(),
         PaneId::Git => app.panes_mut().git_mut().viewport_mut(),
-        PaneId::Keymap => app.panes_mut().keymap_mut().viewport_mut(),
-        PaneId::Settings => app.panes_mut().settings_mut().viewport_mut(),
-        PaneId::Finder => app.panes_mut().finder_mut().viewport_mut(),
+        PaneId::Keymap => app.overlays_mut().keymap_pane_mut().viewport_mut(),
+        PaneId::Settings => app.overlays_mut().settings_pane_mut().viewport_mut(),
+        PaneId::Finder => app.overlays_mut().finder_pane_mut().viewport_mut(),
         PaneId::Output => app.panes_mut().output_mut().viewport_mut(),
         PaneId::Targets => app.panes_mut().targets_mut().viewport_mut(),
         PaneId::ProjectList => app.panes_mut().project_list_mut().viewport_mut(),
@@ -129,14 +129,23 @@ const fn clear_all_hover(app: &mut App) {
     app.toasts_mut().viewport_mut().set_hovered(None);
     app.ci_mut().viewport_mut().set_hovered(None);
     app.lint_mut().viewport_mut().set_hovered(None);
+    app.overlays_mut()
+        .keymap_pane_mut()
+        .viewport_mut()
+        .set_hovered(None);
+    app.overlays_mut()
+        .settings_pane_mut()
+        .viewport_mut()
+        .set_hovered(None);
+    app.overlays_mut()
+        .finder_pane_mut()
+        .viewport_mut()
+        .set_hovered(None);
     let panes = app.panes_mut();
     panes.package_mut().viewport_mut().set_hovered(None);
     panes.lang_mut().viewport_mut().set_hovered(None);
     panes.cpu_mut().viewport_mut().set_hovered(None);
     panes.git_mut().viewport_mut().set_hovered(None);
-    panes.keymap_mut().viewport_mut().set_hovered(None);
-    panes.settings_mut().viewport_mut().set_hovered(None);
-    panes.finder_mut().viewport_mut().set_hovered(None);
     panes.output_mut().viewport_mut().set_hovered(None);
     panes.targets_mut().viewport_mut().set_hovered(None);
     panes.project_list_mut().viewport_mut().set_hovered(None);
@@ -501,7 +510,7 @@ mod tests {
     }
 
     fn finder_result_point(app: &App, result_index: usize) -> (u16, u16) {
-        let area = app.panes().finder().viewport().content_area();
+        let area = app.overlays().finder_pane().viewport().content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -700,7 +709,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.panes().finder().viewport().pos(),
+            app.overlays().finder_pane().viewport().pos(),
             1,
             "clicking the second rendered finder result should select result index 1, not the header-offset visual row"
         );
@@ -745,11 +754,11 @@ mod tests {
         app.overlays_mut().open_settings();
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.panes().settings().viewport(), 5);
+        let (x, y) = pane_row_point(app.overlays().settings_pane().viewport(), 5);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.panes().settings().viewport().pos(),
+            app.overlays().settings_pane().viewport().pos(),
             SettingOption::CiRunCount as usize,
             "clicking a rendered settings option should select the logical setting, not the visual line index including spacer/header rows"
         );
@@ -763,13 +772,13 @@ mod tests {
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
-        let (x, y) = pane_row_point(app.panes().settings().viewport(), 5);
+        let (x, y) = pane_row_point(app.overlays().settings_pane().viewport(), 5);
         move_mouse(&mut app, x, y);
         render_ui(&mut app);
 
         assert_eq!(
-            app.panes()
-                .settings()
+            app.overlays()
+                .settings_pane()
                 .viewport()
                 .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
             PaneSelectionState::Hovered,
@@ -778,17 +787,17 @@ mod tests {
         press_key(&mut app, KeyCode::Down);
         render_ui(&mut app);
 
-        assert_eq!(app.panes().settings().viewport().pos(), 1);
+        assert_eq!(app.overlays().settings_pane().viewport().pos(), 1);
         assert_eq!(
-            app.panes()
-                .settings()
+            app.overlays()
+                .settings_pane()
                 .viewport()
                 .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
             PaneSelectionState::Unselected,
         );
         assert_eq!(
-            app.panes()
-                .settings()
+            app.overlays()
+                .settings_pane()
                 .viewport()
                 .selection_state(1, app.focus().pane_state(PaneId::Settings)),
             PaneSelectionState::Active,
@@ -803,15 +812,15 @@ mod tests {
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
-        let (x, y) = pane_row_point(app.panes().settings().viewport(), 5);
+        let (x, y) = pane_row_point(app.overlays().settings_pane().viewport(), 5);
         move_mouse(&mut app, x, y);
         render_ui(&mut app);
         press_key(&mut app, KeyCode::Down);
         render_ui(&mut app);
 
         assert_eq!(
-            app.panes()
-                .settings()
+            app.overlays()
+                .settings_pane()
                 .viewport()
                 .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
             PaneSelectionState::Unselected,
@@ -821,8 +830,8 @@ mod tests {
         render_ui(&mut app);
 
         assert_eq!(
-            app.panes()
-                .settings()
+            app.overlays()
+                .settings_pane()
                 .viewport()
                 .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
             PaneSelectionState::Hovered,
@@ -837,15 +846,15 @@ mod tests {
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
-        let (x, y) = pane_row_point(app.panes().settings().viewport(), 5);
+        let (x, y) = pane_row_point(app.overlays().settings_pane().viewport(), 5);
         input::set_last_mouse_pos_for_test(Some((x, y)));
         focus_gained(&mut app);
         render_ui(&mut app);
 
-        assert_eq!(app.panes().settings().viewport().pos(), hovered_row);
+        assert_eq!(app.overlays().settings_pane().viewport().pos(), hovered_row);
         assert_eq!(
-            app.panes()
-                .settings()
+            app.overlays()
+                .settings_pane()
                 .viewport()
                 .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
             PaneSelectionState::Active,
@@ -1055,7 +1064,7 @@ mod tests {
         let (x, y) = finder_result_point(&app, 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.panes().finder().viewport().pos(), 1);
+        assert_eq!(app.overlays().finder_pane().viewport().pos(), 1);
     }
 
     #[test]
@@ -1065,11 +1074,11 @@ mod tests {
         app.overlays_mut().open_settings();
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.panes().settings().viewport(), 2);
+        let (x, y) = pane_row_point(app.overlays().settings_pane().viewport(), 2);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.panes().settings().viewport().pos(),
+            app.overlays().settings_pane().viewport().pos(),
             SettingOption::InvertScroll as usize
         );
     }

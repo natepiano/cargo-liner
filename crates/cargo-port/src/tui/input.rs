@@ -488,7 +488,7 @@ fn open_finder(app: &mut App) {
     finder.query.clear();
     finder.results.clear();
     finder.total = 0;
-    app.panes_mut().finder_mut().viewport_mut().home();
+    app.overlays_mut().finder_pane_mut().viewport_mut().home();
 }
 
 fn shell_escape_path(path: &Path) -> String {
@@ -576,8 +576,8 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
         GlobalAction::OpenKeymap => {
             app.focus_mut().open_overlay(PaneId::Keymap);
             app.overlays_mut().open_keymap();
-            app.panes_mut()
-                .keymap_mut()
+            app.overlays_mut()
+                .keymap_pane_mut()
                 .viewport_mut()
                 .set_len(keymap_ui::selectable_row_count());
         },

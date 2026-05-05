@@ -1113,7 +1113,10 @@ impl App {
         if let Some(idx) = crate::tui::settings::SettingOption::iter()
             .position(|s| s == SettingOption::IncludeDirs)
         {
-            self.panes_mut().settings_mut().viewport_mut().set_pos(idx);
+            self.overlays_mut()
+                .settings_pane_mut()
+                .viewport_mut()
+                .set_pos(idx);
         }
         self.overlays
             .set_inline_error("Configure at least one include directory before continuing");

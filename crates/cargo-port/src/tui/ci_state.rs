@@ -24,7 +24,14 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
 use super::app::CiRunDisplayMode;
+use super::pane::Hittable;
+use super::pane::HoverTarget;
+use super::pane::Pane;
+use super::pane::PaneRenderCtx;
+use super::pane::Viewport;
 use super::panes;
+use super::panes::CiData;
+use super::panes::PaneId;
 use super::toasts::ToastTaskId;
 #[cfg(test)]
 use crate::ci::CiRun;
@@ -33,13 +40,6 @@ use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ProjectCiInfo;
 use crate::project::RepoInfo;
-use crate::tui::pane::Hittable;
-use crate::tui::pane::HoverTarget;
-use crate::tui::pane::Pane;
-use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::Viewport;
-use crate::tui::panes::CiData;
-use crate::tui::panes::PaneId;
 
 /// Display value for the Ci row in the Package detail pane.
 ///

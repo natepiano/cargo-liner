@@ -17,14 +17,11 @@ use ratatui::layout::Rect;
 
 use super::data::PaneDataStore;
 use super::pane_impls::CpuPane;
-use super::pane_impls::FinderPane;
 use super::pane_impls::GitPane;
-use super::pane_impls::KeymapPane;
 use super::pane_impls::LangPane;
 use super::pane_impls::OutputPane;
 use super::pane_impls::PackagePane;
 use super::pane_impls::ProjectListPane;
-use super::pane_impls::SettingsPane;
 use super::pane_impls::TargetsPane;
 use super::support::WorktreeInfo;
 use crate::config::CpuConfig;
@@ -66,9 +63,6 @@ pub struct Panes {
     lang:         LangPane,
     cpu:          CpuPane,
     git:          GitPane,
-    keymap:       KeymapPane,
-    settings:     SettingsPane,
-    finder:       FinderPane,
     output:       OutputPane,
     targets:      TargetsPane,
     project_list: ProjectListPane,
@@ -84,9 +78,6 @@ impl Panes {
             lang:         LangPane::new(),
             cpu:          CpuPane::new(cpu_cfg),
             git:          GitPane::new(),
-            keymap:       KeymapPane::new(),
-            settings:     SettingsPane::new(),
-            finder:       FinderPane::new(),
             output:       OutputPane::new(),
             targets:      TargetsPane::new(),
             project_list: ProjectListPane::new(),
@@ -121,24 +112,6 @@ impl Panes {
 
     /// Mutable typed accessor for the Git pane.
     pub const fn git_mut(&mut self) -> &mut GitPane { &mut self.git }
-
-    /// Typed accessor for the Keymap pane.
-    pub const fn keymap(&self) -> &KeymapPane { &self.keymap }
-
-    /// Mutable typed accessor for the Keymap pane.
-    pub const fn keymap_mut(&mut self) -> &mut KeymapPane { &mut self.keymap }
-
-    /// Typed accessor for the Settings pane.
-    pub const fn settings(&self) -> &SettingsPane { &self.settings }
-
-    /// Mutable typed accessor for the Settings pane.
-    pub const fn settings_mut(&mut self) -> &mut SettingsPane { &mut self.settings }
-
-    /// Typed accessor for the Finder pane.
-    pub const fn finder(&self) -> &FinderPane { &self.finder }
-
-    /// Mutable typed accessor for the Finder pane.
-    pub const fn finder_mut(&mut self) -> &mut FinderPane { &mut self.finder }
 
     /// Typed accessor for the Targets pane.
     pub const fn targets(&self) -> &TargetsPane { &self.targets }
