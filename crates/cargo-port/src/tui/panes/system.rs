@@ -28,21 +28,15 @@ use super::pane_impls::ProjectListPane;
 use super::pane_impls::SettingsPane;
 use super::pane_impls::TargetsPane;
 use super::pane_impls::ToastsPane;
-use super::spec::PaneId;
 use super::support::WorktreeInfo;
 #[cfg(test)]
 use crate::ci::CiRun;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::config_state::Config;
-use crate::tui::pane::HITTABLE_Z_ORDER;
-use crate::tui::pane::Hittable;
-use crate::tui::pane::HittableId;
-use crate::tui::pane::HoverTarget;
 use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::Viewport;
 use crate::tui::scan_state::Scan;
 
 /// Bundle of refs the dispatchers need to construct a
@@ -120,6 +114,9 @@ impl Panes {
     /// Mutable typed accessor for the CPU pane.
     pub const fn cpu_mut(&mut self) -> &mut CpuPane { &mut self.cpu }
 
+    /// Typed accessor for the Lang pane.
+    pub const fn lang(&self) -> &LangPane { &self.lang }
+
     /// Mutable typed accessor for the Lang pane.
     pub const fn lang_mut(&mut self) -> &mut LangPane { &mut self.lang }
 
@@ -182,6 +179,13 @@ impl Panes {
 
     /// Mutable typed accessor for the `ProjectList` pane.
     pub const fn project_list_mut(&mut self) -> &mut ProjectListPane { &mut self.project_list }
+
+    /// Mutable typed accessor for the Output pane.
+    pub const fn output_mut(&mut self) -> &mut OutputPane { &mut self.output }
+
+    /// Currently-hovered pane/row pair, or `None`. Used by the
+    /// App-level `apply_hovered_pane_row` orchestrator.
+    pub const fn hovered_row(&self) -> Option<HoveredPaneRow> { self.hovered_row }
 
     /// Write the detail-set content across the four migrated detail
     /// panes (Package/Git/CI/Lints) plus the targets slot in
@@ -303,80 +307,10 @@ impl Panes {
         Pane::render(&mut self.git, frame, area, ctx);
     }
 
-    /// Set the cursor position for `id`'s viewport, routing to
-    /// the per-pane `Viewport`. Used by the generic click handler
-    /// in `interaction.rs` for any non-`ProjectList` pane.
-    /// `ProjectList`'s cursor lives on `Selection.cursor`, so callers
-    /// must route project-list cursor writes through
-    /// `app.selection_mut().set_cursor(row)`, not this method.
-    pub const fn set_pane_pos(&mut self, id: PaneId, row: usize) {
-        match id {
-            PaneId::Cpu => self.cpu.viewport_mut().set_pos(row),
-            PaneId::Lang => self.lang.viewport_mut().set_pos(row),
-            PaneId::Lints => self.lints.viewport_mut().set_pos(row),
-            PaneId::CiRuns => self.ci_runs.viewport_mut().set_pos(row),
-            PaneId::Package => self.package.viewport_mut().set_pos(row),
-            PaneId::Git => self.git.viewport_mut().set_pos(row),
-            PaneId::Toasts => self.toasts.viewport_mut().set_pos(row),
-            PaneId::Keymap => self.keymap.viewport_mut().set_pos(row),
-            PaneId::Settings => self.settings.viewport_mut().set_pos(row),
-            PaneId::Finder => self.finder.viewport_mut().set_pos(row),
-            PaneId::Output => self.output.viewport_mut().set_pos(row),
-            PaneId::Targets => self.targets.viewport_mut().set_pos(row),
-            PaneId::ProjectList => {},
-        }
-    }
-
     pub const fn pane_data(&self) -> &PaneDataStore { &self.data }
 
     pub const fn set_hover(&mut self, hovered: Option<HoveredPaneRow>) {
         self.hovered_row = hovered;
-    }
-
-    /// Push the current `hovered_pane_row` into the per-pane viewports.
-    /// Clears any prior hover across every pane first, then sets the row
-    /// on the pane indicated by `hovered_pane_row` (if any). Each pane
-    /// owns its own `Viewport`, so the clear is a flat fan-out across
-    /// all 13 per-pane structs.
-    pub const fn apply_hovered_pane_row(&mut self) {
-        self.package.viewport_mut().set_hovered(None);
-        self.lang.viewport_mut().set_hovered(None);
-        self.cpu.viewport_mut().set_hovered(None);
-        self.git.viewport_mut().set_hovered(None);
-        self.lints.viewport_mut().set_hovered(None);
-        self.ci_runs.viewport_mut().set_hovered(None);
-        self.toasts.viewport_mut().set_hovered(None);
-        self.keymap.viewport_mut().set_hovered(None);
-        self.settings.viewport_mut().set_hovered(None);
-        self.finder.viewport_mut().set_hovered(None);
-        self.output.viewport_mut().set_hovered(None);
-        self.targets.viewport_mut().set_hovered(None);
-        self.project_list.viewport_mut().set_hovered(None);
-        let Some(hovered) = self.hovered_row else {
-            return;
-        };
-        self.viewport_mut_for(hovered.pane)
-            .set_hovered(Some(hovered.row));
-    }
-
-    /// Mutable counterpart to `viewport_for`. Routes to the per-pane
-    /// `Viewport`; the match covers the full `PaneId` set.
-    pub const fn viewport_mut_for(&mut self, id: PaneId) -> &mut Viewport {
-        match id {
-            PaneId::Cpu => self.cpu.viewport_mut(),
-            PaneId::Lang => self.lang.viewport_mut(),
-            PaneId::Lints => self.lints.viewport_mut(),
-            PaneId::CiRuns => self.ci_runs.viewport_mut(),
-            PaneId::Package => self.package.viewport_mut(),
-            PaneId::Git => self.git.viewport_mut(),
-            PaneId::Toasts => self.toasts.viewport_mut(),
-            PaneId::Keymap => self.keymap.viewport_mut(),
-            PaneId::Settings => self.settings.viewport_mut(),
-            PaneId::Finder => self.finder.viewport_mut(),
-            PaneId::Output => self.output.viewport_mut(),
-            PaneId::Targets => self.targets.viewport_mut(),
-            PaneId::ProjectList => self.project_list.viewport_mut(),
-        }
     }
 
     /// Return the cached worktree-summary for `group_root` if present;
@@ -406,31 +340,6 @@ impl Panes {
     /// placeholder `CpuUsage`. Delegates to
     /// `CpuPane::install_placeholder`. Used from `App::finish_new`.
     pub fn install_cpu_placeholder(&mut self) { self.cpu.install_placeholder(); }
-
-    /// Walk `HITTABLE_Z_ORDER` top-to-bottom and return the first
-    /// pane's `hit_test_at` answer.
-    pub fn hit_test_at(&self, pos: ratatui::layout::Position) -> Option<HoverTarget> {
-        for id in HITTABLE_Z_ORDER {
-            let pane: &dyn Hittable = match id {
-                HittableId::Toasts => &self.toasts,
-                HittableId::Finder => &self.finder,
-                HittableId::Settings => &self.settings,
-                HittableId::Keymap => &self.keymap,
-                HittableId::ProjectList => &self.project_list,
-                HittableId::Package => &self.package,
-                HittableId::Lang => &self.lang,
-                HittableId::Cpu => &self.cpu,
-                HittableId::Git => &self.git,
-                HittableId::Targets => &self.targets,
-                HittableId::Lints => &self.lints,
-                HittableId::CiRuns => &self.ci_runs,
-            };
-            if let Some(hit) = pane.hit_test_at(pos) {
-                return Some(hit);
-            }
-        }
-        None
-    }
 }
 
 #[cfg(test)]

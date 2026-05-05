@@ -182,7 +182,7 @@ Phases 11–16 are the remaining architectural moves.
 | 10 of 23 | Phase 10 — `CiFetchTracker` relocation prep for Phase 11 | **Done** |
 | 11 of 23 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` | **Done** (cursor field move; Group 1/2 method absorption deferred to Phase 21) |
 | 12 of 23 | Phase 12 — Pane trait foundations (cursor-mirror cleanup + `Pane` trait relocation) | **Done** |
-| 13 of 23 | Phase 13 — Relocate Panes' dispatch methods to App-level | Ready |
+| 13 of 23 | Phase 13 — Relocate Panes' dispatch methods to App-level | **Done** |
 | 14 of 23 | Phase 14 — `ToastsPane` → `ToastManager` absorption | Ready |
 | 15 of 23 | Phase 15 — `CiPane` → `Ci` absorption | Ready |
 | 16 of 23 | Phase 16 — `LintsPane` → `Lint` absorption | Ready |
@@ -1713,6 +1713,52 @@ absorption at a time.
 still on `Panes` at this point.
 
 **Risk:** low — pure relocation, no semantic change.
+
+### Phase 13 retrospective
+
+**Outcome:** clean relocation. The four dispatch methods now live
+in `tui/interaction.rs` as free functions taking `&mut App` (or
+`&App`). Each per-arm RHS still reads `app.panes_mut().<x>_mut()`
+because every viewport is still on `Panes` — Phases 14–17 will
+swap arms one at a time as each absorption lands.
+
+**Numbers:**
+- Tests: 597 / 597 pass.
+- 4 functions added in `tui/interaction.rs`: `hit_test_at`,
+  `set_pane_pos`, `viewport_mut_for`, `apply_hovered_pane_row`
+  (plus internal `clear_all_hover` helper).
+- 4 methods deleted from `impl Panes` in `tui/panes/system.rs`.
+- 3 accessors added to `Panes` (`lang()`, `output_mut()`,
+  `hovered_row()`) so the free fns can reach the panes they need.
+- 5 call-site rewrites: `interaction.rs` (3 internal), `input.rs:280`,
+  `app/mod.rs:783` (the `apply_hovered_pane_row` shim now delegates
+  to the free fn).
+
+**Lessons:**
+1. **The "obvious" first move pattern works.** All four dispatch
+   methods relocated cleanly because every per-arm RHS still
+   compiles — the relocation is pure code-motion. No semantic
+   change, no behavior change, no borrow-checker friction.
+2. **Clippy's `missing_const_for_fn` fires on simple free fns.**
+   Three of the new free fns needed `const fn` to satisfy clippy
+   (the same lint that hit Phase 8 lessons). Run clippy before
+   declaring a relocation done; the warnings are easy fixes but
+   easy to miss.
+3. **`apply_hovered_pane_row`'s split into clear-then-set is the
+   right shape for absorption.** The existing single method's
+   `clear_all_hover` half iterates every viewport — when subsystems
+   start owning their viewports, the clear loop's per-arm RHS
+   swaps subsystem-by-subsystem. Splitting now means each Phase
+   14–17 commit only touches the relevant arm.
+
+**File-level changes:**
+- *Modified:* `src/tui/interaction.rs` (added 4 free fns + 1
+  helper, ~75 LOC), `src/tui/panes/system.rs` (deleted 4 methods,
+  added 3 accessors, ~80 LOC removed net), `src/tui/input.rs`
+  (rewrote 1 caller), `src/tui/app/mod.rs` (rewrote
+  `apply_hovered_pane_row` shim).
+
+**Status: done.**
 
 ## Phase 14 — `ToastsPane` → `ToastManager` absorption
 

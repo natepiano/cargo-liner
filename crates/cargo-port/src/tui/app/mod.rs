@@ -147,6 +147,7 @@ pub(super) use types::SelectionSync;
 
 use super::ci_state::Ci;
 pub(super) use super::columns::ProjectListWidths;
+use super::interaction;
 use super::lint_state::Lint;
 pub(super) use super::net_state::AvailabilityStatus;
 use super::net_state::Net;
@@ -780,7 +781,9 @@ impl App {
         self.panes.set_hover(hovered_pane_row);
     }
 
-    pub(super) const fn apply_hovered_pane_row(&mut self) { self.panes.apply_hovered_pane_row(); }
+    pub(super) const fn apply_hovered_pane_row(&mut self) {
+        interaction::apply_hovered_pane_row(self);
+    }
 
     pub(super) const fn cached_fit_widths(&self) -> &ProjectListWidths {
         self.selection.fit_widths()

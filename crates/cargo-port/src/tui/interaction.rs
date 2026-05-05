@@ -3,7 +3,11 @@ use ratatui::layout::Rect;
 
 use super::app::App;
 use super::app::HoveredPaneRow;
+use super::pane::HITTABLE_Z_ORDER;
+use super::pane::Hittable;
+use super::pane::HittableId;
 use super::pane::HoverTarget;
+use super::pane::Viewport;
 use super::panes::PaneId;
 
 /// Per-toast hit-test rects produced by `toasts::render_toasts`
@@ -17,7 +21,7 @@ pub struct ToastHitbox {
 }
 
 pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
-    let Some(hit) = app.panes().hit_test_at(pos) else {
+    let Some(hit) = hit_test_at(app, pos) else {
         return false;
     };
     match hit {
@@ -26,7 +30,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
             if pane == PaneId::ProjectList {
                 app.selection_mut().set_cursor(row);
             } else {
-                app.panes_mut().set_pane_pos(pane, row);
+                set_pane_pos(app, pane, row);
             }
             true
         },
@@ -46,10 +50,97 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
 }
 
 pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPaneRow> {
-    match app.panes().hit_test_at(pos)? {
+    match hit_test_at(app, pos)? {
         HoverTarget::PaneRow { pane, row } => Some(HoveredPaneRow { pane, row }),
         HoverTarget::Dismiss(_) | HoverTarget::ToastCard(_) => None,
     }
+}
+
+/// Walk `HITTABLE_Z_ORDER` top-to-bottom and return the first pane's
+/// `hit_test_at` answer. Phase 13 relocation: lives at App-level so
+/// per-arm reach can resolve to whichever owner holds the pane (Panes
+/// for survivors; subsystems on App after Phases 14–17).
+pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
+    for id in HITTABLE_Z_ORDER {
+        let pane: &dyn Hittable = match id {
+            HittableId::Toasts => app.panes().toasts(),
+            HittableId::Finder => app.panes().finder(),
+            HittableId::Settings => app.panes().settings(),
+            HittableId::Keymap => app.panes().keymap(),
+            HittableId::ProjectList => app.panes().project_list(),
+            HittableId::Package => app.panes().package(),
+            HittableId::Lang => app.panes().lang(),
+            HittableId::Cpu => app.panes().cpu(),
+            HittableId::Git => app.panes().git(),
+            HittableId::Targets => app.panes().targets(),
+            HittableId::Lints => app.panes().lints(),
+            HittableId::CiRuns => app.panes().ci(),
+        };
+        if let Some(hit) = pane.hit_test_at(pos) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+/// Set the cursor position for `id`'s viewport. Phase 13 relocation:
+/// matches by `PaneId` to whichever owner holds the target viewport.
+/// `ProjectList`'s cursor lives on `Selection.cursor`; callers route
+/// through `app.selection_mut().set_cursor(row)`, not this fn.
+pub(super) fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
+    if id == PaneId::ProjectList {
+        return;
+    }
+    viewport_mut_for(app, id).set_pos(row);
+}
+
+/// Mutable viewport accessor by `PaneId`. Phase 13 relocation —
+/// per-arm reach swaps to subsystem owners as Phases 14–17 absorb
+/// wrappers.
+pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> &mut Viewport {
+    let panes = app.panes_mut();
+    match id {
+        PaneId::Cpu => panes.cpu_mut().viewport_mut(),
+        PaneId::Lang => panes.lang_mut().viewport_mut(),
+        PaneId::Lints => panes.lints_mut().viewport_mut(),
+        PaneId::CiRuns => panes.ci_mut().viewport_mut(),
+        PaneId::Package => panes.package_mut().viewport_mut(),
+        PaneId::Git => panes.git_mut().viewport_mut(),
+        PaneId::Toasts => panes.toasts_mut().viewport_mut(),
+        PaneId::Keymap => panes.keymap_mut().viewport_mut(),
+        PaneId::Settings => panes.settings_mut().viewport_mut(),
+        PaneId::Finder => panes.finder_mut().viewport_mut(),
+        PaneId::Output => panes.output_mut().viewport_mut(),
+        PaneId::Targets => panes.targets_mut().viewport_mut(),
+        PaneId::ProjectList => panes.project_list_mut().viewport_mut(),
+    }
+}
+
+/// Push the current `hovered_pane_row` into the per-pane viewports.
+/// Clears any prior hover across every pane first, then sets the row
+/// on the pane indicated by `hovered_pane_row` (if any).
+pub(super) const fn apply_hovered_pane_row(app: &mut App) {
+    clear_all_hover(app);
+    if let Some(hovered) = app.panes().hovered_row() {
+        viewport_mut_for(app, hovered.pane).set_hovered(Some(hovered.row));
+    }
+}
+
+const fn clear_all_hover(app: &mut App) {
+    let panes = app.panes_mut();
+    panes.package_mut().viewport_mut().set_hovered(None);
+    panes.lang_mut().viewport_mut().set_hovered(None);
+    panes.cpu_mut().viewport_mut().set_hovered(None);
+    panes.git_mut().viewport_mut().set_hovered(None);
+    panes.lints_mut().viewport_mut().set_hovered(None);
+    panes.ci_mut().viewport_mut().set_hovered(None);
+    panes.toasts_mut().viewport_mut().set_hovered(None);
+    panes.keymap_mut().viewport_mut().set_hovered(None);
+    panes.settings_mut().viewport_mut().set_hovered(None);
+    panes.finder_mut().viewport_mut().set_hovered(None);
+    panes.output_mut().viewport_mut().set_hovered(None);
+    panes.targets_mut().viewport_mut().set_hovered(None);
+    panes.project_list_mut().viewport_mut().set_hovered(None);
 }
 
 #[cfg(test)]
@@ -517,7 +608,7 @@ mod tests {
             .focused_dismiss_target()
             .unwrap_or_else(|| std::process::abort());
         let (x, y) = row_dismiss_point(&app, 0);
-        let Some(hit) = app.panes().hit_test_at(Position::new(x, y)) else {
+        let Some(hit) = super::hit_test_at(&app, Position::new(x, y)) else {
             std::process::abort();
         };
         let HoverTarget::Dismiss(mouse_target) = hit else {

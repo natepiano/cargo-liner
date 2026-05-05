@@ -277,7 +277,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
         if pane_id == PaneId::ProjectList || !pane_rect.contains(pos) {
             continue;
         }
-        let pane = app.panes_mut().viewport_mut_for(pane_id);
+        let pane = interaction::viewport_mut_for(app, pane_id);
         if up {
             pane.up();
         } else {

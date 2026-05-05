@@ -14,14 +14,14 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use strum::EnumIter;
 
+use super::PaneFocusState;
 use crate::tui::app::DismissTarget;
 use crate::tui::config_state::Config;
-use crate::tui::pane::PaneFocusState;
 use crate::tui::panes::PaneId;
 use crate::tui::scan_state::Scan;
 
 /// Bundle of references a pane needs at render time.
-pub(in crate::tui) struct PaneRenderCtx<'a> {
+pub struct PaneRenderCtx<'a> {
     pub focus_state:           PaneFocusState,
     pub is_focused:            bool,
     pub animation_elapsed:     std::time::Duration,
@@ -32,13 +32,13 @@ pub(in crate::tui) struct PaneRenderCtx<'a> {
 
 /// Per-pane render dispatch. `Hittable` is a separate sub-trait
 /// for panes that participate in click/hover dispatch.
-pub(in crate::tui) trait Pane {
+pub trait Pane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>);
 }
 
 /// Result of a single pane's hit-test at a screen position.
 #[derive(Clone, Debug)]
-pub(in crate::tui) enum HoverTarget {
+pub enum HoverTarget {
     PaneRow { pane: PaneId, row: usize },
     Dismiss(DismissTarget),
     ToastCard(u64),
@@ -48,7 +48,7 @@ pub(in crate::tui) enum HoverTarget {
 /// hover dispatch. Keeping `Pane` and `Hittable` separate lets the
 /// dispatch match in `Panes::hit_test_at` reject non-clickable
 /// panes at compile time.
-pub(in crate::tui) trait Hittable: Pane {
+pub trait Hittable: Pane {
     /// Return the hit target if `pos` lands inside this pane's
     /// rendered area, or `None` otherwise. Implementations rely on
     /// state recorded during render (viewport content area + scroll
@@ -62,7 +62,7 @@ pub(in crate::tui) trait Hittable: Pane {
 /// `hit_test_tests` walk all variants and assert each one appears
 /// in `HITTABLE_Z_ORDER`.
 #[derive(EnumIter, Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(in crate::tui) enum HittableId {
+pub enum HittableId {
     Toasts,
     Finder,
     Settings,
@@ -81,7 +81,7 @@ pub(in crate::tui) enum HittableId {
 /// Overlays sit above tiled panes; within a category the order
 /// matches how panes are drawn (later-drawn overlays occlude earlier
 /// ones on the screen).
-pub(in crate::tui) const HITTABLE_Z_ORDER: [HittableId; 12] = [
+pub const HITTABLE_Z_ORDER: [HittableId; 12] = [
     HittableId::Toasts,
     HittableId::Finder,
     HittableId::Settings,
