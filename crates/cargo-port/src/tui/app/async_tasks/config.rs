@@ -186,8 +186,7 @@ impl App {
                 if actions.refresh_lint_runtime.should_apply() {
                     self.respawn_watcher_and_register_existing_projects();
                 }
-                self.scan
-                    .projects_mut()
+                self.projects
                     .regroup_members(&self.config.current().tui.inline_dirs);
                 self.refresh_derived_state();
             },

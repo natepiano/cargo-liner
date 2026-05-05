@@ -402,13 +402,13 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (lint, config, scan) = app.split_lint_for_render();
+                let (lint, config, projects) = app.split_lint_for_render();
                 let ctx = PaneRenderCtx {
                     focus_state,
                     is_focused,
                     animation_elapsed,
                     config,
-                    scan,
+                    projects,
                     selected_project_path: selected_path.as_deref(),
                 };
                 panes::render_lints_pane_body(frame, area, lint, &ctx);
@@ -430,13 +430,13 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let (ci, config, scan) = app.split_ci_for_render();
+                let (ci, config, projects) = app.split_ci_for_render();
                 let ctx = PaneRenderCtx {
                     focus_state,
                     is_focused,
                     animation_elapsed,
                     config,
-                    scan,
+                    projects,
                     selected_project_path: selected_path.as_deref(),
                 };
                 panes::render_ci_pane_body(frame, area, ci, &ctx);

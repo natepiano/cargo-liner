@@ -83,11 +83,12 @@ impl App {
     }
     pub(super) fn migrate_legacy_root_expansions(&mut self, legacy: &[LegacyRootExpansion]) {
         let Self {
-            scan, selection, ..
+            projects,
+            selection,
+            ..
         } = self;
         for legacy_root in legacy {
-            let Some((current_index, current_entry)) = scan
-                .projects()
+            let Some((current_index, current_entry)) = projects
                 .iter()
                 .enumerate()
                 .find(|(_, entry)| entry.item.path() == legacy_root.root_path.as_path())
@@ -131,12 +132,14 @@ impl App {
     pub(super) fn rebuild_visible_rows_now(&mut self) {
         let include_non_rust = self.config().include_non_rust().includes_non_rust();
         let Self {
-            scan, selection, ..
+            projects,
+            selection,
+            ..
         } = self;
-        selection.recompute_visibility(scan.projects(), include_non_rust);
+        selection.recompute_visibility(projects, include_non_rust);
     }
     pub fn rescan(&mut self) {
-        self.scan.projects_mut().clear();
+        self.projects.clear();
         // disk_usage lives on project items — cleared with projects above
         self.ci.fetch_tracker_mut().clear();
         self.ci.clear_display_modes();

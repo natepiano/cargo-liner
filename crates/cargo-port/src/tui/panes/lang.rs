@@ -155,14 +155,13 @@ pub(super) fn render_lang_pane_body(
     let PaneRenderCtx {
         focus_state,
         is_focused,
-        scan,
+        projects,
         selected_project_path,
         animation_elapsed: _,
         config: _,
     } = ctx;
 
-    let lang_stats = scan
-        .projects()
+    let lang_stats = projects
         .at_path(selected_project_path.unwrap_or_else(|| std::path::Path::new("")))
         .and_then(|p| p.language_stats.as_ref())
         .cloned();

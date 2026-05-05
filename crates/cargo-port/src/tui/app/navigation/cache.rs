@@ -9,9 +9,11 @@ impl App {
     pub fn ensure_visible_rows_cached(&mut self) {
         let include_non_rust = self.config().include_non_rust().includes_non_rust();
         let Self {
-            scan, selection, ..
+            projects,
+            selection,
+            ..
         } = self;
-        selection.recompute_visibility(scan.projects(), include_non_rust);
+        selection.recompute_visibility(projects, include_non_rust);
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.

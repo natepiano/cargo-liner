@@ -215,7 +215,12 @@ pub(super) struct App {
     /// `keymap_last_seen`, `keymap_diagnostics_id`. Composes
     /// `WatchedFile<ResolvedKeymap>`.
     keymap:            Keymap,
-    /// Scan subsystem. Owns `projects`, `scan` (`ScanState`),
+    /// The central per-project data store. Lint runs, CI info, git
+    /// info, language stats, package/workspace fields, and disk usage
+    /// all live inside the tree. Every subsystem that produces
+    /// per-project data writes into it.
+    projects:          ProjectList,
+    /// Scan subsystem. Owns `scan` (`ScanState`),
     /// `dirty`, `data_generation`, `discovery_shimmers`,
     /// `pending_git_first_commit`, `metadata_store`,
     /// `target_dir_index`, `priority_fetch_path`,
@@ -457,9 +462,9 @@ impl App {
         self.prune_toasts();
     }
 
-    pub(super) const fn projects(&self) -> &ProjectList { self.scan.projects() }
+    pub(super) const fn projects(&self) -> &ProjectList { &self.projects }
 
-    pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { self.scan.projects_mut() }
+    pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { &mut self.projects }
 
     pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { self.net.github().fetch_cache() }
 
@@ -738,33 +743,39 @@ impl App {
     pub(super) const fn panes(&self) -> &Panes { &self.panes }
 
     /// Split-borrow accessor for per-pane render dispatch.
-    /// Returns `(&mut Panes, &Config, &Selection, &Scan)` — the
-    /// four refs the dispatcher passes through to construct
-    /// `PaneRenderCtx`. All four are disjoint `App` fields, so
-    /// holding them simultaneously is sound.
+    /// Returns `(&mut Panes, &mut LayoutCache, &Config, &Selection,
+    /// &ProjectList)` — the refs the dispatcher passes through to
+    /// construct `PaneRenderCtx`. All disjoint `App` fields, so holding
+    /// them simultaneously is sound.
     pub(super) const fn split_panes_for_render(
         &mut self,
-    ) -> (&mut Panes, &mut LayoutCache, &Config, &Selection, &Scan) {
+    ) -> (
+        &mut Panes,
+        &mut LayoutCache,
+        &Config,
+        &Selection,
+        &ProjectList,
+    ) {
         (
             &mut self.panes,
             &mut self.layout_cache,
             &self.config,
             &self.selection,
-            &self.scan,
+            &self.projects,
         )
     }
 
     /// Split-borrow accessor for the CI pane render path. CI content
     /// lives on the `Ci` subsystem (not `Panes`), so it has its own
     /// split.
-    pub(super) const fn split_ci_for_render(&mut self) -> (&mut Ci, &Config, &Scan) {
-        (&mut self.ci, &self.config, &self.scan)
+    pub(super) const fn split_ci_for_render(&mut self) -> (&mut Ci, &Config, &ProjectList) {
+        (&mut self.ci, &self.config, &self.projects)
     }
 
     /// Split-borrow accessor for the Lints pane render path. Lints
     /// content lives on the `Lint` subsystem (not `Panes`).
-    pub(super) const fn split_lint_for_render(&mut self) -> (&mut Lint, &Config, &Scan) {
-        (&mut self.lint, &self.config, &self.scan)
+    pub(super) const fn split_lint_for_render(&mut self) -> (&mut Lint, &Config, &ProjectList) {
+        (&mut self.lint, &self.config, &self.projects)
     }
 
     /// Compute `selected_project_path` once for the current frame
@@ -1009,15 +1020,11 @@ impl App {
     }
 
     /// Borrow `App` for a structural mutation of the project tree.
-    /// The returned guard borrows `Scan + Panes + Selection`
-    /// directly so its `Drop` can fan out across the three
-    /// subsystems with the dependency declared at the type level.
-    /// `mutate_tree` stays on `App` (rather than on `Scan`) so
-    /// callers can split-borrow the three disjoint App fields:
-    /// putting it on `Scan` would force callers to hold
-    /// `&mut self.scan` while also passing `&mut self.panes` and
-    /// `&mut self.selection`, which the borrow checker rejects
-    /// because method-call syntax reborrows the receiver.
+    /// The returned guard borrows `&mut ProjectList + &mut Panes +
+    /// &mut Selection` directly so its `Drop` can fan out across the
+    /// three subsystems with the dependency declared at the type
+    /// level. `mutate_tree` stays on `App` so callers can split-borrow
+    /// the three disjoint fields.
     ///
     /// Mutation guard (RAII) — fan-out flavor. See "Recurring
     /// patterns" in this module.
@@ -1029,13 +1036,13 @@ impl App {
             .include_non_rust
             .includes_non_rust();
         let Self {
-            scan,
+            projects,
             panes,
             selection,
             ..
         } = self;
         TreeMutation {
-            scan,
+            projects,
             panes,
             selection,
             include_non_rust,
@@ -1047,9 +1054,7 @@ impl App {
     pub(super) const fn take_confirm(&mut self) -> Option<ConfirmAction> { self.confirm.take() }
 
     #[cfg(test)]
-    pub(super) fn set_projects(&mut self, projects: ProjectList) {
-        *self.scan.projects_mut() = projects;
-    }
+    pub(super) fn set_projects(&mut self, projects: ProjectList) { self.projects = projects; }
 
     #[cfg(test)]
     pub(super) const fn set_retry_spawn_mode_for_test(&mut self, mode: RetrySpawnMode) {
@@ -1288,7 +1293,7 @@ impl App {
 /// earlier via `drop`), at which point all tree-derived caches are
 /// invalidated.
 ///
-/// **Type-level invariant:** the guard borrows `&mut Scan + &mut
+/// **Type-level invariant:** the guard borrows `&mut ProjectList + &mut
 /// Panes + &mut Selection` simultaneously. New tree-mutation paths
 /// added here force the cache-clear to fire on `Drop` — there is
 /// no way to forget invalidation. `Drop` runs on every exit path,
@@ -1297,7 +1302,7 @@ impl App {
 /// Mutation guard (RAII), fan-out flavor. See "Recurring patterns"
 /// in [`crate::tui::app`] for the pattern.
 pub(super) struct TreeMutation<'a> {
-    scan:             &'a mut Scan,
+    projects:         &'a mut ProjectList,
     panes:            &'a mut Panes,
     selection:        &'a mut Selection,
     include_non_rust: bool,
@@ -1305,31 +1310,29 @@ pub(super) struct TreeMutation<'a> {
 
 impl TreeMutation<'_> {
     /// Replace the entire project list (used by tree-build paths).
-    pub(super) fn replace_all(&mut self, projects: ProjectList) {
-        *self.scan.projects_mut() = projects;
-    }
+    pub(super) fn replace_all(&mut self, projects: ProjectList) { *self.projects = projects; }
 
     /// Insert a discovered project into the existing tree, returning
     /// `true` if the insertion changed the tree.
     pub(super) fn insert_into_hierarchy(&mut self, item: RootItem) -> bool {
-        self.scan.projects_mut().insert_into_hierarchy(item)
+        self.projects.insert_into_hierarchy(item)
     }
 
     /// Replace a single leaf at `path` with `item`. Returns the previous
     /// item if one was found.
     pub(super) fn replace_leaf_by_path(&mut self, path: &Path, item: RootItem) -> Option<RootItem> {
-        self.scan.projects_mut().replace_leaf_by_path(path, item)
+        self.projects.replace_leaf_by_path(path, item)
     }
 
     /// Re-bucket workspace members under inline-dir groups.
     pub(super) fn regroup_members(&mut self, inline_dirs: &[String]) {
-        self.scan.projects_mut().regroup_members(inline_dirs);
+        self.projects.regroup_members(inline_dirs);
     }
 
     /// Re-detect worktree groupings at the top level after a structural
     /// change (insert / replace / remove).
     pub(super) fn regroup_top_level_worktrees(&mut self) {
-        self.scan.projects_mut().regroup_top_level_worktrees();
+        self.projects.regroup_top_level_worktrees();
     }
 }
 
@@ -1341,7 +1344,7 @@ impl Drop for TreeMutation<'_> {
     fn drop(&mut self) {
         self.panes.clear_for_tree_change();
         self.selection
-            .recompute_visibility(self.scan.projects(), self.include_non_rust);
+            .recompute_visibility(self.projects, self.include_non_rust);
     }
 }
 

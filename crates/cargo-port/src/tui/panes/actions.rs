@@ -305,7 +305,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
         .projects()
         .ci_data_for(abs)
         .map_or(0, ProjectCiData::github_total);
-    app.scan_mut().projects_mut().replace_ci_data_for_path(
+    app.projects_mut().replace_ci_data_for_path(
         abs,
         ProjectCiData::Loaded(ProjectCiInfo {
             runs:         Vec::new(),

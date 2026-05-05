@@ -27,10 +27,8 @@ use crate::project::AbsolutePath;
 use crate::project::WorkspaceMetadata;
 use crate::project::WorkspaceMetadataHandle;
 use crate::project::WorkspaceMetadataStore;
-use crate::project_list::ProjectList;
 
 pub(super) struct Scan {
-    projects:                 ProjectList,
     state:                    ScanState,
     dirty:                    DirtyState,
     data_generation:          u64,
@@ -46,12 +44,10 @@ pub(super) struct Scan {
 
 impl Scan {
     pub(super) fn new(
-        projects: ProjectList,
         state: ScanState,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
     ) -> Self {
         Self {
-            projects,
             state,
             dirty: DirtyState::initial(),
             data_generation: 0,
@@ -65,12 +61,6 @@ impl Scan {
             retry_spawn_mode: RetrySpawnMode::Enabled,
         }
     }
-
-    // ── projects ────────────────────────────────────────────────────
-
-    pub(super) const fn projects(&self) -> &ProjectList { &self.projects }
-
-    pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { &mut self.projects }
 
     // ── scan-state machine ──────────────────────────────────────────
 
@@ -227,7 +217,6 @@ mod tests {
 
     fn fresh() -> Scan {
         Scan::new(
-            ProjectList::new(Vec::new()),
             ScanState::new(Instant::now()),
             Arc::new(Mutex::new(WorkspaceMetadataStore::new())),
         )

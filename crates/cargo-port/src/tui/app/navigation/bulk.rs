@@ -19,9 +19,11 @@ impl App {
             .or_else(|| self.selected_project_path().map(AbsolutePath::from));
         self.selection.paths_mut().collapsed_anchor = None;
         let Self {
-            scan, selection, ..
+            projects,
+            selection,
+            ..
         } = self;
-        for (ni, entry) in scan.projects().iter().enumerate() {
+        for (ni, entry) in projects.iter().enumerate() {
             if entry.item.has_children() {
                 selection.expanded_mut().insert(ExpandKey::Node(ni));
             }
@@ -79,9 +81,11 @@ impl App {
 
     pub(super) fn expand_path_in_tree(&mut self, target_path: &Path) {
         let Self {
-            scan, selection, ..
+            projects,
+            selection,
+            ..
         } = self;
-        for (ni, entry) in scan.projects().iter().enumerate() {
+        for (ni, entry) in projects.iter().enumerate() {
             match &entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     for (gi, group) in ws.groups().iter().enumerate() {

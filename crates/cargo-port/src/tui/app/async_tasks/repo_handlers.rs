@@ -107,7 +107,7 @@ impl App {
         // Detected git state implies the entry is in a git repo. Ensure
         // the entry has a `git_repo` slot so per-repo writes (CI,
         // GitHub meta, RepoInfo) can land on it.
-        if let Some(entry) = self.scan.projects_mut().entry_containing_mut(path) {
+        if let Some(entry) = self.projects.entry_containing_mut(path) {
             entry.git_repo.get_or_insert_with(Default::default);
         }
 
@@ -156,7 +156,7 @@ impl App {
         let fetch_head_advanced =
             info.last_fetched.is_some() && info.last_fetched != previous_last_fetched;
 
-        if let Some(entry) = self.scan.projects_mut().entry_containing_mut(path) {
+        if let Some(entry) = self.projects.entry_containing_mut(path) {
             if entry.item.path().as_path() != path {
                 // Non-primary write — discard per the policy above.
                 return;
@@ -199,8 +199,7 @@ impl App {
         // `pending_git_first_commit` and `handle_repo_info` will fold
         // it in when repo info arrives.
         let applied = self
-            .scan
-            .projects_mut()
+            .projects
             .entry_containing_mut(path)
             .and_then(|entry| entry.git_repo.as_mut()?.repo_info.as_mut())
             .map(|repo| repo.first_commit.clone_from(&first_commit))
@@ -262,7 +261,7 @@ impl App {
         self.sync_running_repo_fetch_toast();
     }
     pub fn handle_repo_meta(&mut self, path: &Path, stars: u64, description: Option<String>) {
-        if let Some(entry) = self.scan.projects_mut().entry_containing_mut(path) {
+        if let Some(entry) = self.projects.entry_containing_mut(path) {
             let repo = entry.git_repo.get_or_insert_with(Default::default);
             repo.github_info = Some(GitHubInfo { stars, description });
         }

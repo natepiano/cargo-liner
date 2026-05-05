@@ -355,13 +355,13 @@ fn dispatch_via_trait(
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (panes, _layout_cache, config, _selection, scan) = app.split_panes_for_render();
+    let (panes, _layout_cache, config, _selection, projects) = app.split_panes_for_render();
     let args = DispatchArgs {
         focus_state,
         is_focused,
         animation_elapsed,
         config,
-        scan,
+        projects,
         selected_project_path: selected_project_path.as_deref(),
     };
     dispatcher(panes, frame, area, &args);
@@ -374,13 +374,13 @@ fn render_lints_pane(app: &mut App, frame: &mut Frame, area: Rect) {
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (lint, config, scan) = app.split_lint_for_render();
+    let (lint, config, projects) = app.split_lint_for_render();
     let ctx = PaneRenderCtx {
         focus_state,
         is_focused,
         animation_elapsed,
         config,
-        scan,
+        projects,
         selected_project_path: selected_project_path.as_deref(),
     };
     panes::render_lints_pane_body(frame, area, lint, &ctx);
@@ -393,13 +393,13 @@ fn render_ci_pane(app: &mut App, frame: &mut Frame, area: Rect) {
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (ci, config, scan) = app.split_ci_for_render();
+    let (ci, config, projects) = app.split_ci_for_render();
     let ctx = PaneRenderCtx {
         focus_state,
         is_focused,
         animation_elapsed,
         config,
-        scan,
+        projects,
         selected_project_path: selected_project_path.as_deref(),
     };
     panes::render_ci_pane_body(frame, area, ci, &ctx);

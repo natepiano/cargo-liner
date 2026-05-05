@@ -190,7 +190,6 @@ impl AppBuilder<Started> {
             .map(|p| p.as_path().to_path_buf());
         let keymap = Keymap::new(keymap_path_buf, keymap::ResolvedKeymap::defaults());
         let scan = Scan::new(
-            started.projects,
             ScanState::new(inputs.scan_started_at),
             inputs.metadata_store,
         );
@@ -202,6 +201,7 @@ impl AppBuilder<Started> {
             net: crate::tui::net_state::Net::new(inputs.http_client),
             panes,
             selection,
+            projects: started.projects,
             background,
             inflight,
             lint,

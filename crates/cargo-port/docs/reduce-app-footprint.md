@@ -196,7 +196,7 @@ moves the headline number). Every phase ends with a
 `scripts/count_app_methods.py` — the per-phase correction for
 the prior plan's missing feedback loop.
 
-### Phase 1 — Lift `ProjectList` from `Scan` to `App`
+### Phase 1 — Lift `ProjectList` from `Scan` to `App` ✅
 
 `projects: ProjectList` lives on `Scan` today. But `ProjectList`
 is the central per-project data store of the whole app: lint
@@ -228,7 +228,35 @@ owner.
 `confirm_verifying`, `retry_spawn_mode`. Coordination state,
 not project data.
 
-### Phase 2 — Merge `Selection` into `ProjectList`; relocate to `tui/`
+#### Retrospective
+
+**What worked:**
+- All 4 listed steps applied as written. `App::projects` field added; `Scan::projects` field, `Scan::projects()`, `Scan::projects_mut()`, and the `projects` parameter on `Scan::new()` deleted; `TreeMutation` now borrows `&mut ProjectList + &mut Panes + &mut Selection`.
+- `App::projects()` / `App::projects_mut()` accessors retained as one-line shims (`&self.projects` / `&mut self.projects`) so non-`scan` callers were untouched. The headline-count drop for those is Phase 6.
+- 599 tests pass; clippy clean.
+
+**What deviated from the plan:**
+- The plan listed 4 caller-rewrite locations (`async_tasks/*`); the actual surface was wider: `src/tui/app/ci.rs`, `src/tui/panes/actions.rs`, `src/tui/panes/lang.rs`, plus the render plumbing. `panes/lang.rs` and the `PaneRenderCtx` / `DispatchArgs` chain held a `scan: &Scan` field whose only use was `scan.projects()`.
+- Renamed that render-context field from `scan` to `projects` (`&'a ProjectList`) in `tui/pane/dispatch.rs`, `tui/panes/system.rs`, `tui/render.rs`, `tui/interaction.rs`, `tui/panes/lang.rs`, `tui/panes/package.rs`. `split_ci_for_render`, `split_lint_for_render`, `split_panes_for_render` now hand out `&ProjectList` instead of `&Scan`.
+
+**Surprises:**
+- The render path was the largest borrow-of-`projects-via-Scan` consumer, not `async_tasks/*`. The plan named the scan-cluster mutators but missed the render plumbing entirely.
+- `panes/actions.rs` used `app.scan_mut().projects_mut()` — caller-side `App::scan_mut().projects_mut()` chains existed outside the `self.scan.projects_mut()` pattern and were not enumerated by the plan.
+
+**Implications for remaining phases:**
+- Phase 2 (Selection → ProjectList merge) inherits the new `App::projects` field directly; the rename to `project_list` is now a single-field rename instead of a field-plus-restructure.
+- Phase 6 (delete `App::projects()` / `App::projects_mut()`) caller count was estimated at ~304; live counts post-Phase-1 are 250 + 25 = ~275. The render-context rename plus the wider-than-planned async_tasks sweep dropped roughly 30 call sites. Phase 6 numbers updated.
+- The `&Scan` → `&ProjectList` rename in render contexts revealed that the only render consumer of `Scan` (lang.rs) was actually a project-list consumer. No remaining render-path code reads from `Scan` directly. This means future phases that touch `Scan` accessors don't need to reach into the render plumbing.
+
+#### Phase 1 Review
+
+- Phase 2 step 4 — drop the `&Selection` slot from `App::split_panes_for_render`'s return tuple at the same time `Selection` is deleted (already bound `_selection` and unused).
+- Phase 2 step 5 — rename now also covers `PaneRenderCtx::projects`, `DispatchArgs::projects`, and locals named `projects` in `dispatch_via_trait` / `render_lints_pane` / `render_ci_pane` (introduced by Phase 1's render-context rename).
+- Phase 2 borrow-checker note — reworded to reflect that `TreeMutation` already borrows `&mut ProjectList + &mut Panes + &mut Selection` post-Phase-1; Phase 2's actual change is dropping the `&mut Selection` slot.
+- Phase 5.4 (Scan T/P delete) — caller estimate trimmed to ~40–50 with explicit note that no `tui/render.rs` or `tui/panes/*` touches are needed.
+- Phase 6 — caller-count updated from ~304 to ~275 (live: 250 + 25); also added explicit "depends on Phase 2 step 5" sequencing note to guard against the `selected_project_path_for_render` call path breaking if Phase 6 lands before the field rename.
+- Phase 7 — added render-path note about `selected_project_path_for_render`: post-Phase-2 it's a pure `ProjectList` query, so render.rs can either keep the App shim or invert order (split-borrow first, then call on `&ProjectList`).
+- Phase 11 — ordering note expanded to include Phase 2 dependency (field rename), not just Phase 6.
 
 `Selection` is named for cross-pane state but every field is
 project-list navigation: `cursor`, `expanded`,
@@ -249,19 +277,27 @@ Selection's state, replaces both App fields.
 2. Add Selection's fields and methods to `impl ProjectList`.
 3. Move `SelectionMutation` (RAII guard for visibility-changing operations) to the new
    location; its `Drop` recompute now operates on `self` directly.
-4. Delete the `Selection` struct and the `selection: Selection` field on App.
+4. Delete the `Selection` struct and the `selection: Selection` field on App. Drop
+   the `&Selection` slot from `App::split_panes_for_render`'s return tuple at the
+   same time (it's currently bound as `_selection` and unused; leaving it in place
+   would not compile after `Selection` is deleted).
 5. Rename App's `projects` field to `project_list` (now reflects the absorbed scope).
    **Pause and ask the user to perform this rename via the editor's global rename
    feature** (per CLAUDE.md: editor rename is faster and more accurate than mechanical
-   substitution for type/field renames).
+   substitution for type/field renames). The rename also covers `PaneRenderCtx::projects`
+   (in `src/tui/pane/dispatch.rs`) and `DispatchArgs::projects` (in `src/tui/panes/system.rs`)
+   plus the locals named `projects` in `dispatch_via_trait` / `render_lints_pane` /
+   `render_ci_pane` — these were introduced by Phase 1's render-context rename and should
+   move in lockstep with the App field.
 6. Rewrite all callers: `app.selection.X` / `app.projects.X` → `app.project_list.X`.
    The user-driven rename in step 5 handles the field-name rewrite; this step covers the
    selection-side merge that the editor rename can't see (where today's `app.selection.X`
    becomes `app.project_list.X`).
 
-**Borrow-checker note.** `TreeMutation` after Phase 2 borrows `&mut
-ProjectList + &mut Panes` — Selection is gone, ProjectList
-covers what both held. One fewer borrow in the fan-out.
+**Borrow-checker note.** `TreeMutation` already borrows `&mut ProjectList + &mut Panes
++ &mut Selection` post-Phase-1. Phase 2's actual change is dropping the `&mut Selection`
+slot once Selection's fields/methods migrate into ProjectList — one fewer borrow in the
+fan-out, the rest of the TreeMutation surface is already in place.
 
 ### Phase 3 — Tooling + small-subsystem T/P delete
 
@@ -302,10 +338,12 @@ Sub-commit by subsystem so each diff is bounded and reviewable.
 | 5.1 | `Panes` (`panes`/`_mut`, `pane_data`, `set_hovered_pane_row`, `apply_hovered_pane_row`, `worktree_summary_or_compute`, etc.) | ~8 | ~120 |
 | 5.2 | `Focus` (`focus`/`_mut`, `focused_pane`) | ~3 | ~85 |
 | 5.3 | `Overlays` (`overlays`/`_mut`) | ~2 | ~130 |
-| 5.4 | `Scan` (`scan`/`_mut`, `scan_state_mut` (test-only), `data_generation_for_test`, `set_retry_spawn_mode_for_test`, `set_projects`, `increment_data_generation`, `refresh_derived_state`) | ~10 | ~50 |
+| 5.4 | `Scan` (`scan`/`_mut`, `scan_state_mut` (test-only), `data_generation_for_test`, `set_retry_spawn_mode_for_test`, `set_projects`, `increment_data_generation`, `refresh_derived_state`) | ~10 | ~40–50 |
 | 5.5 | `Startup` (`startup`/`_mut`) | ~2 | ~25 |
 
 **Methods removed:** ~25. **Caller rewrites:** ~410 across 5 sub-commits.
+
+**Phase 5.4 scope note (post-Phase-1):** Phase 1 dropped `Scan::projects()` / `Scan::projects_mut()` outright and rewrote the render plumbing to take `&ProjectList` directly. So Phase 5.4 is now purely an `app/*` and `async_tasks/*` sweep — no `tui/render.rs` or `tui/panes/*` touches needed for `scan()` / `scan_mut()` deletion. Caller estimate trimmed accordingly.
 
 ### Phase 6 — Delete `App::projects()` / `projects_mut()` (highest-fanout rewrite)
 
@@ -314,14 +352,22 @@ These two pass-throughs survived 1/2 (1 lifted the field; 2 renamed it
 App-level pass-throughs are these two — and they have the largest fanout in the entire
 plan.
 
-Live counts (`rg -n '\.projects\(\)' src/` and `\.projects_mut\(\)`):
-- `app.projects()` / `self.projects()` → 258 occurrences
-- `app.projects_mut()` / `self.projects_mut()` → 46 occurrences
+Live counts post-Phase-1 (`rg -n '\.projects\(\)' src/` and `\.projects_mut\(\)`):
+- `app.projects()` / `self.projects()` → 250 occurrences
+- `app.projects_mut()` / `self.projects_mut()` → 25 occurrences
 
 Rewrite each to `app.project_list.X` (or `&mut app.project_list.X`). Delete both methods.
 
-**Methods removed:** 2. **Caller rewrites:** ~304. **Largest single phase by
+**Methods removed:** 2. **Caller rewrites:** ~275. **Largest single phase by
 call-site count in the entire plan.**
+
+**Ordering: Phase 6 depends on Phase 2 step 5 (field rename) being complete.**
+`tui/render.rs::dispatch_via_trait`, `render_lints_pane`, and `render_ci_pane` call
+`app.selected_project_path_for_render()` before split-borrowing, which routes through
+`self.projects()`. If Phase 6 deletes `App::projects()` before Phase 2 has renamed the
+field `projects` → `project_list`, that call path breaks. The plan's overall 1→2→…→6
+order handles this implicitly; making the dependency explicit guards against
+sub-phase reordering silently introducing the bug.
 
 Recommend the user run a global rename (`projects()` → `project_list`,
 `projects_mut()` → `project_list`) via the editor's rename feature — see CLAUDE.md
@@ -340,6 +386,14 @@ Relocate row-navigation single-subsystem methods to `impl ProjectList` (post-Pha
 `select_matching_visible_row`, `expand_path_in_tree`, `try_collapse`.
 
 **Methods relocated:** ~20. **Caller rewrites:** ~150.
+
+**Render-path note (post-Phase-1):** `tui/render.rs::dispatch_via_trait`,
+`render_lints_pane`, and `render_ci_pane` currently call
+`app.selected_project_path_for_render()` *before* split-borrowing. After Phase 2,
+`selected_project_path` is a pure `ProjectList` query (Selection's cursor field
+having merged in), so Phase 7 can either keep that App-shim wrapper or invert the
+order in render.rs (split-borrow first, then call `projects.selected_project_path()`
+on the borrowed `&ProjectList`). Inverting drops one App-level method.
 
 ### Phase 8 — `project_list` absorption II (action methods)
 
@@ -451,11 +505,13 @@ After 11, App's method count drops from 184 → **161** (exact: 184 − 23 = 161
 Group W's instance methods that genuinely belong on App (`set_confirm`,
 `confirm`, `take_confirm`, `build_worktree_detail`) stay.
 
-**Ordering: Phase 11 must run after Phase 6.** Several Phase 11 callers are inside today's
-`impl App` blocks that read `self.projects()` (e.g. `member_path_ref` at
-`navigation/selection.rs:79,87`). After 6 deletes `projects()`, those
-callers use `self.project_list` directly; relocating Phase 11 helpers before 6
-would land in a half-rewritten state. Phase 11 is otherwise independent of Phases 2, 7, 8.
+**Ordering: Phase 11 must run after Phase 2 and Phase 6.** Several Phase 11 callers are
+inside today's `impl App` blocks that read `self.projects()` (e.g. `member_path_ref` at
+`navigation/selection.rs:79,87`). Phase 2 renames the field `projects` → `project_list`;
+Phase 6 deletes the `projects()` accessor. After both, those callers use
+`self.project_list` directly; relocating Phase 11 helpers before 2 or 6 would land them
+referencing a still-named field or a still-live accessor and need re-rewriting. Phase 11
+is otherwise independent of Phases 7 and 8.
 
 
 ## Mechanics of a collapse step
