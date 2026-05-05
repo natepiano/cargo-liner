@@ -1,14 +1,11 @@
 use std::time::Duration;
 use std::time::Instant;
 
-use super::phase_state::KeyedPhase;
-use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::tui::finder::FINDER_COLUMN_COUNT;
 use crate::tui::finder::FinderItem;
 use crate::tui::panes::PaneId;
 use crate::tui::terminal;
-use crate::tui::toasts::ToastTaskId;
 
 /// An action waiting for user confirmation (y/n).
 pub enum ConfirmAction {
@@ -80,21 +77,6 @@ impl DiscoveryRowKind {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct StartupPhaseTracker {
-    pub scan_complete_at:    Option<Instant>,
-    pub startup_toast:       Option<ToastTaskId>,
-    pub startup_complete_at: Option<Instant>,
-
-    pub disk:     KeyedPhase<AbsolutePath>,
-    pub git:      KeyedPhase<AbsolutePath>,
-    pub repo:     KeyedPhase<OwnerRepo>,
-    /// Keyed on workspace root; seen when a `BackgroundMsg::CargoMetadata`
-    /// arrival is either merged into the store or converted into an error
-    /// toast.
-    pub metadata: KeyedPhase<AbsolutePath>,
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Dirtiness {
     #[default]
@@ -160,19 +142,17 @@ impl DirtyState {
 
 #[derive(Debug)]
 pub struct ScanState {
-    pub phase:          ScanPhase,
-    pub started_at:     Instant,
-    pub run_count:      u64,
-    pub startup_phases: StartupPhaseTracker,
+    pub phase:      ScanPhase,
+    pub started_at: Instant,
+    pub run_count:  u64,
 }
 
 impl ScanState {
-    pub fn new(started_at: Instant) -> Self {
+    pub const fn new(started_at: Instant) -> Self {
         Self {
             phase: ScanPhase::Running,
             started_at,
             run_count: 1,
-            startup_phases: StartupPhaseTracker::default(),
         }
     }
 }

@@ -10,48 +10,18 @@ use crate::tui::toasts::TrackedItem;
 impl App {
     pub(super) fn startup_disk_toast_body(&self) -> String {
         let empty = HashSet::new();
-        let expected = self
-            .scan
-            .scan_state()
-            .startup_phases
-            .disk
-            .expected
-            .as_ref()
-            .unwrap_or(&empty);
-        Self::startup_remaining_toast_body(
-            expected,
-            &self.scan.scan_state().startup_phases.disk.seen,
-        )
+        let expected = self.startup.disk.expected.as_ref().unwrap_or(&empty);
+        Self::startup_remaining_toast_body(expected, &self.startup.disk.seen)
     }
     pub(super) fn startup_git_toast_body(&self) -> String {
         let empty = HashSet::new();
-        let expected = self
-            .scan
-            .scan_state()
-            .startup_phases
-            .git
-            .expected
-            .as_ref()
-            .unwrap_or(&empty);
-        Self::startup_remaining_toast_body(
-            expected,
-            &self.scan.scan_state().startup_phases.git.seen,
-        )
+        let expected = self.startup.git.expected.as_ref().unwrap_or(&empty);
+        Self::startup_remaining_toast_body(expected, &self.startup.git.seen)
     }
     pub(super) fn startup_metadata_toast_body(&self) -> String {
         let empty = HashSet::new();
-        let expected = self
-            .scan
-            .scan_state()
-            .startup_phases
-            .metadata
-            .expected
-            .as_ref()
-            .unwrap_or(&empty);
-        Self::startup_remaining_toast_body(
-            expected,
-            &self.scan.scan_state().startup_phases.metadata.seen,
-        )
+        let expected = self.startup.metadata.expected.as_ref().unwrap_or(&empty);
+        Self::startup_remaining_toast_body(expected, &self.startup.metadata.seen)
     }
     /// Build tracked items from expected/seen path sets. Already-seen paths
     /// are pre-marked as completed so the renderer shows them with strikethrough.

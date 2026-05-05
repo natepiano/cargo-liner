@@ -129,6 +129,7 @@ mod tests;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 
+use async_tasks::Startup;
 pub(super) use dismiss::DismissTarget;
 pub(super) use target_index::CleanSelection;
 pub(super) use target_index::TargetDirIndex;
@@ -221,6 +222,12 @@ pub(super) struct App {
     /// `confirm_verifying`, `lint_cache_usage`, and (test-only)
     /// `retry_spawn_mode`.
     scan:              Scan,
+    /// Startup-phase orchestrator. Owns the per-phase trackers
+    /// (`disk`, `git`, `repo`, `metadata`, `lint_phase`,
+    /// `lint_count`) plus the `scan_complete_at`, `toast`, and
+    /// `complete_at` slots that drive the umbrella "Startup" toast
+    /// and its detail toasts.
+    startup:           Startup,
     focus:             Focus,
     /// Overlays subsystem. Owns the four overlay-mode enums
     /// (`FinderMode`, `SettingsMode`, `KeymapMode`, `ExitMode`),
@@ -1053,8 +1060,13 @@ impl App {
 
     pub(super) const fn scan_mut(&mut self) -> &mut Scan { &mut self.scan }
 
+    /// `Startup` subsystem accessor. Test-only — production paths
+    /// reach the field directly via `self.startup`.
     #[cfg(test)]
-    pub(super) const fn scan_state(&self) -> &ScanState { self.scan.scan_state() }
+    pub(super) const fn startup(&self) -> &Startup { &self.startup }
+
+    #[cfg(test)]
+    pub(super) const fn startup_mut(&mut self) -> &mut Startup { &mut self.startup }
 
     #[cfg(test)]
     pub(super) const fn scan_state_mut(&mut self) -> &mut ScanState { self.scan.scan_state_mut() }

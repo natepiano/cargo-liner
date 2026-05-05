@@ -13,7 +13,6 @@ use crate::tui::app::ExpandKey::Node;
 use crate::tui::app::ExpandKey::Worktree;
 use crate::tui::app::ExpandKey::WorktreeGroup;
 use crate::tui::app::types::ScanPhase;
-use crate::tui::app::types::StartupPhaseTracker;
 use crate::tui::panes::PaneId;
 
 impl App {
@@ -149,7 +148,7 @@ impl App {
         self.scan.scan_state_mut().phase = ScanPhase::Running;
         self.scan.scan_state_mut().started_at = Instant::now();
         self.scan.scan_state_mut().run_count += 1;
-        self.scan.scan_state_mut().startup_phases = StartupPhaseTracker::default();
+        self.startup.reset();
         tracing::info!(
             kind = "rescan",
             run = self.scan.scan_state().run_count,

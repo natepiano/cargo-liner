@@ -115,13 +115,8 @@ impl App {
             let git_dir = self
                 .startup_git_directory_for_path(path)
                 .unwrap_or_else(|| AbsolutePath::from(path));
-            self.scan
-                .scan_state_mut()
-                .startup_phases
-                .git
-                .seen
-                .insert(git_dir.clone());
-            if let Some(git_toast) = self.scan.scan_state_mut().startup_phases.git.toast {
+            self.startup.git.seen.insert(git_dir.clone());
+            if let Some(git_toast) = self.startup.git.toast {
                 self.mark_tracked_item_completed(git_toast, &git_dir.to_string());
             }
             self.maybe_log_startup_phase_completions();
@@ -222,19 +217,12 @@ impl App {
     }
     pub(super) fn handle_repo_fetch_queued(&mut self, repo: OwnerRepo) {
         let first_repo = self
-            .scan
-            .scan_state_mut()
-            .startup_phases
+            .startup
             .repo
             .expected
             .as_ref()
             .is_none_or(HashSet::is_empty);
-        self.scan
-            .scan_state_mut()
-            .startup_phases
-            .repo
-            .ensure_expected()
-            .insert(repo.clone());
+        self.startup.repo.ensure_expected().insert(repo.clone());
         self.net
             .github_mut()
             .running_mut()
@@ -243,12 +231,9 @@ impl App {
             // First repo queued — add the "GitHub repos" tracked item
             // to the startup toast and reset completion so the phase
             // is re-evaluated now that there's actual work to track.
-            self.scan.scan_state_mut().startup_phases.repo.complete_at = None;
-            self.scan
-                .scan_state_mut()
-                .startup_phases
-                .startup_complete_at = None;
-            if let Some(toast) = self.scan.scan_state_mut().startup_phases.startup_toast {
+            self.startup.repo.complete_at = None;
+            self.startup.complete_at = None;
+            if let Some(toast) = self.startup.toast {
                 let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
                 self.toasts.add_new_tracked_items(
                     toast,
@@ -272,12 +257,7 @@ impl App {
             .repo_fetch_in_flight_mut()
             .remove(&repo);
         self.net.github_mut().running_mut().remove(&repo);
-        self.scan
-            .scan_state_mut()
-            .startup_phases
-            .repo
-            .seen
-            .insert(repo);
+        self.startup.repo.seen.insert(repo);
         self.maybe_log_startup_phase_completions();
         self.sync_running_repo_fetch_toast();
     }

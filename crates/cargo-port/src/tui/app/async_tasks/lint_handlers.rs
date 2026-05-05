@@ -30,42 +30,32 @@ impl App {
         if let Some(lr) = self.scan.projects_mut().lint_at_path_mut(path) {
             lr.set_status(status);
         }
-        self.lint.startup_phase.seen += 1;
+        self.startup.lint_count.seen += 1;
         self.maybe_complete_startup_lint_cache();
     }
     pub(super) fn maybe_complete_startup_lint_cache(&mut self) {
         let now = Instant::now();
-        if !self.lint.startup_phase.complete_once(now) {
+        if !self.startup.lint_count.complete_once(now) {
             return;
         }
         // All startup lint statuses collected — compute cache size once.
         self.refresh_lint_cache_usage_from_disk();
-        if let Some(toast) = self.scan.scan_state_mut().startup_phases.startup_toast {
+        if let Some(toast) = self.startup.toast {
             self.mark_tracked_item_completed(toast, STARTUP_PHASE_LINT);
         }
         // If core startup already finished, now finish the startup toast.
-        if self
-            .scan
-            .scan_state()
-            .startup_phases
-            .startup_complete_at
-            .is_some()
-            && let Some(toast) = self
-                .scan
-                .scan_state_mut()
-                .startup_phases
-                .startup_toast
-                .take()
+        if self.startup.complete_at.is_some()
+            && let Some(toast) = self.startup.toast.take()
         {
             self.finish_task_toast(toast);
         }
-        if let Some(scan_complete_at) = self.scan.scan_state().startup_phases.scan_complete_at {
+        if let Some(scan_complete_at) = self.startup.scan_complete_at {
             tracing::info!(
                 phase = "lint_startup_applied",
                 since_scan_complete_ms =
                     crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-                seen = self.lint.startup_phase.seen,
-                expected = self.lint.startup_phase.expected.unwrap_or(0),
+                seen = self.startup.lint_count.seen,
+                expected = self.startup.lint_count.expected.unwrap_or(0),
                 "startup_phase_complete"
             );
         }
@@ -121,21 +111,21 @@ impl App {
         }
         if status_started {
             let abs_path = AbsolutePath::from(path);
-            let expected = self.lint.phase.ensure_expected();
+            let expected = self.startup.lint_phase.ensure_expected();
             if expected.insert(abs_path) {
-                self.lint.phase.complete_at = None;
+                self.startup.lint_phase.complete_at = None;
             }
         }
         if status_is_terminal {
             let abs_path = AbsolutePath::from(path);
             if self
-                .lint
-                .phase
+                .startup
+                .lint_phase
                 .expected
                 .as_ref()
                 .is_some_and(|expected| expected.contains(path))
             {
-                self.lint.phase.seen.insert(abs_path);
+                self.startup.lint_phase.seen.insert(abs_path);
             }
         }
         self.maybe_log_startup_phase_completions();

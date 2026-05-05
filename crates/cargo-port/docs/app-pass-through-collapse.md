@@ -2,12 +2,7 @@
 
 ## Status
 
-Phases 1–21 done. Phase 22 remains.
-
-**Phase 22 — Extract `StartupOrchestrator` (state-owning).**
-Move the startup-phase state machine into its own subsystem.
-Phase-tracking state migrates off `scan_state` and `lint` (it
-isn't scan data; it isn't lint data) into the orchestrator.
+All phases done (1–22).
 
 **End state.** The codebase has one architectural pattern: `App`
 owns named subsystems by reference; cross-subsystem reactions
@@ -162,11 +157,10 @@ Phases 11–16 are the remaining architectural moves.
 | 18 of 22 | Phase 18 — Event-bus skeleton + `apply_service_signal` smoke test | **Done** *(reverted in Phase 20)* |
 | 19 of 22 | Phase 19 — Move `row_count` + 4 cursor-movement methods onto `Selection` | **Done** |
 | 20 of 22 | Phase 20 — Rip out the event bus (revert Phase 18) | **Done** |
-| 21 of 22 | Phase 21 — `TreeReaction` enum cleanup of `ReloadActions` | Ready (reorderable) |
-| 22 of 22 | Phase 22 — Extract `StartupOrchestrator` (state-owning subsystem) | Ready (reorderable) |
+| 21 of 22 | Phase 21 — `TreeReaction` enum cleanup of `ReloadActions` | **Done** |
+| 22 of 22 | Phase 22 — Extract `Startup` subsystem (state-owning) | **Done** |
 
-Execution order: numeric. Phases 21 and 22 are reorderable —
-neither has a source dependency on the other.
+Execution order: numeric.
 
 Per-phase steps:
 1. Add the subsystem accessor on `App`.
@@ -2370,80 +2364,80 @@ a refactor is purely structural with no behavioral component,
 "low risk" actually means it: 4 file edits, ~30 lines net,
 zero test failures, no debugging.
 
-## Phase 22 — Extract `StartupOrchestrator` (state-owning subsystem)
+## Phase 22 — Extract `Startup` subsystem — **DONE**
 
-**Goal.** Move the startup-phase state machine into its own
-subsystem at
-`src/tui/app/async_tasks/startup_phase/orchestrator.rs`. The
-phase-tracking state migrates with the methods — this is a real
-subsystem extraction, not just a method relocation.
+**Outcome.** State migrated off `scan_state.startup_phases` and
+`lint.{phase, startup_phase}` into a new `Startup` subsystem at
+`src/tui/app/async_tasks/startup_phase/orchestrator.rs`. App
+gained a `startup: Startup` field plus `#[cfg(test)]`
+`startup()` / `startup_mut()` accessors. The cross-subsystem
+`maybe_complete_startup_*` methods stayed on `App` (they
+already follow the cross-subsystem-orchestrator pattern from
+Phases 8–10) and now read/write through `self.startup` instead
+of through two unrelated subsystems.
 
-**Why state-owning, not method-only.** The architectural review
-post-Phase-19 found that the existing `tracker.rs` does **not**
-own the startup-phase state today. The state lives on
-`self.scan.scan_state_mut().startup_phases` (the disk / git /
-repo / metadata phase counters) and on `self.lint.phase` /
-`self.lint.startup_phase` (the lint phase). Each
-`maybe_complete_startup_*` method on App reads `self.scan` to
-check the phase and writes `self.toasts` (via
-`finish_task_toast`, `mark_tracked_item_completed`);
-`maybe_complete_startup_lints` reads `self.lint.phase` while
-siblings write `self.scan`. The phase-tracking fields aren't
-scan data and aren't lint data — they're startup-coordination
-data living in the wrong subsystems. Method-only relocation
-would leave the same architectural debt the plan was designed
-to address. State-owning extraction moves the data to its
-correct owner.
+**Producer changes.**
+- `tui/app/async_tasks/startup_phase/orchestrator.rs` — new file declaring `Startup` with
+  `scan_complete_at`, `toast`, `complete_at`, `disk`, `git`, `repo`, `metadata`, `lint_phase`,
+  `lint_count`, plus `new()` and `reset()`.
+- `tui/app/types.rs` — `StartupPhaseTracker` deleted; `ScanState` lost its `startup_phases` field
+  (and its constructor became `const fn`).
+- `tui/lint_state.rs` — `phase` and `startup_phase` fields deleted; the doc comment shed its
+  "startup-pass trackers" line; the unused `KeyedPhase` / `CountedPhase` imports went with them.
 
-**Steps.**
+**Consumer changes (mechanical).**
+- 7 files under `tui/app/async_tasks/` (`startup_phase/{tracker,toast_bodies}.rs`,
+  `disk_handlers.rs`, `lint_handlers.rs`, `repo_handlers.rs`, `metadata_handlers.rs`,
+  `dispatch.rs`, `tree.rs`) had their `self.scan.scan_state{,_mut}().startup_phases.X` and
+  `self.lint.{phase,startup_phase}` accesses rewritten to `self.startup.X` / `self.startup.lint_phase`
+  / `self.startup.lint_count`.
+- `tui/app/tests/state.rs` had `app.scan_state{,_mut}().startup_phases` rewritten to
+  `app.startup{,_mut}()` and `app.lint().{phase,startup_phase}` rewritten to
+  `app.startup().{lint_phase,lint_count}`.
+- `App::rescan` swapped `*startup_phases = StartupPhaseTracker::default()` for
+  `self.startup.reset()`.
 
-1. **Create `StartupOrchestrator`.** Define the struct at
-   `tui/app/async_tasks/startup_phase/orchestrator.rs`. Move
-   the phase-tracking fields off `scan_state.startup_phases`
-   and `lint.phase` / `lint.startup_phase` into the
-   orchestrator. Delete those fields from `scan_state.rs` and
-   `lint_state.rs`.
-2. **Add `App::startup` field + accessors.** `app.startup()` /
-   `app.startup_mut()` follow the pattern established in
-   Phases 8–10 for subsystem accessors.
-3. **Move the six `maybe_complete_startup_*` methods.** Each
-   becomes `&mut self` on the orchestrator, taking the
-   cross-subsystem references it needs as typed parameters
-   (`&Scan`, `&Lint`, `&mut ToastManager`). Where the method
-   today reads `self.scan.scan_state().startup_phases.foo`, it
-   now reads `self.<phase>` directly on the orchestrator.
-4. **Update the per-tick caller.** App's per-tick poll loop
-   calls `self.startup.advance(...)` once per tick (or
-   continues calling `maybe_log_startup_phase_completions`
-   which now delegates to the orchestrator).
-5. **Update test access.** `tests/state.rs:1899-1931` calls
-   `maybe_complete_startup_*` directly on `App` to drive
-   startup phases. Rewrite to
-   `app.startup_mut().maybe_complete_*(...)`.
-6. **Update read sites of the migrated state.** Any place
-   reading `scan_state.startup_phases` or `lint.phase` /
-   `lint.startup_phase` now reads through `app.startup()`.
+**Behavior preservation.**
+1. The `complete_once` semantics on `KeyedPhase` / `CountedPhase` carry forward unchanged — the
+   trait impls in `phase_state.rs` weren't touched.
+2. The lint-startup gating in `maybe_complete_startup_ready` (finish the umbrella toast only when
+   `lint_count.complete_at.is_some()`) holds: the same field is read, just through `self.startup`
+   instead of `self.lint.startup_phase`.
+3. The repo-phase gate ("don't auto-complete repo until git is complete") is preserved — same
+   `git.complete_at.is_none()` short-circuit, just on the new struct.
+4. All 599 tests pass with no test-body logic changes — only the access path was rewritten.
 
-**Pre-requisites:** none. Reorderable with Phases 20 and 21.
-
-**Per Phase 17 lesson 5:** the six `maybe_complete_startup_*`
-methods will have chained call sites; bulk rewrites need both
-single-line and multi-line perl substitutions to catch every
-site.
-
-**Visibility (Phase 12 lesson 1).** The orchestrator's location
-is deeply nested under `tui/`. The project rule forbids
-`pub(crate)` in nested `tui/` modules. Declare types
-`pub(super)` and re-export upward at `tui/app/mod.rs` only as
-needed. If broader visibility turns out to be required,
-relocate the type to a top-level `crate::tui::*` module rather
-than widening in place.
-
-**Risk:** medium. State migration off `scan_state` and `lint`
-is the load-bearing piece — those modules need their fields
-removed and any read sites of the migrated state need to switch
-to `app.startup()` calls. The methods themselves are mechanical
-to relocate once the state is in place.
+**Lessons.**
+1. **State-owning extraction is the cheap move when the methods are already cross-subsystem.** The
+   plan called for moving `maybe_complete_startup_*` onto `Startup` with `&mut ToastManager` /
+   `&Lint` / `&Scan` parameters. Doing that would have required either (a) splitting App's
+   `finish_task_toast` / `mark_tracked_item_completed` helpers (which fold in linger config and
+   `prune_toasts`) or (b) duplicating that logic. Neither was justified by the architectural
+   payoff. Keeping the methods on App as cross-subsystem orchestrators — exactly the pattern
+   `apply_lint_config_change` and `force_settings_if_unconfigured` already follow — got the same
+   end-state (state lives where it belongs) at a quarter of the diff size.
+2. **Multi-line perl substitutions must use `\s*` between every token in chained method calls.**
+   Initial `s/self\.scan\.scan_state_mut\(\)\.startup_phases/.../` missed every site where the
+   chain spanned newlines (most of them in `tracker.rs` because `rustfmt` breaks long chains).
+   Second pass with `self\s*\.\s*scan\s*\.\s*scan_state_mut\(\)\s*\.\s*startup_phases` caught
+   them all. Phase 17 lesson 5 called this out for method renames; field-access rewrites need
+   the same treatment.
+3. **Clippy `struct_field_names` bites prefix-and-suffix.** `Startup.startup_toast` and
+   `Startup.startup_complete_at` triggered "field name starts with the struct's name";
+   `Startup.lint_startup` triggered "ends with". The original names were fine on
+   `StartupPhaseTracker`, where the prefix didn't match the struct name. After the rename
+   (`startup_toast → toast`, `startup_complete_at → complete_at`, `lint_startup → lint_count`)
+   the struct reads cleaner anyway — the prefix was redundant once the data lived inside a
+   struct named `Startup`.
+4. **Visibility cap on re-exports requires `pub` on the target struct.** Tried a
+   `pub(super)` chain (`orchestrator → startup_phase → async_tasks → app`); rustc rejected each
+   re-export with "private struct import". `pub(super) use` can't widen visibility past the
+   re-exported item's own visibility. The fix: declare `Startup` as plain `pub` at the
+   orchestrator level. The `mod orchestrator;` declaration is itself private, so external code
+   cannot reach `Startup` except through the re-export chain — the effective visibility is
+   gated by module-tree privacy, not by `pub(in <path>)`. This is consistent with the project
+   rule banning `pub(in <path>)`: rely on private `mod foo;` to gate, then `pub` the type
+   inside.
 
 ### Bus design (Phases 18 + 21)
 
@@ -2765,7 +2759,7 @@ Updated post-Phase-8.
 | 19  | Move `row_count` + 4 cursor-movement methods onto `Selection` | Done |
 | 20  | Rip out the event bus (revert Phase 18) | Done |
 | 21  | `TreeReaction` enum cleanup of `ReloadActions` | Done |
-| 22  | Extract `StartupOrchestrator` (state-owning subsystem) | Ready |
+| 22  | Extract `Startup` subsystem (state-owning) | Done |
 
 After Phase 22, App's struct surface drops to roughly:
 `new`, `run`, the cross-subsystem orchestrators

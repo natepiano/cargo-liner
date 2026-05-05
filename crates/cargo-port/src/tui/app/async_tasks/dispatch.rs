@@ -59,9 +59,9 @@ impl App {
         self.mutate_tree().replace_all(ProjectList::new(projects));
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();
-        self.lint.startup_phase.expected = Some(lint_registered);
-        self.lint.startup_phase.seen = 0;
-        self.lint.startup_phase.complete_at = None;
+        self.startup.lint_count.expected = Some(lint_registered);
+        self.startup.lint_count.seen = 0;
+        self.startup.lint_count.complete_at = None;
         // When nothing will ever increment `seen` (lint runtime disabled or no
         // eligible projects), nothing else will drive completion — finish the
         // phase here so the startup toast can finish.

@@ -209,6 +209,7 @@ impl AppBuilder<Started> {
             config,
             keymap,
             scan,
+            startup: crate::tui::app::async_tasks::Startup::new(),
             focus: crate::tui::focus::Focus::new(PaneId::ProjectList),
             overlays,
             confirm: None,

@@ -114,7 +114,7 @@ impl App {
             },
         }
 
-        if let Some(task_id) = self.scan.scan_state_mut().startup_phases.metadata.toast {
+        if let Some(task_id) = self.startup.metadata.toast {
             let key = workspace_root.to_string();
             self.toasts.mark_item_completed(task_id, &key);
         }
@@ -122,12 +122,7 @@ impl App {
         // workspace's re-fingerprint, clear the Verifying flag so
         // the next render shows Ready and 'y' starts working again.
         self.scan.clear_confirm_verifying_for(&workspace_root);
-        self.scan
-            .scan_state_mut()
-            .startup_phases
-            .metadata
-            .seen
-            .insert(workspace_root);
+        self.startup.metadata.seen.insert(workspace_root);
         self.maybe_log_startup_phase_completions();
     }
     /// Merge a successful `cargo metadata` arrival. Returns `false` when the

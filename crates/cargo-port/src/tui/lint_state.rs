@@ -1,7 +1,8 @@
 //! The `Lint` subsystem.
 //!
 //! Owns the lint runtime, in-flight paths, the running-toast slot,
-//! the on-disk cache stat counter, and the startup-pass trackers.
+//! and the on-disk cache stat counter. Startup-pass trackers
+//! migrated to the [`Startup`] subsystem in Phase 22.
 //!
 //! The four lookup functions (`status_for_path`, `status_for_root`,
 //! `status_for_worktree`, `run_count_at`) return unframed
@@ -19,8 +20,6 @@ use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
-use super::app::CountedPhase;
-use super::app::KeyedPhase;
 use super::pane::Hittable;
 use super::pane::HoverTarget;
 use super::pane::Pane;
@@ -63,35 +62,27 @@ pub enum LintDisplay {
 }
 
 /// The `Lint` subsystem. Owns the lint runtime, in-flight
-/// paths, running-toast slot, the disk cache stat counter,
-/// and the lint-specific startup-phase trackers.
+/// paths, running-toast slot, and the disk cache stat counter.
 pub struct Lint {
     /// Tokio runtime handle that runs cargo lint commands. Spawned
     /// at startup; replaced by [`Self::set_runtime`] when lint
     /// config (`lint.enabled`, `lint.parallel`, `lint.cache_root`)
     /// changes. `None` when lint is disabled.
-    runtime:           Option<RuntimeHandle>,
+    runtime:     Option<RuntimeHandle>,
     /// Paths with a lint run currently in flight, keyed by the
     /// time the run was launched, paired with the single sticky
     /// "N lints running" toast slot. Synced each tick by
     /// `App::sync_running_lint_toast`.
-    running:           RunningTracker<AbsolutePath>,
+    running:     RunningTracker<AbsolutePath>,
     /// Bytes used by the on-disk lint-log cache (`~/.cache/cargo-port/lints/`).
     /// Refreshed by `App::refresh_lint_cache_usage_from_disk`,
     /// displayed in the Settings popup.
-    cache_usage:       CacheUsage,
-    /// Tracks terminal lint events (`Passed` / `Failed`) keyed
-    /// on project path; `seen` counts only terminal arrivals.
-    pub phase:         KeyedPhase<AbsolutePath>,
-    /// Counts startup-time lint completions across the project
-    /// tree. Used by `App::maybe_complete_startup_lints` to decide
-    /// when the startup-lint pass is done.
-    pub startup_phase: CountedPhase,
+    cache_usage: CacheUsage,
     /// Per-pane cursor for the Lints pane.
-    viewport:          Viewport,
+    viewport:    Viewport,
     /// Cached Lints table content built per-frame in
     /// `panes::build_lints_data`.
-    content:           Option<LintsData>,
+    content:     Option<LintsData>,
 }
 
 impl Lint {
@@ -103,8 +94,6 @@ impl Lint {
             runtime,
             running: RunningTracker::new(),
             cache_usage: CacheUsage::default(),
-            phase: KeyedPhase::default(),
-            startup_phase: CountedPhase::default(),
             viewport: Viewport::new(),
             content: None,
         }
