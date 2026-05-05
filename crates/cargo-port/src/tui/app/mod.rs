@@ -13,15 +13,15 @@
 //! is to let the recompute fire. Type-enforced; no convention to
 //! remember.
 //!
-//! - **Fan-out flavor** — see [`TreeMutation`] (this module). The guard borrows `&mut Scan + &mut
-//!   Panes + &mut Selection` directly so its `Drop` can fan out across the three subsystems with
-//!   the dependency declared at the type level. On drop it clears
-//!   [`super::panes::Panes::clear_for_tree_change`] and rebuilds
-//!   [`super::selection::Selection::recompute_visibility`]. `App::mutate_tree` constructs the guard
-//!   via destructuring so the three subsystem borrows are disjoint.
-//! - **Self-only flavor** — see [`super::selection::SelectionMutation`]. Visibility-changing
-//!   mutations on `Selection` (`toggle_expand`, `apply_finder`) are only callable through the
-//!   guard; `Drop` recomputes `cached_visible_rows`.
+//! - **Fan-out flavor** — see [`TreeMutation`] (this module). The guard borrows `&mut ProjectList +
+//!   &mut Panes` directly so its `Drop` can fan out across both subsystems with the dependency
+//!   declared at the type level. On drop it clears [`super::panes::Panes::clear_for_tree_change`]
+//!   and rebuilds [`crate::tui::project_list::ProjectList::recompute_visibility`].
+//!   `App::mutate_tree` constructs the guard via destructuring so the two subsystem borrows are
+//!   disjoint.
+//! - **Self-only flavor** — see [`crate::tui::project_list::SelectionMutation`].
+//!   Visibility-changing mutations on `ProjectList` (`toggle_expand`, `apply_finder`) are only
+//!   callable through the guard; `Drop` recomputes `cached_visible_rows`.
 //!
 //! ## Cross-subsystem orchestrator on App
 //! Operations that touch multiple subsystems and have no single
@@ -32,7 +32,7 @@
 //!
 //! - See [`App::apply_lint_config_change`]. Touches Inflight (respawn lint runtime, clear in-flight
 //!   paths, sync toast), Scan (clear lint state, refresh from disk, bump `data_generation`), and
-//!   Selection (recompute fit widths). New side-effects of a lint-config change MUST be added
+//!   `ProjectList` (recompute fit widths). New side-effects of a lint-config change MUST be added
 //!   there.
 //!
 //! ## Generic primitive plus bespoke state
@@ -85,7 +85,6 @@ use super::panes::PaneDataStore;
 use super::panes::PaneId;
 use super::panes::Panes;
 use super::scan_state::Scan;
-use super::selection::Selection;
 use super::toasts::ToastStyle::Warning;
 use super::toasts::ToastView;
 use super::toasts::TrackedItem;
@@ -105,10 +104,10 @@ use crate::project::RustProject;
 use crate::project::Workspace;
 use crate::project::WorkspaceMetadataStore;
 use crate::project::WorktreeGroup;
-use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::RepoCache;
+use crate::tui::project_list::ProjectList;
 
 #[cfg(test)]
 #[allow(
@@ -168,9 +167,9 @@ use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
 use crate::project;
 use crate::project::RootItem;
-pub(super) use crate::project_list::ExpandKey;
-pub(super) use crate::project_list::VisibleRow;
 use crate::scan::MetadataDispatchContext;
+pub(super) use crate::tui::project_list::ExpandKey;
+pub(super) use crate::tui::project_list::VisibleRow;
 pub(super) struct App {
     /// Net subsystem. Owns the shared `HttpClient`, the GitHub
     /// sub-state (availability, repo-fetch cache, in-flight set,
@@ -183,12 +182,6 @@ pub(super) struct App {
     /// `hovered_pane_row`, and `cpu_poller`. App's
     /// impl-files reach pane state through this handle.
     panes:             Panes,
-    /// Selection subsystem. Owns `selection_paths`, `selection`
-    /// (`SelectionSync`), `expanded`, `finder`,
-    /// `cached_visible_rows`, `cached_root_sorted`,
-    /// `cached_child_sorted`, and `cached_fit_widths`
-    /// (`ProjectListWidths`).
-    selection:         Selection,
     /// Background subsystem. Owns the four mpsc channel pairs plus
     /// `watch_tx`. The `bg_*` pair is replaced wholesale on every
     /// rescan via [`Background::swap_bg_channel`]; the others outlive
@@ -219,7 +212,7 @@ pub(super) struct App {
     /// info, language stats, package/workspace fields, and disk usage
     /// all live inside the tree. Every subsystem that produces
     /// per-project data writes into it.
-    projects:          ProjectList,
+    project_list:      ProjectList,
     /// Scan subsystem. Owns `scan` (`ScanState`),
     /// `dirty`, `data_generation`, `discovery_shimmers`,
     /// `pending_git_first_commit`, `metadata_store`,
@@ -462,9 +455,9 @@ impl App {
         self.prune_toasts();
     }
 
-    pub(super) const fn projects(&self) -> &ProjectList { &self.projects }
+    pub(super) const fn projects(&self) -> &ProjectList { &self.project_list }
 
-    pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { &mut self.projects }
+    pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { &mut self.project_list }
 
     pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { self.net.github().fetch_cache() }
 
@@ -749,19 +742,12 @@ impl App {
     /// them simultaneously is sound.
     pub(super) const fn split_panes_for_render(
         &mut self,
-    ) -> (
-        &mut Panes,
-        &mut LayoutCache,
-        &Config,
-        &Selection,
-        &ProjectList,
-    ) {
+    ) -> (&mut Panes, &mut LayoutCache, &Config, &ProjectList) {
         (
             &mut self.panes,
             &mut self.layout_cache,
             &self.config,
-            &self.selection,
-            &self.projects,
+            &self.project_list,
         )
     }
 
@@ -769,13 +755,13 @@ impl App {
     /// lives on the `Ci` subsystem (not `Panes`), so it has its own
     /// split.
     pub(super) const fn split_ci_for_render(&mut self) -> (&mut Ci, &Config, &ProjectList) {
-        (&mut self.ci, &self.config, &self.projects)
+        (&mut self.ci, &self.config, &self.project_list)
     }
 
     /// Split-borrow accessor for the Lints pane render path. Lints
     /// content lives on the `Lint` subsystem (not `Panes`).
     pub(super) const fn split_lint_for_render(&mut self) -> (&mut Lint, &Config, &ProjectList) {
-        (&mut self.lint, &self.config, &self.projects)
+        (&mut self.lint, &self.config, &self.project_list)
     }
 
     /// Compute `selected_project_path` once for the current frame
@@ -800,13 +786,13 @@ impl App {
     }
 
     pub(super) const fn cached_fit_widths(&self) -> &ProjectListWidths {
-        self.selection.fit_widths()
+        self.project_list.fit_widths()
     }
 
-    pub(super) fn cached_root_sorted(&self) -> &[u64] { self.selection.cached_root_sorted() }
+    pub(super) fn cached_root_sorted(&self) -> &[u64] { self.project_list.cached_root_sorted() }
 
     pub(super) const fn cached_child_sorted(&self) -> &HashMap<usize, Vec<u64>> {
-        self.selection.cached_child_sorted()
+        self.project_list.cached_child_sorted()
     }
 
     pub(super) const fn focused_pane(&self) -> PaneId { self.focus.current() }
@@ -815,25 +801,19 @@ impl App {
 
     pub(super) const fn focus_mut(&mut self) -> &mut Focus { &mut self.focus }
 
-    pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { self.selection.expanded() }
+    pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { self.project_list.expanded() }
 
     #[cfg(test)]
     pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> {
-        self.selection.expanded_mut()
+        self.project_list.expanded_mut()
     }
 
-    pub(super) const fn finder(&self) -> &FinderState { self.selection.finder() }
+    pub(super) const fn finder(&self) -> &FinderState { self.project_list.finder() }
 
-    pub(super) const fn finder_mut(&mut self) -> &mut FinderState { self.selection.finder_mut() }
-
-    /// Read-only handle to the [`Selection`] subsystem.
-    pub(super) const fn selection(&self) -> &Selection { &self.selection }
-
-    /// Mutable handle to the [`Selection`] subsystem.
-    pub(super) const fn selection_mut(&mut self) -> &mut Selection { &mut self.selection }
+    pub(super) const fn finder_mut(&mut self) -> &mut FinderState { self.project_list.finder_mut() }
 
     pub(super) const fn last_selected_path(&self) -> Option<&AbsolutePath> {
-        self.selection.paths().last_selected.as_ref()
+        self.project_list.paths().last_selected.as_ref()
     }
 
     pub(super) fn set_pending_example_run(&mut self, run: PendingExampleRun) {
@@ -1036,15 +1016,13 @@ impl App {
             .include_non_rust
             .includes_non_rust();
         let Self {
-            projects,
+            project_list: projects,
             panes,
-            selection,
             ..
         } = self;
         TreeMutation {
             projects,
             panes,
-            selection,
             include_non_rust,
         }
     }
@@ -1054,7 +1032,9 @@ impl App {
     pub(super) const fn take_confirm(&mut self) -> Option<ConfirmAction> { self.confirm.take() }
 
     #[cfg(test)]
-    pub(super) fn set_projects(&mut self, projects: ProjectList) { self.projects = projects; }
+    pub(super) fn set_projects(&mut self, projects: ProjectList) {
+        self.project_list.replace_roots_from(projects);
+    }
 
     #[cfg(test)]
     pub(super) const fn set_retry_spawn_mode_for_test(&mut self, mode: RetrySpawnMode) {
@@ -1293,24 +1273,25 @@ impl App {
 /// earlier via `drop`), at which point all tree-derived caches are
 /// invalidated.
 ///
-/// **Type-level invariant:** the guard borrows `&mut ProjectList + &mut
-/// Panes + &mut Selection` simultaneously. New tree-mutation paths
-/// added here force the cache-clear to fire on `Drop` — there is
-/// no way to forget invalidation. `Drop` runs on every exit path,
-/// including panics and early returns.
+/// **Type-level invariant:** the guard borrows `&mut ProjectList +
+/// &mut Panes` simultaneously. New tree-mutation paths added here
+/// force the cache-clear to fire on `Drop` — there is no way to
+/// forget invalidation. `Drop` runs on every exit path, including
+/// panics and early returns.
 ///
 /// Mutation guard (RAII), fan-out flavor. See "Recurring patterns"
 /// in [`crate::tui::app`] for the pattern.
 pub(super) struct TreeMutation<'a> {
     projects:         &'a mut ProjectList,
     panes:            &'a mut Panes,
-    selection:        &'a mut Selection,
     include_non_rust: bool,
 }
 
 impl TreeMutation<'_> {
     /// Replace the entire project list (used by tree-build paths).
-    pub(super) fn replace_all(&mut self, projects: ProjectList) { *self.projects = projects; }
+    pub(super) fn replace_all(&mut self, projects: ProjectList) {
+        self.projects.replace_roots_from(projects);
+    }
 
     /// Insert a discovered project into the existing tree, returning
     /// `true` if the insertion changed the tree.
@@ -1337,14 +1318,14 @@ impl TreeMutation<'_> {
 }
 
 impl Drop for TreeMutation<'_> {
-    /// Fan out across the three subsystems whose derived state
-    /// depends on tree structure:
+    /// Fan out across the two subsystems whose derived state depends
+    /// on tree structure:
     /// 1. [`Panes::clear_for_tree_change`] drops `worktree_summary_cache`.
-    /// 2. [`Selection::recompute_visibility`] rebuilds `cached_visible_rows` against the new tree.
+    /// 2. [`ProjectList::recompute_visibility`] rebuilds `cached_visible_rows` against the new
+    ///    tree.
     fn drop(&mut self) {
         self.panes.clear_for_tree_change();
-        self.selection
-            .recompute_visibility(self.projects, self.include_non_rust);
+        self.projects.recompute_visibility(self.include_non_rust);
     }
 }
 

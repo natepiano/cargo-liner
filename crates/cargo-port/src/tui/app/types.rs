@@ -174,24 +174,13 @@ impl SelectionPaths {
     }
 }
 
+#[derive(Default)]
 pub struct FinderState {
     pub query:      String,
     pub results:    Vec<usize>,
     pub total:      usize,
     pub index:      Vec<FinderItem>,
     pub col_widths: [usize; FINDER_COLUMN_COUNT],
-}
-
-impl FinderState {
-    pub const fn new() -> Self {
-        Self {
-            query:      String::new(),
-            results:    Vec::new(),
-            total:      0,
-            index:      Vec::new(),
-            col_widths: [0; FINDER_COLUMN_COUNT],
-        }
-    }
 }
 
 #[derive(Default)]

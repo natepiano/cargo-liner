@@ -53,9 +53,6 @@ use crate::project::WorkflowPresence;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
-pub(super) use crate::project_list::ExpandKey;
-use crate::project_list::ProjectList;
-pub(super) use crate::project_list::VisibleRow;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
@@ -63,6 +60,9 @@ use crate::test_support;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PaneId;
+pub(super) use crate::tui::project_list::ExpandKey;
+use crate::tui::project_list::ProjectList;
+pub(super) use crate::tui::project_list::VisibleRow;
 use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
 
@@ -236,7 +236,7 @@ fn resolved_root_label(item: &RootItem) -> String {
 /// Wrap owned `RootItem`s in a `ProjectList` for test helpers that pass
 /// them to finder/widths functions.
 pub(super) fn as_entries(items: Vec<RootItem>) -> ProjectList {
-    crate::project_list::ProjectList::new(items)
+    crate::tui::project_list::ProjectList::new(items)
 }
 
 fn make_non_rust_project(name: Option<&str>, path: &str) -> RootItem {
@@ -645,7 +645,7 @@ fn expect_real_discovery_creates_group(kind: WorktreeProjectKind) {
         "real worktree discovery should create a worktree group",
     );
 
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
     assert!(app.expand(), "root should expand into worktree entries");
     app.ensure_visible_rows_cached();
     assert_eq!(app.visible_rows().len(), 3);
@@ -996,7 +996,7 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
 }
 
 fn assert_deleted_linked_worktree_dismisses_to_root(app: &mut App, linked_dir: &Path) {
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
     assert!(
         app.expand(),
         "root should expand into worktree entries after regroup"
@@ -1013,7 +1013,7 @@ fn assert_deleted_linked_worktree_dismisses_to_root(app: &mut App, linked_dir: &
         },
     );
     assert!(app.projects().is_deleted(linked_dir));
-    app.selection_mut().set_cursor(2);
+    app.projects_mut().set_cursor(2);
     let target = app
         .focused_dismiss_target()
         .expect("deleted linked worktree should be dismissable");

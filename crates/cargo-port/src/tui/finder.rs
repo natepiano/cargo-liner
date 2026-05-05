@@ -44,7 +44,7 @@ use crate::project::RustProject;
 use crate::project::VendoredPackage;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
-use crate::project_list::ProjectList;
+use crate::tui::project_list::ProjectList;
 
 /// A searchable item in the universal finder.
 #[derive(Clone)]
@@ -972,8 +972,9 @@ mod tests {
             },
             ..Workspace::default()
         };
-        let list_items =
-            crate::project_list::ProjectList::new(vec![RootItem::Rust(RustProject::Workspace(ws))]);
+        let list_items = crate::tui::project_list::ProjectList::new(vec![RootItem::Rust(
+            RustProject::Workspace(ws),
+        )]);
         let (items, _widths) = build_finder_index(&list_items);
         assert!(items.iter().any(|item| {
             item.project_path == test_path("~/rust/hana/crates/clay-layout")
@@ -1074,9 +1075,10 @@ mod tests {
             ..Package::default()
         };
 
-        let (items, _widths) = build_finder_index(&crate::project_list::ProjectList::new(vec![
-            RootItem::Rust(RustProject::Package(pkg)),
-        ]));
+        let (items, _widths) =
+            build_finder_index(&crate::tui::project_list::ProjectList::new(vec![
+                RootItem::Rust(RustProject::Package(pkg)),
+            ]));
         assert!(items.iter().any(|item| {
             item.display_name == "build-easefunction-graphs"
                 && item.search_tokens.iter().any(|token| token == "tools")

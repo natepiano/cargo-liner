@@ -25,12 +25,12 @@ use super::pane_impls::ProjectListPane;
 use super::pane_impls::TargetsPane;
 use super::support::WorktreeInfo;
 use crate::config::CpuConfig;
-use crate::project_list::ProjectList;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::config_state::Config;
 use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
+use crate::tui::project_list::ProjectList;
 
 /// Bundle of refs the dispatchers need to construct a
 /// `PaneRenderCtx`. Constructed at the call site from
@@ -41,7 +41,7 @@ pub struct DispatchArgs<'a> {
     pub is_focused:            bool,
     pub animation_elapsed:     Duration,
     pub config:                &'a Config,
-    pub projects:              &'a ProjectList,
+    pub project_list:          &'a ProjectList,
     pub selected_project_path: Option<&'a Path>,
 }
 
@@ -51,7 +51,7 @@ const fn build_ctx<'a>(args: &DispatchArgs<'a>) -> PaneRenderCtx<'a> {
         is_focused:            args.is_focused,
         animation_elapsed:     args.animation_elapsed,
         config:                args.config,
-        projects:              args.projects,
+        project_list:          args.project_list,
         selected_project_path: args.selected_project_path,
     }
 }

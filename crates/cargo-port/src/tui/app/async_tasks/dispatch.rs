@@ -1,10 +1,10 @@
 use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
-use crate::project_list::ProjectList;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::types::ScanPhase;
+use crate::tui::project_list::ProjectList;
 
 impl App {
     /// Bump `data_generation` only when a background message can change
@@ -55,7 +55,7 @@ impl App {
         let selected_path = self
             .selected_project_path()
             .map(AbsolutePath::from)
-            .or_else(|| self.selection.paths_mut().last_selected.clone());
+            .or_else(|| self.project_list.paths_mut().last_selected.clone());
         self.mutate_tree().replace_all(ProjectList::new(projects));
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();
@@ -75,7 +75,7 @@ impl App {
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
         } else if !self.projects().is_empty() {
-            self.selection.set_cursor(0);
+            self.project_list.set_cursor(0);
         }
         self.sync_selected_project();
 

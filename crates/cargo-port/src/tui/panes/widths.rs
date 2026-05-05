@@ -41,13 +41,13 @@ use crate::project::RustProject;
 use crate::project::VendoredPackage;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
-use crate::project_list::ProjectList;
 use crate::tui::columns;
 use crate::tui::columns::COL_DISK;
 use crate::tui::columns::COL_MAIN;
 use crate::tui::columns::COL_NAME;
 use crate::tui::columns::COL_SYNC;
 use crate::tui::columns::ProjectListWidths;
+use crate::tui::project_list::ProjectList;
 use crate::tui::render;
 
 /// Walk the project tree and produce a `ProjectListWidths`.

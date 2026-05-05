@@ -28,7 +28,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
         HoverTarget::PaneRow { pane, row } => {
             app.focus_mut().set(pane);
             if pane == PaneId::ProjectList {
-                app.selection_mut().set_cursor(row);
+                app.projects_mut().set_cursor(row);
             } else {
                 set_pane_pos(app, pane, row);
             }
@@ -86,7 +86,7 @@ pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
 /// Set the cursor position for `id`'s viewport. Phase 13 relocation:
 /// matches by `PaneId` to whichever owner holds the target viewport.
 /// `ProjectList`'s cursor lives on `Selection.cursor`; callers route
-/// through `app.selection_mut().set_cursor(row)`, not this fn.
+/// through `app.projects_mut().set_cursor(row)`, not this fn.
 pub(super) fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
     if id == PaneId::ProjectList {
         return;
@@ -208,7 +208,6 @@ mod tests {
     use crate::project::WorkspaceMetadata;
     use crate::project::WorktreeGroup;
     use crate::project::WorktreeStatus;
-    use crate::project_list::ProjectList;
     use crate::scan::BackgroundMsg;
     use crate::scan::DirSizes;
     use crate::tui::app::App;
@@ -224,6 +223,7 @@ mod tests {
     use crate::tui::panes;
     use crate::tui::panes::LintsData;
     use crate::tui::panes::PaneId;
+    use crate::tui::project_list::ProjectList;
     use crate::tui::render;
     use crate::tui::settings::SettingOption;
     use crate::tui::toasts::ToastStyle;
@@ -408,7 +408,7 @@ mod tests {
                     is_focused,
                     animation_elapsed,
                     config,
-                    projects,
+                    project_list: projects,
                     selected_project_path: selected_path.as_deref(),
                 };
                 panes::render_lints_pane_body(frame, area, lint, &ctx);
@@ -436,7 +436,7 @@ mod tests {
                     is_focused,
                     animation_elapsed,
                     config,
-                    projects,
+                    project_list: projects,
                     selected_project_path: selected_path.as_deref(),
                 };
                 panes::render_ci_pane_body(frame, area, ci, &ctx);
@@ -608,7 +608,7 @@ mod tests {
 
         let mut app = make_app(&[make_package("deleted", &deleted_dir)]);
         mark_deleted(&mut app, &deleted_dir);
-        app.selection_mut().set_cursor(0);
+        app.projects_mut().set_cursor(0);
         render_ui(&mut app);
 
         let keyboard_target = app
@@ -649,7 +649,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::ProjectList);
-        assert_eq!(app.selection().cursor(), 1);
+        assert_eq!(app.projects().cursor(), 1);
         assert_eq!(
             app.selected_project_path().map(Path::to_path_buf),
             Some(second),
@@ -730,7 +730,7 @@ mod tests {
         let mut app = make_app(&[root]);
         app.expanded_mut().insert(ExpandKey::Node(0));
         app.ensure_visible_rows_cached();
-        app.selection_mut().move_down();
+        app.projects_mut().move_down();
         let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
         app.handle_repo_info(&workspace, repo);
         app.handle_checkout_info(&workspace, checkout);
@@ -970,7 +970,7 @@ mod tests {
         render_ui(&mut app);
         let stale_click = row_dismiss_point(&app, 0);
 
-        app.selection_mut().set_cursor(0);
+        app.projects_mut().set_cursor(0);
         let target = app
             .focused_dismiss_target()
             .unwrap_or_else(|| std::process::abort());

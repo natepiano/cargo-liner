@@ -27,7 +27,7 @@ impl App {
         status: LintStatus,
     ) {
         // Apply the cached status to the project (same as a live status).
-        if let Some(lr) = self.projects.lint_at_path_mut(path) {
+        if let Some(lr) = self.project_list.lint_at_path_mut(path) {
             lr.set_status(status);
         }
         self.startup.lint_count.seen += 1;
@@ -69,7 +69,7 @@ impl App {
             LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog
         );
         if !self.projects().is_rust_at_path(path) {
-            if let Some(lr) = self.projects.lint_at_path_mut(path) {
+            if let Some(lr) = self.project_list.lint_at_path_mut(path) {
                 lr.clear_runs();
             }
             return;
@@ -87,14 +87,14 @@ impl App {
             is_rust,
         );
         if eligible {
-            if let Some(lr) = self.projects.lint_at_path_mut(path) {
+            if let Some(lr) = self.project_list.lint_at_path_mut(path) {
                 lr.set_status(status);
             }
             if status_is_terminal {
                 self.reload_lint_history(path);
             }
         } else {
-            if let Some(lr) = self.projects.lint_at_path_mut(path) {
+            if let Some(lr) = self.project_list.lint_at_path_mut(path) {
                 lr.clear_runs();
             }
             self.lint.running_mut().remove(path);

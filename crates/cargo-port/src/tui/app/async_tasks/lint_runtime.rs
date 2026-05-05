@@ -52,7 +52,7 @@ impl App {
         });
         for path in &paths {
             let runs = lint::read_history(path);
-            if let Some(lr) = self.projects.lint_at_path_mut(path) {
+            if let Some(lr) = self.project_list.lint_at_path_mut(path) {
                 lr.set_runs(runs, path);
             }
         }
@@ -63,7 +63,7 @@ impl App {
             return;
         }
         let runs = lint::read_history(project_path);
-        if let Some(lr) = self.projects.lint_at_path_mut(project_path) {
+        if let Some(lr) = self.project_list.lint_at_path_mut(project_path) {
             lr.set_runs(runs, project_path);
         }
     }

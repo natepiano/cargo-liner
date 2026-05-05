@@ -30,7 +30,7 @@ impl App {
             .primary_url_for(path)
             .and_then(ci::parse_owner_repo)
             .is_some_and(|owner_repo| scan::is_exhausted(owner_repo.owner(), owner_repo.repo()));
-        if let Some(entry) = self.projects.entry_containing_mut(path) {
+        if let Some(entry) = self.project_list.entry_containing_mut(path) {
             let repo = entry.git_repo.get_or_insert_with(Default::default);
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs,
@@ -143,7 +143,7 @@ impl App {
             );
         }
         self.ci.fetch_tracker_mut().complete(abs.as_path());
-        if let Some(entry) = self.projects.entry_containing_mut(abs.as_path()) {
+        if let Some(entry) = self.project_list.entry_containing_mut(abs.as_path()) {
             let repo = entry.git_repo.get_or_insert_with(Default::default);
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
                 runs: merged,

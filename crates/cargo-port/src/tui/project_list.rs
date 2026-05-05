@@ -36,12 +36,18 @@ use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
 use crate::scan;
+use crate::tui::app::FinderState;
+use crate::tui::app::SelectionPaths;
+use crate::tui::app::SelectionSync;
+use crate::tui::columns::ProjectListWidths;
 
-/// Owning wrapper around the project hierarchy.
+/// Owning wrapper around the project hierarchy plus all project-list
+/// navigation state (cursor, expansion set, finder, sort/width caches).
 ///
-/// `ProjectList` is the single source of truth for all project data.
-/// Mutations go through its methods; derived state is computed from it on
-/// demand.
+/// `ProjectList` is the single source of truth for project data and the
+/// per-pane state that navigates that data. Mutations go through its
+/// methods; derived state (e.g. `cached_visible_rows`) is computed from
+/// it on demand or refreshed by the [`SelectionMutation`] guard.
 ///
 /// The underlying store is `IndexMap<AbsolutePath, ProjectEntry>` keyed by
 /// each root's absolute path. The map preserves insertion order so
@@ -49,9 +55,18 @@ use crate::scan;
 /// `get` without a separate index that would have to be kept in sync by
 /// convention. Every mutation site updates keys and values together, so
 /// the "key matches the root's own path" invariant cannot silently drift.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(crate) struct ProjectList {
-    roots: IndexMap<AbsolutePath, ProjectEntry>,
+    roots:               IndexMap<AbsolutePath, ProjectEntry>,
+    paths:               SelectionPaths,
+    sync:                SelectionSync,
+    expanded:            HashSet<ExpandKey>,
+    finder:              FinderState,
+    cached_visible_rows: Vec<VisibleRow>,
+    cached_root_sorted:  Vec<u64>,
+    cached_child_sorted: HashMap<usize, Vec<u64>>,
+    cached_fit_widths:   ProjectListWidths,
+    cursor:              usize,
 }
 
 impl ProjectList {
@@ -64,7 +79,17 @@ impl ProjectList {
                     (entry.item.path().clone(), entry)
                 })
                 .collect(),
+            ..Self::default()
         }
+    }
+
+    /// Production-only seeding: load `last_selected` from the terminal-state
+    /// file and stamp the lint-enabled state into the column-width cache.
+    /// Tests build via `ProjectList::new` / `ProjectList::default` and skip
+    /// this side-effecting initialization.
+    pub(super) fn init_runtime_state(&mut self, lint_enabled: bool) {
+        self.paths = SelectionPaths::new();
+        self.cached_fit_widths = ProjectListWidths::new(lint_enabled);
     }
 
     // -- Slice-like read surface ------------------------------------------
@@ -74,6 +99,30 @@ impl ProjectList {
     pub(crate) fn is_empty(&self) -> bool { self.roots.is_empty() }
 
     pub(crate) fn iter(&self) -> Values<'_, AbsolutePath, ProjectEntry> { self.roots.values() }
+
+    /// Replace only the project hierarchy, keeping the selection-cluster
+    /// state (cursor, expansion set, finder, sort/width caches) intact.
+    /// Used by tree-rebuild paths that hand-build a fresh `ProjectList`
+    /// for whole-tree replacement.
+    pub(super) fn replace_roots_from(&mut self, replacement: Self) {
+        self.roots = replacement.roots;
+    }
+
+    /// Split-borrow accessor for bulk-expansion paths that need to inspect
+    /// the tree structure while mutating the expansion set. Used by
+    /// `App::expand_all`, `App::expand_path_in_tree`, and the legacy-root
+    /// migration in `async_tasks::tree`.
+    pub(super) fn iter_with_expanded_mut(
+        &mut self,
+    ) -> (
+        Values<'_, AbsolutePath, ProjectEntry>,
+        &mut HashSet<ExpandKey>,
+    ) {
+        let Self {
+            roots, expanded, ..
+        } = self;
+        (roots.values(), expanded)
+    }
 
     #[cfg(test)]
     pub(crate) fn first(&self) -> Option<&ProjectEntry> {
@@ -1044,7 +1093,7 @@ impl ProjectList {
     /// nested containers are walked into; `include_non_rust`
     /// gates whether non-Rust roots are emitted; `Dismissed`
     /// roots are always filtered out.
-    pub(crate) fn visible_rows(
+    pub(crate) fn compute_visible_rows(
         &self,
         expanded: &HashSet<ExpandKey>,
         include_non_rust: bool,
@@ -1274,4 +1323,229 @@ fn worst_git_status(states: impl Iterator<Item = Option<GitStatus>>) -> Option<G
         }
     }
     states.flatten().max_by_key(|s| severity(*s))
+}
+
+// ── Selection-cluster surface ───────────────────────────────────────
+//
+// Project-list navigation state (cursor, expansion set, finder, sort and
+// width caches) lives directly on `ProjectList` because every field is
+// project-list scoped — none of it is shared with other panes. The
+// `SelectionMutation` guard at the bottom recomputes `cached_visible_rows`
+// on drop so visibility-changing mutations stay in sync with derived
+// rows. Mutation guard (RAII) — self-only flavor; see
+// `src/tui/app/mod.rs` § "Recurring patterns".
+
+impl ProjectList {
+    // ── project-list cursor ─────────────────────────────────────────
+
+    pub(super) const fn cursor(&self) -> usize { self.cursor }
+
+    pub(super) const fn set_cursor(&mut self, cursor: usize) { self.cursor = cursor; }
+
+    // ── path tracking ───────────────────────────────────────────────
+
+    pub(super) const fn paths(&self) -> &SelectionPaths { &self.paths }
+
+    pub(super) const fn paths_mut(&mut self) -> &mut SelectionPaths { &mut self.paths }
+
+    // ── sync flag ───────────────────────────────────────────────────
+
+    pub(super) const fn sync(&self) -> SelectionSync { self.sync }
+
+    pub(super) const fn mark_sync_changed(&mut self) { self.sync = SelectionSync::Changed; }
+
+    pub(super) const fn mark_sync_stable(&mut self) { self.sync = SelectionSync::Stable; }
+
+    // ── expansion set ───────────────────────────────────────────────
+
+    pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { &self.expanded }
+
+    /// Mutable access to the expansion set. Most callers (rebuild paths
+    /// in `tui::app::async_tasks` and `tui::app::navigation`) populate
+    /// the set in bulk and don't want the per-mutation recompute the
+    /// `SelectionMutation` guard fires; the guard covers single-key
+    /// toggle paths where the recompute is the whole point.
+    pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> { &mut self.expanded }
+
+    // ── finder state ────────────────────────────────────────────────
+
+    pub(super) const fn finder(&self) -> &FinderState { &self.finder }
+
+    pub(super) const fn finder_mut(&mut self) -> &mut FinderState { &mut self.finder }
+
+    // ── cached visible rows ─────────────────────────────────────────
+
+    pub(super) fn visible_rows(&self) -> &[VisibleRow] { &self.cached_visible_rows }
+
+    pub(super) const fn row_count(&self) -> usize { self.cached_visible_rows.len() }
+
+    // ── cursor movement ─────────────────────────────────────────────
+
+    pub(super) const fn move_up(&mut self) {
+        let count = self.row_count();
+        if count == 0 {
+            return;
+        }
+        let current = self.cursor;
+        if current > 0 {
+            self.cursor = current - 1;
+        }
+    }
+
+    pub(super) const fn move_down(&mut self) {
+        let count = self.row_count();
+        if count == 0 {
+            return;
+        }
+        let current = self.cursor;
+        if current < count - 1 {
+            self.cursor = current + 1;
+        }
+    }
+
+    pub(super) const fn move_to_top(&mut self) {
+        if self.row_count() > 0 {
+            self.cursor = 0;
+        }
+    }
+
+    pub(super) const fn move_to_bottom(&mut self) {
+        let count = self.row_count();
+        if count > 0 {
+            self.cursor = count - 1;
+        }
+    }
+
+    /// Recompute `cached_visible_rows` from the current `expanded`
+    /// set. Called by [`SelectionMutation::drop`] and (via App) from
+    /// `TreeMutation::drop` so externally-driven tree mutations also
+    /// keep the visible-rows cache fresh.
+    pub(super) fn recompute_visibility(&mut self, include_non_rust: bool) {
+        self.cached_visible_rows = self.compute_visible_rows(&self.expanded, include_non_rust);
+        let len = self.cached_visible_rows.len();
+        if len == 0 {
+            self.cursor = 0;
+        } else if self.cursor >= len {
+            self.cursor = len - 1;
+        }
+    }
+
+    // ── disk-sort caches ────────────────────────────────────────────
+
+    pub(super) fn cached_root_sorted(&self) -> &[u64] { &self.cached_root_sorted }
+
+    pub(super) const fn cached_child_sorted(&self) -> &HashMap<usize, Vec<u64>> {
+        &self.cached_child_sorted
+    }
+
+    pub(super) fn set_disk_caches(
+        &mut self,
+        root_sorted: Vec<u64>,
+        child_sorted: HashMap<usize, Vec<u64>>,
+    ) {
+        self.cached_root_sorted = root_sorted;
+        self.cached_child_sorted = child_sorted;
+    }
+
+    // ── fit widths ──────────────────────────────────────────────────
+
+    pub(super) const fn fit_widths(&self) -> &ProjectListWidths { &self.cached_fit_widths }
+
+    /// Test-only — production paths replace the whole `ProjectListWidths`
+    /// via [`Self::set_fit_widths`] and never observe individual columns
+    /// after seeding.
+    #[cfg(test)]
+    pub(super) const fn fit_widths_mut(&mut self) -> &mut ProjectListWidths {
+        &mut self.cached_fit_widths
+    }
+
+    pub(super) fn set_fit_widths(&mut self, widths: ProjectListWidths) {
+        self.cached_fit_widths = widths;
+    }
+
+    pub(super) fn reset_fit_widths(&mut self, lint_enabled: bool) {
+        self.cached_fit_widths = ProjectListWidths::new(lint_enabled);
+    }
+
+    // ── mutation guard entry point ──────────────────────────────────
+
+    /// Borrow `self` for a visibility-changing mutation.
+    ///
+    /// Type-level invariant: the guard's mutating methods
+    /// (`toggle_expand`, `expand`, `collapse`, `expanded_mut`,
+    /// `finder_mut`) are only callable through the returned guard.
+    /// The guard's `Drop` recomputes `cached_visible_rows`, so
+    /// visibility-affecting mutations cannot drift out of sync with
+    /// their derived rows.
+    #[allow(
+        dead_code,
+        reason = "tui::app::navigation (try_expand / try_collapse) still calls \
+                  expanded_mut directly because it recomputes via a separate \
+                  ensure_visible_rows_cached() call in the same code path."
+    )]
+    pub(super) const fn mutate(&mut self, include_non_rust: bool) -> SelectionMutation<'_> {
+        SelectionMutation {
+            project_list: self,
+            include_non_rust,
+        }
+    }
+}
+
+/// RAII guard for visibility-changing [`ProjectList`] mutations.
+/// Obtained via [`ProjectList::mutate`]; `Drop` recomputes
+/// `cached_visible_rows`. Mutation guard (RAII) — self-only flavor.
+#[allow(
+    dead_code,
+    reason = "guard ships alongside ProjectList so the type is in place \
+              while call sites still use the direct accessors"
+)]
+pub(super) struct SelectionMutation<'a> {
+    project_list:     &'a mut ProjectList,
+    include_non_rust: bool,
+}
+
+#[allow(
+    dead_code,
+    reason = "guard methods ship alongside the type while call sites \
+              still use the direct accessors"
+)]
+impl SelectionMutation<'_> {
+    /// Toggle membership of `key` in the expansion set. Returns `true`
+    /// if the key was newly inserted.
+    pub(super) fn toggle_expand(&mut self, key: ExpandKey) -> bool {
+        if self.project_list.expanded.contains(&key) {
+            self.project_list.expanded.remove(&key);
+            false
+        } else {
+            self.project_list.expanded.insert(key);
+            true
+        }
+    }
+
+    /// Insert `key` into the expansion set. Returns `true` if the key
+    /// was newly inserted.
+    pub fn expand(&mut self, key: ExpandKey) -> bool { self.project_list.expanded.insert(key) }
+
+    /// Remove `key` from the expansion set. Returns `true` if the key
+    /// was present.
+    pub fn collapse(&mut self, key: &ExpandKey) -> bool { self.project_list.expanded.remove(key) }
+
+    /// Mutable access to the underlying expansion set, for bulk
+    /// operations (e.g. `clear`, multi-key inserts) that still want
+    /// the drop-recompute to fire afterward.
+    pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> {
+        &mut self.project_list.expanded
+    }
+
+    /// Mutable access to the finder state, for callers that update
+    /// the finder query / results inline. The drop-recompute fires
+    /// on guard release.
+    pub(super) const fn finder_mut(&mut self) -> &mut FinderState { &mut self.project_list.finder }
+}
+
+impl Drop for SelectionMutation<'_> {
+    fn drop(&mut self) {
+        self.project_list
+            .recompute_visibility(self.include_non_rust);
+    }
 }

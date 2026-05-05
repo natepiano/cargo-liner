@@ -44,7 +44,6 @@ use crate::project::VendoredPackage;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
-use crate::project_list::ProjectList;
 use crate::tui::app::App;
 use crate::tui::app::DiscoveryRowKind;
 use crate::tui::app::DismissTarget;
@@ -59,6 +58,7 @@ use crate::tui::constants::LABEL_COLOR;
 use crate::tui::pane;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
+use crate::tui::project_list::ProjectList;
 use crate::tui::render;
 
 /// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
@@ -201,7 +201,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .viewport_mut()
         .set_viewport_rows(usize::from(list_area.height));
     let project_list = List::new(items);
-    let mut list_state = ListState::default().with_selected(Some(app.selection().cursor()));
+    let mut list_state = ListState::default().with_selected(Some(app.projects().cursor()));
     *list_state.offset_mut() = app.panes().project_list().viewport().scroll_offset();
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
     app.layout_cache_mut().project_list_body = list_area;
@@ -209,7 +209,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .project_list_mut()
         .viewport_mut()
         .set_scroll_offset(list_state.offset());
-    app.selection_mut()
+    app.projects_mut()
         .set_cursor(list_state.selected().unwrap_or(0));
     set_project_list_dismiss_actions(app, list_area, row_width);
 
@@ -275,7 +275,7 @@ fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<
 
 fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
     let focused = app.focus().is(PaneId::ProjectList);
-    let cursor = app.selection().cursor();
+    let cursor = app.projects().cursor();
     let roots = app.resolved_dirs();
 
     // Count visible rows per root directory and determine which root the
@@ -994,7 +994,7 @@ pub fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<ListItem<
         .resolved_root_labels(app.config().include_non_rust().includes_non_rust());
     let focus = app.focus().pane_state(PaneId::ProjectList);
     let pane = app.panes().project_list().viewport();
-    let cursor = app.selection().cursor();
+    let cursor = app.projects().cursor();
 
     let rows = app.visible_rows();
     rows.iter()

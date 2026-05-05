@@ -4,8 +4,6 @@ use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
-#[cfg(test)]
-use crate::project_list::ProjectList;
 use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::ExpandKey::Group;
@@ -14,6 +12,8 @@ use crate::tui::app::ExpandKey::Worktree;
 use crate::tui::app::ExpandKey::WorktreeGroup;
 use crate::tui::app::types::ScanPhase;
 use crate::tui::panes::PaneId;
+#[cfg(test)]
+use crate::tui::project_list::ProjectList;
 
 impl App {
     #[cfg(test)]
@@ -21,7 +21,7 @@ impl App {
         let selected_path = self
             .selected_project_path()
             .map(AbsolutePath::from)
-            .or_else(|| self.selection.paths_mut().last_selected.clone());
+            .or_else(|| self.project_list.paths_mut().last_selected.clone());
         let should_focus_project_list = false;
         self.mutate_tree().replace_all(projects);
         self.prune_inactive_project_state();
@@ -33,7 +33,7 @@ impl App {
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
         } else if !self.projects().is_empty() {
-            self.selection.set_cursor(0);
+            self.project_list.set_cursor(0);
         }
         if should_focus_project_list {
             self.focus.set(PaneId::ProjectList);
@@ -48,7 +48,7 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(ni, entry)| {
-                if !self.selection.expanded().contains(&Node(ni)) {
+                if !self.project_list.expanded().contains(&Node(ni)) {
                     return None;
                 }
 
@@ -64,7 +64,7 @@ impl App {
                             .filter_map(|(gi, group)| {
                                 group
                                     .is_named()
-                                    .then(|| self.selection.expanded().contains(&Group(ni, gi)))
+                                    .then(|| self.project_list.expanded().contains(&Group(ni, gi)))
                                     .filter(|expanded| *expanded)
                                     .map(|_| gi)
                             })
@@ -82,47 +82,43 @@ impl App {
             .collect()
     }
     pub(super) fn migrate_legacy_root_expansions(&mut self, legacy: &[LegacyRootExpansion]) {
-        let Self {
-            projects,
-            selection,
-            ..
-        } = self;
+        let (roots, expanded) = self.project_list.iter_with_expanded_mut();
+        // Snapshot path-and-item pairs so the iterator borrow ends before we
+        // mutate `expanded` below.
+        let entries: Vec<(usize, &RootItem)> = roots
+            .enumerate()
+            .map(|(idx, entry)| (idx, &entry.item))
+            .collect();
         for legacy_root in legacy {
-            let Some((current_index, current_entry)) = projects
+            let Some((current_index, item)) = entries
                 .iter()
-                .enumerate()
-                .find(|(_, entry)| entry.item.path() == legacy_root.root_path.as_path())
+                .find(|(_, item)| item.path() == legacy_root.root_path.as_path())
+                .map(|(idx, item)| (*idx, *item))
             else {
                 continue;
             };
 
-            match &current_entry.item {
+            match item {
                 RootItem::Worktrees(
                     group @ crate::project::WorktreeGroup::Workspaces { primary, .. },
                 ) if group.renders_as_group() => {
-                    selection.expanded_mut().insert(Node(current_index));
+                    expanded.insert(Node(current_index));
                     if legacy_root.had_children {
-                        selection.expanded_mut().insert(Worktree(current_index, 0));
+                        expanded.insert(Worktree(current_index, 0));
                     }
                     for &group_index in &legacy_root.named_groups {
                         if primary.groups().get(group_index).is_some() {
-                            selection.expanded_mut().insert(WorktreeGroup(
-                                current_index,
-                                0,
-                                group_index,
-                            ));
+                            expanded.insert(WorktreeGroup(current_index, 0, group_index));
                         }
-                        selection
-                            .expanded_mut()
-                            .remove(&Group(legacy_root.old_node_index, group_index));
+                        expanded.remove(&Group(legacy_root.old_node_index, group_index));
                     }
                 },
                 RootItem::Worktrees(group @ crate::project::WorktreeGroup::Packages { .. })
                     if group.renders_as_group() =>
                 {
-                    selection.expanded_mut().insert(Node(current_index));
+                    expanded.insert(Node(current_index));
                     if legacy_root.had_children {
-                        selection.expanded_mut().insert(Worktree(current_index, 0));
+                        expanded.insert(Worktree(current_index, 0));
                     }
                 },
                 _ => {},
@@ -131,15 +127,10 @@ impl App {
     }
     pub(super) fn rebuild_visible_rows_now(&mut self) {
         let include_non_rust = self.config().include_non_rust().includes_non_rust();
-        let Self {
-            projects,
-            selection,
-            ..
-        } = self;
-        selection.recompute_visibility(projects, include_non_rust);
+        self.project_list.recompute_visibility(include_non_rust);
     }
     pub fn rescan(&mut self) {
-        self.projects.clear();
+        self.project_list.clear();
         // disk_usage lives on project items — cleared with projects above
         self.ci.fetch_tracker_mut().clear();
         self.ci.clear_display_modes();
@@ -162,10 +153,10 @@ impl App {
         self.overlays.close_settings();
         self.overlays.close_finder();
         self.reset_project_panes();
-        self.selection.paths_mut().selected_project = None;
+        self.project_list.paths_mut().selected_project = None;
         self.inflight.clear_pending_ci_fetch();
-        self.selection.expanded_mut().clear();
-        self.selection.set_cursor(0);
+        self.project_list.expanded_mut().clear();
+        self.project_list.set_cursor(0);
         self.panes_mut()
             .project_list_mut()
             .viewport_mut()

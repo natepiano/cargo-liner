@@ -6,7 +6,7 @@ use crate::tui::app::VisibleRow;
 
 impl App {
     pub(super) fn selected_is_expandable(&self) -> bool {
-        let selected = self.selection.cursor();
+        let selected = self.project_list.cursor();
         self.visible_rows()
             .get(selected)
             .copied()
@@ -68,41 +68,41 @@ impl App {
         if !self.selected_is_expandable() {
             return false;
         }
-        let selected = self.selection.cursor();
+        let selected = self.project_list.cursor();
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
         };
         let Some(key) = self.expand_key_for_row(row) else {
             return false;
         };
-        self.selection.expanded_mut().insert(key)
+        self.project_list.expanded_mut().insert(key)
     }
 
     /// Remove `key` from expanded, recompute rows, and move cursor to `target`.
     pub(super) fn collapse_to(&mut self, key: &ExpandKey, target: VisibleRow) {
-        self.selection.expanded_mut().remove(key);
+        self.project_list.expanded_mut().remove(key);
         self.ensure_visible_rows_cached();
         if let Some(pos) = self.visible_rows().iter().position(|r| *r == target) {
-            self.selection.set_cursor(pos);
+            self.project_list.set_cursor(pos);
         }
     }
 
     /// Try to remove `key` from expanded. If present, mark dirty and return `true`.
     /// Otherwise return `false` (caller should cascade to parent).
     pub(super) fn try_collapse(&mut self, key: &ExpandKey) -> bool {
-        self.selection.expanded_mut().remove(key)
+        self.project_list.expanded_mut().remove(key)
     }
 
     pub fn collapse(&mut self) -> bool {
-        let selected = self.selection.cursor();
+        let selected = self.project_list.cursor();
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
         };
-        let expanded_before = self.selection.expanded().len();
-        let selected_before = self.selection.cursor();
+        let expanded_before = self.project_list.expanded().len();
+        let selected_before = self.project_list.cursor();
         self.collapse_row(row);
-        self.selection.expanded().len() != expanded_before
-            || self.selection.cursor() != selected_before
+        self.project_list.expanded().len() != expanded_before
+            || self.project_list.cursor() != selected_before
     }
 
     pub(super) fn collapse_row(&mut self, row: VisibleRow) {

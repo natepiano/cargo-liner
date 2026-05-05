@@ -34,7 +34,7 @@ use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
-use crate::project_list::ProjectList;
+use crate::tui::project_list::ProjectList;
 
 /// Display value for the Lint row in the Package detail pane.
 ///

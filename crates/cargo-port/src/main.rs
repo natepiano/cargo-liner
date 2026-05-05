@@ -12,7 +12,6 @@ mod keymap;
 mod lint;
 mod perf_log;
 mod project;
-mod project_list;
 mod scan;
 #[cfg(test)]
 mod test_support;

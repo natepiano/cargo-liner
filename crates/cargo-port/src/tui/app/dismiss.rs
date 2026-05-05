@@ -105,10 +105,10 @@ impl App {
                 if let Some(ni) = parent_node_index {
                     self.select_root_row(ni);
                 } else {
-                    let count = self.selection.row_count();
-                    let selected = self.selection.cursor();
+                    let count = self.project_list.row_count();
+                    let selected = self.project_list.cursor();
                     if selected >= count {
-                        self.selection.set_cursor(count.saturating_sub(1));
+                        self.project_list.set_cursor(count.saturating_sub(1));
                     }
                 }
             },
@@ -147,7 +147,7 @@ impl App {
             .iter()
             .position(|row| matches!(row, VisibleRow::Root { node_index: ni } if *ni == node_index))
         {
-            self.selection.set_cursor(pos);
+            self.project_list.set_cursor(pos);
         }
     }
 }

@@ -262,9 +262,9 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
 
     if app.layout_cache().project_list_body.contains(pos) {
         if up {
-            app.selection_mut().move_up();
+            app.projects_mut().move_up();
         } else {
-            app.selection_mut().move_down();
+            app.projects_mut().move_down();
         }
         return;
     }
@@ -594,19 +594,19 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
 fn handle_normal_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.selection_mut().move_up(),
-        KeyCode::Down => return app.selection_mut().move_down(),
-        KeyCode::Home => return app.selection_mut().move_to_top(),
-        KeyCode::End => return app.selection_mut().move_to_bottom(),
+        KeyCode::Up => return app.projects_mut().move_up(),
+        KeyCode::Down => return app.projects_mut().move_down(),
+        KeyCode::Home => return app.projects_mut().move_to_top(),
+        KeyCode::End => return app.projects_mut().move_to_bottom(),
         KeyCode::Right => {
             if !app.expand() {
-                app.selection_mut().move_down();
+                app.projects_mut().move_down();
             }
             return;
         },
         KeyCode::Left => {
             if !app.collapse() {
-                app.selection_mut().move_up();
+                app.projects_mut().move_up();
             }
             return;
         },

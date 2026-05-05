@@ -11,20 +11,20 @@ impl App {
         self.ensure_visible_rows_cached();
         let current = self.selected_project_path().map(AbsolutePath::from);
         if self
-            .selection
+            .project_list
             .paths()
             .collapsed_anchor
             .as_ref()
             .is_some_and(|anchor| current.as_ref() != Some(anchor))
         {
-            self.selection.paths_mut().collapsed_selected = None;
-            self.selection.paths_mut().collapsed_anchor = None;
+            self.project_list.paths_mut().collapsed_selected = None;
+            self.project_list.paths_mut().collapsed_anchor = None;
         }
-        if self.selection.paths_mut().selected_project == current {
+        if self.project_list.paths_mut().selected_project == current {
             return;
         }
 
-        self.selection
+        self.project_list
             .paths_mut()
             .selected_project
             .clone_from(&current);
@@ -40,11 +40,11 @@ impl App {
         }
 
         if let Some(abs_path) = current
-            && self.selection.paths_mut().last_selected.as_ref() != Some(&abs_path)
+            && self.project_list.paths_mut().last_selected.as_ref() != Some(&abs_path)
         {
             self.scan.bump_generation();
-            self.selection.paths_mut().last_selected = Some(abs_path);
-            self.selection.mark_sync_changed();
+            self.project_list.paths_mut().last_selected = Some(abs_path);
+            self.project_list.mark_sync_changed();
             self.maybe_priority_fetch();
         }
     }

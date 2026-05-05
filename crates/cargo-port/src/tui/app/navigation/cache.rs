@@ -8,16 +8,11 @@ use crate::tui::panes::DetailCacheKey;
 impl App {
     pub fn ensure_visible_rows_cached(&mut self) {
         let include_non_rust = self.config().include_non_rust().includes_non_rust();
-        let Self {
-            projects,
-            selection,
-            ..
-        } = self;
-        selection.recompute_visibility(projects, include_non_rust);
+        self.project_list.recompute_visibility(include_non_rust);
     }
 
     /// Return the cached visible rows. Must call `ensure_visible_rows_cached()` first.
-    pub fn visible_rows(&self) -> &[VisibleRow] { self.selection.visible_rows() }
+    pub fn visible_rows(&self) -> &[VisibleRow] { self.project_list.visible_rows() }
 
     pub fn ensure_fit_widths_cached(&mut self) {
         let root_labels = self
@@ -29,12 +24,12 @@ impl App {
             self.config().lint_enabled(),
             0,
         );
-        self.selection.set_fit_widths(widths);
+        self.project_list.set_fit_widths(widths);
     }
 
     pub fn ensure_disk_cache(&mut self) {
         let (root_sorted, child_sorted) = panes::compute_disk_cache(self.projects());
-        self.selection.set_disk_caches(root_sorted, child_sorted);
+        self.project_list.set_disk_caches(root_sorted, child_sorted);
     }
 
     /// Ensure per-pane data on `PaneManager` is up to date for the selected

@@ -12,26 +12,22 @@ use crate::tui::app::VisibleRow;
 impl App {
     pub fn expand_all(&mut self) {
         let selected_path = self
-            .selection
+            .project_list
             .paths_mut()
             .collapsed_selected
             .take()
             .or_else(|| self.selected_project_path().map(AbsolutePath::from));
-        self.selection.paths_mut().collapsed_anchor = None;
-        let Self {
-            projects,
-            selection,
-            ..
-        } = self;
-        for (ni, entry) in projects.iter().enumerate() {
+        self.project_list.paths_mut().collapsed_anchor = None;
+        let (roots, expanded) = self.project_list.iter_with_expanded_mut();
+        for (ni, entry) in roots.enumerate() {
             if entry.item.has_children() {
-                selection.expanded_mut().insert(ExpandKey::Node(ni));
+                expanded.insert(ExpandKey::Node(ni));
             }
             match &entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     for (gi, group) in ws.groups().iter().enumerate() {
                         if group.is_named() {
-                            selection.expanded_mut().insert(ExpandKey::Group(ni, gi));
+                            expanded.insert(ExpandKey::Group(ni, gi));
                         }
                     }
                 },
@@ -40,13 +36,11 @@ impl App {
                 }) => {
                     for (wi, ws) in std::iter::once(primary).chain(linked.iter()).enumerate() {
                         if ws.has_members() {
-                            selection.expanded_mut().insert(ExpandKey::Worktree(ni, wi));
+                            expanded.insert(ExpandKey::Worktree(ni, wi));
                         }
                         for (gi, group) in ws.groups().iter().enumerate() {
                             if group.is_named() {
-                                selection
-                                    .expanded_mut()
-                                    .insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                                expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
                             }
                         }
                     }
@@ -62,52 +56,48 @@ impl App {
     pub fn collapse_all(&mut self) {
         let selected_path = self.selected_project_path().map(AbsolutePath::from);
         let anchor = self.selected_row().map(Self::collapse_anchor_row);
-        self.selection.expanded_mut().clear();
+        self.project_list.expanded_mut().clear();
         self.ensure_visible_rows_cached();
         if let Some(anchor) = anchor
             && let Some(pos) = self.visible_rows().iter().position(|row| *row == anchor)
         {
-            self.selection.set_cursor(pos);
+            self.project_list.set_cursor(pos);
         }
         let anchor_path = self.selected_project_path().map(AbsolutePath::from);
         if selected_path == anchor_path {
-            self.selection.paths_mut().collapsed_selected = None;
-            self.selection.paths_mut().collapsed_anchor = None;
+            self.project_list.paths_mut().collapsed_selected = None;
+            self.project_list.paths_mut().collapsed_anchor = None;
         } else {
-            self.selection.paths_mut().collapsed_selected = selected_path;
-            self.selection.paths_mut().collapsed_anchor = anchor_path;
+            self.project_list.paths_mut().collapsed_selected = selected_path;
+            self.project_list.paths_mut().collapsed_anchor = anchor_path;
         }
     }
 
     pub(super) fn expand_path_in_tree(&mut self, target_path: &Path) {
-        let Self {
-            projects,
-            selection,
-            ..
-        } = self;
-        for (ni, entry) in projects.iter().enumerate() {
+        let (roots, expanded) = self.project_list.iter_with_expanded_mut();
+        for (ni, entry) in roots.enumerate() {
             match &entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     for (gi, group) in ws.groups().iter().enumerate() {
                         for member in group.members() {
                             if member.path() == target_path {
-                                selection.expanded_mut().insert(ExpandKey::Node(ni));
+                                expanded.insert(ExpandKey::Node(ni));
                                 if group.is_named() {
-                                    selection.expanded_mut().insert(ExpandKey::Group(ni, gi));
+                                    expanded.insert(ExpandKey::Group(ni, gi));
                                 }
                             }
                         }
                     }
                     for vendored in ws.vendored() {
                         if vendored.path() == target_path {
-                            selection.expanded_mut().insert(ExpandKey::Node(ni));
+                            expanded.insert(ExpandKey::Node(ni));
                         }
                     }
                 },
                 RootItem::Rust(RustProject::Package(pkg)) => {
                     for vendored in pkg.vendored() {
                         if vendored.path() == target_path {
-                            selection.expanded_mut().insert(ExpandKey::Node(ni));
+                            expanded.insert(ExpandKey::Node(ni));
                         }
                     }
                 },
@@ -117,25 +107,23 @@ impl App {
                 }) => {
                     for (wi, ws) in std::iter::once(primary).chain(linked.iter()).enumerate() {
                         if ws.path() == target_path {
-                            selection.expanded_mut().insert(ExpandKey::Node(ni));
+                            expanded.insert(ExpandKey::Node(ni));
                         }
                         for (gi, group) in ws.groups().iter().enumerate() {
                             for member in group.members() {
                                 if member.path() == target_path {
-                                    selection.expanded_mut().insert(ExpandKey::Node(ni));
-                                    selection.expanded_mut().insert(ExpandKey::Worktree(ni, wi));
+                                    expanded.insert(ExpandKey::Node(ni));
+                                    expanded.insert(ExpandKey::Worktree(ni, wi));
                                     if group.is_named() {
-                                        selection
-                                            .expanded_mut()
-                                            .insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                                        expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
                                     }
                                 }
                             }
                         }
                         for vendored in ws.vendored() {
                             if vendored.path() == target_path {
-                                selection.expanded_mut().insert(ExpandKey::Node(ni));
-                                selection.expanded_mut().insert(ExpandKey::Worktree(ni, wi));
+                                expanded.insert(ExpandKey::Node(ni));
+                                expanded.insert(ExpandKey::Worktree(ni, wi));
                             }
                         }
                     }
@@ -145,12 +133,12 @@ impl App {
                 }) => {
                     for (wi, pkg) in std::iter::once(primary).chain(linked.iter()).enumerate() {
                         if pkg.path() == target_path {
-                            selection.expanded_mut().insert(ExpandKey::Node(ni));
+                            expanded.insert(ExpandKey::Node(ni));
                         }
                         for vendored in pkg.vendored() {
                             if vendored.path() == target_path {
-                                selection.expanded_mut().insert(ExpandKey::Node(ni));
-                                selection.expanded_mut().insert(ExpandKey::Worktree(ni, wi));
+                                expanded.insert(ExpandKey::Node(ni));
+                                expanded.insert(ExpandKey::Worktree(ni, wi));
                             }
                         }
                     }
@@ -171,7 +159,7 @@ impl App {
             .iter()
             .position(|row| self.row_matches_project_path(*row, target_path));
         if let Some(selected_index) = selected_index {
-            self.selection.set_cursor(selected_index);
+            self.project_list.set_cursor(selected_index);
         }
     }
 

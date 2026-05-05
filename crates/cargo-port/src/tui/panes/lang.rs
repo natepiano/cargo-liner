@@ -155,7 +155,7 @@ pub(super) fn render_lang_pane_body(
     let PaneRenderCtx {
         focus_state,
         is_focused,
-        projects,
+        project_list: projects,
         selected_project_path,
         animation_elapsed: _,
         config: _,

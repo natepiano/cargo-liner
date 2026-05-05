@@ -933,7 +933,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     app.scan_state_mut().phase = ScanPhase::Complete;
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
     app.sync_selected_project();
 
     apply_git_info(
@@ -1029,7 +1029,7 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
 fn git_first_commit_arriving_before_git_info_is_preserved() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
     app.sync_selected_project();
 
     apply_bg_msg(
@@ -1077,7 +1077,7 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
 fn git_info_invalidates_selected_git_pane_cache() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
 
@@ -1112,7 +1112,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     let project_a = make_project(Some("alpha"), "~/alpha");
     let project_b = make_project(Some("beta"), "~/beta");
     let mut app = make_app(&[project_a, project_b]);
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
     app.sync_selected_project();
 
     // Seed the cache.
@@ -1140,7 +1140,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     );
 
     // Changing the selected row invalidates the stamp → must rebuild.
-    app.selection_mut().set_cursor(1);
+    app.projects_mut().set_cursor(1);
     app.sync_selected_project();
     app.ensure_detail_cached();
     assert_eq!(
@@ -1206,7 +1206,7 @@ fn background_message_for_unselected_path_does_not_invalidate_detail() {
     let project_a = make_project(Some("alpha"), "~/alpha");
     let project_b = make_project(Some("beta"), "~/beta");
     let mut app = make_app(&[project_a, project_b]);
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
     let baseline = app.pane_data().detail_build_count();
@@ -1935,7 +1935,7 @@ fn startup_ready_waits_on_metadata_phase() {
 fn clean_selection_on_root_rust_project_returns_project_selection() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
 
     let selection = app
         .clean_selection()
@@ -1956,7 +1956,7 @@ fn clean_selection_on_non_rust_root_is_none() {
     // clean-ineligible so the shortcut is dimmed in the status bar.
     let non_rust = make_non_rust_project(Some("notes"), "~/notes");
     let mut app = make_app(std::slice::from_ref(&non_rust));
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
     assert!(app.clean_selection().is_none());
 }
 
@@ -1990,7 +1990,7 @@ fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
         vec![linked],
     ));
     let mut app = make_app(std::slice::from_ref(&worktrees));
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
 
     match app.clean_selection().expect("group root is clean-eligible") {
         CleanSelection::WorktreeGroup { primary, linked } => {
@@ -2235,10 +2235,10 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     // can prove reset_fit_widths fired (reset re-seeds with
     // `generation: u64::MAX`, which is the construct-time default).
     {
-        let widths = app.selection_mut().fit_widths_mut();
+        let widths = app.projects_mut().fit_widths_mut();
         widths.generation = 0;
     }
-    assert_eq!(app.selection().fit_widths().generation, 0);
+    assert_eq!(app.projects().fit_widths().generation, 0);
 
     let cfg = app.current_config().clone();
     app.apply_lint_config_change(&cfg);
@@ -2257,7 +2257,7 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     );
     // Selection: fit_widths reset (back to construct-time sentinel).
     assert_eq!(
-        app.selection().fit_widths().generation,
+        app.projects().fit_widths().generation,
         u64::MAX,
         "apply_lint_config_change must reset fit_widths"
     );

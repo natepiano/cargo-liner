@@ -14,7 +14,7 @@ use crate::tui::app::target_index::CleanSelection;
 impl App {
     pub fn selected_row(&self) -> Option<VisibleRow> {
         let rows = self.visible_rows();
-        let selected = self.selection.cursor();
+        let selected = self.project_list.cursor();
         rows.get(selected).copied()
     }
 
@@ -177,7 +177,7 @@ impl App {
     /// Resolve the display path of the currently selected row using `project_list_items`.
     pub fn selected_display_path(&self) -> Option<DisplayPath> {
         let rows = self.visible_rows();
-        let selected = self.selection.cursor();
+        let selected = self.project_list.cursor();
         let row = rows.get(selected)?;
         self.display_path_for_row(*row)
     }

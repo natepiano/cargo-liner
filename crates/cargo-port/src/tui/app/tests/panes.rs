@@ -216,7 +216,7 @@ fn cpu_pane_selection_persists_across_project_changes() {
     let mut app = make_app(&[project_a, project_b]);
     app.focus_mut().set(PaneId::Cpu);
     app.panes_mut().cpu_mut().viewport_mut().set_pos(1);
-    app.selection_mut().set_cursor(1);
+    app.projects_mut().set_cursor(1);
 
     app.sync_selected_project();
 
@@ -252,7 +252,7 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
     let project = make_project(Some("demo"), "/never-real/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     app.scan_state_mut().phase = ScanPhase::Complete;
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
     app.sync_selected_project();
 
     app.ensure_detail_cached();
@@ -345,7 +345,7 @@ fn first_non_empty_tree_build_focuses_project_list() {
     apply_items(&mut app, &[project]);
 
     assert_eq!(app.focused_pane(), PaneId::ProjectList);
-    assert_eq!(app.selection().cursor(), 0);
+    assert_eq!(app.projects().cursor(), 0);
 }
 
 #[test]
@@ -438,7 +438,7 @@ fn project_change_resets_project_dependent_panes() {
     app.panes_mut().git_mut().viewport_mut().set_pos(4);
     app.panes_mut().targets_mut().viewport_mut().set_pos(5);
     app.ci_mut().viewport_mut().set_pos(6);
-    app.selection_mut().set_cursor(1);
+    app.projects_mut().set_cursor(1);
     app.sync_selected_project();
 
     assert_eq!(app.panes().package().viewport().pos(), 0);
@@ -450,7 +450,7 @@ fn project_change_resets_project_dependent_panes() {
     assert!(!app.focus().remembers_visited(PaneId::Targets));
     assert!(!app.focus().remembers_visited(PaneId::CiRuns));
     assert_eq!(
-        app.selection()
+        app.projects()
             .paths()
             .selected_project
             .as_ref()
@@ -543,7 +543,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         "deleted top-level project should still render before dismiss"
     );
 
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
     assert!(
         app.focused_dismiss_target().is_some(),
         "deleted top-level project should expose dismiss affordance"
@@ -625,7 +625,7 @@ fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
         Deleted
     );
 
-    app.selection_mut().set_cursor(0);
+    app.projects_mut().set_cursor(0);
     let target = app
         .focused_dismiss_target()
         .expect("deleted top-level project should be dismissable");

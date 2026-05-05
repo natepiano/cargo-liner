@@ -31,7 +31,6 @@ use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project::WorkspaceMetadataStore;
-use crate::project_list::ProjectList;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::tui::background::Background;
@@ -41,8 +40,8 @@ use crate::tui::inflight::Inflight;
 use crate::tui::keymap_state::Keymap;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::Panes;
+use crate::tui::project_list::ProjectList;
 use crate::tui::scan_state::Scan;
-use crate::tui::selection::Selection;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -170,7 +169,8 @@ impl AppBuilder<Started> {
         let channeled = started.channeled;
         let inputs = channeled.inputs;
         let panes = Panes::new(&inputs.cfg.cpu);
-        let selection = Selection::new(inputs.cfg.lint.enabled);
+        let mut projects = started.projects;
+        projects.init_runtime_state(inputs.cfg.lint.enabled);
         let background = Background::new(BackgroundChannels {
             bg:       (inputs.bg_tx, inputs.bg_rx),
             ci_fetch: (channeled.ci_fetch_tx, channeled.ci_fetch_rx),
@@ -200,8 +200,7 @@ impl AppBuilder<Started> {
         let mut app = App {
             net: crate::tui::net_state::Net::new(inputs.http_client),
             panes,
-            selection,
-            projects: started.projects,
+            project_list: projects,
             background,
             inflight,
             lint,

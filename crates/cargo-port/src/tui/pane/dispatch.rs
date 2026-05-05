@@ -18,10 +18,10 @@ use ratatui::layout::Rect;
 use strum::EnumIter;
 
 use super::PaneFocusState;
-use crate::project_list::ProjectList;
 use crate::tui::app::DismissTarget;
 use crate::tui::config_state::Config;
 use crate::tui::panes::PaneId;
+use crate::tui::project_list::ProjectList;
 
 /// Bundle of references a pane needs at render time.
 pub struct PaneRenderCtx<'a> {
@@ -29,7 +29,7 @@ pub struct PaneRenderCtx<'a> {
     pub is_focused:            bool,
     pub animation_elapsed:     Duration,
     pub config:                &'a Config,
-    pub projects:              &'a ProjectList,
+    pub project_list:          &'a ProjectList,
     pub selected_project_path: Option<&'a Path>,
 }
 

@@ -229,7 +229,7 @@ pub(super) fn render_package_pane_body(
         is_focused: _,
         animation_elapsed,
         config,
-        projects: _,
+        project_list: _,
         selected_project_path: _,
     } = ctx;
     let lint_enabled = config.current().lint.enabled;

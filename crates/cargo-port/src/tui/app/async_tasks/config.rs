@@ -186,7 +186,7 @@ impl App {
                 if actions.refresh_lint_runtime.should_apply() {
                     self.respawn_watcher_and_register_existing_projects();
                 }
-                self.projects
+                self.project_list
                     .regroup_members(&self.config.current().tui.inline_dirs);
                 self.refresh_derived_state();
             },
@@ -230,9 +230,9 @@ impl App {
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
 
-        // Selection: recompute fit widths (column schema differs
-        // with lint enabled / disabled).
-        self.selection
+        // Recompute fit widths — column schema differs with lint
+        // enabled / disabled.
+        self.project_list
             .reset_fit_widths(self.config().lint_enabled());
 
         if let Some(warning) = lint_spawn.warning {
