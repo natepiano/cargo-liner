@@ -16,11 +16,14 @@ use anyhow::Result;
 
 use super::persistence;
 use crate::config::LoadedConfig;
+use crate::constants::CARGO_TERM_COLOR_ALWAYS;
+use crate::constants::CARGO_TERM_COLOR_ENV;
 use crate::constants::CONFIG_FINGERPRINT_ENV;
 use crate::constants::CONFIG_JSON_ENV;
 use crate::constants::CONFIG_ROOT_ENV;
 use crate::constants::DRIVER_ENV;
 use crate::constants::FINDINGS_DIR_ENV;
+use crate::constants::RUSTC_WORKSPACE_WRAPPER_ENV;
 use crate::constants::SCOPE_FINGERPRINT_ENV;
 use crate::diagnostics::CompilerWarningFacts;
 use crate::diagnostics::Report;
@@ -143,7 +146,7 @@ fn run_cargo_check(
     command.args(&cargo_plan.cargo_args);
 
     command
-        .env("RUSTC_WORKSPACE_WRAPPER", &current_exe)
+        .env(RUSTC_WORKSPACE_WRAPPER_ENV, &current_exe)
         .env(DRIVER_ENV, "1")
         .env(CONFIG_ROOT_ENV, &loaded_config.root)
         .env(
@@ -196,7 +199,7 @@ pub fn run_cargo_fix(cargo_plan: &CargoCheckPlan, color: ColorMode) -> Result<Du
     }
 
     if color.is_enabled() {
-        command.env("CARGO_TERM_COLOR", "always");
+        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
     }
 
     let status = command
@@ -219,7 +222,7 @@ fn run_cargo_command(
     color: ColorMode,
 ) -> Result<CommandOutcome> {
     if color.is_enabled() {
-        command.env("CARGO_TERM_COLOR", "always");
+        command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
     }
     command.stdin(Stdio::inherit());
     command.stderr(Stdio::piped());

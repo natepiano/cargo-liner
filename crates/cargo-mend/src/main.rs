@@ -35,6 +35,12 @@ use std::time::Instant;
 use anyhow::Result;
 use cli::FixExecution;
 use config::DiagnosticsConfig;
+use constants::CARGO_TERM_COLOR_ALWAYS;
+use constants::CARGO_TERM_COLOR_ENV;
+use constants::CARGO_TERM_COLOR_NEVER;
+use constants::CLICOLOR_ENV;
+use constants::CLICOLOR_FORCE_ENV;
+use constants::DRIVER_ENV;
 use constants::EXIT_CODE_ERROR;
 use constants::EXIT_CODE_WARNING;
 use display_filter::DisplayFilter;
@@ -51,7 +57,7 @@ use runner::MendRunner;
 const FIX_ALL_MAX_PASSES: usize = 5;
 
 fn main() -> ExitCode {
-    if std::env::var_os("MEND_DRIVER").is_some() {
+    if std::env::var_os(DRIVER_ENV).is_some() {
         return compiler::driver_main();
     }
 
@@ -224,16 +230,16 @@ fn run() -> Result<ExitCode, MendFailure> {
 }
 
 fn color_mode() -> ColorMode {
-    if let Ok(choice) = std::env::var("CLICOLOR_FORCE")
+    if let Ok(choice) = std::env::var(CLICOLOR_FORCE_ENV)
         && choice != "0"
     {
         return ColorMode::Enabled;
     }
 
-    if let Ok(choice) = std::env::var("CARGO_TERM_COLOR") {
+    if let Ok(choice) = std::env::var(CARGO_TERM_COLOR_ENV) {
         let color_mode = match choice.to_ascii_lowercase().as_str() {
-            "never" => Some(ColorMode::Disabled),
-            "always" => Some(ColorMode::Enabled),
+            CARGO_TERM_COLOR_NEVER => Some(ColorMode::Disabled),
+            CARGO_TERM_COLOR_ALWAYS => Some(ColorMode::Enabled),
             _ => None,
         };
         if let Some(color_mode) = color_mode {
@@ -241,7 +247,7 @@ fn color_mode() -> ColorMode {
         }
     }
 
-    if let Ok(choice) = std::env::var("CLICOLOR")
+    if let Ok(choice) = std::env::var(CLICOLOR_ENV)
         && choice == "0"
     {
         return ColorMode::Disabled;
