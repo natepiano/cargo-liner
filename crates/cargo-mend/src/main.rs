@@ -38,11 +38,14 @@ use config::DiagnosticsConfig;
 use constants::CARGO_TERM_COLOR_ALWAYS;
 use constants::CARGO_TERM_COLOR_ENV;
 use constants::CARGO_TERM_COLOR_NEVER;
+use constants::CLICOLOR_DISABLED_VALUE;
 use constants::CLICOLOR_ENV;
 use constants::CLICOLOR_FORCE_ENV;
 use constants::DRIVER_ENV;
 use constants::EXIT_CODE_ERROR;
 use constants::EXIT_CODE_WARNING;
+use constants::TERM_DUMB_VALUE;
+use constants::TERM_ENV;
 use diagnostics::CompilerWarningFacts;
 use display_filter::DisplayFilter;
 use outcome::ExecutionOutcome;
@@ -235,7 +238,7 @@ fn run() -> Result<ExitCode, MendFailure> {
 
 fn color_mode() -> ColorMode {
     if let Ok(choice) = std::env::var(CLICOLOR_FORCE_ENV)
-        && choice != "0"
+        && choice != CLICOLOR_DISABLED_VALUE
     {
         return ColorMode::Enabled;
     }
@@ -252,7 +255,7 @@ fn color_mode() -> ColorMode {
     }
 
     if let Ok(choice) = std::env::var(CLICOLOR_ENV)
-        && choice == "0"
+        && choice == CLICOLOR_DISABLED_VALUE
     {
         return ColorMode::Disabled;
     }
@@ -261,7 +264,7 @@ fn color_mode() -> ColorMode {
         return ColorMode::Enabled;
     }
 
-    if std::env::var("TERM").is_ok_and(|term| term != "dumb") {
+    if std::env::var(TERM_ENV).is_ok_and(|term| term != TERM_DUMB_VALUE) {
         ColorMode::Enabled
     } else {
         ColorMode::Disabled

@@ -57,7 +57,7 @@ impl Findings {
 pub(crate) fn render_human_report(
     report: &Report,
     compiler_stats: &CompilerStats,
-    color: ColorMode,
+    color_mode: ColorMode,
 ) -> String {
     let findings = Findings::classify(report, compiler_stats);
     if findings == Findings::None {
@@ -67,15 +67,15 @@ pub(crate) fn render_human_report(
     let mut output = String::new();
     if matches!(findings, Findings::MendOnly | Findings::Both) {
         for finding in &report.findings {
-            render_finding(&mut output, finding, color);
+            render_finding(&mut output, finding, color_mode);
         }
     }
 
-    if let Some(errors_block) = errors_block(report, color) {
+    if let Some(errors_block) = errors_block(report, color_mode) {
         output.push_str(&errors_block);
         output.push('\n');
     }
-    output.push_str(&summary_line(report, compiler_stats, color));
+    output.push_str(&summary_line(report, compiler_stats, color_mode));
     output.push('\n');
     output
 }
@@ -84,19 +84,19 @@ pub(crate) fn render_timing(
     total: Duration,
     check: Duration,
     mend: Duration,
-    color: ColorMode,
+    color_mode: ColorMode,
 ) -> String {
     format!(
         "    {} in {:.2}s (check: {:.2}s, mend: {:.2}s)",
-        paint("Finished", ANSI_BOLD_GREEN, color),
+        paint("Finished", ANSI_BOLD_GREEN, color_mode),
         total.as_secs_f64(),
         check.as_secs_f64(),
         mend.as_secs_f64(),
     )
 }
 
-fn render_finding(output: &mut String, finding: &Finding, color: ColorMode) {
-    let severity = severity_label(finding.severity, color);
+fn render_finding(output: &mut String, finding: &Finding, color_mode: ColorMode) {
+    let severity = severity_label(finding.severity, color_mode);
     let headline = diagnostics::finding_headline(finding);
     let line_label = finding.line.to_string();
     let gutter_width = line_label.len();
@@ -106,40 +106,40 @@ fn render_finding(output: &mut String, finding: &Finding, color: ColorMode) {
     let _ = writeln!(
         output,
         "{arrow_pad}{} {}:{}:{}",
-        blue_bold("-->", color),
+        blue_bold("-->", color_mode),
         finding.path,
         finding.line,
         finding.column
     );
-    let _ = writeln!(output, "{gutter_pad}{}", blue_bold("|", color));
+    let _ = writeln!(output, "{gutter_pad}{}", blue_bold("|", color_mode));
     let _ = writeln!(
         output,
         "{:>width$} {} {}",
-        blue_bold(&line_label, color),
-        blue_bold("|", color),
+        blue_bold(&line_label, color_mode),
+        blue_bold("|", color_mode),
         finding.source_line,
         width = gutter_width
     );
     let _ = writeln!(
         output,
         "{gutter_pad}{} {}",
-        blue_bold("|", color),
+        blue_bold("|", color_mode),
         severity_marker(
             finding.severity,
             finding.column,
             finding.highlight_len,
-            color
+            color_mode
         )
     );
     if let Some(inline_help) = diagnostics::custom_inline_help_text(finding)
         .or_else(|| diagnostics::inline_help_text(finding))
     {
-        let _ = writeln!(output, "{gutter_pad}{}", blue_bold("|", color));
+        let _ = writeln!(output, "{gutter_pad}{}", blue_bold("|", color_mode));
         let _ = writeln!(
             output,
             "{gutter_pad}{} {}",
-            blue_bold("|", color),
-            blue_bold(&format!("help: {inline_help}"), color)
+            blue_bold("|", color_mode),
+            blue_bold(&format!("help: {inline_help}"), color_mode)
         );
     }
 
@@ -148,14 +148,14 @@ fn render_finding(output: &mut String, finding: &Finding, color: ColorMode) {
         || diagnostics::inline_help_text(finding).is_some()
         || !reasons.is_empty()
     {
-        let _ = writeln!(output, "{gutter_pad}{}", blue_bold("|", color));
+        let _ = writeln!(output, "{gutter_pad}{}", blue_bold("|", color_mode));
     }
     if !reasons.is_empty() {
         for reason in reasons {
             let _ = writeln!(
                 output,
                 "{gutter_pad}{} {}",
-                diagnostic_label("note", color),
+                diagnostic_label("note", color_mode),
                 reason
             );
         }
@@ -164,7 +164,7 @@ fn render_finding(output: &mut String, finding: &Finding, color: ColorMode) {
     let _ = writeln!(
         output,
         "{gutter_pad}{} for further information visit {help_url}",
-        diagnostic_label("help", color)
+        diagnostic_label("help", color_mode)
     );
     let _ = writeln!(output);
 }
@@ -186,7 +186,7 @@ struct SummaryFixable {
     command: &'static str,
 }
 
-fn errors_block(report: &Report, color: ColorMode) -> Option<String> {
+fn errors_block(report: &Report, color_mode: ColorMode) -> Option<String> {
     if report.summary.errors == 0 {
         return None;
     }
@@ -194,7 +194,7 @@ fn errors_block(report: &Report, color: ColorMode) -> Option<String> {
     let label = pluralize(n, "mend error", "mend errors");
     Some(format!(
         "{} {n} {label} (not auto-fixable; fix manually)",
-        paint("errors:", ANSI_BOLD_RED, color)
+        paint("errors:", ANSI_BOLD_RED, color_mode)
     ))
 }
 
@@ -213,7 +213,7 @@ const fn fixable_category_count(report: &Report, compiler_stats: &CompilerStats)
     n
 }
 
-fn summary_line(report: &Report, compiler_stats: &CompilerStats, color: ColorMode) -> String {
+fn summary_line(report: &Report, compiler_stats: &CompilerStats, color_mode: ColorMode) -> String {
     let mut rows = Vec::new();
     let categories = fixable_category_count(report, compiler_stats);
     let total_fixable = report.summary.fixable_with_fix
@@ -258,7 +258,7 @@ fn summary_line(report: &Report, compiler_stats: &CompilerStats, color: ColorMod
     }
 
     if rows.is_empty() {
-        return format!("{} no issues found", dim("summary:", color));
+        return format!("{} no issues found", dim("summary:", color_mode));
     }
 
     // When fixables span multiple flag categories, append a `--fix-all` entry
@@ -273,10 +273,10 @@ fn summary_line(report: &Report, compiler_stats: &CompilerStats, color: ColorMod
         });
     }
 
-    render_summary_rows(&rows, color)
+    render_summary_rows(&rows, color_mode)
 }
 
-fn render_summary_rows(rows: &[SummaryRow], color: ColorMode) -> String {
+fn render_summary_rows(rows: &[SummaryRow], color_mode: ColorMode) -> String {
     let count_width = rows.iter().map(|r| digit_count(r.count)).max().unwrap_or(1);
     let desc_width = rows.iter().map(|r| r.description.len()).max().unwrap_or(0);
     let fixable_count_width = rows
@@ -285,7 +285,7 @@ fn render_summary_rows(rows: &[SummaryRow], color: ColorMode) -> String {
         .map(|f| digit_count(f.count))
         .max()
         .unwrap_or(0);
-    let prefix = dim("summary:", color);
+    let prefix = dim("summary:", color_mode);
     let indent = " ".repeat("summary:".len());
     // Continuation indent fills the count + description columns so the dash
     // aligns with the inline fixable on the parent row.
@@ -338,22 +338,24 @@ fn render_summary_rows(rows: &[SummaryRow], color: ColorMode) -> String {
 
 fn digit_count(n: usize) -> usize { n.to_string().len() }
 
-fn severity_label(severity: Severity, color: ColorMode) -> String {
+fn severity_label(severity: Severity, color_mode: ColorMode) -> String {
     match severity {
-        Severity::Error => paint("error:", ANSI_BOLD_RED, color),
-        Severity::Warning => paint("warning:", ANSI_BOLD_YELLOW, color),
+        Severity::Error => paint("error:", ANSI_BOLD_RED, color_mode),
+        Severity::Warning => paint("warning:", ANSI_BOLD_YELLOW, color_mode),
     }
 }
 
-fn dim(text: &str, color: ColorMode) -> String { paint(text, ANSI_DIM, color) }
+fn dim(text: &str, color_mode: ColorMode) -> String { paint(text, ANSI_DIM, color_mode) }
 
-fn blue_bold(text: &str, color: ColorMode) -> String { paint(text, ANSI_BOLD_BLUE, color) }
+fn blue_bold(text: &str, color_mode: ColorMode) -> String {
+    paint(text, ANSI_BOLD_BLUE, color_mode)
+}
 
 fn severity_marker(
     severity: Severity,
     column: usize,
     highlight_len: usize,
-    color: ColorMode,
+    color_mode: ColorMode,
 ) -> String {
     let indent = " ".repeat(column.saturating_sub(1));
     let carets = "^".repeat(highlight_len.max(1));
@@ -361,21 +363,21 @@ fn severity_marker(
         Severity::Error => ANSI_BOLD_RED,
         Severity::Warning => ANSI_BOLD_YELLOW,
     };
-    format!("{indent}{}", paint(&carets, code, color))
+    format!("{indent}{}", paint(&carets, code, color_mode))
 }
 
-fn diagnostic_label(kind: &str, color: ColorMode) -> String {
-    let prefix = blue_bold("=", color);
+fn diagnostic_label(kind: &str, color_mode: ColorMode) -> String {
+    let prefix = blue_bold("=", color_mode);
     let label = match kind {
-        "help" => paint("help", ANSI_BOLD, color),
-        "note" => paint("note", ANSI_BOLD, color),
+        "help" => paint("help", ANSI_BOLD, color_mode),
+        "note" => paint("note", ANSI_BOLD, color_mode),
         other => other.to_string(),
     };
     format!("{prefix} {label}:")
 }
 
-fn paint(text: &str, code: &str, color: ColorMode) -> String {
-    match color {
+fn paint(text: &str, code: &str, color_mode: ColorMode) -> String {
+    match color_mode {
         ColorMode::Enabled => format!("\x1b[{code}m{text}\x1b[0m"),
         ColorMode::Disabled => text.to_string(),
     }

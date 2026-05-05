@@ -9,6 +9,8 @@ pub(crate) const ANSI_DIM: &str = "2";
 // Color mode
 pub(crate) const CARGO_TERM_COLOR_ALWAYS: &str = "always";
 pub(crate) const CARGO_TERM_COLOR_NEVER: &str = "never";
+pub(crate) const CLICOLOR_DISABLED_VALUE: &str = "0";
+pub(crate) const TERM_DUMB_VALUE: &str = "dumb";
 
 // Config
 pub(crate) const APP_NAME: &str = "cargo-mend";
@@ -26,6 +28,7 @@ pub(crate) const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
 pub(crate) const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
 pub(crate) const RUSTC_WORKSPACE_WRAPPER_ENV: &str = "RUSTC_WORKSPACE_WRAPPER";
 pub(crate) const SCOPE_FINGERPRINT_ENV: &str = "MEND_SCOPE_FINGERPRINT";
+pub(crate) const TERM_ENV: &str = "TERM";
 
 // Exit codes
 pub(crate) const EXIT_CODE_ERROR: u8 = 1;

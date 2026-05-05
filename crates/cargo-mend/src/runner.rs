@@ -45,7 +45,7 @@ pub(crate) struct MendRunner<'a> {
     selection:     &'a Selection,
     cargo_plan:    &'a CargoCheckPlan,
     loaded_config: &'a LoadedConfig,
-    color:         ColorMode,
+    color_mode:    ColorMode,
     output:        OutputFormat,
 }
 
@@ -91,14 +91,14 @@ impl<'a> MendRunner<'a> {
         selection: &'a Selection,
         cargo_plan: &'a CargoCheckPlan,
         loaded_config: &'a LoadedConfig,
-        color: ColorMode,
+        color_mode: ColorMode,
         output: OutputFormat,
     ) -> Self {
         Self {
             selection,
             cargo_plan,
             loaded_config,
-            color,
+            color_mode,
             output,
         }
     }
@@ -379,7 +379,7 @@ impl<'a> MendRunner<'a> {
             self.cargo_plan,
             self.loaded_config,
             output_mode,
-            self.color,
+            self.color_mode,
         )?;
         let report = &mut result.report;
         let diagnostics_config = &self.loaded_config.diagnostics_config;

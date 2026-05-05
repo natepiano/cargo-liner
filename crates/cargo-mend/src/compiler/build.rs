@@ -73,7 +73,7 @@ pub fn run_selection(
     cargo_plan: &CargoCheckPlan,
     loaded_config: &LoadedConfig,
     output_mode: BuildOutputMode,
-    color: ColorMode,
+    color_mode: ColorMode,
 ) -> Result<SelectionResult, MendFailure> {
     let findings_dir = persistence::prepare_findings_dir(cargo_plan.target_directory.as_path())
         .map_err(|err| {
@@ -89,7 +89,7 @@ pub fn run_selection(
         &findings_dir,
         &scope_fingerprint,
         output_mode,
-        color,
+        color_mode,
     )
     .map_err(|err| {
         MendFailure::Analysis(AnalysisFailure {
@@ -138,7 +138,7 @@ fn run_cargo_check(
     findings_dir: &Path,
     scope_fingerprint: &str,
     output_mode: BuildOutputMode,
-    color: ColorMode,
+    color_mode: ColorMode,
 ) -> Result<CommandOutcome> {
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
     let mut command = Command::new("cargo");
@@ -159,7 +159,7 @@ fn run_cargo_check(
         .env(SCOPE_FINGERPRINT_ENV, scope_fingerprint)
         .stdin(Stdio::inherit());
 
-    run_cargo_command(&mut command, output_mode, color)
+    run_cargo_command(&mut command, output_mode, color_mode)
         .context("failed to run cargo check for mend")
 }
 
@@ -172,7 +172,7 @@ fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-pub fn run_cargo_fix(cargo_plan: &CargoCheckPlan, color: ColorMode) -> Result<Duration> {
+pub fn run_cargo_fix(cargo_plan: &CargoCheckPlan, color_mode: ColorMode) -> Result<Duration> {
     let start = Instant::now();
     let mut command = Command::new("cargo");
     command
@@ -198,7 +198,7 @@ pub fn run_cargo_fix(cargo_plan: &CargoCheckPlan, color: ColorMode) -> Result<Du
         }
     }
 
-    if color.is_enabled() {
+    if color_mode.is_enabled() {
         command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
     }
 
@@ -219,9 +219,9 @@ pub fn run_cargo_fix(cargo_plan: &CargoCheckPlan, color: ColorMode) -> Result<Du
 fn run_cargo_command(
     command: &mut Command,
     output_mode: BuildOutputMode,
-    color: ColorMode,
+    color_mode: ColorMode,
 ) -> Result<CommandOutcome> {
-    if color.is_enabled() {
+    if color_mode.is_enabled() {
         command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
     }
     command.stdin(Stdio::inherit());
