@@ -108,10 +108,12 @@ mod tests {
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
 
+    use anyhow::Result;
+
     use crate::config::VisibilityConfig;
 
     #[test]
-    fn config_relative_path_handles_nested_workspace_paths() -> anyhow::Result<()> {
+    fn config_relative_path_handles_nested_workspace_paths() -> Result<()> {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let workspace_root = std::env::temp_dir().join(format!("mend-config-root-test-{unique}"));
         let file_path = workspace_root.join("mcp/src/brp_tools/tools/mod.rs");
@@ -149,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn config_relative_path_for_settings_handles_workspace_relative_paths() -> anyhow::Result<()> {
+    fn config_relative_path_for_settings_handles_workspace_relative_paths() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let config_root = temp.path().join("workspace");
         let package_root = config_root.join("mcp");

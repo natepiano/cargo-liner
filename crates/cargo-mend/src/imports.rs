@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -6,6 +7,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Context;
+use anyhow::Error;
 use anyhow::Result;
 use proc_macro2::LineColumn;
 use syn::ItemMod;
@@ -69,7 +71,7 @@ pub(crate) struct ValidatedFixSet {
 }
 
 impl TryFrom<Vec<UseFix>> for ValidatedFixSet {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(mut fixes: Vec<UseFix>) -> Result<Self> {
         fixes.sort_by(|left, right| {
@@ -184,7 +186,12 @@ pub(crate) fn apply_fixes(fixes: &ValidatedFixSet) -> Result<usize> {
     for (path, mut file_fixes) in by_file {
         let mut text = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        file_fixes.sort_by_key(|fix| std::cmp::Reverse(fix.start));
+        // Apply later edits first so earlier offsets remain valid. When two
+        // fixes share a start offset (a replacement at [N..M] and an insertion
+        // at [N..N]), apply the wider replacement first — otherwise the
+        // insertion shifts the file and the replacement's [N..M] hits the
+        // freshly-inserted text instead of the original bytes.
+        file_fixes.sort_by_key(|fix| Reverse((fix.start, fix.end)));
         for fix in file_fixes {
             if fix.end <= text.len() && fix.start <= fix.end {
                 text.replace_range(fix.start..fix.end, &fix.replacement);

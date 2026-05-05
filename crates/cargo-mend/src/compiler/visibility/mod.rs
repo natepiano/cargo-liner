@@ -13,6 +13,7 @@ use rustc_hir::ForeignItem;
 use rustc_hir::ImplItem;
 use rustc_hir::Item;
 use rustc_hir::ItemKind;
+use rustc_middle::middle::privacy::EffectiveVisibilities;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::Span;
 use rustc_span::def_id::CRATE_DEF_ID;
@@ -83,7 +84,7 @@ pub(super) struct VisibilityContext<'a, 'tcx> {
     settings:               &'a DriverSettings,
     source_root:            &'a Path,
     root_module:            &'a Path,
-    effective_visibilities: &'a rustc_middle::middle::privacy::EffectiveVisibilities,
+    effective_visibilities: &'a EffectiveVisibilities,
     source_cache:           &'a SourceCache,
 }
 

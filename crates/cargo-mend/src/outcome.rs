@@ -3,6 +3,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Error;
+use fmt::Display;
+use fmt::Formatter;
+use fmt::Result;
 
 use super::constants::EXIT_CODE_WARNING;
 use super::diagnostics::Report;
@@ -91,8 +94,8 @@ impl MendFailure {
     pub(crate) fn exit_code() -> ExitCode { ExitCode::from(EXIT_CODE_WARNING) }
 }
 
-impl fmt::Display for MendFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for MendFailure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
             Self::Analysis(failure) => write!(f, "{failure}"),
             Self::FixValidation(failure) => write!(f, "{failure}"),
@@ -101,8 +104,8 @@ impl fmt::Display for MendFailure {
     }
 }
 
-impl fmt::Display for AnalysisFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for AnalysisFailure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match &self.cause {
             CompilerFailureCause::CargoCheck => {
                 write!(
@@ -117,8 +120,8 @@ impl fmt::Display for AnalysisFailure {
     }
 }
 
-impl fmt::Display for FixValidationFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for FixValidationFailure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         let source = match &self.cause {
             CompilerFailureCause::CargoCheck => {
                 "compiler failed after applying mend fixes".to_string()

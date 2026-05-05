@@ -2,8 +2,11 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use syn::File;
+use syn::Item;
 use syn::ItemUse;
 use syn::UseTree;
+use syn::Visibility;
 
 use super::settings::DriverSettings;
 use super::source_cache;
@@ -343,13 +346,13 @@ pub(super) fn parent_of_boundary(
 }
 
 pub(super) fn exported_names_from_parent_boundary(
-    file: &syn::File,
+    file: &File,
     child_module_name: &str,
     item_name: &str,
 ) -> ParentFacadeExports {
     let mut exported = ParentFacadeExports::default();
     for item in &file.items {
-        let syn::Item::Use(item_use) = item else {
+        let Item::Use(item_use) = item else {
             continue;
         };
         let Some(visibility) = parent_facade_visibility(&item_use.vis) else {
@@ -421,10 +424,10 @@ fn pub_use_is_fix_supported_with_prefix(
     }
 }
 
-pub(super) fn parent_facade_visibility(vis: &syn::Visibility) -> Option<ParentFacadeVisibility> {
+pub(super) fn parent_facade_visibility(vis: &Visibility) -> Option<ParentFacadeVisibility> {
     match vis {
-        syn::Visibility::Public(_) => Some(ParentFacadeVisibility::Public),
-        syn::Visibility::Restricted(restricted)
+        Visibility::Public(_) => Some(ParentFacadeVisibility::Public),
+        Visibility::Restricted(restricted)
             if restricted.path.segments.len() == 1
                 && restricted.path.segments[0].ident == "super" =>
         {
@@ -615,7 +618,7 @@ pub(super) fn public_reexport_exists_outside_parent(
         };
 
         for item in &file.items {
-            let syn::Item::Use(item_use) = item else {
+            let Item::Use(item_use) = item else {
                 continue;
             };
             let Some(_) = parent_facade_visibility(&item_use.vis) else {

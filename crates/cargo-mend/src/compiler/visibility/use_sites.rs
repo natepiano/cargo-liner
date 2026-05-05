@@ -11,12 +11,17 @@
 //! macro invocations and paths produced by proc-macro expansion — both
 //! of which the source-level scanner cannot.
 
+use rustc_hir::AmbigArg;
 use rustc_hir::Expr;
 use rustc_hir::ExprKind;
+use rustc_hir::HirId;
 use rustc_hir::Item;
 use rustc_hir::ItemKind;
+use rustc_hir::Pat;
+use rustc_hir::PatExprKind;
 use rustc_hir::PatKind;
 use rustc_hir::QPath;
+use rustc_hir::Ty;
 use rustc_hir::TyKind;
 use rustc_hir::def::Res;
 use rustc_hir::def_id::CRATE_DEF_ID;
@@ -25,6 +30,7 @@ use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::Visitor;
 use rustc_hir::intravisit::walk_expr;
 use rustc_hir::intravisit::walk_item;
+use rustc_middle::hir::nested_filter::All;
 use rustc_middle::ty::TyCtxt;
 
 use crate::compiler::persistence::UseSite;
@@ -78,7 +84,7 @@ impl UseSiteCollector<'_, '_> {
         });
     }
 
-    fn record_qpath(&mut self, qpath: &QPath<'_>, hir_id: rustc_hir::HirId) {
+    fn record_qpath(&mut self, qpath: &QPath<'_>, hir_id: HirId) {
         let res = match qpath {
             QPath::Resolved(_, path) => path.res,
             QPath::TypeRelative(..) => {
@@ -99,7 +105,7 @@ impl UseSiteCollector<'_, '_> {
 }
 
 impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
-    type NestedFilter = rustc_middle::hir::nested_filter::All;
+    type NestedFilter = All;
 
     fn maybe_tcx(&mut self) -> TyCtxt<'tcx> { self.tcx }
 
@@ -134,16 +140,16 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
         walk_expr(self, expr);
     }
 
-    fn visit_ty(&mut self, ty: &'tcx rustc_hir::Ty<'tcx, rustc_hir::AmbigArg>) {
+    fn visit_ty(&mut self, ty: &'tcx Ty<'tcx, AmbigArg>) {
         if let TyKind::Path(qpath) = &ty.kind {
             self.record_qpath(qpath, ty.hir_id);
         }
         rustc_hir::intravisit::walk_ty(self, ty);
     }
 
-    fn visit_pat(&mut self, pat: &'tcx rustc_hir::Pat<'tcx>) {
+    fn visit_pat(&mut self, pat: &'tcx Pat<'tcx>) {
         if let PatKind::Expr(expr) = &pat.kind
-            && let rustc_hir::PatExprKind::Path(qpath) = &expr.kind
+            && let PatExprKind::Path(qpath) = &expr.kind
         {
             self.record_qpath(qpath, expr.hir_id);
         }

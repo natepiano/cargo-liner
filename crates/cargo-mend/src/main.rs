@@ -40,6 +40,8 @@ use constants::EXIT_CODE_WARNING;
 use display_filter::DisplayFilter;
 use outcome::ExecutionOutcome;
 use outcome::MendFailure;
+use render::ColorMode;
+use render::CompilerStats;
 use render::OutputFormat;
 use run_mode::OperationMode;
 use runner::MendRunner;
@@ -178,7 +180,7 @@ fn run() -> Result<ExitCode, MendFailure> {
     let display_filter = DisplayFilter::from_cli(&cli.cargo, &selection.packages);
     display_filter.apply(&mut outcome.report);
 
-    let compiler_stats = render::CompilerStats {
+    let compiler_stats = CompilerStats {
         warnings: outcome.compiler_warnings,
         fixable:  outcome.compiler_fixable,
     };
@@ -221,17 +223,17 @@ fn run() -> Result<ExitCode, MendFailure> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn color_mode() -> render::ColorMode {
+fn color_mode() -> ColorMode {
     if let Ok(choice) = std::env::var("CLICOLOR_FORCE")
         && choice != "0"
     {
-        return render::ColorMode::Enabled;
+        return ColorMode::Enabled;
     }
 
     if let Ok(choice) = std::env::var("CARGO_TERM_COLOR") {
         let color_mode = match choice.to_ascii_lowercase().as_str() {
-            "never" => Some(render::ColorMode::Disabled),
-            "always" => Some(render::ColorMode::Enabled),
+            "never" => Some(ColorMode::Disabled),
+            "always" => Some(ColorMode::Enabled),
             _ => None,
         };
         if let Some(color_mode) = color_mode {
@@ -242,17 +244,17 @@ fn color_mode() -> render::ColorMode {
     if let Ok(choice) = std::env::var("CLICOLOR")
         && choice == "0"
     {
-        return render::ColorMode::Disabled;
+        return ColorMode::Disabled;
     }
 
     if std::io::stdout().is_terminal() || std::io::stderr().is_terminal() {
-        return render::ColorMode::Enabled;
+        return ColorMode::Enabled;
     }
 
     if std::env::var("TERM").is_ok_and(|term| term != "dumb") {
-        render::ColorMode::Enabled
+        ColorMode::Enabled
     } else {
-        render::ColorMode::Disabled
+        ColorMode::Disabled
     }
 }
 

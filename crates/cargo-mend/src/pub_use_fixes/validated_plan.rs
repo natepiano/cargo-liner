@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use anyhow::Result;
 use proc_macro2::LineColumn;
+use syn::ItemMod;
 use syn::ItemUse;
 use syn::UseTree;
 use syn::spanned::Spanned;
@@ -105,7 +106,7 @@ struct PubUseFixVisitor<'a> {
 }
 
 impl Visit<'_> for PubUseFixVisitor<'_> {
-    fn visit_item_mod(&mut self, node: &syn::ItemMod) {
+    fn visit_item_mod(&mut self, node: &ItemMod) {
         if let Some((_, items)) = &node.content {
             self.current_module_path.push(node.ident.to_string());
             for item in items {

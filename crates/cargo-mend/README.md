@@ -457,8 +457,11 @@ qualifies all bare references in the file.
 <a id="inline-path-qualified-type"></a>
 ### Inline path-qualified type
 
-This warning detects types used with inline path qualification (like `crate::module::MyType`)
-and suggests adding a `use` import at the top of the file instead.
+This warning detects types used with inline path qualification — both intra-crate
+(`crate::module::MyType`, `super::module::MyType`) and external-crate
+(`ratatui::Frame`, `std::collections::BTreeMap`, `notify::WatcherKind::Variant`) —
+and suggests adding a `use` import at the top of the file instead. Trait paths in
+`impl Trait for Type` are also covered.
 
 Example:
 
@@ -468,16 +471,28 @@ fn example() -> crate::module::MyType {
     crate::module::MyType::new()
 }
 
+fn render(frame: &mut ratatui::Frame<'_>) {}
+
+impl crate::pane::Hittable for ToastManager { /* ... */ }
+
 // After:
 use crate::module::MyType;
+use crate::pane::Hittable;
+use ratatui::Frame;
 
 fn example() -> MyType {
     MyType::new()
 }
+
+fn render(frame: &mut Frame<'_>) {}
+
+impl Hittable for ToastManager { /* ... */ }
 ```
 
 `cargo mend --fix` can rewrite these cases automatically. It adds the `use` import and replaces
-all inline occurrences with the bare type name.
+all inline occurrences with the bare type name. The fix is skipped when adding the import would
+shadow a name the file already uses (e.g. it won't add `use io::Result;` if the file relies on
+the prelude `Result` via `Result::ok`).
 
 <a id="shorten-local-crate-import"></a>
 ### Shorten local crate import

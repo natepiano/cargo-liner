@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use proc_macro2::LineColumn;
 use syn::ExprPath;
+use syn::ItemMod;
 use syn::ItemUse;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
@@ -21,10 +23,10 @@ pub(super) struct InlineCallCandidate {
     pub(super) module_name:      String,
     pub(super) module_path:      String,
     pub(super) absolute_module:  Vec<String>,
-    pub(super) prefix_start:     proc_macro2::LineColumn,
-    pub(super) leaf_start:       proc_macro2::LineColumn,
-    pub(super) full_span_start:  proc_macro2::LineColumn,
-    pub(super) full_span_end:    proc_macro2::LineColumn,
+    pub(super) prefix_start:     LineColumn,
+    pub(super) leaf_start:       LineColumn,
+    pub(super) full_span_start:  LineColumn,
+    pub(super) full_span_end:    LineColumn,
     /// True when the target module is the file's own parent module.
     /// Rewrite the call to `super::function_name(...)` and add no `use`.
     pub(super) is_parent_module: bool,
@@ -41,7 +43,7 @@ pub(super) struct InlineCallDetector<'a> {
 impl Visit<'_> for InlineCallDetector<'_> {
     fn visit_item_use(&mut self, _: &ItemUse) {}
 
-    fn visit_item_mod(&mut self, node: &syn::ItemMod) {
+    fn visit_item_mod(&mut self, node: &ItemMod) {
         if node.content.is_some() {
             self.inline_mod_depth += 1;
             syn::visit::visit_item_mod(self, node);

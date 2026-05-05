@@ -1,6 +1,9 @@
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
+use render::ColorMode;
+use render::OutputFormat;
 
 use super::compiler;
 use super::compiler::BuildOutputMode;
@@ -41,8 +44,8 @@ pub(crate) struct MendRunner<'a> {
     selection:     &'a Selection,
     cargo_plan:    &'a CargoCheckPlan,
     loaded_config: &'a LoadedConfig,
-    color:         render::ColorMode,
-    output:        render::OutputFormat,
+    color:         ColorMode,
+    output:        OutputFormat,
 }
 
 struct RunPlan {
@@ -87,8 +90,8 @@ impl<'a> MendRunner<'a> {
         selection: &'a Selection,
         cargo_plan: &'a CargoCheckPlan,
         loaded_config: &'a LoadedConfig,
-        color: render::ColorMode,
-        output: render::OutputFormat,
+        color: ColorMode,
+        output: OutputFormat,
     ) -> Self {
         Self {
             selection,
@@ -108,7 +111,7 @@ impl<'a> MendRunner<'a> {
     }
 
     fn plan(&self, operation_mode: OperationMode) -> Result<RunPlan, MendFailure> {
-        let output_mode = if self.output == render::OutputFormat::Json {
+        let output_mode = if self.output == OutputFormat::Json {
             BuildOutputMode::Json
         } else if operation_mode.fixes.contains(FixKind::FixPubUse) {
             BuildOutputMode::SuppressUnusedImportWarnings
@@ -289,7 +292,7 @@ impl<'a> MendRunner<'a> {
 
     fn combined_fixes(fix_scans: FixScans<'_>) -> Result<ValidatedFixSet, MendFailure> {
         // Collect `prefer_module_import` fix ranges for deconfliction with `ShortenImport`
-        let prefer_ranges: Vec<(&std::path::Path, usize, usize)> = fix_scans
+        let prefer_ranges: Vec<(&Path, usize, usize)> = fix_scans
             .module_imports
             .iter()
             .flat_map(|scan| scan.fixes.iter())

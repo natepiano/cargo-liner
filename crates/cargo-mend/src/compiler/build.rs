@@ -4,7 +4,9 @@ use std::hash::Hasher;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::path::Path;
+use std::process::ChildStderr;
 use std::process::Command;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::Duration;
 use std::time::Instant;
@@ -49,7 +51,7 @@ pub(super) enum DiagnosticBlockKind {
 
 #[derive(Debug, Clone, Copy)]
 struct CommandOutcome {
-    status:            std::process::ExitStatus,
+    status:            ExitStatus,
     warning_facts:     CompilerWarningFacts,
     duration:          Duration,
     compiler_warnings: usize,
@@ -253,7 +255,7 @@ struct StderrObservation {
 }
 
 fn stream_cargo_stderr(
-    stderr: std::process::ChildStderr,
+    stderr: ChildStderr,
     output_mode: BuildOutputMode,
 ) -> Result<StderrObservation> {
     let mut reader = BufReader::new(stderr);

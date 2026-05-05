@@ -1,11 +1,15 @@
 use std::fs;
+use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
 use regex::Regex;
 use syn::Item;
 use syn::ItemUse;
+use syn::UseGroup;
+use syn::UsePath;
 use syn::UseTree;
+use syn::Visibility;
 use syn::spanned::Spanned;
 
 use super::validated_plan;
@@ -13,7 +17,7 @@ use crate::imports::UseFix;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ParentBoundaryKey {
-    pub(super) parent_module: std::path::PathBuf,
+    pub(super) parent_module: PathBuf,
     pub(super) item_start:    usize,
     pub(super) item_end:      usize,
 }
@@ -154,10 +158,10 @@ fn rewrite_parent_pub_use_item_for_exports(
     Ok(lines.join("\n"))
 }
 
-fn facade_use_prefix(vis: &syn::Visibility) -> Option<&'static str> {
+fn facade_use_prefix(vis: &Visibility) -> Option<&'static str> {
     match vis {
-        syn::Visibility::Public(_) => Some("pub use"),
-        syn::Visibility::Restricted(restricted)
+        Visibility::Public(_) => Some("pub use"),
+        Visibility::Restricted(restricted)
             if restricted.path.segments.len() == 1
                 && restricted.path.segments[0].ident == "super" =>
         {
@@ -177,7 +181,7 @@ fn remove_exports_from_use_tree(
             let mut next = prefix;
             next.push(path.ident.to_string());
             let rewritten = remove_exports_from_use_tree(next, &path.tree, exports)?;
-            Some(UseTree::Path(syn::UsePath {
+            Some(UseTree::Path(UsePath {
                 ident:        path.ident.clone(),
                 colon2_token: path.colon2_token,
                 tree:         Box::new(rewritten),
@@ -213,7 +217,7 @@ fn remove_exports_from_use_tree(
                     for item in kept_items {
                         punctuated.push(item);
                     }
-                    Some(UseTree::Group(syn::UseGroup {
+                    Some(UseTree::Group(UseGroup {
                         brace_token: group.brace_token,
                         items:       punctuated,
                     }))

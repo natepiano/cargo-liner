@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -383,7 +384,7 @@ impl From<RawFixCli> for FixCli {
     }
 }
 
-fn normalized_args() -> Vec<std::ffi::OsString> {
+fn normalized_args() -> Vec<OsString> {
     let mut args: Vec<_> = std::env::args_os().collect();
     if args.get(1).is_some_and(|arg| arg == "mend") {
         args.remove(1);

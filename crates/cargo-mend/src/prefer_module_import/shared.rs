@@ -3,6 +3,7 @@ use std::path::Path;
 use proc_macro2::LineColumn;
 use syn::ItemUse;
 use syn::UseTree;
+use syn::Visibility;
 
 use crate::constants::PUB_VISIBILITY_PREFIX;
 
@@ -106,12 +107,12 @@ pub(super) fn common_prefix_len(left: &[String], right: &[String]) -> usize {
 
 pub(super) fn extract_visibility_prefix(node: &ItemUse) -> String {
     match &node.vis {
-        syn::Visibility::Public(_) => PUB_VISIBILITY_PREFIX.to_string(),
-        syn::Visibility::Restricted(vis) => {
+        Visibility::Public(_) => PUB_VISIBILITY_PREFIX.to_string(),
+        Visibility::Restricted(vis) => {
             let path = &vis.path;
             format!("pub({}) ", quote::quote!(#path))
         },
-        syn::Visibility::Inherited => String::new(),
+        Visibility::Inherited => String::new(),
     }
 }
 

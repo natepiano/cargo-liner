@@ -1,5 +1,9 @@
 use std::collections::BTreeSet;
 
+use proc_macro2::Spacing;
+use proc_macro2::TokenStream;
+use proc_macro2::TokenTree;
+use syn::Arm;
 use syn::Block;
 use syn::Expr;
 use syn::ExprClosure;
@@ -10,6 +14,7 @@ use syn::ImplItemFn;
 use syn::ItemFn;
 use syn::ItemUse;
 use syn::Local;
+use syn::Macro;
 use syn::Pat;
 use syn::TraitItemFn;
 use syn::visit::Visit;
@@ -139,7 +144,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
         self.exit_scope();
     }
 
-    fn visit_arm(&mut self, arm: &syn::Arm) {
+    fn visit_arm(&mut self, arm: &Arm) {
         for attr in &arm.attrs {
             self.visit_attribute(attr);
         }
@@ -191,7 +196,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
         }
     }
 
-    fn visit_macro(&mut self, node: &syn::Macro) {
+    fn visit_macro(&mut self, node: &Macro) {
         collect_bare_refs_from_tokens(
             &node.tokens,
             self.offsets,
@@ -254,7 +259,7 @@ fn collect_fn_param_bindings<'a>(
 }
 
 pub(super) fn collect_bare_refs_from_tokens(
-    tokens: &proc_macro2::TokenStream,
+    tokens: &TokenStream,
     offsets: &[usize],
     imported_names: &BTreeSet<String>,
     references: &mut Vec<BareReference>,
@@ -263,7 +268,7 @@ pub(super) fn collect_bare_refs_from_tokens(
     let mut prev_is_colon_colon = false;
     for token_tree in tokens.clone() {
         match token_tree {
-            proc_macro2::TokenTree::Ident(ref ident) => {
+            TokenTree::Ident(ref ident) => {
                 let name = ident.to_string();
                 if !prev_is_colon_colon && imported_names.contains(&name) {
                     let span = ident.span();
@@ -278,12 +283,12 @@ pub(super) fn collect_bare_refs_from_tokens(
                 prev_colon_joint = false;
                 prev_is_colon_colon = false;
             },
-            proc_macro2::TokenTree::Punct(ref punct) => {
+            TokenTree::Punct(ref punct) => {
                 if punct.as_char() == ':' {
                     if prev_colon_joint {
                         prev_is_colon_colon = true;
                         prev_colon_joint = false;
-                    } else if punct.spacing() == proc_macro2::Spacing::Joint {
+                    } else if punct.spacing() == Spacing::Joint {
                         prev_colon_joint = true;
                         prev_is_colon_colon = false;
                     } else {
@@ -295,11 +300,11 @@ pub(super) fn collect_bare_refs_from_tokens(
                     prev_is_colon_colon = false;
                 }
             },
-            proc_macro2::TokenTree::Group(ref group) => {
+            TokenTree::Group(ref group) => {
                 collect_bare_refs_from_tokens(&group.stream(), offsets, imported_names, references);
                 prev_is_colon_colon = false;
             },
-            proc_macro2::TokenTree::Literal(_) => {
+            TokenTree::Literal(_) => {
                 prev_colon_joint = false;
                 prev_is_colon_colon = false;
             },
@@ -315,6 +320,8 @@ pub(super) fn collect_bare_refs_from_tokens(
 mod tests {
     use std::collections::BTreeSet;
 
+    use proc_macro2::TokenStream;
+
     use super::BareReference;
     use super::collect_bare_refs_from_tokens;
     use super::shared;
@@ -325,7 +332,7 @@ mod tests {
         let offsets = shared::line_offsets(src);
         let mut names = BTreeSet::new();
         names.insert("do_thing".to_string());
-        let tokens: proc_macro2::TokenStream = src.parse().expect("parse tokens");
+        let tokens: TokenStream = src.parse().expect("parse tokens");
         let mut refs: Vec<BareReference> = Vec::new();
         collect_bare_refs_from_tokens(&tokens, &offsets, &names, &mut refs);
         assert_eq!(refs.len(), 1);
@@ -339,7 +346,7 @@ mod tests {
         let offsets = shared::line_offsets(src);
         let mut names = BTreeSet::new();
         names.insert("do_thing".to_string());
-        let tokens: proc_macro2::TokenStream = src.parse().expect("parse tokens");
+        let tokens: TokenStream = src.parse().expect("parse tokens");
         let mut refs: Vec<BareReference> = Vec::new();
         collect_bare_refs_from_tokens(&tokens, &offsets, &names, &mut refs);
         assert!(refs.is_empty(), "qualified path should not match");
@@ -351,7 +358,7 @@ mod tests {
         let offsets = shared::line_offsets(src);
         let mut names = BTreeSet::new();
         names.insert("do_thing".to_string());
-        let tokens: proc_macro2::TokenStream = src.parse().expect("parse tokens");
+        let tokens: TokenStream = src.parse().expect("parse tokens");
         let mut refs: Vec<BareReference> = Vec::new();
         collect_bare_refs_from_tokens(&tokens, &offsets, &names, &mut refs);
         assert_eq!(refs.len(), 1);

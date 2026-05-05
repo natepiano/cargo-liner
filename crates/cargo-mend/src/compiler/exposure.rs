@@ -2,7 +2,15 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use proc_macro2::TokenTree;
 use quote::ToTokens;
+use syn::Attribute;
+use syn::Fields;
+use syn::ImplItem;
+use syn::Item;
+use syn::ItemImpl;
+use syn::TraitItem;
+use syn::Type;
 use syn::visit::Visit;
 
 use super::facade;
@@ -45,7 +53,7 @@ pub(super) fn child_item_is_exposed_by_other_crate_visible_signature(
     }
 
     for item in &file.items {
-        let syn::Item::Impl(item_impl) = item else {
+        let Item::Impl(item_impl) = item else {
             continue;
         };
         let Some(self_type_name) = impl_self_type_name(item_impl) else {
@@ -113,7 +121,7 @@ pub(super) fn child_item_is_exposed_by_sibling_boundary_signature(
         }
 
         for item in &file.items {
-            let syn::Item::Impl(item_impl) = item else {
+            let Item::Impl(item_impl) = item else {
                 continue;
             };
             let Some(self_type_name) = impl_self_type_name(item_impl) else {
@@ -152,7 +160,7 @@ pub(super) fn impl_item_is_exposed_by_exported_self_type(
     };
 
     for item in &file.items {
-        let syn::Item::Impl(item_impl) = item else {
+        let Item::Impl(item_impl) = item else {
             continue;
         };
         let Some(self_type_name) = impl_self_type_name(item_impl) else {
@@ -161,19 +169,19 @@ pub(super) fn impl_item_is_exposed_by_exported_self_type(
         for impl_item in &item_impl.items {
             let outward = item_impl.trait_.is_some();
             let is_target = match impl_item {
-                syn::ImplItem::Fn(item)
+                ImplItem::Fn(item)
                     if (outward || matches!(item.vis, syn::Visibility::Public(_)))
                         && item.sig.ident == item_name =>
                 {
                     true
                 },
-                syn::ImplItem::Const(item)
+                ImplItem::Const(item)
                     if (outward || matches!(item.vis, syn::Visibility::Public(_)))
                         && item.ident == item_name =>
                 {
                     true
                 },
-                syn::ImplItem::Type(item)
+                ImplItem::Type(item)
                     if (outward || matches!(item.vis, syn::Visibility::Public(_)))
                         && item.ident == item_name =>
                 {
@@ -238,10 +246,10 @@ fn file_defines_type(source_cache: &SourceCache, path: &Path, type_name: &str) -
     };
     for item in &file.items {
         let name = match item {
-            syn::Item::Struct(item) => &item.ident,
-            syn::Item::Enum(item) => &item.ident,
-            syn::Item::Type(item) => &item.ident,
-            syn::Item::Union(item) => &item.ident,
+            Item::Struct(item) => &item.ident,
+            Item::Enum(item) => &item.ident,
+            Item::Type(item) => &item.ident,
+            Item::Union(item) => &item.ident,
             _ => continue,
         };
         if name == type_name {
@@ -364,110 +372,110 @@ pub(super) fn type_is_exposed_outside_parent(
         )?)
 }
 
-pub(super) fn public_item_name(item: &syn::Item) -> Option<String> {
+pub(super) fn public_item_name(item: &Item) -> Option<String> {
     match item {
-        syn::Item::Const(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Const(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             Some(item.ident.to_string())
         },
-        syn::Item::Enum(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Enum(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             Some(item.ident.to_string())
         },
-        syn::Item::Fn(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Fn(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             Some(item.sig.ident.to_string())
         },
-        syn::Item::Static(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Static(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             Some(item.ident.to_string())
         },
-        syn::Item::Struct(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Struct(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             Some(item.ident.to_string())
         },
-        syn::Item::Trait(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Trait(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             Some(item.ident.to_string())
         },
-        syn::Item::Type(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Type(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             Some(item.ident.to_string())
         },
         _ => None,
     }
 }
 
-pub(super) fn public_item_surface_mentions_name(item: &syn::Item, item_name: &str) -> bool {
+pub(super) fn public_item_surface_mentions_name(item: &Item, item_name: &str) -> bool {
     let mut visitor = ItemSurfaceReferenceVisitor::new(item_name);
     match item {
-        syn::Item::Const(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Const(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             if attributes_mention_name(&item.attrs, item_name) {
                 return true;
             }
             visitor.visit_type(&item.ty);
         },
-        syn::Item::Enum(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Enum(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             if attributes_mention_name(&item.attrs, item_name) {
                 return true;
             }
             for variant in &item.variants {
                 match &variant.fields {
-                    syn::Fields::Named(fields) => {
+                    Fields::Named(fields) => {
                         for field in &fields.named {
                             visitor.visit_type(&field.ty);
                         }
                     },
-                    syn::Fields::Unnamed(fields) => {
+                    Fields::Unnamed(fields) => {
                         for field in &fields.unnamed {
                             visitor.visit_type(&field.ty);
                         }
                     },
-                    syn::Fields::Unit => {},
+                    Fields::Unit => {},
                 }
             }
         },
-        syn::Item::Fn(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Fn(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             if attributes_mention_name(&item.attrs, item_name) {
                 return true;
             }
             visitor.visit_signature(&item.sig);
         },
-        syn::Item::Static(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Static(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             if attributes_mention_name(&item.attrs, item_name) {
                 return true;
             }
             visitor.visit_type(&item.ty);
         },
-        syn::Item::Struct(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Struct(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             if attributes_mention_name(&item.attrs, item_name) {
                 return true;
             }
             match &item.fields {
-                syn::Fields::Named(fields) => {
+                Fields::Named(fields) => {
                     for field in &fields.named {
                         visitor.visit_type(&field.ty);
                     }
                 },
-                syn::Fields::Unnamed(fields) => {
+                Fields::Unnamed(fields) => {
                     for field in &fields.unnamed {
                         visitor.visit_type(&field.ty);
                     }
                 },
-                syn::Fields::Unit => {},
+                Fields::Unit => {},
             }
         },
-        syn::Item::Trait(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Trait(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             if attributes_mention_name(&item.attrs, item_name) {
                 return true;
             }
             for trait_item in &item.items {
                 match trait_item {
-                    syn::TraitItem::Fn(item) => visitor.visit_signature(&item.sig),
-                    syn::TraitItem::Type(item) => {
+                    TraitItem::Fn(item) => visitor.visit_signature(&item.sig),
+                    TraitItem::Type(item) => {
                         if let Some((_, ty)) = &item.default {
                             visitor.visit_type(ty);
                         }
                     },
-                    syn::TraitItem::Const(item) => visitor.visit_type(&item.ty),
+                    TraitItem::Const(item) => visitor.visit_type(&item.ty),
                     _ => {},
                 }
             }
         },
-        syn::Item::Type(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
+        Item::Type(item) if matches!(item.vis, syn::Visibility::Public(_)) => {
             if attributes_mention_name(&item.attrs, item_name) {
                 return true;
             }
@@ -478,8 +486,8 @@ pub(super) fn public_item_surface_mentions_name(item: &syn::Item, item_name: &st
     visitor.found
 }
 
-pub(super) fn impl_self_type_name(item_impl: &syn::ItemImpl) -> Option<String> {
-    let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+pub(super) fn impl_self_type_name(item_impl: &ItemImpl) -> Option<String> {
+    let Type::Path(type_path) = item_impl.self_ty.as_ref() else {
         return None;
     };
     if type_path.qself.is_some() {
@@ -492,37 +500,28 @@ pub(super) fn impl_self_type_name(item_impl: &syn::ItemImpl) -> Option<String> {
         .map(|segment| segment.ident.to_string())
 }
 
-pub(super) fn outward_impl_surface_mentions_name(
-    item_impl: &syn::ItemImpl,
-    item_name: &str,
-) -> bool {
+pub(super) fn outward_impl_surface_mentions_name(item_impl: &ItemImpl, item_name: &str) -> bool {
     let mut visitor = ItemSurfaceReferenceVisitor::new(item_name);
     let mut found_public_surface = false;
     let outward = item_impl.trait_.is_some();
 
     for impl_item in &item_impl.items {
         match impl_item {
-            syn::ImplItem::Fn(item)
-                if outward || matches!(item.vis, syn::Visibility::Public(_)) =>
-            {
+            ImplItem::Fn(item) if outward || matches!(item.vis, syn::Visibility::Public(_)) => {
                 if attributes_mention_name(&item.attrs, item_name) {
                     return true;
                 }
                 visitor.visit_signature(&item.sig);
                 found_public_surface = true;
             },
-            syn::ImplItem::Const(item)
-                if outward || matches!(item.vis, syn::Visibility::Public(_)) =>
-            {
+            ImplItem::Const(item) if outward || matches!(item.vis, syn::Visibility::Public(_)) => {
                 if attributes_mention_name(&item.attrs, item_name) {
                     return true;
                 }
                 visitor.visit_type(&item.ty);
                 found_public_surface = true;
             },
-            syn::ImplItem::Type(item)
-                if outward || matches!(item.vis, syn::Visibility::Public(_)) =>
-            {
+            ImplItem::Type(item) if outward || matches!(item.vis, syn::Visibility::Public(_)) => {
                 if attributes_mention_name(&item.attrs, item_name) {
                     return true;
                 }
@@ -536,21 +535,21 @@ pub(super) fn outward_impl_surface_mentions_name(
     found_public_surface && visitor.found
 }
 
-fn attributes_mention_name(attrs: &[syn::Attribute], item_name: &str) -> bool {
+fn attributes_mention_name(attrs: &[Attribute], item_name: &str) -> bool {
     attrs
         .iter()
         .any(|attr| attribute_tokens_mention_name(attr, item_name))
 }
 
-fn attribute_tokens_mention_name(attr: &syn::Attribute, item_name: &str) -> bool {
-    fn token_tree_mentions_name(tree: &proc_macro2::TokenTree, item_name: &str) -> bool {
+fn attribute_tokens_mention_name(attr: &Attribute, item_name: &str) -> bool {
+    fn token_tree_mentions_name(tree: &TokenTree, item_name: &str) -> bool {
         match tree {
-            proc_macro2::TokenTree::Group(group) => group
+            TokenTree::Group(group) => group
                 .stream()
                 .into_iter()
                 .any(|tree| token_tree_mentions_name(&tree, item_name)),
-            proc_macro2::TokenTree::Ident(ident) => ident == item_name,
-            proc_macro2::TokenTree::Literal(literal) => {
+            TokenTree::Ident(ident) => ident == item_name,
+            TokenTree::Literal(literal) => {
                 literal
                     .to_string()
                     .trim_matches('"')
@@ -558,7 +557,7 @@ fn attribute_tokens_mention_name(attr: &syn::Attribute, item_name: &str) -> bool
                     .trim_matches('#')
                     == item_name
             },
-            proc_macro2::TokenTree::Punct(_) => false,
+            TokenTree::Punct(_) => false,
         }
     }
 

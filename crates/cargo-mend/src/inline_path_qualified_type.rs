@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -7,8 +8,21 @@ use std::path::Path;
 use anyhow::Context;
 use anyhow::Result;
 use proc_macro2::LineColumn;
+use syn::ExprPath;
+use syn::ExprStruct;
 use syn::Item;
+use syn::ItemConst;
+use syn::ItemEnum;
+use syn::ItemFn;
+use syn::ItemImpl;
+use syn::ItemMod;
+use syn::ItemStatic;
+use syn::ItemStruct;
+use syn::ItemTrait;
+use syn::ItemType;
 use syn::ItemUse;
+use syn::PatStruct;
+use syn::PatTupleStruct;
 use syn::TypePath;
 use syn::UseTree;
 use syn::spanned::Spanned;
@@ -125,8 +139,8 @@ fn process_occurrence(
         return;
     }
 
-    let byte_start = offset(ctx.offsets, occ.span_start);
-    let byte_end = offset(ctx.offsets, occ.span_end);
+    let byte_start = offset(ctx.text, ctx.offsets, occ.span_start);
+    let byte_end = offset(ctx.text, ctx.offsets, occ.span_end);
 
     let source_line = ctx
         .text
@@ -217,6 +231,7 @@ fn scan_file(
     let mut visitor = InlinePathVisitor {
         occurrences:     Vec::new(),
         bare_type_names: BTreeSet::new(),
+        mod_depth:       0,
     };
     visitor.visit_file(&syntax);
 
@@ -277,7 +292,11 @@ fn collect_scopes(
     let mut first_item_start = None;
 
     for item in items {
-        let item_start = offset(scope_collection_context.offsets, item.span().start());
+        let item_start = offset(
+            scope_collection_context.text,
+            scope_collection_context.offsets,
+            item.span().start(),
+        );
         first_item_start.get_or_insert(item_start);
 
         if let Item::Use(item_use) = item {
@@ -285,7 +304,11 @@ fn collect_scopes(
                 existing_imports.insert(import_path);
             }
             last_use_start = Some(item_start);
-            let item_end = offset(scope_collection_context.offsets, item_use.span().end());
+            let item_end = offset(
+                scope_collection_context.text,
+                scope_collection_context.offsets,
+                item_use.span().end(),
+            );
             last_use_end = Some(
                 if scope_collection_context.text.as_bytes().get(item_end) == Some(&b'\n') {
                     item_end + 1
@@ -317,8 +340,16 @@ fn collect_scopes(
             collect_scopes(
                 child_items,
                 ScopeSpan::new(
-                    offset(scope_collection_context.offsets, item_mod.span().start()),
-                    offset(scope_collection_context.offsets, item_mod.span().end()),
+                    offset(
+                        scope_collection_context.text,
+                        scope_collection_context.offsets,
+                        item_mod.span().start(),
+                    ),
+                    offset(
+                        scope_collection_context.text,
+                        scope_collection_context.offsets,
+                        item_mod.span().end(),
+                    ),
                 ),
                 &child_module_path,
                 scope_collection_context,
@@ -332,7 +363,7 @@ fn find_innermost_scope(scopes: &[ScopeInfo], byte_offset: usize) -> Option<usiz
         .iter()
         .enumerate()
         .filter(|(_, scope)| scope.span_start <= byte_offset && byte_offset < scope.span_end)
-        .max_by_key(|(_, scope)| (scope.span_start, std::cmp::Reverse(scope.span_end)))
+        .max_by_key(|(_, scope)| (scope.span_start, Reverse(scope.span_end)))
         .map(|(scope_id, _)| scope_id)
 }
 
@@ -412,18 +443,41 @@ fn find_collision_names(
 struct InlinePathVisitor {
     occurrences:     Vec<InlinePathOccurrence>,
     bare_type_names: BTreeSet<String>,
+    mod_depth:       usize,
 }
 
 impl InlinePathVisitor {
     fn check_path(&mut self, path: &syn::Path) {
         let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
 
-        if segments.len() < 3 {
+        if segments.len() < 2 {
             return;
         }
 
         let first = &segments[0];
-        if first != "crate" && first != "super" {
+        let is_intra_crate = first == "crate" || first == "super";
+
+        // For intra-crate paths, require at least 3 segments — `crate::Foo` /
+        // `super::Foo` are already short enough that hoisting them to a `use`
+        // is churn. For external-crate paths (`ratatui::Frame`,
+        // `std::collections::BTreeMap`), 2 segments is the minimum and worth
+        // hoisting.
+        if is_intra_crate && segments.len() < 3 {
+            return;
+        }
+
+        // Filter obvious non-crate roots. `self::` is a same-module reference,
+        // not a candidate for a `use`.
+        if first == "self" || first == "Self" {
+            return;
+        }
+
+        // For non-intra-crate paths, the first segment must look like a crate
+        // name (snake_case / lowercase). A PascalCase first segment means this
+        // is `Type::Variant` (enum variant pattern), `Type::AssocType`, or
+        // `Type::CONST` — not a crate-qualified path. Suggesting `use Type;`
+        // for those cases is wrong and confusing.
+        if !is_intra_crate && is_pascal_case(first) {
             return;
         }
 
@@ -469,6 +523,36 @@ impl InlinePathVisitor {
     }
 }
 
+impl InlinePathVisitor {
+    /// Register a path's bare-name footprint for shadow detection.
+    ///
+    /// A single-segment path (`Result<T, E>`) clearly puts `Result` in use as
+    /// a type. But a multi-segment path that *starts* with a `PascalCase`
+    /// segment (`Result::ok`, `Alignment::Center`, `MyEnum::Variant`) also
+    /// references `Result` / `Alignment` / `MyEnum` as a type — so adding
+    /// `use other_crate::Result;` would silently change which type those
+    /// expressions resolve through. Register the leading `PascalCase` segment
+    /// in either case.
+    fn record_bare_name_footprint(&mut self, path: &syn::Path) {
+        let Some(first) = path.segments.first() else {
+            return;
+        };
+        let name = first.ident.to_string();
+        if !is_pascal_case(&name) {
+            return;
+        }
+        if path.segments.len() == 1 {
+            self.bare_type_names.insert(name);
+        } else if name != "Self" {
+            // A bare `Self::method` is fine — `Self` isn't a name we'd ever
+            // import. Anything else PascalCase as the first segment is a real
+            // type reference whose meaning would change under a same-named
+            // import.
+            self.bare_type_names.insert(name);
+        }
+    }
+}
+
 impl Visit<'_> for InlinePathVisitor {
     fn visit_item_use(&mut self, _: &ItemUse) {
         // Skip use statements — they are imports, not inline code
@@ -477,73 +561,122 @@ impl Visit<'_> for InlinePathVisitor {
     fn visit_type_path(&mut self, node: &TypePath) {
         if node.qself.is_none() {
             self.check_path(&node.path);
-            // Track bare type names to detect potential shadowing
-            if node.path.segments.len() == 1 {
-                let name = node.path.segments[0].ident.to_string();
-                if is_pascal_case(&name) {
-                    self.bare_type_names.insert(name);
-                }
-            }
+            self.record_bare_name_footprint(&node.path);
         }
         syn::visit::visit_type_path(self, node);
     }
 
-    fn visit_expr_path(&mut self, node: &syn::ExprPath) {
+    fn visit_expr_path(&mut self, node: &ExprPath) {
         if node.qself.is_none() {
             self.check_path(&node.path);
-            if node.path.segments.len() == 1 {
-                let name = node.path.segments[0].ident.to_string();
-                if is_pascal_case(&name) {
-                    self.bare_type_names.insert(name);
-                }
-            }
+            self.record_bare_name_footprint(&node.path);
         }
         // Don't recurse — path segments don't contain sub-expressions
     }
 
-    fn visit_expr_struct(&mut self, node: &syn::ExprStruct) {
+    fn visit_expr_struct(&mut self, node: &ExprStruct) {
         // `Foo { .. }` and `crate::foo::Bar { .. }` — the path of a struct
         // literal isn't reached by `visit_expr_path` / `visit_type_path`,
         // so handle it explicitly.
         if node.qself.is_none() {
             self.check_path(&node.path);
-            if node.path.segments.len() == 1 {
-                let name = node.path.segments[0].ident.to_string();
-                if is_pascal_case(&name) {
-                    self.bare_type_names.insert(name);
-                }
-            }
+            self.record_bare_name_footprint(&node.path);
         }
         syn::visit::visit_expr_struct(self, node);
     }
 
-    fn visit_pat_struct(&mut self, node: &syn::PatStruct) {
+    fn visit_pat_struct(&mut self, node: &PatStruct) {
         // `Foo { .. }` and `crate::foo::Bar { .. }` in pattern position
         // (`let Bar { .. } = ...`, match arms) — also not visited by
         // `visit_expr_path` / `visit_type_path`.
         if node.qself.is_none() {
             self.check_path(&node.path);
-            if node.path.segments.len() == 1 {
-                let name = node.path.segments[0].ident.to_string();
+            self.record_bare_name_footprint(&node.path);
+        }
+        syn::visit::visit_pat_struct(self, node);
+    }
+
+    fn visit_item_mod(&mut self, node: &ItemMod) {
+        // Track nesting depth so item-name registration below can gate on
+        // "is this at the file's top level". Names defined inside nested
+        // modules don't collide with imports added at the top level.
+        self.mod_depth += 1;
+        syn::visit::visit_item_mod(self, node);
+        self.mod_depth -= 1;
+    }
+
+    fn visit_item_struct(&mut self, node: &ItemStruct) {
+        if self.mod_depth == 0 {
+            self.bare_type_names.insert(node.ident.to_string());
+        }
+        syn::visit::visit_item_struct(self, node);
+    }
+
+    fn visit_item_enum(&mut self, node: &ItemEnum) {
+        if self.mod_depth == 0 {
+            self.bare_type_names.insert(node.ident.to_string());
+        }
+        syn::visit::visit_item_enum(self, node);
+    }
+
+    fn visit_item_type(&mut self, node: &ItemType) {
+        if self.mod_depth == 0 {
+            self.bare_type_names.insert(node.ident.to_string());
+        }
+        syn::visit::visit_item_type(self, node);
+    }
+
+    fn visit_item_trait(&mut self, node: &ItemTrait) {
+        if self.mod_depth == 0 {
+            self.bare_type_names.insert(node.ident.to_string());
+        }
+        syn::visit::visit_item_trait(self, node);
+    }
+
+    fn visit_item_fn(&mut self, node: &ItemFn) {
+        // A free function with a PascalCase name would also collide with an
+        // imported type of the same name. Rare, but cheap to track.
+        if self.mod_depth == 0 {
+            self.bare_type_names.insert(node.sig.ident.to_string());
+        }
+        syn::visit::visit_item_fn(self, node);
+    }
+
+    fn visit_item_const(&mut self, node: &ItemConst) {
+        if self.mod_depth == 0 {
+            self.bare_type_names.insert(node.ident.to_string());
+        }
+        syn::visit::visit_item_const(self, node);
+    }
+
+    fn visit_item_static(&mut self, node: &ItemStatic) {
+        if self.mod_depth == 0 {
+            self.bare_type_names.insert(node.ident.to_string());
+        }
+        syn::visit::visit_item_static(self, node);
+    }
+
+    fn visit_item_impl(&mut self, node: &ItemImpl) {
+        // `impl Trait for Type` — the trait path is `ItemImpl::trait_`, a bare
+        // `syn::Path` not visited as a `TypePath`. Inspect it directly.
+        if let Some((_, trait_path, _)) = &node.trait_ {
+            self.check_path(trait_path);
+            if trait_path.segments.len() == 1 {
+                let name = trait_path.segments[0].ident.to_string();
                 if is_pascal_case(&name) {
                     self.bare_type_names.insert(name);
                 }
             }
         }
-        syn::visit::visit_pat_struct(self, node);
+        syn::visit::visit_item_impl(self, node);
     }
 
-    fn visit_pat_tuple_struct(&mut self, node: &syn::PatTupleStruct) {
+    fn visit_pat_tuple_struct(&mut self, node: &PatTupleStruct) {
         // `Foo(..)` in pattern position — e.g. `let Foo(x) = ...` or
         // `Some(Enum::Variant(x))` match arms.
         if node.qself.is_none() {
             self.check_path(&node.path);
-            if node.path.segments.len() == 1 {
-                let name = node.path.segments[0].ident.to_string();
-                if is_pascal_case(&name) {
-                    self.bare_type_names.insert(name);
-                }
-            }
+            self.record_bare_name_footprint(&node.path);
         }
         syn::visit::visit_pat_tuple_struct(self, node);
     }
@@ -587,12 +720,21 @@ fn line_offsets(text: &str) -> Vec<usize> {
     offsets
 }
 
-fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
-    line_offsets
+fn offset(text: &str, line_offsets: &[usize], position: LineColumn) -> usize {
+    let line_start = line_offsets
         .get(position.line.saturating_sub(1))
         .copied()
-        .unwrap_or(0)
-        + position.column
+        .unwrap_or(0);
+    // `proc_macro2::LineColumn::column` is a 0-based count of UTF-8 *characters*
+    // from the start of the line, not bytes. Walk char_indices to convert to a
+    // byte offset so multi-byte characters (em-dashes, accented letters, etc.)
+    // earlier on the same line don't shift the replacement window.
+    let line_text = text.get(line_start..).unwrap_or("");
+    let byte_in_line = line_text
+        .char_indices()
+        .nth(position.column)
+        .map_or(line_text.len(), |(byte_idx, _)| byte_idx);
+    line_start + byte_in_line
 }
 
 #[cfg(test)]

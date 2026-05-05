@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use syn::File;
+use syn::ItemUse;
 use syn::UseTree;
 use syn::visit::Visit;
 
@@ -32,7 +34,7 @@ pub(super) struct UseRename {
 pub(super) struct SourceCache {
     contents:        HashMap<PathBuf, String>,
     files_by_dir:    HashMap<PathBuf, Vec<PathBuf>>,
-    parsed:          HashMap<PathBuf, syn::File>,
+    parsed:          HashMap<PathBuf, File>,
     extracted_paths: HashMap<PathBuf, ExtractedPaths>,
 }
 
@@ -90,7 +92,7 @@ impl SourceCache {
             .with_context(|| format!("source file not in cache: {}", path.display()))
     }
 
-    pub fn parsed_file(&self, path: &Path) -> Option<&syn::File> { self.parsed.get(path) }
+    pub fn parsed_file(&self, path: &Path) -> Option<&File> { self.parsed.get(path) }
 
     pub fn extracted_paths(&self, path: &Path) -> Option<&ExtractedPaths> {
         self.extracted_paths.get(path)
@@ -226,7 +228,7 @@ struct PathExtractor {
 }
 
 impl<'ast> Visit<'ast> for PathExtractor {
-    fn visit_item_use(&mut self, item_use: &'ast syn::ItemUse) {
+    fn visit_item_use(&mut self, item_use: &'ast ItemUse) {
         let mut flat = Vec::new();
         flatten_use_tree(Vec::new(), &item_use.tree, &mut flat);
         for raw in flat {
@@ -253,7 +255,7 @@ impl<'ast> Visit<'ast> for PathExtractor {
     }
 }
 
-pub(super) fn extract_paths(file: &syn::File) -> ExtractedPaths {
+pub(super) fn extract_paths(file: &File) -> ExtractedPaths {
     let mut extractor = PathExtractor {
         use_paths:       Vec::new(),
         expr_paths:      Vec::new(),
@@ -300,6 +302,8 @@ mod tests {
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
 
+    use anyhow::Result;
+
     use super::analysis_source_root_for;
     use super::module_path_from_source_file;
 
@@ -326,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn module_path_from_source_file_treats_main_rs_as_crate_root() -> anyhow::Result<()> {
+    fn module_path_from_source_file_treats_main_rs_as_crate_root() -> Result<()> {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("mend-main-root-test-{unique}"));
         let source_dir = temp_dir.join("src");

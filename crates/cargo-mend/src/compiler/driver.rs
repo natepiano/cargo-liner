@@ -5,9 +5,11 @@ use std::process::ExitCode;
 use std::process::Stdio;
 
 use anyhow::Context;
+use anyhow::Error;
 use anyhow::Result;
 use rustc_driver::Callbacks;
 use rustc_driver::Compilation;
+use rustc_interface::interface::Compiler;
 use rustc_middle::ty::TyCtxt;
 
 use super::settings::DriverSettings;
@@ -17,7 +19,7 @@ use crate::constants::EXIT_CODE_ERROR;
 #[derive(Debug)]
 struct AnalysisCallbacks {
     settings: DriverSettings,
-    error:    Option<anyhow::Error>,
+    error:    Option<Error>,
 }
 
 impl AnalysisCallbacks {
@@ -30,11 +32,7 @@ impl AnalysisCallbacks {
 }
 
 impl Callbacks for AnalysisCallbacks {
-    fn after_analysis(
-        &mut self,
-        _: &rustc_interface::interface::Compiler,
-        tcx: TyCtxt<'_>,
-    ) -> Compilation {
+    fn after_analysis(&mut self, _: &Compiler, tcx: TyCtxt<'_>) -> Compilation {
         match visibility::collect_and_store_findings(tcx, &self.settings) {
             Ok(true | false) => Compilation::Continue,
             Err(err) => {

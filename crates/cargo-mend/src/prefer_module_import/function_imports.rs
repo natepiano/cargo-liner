@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use proc_macro2::LineColumn;
 use syn::ItemUse;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
@@ -13,8 +14,8 @@ pub(super) struct RawCandidate {
     pub(super) module_path:      String,
     pub(super) absolute_module:  Vec<String>,
     pub(super) replacement_use:  String,
-    pub(super) span_start:       proc_macro2::LineColumn,
-    pub(super) span_end:         proc_macro2::LineColumn,
+    pub(super) span_start:       LineColumn,
+    pub(super) span_end:         LineColumn,
     /// True when the target module is the file's own parent module.
     /// The use statement should be deleted and references rewritten as `super::fn(...)`.
     pub(super) is_parent_module: bool,

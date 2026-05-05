@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use anyhow::Result;
 use serde::Serialize;
+use serde_json::Value;
 
 use super::diagnostics;
 use super::diagnostics::Finding;
@@ -85,7 +86,7 @@ struct RustcSpan {
     byte_start:               usize,
     column_end:               usize,
     column_start:             usize,
-    expansion:                Option<serde_json::Value>,
+    expansion:                Option<Value>,
     file_name:                String,
     is_primary:               bool,
     label:                    Option<String>,

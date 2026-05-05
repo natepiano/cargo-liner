@@ -379,7 +379,7 @@ edition = "2024"
 }
 
 #[test]
-fn skips_std_paths() {
+fn flags_std_paths() {
     let temp = tempdir().expect("create temp fixture dir");
 
     fs::write(
@@ -403,11 +403,11 @@ edition = "2024"
 
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     assert!(
-        !report
+        report
             .findings
             .iter()
             .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
-        "std paths should not be flagged"
+        "external-crate paths (std/core/third-party) should be flagged"
     );
 }
 
@@ -1062,5 +1062,366 @@ mod tests {
         "post-fix cargo check failed: {}\n{}",
         String::from_utf8_lossy(&check.stdout),
         String::from_utf8_lossy(&check.stderr)
+    );
+}
+
+/// Multi-byte UTF-8 characters earlier on the same line (em-dashes, accented
+/// letters, etc.) must not shift the byte offset of a path that gets
+/// rewritten. `proc_macro2::LineColumn::column` is a character index, not a
+/// byte index — the `offset()` helper has to convert.
+#[test]
+fn multi_byte_chars_do_not_corrupt_replacement_span() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_multibyte_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        // The em-dash `—` is 3 bytes / 1 column. Without the byte conversion
+        // the rewrite of `std::cmp::Ordering::Equal` lands 2 bytes too early,
+        // corrupting `align(...)` to garbage.
+        "pub fn align(_s: &str) -> std::cmp::Ordering {\n    let _ = \"—\";\n    \
+         std::cmp::Ordering::Equal\n}\n\nfn main() {}\n",
+    )
+    .expect("write main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed file");
+    assert!(
+        main_rs.contains("use std::cmp::Ordering;"),
+        "expected `use std::cmp::Ordering;` insertion, got:\n{main_rs}"
+    );
+    // Body must contain a clean `Ordering::Equal` — the rewrite of
+    // `std::cmp::Ordering::Equal` must not have shifted into surrounding text.
+    let body = main_rs
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("use "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        body.contains("Ordering::Equal"),
+        "expected clean `Ordering::Equal` in body, got body:\n{body}"
+    );
+    assert!(
+        !body.contains("std::cmp::Ordering"),
+        "body should not retain fully-qualified path, got body:\n{body}"
+    );
+}
+
+/// A file that uses `Result::ok` as a method reference (e.g.
+/// `.filter_map(Result::ok)`) is relying on the prelude `Result`. If a
+/// separate `io::Result<T>` appears in the same file, the lint must not add
+/// `use io::Result;` — that would shadow the prelude `Result` and silently
+/// change which type `Result::ok` resolves through, often producing a
+/// confusing trait-bound error.
+#[test]
+fn multi_segment_path_with_pascal_first_segment_blocks_shadowing_import() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_result_shadow_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"use std::io;
+
+pub fn open(path: &str) -> io::Result<String> {
+    let _ = [Ok::<_, io::Error>(())].into_iter().filter_map(Result::ok);
+    std::fs::read_to_string(path)
+}
+
+fn main() {
+    let _ = open("x");
+}
+"#,
+    )
+    .expect("write main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed file");
+    assert!(
+        !main_rs.contains("use io::Result;") && !main_rs.contains("use std::io::Result;"),
+        "must not import a name that would shadow prelude `Result`, got:\n{main_rs}"
+    );
+}
+
+/// `impl crate::path::Trait for Type` puts the trait path in
+/// `ItemImpl::trait_`, which is a bare `syn::Path` — not visited as a
+/// `TypePath`. The visitor must hook `visit_item_impl` explicitly.
+#[test]
+fn impl_trait_path_is_rewritten() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_impl_trait_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/pane")).expect("create src/pane");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod pane;\nmod consumer;\nfn main() {}\n",
+    )
+    .expect("write fixture main");
+    fs::write(
+        temp.path().join("src/pane/mod.rs"),
+        "pub trait Hittable {\n    fn hit(&self) -> bool;\n}\n",
+    )
+    .expect("write pane mod");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        r#"pub struct Manager;
+
+impl crate::pane::Hittable for Manager {
+    fn hit(&self) -> bool { false }
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/consumer.rs")).expect("read fixed file");
+    assert!(
+        consumer.contains("use crate::pane::Hittable;"),
+        "expected `use crate::pane::Hittable;` insertion, got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("impl Hittable for Manager"),
+        "expected `impl Hittable for Manager`, got:\n{consumer}"
+    );
+    assert!(
+        !consumer.contains("impl crate::pane::Hittable"),
+        "fully-qualified trait path should be rewritten, got:\n{consumer}"
+    );
+}
+
+/// `Type::Variant` (enum variant patterns / associated items) must not be
+/// treated as a crate-qualified path. The first segment is `PascalCase`,
+/// which means it's a type — suggesting `use Type;` is wrong.
+#[test]
+fn enum_variant_two_segment_path_is_not_flagged() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_enum_variant_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"pub struct Package;
+
+pub enum RustProject {
+    Package(Package),
+}
+
+pub fn unwrap(item: RustProject) -> Option<Package> {
+    let RustProject::Package(pkg) = item else {
+        return None;
+    };
+    Some(pkg)
+}
+
+fn main() {}
+"#,
+    )
+    .expect("write main");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
+        "`Type::Variant` patterns must not be flagged, got findings: {:?}",
+        report
+            .findings
+            .iter()
+            .filter(|f| f.code == DiagnosticCode::InlinePathQualifiedType)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// External-crate enum-variant paths like `notify::WatcherKind::NullWatcher`
+/// should be rewritten the same way intra-crate enum variants are: import
+/// the enum (`use notify::WatcherKind;`) and rewrite the call site to
+/// `WatcherKind::NullWatcher`.
+#[test]
+fn external_crate_enum_variant_path_is_rewritten() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_external_variant_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    // Stand-in for an external crate: a top-level `mod notify` with a
+    // PascalCase enum and variant, used inline as `notify::WatcherKind::NullWatcher`.
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod notify {
+    pub enum WatcherKind {
+        NullWatcher,
+    }
+}
+
+fn pick() -> notify::WatcherKind {
+    notify::WatcherKind::NullWatcher
+}
+
+fn main() {
+    let _ = pick();
+}
+"#,
+    )
+    .expect("write main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed file");
+    assert!(
+        main_rs.contains("use notify::WatcherKind;"),
+        "expected `use notify::WatcherKind;` insertion, got:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains("WatcherKind::NullWatcher"),
+        "expected rewrite to `WatcherKind::NullWatcher`, got:\n{main_rs}"
+    );
+    assert!(
+        !main_rs.contains("notify::WatcherKind::NullWatcher"),
+        "fully-qualified variant should be rewritten, got:\n{main_rs}"
+    );
+}
+
+/// External-crate paths in argument or return position
+/// (`fn render(&mut self, frame: &mut ratatui::Frame<'_>)`) should be hoisted
+/// to a `use` import the same way intra-crate paths are.
+#[test]
+fn external_crate_path_in_argument_is_rewritten() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_ext_crate_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"pub struct Frame;
+
+pub fn take(_frame: &mut std::collections::BTreeMap<String, i32>) {}
+
+fn main() {}
+"#,
+    )
+    .expect("write main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed file");
+    assert!(
+        main_rs.contains("use std::collections::BTreeMap;"),
+        "expected `use std::collections::BTreeMap;` insertion, got:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains("&mut BTreeMap<String, i32>"),
+        "expected bare type with generics, got:\n{main_rs}"
+    );
+    assert!(
+        !main_rs.contains("std::collections::BTreeMap<"),
+        "fully-qualified path should be rewritten, got:\n{main_rs}"
     );
 }

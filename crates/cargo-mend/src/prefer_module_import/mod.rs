@@ -11,6 +11,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
+use syn::File;
 use syn::Item;
 use syn::spanned::Spanned;
 
@@ -202,12 +203,12 @@ fn scan_file(
     Ok((findings, fixes))
 }
 
-fn collect_declared_modules(syntax: &syn::File) -> BTreeSet<String> {
+fn collect_declared_modules(syntax: &File) -> BTreeSet<String> {
     syntax
         .items
         .iter()
         .filter_map(|item| {
-            if let syn::Item::Mod(item_mod) = item
+            if let Item::Mod(item_mod) = item
                 && item_mod.content.is_none()
             {
                 Some(item_mod.ident.to_string())
@@ -219,7 +220,7 @@ fn collect_declared_modules(syntax: &syn::File) -> BTreeSet<String> {
 }
 
 fn build_will_import_modules(
-    syntax: &syn::File,
+    syntax: &File,
     source_root: &Path,
     current_module_path: &[String],
     module_to_functions: &BTreeMap<String, Vec<RawCandidate>>,
@@ -245,7 +246,7 @@ fn build_will_import_modules(
     will_import_modules
 }
 
-fn file_level_insertion_offset(syntax: &syn::File, text: &str, offsets: &[usize]) -> usize {
+fn file_level_insertion_offset(syntax: &File, text: &str, offsets: &[usize]) -> usize {
     let mut last_use_end: Option<usize> = None;
     let mut first_item_start: Option<usize> = None;
     for item in &syntax.items {

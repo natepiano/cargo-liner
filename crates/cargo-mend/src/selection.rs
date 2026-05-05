@@ -8,6 +8,7 @@ use anyhow::bail;
 use cargo_metadata::Metadata;
 use cargo_metadata::MetadataCommand;
 use cargo_metadata::Package;
+use cargo_metadata::Target;
 
 use super::cli::CargoCheckCli;
 use super::cli::WorkspaceSelection;
@@ -203,7 +204,7 @@ fn package_metadata_from_cargo(package: &Package) -> Result<PackageMetadata> {
     })
 }
 
-fn target_metadata_from_cargo(target: &cargo_metadata::Target) -> TargetMetadata {
+fn target_metadata_from_cargo(target: &Target) -> TargetMetadata {
     TargetMetadata {
         kind:              target.kind.iter().map(ToString::to_string).collect(),
         crate_types:       target.crate_types.iter().map(ToString::to_string).collect(),

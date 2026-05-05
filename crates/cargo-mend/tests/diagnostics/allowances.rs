@@ -862,7 +862,8 @@ edition = "2024"
     .expect("write fixture manifest");
     fs::write(
         temp.path().join("src/main.rs"),
-        "mod parent;\n\nfn main() {\n    let _ = parent::BoundaryType;\n}\n",
+        "mod parent;\n\nuse parent::BoundaryType;\n\nfn main() {\n    let _ = \
+         BoundaryType;\n}\n",
     )
     .expect("write fixture main");
     fs::write(
