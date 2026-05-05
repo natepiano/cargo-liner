@@ -183,7 +183,7 @@ Phases 11–16 are the remaining architectural moves.
 | 11 of 23 | Phase 11 — Move `Viewport.pos` → `Selection.cursor` | **Done** (cursor field move; Group 1/2 method absorption deferred to Phase 21) |
 | 12 of 23 | Phase 12 — Pane trait foundations (cursor-mirror cleanup + `Pane` trait relocation) | **Done** |
 | 13 of 23 | Phase 13 — Relocate Panes' dispatch methods to App-level | **Done** |
-| 14 of 23 | Phase 14 — `ToastsPane` → `ToastManager` absorption | Ready |
+| 14 of 23 | Phase 14 — `ToastsPane` → `ToastManager` absorption | **Done** |
 | 15 of 23 | Phase 15 — `CiPane` → `Ci` absorption | Ready |
 | 16 of 23 | Phase 16 — `LintsPane` → `Lint` absorption | Ready |
 | 17 of 23 | Phase 17 — `KeymapPane` + `SettingsPane` + `FinderPane` → `Overlays` absorption | Ready |
@@ -1784,90 +1784,190 @@ First wrapper absorption. Smallest blast radius:
 `apply_service_signal`'s `set_len(toast_len)` write only
 disappears once the toasts viewport lives on `ToastManager`.
 
+### Phase 14 retrospective
+
+**Outcome:** clean absorption. `ToastsPane` is gone. `ToastManager`
+now owns its own `viewport: Viewport` and `hits: Vec<ToastHitbox>`,
+and impls `Pane` and `Hittable` directly. The Phase 13 dispatch
+relocation paid off — only one arm in each free fn (`set_pane_pos`,
+`viewport_mut_for`, `clear_all_hover`, `hit_test_at`) needed to
+swap from `app.panes_mut().toasts_mut()` to `app.toasts_mut()`.
+
+**Numbers:**
+- Tests: 597 / 597 pass.
+- 11 mend import-tidy fixes (auto-applied).
+- ~30 call-site rewrites: `app.panes_mut().toasts_mut().viewport_mut()`
+  → `app.toasts_mut().viewport_mut()`.
+- Removed: `ToastsPane` struct + impls (`pane_impls.rs`),
+  `Panes::toasts` field + accessors (`system.rs`).
+- `App::toasts_mut()` widened from `#[cfg(test)]` to
+  `pub(super)` (production callers now reach the toasts viewport
+  through it).
+
+**Lessons:**
+1. **Borrow-checker friction at the dispatch arms.** Building
+   `viewport_mut_for` originally tied `let panes = app.panes_mut();`
+   for ten arms and then needed `app.toasts_mut()` for the Toasts
+   arm — second mutable borrow conflict. Fix: drop the local
+   binding and have each arm take its own `app.panes_mut()` or
+   `app.toasts_mut()` directly. The compiler proves the borrows
+   don't overlap (each arm is a single expression). **Apply to
+   Phases 15-17:** the same shape works — every match arm reaches
+   App freshly, no shared local binding.
+2. **Items-after-test-module.** Initial impls landed *after*
+   `mod tests` at the bottom of `manager.rs`, which clippy
+   rejected (`items_after_test_module`). Fix: move the impls
+   before the test module. **Apply:** when adding trait impls to
+   subsystem files that already have a test module, place the
+   new impls above the test mod.
+3. **Multi-line perl substitution still required.** The bulk
+   rewrite needed both single-line and `-0pe` multi-line patterns
+   to catch chained `\n.panes_mut()\n.toasts_mut()\n.viewport_mut()`
+   call sites. The Phase 3 lesson recurred verbatim.
+
+**File-level changes:**
+- *Modified:* `src/tui/toasts/manager.rs` (added `viewport`/`hits`
+  fields, accessors, `Pane`/`Hittable` impls), `src/tui/app/mod.rs`
+  (widened `toasts_mut`), `src/tui/interaction.rs` (Toasts arms in
+  4 dispatch fns now route through `app.toasts*()`),
+  `src/tui/panes/pane_impls.rs` (removed `ToastsPane`),
+  `src/tui/panes/system.rs` (removed `toasts` field +
+  accessors), ~30 call-site rewrites across `tui/`.
+
+**Status: done.**
+
 ## Phase 15 — `CiPane` → `Ci` absorption
 
-- Move `viewport: Viewport` + content from `CiPane` into `Ci`.
-- `Ci::viewport()`, `viewport_mut()`, `set_content()` accessors.
-- Implement `Pane` for `Ci`.
-- Delete `CiPane` from `pane_impls.rs`; remove the field from `Panes`.
-- Update Phase 13's `set_pane_pos` `PaneId::CiRuns` arm.
-- `Panes::set_detail_data` signature gains `&mut Ci` alongside
-  `&mut Panes` since CI content now lives on `Ci`, not on the wrapper.
-- `build_ci_data` callers update accordingly (final form in Phase 18).
+**Land Phase 15 + Phase 16 as one commit.** Both modify the same
+`Panes::set_detail_data` orchestrator's signature; splitting leaves
+an awkward intermediate where `set_detail_data` takes `&mut Ci` but
+not `&mut Lint`.
 
-**Risk:** medium — `set_detail_data` is the load-bearing piece.
+- Move `viewport: Viewport` + content from `CiPane` (`pane_impls.rs:350-396`)
+  into `Ci` (`crate::tui::ci_state`).
+- Add `Ci::viewport()`, `viewport_mut()`, `set_content()` accessors.
+- Implement `Pane` and `Hittable` for `Ci`. Render reads only
+  `pane.content()` and `pane.viewport()` (`panes/ci.rs:267-272`) —
+  same as Phase 14's pattern; `Ci`'s impl reads its own content,
+  no `PaneRenderCtx` extension required.
+- Delete `CiPane` from `pane_impls.rs`; remove the field from `Panes`.
+- Update Phase 13's `set_pane_pos` / `viewport_mut_for` /
+  `clear_all_hover` / `hit_test_at` `PaneId::CiRuns` /
+  `HittableId::CiRuns` arms to route through `app.ci_mut()` /
+  `app.ci()` (matching the Phase 14 toasts swap).
+
+**`Panes::set_detail_data` design (post-Phase-14 review correction):**
+the earlier draft said the signature would gain `&mut Ci`. Better
+approach: **drop the `ci` and `lints` parameters from
+`set_detail_data` entirely** and have the only production caller
+(`navigation/cache.rs:55-80`) write to subsystems directly:
+
+```rust
+let ci = build_ci_data(self);
+let lints = build_lints_data(self);
+// ... gather other detail data ...
+self.ci_mut().set_content(ci);
+self.lint_mut().set_content(lints);
+self.panes_mut().set_detail_data(key, package, git, targets);
+```
+
+Each statement freshly borrows `app` so no borrow-checker conflict
+(Phase 14 lesson 1). This re-uses the absorption pattern instead of
+re-enacting the orchestrator through `&mut` arguments.
+
+**Risk:** medium — `set_detail_data` signature is the load-bearing
+piece. Tests at `system.rs:399,428` need updating.
 
 ## Phase 16 — `LintsPane` → `Lint` absorption
 
-Same pattern as Phase 15:
+Same pattern as Phase 15. **Land in the same commit as Phase 15**
+so `set_detail_data` loses both `ci` and `lints` parameters
+together.
 
-- Move `viewport: Viewport` + content from `LintsPane` into `Lint`.
-- `Lint::viewport()`, `viewport_mut()`, `set_content()` accessors.
-- Implement `Pane` for `Lint`.
+- Move `viewport: Viewport` + content from `LintsPane`
+  (`pane_impls.rs:305-343`) into `Lint`.
+- Add `Lint::viewport()`, `viewport_mut()`, `set_content()` accessors.
+- Implement `Pane` and `Hittable` for `Lint`. Render reads only
+  `pane.content()` and `pane.viewport()` (`panes/lints.rs:135-156`).
 - Delete `LintsPane`; remove the field from `Panes`.
-- `Panes::set_detail_data` signature now also gains `&mut Lint`.
+- Update Phase 13 dispatch arms for `PaneId::Lints` /
+  `HittableId::Lints`.
 
-**Risk:** medium — mirrors Phase 15.
+**Risk:** medium — mirrors Phase 15; same `set_detail_data` change.
 
 ## Phase 17 — Keymap + Settings + Finder → `Overlays` absorption
 
-Three viewports land in `Overlays` (`crate::tui::overlays`)
-together — single commit since they all move to the same
-destination:
+Three viewports land in `Overlays` (`crate::tui::overlays`) together
+— single commit since they all move to the same destination.
 
-- Move `viewport: Viewport` from each of `KeymapPane`, `SettingsPane`,
-  `FinderPane` into `Overlays`.
-- `Overlays::keymap_viewport_mut()`, `settings_viewport_mut()`,
-  `finder_viewport_mut()` accessors (or named `keymap_pane_mut()`
-  etc. to reflect they're per-overlay state).
-- Implement `Pane` for `Overlays` once for each (or split into three
-  impls if needed — Pane is per-pane, not per-subsystem, but Overlays
-  hosts three panes).
-- Delete `KeymapPane`, `SettingsPane`, `FinderPane`; remove the three
-  fields from `Panes`.
-- Update Phase 13's `set_pane_pos` arms for these three.
+- Move `viewport: Viewport` from each of `KeymapPane`,
+  `SettingsPane`, `FinderPane` into `Overlays` as **three
+  independent fields** (`keymap_viewport`, `settings_viewport`,
+  `finder_viewport`). A single shared overlay viewport would
+  conflate cursors when overlays are reopened — they have
+  independent cursor state.
+- **`SettingsPane.line_targets: Vec<Option<usize>>`** must move
+  alongside (`pane_impls.rs:442`) — this is per-frame layout state
+  analogous to `ToastManager.hits` from Phase 14. Decide: live on
+  `Overlays` next to `settings_viewport`, or extracted to a
+  render-side layout cache. Recommend: on `Overlays` (matching
+  the Phase 14 ToastManager precedent).
+- Add `Overlays::keymap_viewport()`, `keymap_viewport_mut()`, and
+  parallel pairs for settings + finder. Stay `pub(crate)` —
+  `Overlays` already lives at `crate::tui::overlays`, so the
+  `pub(crate)`-allowed-at-top-level rule applies.
+- Implement `Pane` and `Hittable` three times for `Overlays` — no
+  way around the per-`PaneId` dispatch needing per-pane handlers.
+  Render impls are no-ops (overlay path in `keymap_ui.rs`,
+  `settings.rs`, `finder.rs` does the work) — same shape as
+  ToastManager's Phase 14 impl.
+- Delete `KeymapPane`, `SettingsPane`, `FinderPane`; remove the
+  three fields from `Panes`.
+- Update Phase 13 dispatch arms for the three.
 
-**Risk:** medium — three panes in one commit means a larger blast
-radius, but they share an owner and the pattern is identical to the
-single-pane absorptions.
+**Risk:** medium — three panes in one commit means larger blast
+radius, but identical pattern to Phase 14 × 3.
 
-## Phase 18 — `RenderSplit<'_>` and `build_*_data` signature changes
+## Phase 18 — `build_*_data` caller cleanup
 
-Migrate the render-builder functions to take a disjoint-borrow
-helper instead of `&App`:
+**Reduced scope (post-Phase-14 review).** With Phase 15/16's
+`set_detail_data` change above (drops `ci`/`lints` params),
+`RenderSplit<'_>` is no longer load-bearing — the destination
+borrow conflict that justified it disappears. `build_ci_data` /
+`build_lints_data` keep their `&App` signatures because they read
+*across* many subsystems (`Selection` cursor, `Scan`, `Net`, project
+git state) — the data is *not* co-located on `Ci` / `Lint`, so
+making them subsystem methods doesn't fit either.
 
-- Define `RenderSplit<'_>` (the field set was sketched in the
-  original Phase 12 design depth — confirm the final field list
-  exposes everything `build_ci_data` and `build_lints_data` read,
-  including Selection cursor, Scan, Net, project-list disk state).
-- `build_ci_data(&App)` → `build_ci_data(split: &RenderSplit<'_>)`.
-- `build_lints_data(&App)` → `build_lints_data(split: &RenderSplit<'_>)`.
-- ~3 callers update (the detail-cache rebuild path).
+**Phase 18 scope:** sanity-check that all `build_*_data` callers
+still compile after Phases 15/16's destination change. Verify the
+`cache.rs` rebuild path uses the fresh-borrow pattern correctly.
+No new types, no signature changes.
 
-**Risk:** medium — borrow-helper composition. Sanity-check the
-split exposes everything before locking in fields.
+**Risk:** low — verification phase, no architectural change.
 
 ## Phase 19 — Pane-wrapper survivors + deferred decisions
 
-Cleanup pass. The surviving wrappers stay; document the open
-questions and resolve them:
+Cleanup pass. Resolve the deferred questions:
 
-- **`OutputPane` decision.** Today: holds example output buffer.
-  Could collapse into `Inflight` (which already owns example state)
-  if `Inflight` gains a viewport. Pick one:
-  - (a) collapse into `Inflight` — same pattern as Phases 14–17.
-  - (b) keep as a survivor — `Inflight` is bigger and more cross-
-    cutting than the panes' data subsystems; mixing render state
-    in may not pay off.
+- **`OutputPane` — keep as survivor.** Today `OutputPane` carries
+  only `viewport` (`pane_impls.rs:611-626`). Buffer content already
+  lives on `Inflight` (`inflight.rs:102` `example_output_mut`). The
+  pane's only role is owning the render-side viewport. Collapsing
+  into `Inflight` would force `Inflight` (a cross-cutting subsystem
+  touched by `poll.rs`, `input.rs`) to grow a TUI viewport field —
+  wrong direction. Keep as survivor with documented rationale.
+- **`LangPane` — keep as survivor.** No `Lang` subsystem exists;
+  introducing one to host a single viewport is yak-shaving.
+- **Detail-pane caches stay on `Panes`.** `PaneDataStore`
+  (`system.rs:81`) hosts the `DetailCacheKey` stamp; the four
+  content-bearing wrappers being absorbed (Package, Git, Targets,
+  plus the now-absorbed CI/Lints) leaves no reason to relocate.
 - **`*Layout` rename** (deferred from original Phase 12 design):
-  rename per-frame layout types (`ToastsLayout`, `CpuLayout`, etc.)
-  if they need separate identity from the wrappers — execute or
-  drop based on whether the survivors carry layout state cleanly.
-- **Detail-pane cache home review.** Today on `Panes`. Confirm the
-  decision (option b from original Phase 12 design depth) still
-  holds after Phases 14–17.
+  drop unless a clear rename target emerges from Phases 14–17's
+  layout-state moves.
 
-**Risk:** low — judgment calls, no load-bearing borrow refactors.
+**Risk:** low — decisions, no load-bearing refactors.
 
 ## Phase 20 — `Bus<Event>` skeleton + `apply_service_signal` (Cluster A, smoke test)
 
@@ -1989,21 +2089,17 @@ read paths.
 Subsystems need their pane state already moved (Phases 14–17) so
 their `handle()` bodies can mutate self plus update their own pane.
 
-**Why Phase 14 (ToastsPane absorption) must land before Phase 20.**
-`apply_service_signal`'s reaction body today calls
-`push_service_unavailable_toast`, which writes both
-`self.toasts.push_persistent(...)` and
+**Phase 14 prerequisite — satisfied.** `apply_service_signal`'s
+reaction body called `push_service_unavailable_toast`, which used
+to write both `self.toasts.push_persistent(...)` and
 `self.panes_mut().toasts_mut().viewport_mut().set_len(...)`. The
-second write is what only **Stage 4-Toasts absorption** eliminates
-(by moving the toasts viewport into `ToastManager`). Stage 3's
-dispatch relocation is *not* sufficient — it moves the dispatch
-location but the viewport is still owned by `ToastsPane`.
-
-If Phase 20 lands without Phase 14 (ToastsPane absorption),
-`HandlerCtx` for `ServiceSignal` subscribers must carry both
-`&mut ToastManager` AND `&mut Panes`, re-enacting through the ctx
-struct the bus was supposed to remove. Phase 20's hard prerequisite
-is therefore Phase 14 specifically, not the broad "Phase 12 done."
+second write was the load-bearing reason Phase 20 needed Phase 14
+done first. Verified post-Phase-14 (commit at HEAD): `app/mod.rs`
+toast-orchestrator paths now route `set_len(toast_len)` through
+`self.toasts.viewport_mut()` directly (no `&mut Panes`), and
+`interaction.rs:102` routes the dispatch arm through
+`app.toasts_mut()`. `HandlerCtx` for `ServiceSignal` subscribers
+needs only `&mut Net + &mut ToastManager` — no `&mut Panes`.
 
 **Risk:** Phase 20 introduces the bus skeleton; Phases 21–23 widen
 its subscriber surface incrementally.

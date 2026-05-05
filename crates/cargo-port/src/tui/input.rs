@@ -644,15 +644,12 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
 
 fn handle_toast_key(app: &mut App, event: &KeyEvent) {
     match event.code {
-        KeyCode::Up => app.panes_mut().toasts_mut().viewport_mut().up(),
-        KeyCode::Down => app.panes_mut().toasts_mut().viewport_mut().down(),
-        KeyCode::Home => app.panes_mut().toasts_mut().viewport_mut().home(),
+        KeyCode::Up => app.toasts_mut().viewport_mut().up(),
+        KeyCode::Down => app.toasts_mut().viewport_mut().down(),
+        KeyCode::Home => app.toasts_mut().viewport_mut().home(),
         KeyCode::End => {
             let last_index = app.toasts().active_now().len().saturating_sub(1);
-            app.panes_mut()
-                .toasts_mut()
-                .viewport_mut()
-                .set_pos(last_index);
+            app.toasts_mut().viewport_mut().set_pos(last_index);
         },
         KeyCode::Enter => {
             // Open action_path if the focused toast has one.
@@ -660,7 +657,7 @@ fn handle_toast_key(app: &mut App, event: &KeyEvent) {
                 .toasts()
                 .active_now()
                 .into_iter()
-                .nth(app.panes().toasts().viewport().pos())
+                .nth(app.toasts().viewport().pos())
                 && let Some(path) = toast.action_path()
             {
                 let editor = app.config().editor().to_string();

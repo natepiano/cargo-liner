@@ -148,7 +148,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         app.focus().is(PaneId::Toasts),
         app.focused_toast_id(),
     );
-    app.panes_mut().toasts_mut().set_hits(toast_result.hitboxes);
+    app.toasts_mut().set_hits(toast_result.hitboxes);
 
     if app.overlays().is_settings_open() {
         settings::render_settings_popup(frame, app);

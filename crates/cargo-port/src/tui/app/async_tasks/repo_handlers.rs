@@ -261,10 +261,7 @@ impl App {
                     linger,
                 );
                 let toast_len = self.toasts.active_now().len();
-                self.panes_mut()
-                    .toasts_mut()
-                    .viewport_mut()
-                    .set_len(toast_len);
+                self.toasts.viewport_mut().set_len(toast_len);
             }
         }
         self.sync_running_repo_fetch_toast();

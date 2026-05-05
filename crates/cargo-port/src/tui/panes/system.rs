@@ -27,7 +27,6 @@ use super::pane_impls::PackagePane;
 use super::pane_impls::ProjectListPane;
 use super::pane_impls::SettingsPane;
 use super::pane_impls::TargetsPane;
-use super::pane_impls::ToastsPane;
 use super::support::WorktreeInfo;
 #[cfg(test)]
 use crate::ci::CiRun;
@@ -72,7 +71,6 @@ pub struct Panes {
     git:          GitPane,
     lints:        LintsPane,
     ci_runs:      CiPane,
-    toasts:       ToastsPane,
     keymap:       KeymapPane,
     settings:     SettingsPane,
     finder:       FinderPane,
@@ -93,7 +91,6 @@ impl Panes {
             git:          GitPane::new(),
             lints:        LintsPane::new(),
             ci_runs:      CiPane::new(),
-            toasts:       ToastsPane::new(),
             keymap:       KeymapPane::new(),
             settings:     SettingsPane::new(),
             finder:       FinderPane::new(),
@@ -143,12 +140,6 @@ impl Panes {
 
     /// Mutable typed accessor for the Git pane.
     pub const fn git_mut(&mut self) -> &mut GitPane { &mut self.git }
-
-    /// Typed accessor for the Toasts pane.
-    pub const fn toasts(&self) -> &ToastsPane { &self.toasts }
-
-    /// Mutable typed accessor for the Toasts pane.
-    pub const fn toasts_mut(&mut self) -> &mut ToastsPane { &mut self.toasts }
 
     /// Typed accessor for the Keymap pane.
     pub const fn keymap(&self) -> &KeymapPane { &self.keymap }

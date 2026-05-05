@@ -7,6 +7,8 @@ use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::tui::constants::TOAST_LINE_REVEAL_MS;
 use crate::tui::constants::TOAST_WIDTH;
+use crate::tui::interaction::ToastHitbox;
+use crate::tui::pane::Viewport;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ToastTaskId(pub u64);
@@ -220,11 +222,28 @@ impl<'a> ToastView<'a> {
 
 #[derive(Default)]
 pub struct ToastManager {
-    next_id: u64,
-    toasts:  Vec<Toast>,
+    next_id:  u64,
+    toasts:   Vec<Toast>,
+    /// Per-pane cursor for the toasts overlay. Phase 14 absorption:
+    /// the toasts viewport lives with its data, not on a separate
+    /// `ToastsPane` wrapper.
+    viewport: Viewport,
+    /// Per-toast hit rects recorded each frame by `render_toasts`
+    /// (card body + close `[x]` action). Walked top-down by
+    /// `Hittable::hit_test_at`; the action region wins over the body.
+    hits:     Vec<ToastHitbox>,
 }
 
 impl ToastManager {
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    pub fn set_hits(&mut self, hits: Vec<ToastHitbox>) { self.hits = hits; }
+
+    #[cfg(test)]
+    pub fn hits(&self) -> &[ToastHitbox] { &self.hits }
+
     const fn alloc_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
@@ -706,6 +725,36 @@ fn wrapped_line_count(line: &str, width: usize) -> usize {
         rows += 1;
     }
     rows.max(1)
+}
+
+// Phase 14 absorption: `ToastManager` impls `Pane` and `Hittable`
+// directly. Pane render is a no-op (toasts render via the overlay
+// path in `render.rs`); Hittable walks the recorded hit rects.
+
+impl crate::tui::pane::Pane for ToastManager {
+    fn render(
+        &mut self,
+        _frame: &mut ratatui::Frame<'_>,
+        _area: ratatui::layout::Rect,
+        _ctx: &crate::tui::pane::PaneRenderCtx<'_>,
+    ) {
+    }
+}
+
+impl crate::tui::pane::Hittable for ToastManager {
+    fn hit_test_at(&self, pos: ratatui::layout::Position) -> Option<crate::tui::pane::HoverTarget> {
+        for hit in &self.hits {
+            if hit.close_rect.contains(pos) {
+                return Some(crate::tui::pane::HoverTarget::Dismiss(
+                    crate::tui::app::DismissTarget::Toast(hit.id),
+                ));
+            }
+            if hit.card_rect.contains(pos) {
+                return Some(crate::tui::pane::HoverTarget::ToastCard(hit.id));
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]

@@ -41,7 +41,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
         HoverTarget::ToastCard(id) => {
             let active = app.toasts().active_now();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
-                app.panes_mut().toasts_mut().viewport_mut().set_pos(index);
+                app.toasts_mut().viewport_mut().set_pos(index);
                 app.focus_mut().set(PaneId::Toasts);
             }
             true
@@ -63,7 +63,7 @@ pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPan
 pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
     for id in HITTABLE_Z_ORDER {
         let pane: &dyn Hittable = match id {
-            HittableId::Toasts => app.panes().toasts(),
+            HittableId::Toasts => app.toasts(),
             HittableId::Finder => app.panes().finder(),
             HittableId::Settings => app.panes().settings(),
             HittableId::Keymap => app.panes().keymap(),
@@ -98,21 +98,20 @@ pub(super) fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
 /// per-arm reach swaps to subsystem owners as Phases 14–17 absorb
 /// wrappers.
 pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> &mut Viewport {
-    let panes = app.panes_mut();
     match id {
-        PaneId::Cpu => panes.cpu_mut().viewport_mut(),
-        PaneId::Lang => panes.lang_mut().viewport_mut(),
-        PaneId::Lints => panes.lints_mut().viewport_mut(),
-        PaneId::CiRuns => panes.ci_mut().viewport_mut(),
-        PaneId::Package => panes.package_mut().viewport_mut(),
-        PaneId::Git => panes.git_mut().viewport_mut(),
-        PaneId::Toasts => panes.toasts_mut().viewport_mut(),
-        PaneId::Keymap => panes.keymap_mut().viewport_mut(),
-        PaneId::Settings => panes.settings_mut().viewport_mut(),
-        PaneId::Finder => panes.finder_mut().viewport_mut(),
-        PaneId::Output => panes.output_mut().viewport_mut(),
-        PaneId::Targets => panes.targets_mut().viewport_mut(),
-        PaneId::ProjectList => panes.project_list_mut().viewport_mut(),
+        PaneId::Toasts => app.toasts_mut().viewport_mut(),
+        PaneId::Cpu => app.panes_mut().cpu_mut().viewport_mut(),
+        PaneId::Lang => app.panes_mut().lang_mut().viewport_mut(),
+        PaneId::Lints => app.panes_mut().lints_mut().viewport_mut(),
+        PaneId::CiRuns => app.panes_mut().ci_mut().viewport_mut(),
+        PaneId::Package => app.panes_mut().package_mut().viewport_mut(),
+        PaneId::Git => app.panes_mut().git_mut().viewport_mut(),
+        PaneId::Keymap => app.panes_mut().keymap_mut().viewport_mut(),
+        PaneId::Settings => app.panes_mut().settings_mut().viewport_mut(),
+        PaneId::Finder => app.panes_mut().finder_mut().viewport_mut(),
+        PaneId::Output => app.panes_mut().output_mut().viewport_mut(),
+        PaneId::Targets => app.panes_mut().targets_mut().viewport_mut(),
+        PaneId::ProjectList => app.panes_mut().project_list_mut().viewport_mut(),
     }
 }
 
@@ -127,6 +126,7 @@ pub(super) const fn apply_hovered_pane_row(app: &mut App) {
 }
 
 const fn clear_all_hover(app: &mut App) {
+    app.toasts_mut().viewport_mut().set_hovered(None);
     let panes = app.panes_mut();
     panes.package_mut().viewport_mut().set_hovered(None);
     panes.lang_mut().viewport_mut().set_hovered(None);
@@ -134,7 +134,6 @@ const fn clear_all_hover(app: &mut App) {
     panes.git_mut().viewport_mut().set_hovered(None);
     panes.lints_mut().viewport_mut().set_hovered(None);
     panes.ci_mut().viewport_mut().set_hovered(None);
-    panes.toasts_mut().viewport_mut().set_hovered(None);
     panes.keymap_mut().viewport_mut().set_hovered(None);
     panes.settings_mut().viewport_mut().set_hovered(None);
     panes.finder_mut().viewport_mut().set_hovered(None);
@@ -532,7 +531,6 @@ mod tests {
 
     fn toast_close_point(app: &App, toast_id: u64) -> (u16, u16) {
         let Some(rect) = app
-            .panes()
             .toasts()
             .hits()
             .iter()
@@ -549,7 +547,6 @@ mod tests {
 
     fn toast_body_point(app: &App, toast_id: u64) -> (u16, u16) {
         let Some(rect) = app
-            .panes()
             .toasts()
             .hits()
             .iter()
@@ -993,10 +990,7 @@ mod tests {
             app.toasts_mut()
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
         let toast_len = app.toasts().active_now().len();
-        app.panes_mut()
-            .toasts_mut()
-            .viewport_mut()
-            .set_len(toast_len);
+        app.toasts_mut().viewport_mut().set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_close_point(&app, toast_id);
@@ -1024,10 +1018,7 @@ mod tests {
             app.toasts_mut()
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
         let toast_len = app.toasts().active_now().len();
-        app.panes_mut()
-            .toasts_mut()
-            .viewport_mut()
-            .set_len(toast_len);
+        app.toasts_mut().viewport_mut().set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_body_point(&app, toast_id);

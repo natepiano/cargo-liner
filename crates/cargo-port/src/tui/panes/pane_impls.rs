@@ -29,7 +29,6 @@ use crate::project::AbsolutePath;
 use crate::tui::app::DismissTarget;
 use crate::tui::cpu::CpuPoller;
 use crate::tui::cpu::CpuUsage;
-use crate::tui::interaction::ToastHitbox;
 use crate::tui::pane;
 use crate::tui::pane::Hittable;
 use crate::tui::pane::HoverTarget;
@@ -396,54 +395,9 @@ impl Hittable for CiPane {
     }
 }
 
-// ── Toasts ──────────────────────────────────────────────────────
-pub struct ToastsPane {
-    viewport: Viewport,
-    /// Per-toast hit rects recorded each frame by `render_toasts`
-    /// (card body + close `[x]` action). Walked top-down by
-    /// `Hittable::hit_test_at`; the action region wins over the body.
-    hits:     Vec<ToastHitbox>,
-}
-
-impl ToastsPane {
-    pub const fn new() -> Self {
-        Self {
-            viewport: Viewport::new(),
-            hits:     Vec::new(),
-        }
-    }
-
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
-
-    pub fn set_hits(&mut self, hits: Vec<ToastHitbox>) { self.hits = hits; }
-
-    #[cfg(test)]
-    pub fn hits(&self) -> &[ToastHitbox] { &self.hits }
-}
-
-impl Pane for ToastsPane {
-    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {
-        // ToastsPane renders via the overlay path in `render.rs`,
-        // not through `render_tiled_pane`. The trait impl exists
-        // only so the pane can also implement `Hittable`.
-    }
-}
-
-impl Hittable for ToastsPane {
-    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        for hit in &self.hits {
-            if hit.close_rect.contains(pos) {
-                return Some(HoverTarget::Dismiss(DismissTarget::Toast(hit.id)));
-            }
-            if hit.card_rect.contains(pos) {
-                return Some(HoverTarget::ToastCard(hit.id));
-            }
-        }
-        None
-    }
-}
+// Phase 14 absorption: `ToastsPane` was deleted. The toasts viewport
+// and hit rects now live on `ToastManager` itself, which directly
+// `impl Pane` and `impl Hittable` (see `tui/toasts/manager.rs`).
 
 // ── Keymap ──────────────────────────────────────────────────────
 pub struct KeymapPane {
