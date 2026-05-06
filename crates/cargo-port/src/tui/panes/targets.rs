@@ -4,7 +4,7 @@
 //! alongside `TargetsPane`. They are free functions (no `Pane`
 //! trait impl) because the body touches App shell state during
 //! render — `pane_focus_state` plus the typed
-//! `panes_mut().targets_mut().viewport_mut()` accessors.
+//! `panes_mut().targets_mut().viewport` accessors.
 
 use ratatui::Frame;
 use ratatui::layout::Alignment;
@@ -29,7 +29,7 @@ use crate::tui::panes;
 use crate::tui::render;
 
 pub fn render_empty_targets_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.panes.targets_mut().viewport_mut().clear_surface();
+    app.panes.targets.viewport.clear_surface();
     let empty_targets = pane::empty_pane_block(" No Targets ");
     frame.render_widget(empty_targets, area);
 }
@@ -46,7 +46,7 @@ pub fn render_targets_panel(
     let bench_count = data.benches.len();
 
     let focus = app.focus.pane_state(PaneId::Targets);
-    let cursor = app.panes.targets().viewport().pos();
+    let cursor = app.panes.targets.viewport.pos();
 
     let targets_title = {
         let focused_cursor = matches!(focus, PaneFocusState::Active).then_some(cursor);
@@ -85,18 +85,12 @@ pub fn render_targets_panel(
         .block(targets_title, matches!(focus, PaneFocusState::Active));
 
     let entries = panes::build_target_list_from_data(data);
-    app.panes
-        .targets_mut()
-        .viewport_mut()
-        .set_len(entries.len());
+    app.panes.targets.viewport.set_len(entries.len());
     let content_inner = targets_block.inner(area);
+    app.panes.targets.viewport.set_content_area(content_inner);
     app.panes
-        .targets_mut()
-        .viewport_mut()
-        .set_content_area(content_inner);
-    app.panes
-        .targets_mut()
-        .viewport_mut()
+        .targets
+        .viewport
         .set_viewport_rows(usize::from(content_inner.height));
 
     let kind_col_width = panes::RunTargetKind::padded_label_width();
@@ -120,8 +114,8 @@ pub fn render_targets_panel(
             ])
             .style(
                 app.panes
-                    .targets()
-                    .viewport()
+                    .targets
+                    .viewport
                     .selection_state(row_index, focus)
                     .overlay_style(),
             )
@@ -140,8 +134,8 @@ pub fn render_targets_panel(
     let mut table_state = TableState::default().with_selected(Some(cursor));
     frame.render_stateful_widget(table, area, &mut table_state);
     app.panes
-        .targets_mut()
-        .viewport_mut()
+        .targets
+        .viewport
         .set_scroll_offset(table_state.offset());
-    pane::render_overflow_affordance(frame, area, app.panes.targets().viewport());
+    pane::render_overflow_affordance(frame, area, &app.panes.targets.viewport);
 }

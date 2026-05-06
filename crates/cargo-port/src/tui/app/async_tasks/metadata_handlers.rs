@@ -151,7 +151,7 @@ impl App {
         // acceptable for Step 6c.)
         for project_root in member_roots {
             self.scan
-                .target_dir_index_mut()
+                .target_dir_index
                 .upsert(TargetDirMember { project_root }, target_directory.clone());
         }
         tracing::info!(

@@ -54,7 +54,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             if let Ok(mut pos) = LAST_MOUSE_POS.lock() {
                 *pos = Some((mouse.column, mouse.row));
             }
-            app.set_mouse_pos(Some(Position::new(mouse.column, mouse.row)));
+            app.mouse_pos = Some(Position::new(mouse.column, mouse.row));
             handle_mouse_event(app, mouse.kind, mouse.column, mouse.row);
         },
         Event::FocusGained => {
@@ -62,7 +62,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             if let Ok(pos) = LAST_MOUSE_POS.lock()
                 && let Some((column, row)) = *pos
             {
-                app.set_mouse_pos(Some(Position::new(column, row)));
+                app.mouse_pos = Some(Position::new(column, row));
                 handle_mouse_click(app, column, row);
             }
         },
@@ -86,7 +86,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
 }
 
 fn handle_key_event(app: &mut App, raw: &KeyEvent) {
-    app.set_mouse_pos(None);
+    app.mouse_pos = None;
 
     let normalized = normalize_nav(app, raw);
     let code = normalized.code;
@@ -276,7 +276,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
     let pane_regions = app
         .layout_cache
         .tiled
-        .panes()
+        .panes
         .iter()
         .map(|resolved| (resolved.pane, resolved.area))
         .collect::<Vec<_>>();
@@ -342,7 +342,7 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
     let pane_regions = app
         .layout_cache
         .tiled
-        .panes()
+        .panes
         .iter()
         .map(|resolved| (resolved.pane, resolved.area))
         .collect::<Vec<_>>();
@@ -485,16 +485,16 @@ fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
 
 fn open_finder(app: &mut App) {
     let (index, col_widths) = finder::build_finder_index(&app.project_list);
-    let finder = app.finder_mut();
+    let finder = &mut app.project_list.finder;
     finder.index = index;
     finder.col_widths = col_widths;
     app.focus.open_overlay(PaneId::Finder);
     app.overlays.open_finder();
-    let finder = app.finder_mut();
+    let finder = &mut app.project_list.finder;
     finder.query.clear();
     finder.results.clear();
     finder.total = 0;
-    app.overlays.finder_pane_mut().viewport_mut().home();
+    app.overlays.finder_pane.viewport.home();
 }
 
 fn shell_escape_path(path: &Path) -> String {
@@ -584,8 +584,8 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
             app.focus.open_overlay(PaneId::Keymap);
             app.overlays.open_keymap();
             app.overlays
-                .keymap_pane_mut()
-                .viewport_mut()
+                .keymap_pane
+                .viewport
                 .set_len(keymap_ui::selectable_row_count());
         },
         GlobalAction::Rescan => app.rescan(),
@@ -656,12 +656,12 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
 
 fn handle_toast_key(app: &mut App, event: &KeyEvent) {
     match event.code {
-        KeyCode::Up => app.toasts.viewport_mut().up(),
-        KeyCode::Down => app.toasts.viewport_mut().down(),
-        KeyCode::Home => app.toasts.viewport_mut().home(),
+        KeyCode::Up => app.toasts.viewport.up(),
+        KeyCode::Down => app.toasts.viewport.down(),
+        KeyCode::Home => app.toasts.viewport.home(),
         KeyCode::End => {
             let last_index = app.toasts.active_now().len().saturating_sub(1);
-            app.toasts.viewport_mut().set_pos(last_index);
+            app.toasts.viewport.set_pos(last_index);
         },
         KeyCode::Enter => {
             // Open action_path if the focused toast has one.
@@ -669,7 +669,7 @@ fn handle_toast_key(app: &mut App, event: &KeyEvent) {
                 .toasts
                 .active_now()
                 .into_iter()
-                .nth(app.toasts.viewport().pos())
+                .nth(app.toasts.viewport.pos())
                 && let Some(path) = toast.action_path()
             {
                 let editor = app.config.editor().to_string();

@@ -29,17 +29,17 @@ use crate::project::WorkspaceMetadataHandle;
 use crate::project::WorkspaceMetadataStore;
 
 pub(super) struct Scan {
-    state:                    ScanState,
-    dirty:                    DirtyState,
-    data_generation:          u64,
-    discovery_shimmers:       HashMap<AbsolutePath, DiscoveryShimmer>,
-    pending_git_first_commit: HashMap<AbsolutePath, String>,
-    metadata_store:           Arc<Mutex<WorkspaceMetadataStore>>,
-    target_dir_index:         TargetDirIndex,
-    priority_fetch_path:      Option<AbsolutePath>,
-    confirm_verifying:        Option<AbsolutePath>,
+    pub(super) state:            ScanState,
+    dirty:                       DirtyState,
+    data_generation:             u64,
+    discovery_shimmers:          HashMap<AbsolutePath, DiscoveryShimmer>,
+    pending_git_first_commit:    HashMap<AbsolutePath, String>,
+    metadata_store:              Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(super) target_dir_index: TargetDirIndex,
+    priority_fetch_path:         Option<AbsolutePath>,
+    confirm_verifying:           Option<AbsolutePath>,
     #[cfg(test)]
-    retry_spawn_mode:         RetrySpawnMode,
+    retry_spawn_mode:            RetrySpawnMode,
 }
 
 impl Scan {
@@ -63,10 +63,6 @@ impl Scan {
     }
 
     // ── scan-state machine ──────────────────────────────────────────
-
-    pub(super) const fn scan_state(&self) -> &ScanState { &self.state }
-
-    pub(super) const fn scan_state_mut(&mut self) -> &mut ScanState { &mut self.state }
 
     pub(super) const fn is_complete(&self) -> bool { self.state.phase.is_complete() }
 
@@ -155,12 +151,6 @@ impl Scan {
     }
 
     // ── target-dir index ────────────────────────────────────────────
-
-    pub(super) const fn target_dir_index(&self) -> &TargetDirIndex { &self.target_dir_index }
-
-    pub(super) const fn target_dir_index_mut(&mut self) -> &mut TargetDirIndex {
-        &mut self.target_dir_index
-    }
 
     // ── priority fetch path ─────────────────────────────────────────
 

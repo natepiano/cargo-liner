@@ -161,12 +161,12 @@ impl RustProject {
 
 pub(super) fn info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'a ProjectInfo> {
     if ws.path() == path {
-        return Some(ws.rust.info());
+        return Some(&ws.rust.info);
     }
     for group in ws.groups() {
         for member in group.members() {
             if member.path() == path {
-                return Some(member.rust.info());
+                return Some(&member.rust.info);
             }
         }
     }
@@ -180,7 +180,7 @@ pub(super) fn info_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'
 
 pub(super) fn info_in_package<'a>(pkg: &'a Package, path: &Path) -> Option<&'a ProjectInfo> {
     if pkg.path() == path {
-        return Some(pkg.rust.info());
+        return Some(&pkg.rust.info);
     }
     for vendored in pkg.vendored() {
         if vendored.path() == path {
@@ -195,7 +195,7 @@ pub(super) fn info_in_workspace_mut<'a>(
     path: &Path,
 ) -> Option<&'a mut ProjectInfo> {
     if ws.path() == path {
-        return Some(ws.rust.info_mut());
+        return Some(&mut ws.rust.info);
     }
     let member_index = ws
         .groups()
@@ -210,9 +210,9 @@ pub(super) fn info_in_workspace_mut<'a>(
         });
     if let Some((group_index, member_index)) = member_index {
         return Some(
-            ws.groups_mut()[group_index].members_mut()[member_index]
+            &mut ws.groups_mut()[group_index].members_mut()[member_index]
                 .rust
-                .info_mut(),
+                .info,
         );
     }
     let vendored_index = ws
@@ -230,7 +230,7 @@ pub(super) fn info_in_package_mut<'a>(
     path: &Path,
 ) -> Option<&'a mut ProjectInfo> {
     if pkg.path() == path {
-        return Some(pkg.rust.info_mut());
+        return Some(&mut pkg.rust.info);
     }
     for vendored in pkg.vendored_mut() {
         if vendored.path() == path {
@@ -335,45 +335,49 @@ pub(super) fn vendored_in_package_mut<'a>(
 
 pub(super) fn lint_in_workspace<'a>(ws: &'a Workspace, path: &Path) -> Option<&'a LintRuns> {
     if ws.path() == path {
-        return Some(ws.lint_runs());
+        return Some(&ws.rust.lint_runs);
     }
     let is_member = ws
         .groups()
         .iter()
         .any(|g| g.members().iter().any(|m| m.path() == path));
-    is_member.then(|| ws.lint_runs())
+    is_member.then_some(&ws.rust.lint_runs)
 }
 
 pub(super) fn lint_in_package<'a>(pkg: &'a Package, path: &Path) -> Option<&'a LintRuns> {
-    (pkg.path() == path).then(|| pkg.lint_runs())
+    (pkg.path() == path).then_some(&pkg.rust.lint_runs)
 }
 
 pub(super) fn lint_in_workspace_mut<'a>(
     ws: &'a mut Workspace,
     path: &Path,
 ) -> Option<&'a mut LintRuns> {
-    if ws.path() == path {
-        return Some(ws.lint_runs_mut());
-    }
     let is_member = ws
         .groups()
         .iter()
         .any(|g| g.members().iter().any(|m| m.path() == path));
-    is_member.then(|| ws.lint_runs_mut())
+    if ws.path() == path || is_member {
+        return Some(&mut ws.rust.lint_runs);
+    }
+    None
 }
 
 pub(super) fn lint_in_package_mut<'a>(
     pkg: &'a mut Package,
     path: &Path,
 ) -> Option<&'a mut LintRuns> {
-    (pkg.path() == path).then(|| pkg.lint_runs_mut())
+    if pkg.path() == path {
+        Some(&mut pkg.rust.lint_runs)
+    } else {
+        None
+    }
 }
 
 fn collect_project_info_from_workspace(ws: &Workspace, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
-    out.push((ws.path().clone(), ws.rust.info().clone()));
+    out.push((ws.path().clone(), ws.rust.info.clone()));
     for group in ws.groups() {
         for member in group.members() {
-            out.push((member.path().clone(), member.rust.info().clone()));
+            out.push((member.path().clone(), member.rust.info.clone()));
         }
     }
     for vendored in ws.vendored() {
@@ -382,7 +386,7 @@ fn collect_project_info_from_workspace(ws: &Workspace, out: &mut Vec<(AbsolutePa
 }
 
 fn collect_project_info_from_package(pkg: &Package, out: &mut Vec<(AbsolutePath, ProjectInfo)>) {
-    out.push((pkg.path().clone(), pkg.rust.info().clone()));
+    out.push((pkg.path().clone(), pkg.rust.info.clone()));
     for vendored in pkg.vendored() {
         out.push((vendored.path().clone(), vendored.info.clone()));
     }

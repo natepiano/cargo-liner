@@ -1133,7 +1133,7 @@ App as Group X. Phase 12 didn't touch it; quick spot-check before bulk pass.
 - F10 — Phase 14 inventory step 5 added: scan for accessors orphaned by Phase-13 relocations (precedent: `Net::crates_io_mut()`).
 - F11 — No new sequencing constraints between 14 and 15 from Phase 13.
 
-### Phase 14 — Recursive trivial-accessor purge inside subsystems
+### Phase 14 — Recursive trivial-accessor purge inside subsystems ✅
 
 The universal decision rule applies at every nesting depth, not just on `App`.
 Phase 14 sweeps the same rule through subsystem internals: every `pub(super) const fn
@@ -1274,6 +1274,34 @@ Headline metric for 14: **crate-wide trivial-accessor count** (reported by
 — **176 → ~163 after Phase 14** (live baseline; the prior plan's `181 → 169`
 was Phase-12-era and is stale). Phase 14 also cleans the rest of the codebase
 to match the same rule.
+
+### Retrospective
+
+**What worked:**
+- App headline target hit exactly: **176 → 163** (delta 13), matching plan estimate.
+- Bulk perl substitution was effective for caller-rewrite scope — `\.X(_mut)?\(\)` → `.X` worked at scale.
+- Visibility tightening on `ProjectList`: 50 `pub(crate)` → `pub(super)` succeeded with zero caller rewrites (no non-tui consumers).
+- Phase 13 `pub fn` → `pub(super)` tightening worked for `Ci::display_mode_label_for`, `Net::spawn_rate_limit_prime`, `ProjectList::handle_repo_meta` (callers in `tui/app/` are children of `tui/`, so visible). Failed for `ToastManager::*` (deeper nesting prevents children-of-tui access via `pub(super)`).
+
+**What deviated from the plan:**
+- Plan's "publish field, delete accessor, rewrite callers" mechanic broke down on **trait-impl methods**. Bulk rewrite of `.info()` → `.info` collided with `ProjectFields::info` trait method dispatch on `Workspace` / `Package` / `LocalGitState`. Several rounds of patches restored `.info()` parens at non-RustInfo callers; orphan trait method `info_mut` was deleted from the trait + impls.
+- Project/lint trivial accessors (`RustInfo::cargo`, `info`, `info_mut`, `lint_runs`, `lint_runs_mut`; `VendoredPackage::cargo`; `RustInfo::info_mut` trait method) ended up unused and were deleted (warnings).
+- Workspace and member iter sites needed `&` and `&mut` adjustments at many caller sites for moved-by-value field access.
+
+**Surprises:**
+- The `clippy::struct_field_names` lint on `Scan.scan_state` (field name repeats struct name). Resolved by reverting field name to `state` and rewriting all `.scan.scan_state` → `.scan.state` callers.
+- `bool::then(|| ref)` patterns triggered `clippy::unnecessary-closure-with-bool::then`; required converting to `then_some(ref)`.
+- Multiple double-borrow sites (`Some(&cargo)` where `cargo` was already `&Cargo`) needed unwrapping.
+- Trait dispatch (`obj.info()` where `obj: impl ProjectFields`) cannot be safely bulk-rewritten to field access — only inherent accessors on the storing type can.
+
+**Implications for remaining phases:**
+- Phase 15 (Group W static helpers): no direct effect from Phase 14 changes. The relocation rule still applies; helpers stay where they are unless still on `impl App`.
+- The Panes/PaneId trivial-accessor purge introduced potential read-side coupling (`app.panes.git`, `app.toasts.viewport`, etc.) that subsequent phases may want to factor through accessor methods if the field-vs-method distinction starts to bind on lifetime/borrow patterns.
+- `pub(super)` tightening on `ToastManager::start_task` / `mark_tracked_item_completed` / `focused_toast_id` was attempted and reverted — they live in `tui/toasts/manager.rs` (deep nest) and are called from `tui/app/async_tasks/`; `pub(super)` is too narrow. Stays `pub`.
+
+### Phase 14 Review
+
+(To be filled in after dispatching the Plan subagent forward review.)
 
 ### Phase 15 — Relocate Group W static helpers to their data owners
 
@@ -1469,10 +1497,10 @@ sits.
 | **11** | **`project_list` absorption I — row-navigation read-side** | **26 (14 main + 11 helper statics + 1 test helper; 3 cross-subsystem stayed on App)** | **80** | **217 ✅** |
 | **12** | **`project_list` absorption II — action methods (with `include_non_rust` arg threading)** | **24 (19 main + 2 helper statics + 1 to `impl VisibleRow` + 2 ci holdovers; 3 Phase-11 holdovers reclassified as Group X)** | **~80 src + ~10 tests** | **193 ✅** |
 | **13** | **Non-`project_list` S relocations** | **17 (5 startup + 3 toasts + 2 scan + 2 net + 1 background + 1 inflight + 1 ci + 1 `handle_repo_meta` → `impl ProjectList` via plan-phase-review F5; 2 of plan's 18 reclassified as carryovers — `handle_git_first_commit`, `push_service_unavailable_toast` reclassified as X)** | **~30 src** | **176 ✅** |
-| 14 | Recursive trivial-accessor purge (crate-wide + 5 App-local accessors + ≤7 project_list pass-throughs after pre-flight grep + delete 3 empty placeholder modules + Phase-13 ci shim) | ~50–80 (crate-wide), ≤13 (App) | ~200 | ~163 |
+| **14** | **Recursive trivial-accessor purge** (5 App-local accessors + 7 `project_list` pass-throughs + 1 Phase-13 ci shim + 3 empty placeholder modules + ResolvedPaneLayout::panes + Panes::worktree_summary_or_compute + recursive sweep on ProjectList/Panes/Overlays/Net/CiState/LintState/ConfigState/ScanState/WatchedFile/ToastsManager + 50 ProjectList visibility tightenings + 4 Phase-13 pub fn → pub(super)) | **13 (App), ~30 crate-wide** | **~400 src + ~50 tests** | **163 ✅** |
 | 15 | Relocate Group W static helpers to their data owners (after 10) | ~11 (was 23; 11 off App since Phase 11; `collapse_anchor_row` off App since Phase 12) | ~50 | **~152** |
 
-**Net: 308 → 176 on App after Phase 13, → ~163 after Phase 14, → ~152 after Phase 15.**
+**Net: 308 → 176 on App after Phase 13, → 163 after Phase 14, → ~152 after Phase 15.**
 Phase 12 came in 3 under plan (24 vs ~27); end-state slides from ~148 to
 ~152, a 4-method drift from the original ~146 estimate (well within the
 ±5/phase tolerance). The 3 Phase-12 carryovers (`build_selected_pane_data`,

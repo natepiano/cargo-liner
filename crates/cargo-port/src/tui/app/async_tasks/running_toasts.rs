@@ -28,9 +28,9 @@ impl App {
     /// with the live in-flight repo fetches.
     pub(super) fn sync_running_repo_fetch_toast(&mut self) {
         let (toast_slot, items) =
-            Self::running_items_for_toast(self.net.github().running(), ToString::to_string);
+            Self::running_items_for_toast(self.net.github.running(), ToString::to_string);
         let next = self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &items);
-        self.net.github_mut().running_mut().set_toast(next);
+        self.net.github.running_mut().set_toast(next);
     }
     /// Collect a `RunningTracker<K>` into the data the toast helper
     /// needs: the current toast slot plus a `TrackedItem` per running

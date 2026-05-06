@@ -55,13 +55,11 @@ pub struct ResolvedPane<Id> {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResolvedPaneLayout<Id> {
-    panes: Vec<ResolvedPane<Id>>,
+    pub panes: Vec<ResolvedPane<Id>>,
 }
 
 impl<Id> ResolvedPaneLayout<Id> {
     pub const fn new(panes: Vec<ResolvedPane<Id>>) -> Self { Self { panes } }
-
-    pub fn panes(&self) -> &[ResolvedPane<Id>] { &self.panes }
 }
 
 #[cfg(test)]

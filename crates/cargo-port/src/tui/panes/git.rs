@@ -645,7 +645,7 @@ pub(super) fn render_git_pane_body(
     ctx: &PaneRenderCtx<'_>,
 ) {
     let Some(git_data) = pane.content().cloned() else {
-        pane.viewport_mut().clear_surface();
+        pane.viewport.clear_surface();
         let empty = pane::empty_pane_block(pane::pane_title("Git", &PaneTitleCount::None));
         frame.render_widget(empty, area);
         return;
@@ -654,13 +654,13 @@ pub(super) fn render_git_pane_body(
     let flat_fields = panes::git_fields_from_data(&git_data);
     let total_rows = flat_fields.len() + git_data.remotes.len() + git_data.worktrees.len();
     if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
-        pane.viewport_mut().clear_surface();
+        pane.viewport.clear_surface();
         let empty_git = pane::empty_pane_block(" Not a git repo ");
         frame.render_widget(empty_git, area);
         return;
     }
 
-    pane.viewport_mut().set_len(total_rows);
+    pane.viewport.set_len(total_rows);
     let focus = ctx.focus_state;
     let border_style = if matches!(focus, PaneFocusState::Active) {
         styles.chrome.active_border
@@ -685,21 +685,21 @@ pub(super) fn render_git_pane_body(
     );
 
     {
-        let viewport = pane.viewport_mut();
+        let viewport = &mut pane.viewport;
         viewport.set_content_area(content_area);
         viewport.set_viewport_rows(usize::from(content_area.height));
     }
     let git_ctx = GitRenderCtx {
         data: &git_data,
         fields: &flat_fields,
-        pane: pane.viewport(),
+        pane: &pane.viewport,
         focus,
         styles,
     };
     let layout = render_git_column_inner(frame, &git_ctx, area, content_area);
-    pane.viewport_mut().set_scroll_offset(layout.scroll_offset);
+    pane.viewport.set_scroll_offset(layout.scroll_offset);
     pane.set_row_layout(content_area, layout.row_line_ys);
-    pane::render_overflow_affordance(frame, area, pane.viewport());
+    pane::render_overflow_affordance(frame, area, &pane.viewport);
     let _ = ctx;
 }
 

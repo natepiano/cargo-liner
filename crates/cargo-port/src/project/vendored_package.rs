@@ -36,8 +36,6 @@ impl VendoredPackage {
         ))
     }
 
-    pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
-
     pub(crate) fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
 
     pub(crate) const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
@@ -62,8 +60,6 @@ impl ProjectFields for VendoredPackage {
     fn git_info(&self) -> Option<&CheckoutInfo> { self.info.local_git_state.info() }
 
     fn info(&self) -> &ProjectInfo { &self.info }
-
-    fn info_mut(&mut self) -> &mut ProjectInfo { &mut self.info }
 
     fn display_path(&self) -> DisplayPath { self.path.display_path() }
 

@@ -27,9 +27,9 @@ impl Keymap {
         }
     }
 
-    pub(super) const fn current(&self) -> &ResolvedKeymap { self.file.current() }
+    pub(super) const fn current(&self) -> &ResolvedKeymap { &self.file.current }
 
-    pub(super) const fn current_mut(&mut self) -> &mut ResolvedKeymap { self.file.current_mut() }
+    pub(super) const fn current_mut(&mut self) -> &mut ResolvedKeymap { &mut self.file.current }
 
     pub(super) fn path(&self) -> Option<&Path> { self.file.path() }
 
@@ -38,9 +38,7 @@ impl Keymap {
     /// existing `App::maybe_reload_keymap_from_disk` path captures
     /// `result.keymap` from `keymap::load_keymap_from_str` and
     /// installs it directly).
-    pub(super) fn replace_current(&mut self, value: ResolvedKeymap) {
-        *self.file.current_mut() = value;
-    }
+    pub(super) fn replace_current(&mut self, value: ResolvedKeymap) { self.file.current = value; }
 
     /// Refresh the cached stamp without re-parsing. Used after App
     /// itself writes the file (defaults written for missing

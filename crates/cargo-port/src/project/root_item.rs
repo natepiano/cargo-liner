@@ -136,12 +136,12 @@ impl RootItem {
     /// Git submodules for this item's primary project info.
     pub(crate) fn submodules(&self) -> &[Submodule] {
         match self {
-            Self::Rust(RustProject::Workspace(ws)) => &ws.info().submodules,
-            Self::Rust(RustProject::Package(pkg)) => &pkg.info().submodules,
-            Self::NonRust(p) => &p.info().submodules,
+            Self::Rust(RustProject::Workspace(ws)) => &ws.info.submodules,
+            Self::Rust(RustProject::Package(pkg)) => &pkg.info.submodules,
+            Self::NonRust(p) => &p.info.submodules,
             Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces { primary, .. } => &primary.info().submodules,
-                WorktreeGroup::Packages { primary, .. } => &primary.info().submodules,
+                WorktreeGroup::Workspaces { primary, .. } => &primary.info.submodules,
+                WorktreeGroup::Packages { primary, .. } => &primary.info.submodules,
             },
         }
     }
@@ -187,7 +187,7 @@ impl RootItem {
     pub(crate) fn at_path(&self, path: &Path) -> Option<&ProjectInfo> {
         let result = match self {
             Self::Rust(p) => p.at_path(path),
-            Self::NonRust(p) => (p.path() == path).then(|| p.info()),
+            Self::NonRust(p) => (p.path() == path).then_some(&p.info),
             Self::Worktrees(g) => match g {
                 WorktreeGroup::Workspaces {
                     primary, linked, ..
@@ -244,7 +244,7 @@ impl RootItem {
         }
         match self {
             Self::Rust(p) => p.at_path_mut(path),
-            Self::NonRust(p) => (p.path() == path).then(|| p.info_mut()),
+            Self::NonRust(p) => (p.path() == path).then_some(&mut p.info),
             Self::Worktrees(g) => match g {
                 WorktreeGroup::Workspaces {
                     primary, linked, ..
@@ -424,12 +424,12 @@ impl RootItem {
                 .vendored()
                 .iter()
                 .any(|v| v.path() == path)
-                .then(|| ws.lint_runs()),
+                .then_some(&ws.rust.lint_runs),
             Self::Rust(RustProject::Package(pkg)) => pkg
                 .vendored()
                 .iter()
                 .any(|v| v.path() == path)
-                .then(|| pkg.lint_runs()),
+                .then_some(&pkg.rust.lint_runs),
             Self::NonRust(_) => None,
             Self::Worktrees(g) => match g {
                 WorktreeGroup::Workspaces {
@@ -437,13 +437,13 @@ impl RootItem {
                 } => std::iter::once(primary)
                     .chain(linked.iter())
                     .find(|ws| ws.vendored().iter().any(|v| v.path() == path))
-                    .map(|ws| ws.lint_runs()),
+                    .map(|ws| &ws.rust.lint_runs),
                 WorktreeGroup::Packages {
                     primary, linked, ..
                 } => std::iter::once(primary)
                     .chain(linked.iter())
                     .find(|pkg| pkg.vendored().iter().any(|v| v.path() == path))
-                    .map(|pkg| pkg.lint_runs()),
+                    .map(|pkg| &pkg.rust.lint_runs),
             },
         }
     }
@@ -468,7 +468,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.collect_project_info(&mut out),
             Self::NonRust(p) => {
-                out.push((p.path().clone(), p.info().clone()));
+                out.push((p.path().clone(), p.info.clone()));
             },
             Self::Worktrees(g) => match g {
                 WorktreeGroup::Workspaces {
@@ -502,32 +502,32 @@ impl RootItem {
 fn submodule_info_mut<'a>(item: &'a mut RootItem, path: &Path) -> Option<&'a mut ProjectInfo> {
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => ws
-            .info_mut()
+            .info
             .submodules
             .iter_mut()
             .find(|s| s.path.as_path() == path)
             .map(|s| &mut s.info),
         RootItem::Rust(RustProject::Package(pkg)) => pkg
-            .info_mut()
+            .info
             .submodules
             .iter_mut()
             .find(|s| s.path.as_path() == path)
             .map(|s| &mut s.info),
         RootItem::NonRust(nr) => nr
-            .info_mut()
+            .info
             .submodules
             .iter_mut()
             .find(|s| s.path.as_path() == path)
             .map(|s| &mut s.info),
         RootItem::Worktrees(g) => match g {
             WorktreeGroup::Workspaces { primary, .. } => primary
-                .info_mut()
+                .info
                 .submodules
                 .iter_mut()
                 .find(|s| s.path.as_path() == path)
                 .map(|s| &mut s.info),
             WorktreeGroup::Packages { primary, .. } => primary
-                .info_mut()
+                .info
                 .submodules
                 .iter_mut()
                 .find(|s| s.path.as_path() == path)

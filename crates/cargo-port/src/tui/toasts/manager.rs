@@ -234,23 +234,19 @@ impl<'a> ToastView<'a> {
 
 #[derive(Default)]
 pub struct ToastManager {
-    next_id:  u64,
-    toasts:   Vec<Toast>,
+    next_id:      u64,
+    toasts:       Vec<Toast>,
     /// Per-pane cursor for the toasts overlay. Phase 14 absorption:
     /// the toasts viewport lives with its data, not on a separate
     /// `ToastsPane` wrapper.
-    viewport: Viewport,
+    pub viewport: Viewport,
     /// Per-toast hit rects recorded each frame by `render_toasts`
     /// (card body + close `[x]` action). Walked top-down by
     /// `Hittable::hit_test_at`; the action region wins over the body.
-    hits:     Vec<ToastHitbox>,
+    hits:         Vec<ToastHitbox>,
 }
 
 impl ToastManager {
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
-
     pub fn set_hits(&mut self, hits: Vec<ToastHitbox>) { self.hits = hits; }
 
     #[cfg(test)]

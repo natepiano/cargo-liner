@@ -158,7 +158,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     cfg.tui.include_non_rust = NonRustInclusion::Include;
     cfg.tui.include_dirs = vec!["/tmp/test".to_string()];
     let mut app = make_app_with_config(&[rust_project, non_rust_project], &cfg);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     assert_eq!(app.project_list.len(), 2);
 
@@ -197,7 +197,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
 fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
     let rust_project = make_project(Some("rust"), "~/rust");
     let mut app = make_app(&[rust_project]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     let mut cfg = app.config.current().clone();
     cfg.tui.include_non_rust = NonRustInclusion::Include;
@@ -211,30 +211,30 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
 fn service_reachability_tracks_background_messages() {
     let mut app = make_app(&[]);
 
-    assert!(!app.net.github().availability().is_unavailable());
-    assert!(!app.net.crates_io().availability().is_unavailable());
+    assert!(!app.net.github.availability.is_unavailable());
+    assert!(!app.net.crates_io.availability.is_unavailable());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
         service: ServiceKind::GitHub,
     }));
-    assert!(app.net.github().availability().is_unavailable());
+    assert!(app.net.github.availability.is_unavailable());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
         service: ServiceKind::CratesIo,
     }));
-    assert!(app.net.crates_io().availability().is_unavailable());
+    assert!(app.net.crates_io.availability.is_unavailable());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceReachable {
         service: ServiceKind::GitHub,
     }));
-    assert!(!app.net.github().availability().is_unavailable());
-    assert!(app.net.crates_io().availability().is_unavailable());
+    assert!(!app.net.github.availability.is_unavailable());
+    assert!(app.net.crates_io.availability.is_unavailable());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceReachable {
         service: ServiceKind::CratesIo,
     }));
-    assert!(!app.net.github().availability().is_unavailable());
-    assert!(!app.net.crates_io().availability().is_unavailable());
+    assert!(!app.net.github.availability.is_unavailable());
+    assert!(!app.net.crates_io.availability.is_unavailable());
 }
 
 #[test]
@@ -253,18 +253,18 @@ fn successful_request_dismisses_stuck_unreachable_toast() {
     });
     let toast_id = app
         .net
-        .github()
-        .availability()
+        .github
+        .availability
         .toast_id()
         .expect("first unreachable signal pushes a toast");
     assert!(app.toasts.is_alive(toast_id));
-    assert!(app.net.github().availability().is_unavailable());
+    assert!(app.net.github.availability.is_unavailable());
 
     app.handle_bg_msg(BackgroundMsg::ServiceReachable {
         service: ServiceKind::GitHub,
     });
     assert!(
-        !app.net.github().availability().is_unavailable(),
+        !app.net.github.availability.is_unavailable(),
         "reachable signal should flip status back to available"
     );
     assert!(
@@ -287,8 +287,8 @@ fn unreachable_toast_reappears_after_user_dismissal() {
     });
     let toast_id = app
         .net
-        .github()
-        .availability()
+        .github
+        .availability
         .toast_id()
         .expect("first unreachable signal pushes a toast");
 
@@ -309,8 +309,8 @@ fn unreachable_toast_reappears_after_user_dismissal() {
     });
     let new_id = app
         .net
-        .github()
-        .availability()
+        .github
+        .availability
         .toast_id()
         .expect("second unreachable signal should retain a toast id");
     assert_ne!(

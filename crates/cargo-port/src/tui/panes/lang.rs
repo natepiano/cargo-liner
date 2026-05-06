@@ -162,13 +162,13 @@ fn render_lang_table(
     widths: [Constraint; 7],
     body_area: Rect,
 ) {
-    let cursor = pane.viewport().pos();
+    let cursor = pane.viewport.pos();
     let table = Table::new(rows, widths)
         .column_spacing(1)
         .row_highlight_style(Style::default());
     let mut table_state = TableState::default().with_selected(Some(cursor));
     frame.render_stateful_widget(table, body_area, &mut table_state);
-    pane.viewport_mut().set_scroll_offset(table_state.offset());
+    pane.viewport.set_scroll_offset(table_state.offset());
 }
 
 /// Body of `LangPane::render`. Same pattern as
@@ -195,7 +195,7 @@ pub(super) fn render_lang_pane_body(
         .cloned();
 
     let lang_count = lang_stats.as_ref().map_or(0, |s| s.entries.len());
-    let cursor = matches!(focus_state, PaneFocusState::Active).then(|| pane.viewport().pos());
+    let cursor = matches!(focus_state, PaneFocusState::Active).then(|| pane.viewport.pos());
     let title = pane::pane_title(
         "Languages",
         &PaneTitleCount::Single {
@@ -208,19 +208,19 @@ pub(super) fn render_lang_pane_body(
     frame.render_widget(block, area);
 
     let Some(stats) = lang_stats else {
-        pane.viewport_mut().clear_surface();
+        pane.viewport.clear_surface();
         frame.render_widget(Paragraph::new("  Scanning..."), inner);
         return;
     };
 
     if stats.entries.is_empty() {
-        pane.viewport_mut().clear_surface();
+        pane.viewport.clear_surface();
         frame.render_widget(Paragraph::new("  No source files detected"), inner);
         return;
     }
 
     if inner.height < 2 {
-        pane.viewport_mut().clear_surface();
+        pane.viewport.clear_surface();
         return;
     }
 
@@ -240,7 +240,7 @@ pub(super) fn render_lang_pane_body(
     let rows_needed = u16::try_from(entry_count + 1).unwrap_or(u16::MAX);
     let pin_footer = rows_needed > content_below_header;
 
-    let mut rows = build_lang_rows(pane.viewport(), &stats, name_width, *focus_state);
+    let mut rows = build_lang_rows(&pane.viewport, &stats, name_width, *focus_state);
 
     if pin_footer {
         let footer_y = inner.y + inner.height.saturating_sub(1);
@@ -252,7 +252,7 @@ pub(super) fn render_lang_pane_body(
         let body_height = inner.height.saturating_sub(2);
         let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
 
-        let viewport = pane.viewport_mut();
+        let viewport = &mut pane.viewport;
         viewport.set_len(rows.len());
         viewport.set_content_area(body_area);
         viewport.set_viewport_rows(usize::from(body_area.height));
@@ -262,12 +262,12 @@ pub(super) fn render_lang_pane_body(
         let body_height = inner.height.saturating_sub(1);
         let body_area = Rect::new(inner.x, inner.y + 1, inner.width, body_height);
 
-        let viewport = pane.viewport_mut();
+        let viewport = &mut pane.viewport;
         viewport.set_len(entry_count);
         viewport.set_content_area(body_area);
         viewport.set_viewport_rows(usize::from(body_area.height));
         render_lang_table(frame, pane, rows, widths, body_area);
     }
 
-    pane::render_overflow_affordance(frame, area, pane.viewport());
+    pane::render_overflow_affordance(frame, area, &pane.viewport);
 }

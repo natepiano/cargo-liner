@@ -30,7 +30,7 @@ impl App {
         // blocked.
         if !self
             .net
-            .github_mut()
+            .github
             .repo_fetch_in_flight_mut()
             .insert(owner_repo.clone())
         {
@@ -39,7 +39,7 @@ impl App {
 
         let tx = self.background.bg_sender();
         let client = self.net.http_client();
-        let repo_cache = self.net.github().fetch_cache().clone();
+        let repo_cache = self.net.github.fetch_cache.clone();
         let path: AbsolutePath = AbsolutePath::from(path);
         let repo_url = repo_url.to_string();
         let ci_run_count = self.config.ci_run_count();
@@ -169,9 +169,9 @@ impl App {
             && self.scan.is_complete()
             && let Some(url) = self.project_list.fetch_url_for(path)
             && let Some(owner_repo) = ci::parse_owner_repo(&url)
-            && !self.net.github().contains_in_flight(&owner_repo)
+            && !self.net.github.contains_in_flight(&owner_repo)
         {
-            scan::invalidate_cached_repo_data(self.net.github().fetch_cache(), &owner_repo);
+            scan::invalidate_cached_repo_data(&self.net.github.fetch_cache, &owner_repo);
         }
 
         self.maybe_trigger_repo_fetch(path);
@@ -222,10 +222,7 @@ impl App {
             .as_ref()
             .is_none_or(HashSet::is_empty);
         self.startup.repo.ensure_expected().insert(repo.clone());
-        self.net
-            .github_mut()
-            .running_mut()
-            .insert(repo, Instant::now());
+        self.net.github.running_mut().insert(repo, Instant::now());
         if first_repo {
             // First repo queued — add the "GitHub repos" tracked item
             // to the startup toast and reset completion so the phase
@@ -245,17 +242,14 @@ impl App {
                     linger,
                 );
                 let toast_len = self.toasts.active_now().len();
-                self.toasts.viewport_mut().set_len(toast_len);
+                self.toasts.viewport.set_len(toast_len);
             }
         }
         self.sync_running_repo_fetch_toast();
     }
     pub(super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
-        self.net
-            .github_mut()
-            .repo_fetch_in_flight_mut()
-            .remove(&repo);
-        self.net.github_mut().running_mut().remove(&repo);
+        self.net.github.repo_fetch_in_flight_mut().remove(&repo);
+        self.net.github.running_mut().remove(&repo);
         self.startup.repo.seen.insert(repo);
         self.maybe_log_startup_phase_completions();
         self.sync_running_repo_fetch_toast();

@@ -268,7 +268,7 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
     };
 
     if !ci_data.has_runs() {
-        let viewport = pane.viewport_mut();
+        let viewport = &mut pane.viewport;
         viewport.set_len(0);
         viewport.set_content_area(Rect::ZERO);
         render_empty_ci_block(frame, &empty_ci_title(&ci_data), area);
@@ -277,14 +277,14 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
 
     let ci_focused = ctx.is_focused;
     let ci_focus = ctx.focus_state;
-    let focused_pos = ci_focused.then(|| pane.viewport().pos());
+    let focused_pos = ci_focused.then(|| pane.viewport.pos());
     let title = ci_panel_title(&ci_data, focused_pos);
 
     let ci_block = pane::default_pane_chrome().block(title, ci_focused);
 
     let inner = ci_block.inner(area);
     {
-        let viewport = pane.viewport_mut();
+        let viewport = &mut pane.viewport;
         viewport.set_len(ci_data.runs.len());
         viewport.set_content_area(inner);
         viewport.set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
@@ -312,7 +312,7 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
 
     let header = build_ci_header_row(&cols);
 
-    let viewport_ref = pane.viewport();
+    let viewport_ref = &pane.viewport;
     let rows: Vec<Row> = ci_data
         .runs
         .iter()
@@ -335,10 +335,10 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
         .column_spacing(1)
         .row_highlight_style(Style::default());
 
-    let mut table_state = TableState::default().with_selected(Some(pane.viewport().pos()));
+    let mut table_state = TableState::default().with_selected(Some(pane.viewport.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    pane.viewport_mut().set_scroll_offset(table_state.offset());
-    pane::render_overflow_affordance(frame, area, pane.viewport());
+    pane.viewport.set_scroll_offset(table_state.offset());
+    pane::render_overflow_affordance(frame, area, &pane.viewport);
 
     let _ = ctx;
 }

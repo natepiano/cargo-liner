@@ -48,8 +48,6 @@ impl ProjectFields for NonRustProject {
 
     fn info(&self) -> &ProjectInfo { &self.info }
 
-    fn info_mut(&mut self) -> &mut ProjectInfo { &mut self.info }
-
     fn display_path(&self) -> DisplayPath { self.path.display_path() }
 
     fn root_directory_name(&self) -> RootDirectoryName {

@@ -42,7 +42,7 @@ impl App {
             row,
             generation: self.scan.generation(),
         });
-        if self.panes.pane_data().detail_is_current(desired) {
+        if self.panes.pane_data.detail_is_current(desired) {
             return;
         }
         let started = std::time::Instant::now();

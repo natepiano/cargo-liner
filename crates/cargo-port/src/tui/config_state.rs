@@ -61,8 +61,8 @@ impl Default for SettingsEditBuffer {
 /// Owns the parsed config plus the on-disk watch state and the
 /// in-app settings editor's edit buffer.
 pub(super) struct Config {
-    file:        WatchedFile<CargoPortConfig>,
-    edit_buffer: SettingsEditBuffer,
+    file:                   WatchedFile<CargoPortConfig>,
+    pub(super) edit_buffer: SettingsEditBuffer,
 }
 
 impl Config {
@@ -73,9 +73,9 @@ impl Config {
         }
     }
 
-    pub(super) const fn current(&self) -> &CargoPortConfig { self.file.current() }
+    pub(super) const fn current(&self) -> &CargoPortConfig { &self.file.current }
 
-    pub(super) const fn current_mut(&mut self) -> &mut CargoPortConfig { self.file.current_mut() }
+    pub(super) const fn current_mut(&mut self) -> &mut CargoPortConfig { &mut self.file.current }
 
     pub(super) fn path(&self) -> Option<&Path> { self.file.path() }
 
@@ -92,12 +92,6 @@ impl Config {
     /// `Result<CargoPortConfig, String>`) and applies its own
     /// rescan / toast logic on the outcome.
     pub(super) fn take_stamp_change(&mut self) -> Option<&Path> { self.file.take_stamp_change() }
-
-    pub(super) const fn edit_buffer(&self) -> &SettingsEditBuffer { &self.edit_buffer }
-
-    pub(super) const fn edit_buffer_mut(&mut self) -> &mut SettingsEditBuffer {
-        &mut self.edit_buffer
-    }
 
     // ── flag accessors (Phase 1 of pass-through collapse) ───────────
 
@@ -138,7 +132,7 @@ impl Config {
     /// reload. Production paths construct `Config` once at startup.
     #[cfg(test)]
     pub(super) fn force_reload_from(&mut self, path: PathBuf) {
-        let current = self.file.current().clone();
+        let current = self.file.current.clone();
         self.file = WatchedFile::new(Some(path), current);
         // Replace WatchedFile constructor sets stamp to whatever's
         // on disk now; clear it so the next take_stamp_change sees
@@ -189,7 +183,7 @@ mod tests {
         let cfg = CargoPortConfig::default();
         let config = Config::new(None, cfg);
         assert!(config.path().is_none());
-        assert_eq!(config.edit_buffer().buf(), "");
-        assert_eq!(config.edit_buffer().cursor(), 0);
+        assert_eq!(config.edit_buffer.buf(), "");
+        assert_eq!(config.edit_buffer.cursor(), 0);
     }
 }

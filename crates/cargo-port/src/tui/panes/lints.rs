@@ -147,23 +147,23 @@ pub fn render_lints_pane_body(
     };
 
     let focused = ctx.is_focused;
-    let title = lints_panel_title(&lints_data, focused, pane.viewport().pos());
+    let title = lints_panel_title(&lints_data, focused, pane.viewport.pos());
     let block = lints_panel_block(title, focused, !lints_data.runs.is_empty());
 
     let inner = block.inner(area);
     {
-        let viewport = pane.viewport_mut();
+        let viewport = &mut pane.viewport;
         viewport.set_content_area(inner);
         viewport.set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
     }
 
     if lints_data.runs.is_empty() {
         frame.render_widget(block, area);
-        pane.viewport_mut().set_len(0);
+        pane.viewport.set_len(0);
         return;
     }
 
-    let viewport_clone = pane.viewport().clone();
+    let viewport_clone = pane.viewport.clone();
     let focus = ctx.focus_state;
     let rows = build_lint_rows(
         &lints_data.runs,
@@ -172,7 +172,7 @@ pub fn render_lints_pane_body(
         &viewport_clone,
         focus,
     );
-    pane.viewport_mut().set_len(rows.len());
+    pane.viewport.set_len(rows.len());
 
     let col_header_style = Style::default()
         .fg(COLUMN_HEADER_COLOR)
@@ -204,10 +204,10 @@ pub fn render_lints_pane_body(
     .column_spacing(2)
     .row_highlight_style(Style::default());
 
-    let mut table_state = TableState::default().with_selected(Some(pane.viewport().pos()));
+    let mut table_state = TableState::default().with_selected(Some(pane.viewport.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    pane.viewport_mut().set_scroll_offset(table_state.offset());
-    pane::render_overflow_affordance(frame, area, pane.viewport());
+    pane.viewport.set_scroll_offset(table_state.offset());
+    pane::render_overflow_affordance(frame, area, &pane.viewport);
 
     let _ = ctx;
 }

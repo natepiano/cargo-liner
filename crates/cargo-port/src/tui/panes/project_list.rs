@@ -45,6 +45,7 @@ use crate::project::VendoredPackage;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
+use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::DiscoveryRowKind;
 use crate::tui::app::DismissTarget;
@@ -125,7 +126,7 @@ pub fn formatted_disk_for_item(item: &RootItem) -> String {
 
 pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let (mut items, header, summary_line, row_width) = {
-        let widths = app.cached_fit_widths();
+        let widths = &app.project_list.cached_fit_widths;
         let items: Vec<ListItem> = render_tree_items(app, widths);
         let total_str = render::format_bytes(
             app.project_list
@@ -189,26 +190,20 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         content_area
     };
+    app.panes.project_list.viewport.set_len(total_project_rows);
+    app.panes.project_list.viewport.set_content_area(list_area);
     app.panes
-        .project_list_mut()
-        .viewport_mut()
-        .set_len(total_project_rows);
-    app.panes
-        .project_list_mut()
-        .viewport_mut()
-        .set_content_area(list_area);
-    app.panes
-        .project_list_mut()
-        .viewport_mut()
+        .project_list
+        .viewport
         .set_viewport_rows(usize::from(list_area.height));
     let project_list = List::new(items);
     let mut list_state = ListState::default().with_selected(Some(app.project_list.cursor()));
-    *list_state.offset_mut() = app.panes.project_list().viewport().scroll_offset();
+    *list_state.offset_mut() = app.panes.project_list.viewport.scroll_offset();
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
     app.layout_cache.project_list_body = list_area;
     app.panes
-        .project_list_mut()
-        .viewport_mut()
+        .project_list
+        .viewport
         .set_scroll_offset(list_state.offset());
     app.project_list
         .set_cursor(list_state.selected().unwrap_or(0));
@@ -218,18 +213,18 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
         render_project_list_footer(frame, content_area, line);
     }
 
-    pane::render_overflow_affordance(frame, area, app.panes.project_list().viewport());
+    pane::render_overflow_affordance(frame, area, &app.panes.project_list.viewport);
 }
 
 const DISMISS_SUFFIX: &str = " [x]";
 
 fn set_project_list_dismiss_actions(app: &mut App, list_area: Rect, row_width: u16) {
     let visible_height = usize::from(list_area.height);
-    let visible_start = app.panes.project_list().viewport().scroll_offset();
+    let visible_start = app.panes.project_list.viewport.scroll_offset();
     let visible_end = app
         .panes
-        .project_list()
-        .viewport()
+        .project_list
+        .viewport
         .len()
         .min(visible_start.saturating_add(visible_height));
     let suffix_width = u16::try_from(columns::display_width(DISMISS_SUFFIX)).unwrap_or(u16::MAX);
@@ -252,11 +247,11 @@ fn set_project_list_dismiss_actions(app: &mut App, list_area: Rect, row_width: u
             .saturating_add(row_width.saturating_sub(suffix_width));
         actions.push((Rect::new(x, y, suffix_width, 1), target));
     }
-    app.panes.project_list_mut().set_dismiss_actions(actions);
+    app.panes.project_list.set_dismiss_actions(actions);
 }
 
 const fn clear_project_list_surface(app: &mut App) {
-    app.panes.project_list_mut().viewport_mut().clear_surface();
+    app.panes.project_list.viewport.clear_surface();
 }
 
 fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<'static>) {
@@ -272,7 +267,7 @@ fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<
 fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
     let focused = app.focus.is(PaneId::ProjectList);
     let cursor = app.project_list.cursor();
-    let roots = app.resolved_dirs();
+    let roots = scan::resolve_include_dirs(&app.config.current().tui.include_dirs);
 
     // Count visible rows per root directory and determine which root the
     // cursor is in.
@@ -351,7 +346,11 @@ fn render_root_item(
     let main_sync = app.project_list.git_main(item.path());
     let git_status = app.project_list.git_status_for_item(item);
     let prefix = if item.has_children() {
-        if app.expanded().contains(&ExpandKey::Node(node_index)) {
+        if app
+            .project_list
+            .expanded
+            .contains(&ExpandKey::Node(node_index))
+        {
             PREFIX_ROOT_EXPANDED
         } else {
             PREFIX_ROOT_COLLAPSED
@@ -491,7 +490,11 @@ fn render_worktree_entry<'a>(
     let (wt_name, has_expandable_children) = worktree_entry_name_and_expandable(item, wi, &dp);
 
     let prefix = if has_expandable_children {
-        if app.expanded().contains(&ExpandKey::Worktree(ni, wi)) {
+        if app
+            .project_list
+            .expanded
+            .contains(&ExpandKey::Worktree(ni, wi))
+        {
             PREFIX_WT_EXPANDED
         } else {
             PREFIX_WT_COLLAPSED
@@ -655,7 +658,8 @@ fn render_wt_group_header<'a>(
         _ => (String::new(), 0),
     };
     let prefix = if app
-        .expanded()
+        .project_list
+        .expanded
         .contains(&ExpandKey::WorktreeGroup(ni, wi, gi))
     {
         PREFIX_WT_GROUP_EXPANDED
@@ -987,13 +991,13 @@ fn render_wt_vendored_item(
 }
 
 pub fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<ListItem<'static>> {
-    let root_sorted = app.cached_root_sorted();
-    let child_sorted = app.cached_child_sorted();
+    let root_sorted = &app.project_list.cached_root_sorted;
+    let child_sorted = &app.project_list.cached_child_sorted;
     let root_labels = app
         .project_list
         .resolved_root_labels(app.config.include_non_rust().includes_non_rust());
     let focus = app.focus.pane_state(PaneId::ProjectList);
-    let pane = app.panes.project_list().viewport();
+    let pane = &app.panes.project_list.viewport;
     let cursor = app.project_list.cursor();
 
     let rows = app.visible_rows();
@@ -1034,7 +1038,8 @@ fn render_tree_item(
                 _ => (String::new(), 0),
             };
             let prefix = if app
-                .expanded()
+                .project_list
+                .expanded
                 .contains(&ExpandKey::Group(*node_index, *group_index))
             {
                 PREFIX_GROUP_EXPANDED

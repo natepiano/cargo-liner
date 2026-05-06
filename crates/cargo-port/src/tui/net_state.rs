@@ -126,8 +126,8 @@ impl ServiceAvailability {
 }
 
 pub struct Github {
-    availability:         ServiceAvailability,
-    fetch_cache:          RepoCache,
+    pub availability:     ServiceAvailability,
+    pub fetch_cache:      RepoCache,
     repo_fetch_in_flight: HashSet<OwnerRepo>,
     /// Live cache-missed repo fetches plus the single sticky
     /// "Retrieving GitHub repo details" toast slot.
@@ -144,8 +144,6 @@ impl Github {
         }
     }
 
-    pub const fn fetch_cache(&self) -> &RepoCache { &self.fetch_cache }
-
     pub const fn repo_fetch_in_flight_mut(&mut self) -> &mut HashSet<OwnerRepo> {
         &mut self.repo_fetch_in_flight
     }
@@ -157,11 +155,6 @@ impl Github {
     pub const fn running(&self) -> &RunningTracker<OwnerRepo> { &self.running }
 
     pub const fn running_mut(&mut self) -> &mut RunningTracker<OwnerRepo> { &mut self.running }
-
-    #[cfg(test)]
-    pub const fn availability(&self) -> &ServiceAvailability { &self.availability }
-
-    pub const fn availability_mut(&mut self) -> &mut ServiceAvailability { &mut self.availability }
 
     /// Reset every GitHub field to its post-construction state.
     /// Called by `Net::clear_for_tree_change` on rescan; replaces
@@ -175,7 +168,7 @@ impl Github {
 }
 
 pub struct CratesIo {
-    availability: ServiceAvailability,
+    pub availability: ServiceAvailability,
 }
 
 impl CratesIo {
@@ -184,17 +177,12 @@ impl CratesIo {
             availability: ServiceAvailability::new(),
         }
     }
-
-    #[cfg(test)]
-    pub const fn availability(&self) -> &ServiceAvailability { &self.availability }
-
-    pub const fn availability_mut(&mut self) -> &mut ServiceAvailability { &mut self.availability }
 }
 
 pub struct Net {
-    http_client: HttpClient,
-    github:      Github,
-    crates_io:   CratesIo,
+    http_client:   HttpClient,
+    pub github:    Github,
+    pub crates_io: CratesIo,
 }
 
 impl Net {
@@ -216,13 +204,6 @@ impl Net {
         self.http_client.set_force_github_rate_limit(on);
     }
 
-    pub const fn github(&self) -> &Github { &self.github }
-
-    pub const fn github_mut(&mut self) -> &mut Github { &mut self.github }
-
-    #[cfg(test)]
-    pub const fn crates_io(&self) -> &CratesIo { &self.crates_io }
-
     pub const fn github_status(&self) -> AvailabilityStatus { self.github.availability.status() }
 
     /// Clear the GitHub sub-state on rescan: drop the repo-fetch
@@ -236,8 +217,8 @@ impl Net {
         service: ServiceKind,
     ) -> &mut ServiceAvailability {
         match service {
-            ServiceKind::GitHub => self.github.availability_mut(),
-            ServiceKind::CratesIo => self.crates_io.availability_mut(),
+            ServiceKind::GitHub => &mut self.github.availability,
+            ServiceKind::CratesIo => &mut self.crates_io.availability,
         }
     }
 
@@ -246,7 +227,7 @@ impl Net {
     /// is quota-exempt, so this is safe to run even when GitHub is
     /// refusing other calls. Logged via `rate_limit_prime_ok` /
     /// `rate_limit_prime_failed`.
-    pub fn spawn_rate_limit_prime(&self) {
+    pub(super) fn spawn_rate_limit_prime(&self) {
         let client = self.http_client();
         std::thread::spawn(move || {
             let (rate_limit, _signal) = client.fetch_rate_limit();

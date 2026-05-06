@@ -238,7 +238,7 @@ pub(super) fn render_package_pane_body(
         let title_style = Style::default()
             .fg(TITLE_COLOR)
             .add_modifier(Modifier::BOLD);
-        pane.viewport_mut().clear_surface();
+        pane.viewport.clear_surface();
         let empty_block = Block::default()
             .borders(Borders::ALL)
             .title(" Details ")
@@ -250,7 +250,7 @@ pub(super) fn render_package_pane_body(
     };
 
     let fields = panes::package_fields_from_data(&pkg_data);
-    pane.viewport_mut().set_len(fields.len());
+    pane.viewport.set_len(fields.len());
     let border_style = if matches!(focus_state, PaneFocusState::Active) {
         styles.chrome.active_border
     } else {
@@ -275,14 +275,14 @@ pub(super) fn render_package_pane_body(
     };
     let areas = render_project_description_section(frame, &context, area, project_inner);
     {
-        let viewport = pane.viewport_mut();
+        let viewport = &mut pane.viewport;
         viewport.set_content_area(areas.lower);
         viewport.set_viewport_rows(usize::from(areas.lower.height));
     }
 
-    let scroll_offset = render_project_metadata(frame, pane.viewport(), &context, areas.lower);
-    pane.viewport_mut().set_scroll_offset(scroll_offset);
-    pane::render_overflow_affordance(frame, area, pane.viewport());
+    let scroll_offset = render_project_metadata(frame, &pane.viewport, &context, areas.lower);
+    pane.viewport.set_scroll_offset(scroll_offset);
+    pane::render_overflow_affordance(frame, area, &pane.viewport);
 }
 
 fn render_project_description_section(

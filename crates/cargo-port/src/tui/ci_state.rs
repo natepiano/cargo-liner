@@ -79,14 +79,14 @@ pub enum CiDisplay {
 ///   `All` selection. Treated as domain state (which CI runs are surfaced for this project), not UI
 ///   state.
 pub struct Ci {
-    fetch_tracker: CiFetchTracker,
-    fetch_toast:   Option<ToastTaskId>,
-    display_modes: HashMap<AbsolutePath, CiRunDisplayMode>,
+    pub fetch_tracker: CiFetchTracker,
+    fetch_toast:       Option<ToastTaskId>,
+    display_modes:     HashMap<AbsolutePath, CiRunDisplayMode>,
     /// Per-pane cursor for the CI runs pane.
-    viewport:      Viewport,
+    pub viewport:      Viewport,
     /// Cached CI table content built per-frame in
     /// `panes::build_ci_data`.
-    content:       Option<CiData>,
+    content:           Option<CiData>,
 }
 
 impl Ci {
@@ -101,10 +101,6 @@ impl Ci {
     }
 
     // ── viewport ────────────────────────────────────────────────
-
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
     // ── content ─────────────────────────────────────────────────
 
@@ -124,10 +120,6 @@ impl Ci {
 
     // ── fetch tracker ───────────────────────────────────────────
 
-    pub const fn fetch_tracker(&self) -> &CiFetchTracker { &self.fetch_tracker }
-
-    pub const fn fetch_tracker_mut(&mut self) -> &mut CiFetchTracker { &mut self.fetch_tracker }
-
     // ── fetch toast ─────────────────────────────────────────────
 
     pub const fn set_fetch_toast(&mut self, task_id: Option<ToastTaskId>) {
@@ -142,7 +134,7 @@ impl Ci {
         self.display_modes.get(path).copied().unwrap_or_default()
     }
 
-    pub fn display_mode_label_for(&self, path: &Path) -> &'static str {
+    pub(super) fn display_mode_label_for(&self, path: &Path) -> &'static str {
         match self.display_mode_for(path) {
             CiRunDisplayMode::BranchOnly => "branch",
             CiRunDisplayMode::All => "all",

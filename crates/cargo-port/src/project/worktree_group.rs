@@ -103,23 +103,23 @@ impl WorktreeGroup {
         let statuses: Vec<LintStatus> = match self {
             Self::Workspaces {
                 primary, linked, ..
-            } => std::iter::once(primary.lint_runs().status())
+            } => std::iter::once(primary.lint_runs.status())
                 .chain(
                     linked
                         .iter()
                         .filter(|l| l.visibility() == Visibility::Visible)
-                        .map(|l| l.lint_runs().status()),
+                        .map(|l| l.lint_runs.status()),
                 )
                 .cloned()
                 .collect(),
             Self::Packages {
                 primary, linked, ..
-            } => std::iter::once(primary.lint_runs().status())
+            } => std::iter::once(primary.lint_runs.status())
                 .chain(
                     linked
                         .iter()
                         .filter(|l| l.visibility() == Visibility::Visible)
-                        .map(|l| l.lint_runs().status()),
+                        .map(|l| l.lint_runs.status()),
                 )
                 .cloned()
                 .collect(),
@@ -174,22 +174,22 @@ impl WorktreeGroup {
                 primary, linked, ..
             } => {
                 if worktree_index == 0 {
-                    primary.lint_runs().status().clone()
+                    primary.lint_runs.status().clone()
                 } else {
                     linked
                         .get(worktree_index - 1)
-                        .map_or(LintStatus::NoLog, |l| l.lint_runs().status().clone())
+                        .map_or(LintStatus::NoLog, |l| l.lint_runs.status().clone())
                 }
             },
             Self::Packages {
                 primary, linked, ..
             } => {
                 if worktree_index == 0 {
-                    primary.lint_runs().status().clone()
+                    primary.lint_runs.status().clone()
                 } else {
                     linked
                         .get(worktree_index - 1)
-                        .map_or(LintStatus::NoLog, |l| l.lint_runs().status().clone())
+                        .map_or(LintStatus::NoLog, |l| l.lint_runs.status().clone())
                 }
             },
         }

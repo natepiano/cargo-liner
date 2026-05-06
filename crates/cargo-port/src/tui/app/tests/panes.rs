@@ -25,7 +25,7 @@ fn collapse_all_anchors_member_selection_to_root() {
 
     let mut app = make_app(&[workspace, member.clone()]);
     apply_items(&mut app, &[root]);
-    app.expanded_mut().insert(ExpandKey::Node(0));
+    app.project_list.expanded.insert(ExpandKey::Node(0));
     app.project_list
         .select_project_in_tree(member.path(), false);
 
@@ -141,8 +141,8 @@ fn tabbable_panes_follow_canonical_order() {
     let mut app = make_app(std::slice::from_ref(&project));
     seed_single_example_metadata(&app, &project_path, "example");
     app.toasts = ToastManager::default();
-    app.toasts.viewport_mut().set_len(0);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.toasts.viewport.set_len(0);
+    app.scan.state.phase = ScanPhase::Complete;
     apply_git_info(
         &mut app,
         project.path(),
@@ -223,12 +223,12 @@ fn cpu_pane_selection_persists_across_project_changes() {
     let project_b = make_project(Some("b"), "~/b");
     let mut app = make_app(&[project_a, project_b]);
     app.focus.set(PaneId::Cpu);
-    app.panes.cpu_mut().viewport_mut().set_pos(1);
+    app.panes.cpu.viewport.set_pos(1);
     app.project_list.set_cursor(1);
 
     app.sync_selected_project();
 
-    assert_eq!(app.panes.cpu().viewport().pos(), 1);
+    assert_eq!(app.panes.cpu.viewport.pos(), 1);
 }
 
 #[test]
@@ -261,14 +261,14 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
 
     let project = make_project(Some("demo"), "/never-real/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
     app.project_list.set_cursor(0);
     app.sync_selected_project();
 
     app.ensure_detail_cached();
     let example_count = app
         .panes
-        .targets()
+        .targets
         .content()
         .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
     assert_eq!(
@@ -337,7 +337,7 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
     app.ensure_detail_cached();
     let example_count = app
         .panes
-        .targets()
+        .targets
         .content()
         .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
     assert_eq!(
@@ -444,24 +444,24 @@ fn project_change_resets_project_dependent_panes() {
     app.focus.set(PaneId::Git);
     app.focus.set(PaneId::Targets);
     app.focus.set(PaneId::CiRuns);
-    app.panes.package_mut().viewport_mut().set_pos(3);
-    app.panes.git_mut().viewport_mut().set_pos(4);
-    app.panes.targets_mut().viewport_mut().set_pos(5);
-    app.ci.viewport_mut().set_pos(6);
+    app.panes.package.viewport.set_pos(3);
+    app.panes.git.viewport.set_pos(4);
+    app.panes.targets.viewport.set_pos(5);
+    app.ci.viewport.set_pos(6);
     app.project_list.set_cursor(1);
     app.sync_selected_project();
 
-    assert_eq!(app.panes.package().viewport().pos(), 0);
-    assert_eq!(app.panes.git().viewport().pos(), 0);
-    assert_eq!(app.panes.targets().viewport().pos(), 0);
-    assert_eq!(app.ci.viewport().pos(), 0);
+    assert_eq!(app.panes.package.viewport.pos(), 0);
+    assert_eq!(app.panes.git.viewport.pos(), 0);
+    assert_eq!(app.panes.targets.viewport.pos(), 0);
+    assert_eq!(app.ci.viewport.pos(), 0);
     assert!(!app.focus.remembers_visited(PaneId::Package));
     assert!(!app.focus.remembers_visited(PaneId::Git));
     assert!(!app.focus.remembers_visited(PaneId::Targets));
     assert!(!app.focus.remembers_visited(PaneId::CiRuns));
     assert_eq!(
         app.project_list
-            .paths()
+            .paths
             .selected_project
             .as_ref()
             .map(crate::project::AbsolutePath::as_path),
@@ -474,15 +474,15 @@ fn apply_config_resets_column_layout_flag() {
     let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
     let mut cfg = CargoPortConfig::default();
 
-    assert!(!app.cached_fit_widths().lint_enabled());
+    assert!(!app.project_list.cached_fit_widths.lint_enabled());
 
     cfg.lint.enabled = true;
     app.apply_config(&cfg);
-    assert!(app.cached_fit_widths().lint_enabled());
+    assert!(app.project_list.cached_fit_widths.lint_enabled());
 
     cfg.lint.enabled = false;
     app.apply_config(&cfg);
-    assert!(!app.cached_fit_widths().lint_enabled());
+    assert!(!app.project_list.cached_fit_widths.lint_enabled());
 }
 
 #[test]

@@ -29,7 +29,7 @@ fn lint_runtime_waits_for_scan_completion() {
 
     assert!(app.lint_runtime_projects().is_empty());
 
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
     let projects = app.lint_runtime_projects();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].abs_path, abs_path);
@@ -95,7 +95,7 @@ fn ci_fetch_on_member_targets_workspace_owner_path() {
 
     let mut app = make_app(&[workspace, member.clone()]);
     apply_items(&mut app, &[root]);
-    app.expanded_mut().insert(ExpandKey::Node(0));
+    app.project_list.expanded.insert(ExpandKey::Node(0));
     app.ensure_visible_rows_cached();
     app.project_list
         .select_project_in_tree(member.path(), false);
@@ -390,7 +390,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     let project_a = make_project(Some("a"), "~/a");
     let project_b = make_project(Some("b"), "~/b");
     let mut app = make_app(&[project_a.clone(), project_b]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     app.initialize_startup_phase_tracker();
 
@@ -509,7 +509,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
 
     let mut app = make_app(&[]);
     apply_items(&mut app, &[non_rust, workspace, worktrees]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     app.initialize_startup_phase_tracker();
 
@@ -544,7 +544,7 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 
     let mut app = make_app(&[]);
     apply_items(&mut app, &[workspace]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
     apply_git_info(&mut app, member_dir.as_path(), make_git_info(None));
@@ -561,7 +561,7 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 fn lint_toast_reuses_existing_on_restart() {
     let project = make_project(Some("a"), "~/a");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project.path().to_path_buf().into(),
@@ -599,7 +599,7 @@ fn lint_runtime_projects_uses_workspace_root_not_members() {
 
     let mut app = make_app(&[workspace, member_a, member_b]);
     apply_items(&mut app, &[root]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     let projects = app.lint_runtime_projects();
     assert_eq!(projects.len(), 1);
@@ -624,7 +624,7 @@ fn lint_runtime_projects_deduplicates_primary_worktree_path() {
 
     let mut app = make_app(&[make_project(Some("ws"), "~/ws"), feature_item]);
     apply_items(&mut app, &[root_item]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     let projects = app.lint_runtime_projects();
     assert_eq!(projects.len(), 2);
@@ -720,7 +720,7 @@ fn git_status_suppresses_sync_for_untracked_and_ignored() {
 fn background_git_info_updates_rendered_git_status() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     apply_bg_msg(
         &mut app,
@@ -883,7 +883,7 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
 fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
     apply_git_info(
         &mut app,
         project.path(),
@@ -935,7 +935,7 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
 fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
     app.project_list.set_cursor(0);
     app.sync_selected_project();
 
@@ -982,7 +982,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
 
     let display = app
         .panes
-        .package()
+        .package
         .content()
         .unwrap_or_else(|| std::process::abort())
         .ci_display;
@@ -1068,7 +1068,7 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
     );
     assert!(
         app.panes
-            .git()
+            .git
             .content()
             .and_then(|g| g.inception.as_ref())
             .is_some(),
@@ -1086,7 +1086,7 @@ fn git_info_invalidates_selected_git_pane_cache() {
 
     assert_eq!(
         app.panes
-            .git()
+            .git
             .content()
             .and_then(|data| data.remotes.first())
             .and_then(|row| row.full_url.as_deref()),
@@ -1102,7 +1102,7 @@ fn git_info_invalidates_selected_git_pane_cache() {
 
     assert_eq!(
         app.panes
-            .git()
+            .git
             .content()
             .and_then(|data| data.remotes.first())
             .and_then(|row| row.full_url.as_deref()),
@@ -1120,14 +1120,14 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
 
     // Seed the cache.
     app.ensure_detail_cached();
-    let after_seed = app.panes.pane_data().detail_build_count();
+    let after_seed = app.panes.pane_data.detail_build_count();
     assert!(after_seed >= 1, "first call must build");
 
     // Unchanged selection and generation — must NOT rebuild.
     app.ensure_detail_cached();
     app.ensure_detail_cached();
     assert_eq!(
-        app.panes.pane_data().detail_build_count(),
+        app.panes.pane_data.detail_build_count(),
         after_seed,
         "idle frames must not rebuild the detail set"
     );
@@ -1135,7 +1135,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     // Bumping the data generation invalidates the stamp → must rebuild.
     app.scan.bump_generation();
     app.ensure_detail_cached();
-    let after_generation_bump = app.panes.pane_data().detail_build_count();
+    let after_generation_bump = app.panes.pane_data.detail_build_count();
     assert_eq!(
         after_generation_bump,
         after_seed + 1,
@@ -1147,7 +1147,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     app.sync_selected_project();
     app.ensure_detail_cached();
     assert_eq!(
-        app.panes.pane_data().detail_build_count(),
+        app.panes.pane_data.detail_build_count(),
         after_generation_bump + 1,
         "selection change must trigger exactly one rebuild"
     );
@@ -1156,7 +1156,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     app.ensure_detail_cached();
     app.ensure_detail_cached();
     assert_eq!(
-        app.panes.pane_data().detail_build_count(),
+        app.panes.pane_data.detail_build_count(),
         after_generation_bump + 1,
         "further idle frames must not rebuild"
     );
@@ -1172,12 +1172,14 @@ fn worktree_summary_or_compute_caches_until_tree_mutation() {
 
     let _ = app
         .panes
+        .git
         .worktree_summary_or_compute(group_root.as_path(), || {
             counter.fetch_add(1, Ordering::SeqCst);
             Vec::new()
         });
     let _ = app
         .panes
+        .git
         .worktree_summary_or_compute(group_root.as_path(), || {
             counter.fetch_add(1, Ordering::SeqCst);
             Vec::new()
@@ -1199,6 +1201,7 @@ fn worktree_summary_or_compute_caches_until_tree_mutation() {
 
     let _ = app
         .panes
+        .git
         .worktree_summary_or_compute(group_root.as_path(), || {
             counter.fetch_add(1, Ordering::SeqCst);
             Vec::new()
@@ -1218,7 +1221,7 @@ fn background_message_for_unselected_path_does_not_invalidate_detail() {
     app.project_list.set_cursor(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
-    let baseline = app.panes.pane_data().detail_build_count();
+    let baseline = app.panes.pane_data.detail_build_count();
 
     // A disk-usage message for a *different* project must not bump the
     // detail-cache key. Watchers fire dozens of these per second; if they
@@ -1233,7 +1236,7 @@ fn background_message_for_unselected_path_does_not_invalidate_detail() {
     );
     app.ensure_detail_cached();
     assert_eq!(
-        app.panes.pane_data().detail_build_count(),
+        app.panes.pane_data.detail_build_count(),
         baseline,
         "unrelated background messages must not invalidate the detail cache"
     );
@@ -1248,7 +1251,7 @@ fn background_message_for_unselected_path_does_not_invalidate_detail() {
     );
     app.ensure_detail_cached();
     assert_eq!(
-        app.panes.pane_data().detail_build_count(),
+        app.panes.pane_data.detail_build_count(),
         baseline + 1,
         "messages affecting the selected path must rebuild exactly once"
     );
@@ -1561,7 +1564,7 @@ fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let project_b = make_project(Some("b"), "~/never-real/b");
     let mut app = make_app(&[project_a.clone(), project_b.clone()]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     app.initialize_startup_phase_tracker();
 
@@ -1594,7 +1597,7 @@ fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
 fn successful_metadata_arrival_advances_phase_and_tracked_item() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let mut app = make_app(std::slice::from_ref(&project_a));
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
     let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
@@ -1639,7 +1642,7 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
 fn stale_generation_metadata_arrival_is_dropped() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let mut app = make_app(std::slice::from_ref(&project_a));
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
     let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
@@ -1684,7 +1687,7 @@ fn stale_generation_metadata_arrival_is_dropped() {
 fn failed_metadata_arrival_surfaces_error_toast() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let mut app = make_app(std::slice::from_ref(&project_a));
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
     let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
@@ -1883,7 +1886,7 @@ fn start_clean_falls_back_to_literal_target_when_no_metadata_yet() {
 fn startup_ready_waits_on_metadata_phase() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let mut app = make_app(std::slice::from_ref(&project_a));
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
     let now = std::time::Instant::now();
@@ -2149,7 +2152,7 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     let pre_types = app
         .project_list
         .rust_info_at_path(project_path.as_path())
-        .map_or(0, |r| r.cargo().types().len());
+        .map_or(0, |r| r.cargo.types().len());
     assert_eq!(pre_types, 0, "pre-metadata types stay empty");
 
     let manifest_path = AbsolutePath::from(project_path.as_path().join("Cargo.toml"));
@@ -2213,7 +2216,7 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     let cargo = app
         .project_list
         .rust_info_at_path(project_path.as_path())
-        .map_or_else(|| std::process::abort(), |r| r.cargo().clone());
+        .map_or_else(|| std::process::abort(), |r| r.cargo.clone());
     assert!(
         cargo.types().contains(&crate::project::ProjectType::Binary),
         "Bin TargetKind → ProjectType::Binary stamped from metadata"
@@ -2253,7 +2256,7 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
         let widths = app.project_list.fit_widths_mut();
         widths.generation = 0;
     }
-    assert_eq!(app.project_list.fit_widths().generation, 0);
+    assert_eq!(app.project_list.cached_fit_widths.generation, 0);
 
     let cfg = app.config.current().clone();
     app.apply_lint_config_change(&cfg);
@@ -2272,7 +2275,7 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     );
     // Selection: fit_widths reset (back to construct-time sentinel).
     assert_eq!(
-        app.project_list.fit_widths().generation,
+        app.project_list.cached_fit_widths.generation,
         u64::MAX,
         "apply_lint_config_change must reset fit_widths"
     );

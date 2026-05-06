@@ -370,7 +370,7 @@ pub(super) fn render_cpu_pane_body(
     ctx: &PaneRenderCtx<'_>,
 ) {
     let focus = ctx.focus_state;
-    let cursor = matches!(focus, PaneFocusState::Active).then(|| pane.viewport().pos());
+    let cursor = matches!(focus, PaneFocusState::Active).then(|| pane.viewport.pos());
     let title = pane.content().map_or_else(
         || " CPU ".to_string(),
         |usage| cpu_panel_title(usage.cores.len(), cursor),
@@ -380,7 +380,7 @@ pub(super) fn render_cpu_pane_body(
     frame.render_widget(block, area);
 
     if inner.height == 0 {
-        pane.viewport_mut().clear_surface();
+        pane.viewport.clear_surface();
         pane.clear_row_rects();
         return;
     }
@@ -400,7 +400,7 @@ pub(super) fn render_cpu_pane_body(
 
     let cpu_cfg = &ctx.config.current().cpu;
     let mut row_rects: Vec<(Rect, usize)> = Vec::new();
-    let viewport = pane.viewport();
+    let viewport = &pane.viewport;
     render_aggregate_row(frame, viewport, &mut row_rects, &usage, &layout, focus);
     render_core_rows(
         frame,
@@ -459,6 +459,6 @@ pub(super) fn render_cpu_pane_body(
         &layout,
         focus,
     );
-    sync_cpu_pane_state(pane.viewport_mut(), inner, usage.cores.len());
+    sync_cpu_pane_state(&mut pane.viewport, inner, usage.cores.len());
     pane.set_row_rects(row_rects);
 }

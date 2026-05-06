@@ -34,17 +34,16 @@ impl App {
         projects: Vec<RootItem>,
         disk_entries: &[(String, AbsolutePath)],
     ) {
-        let kind = if self.scan.scan_state_mut().run_count == 1 {
+        let kind = if self.scan.state.run_count == 1 {
             "initial"
         } else {
             "rescan"
         };
 
         tracing::info!(
-            elapsed_ms =
-                crate::perf_log::ms(self.scan.scan_state().started_at.elapsed().as_millis()),
+            elapsed_ms = crate::perf_log::ms(self.scan.state.started_at.elapsed().as_millis()),
             kind,
-            run = self.scan.scan_state_mut().run_count,
+            run = self.scan.state.run_count,
             tree_items = projects.len(),
             disk_entries = disk_entries.len(),
             "scan_result_applied"
@@ -56,7 +55,7 @@ impl App {
             .project_list
             .selected_project_path()
             .map(AbsolutePath::from)
-            .or_else(|| self.project_list.paths_mut().last_selected.clone());
+            .or_else(|| self.project_list.paths.last_selected.clone());
         self.mutate_tree().replace_all(ProjectList::new(projects));
         self.prune_inactive_project_state();
         let lint_registered = self.register_lint_for_root_items();
@@ -88,7 +87,7 @@ impl App {
         self.finish_watcher_registration_batch();
 
         // Mark scan complete and initialize startup tracking.
-        self.scan.scan_state_mut().phase = ScanPhase::Complete;
+        self.scan.state.phase = ScanPhase::Complete;
         self.initialize_startup_phase_tracker();
         self.schedule_startup_project_details();
         self.schedule_git_first_commit_refreshes();

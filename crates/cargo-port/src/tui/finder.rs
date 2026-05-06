@@ -186,7 +186,7 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &Workspace) {
     let root_path = ws.display_path().into_string();
     let root_abs_path = ws.path();
     let root_branch = branch_for(ws.git_info());
-    let cargo = ws.cargo();
+    let cargo = &ws.cargo;
     let root_name = ws.root_directory_name().into_string();
     let cargo_name = ws.package_name().into_string();
     let cargo_name = (cargo_name != root_name).then_some(cargo_name);
@@ -208,7 +208,7 @@ fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &Workspace) {
 
     for group in ws.groups() {
         for member in group.members() {
-            let member_cargo = member.cargo();
+            let member_cargo = &member.cargo;
             let member_display_path = member.display_path();
             let member_abs_path = member.path();
             let member_name = member.package_name().into_string();
@@ -239,7 +239,7 @@ fn add_package_items(items: &mut Vec<FinderItem>, pkg: &Package) {
     let root_path = pkg.display_path().into_string();
     let root_abs_path = pkg.path();
     let root_branch = branch_for(pkg.git_info());
-    let cargo = pkg.cargo();
+    let cargo = &pkg.cargo;
     let root_name = pkg.root_directory_name().into_string();
     let pkg_name = pkg.package_name().into_string();
     let cargo_name = (pkg_name != root_name).then_some(pkg_name);
@@ -294,7 +294,7 @@ fn add_vendored_items_typed(
         dir: dir.clone(),
     });
 
-    let cargo = project.cargo();
+    let cargo = &project.cargo;
 
     if cargo.types().contains(&ProjectType::Binary) {
         let kind = FinderKind::Binary;
@@ -568,39 +568,39 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc => {
             app.overlays.close_finder();
-            app.finder_mut().query.clear();
-            app.finder_mut().results.clear();
-            app.overlays.finder_pane_mut().viewport_mut().home();
+            app.project_list.finder.query.clear();
+            app.project_list.finder.results.clear();
+            app.overlays.finder_pane.viewport.home();
             app.focus.close_overlay();
         },
         KeyCode::Enter => {
             confirm_finder(app);
         },
         KeyCode::Up => {
-            app.overlays.finder_pane_mut().viewport_mut().up();
+            app.overlays.finder_pane.viewport.up();
         },
         KeyCode::Down => {
-            app.overlays.finder_pane_mut().viewport_mut().down();
+            app.overlays.finder_pane.viewport.down();
         },
         KeyCode::Home => {
-            app.overlays.finder_pane_mut().viewport_mut().home();
+            app.overlays.finder_pane.viewport.home();
         },
         KeyCode::End => {
-            app.overlays.finder_pane_mut().viewport_mut().end();
+            app.overlays.finder_pane.viewport.end();
         },
         KeyCode::Backspace => {
-            if app.finder().query.is_empty() {
+            if app.project_list.finder.query.is_empty() {
                 app.overlays.close_finder();
-                app.finder_mut().results.clear();
-                app.overlays.finder_pane_mut().viewport_mut().home();
+                app.project_list.finder.results.clear();
+                app.overlays.finder_pane.viewport.home();
                 app.focus.close_overlay();
             } else {
-                app.finder_mut().query.pop();
+                app.project_list.finder.query.pop();
                 refresh_finder_results(app);
             }
         },
         KeyCode::Char(c) => {
-            app.finder_mut().query.push(c);
+            app.project_list.finder.query.push(c);
             refresh_finder_results(app);
         },
         _ => {},
@@ -609,30 +609,31 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
 
 fn refresh_finder_results(app: &mut App) {
     let (results, total) = {
-        let finder = app.finder();
+        let finder = &app.project_list.finder;
         search_finder(&finder.index, &finder.query, MAX_FINDER_RESULTS)
     };
-    let finder = app.finder_mut();
+    let finder = &mut app.project_list.finder;
     finder.results = results;
     finder.total = total;
-    app.overlays.finder_pane_mut().viewport_mut().home();
+    app.overlays.finder_pane.viewport.home();
 }
 
 fn confirm_finder(app: &mut App) {
     let Some(&idx) = app
-        .finder()
+        .project_list
+        .finder
         .results
-        .get(app.overlays.finder_pane().viewport().pos())
+        .get(app.overlays.finder_pane.viewport.pos())
     else {
         return;
     };
-    let item = app.finder().index[idx].clone();
+    let item = app.project_list.finder.index[idx].clone();
 
     // Close finder
     app.overlays.close_finder();
-    app.finder_mut().query.clear();
-    app.finder_mut().results.clear();
-    app.overlays.finder_pane_mut().viewport_mut().home();
+    app.project_list.finder.query.clear();
+    app.project_list.finder.results.clear();
+    app.overlays.finder_pane.viewport.home();
     app.focus.close_overlay();
 
     // Navigate to the project
@@ -654,7 +655,7 @@ fn confirm_finder(app: &mut App) {
 /// to the matching target entry.
 fn navigate_to_target(app: &mut App, item: &FinderItem) {
     // Focus the targets pane (now in the left panel below the project list).
-    let Some(targets_data) = app.panes.targets().content().cloned() else {
+    let Some(targets_data) = app.panes.targets.content().cloned() else {
         return;
     };
     if targets_data.has_targets() {
@@ -674,7 +675,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
                 if entry.name == target_name
                     && std::mem::discriminant(&entry.kind) == std::mem::discriminant(&target_kind)
                 {
-                    app.panes.targets_mut().viewport_mut().set_pos(i);
+                    app.panes.targets.viewport.set_pos(i);
                     return;
                 }
             }
@@ -686,7 +687,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
 
 pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     // Use cached column widths (computed at index build time) for stable popup sizing
-    let col_widths = app.finder().col_widths;
+    let col_widths = app.project_list.finder.col_widths;
 
     // Size popup to fit all columns + spacing (4 gaps) + borders (2), capped at terminal width
     let natural_width: usize = col_widths.iter().sum::<usize>() + 4 + 2;
@@ -696,15 +697,15 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         .unwrap_or(u16::MAX)
         .clamp(min_popup_width, max_popup_width);
 
-    let title = if app.finder().query.is_empty() {
+    let title = if app.project_list.finder.query.is_empty() {
         " Find Anything ".to_string()
-    } else if app.finder().total <= app.finder().results.len() {
-        format!(" Find Anything ({}) ", app.finder().total)
+    } else if app.project_list.finder.total <= app.project_list.finder.results.len() {
+        format!(" Find Anything ({}) ", app.project_list.finder.total)
     } else {
         format!(
             " Find Anything ({} of {}) ",
-            app.finder().results.len(),
-            app.finder().total
+            app.project_list.finder.results.len(),
+            app.project_list.finder.total
         )
     };
 
@@ -733,7 +734,7 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     let input_line = Line::from(vec![
         Span::styled("  / ", prompt_style),
         Span::styled(
-            format!("{}_", app.finder().query),
+            format!("{}_", app.project_list.finder.query),
             Style::default().fg(TITLE_COLOR),
         ),
     ]);
@@ -763,14 +764,11 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         height: inner.height.saturating_sub(2),
     };
 
-    let result_count = app.finder().results.len();
+    let result_count = app.project_list.finder.results.len();
+    app.overlays.finder_pane.viewport.set_len(result_count);
     app.overlays
-        .finder_pane_mut()
-        .viewport_mut()
-        .set_len(result_count);
-    app.overlays
-        .finder_pane_mut()
-        .viewport_mut()
+        .finder_pane
+        .viewport
         .set_content_area(results_area);
     render_finder_results(frame, app, col_widths, results_area);
 }
@@ -854,8 +852,8 @@ fn render_finder_results(
     col_widths: [usize; FINDER_COLUMN_COUNT],
     area: Rect,
 ) {
-    if app.finder().results.is_empty() {
-        let msg = if app.finder().query.is_empty() {
+    if app.project_list.finder.results.is_empty() {
+        let msg = if app.project_list.finder.query.is_empty() {
             "Type to search projects, examples, benches..."
         } else {
             "No matches"
@@ -868,14 +866,15 @@ fn render_finder_results(
         return;
     }
 
-    let query = app.finder().query.clone();
+    let query = app.project_list.finder.query.clone();
     let rows: Vec<Row> = app
-        .finder()
+        .project_list
+        .finder
         .results
         .iter()
         .enumerate()
         .map(|(row_index, &idx)| {
-            let item = &app.finder().index[idx];
+            let item = &app.project_list.finder.index[idx];
             let parent = if item.kind == FinderKind::Project {
                 String::new()
             } else {
@@ -894,8 +893,8 @@ fn render_finder_results(
             ])
             .style(
                 app.overlays
-                    .finder_pane()
-                    .viewport()
+                    .finder_pane
+                    .viewport
                     .selection_state(row_index, app.focus.pane_state(PaneId::Finder))
                     .overlay_style(),
             )
@@ -919,11 +918,11 @@ fn render_finder_results(
         .row_highlight_style(Style::default());
 
     let mut table_state =
-        TableState::default().with_selected(Some(app.overlays.finder_pane().viewport().pos()));
+        TableState::default().with_selected(Some(app.overlays.finder_pane.viewport.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
     app.overlays
-        .finder_pane_mut()
-        .viewport_mut()
+        .finder_pane
+        .viewport
         .set_scroll_offset(table_state.offset());
 
     // FinderPane participates in hit-test dispatch via its

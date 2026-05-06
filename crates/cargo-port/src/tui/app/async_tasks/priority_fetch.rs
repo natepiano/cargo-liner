@@ -35,7 +35,7 @@ impl App {
             .unwrap_or_else(|| abs_key.display_path());
         let name = self
             .panes
-            .package()
+            .package
             .content()
             .map(|d| d.title_name.clone())
             .filter(|n| n != "-");

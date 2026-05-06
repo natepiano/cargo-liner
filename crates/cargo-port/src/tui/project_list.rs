@@ -65,21 +65,21 @@ use crate::scan;
 /// convention. Every mutation site updates keys and values together, so
 /// the "key matches the root's own path" invariant cannot silently drift.
 #[derive(Default)]
-pub(crate) struct ProjectList {
-    roots:               IndexMap<AbsolutePath, ProjectEntry>,
-    paths:               SelectionPaths,
-    sync:                SelectionSync,
-    expanded:            HashSet<ExpandKey>,
-    finder:              FinderState,
-    cached_visible_rows: Vec<VisibleRow>,
-    cached_root_sorted:  Vec<u64>,
-    cached_child_sorted: HashMap<usize, Vec<u64>>,
-    cached_fit_widths:   ProjectListWidths,
-    cursor:              usize,
+pub(super) struct ProjectList {
+    roots:                          IndexMap<AbsolutePath, ProjectEntry>,
+    pub(super) paths:               SelectionPaths,
+    sync:                           SelectionSync,
+    pub(super) expanded:            HashSet<ExpandKey>,
+    pub(super) finder:              FinderState,
+    cached_visible_rows:            Vec<VisibleRow>,
+    pub(super) cached_root_sorted:  Vec<u64>,
+    pub(super) cached_child_sorted: HashMap<usize, Vec<u64>>,
+    pub(super) cached_fit_widths:   ProjectListWidths,
+    cursor:                         usize,
 }
 
 impl ProjectList {
-    pub(crate) fn new(items: Vec<RootItem>) -> Self {
+    pub(super) fn new(items: Vec<RootItem>) -> Self {
         Self {
             roots: items
                 .into_iter()
@@ -103,11 +103,11 @@ impl ProjectList {
 
     // -- Slice-like read surface ------------------------------------------
 
-    pub(crate) fn len(&self) -> usize { self.roots.len() }
+    pub(super) fn len(&self) -> usize { self.roots.len() }
 
-    pub(crate) fn is_empty(&self) -> bool { self.roots.is_empty() }
+    pub(super) fn is_empty(&self) -> bool { self.roots.is_empty() }
 
-    pub(crate) fn iter(&self) -> Values<'_, AbsolutePath, ProjectEntry> { self.roots.values() }
+    pub(super) fn iter(&self) -> Values<'_, AbsolutePath, ProjectEntry> { self.roots.values() }
 
     /// Replace only the project hierarchy, keeping the selection-cluster
     /// state (cursor, expansion set, finder, sort/width caches) intact.
@@ -134,15 +134,15 @@ impl ProjectList {
     }
 
     #[cfg(test)]
-    pub(crate) fn first(&self) -> Option<&ProjectEntry> {
+    pub(super) fn first(&self) -> Option<&ProjectEntry> {
         self.roots.first().map(|(_, entry)| entry)
     }
 
-    pub(crate) fn get(&self, index: usize) -> Option<&ProjectEntry> {
+    pub(super) fn get(&self, index: usize) -> Option<&ProjectEntry> {
         self.roots.get_index(index).map(|(_, entry)| entry)
     }
 
-    pub(crate) fn resolved_root_labels(&self, include_non_rust: bool) -> Vec<String> {
+    pub(super) fn resolved_root_labels(&self, include_non_rust: bool) -> Vec<String> {
         let mut labels: Vec<String> = self
             .roots
             .values()
@@ -187,7 +187,7 @@ impl ProjectList {
         labels
     }
 
-    pub(crate) fn git_directories(&self) -> Vec<AbsolutePath> {
+    pub(super) fn git_directories(&self) -> Vec<AbsolutePath> {
         self.roots
             .values()
             .filter_map(|entry| entry.item.git_directory())
@@ -203,7 +203,7 @@ impl ProjectList {
     /// a synthesized `ProjectEntry` whose `item` is `Rust(Workspace(..))`
     /// or `Rust(Package(..))`. The synthesized entries share the outer
     /// `git_repo` via clone so each leaf sees the same repo-level data.
-    pub(crate) fn for_each_leaf(&self, mut f: impl FnMut(&ProjectEntry)) {
+    pub(super) fn for_each_leaf(&self, mut f: impl FnMut(&ProjectEntry)) {
         for entry in self.roots.values() {
             match &entry.item {
                 RootItem::Worktrees(WorktreeGroup::Workspaces {
@@ -241,7 +241,7 @@ impl ProjectList {
 
     /// Zero-allocation leaf path iteration. Yields `(path, is_rust)` for
     /// every leaf project without cloning any `RootItem`.
-    pub(crate) fn for_each_leaf_path(&self, mut f: impl FnMut(&Path, bool)) {
+    pub(super) fn for_each_leaf_path(&self, mut f: impl FnMut(&Path, bool)) {
         for entry in self.roots.values() {
             match &entry.item {
                 RootItem::Worktrees(WorktreeGroup::Workspaces {
@@ -263,7 +263,7 @@ impl ProjectList {
         }
     }
 
-    pub(crate) fn at_path(&self, target: &Path) -> Option<&ProjectInfo> {
+    pub(super) fn at_path(&self, target: &Path) -> Option<&ProjectInfo> {
         if let Some(entry) = self.roots.get(target) {
             return entry.item.at_path(target);
         }
@@ -272,7 +272,7 @@ impl ProjectList {
             .find_map(|entry| entry.item.at_path(target))
     }
 
-    pub(crate) fn at_path_mut(&mut self, target: &Path) -> Option<&mut ProjectInfo> {
+    pub(super) fn at_path_mut(&mut self, target: &Path) -> Option<&mut ProjectInfo> {
         // Split into two separate borrows to sidestep the NLL limitation on
         // returning a reference borrowed inside an if-let: first check if the
         // root key matches, then re-borrow mutably to return.
@@ -291,7 +291,7 @@ impl ProjectList {
     /// CI fetches and GitHub repo metadata for submodules belong to the
     /// upstream repository and are suppressed at the parent project's
     /// level — see the `BackgroundMsg::GitInfo` handler.
-    pub(crate) fn is_submodule_path(&self, target: &Path) -> bool {
+    pub(super) fn is_submodule_path(&self, target: &Path) -> bool {
         self.roots.values().any(|entry| {
             entry
                 .item
@@ -301,25 +301,25 @@ impl ProjectList {
         })
     }
 
-    pub(crate) fn rust_info_at_path(&self, target: &Path) -> Option<&RustInfo> {
+    pub(super) fn rust_info_at_path(&self, target: &Path) -> Option<&RustInfo> {
         self.roots
             .values()
             .find_map(|entry| entry.item.rust_info_at_path(target))
     }
 
-    pub(crate) fn rust_info_at_path_mut(&mut self, target: &Path) -> Option<&mut RustInfo> {
+    pub(super) fn rust_info_at_path_mut(&mut self, target: &Path) -> Option<&mut RustInfo> {
         self.roots
             .values_mut()
             .find_map(|entry| entry.item.rust_info_at_path_mut(target))
     }
 
-    pub(crate) fn vendored_at_path(&self, target: &Path) -> Option<&VendoredPackage> {
+    pub(super) fn vendored_at_path(&self, target: &Path) -> Option<&VendoredPackage> {
         self.roots
             .values()
             .find_map(|entry| entry.item.vendored_at_path(target))
     }
 
-    pub(crate) fn vendored_at_path_mut(&mut self, target: &Path) -> Option<&mut VendoredPackage> {
+    pub(super) fn vendored_at_path_mut(&mut self, target: &Path) -> Option<&mut VendoredPackage> {
         self.roots
             .values_mut()
             .find_map(|entry| entry.item.vendored_at_path_mut(target))
@@ -330,19 +330,19 @@ impl ProjectList {
     /// Used by the detail pane/icon to show parent lints when a vendored row
     /// is selected — the list-row icon stays blank because `lint_at_path`
     /// does not fall back.
-    pub(crate) fn vendored_owner_lint(&self, target: &Path) -> Option<&LintRuns> {
+    pub(super) fn vendored_owner_lint(&self, target: &Path) -> Option<&LintRuns> {
         self.roots
             .values()
             .find_map(|entry| entry.item.vendored_owner_lint(target))
     }
 
-    pub(crate) fn lint_at_path(&self, target: &Path) -> Option<&LintRuns> {
+    pub(super) fn lint_at_path(&self, target: &Path) -> Option<&LintRuns> {
         self.roots
             .values()
             .find_map(|entry| entry.item.lint_at_path(target))
     }
 
-    pub(crate) fn lint_at_path_mut(&mut self, target: &Path) -> Option<&mut LintRuns> {
+    pub(super) fn lint_at_path_mut(&mut self, target: &Path) -> Option<&mut LintRuns> {
         self.roots
             .values_mut()
             .find_map(|entry| entry.item.lint_at_path_mut(target))
@@ -350,13 +350,13 @@ impl ProjectList {
 
     /// Top-level entry whose hierarchy contains `target`. One-shot
     /// replacement for the per-field per-path lookups used elsewhere.
-    pub(crate) fn entry_containing(&self, target: &Path) -> Option<&ProjectEntry> {
+    pub(super) fn entry_containing(&self, target: &Path) -> Option<&ProjectEntry> {
         self.roots
             .values()
             .find(|entry| project::entry_contains(entry, target))
     }
 
-    pub(crate) fn entry_containing_mut(&mut self, target: &Path) -> Option<&mut ProjectEntry> {
+    pub(super) fn entry_containing_mut(&mut self, target: &Path) -> Option<&mut ProjectEntry> {
         self.roots
             .values_mut()
             .find(|entry| project::entry_contains(entry, target))
@@ -365,7 +365,7 @@ impl ProjectList {
     /// Replace `git_repo.ci_data` on the entry containing `path`.
     /// Silently no-ops when no entry contains `path` or the entry
     /// has no git repo.
-    pub(crate) fn replace_ci_data_for_path(&mut self, path: &Path, ci_data: ProjectCiData) {
+    pub(super) fn replace_ci_data_for_path(&mut self, path: &Path, ci_data: ProjectCiData) {
         if let Some(repo) = self
             .entry_containing_mut(path)
             .and_then(|entry| entry.git_repo.as_mut())
@@ -376,7 +376,7 @@ impl ProjectList {
 
     // -- Git/Repo reads (Phase 3) ----------------------------------------
 
-    pub(crate) fn git_info_for(&self, path: &Path) -> Option<&CheckoutInfo> {
+    pub(super) fn git_info_for(&self, path: &Path) -> Option<&CheckoutInfo> {
         self.at_path(path)
             .and_then(|project| project.local_git_state.info())
     }
@@ -385,13 +385,13 @@ impl ProjectList {
     /// entry containing `path`. `None` means either the path isn't in a
     /// known entry, the entry isn't in a git repo, or the background
     /// `LocalGitInfo::get` call hasn't completed yet.
-    pub(crate) fn repo_info_for(&self, path: &Path) -> Option<&RepoInfo> {
+    pub(super) fn repo_info_for(&self, path: &Path) -> Option<&RepoInfo> {
         self.entry_containing(path)
             .and_then(|entry| entry.git_repo.as_ref()?.repo_info.as_ref())
     }
 
     /// Convenience: the primary remote's URL for the checkout at `path`.
-    pub(crate) fn primary_url_for(&self, path: &Path) -> Option<&str> {
+    pub(super) fn primary_url_for(&self, path: &Path) -> Option<&str> {
         let checkout = self.git_info_for(path)?;
         let repo = self.repo_info_for(path)?;
         checkout.primary_url(repo)
@@ -399,7 +399,7 @@ impl ProjectList {
 
     /// Convenience: the primary remote's ahead/behind for the checkout
     /// at `path`.
-    pub(crate) fn primary_ahead_behind_for(&self, path: &Path) -> Option<(usize, usize)> {
+    pub(super) fn primary_ahead_behind_for(&self, path: &Path) -> Option<(usize, usize)> {
         let checkout = self.git_info_for(path)?;
         let repo = self.repo_info_for(path)?;
         checkout.primary_ahead_behind(repo)
@@ -411,7 +411,7 @@ impl ProjectList {
     /// still belongs to the repo and should fetch repo-level metadata.
     /// Preference order: `upstream`, then `origin`, then the first
     /// remote with a parseable owner/repo URL.
-    pub(crate) fn fetch_url_for(&self, path: &Path) -> Option<String> {
+    pub(super) fn fetch_url_for(&self, path: &Path) -> Option<String> {
         let repo = self.repo_info_for(path)?;
         let parseable = |name: &str| {
             repo.remotes
@@ -431,14 +431,14 @@ impl ProjectList {
             .map(String::from)
     }
 
-    pub(crate) fn git_status_for(&self, path: &Path) -> Option<GitStatus> {
+    pub(super) fn git_status_for(&self, path: &Path) -> Option<GitStatus> {
         self.git_info_for(path).map(|info| info.status)
     }
 
     /// Roll up the worst git path state across all **visible** children of a
     /// `RootItem`. For worktree groups, checks primary + non-dismissed linked
     /// entries. For everything else, returns the state for the single path.
-    pub(crate) fn git_status_for_item(&self, item: &RootItem) -> Option<GitStatus> {
+    pub(super) fn git_status_for_item(&self, item: &RootItem) -> Option<GitStatus> {
         match item {
             RootItem::Worktrees(g) => {
                 let states: Box<dyn Iterator<Item = Option<GitStatus>>> = match g {
@@ -470,7 +470,7 @@ impl ProjectList {
     }
 
     /// Formatted ahead/behind sync status for the project list columns.
-    pub(crate) fn git_sync(&self, path: &Path) -> String {
+    pub(super) fn git_sync(&self, path: &Path) -> String {
         let Some(info) = self.git_info_for(path) else {
             return String::new();
         };
@@ -486,13 +486,13 @@ impl ProjectList {
         }
     }
 
-    pub(crate) fn ci_data_for(&self, path: &Path) -> Option<&ProjectCiData> {
+    pub(super) fn ci_data_for(&self, path: &Path) -> Option<&ProjectCiData> {
         self.entry_containing(path)
             .and_then(|entry| entry.git_repo.as_ref())
             .map(|repo| &repo.ci_data)
     }
 
-    pub(crate) fn ci_info_for(&self, path: &Path) -> Option<&ProjectCiInfo> {
+    pub(super) fn ci_info_for(&self, path: &Path) -> Option<&ProjectCiInfo> {
         self.ci_data_for(path).and_then(ProjectCiData::info)
     }
 
@@ -500,7 +500,7 @@ impl ProjectList {
     /// parent repo's default-branch runs: an unpushed (no-upstream) branch
     /// that also isn't the default. Used to suppress stale parent-repo CI
     /// status for unpublished worktree branches.
-    pub(crate) fn unpublished_ci_branch_name(&self, path: &Path) -> Option<String> {
+    pub(super) fn unpublished_ci_branch_name(&self, path: &Path) -> Option<String> {
         let git = self.git_info_for(path)?;
         let default_branch = self
             .repo_info_for(path)
@@ -510,12 +510,12 @@ impl ProjectList {
             .flatten()
     }
 
-    pub(crate) fn is_deleted(&self, path: &Path) -> bool {
+    pub(super) fn is_deleted(&self, path: &Path) -> bool {
         self.at_path(path)
             .is_some_and(|project| project.visibility == Visibility::Deleted)
     }
 
-    pub(crate) fn is_rust_at_path(&self, path: &Path) -> bool {
+    pub(super) fn is_rust_at_path(&self, path: &Path) -> bool {
         self.iter().any(|item| {
             if item
                 .submodules()
@@ -528,7 +528,7 @@ impl ProjectList {
         })
     }
 
-    pub(crate) fn is_vendored_path(&self, path: &Path) -> bool {
+    pub(super) fn is_vendored_path(&self, path: &Path) -> bool {
         self.iter().any(|item| match &item.item {
             RootItem::Rust(RustProject::Workspace(ws)) => {
                 ws.vendored().iter().any(|v| v.path() == path)
@@ -550,7 +550,7 @@ impl ProjectList {
         })
     }
 
-    pub(crate) fn is_workspace_member_path(&self, path: &Path) -> bool {
+    pub(super) fn is_workspace_member_path(&self, path: &Path) -> bool {
         self.iter().any(|item| match &item.item {
             RootItem::Rust(RustProject::Workspace(ws)) => ws
                 .groups()
@@ -567,7 +567,7 @@ impl ProjectList {
         })
     }
 
-    pub(crate) fn git_main(&self, path: &Path) -> String {
+    pub(super) fn git_main(&self, path: &Path) -> String {
         let Some(info) = self.git_info_for(path) else {
             return String::new();
         };
@@ -595,7 +595,7 @@ impl ProjectList {
     /// This preserves the `IndexMap` key invariant: no mutation here can
     /// change a root entry's primary path, so keys stay in sync with the
     /// entries they index.
-    pub(crate) fn replace_leaf_by_path(
+    pub(super) fn replace_leaf_by_path(
         &mut self,
         path: &Path,
         mut replacement: RootItem,
@@ -665,7 +665,7 @@ impl ProjectList {
     ///
     /// Returns `true` if an entry was found and promoted.
     #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stages")]
-    pub(crate) fn promote_to_worktree_group(&mut self, path: &Path, group: WorktreeGroup) -> bool {
+    pub(super) fn promote_to_worktree_group(&mut self, path: &Path, group: WorktreeGroup) -> bool {
         let Some(entry) = self.roots.get_mut(path) else {
             return false;
         };
@@ -684,7 +684,7 @@ impl ProjectList {
     /// top-level peer.
     ///
     /// Returns `true` if the item was inserted into an existing workspace.
-    pub(crate) fn insert_into_hierarchy(&mut self, item: RootItem) -> bool {
+    pub(super) fn insert_into_hierarchy(&mut self, item: RootItem) -> bool {
         let item_path = item.path().to_path_buf();
         for entry in self.roots.values_mut() {
             if try_attach_worktree(&mut entry.item, &item) {
@@ -728,7 +728,7 @@ impl ProjectList {
     /// Regroup workspace members based on `inline_dirs` config. Walks all
     /// workspaces (including inside worktree groups) and re-sorts their
     /// members into `Named` / `Inline` groups.
-    pub(crate) fn regroup_members(&mut self, inline_dirs: &[String]) {
+    pub(super) fn regroup_members(&mut self, inline_dirs: &[String]) {
         for entry in self.roots.values_mut() {
             match &mut entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
@@ -747,7 +747,7 @@ impl ProjectList {
         }
     }
 
-    pub(crate) fn regroup_top_level_worktrees(&mut self) {
+    pub(super) fn regroup_top_level_worktrees(&mut self) {
         let mut index = 0;
         while index < self.roots.len() {
             let Some(identity) = linked_worktree_identity(&self.roots[index].item).cloned() else {
@@ -782,10 +782,10 @@ impl ProjectList {
 
     // -- Vec-like operations -------------------------------------------------
 
-    pub(crate) fn clear(&mut self) { self.roots.clear(); }
+    pub(super) fn clear(&mut self) { self.roots.clear(); }
 
     #[cfg(test)]
-    pub(crate) fn push(&mut self, item: RootItem) {
+    pub(super) fn push(&mut self, item: RootItem) {
         let key = item.path().clone();
         self.roots.insert(key, ProjectEntry::new(item));
     }
@@ -1037,7 +1037,7 @@ fn try_insert_member(ws: &mut Workspace, item_path: &Path, item: &RootItem) -> b
 /// nested containers (root nodes, named groups, worktree
 /// entries, worktree groups) the user has toggled open.
 #[derive(Hash, Eq, PartialEq, Clone)]
-pub(crate) enum ExpandKey {
+pub(super) enum ExpandKey {
     Node(usize),
     Group(usize, usize),
     Worktree(usize, usize),
@@ -1046,7 +1046,7 @@ pub(crate) enum ExpandKey {
 
 /// What a visible row represents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum VisibleRow {
+pub(super) enum VisibleRow {
     /// A top-level project/workspace root.
     Root { node_index: usize },
     /// A group header (e.g., "examples").
@@ -1102,7 +1102,7 @@ impl ProjectList {
     /// nested containers are walked into; `include_non_rust`
     /// gates whether non-Rust roots are emitted; `Dismissed`
     /// roots are always filtered out.
-    pub(crate) fn compute_visible_rows(
+    pub(super) fn compute_visible_rows(
         &self,
         expanded: &HashSet<ExpandKey>,
         include_non_rust: bool,
@@ -1353,10 +1353,6 @@ impl ProjectList {
 
     // ── path tracking ───────────────────────────────────────────────
 
-    pub(super) const fn paths(&self) -> &SelectionPaths { &self.paths }
-
-    pub(super) const fn paths_mut(&mut self) -> &mut SelectionPaths { &mut self.paths }
-
     // ── sync flag ───────────────────────────────────────────────────
 
     pub(super) const fn sync(&self) -> SelectionSync { self.sync }
@@ -1366,21 +1362,6 @@ impl ProjectList {
     pub(super) const fn mark_sync_stable(&mut self) { self.sync = SelectionSync::Stable; }
 
     // ── expansion set ───────────────────────────────────────────────
-
-    pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { &self.expanded }
-
-    /// Mutable access to the expansion set. Most callers (rebuild paths
-    /// in `tui::app::async_tasks` and `tui::app::navigation`) populate
-    /// the set in bulk and don't want the per-mutation recompute the
-    /// `SelectionMutation` guard fires; the guard covers single-key
-    /// toggle paths where the recompute is the whole point.
-    pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> { &mut self.expanded }
-
-    // ── finder state ────────────────────────────────────────────────
-
-    pub(super) const fn finder(&self) -> &FinderState { &self.finder }
-
-    pub(super) const fn finder_mut(&mut self) -> &mut FinderState { &mut self.finder }
 
     // ── cached visible rows ─────────────────────────────────────────
 
@@ -1441,12 +1422,6 @@ impl ProjectList {
 
     // ── disk-sort caches ────────────────────────────────────────────
 
-    pub(super) fn cached_root_sorted(&self) -> &[u64] { &self.cached_root_sorted }
-
-    pub(super) const fn cached_child_sorted(&self) -> &HashMap<usize, Vec<u64>> {
-        &self.cached_child_sorted
-    }
-
     pub(super) fn set_disk_caches(
         &mut self,
         root_sorted: Vec<u64>,
@@ -1457,8 +1432,6 @@ impl ProjectList {
     }
 
     // ── fit widths ──────────────────────────────────────────────────
-
-    pub(super) const fn fit_widths(&self) -> &ProjectListWidths { &self.cached_fit_widths }
 
     /// Test-only — production paths replace the whole `ProjectListWidths`
     /// via [`Self::set_fit_widths`] and never observe individual columns
@@ -1881,9 +1854,7 @@ impl ProjectList {
         }
     }
 
-    pub(super) fn try_collapse(&mut self, key: &ExpandKey) -> bool {
-        self.expanded_mut().remove(key)
-    }
+    pub(super) fn try_collapse(&mut self, key: &ExpandKey) -> bool { self.expanded.remove(key) }
 
     pub(super) fn dismiss_target_for_row_inner(
         &self,
@@ -1975,7 +1946,7 @@ impl ProjectList {
     }
 
     pub(super) const fn last_selected_path(&self) -> Option<&AbsolutePath> {
-        self.paths().last_selected.as_ref()
+        self.paths.last_selected.as_ref()
     }
 
     pub(super) fn current_branch_for(&self, path: &Path) -> Option<&str> {
@@ -2280,11 +2251,11 @@ impl ProjectList {
     /// Expand every node and named group, restoring selection after recompute.
     pub(super) fn expand_all(&mut self, include_non_rust: bool) {
         let selected_path = self
-            .paths_mut()
+            .paths
             .collapsed_selected
             .take()
             .or_else(|| self.selected_project_path().map(AbsolutePath::from));
-        self.paths_mut().collapsed_anchor = None;
+        self.paths.collapsed_anchor = None;
         let (roots, expanded) = self.iter_with_expanded_mut();
         for (ni, entry) in roots.enumerate() {
             if entry.item.has_children() {
@@ -2324,7 +2295,7 @@ impl ProjectList {
     pub(super) fn collapse_all(&mut self, include_non_rust: bool) {
         let selected_path = self.selected_project_path().map(AbsolutePath::from);
         let anchor = self.selected_row().map(VisibleRow::collapse_anchor);
-        self.expanded_mut().clear();
+        self.expanded.clear();
         self.recompute_visibility(include_non_rust);
         if let Some(anchor) = anchor
             && let Some(pos) = self.visible_rows().iter().position(|row| *row == anchor)
@@ -2333,11 +2304,11 @@ impl ProjectList {
         }
         let anchor_path = self.selected_project_path().map(AbsolutePath::from);
         if selected_path == anchor_path {
-            self.paths_mut().collapsed_selected = None;
-            self.paths_mut().collapsed_anchor = None;
+            self.paths.collapsed_selected = None;
+            self.paths.collapsed_anchor = None;
         } else {
-            self.paths_mut().collapsed_selected = selected_path;
-            self.paths_mut().collapsed_anchor = anchor_path;
+            self.paths.collapsed_selected = selected_path;
+            self.paths.collapsed_anchor = anchor_path;
         }
     }
 
@@ -2447,7 +2418,7 @@ impl ProjectList {
         target: VisibleRow,
         include_non_rust: bool,
     ) {
-        self.expanded_mut().remove(key);
+        self.expanded.remove(key);
         self.recompute_visibility(include_non_rust);
         if let Some(pos) = self.visible_rows().iter().position(|r| *r == target) {
             self.set_cursor(pos);
@@ -2562,10 +2533,10 @@ impl ProjectList {
         let Some(row) = self.visible_rows().get(selected).copied() else {
             return false;
         };
-        let expanded_before = self.expanded().len();
+        let expanded_before = self.expanded.len();
         let selected_before = self.cursor();
         self.collapse_row(row, include_non_rust);
-        self.expanded().len() != expanded_before || self.cursor() != selected_before
+        self.expanded.len() != expanded_before || self.cursor() != selected_before
     }
 
     /// Whether the group at `(ni, gi)` is an inline (unnamed) group.
@@ -2651,7 +2622,7 @@ impl ProjectList {
         self.iter()
             .enumerate()
             .filter_map(|(ni, entry)| {
-                if !self.expanded().contains(&ExpandKey::Node(ni)) {
+                if !self.expanded.contains(&ExpandKey::Node(ni)) {
                     return None;
                 }
                 match &entry.item {
@@ -2666,7 +2637,7 @@ impl ProjectList {
                             .filter_map(|(gi, group)| {
                                 group
                                     .is_named()
-                                    .then(|| self.expanded().contains(&ExpandKey::Group(ni, gi)))
+                                    .then(|| self.expanded.contains(&ExpandKey::Group(ni, gi)))
                                     .filter(|expanded| *expanded)
                                     .map(|_| gi)
                             })
@@ -2778,7 +2749,12 @@ impl ProjectList {
         }
     }
 
-    pub fn handle_repo_meta(&mut self, path: &Path, stars: u64, description: Option<String>) {
+    pub(super) fn handle_repo_meta(
+        &mut self,
+        path: &Path,
+        stars: u64,
+        description: Option<String>,
+    ) {
         if let Some(entry) = self.entry_containing_mut(path) {
             let repo = entry.git_repo.get_or_insert_with(Default::default);
             repo.github_info = Some(GitHubInfo { stars, description });

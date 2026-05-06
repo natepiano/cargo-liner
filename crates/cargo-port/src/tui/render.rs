@@ -127,22 +127,19 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
-    let left_width = u16::try_from(app.cached_fit_widths().total_width() + BLOCK_BORDER_WIDTH + 1)
-        .unwrap_or(u16::MAX);
+    let left_width =
+        u16::try_from(app.project_list.cached_fit_widths.total_width() + BLOCK_BORDER_WIDTH + 1)
+            .unwrap_or(u16::MAX);
 
     let bottom_row = if app.inflight.example_output().is_empty() {
         panes::BottomRow::Diagnostics
     } else {
         panes::BottomRow::Output
     };
-    let core_count = app
-        .panes
-        .cpu()
-        .content()
-        .map_or(1, |usage| usage.cores.len());
+    let core_count = app.panes.cpu.content().map_or(1, |usage| usage.cores.len());
     let tiled = panes::resolve_layout(outer_layout[0], left_width, core_count, bottom_row);
 
-    for resolved in tiled.panes() {
+    for resolved in &tiled.panes {
         render_tiled_pane(frame, app, resolved.pane, resolved.area);
     }
     app.layout_cache.tiled = tiled;
@@ -247,7 +244,7 @@ fn append_sibling_lines(
     selection: &[AbsolutePath],
     lines: &mut Vec<String>,
 ) {
-    let siblings = app.scan.target_dir_index().siblings(target, selection);
+    let siblings = app.scan.target_dir_index.siblings(target, selection);
     let project_siblings: Vec<&AbsolutePath> =
         siblings.iter().map(|member| &member.project_root).collect();
     if !project_siblings.is_empty() {
@@ -348,7 +345,7 @@ fn dispatch_via_trait(
 ) {
     let focus_state = app.focus.pane_state(id);
     let is_focused = app.focus.is(id);
-    let animation_elapsed = app.animation_elapsed();
+    let animation_elapsed = app.animation_started.elapsed();
     // Compute `selected_project_path` before the split-borrow — it
     // crosses Selection + Scan via `path_for_row`, so the
     // dispatcher's typed refs alone can't reproduce it.
@@ -370,7 +367,7 @@ fn dispatch_via_trait(
 fn render_lints_pane(app: &mut App, frame: &mut Frame, area: Rect) {
     let focus_state = app.focus.pane_state(PaneId::Lints);
     let is_focused = app.focus.is(PaneId::Lints);
-    let animation_elapsed = app.animation_elapsed();
+    let animation_elapsed = app.animation_started.elapsed();
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
@@ -389,7 +386,7 @@ fn render_lints_pane(app: &mut App, frame: &mut Frame, area: Rect) {
 fn render_ci_pane(app: &mut App, frame: &mut Frame, area: Rect) {
     let focus_state = app.focus.pane_state(PaneId::CiRuns);
     let is_focused = app.focus.is(PaneId::CiRuns);
-    let animation_elapsed = app.animation_elapsed();
+    let animation_elapsed = app.animation_started.elapsed();
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
@@ -437,7 +434,7 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
             panes::Panes::dispatch_cpu_render,
         ),
         PaneId::Targets => {
-            if let Some(targets_data) = app.panes.targets().content().cloned()
+            if let Some(targets_data) = app.panes.targets.content().cloned()
                 && targets_data.has_targets()
             {
                 panes::render_targets_panel(frame, app, &targets_data, &pane_render_styles(), area);
@@ -454,7 +451,7 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
 
 fn sync_hovered_pane_row(app: &mut App) {
     let hovered = app
-        .mouse_pos()
+        .mouse_pos
         .and_then(|pos| interaction::hovered_pane_row_at(app, pos));
     app.panes.set_hover(hovered);
     app.apply_hovered_pane_row();
@@ -567,7 +564,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             .add_modifier(Modifier::BOLD);
         left_spans.push(Span::styled(" ⟳ scanning… ", key_style));
     }
-    let uptime_secs = app.animation_elapsed().as_secs();
+    let uptime_secs = app.animation_started.elapsed().as_secs();
     let uptime_label_style = Style::default()
         .fg(TITLE_COLOR)
         .add_modifier(Modifier::BOLD);

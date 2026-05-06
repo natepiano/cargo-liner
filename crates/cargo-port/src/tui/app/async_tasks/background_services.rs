@@ -43,7 +43,7 @@ impl App {
                 .filter(|_| {
                     self.project_list
                         .rust_info_at_path(item.path())
-                        .is_some_and(|r| r.cargo().publishable())
+                        .is_some_and(|r| r.cargo.publishable())
                 });
             let repo_presence = if project::git_repo_root(&abs_path).is_some() {
                 GitRepoPresence::InRepo

@@ -23,7 +23,6 @@ use super::pane_impls::OutputPane;
 use super::pane_impls::PackagePane;
 use super::pane_impls::ProjectListPane;
 use super::pane_impls::TargetsPane;
-use super::support::WorktreeInfo;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
 use crate::tui::config_state::Config;
@@ -59,16 +58,16 @@ const fn build_ctx<'a>(args: &DispatchArgs<'a>) -> PaneRenderCtx<'a> {
 /// Owns every pane-related piece of state. App holds a single `panes:
 /// Panes` field.
 pub struct Panes {
-    package:      PackagePane,
-    lang:         LangPane,
-    cpu:          CpuPane,
-    git:          GitPane,
-    output:       OutputPane,
-    targets:      TargetsPane,
-    project_list: ProjectListPane,
+    pub package:      PackagePane,
+    pub lang:         LangPane,
+    pub cpu:          CpuPane,
+    pub git:          GitPane,
+    pub output:       OutputPane,
+    pub targets:      TargetsPane,
+    pub project_list: ProjectListPane,
 
-    data:        PaneDataStore,
-    hovered_row: Option<HoveredPaneRow>,
+    pub pane_data: PaneDataStore,
+    hovered_row:   Option<HoveredPaneRow>,
 }
 
 impl Panes {
@@ -82,51 +81,10 @@ impl Panes {
             targets:      TargetsPane::new(),
             project_list: ProjectListPane::new(),
 
-            data:        PaneDataStore::new(),
+            pane_data:   PaneDataStore::new(),
             hovered_row: None,
         }
     }
-
-    /// Typed accessor for the CPU pane. Used by callers that
-    /// need to read CPU-pane state (content `CpuUsage`, etc.) —
-    /// e.g., the render path and `is_pane_tabbable`.
-    pub const fn cpu(&self) -> &CpuPane { &self.cpu }
-
-    /// Mutable typed accessor for the CPU pane.
-    pub const fn cpu_mut(&mut self) -> &mut CpuPane { &mut self.cpu }
-
-    /// Typed accessor for the Lang pane.
-    pub const fn lang(&self) -> &LangPane { &self.lang }
-
-    /// Mutable typed accessor for the Lang pane.
-    pub const fn lang_mut(&mut self) -> &mut LangPane { &mut self.lang }
-
-    /// Typed accessor for the Package pane.
-    pub const fn package(&self) -> &PackagePane { &self.package }
-
-    /// Mutable typed accessor for the Package pane.
-    pub const fn package_mut(&mut self) -> &mut PackagePane { &mut self.package }
-
-    /// Typed accessor for the Git pane.
-    pub const fn git(&self) -> &GitPane { &self.git }
-
-    /// Mutable typed accessor for the Git pane.
-    pub const fn git_mut(&mut self) -> &mut GitPane { &mut self.git }
-
-    /// Typed accessor for the Targets pane.
-    pub const fn targets(&self) -> &TargetsPane { &self.targets }
-
-    /// Mutable typed accessor for the Targets pane.
-    pub const fn targets_mut(&mut self) -> &mut TargetsPane { &mut self.targets }
-
-    /// Typed accessor for the `ProjectList` pane.
-    pub const fn project_list(&self) -> &ProjectListPane { &self.project_list }
-
-    /// Mutable typed accessor for the `ProjectList` pane.
-    pub const fn project_list_mut(&mut self) -> &mut ProjectListPane { &mut self.project_list }
-
-    /// Mutable typed accessor for the Output pane.
-    pub const fn output_mut(&mut self) -> &mut OutputPane { &mut self.output }
 
     /// Currently-hovered pane/row pair, or `None`. Used by the
     /// App-level `apply_hovered_pane_row` orchestrator.
@@ -148,7 +106,7 @@ impl Panes {
         self.package.set_content(package);
         self.git.set_content(git);
         self.targets.set_content(targets);
-        self.data.set_detail_stamp(Some(stamp));
+        self.pane_data.set_detail_stamp(Some(stamp));
     }
 
     /// Clear the detail set across the migrated detail panes owned by `Panes`,
@@ -158,7 +116,7 @@ impl Panes {
         self.package.clear_content();
         self.git.clear_content();
         self.targets.clear_content();
-        self.data.set_detail_stamp(stamp);
+        self.pane_data.set_detail_stamp(stamp);
     }
 
     /// Dispatch `CpuPane`'s render through the `Pane` trait.
@@ -209,22 +167,8 @@ impl Panes {
         Pane::render(&mut self.git, frame, area, ctx);
     }
 
-    pub const fn pane_data(&self) -> &PaneDataStore { &self.data }
-
     pub const fn set_hover(&mut self, hovered: Option<HoveredPaneRow>) {
         self.hovered_row = hovered;
-    }
-
-    /// Return the cached worktree-summary for `group_root` if present;
-    /// otherwise compute via `compute` (the shell-out path), cache, and
-    /// return. Cache lives on `GitPane`; Panes is a pass-through.
-    /// Sticky cache; only `clear_for_tree_change` invalidates it.
-    pub fn worktree_summary_or_compute(
-        &self,
-        group_root: &Path,
-        compute: impl FnOnce() -> Vec<WorktreeInfo>,
-    ) -> Vec<WorktreeInfo> {
-        self.git.worktree_summary_or_compute(group_root, compute)
     }
 
     /// Drop tree-derived caches owned by per-pane structs.
@@ -282,8 +226,8 @@ mod detail_set_tests {
     #[test]
     fn new_panes_detail_is_current_only_with_no_selection() {
         let panes = fresh();
-        assert!(panes.pane_data().detail_is_current(None));
-        assert!(!panes.pane_data().detail_is_current(Some(DetailCacheKey {
+        assert!(panes.pane_data.detail_is_current(None));
+        assert!(!panes.pane_data.detail_is_current(Some(DetailCacheKey {
             row:        any_row(),
             generation: 0,
         })));
@@ -299,18 +243,18 @@ mod detail_set_tests {
         let (pkg, git, targets) = empty_detail();
         panes.set_detail_data(key, pkg, git, targets);
 
-        assert!(panes.pane_data().detail_is_current(Some(key)));
-        assert!(panes.package().content().is_some());
-        assert!(panes.git().content().is_some());
-        assert!(panes.targets().content().is_some());
+        assert!(panes.pane_data.detail_is_current(Some(key)));
+        assert!(panes.package.content().is_some());
+        assert!(panes.git.content().is_some());
+        assert!(panes.targets.content().is_some());
 
         // Different stamps don't match.
-        assert!(!panes.pane_data().detail_is_current(None));
-        assert!(!panes.pane_data().detail_is_current(Some(DetailCacheKey {
+        assert!(!panes.pane_data.detail_is_current(None));
+        assert!(!panes.pane_data.detail_is_current(Some(DetailCacheKey {
             row:        any_row(),
             generation: 4,
         })));
-        assert!(!panes.pane_data().detail_is_current(Some(DetailCacheKey {
+        assert!(!panes.pane_data.detail_is_current(Some(DetailCacheKey {
             row:        other_row(),
             generation: 3,
         })));
@@ -331,16 +275,16 @@ mod detail_set_tests {
             generation: 7,
         };
         panes.clear_detail_data(Some(clear_key));
-        assert!(panes.pane_data().detail_is_current(Some(clear_key)));
-        assert!(panes.package().content().is_none());
-        assert!(panes.git().content().is_none());
-        assert!(panes.targets().content().is_none());
+        assert!(panes.pane_data.detail_is_current(Some(clear_key)));
+        assert!(panes.package.content().is_none());
+        assert!(panes.git.content().is_none());
+        assert!(panes.targets.content().is_none());
     }
 
     #[test]
     fn clear_detail_with_none_matches_none() {
         let mut panes = fresh();
         panes.clear_detail_data(None);
-        assert!(panes.pane_data().detail_is_current(None));
+        assert!(panes.pane_data.detail_is_current(None));
     }
 }

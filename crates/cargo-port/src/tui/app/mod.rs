@@ -59,7 +59,6 @@ pub(super) use phase_state::KeyedPhase;
 mod target_index;
 mod types;
 
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -166,71 +165,71 @@ pub(super) struct App {
     /// (availability). App orchestration that touches Net plus
     /// other subsystems (toast push/dismiss, retry spawn) stays
     /// as named methods on `App`.
-    pub(super) net:          Net,
+    pub(super) net:               Net,
     /// Panes subsystem. Owns `pane_manager`, `pane_data`,
     /// `hovered_pane_row`, and `cpu_poller`. App's
     /// impl-files reach pane state through this handle.
-    pub(super) panes:        Panes,
+    pub(super) panes:             Panes,
     /// Background subsystem. Owns the four mpsc channel pairs plus
     /// `watch_tx`. The `bg_*` pair is replaced wholesale on every
     /// rescan via [`Background::swap_bg_channel`]; the others outlive
     /// any single rescan.
-    pub(super) background:   Background,
+    pub(super) background:        Background,
     /// Inflight subsystem. Owns the running-paths maps, toast
     /// slots, pending queues, and example-runner state.
-    pub(super) inflight:     Inflight,
+    pub(super) inflight:          Inflight,
     /// Lint subsystem. Owns the lint runtime, in-flight lint
     /// state, the disk cache stat counter, and the startup-pass
     /// trackers.
-    pub(super) lint:         Lint,
+    pub(super) lint:              Lint,
     /// Ci subsystem. Owns `fetch_tracker`, `fetch_toast`, and
     /// per-project `display_modes`, plus `Ci::package_display`
     /// which returns the typed [`CiDisplay`] for the package
     /// detail row.
-    pub(super) ci:           Ci,
+    pub(super) ci:                Ci,
     /// Config subsystem. Owns `current_config`, `config_path`,
     /// `config_last_seen`, plus the in-app settings editor's
     /// `SettingsEditBuffer`. Composes
     /// `WatchedFile<CargoPortConfig>`.
-    pub(super) config:       Config,
+    pub(super) config:            Config,
     /// Keymap subsystem. Owns `current_keymap`, `keymap_path`,
     /// `keymap_last_seen`, `keymap_diagnostics_id`. Composes
     /// `WatchedFile<ResolvedKeymap>`.
-    pub(super) keymap:       Keymap,
+    pub(super) keymap:            Keymap,
     /// The central per-project data store. Lint runs, CI info, git
     /// info, language stats, package/workspace fields, and disk usage
     /// all live inside the tree. Every subsystem that produces
     /// per-project data writes into it.
-    pub(super) project_list: ProjectList,
+    pub(super) project_list:      ProjectList,
     /// Scan subsystem. Owns `scan` (`ScanState`),
     /// `dirty`, `data_generation`, `discovery_shimmers`,
     /// `pending_git_first_commit`, `metadata_store`,
     /// `target_dir_index`, `priority_fetch_path`,
     /// `confirm_verifying`, `lint_cache_usage`, and (test-only)
     /// `retry_spawn_mode`.
-    pub(super) scan:         Scan,
+    pub(super) scan:              Scan,
     /// Startup-phase orchestrator. Owns the per-phase trackers
     /// (`disk`, `git`, `repo`, `metadata`, `lint_phase`,
     /// `lint_count`) plus the `scan_complete_at`, `toast`, and
     /// `complete_at` slots that drive the umbrella "Startup" toast
     /// and its detail toasts.
-    pub(super) startup:      Startup,
-    pub(super) focus:        Focus,
+    pub(super) startup:           Startup,
+    pub(super) focus:             Focus,
     /// Overlays subsystem. Owns the four overlay-mode enums
     /// (`FinderMode`, `SettingsMode`, `KeymapMode`, `ExitMode`),
     /// the transient `inline_error` UI feedback, and the
     /// `status_flash` slot.
-    pub(super) overlays:     Overlays,
-    confirm:                 Option<ConfirmAction>,
-    animation_started:       Instant,
-    mouse_pos:               Option<Position>,
-    pub(super) toasts:       ToastManager,
+    pub(super) overlays:          Overlays,
+    confirm:                      Option<ConfirmAction>,
+    pub(super) animation_started: Instant,
+    pub(super) mouse_pos:         Option<Position>,
+    pub(super) toasts:            ToastManager,
     /// Layout coordination cache. Computed once per draw and shared
     /// across the render path: tile layout, project-list body rect,
     /// and the row-hitbox map for click/hover dispatch. Lives on
     /// App-shell because it's coordination state, not pane state —
     /// it describes what rect each pane occupies.
-    pub(super) layout_cache: LayoutCache,
+    pub(super) layout_cache:      LayoutCache,
 }
 
 impl App {
@@ -304,7 +303,7 @@ impl App {
                 ratatui::style::Style::default(),
             );
         }
-        let icon = status.icon().frame_at(self.animation_elapsed());
+        let icon = status.icon().frame_at(self.animation_started.elapsed());
         let style = if matches!(status, LintStatus::Running(_)) {
             ratatui::style::Style::default().fg(crate::tui::constants::ACCENT_COLOR)
         } else {
@@ -313,30 +312,23 @@ impl App {
         LintCell::from_parts(icon, style)
     }
 
-    pub(super) fn resolved_dirs(&self) -> Vec<AbsolutePath> {
-        scan::resolve_include_dirs(&self.config.current().tui.include_dirs)
-    }
-
-    fn toast_timeout(&self) -> Duration {
-        Duration::from_secs_f64(self.config.current().tui.status_flash_secs)
-    }
-
     pub(super) fn prune_toasts(&mut self) {
         let now = Instant::now();
         let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
         self.toasts.prune_tracked_items(now, linger);
         self.toasts.prune(now);
         let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport_mut().set_len(toast_len);
+        self.toasts.viewport.set_len(toast_len);
         if self.focus.base() == PaneId::Toasts && self.toasts.active_now().is_empty() {
             self.focus.set(PaneId::ProjectList);
         }
     }
 
     pub(super) fn show_timed_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {
-        self.toasts.push_timed(title, body, self.toast_timeout(), 1);
+        let timeout = Duration::from_secs_f64(self.config.current().tui.status_flash_secs);
+        self.toasts.push_timed(title, body, timeout, 1);
         let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport_mut().set_len(toast_len);
+        self.toasts.viewport.set_len(toast_len);
     }
 
     pub(super) fn show_timed_warning_toast(
@@ -344,10 +336,15 @@ impl App {
         title: impl Into<String>,
         body: impl Into<String>,
     ) {
-        self.toasts
-            .push_timed_styled(title, body, self.toast_timeout(), 1, Warning);
+        self.toasts.push_timed_styled(
+            title,
+            body,
+            Duration::from_secs_f64(self.config.current().tui.status_flash_secs),
+            1,
+            Warning,
+        );
         let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport_mut().set_len(toast_len);
+        self.toasts.viewport.set_len(toast_len);
     }
 
     pub(super) fn finish_task_toast(&mut self, task_id: ToastTaskId) {
@@ -364,7 +361,7 @@ impl App {
         let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
         self.toasts.set_tracked_items(task_id, items, linger);
         let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport_mut().set_len(toast_len);
+        self.toasts.viewport.set_len(toast_len);
     }
 
     /// Begin a clean for `project_path`. Returns `true` if a cargo clean
@@ -422,7 +419,7 @@ impl App {
             .entry_containing(path)
             .is_some_and(|entry| {
                 self.ci
-                    .fetch_tracker()
+                    .fetch_tracker
                     .is_fetching(entry.item.path().as_path())
             })
     }
@@ -484,8 +481,6 @@ impl App {
             None
         }
     }
-
-    pub(super) fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
 
     pub(super) fn register_discovery_shimmer(&mut self, path: &Path) {
         if !self.scan.is_complete() || !self.config.discovery_shimmer_enabled() {
@@ -596,7 +591,7 @@ impl App {
             .pending_git_first_commit_mut()
             .retain(|path, _| all_paths.contains(path));
         self.ci
-            .fetch_tracker_mut()
+            .fetch_tracker
             .retain(|path| all_paths.contains(path));
     }
 
@@ -660,34 +655,9 @@ impl App {
         self.project_list.selected_project_path()
     }
 
-    pub(super) const fn mouse_pos(&self) -> Option<Position> { self.mouse_pos }
-
-    pub(super) const fn set_mouse_pos(&mut self, pos: Option<Position>) { self.mouse_pos = pos; }
-
     pub(super) const fn apply_hovered_pane_row(&mut self) {
         interaction::apply_hovered_pane_row(self);
     }
-
-    pub(super) const fn cached_fit_widths(&self) -> &ProjectListWidths {
-        self.project_list.fit_widths()
-    }
-
-    pub(super) fn cached_root_sorted(&self) -> &[u64] { self.project_list.cached_root_sorted() }
-
-    pub(super) const fn cached_child_sorted(&self) -> &HashMap<usize, Vec<u64>> {
-        self.project_list.cached_child_sorted()
-    }
-
-    pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { self.project_list.expanded() }
-
-    #[cfg(test)]
-    pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> {
-        self.project_list.expanded_mut()
-    }
-
-    pub(super) const fn finder(&self) -> &FinderState { self.project_list.finder() }
-
-    pub(super) const fn finder_mut(&mut self) -> &mut FinderState { self.project_list.finder_mut() }
 
     #[cfg(test)]
     pub(super) fn set_confirm(&mut self, action: ConfirmAction) { self.confirm = Some(action); }
@@ -799,10 +769,6 @@ impl App {
         self.project_list.owner_repo_for_path_inner(path)
     }
 
-    pub(super) fn ci_display_mode_label_for(&self, path: &Path) -> &'static str {
-        self.ci.display_mode_label_for(path)
-    }
-
     pub(super) fn ci_toggle_available_for(&self, path: &Path) -> bool {
         self.project_list.ci_toggle_available_for_inner(path)
     }
@@ -840,10 +806,7 @@ impl App {
         if let Some(idx) = crate::tui::settings::SettingOption::iter()
             .position(|s| s == SettingOption::IncludeDirs)
         {
-            self.overlays
-                .settings_pane_mut()
-                .viewport_mut()
-                .set_pos(idx);
+            self.overlays.settings_pane.viewport.set_pos(idx);
         }
         self.overlays
             .set_inline_error("Configure at least one include directory before continuing");
@@ -899,15 +862,15 @@ impl App {
                             .and_then(|p| p.language_stats.as_ref())
                             .is_some_and(|ls| !ls.entries.is_empty())
                     }),
-                PaneId::Git => self.panes.git().content().is_some_and(|g| {
+                PaneId::Git => self.panes.git.content().is_some_and(|g| {
                     g.branch.is_some() || !g.remotes.is_empty() || !g.worktrees.is_empty()
                 }),
                 _ => false,
             },
-            PaneBehavior::Cpu => self.panes.cpu().content().is_some(),
+            PaneBehavior::Cpu => self.panes.cpu.content().is_some(),
             PaneBehavior::DetailTargets => self
                 .panes
-                .targets()
+                .targets
                 .content()
                 .is_some_and(panes::TargetsData::has_targets),
             PaneBehavior::Lints => {
@@ -949,9 +912,9 @@ impl App {
         }
         let current = self.focus.base();
         if current == PaneId::Toasts
-            && self.toasts.viewport().pos() + 1 < self.toasts.active_now().len()
+            && self.toasts.viewport.pos() + 1 < self.toasts.active_now().len()
         {
-            self.toasts.viewport_mut().down();
+            self.toasts.viewport.down();
             self.focus.set(PaneId::Toasts);
             return;
         }
@@ -959,7 +922,7 @@ impl App {
         let next = panes[(index + 1) % panes.len()];
         self.focus.set(next);
         if next == PaneId::Toasts {
-            self.toasts.viewport_mut().home();
+            self.toasts.viewport.home();
         }
     }
 
@@ -970,8 +933,8 @@ impl App {
             return;
         }
         let current = self.focus.base();
-        if current == PaneId::Toasts && self.toasts.viewport().pos() > 0 {
-            self.toasts.viewport_mut().up();
+        if current == PaneId::Toasts && self.toasts.viewport.pos() > 0 {
+            self.toasts.viewport.up();
             self.focus.set(PaneId::Toasts);
             return;
         }
@@ -980,17 +943,17 @@ impl App {
         self.focus.set(prev);
         if prev == PaneId::Toasts {
             let last_index = self.toasts.active_now().len().saturating_sub(1);
-            self.toasts.viewport_mut().set_pos(last_index);
+            self.toasts.viewport.set_pos(last_index);
         }
     }
 
     pub(super) fn reset_project_panes(&mut self) {
-        self.panes.package_mut().viewport_mut().home();
-        self.panes.git_mut().viewport_mut().home();
-        self.panes.targets_mut().viewport_mut().home();
-        self.ci.viewport_mut().home();
-        self.lint.viewport_mut().home();
-        self.toasts.viewport_mut().home();
+        self.panes.package.viewport.home();
+        self.panes.git.viewport.home();
+        self.panes.targets.viewport.home();
+        self.ci.viewport.home();
+        self.lint.viewport.home();
+        self.toasts.viewport.home();
         self.focus.unvisit(PaneId::Package);
         self.focus.unvisit(PaneId::Git);
         self.focus.unvisit(PaneId::Targets);

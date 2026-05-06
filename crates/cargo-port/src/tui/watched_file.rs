@@ -33,9 +33,9 @@ struct Stamp {
 /// e.g. config defaults loaded from environment) in which case
 /// `try_reload` is always [`ReloadOutcome::Unchanged`].
 pub(super) struct WatchedFile<T> {
-    path:    Option<PathBuf>,
-    stamp:   Option<Stamp>,
-    current: T,
+    path:               Option<PathBuf>,
+    stamp:              Option<Stamp>,
+    pub(super) current: T,
 }
 
 impl<T> WatchedFile<T> {
@@ -50,10 +50,6 @@ impl<T> WatchedFile<T> {
             current,
         }
     }
-
-    pub(super) const fn current(&self) -> &T { &self.current }
-
-    pub(super) const fn current_mut(&mut self) -> &mut T { &mut self.current }
 
     pub(super) fn path(&self) -> Option<&Path> { self.path.as_deref() }
 

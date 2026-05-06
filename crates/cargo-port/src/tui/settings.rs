@@ -561,8 +561,8 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         .saturating_add(1);
 
     app.overlays
-        .settings_pane_mut()
-        .viewport_mut()
+        .settings_pane
+        .viewport
         .set_len(SettingOption::COUNT);
 
     let inner = PopupFrame {
@@ -573,17 +573,12 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     }
     .render(frame);
 
-    app.overlays
-        .settings_pane_mut()
-        .viewport_mut()
-        .set_content_area(inner);
+    app.overlays.settings_pane.viewport.set_content_area(inner);
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
 
-    app.overlays
-        .settings_pane_mut()
-        .set_line_targets(line_targets);
+    app.overlays.settings_pane.set_line_targets(line_targets);
 }
 
 const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
@@ -689,7 +684,7 @@ fn push_lint_cache_size_row(
     ctx: &SettingsLineContext<'_>,
     value: &str,
 ) {
-    let used = render::format_bytes(app.lint.cache_usage().bytes);
+    let used = render::format_bytes(app.lint.cache_usage.bytes);
     let limit = &app.config.current().lint.cache_size;
     let usage_suffix = format!("  {used} / {limit}");
     lines.push(Line::from(vec![
@@ -719,8 +714,8 @@ fn push_setting_row(
     } else if app.overlays.is_settings_editing() && ctx.selection != PaneSelectionState::Unselected
     {
         let edit_buffer = render_edit_buffer(
-            app.config.edit_buffer().buf(),
-            app.config.edit_buffer().cursor(),
+            app.config.edit_buffer.buf(),
+            app.config.edit_buffer.cursor(),
         );
         push_wrapped_setting_value(
             lines,
@@ -786,15 +781,15 @@ pub(super) fn build_settings_lines(
             continue;
         }
 
-        let cursor = if app.overlays.settings_pane().viewport().pos() == selection_index {
+        let cursor = if app.overlays.settings_pane.viewport.pos() == selection_index {
             "▶ "
         } else {
             "  "
         };
         let selection = app
             .overlays
-            .settings_pane()
-            .viewport()
+            .settings_pane
+            .viewport
             .selection_state(selection_index, app.focus.pane_state(PaneId::Settings));
         let setting = *setting;
         let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
@@ -839,7 +834,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         return;
     }
 
-    let setting = SettingOption::from_index(app.overlays.settings_pane().viewport().pos());
+    let setting = SettingOption::from_index(app.overlays.settings_pane.viewport.pos());
 
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
@@ -853,11 +848,11 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Up => {
             app.overlays.clear_inline_error();
-            app.overlays.settings_pane_mut().viewport_mut().up();
+            app.overlays.settings_pane.viewport.up();
         },
         KeyCode::Down => {
             app.overlays.clear_inline_error();
-            app.overlays.settings_pane_mut().viewport_mut().down();
+            app.overlays.settings_pane.viewport.down();
         },
         KeyCode::Left | KeyCode::Right => {
             app.overlays.clear_inline_error();
@@ -926,14 +921,14 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
 
 fn finish_settings_edit_with_error(app: &mut App, error: impl Into<String>) {
     app.overlays.end_settings_editing();
-    app.config.edit_buffer_mut().set(String::new(), 0);
+    app.config.edit_buffer.set(String::new(), 0);
     app.overlays.set_inline_error(error.into());
 }
 
 fn begin_settings_edit(app: &mut App, value: String) {
     app.overlays.begin_settings_editing();
     let cursor = value.len();
-    app.config.edit_buffer_mut().set(value, cursor);
+    app.config.edit_buffer.set(value, cursor);
 }
 
 fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
@@ -1015,8 +1010,8 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
 }
 
 fn apply_settings_edit(app: &mut App) {
-    let setting = SettingOption::from_index(app.overlays.settings_pane().viewport().pos());
-    let value = app.config.edit_buffer().buf().to_string();
+    let setting = SettingOption::from_index(app.overlays.settings_pane.viewport.pos());
+    let value = app.config.edit_buffer.buf().to_string();
     let result = setting.map_or(Ok(()), |setting| {
         apply_settings_edit_for(app, setting, &value)
     });
@@ -1025,7 +1020,7 @@ fn apply_settings_edit(app: &mut App) {
         return;
     }
     app.overlays.end_settings_editing();
-    app.config.edit_buffer_mut().set(String::new(), 0);
+    app.config.edit_buffer.set(String::new(), 0);
 }
 
 fn apply_settings_edit_for(
@@ -1172,43 +1167,43 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Esc => {
             app.overlays.end_settings_editing();
-            app.config.edit_buffer_mut().set(String::new(), 0);
+            app.config.edit_buffer.set(String::new(), 0);
         },
         KeyCode::Left => {
             let cursor = prev_char_boundary(
-                app.config.edit_buffer().buf(),
-                app.config.edit_buffer().cursor(),
+                app.config.edit_buffer.buf(),
+                app.config.edit_buffer.cursor(),
             );
-            let value = app.config.edit_buffer().buf().to_string();
-            app.config.edit_buffer_mut().set(value, cursor);
+            let value = app.config.edit_buffer.buf().to_string();
+            app.config.edit_buffer.set(value, cursor);
         },
         KeyCode::Right => {
             let cursor = next_char_boundary(
-                app.config.edit_buffer().buf(),
-                app.config.edit_buffer().cursor(),
+                app.config.edit_buffer.buf(),
+                app.config.edit_buffer.cursor(),
             );
-            let value = app.config.edit_buffer().buf().to_string();
-            app.config.edit_buffer_mut().set(value, cursor);
+            let value = app.config.edit_buffer.buf().to_string();
+            app.config.edit_buffer.set(value, cursor);
         },
         KeyCode::Home => {
-            let value = app.config.edit_buffer().buf().to_string();
-            app.config.edit_buffer_mut().set(value, 0);
+            let value = app.config.edit_buffer.buf().to_string();
+            app.config.edit_buffer.set(value, 0);
         },
         KeyCode::End => {
-            let value = app.config.edit_buffer().buf().to_string();
-            app.config.edit_buffer_mut().set(value.clone(), value.len());
+            let value = app.config.edit_buffer.buf().to_string();
+            app.config.edit_buffer.set(value.clone(), value.len());
         },
         KeyCode::Backspace => {
-            let (buf, cursor) = app.config.edit_buffer_mut().parts_mut();
+            let (buf, cursor) = app.config.edit_buffer.parts_mut();
             backspace_at_cursor(buf, cursor);
         },
         KeyCode::Delete => {
-            let cursor = app.config.edit_buffer().cursor();
-            let (buf, _) = app.config.edit_buffer_mut().parts_mut();
+            let cursor = app.config.edit_buffer.cursor();
+            let (buf, _) = app.config.edit_buffer.parts_mut();
             delete_at_cursor(buf, cursor);
         },
         KeyCode::Char(c) => {
-            let (buf, cursor) = app.config.edit_buffer_mut().parts_mut();
+            let (buf, cursor) = app.config.edit_buffer.parts_mut();
             insert_char_at_cursor(buf, cursor, c);
         },
         _ => {},
@@ -1238,10 +1233,7 @@ pub(super) fn focus_terminal_command(app: &mut App) {
     if let Some(index) =
         SettingOption::iter().position(|setting| setting == SettingOption::TerminalCommand)
     {
-        app.overlays
-            .settings_pane_mut()
-            .viewport_mut()
-            .set_pos(index);
+        app.overlays.settings_pane.viewport.set_pos(index);
     }
 }
 

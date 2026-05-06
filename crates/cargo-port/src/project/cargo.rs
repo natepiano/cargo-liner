@@ -13,7 +13,6 @@ use super::info::ProjectInfo;
 use super::non_rust::NonRustProject;
 use super::package::Package;
 use super::paths::AbsolutePath;
-use super::project_fields::ProjectFields;
 use super::rust_info::Cargo;
 use super::rust_info::RustInfo;
 use super::workspace::Workspace;
@@ -130,7 +129,7 @@ pub(crate) fn from_git_dir(project_dir: &Path) -> NonRustProject {
         .map(|n| n.to_string_lossy().to_string());
 
     let mut project = NonRustProject::new(AbsolutePath::from(project_dir), name);
-    project.info_mut().worktree_health = git::get_worktree_health(project_dir);
+    project.info.worktree_health = git::get_worktree_health(project_dir);
     project.worktree_status = git::get_worktree_status(project_dir);
     project
 }

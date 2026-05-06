@@ -14,7 +14,7 @@ fn discovery_shimmer_is_not_registered_before_scan_completes() {
 #[test]
 fn discovery_shimmer_registers_and_allows_multiple_concurrent_roots() {
     let mut app = make_app(&[]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     assert!(app.handle_project_discovered(make_project(Some("alpha"), "~/rust/alpha",)));
     assert!(app.handle_project_discovered(make_project(Some("beta"), "~/rust/beta",)));
@@ -41,7 +41,7 @@ fn expanded_workspace_members_use_the_parent_shimmer_owner() {
         vec![inline_group(vec![member.clone()])],
     );
     let mut app = make_app(&[]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     assert!(app.handle_project_discovered(workspace));
     app.project_list.set_cursor(0);
@@ -101,7 +101,7 @@ fn newly_discovered_member_keeps_its_own_shimmer_owner() {
     let workspace =
         make_workspace_with_members(Some("ws"), "~/rust/ws", vec![inline_group(vec![])]);
     let mut app = make_app(&[workspace]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     let member_path = test_path("~/rust/ws/crates/crate_a");
     assert!(
@@ -127,7 +127,7 @@ fn discovered_workspace_member_shimmers_parent_and_self_but_not_siblings() {
         )])],
     );
     let mut app = make_app(&[workspace]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     assert!(
         app.handle_project_discovered(RootItem::Rust(RustProject::Package(
@@ -203,7 +203,7 @@ fn discovered_linked_worktree_shimmers_parent_and_subtree_but_not_existing_sibli
     );
     let primary_item = RootItem::Rust(RustProject::Workspace(primary));
     let mut app = make_app(&[primary_item]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     assert!(app.handle_project_discovered(RootItem::Rust(RustProject::Workspace(linked))));
 
@@ -266,7 +266,7 @@ fn discovered_package_worktree_shimmers_parent_and_self_but_not_existing_sibling
         )],
     );
     let mut app = make_app(&[root]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     assert!(
         app.handle_project_discovered(RootItem::Rust(RustProject::Package(
@@ -328,7 +328,7 @@ fn refreshed_stale_package_worktree_keeps_shimmer_after_regroup() {
         )],
     );
     let mut app = make_app(&[root]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     assert!(
         app.handle_project_discovered(make_project(Some("cargo-port"), "~/rust/cargo-port-test",))
@@ -381,7 +381,7 @@ fn discovered_worktree_member_shimmers_parent_self_and_children_but_not_siblings
         )],
     );
     let mut app = make_app(&[root]);
-    app.scan.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.state.phase = ScanPhase::Complete;
 
     assert!(
         app.handle_project_discovered(RootItem::Rust(RustProject::Package(

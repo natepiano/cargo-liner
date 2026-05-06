@@ -41,7 +41,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
         HoverTarget::ToastCard(id) => {
             let active = app.toasts.active_now();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
-                app.toasts.viewport_mut().set_pos(index);
+                app.toasts.viewport.set_pos(index);
                 app.focus.set(PaneId::Toasts);
             }
             true
@@ -64,15 +64,15 @@ pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
     for id in HITTABLE_Z_ORDER {
         let pane: &dyn Hittable = match id {
             HittableId::Toasts => &app.toasts,
-            HittableId::Finder => app.overlays.finder_pane(),
-            HittableId::Settings => app.overlays.settings_pane(),
-            HittableId::Keymap => app.overlays.keymap_pane(),
-            HittableId::ProjectList => app.panes.project_list(),
-            HittableId::Package => app.panes.package(),
-            HittableId::Lang => app.panes.lang(),
-            HittableId::Cpu => app.panes.cpu(),
-            HittableId::Git => app.panes.git(),
-            HittableId::Targets => app.panes.targets(),
+            HittableId::Finder => &app.overlays.finder_pane,
+            HittableId::Settings => &app.overlays.settings_pane,
+            HittableId::Keymap => &app.overlays.keymap_pane,
+            HittableId::ProjectList => &app.panes.project_list,
+            HittableId::Package => &app.panes.package,
+            HittableId::Lang => &app.panes.lang,
+            HittableId::Cpu => &app.panes.cpu,
+            HittableId::Git => &app.panes.git,
+            HittableId::Targets => &app.panes.targets,
             HittableId::Lints => &app.lint,
             HittableId::CiRuns => &app.ci,
         };
@@ -99,19 +99,19 @@ pub(super) fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
 /// wrappers.
 pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> &mut Viewport {
     match id {
-        PaneId::Toasts => app.toasts.viewport_mut(),
-        PaneId::Cpu => app.panes.cpu_mut().viewport_mut(),
-        PaneId::Lang => app.panes.lang_mut().viewport_mut(),
-        PaneId::Lints => app.lint.viewport_mut(),
-        PaneId::CiRuns => app.ci.viewport_mut(),
-        PaneId::Package => app.panes.package_mut().viewport_mut(),
-        PaneId::Git => app.panes.git_mut().viewport_mut(),
-        PaneId::Keymap => app.overlays.keymap_pane_mut().viewport_mut(),
-        PaneId::Settings => app.overlays.settings_pane_mut().viewport_mut(),
-        PaneId::Finder => app.overlays.finder_pane_mut().viewport_mut(),
-        PaneId::Output => app.panes.output_mut().viewport_mut(),
-        PaneId::Targets => app.panes.targets_mut().viewport_mut(),
-        PaneId::ProjectList => app.panes.project_list_mut().viewport_mut(),
+        PaneId::Toasts => &mut app.toasts.viewport,
+        PaneId::Cpu => &mut app.panes.cpu.viewport,
+        PaneId::Lang => &mut app.panes.lang.viewport,
+        PaneId::Lints => &mut app.lint.viewport,
+        PaneId::CiRuns => &mut app.ci.viewport,
+        PaneId::Package => &mut app.panes.package.viewport,
+        PaneId::Git => &mut app.panes.git.viewport,
+        PaneId::Keymap => &mut app.overlays.keymap_pane.viewport,
+        PaneId::Settings => &mut app.overlays.settings_pane.viewport,
+        PaneId::Finder => &mut app.overlays.finder_pane.viewport,
+        PaneId::Output => &mut app.panes.output.viewport,
+        PaneId::Targets => &mut app.panes.targets.viewport,
+        PaneId::ProjectList => &mut app.panes.project_list.viewport,
     }
 }
 
@@ -126,29 +126,20 @@ pub(super) const fn apply_hovered_pane_row(app: &mut App) {
 }
 
 const fn clear_all_hover(app: &mut App) {
-    app.toasts.viewport_mut().set_hovered(None);
-    app.ci.viewport_mut().set_hovered(None);
-    app.lint.viewport_mut().set_hovered(None);
-    app.overlays
-        .keymap_pane_mut()
-        .viewport_mut()
-        .set_hovered(None);
-    app.overlays
-        .settings_pane_mut()
-        .viewport_mut()
-        .set_hovered(None);
-    app.overlays
-        .finder_pane_mut()
-        .viewport_mut()
-        .set_hovered(None);
+    app.toasts.viewport.set_hovered(None);
+    app.ci.viewport.set_hovered(None);
+    app.lint.viewport.set_hovered(None);
+    app.overlays.keymap_pane.viewport.set_hovered(None);
+    app.overlays.settings_pane.viewport.set_hovered(None);
+    app.overlays.finder_pane.viewport.set_hovered(None);
     let panes = &mut app.panes;
-    panes.package_mut().viewport_mut().set_hovered(None);
-    panes.lang_mut().viewport_mut().set_hovered(None);
-    panes.cpu_mut().viewport_mut().set_hovered(None);
-    panes.git_mut().viewport_mut().set_hovered(None);
-    panes.output_mut().viewport_mut().set_hovered(None);
-    panes.targets_mut().viewport_mut().set_hovered(None);
-    panes.project_list_mut().viewport_mut().set_hovered(None);
+    panes.package.viewport.set_hovered(None);
+    panes.lang.viewport.set_hovered(None);
+    panes.cpu.viewport.set_hovered(None);
+    panes.git.viewport.set_hovered(None);
+    panes.output.viewport.set_hovered(None);
+    panes.targets.viewport.set_hovered(None);
+    panes.project_list.viewport.set_hovered(None);
 }
 
 #[cfg(test)]
@@ -395,7 +386,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         let focus_state = app.focus.pane_state(PaneId::Lints);
         let is_focused = app.focus.is(PaneId::Lints);
-        let animation_elapsed = app.animation_elapsed();
+        let animation_elapsed = app.animation_started.elapsed();
         let selected_path = app
             .selected_project_path_for_render()
             .map(std::path::Path::to_path_buf);
@@ -423,7 +414,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         let focus_state = app.focus.pane_state(PaneId::CiRuns);
         let is_focused = app.focus.is(PaneId::CiRuns);
-        let animation_elapsed = app.animation_elapsed();
+        let animation_elapsed = app.animation_started.elapsed();
         let selected_path = app
             .selected_project_path_for_render()
             .map(std::path::Path::to_path_buf);
@@ -510,7 +501,7 @@ mod tests {
     }
 
     fn finder_result_point(app: &App, result_index: usize) -> (u16, u16) {
-        let area = app.overlays.finder_pane().viewport().content_area();
+        let area = app.overlays.finder_pane.viewport.content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -520,7 +511,7 @@ mod tests {
     }
 
     fn lint_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.lint.viewport().content_area();
+        let area = app.lint.viewport.content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -530,7 +521,7 @@ mod tests {
     }
 
     fn ci_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.ci.viewport().content_area();
+        let area = app.ci.viewport.content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -698,7 +689,7 @@ mod tests {
 
         let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
         let (index, col_widths) = finder::build_finder_index(&app.project_list);
-        let finder = app.finder_mut();
+        let finder = &mut app.project_list.finder;
         finder.index = index;
         finder.col_widths = col_widths;
         finder.results = vec![0, 1];
@@ -711,7 +702,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.overlays.finder_pane().viewport().pos(),
+            app.overlays.finder_pane.viewport.pos(),
             1,
             "clicking the second rendered finder result should select result index 1, not the header-offset visual row"
         );
@@ -730,7 +721,7 @@ mod tests {
             vec![inline_group(vec![make_member("core", &member)])],
         );
         let mut app = make_app(&[root]);
-        app.expanded_mut().insert(ExpandKey::Node(0));
+        app.project_list.expanded.insert(ExpandKey::Node(0));
         app.ensure_visible_rows_cached();
         app.project_list.move_down();
         let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
@@ -739,7 +730,7 @@ mod tests {
 
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.panes.git().viewport(), 0);
+        let (x, y) = pane_row_point(&app.panes.git.viewport, 0);
         assert_eq!(
             super::hovered_pane_row_at(&app, Position::new(x, y)),
             Some(HoveredPaneRow {
@@ -756,11 +747,11 @@ mod tests {
         app.overlays.open_settings();
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.overlays.settings_pane().viewport(), 5);
+        let (x, y) = pane_row_point(&app.overlays.settings_pane.viewport, 5);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.overlays.settings_pane().viewport().pos(),
+            app.overlays.settings_pane.viewport.pos(),
             SettingOption::CiRunCount as usize,
             "clicking a rendered settings option should select the logical setting, not the visual line index including spacer/header rows"
         );
@@ -774,14 +765,14 @@ mod tests {
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
-        let (x, y) = pane_row_point(app.overlays.settings_pane().viewport(), 5);
+        let (x, y) = pane_row_point(&app.overlays.settings_pane.viewport, 5);
         move_mouse(&mut app, x, y);
         render_ui(&mut app);
 
         assert_eq!(
             app.overlays
-                .settings_pane()
-                .viewport()
+                .settings_pane
+                .viewport
                 .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
             PaneSelectionState::Hovered,
         );
@@ -789,18 +780,18 @@ mod tests {
         press_key(&mut app, KeyCode::Down);
         render_ui(&mut app);
 
-        assert_eq!(app.overlays.settings_pane().viewport().pos(), 1);
+        assert_eq!(app.overlays.settings_pane.viewport.pos(), 1);
         assert_eq!(
             app.overlays
-                .settings_pane()
-                .viewport()
+                .settings_pane
+                .viewport
                 .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
             PaneSelectionState::Unselected,
         );
         assert_eq!(
             app.overlays
-                .settings_pane()
-                .viewport()
+                .settings_pane
+                .viewport
                 .selection_state(1, app.focus.pane_state(PaneId::Settings)),
             PaneSelectionState::Active,
         );
@@ -814,7 +805,7 @@ mod tests {
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
-        let (x, y) = pane_row_point(app.overlays.settings_pane().viewport(), 5);
+        let (x, y) = pane_row_point(&app.overlays.settings_pane.viewport, 5);
         move_mouse(&mut app, x, y);
         render_ui(&mut app);
         press_key(&mut app, KeyCode::Down);
@@ -822,8 +813,8 @@ mod tests {
 
         assert_eq!(
             app.overlays
-                .settings_pane()
-                .viewport()
+                .settings_pane
+                .viewport
                 .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
             PaneSelectionState::Unselected,
         );
@@ -833,8 +824,8 @@ mod tests {
 
         assert_eq!(
             app.overlays
-                .settings_pane()
-                .viewport()
+                .settings_pane
+                .viewport
                 .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
             PaneSelectionState::Hovered,
         );
@@ -848,16 +839,16 @@ mod tests {
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
-        let (x, y) = pane_row_point(app.overlays.settings_pane().viewport(), 5);
+        let (x, y) = pane_row_point(&app.overlays.settings_pane.viewport, 5);
         input::set_last_mouse_pos_for_test(Some((x, y)));
         focus_gained(&mut app);
         render_ui(&mut app);
 
-        assert_eq!(app.overlays.settings_pane().viewport().pos(), hovered_row);
+        assert_eq!(app.overlays.settings_pane.viewport.pos(), hovered_row);
         assert_eq!(
             app.overlays
-                .settings_pane()
-                .viewport()
+                .settings_pane
+                .viewport
                 .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
             PaneSelectionState::Active,
         );
@@ -880,7 +871,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.lint.viewport().pos(),
+            app.lint.viewport.pos(),
             1,
             "clicking the second rendered lint run should select run index 1, not the header-offset visual row"
         );
@@ -914,7 +905,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.ci.viewport().pos(),
+            app.ci.viewport.pos(),
             1,
             "clicking the second rendered CI run should select run index 1, not the header-offset visual row"
         );
@@ -930,7 +921,7 @@ mod tests {
             false,
             Some(primary.as_path()),
         )))]);
-        app.expanded_mut().insert(ExpandKey::Node(0));
+        app.project_list.expanded.insert(ExpandKey::Node(0));
         render_ui(&mut app);
 
         app.project_list
@@ -1005,7 +996,7 @@ mod tests {
             app.toasts
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
         let toast_len = app.toasts.active_now().len();
-        app.toasts.viewport_mut().set_len(toast_len);
+        app.toasts.viewport.set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_close_point(&app, toast_id);
@@ -1033,7 +1024,7 @@ mod tests {
             app.toasts
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
         let toast_len = app.toasts.active_now().len();
-        app.toasts.viewport_mut().set_len(toast_len);
+        app.toasts.viewport.set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_body_point(&app, toast_id);
@@ -1056,7 +1047,7 @@ mod tests {
 
         let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
         let (index, col_widths) = finder::build_finder_index(&app.project_list);
-        let finder = app.finder_mut();
+        let finder = &mut app.project_list.finder;
         finder.index = index;
         finder.col_widths = col_widths;
         finder.query = "a".to_string();
@@ -1069,7 +1060,7 @@ mod tests {
         let (x, y) = finder_result_point(&app, 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.overlays.finder_pane().viewport().pos(), 1);
+        assert_eq!(app.overlays.finder_pane.viewport.pos(), 1);
     }
 
     #[test]
@@ -1079,11 +1070,11 @@ mod tests {
         app.overlays.open_settings();
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.overlays.settings_pane().viewport(), 2);
+        let (x, y) = pane_row_point(&app.overlays.settings_pane.viewport, 2);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.overlays.settings_pane().viewport().pos(),
+            app.overlays.settings_pane.viewport.pos(),
             SettingOption::InvertScroll as usize
         );
     }
@@ -1097,11 +1088,11 @@ mod tests {
         let mut app = make_app(&[make_package("demo", &project_dir)]);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.panes.package().viewport(), 1);
+        let (x, y) = pane_row_point(&app.panes.package.viewport, 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focus.current(), PaneId::Package);
-        assert_eq!(app.panes.package().viewport().pos(), 1);
+        assert_eq!(app.panes.package.viewport.pos(), 1);
     }
 
     #[test]
@@ -1167,11 +1158,11 @@ mod tests {
             });
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.panes.targets().viewport(), 1);
+        let (x, y) = pane_row_point(&app.panes.targets.viewport, 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focus.current(), PaneId::Targets);
-        assert_eq!(app.panes.targets().viewport().pos(), 1);
+        assert_eq!(app.panes.targets.viewport.pos(), 1);
     }
 
     #[test]
@@ -1186,11 +1177,11 @@ mod tests {
         app.handle_checkout_info(&project_dir, checkout);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.panes.git().viewport(), 1);
+        let (x, y) = pane_row_point(&app.panes.git.viewport, 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focus.current(), PaneId::Git);
-        assert_eq!(app.panes.git().viewport().pos(), 1);
+        assert_eq!(app.panes.git.viewport.pos(), 1);
     }
 
     // ── Confirm popup renders resolved target dir (Step 2) ─────────

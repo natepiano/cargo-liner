@@ -67,7 +67,7 @@ impl App {
         let (title, body) = service_unavailable_message(service, kind);
         let id = self.toasts.push_persistent(title, body, Warning, None, 1);
         let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport_mut().set_len(toast_len);
+        self.toasts.viewport.set_len(toast_len);
         id
     }
     pub(super) fn spawn_service_retry(&self, service: ServiceKind) {

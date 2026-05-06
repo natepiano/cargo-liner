@@ -68,21 +68,21 @@ pub struct Lint {
     /// at startup; replaced by [`Self::set_runtime`] when lint
     /// config (`lint.enabled`, `lint.parallel`, `lint.cache_root`)
     /// changes. `None` when lint is disabled.
-    runtime:     Option<RuntimeHandle>,
+    runtime:         Option<RuntimeHandle>,
     /// Paths with a lint run currently in flight, keyed by the
     /// time the run was launched, paired with the single sticky
     /// "N lints running" toast slot. Synced each tick by
     /// `App::sync_running_lint_toast`.
-    running:     RunningTracker<AbsolutePath>,
+    running:         RunningTracker<AbsolutePath>,
     /// Bytes used by the on-disk lint-log cache (`~/.cache/cargo-port/lints/`).
     /// Refreshed by `App::refresh_lint_cache_usage_from_disk`,
     /// displayed in the Settings popup.
-    cache_usage: CacheUsage,
+    pub cache_usage: CacheUsage,
     /// Per-pane cursor for the Lints pane.
-    viewport:    Viewport,
+    pub viewport:    Viewport,
     /// Cached Lints table content built per-frame in
     /// `panes::build_lints_data`.
-    content:     Option<LintsData>,
+    content:         Option<LintsData>,
 }
 
 impl Lint {
@@ -100,10 +100,6 @@ impl Lint {
     }
 
     // ── viewport ────────────────────────────────────────────────
-
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
     // ── content ─────────────────────────────────────────────────
 
@@ -133,8 +129,6 @@ impl Lint {
     pub const fn running_mut(&mut self) -> &mut RunningTracker<AbsolutePath> { &mut self.running }
 
     // ── cache usage ─────────────────────────────────────────────
-
-    pub const fn cache_usage(&self) -> &CacheUsage { &self.cache_usage }
 
     pub const fn set_cache_usage(&mut self, usage: CacheUsage) { self.cache_usage = usage; }
 

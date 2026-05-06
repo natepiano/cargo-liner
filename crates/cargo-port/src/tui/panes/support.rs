@@ -234,11 +234,11 @@ struct ProjectCounts {
 }
 
 impl ProjectCounts {
-    fn add_package(&mut self, project: &Package) { self.add_cargo(project.cargo()); }
+    fn add_package(&mut self, project: &Package) { self.add_cargo(&project.cargo); }
 
     fn add_workspace(&mut self, ws: &Workspace) {
         self.workspaces += 1;
-        self.add_cargo(ws.cargo());
+        self.add_cargo(&ws.cargo);
     }
 
     fn add_cargo(&mut self, cargo: &Cargo) {
@@ -1300,7 +1300,7 @@ pub fn build_pane_data_for_member(app: &App, pkg: &Package) -> DetailPaneData {
 pub fn build_pane_data_for_vendored(app: &App, vendored: &VendoredPackage) -> DetailPaneData {
     let display_path = vendored.display_path().into_string();
     let abs_path = vendored.path();
-    let cargo = vendored.cargo();
+    let cargo = &vendored.cargo;
 
     let mut counts = ProjectCounts::default();
     counts.add_cargo(cargo);
@@ -1401,7 +1401,7 @@ fn build_pane_data_for_workspace(
     wt_item: Option<&RootItem>,
 ) -> DetailPaneData {
     let abs_path = ws.path();
-    let cargo = ws.cargo();
+    let cargo = &ws.cargo;
 
     let mut counts = ProjectCounts::default();
     counts.add_workspace(ws);
@@ -1438,7 +1438,7 @@ fn build_pane_data_for_package(
     wt_item: Option<&RootItem>,
 ) -> DetailPaneData {
     let abs_path = pkg.path();
-    let cargo = pkg.cargo();
+    let cargo = &pkg.cargo;
 
     let mut counts = ProjectCounts::default();
     counts.add_package(pkg);
@@ -1625,6 +1625,14 @@ fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
     }
 }
 
+fn resolve_worktrees(app: &App, wt_item: Option<&RootItem>) -> Vec<WorktreeInfo> {
+    wt_item.map_or_else(Vec::new, |item| {
+        app.panes
+            .git
+            .worktree_summary_or_compute(item.path().as_path(), || worktrees_from_item(app, item))
+    })
+}
+
 fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData {
     let PaneDataSource {
         abs_path,
@@ -1648,10 +1656,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let disk_ms = perf_log::ms(t_disk.elapsed().as_millis());
 
     let t_wt = std::time::Instant::now();
-    let worktrees = wt_item.map_or_else(Vec::new, |item| {
-        app.panes
-            .worktree_summary_or_compute(item.path().as_path(), || worktrees_from_item(app, item))
-    });
+    let worktrees = resolve_worktrees(app, wt_item);
     let worktrees_ms = perf_log::ms(t_wt.elapsed().as_millis());
 
     let types_str = cargo.map_or_else(String::new, |c| {
@@ -1794,7 +1799,7 @@ pub fn build_ci_data(app: &App) -> CiData {
     let runs = app.selected_ci_runs();
     let is_fetching = selected_path.is_some_and(|path| app.ci_is_fetching(path));
     let branch_filtered_empty = selected_path.is_some_and(|path| {
-        app.ci_toggle_available_for(path) && app.ci_display_mode_label_for(path) == "branch"
+        app.ci_toggle_available_for(path) && app.ci.display_mode_label_for(path) == "branch"
     }) && ci_info.is_some_and(|info| !info.runs.is_empty())
         && runs.is_empty();
     // "Do we have a GitHub-parseable remote?" is a per-repo question and
@@ -1840,7 +1845,7 @@ pub fn build_ci_data(app: &App) -> CiData {
         runs,
         mode_label: selected_path.and_then(|path| {
             app.ci_toggle_available_for(path)
-                .then(|| app.ci_display_mode_label_for(path).to_string())
+                .then(|| app.ci.display_mode_label_for(path).to_string())
         }),
         current_branch,
         empty_state,

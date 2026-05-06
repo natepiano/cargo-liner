@@ -37,8 +37,8 @@ use crate::tui::pane::Viewport;
 
 // ── Package ─────────────────────────────────────────────────────
 pub struct PackagePane {
-    viewport: Viewport,
-    content:  Option<super::PackageData>,
+    pub viewport: Viewport,
+    content:      Option<super::PackageData>,
 }
 
 impl PackagePane {
@@ -48,10 +48,6 @@ impl PackagePane {
             content:  None,
         }
     }
-
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
     pub const fn content(&self) -> Option<&super::PackageData> { self.content.as_ref() }
 
@@ -82,7 +78,7 @@ impl Hittable for PackagePane {
 
 // ── Lang ────────────────────────────────────────────────────────
 pub struct LangPane {
-    viewport: Viewport,
+    pub viewport: Viewport,
 }
 
 impl LangPane {
@@ -91,10 +87,6 @@ impl LangPane {
             viewport: Viewport::new(),
         }
     }
-
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 }
 
 impl Pane for LangPane {
@@ -119,15 +111,15 @@ impl Hittable for LangPane {
 
 // ── Cpu ─────────────────────────────────────────────────────────
 pub struct CpuPane {
-    viewport:  Viewport,
-    content:   Option<CpuUsage>,
-    poller:    CpuPoller,
+    pub viewport: Viewport,
+    content:      Option<CpuUsage>,
+    poller:       CpuPoller,
     /// Per-rendered-row `(Rect, logical_row)` recorded each frame
     /// so `Hittable::hit_test_at` can map `pos` back to the logical
     /// row. CPU rows are non-uniform (aggregate, per-core,
     /// breakdown, GPU) so a flat `viewport.pos_to_local_row` won't
     /// work.
-    row_rects: Vec<(Rect, usize)>,
+    row_rects:    Vec<(Rect, usize)>,
 }
 
 impl CpuPane {
@@ -158,10 +150,6 @@ impl CpuPane {
     }
 
     pub const fn content(&self) -> Option<&CpuUsage> { self.content.as_ref() }
-
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
     pub fn set_row_rects(&mut self, rects: Vec<(Rect, usize)>) { self.row_rects = rects; }
 
@@ -194,7 +182,7 @@ impl Hittable for CpuPane {
 
 // ── Git ─────────────────────────────────────────────────────────
 pub struct GitPane {
-    viewport:               Viewport,
+    pub viewport:           Viewport,
     content:                Option<super::GitData>,
     worktree_summary_cache: RefCell<HashMap<AbsolutePath, Vec<super::WorktreeInfo>>>,
     /// Per-row `inner_y` positions recorded each frame, indexed by
@@ -220,10 +208,6 @@ impl GitPane {
             row_layout:             GitRowLayout::default(),
         }
     }
-
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
     pub const fn content(&self) -> Option<&super::GitData> { self.content.as_ref() }
 
@@ -305,8 +289,8 @@ impl Hittable for GitPane {
 
 // ── Targets ─────────────────────────────────────────────────────
 pub struct TargetsPane {
-    viewport: Viewport,
-    content:  Option<super::TargetsData>,
+    pub viewport: Viewport,
+    content:      Option<super::TargetsData>,
 }
 
 impl TargetsPane {
@@ -316,10 +300,6 @@ impl TargetsPane {
             content:  None,
         }
     }
-
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
     pub const fn content(&self) -> Option<&super::TargetsData> { self.content.as_ref() }
 
@@ -351,7 +331,7 @@ impl Pane for TargetsPane {
 
 // ── ProjectList ─────────────────────────────────────────────────
 pub struct ProjectListPane {
-    viewport:        Viewport,
+    pub viewport:    Viewport,
     /// Per-row dismiss `[x]` rects recorded each frame, alongside
     /// the resolved `DismissTarget`. The action region wins over
     /// the row body in `Hittable::hit_test_at`.
@@ -365,10 +345,6 @@ impl ProjectListPane {
             dismiss_actions: Vec::new(),
         }
     }
-
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
     pub fn set_dismiss_actions(&mut self, actions: Vec<(Rect, DismissTarget)>) {
         self.dismiss_actions = actions;
@@ -398,7 +374,7 @@ impl Hittable for ProjectListPane {
 
 // ── Output ──────────────────────────────────────────────────────
 pub struct OutputPane {
-    viewport: Viewport,
+    pub viewport: Viewport,
 }
 
 impl OutputPane {
@@ -407,8 +383,6 @@ impl OutputPane {
             viewport: Viewport::new(),
         }
     }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 }
 
 // `OutputPane` is not `Hittable` — the output panel is read-only,

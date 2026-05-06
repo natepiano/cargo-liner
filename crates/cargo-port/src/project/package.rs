@@ -54,8 +54,6 @@ impl ProjectFields for Package {
 
     fn info(&self) -> &ProjectInfo { &self.rust.info }
 
-    fn info_mut(&mut self) -> &mut ProjectInfo { &mut self.rust.info }
-
     fn display_path(&self) -> DisplayPath { self.path.display_path() }
 
     fn root_directory_name(&self) -> RootDirectoryName {

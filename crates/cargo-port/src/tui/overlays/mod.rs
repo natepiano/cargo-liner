@@ -58,15 +58,15 @@ pub(crate) enum ExitMode {
 
 #[derive(Default)]
 pub(crate) struct Overlays {
-    finder:        FinderMode,
-    settings:      SettingsMode,
-    keymap:        KeymapMode,
-    exit:          ExitMode,
-    inline_error:  Option<String>,
-    status_flash:  Option<(String, Instant)>,
-    keymap_pane:   KeymapPane,
-    settings_pane: SettingsPane,
-    finder_pane:   FinderPane,
+    finder:            FinderMode,
+    settings:          SettingsMode,
+    keymap:            KeymapMode,
+    exit:              ExitMode,
+    inline_error:      Option<String>,
+    status_flash:      Option<(String, Instant)>,
+    pub keymap_pane:   KeymapPane,
+    pub settings_pane: SettingsPane,
+    pub finder_pane:   FinderPane,
 }
 
 impl Overlays {
@@ -169,18 +169,4 @@ impl Overlays {
     // Each accessor returns the small viewport-holding struct for one
     // overlay pane. The three structs live in `render_state.rs`; their
     // `Pane` / `Hittable` impls live in `pane_impls.rs`.
-
-    pub(crate) const fn keymap_pane(&self) -> &KeymapPane { &self.keymap_pane }
-
-    pub(crate) const fn keymap_pane_mut(&mut self) -> &mut KeymapPane { &mut self.keymap_pane }
-
-    pub(crate) const fn settings_pane(&self) -> &SettingsPane { &self.settings_pane }
-
-    pub(crate) const fn settings_pane_mut(&mut self) -> &mut SettingsPane {
-        &mut self.settings_pane
-    }
-
-    pub(crate) const fn finder_pane(&self) -> &FinderPane { &self.finder_pane }
-
-    pub(crate) const fn finder_pane_mut(&mut self) -> &mut FinderPane { &mut self.finder_pane }
 }

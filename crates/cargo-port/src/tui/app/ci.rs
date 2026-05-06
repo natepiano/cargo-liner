@@ -30,7 +30,7 @@ impl App {
                 exhausted,
             });
         } else {
-            self.ci.fetch_tracker_mut().complete(path);
+            self.ci.fetch_tracker.complete(path);
         }
     }
 
@@ -120,12 +120,12 @@ impl App {
             },
         };
 
-        self.ci.viewport_mut().set_pos(merged.len());
+        self.ci.viewport.set_pos(merged.len());
         if let Some(repo) = self.project_list.owner_repo_for_path_inner(&abs) {
-            let meta = scan::load_cached_repo_data(self.net.github().fetch_cache(), &repo)
+            let meta = scan::load_cached_repo_data(&self.net.github.fetch_cache, &repo)
                 .and_then(|cached| cached.meta);
             scan::store_cached_repo_data(
-                self.net.github().fetch_cache(),
+                &self.net.github.fetch_cache,
                 &repo,
                 CachedRepoData {
                     runs: merged.clone(),
@@ -134,7 +134,7 @@ impl App {
                 },
             );
         }
-        self.ci.fetch_tracker_mut().complete(abs.as_path());
+        self.ci.fetch_tracker.complete(abs.as_path());
         if let Some(entry) = self.project_list.entry_containing_mut(abs.as_path()) {
             let repo = entry.git_repo.get_or_insert_with(Default::default);
             repo.ci_data = ProjectCiData::Loaded(ProjectCiInfo {
@@ -160,7 +160,7 @@ impl App {
             CiRunDisplayMode::All => CiRunDisplayMode::BranchOnly,
         };
         self.ci.set_display_mode(AbsolutePath::from(path), new_mode);
-        self.ci.viewport_mut().home();
+        self.ci.viewport.home();
         self.scan.bump_generation();
     }
 }

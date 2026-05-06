@@ -19,7 +19,6 @@ pub(crate) trait ProjectFields {
     fn disk_usage_bytes(&self) -> Option<u64>;
     fn git_info(&self) -> Option<&CheckoutInfo>;
     fn info(&self) -> &ProjectInfo;
-    fn info_mut(&mut self) -> &mut ProjectInfo;
     fn display_path(&self) -> DisplayPath;
     fn root_directory_name(&self) -> RootDirectoryName;
 

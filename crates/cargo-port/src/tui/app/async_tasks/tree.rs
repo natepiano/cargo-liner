@@ -16,7 +16,7 @@ impl App {
             .project_list
             .selected_project_path()
             .map(AbsolutePath::from)
-            .or_else(|| self.project_list.paths_mut().last_selected.clone());
+            .or_else(|| self.project_list.paths.last_selected.clone());
         let should_focus_project_list = false;
         self.mutate_tree().replace_all(projects);
         self.prune_inactive_project_state();
@@ -46,20 +46,20 @@ impl App {
     pub fn rescan(&mut self) {
         self.project_list.clear();
         // disk_usage lives on project items — cleared with projects above
-        self.ci.fetch_tracker_mut().clear();
+        self.ci.fetch_tracker.clear();
         self.ci.clear_display_modes();
         self.clear_all_lint_state();
         self.lint
             .set_cache_usage(crate::lint::CacheUsage::default());
         self.net.clear_for_tree_change();
         self.scan.discovery_shimmers_mut().clear();
-        self.scan.scan_state_mut().phase = ScanPhase::Running;
-        self.scan.scan_state_mut().started_at = Instant::now();
-        self.scan.scan_state_mut().run_count += 1;
+        self.scan.state.phase = ScanPhase::Running;
+        self.scan.state.started_at = Instant::now();
+        self.scan.state.run_count += 1;
         self.startup.reset();
         tracing::info!(
             kind = "rescan",
-            run = self.scan.scan_state().run_count,
+            run = self.scan.state.run_count,
             "scan_start"
         );
         self.scan.set_priority_fetch_path(None);
@@ -67,14 +67,11 @@ impl App {
         self.overlays.close_settings();
         self.overlays.close_finder();
         self.reset_project_panes();
-        self.project_list.paths_mut().selected_project = None;
+        self.project_list.paths.selected_project = None;
         self.inflight.clear_pending_ci_fetch();
-        self.project_list.expanded_mut().clear();
+        self.project_list.expanded.clear();
         self.project_list.set_cursor(0);
-        self.panes
-            .project_list_mut()
-            .viewport_mut()
-            .set_scroll_offset(0);
+        self.panes.project_list.viewport.set_scroll_offset(0);
         self.scan.bump_generation();
         let scan_dirs = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
         let (tx, rx) = scan::spawn_streaming_scan(

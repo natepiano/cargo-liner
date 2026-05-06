@@ -28,19 +28,9 @@ pub(crate) struct RustInfo {
 }
 
 impl RustInfo {
-    pub(crate) const fn cargo(&self) -> &Cargo { &self.cargo }
-
     pub(crate) fn vendored(&self) -> &[VendoredPackage] { &self.vendored }
 
     pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<VendoredPackage> { &mut self.vendored }
-
-    pub(crate) const fn info(&self) -> &ProjectInfo { &self.info }
-
-    pub(crate) const fn info_mut(&mut self) -> &mut ProjectInfo { &mut self.info }
-
-    pub(crate) const fn lint_runs(&self) -> &LintRuns { &self.lint_runs }
-
-    pub(crate) const fn lint_runs_mut(&mut self) -> &mut LintRuns { &mut self.lint_runs }
 
     pub(crate) fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
 

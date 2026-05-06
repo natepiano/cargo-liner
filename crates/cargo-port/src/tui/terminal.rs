@@ -365,9 +365,7 @@ fn spawn_pending_background_tasks(app: &mut App) {
 
     if let Some(fetch) = app.inflight.take_pending_ci_fetch() {
         let abs_path = Path::new(&fetch.project_path);
-        app.ci
-            .fetch_tracker_mut()
-            .start(AbsolutePath::from(abs_path));
+        app.ci.fetch_tracker.start(AbsolutePath::from(abs_path));
         app.scan.bump_generation();
         spawn_ci_fetch(app, &fetch);
     }

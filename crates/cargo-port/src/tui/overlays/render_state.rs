@@ -13,14 +13,10 @@
 use crate::tui::pane::Viewport;
 
 pub struct KeymapPane {
-    pub(super) viewport: Viewport,
+    pub viewport: Viewport,
 }
 
-impl KeymapPane {
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
-}
+impl KeymapPane {}
 
 impl Default for KeymapPane {
     fn default() -> Self {
@@ -31,7 +27,7 @@ impl Default for KeymapPane {
 }
 
 pub struct SettingsPane {
-    pub(super) viewport:     Viewport,
+    pub viewport:            Viewport,
     /// Per-rendered-line mapping from line index (relative to the
     /// settings popup's content area) to the underlying setting row
     /// index. Spacer / header lines are `None`. Recorded by
@@ -42,10 +38,6 @@ pub struct SettingsPane {
 }
 
 impl SettingsPane {
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
-
     pub fn set_line_targets(&mut self, targets: Vec<Option<usize>>) { self.line_targets = targets; }
 }
 
@@ -59,14 +51,10 @@ impl Default for SettingsPane {
 }
 
 pub struct FinderPane {
-    pub(super) viewport: Viewport,
+    pub viewport: Viewport,
 }
 
-impl FinderPane {
-    pub const fn viewport(&self) -> &Viewport { &self.viewport }
-
-    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
-}
+impl FinderPane {}
 
 impl Default for FinderPane {
     fn default() -> Self {

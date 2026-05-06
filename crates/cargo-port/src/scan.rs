@@ -634,7 +634,7 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
                         name:            nested_ws.name().map(str::to_string),
                         worktree_status: nested_ws.worktree_status().clone(),
                         rust:            RustInfo {
-                            cargo: nested_ws.cargo().clone(),
+                            cargo: nested_ws.cargo.clone(),
                             ..RustInfo::default()
                         },
                     })
@@ -971,7 +971,7 @@ fn extract_vendored_new(items: &mut Vec<RootItem>) {
                 path: ws.path().clone(),
                 name: ws.name().map(String::from),
                 worktree_status: ws.worktree_status().clone(),
-                cargo: ws.cargo().clone(),
+                cargo: ws.cargo.clone(),
                 ..VendoredPackage::default()
             },
             RootItem::NonRust(nr) => VendoredPackage {
