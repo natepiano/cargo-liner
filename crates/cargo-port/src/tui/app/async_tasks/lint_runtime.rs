@@ -20,8 +20,8 @@ impl App {
         let new_watcher = watcher::spawn_watcher(
             &watch_roots,
             self.background.bg_sender(),
-            self.config().ci_run_count(),
-            self.config().include_non_rust(),
+            self.config.ci_run_count(),
+            self.config.include_non_rust(),
             self.net.http_client(),
             self.lint.runtime_clone(),
             self.scan.metadata_store_handle(),

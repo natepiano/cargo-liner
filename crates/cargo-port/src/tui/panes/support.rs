@@ -1134,7 +1134,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .and_then(|info| info.ahead_behind_local)
         .map(format_ahead_behind);
     let local_main_branch = repo_info.and_then(|repo| repo.local_main_branch.clone());
-    let main_branch_label = app.current_config().tui.main_branch.clone();
+    let main_branch_label = app.config.current().tui.main_branch.clone();
     let github = git_repo.and_then(|repo| repo.github_info.as_ref());
     let stars = github.map(|g| g.stars);
     let description = github.and_then(|g| g.description.clone());
@@ -1147,7 +1147,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let last_fetched = repo_info
         .and_then(|repo| repo.last_fetched.as_deref())
         .map(format_timestamp);
-    let default_host = app.current_config().tui.default_remote_host_url.clone();
+    let default_host = app.config.current().tui.default_remote_host_url.clone();
     let remotes = repo_info.map_or_else(Vec::new, |repo| build_remote_rows(repo, &default_host));
     let rate_limit = app.rate_limit();
     GitDetailFields {

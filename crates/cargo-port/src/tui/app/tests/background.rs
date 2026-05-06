@@ -110,15 +110,15 @@ fn external_config_reload_applies_valid_changes() {
     )
     .unwrap_or_else(|_| std::process::abort());
 
-    app.config_mut().force_reload_from(path);
+    app.config.force_reload_from(path);
     app.maybe_reload_config_from_disk();
 
-    assert_eq!(app.config().editor(), "helix");
-    assert_eq!(app.config().ci_run_count(), 9);
-    assert_eq!(app.current_config().cpu.poll_ms, 1500);
-    assert_eq!(app.config().invert_scroll(), ScrollDirection::Normal);
-    assert_eq!(app.current_config().tui.editor, "helix");
-    assert_eq!(app.current_config().tui.ci_run_count, 9);
+    assert_eq!(app.config.editor(), "helix");
+    assert_eq!(app.config.ci_run_count(), 9);
+    assert_eq!(app.config.current().cpu.poll_ms, 1500);
+    assert_eq!(app.config.invert_scroll(), ScrollDirection::Normal);
+    assert_eq!(app.config.current().tui.editor, "helix");
+    assert_eq!(app.config.current().tui.ci_run_count, 9);
 }
 
 #[test]
@@ -135,15 +135,15 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
     )
     .unwrap_or_else(|_| std::process::abort());
 
-    app.config_mut().force_reload_from(path.clone());
+    app.config.force_reload_from(path.clone());
     app.maybe_reload_config_from_disk();
 
     std::fs::write(&path, "[tui\neditor = \"vim\"\n").unwrap_or_else(|_| std::process::abort());
-    app.config_mut().force_reload_from(path);
+    app.config.force_reload_from(path);
     app.maybe_reload_config_from_disk();
 
-    assert_eq!(app.config().editor(), "zed");
-    assert_eq!(app.current_config().tui.editor, "zed");
+    assert_eq!(app.config.editor(), "zed");
+    assert_eq!(app.config.current().tui.editor, "zed");
     assert!(matches!(
         app.overlays().status_flash(),
         Some((msg, _)) if msg.contains("Config reload failed")
@@ -199,7 +199,7 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
     let mut app = make_app(&[rust_project]);
     app.scan_state_mut().phase = ScanPhase::Complete;
 
-    let mut cfg = app.current_config().clone();
+    let mut cfg = app.config.current().clone();
     cfg.tui.include_non_rust = NonRustInclusion::Include;
     app.apply_config(&cfg);
 

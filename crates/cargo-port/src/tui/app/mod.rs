@@ -203,11 +203,11 @@ pub(super) struct App {
     /// `config_last_seen`, plus the in-app settings editor's
     /// `SettingsEditBuffer`. Composes
     /// `WatchedFile<CargoPortConfig>`.
-    config:            Config,
+    pub(super) config: Config,
     /// Keymap subsystem. Owns `current_keymap`, `keymap_path`,
     /// `keymap_last_seen`, `keymap_diagnostics_id`. Composes
     /// `WatchedFile<ResolvedKeymap>`.
-    keymap:            Keymap,
+    pub(super) keymap: Keymap,
     /// The central per-project data store. Lint runs, CI info, git
     /// info, language stats, package/workspace fields, and disk usage
     /// all live inside the tree. Every subsystem that produces
@@ -241,7 +241,7 @@ pub(super) struct App {
     /// and the row-hitbox map for click/hover dispatch. Lives on
     /// App-shell because it's coordination state, not pane state —
     /// it describes what rect each pane occupies.
-    layout_cache:      LayoutCache,
+    pub(super) layout_cache: LayoutCache,
 }
 
 impl App {
@@ -309,7 +309,7 @@ impl App {
     /// Declared in `mod.rs` (not `lint.rs`) so `pub(super)` reaches
     /// `tui` and satisfies callers in `tui/panes/project_list.rs`.
     pub(super) fn lint_cell(&self, status: &LintStatus) -> LintCell {
-        if !self.config().lint_enabled() {
+        if !self.config.lint_enabled() {
             return LintCell::from_parts(
                 crate::constants::LINT_NO_LOG,
                 ratatui::style::Style::default(),
@@ -324,31 +324,9 @@ impl App {
         LintCell::from_parts(icon, style)
     }
 
-    pub(super) const fn config(&self) -> &Config { &self.config }
-
-    pub(super) const fn current_config(&self) -> &CargoPortConfig { self.config.current() }
-
-    /// Test-only mutable access to the active config. Production
-    /// paths route through [`Self::apply_config`] so derived state
-    /// (panes, selection, scan-state fields) stays in sync.
-    #[cfg(test)]
-    pub(super) const fn current_config_mut(&mut self) -> &mut CargoPortConfig {
-        self.config.current_mut()
-    }
-
-    /// Test-only — production paths reach Config sub-fields via
-    /// the top-level App accessors (`current_config`, `config_path`,
-    /// `settings_edit_*`).
-    #[cfg(test)]
-    pub(super) const fn config_mut(&mut self) -> &mut Config { &mut self.config }
-
     pub(super) fn resolved_dirs(&self) -> Vec<AbsolutePath> {
         scan::resolve_include_dirs(&self.config.current().tui.include_dirs)
     }
-
-    pub(super) const fn keymap(&self) -> &Keymap { &self.keymap }
-
-    pub(super) const fn keymap_mut(&mut self) -> &mut Keymap { &mut self.keymap }
 
     pub(super) const fn toasts(&self) -> &ToastManager { &self.toasts }
 
@@ -581,12 +559,12 @@ impl App {
     pub(super) fn animation_elapsed(&self) -> Duration { self.animation_started.elapsed() }
 
     pub(super) fn register_discovery_shimmer(&mut self, path: &Path) {
-        if !self.scan.is_complete() || !self.config().discovery_shimmer_enabled() {
+        if !self.scan.is_complete() || !self.config.discovery_shimmer_enabled() {
             return;
         }
         let shimmer = types::DiscoveryShimmer::new(
             Instant::now(),
-            self.config().discovery_shimmer_duration(),
+            self.config.discovery_shimmer_duration(),
         );
         self.scan
             .discovery_shimmers_mut()
@@ -600,7 +578,7 @@ impl App {
         git_status: Option<GitStatus>,
         row_kind: DiscoveryRowKind,
     ) -> Option<Vec<StyledSegment>> {
-        if !self.config().discovery_shimmer_enabled() {
+        if !self.config.discovery_shimmer_enabled() {
             return None;
         }
         let now = Instant::now();
@@ -721,10 +699,6 @@ impl App {
             }
         }
     }
-
-    pub(super) const fn layout_cache(&self) -> &LayoutCache { &self.layout_cache }
-
-    pub(super) const fn layout_cache_mut(&mut self) -> &mut LayoutCache { &mut self.layout_cache }
 
     pub(super) const fn pane_data(&self) -> &PaneDataStore { self.panes.pane_data() }
 
@@ -938,18 +912,6 @@ impl App {
 
     pub(super) const fn confirm(&self) -> Option<&ConfirmAction> { self.confirm.as_ref() }
 
-    pub(super) fn settings_edit_buf(&self) -> &str { self.config.edit_buffer().buf() }
-
-    pub(super) const fn settings_edit_cursor(&self) -> usize { self.config.edit_buffer().cursor() }
-
-    pub(super) const fn settings_edit_parts_mut(&mut self) -> (&mut String, &mut usize) {
-        self.config.edit_buffer_mut().parts_mut()
-    }
-
-    pub(super) fn set_settings_edit_state(&mut self, value: String, cursor: usize) {
-        self.config.edit_buffer_mut().set(value, cursor);
-    }
-
     pub(super) const fn overlays(&self) -> &Overlays { &self.overlays }
 
     pub(super) const fn overlays_mut(&mut self) -> &mut Overlays { &mut self.overlays }
@@ -1026,8 +988,6 @@ impl App {
             include_non_rust,
         }
     }
-
-    pub(super) fn config_path(&self) -> Option<&Path> { self.config.path() }
 
     pub(super) const fn take_confirm(&mut self) -> Option<ConfirmAction> { self.confirm.take() }
 

@@ -147,7 +147,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(block, area);
     if inner.height == 0 {
         clear_project_list_surface(app);
-        app.layout_cache_mut().project_list_body = Rect::ZERO;
+        app.layout_cache.project_list_body = Rect::ZERO;
         return;
     }
 
@@ -164,7 +164,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     if content_area.height == 0 {
         clear_project_list_surface(app);
-        app.layout_cache_mut().project_list_body = Rect::ZERO;
+        app.layout_cache.project_list_body = Rect::ZERO;
         return;
     }
 
@@ -204,7 +204,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut list_state = ListState::default().with_selected(Some(app.projects().cursor()));
     *list_state.offset_mut() = app.panes().project_list().viewport().scroll_offset();
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
-    app.layout_cache_mut().project_list_body = list_area;
+    app.layout_cache.project_list_body = list_area;
     app.panes_mut()
         .project_list_mut()
         .viewport_mut()
@@ -991,7 +991,7 @@ pub fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<ListItem<
     let child_sorted = app.cached_child_sorted();
     let root_labels = app
         .projects()
-        .resolved_root_labels(app.config().include_non_rust().includes_non_rust());
+        .resolved_root_labels(app.config.include_non_rust().includes_non_rust());
     let focus = app.focus().pane_state(PaneId::ProjectList);
     let pane = app.panes().project_list().viewport();
     let cursor = app.projects().cursor();

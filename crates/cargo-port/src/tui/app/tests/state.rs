@@ -1263,7 +1263,7 @@ fn lint_rollups_distinguish_root_from_primary_worktree() {
     );
 
     let mut app = make_app(&[make_project(None, "~/ws")]);
-    app.current_config_mut().lint.enabled = true;
+    app.config.current_mut().lint.enabled = true;
     apply_items(&mut app, &[root]);
     app.projects_mut()
         .lint_at_path_mut(&test_path("~/ws"))
@@ -1299,7 +1299,7 @@ fn lint_rollup_prefers_running_root_over_member_history() {
     );
 
     let mut app = make_app(&[make_workspace_project(None, "~/ws")]);
-    app.current_config_mut().lint.enabled = true;
+    app.config.current_mut().lint.enabled = true;
     apply_items(&mut app, &[root]);
     app.projects_mut()
         .lint_at_path_mut(&test_path("~/ws"))
@@ -1318,7 +1318,7 @@ fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
     );
 
     let mut app = make_app(&[make_project(None, "~/ws")]);
-    app.current_config_mut().lint.enabled = true;
+    app.config.current_mut().lint.enabled = true;
     apply_items(&mut app, &[root]);
     app.projects_mut()
         .lint_at_path_mut(&test_path("~/ws"))
@@ -2240,7 +2240,7 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     }
     assert_eq!(app.projects().fit_widths().generation, 0);
 
-    let cfg = app.current_config().clone();
+    let cfg = app.config.current().clone();
     app.apply_lint_config_change(&cfg);
 
     // Inflight: running-lint paths cleared, lint runtime present

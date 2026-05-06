@@ -119,7 +119,7 @@ pub(super) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 
 pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     sync_hovered_pane_row(app);
-    *app.layout_cache_mut() = LayoutCache::default();
+    app.layout_cache = LayoutCache::default();
     app.prune_toasts();
 
     let outer_layout = Layout::default()
@@ -145,7 +145,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     for resolved in tiled.panes() {
         render_tiled_pane(frame, app, resolved.pane, resolved.area);
     }
-    app.layout_cache_mut().tiled = tiled;
+    app.layout_cache.tiled = tiled;
 
     render_status_bar(frame, app, outer_layout[1]);
     let toast_result = toasts::render_toasts(
@@ -554,8 +554,8 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         enter_action,
         clean_enabled,
         clear_lint_action,
-        app.keymap().current(),
-        app.config().terminal_command_configured(),
+        app.keymap.current(),
+        app.config.terminal_command_configured(),
         app.selected_project_is_deleted(),
     );
 

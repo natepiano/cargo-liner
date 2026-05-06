@@ -14,7 +14,7 @@ should have done in its early phases.
 
 ## Goal
 
-Drop App's method count from **308 → 161** (per team-agent
+Drop App's method count from **308 → ~156** (per team-agent
 classification of all 308 methods + subagent review
 corrections + threading `include_non_rust` through the
 visibility-cache helpers + relocating Group W static helpers
@@ -139,14 +139,16 @@ reading each body in source. Final counts:
 | W — wrapping logic / static helpers / App-local | 27 | — | keep on App |
 | **Total** | **308** | | |
 
-**Final App method count target: 161.** Math: phase-by-phase
-sum from the summary table: 2 + 12 + 20 + 25 + 2 + 20 + 26 +
-17 + 23 = **147 removed** across Phases 1, 3–9, 11. **308 − 147 =
-161.** 2 and 10 don't reduce App's count directly; they
-prep 2 for 8/11 and clean trivial accessors crate-wide.
+**Final App method count target: ~156.** Math: phase-by-phase sum from
+the summary table: 2 + 13 + 20 + 9 + 3 + 2 + 10 + 2 + 2 + 17 + 27 + 18 + 5
++ 23 = **153 removed** across Phases 1, 3–13 (App-side reductions) plus
+Phase 14 (5 App-local accessors) and Phase 15 (23 static-helper relocations).
+**308 − 153 ≈ 156.** Phases 2 and 14's crate-wide pass don't reduce App's
+count directly; Phase 2 preps for 11/12 and Phase 14 cleans trivial
+accessors crate-wide.
 
-**Where the reduction concentrates.** The 157 removals:
-- **93** trivial accessors / pass-throughs deleted (T+P).
+**Where the reduction concentrates.** The ~153 removals:
+- **~88** trivial accessors / pass-throughs deleted (T+P) across Phases 3–9.
 - **64** single-subsystem orchestrators relocated.
 
 S relocation destinations:
@@ -171,7 +173,7 @@ move into the merged ProjectList. Methods like `path_for_row`,
 project tree + selection state, which after Phase 2 are the same
 struct.
 
-**The remaining 161 are real cross-subsystem work.** Composers
+**The remaining ~156 are real cross-subsystem work.** Composers
 like `apply_config`, `rescan`, `handle_bg_msg`, the
 `maybe_complete_startup_*` family, `prune_toasts`, the toast
 helpers (`show_timed_toast`, `start_task_toast`,
@@ -232,7 +234,7 @@ not project data.
 
 **What worked:**
 - All 4 listed steps applied as written. `App::projects` field added; `Scan::projects` field, `Scan::projects()`, `Scan::projects_mut()`, and the `projects` parameter on `Scan::new()` deleted; `TreeMutation` now borrows `&mut ProjectList + &mut Panes + &mut Selection`.
-- `App::projects()` / `App::projects_mut()` accessors retained as one-line shims (`&self.projects` / `&mut self.projects`) so non-`scan` callers were untouched. The headline-count drop for those is Phase 6.
+- `App::projects()` / `App::projects_mut()` accessors retained as one-line shims (`&self.projects` / `&mut self.projects`) so non-`scan` callers were untouched. The headline-count drop for those is Phase 10.
 - 599 tests pass; clippy clean.
 
 **What deviated from the plan:**
@@ -245,7 +247,7 @@ not project data.
 
 **Implications for remaining phases:**
 - Phase 2 (Selection → ProjectList merge) inherits the new `App::projects` field directly; the rename to `project_list` is now a single-field rename instead of a field-plus-restructure.
-- Phase 6 (delete `App::projects()` / `App::projects_mut()`) caller count was estimated at ~304; live counts post-Phase-1 are 250 + 25 = ~275. The render-context rename plus the wider-than-planned async_tasks sweep dropped roughly 30 call sites. Phase 6 numbers updated.
+- Phase 10 (delete `App::projects()` / `App::projects_mut()`) caller count was estimated at ~304; live counts post-Phase-1 are 250 + 25 = ~275. The render-context rename plus the wider-than-planned async_tasks sweep dropped roughly 30 call sites. Phase 10 numbers updated.
 - The `&Scan` → `&ProjectList` rename in render contexts revealed that the only render consumer of `Scan` (lang.rs) was actually a project-list consumer. No remaining render-path code reads from `Scan` directly. This means future phases that touch `Scan` accessors don't need to reach into the render plumbing.
 
 #### Phase 1 Review
@@ -253,10 +255,10 @@ not project data.
 - Phase 2 step 4 — drop the `&Selection` slot from `App::split_panes_for_render`'s return tuple at the same time `Selection` is deleted (already bound `_selection` and unused).
 - Phase 2 step 5 — rename now also covers `PaneRenderCtx::projects`, `DispatchArgs::projects`, and locals named `projects` in `dispatch_via_trait` / `render_lints_pane` / `render_ci_pane` (introduced by Phase 1's render-context rename).
 - Phase 2 borrow-checker note — reworded to reflect that `TreeMutation` already borrows `&mut ProjectList + &mut Panes + &mut Selection` post-Phase-1; Phase 2's actual change is dropping the `&mut Selection` slot.
-- Phase 5.4 (Scan T/P delete) — caller estimate trimmed to ~40–50 with explicit note that no `tui/render.rs` or `tui/panes/*` touches are needed.
-- Phase 6 — caller-count updated from ~304 to ~275 (live: 250 + 25); also added explicit "depends on Phase 2 step 5" sequencing note to guard against the `selected_project_path_for_render` call path breaking if Phase 6 lands before the field rename.
-- Phase 7 — added render-path note about `selected_project_path_for_render`: post-Phase-2 it's a pure `ProjectList` query, so render.rs can either keep the App shim or invert order (split-borrow first, then call on `&ProjectList`).
-- Phase 11 — ordering note expanded to include Phase 2 dependency (field rename), not just Phase 6.
+- Phase 8 (Scan T/P delete; was Phase 5.4 pre-resequence) — caller estimate trimmed to ~40–50 with explicit note that no `tui/render.rs` or `tui/panes/*` touches are needed.
+- Phase 10 — caller-count updated from ~304 to ~275 (live: 250 + 25); also added explicit "depends on Phase 2 step 5" sequencing note to guard against the `selected_project_path_for_render` call path breaking if Phase 10 lands before the field rename.
+- Phase 11 — added render-path note about `selected_project_path_for_render`: post-Phase-2 it's a pure `ProjectList` query, so render.rs can either keep the App shim or invert order (split-borrow first, then call on `&ProjectList`).
+- Phase 15 — ordering note expanded to include Phase 2 dependency (field rename), not just Phase 10.
 
 ### Phase 2 — Merge Selection into ProjectList ✅
 
@@ -306,7 +308,7 @@ fan-out, the rest of the TreeMutation surface is already in place.
 **What worked:**
 - All 6 listed steps applied. `src/project_list.rs` moved to `src/tui/project_list.rs`; `Selection` struct deleted; `selection: Selection` field deleted from `App`; the `&Selection` slot dropped from `split_panes_for_render`; `App.projects` field renamed to `App.project_list` (user-driven editor rename); `PaneRenderCtx::projects` and `DispatchArgs::projects` renamed to `project_list` in lockstep; all `app.selection.X` and `self.selection.X` rewritten to project_list.
 - 599 tests pass; clippy clean; `cargo install` smoke-test green.
-- `App::projects()` / `App::projects_mut()` accessor methods retained intact (slated for deletion in Phase 6) — Phase 2 made zero touches to ~330 caller call sites of those methods, keeping the diff bounded.
+- `App::projects()` / `App::projects_mut()` accessor methods retained intact (slated for deletion in Phase 10) — Phase 2 made zero touches to ~330 caller call sites of those methods, keeping the diff bounded.
 - `TreeMutation` now borrows `&mut ProjectList + &mut Panes` (slot dropped); `Drop` calls `self.projects.recompute_visibility(self.include_non_rust)` directly, no Selection middleman.
 
 **What deviated from the plan:**
@@ -324,23 +326,23 @@ fan-out, the rest of the TreeMutation surface is already in place.
 - `app.selection()` / `app.selection_mut()` accessor methods on `App` (returning `&Selection` / `&mut Selection`) had to be deleted along with the field — they don't exist as a target for the editor rename. Mechanical sed `app.selection_mut()` → `app.projects_mut()` and `app.selection()` → `app.projects()` covered every caller.
 
 **Implications for remaining phases:**
-- Phase 6 (delete `App::projects()` / `App::projects_mut()`) call sites are unchanged — Phase 2 did not touch them. The post-Phase-2 caller count is the same ~275 the plan currently records. No revision needed.
-- Phase 7 (`project_list` absorption I — row-navigation): the absorption target was already proven by Phase 2's bulk migration. `App::row_count()`, `App::cursor()`, `App::set_cursor()`, `App::move_*` are now thin pass-throughs to identically-named methods on `ProjectList` — when Phase 7 deletes them, callers can switch to `app.project_list.X` mechanically without behavioral risk.
-- Phase 8 (`project_list` absorption II — action methods) inherits the new `iter_with_expanded_mut` pattern. If any of the action-method moves want to walk projects while mutating expansion, the helper is already in place.
-- Phase 11 (Group W static helpers → data owners): `replace_roots_from` is a candidate static-helper-on-data-owner that isn't in the Phase 11 enumeration. If Phase 11 cataloged static helpers by-eye from Group W, it likely missed this one. Worth reviewing.
-- The decision to keep `pub(crate)` on pre-existing `ProjectList` methods rather than tightening to `pub(super)` is a Phase 10 concern (recursive trivial-accessor purge inside subsystems). Phase 10 should call out the visibility tightening explicitly so the cleanup is recorded, not silently dropped.
+- Phase 10 (delete `App::projects()` / `App::projects_mut()`) call sites are unchanged — Phase 2 did not touch them. The post-Phase-2 caller count is the same ~275 the plan currently records. No revision needed.
+- Phase 11 (`project_list` absorption I — row-navigation): the absorption target was already proven by Phase 2's bulk migration. `App::row_count()`, `App::cursor()`, `App::set_cursor()`, `App::move_*` are now thin pass-throughs to identically-named methods on `ProjectList` — when Phase 11 deletes them, callers can switch to `app.project_list.X` mechanically without behavioral risk.
+- Phase 12 (`project_list` absorption II — action methods) inherits the new `iter_with_expanded_mut` pattern. If any of the action-method moves want to walk projects while mutating expansion, the helper is already in place.
+- Phase 15 (Group W static helpers → data owners): `replace_roots_from` is a candidate static-helper-on-data-owner that isn't in the Phase 15 enumeration. If Phase 15 cataloged static helpers by-eye from Group W, it likely missed this one. Worth reviewing.
+- The decision to keep `pub(crate)` on pre-existing `ProjectList` methods rather than tightening to `pub(super)` is a Phase 14 concern (recursive trivial-accessor purge inside subsystems). Phase 14 should call out the visibility tightening explicitly so the cleanup is recorded, not silently dropped.
 
 #### Phase 2 Review
 
-- Phase 7/Phase 8 — original Phase 7 listed `expand_path_in_tree`, `select_matching_visible_row`, `clean_selection`, `select_root_row` which Phase 8 also enumerated. Reconciled: Phase 7 now scopes to row-navigation **read-side** queries only (`path_for_row`, `selected_project_path`, `selected_row`, etc., 16 methods); the mutating/expansion-affecting/`include_non_rust`-threaded methods all moved to Phase 8 (28 methods). Sub-commit framing rejected — both stay as full phases per the no-sub-commits rule.
-- Phase 8 — added explicit pointer to `ProjectList::iter_with_expanded_mut` as the split-borrow pattern relocated methods should reuse. Added note to re-run `count_app_methods.py` at phase start because Phase 2's caller absorption may have lowered the live rewrite count.
-- Phase 10 — added explicit "Visibility tightening on relocated types" subsection enumerating the ~38 pre-existing `pub(crate)` methods on `ProjectList` slated for `pub(super)` tightening (zero caller rewrites — narrowing only).
-- Phase 11 — added "Already-resident helpers (no Phase 11 action)" subsection naming `ProjectList::replace_roots_from` so future passes don't relitigate moving it (already lives on the data owner; called by `App::set_projects` and `TreeMutation::replace_all`).
-- Phase summary table — Phase 7/8 row-counts updated to reflect dedup (Phase 7: ~16/~80, Phase 8: ~28/~170; "App after" columns adjusted to 231/203 respectively).
+- Phase 11/Phase 12 — original Phase 11 listed `expand_path_in_tree`, `select_matching_visible_row`, `clean_selection`, `select_root_row` which Phase 12 also enumerated. Reconciled: Phase 11 now scopes to row-navigation **read-side** queries only (`path_for_row`, `selected_project_path`, `selected_row`, etc., 16 methods); the mutating/expansion-affecting/`include_non_rust`-threaded methods all moved to Phase 12 (28 methods). Sub-commit framing rejected — both stay as full phases per the no-sub-commits rule.
+- Phase 12 — added explicit pointer to `ProjectList::iter_with_expanded_mut` as the split-borrow pattern relocated methods should reuse. Added note to re-run `count_app_methods.py` at phase start because Phase 2's caller absorption may have lowered the live rewrite count.
+- Phase 14 — added explicit "Visibility tightening on relocated types" subsection enumerating the ~38 pre-existing `pub(crate)` methods on `ProjectList` slated for `pub(super)` tightening (zero caller rewrites — narrowing only).
+- Phase 15 — added "Already-resident helpers (no Phase 15 action)" subsection naming `ProjectList::replace_roots_from` so future passes don't relitigate moving it (already lives on the data owner; called by `App::set_projects` and `TreeMutation::replace_all`).
+- Phase summary table — Phase 11/8 row-counts updated to reflect dedup (Phase 11: ~16/~80, Phase 12: ~28/~170; "App after" columns adjusted to 231/203 respectively).
 - Group X line for `split_panes_for_render` updated to reflect the now-4-tuple return signature (selection slot dropped in Phase 2 step 4).
 - No findings rejected.
 
-### Phase 3 — Tooling + small-subsystem T/P delete
+### Phase 3 — Tooling + small-subsystem T/P delete ✅
 
 Two pieces:
 
@@ -359,6 +361,38 @@ Picked first because Config/Keymap/LayoutCache have low fanout — smoke-tests t
 mechanic (publish + rewrite + delete + validate + count delta) before higher-traffic
 subsystems.
 
+#### Retrospective
+
+**What worked:**
+- `scripts/count_app_methods.py` shipped at ~80 lines, runs <1s, gives total + per-file table. Counted 306 pre-Phase-3 → 293 post-Phase-3 (delta −13, matching predicted ~12).
+- The publish-field + perl-bulk-rewrite + delete-accessor mechanic is mechanical: one perl pass rewrote 13 method calls across 16 files, then deletions surfaced as dead-code warnings, which guided where to cut.
+
+**What deviated from the plan:**
+- 13 methods deleted, not 12: `config()`, `config_mut()`, `current_config()`, `current_config_mut()`, `config_path()`, `keymap()`, `keymap_mut()`, `layout_cache()`, `layout_cache_mut()`, `settings_edit_buf`, `settings_edit_cursor`, `settings_edit_parts_mut`, `set_settings_edit_state`. Plan's `~12` was a rough estimate; `settings_edit_*` is 4 methods and the plan pluralized it as one bullet.
+- One incidental rewrite outside the plan: `*app.layout_cache_mut() = LayoutCache::default();` collapsed to `app.layout_cache = LayoutCache::default();` — the dereference is no longer needed once the field is direct.
+
+**Surprises:**
+- The `.config_mut()` pattern was test-only (`#[cfg(test)]`). The plan listed it among prod accessors. With the field public, tests just write `&mut app.config` directly — no `cfg(test)` accessor needed.
+- `python3 scripts/count_app_methods.py` reports 293, not ~156 yet — Phase 3 is one of thirteen reduction phases. The headline target reduction lands across Phases 4–15.
+
+**Implications for remaining phases:**
+- The publish + bulk-rewrite + delete mechanic worked clean on a low-fanout subsystem. Phases 4–5 can reuse the exact perl pattern; bigger fanout means longer regex but identical mechanic.
+- Tests-only mut accessors (`config_mut`, future `scan_state_mut`, `background_mut`, etc.) get deleted entirely once their field is `pub(super)` — tests reach via field directly. No `#[cfg(test)]` shim needed.
+- `count_app_methods.py` is now the single source of truth for the headline number per phase. Future retrospectives report `pre-N → post-N (delta)` from this script.
+
+#### Phase 3 Review
+
+- Phase 5 (was T/P delete: Panes/Focus/Overlays/Scan/Startup as one phase with sub-commits 5.1–5.5) split into five separately-numbered phases (Panes/Focus/Overlays/Scan/Startup = Phases 5–9) per the no-sub-commits rule. Old Phases 6–11 renumbered to 10–15. Summary table and all cross-references updated.
+- Phase 13 scan list reconciled with inventory: `handle_git_first_commit`, `should_verify_before_clean`, `handle_out_of_tree_target_size`, `handle_repo_meta`. `clean_metadata_dispatch` and `update_generations_for_msg` stay on App (Group X).
+- Phase 13 toasts list replaced with inventory's 4 specific methods: `push_service_unavailable_toast`, `start_task_toast`, `mark_tracked_item_completed`, `focused_toast_id`. `dismiss_keymap_diagnostics` stays on App (Group X).
+- Phase 13 background list replaced: `register_item_background_services` (S relocation) instead of `finish_watcher_registration_batch` (P-shim handled in T/P sweep). Phase 13 method count 17 → 18.
+- Phase 12 dropped `register_existing_projects` (Group X — touches `project_list` and `background`); count 28 → 27.
+- Phase 5 (Panes T/P) gained `poll_cpu_if_due`; count ~8 → ~9. (`apply_hovered_pane_row` was already excluded as Group X.)
+- Phase 11 (project_list absorption I) gained `last_selected_path` (single-subsystem read); count ~16 → ~17.
+- Phase 14 gained an "App-local trivial accessors" subsection enumerating `mouse_pos`/`set_mouse_pos`, `animation_elapsed`, `toast_timeout`, `resolved_dirs` (5 App-local removals). Final App count target adjusted: 161 → ~156.
+- Summary table caller-rewrite columns updated: Phase 6 estimate 304 → 275 (live: 250 + 25); Phase 9 method count 18 → 17; Phase 3 row marked ✅ with measured delta.
+- T+P table heading rescoped from "Phase 3 deletion list" to "deletion list (Phases 3–9)"; 13 Phase-3-completed rows marked with ✅.
+
 ### Phase 4 — Medium-subsystem T/P delete (Lint, Ci, Toasts, Net, Background, Inflight)
 
 Publish each subsystem as `pub(super)`. Delete trivial accessors and pass-throughs:
@@ -369,24 +403,48 @@ Publish each subsystem as `pub(super)`. Delete trivial accessors and pass-throug
 
 **Methods removed:** ~20. **Caller rewrites:** ~250.
 
-### Phase 5 — Big-subsystem T/P delete (Panes, Focus, Overlays, Scan, Startup)
+### Phase 5 — Panes T/P delete
 
-Publish the high-fanout subsystems. Delete trivial accessors and pass-throughs.
-Sub-commit by subsystem so each diff is bounded and reviewable.
+Publish `panes` as `pub(super)`. Delete trivial accessors and pass-throughs:
+`panes`/`_mut`, `pane_data`, `set_hovered_pane_row`, `worktree_summary_or_compute`,
+`poll_cpu_if_due`. Rewrite call sites.
 
-| Sub-phase | Subsystem | Methods deleted | Caller rewrites |
-| --- | --- | ---: | ---: |
-| 5.1 | `Panes` (`panes`/`_mut`, `pane_data`, `set_hovered_pane_row`, `apply_hovered_pane_row`, `worktree_summary_or_compute`, etc.) | ~8 | ~120 |
-| 5.2 | `Focus` (`focus`/`_mut`, `focused_pane`) | ~3 | ~85 |
-| 5.3 | `Overlays` (`overlays`/`_mut`) | ~2 | ~130 |
-| 5.4 | `Scan` (`scan`/`_mut`, `scan_state_mut` (test-only), `data_generation_for_test`, `set_retry_spawn_mode_for_test`, `set_projects`, `increment_data_generation`, `refresh_derived_state`) | ~10 | ~40–50 |
-| 5.5 | `Startup` (`startup`/`_mut`) | ~2 | ~25 |
+**Methods removed:** ~9. **Caller rewrites:** ~120.
 
-**Methods removed:** ~25. **Caller rewrites:** ~410 across 5 sub-commits.
+### Phase 6 — Focus T/P delete
 
-**Phase 5.4 scope note (post-Phase-1):** Phase 1 dropped `Scan::projects()` / `Scan::projects_mut()` outright and rewrote the render plumbing to take `&ProjectList` directly. So Phase 5.4 is now purely an `app/*` and `async_tasks/*` sweep — no `tui/render.rs` or `tui/panes/*` touches needed for `scan()` / `scan_mut()` deletion. Caller estimate trimmed accordingly.
+Publish `focus` as `pub(super)`. Delete `focus`/`_mut`, `focused_pane`. Rewrite
+call sites.
 
-### Phase 6 — Delete `App::projects()` / `projects_mut()` (highest-fanout rewrite)
+**Methods removed:** ~3. **Caller rewrites:** ~85.
+
+### Phase 7 — Overlays T/P delete
+
+Publish `overlays` as `pub(super)`. Delete `overlays`/`_mut`. Rewrite call sites.
+
+**Methods removed:** ~2. **Caller rewrites:** ~130.
+
+### Phase 8 — Scan T/P delete
+
+Publish `scan` as `pub(super)`. Delete `scan`/`_mut`, `scan_state_mut` (test-only),
+`data_generation_for_test`, `set_retry_spawn_mode_for_test`, `set_projects`,
+`increment_data_generation`, `refresh_derived_state`. Rewrite call sites.
+
+**Phase 8 scope note (post-Phase-1):** Phase 1 dropped `Scan::projects()` /
+`Scan::projects_mut()` outright and rewrote the render plumbing to take
+`&ProjectList` directly. So Phase 8 is now purely an `app/*` and `async_tasks/*`
+sweep — no `tui/render.rs` or `tui/panes/*` touches needed for `scan()` /
+`scan_mut()` deletion. Caller estimate trimmed accordingly.
+
+**Methods removed:** ~10. **Caller rewrites:** ~40–50.
+
+### Phase 9 — Startup T/P delete
+
+Publish `startup` as `pub(super)`. Delete `startup`/`_mut`. Rewrite call sites.
+
+**Methods removed:** ~2. **Caller rewrites:** ~25.
+
+### Phase 10 — Delete `App::projects()` / `projects_mut()` (highest-fanout rewrite)
 
 These two pass-throughs survived 1/2 (1 lifted the field; 2 renamed it
 `project_list`). After 5 publishes other subsystems' fields, the only remaining
@@ -402,58 +460,60 @@ Rewrite each to `app.project_list.X` (or `&mut app.project_list.X`). Delete both
 **Methods removed:** 2. **Caller rewrites:** ~275. **Largest single phase by
 call-site count in the entire plan.**
 
-**Ordering: Phase 6 depends on Phase 2 step 5 (field rename) being complete.**
+**Ordering: Phase 10 depends on Phase 2 step 5 (field rename) being complete.**
 `tui/render.rs::dispatch_via_trait`, `render_lints_pane`, and `render_ci_pane` call
 `app.selected_project_path_for_render()` before split-borrowing, which routes through
-`self.projects()`. If Phase 6 deletes `App::projects()` before Phase 2 has renamed the
-field `projects` → `project_list`, that call path breaks. The plan's overall 1→2→…→6
+`self.projects()`. If Phase 10 deletes `App::projects()` before Phase 2 has renamed the
+field `projects` → `project_list`, that call path breaks. The plan's overall 1→2→…→10
 order handles this implicitly; making the dependency explicit guards against
-sub-phase reordering silently introducing the bug.
+phase reordering silently introducing the bug.
 
 Recommend the user run a global rename (`projects()` → `project_list`,
 `projects_mut()` → `project_list`) via the editor's rename feature — see CLAUDE.md
 note about rename support. Falls back to mechanical perl substitution otherwise
 (handle the rustfmt-wrapped chain pattern).
 
-### Phase 7 — `project_list` absorption I (row-navigation read-side)
+### Phase 11 — `project_list` absorption I (row-navigation read-side)
 
 Relocate row-navigation single-subsystem read methods to `impl ProjectList`
 (post-Phase-2). These are pure queries over `ProjectList` state with no
 `include_non_rust` threading — the read-side commits as one bounded phase
-before the larger Phase 8 action-method sweep.
+before the larger Phase 12 action-method sweep.
 
 `path_for_row`, `display_path_for_row`, `abs_path_for_row`, `expand_key_for_row`,
 `dismiss_target_for_row_inner`, `worktree_parent_node_index`,
 `row_matches_project_path`, `selected_project_path`, `selected_row`,
 `build_selected_pane_data`, `current_branch_for`, `latest_ci_run_for_path`,
 `owner_repo_for_path_inner`, `ci_toggle_available_for_inner`,
-`ci_runs_for_display_inner`, `try_collapse`.
+`ci_runs_for_display_inner`, `try_collapse`, `last_selected_path`.
 
-**Methods relocated:** ~16. **Caller rewrites:** ~80.
+**Methods relocated:** ~17. **Caller rewrites:** ~80.
 
 **Render-path note (post-Phase-1):** `tui/render.rs::dispatch_via_trait`,
 `render_lints_pane`, and `render_ci_pane` currently call
 `app.selected_project_path_for_render()` *before* split-borrowing. After Phase
 2, `selected_project_path` is a pure `ProjectList` query (Selection's cursor
-field having merged in), so Phase 7 can either keep that App-shim wrapper or
+field having merged in), so Phase 11 can either keep that App-shim wrapper or
 invert the order in render.rs (split-borrow first, then call
 `projects.selected_project_path()` on the borrowed `&ProjectList`). Inverting
 drops one App-level method.
 
-### Phase 8 — `project_list` absorption II (action methods + `include_non_rust` threading)
+### Phase 12 — `project_list` absorption II (action methods + `include_non_rust` threading)
 
 Relocate the remaining `project_list` S methods (mutating, expansion-affecting,
 or threaded through `include_non_rust`): `expand_all`, `collapse_all`,
 `collapse_row`, `collapse_to`, `collapse`, `select_project_in_tree`,
 `select_matching_visible_row`, `expand_path_in_tree`, `select_root`,
 `select_root_row`, `clean_selection`, `move_up`, `move_down`, `move_to_top`,
-`move_to_bottom`, `apply_finder`, `toggle_expand`, `register_existing_projects`,
+`move_to_bottom`, `apply_finder`, `toggle_expand`,
 `capture_legacy_root_expansions`, `migrate_legacy_root_expansions`,
 `apply_cargo_fields_from_workspace_metadata`, `lint_runtime_root_entries`,
 `handle_language_stats_batch`, `handle_crates_io_version_msg`, plus
 `has_cached_non_rust_projects`, `selected_project_is_deleted`, `selected_ci_path`.
+(`register_existing_projects` stays on App as Group X — it touches `project_list`
+and `background` together when registering new items' watchers.)
 
-**Methods relocated:** ~28. **Caller rewrites:** ~120 in `src/` plus ~50 in
+**Methods relocated:** ~27. **Caller rewrites:** ~120 in `src/` plus ~50 in
 `tests/` (the `include_non_rust` flag must be passed at every test call site of
 the threaded methods — `tests/rows.rs`, `tests/panes.rs`, `tests/worktrees.rs`,
 `tests/mod.rs`). Re-run `count_app_methods.py` at phase start — Phase 2's
@@ -462,7 +522,7 @@ the original estimate counted twice; the live number may be lower.
 
 **Pattern from Phase 2:** the relocated methods that walk projects while
 mutating `expanded` (e.g. `expand_path_in_tree`, `select_project_in_tree`,
-`migrate_legacy_root_expansions`, `register_existing_projects`) should use the
+`migrate_legacy_root_expansions`) should use the
 `ProjectList::iter_with_expanded_mut` split-borrow helper introduced in Phase
 2, not re-invent the destructuring pattern. The helper returns `(Values<'_>,
 &mut HashSet<ExpandKey>)` from `&mut self`.
@@ -488,32 +548,53 @@ After Phases 7 and 8, ProjectList absorbs the navigation/data layer it
 conceptually owned all along. The `impl App` block in `tui/app/navigation/*`
 shrinks substantially; most of `navigation/` becomes `impl ProjectList`.
 
-### Phase 9 — Non-`project_list` S relocations
+### Phase 13 — Non-`project_list` S relocations
 
 Relocate the remaining S methods to their owning subsystems:
 
 - → `startup` (5): `startup_disk_toast_body`, `startup_git_toast_body`,
   `startup_metadata_toast_body`, `log_startup_phase_plan`, `maybe_complete_startup_lints`.
-- → `toasts` (3): toast-body helpers, `dismiss_keymap_diagnostics`. (`running_items_for_toast` is a static helper — moved in 11 onto `RunningTracker`.)
-- → `scan` (4): `should_verify_before_clean`, `handle_out_of_tree_target_size`,
-  `clean_metadata_dispatch`, `update_generations_for_msg`.
+- → `toasts` (4): `push_service_unavailable_toast`, `start_task_toast`,
+  `mark_tracked_item_completed`, `focused_toast_id`. (`running_items_for_toast`
+  is a static helper — moved in 15 onto `RunningTracker`. `dismiss_keymap_diagnostics`
+  stays on App as Group X — touches Toasts + Keymap diagnostics state.)
+- → `scan` (4): `handle_git_first_commit`, `should_verify_before_clean`,
+  `handle_out_of_tree_target_size`, `handle_repo_meta`. (`clean_metadata_dispatch`
+  and `update_generations_for_msg` stay on App as Group X — they touch
+  net+background+scan and dispatch across every BackgroundMsg variant respectively.)
 - → `net` (2): `availability_for`, `spawn_rate_limit_prime`.
-- → `background` (1): `finish_watcher_registration_batch`.
+- → `background` (1): `register_item_background_services`. (`finish_watcher_registration_batch`
+  is a P-category one-line shim handled in the Phase 4–9 T/P sweep, not an S relocation.)
 - → `inflight` (1): `apply_example_progress`.
 - → `ci` (1): `ci_display_mode_label_for_inner`.
 
-**Methods relocated:** ~18. **Caller rewrites:** ~100.
+**Methods relocated:** 18. **Caller rewrites:** ~100.
 
-### Phase 10 — Recursive trivial-accessor purge inside subsystems
+### Phase 14 — Recursive trivial-accessor purge inside subsystems
 
 The universal decision rule applies at every nesting depth, not just on `App`.
-Phase 10 sweeps the same rule through subsystem internals: every `pub(super) const fn
+Phase 14 sweeps the same rule through subsystem internals: every `pub(super) const fn
 x(&self) -> &X { &self.x }` inside `Scan`, `Net.{Github, CratesIo}`, `Lint`,
 `Inflight`, `Panes.{CpuPane, GitPane, TargetsPane, ...}`, `Config.WatchedFile`,
 `Keymap.WatchedFile`, `ScanState`, etc. — publish the field as `pub(super)`,
 delete the accessor, rewrite callers.
 
 **Methods removed crate-wide:** ~50–80. **Caller rewrites:** ~200.
+
+**App-local trivial accessors (no subsystem).** Several App accessors don't
+belong to any owned subsystem — they wrap App's own primitive fields or
+compose two subsystems with one line. Publish the field (or inline the body)
+and delete the accessor:
+
+- `mouse_pos`, `set_mouse_pos` — publish `App::mouse_pos: Option<Position>` as
+  `pub(super)`, delete both accessors.
+- `animation_elapsed` — publish `App::animation_started: Instant` as
+  `pub(super)`; callers compute `app.animation_started.elapsed()` directly.
+- `toast_timeout` — one-line wrapper over `config.tui.status_flash_secs`.
+  Inline at the two call sites in `show_timed_toast` /
+  `show_timed_warning_toast` and delete.
+- `resolved_dirs` — one-line wrapper over `scan::resolve_include_dirs`.
+  Inline at call sites.
 
 **Visibility tightening on relocated types.** Phase 2 moved `ProjectList` from
 `src/project_list.rs` (top-level) to `src/tui/project_list.rs` (nested).
@@ -528,12 +609,12 @@ Pre-existing `pub(crate)` methods on `ProjectList` (`new`, `len`, `is_empty`,
 identified (none currently). ~38 visibility tightenings; zero caller rewrites
 (visibility narrowing is invisible to call sites already inside `tui/`).
 
-Headline metric for 10: **crate-wide trivial-accessor count** (reported by
-`count_app_methods.py`). App's count is unchanged by 10 — it lands at its
-final ~184 after Phase 9. Phase 10 cleans the rest of the codebase to match the same
-rule.
+Headline metric for 14: **crate-wide trivial-accessor count** (reported by
+`count_app_methods.py`). App's count drops by 5 in 14 (the App-local accessors
+listed above) — it lands at ~179 after Phase 14. Phase 14 also cleans the rest
+of the codebase to match the same rule.
 
-### Phase 11 — Relocate Group W static helpers to their data owners
+### Phase 15 — Relocate Group W static helpers to their data owners
 
 23 of Group W's 27 entries are `Self::foo(...)` associated functions inside
 `impl App` — they don't take `&self` and have nothing to do with App's state.
@@ -567,7 +648,7 @@ data owner.
 - `collapse_anchor_row` (`navigation/movement.rs:5`) — `const fn` over a `VisibleRow`
   arg. Move to `impl VisibleRow`.
 
-**Already-resident helpers (no Phase 11 action):**
+**Already-resident helpers (no Phase 15 action):**
 - `ProjectList::replace_roots_from` (introduced in Phase 2) is a static-helper-on-data-owner
   that already lives on `ProjectList`. Called by `App::set_projects` (test-only) and
   `TreeMutation::replace_all`. Listed here so future passes don't relitigate moving it.
@@ -575,16 +656,16 @@ data owner.
 **Methods removed from App:** ~23. **Caller rewrites:** mostly `Self::foo(...)` →
 `Type::foo(...)` plus method-call form where it makes sense (~50 sites total).
 
-After 11, App's method count drops from 184 → **161** (exact: 184 − 23 = 161).
+After 15, App's method count drops from 179 → **~156** (exact: 179 − 23 = 156).
 Group W's instance methods that genuinely belong on App (`set_confirm`,
 `confirm`, `take_confirm`, `build_worktree_detail`) stay.
 
-**Ordering: Phase 11 must run after Phase 2 and Phase 6.** Several Phase 11 callers are
+**Ordering: Phase 15 must run after Phase 2 and Phase 10.** Several Phase 15 callers are
 inside today's `impl App` blocks that read `self.projects()` (e.g. `member_path_ref` at
 `navigation/selection.rs:79,87`). Phase 2 renames the field `projects` → `project_list`;
-Phase 6 deletes the `projects()` accessor. After both, those callers use
-`self.project_list` directly; relocating Phase 11 helpers before 2 or 6 would land them
-referencing a still-named field or a still-live accessor and need re-rewriting. Phase 11
+Phase 10 deletes the `projects()` accessor. After both, those callers use
+`self.project_list` directly; relocating Phase 15 helpers before 2 or 6 would land them
+referencing a still-named field or a still-live accessor and need re-rewriting. Phase 15
 is otherwise independent of Phases 7 and 8.
 
 
@@ -629,13 +710,13 @@ completes (sample, will be firmed up by the deep-dive):
 
 ## Success criteria
 
-- App's method count drops to **184** after Phase 9 (App-side T/P/S phases complete) and to **161** after Phase 11 (static-helper relocation).
+- App's method count drops to **184** after Phase 13 (App-side T/P/S phases complete), to **179** after Phase 14 (App-local accessors), and to **~156** after Phase 15 (static-helper relocation).
 - `tui/app/mod.rs` drops from 1565 lines to under ~800.
 - Every phase retrospective includes a `count: before → after (delta)` line generated by
   `scripts/count_app_methods.py`.
 - All 599 tests still pass after each phase.
 - Clippy stays green under `--all-features -- -D warnings` after each phase.
-- Trivial-accessor count crate-wide drops to 0 after Phase 10 (all data fields `pub(super)` or
+- Trivial-accessor count crate-wide drops to 0 after Phase 14 (all data fields `pub(super)` or
   carry real logic).
 
 ## Phase summary
@@ -648,17 +729,21 @@ sits.
 | --- | --- | ---: | ---: | ---: |
 | 1 | Lift `ProjectList` to App (structural) | 2 | ~15 | 306 |
 | 2 | Merge `Selection` into `ProjectList`; relocate to `tui/` (structural) | 0 | ~150 | 306 |
-| 3 | Tooling + T/P delete: Config, Keymap, LayoutCache | ~12 | ~100 | 294 |
+| 3 | Tooling + T/P delete: Config, Keymap, LayoutCache | 13 | ~140 | 293 ✅ |
 | 4 | T/P delete: Lint, Ci, Toasts, Net, Background, Inflight | ~20 | ~250 | 274 |
-| 5 | T/P delete: Panes, Focus, Overlays, Scan, Startup (5 sub-commits) | ~25 | ~410 | 249 |
-| **6** | **Delete `App::projects()` / `projects_mut()`** | **2** | **~304** | **247** |
-| 7 | `project_list` absorption I — row-navigation read-side | ~16 | ~80 | 231 |
-| 8 | `project_list` absorption II — action methods (with `include_non_rust` arg threading) | ~28 | ~170 | 203 |
-| 9 | Non-`project_list` S relocations | ~17 | ~95 | 184 |
-| 10 | Recursive trivial-accessor purge inside subsystems | ~50–80 (crate-wide) | ~200 | 184 |
-| 11 | Relocate Group W static helpers to their data owners (after 6) | 23 | ~50 | **161** |
+| 5 | T/P delete: Panes | ~9 | ~120 | 265 |
+| 6 | T/P delete: Focus | ~3 | ~85 | 262 |
+| 7 | T/P delete: Overlays | ~2 | ~130 | 260 |
+| 8 | T/P delete: Scan | ~10 | ~40–50 | 250 |
+| 9 | T/P delete: Startup | ~2 | ~25 | 248 |
+| **10** | **Delete `App::projects()` / `projects_mut()`** | **2** | **~275** | **246** |
+| 11 | `project_list` absorption I — row-navigation read-side | ~17 | ~85 | 229 |
+| 12 | `project_list` absorption II — action methods (with `include_non_rust` arg threading) | ~27 | ~170 | 202 |
+| 13 | Non-`project_list` S relocations | 18 | ~95 | 184 |
+| 14 | Recursive trivial-accessor purge (crate-wide + 5 App-local accessors) | ~50–80 (crate-wide), 5 (App) | ~200 | 179 |
+| 15 | Relocate Group W static helpers to their data owners (after 10) | 23 | ~50 | **156** |
 
-**Net: 308 → 184 on App after Phase 9, then 308 → 161 after Phase 11.**
+**Net: 308 → 184 on App after Phase 13, → 179 after Phase 14, → ~156 after Phase 15.**
 Per review-finding C2, six methods (`expand_all`, `collapse_all`,
 `select_matching_visible_row`, `select_project_in_tree`,
 `expand_path_in_tree`, `collapse_to`) keep their S →
@@ -670,11 +755,11 @@ proper data owners (`RootItem`, `WorktreeGroup`,
 `RunningTracker`, etc.) — they were declared inside `impl App`
 for convenience but don't belong on App at all.
 
-Phase 6 is now the largest phase by call-site count (~304), not
-Phase 5 (~410 across 5 sub-commits). Phase 5 is bigger as one phase but
-splits into 5 reviewable sub-diffs.
+Phase 10 is the largest single phase by call-site count (~275). The combined
+Phase 5–9 T/P sweep (~410 callers across 5 separately-numbered phases) is bigger
+in aggregate, but each individual phase is small enough to review independently.
 
-Phase 10 is a companion phase — App's headline count target is
+Phase 14 is a companion phase — App's headline count target is
 satisfied at end of 9. 10 reduces trivial-accessor count
 crate-wide but leaves App's number unchanged.
 
@@ -704,14 +789,14 @@ All 308 App methods, hand-classified by reading each body. Six agents in paralle
 | **W** — wrapping logic / static helpers / App-local fields | 27 | — | keep on App |
 | **Total** | **308** | | |
 
-**3 deletes T+P = 93 methods.**  
-**8 relocates S = 64 methods.**  
-**App's final method count = 161 after Phase 11 (down from 308, ~48% reduction).** Phase-by-phase math: 3–9 remove T + P + S = 124 methods (App lands at 184), then 11 relocates 23 static helpers from Group W (App lands at 161). 10 is crate-wide; it doesn't change App's count.
+**Phases 3–9 delete T+P = ~88 methods.**  
+**Phases 10–13 absorb/relocate ~64 S methods.**  
+**App's final method count ≈ 156 after Phase 15 (down from 308, ~49% reduction).** Phase-by-phase math: 3–13 remove T + P + S to land App at 184, Phase 14 removes 5 App-local accessors (lands at 179), then Phase 15 relocates 23 static helpers from Group W (lands at ~156). Phase 14's main work is crate-wide trivial-accessor cleanup.
 
 ### Group S — relocation list (single-subsystem orchestrators)
 
-Each method moves from App to the destination subsystem in Phase 7 (read-side),
-Phase 8 (action methods), or Phase 9 (non-`project_list`).
+Each method moves from App to the destination subsystem in Phase 11 (read-side),
+Phase 12 (action methods), or Phase 13 (non-`project_list`).
 
 #### → `project_list` (46 methods)
 
@@ -989,9 +1074,15 @@ Phase 8 (action methods), or Phase 9 (non-`project_list`).
 | `confirm` | `mod.rs:948` | 1L | returns self.confirm.as_ref() (App-local) |
 | `take_confirm` | `mod.rs:1047` | 1L | takes self.confirm Option (App-local) |
 
-### Groups T + P — Phase 3 deletion list
+### Groups T + P — deletion list (Phases 3–9)
 
-93 methods. Trivial accessors and pass-throughs. 3 publishes fields and rewrites callers.
+~88 methods. Trivial accessors and pass-throughs. Phase 3 publishes
+Config/Keymap/LayoutCache; Phase 4 covers Lint/Ci/Toasts/Net/Background/Inflight;
+Phases 5–9 cover Panes/Focus/Overlays/Scan/Startup. Phase 3 entries are marked
+✅ below.
+
+`projects` and `projects_mut` belong to Phase 10 — not the T+P sweep — but are
+listed here for completeness since they're one-line pass-throughs.
 
 | Method | Cat | File:line | Body | Notes |
 | --- | --- | --- | ---: | --- |
@@ -1002,8 +1093,8 @@ Phase 8 (action methods), or Phase 9 (non-`project_list`).
 | `ci_display_mode_for` | P | `ci.rs:157` | 1L | one-line ci forward |
 | `current_branch_for` | P | `ci.rs:168` | 1L | one-line projects() git_info access |
 | `ci_toggle_available_for_inner` | P | `ci.rs:172` | 1L | thin wrapper over current_branch_for |
-| `current_config` | P | `mod.rs:331` | 1L | self.config.current() |
-| `current_config_mut` | P | `mod.rs:337` | 1L | self.config.current_mut() |
+| `current_config` ✅ | P | `mod.rs:331` | 1L | self.config.current() |
+| `current_config_mut` ✅ | P | `mod.rs:337` | 1L | self.config.current_mut() |
 | `resolved_dirs` | P | `mod.rs:347` | 1L | resolves include_dirs from config |
 | `toast_timeout` | P | `mod.rs:357` | 1L | reads config.tui.status_flash_secs only |
 | `projects` | P | `mod.rs:460` | 1L | post-Phase-1: direct project_list accessor |
@@ -1034,10 +1125,10 @@ Phase 8 (action methods), or Phase 9 (non-`project_list`).
 | `set_ci_fetch_toast` | P | `mod.rs:840` | 1L | delegates to ci.set_fetch_toast |
 | `take_pending_ci_fetch` | P | `mod.rs:844` | 1L | delegates to inflight.take_pending_ci_fetch |
 | `pending_cleans_mut` | P | `mod.rs:848` | 1L | delegates to inflight.pending_cleans_mut |
-| `settings_edit_buf` | P | `mod.rs:950` | 1L | delegates to config.edit_buffer().buf() |
-| `settings_edit_cursor` | P | `mod.rs:952` | 1L | delegates to config.edit_buffer().cursor() |
-| `settings_edit_parts_mut` | P | `mod.rs:954` | 1L | delegates to config.edit_buffer_mut().parts_mut() |
-| `set_settings_edit_state` | P | `mod.rs:958` | 1L | delegates to config.edit_buffer_mut().set |
+| `settings_edit_buf` ✅ | P | `mod.rs:950` | 1L | delegates to config.edit_buffer().buf() |
+| `settings_edit_cursor` ✅ | P | `mod.rs:952` | 1L | delegates to config.edit_buffer().cursor() |
+| `settings_edit_parts_mut` ✅ | P | `mod.rs:954` | 1L | delegates to config.edit_buffer_mut().parts_mut() |
+| `set_settings_edit_state` ✅ | P | `mod.rs:958` | 1L | delegates to config.edit_buffer_mut().set |
 | `bg_tx` | P | `mod.rs:966` | 1L | delegates to background.bg_sender() |
 | `http_client` | P | `mod.rs:968` | 1L | delegates to net.http_client() |
 | `ci_fetch_tx` | P | `mod.rs:970` | 1L | delegates to background.ci_fetch_sender() |
@@ -1050,7 +1141,7 @@ Phase 8 (action methods), or Phase 9 (non-`project_list`).
 | `set_example_running` | P | `mod.rs:994` | 1L | delegates to inflight.set_example_running |
 | `increment_data_generation` | P | `mod.rs:998` | 1L | delegates to scan.bump_generation() |
 | `worktree_summary_or_compute` | P | `mod.rs:1003` | 1L | delegates to panes.worktree_summary_or_compute |
-| `config_path` | P | `mod.rs:1045` | 1L | delegates to config.path() |
+| `config_path` ✅ | P | `mod.rs:1045` | 1L | delegates to config.path() |
 | `set_projects` | P | `mod.rs:1050` | 1L | writes scan.projects_mut() (test-only) |
 | `set_retry_spawn_mode_for_test` | P | `mod.rs:1055` | 1L | delegates to scan.set_retry_spawn_mode |
 | `scan_state_mut` | P | `mod.rs:1072` | 1L | delegates to scan.scan_state_mut() |
@@ -1060,18 +1151,18 @@ Phase 8 (action methods), or Phase 9 (non-`project_list`).
 | `row_matches_project_path` | P | `navigation/bulk.rs:158` | 2L | One-line delegates to self.path_for_row (project_list only) |
 | `try_collapse` | P | `navigation/expand.rs:92` | 1L | One-line delegates to selection.expanded_mut().remove(key) |
 | `selected_project_path` | P | `navigation/selection.rs:63` | 2L | One-line delegates to selected_row + path_for_row |
-| `config` | T | `mod.rs:329` | 1L | &self.config |
-| `config_mut` | T | `mod.rs:345` | 1L | &mut self.config |
-| `keymap` | T | `mod.rs:351` | 1L | &self.keymap |
-| `keymap_mut` | T | `mod.rs:353` | 1L | &mut self.keymap |
+| `config` ✅ | T | `mod.rs:329` | 1L | &self.config |
+| `config_mut` ✅ | T | `mod.rs:345` | 1L | &mut self.config |
+| `keymap` ✅ | T | `mod.rs:351` | 1L | &self.keymap |
+| `keymap_mut` ✅ | T | `mod.rs:353` | 1L | &mut self.keymap |
 | `toasts` | T | `mod.rs:355` | 1L | &self.toasts |
 | `net` | T | `mod.rs:472` | 1L | &self.net |
 | `lint` | T | `mod.rs:485` | 1L | &self.lint |
 | `lint_mut` | T | `mod.rs:487` | 1L | &mut self.lint |
 | `ci` | T | `mod.rs:491` | 1L | &self.ci |
 | `ci_mut` | T | `mod.rs:493` | 1L | &mut self.ci |
-| `layout_cache` | T | `mod.rs:727` | 1L | &self.layout_cache |
-| `layout_cache_mut` | T | `mod.rs:729` | 1L | &mut self.layout_cache |
+| `layout_cache` ✅ | T | `mod.rs:727` | 1L | &self.layout_cache |
+| `layout_cache_mut` ✅ | T | `mod.rs:729` | 1L | &mut self.layout_cache |
 | `panes_mut` | T | `mod.rs:733` | 1L | &mut self.panes |
 | `panes` | T | `mod.rs:738` | 1L | &self.panes |
 | `focus` | T | `mod.rs:803` | 1L | returns &self.focus |

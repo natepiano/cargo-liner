@@ -162,7 +162,7 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
         return *raw;
     }
 
-    let code = if raw.modifiers == KeyModifiers::NONE && app.config().navigation_keys().uses_vim() {
+    let code = if raw.modifiers == KeyModifiers::NONE && app.config.navigation_keys().uses_vim() {
         match panes::behavior(app.focused_pane()) {
             PaneBehavior::DetailFields
             | PaneBehavior::DetailTargets
@@ -257,10 +257,10 @@ fn handle_mouse_event(app: &mut App, kind: MouseEventKind, column: u16, row: u16
 }
 
 fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
-    let up = scroll_up ^ app.config().invert_scroll().is_inverted();
+    let up = scroll_up ^ app.config.invert_scroll().is_inverted();
     let pos = Position::new(column, row);
 
-    if app.layout_cache().project_list_body.contains(pos) {
+    if app.layout_cache.project_list_body.contains(pos) {
         if up {
             app.projects_mut().move_up();
         } else {
@@ -270,7 +270,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
     }
 
     let pane_regions = app
-        .layout_cache()
+        .layout_cache
         .tiled
         .panes()
         .iter()
@@ -334,9 +334,9 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    let project_list = app.layout_cache().project_list_body;
+    let project_list = app.layout_cache.project_list_body;
     let pane_regions = app
-        .layout_cache()
+        .layout_cache
         .tiled
         .panes()
         .iter()
@@ -400,7 +400,7 @@ fn open_in_editor(app: &mut App) {
         })
         .unwrap_or(selected_path);
 
-    let _ = open_paths_in_editor(app.config().editor(), [&abs_path]);
+    let _ = open_paths_in_editor(app.config.editor(), [&abs_path]);
 }
 
 fn overlay_editor_target_path(
@@ -456,17 +456,17 @@ fn open_paths_via_editor_command(editor: &str, paths: &[&Path]) -> Result<()> {
 
 fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
     let bind = bind_from(event);
-    let Some(GlobalAction::OpenEditor) = app.keymap().current().global.action_for(&bind) else {
+    let Some(GlobalAction::OpenEditor) = app.keymap.current().global.action_for(&bind) else {
         return false;
     };
 
     let context = app.input_context();
-    let Some(path) = overlay_editor_target_path(context, app.config_path(), app.keymap().path())
+    let Some(path) = overlay_editor_target_path(context, app.config.path(), app.keymap.path())
     else {
         return false;
     };
 
-    if let Err(err) = open_path_in_editor(app.config().editor(), &path) {
+    if let Err(err) = open_path_in_editor(app.config.editor(), &path) {
         let title = match context {
             InputContext::Settings => "Settings editor failed",
             InputContext::Keymap => "Keymap editor failed",
@@ -536,7 +536,7 @@ fn open_terminal(app: &mut App) {
         );
         return;
     }
-    let command = app.config().terminal_command().trim();
+    let command = app.config.terminal_command().trim();
     if command.is_empty() {
         open_settings_to_terminal_command(app);
         return;
@@ -558,7 +558,7 @@ fn open_terminal(app: &mut App) {
 
 fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
     let bind = bind_from(event);
-    let Some(action) = app.keymap().current().global.action_for(&bind) else {
+    let Some(action) = app.keymap.current().global.action_for(&bind) else {
         return false;
     };
     match action {
@@ -615,7 +615,7 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
 
     // Action keys through keymap.
     let bind = bind_from(event);
-    let Some(action) = app.keymap().current().project_list.action_for(&bind) else {
+    let Some(action) = app.keymap.current().project_list.action_for(&bind) else {
         return;
     };
     match action {
@@ -663,7 +663,7 @@ fn handle_toast_key(app: &mut App, event: &KeyEvent) {
                 .nth(app.toasts().viewport().pos())
                 && let Some(path) = toast.action_path()
             {
-                let editor = app.config().editor().to_string();
+                let editor = app.config.editor().to_string();
                 let path = path.to_path_buf();
                 std::thread::spawn(move || {
                     let _ = open_path_in_editor(&editor, &path);

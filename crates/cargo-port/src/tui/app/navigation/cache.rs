@@ -7,7 +7,7 @@ use crate::tui::panes::DetailCacheKey;
 
 impl App {
     pub fn ensure_visible_rows_cached(&mut self) {
-        let include_non_rust = self.config().include_non_rust().includes_non_rust();
+        let include_non_rust = self.config.include_non_rust().includes_non_rust();
         self.project_list.recompute_visibility(include_non_rust);
     }
 
@@ -17,11 +17,11 @@ impl App {
     pub fn ensure_fit_widths_cached(&mut self) {
         let root_labels = self
             .projects()
-            .resolved_root_labels(self.config().include_non_rust().includes_non_rust());
+            .resolved_root_labels(self.config.include_non_rust().includes_non_rust());
         let widths = panes::compute_project_list_widths(
             self.projects(),
             &root_labels,
-            self.config().lint_enabled(),
+            self.config.lint_enabled(),
             0,
         );
         self.project_list.set_fit_widths(widths);

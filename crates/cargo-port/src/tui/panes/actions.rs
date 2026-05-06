@@ -72,7 +72,7 @@ pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
     match app.focus().base() {
         PaneId::Cpu => {},
         PaneId::Targets => {
-            if let Some(action) = app.keymap().current().targets.action_for(&bind) {
+            if let Some(action) = app.keymap.current().targets.action_for(&bind) {
                 match action {
                     TargetsAction::Activate => handle_detail_enter(app),
                     TargetsAction::ReleaseBuild => handle_target_action(app, BuildMode::Release),
@@ -81,7 +81,7 @@ pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
             }
         },
         PaneId::Git => {
-            if let Some(action) = app.keymap().current().git.action_for(&bind) {
+            if let Some(action) = app.keymap.current().git.action_for(&bind) {
                 match action {
                     GitAction::Activate => handle_detail_enter(app),
                     GitAction::Clean => request_clean(app),
@@ -90,7 +90,7 @@ pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
         },
         _ => {
             // Package pane (default detail pane).
-            if let Some(action) = app.keymap().current().package.action_for(&bind) {
+            if let Some(action) = app.keymap.current().package.action_for(&bind) {
                 match action {
                     PackageAction::Activate => handle_detail_enter(app),
                     PackageAction::Clean => request_clean(app),
@@ -187,7 +187,7 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
 
     // Action keys through keymap.
     let bind = KeyBind::new(event.code, event.modifiers);
-    let Some(action) = app.keymap().current().ci_runs.action_for(&bind) else {
+    let Some(action) = app.keymap.current().ci_runs.action_for(&bind) else {
         return;
     };
     match action {
@@ -256,7 +256,7 @@ fn handle_ci_fetch_more(app: &mut App) {
     };
     app.set_pending_ci_fetch(PendingCiFetch {
         project_path: ci_path.display().to_string(),
-        ci_run_count: app.config().ci_run_count(),
+        ci_run_count: app.config.ci_run_count(),
         oldest_created_at,
         kind,
     });
@@ -283,7 +283,7 @@ pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
 
     // Action keys through keymap.
     let bind = KeyBind::new(event.code, event.modifiers);
-    let Some(action) = app.keymap().current().lints.action_for(&bind) else {
+    let Some(action) = app.keymap.current().lints.action_for(&bind) else {
         return;
     };
     match action {
@@ -367,7 +367,7 @@ fn open_lint_run_output(app: &App) {
     }
 
     let _ = input::open_paths_in_editor(
-        app.config().editor(),
+        app.config.editor(),
         std::iter::once(abs_path).chain(log_paths.iter().map(AbsolutePath::as_path)),
     );
 }

@@ -126,7 +126,7 @@ impl App {
         }
     }
     pub(super) fn rebuild_visible_rows_now(&mut self) {
-        let include_non_rust = self.config().include_non_rust().includes_non_rust();
+        let include_non_rust = self.config.include_non_rust().includes_non_rust();
         self.project_list.recompute_visibility(include_non_rust);
     }
     pub fn rescan(&mut self) {
@@ -166,7 +166,7 @@ impl App {
         let (tx, rx) = scan::spawn_streaming_scan(
             scan_dirs,
             &self.config.current().tui.inline_dirs,
-            self.config().include_non_rust(),
+            self.config.include_non_rust(),
             self.net.http_client(),
             self.scan.metadata_store_handle(),
         );
