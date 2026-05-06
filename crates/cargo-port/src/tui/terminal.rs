@@ -245,7 +245,7 @@ fn event_loop(
 
         let (bg_stats, bg_elapsed) = poll_background_frame(app);
         app.panes.cpu_tick(Instant::now());
-        app.scan_mut().prune_shimmers(Instant::now());
+        app.scan.prune_shimmers(Instant::now());
         clear_terminal_if_dirty(terminal, app)?;
 
         let rows_elapsed = measure(|| app.ensure_visible_rows_cached());
@@ -331,8 +331,8 @@ fn clear_terminal_if_dirty(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
 ) -> io::Result<()> {
-    if app.scan().terminal_is_dirty() {
-        app.scan_mut().clear_terminal_dirty();
+    if app.scan.terminal_is_dirty() {
+        app.scan.clear_terminal_dirty();
         execute!(terminal.backend_mut(), Clear(ClearType::All))?;
         terminal.clear()?;
     }
@@ -368,7 +368,7 @@ fn spawn_pending_background_tasks(app: &mut App) {
         app.ci
             .fetch_tracker_mut()
             .start(AbsolutePath::from(abs_path));
-        app.increment_data_generation();
+        app.scan.bump_generation();
         spawn_ci_fetch(app, &fetch);
     }
 }
@@ -407,7 +407,7 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         disk_results = bg_stats.disk_results,
         needs_rebuild = bg_stats.needs_rebuild,
         items = app.projects().len(),
-        scan_complete = app.scan().is_complete(),
+        scan_complete = app.scan.is_complete(),
         "slow_frame"
     );
 }

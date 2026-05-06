@@ -599,7 +599,7 @@ did not need to fire; Phase 14 will.
 - Phase summary table: corrected baseline-drift error introduced by Phase 7 actually leaving App at 254 (not the table's prior 260). Phases 8–15 "App after" columns shifted -6 each; final post-15 floor moved from ~156 to ~151.
 - Phases 9, 10, 11, 12, 13, 15: confirmed clean — no edits needed. Phase 9 pre-flight (`fn startup`/`startup_mut` only on App) verified; no collisions expected. Phases 10/11/12/13/15 unaffected by Phase 7 outcome.
 
-### Phase 8 — Scan trivial-accessor / pass-through delete
+### Phase 8 — Scan trivial-accessor / pass-through delete ✅
 
 Publish `scan` as `pub(super)`. Delete `scan`/`_mut`, `scan_state_mut` (test-only),
 `data_generation_for_test`, `set_retry_spawn_mode_for_test`,
@@ -644,6 +644,13 @@ will see them as already-published-field uses and skip the chain expansion.
 chain-expansion methods plus `\.scan\(\)`/`\.scan_mut\(\)`). ~30 of the 34
 `scan_state_mut` callers live in
 `src/tui/app/tests/{panes,discovery_shimmer,state}.rs`.
+
+### Retrospective
+
+**What worked:** Chain-expansions-first ordering was correct — running all five (`scan_state_mut`, `set_retry_spawn_mode_for_test`, `refresh_derived_state`, `increment_data_generation`, `data_generation_for_test`) before the `scan`/`scan_mut` field-publish meant the bulk passes saw no leftover App-method calls. The pre-flight collision-revert pass for `\.scan\.scan\.` was prepared but did not fire — no double-prefixes found in the diff.
+**What deviated from the plan:** Phase 8 removed 7 App methods, not the planned `~9`. The original `~9` count included `set_projects` (already moved to Phase 11) and was generous; actual list was `scan`, `scan_mut`, `scan_state_mut`, `set_retry_spawn_mode_for_test`, `increment_data_generation`, `data_generation_for_test` (in `app/mod.rs`), plus `refresh_derived_state` (in `async_tasks/tree.rs`).
+**Surprises:** The collision-revert pass was unnecessary because the chain-expansion regex `\.scan_state_mut\(\)` → `.scan.scan_state_mut()` only matched `app.scan_state_mut()` call sites; it did not re-match the already-correct `self.scan.scan_state_mut()` because perl's substitution operates left-to-right and consumes `.scan_state_mut()` once. Today's already-correct sites had a `.scan.` prefix that perl did not touch.
+**Implications for remaining phases:** The mechanic now stands tested against the hardest expected case (5 chain expansions + name-collision in the same phase). Phases 9 (Startup) and 10 (`projects`/`projects_mut`) are mechanically simpler. The `refresh_derived_state` deletion in `async_tasks/tree.rs` confirms that App methods can live outside `app/mod.rs` — the count_app_methods.py script picks them up automatically, but the deletion list in future phases must scan all of `src/tui/app/` not just `mod.rs`.
 
 ### Phase 9 — Startup trivial-accessor / pass-through delete
 
@@ -992,16 +999,16 @@ sits.
 | 5 | trivial-accessor / pass-through delete: Panes | 6 | ~110 | 259 ✅ |
 | 6 | trivial-accessor / pass-through delete: Focus | 3 | ~93 | 256 ✅ |
 | 7 | trivial-accessor / pass-through delete: Overlays | 2 | 127 | 254 ✅ |
-| 8 | trivial-accessor / pass-through delete: Scan | ~9 | ~95 | 245 |
-| 9 | trivial-accessor / pass-through delete: Startup | ~2 | ~25 | 243 |
-| **10** | **Delete `App::projects()` / `projects_mut()`** | **2** | **~275** | **241** |
-| 11 | `project_list` absorption I — row-navigation read-side | ~17 | ~85 | 224 |
-| 12 | `project_list` absorption II — action methods (with `include_non_rust` arg threading) | ~27 | ~170 | 197 |
-| 13 | Non-`project_list` S relocations | 18 | ~95 | 179 |
-| 14 | Recursive trivial-accessor purge (crate-wide + 5 App-local accessors) | ~50–80 (crate-wide), 5 (App) | ~200 | 174 |
-| 15 | Relocate Group W static helpers to their data owners (after 10) | 23 | ~50 | **151** |
+| 8 | trivial-accessor / pass-through delete: Scan | 7 | ~95 | 247 ✅ |
+| 9 | trivial-accessor / pass-through delete: Startup | ~2 | ~25 | 245 |
+| **10** | **Delete `App::projects()` / `projects_mut()`** | **2** | **~275** | **243** |
+| 11 | `project_list` absorption I — row-navigation read-side | ~17 | ~85 | 226 |
+| 12 | `project_list` absorption II — action methods (with `include_non_rust` arg threading) | ~27 | ~170 | 199 |
+| 13 | Non-`project_list` S relocations | 18 | ~95 | 181 |
+| 14 | Recursive trivial-accessor purge (crate-wide + 5 App-local accessors) | ~50–80 (crate-wide), 5 (App) | ~200 | 176 |
+| 15 | Relocate Group W static helpers to their data owners (after 10) | 23 | ~50 | **153** |
 
-**Net: 308 → 179 on App after Phase 13, → 174 after Phase 14, → ~151 after Phase 15.**
+**Net: 308 → 181 on App after Phase 13, → 176 after Phase 14, → ~153 after Phase 15.**
 Per review-finding C2, six methods (`expand_all`, `collapse_all`,
 `select_matching_visible_row`, `select_project_in_tree`,
 `expand_path_in_tree`, `collapse_to`) keep their S →

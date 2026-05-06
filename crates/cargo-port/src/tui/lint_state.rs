@@ -28,13 +28,13 @@ use super::pane::Viewport;
 use super::panes;
 use super::panes::LintsData;
 use super::panes::PaneId;
+use super::project_list::ProjectList;
 use super::running_tracker::RunningTracker;
 use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
-use crate::tui::project_list::ProjectList;
 
 /// Display value for the Lint row in the Package detail pane.
 ///

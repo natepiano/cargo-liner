@@ -315,7 +315,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
     );
     app.ci.fetch_tracker_mut().complete(abs);
     app.ci.viewport_mut().home();
-    app.increment_data_generation();
+    app.scan.bump_generation();
 }
 
 fn clear_lint_history(app: &mut App) {
@@ -334,7 +334,7 @@ fn clear_lint_history(app: &mut App) {
     app.lint.viewport_mut().home();
     app.focus.set(PaneId::ProjectList);
     app.refresh_lint_cache_usage_from_disk();
-    app.increment_data_generation();
+    app.scan.bump_generation();
 }
 
 fn open_lint_run_output(app: &App) {

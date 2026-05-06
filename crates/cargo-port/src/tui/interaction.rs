@@ -1138,7 +1138,7 @@ mod tests {
         };
         let mut packages = std::collections::HashMap::new();
         packages.insert(pkg.id.clone(), pkg);
-        app.scan()
+        app.scan
             .metadata_store_handle()
             .lock()
             .unwrap_or_else(|_| std::process::abort())
@@ -1220,7 +1220,7 @@ mod tests {
         let mut app = make_app(&[make_package("demo", &project_dir)]);
 
         let custom_target = tmp.path().join("out-of-tree-target");
-        app.scan()
+        app.scan
             .metadata_store_handle()
             .lock()
             .unwrap_or_else(|_| std::process::abort())
@@ -1303,7 +1303,7 @@ mod tests {
             },
             out_of_tree_target_bytes: None,
         };
-        app.scan()
+        app.scan
             .metadata_store_handle()
             .lock()
             .unwrap_or_else(|_| std::process::abort())
@@ -1428,7 +1428,7 @@ mod tests {
         let root = AbsolutePath::from(project_dir);
         let target = AbsolutePath::from(shared_target);
         {
-            let store = app.scan().metadata_store_handle();
+            let store = app.scan.metadata_store_handle();
             let mut guard = store.lock().unwrap_or_else(|_| std::process::abort());
             guard.upsert(WorkspaceMetadata {
                 workspace_root:           root,
@@ -1516,7 +1516,7 @@ mod tests {
             };
             // Route through handle_bg_msg so the TargetDirIndex gets
             // refreshed alongside the store (Step 6c handler path).
-            let store = app.scan().metadata_store_handle();
+            let store = app.scan.metadata_store_handle();
             let generation = store
                 .lock()
                 .unwrap_or_else(|_| std::process::abort())

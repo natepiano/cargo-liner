@@ -168,7 +168,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     }
     if let Some(action) = app.confirm() {
         let body = confirm_action_body(app, action);
-        let verifying = app.scan().confirm_verifying().is_some();
+        let verifying = app.scan.confirm_verifying().is_some();
         render_confirm_popup(frame, action, &body, verifying);
     }
 
@@ -188,7 +188,7 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
     match action {
         ConfirmAction::Clean(project_path) => {
             let target = app
-                .scan()
+                .scan
                 .resolve_target_dir(project_path)
                 .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join("target")));
             let mut lines = vec![project::home_relative_path(target.as_path())];
@@ -225,7 +225,7 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
             let mut seen_targets: HashSet<AbsolutePath> = std::collections::HashSet::new();
             for path in &all_paths {
                 let target = app
-                    .scan()
+                    .scan
                     .resolve_target_dir(path)
                     .unwrap_or_else(|| AbsolutePath::from(path.as_path().join("target")));
                 if seen_targets.insert(target.clone()) {
@@ -247,7 +247,7 @@ fn append_sibling_lines(
     selection: &[AbsolutePath],
     lines: &mut Vec<String>,
 ) {
-    let siblings = app.scan().target_dir_index().siblings(target, selection);
+    let siblings = app.scan.target_dir_index().siblings(target, selection);
     let project_siblings: Vec<&AbsolutePath> =
         siblings.iter().map(|member| &member.project_root).collect();
     if !project_siblings.is_empty() {
@@ -560,7 +560,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let mut left_spans = Vec::new();
-    if !app.scan().is_complete() {
+    if !app.scan.is_complete() {
         let key_style = Style::default()
             .fg(ACCENT_COLOR)
             .add_modifier(Modifier::BOLD);

@@ -785,7 +785,7 @@ fn version_and_description(pkg: Option<&PackageRecord>) -> (String, Option<Strin
 /// `None` for in-tree targets (already reflected in `DiskTarget`) or
 /// before the walk has landed.
 fn lookup_out_of_tree_target_bytes(app: &App, abs_path: &AbsolutePath) -> Option<u64> {
-    let store = app.scan().metadata_store_handle();
+    let store = app.scan.metadata_store_handle();
     let guard = store.lock().ok()?;
     let snap = guard
         .containing_workspace_root(abs_path)
@@ -1539,7 +1539,7 @@ fn resolve_disk_and_ci(
 }
 
 fn lookup_package_record(app: &App, abs_path: &AbsolutePath) -> Option<PackageRecord> {
-    app.scan()
+    app.scan
         .metadata_store_handle()
         .lock()
         .ok()
@@ -1649,7 +1649,8 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 
     let t_wt = std::time::Instant::now();
     let worktrees = wt_item.map_or_else(Vec::new, |item| {
-        app.panes.worktree_summary_or_compute(item.path().as_path(), || worktrees_from_item(app, item))
+        app.panes
+            .worktree_summary_or_compute(item.path().as_path(), || worktrees_from_item(app, item))
     });
     let worktrees_ms = perf_log::ms(t_wt.elapsed().as_millis());
 
@@ -1817,7 +1818,7 @@ pub fn build_ci_data(app: &App) -> CiData {
         CiEmptyState::NoWorkflowConfigured
     } else if is_fetching {
         CiEmptyState::Fetching
-    } else if ci_info.is_none() || !app.scan().is_complete() {
+    } else if ci_info.is_none() || !app.scan.is_complete() {
         CiEmptyState::Loading
     } else if branch_filtered_empty {
         unpublished_branch_name.map_or_else(

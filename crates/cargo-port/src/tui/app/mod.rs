@@ -82,6 +82,7 @@ use super::overlays::Overlays;
 use super::panes::LayoutCache;
 use super::panes::PaneId;
 use super::panes::Panes;
+use super::project_list::ProjectList;
 use super::scan_state::Scan;
 use super::toasts::ToastStyle::Warning;
 use super::toasts::ToastView;
@@ -103,7 +104,6 @@ use crate::project::WorkspaceMetadataStore;
 use crate::project::WorktreeGroup;
 use crate::scan;
 use crate::scan::BackgroundMsg;
-use crate::tui::project_list::ProjectList;
 
 #[cfg(test)]
 #[allow(
@@ -151,6 +151,8 @@ pub(super) use super::net_state::AvailabilityStatus;
 use super::net_state::Net;
 use super::panes;
 use super::panes::BottomRow;
+pub(super) use super::project_list::ExpandKey;
+pub(super) use super::project_list::VisibleRow;
 use super::settings::SettingOption;
 use super::shortcuts::InputContext;
 use super::toasts::ToastManager;
@@ -158,8 +160,6 @@ use super::toasts::ToastTaskId;
 use crate::project;
 use crate::project::RootItem;
 use crate::scan::MetadataDispatchContext;
-pub(super) use crate::tui::project_list::ExpandKey;
-pub(super) use crate::tui::project_list::VisibleRow;
 pub(super) struct App {
     /// Net subsystem. Owns the shared `HttpClient`, the GitHub
     /// sub-state (availability, repo-fetch cache, in-flight set,
@@ -209,7 +209,7 @@ pub(super) struct App {
     /// `target_dir_index`, `priority_fetch_path`,
     /// `confirm_verifying`, `lint_cache_usage`, and (test-only)
     /// `retry_spawn_mode`.
-    scan:                    Scan,
+    pub(super) scan:         Scan,
     /// Startup-phase orchestrator. Owns the per-phase trackers
     /// (`disk`, `git`, `repo`, `metadata`, `lint_phase`,
     /// `lint_count`) plus the `scan_complete_at`, `toast`, and
@@ -821,8 +821,6 @@ impl App {
         }
     }
 
-    pub(super) const fn increment_data_generation(&mut self) { self.scan.bump_generation(); }
-
     /// Borrow `App` for a structural mutation of the project tree.
     /// The returned guard borrows `&mut ProjectList + &mut Panes +
     /// &mut Selection` directly so its `Drop` can fan out across the
@@ -858,15 +856,6 @@ impl App {
         self.project_list.replace_roots_from(projects);
     }
 
-    #[cfg(test)]
-    pub(super) const fn set_retry_spawn_mode_for_test(&mut self, mode: RetrySpawnMode) {
-        self.scan.set_retry_spawn_mode(mode);
-    }
-
-    pub(super) const fn scan(&self) -> &Scan { &self.scan }
-
-    pub(super) const fn scan_mut(&mut self) -> &mut Scan { &mut self.scan }
-
     /// `Startup` subsystem accessor. Test-only — production paths
     /// reach the field directly via `self.startup`.
     #[cfg(test)]
@@ -874,12 +863,6 @@ impl App {
 
     #[cfg(test)]
     pub(super) const fn startup_mut(&mut self) -> &mut Startup { &mut self.startup }
-
-    #[cfg(test)]
-    pub(super) const fn scan_state_mut(&mut self) -> &mut ScanState { self.scan.scan_state_mut() }
-
-    #[cfg(test)]
-    pub(super) const fn data_generation_for_test(&self) -> u64 { self.scan.generation() }
 
     pub(super) fn dismiss_target_for_row(&self, row: VisibleRow) -> Option<DismissTarget> {
         self.dismiss_target_for_row_inner(row)

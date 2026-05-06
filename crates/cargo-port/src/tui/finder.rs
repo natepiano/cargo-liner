@@ -33,6 +33,7 @@ use super::panes;
 use super::panes::PaneId;
 use super::panes::RunTargetKind;
 use super::popup::PopupFrame;
+use super::project_list::ProjectList;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ExampleGroup;
@@ -44,7 +45,6 @@ use crate::project::RustProject;
 use crate::project::VendoredPackage;
 use crate::project::Workspace;
 use crate::project::WorktreeGroup;
-use crate::tui::project_list::ProjectList;
 
 /// A searchable item in the universal finder.
 #[derive(Clone)]

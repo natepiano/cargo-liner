@@ -38,7 +38,7 @@ impl App {
         stats.disk_results = 0;
 
         if needs_rebuild {
-            self.refresh_derived_state();
+            self.scan.bump_generation();
             self.maybe_priority_fetch();
         }
         stats.needs_rebuild = needs_rebuild;

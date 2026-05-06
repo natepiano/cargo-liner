@@ -97,7 +97,7 @@ fn seed_single_example_metadata(app: &App, project_path: &AbsolutePath, example_
     };
     let mut packages = std::collections::HashMap::new();
     packages.insert(pkg.id.clone(), pkg);
-    app.scan()
+    app.scan
         .metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())
@@ -134,7 +134,7 @@ fn tabbable_panes_follow_canonical_order() {
     seed_single_example_metadata(&app, &project_path, "example");
     app.toasts = ToastManager::default();
     app.toasts.viewport_mut().set_len(0);
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
     apply_git_info(
         &mut app,
         project.path(),
@@ -251,7 +251,7 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
 
     let project = make_project(Some("demo"), "/never-real/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
     app.projects_mut().set_cursor(0);
     app.sync_selected_project();
 
@@ -313,7 +313,7 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
         out_of_tree_target_bytes: None,
     };
     let generation = app
-        .scan()
+        .scan
         .metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())

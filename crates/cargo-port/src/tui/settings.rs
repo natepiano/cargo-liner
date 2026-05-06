@@ -716,8 +716,7 @@ fn push_setting_row(
             &error,
             ctx.selection.patch(Style::default().fg(INLINE_ERROR_COLOR)),
         );
-    } else if app.overlays.is_settings_editing()
-        && ctx.selection != PaneSelectionState::Unselected
+    } else if app.overlays.is_settings_editing() && ctx.selection != PaneSelectionState::Unselected
     {
         let edit_buffer = render_edit_buffer(
             app.config.edit_buffer().buf(),

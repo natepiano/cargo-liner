@@ -29,7 +29,7 @@ fn lint_runtime_waits_for_scan_completion() {
 
     assert!(app.lint_runtime_projects().is_empty());
 
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
     let projects = app.lint_runtime_projects();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].abs_path, abs_path);
@@ -387,7 +387,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     let project_a = make_project(Some("a"), "~/a");
     let project_b = make_project(Some("b"), "~/b");
     let mut app = make_app(&[project_a.clone(), project_b]);
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
 
     app.initialize_startup_phase_tracker();
 
@@ -506,7 +506,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
 
     let mut app = make_app(&[]);
     apply_items(&mut app, &[non_rust, workspace, worktrees]);
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
 
     app.initialize_startup_phase_tracker();
 
@@ -541,7 +541,7 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 
     let mut app = make_app(&[]);
     apply_items(&mut app, &[workspace]);
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
     apply_git_info(&mut app, member_dir.as_path(), make_git_info(None));
@@ -558,7 +558,7 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 fn lint_toast_reuses_existing_on_restart() {
     let project = make_project(Some("a"), "~/a");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project.path().to_path_buf().into(),
@@ -596,7 +596,7 @@ fn lint_runtime_projects_uses_workspace_root_not_members() {
 
     let mut app = make_app(&[workspace, member_a, member_b]);
     apply_items(&mut app, &[root]);
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
 
     let projects = app.lint_runtime_projects();
     assert_eq!(projects.len(), 1);
@@ -621,7 +621,7 @@ fn lint_runtime_projects_deduplicates_primary_worktree_path() {
 
     let mut app = make_app(&[make_project(Some("ws"), "~/ws"), feature_item]);
     apply_items(&mut app, &[root_item]);
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
 
     let projects = app.lint_runtime_projects();
     assert_eq!(projects.len(), 2);
@@ -717,7 +717,7 @@ fn git_status_suppresses_sync_for_untracked_and_ignored() {
 fn background_git_info_updates_rendered_git_status() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
 
     apply_bg_msg(
         &mut app,
@@ -880,7 +880,7 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
 fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
     apply_git_info(
         &mut app,
         project.path(),
@@ -932,7 +932,7 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
 fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
     app.projects_mut().set_cursor(0);
     app.sync_selected_project();
 
@@ -1130,7 +1130,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     );
 
     // Bumping the data generation invalidates the stamp → must rebuild.
-    app.increment_data_generation();
+    app.scan.bump_generation();
     app.ensure_detail_cached();
     let after_generation_bump = app.panes.pane_data().detail_build_count();
     assert_eq!(
@@ -1167,14 +1167,18 @@ fn worktree_summary_or_compute_caches_until_tree_mutation() {
     let group_root = test_path("~/demo");
     let counter = std::sync::atomic::AtomicUsize::new(0);
 
-    let _ = app.panes.worktree_summary_or_compute(group_root.as_path(), || {
-        counter.fetch_add(1, Ordering::SeqCst);
-        Vec::new()
-    });
-    let _ = app.panes.worktree_summary_or_compute(group_root.as_path(), || {
-        counter.fetch_add(1, Ordering::SeqCst);
-        Vec::new()
-    });
+    let _ = app
+        .panes
+        .worktree_summary_or_compute(group_root.as_path(), || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Vec::new()
+        });
+    let _ = app
+        .panes
+        .worktree_summary_or_compute(group_root.as_path(), || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Vec::new()
+        });
     assert_eq!(
         counter.load(std::sync::atomic::Ordering::SeqCst),
         1,
@@ -1190,10 +1194,12 @@ fn worktree_summary_or_compute_caches_until_tree_mutation() {
         // Drop here.
     }
 
-    let _ = app.panes.worktree_summary_or_compute(group_root.as_path(), || {
-        counter.fetch_add(1, Ordering::SeqCst);
-        Vec::new()
-    });
+    let _ = app
+        .panes
+        .worktree_summary_or_compute(group_root.as_path(), || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Vec::new()
+        });
     assert_eq!(
         counter.load(std::sync::atomic::Ordering::SeqCst),
         2,
@@ -1551,7 +1557,7 @@ fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let project_b = make_project(Some("b"), "~/never-real/b");
     let mut app = make_app(&[project_a.clone(), project_b.clone()]);
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
 
     app.initialize_startup_phase_tracker();
 
@@ -1584,12 +1590,12 @@ fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
 fn successful_metadata_arrival_advances_phase_and_tracked_item() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let mut app = make_app(std::slice::from_ref(&project_a));
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
     let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
     let generation = app
-        .scan()
+        .scan
         .metadata_store_handle()
         .lock()
         .expect("store lock")
@@ -1607,7 +1613,7 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
         "metadata.seen records the arrived workspace"
     );
     assert!(
-        app.scan()
+        app.scan
             .metadata_store_handle()
             .lock()
             .expect("store lock")
@@ -1629,11 +1635,11 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
 fn stale_generation_metadata_arrival_is_dropped() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let mut app = make_app(std::slice::from_ref(&project_a));
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
     let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
-    let store = app.scan().metadata_store_handle();
+    let store = app.scan.metadata_store_handle();
     let stale_gen = store
         .lock()
         .expect("store")
@@ -1657,7 +1663,7 @@ fn stale_generation_metadata_arrival_is_dropped() {
         "stale-generation arrival does not advance metadata.seen"
     );
     assert!(
-        app.scan()
+        app.scan
             .metadata_store_handle()
             .lock()
             .expect("store")
@@ -1674,12 +1680,12 @@ fn stale_generation_metadata_arrival_is_dropped() {
 fn failed_metadata_arrival_surfaces_error_toast() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let mut app = make_app(std::slice::from_ref(&project_a));
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
     let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
     let generation = app
-        .scan()
+        .scan
         .metadata_store_handle()
         .lock()
         .expect("store")
@@ -1729,7 +1735,7 @@ fn cargo_metadata_workspace_missing_does_not_raise_toast() {
         .reset_with_expected(std::iter::once(workspace_root.clone()).collect());
 
     let generation = app
-        .scan()
+        .scan
         .metadata_store_handle()
         .lock()
         .expect("store")
@@ -1775,7 +1781,7 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
     let mut app = make_app(&[pkg]);
 
     // Inject metadata pointing the project at the out-of-tree target.
-    app.scan()
+    app.scan
         .metadata_store_handle()
         .lock()
         .expect("store")
@@ -1819,7 +1825,7 @@ fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
         ..crate::project::Package::default()
     }));
     let mut app = make_app(&[pkg]);
-    app.scan()
+    app.scan
         .metadata_store_handle()
         .lock()
         .expect("store")
@@ -1873,7 +1879,7 @@ fn start_clean_falls_back_to_literal_target_when_no_metadata_yet() {
 fn startup_ready_waits_on_metadata_phase() {
     let project_a = make_project(Some("a"), "~/never-real/a");
     let mut app = make_app(std::slice::from_ref(&project_a));
-    app.scan_state_mut().phase = ScanPhase::Complete;
+    app.scan.scan_state_mut().phase = ScanPhase::Complete;
     app.initialize_startup_phase_tracker();
 
     let now = std::time::Instant::now();
@@ -1907,7 +1913,7 @@ fn startup_ready_waits_on_metadata_phase() {
     // Dispatch the metadata arrival → phase completes → startup ready.
     let workspace_root = AbsolutePath::from(project_a.path().as_path().to_path_buf());
     let generation = app
-        .scan()
+        .scan
         .metadata_store_handle()
         .lock()
         .expect("store")
@@ -2016,7 +2022,7 @@ fn request_clean_confirm_opens_ready_when_fingerprint_matches() {
     // (the project path doesn't exist). capture() will fail on the
     // non-existent path, and `should_verify_before_clean` treats
     // capture failure as "no drift" → Ready.
-    app.scan()
+    app.scan
         .metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())
@@ -2025,7 +2031,7 @@ fn request_clean_confirm_opens_ready_when_fingerprint_matches() {
     app.request_clean_confirm(workspace_root);
 
     assert!(
-        app.scan().confirm_verifying().is_none(),
+        app.scan.confirm_verifying().is_none(),
         "capture failure (test path doesn't exist) → no verifying state"
     );
     assert!(app.confirm().is_some(), "popup opens immediately in Ready");
@@ -2045,7 +2051,7 @@ fn request_clean_confirm_marks_verifying_when_no_metadata_covers_path() {
     app.request_clean_confirm(workspace_root.clone());
 
     assert_eq!(
-        app.scan().confirm_verifying(),
+        app.scan.confirm_verifying(),
         Some(&workspace_root),
         "missing metadata → confirm opens in Verifying state, \
          pending on this workspace root"
@@ -2055,7 +2061,7 @@ fn request_clean_confirm_marks_verifying_when_no_metadata_covers_path() {
     // clear the Verifying flag (design plan → "Verifying target
     // dir…" transitions to Ready on metadata arrival).
     let generation = app
-        .scan()
+        .scan
         .metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())
@@ -2067,7 +2073,7 @@ fn request_clean_confirm_marks_verifying_when_no_metadata_covers_path() {
         result: Ok(fake_metadata(&workspace_root)),
     });
     assert!(
-        app.scan().confirm_verifying().is_none(),
+        app.scan.confirm_verifying().is_none(),
         "successful arrival clears the Verifying flag"
     );
 }
@@ -2086,7 +2092,7 @@ fn out_of_tree_target_size_message_stamps_metadata() {
     }));
     let mut app = make_app(&[pkg]);
     {
-        let store = app.scan().metadata_store_handle();
+        let store = app.scan.metadata_store_handle();
         let mut guard = store.lock().unwrap_or_else(|_| std::process::abort());
         guard.upsert(WorkspaceMetadata {
             workspace_root:           workspace_root.clone(),
@@ -2106,7 +2112,7 @@ fn out_of_tree_target_size_message_stamps_metadata() {
     });
 
     let stamped = app
-        .scan()
+        .scan
         .metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())
@@ -2183,7 +2189,7 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
         out_of_tree_target_bytes: None,
     };
     let generation = app
-        .scan()
+        .scan
         .metadata_store_handle()
         .lock()
         .unwrap_or_else(|_| std::process::abort())
@@ -2229,7 +2235,7 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     assert!(!app.lint.running().is_empty());
 
     // App-shell scan state: capture the pre-call generation.
-    let gen_before = app.data_generation_for_test();
+    let gen_before = app.scan.generation();
 
     // Selection: replace fit_widths with a sentinel generation so we
     // can prove reset_fit_widths fired (reset re-seeds with
@@ -2251,7 +2257,7 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     );
     // Scan: data_generation bumped exactly once.
     assert_eq!(
-        app.data_generation_for_test(),
+        app.scan.generation(),
         gen_before + 1,
         "apply_lint_config_change must bump data_generation"
     );

@@ -40,9 +40,6 @@ impl App {
         }
         self.sync_selected_project();
     }
-    /// Lightweight refresh of derived state after in-place hierarchy changes
-    /// (discovery, refresh). Marks caches dirty without a full tree rebuild.
-    pub const fn refresh_derived_state(&mut self) { self.scan.bump_generation(); }
     pub(super) fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
         self.projects()
             .iter()

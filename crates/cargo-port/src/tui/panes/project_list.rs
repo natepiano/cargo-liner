@@ -251,16 +251,11 @@ fn set_project_list_dismiss_actions(app: &mut App, list_area: Rect, row_width: u
             .saturating_add(row_width.saturating_sub(suffix_width));
         actions.push((Rect::new(x, y, suffix_width, 1), target));
     }
-    app.panes
-        .project_list_mut()
-        .set_dismiss_actions(actions);
+    app.panes.project_list_mut().set_dismiss_actions(actions);
 }
 
 const fn clear_project_list_surface(app: &mut App) {
-    app.panes
-        .project_list_mut()
-        .viewport_mut()
-        .clear_surface();
+    app.panes.project_list_mut().viewport_mut().clear_surface();
 }
 
 fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<'static>) {

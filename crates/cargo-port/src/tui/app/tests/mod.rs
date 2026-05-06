@@ -132,7 +132,7 @@ fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
         Instant::now(),
         metadata_store,
     );
-    app.set_retry_spawn_mode_for_test(RetrySpawnMode::Disabled);
+    app.scan.set_retry_spawn_mode(RetrySpawnMode::Disabled);
     app.sync_selected_project();
     app
 }
@@ -485,7 +485,7 @@ fn item_from_project_dir(dir: &Path) -> RootItem {
 
 fn apply_bg_msg(app: &mut App, msg: BackgroundMsg) {
     if app.handle_bg_msg(msg) {
-        app.refresh_derived_state();
+        app.scan.bump_generation();
     }
     app.ensure_visible_rows_cached();
 }

@@ -8,6 +8,10 @@ use indexmap::IndexMap;
 use indexmap::map::Values;
 use indexmap::map::ValuesMut;
 
+use super::app::FinderState;
+use super::app::SelectionPaths;
+use super::app::SelectionSync;
+use super::columns::ProjectListWidths;
 use crate::ci;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
@@ -36,10 +40,6 @@ use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
 use crate::scan;
-use crate::tui::app::FinderState;
-use crate::tui::app::SelectionPaths;
-use crate::tui::app::SelectionSync;
-use crate::tui::columns::ProjectListWidths;
 
 /// Owning wrapper around the project hierarchy plus all project-list
 /// navigation state (cursor, expansion set, finder, sort/width caches).

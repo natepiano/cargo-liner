@@ -569,14 +569,11 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     let rows = build_rows(app.keymap.current());
 
     // Dynamic width: base fits all normal keys, expands for conflict messages.
-    let content_width = app
-        .overlays
-        .inline_error()
-        .map_or(BASE_POPUP_WIDTH, |msg| {
-            // 2 indent + 25 desc + msg len + 2 pad
-            let needed = u16::try_from(2 + 25 + msg.len() + 2).unwrap_or(u16::MAX);
-            BASE_POPUP_WIDTH.max(needed)
-        });
+    let content_width = app.overlays.inline_error().map_or(BASE_POPUP_WIDTH, |msg| {
+        // 2 indent + 25 desc + msg len + 2 pad
+        let needed = u16::try_from(2 + 25 + msg.len() + 2).unwrap_or(u16::MAX);
+        BASE_POPUP_WIDTH.max(needed)
+    });
     // +2 for left/right border
     let width = (content_width + 2).min(area.width.saturating_sub(4));
 

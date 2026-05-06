@@ -77,7 +77,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
             kind = %event_label(event),
             focus = pane_label(app.focus.current()),
-            scan_complete = app.scan().is_complete(),
+            scan_complete = app.scan.is_complete(),
             selected = %app.selected_project_path()
                 .map_or_else(|| "-".to_string(), |path| path.display().to_string()),
             "input_event"
@@ -106,7 +106,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         app.inflight
             .example_output_mut()
             .push("── killed ──".to_string());
-        app.scan_mut().mark_terminal_dirty();
+        app.scan.mark_terminal_dirty();
         return;
     }
     if code == KeyCode::Esc && !app.inflight.example_output().is_empty() {
@@ -213,7 +213,7 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
     // re-fetch, `y` is disabled — the plan isn't trustworthy yet.
     // `n` cancels regardless, so we let the Ignore path fall through
     // to take_confirm().
-    if key == KeyCode::Char('y') && app.scan().confirm_verifying().is_some() {
+    if key == KeyCode::Char('y') && app.scan.confirm_verifying().is_some() {
         return true;
     }
     let Some(action) = app.take_confirm() else {

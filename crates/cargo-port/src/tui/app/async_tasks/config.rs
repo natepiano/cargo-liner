@@ -188,7 +188,7 @@ impl App {
                 }
                 self.project_list
                     .regroup_members(&self.config.current().tui.inline_dirs);
-                self.refresh_derived_state();
+                self.scan.bump_generation();
             },
             TreeReaction::None => {
                 if actions.refresh_lint_runtime.should_apply() {
