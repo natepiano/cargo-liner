@@ -18,6 +18,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+#[cfg(test)]
 use super::toast_bodies;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
