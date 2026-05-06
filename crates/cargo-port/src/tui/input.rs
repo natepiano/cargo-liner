@@ -92,8 +92,8 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     let code = normalized.code;
 
     // Structural keys checked by code only (modifiers irrelevant).
-    if code == KeyCode::Esc && app.example_running().is_some() {
-        let pid_holder = app.example_child();
+    if code == KeyCode::Esc && app.inflight.example_running().is_some() {
+        let pid_holder = app.inflight.example_child();
         let pid = *pid_holder
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -102,14 +102,16 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
                 .arg(pid.to_string())
                 .output();
         }
-        app.set_example_running(None);
-        app.example_output_mut().push("── killed ──".to_string());
+        app.inflight.set_example_running(None);
+        app.inflight
+            .example_output_mut()
+            .push("── killed ──".to_string());
         app.scan_mut().mark_terminal_dirty();
         return;
     }
-    if code == KeyCode::Esc && !app.example_output().is_empty() {
+    if code == KeyCode::Esc && !app.inflight.example_output().is_empty() {
         let was_on_output = app.focus().is(PaneId::Output);
-        app.example_output_mut().clear();
+        app.inflight.example_output_mut().clear();
         if was_on_output {
             app.focus_mut().set(PaneId::Targets);
         }
@@ -221,7 +223,8 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
         match action {
             ConfirmAction::Clean(abs_path) => {
                 if app.start_clean(&abs_path) {
-                    app.pending_cleans_mut()
+                    app.inflight
+                        .pending_cleans_mut()
                         .push_back(PendingClean { abs_path });
                 }
             },
@@ -234,7 +237,8 @@ fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
                 // project cleans.
                 for path in std::iter::once(primary).chain(linked) {
                     if app.start_clean(&path) {
-                        app.pending_cleans_mut()
+                        app.inflight
+                            .pending_cleans_mut()
                             .push_back(PendingClean { abs_path: path });
                     }
                 }
@@ -647,20 +651,20 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
 
 fn handle_toast_key(app: &mut App, event: &KeyEvent) {
     match event.code {
-        KeyCode::Up => app.toasts_mut().viewport_mut().up(),
-        KeyCode::Down => app.toasts_mut().viewport_mut().down(),
-        KeyCode::Home => app.toasts_mut().viewport_mut().home(),
+        KeyCode::Up => app.toasts.viewport_mut().up(),
+        KeyCode::Down => app.toasts.viewport_mut().down(),
+        KeyCode::Home => app.toasts.viewport_mut().home(),
         KeyCode::End => {
-            let last_index = app.toasts().active_now().len().saturating_sub(1);
-            app.toasts_mut().viewport_mut().set_pos(last_index);
+            let last_index = app.toasts.active_now().len().saturating_sub(1);
+            app.toasts.viewport_mut().set_pos(last_index);
         },
         KeyCode::Enter => {
             // Open action_path if the focused toast has one.
             if let Some(toast) = app
-                .toasts()
+                .toasts
                 .active_now()
                 .into_iter()
-                .nth(app.toasts().viewport().pos())
+                .nth(app.toasts.viewport().pos())
                 && let Some(path) = toast.action_path()
             {
                 let editor = app.config.editor().to_string();

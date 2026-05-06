@@ -148,7 +148,7 @@ count directly; Phase 2 preps for 11/12 and Phase 14 cleans trivial
 accessors crate-wide.
 
 **Where the reduction concentrates.** The ~153 removals:
-- **~88** trivial accessors / pass-throughs deleted (T+P) across Phases 3–9.
+- **~88** trivial accessors / pass-throughs deleted (trivial-accessor + pass-through) across Phases 3–9.
 - **64** single-subsystem orchestrators relocated.
 
 S relocation destinations:
@@ -255,7 +255,7 @@ not project data.
 - Phase 2 step 4 — drop the `&Selection` slot from `App::split_panes_for_render`'s return tuple at the same time `Selection` is deleted (already bound `_selection` and unused).
 - Phase 2 step 5 — rename now also covers `PaneRenderCtx::projects`, `DispatchArgs::projects`, and locals named `projects` in `dispatch_via_trait` / `render_lints_pane` / `render_ci_pane` (introduced by Phase 1's render-context rename).
 - Phase 2 borrow-checker note — reworded to reflect that `TreeMutation` already borrows `&mut ProjectList + &mut Panes + &mut Selection` post-Phase-1; Phase 2's actual change is dropping the `&mut Selection` slot.
-- Phase 8 (Scan T/P delete; was Phase 5.4 pre-resequence) — caller estimate trimmed to ~40–50 with explicit note that no `tui/render.rs` or `tui/panes/*` touches are needed.
+- Phase 8 (Scan trivial-accessor / pass-through delete; was Phase 5.4 pre-resequence) — caller estimate trimmed to ~40–50 with explicit note that no `tui/render.rs` or `tui/panes/*` touches are needed.
 - Phase 10 — caller-count updated from ~304 to ~275 (live: 250 + 25); also added explicit "depends on Phase 2 step 5" sequencing note to guard against the `selected_project_path_for_render` call path breaking if Phase 10 lands before the field rename.
 - Phase 11 — added render-path note about `selected_project_path_for_render`: post-Phase-2 it's a pure `ProjectList` query, so render.rs can either keep the App shim or invert order (split-borrow first, then call on `&ProjectList`).
 - Phase 15 — ordering note expanded to include Phase 2 dependency (field rename), not just Phase 10.
@@ -342,14 +342,14 @@ fan-out, the rest of the TreeMutation surface is already in place.
 - Group X line for `split_panes_for_render` updated to reflect the now-4-tuple return signature (selection slot dropped in Phase 2 step 4).
 - No findings rejected.
 
-### Phase 3 — Tooling + small-subsystem T/P delete ✅
+### Phase 3 — Tooling + small-subsystem trivial-accessor / pass-through delete ✅
 
 Two pieces:
 
 1. **Ship `scripts/count_app_methods.py`** — the corrected classifier with the helper-resolution
    table. Output: total App method count, per-category breakdown, S relocation list. Single
    command, <1s. Every retrospective uses this.
-2. **Delete T/P for Config, Keymap, LayoutCache.** Publish `app.config`, `app.keymap`,
+2. **Delete trivial-accessor / pass-through for Config, Keymap, LayoutCache.** Publish `app.config`, `app.keymap`,
    `app.layout_cache` as `pub(super)`. Delete the trivial accessors and short pass-throughs
    (`config()`, `config_mut()`, `current_config()`, `current_config_mut()`, `config_path()`,
    `keymap()`, `keymap_mut()`, `layout_cache()`, `layout_cache_mut()`, `settings_edit_*`).
@@ -382,18 +382,18 @@ subsystems.
 
 #### Phase 3 Review
 
-- Phase 5 (was T/P delete: Panes/Focus/Overlays/Scan/Startup as one phase with sub-commits 5.1–5.5) split into five separately-numbered phases (Panes/Focus/Overlays/Scan/Startup = Phases 5–9) per the no-sub-commits rule. Old Phases 6–11 renumbered to 10–15. Summary table and all cross-references updated.
+- Phase 5 (was trivial-accessor / pass-through delete: Panes/Focus/Overlays/Scan/Startup as one phase with sub-commits 5.1–5.5) split into five separately-numbered phases (Panes/Focus/Overlays/Scan/Startup = Phases 5–9) per the no-sub-commits rule. Old Phases 6–11 renumbered to 10–15. Summary table and all cross-references updated.
 - Phase 13 scan list reconciled with inventory: `handle_git_first_commit`, `should_verify_before_clean`, `handle_out_of_tree_target_size`, `handle_repo_meta`. `clean_metadata_dispatch` and `update_generations_for_msg` stay on App (Group X).
 - Phase 13 toasts list replaced with inventory's 4 specific methods: `push_service_unavailable_toast`, `start_task_toast`, `mark_tracked_item_completed`, `focused_toast_id`. `dismiss_keymap_diagnostics` stays on App (Group X).
-- Phase 13 background list replaced: `register_item_background_services` (S relocation) instead of `finish_watcher_registration_batch` (P-shim handled in T/P sweep). Phase 13 method count 17 → 18.
+- Phase 13 background list replaced: `register_item_background_services` (S relocation) instead of `finish_watcher_registration_batch` (P-shim handled in trivial-accessor / pass-through sweep). Phase 13 method count 17 → 18.
 - Phase 12 dropped `register_existing_projects` (Group X — touches `project_list` and `background`); count 28 → 27.
-- Phase 5 (Panes T/P) gained `poll_cpu_if_due`; count ~8 → ~9. (`apply_hovered_pane_row` was already excluded as Group X.)
+- Phase 5 (Panes trivial-accessor / pass-through) gained `poll_cpu_if_due`; count ~8 → ~9. (`apply_hovered_pane_row` was already excluded as Group X.)
 - Phase 11 (project_list absorption I) gained `last_selected_path` (single-subsystem read); count ~16 → ~17.
 - Phase 14 gained an "App-local trivial accessors" subsection enumerating `mouse_pos`/`set_mouse_pos`, `animation_elapsed`, `toast_timeout`, `resolved_dirs` (5 App-local removals). Final App count target adjusted: 161 → ~156.
 - Summary table caller-rewrite columns updated: Phase 6 estimate 304 → 275 (live: 250 + 25); Phase 9 method count 18 → 17; Phase 3 row marked ✅ with measured delta.
-- T+P table heading rescoped from "Phase 3 deletion list" to "deletion list (Phases 3–9)"; 13 Phase-3-completed rows marked with ✅.
+- trivial-accessor + pass-through table heading rescoped from "Phase 3 deletion list" to "deletion list (Phases 3–9)"; 13 Phase-3-completed rows marked with ✅.
 
-### Phase 4 — Medium-subsystem T/P delete (Lint, Ci, Toasts, Net, Background, Inflight)
+### Phase 4 — Medium-subsystem trivial-accessor / pass-through delete (Lint, Ci, Toasts, Net, Background, Inflight) ✅
 
 Publish each subsystem as `pub(super)`. Delete trivial accessors and pass-throughs:
 `lint()`/`_mut`, `ci()`/`_mut`, `toasts()`/`_mut`, `net()`, `inflight()`,
@@ -403,32 +403,121 @@ Publish each subsystem as `pub(super)`. Delete trivial accessors and pass-throug
 
 **Methods removed:** ~20. **Caller rewrites:** ~250.
 
-### Phase 5 — Panes T/P delete
+#### Retrospective
+
+**What worked:**
+- Publish-field + perl-bulk-rewrite + delete-accessor mechanic transferred cleanly from Phase 3. 28 App methods removed (293 → 265, delta −28); plan predicted ~20 — undercount because pass-throughs (`set_pending_*`, `take_pending_*`, `set_ci_fetch_toast`, `pending_cleans_mut`, `example_output_mut`) were collapsed into "set/take pending fetch helpers" / "example_*" bullets in the plan.
+- Diagnostic-driven iteration worked: each `cargo check` round surfaced the next batch of stale references, including two `&dyn Hittable` arms in `interaction.rs:66,76` that needed `&app.toasts` / `&app.lint` / `&app.ci` (field access loses the auto-borrow that the accessor provided).
+
+**What deviated from the plan:**
+- Pass-through bulk-replace over-applied across non-App types whose own methods share the same name. `\.rate_limit\(\)` matched HttpClient::rate_limit and Net::rate_limit bodies (`self.http_client.rate_limit()` → `self.http_client.net.rate_limit()`); `\.example_*\(\)` matched Inflight test bodies (`inflight.example_running()` → `inflight.inflight.example_running()`); `self.net.X()` and `self.inflight.X()` already-correct call sites in `app/async_tasks/*.rs` got prefixed twice. Required a follow-up perl pass to revert `\.net\.net\.` / `\.inflight\.inflight\.` / `inflight.inflight.` / `client.net.X()` / `self.http_client.net.rate_limit()`.
+- Field-access loses auto-borrow at trait-object coercion sites: `app.toasts` (a `ToastManager` value) does not coerce to `&dyn Hittable` the way `app.toasts()` (returning `&ToastManager`) did. Needed manual `&app.toasts` / `&app.lint` / `&app.ci` at three sites in `interaction.rs`.
+- `set_ci_fetch_toast` could not be done via mechanical regex — it wraps the arg in `Some(...)`. Single caller rewritten by hand: `app.set_ci_fetch_toast(task_id)` → `app.ci.set_fetch_toast(Some(task_id))`.
+- 8 unused imports surfaced after the deletions (`VecDeque`, `GitHubRateLimit`, `RepoCache`, `PendingCiFetch`, `PendingExampleRun`, `CiFetchMsg`, `CleanMsg`, `ExampleMsg`). All removed.
+
+**Surprises:**
+- The naming overlap between App-side accessor and underlying-type method (Net::rate_limit, HttpClient::rate_limit, Inflight::example_running) is real and breaks naive bulk regex. Future phases with similar overlap (Panes::pane_data overlaps with App::pane_data?) need the regex scoped to App-side call patterns or the over-replacement reverted in a second pass.
+- The `inflight` test module uses a variable literally named `inflight`, so even `\binflight\.X\(` patterns hit. Rust's lack of method-call AST for a regex tool means revert-after-the-fact is the practical approach.
+
+**Implications for remaining phases:**
+- Phase 5 (Panes) — `panes` is a common substring; `pane_data`, `panes_mut`, `set_hovered_pane_row` are App-side names that may or may not collide with method names on the `Panes` type itself. Pre-flight: enumerate Panes' own methods before running the regex; expect a revert pass.
+- Phase 6 (Focus) — `focus()`, `focus_mut()`, `focused_pane()` — `Focus::focused_pane` likely exists. Same revert-pass risk.
+- Phase 7 (Overlays) — `overlays()`/`_mut()` — high call-site count (~130) but the names are unlikely to collide with non-App types.
+- The clean run of test + clippy + install confirmed Phase 4's net effect: −28 App methods, no behavior change. End-state 265 is 9 below the plan's 274 estimate; future targets adjust down by 9 unless re-estimated.
+
+#### Phase 4 Review
+
+- Phase 5 (Panes) gained a mandatory pre-flight name-collision check + revert pass: `Panes::pane_data` and `Panes::worktree_summary_or_compute` collide with App-side accessors. Trait-object-coercion grep also added.
+- Phase 6 (Focus), Phase 7 (Overlays), Phase 9 (Startup) tagged as "no pre-flight collision check needed" — verified against subsystem method lists; those phases can run the bulk-replace mechanic without a revert pass.
+- Phase 8 (Scan) gained a mandatory pre-flight + revert pass: `Scan::scan_state_mut`, `Scan::bump_generation`, `Scan::metadata_store`, `Scan::target_dir_index`, `Scan::priority_fetch_path`, `Scan::confirm_verifying`, `Scan::discovery_shimmers` all collide. Densest collision surface in the trivial-accessor / pass-through sweep.
+- "Mechanics of a collapse step" section grew from 6 steps to 9: added step 2 (pre-flight collision grep), step 5 (revert double-prefix `\.X\.X\.` → `.X.`), step 7 (clean up orphaned imports). Also called out trait-object-coercion sites (auto-borrow lost when accessor → field) and arity-changing rewrites (`set_ci_fetch_toast(x)` → `ci.set_fetch_toast(Some(x))`).
+- Phase 13 framing confirmed (no edit): with subsystems now public, S-relocation is uniformly "lift body as-is into impl OwningSubsystem" — no field-publish prereq remaining.
+- Phase 14 App-local accessors confirmed live (no edit): `animation_elapsed`, `mouse_pos`, `toast_timeout`, `resolved_dirs` all still have prod callers; deletion + caller rewrite is real Phase 14 work.
+- Phase 10 sequencing constraint unchanged (no edit): "must run after Phase 2" is the binding prereq, not field-publication. Phase 4's mechanic validation does help Phase 10's playbook but doesn't change ordering.
+- End-state arithmetic confirmed (no edit): summary table predicts 265 → 147 across remaining App-side phases, matching the ~156 target within phase-estimate noise.
+
+### Phase 5 — Panes trivial-accessor / pass-through delete ✅
 
 Publish `panes` as `pub(super)`. Delete trivial accessors and pass-throughs:
 `panes`/`_mut`, `pane_data`, `set_hovered_pane_row`, `worktree_summary_or_compute`,
 `poll_cpu_if_due`. Rewrite call sites.
 
+**Pre-flight name-collision check (mandatory):** `Panes::pane_data` (`src/tui/panes/system.rs:212`)
+and `Panes::worktree_summary_or_compute` (line 222) collide with the App-side accessors
+slated for deletion. The mechanical regex `\.pane_data\(\)` / `\.worktree_summary_or_compute\(`
+will rewrite already-correct `self.panes.pane_data()` into `self.panes.panes.pane_data()`.
+Run a revert pass after bulk-replace: `\.panes\.panes\.` → `.panes.`.
+
+**Trait-object coercion sites:** Phase 4 hit `&dyn Hittable` arms in `tui/interaction.rs`
+where the accessor's auto-borrow disappeared once the field went public. Grep for `&dyn`
+patterns referencing `panes` before assuming the bulk-replace is complete.
+
 **Methods removed:** ~9. **Caller rewrites:** ~120.
 
-### Phase 6 — Focus T/P delete
+### Retrospective
+
+**What worked:** Pre-flight collision check correctly identified `Panes::pane_data` and `Panes::worktree_summary_or_compute` as collision points. The 6-step mechanic (publish → bulk-replace → revert pass → delete → cleanup → validate) ran cleanly with one trait-object-coercion fix and three unrelated-method false positives.
+
+**What deviated from the plan:** 6 methods removed (not ~9): `panes`, `panes_mut`, `pane_data`, `set_hovered_pane_row`, `worktree_summary_or_compute`, `poll_cpu_if_due`. The plan listed these correctly; the "~9" estimate was conservative.
+
+**Surprises:**
+- The bulk regex `\.panes\(\)` → `.panes` clobbered unrelated `ResolvedPaneLayout::panes()` at `render.rs:145` and `input.rs:279,345` — both were field-private method calls. Required surgical revert.
+- The `\.panes\.panes\.` revert regex did NOT catch `panes.panes.pane_data()` in `panes/system.rs` tests because the leading `panes` had no `.` prefix. Needed a more specific revert regex `\bpanes\.panes\.pane_data\(\)` → `panes.pane_data()`.
+- `interaction.rs:144` had `let panes = app.panes_mut();` — bulk regex turned it into `let panes = app.panes;` (a move, requiring Drop). Fix: `&mut app.panes`.
+- `Panes::worktree_summary_or_compute` body called `self.git.worktree_summary_or_compute(...)`. Bulk regex turned it into `self.git.panes.worktree_summary_or_compute(...)`. Surgical revert needed because `\.git\.panes\.` is not a generic pattern.
+
+**Implications for remaining phases:**
+- Bulk-regex pattern `\.X\(\)` → `.field` is unsafe when X is a common method name across multiple types. For Phase 6 (Focus), Phase 7 (Overlays), Phase 8 (Scan), Phase 9 (Startup): grep for non-App callers of the same accessor name BEFORE running the regex. If any exist, surgically rewrite App-only sites instead of bulk-replacing.
+- Revert regex `\.X\.X\.` only catches the case where the bad insertion is preceded by `.`. For tests/inner code where the variable is a bare identifier (e.g. `panes.X.Y`), use `\bvar\.X\.X` or do surgical fix.
+
+### Phase 5 Review
+
+- Phase 8 (Scan): dropped the unneeded find-and-replace cleanup directive; rewrote pre-flight to verify what was actually checked (no unrelated type has a `scan()`/`scan_mut()` method).
+- Phase 8 → Phase 11: moved `set_projects` (test-only helper); body is project_list work, not Scan work. Phase 8 method count ~10 → ~9; Phase 11 gained one test-only delete.
+- Phase 14: added `ResolvedPaneLayout::panes()` (`tui/pane/layout.rs`) and `Panes::worktree_summary_or_compute` (`panes/system.rs:222`) to the recursive purge enumeration.
+- Phases 6/7/9: replaced "no pre-flight needed" with a concrete pre-flight (verify no unrelated type has a method by the same name) + grep for `let .* = .*\._mut()` binding sites.
+- Phase 7: added explicit note that `&dyn Hittable` arms in `interaction.rs` are safe (underlying call still returns a reference, unlike Phase 4's `&app.toasts` case).
+- Mechanics step 3: enumerated three rewrite categories — plain field access, trait-object coercion (need `&app.field`), `let`-binding from `_mut()` accessor (need `&mut app.field`).
+- Mechanics step 5: added the no-leading-dot revert variant `\bsubsystem\.subsystem\.` for inner-scope sites where a local var shares the field name.
+
+### Phase 6 — Focus trivial-accessor / pass-through delete
 
 Publish `focus` as `pub(super)`. Delete `focus`/`_mut`, `focused_pane`. Rewrite
 call sites.
 
+**Pre-flight check:** Verified `fn focus` is only defined on App; `Focus`'s
+own methods (`current`, `set`) don't share names with the App-side accessors
+slated for deletion. Also grep `let .* = .*\.focus_mut\(\)` to find any
+`let`-binding sites that need explicit `&mut app.focus` after the bulk
+rewrite (per Phase 5's `interaction.rs:144` lesson).
+
 **Methods removed:** ~3. **Caller rewrites:** ~85.
 
-### Phase 7 — Overlays T/P delete
+### Phase 7 — Overlays trivial-accessor / pass-through delete
 
 Publish `overlays` as `pub(super)`. Delete `overlays`/`_mut`. Rewrite call sites.
 
+**Pre-flight check:** Verified `fn overlays` is only defined on App; `Overlays`
+has no method named `overlays`. Also grep `let .* = .*\.overlays_mut\(\)` for
+`let`-binding rewrites.
+
+**Trait-object arms:** `src/tui/interaction.rs:65–78` builds `&dyn Hittable`
+from `app.overlays().finder_pane()` etc. After publish, the rewrite
+`app.overlays.finder_pane()` is still a method call returning a reference, so
+auto-borrow is preserved — no `&app.overlays` injection needed (unlike Phase 4's
+`&app.toasts` case).
+
 **Methods removed:** ~2. **Caller rewrites:** ~130.
 
-### Phase 8 — Scan T/P delete
+### Phase 8 — Scan trivial-accessor / pass-through delete
 
 Publish `scan` as `pub(super)`. Delete `scan`/`_mut`, `scan_state_mut` (test-only),
-`data_generation_for_test`, `set_retry_spawn_mode_for_test`, `set_projects`,
+`data_generation_for_test`, `set_retry_spawn_mode_for_test`,
 `increment_data_generation`, `refresh_derived_state`. Rewrite call sites.
+
+(Note: `set_projects` was previously listed here. Moved to Phase 11 because its
+body is `self.project_list.replace_roots_from(projects)` — project_list work,
+not Scan work.)
 
 **Phase 8 scope note (post-Phase-1):** Phase 1 dropped `Scan::projects()` /
 `Scan::projects_mut()` outright and rewrote the render plumbing to take
@@ -436,11 +525,21 @@ Publish `scan` as `pub(super)`. Delete `scan`/`_mut`, `scan_state_mut` (test-onl
 sweep — no `tui/render.rs` or `tui/panes/*` touches needed for `scan()` /
 `scan_mut()` deletion. Caller estimate trimmed accordingly.
 
+**Pre-flight check:** Verified `fn scan` is only defined on App in
+`src/tui/app/mod.rs` — no unrelated type has a method named `scan` that
+the bulk regex `\.scan\(\)` → `.scan` could clobber. Same for `scan_mut`.
+Every deleted-from-App accessor name is also unique to App, so no double-prefix
+fix-up is needed on the first pass.
+
 **Methods removed:** ~10. **Caller rewrites:** ~40–50.
 
-### Phase 9 — Startup T/P delete
+### Phase 9 — Startup trivial-accessor / pass-through delete
 
 Publish `startup` as `pub(super)`. Delete `startup`/`_mut`. Rewrite call sites.
+
+**Pre-flight check:** Verified `fn startup` is only defined on App; `Startup`'s
+own methods (`new`, `reset`, phase trackers) don't share names with App's
+accessors. Also grep `let .* = .*\.startup_mut\(\)` for `let`-binding rewrites.
 
 **Methods removed:** ~2. **Caller rewrites:** ~25.
 
@@ -487,7 +586,12 @@ before the larger Phase 12 action-method sweep.
 `owner_repo_for_path_inner`, `ci_toggle_available_for_inner`,
 `ci_runs_for_display_inner`, `try_collapse`, `last_selected_path`.
 
-**Methods relocated:** ~17. **Caller rewrites:** ~80.
+Also delete the test-only helper `set_projects` (body: one-line
+`self.project_list.replace_roots_from(projects)`); test callers switch to
+calling `replace_roots_from` directly on the field. Moved here from Phase 8
+because the work is project_list-side, not Scan-side.
+
+**Methods relocated:** ~17 + 1 test-only delete. **Caller rewrites:** ~80.
 
 **Render-path note (post-Phase-1):** `tui/render.rs::dispatch_via_trait`,
 `render_lints_pane`, and `render_ci_pane` currently call
@@ -564,7 +668,7 @@ Relocate the remaining S methods to their owning subsystems:
   net+background+scan and dispatch across every BackgroundMsg variant respectively.)
 - → `net` (2): `availability_for`, `spawn_rate_limit_prime`.
 - → `background` (1): `register_item_background_services`. (`finish_watcher_registration_batch`
-  is a P-category one-line shim handled in the Phase 4–9 T/P sweep, not an S relocation.)
+  is a P-category one-line shim handled in the Phase 4–9 trivial-accessor / pass-through sweep, not an S relocation.)
 - → `inflight` (1): `apply_example_progress`.
 - → `ci` (1): `ci_display_mode_label_for_inner`.
 
@@ -576,8 +680,18 @@ The universal decision rule applies at every nesting depth, not just on `App`.
 Phase 14 sweeps the same rule through subsystem internals: every `pub(super) const fn
 x(&self) -> &X { &self.x }` inside `Scan`, `Net.{Github, CratesIo}`, `Lint`,
 `Inflight`, `Panes.{CpuPane, GitPane, TargetsPane, ...}`, `Config.WatchedFile`,
-`Keymap.WatchedFile`, `ScanState`, etc. — publish the field as `pub(super)`,
-delete the accessor, rewrite callers.
+`Keymap.WatchedFile`, `ScanState`, `tui/pane/layout.rs::ResolvedPaneLayout`,
+etc. — publish the field as `pub(super)`, delete the accessor, rewrite callers.
+
+Specific accessors flagged by earlier phases:
+- `ResolvedPaneLayout::panes()` (`src/tui/pane/layout.rs`) — body is `&self.panes`.
+  Surfaced during Phase 5 as a regex false-positive collision. After Phase 14
+  publishes the field and deletes the accessor, the call sites at
+  `src/tui/render.rs:145` and `src/tui/input.rs:279,345` rewrite to direct
+  field access.
+- `Panes::worktree_summary_or_compute` (`src/tui/panes/system.rs:222`) —
+  one-line pass-through to `GitPane::worktree_summary_or_compute`. Delete and
+  publish `Panes::git` so callers go through `panes.git.worktree_summary_or_compute(...)`.
 
 **Methods removed crate-wide:** ~50–80. **Caller rewrites:** ~200.
 
@@ -677,15 +791,33 @@ For each candidate App method `app.foo(args)` whose body is
 1. **Find call sites.** `rg -n '\.foo\(' src/ --type rust`. The leading `\.` plus
    open-paren matches both `app.foo(` and rustfmt-wrapped `\n    .foo(` patterns. Filter
    to actual calls (not the def line, not doc comments).
-2. **Inspect each call site.** `app.foo(args)` → `app.subsystem.bar(args)` (or
-   `&mut app.subsystem` for mut paths). For internal callers (`self.foo()`), the rewrite
-   is `self.subsystem.bar()`.
-3. **Apply the rewrites.** `Edit` per file; bulk perl is risky for non-trivial bodies.
-   Use the multi-line `\s*` pattern when rustfmt has wrapped a call.
-4. **Delete the App method.** No transitional `#[deprecated]` shim.
-5. **Validate.** `cargo check` → `cargo nextest run` → `cargo clippy --workspace
-   --all-targets --all-features -- -D warnings`.
-6. **Record the count delta.** `python3 scripts/count_app_methods.py` and put the
+2. **Pre-flight name-collision check.** For each accessor name being deleted, grep
+   for a same-named method on the underlying type:
+   `grep "fn $NAME\b" src/tui/$SUBSYSTEM*.rs`. If a collision exists, the bulk regex
+   will over-replace `self.subsystem.X()` (already correct) into
+   `self.subsystem.subsystem.X()`. Plan for a step-4.5 revert pass.
+3. **Inspect each call site.** Three rewrite categories to watch for:
+   (a) plain method call → field access — the common case;
+   (b) trait-object coercion sites (`&dyn Hittable` arms, `&dyn Renderable` etc.)
+       lose the auto-borrow that the accessor provided — need explicit `&app.field`;
+   (c) `let` bindings from a `_mut()` accessor (e.g. `let panes = app.panes_mut();`)
+       become a value move once the accessor is gone — need explicit
+       `let panes = &mut app.panes;`. (Phase 5 hit this at `interaction.rs:144`.)
+   For internal callers (`self.foo()`), the rewrite is `self.subsystem.bar()`.
+4. **Apply the rewrites.** Bulk perl per the regex; Edit per file for arity-changing
+   rewrites (e.g. `set_ci_fetch_toast(x)` → `ci.set_fetch_toast(Some(x))`). Use the
+   multi-line `\s*` pattern when rustfmt has wrapped a call.
+5. **Revert double-prefix patterns.** `\.subsystem\.subsystem\.` → `.subsystem.`,
+   plus the no-leading-dot variant `\bsubsystem\.subsystem\.` → `subsystem.` for
+   tests/inner code where a local var is named the same as the field (Phase 5
+   hit this at `panes/system.rs` test sites). Required when step 2 flagged a
+   collision; cheap to run unconditionally.
+6. **Delete the App method.** No transitional `#[deprecated]` shim.
+7. **Clean up unused imports.** Pass-through deletions often orphan imports
+   (`GitHubRateLimit`, `RepoCache`, message types). Remove them when warnings surface.
+8. **Validate.** `cargo check` → `cargo nextest run` → `cargo clippy --workspace
+   --all-targets --all-features -- -D warnings` → `cargo install --path .`.
+9. **Record the count delta.** `python3 scripts/count_app_methods.py` and put the
    before/after numbers in the phase retrospective.
 
 ## What stays on App (Group E preview)
@@ -710,7 +842,7 @@ completes (sample, will be firmed up by the deep-dive):
 
 ## Success criteria
 
-- App's method count drops to **184** after Phase 13 (App-side T/P/S phases complete), to **179** after Phase 14 (App-local accessors), and to **~156** after Phase 15 (static-helper relocation).
+- App's method count drops to **184** after Phase 13 (App-side trivial-accessor / pass-through/S phases complete), to **179** after Phase 14 (App-local accessors), and to **~156** after Phase 15 (static-helper relocation).
 - `tui/app/mod.rs` drops from 1565 lines to under ~800.
 - Every phase retrospective includes a `count: before → after (delta)` line generated by
   `scripts/count_app_methods.py`.
@@ -729,13 +861,13 @@ sits.
 | --- | --- | ---: | ---: | ---: |
 | 1 | Lift `ProjectList` to App (structural) | 2 | ~15 | 306 |
 | 2 | Merge `Selection` into `ProjectList`; relocate to `tui/` (structural) | 0 | ~150 | 306 |
-| 3 | Tooling + T/P delete: Config, Keymap, LayoutCache | 13 | ~140 | 293 ✅ |
-| 4 | T/P delete: Lint, Ci, Toasts, Net, Background, Inflight | ~20 | ~250 | 274 |
-| 5 | T/P delete: Panes | ~9 | ~120 | 265 |
-| 6 | T/P delete: Focus | ~3 | ~85 | 262 |
-| 7 | T/P delete: Overlays | ~2 | ~130 | 260 |
-| 8 | T/P delete: Scan | ~10 | ~40–50 | 250 |
-| 9 | T/P delete: Startup | ~2 | ~25 | 248 |
+| 3 | Tooling + trivial-accessor / pass-through delete: Config, Keymap, LayoutCache | 13 | ~140 | 293 ✅ |
+| 4 | trivial-accessor / pass-through delete: Lint, Ci, Toasts, Net, Background, Inflight | 28 | ~250 | 265 ✅ |
+| 5 | trivial-accessor / pass-through delete: Panes | 6 | ~110 | 259 ✅ |
+| 6 | trivial-accessor / pass-through delete: Focus | ~3 | ~85 | 262 |
+| 7 | trivial-accessor / pass-through delete: Overlays | ~2 | ~130 | 260 |
+| 8 | trivial-accessor / pass-through delete: Scan | ~9 | ~40–50 | 251 |
+| 9 | trivial-accessor / pass-through delete: Startup | ~2 | ~25 | 248 |
 | **10** | **Delete `App::projects()` / `projects_mut()`** | **2** | **~275** | **246** |
 | 11 | `project_list` absorption I — row-navigation read-side | ~17 | ~85 | 229 |
 | 12 | `project_list` absorption II — action methods (with `include_non_rust` arg threading) | ~27 | ~170 | 202 |
@@ -756,7 +888,7 @@ proper data owners (`RootItem`, `WorktreeGroup`,
 for convenience but don't belong on App at all.
 
 Phase 10 is the largest single phase by call-site count (~275). The combined
-Phase 5–9 T/P sweep (~410 callers across 5 separately-numbered phases) is bigger
+Phase 5–9 trivial-accessor / pass-through sweep (~410 callers across 5 separately-numbered phases) is bigger
 in aggregate, but each individual phase is small enough to review independently.
 
 Phase 14 is a companion phase — App's headline count target is
@@ -769,7 +901,7 @@ within ±5 per phase as actual rewrites expose edge cases.
 
 Note: this plan dropped the prior caller-count buckets (B/C/D
 for 1, 2–5, 6+ callers). Hand-classification showed the
-distinction was not load-bearing — the T/P delete mechanic is
+distinction was not load-bearing — the trivial-accessor / pass-through delete mechanic is
 the same whether a method has 1 caller or 200. Caller fanout
 matters for phase sizing (already accounted for above), not
 for the structure of the work.
@@ -789,7 +921,7 @@ All 308 App methods, hand-classified by reading each body. Six agents in paralle
 | **W** — wrapping logic / static helpers / App-local fields | 27 | — | keep on App |
 | **Total** | **308** | | |
 
-**Phases 3–9 delete T+P = ~88 methods.**  
+**Phases 3–9 delete trivial-accessor + pass-through = ~88 methods.**  
 **Phases 10–13 absorb/relocate ~64 S methods.**  
 **App's final method count ≈ 156 after Phase 15 (down from 308, ~49% reduction).** Phase-by-phase math: 3–13 remove T + P + S to land App at 184, Phase 14 removes 5 App-local accessors (lands at 179), then Phase 15 relocates 23 static helpers from Group W (lands at ~156). Phase 14's main work is crate-wide trivial-accessor cleanup.
 
@@ -1081,7 +1213,7 @@ Config/Keymap/LayoutCache; Phase 4 covers Lint/Ci/Toasts/Net/Background/Inflight
 Phases 5–9 cover Panes/Focus/Overlays/Scan/Startup. Phase 3 entries are marked
 ✅ below.
 
-`projects` and `projects_mut` belong to Phase 10 — not the T+P sweep — but are
+`projects` and `projects_mut` belong to Phase 10 — not the trivial-accessor + pass-through sweep — but are
 listed here for completeness since they're one-line pass-throughs.
 
 | Method | Cat | File:line | Body | Notes |

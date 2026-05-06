@@ -30,21 +30,21 @@ use crate::tui::pane::Viewport;
 use crate::tui::toasts::TrackedItem;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
-    let Some(targets_data) = app.panes().targets().content().cloned() else {
+    let Some(targets_data) = app.panes.targets().content().cloned() else {
         return;
     };
     let entries = build_target_list_from_data(&targets_data);
-    if let Some(entry) = entries.get(app.panes().targets().viewport().pos())
+    if let Some(entry) = entries.get(app.panes.targets().viewport().pos())
         && let Some(abs_path) = app.selected_project_path()
     {
-        let package_name = app.panes().package().content().and_then(|d| {
+        let package_name = app.panes.package().content().and_then(|d| {
             if d.title_name == "-" {
                 None
             } else {
                 Some(d.title_name.clone())
             }
         });
-        app.set_pending_example_run(PendingExampleRun {
+        app.inflight.set_pending_example_run(PendingExampleRun {
             abs_path: abs_path.display().to_string(),
             target_name: entry.name.clone(),
             package_name,
@@ -121,10 +121,10 @@ fn request_clean(app: &mut App) {
 /// currently active detail column.
 fn active_detail_pane(app: &mut App) -> &mut Viewport {
     match app.focus().base() {
-        PaneId::Targets => app.panes_mut().targets_mut().viewport_mut(),
-        PaneId::Lang => app.panes_mut().lang_mut().viewport_mut(),
-        PaneId::Cpu => app.panes_mut().cpu_mut().viewport_mut(),
-        PaneId::Git => app.panes_mut().git_mut().viewport_mut(),
+        PaneId::Targets => app.panes.targets_mut().viewport_mut(),
+        PaneId::Lang => app.panes.lang_mut().viewport_mut(),
+        PaneId::Cpu => app.panes.cpu_mut().viewport_mut(),
+        PaneId::Git => app.panes.git_mut().viewport_mut(),
         PaneId::Package
         | PaneId::ProjectList
         | PaneId::Lints
@@ -133,7 +133,7 @@ fn active_detail_pane(app: &mut App) -> &mut Viewport {
         | PaneId::Toasts
         | PaneId::Settings
         | PaneId::Finder
-        | PaneId::Keymap => app.panes_mut().package_mut().viewport_mut(),
+        | PaneId::Keymap => app.panes.package_mut().viewport_mut(),
     }
 }
 
@@ -142,17 +142,17 @@ fn handle_detail_enter(app: &mut App) {
     if app.focus().is(PaneId::Targets) {
         handle_target_action(app, BuildMode::Debug);
     } else if app.focus().base() == PaneId::Package {
-        if let Some(pkg) = app.panes().package().content() {
+        if let Some(pkg) = app.panes.package().content() {
             let fields = super::package_fields_from_data(pkg);
             if matches!(
-                fields.get(app.panes().package().viewport().pos()),
+                fields.get(app.panes.package().viewport().pos()),
                 Some(DetailField::CratesIo)
             ) {
                 open_url(&format!("https://crates.io/crates/{}", pkg.title_name));
             }
         }
-    } else if let Some(git) = app.panes().git().content() {
-        let pos = app.panes().git().viewport().pos();
+    } else if let Some(git) = app.panes.git().content() {
+        let pos = app.panes.git().viewport().pos();
         if let Some(GitRow::Remote(remote)) = super::git_row_at(git, pos)
             && let Some(url) = remote.full_url.as_deref()
         {
@@ -178,10 +178,10 @@ fn open_url(url: &str) {
 pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.ci_mut().viewport_mut().up(),
-        KeyCode::Down => return app.ci_mut().viewport_mut().down(),
-        KeyCode::Home => return app.ci_mut().viewport_mut().home(),
-        KeyCode::End => return app.ci_mut().viewport_mut().end(),
+        KeyCode::Up => return app.ci.viewport_mut().up(),
+        KeyCode::Down => return app.ci.viewport_mut().down(),
+        KeyCode::Home => return app.ci.viewport_mut().home(),
+        KeyCode::End => return app.ci.viewport_mut().end(),
         _ => {},
     }
 
@@ -208,11 +208,11 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
 
 fn handle_ci_enter(app: &App) {
     let visible_runs = app
-        .ci()
+        .ci
         .content()
         .map(|data| data.runs.clone())
         .unwrap_or_default();
-    let cursor_pos = app.ci().viewport().pos();
+    let cursor_pos = app.ci.viewport().pos();
     if let Some(run) = visible_runs.get(cursor_pos) {
         open_url(&run.url);
     }
@@ -254,7 +254,7 @@ fn handle_ci_fetch_more(app: &mut App) {
     } else {
         CiFetchKind::FetchOlder
     };
-    app.set_pending_ci_fetch(PendingCiFetch {
+    app.inflight.set_pending_ci_fetch(PendingCiFetch {
         project_path: ci_path.display().to_string(),
         ci_run_count: app.config.ci_run_count(),
         oldest_created_at,
@@ -268,16 +268,16 @@ fn handle_ci_fetch_more(app: &mut App) {
         completed_at: None,
     };
     app.set_task_tracked_items(task_id, &[item]);
-    app.set_ci_fetch_toast(task_id);
+    app.ci.set_fetch_toast(Some(task_id));
 }
 
 pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.lint_mut().viewport_mut().up(),
-        KeyCode::Down => return app.lint_mut().viewport_mut().down(),
-        KeyCode::Home => return app.lint_mut().viewport_mut().home(),
-        KeyCode::End => return app.lint_mut().viewport_mut().end(),
+        KeyCode::Up => return app.lint.viewport_mut().up(),
+        KeyCode::Down => return app.lint.viewport_mut().down(),
+        KeyCode::Home => return app.lint.viewport_mut().home(),
+        KeyCode::End => return app.lint.viewport_mut().end(),
         _ => {},
     }
 
@@ -297,7 +297,7 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
     if let Some(repo) = app.owner_repo_for_path(abs) {
         let _ = std::fs::remove_dir_all(scan::ci_cache_dir_pub(repo.owner(), repo.repo()));
         scan::clear_exhausted(repo.owner(), repo.repo());
-        if let Ok(mut cache) = app.repo_fetch_cache().lock() {
+        if let Ok(mut cache) = app.net.github().fetch_cache().lock() {
             cache.remove(&repo);
         }
     }
@@ -313,8 +313,8 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
             exhausted:    false,
         }),
     );
-    app.ci_mut().fetch_tracker_mut().complete(abs);
-    app.ci_mut().viewport_mut().home();
+    app.ci.fetch_tracker_mut().complete(abs);
+    app.ci.viewport_mut().home();
     app.increment_data_generation();
 }
 
@@ -331,7 +331,7 @@ fn clear_lint_history(app: &mut App) {
     if let Some(lr) = app.lint_at_path_mut(&abs_path) {
         lr.clear_runs();
     }
-    app.lint_mut().viewport_mut().home();
+    app.lint.viewport_mut().home();
     app.focus_mut().set(PaneId::ProjectList);
     app.refresh_lint_cache_usage_from_disk();
     app.increment_data_generation();
@@ -344,13 +344,13 @@ fn open_lint_run_output(app: &App) {
     let Some(abs_path) = app.selected_project_path() else {
         return;
     };
-    let Some(runs) = app.lint().content().map(|data| data.runs.as_slice()) else {
+    let Some(runs) = app.lint.content().map(|data| data.runs.as_slice()) else {
         return;
     };
     if runs.is_empty() {
         return;
     }
-    let Some(run) = runs.get(app.lint().viewport().pos()) else {
+    let Some(run) = runs.get(app.lint.viewport().pos()) else {
         return;
     };
 

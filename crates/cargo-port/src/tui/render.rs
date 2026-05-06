@@ -130,13 +130,13 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let left_width = u16::try_from(app.cached_fit_widths().total_width() + BLOCK_BORDER_WIDTH + 1)
         .unwrap_or(u16::MAX);
 
-    let bottom_row = if app.example_output().is_empty() {
+    let bottom_row = if app.inflight.example_output().is_empty() {
         panes::BottomRow::Diagnostics
     } else {
         panes::BottomRow::Output
     };
     let core_count = app
-        .panes()
+        .panes
         .cpu()
         .content()
         .map_or(1, |usage| usage.cores.len());
@@ -151,11 +151,11 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let toast_result = toasts::render_toasts(
         frame,
         outer_layout[0],
-        &app.toasts().active_now(),
+        &app.toasts.active_now(),
         app.focus().is(PaneId::Toasts),
         app.focused_toast_id(),
     );
-    app.toasts_mut().set_hits(toast_result.hitboxes);
+    app.toasts.set_hits(toast_result.hitboxes);
 
     if app.overlays().is_settings_open() {
         settings::render_settings_popup(frame, app);
@@ -437,7 +437,7 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
             panes::Panes::dispatch_cpu_render,
         ),
         PaneId::Targets => {
-            if let Some(targets_data) = app.panes().targets().content().cloned()
+            if let Some(targets_data) = app.panes.targets().content().cloned()
                 && targets_data.has_targets()
             {
                 panes::render_targets_panel(frame, app, &targets_data, &pane_render_styles(), area);
@@ -456,7 +456,7 @@ fn sync_hovered_pane_row(app: &mut App) {
     let hovered = app
         .mouse_pos()
         .and_then(|pos| interaction::hovered_pane_row_at(app, pos));
-    app.set_hovered_pane_row(hovered);
+    app.panes.set_hover(hovered);
     app.apply_hovered_pane_row();
 }
 

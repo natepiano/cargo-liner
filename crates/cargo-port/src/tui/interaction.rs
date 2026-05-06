@@ -39,9 +39,9 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
             true
         },
         HoverTarget::ToastCard(id) => {
-            let active = app.toasts().active_now();
+            let active = app.toasts.active_now();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
-                app.toasts_mut().viewport_mut().set_pos(index);
+                app.toasts.viewport_mut().set_pos(index);
                 app.focus_mut().set(PaneId::Toasts);
             }
             true
@@ -63,18 +63,18 @@ pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPan
 pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
     for id in HITTABLE_Z_ORDER {
         let pane: &dyn Hittable = match id {
-            HittableId::Toasts => app.toasts(),
+            HittableId::Toasts => &app.toasts,
             HittableId::Finder => app.overlays().finder_pane(),
             HittableId::Settings => app.overlays().settings_pane(),
             HittableId::Keymap => app.overlays().keymap_pane(),
-            HittableId::ProjectList => app.panes().project_list(),
-            HittableId::Package => app.panes().package(),
-            HittableId::Lang => app.panes().lang(),
-            HittableId::Cpu => app.panes().cpu(),
-            HittableId::Git => app.panes().git(),
-            HittableId::Targets => app.panes().targets(),
-            HittableId::Lints => app.lint(),
-            HittableId::CiRuns => app.ci(),
+            HittableId::ProjectList => app.panes.project_list(),
+            HittableId::Package => app.panes.package(),
+            HittableId::Lang => app.panes.lang(),
+            HittableId::Cpu => app.panes.cpu(),
+            HittableId::Git => app.panes.git(),
+            HittableId::Targets => app.panes.targets(),
+            HittableId::Lints => &app.lint,
+            HittableId::CiRuns => &app.ci,
         };
         if let Some(hit) = pane.hit_test_at(pos) {
             return Some(hit);
@@ -99,19 +99,19 @@ pub(super) fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
 /// wrappers.
 pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> &mut Viewport {
     match id {
-        PaneId::Toasts => app.toasts_mut().viewport_mut(),
-        PaneId::Cpu => app.panes_mut().cpu_mut().viewport_mut(),
-        PaneId::Lang => app.panes_mut().lang_mut().viewport_mut(),
-        PaneId::Lints => app.lint_mut().viewport_mut(),
-        PaneId::CiRuns => app.ci_mut().viewport_mut(),
-        PaneId::Package => app.panes_mut().package_mut().viewport_mut(),
-        PaneId::Git => app.panes_mut().git_mut().viewport_mut(),
+        PaneId::Toasts => app.toasts.viewport_mut(),
+        PaneId::Cpu => app.panes.cpu_mut().viewport_mut(),
+        PaneId::Lang => app.panes.lang_mut().viewport_mut(),
+        PaneId::Lints => app.lint.viewport_mut(),
+        PaneId::CiRuns => app.ci.viewport_mut(),
+        PaneId::Package => app.panes.package_mut().viewport_mut(),
+        PaneId::Git => app.panes.git_mut().viewport_mut(),
         PaneId::Keymap => app.overlays_mut().keymap_pane_mut().viewport_mut(),
         PaneId::Settings => app.overlays_mut().settings_pane_mut().viewport_mut(),
         PaneId::Finder => app.overlays_mut().finder_pane_mut().viewport_mut(),
-        PaneId::Output => app.panes_mut().output_mut().viewport_mut(),
-        PaneId::Targets => app.panes_mut().targets_mut().viewport_mut(),
-        PaneId::ProjectList => app.panes_mut().project_list_mut().viewport_mut(),
+        PaneId::Output => app.panes.output_mut().viewport_mut(),
+        PaneId::Targets => app.panes.targets_mut().viewport_mut(),
+        PaneId::ProjectList => app.panes.project_list_mut().viewport_mut(),
     }
 }
 
@@ -120,15 +120,15 @@ pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> &mut Viewport
 /// on the pane indicated by `hovered_pane_row` (if any).
 pub(super) const fn apply_hovered_pane_row(app: &mut App) {
     clear_all_hover(app);
-    if let Some(hovered) = app.panes().hovered_row() {
+    if let Some(hovered) = app.panes.hovered_row() {
         viewport_mut_for(app, hovered.pane).set_hovered(Some(hovered.row));
     }
 }
 
 const fn clear_all_hover(app: &mut App) {
-    app.toasts_mut().viewport_mut().set_hovered(None);
-    app.ci_mut().viewport_mut().set_hovered(None);
-    app.lint_mut().viewport_mut().set_hovered(None);
+    app.toasts.viewport_mut().set_hovered(None);
+    app.ci.viewport_mut().set_hovered(None);
+    app.lint.viewport_mut().set_hovered(None);
     app.overlays_mut()
         .keymap_pane_mut()
         .viewport_mut()
@@ -141,7 +141,7 @@ const fn clear_all_hover(app: &mut App) {
         .finder_pane_mut()
         .viewport_mut()
         .set_hovered(None);
-    let panes = app.panes_mut();
+    let panes = &mut app.panes;
     panes.package_mut().viewport_mut().set_hovered(None);
     panes.lang_mut().viewport_mut().set_hovered(None);
     panes.cpu_mut().viewport_mut().set_hovered(None);
@@ -386,7 +386,7 @@ mod tests {
 
     fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
         app.ensure_detail_cached();
-        app.lint_mut().set_content(LintsData {
+        app.lint.set_content(LintsData {
             runs:    runs.to_vec(),
             sizes:   vec![Some(0); runs.len()],
             is_rust: true,
@@ -418,7 +418,7 @@ mod tests {
 
     fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
         app.ensure_detail_cached();
-        app.ci_mut().override_runs_for_test(runs.to_vec());
+        app.ci.override_runs_for_test(runs.to_vec());
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         let focus_state = app.focus().pane_state(PaneId::CiRuns);
@@ -520,7 +520,7 @@ mod tests {
     }
 
     fn lint_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.lint().viewport().content_area();
+        let area = app.lint.viewport().content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -530,7 +530,7 @@ mod tests {
     }
 
     fn ci_run_point(app: &App, run_index: usize) -> (u16, u16) {
-        let area = app.ci().viewport().content_area();
+        let area = app.ci.viewport().content_area();
         (
             area.x.saturating_add(1),
             area.y
@@ -541,7 +541,7 @@ mod tests {
 
     fn toast_close_point(app: &App, toast_id: u64) -> (u16, u16) {
         let Some(rect) = app
-            .toasts()
+            .toasts
             .hits()
             .iter()
             .find(|h| h.id == toast_id)
@@ -557,7 +557,7 @@ mod tests {
 
     fn toast_body_point(app: &App, toast_id: u64) -> (u16, u16) {
         let Some(rect) = app
-            .toasts()
+            .toasts
             .hits()
             .iter()
             .find(|h| h.id == toast_id)
@@ -737,7 +737,7 @@ mod tests {
 
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.panes().git().viewport(), 0);
+        let (x, y) = pane_row_point(app.panes.git().viewport(), 0);
         assert_eq!(
             super::hovered_pane_row_at(&app, Position::new(x, y)),
             Some(HoveredPaneRow {
@@ -878,7 +878,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.lint().viewport().pos(),
+            app.lint.viewport().pos(),
             1,
             "clicking the second rendered lint run should select run index 1, not the header-offset visual row"
         );
@@ -912,7 +912,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.ci().viewport().pos(),
+            app.ci.viewport().pos(),
             1,
             "clicking the second rendered CI run should select run index 1, not the header-offset visual row"
         );
@@ -997,19 +997,19 @@ mod tests {
     fn toast_close_click_dismisses_toast() {
         let mut app = make_app(&[]);
         let toast_id =
-            app.toasts_mut()
+            app.toasts
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
-        let toast_len = app.toasts().active_now().len();
-        app.toasts_mut().viewport_mut().set_len(toast_len);
+        let toast_len = app.toasts.active_now().len();
+        app.toasts.viewport_mut().set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_close_point(&app, toast_id);
         click(&mut app, x, y);
         let after_exit = Instant::now() + Duration::from_secs(1);
-        app.toasts_mut().prune(after_exit);
+        app.toasts.prune(after_exit);
 
         assert!(
-            app.toasts_mut()
+            app.toasts
                 .active(after_exit)
                 .into_iter()
                 .all(|toast| toast.id() != toast_id),
@@ -1025,10 +1025,10 @@ mod tests {
 
         let mut app = make_app(&[make_package("demo", &project_dir)]);
         let toast_id =
-            app.toasts_mut()
+            app.toasts
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
-        let toast_len = app.toasts().active_now().len();
-        app.toasts_mut().viewport_mut().set_len(toast_len);
+        let toast_len = app.toasts.active_now().len();
+        app.toasts.viewport_mut().set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_body_point(&app, toast_id);
@@ -1092,11 +1092,11 @@ mod tests {
         let mut app = make_app(&[make_package("demo", &project_dir)]);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.panes().package().viewport(), 1);
+        let (x, y) = pane_row_point(app.panes.package().viewport(), 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::Package);
-        assert_eq!(app.panes().package().viewport().pos(), 1);
+        assert_eq!(app.panes.package().viewport().pos(), 1);
     }
 
     #[test]
@@ -1162,11 +1162,11 @@ mod tests {
             });
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.panes().targets().viewport(), 1);
+        let (x, y) = pane_row_point(app.panes.targets().viewport(), 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::Targets);
-        assert_eq!(app.panes().targets().viewport().pos(), 1);
+        assert_eq!(app.panes.targets().viewport().pos(), 1);
     }
 
     #[test]
@@ -1181,11 +1181,11 @@ mod tests {
         app.handle_checkout_info(&project_dir, checkout);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(app.panes().git().viewport(), 1);
+        let (x, y) = pane_row_point(app.panes.git().viewport(), 1);
         click(&mut app, x, y);
 
         assert_eq!(app.focused_pane(), PaneId::Git);
-        assert_eq!(app.panes().git().viewport().pos(), 1);
+        assert_eq!(app.panes.git().viewport().pos(), 1);
     }
 
     // ── Confirm popup renders resolved target dir (Step 2) ─────────

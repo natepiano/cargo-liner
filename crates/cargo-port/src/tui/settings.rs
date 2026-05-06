@@ -689,7 +689,7 @@ fn push_lint_cache_size_row(
     ctx: &SettingsLineContext<'_>,
     value: &str,
 ) {
-    let used = render::format_bytes(app.lint().cache_usage().bytes);
+    let used = render::format_bytes(app.lint.cache_usage().bytes);
     let limit = &app.config.current().lint.cache_size;
     let usage_suffix = format!("  {used} / {limit}");
     lines.push(Line::from(vec![
@@ -719,7 +719,10 @@ fn push_setting_row(
     } else if app.overlays().is_settings_editing()
         && ctx.selection != PaneSelectionState::Unselected
     {
-        let edit_buffer = render_edit_buffer(app.config.edit_buffer().buf(), app.config.edit_buffer().cursor());
+        let edit_buffer = render_edit_buffer(
+            app.config.edit_buffer().buf(),
+            app.config.edit_buffer().cursor(),
+        );
         push_wrapped_setting_value(
             lines,
             line_targets,
@@ -1173,12 +1176,18 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
             app.config.edit_buffer_mut().set(String::new(), 0);
         },
         KeyCode::Left => {
-            let cursor = prev_char_boundary(app.config.edit_buffer().buf(), app.config.edit_buffer().cursor());
+            let cursor = prev_char_boundary(
+                app.config.edit_buffer().buf(),
+                app.config.edit_buffer().cursor(),
+            );
             let value = app.config.edit_buffer().buf().to_string();
             app.config.edit_buffer_mut().set(value, cursor);
         },
         KeyCode::Right => {
-            let cursor = next_char_boundary(app.config.edit_buffer().buf(), app.config.edit_buffer().cursor());
+            let cursor = next_char_boundary(
+                app.config.edit_buffer().buf(),
+                app.config.edit_buffer().cursor(),
+            );
             let value = app.config.edit_buffer().buf().to_string();
             app.config.edit_buffer_mut().set(value, cursor);
         },

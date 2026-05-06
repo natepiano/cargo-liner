@@ -30,7 +30,7 @@ impl App {
             .selected_display_path()
             .unwrap_or_else(|| abs_key.display_path());
         let name = self
-            .panes()
+            .panes
             .package()
             .content()
             .map(|d| d.title_name.clone())

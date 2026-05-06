@@ -61,7 +61,6 @@ mod types;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -81,7 +80,6 @@ use super::inflight::Inflight;
 use super::keymap_state::Keymap;
 use super::overlays::Overlays;
 use super::panes::LayoutCache;
-use super::panes::PaneDataStore;
 use super::panes::PaneId;
 use super::panes::Panes;
 use super::scan_state::Scan;
@@ -92,7 +90,6 @@ use crate::ci::CiRun;
 use crate::ci::Conclusion;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
-use crate::http::GitHubRateLimit;
 use crate::http::HttpClient;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
@@ -106,7 +103,6 @@ use crate::project::WorkspaceMetadataStore;
 use crate::project::WorktreeGroup;
 use crate::scan;
 use crate::scan::BackgroundMsg;
-use crate::scan::RepoCache;
 use crate::tui::project_list::ProjectList;
 
 #[cfg(test)]
@@ -155,14 +151,8 @@ pub(super) use super::net_state::AvailabilityStatus;
 use super::net_state::Net;
 use super::panes;
 use super::panes::BottomRow;
-use super::panes::PendingCiFetch;
-use super::panes::PendingExampleRun;
-use super::panes::WorktreeInfo;
 use super::settings::SettingOption;
 use super::shortcuts::InputContext;
-use super::terminal::CiFetchMsg;
-use super::terminal::CleanMsg;
-use super::terminal::ExampleMsg;
 use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
 use crate::project;
@@ -177,65 +167,65 @@ pub(super) struct App {
     /// (availability). App orchestration that touches Net plus
     /// other subsystems (toast push/dismiss, retry spawn) stays
     /// as named methods on `App`.
-    net:               Net,
+    pub(super) net:          Net,
     /// Panes subsystem. Owns `pane_manager`, `pane_data`,
     /// `hovered_pane_row`, and `cpu_poller`. App's
     /// impl-files reach pane state through this handle.
-    panes:             Panes,
+    pub(super) panes:        Panes,
     /// Background subsystem. Owns the four mpsc channel pairs plus
     /// `watch_tx`. The `bg_*` pair is replaced wholesale on every
     /// rescan via [`Background::swap_bg_channel`]; the others outlive
     /// any single rescan.
-    background:        Background,
+    pub(super) background:   Background,
     /// Inflight subsystem. Owns the running-paths maps, toast
     /// slots, pending queues, and example-runner state.
-    inflight:          Inflight,
+    pub(super) inflight:     Inflight,
     /// Lint subsystem. Owns the lint runtime, in-flight lint
     /// state, the disk cache stat counter, and the startup-pass
     /// trackers.
-    lint:              Lint,
+    pub(super) lint:         Lint,
     /// Ci subsystem. Owns `fetch_tracker`, `fetch_toast`, and
     /// per-project `display_modes`, plus `Ci::package_display`
     /// which returns the typed [`CiDisplay`] for the package
     /// detail row.
-    ci:                Ci,
+    pub(super) ci:           Ci,
     /// Config subsystem. Owns `current_config`, `config_path`,
     /// `config_last_seen`, plus the in-app settings editor's
     /// `SettingsEditBuffer`. Composes
     /// `WatchedFile<CargoPortConfig>`.
-    pub(super) config: Config,
+    pub(super) config:       Config,
     /// Keymap subsystem. Owns `current_keymap`, `keymap_path`,
     /// `keymap_last_seen`, `keymap_diagnostics_id`. Composes
     /// `WatchedFile<ResolvedKeymap>`.
-    pub(super) keymap: Keymap,
+    pub(super) keymap:       Keymap,
     /// The central per-project data store. Lint runs, CI info, git
     /// info, language stats, package/workspace fields, and disk usage
     /// all live inside the tree. Every subsystem that produces
     /// per-project data writes into it.
-    project_list:      ProjectList,
+    project_list:            ProjectList,
     /// Scan subsystem. Owns `scan` (`ScanState`),
     /// `dirty`, `data_generation`, `discovery_shimmers`,
     /// `pending_git_first_commit`, `metadata_store`,
     /// `target_dir_index`, `priority_fetch_path`,
     /// `confirm_verifying`, `lint_cache_usage`, and (test-only)
     /// `retry_spawn_mode`.
-    scan:              Scan,
+    scan:                    Scan,
     /// Startup-phase orchestrator. Owns the per-phase trackers
     /// (`disk`, `git`, `repo`, `metadata`, `lint_phase`,
     /// `lint_count`) plus the `scan_complete_at`, `toast`, and
     /// `complete_at` slots that drive the umbrella "Startup" toast
     /// and its detail toasts.
-    startup:           Startup,
-    focus:             Focus,
+    startup:                 Startup,
+    focus:                   Focus,
     /// Overlays subsystem. Owns the four overlay-mode enums
     /// (`FinderMode`, `SettingsMode`, `KeymapMode`, `ExitMode`),
     /// the transient `inline_error` UI feedback, and the
     /// `status_flash` slot.
-    overlays:          Overlays,
-    confirm:           Option<ConfirmAction>,
-    animation_started: Instant,
-    mouse_pos:         Option<Position>,
-    toasts:            ToastManager,
+    overlays:                Overlays,
+    confirm:                 Option<ConfirmAction>,
+    animation_started:       Instant,
+    mouse_pos:               Option<Position>,
+    pub(super) toasts:       ToastManager,
     /// Layout coordination cache. Computed once per draw and shared
     /// across the render path: tile layout, project-list body rect,
     /// and the row-hitbox map for click/hover dispatch. Lives on
@@ -327,8 +317,6 @@ impl App {
     pub(super) fn resolved_dirs(&self) -> Vec<AbsolutePath> {
         scan::resolve_include_dirs(&self.config.current().tui.include_dirs)
     }
-
-    pub(super) const fn toasts(&self) -> &ToastManager { &self.toasts }
 
     fn toast_timeout(&self) -> Duration {
         Duration::from_secs_f64(self.config.current().tui.status_flash_secs)
@@ -437,37 +425,6 @@ impl App {
 
     pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { &mut self.project_list }
 
-    pub(super) const fn repo_fetch_cache(&self) -> &RepoCache { self.net.github().fetch_cache() }
-
-    /// Net subsystem accessor. Owns `HttpClient`, `Github`, and
-    /// `CratesIo` sub-states. Test-only today; production paths
-    /// reach `Net` sub-state through targeted methods on `App`
-    /// (`http_client`, `github_status`, `rate_limit`,
-    /// `repo_fetch_cache`).
-    #[cfg(test)]
-    pub(super) const fn net(&self) -> &Net { &self.net }
-
-    /// GitHub availability — `Reachable`, `Unreachable` (network
-    /// failure), or `RateLimited`. Used by the Git pane to color the
-    /// rate-limit rows and choose the right unavailability suffix.
-    pub(super) const fn github_status(&self) -> AvailabilityStatus { self.net.github_status() }
-
-    /// GitHub's REST + GraphQL rate-limit buckets. Rebuilt
-    /// from the shared `HttpClient` state every frame — not persisted.
-    pub(super) fn rate_limit(&self) -> GitHubRateLimit { self.net.rate_limit() }
-
-    /// Lint subsystem accessor. Owns the lint runtime, running
-    /// paths, running toast, and disk cache stat counter.
-    pub(super) const fn lint(&self) -> &Lint { &self.lint }
-
-    pub(super) const fn lint_mut(&mut self) -> &mut Lint { &mut self.lint }
-
-    /// Ci subsystem accessor. Owns `fetch_tracker`, `fetch_toast`,
-    /// and `display_modes`.
-    pub(super) const fn ci(&self) -> &Ci { &self.ci }
-
-    pub(super) const fn ci_mut(&mut self) -> &mut Ci { &mut self.ci }
-
     pub(super) fn selected_ci_path(&self) -> Option<AbsolutePath> {
         let path = self.selected_project_path()?;
         let entry = self.projects().entry_containing(path)?;
@@ -562,10 +519,8 @@ impl App {
         if !self.scan.is_complete() || !self.config.discovery_shimmer_enabled() {
             return;
         }
-        let shimmer = types::DiscoveryShimmer::new(
-            Instant::now(),
-            self.config.discovery_shimmer_duration(),
-        );
+        let shimmer =
+            types::DiscoveryShimmer::new(Instant::now(), self.config.discovery_shimmer_duration());
         self.scan
             .discovery_shimmers_mut()
             .insert(AbsolutePath::from(path), shimmer);
@@ -700,15 +655,6 @@ impl App {
         }
     }
 
-    pub(super) const fn pane_data(&self) -> &PaneDataStore { self.panes.pane_data() }
-
-    pub(super) const fn panes_mut(&mut self) -> &mut Panes { &mut self.panes }
-
-    /// Read-only view of the per-pane registry. Used by render
-    /// paths that need typed access to a pane's content (e.g.,
-    /// `app.panes().cpu().content()`).
-    pub(super) const fn panes(&self) -> &Panes { &self.panes }
-
     /// Split-borrow accessor for per-pane render dispatch.
     /// Returns `(&mut Panes, &mut LayoutCache, &Config, &Selection,
     /// &ProjectList)` — the refs the dispatcher passes through to
@@ -751,10 +697,6 @@ impl App {
 
     pub(super) const fn set_mouse_pos(&mut self, pos: Option<Position>) { self.mouse_pos = pos; }
 
-    pub(super) const fn set_hovered_pane_row(&mut self, hovered_pane_row: Option<HoveredPaneRow>) {
-        self.panes.set_hover(hovered_pane_row);
-    }
-
     pub(super) const fn apply_hovered_pane_row(&mut self) {
         interaction::apply_hovered_pane_row(self);
     }
@@ -789,41 +731,6 @@ impl App {
     pub(super) const fn last_selected_path(&self) -> Option<&AbsolutePath> {
         self.project_list.paths().last_selected.as_ref()
     }
-
-    pub(super) fn set_pending_example_run(&mut self, run: PendingExampleRun) {
-        self.inflight.set_pending_example_run(run);
-    }
-
-    pub(super) const fn take_pending_example_run(&mut self) -> Option<PendingExampleRun> {
-        self.inflight.take_pending_example_run()
-    }
-
-    pub(super) fn set_pending_ci_fetch(&mut self, fetch: PendingCiFetch) {
-        self.inflight.set_pending_ci_fetch(fetch);
-    }
-
-    pub(super) const fn set_ci_fetch_toast(&mut self, task_id: ToastTaskId) {
-        self.ci.set_fetch_toast(Some(task_id));
-    }
-
-    pub(super) const fn take_pending_ci_fetch(&mut self) -> Option<PendingCiFetch> {
-        self.inflight.take_pending_ci_fetch()
-    }
-
-    pub(super) const fn pending_cleans_mut(&mut self) -> &mut VecDeque<PendingClean> {
-        self.inflight.pending_cleans_mut()
-    }
-
-    /// Test-only — production paths reach background channels via
-    /// the per-channel accessors below.
-    #[cfg(test)]
-    pub(super) const fn background_mut(&mut self) -> &mut Background { &mut self.background }
-
-    /// Read-only handle to the [`Inflight`] subsystem. Test-only —
-    /// production paths reach individual sub-fields through the
-    /// existing top-level App accessors.
-    #[cfg(test)]
-    pub(super) const fn inflight(&self) -> &Inflight { &self.inflight }
 
     #[cfg(test)]
     pub(super) fn set_confirm(&mut self, action: ConfirmAction) { self.confirm = Some(action); }
@@ -916,20 +823,6 @@ impl App {
 
     pub(super) const fn overlays_mut(&mut self) -> &mut Overlays { &mut self.overlays }
 
-    pub(super) fn bg_tx(&self) -> Sender<BackgroundMsg> { self.background.bg_sender() }
-
-    pub(super) fn http_client(&self) -> HttpClient { self.net.http_client() }
-
-    pub(super) fn ci_fetch_tx(&self) -> Sender<CiFetchMsg> { self.background.ci_fetch_sender() }
-
-    pub(super) fn clean_tx(&self) -> Sender<CleanMsg> { self.background.clean_sender() }
-
-    pub(super) fn example_tx(&self) -> Sender<ExampleMsg> { self.background.example_sender() }
-
-    pub(super) fn example_child(&self) -> Arc<Mutex<Option<u32>>> { self.inflight.example_child() }
-
-    pub(super) fn example_output(&self) -> &[String] { self.inflight.example_output() }
-
     pub(super) fn set_example_output(&mut self, output: Vec<String>) {
         let was_empty = self.inflight.example_output_is_empty();
         self.inflight.set_example_output(output);
@@ -938,28 +831,7 @@ impl App {
         }
     }
 
-    pub(super) const fn example_output_mut(&mut self) -> &mut Vec<String> {
-        self.inflight.example_output_mut()
-    }
-
-    pub(super) fn example_running(&self) -> Option<&str> { self.inflight.example_running() }
-
-    pub(super) fn set_example_running(&mut self, running: Option<String>) {
-        self.inflight.set_example_running(running);
-    }
-
     pub(super) const fn increment_data_generation(&mut self) { self.scan.bump_generation(); }
-
-    /// Delegates to `Panes::worktree_summary_or_compute`. Kept on App
-    /// so existing call sites (e.g. `panes/support.rs`) need no
-    /// rewrite this phase.
-    pub(super) fn worktree_summary_or_compute(
-        &self,
-        group_root: &Path,
-        compute: impl FnOnce() -> Vec<WorktreeInfo>,
-    ) -> Vec<WorktreeInfo> {
-        self.panes.worktree_summary_or_compute(group_root, compute)
-    }
 
     /// Borrow `App` for a structural mutation of the project tree.
     /// The returned guard borrows `&mut ProjectList + &mut Panes +
@@ -1019,8 +891,6 @@ impl App {
     #[cfg(test)]
     pub(super) const fn data_generation_for_test(&self) -> u64 { self.scan.generation() }
 
-    pub(super) const fn toasts_mut(&mut self) -> &mut ToastManager { &mut self.toasts }
-
     pub(super) fn dismiss_target_for_row(&self, row: VisibleRow) -> Option<DismissTarget> {
         self.dismiss_target_for_row_inner(row)
     }
@@ -1044,8 +914,6 @@ impl App {
     pub(super) fn ci_runs_for_display(&self, path: &Path) -> Vec<CiRun> {
         self.ci_runs_for_display_inner(path)
     }
-
-    pub(super) fn poll_cpu_if_due(&mut self, now: Instant) { self.panes.cpu_tick(now); }
 
     pub(super) fn reset_cpu_placeholder(&mut self) {
         self.panes.reset_cpu(&self.config.current().cpu);
@@ -1126,27 +994,24 @@ impl App {
                         .and_then(|p| p.language_stats.as_ref())
                         .is_some_and(|ls| !ls.entries.is_empty())
                 }),
-                PaneId::Git => self.panes().git().content().is_some_and(|g| {
+                PaneId::Git => self.panes.git().content().is_some_and(|g| {
                     g.branch.is_some() || !g.remotes.is_empty() || !g.worktrees.is_empty()
                 }),
                 _ => false,
             },
-            PaneBehavior::Cpu => self.panes().cpu().content().is_some(),
+            PaneBehavior::Cpu => self.panes.cpu().content().is_some(),
             PaneBehavior::DetailTargets => self
-                .panes()
+                .panes
                 .targets()
                 .content()
                 .is_some_and(panes::TargetsData::has_targets),
             PaneBehavior::Lints => {
                 self.inflight.example_output_is_empty()
-                    && self
-                        .lint()
-                        .content()
-                        .is_some_and(panes::LintsData::has_runs)
+                    && self.lint.content().is_some_and(panes::LintsData::has_runs)
             },
             PaneBehavior::CiRuns => {
                 self.inflight.example_output_is_empty()
-                    && self.ci().content().is_some_and(panes::CiData::has_runs)
+                    && self.ci.content().is_some_and(panes::CiData::has_runs)
             },
             PaneBehavior::Output => !self.inflight.example_output_is_empty(),
             PaneBehavior::Toasts => !self.toasts.active_now().is_empty(),
@@ -1215,9 +1080,9 @@ impl App {
     }
 
     pub(super) fn reset_project_panes(&mut self) {
-        self.panes_mut().package_mut().viewport_mut().home();
-        self.panes_mut().git_mut().viewport_mut().home();
-        self.panes_mut().targets_mut().viewport_mut().home();
+        self.panes.package_mut().viewport_mut().home();
+        self.panes.git_mut().viewport_mut().home();
+        self.panes.targets_mut().viewport_mut().home();
         self.ci.viewport_mut().home();
         self.lint.viewport_mut().home();
         self.toasts.viewport_mut().home();

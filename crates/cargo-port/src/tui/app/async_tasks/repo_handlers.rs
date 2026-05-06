@@ -328,9 +328,9 @@ impl App {
         self.reload_lint_history(&path);
         self.migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
-        self.ci_mut().clear_content();
-        self.lint_mut().clear_content();
-        self.panes_mut().clear_detail_data(None);
+        self.ci.clear_content();
+        self.lint.clear_content();
+        self.panes.clear_detail_data(None);
         // Signal that derived state needs refresh (batched by caller).
         true
     }

@@ -19,7 +19,7 @@ use crate::tui::constants::LABEL_COLOR;
 use crate::tui::pane;
 
 pub fn render_output_panel(frame: &mut Frame, app: &App, area: Rect) {
-    let title = app.example_running().map_or_else(
+    let title = app.inflight.example_running().map_or_else(
         || " Output (Esc to close) ".to_string(),
         |n| format!(" Running: {n} "),
     );
@@ -29,6 +29,7 @@ pub fn render_output_panel(frame: &mut Frame, app: &App, area: Rect) {
         .block(title, app.focus().is(PaneId::Output));
 
     let lines: Vec<Line> = app
+        .inflight
         .example_output()
         .iter()
         .map(|l| {

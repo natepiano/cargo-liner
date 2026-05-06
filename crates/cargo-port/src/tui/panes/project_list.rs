@@ -188,24 +188,24 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         content_area
     };
-    app.panes_mut()
+    app.panes
         .project_list_mut()
         .viewport_mut()
         .set_len(total_project_rows);
-    app.panes_mut()
+    app.panes
         .project_list_mut()
         .viewport_mut()
         .set_content_area(list_area);
-    app.panes_mut()
+    app.panes
         .project_list_mut()
         .viewport_mut()
         .set_viewport_rows(usize::from(list_area.height));
     let project_list = List::new(items);
     let mut list_state = ListState::default().with_selected(Some(app.projects().cursor()));
-    *list_state.offset_mut() = app.panes().project_list().viewport().scroll_offset();
+    *list_state.offset_mut() = app.panes.project_list().viewport().scroll_offset();
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
     app.layout_cache.project_list_body = list_area;
-    app.panes_mut()
+    app.panes
         .project_list_mut()
         .viewport_mut()
         .set_scroll_offset(list_state.offset());
@@ -217,16 +217,16 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
         render_project_list_footer(frame, content_area, line);
     }
 
-    pane::render_overflow_affordance(frame, area, app.panes().project_list().viewport());
+    pane::render_overflow_affordance(frame, area, app.panes.project_list().viewport());
 }
 
 const DISMISS_SUFFIX: &str = " [x]";
 
 fn set_project_list_dismiss_actions(app: &mut App, list_area: Rect, row_width: u16) {
     let visible_height = usize::from(list_area.height);
-    let visible_start = app.panes().project_list().viewport().scroll_offset();
+    let visible_start = app.panes.project_list().viewport().scroll_offset();
     let visible_end = app
-        .panes()
+        .panes
         .project_list()
         .viewport()
         .len()
@@ -251,13 +251,13 @@ fn set_project_list_dismiss_actions(app: &mut App, list_area: Rect, row_width: u
             .saturating_add(row_width.saturating_sub(suffix_width));
         actions.push((Rect::new(x, y, suffix_width, 1), target));
     }
-    app.panes_mut()
+    app.panes
         .project_list_mut()
         .set_dismiss_actions(actions);
 }
 
 const fn clear_project_list_surface(app: &mut App) {
-    app.panes_mut()
+    app.panes
         .project_list_mut()
         .viewport_mut()
         .clear_surface();
@@ -993,7 +993,7 @@ pub fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<ListItem<
         .projects()
         .resolved_root_labels(app.config.include_non_rust().includes_non_rust());
     let focus = app.focus().pane_state(PaneId::ProjectList);
-    let pane = app.panes().project_list().viewport();
+    let pane = app.panes.project_list().viewport();
     let cursor = app.projects().cursor();
 
     let rows = app.visible_rows();

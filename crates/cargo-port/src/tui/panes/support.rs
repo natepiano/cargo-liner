@@ -1149,7 +1149,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         .map(format_timestamp);
     let default_host = app.config.current().tui.default_remote_host_url.clone();
     let remotes = repo_info.map_or_else(Vec::new, |repo| build_remote_rows(repo, &default_host));
-    let rate_limit = app.rate_limit();
+    let rate_limit = app.net.rate_limit();
     GitDetailFields {
         branch,
         path: app.projects().git_status_for(abs_path),
@@ -1163,7 +1163,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         last_fetched,
         rate_limit_core: rate_limit.core,
         rate_limit_graphql: rate_limit.graphql,
-        github_status: app.github_status(),
+        github_status: app.net.github_status(),
         remotes,
     }
 }
@@ -1649,7 +1649,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 
     let t_wt = std::time::Instant::now();
     let worktrees = wt_item.map_or_else(Vec::new, |item| {
-        app.worktree_summary_or_compute(item.path().as_path(), || worktrees_from_item(app, item))
+        app.panes.worktree_summary_or_compute(item.path().as_path(), || worktrees_from_item(app, item))
     });
     let worktrees_ms = perf_log::ms(t_wt.elapsed().as_millis());
 
@@ -1700,7 +1700,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let is_rust = app.projects().is_rust_at_path(abs_path_owned.as_path());
     let lint_display =
         super::Lint::package_display(app.projects(), &abs_path_owned, is_worktree_group, is_rust);
-    let ci_display = app.ci().package_display(
+    let ci_display = app.ci.package_display(
         &abs_path_owned,
         app.projects().repo_info_for(abs_path_owned.as_path()),
         app.projects().git_info_for(abs_path_owned.as_path()),

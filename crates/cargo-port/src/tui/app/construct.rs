@@ -234,7 +234,7 @@ impl App {
     }
 
     fn finish_new(&mut self) {
-        self.panes_mut().install_cpu_placeholder();
+        self.panes.install_cpu_placeholder();
         self.load_initial_keymap();
         if let Some(warning) = self
             .overlays

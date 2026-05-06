@@ -244,7 +244,7 @@ fn event_loop(
         }
 
         let (bg_stats, bg_elapsed) = poll_background_frame(app);
-        app.poll_cpu_if_due(Instant::now());
+        app.panes.cpu_tick(Instant::now());
         app.scan_mut().prune_shimmers(Instant::now());
         clear_terminal_if_dirty(terminal, app)?;
 
@@ -355,17 +355,17 @@ fn draw_frame(
 }
 
 fn spawn_pending_background_tasks(app: &mut App) {
-    if let Some(run) = app.take_pending_example_run() {
+    if let Some(run) = app.inflight.take_pending_example_run() {
         spawn_example_process(app, &run);
     }
 
-    if let Some(pending) = app.pending_cleans_mut().pop_front() {
+    if let Some(pending) = app.inflight.pending_cleans_mut().pop_front() {
         spawn_clean_process(app, &pending);
     }
 
-    if let Some(fetch) = app.take_pending_ci_fetch() {
+    if let Some(fetch) = app.inflight.take_pending_ci_fetch() {
         let abs_path = Path::new(&fetch.project_path);
-        app.ci_mut()
+        app.ci
             .fetch_tracker_mut()
             .start(AbsolutePath::from(abs_path));
         app.increment_data_generation();
@@ -440,28 +440,31 @@ fn spawn_example_process(app: &mut App, run: &PendingExampleRun) {
         Ok(c) => c,
         Err(e) => {
             app.set_example_output(vec![format!("Failed to start: {e}")]);
-            app.set_example_running(Some(run.target_name.clone()));
+            app.inflight
+                .set_example_running(Some(run.target_name.clone()));
             return;
         },
     };
 
     // Store PID so we can kill from the main thread
     let pid = child.id();
-    *app.example_child()
+    *app.inflight
+        .example_child()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pid);
 
     let name = run.target_name.clone();
     let mode = run.build_mode.label();
     app.set_example_output(vec![format!("Building {name}{mode}...")]);
-    app.set_example_running(Some(format!("{name}{mode}")));
+    app.inflight
+        .set_example_running(Some(format!("{name}{mode}")));
 
     // Take ownership of pipes before moving child to thread
     let stderr = child.stderr.take();
     let stdout = child.stdout.take();
 
-    let pid_holder = app.example_child();
-    let tx = app.example_tx();
+    let pid_holder = app.inflight.example_child();
+    let tx = app.background.example_sender();
     thread::spawn(move || {
         // Read stderr with \r handling for cargo progress lines
         if let Some(stderr) = stderr {
@@ -529,7 +532,7 @@ fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
             return;
         },
     };
-    let tx = app.clean_tx();
+    let tx = app.background.clean_sender();
     let abs_path = pending.abs_path.clone();
     thread::spawn(move || {
         let _ = child.wait();
@@ -547,9 +550,9 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
         return;
     };
 
-    let tx = app.ci_fetch_tx();
-    let bg_tx = app.bg_tx();
-    let client = app.http_client();
+    let tx = app.background.ci_fetch_sender();
+    let bg_tx = app.background.bg_sender();
+    let client = app.net.http_client();
     let project_path = fetch.project_path.clone();
     let ci_run_count = fetch.ci_run_count;
     let oldest_created_at = fetch.oldest_created_at.clone();
@@ -606,8 +609,8 @@ fn save_last_selected(project_path: &AbsolutePath) {
 
 /// Spawn a background thread to fetch details for a single project ahead of the main scan.
 pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name: Option<&String>) {
-    let tx = app.bg_tx();
-    let client = app.http_client();
+    let tx = app.background.bg_sender();
+    let client = app.net.http_client();
     let abs = AbsolutePath::from(abs_path);
     let project_name = name.cloned();
 

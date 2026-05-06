@@ -133,7 +133,7 @@ fn tabbable_panes_follow_canonical_order() {
     let mut app = make_app(std::slice::from_ref(&project));
     seed_single_example_metadata(&app, &project_path, "example");
     app.toasts = ToastManager::default();
-    app.toasts_mut().viewport_mut().set_len(0);
+    app.toasts.viewport_mut().set_len(0);
     app.scan_state_mut().phase = ScanPhase::Complete;
     apply_git_info(
         &mut app,
@@ -215,12 +215,12 @@ fn cpu_pane_selection_persists_across_project_changes() {
     let project_b = make_project(Some("b"), "~/b");
     let mut app = make_app(&[project_a, project_b]);
     app.focus_mut().set(PaneId::Cpu);
-    app.panes_mut().cpu_mut().viewport_mut().set_pos(1);
+    app.panes.cpu_mut().viewport_mut().set_pos(1);
     app.projects_mut().set_cursor(1);
 
     app.sync_selected_project();
 
-    assert_eq!(app.panes().cpu().viewport().pos(), 1);
+    assert_eq!(app.panes.cpu().viewport().pos(), 1);
 }
 
 #[test]
@@ -257,7 +257,7 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
 
     app.ensure_detail_cached();
     let example_count = app
-        .panes()
+        .panes
         .targets()
         .content()
         .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
@@ -326,7 +326,7 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
     });
     app.ensure_detail_cached();
     let example_count = app
-        .panes()
+        .panes
         .targets()
         .content()
         .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
@@ -434,17 +434,17 @@ fn project_change_resets_project_dependent_panes() {
     app.focus_mut().set(PaneId::Git);
     app.focus_mut().set(PaneId::Targets);
     app.focus_mut().set(PaneId::CiRuns);
-    app.panes_mut().package_mut().viewport_mut().set_pos(3);
-    app.panes_mut().git_mut().viewport_mut().set_pos(4);
-    app.panes_mut().targets_mut().viewport_mut().set_pos(5);
-    app.ci_mut().viewport_mut().set_pos(6);
+    app.panes.package_mut().viewport_mut().set_pos(3);
+    app.panes.git_mut().viewport_mut().set_pos(4);
+    app.panes.targets_mut().viewport_mut().set_pos(5);
+    app.ci.viewport_mut().set_pos(6);
     app.projects_mut().set_cursor(1);
     app.sync_selected_project();
 
-    assert_eq!(app.panes().package().viewport().pos(), 0);
-    assert_eq!(app.panes().git().viewport().pos(), 0);
-    assert_eq!(app.panes().targets().viewport().pos(), 0);
-    assert_eq!(app.ci().viewport().pos(), 0);
+    assert_eq!(app.panes.package().viewport().pos(), 0);
+    assert_eq!(app.panes.git().viewport().pos(), 0);
+    assert_eq!(app.panes.targets().viewport().pos(), 0);
+    assert_eq!(app.ci.viewport().pos(), 0);
     assert!(!app.focus().remembers_visited(PaneId::Package));
     assert!(!app.focus().remembers_visited(PaneId::Git));
     assert!(!app.focus().remembers_visited(PaneId::Targets));

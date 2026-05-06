@@ -109,7 +109,7 @@ fn ci_fetch_on_member_targets_workspace_owner_path() {
         &crossterm::event::KeyEvent::new(KeyCode::Char('f'), crossterm::event::KeyModifiers::NONE),
     );
     assert_eq!(
-        app.inflight()
+        app.inflight
             .pending_ci_fetch_ref()
             .as_ref()
             .map(|fetch| fetch.project_path.clone()),
@@ -398,7 +398,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .as_ref()
         .expect("lint expected");
     assert!(expected.is_empty());
-    assert!(app.lint().running().toast().is_none());
+    assert!(app.lint.running().toast().is_none());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_a.path().to_path_buf().into(),
@@ -420,12 +420,12 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
             .contains(project_a.path().as_path())
     );
     assert!(
-        app.lint()
+        app.lint
             .running()
             .running_map()
             .contains_key(project_a.path())
     );
-    assert!(app.lint().running().toast().is_some());
+    assert!(app.lint.running().toast().is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_a.path().to_path_buf().into(),
@@ -433,7 +433,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     });
 
     assert!(app.startup().lint_phase.complete_at.is_some());
-    assert!(app.lint().running().is_empty());
+    assert!(app.lint.running().is_empty());
     app.prune_toasts();
 }
 
@@ -564,20 +564,20 @@ fn lint_toast_reuses_existing_on_restart() {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
-    let first_toast = app.lint().running().toast();
+    let first_toast = app.lint.running().toast();
     assert!(first_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
-    assert_eq!(app.lint().running().toast(), first_toast);
+    assert_eq!(app.lint.running().toast(), first_toast);
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
     });
-    assert_eq!(app.lint().running().toast(), first_toast);
+    assert_eq!(app.lint.running().toast(), first_toast);
 }
 
 #[test]
@@ -978,7 +978,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
     app.ensure_detail_cached();
 
     let display = app
-        .panes()
+        .panes
         .package()
         .content()
         .unwrap_or_else(|| std::process::abort())
@@ -1064,7 +1064,7 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
         Some("2026-03-12T21:18:54-04:00")
     );
     assert!(
-        app.panes()
+        app.panes
             .git()
             .content()
             .and_then(|g| g.inception.as_ref())
@@ -1082,7 +1082,7 @@ fn git_info_invalidates_selected_git_pane_cache() {
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.panes()
+        app.panes
             .git()
             .content()
             .and_then(|data| data.remotes.first())
@@ -1098,7 +1098,7 @@ fn git_info_invalidates_selected_git_pane_cache() {
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.panes()
+        app.panes
             .git()
             .content()
             .and_then(|data| data.remotes.first())
@@ -1117,14 +1117,14 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
 
     // Seed the cache.
     app.ensure_detail_cached();
-    let after_seed = app.pane_data().detail_build_count();
+    let after_seed = app.panes.pane_data().detail_build_count();
     assert!(after_seed >= 1, "first call must build");
 
     // Unchanged selection and generation — must NOT rebuild.
     app.ensure_detail_cached();
     app.ensure_detail_cached();
     assert_eq!(
-        app.pane_data().detail_build_count(),
+        app.panes.pane_data().detail_build_count(),
         after_seed,
         "idle frames must not rebuild the detail set"
     );
@@ -1132,7 +1132,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     // Bumping the data generation invalidates the stamp → must rebuild.
     app.increment_data_generation();
     app.ensure_detail_cached();
-    let after_generation_bump = app.pane_data().detail_build_count();
+    let after_generation_bump = app.panes.pane_data().detail_build_count();
     assert_eq!(
         after_generation_bump,
         after_seed + 1,
@@ -1144,7 +1144,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     app.sync_selected_project();
     app.ensure_detail_cached();
     assert_eq!(
-        app.pane_data().detail_build_count(),
+        app.panes.pane_data().detail_build_count(),
         after_generation_bump + 1,
         "selection change must trigger exactly one rebuild"
     );
@@ -1153,7 +1153,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     app.ensure_detail_cached();
     app.ensure_detail_cached();
     assert_eq!(
-        app.pane_data().detail_build_count(),
+        app.panes.pane_data().detail_build_count(),
         after_generation_bump + 1,
         "further idle frames must not rebuild"
     );
@@ -1167,11 +1167,11 @@ fn worktree_summary_or_compute_caches_until_tree_mutation() {
     let group_root = test_path("~/demo");
     let counter = std::sync::atomic::AtomicUsize::new(0);
 
-    let _ = app.worktree_summary_or_compute(group_root.as_path(), || {
+    let _ = app.panes.worktree_summary_or_compute(group_root.as_path(), || {
         counter.fetch_add(1, Ordering::SeqCst);
         Vec::new()
     });
-    let _ = app.worktree_summary_or_compute(group_root.as_path(), || {
+    let _ = app.panes.worktree_summary_or_compute(group_root.as_path(), || {
         counter.fetch_add(1, Ordering::SeqCst);
         Vec::new()
     });
@@ -1190,7 +1190,7 @@ fn worktree_summary_or_compute_caches_until_tree_mutation() {
         // Drop here.
     }
 
-    let _ = app.worktree_summary_or_compute(group_root.as_path(), || {
+    let _ = app.panes.worktree_summary_or_compute(group_root.as_path(), || {
         counter.fetch_add(1, Ordering::SeqCst);
         Vec::new()
     });
@@ -1209,7 +1209,7 @@ fn background_message_for_unselected_path_does_not_invalidate_detail() {
     app.projects_mut().set_cursor(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
-    let baseline = app.pane_data().detail_build_count();
+    let baseline = app.panes.pane_data().detail_build_count();
 
     // A disk-usage message for a *different* project must not bump the
     // detail-cache key. Watchers fire dozens of these per second; if they
@@ -1224,7 +1224,7 @@ fn background_message_for_unselected_path_does_not_invalidate_detail() {
     );
     app.ensure_detail_cached();
     assert_eq!(
-        app.pane_data().detail_build_count(),
+        app.panes.pane_data().detail_build_count(),
         baseline,
         "unrelated background messages must not invalidate the detail cache"
     );
@@ -1239,7 +1239,7 @@ fn background_message_for_unselected_path_does_not_invalidate_detail() {
     );
     app.ensure_detail_cached();
     assert_eq!(
-        app.pane_data().detail_build_count(),
+        app.panes.pane_data().detail_build_count(),
         baseline + 1,
         "messages affecting the selected path must rebuild exactly once"
     );
@@ -1489,7 +1489,7 @@ fn fetch_more_uses_sync_when_no_cached_runs() {
     );
 
     let fetch = app
-        .inflight()
+        .inflight
         .pending_ci_fetch_ref()
         .expect("fetch should be set");
     assert!(
@@ -1532,7 +1532,7 @@ fn fake_metadata(workspace_root: &AbsolutePath) -> WorkspaceMetadata {
 }
 
 fn metadata_toast_items(app: &App) -> Vec<String> {
-    app.toasts()
+    app.toasts
         .active_now()
         .iter()
         .find(|toast| toast.title() == "Running cargo metadata")
@@ -1695,7 +1695,7 @@ fn failed_metadata_arrival_surfaces_error_toast() {
     });
 
     let error_toast_present = app
-        .toasts()
+        .toasts
         .active_now()
         .iter()
         .any(|toast| toast.title().starts_with("cargo metadata failed"));
@@ -1735,7 +1735,7 @@ fn cargo_metadata_workspace_missing_does_not_raise_toast() {
         .expect("store")
         .next_generation(&workspace_root);
 
-    let toasts_before = app.toasts().active_now().len();
+    let toasts_before = app.toasts.active_now().len();
     app.handle_bg_msg(BackgroundMsg::CargoMetadata {
         workspace_root: workspace_root.clone(),
         generation,
@@ -1744,7 +1744,7 @@ fn cargo_metadata_workspace_missing_does_not_raise_toast() {
     });
 
     assert_eq!(
-        app.toasts().active_now().len(),
+        app.toasts.active_now().len(),
         toasts_before,
         "WorkspaceMissing must not add any toast"
     );
@@ -1794,7 +1794,7 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
         "out-of-tree target dir exists → clean is queued (would have missed with join(\"target\"))"
     );
     assert!(
-        app.inflight()
+        app.inflight
             .clean()
             .running_map()
             .contains_key(project_path.as_path())
@@ -1837,7 +1837,7 @@ fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
         !app.start_clean(&project_path),
         "resolved target doesn't exist → already clean; in-tree target/ decoy must not trip it"
     );
-    assert!(app.inflight().clean().is_empty());
+    assert!(app.inflight.clean().is_empty());
 }
 
 #[test]
@@ -1859,7 +1859,7 @@ fn start_clean_falls_back_to_literal_target_when_no_metadata_yet() {
         "no metadata → falls back to <project>/target, which exists → clean queued"
     );
     assert!(
-        app.inflight()
+        app.inflight
             .clean()
             .running_map()
             .contains_key(project_path.as_path())
@@ -2226,7 +2226,7 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     app.lint
         .running_mut()
         .insert(test_path("~/demo"), Instant::now());
-    assert!(!app.lint().running().is_empty());
+    assert!(!app.lint.running().is_empty());
 
     // App-shell scan state: capture the pre-call generation.
     let gen_before = app.data_generation_for_test();
@@ -2246,7 +2246,7 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     // Inflight: running-lint paths cleared, lint runtime present
     // (re-spawned).
     assert!(
-        app.lint().running().is_empty(),
+        app.lint.running().is_empty(),
         "apply_lint_config_change must clear in-flight lint paths"
     );
     // Scan: data_generation bumped exactly once.

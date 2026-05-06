@@ -42,7 +42,7 @@ impl App {
             row,
             generation: self.scan.generation(),
         });
-        if self.pane_data().detail_is_current(desired) {
+        if self.panes.pane_data().detail_is_current(desired) {
             return;
         }
         let started = std::time::Instant::now();
@@ -56,9 +56,9 @@ impl App {
             let lints_started = std::time::Instant::now();
             let lints = tui::panes::build_lints_data(self);
             let lints_ms = perf_log::ms(lints_started.elapsed().as_millis());
-            self.ci_mut().set_content(ci);
-            self.lint_mut().set_content(lints);
-            self.panes_mut()
+            self.ci.set_content(ci);
+            self.lint.set_content(lints);
+            self.panes
                 .set_detail_data(key, data.package, data.git, data.targets);
             tracing::info!(
                 total_ms = perf_log::ms(started.elapsed().as_millis()),
@@ -68,9 +68,9 @@ impl App {
                 "detail_build_breakdown"
             );
         } else {
-            self.ci_mut().clear_content();
-            self.lint_mut().clear_content();
-            self.panes_mut().clear_detail_data(desired);
+            self.ci.clear_content();
+            self.lint.clear_content();
+            self.panes.clear_detail_data(desired);
         }
     }
 }

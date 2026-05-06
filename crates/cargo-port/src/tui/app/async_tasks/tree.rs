@@ -157,7 +157,7 @@ impl App {
         self.inflight.clear_pending_ci_fetch();
         self.project_list.expanded_mut().clear();
         self.project_list.set_cursor(0);
-        self.panes_mut()
+        self.panes
             .project_list_mut()
             .viewport_mut()
             .set_scroll_offset(0);

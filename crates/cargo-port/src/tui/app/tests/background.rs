@@ -31,7 +31,7 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
     );
     let mut app = make_app(&[]);
     let (watch_tx, watch_rx) = mpsc::channel();
-    app.background_mut().replace_watcher_sender(watch_tx);
+    app.background.replace_watcher_sender(watch_tx);
 
     apply_bg_msg(
         &mut app,
@@ -75,7 +75,7 @@ fn scan_result_registers_linked_worktrees_with_watcher() {
 fn empty_scan_result_finishes_watcher_registration_batch() {
     let mut app = make_app(&[]);
     let (watch_tx, watch_rx) = mpsc::channel();
-    app.background_mut().replace_watcher_sender(watch_tx);
+    app.background.replace_watcher_sender(watch_tx);
 
     apply_bg_msg(
         &mut app,
@@ -211,30 +211,30 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
 fn service_reachability_tracks_background_messages() {
     let mut app = make_app(&[]);
 
-    assert!(!app.net().github().availability().is_unavailable());
-    assert!(!app.net().crates_io().availability().is_unavailable());
+    assert!(!app.net.github().availability().is_unavailable());
+    assert!(!app.net.crates_io().availability().is_unavailable());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
         service: ServiceKind::GitHub,
     }));
-    assert!(app.net().github().availability().is_unavailable());
+    assert!(app.net.github().availability().is_unavailable());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
         service: ServiceKind::CratesIo,
     }));
-    assert!(app.net().crates_io().availability().is_unavailable());
+    assert!(app.net.crates_io().availability().is_unavailable());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceReachable {
         service: ServiceKind::GitHub,
     }));
-    assert!(!app.net().github().availability().is_unavailable());
-    assert!(app.net().crates_io().availability().is_unavailable());
+    assert!(!app.net.github().availability().is_unavailable());
+    assert!(app.net.crates_io().availability().is_unavailable());
 
     assert!(!app.handle_bg_msg(BackgroundMsg::ServiceReachable {
         service: ServiceKind::CratesIo,
     }));
-    assert!(!app.net().github().availability().is_unavailable());
-    assert!(!app.net().crates_io().availability().is_unavailable());
+    assert!(!app.net.github().availability().is_unavailable());
+    assert!(!app.net.crates_io().availability().is_unavailable());
 }
 
 #[test]
@@ -252,23 +252,23 @@ fn successful_request_dismisses_stuck_unreachable_toast() {
         service: ServiceKind::GitHub,
     });
     let toast_id = app
-        .net()
+        .net
         .github()
         .availability()
         .toast_id()
         .expect("first unreachable signal pushes a toast");
-    assert!(app.toasts().is_alive(toast_id));
-    assert!(app.net().github().availability().is_unavailable());
+    assert!(app.toasts.is_alive(toast_id));
+    assert!(app.net.github().availability().is_unavailable());
 
     app.handle_bg_msg(BackgroundMsg::ServiceReachable {
         service: ServiceKind::GitHub,
     });
     assert!(
-        !app.net().github().availability().is_unavailable(),
+        !app.net.github().availability().is_unavailable(),
         "reachable signal should flip status back to available"
     );
     assert!(
-        !app.toasts().is_alive(toast_id),
+        !app.toasts.is_alive(toast_id),
         "reachable signal must dismiss the persistent unreachable toast"
     );
 }
@@ -286,7 +286,7 @@ fn unreachable_toast_reappears_after_user_dismissal() {
         service: ServiceKind::GitHub,
     });
     let toast_id = app
-        .net()
+        .net
         .github()
         .availability()
         .toast_id()
@@ -298,7 +298,7 @@ fn unreachable_toast_reappears_after_user_dismissal() {
     std::thread::sleep(std::time::Duration::from_millis(1500));
     app.prune_toasts();
     assert!(
-        !app.toasts().is_alive(toast_id),
+        !app.toasts.is_alive(toast_id),
         "dismissed toast should no longer be alive after exit animation"
     );
 
@@ -308,7 +308,7 @@ fn unreachable_toast_reappears_after_user_dismissal() {
         service: ServiceKind::GitHub,
     });
     let new_id = app
-        .net()
+        .net
         .github()
         .availability()
         .toast_id()
@@ -318,7 +318,7 @@ fn unreachable_toast_reappears_after_user_dismissal() {
         "a fresh toast should be pushed with a new id"
     );
     assert!(
-        app.toasts().is_alive(new_id),
+        app.toasts.is_alive(new_id),
         "the new toast should be visible"
     );
 }
