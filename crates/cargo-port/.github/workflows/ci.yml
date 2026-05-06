@@ -36,7 +36,7 @@ jobs:
           components: rustfmt
 
       - name: Check formatting
-        run: cargo +nightly fmt -- --check
+        run: cargo +nightly fmt --all -- --check
 
   taplo:
     name: Taplo Check
@@ -186,7 +186,7 @@ jobs:
           RUSTC_BOOTSTRAP: 1
 
       - name: Run cargo mend
-        run: cargo mend --fail-on-warn
+        run: cargo mend --workspace --all-targets --fail-on-warn
         env:
           CARGO_TERM_COLOR: never
 

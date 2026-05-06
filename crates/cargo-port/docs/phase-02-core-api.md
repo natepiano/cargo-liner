@@ -921,12 +921,11 @@ pub use crate::settings::SettingsRegistry;
 
 // --- Pane identity ---------------------------------------------------
 //
-// `PaneId` is binary-defined (the binary enumerates its own panes plus
-// the three framework panes' ids). The framework consumes `PaneId` via
-// trait method `Shortcuts::pane_id() -> PaneId`. The binary re-exports
-// the `PaneId` enum into the binary's `tui` module; `tui_pane` itself
-// declares only the trait association.
-pub use crate::panes::PaneId;
+// The framework defines its own three-variant pane id and a wrapper over
+// the binary's pane id. `AppContext` is the trait every `Ctx` must impl.
+// See `phase-02-paneid-ctx.md` for the full split rationale (option (d)).
+pub use crate::app_context::AppContext;
+pub use crate::pane_id::{BaseFrameworkPaneId, FocusedPane};
 
 // --- Macros (re-exported at the crate root) -------------------------
 pub use crate::keymap::bindings::bindings;
@@ -941,6 +940,7 @@ pub use crate::keymap::traits::action_enum;
 - **Keymap:** `Keymap`, `KeymapBuilder`, `BuilderError`, `KeymapError`, `VimMode`
 - **Traits:** `Shortcuts`, `Navigation`, `Globals`
 - **Bar:** `BarRegion`, `BarRow`, `Shortcut`, `ShortcutState`, `InputMode`
-- **Framework panes & aggregator:** `Framework`, `KeymapPane`, `SettingsPane`, `Toasts`, `ToastsAction`, `SettingsRegistry`, `PaneId`
+- **Framework panes & aggregator:** `Framework`, `KeymapPane`, `SettingsPane`, `Toasts`, `ToastsAction`, `SettingsRegistry`
+- **Pane identity & context:** `AppContext`, `BaseFrameworkPaneId`, `FocusedPane`
 
 **Tradeoff.** Every `pub use` is from one of five top-level modules (`bar`, `framework`, `keymap`, `panes`, `settings`). The crate root is the only public path; internal module paths are not part of the API. This keeps the binary's `use tui_pane::{KeyBind, Keymap, Shortcuts, …};` flat and stable across internal reorganisations.

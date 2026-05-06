@@ -10,6 +10,10 @@ name        = "cargo-port"
 repository  = "https://github.com/natepiano/cargo-port"
 version     = "0.0.4-dev"
 
+[workspace]
+members  = ["tui_pane"]
+resolver = "3"
+
 [dependencies]
 ansi-to-tui        = "8.0.1"
 cargo_metadata     = "0.23.1"
@@ -39,11 +43,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 unicode-width      = "0.2.2"
 walkdir            = "2"
 
+# tui_pane re-exports KeyBind / Keymap / etc. used by the binary.
+tui_pane = { path = "tui_pane", version = "0.0.4-dev" }
+
 [dev-dependencies]
 tempfile = "3"
 
-[lints.clippy]
-# Our strict lints — test modules use:
+[lints]
+workspace = true
+
+[workspace.lints.clippy]
+# Strict per-rule denies. Test modules opt back in via:
 #   #[allow(clippy::expect_used, reason = "tests should panic on unexpected values")]
 allow_attributes_without_reason = "deny"
 expect_used                     = "deny"
@@ -52,15 +62,15 @@ self_named_module_files         = "deny" # use module/mod.rs (directory form) wh
 unreachable                     = "deny"
 unwrap_used                     = "deny"
 
-# Enable lint groups as errors (with lower priority so allows can override)
+# Lint groups as deny with lower priority so per-rule allows below override.
 all      = { level = "deny", priority = -1 }
 cargo    = { level = "deny", priority = -1 }
 nursery  = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 
-# Allow specific lints that conflict with common patterns
+# Conflicts with common patterns.
 multiple_crate_versions = "allow"
 redundant_pub_crate     = "allow"
 
-[lints.rust]
+[workspace.lints.rust]
 missing_docs = "deny"

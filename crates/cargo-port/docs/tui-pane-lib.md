@@ -964,7 +964,7 @@ The `Settings` / `Keymap` / `Toasts` panes use their internal mode flags (Browse
 
 Each phase is a single mergeable commit. Each commit must build green and pass `cargo nextest run`. No sub-phases (`Na/Nb/Nc`) — every increment gets its own integer.
 
-### Phase 1 — Workspace conversion
+### Phase 1 — Workspace conversion ✅
 
 Convert `cargo-port-api-fix` into a Cargo workspace. See `phase-01-cargo-mechanics.md` for full TOML and `phase-01-ci-tooling.md` for the CI updates.
 
@@ -981,38 +981,87 @@ After Phase 1: `cargo build` from the root builds both crates; `cargo install --
 
 **Per-phase rustdoc precondition.** Phases 2–10 add `pub` items to `tui_pane`. Each pub item ships with rustdoc as a precondition for the phase landing — `missing_docs = "deny"` is workspace-wide from Phase 1 onward, so a missing doc breaks the build, not just CI. Per-phase PR-checklist bullet: "Every new `pub` item in `tui_pane` has a rustdoc summary line and at least one runnable doctest (or doctests covered at the trait level for trait methods)."
 
+#### Retrospective
+
+**What worked:**
+- Manifest split landed in one go: build, `cargo nextest run --workspace` (599/599), clippy, fmt, taplo, `cargo install --path .` all green on first cut.
+- Workspace lints inheritance (`[lints] workspace = true`) was a single-line change in the root and the new member; `missing_docs = "deny"` is now enforced on `tui_pane` from day one.
+
+**What deviated from the plan:**
+- `tui_pane/Cargo.toml` had to add `categories`, `keywords`, and `readme = "README.md"` (plus a `tui_pane/README.md` stub). The spec said omit them ("not separately published"), but workspace `clippy::cargo` is `deny` so `cargo_common_metadata` fails the build. Adding the metadata is the smallest fix that preserves the workspace-wide lint posture.
+- The `~/.claude/scripts/hooks/post-tool-use-cargo-check.sh` flag update in `phase-01-ci-tooling.md` §2 was **not** applied — the script lives outside this repo and affects all of the user's Rust projects. Flagged for the user to decide.
+
+**Surprises:**
+- `clippy::cargo_common_metadata` requires a real readme path on disk; `readme = false` in the manifest is not enough to satisfy it.
+- The existing single-crate manifest already had `missing_docs = "deny"`, so the move to workspace-wide enforcement changed nothing for the binary — only added the same denial to `tui_pane`.
+
+**Implications for remaining phases:**
+- The `tui_pane/README.md` stub is now a tracked file that may want real content as the public surface fills in (Phases 2–10).
+- Every new `pub` item in `tui_pane` will fail to compile without rustdoc — the doctest-fixture work in Phase 2 (`DocCtx`) is now load-bearing for the *very first* pub items, not a later add.
+- Decision needed before Phase 2 ships: whether to update the post-tool-use hook (and where — repo-local override vs. global script).
+
+#### Phase 1 Review
+
+Findings the architect review surfaced and the resolution applied to the plan:
+
+- **Phase 2 file list expanded** (significant, approved) — `pane_id.rs`, `app_context.rs`, `framework.rs` skeleton, and `doc_ctx.rs` added at the top of the Phase 2 list. Trait signatures (`Shortcuts<Ctx: AppContext>`, `Navigation::dispatcher` returning `fn(_, FocusedPane<…>, _)`) and every doctest that mentions `Ctx` need these types in the same commit.
+- **`Framework<Ctx>` skeleton moved Phase 3 → Phase 2** (significant, approved) — Phase 2 ships the empty struct + `Default`; Phase 3 fills in pane fields, `editor_target_path`, and `input_mode_queries`. Phase 3 wording updated.
+- **`phase-02-core-api.md` §11 amended** (significant, approved) — dropped `pub use crate::panes::PaneId`; added `pub use crate::{app_context::AppContext, pane_id::{BaseFrameworkPaneId, FocusedPane}}`. Brings the core-api spec in sync with `phase-02-paneid-ctx.md`.
+- **`DocCtx` lands with the first `pub` item** (significant, approved) — explicit Phase 2 file entry; doctests for `KeyBind` / `Bindings` / `Shortcuts` construct `DocCtx` directly, no `no_run` / `ignore`.
+- **`tui_pane/README.md` ownership** (minor, applied) — Phase 2 promotes the stub to crate-overview; Phase 9 adds the `What dissolves` / `What survives` summary; Phase 10 wires `#![doc = include_str!("../README.md")]` into `lib.rs`.
+- **Post-tool-use hook precondition** (minor, applied) — Phase 2 has a precondition note: decide repo-local override vs. global script before landing.
+- **Phase 2 invariant tests** (minor, applied) — restated against `MockNavigation` / fixture types; the same invariants are re-asserted at Phase 5 against the real `NavigationAction`.
+- **Phase 2 strictly-additive declaration** (minor, applied) — explicit note that nothing moves out of the binary in this phase.
+- **Phase 5 parallel-path invariant** (minor, applied) — Phases 5–8 run new dispatch alongside the old; only Phase 9 deletes.
+- **`GlobalAction` split documented in Phase 5** (minor, applied) — splits today's combined enum into `BaseGlobalAction` + `AppGlobalAction`; old enum deleted in Phase 9.
+- **Phase 1 risk bullet rewritten** (minor, applied) — workspace-conversion churn risk removed; Phase 1 verified it benign.
+
 ### Phase 2 — `tui_pane` foundations
 
 Add to `tui_pane/src/`:
 
+- `pane_id.rs` — `BaseFrameworkPaneId { Keymap, Settings, Toasts }` (framework-internal panes), `FocusedPane<AppPaneId> { App(AppPaneId), Framework(BaseFrameworkPaneId) }` wrapper. The binary's `AppPaneId` is the type parameter; the framework defines neither.
+- `app_context.rs` — `pub trait AppContext: 'static` with `type AppPaneId`, `focused_pane(&self) -> FocusedPane<Self::AppPaneId>`, `set_focused_pane(&mut self, FocusedPane<Self::AppPaneId>)`, `framework(&self) -> &Framework<Self>`, `framework_mut(&mut self) -> &mut Framework<Self>`. Required by every Phase 2 trait signature.
+- `framework.rs` — `Framework<Ctx>` **skeleton only** in this phase: `struct Framework<Ctx> { _ctx: PhantomData<fn() -> Ctx> }` plus `impl<Ctx> Default`. No pane fields, no `editor_target_path`, no `input_mode_queries`. Phase 3 fills it in. Required so `AppContext::framework_mut()` and `DocCtx::framework: Framework<DocCtx>` compile.
+- `doc_ctx.rs` — public fixture `DocCtx` carrying `pub focused: FocusedPane<DocPaneId>`, `pub framework: crate::Framework<DocCtx>`. Lands in the same commit as the first `pub` item — every doctest on a trait or fn that mentions `Ctx` constructs a `DocCtx`. No `no_run` / `ignore` opt-outs.
 - `key_bind.rs` — `KeyBind` struct, `From<KeyCode>`, `From<char>`, `shift`/`ctrl` constructors, `display`, `display_short`, parsing.
 - `bindings.rs` — `Bindings<A>` builder + `bindings!` macro.
 - `scope_map.rs` — `ScopeMap<A>` with `Vec<KeyBind>` per action, `display_keys_for`, primary-key invariants.
-- `traits.rs` — `Shortcuts`, `Navigation`, `Globals`, `ActionEnum` marker, `Shortcut` + `ShortcutState`, `BarRow`.
-- `keymap.rs` — `Keymap` struct, `KeymapBuilder`, `register`, `with_navigation`, `with_globals`, `vim_mode`, `with_quit`/`with_restart`/`with_dismiss`.
+- `traits.rs` — `Shortcuts<Ctx: AppContext>`, `Navigation<Ctx: AppContext>`, `Globals<Ctx: AppContext>`, `ActionEnum` marker, `Shortcut` + `ShortcutState`, `BarRow`.
+- `keymap.rs` — `Keymap<Ctx>` struct, `KeymapBuilder<Ctx>`, `register`, `with_navigation`, `with_globals`, `vim_mode`, `with_quit`/`with_restart`/`with_dismiss`.
 - `global.rs` — `GlobalAction` enum, framework dispatch + injected closures.
 - `vim.rs` — `VimMode` enum, vim-binding application inside `build()`, `vim_mode_conflicts`, `is_vim_reserved` reading `Navigation`.
 - `load.rs` — TOML loading via `SCOPE_NAME` + `dirs`-based config path.
 
+The four type-dependency files at the top of this list (`pane_id.rs`, `app_context.rs`, `framework.rs` skeleton, `doc_ctx.rs`) are required by every later file in the phase: `traits.rs` mentions `AppContext` and `FocusedPane` in trait bounds; `keymap.rs` is generic over `Ctx: AppContext`; every `pub` doctest constructs a `DocCtx`. They land first in the commit; the remaining files compile against them.
+
 No app integration in this phase. Unit tests cover each module in isolation.
 
-**Phase 2 invariant tests (mandatory):**
-- `key_for(NavigationAction::Up) == KeyBind::plain(KeyCode::Up)` even with `VimMode::Enabled` (insertion-order primary).
+**Strictly additive to `tui_pane`.** Nothing moves out of the binary in this phase. The binary continues to use its in-tree `keymap_state::Keymap`, `shortcuts::*`, etc., untouched. The migration starts in Phase 5.
+
+**Phase 2 README content.** Update `tui_pane/README.md` from the Phase 1 stub to crate-overview content: purpose + a minimal example consuming `DocCtx`. The `What dissolves` / `What survives` summary lands later (Phase 9); the include-as-doctest wiring lands in Phase 10.
+
+**Pre-Phase-2 precondition (post-tool-use hook).** Decide hook strategy before Phase 2 lands: repo-local override at `.claude/scripts/hooks/post-tool-use-cargo-check.sh` adding `--workspace`, vs. updating the global script at `~/.claude/scripts/hooks/post-tool-use-cargo-check.sh`. Without the flag, edits to `tui_pane/src/*.rs` from inside the binary working dir will not surface `tui_pane` errors. Repo-local override is the lower-blast-radius option.
+
+**Phase 2 invariant tests (mandatory).** Stated against fixture types in `test_support/` (and re-asserted at Phase 5 against the real cargo-port action enums):
+- `MockNavigation::Up` keeps its primary as the inserted `KeyCode::Up` even with `VimMode::Enabled` applied (insertion-order primary).
 - `by_key.len() == by_action.values().map(Vec::len).sum::<usize>()` — no orphan entries.
 - TOML round-trip: single-key form, array form, in-array duplicate rejection.
 - `+`/`=` parse to distinct `KeyCode::Char` values.
 
 ### Phase 3 — Framework panes
 
+Phase 3 fills in the framework panes inside the **existing** `Framework<Ctx>` skeleton from Phase 2. The struct's pane fields and helper methods land here; the type itself, `AppContext`, and `FocusedPane` already exist.
+
 Add to `tui_pane/src/panes/`:
 
 - `keymap_pane.rs` — `KeymapPane<Ctx>` with internal `Mode::{Browse, Awaiting, Conflict}`. Method `editor_target(&self) -> Option<&Path>`.
 - `settings_pane.rs` — `SettingsPane<Ctx>` with internal `Mode::{Browse, Editing}`; uses `SettingsRegistry<Ctx>`. Method `editor_target(&self) -> Option<&Path>`. `input_mode()` returns `TextInput` when `Mode == Editing`, `Navigable` otherwise.
-- `toasts.rs` — `Toasts<Ctx>` stack with `ToastsAction::Dismiss` (defaults to `Esc`). The framework supplies a built-in `Shortcuts<Ctx>` impl whose dispatcher needs to reach the toasts stack; `KeymapBuilder::with_framework_accessor(fn(&mut Ctx) -> &mut Framework<Ctx>)` resolves that. The binary supplies `|app| &mut app.framework`. With this in hand, Toasts' dispatcher is a free fn `fn dismiss_toast<Ctx>(_: ToastsAction, ctx: &mut Ctx)` that uses the registered accessor.
+- `toasts.rs` — `Toasts<Ctx>` stack with `ToastsAction::Dismiss` (defaults to `Esc`). The framework supplies a built-in `Shortcuts<Ctx>` impl whose dispatcher needs to reach the toasts stack via `AppContext::framework_mut()`. Toasts' dispatcher is a free fn `fn dismiss_toast<Ctx: AppContext>(_: ToastsAction, ctx: &mut Ctx)` that calls `ctx.framework_mut()`.
 
 Add `tui_pane/src/settings.rs` — `SettingsRegistry<Ctx>` + `add_bool` / `add_enum` / `add_int` builders. Each closure takes `&Ctx` / `&mut Ctx`.
 
-Add `tui_pane/src/framework.rs` — `Framework<Ctx>` aggregator owning the three framework panes plus a registry of app-pane queries:
+**Fill in `tui_pane/src/framework.rs`** — replace the Phase 2 skeleton with the real `Framework<Ctx>` aggregator owning the three framework panes plus a registry of app-pane queries:
 
 ```rust
 pub struct Framework<Ctx> {
@@ -1047,7 +1096,7 @@ impl<Ctx> Framework<Ctx> {
 
 The registry is populated by `KeymapBuilder::register::<P>()`: each pane's impl provides a free fn `fn pane_input_mode(ctx: &App) -> InputMode` (reads pane state from `ctx`) that the registration step files into `Framework::input_mode_queries[PaneId::P]`.
 
-`Framework<Ctx>` lives in `tui_pane`. The `App.framework: Framework<App>` field-add lands in **Phase 6**, when the framework panes' input paths replace the old `handle_settings_key` / `handle_keymap_key`. Before Phase 6 the framework type is dead code and should not be wired into `App`.
+`Framework<Ctx>` lives in `tui_pane` (skeleton from Phase 2; filled in here). The `App.framework: Framework<App>` field-add lands in **Phase 6**, when the framework panes' input paths replace the old `handle_settings_key` / `handle_keymap_key`. Before Phase 6 the filled-in framework type is exercised only by `tui_pane`'s own tests and `DocCtx` doctests.
 
 ### Phase 4 — Framework bar renderer
 
@@ -1067,9 +1116,12 @@ Snapshot tests in this phase cover the framework panes only (Settings Browse / S
 
 ### Phase 5 — App action enums + `Shortcuts<App>` impls
 
+**Parallel-path invariant for Phases 5–8.** The new dispatch path lands alongside the old one. The old path stays the source of truth for behavior; the new path is exercised by tests added in each phase. **Phase 9 is the only phase that deletes** old code.
+
 In the cargo-port binary crate:
 
 - Define `NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction`.
+- **Split today's `GlobalAction`** in `src/tui/keymap.rs` into `BaseGlobalAction` (consumed via `tui_pane`: Quit/Restart/NextPane/PrevPane/OpenKeymap/OpenSettings/Dismiss) and `AppGlobalAction` (binary-owned). The old combined `GlobalAction` enum stays in place during Phases 5–8 and is deleted in Phase 9.
 - Add `ExpandRow` / `CollapseRow` to `ProjectListAction`.
 - Implement `Shortcuts<App>` for each app pane (Package, Git, ProjectList, CiRuns, Lints, Targets, Output, Lang, Cpu, Finder). Each pane:
   - Owns `defaults() -> Bindings<Action>`.
@@ -1135,9 +1187,12 @@ After Phase 8: every key dispatches through the keymap. No `KeyCode::*` direct m
 
 ### Phase 9 — Bar swap and cleanup
 
+Add the `What dissolves` / `What survives` summary (currently in this doc) as user-facing notes inside `tui_pane/README.md` so the published library has its own change log of what the framework absorbed.
+
 Delete:
 
 - `App::enter_action`, `shortcuts::enter()` const fn.
+- The old combined `GlobalAction` enum in `src/tui/keymap.rs` (split into `BaseGlobalAction` + `AppGlobalAction` in Phase 5).
 - The seven static constants (`NAV`, `ARROWS_EXPAND`, `ARROWS_TOGGLE`, `TAB_PANE`, `ESC_CANCEL`, `ESC_CLOSE`, `EXPAND_COLLAPSE_ALL`) and all their call sites.
 - `detail_groups` / `ci_groups` / `lints_groups` / `project_list_groups` per-context helpers.
 - Threaded `enter_action` / `is_rust` / `clear_lint_action` / `terminal_command_configured` / `selected_project_is_deleted` parameters.
@@ -1192,6 +1247,8 @@ TOML loader:
 
 A snapshot test per focused-pane context locks in byte-identical bar output to the pre-refactor bar under default bindings.
 
+Add `#![doc = include_str!("../README.md")]` to `tui_pane/src/lib.rs` so the README compiles as a real doctest under `cargo test --doc`. Any code blocks in the README must compile against the public surface.
+
 ---
 
 ## What dissolves
@@ -1235,7 +1292,7 @@ Summary:
 
 ## Risks and unknowns
 
-- **Workspace conversion.** Phase 1 changes the Cargo manifest layout and may surface Cargo.lock churn / IDE re-indexing. Mitigation: do the conversion in isolation; verify both crates build green before moving on.
+- **Workspace conversion.** Verified during Phase 1; no further action. Both crates build green, `cargo install --path .` still installs the binary, `Cargo.lock` and `target/` are unchanged in location.
 - **`tui_pane` API under real use.** Designing a framework before its first client lands is speculative — trait signatures and builder methods may need revision once cargo-port consumes them. Mitigation: cargo-port is the first client; phases 5-6 will surface mismatches, and the framework can be revised before any external user touches it.
 - **Scope precedence.** `NavigationAction::Right` and `ProjectListAction::ExpandRow` both default to `Right`. The "pane scope wins" rule is documented above and enforced by the input router. Lock with a unit test.
 - **Settings toggle direction for booleans.** Today's `handle_settings_adjust_key` (`settings.rs:869-919`) inspects `KeyCode::Right` vs `Left` only for `SettingOption::CiRunCount` (a stepper); booleans flip regardless of direction. Plan splits into `ToggleNext` / `ToggleBack`. For booleans, both delegate to flip-the-bool. For the stepper, `ToggleNext` increments and `ToggleBack` decrements.
