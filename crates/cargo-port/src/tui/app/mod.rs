@@ -221,7 +221,7 @@ pub(super) struct App {
     /// (`FinderMode`, `SettingsMode`, `KeymapMode`, `ExitMode`),
     /// the transient `inline_error` UI feedback, and the
     /// `status_flash` slot.
-    overlays:                Overlays,
+    pub(super) overlays:     Overlays,
     confirm:                 Option<ConfirmAction>,
     animation_started:       Instant,
     mouse_pos:               Option<Position>,
@@ -813,10 +813,6 @@ impl App {
 
     pub(super) const fn confirm(&self) -> Option<&ConfirmAction> { self.confirm.as_ref() }
 
-    pub(super) const fn overlays(&self) -> &Overlays { &self.overlays }
-
-    pub(super) const fn overlays_mut(&mut self) -> &mut Overlays { &mut self.overlays }
-
     pub(super) fn set_example_output(&mut self, output: Vec<String>) {
         let was_empty = self.inflight.example_output_is_empty();
         self.inflight.set_example_output(output);
@@ -932,7 +928,7 @@ impl App {
         if let Some(idx) = crate::tui::settings::SettingOption::iter()
             .position(|s| s == SettingOption::IncludeDirs)
         {
-            self.overlays_mut()
+            self.overlays
                 .settings_pane_mut()
                 .viewport_mut()
                 .set_pos(idx);

@@ -552,7 +552,7 @@ rewrite (per Phase 5's `interaction.rs:144` lesson).
 - Mechanics: promoted let-binding grep from a Phase 5 lesson into step 2's
   pre-flight checklist.
 
-### Phase 7 — Overlays trivial-accessor / pass-through delete
+### Phase 7 — Overlays trivial-accessor / pass-through delete ✅
 
 Publish `overlays` as `pub(super)`. Delete `overlays`/`_mut`. Rewrite call sites.
 
@@ -568,9 +568,36 @@ auto-borrow is preserved — no `&app.overlays` injection needed (unlike Phase 4
 
 **Methods removed:** ~2. **Caller rewrites:** ~127 (live count).
 
-**Note for Phase 14:** `Overlays` itself exposes trivial-accessor methods
-(`finder_pane`, `settings_pane`, plus `_mut` variants) which become
-candidates for the recursive purge once Phase 7 publishes the field.
+**Note for Phase 14:** `Overlays` itself exposes six trivial-accessor
+methods (`finder_pane`/`finder_pane_mut`, `settings_pane`/`settings_pane_mut`,
+`keymap_pane`/`keymap_pane_mut` — each body is exactly `&self.{field}` /
+`&mut self.{field}` per `src/tui/overlays/mod.rs`) which become candidates
+for the recursive purge once Phase 7 publishes the field. Phase 14 must publish
+each underlying field as `pub(super)` and rewrite caller chains
+(`app.overlays.finder_pane().viewport()` → `app.overlays.finder_pane.viewport()`)
+in the same files Phase 7 just touched (`src/tui/render.rs`,
+`src/tui/interaction.rs`, `src/tui/finder.rs`, `src/tui/settings.rs`,
+`src/tui/keymap_ui.rs`). The trait-object-coercion footnote (calling a
+method that returns `&FinderPane` auto-borrows; reading the field
+directly does not) applies to the `&dyn Hittable` arms at
+`src/tui/interaction.rs:65–78` — Phase 7 noted this as a precaution but
+did not need to fire; Phase 14 will.
+
+### Retrospective
+
+**What worked:** Pre-flight grep (`fn overlays`, `fn overlays_mut`, `let .* = .*\.overlays_mut\(\)`) all returned the App-only result with no collisions and no let-bindings, so the bulk regex pass landed clean. Two-pass ordering (`_mut` first, then read-side) avoided partial matches as expected. Compiled clean on first attempt.
+**What deviated from the plan:** Nothing. Live caller count (127) matched the plan's estimate exactly.
+**Surprises:** None. The "trait-object arms" note in the plan turned out to be a non-issue — there was no `&dyn Hittable` build site to special-case in the diff (the rewrite category note from prior phases was preserved precautionarily but not load-bearing here).
+**Implications for remaining phases:** Reinforces that the now-standard mechanic (pre-flight grep → field publish → bulk-rewrite `_mut` then read-side → delete methods → validate) is reliable for any subsystem whose accessor name doesn't collide with a method on the subsystem type itself. Phase 8's `scan_state_mut` collision remains the only known exception in the queue.
+
+### Phase 7 Review
+
+- Phase 14: enumerated all six `Overlays` accessor pairs (`finder_pane`/`finder_pane_mut`, `settings_pane`/`settings_pane_mut`, `keymap_pane`/`keymap_pane_mut`) in the Phase 7 "Note for Phase 14"; previously only named four. Added trait-object-coercion caveat for `src/tui/interaction.rs:65–78` `&dyn Hittable` arms — Phase 7 noted it precautionarily but didn't fire; Phase 14 will.
+- Phase 8: caller-rewrite estimate corrected from `~50 (live: 51)` to `~95 (live)`. Original count missed the test-only and pass-through accessors that Phase 8 also deletes (~30 of the 34 `scan_state_mut` callers live in `src/tui/app/tests/{panes,discovery_shimmer,state}.rs`).
+- Phase 8: collision note re-categorized from category-(a) field-publish double-prefix to category-(d) chain-expansion collision. Mechanic outcome (same revert pass) unchanged; framing now matches the actual rewrite the chain expansion produces.
+- Phase 8: chain-expansion ordering list grew from 2 entries (`increment_data_generation`, `data_generation_for_test`) to 5 — added `scan_state_mut`, `set_retry_spawn_mode_for_test`, `refresh_derived_state`, all of which forward to `self.scan.X()` and must be expanded before the `\.scan\(\)`/`\.scan_mut\(\)` field-publish bulk pass.
+- Phase summary table: corrected baseline-drift error introduced by Phase 7 actually leaving App at 254 (not the table's prior 260). Phases 8–15 "App after" columns shifted -6 each; final post-15 floor moved from ~156 to ~151.
+- Phases 9, 10, 11, 12, 13, 15: confirmed clean — no edits needed. Phase 9 pre-flight (`fn startup`/`startup_mut` only on App) verified; no collisions expected. Phases 10/11/12/13/15 unaffected by Phase 7 outcome.
 
 ### Phase 8 — Scan trivial-accessor / pass-through delete
 
@@ -591,20 +618,32 @@ sweep — no `tui/render.rs` or `tui/panes/*` touches needed for `scan()` /
 **Pre-flight check:** Verified `fn scan` is only defined on App in
 `src/tui/app/mod.rs` — no unrelated type has a method named `scan` that
 the bulk regex `\.scan\(\)` → `.scan` could clobber. Same for `scan_mut`.
-**Known collision:** `Scan` itself has its own `scan_state_mut` method, so
-the bulk regex `\.scan_state_mut\(\)` will turn already-correct
-`self.scan.scan_state_mut()` into `self.scan.scan.scan_state_mut()`. The
-step-5 revert pass (`\.scan\.scan\.` → `.scan.` plus the no-leading-dot
-variant `\bscan\.scan\.` → `scan.`) is required, not optional.
+**Known collision (chain-expansion / category (d)):** `Scan` itself has
+its own `scan_state_mut` method, so when the chain-expansion pass rewrites
+`app.scan_state_mut()` → `app.scan.scan_state_mut()`, today's
+already-correct sites `self.scan.scan_state_mut()`
+(`async_tasks/dispatch.rs:37,47,87`, `async_tasks/tree.rs:142,143,144`)
+get incorrectly extended to `self.scan.scan.scan_state_mut()` if the regex
+runs unscoped. The step-5 revert pass (`\.scan\.scan\.` → `.scan.` plus
+the no-leading-dot variant `\bscan\.scan\.` → `scan.`) is required, not
+optional.
 
-**Within-phase ordering:** This phase has two pass-through chain expansions
-queued — `increment_data_generation` (body: `self.scan.bump_generation()`)
-and `data_generation_for_test` (body: `self.scan.generation()`). Per the
-new mechanics step 3 category (d), rewrite these chain expansions
+**Within-phase ordering:** This phase has five pass-through chain
+expansions queued — all delegations to `self.scan.X()`:
+- `increment_data_generation` → `self.scan.bump_generation()`
+- `data_generation_for_test` → `self.scan.generation()`
+- `scan_state_mut` → `self.scan.scan_state_mut()`
+- `set_retry_spawn_mode_for_test` → `self.scan.set_retry_spawn_mode_for_test()`
+- `refresh_derived_state` → `self.scan.refresh_derived_state()`
+
+Per mechanics step 3 category (d), rewrite all five chain expansions
 **before** deleting `scan` / `scan_mut`, otherwise the bulk pass on `scan`
 will see them as already-published-field uses and skip the chain expansion.
 
-**Methods removed:** ~9. **Caller rewrites:** ~50 (live count: 51).
+**Methods removed:** ~9. **Caller rewrites:** ~95 (live count, all five
+chain-expansion methods plus `\.scan\(\)`/`\.scan_mut\(\)`). ~30 of the 34
+`scan_state_mut` callers live in
+`src/tui/app/tests/{panes,discovery_shimmer,state}.rs`.
 
 ### Phase 9 — Startup trivial-accessor / pass-through delete
 
@@ -952,17 +991,17 @@ sits.
 | 4 | trivial-accessor / pass-through delete: Lint, Ci, Toasts, Net, Background, Inflight | 28 | ~250 | 265 ✅ |
 | 5 | trivial-accessor / pass-through delete: Panes | 6 | ~110 | 259 ✅ |
 | 6 | trivial-accessor / pass-through delete: Focus | 3 | ~93 | 256 ✅ |
-| 7 | trivial-accessor / pass-through delete: Overlays | ~2 | ~130 | 260 |
-| 8 | trivial-accessor / pass-through delete: Scan | ~9 | ~40–50 | 251 |
-| 9 | trivial-accessor / pass-through delete: Startup | ~2 | ~25 | 248 |
-| **10** | **Delete `App::projects()` / `projects_mut()`** | **2** | **~275** | **246** |
-| 11 | `project_list` absorption I — row-navigation read-side | ~17 | ~85 | 229 |
-| 12 | `project_list` absorption II — action methods (with `include_non_rust` arg threading) | ~27 | ~170 | 202 |
-| 13 | Non-`project_list` S relocations | 18 | ~95 | 184 |
-| 14 | Recursive trivial-accessor purge (crate-wide + 5 App-local accessors) | ~50–80 (crate-wide), 5 (App) | ~200 | 179 |
-| 15 | Relocate Group W static helpers to their data owners (after 10) | 23 | ~50 | **156** |
+| 7 | trivial-accessor / pass-through delete: Overlays | 2 | 127 | 254 ✅ |
+| 8 | trivial-accessor / pass-through delete: Scan | ~9 | ~95 | 245 |
+| 9 | trivial-accessor / pass-through delete: Startup | ~2 | ~25 | 243 |
+| **10** | **Delete `App::projects()` / `projects_mut()`** | **2** | **~275** | **241** |
+| 11 | `project_list` absorption I — row-navigation read-side | ~17 | ~85 | 224 |
+| 12 | `project_list` absorption II — action methods (with `include_non_rust` arg threading) | ~27 | ~170 | 197 |
+| 13 | Non-`project_list` S relocations | 18 | ~95 | 179 |
+| 14 | Recursive trivial-accessor purge (crate-wide + 5 App-local accessors) | ~50–80 (crate-wide), 5 (App) | ~200 | 174 |
+| 15 | Relocate Group W static helpers to their data owners (after 10) | 23 | ~50 | **151** |
 
-**Net: 308 → 184 on App after Phase 13, → 179 after Phase 14, → ~156 after Phase 15.**
+**Net: 308 → 179 on App after Phase 13, → 174 after Phase 14, → ~151 after Phase 15.**
 Per review-finding C2, six methods (`expand_all`, `collapse_all`,
 `select_matching_visible_row`, `select_project_in_tree`,
 `expand_path_in_tree`, `collapse_to`) keep their S →

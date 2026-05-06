@@ -515,7 +515,7 @@ fn toggle_vim_mode(app: &mut App) {
                 "Cannot enable vim mode — these bindings use h/j/k/l:\n{}",
                 conflicts.join(", ")
             );
-            app.overlays_mut().set_inline_error(msg);
+            app.overlays.set_inline_error(msg);
             return;
         }
     }
@@ -531,7 +531,7 @@ fn save_updated_config(app: &mut App, config: &CargoPortConfig) -> bool {
             true
         },
         Err(err) => {
-            app.overlays_mut().set_inline_error(err);
+            app.overlays.set_inline_error(err);
             false
         },
     }
@@ -560,7 +560,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         .saturating_add(2)
         .saturating_add(1);
 
-    app.overlays_mut()
+    app.overlays
         .settings_pane_mut()
         .viewport_mut()
         .set_len(SettingOption::COUNT);
@@ -573,7 +573,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     }
     .render(frame);
 
-    app.overlays_mut()
+    app.overlays
         .settings_pane_mut()
         .viewport_mut()
         .set_content_area(inner);
@@ -581,7 +581,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
 
-    app.overlays_mut()
+    app.overlays
         .settings_pane_mut()
         .set_line_targets(line_targets);
 }
@@ -659,7 +659,7 @@ fn nav_keys_toggle_suffix(
 ) -> Option<&'static str> {
     if setting == Some(SettingOption::NavigationKeys)
         && selection != PaneSelectionState::Unselected
-        && !app.overlays().is_settings_editing()
+        && !app.overlays.is_settings_editing()
     {
         Some("  maps h/j/k/l to arrow navigation")
     } else {
@@ -716,7 +716,7 @@ fn push_setting_row(
             &error,
             ctx.selection.patch(Style::default().fg(INLINE_ERROR_COLOR)),
         );
-    } else if app.overlays().is_settings_editing()
+    } else if app.overlays.is_settings_editing()
         && ctx.selection != PaneSelectionState::Unselected
     {
         let edit_buffer = render_edit_buffer(
@@ -740,7 +740,7 @@ fn push_setting_row(
         );
     } else if setting == Some(SettingOption::CiRunCount)
         && ctx.selection != PaneSelectionState::Unselected
-        && !app.overlays().is_settings_editing()
+        && !app.overlays.is_settings_editing()
     {
         push_ci_run_count_row(lines, line_targets, ctx, value);
     } else if setting == Some(SettingOption::TerminalCommand)
@@ -787,13 +787,13 @@ pub(super) fn build_settings_lines(
             continue;
         }
 
-        let cursor = if app.overlays().settings_pane().viewport().pos() == selection_index {
+        let cursor = if app.overlays.settings_pane().viewport().pos() == selection_index {
             "▶ "
         } else {
             "  "
         };
         let selection = app
-            .overlays()
+            .overlays
             .settings_pane()
             .viewport()
             .selection_state(selection_index, app.focus.pane_state(PaneId::Settings));
@@ -829,43 +829,43 @@ fn push_settings_header(
 }
 
 fn selected_inline_error(app: &App, selection: PaneSelectionState) -> Option<String> {
-    (selection != PaneSelectionState::Unselected && !app.overlays().is_settings_editing())
-        .then(|| app.overlays().inline_error().cloned())
+    (selection != PaneSelectionState::Unselected && !app.overlays.is_settings_editing())
+        .then(|| app.overlays.inline_error().cloned())
         .flatten()
 }
 
 pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
-    if app.overlays().is_settings_editing() {
+    if app.overlays.is_settings_editing() {
         handle_settings_edit_key(app, key);
         return;
     }
 
-    let setting = SettingOption::from_index(app.overlays().settings_pane().viewport().pos());
+    let setting = SettingOption::from_index(app.overlays.settings_pane().viewport().pos());
 
     match key {
         KeyCode::Esc | KeyCode::Char('s') => {
             if app.config.current().tui.include_dirs.is_empty() {
-                app.overlays_mut()
+                app.overlays
                     .set_inline_error("Configure at least one include directory before continuing");
                 return;
             }
-            app.overlays_mut().close_settings();
+            app.overlays.close_settings();
             app.focus.close_overlay();
         },
         KeyCode::Up => {
-            app.overlays_mut().clear_inline_error();
-            app.overlays_mut().settings_pane_mut().viewport_mut().up();
+            app.overlays.clear_inline_error();
+            app.overlays.settings_pane_mut().viewport_mut().up();
         },
         KeyCode::Down => {
-            app.overlays_mut().clear_inline_error();
-            app.overlays_mut().settings_pane_mut().viewport_mut().down();
+            app.overlays.clear_inline_error();
+            app.overlays.settings_pane_mut().viewport_mut().down();
         },
         KeyCode::Left | KeyCode::Right => {
-            app.overlays_mut().clear_inline_error();
+            app.overlays.clear_inline_error();
             handle_settings_adjust_key(app, key, setting);
         },
         KeyCode::Enter | KeyCode::Char(' ') => {
-            app.overlays_mut().clear_inline_error();
+            app.overlays.clear_inline_error();
             handle_settings_activate_key(app, setting);
         },
         _ => {},
@@ -926,13 +926,13 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
 }
 
 fn finish_settings_edit_with_error(app: &mut App, error: impl Into<String>) {
-    app.overlays_mut().end_settings_editing();
+    app.overlays.end_settings_editing();
     app.config.edit_buffer_mut().set(String::new(), 0);
-    app.overlays_mut().set_inline_error(error.into());
+    app.overlays.set_inline_error(error.into());
 }
 
 fn begin_settings_edit(app: &mut App, value: String) {
-    app.overlays_mut().begin_settings_editing();
+    app.overlays.begin_settings_editing();
     let cursor = value.len();
     app.config.edit_buffer_mut().set(value, cursor);
 }
@@ -1016,7 +1016,7 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
 }
 
 fn apply_settings_edit(app: &mut App) {
-    let setting = SettingOption::from_index(app.overlays().settings_pane().viewport().pos());
+    let setting = SettingOption::from_index(app.overlays.settings_pane().viewport().pos());
     let value = app.config.edit_buffer().buf().to_string();
     let result = setting.map_or(Ok(()), |setting| {
         apply_settings_edit_for(app, setting, &value)
@@ -1025,7 +1025,7 @@ fn apply_settings_edit(app: &mut App) {
         finish_settings_edit_with_error(app, err);
         return;
     }
-    app.overlays_mut().end_settings_editing();
+    app.overlays.end_settings_editing();
     app.config.edit_buffer_mut().set(String::new(), 0);
 }
 
@@ -1142,7 +1142,7 @@ fn apply_lint_settings_edit(
     match setting {
         SettingOption::LintProjects => {
             save_sorted_list_setting(app, value, |config, dirs| config.lint.include = dirs);
-            if app.overlays().inline_error().is_none() {
+            if app.overlays.inline_error().is_none() {
                 app.show_timed_toast("Settings", "Lint projects updated");
             }
         },
@@ -1172,7 +1172,7 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
             apply_settings_edit(app);
         },
         KeyCode::Esc => {
-            app.overlays_mut().end_settings_editing();
+            app.overlays.end_settings_editing();
             app.config.edit_buffer_mut().set(String::new(), 0);
         },
         KeyCode::Left => {
@@ -1239,7 +1239,7 @@ pub(super) fn focus_terminal_command(app: &mut App) {
     if let Some(index) =
         SettingOption::iter().position(|setting| setting == SettingOption::TerminalCommand)
     {
-        app.overlays_mut()
+        app.overlays
             .settings_pane_mut()
             .viewport_mut()
             .set_pos(index);

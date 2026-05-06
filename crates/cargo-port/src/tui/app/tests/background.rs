@@ -145,7 +145,7 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
     assert_eq!(app.config.editor(), "zed");
     assert_eq!(app.config.current().tui.editor, "zed");
     assert!(matches!(
-        app.overlays().status_flash(),
+        app.overlays.status_flash(),
         Some((msg, _)) if msg.contains("Config reload failed")
     ));
 }

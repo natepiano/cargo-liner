@@ -187,7 +187,7 @@ pub(super) const fn selectable_row_count() -> usize {
 // ── Key handling ─────────────────────────────────────────────────────
 
 pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyEvent) {
-    if app.overlays().keymap_is_awaiting() {
+    if app.overlays.keymap_is_awaiting() {
         // Awaiting mode uses the raw event so vim-normalized keys
         // don't interfere with the user's intended binding.
         handle_awaiting_key(app, raw);
@@ -197,38 +197,38 @@ pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyE
     // Navigation uses the normalized event (vim hjkl → arrows).
     match normalized.code {
         KeyCode::Esc => {
-            app.overlays_mut().close_keymap();
+            app.overlays.close_keymap();
             app.focus.close_overlay();
         },
-        KeyCode::Up => app.overlays_mut().keymap_pane_mut().viewport_mut().up(),
-        KeyCode::Down => app.overlays_mut().keymap_pane_mut().viewport_mut().down(),
-        KeyCode::Home => app.overlays_mut().keymap_pane_mut().viewport_mut().home(),
+        KeyCode::Up => app.overlays.keymap_pane_mut().viewport_mut().up(),
+        KeyCode::Down => app.overlays.keymap_pane_mut().viewport_mut().down(),
+        KeyCode::Home => app.overlays.keymap_pane_mut().viewport_mut().home(),
         KeyCode::End => app
-            .overlays_mut()
+            .overlays
             .keymap_pane_mut()
             .viewport_mut()
             .set_pos(selectable_row_count().saturating_sub(1)),
-        KeyCode::Enter => app.overlays_mut().keymap_begin_awaiting(),
+        KeyCode::Enter => app.overlays.keymap_begin_awaiting(),
         _ => {},
     }
 }
 
 fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     if event.code == KeyCode::Esc {
-        app.overlays_mut().keymap_end_awaiting();
+        app.overlays.keymap_end_awaiting();
         return;
     }
 
     // Enter clears a conflict message so the user can try another key.
-    if event.code == KeyCode::Enter && app.overlays().inline_error().is_some() {
-        app.overlays_mut().clear_inline_error();
+    if event.code == KeyCode::Enter && app.overlays.inline_error().is_some() {
+        app.overlays.clear_inline_error();
         return;
     }
 
     let bind = KeyBind::new(event.code, event.modifiers);
     let rows = build_rows(app.keymap.current());
     let selectable: Vec<&KeymapRow> = rows.iter().filter(|r| !r.is_header).collect();
-    let Some(row) = selectable.get(app.overlays().keymap_pane().viewport().pos()) else {
+    let Some(row) = selectable.get(app.overlays.keymap_pane().viewport().pos()) else {
         return;
     };
 
@@ -244,7 +244,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
                 | KeyCode::End
         )
     {
-        app.overlays_mut()
+        app.overlays
             .set_inline_error(format!("\"{}\" reserved for navigation", bind.display()));
         return;
     }
@@ -254,7 +254,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
         && bind.modifiers == KeyModifiers::NONE
         && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l'))
     {
-        app.overlays_mut().set_inline_error(format!(
+        app.overlays.set_inline_error(format!(
             "\"{}\" reserved for vim navigation",
             bind.display()
         ));
@@ -265,7 +265,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     if row.scope != "global"
         && let Some(global_action) = app.keymap.current().global.action_for(&bind)
     {
-        app.overlays_mut().set_inline_error(format!(
+        app.overlays.set_inline_error(format!(
             "\"{}\" used by Global → {}",
             bind.display(),
             global_action.toml_key()
@@ -278,20 +278,20 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     if row.scope == "global"
         && let Some(msg) = check_pane_conflict(app.keymap.current(), &bind)
     {
-        app.overlays_mut().set_inline_error(msg);
+        app.overlays.set_inline_error(msg);
         return;
     }
 
     // Check intra-scope conflict.
     let conflict = check_scope_conflict(app.keymap.current(), row.scope, row.action, &bind);
     if let Some(msg) = conflict {
-        app.overlays_mut().set_inline_error(msg);
+        app.overlays.set_inline_error(msg);
         return;
     }
 
     // Valid — apply the rebind.
     apply_rebind(app, row.scope, row.action, bind);
-    app.overlays_mut().keymap_end_awaiting();
+    app.overlays.keymap_end_awaiting();
 }
 
 fn check_scope_conflict(
@@ -502,12 +502,12 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
         }
 
         let selection = app
-            .overlays()
+            .overlays
             .keymap_pane()
             .viewport()
             .selection_state(selectable_index, app.focus.pane_state(PaneId::Keymap));
         let key_text = if selection != PaneSelectionState::Unselected && is_awaiting {
-            app.overlays()
+            app.overlays
                 .inline_error()
                 .cloned()
                 .unwrap_or_else(|| "Press key...".to_string())
@@ -520,7 +520,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
 
         let line = if selection != PaneSelectionState::Unselected
             && is_awaiting
-            && app.overlays().inline_error().is_some()
+            && app.overlays.inline_error().is_some()
         {
             Line::from(vec![
                 Span::styled(
@@ -570,7 +570,7 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
 
     // Dynamic width: base fits all normal keys, expands for conflict messages.
     let content_width = app
-        .overlays()
+        .overlays
         .inline_error()
         .map_or(BASE_POPUP_WIDTH, |msg| {
             // 2 indent + 25 desc + msg len + 2 pad
@@ -592,8 +592,8 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     }
     .render(frame);
 
-    let selected_pos = app.overlays().keymap_pane().viewport().pos();
-    let is_awaiting = app.overlays().keymap_is_awaiting();
+    let selected_pos = app.overlays.keymap_pane().viewport().pos();
+    let is_awaiting = app.overlays.keymap_is_awaiting();
     let lines = build_lines(&rows, app, is_awaiting);
 
     // Scroll to keep selection visible.

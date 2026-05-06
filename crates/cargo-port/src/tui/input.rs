@@ -123,15 +123,15 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     if handle_overlay_editor_key(app, &normalized) {
         return;
     }
-    if app.overlays().is_keymap_open() {
+    if app.overlays.is_keymap_open() {
         keymap_ui::handle_keymap_key(app, raw, &normalized);
         return;
     }
-    if app.overlays().is_finder_open() {
+    if app.overlays.is_finder_open() {
         finder::handle_finder_key(app, code);
         return;
     }
-    if app.overlays().is_settings_open() {
+    if app.overlays.is_settings_open() {
         settings::handle_settings_key(app, code);
         return;
     }
@@ -160,7 +160,7 @@ fn bind_from(event: &KeyEvent) -> KeyBind { KeyBind::new(event.code, event.modif
 /// no modifiers are held (so `Ctrl+k` is never eaten by vim mode).
 /// Arrow remapping in list panes also only applies to bare arrows.
 fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
-    if app.overlays().is_finder_open() || app.overlays().is_settings_editing() {
+    if app.overlays.is_finder_open() || app.overlays.is_settings_editing() {
         return *raw;
     }
 
@@ -487,12 +487,12 @@ fn open_finder(app: &mut App) {
     finder.index = index;
     finder.col_widths = col_widths;
     app.focus.open_overlay(PaneId::Finder);
-    app.overlays_mut().open_finder();
+    app.overlays.open_finder();
     let finder = app.finder_mut();
     finder.query.clear();
     finder.results.clear();
     finder.total = 0;
-    app.overlays_mut().finder_pane_mut().viewport_mut().home();
+    app.overlays.finder_pane_mut().viewport_mut().home();
 }
 
 fn shell_escape_path(path: &Path) -> String {
@@ -509,7 +509,7 @@ fn terminal_shell_command(command: &str, selected_path: &Path) -> String {
 
 fn open_settings_to_terminal_command(app: &mut App) {
     app.focus.open_overlay(PaneId::Settings);
-    app.overlays_mut().open_settings();
+    app.overlays.open_settings();
     settings::focus_terminal_command(app);
 }
 
@@ -566,21 +566,21 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
         return false;
     };
     match action {
-        GlobalAction::Quit => app.overlays_mut().request_quit(),
-        GlobalAction::Restart => app.overlays_mut().request_restart(),
+        GlobalAction::Quit => app.overlays.request_quit(),
+        GlobalAction::Restart => app.overlays.request_restart(),
         GlobalAction::Find => open_finder(app),
         GlobalAction::OpenEditor => open_in_editor(app),
         GlobalAction::OpenTerminal => open_terminal(app),
         GlobalAction::Settings => {
             app.focus.open_overlay(PaneId::Settings);
-            app.overlays_mut().open_settings();
+            app.overlays.open_settings();
         },
         GlobalAction::NextPane => app.focus_next_pane(),
         GlobalAction::PrevPane => app.focus_previous_pane(),
         GlobalAction::OpenKeymap => {
             app.focus.open_overlay(PaneId::Keymap);
-            app.overlays_mut().open_keymap();
-            app.overlays_mut()
+            app.overlays.open_keymap();
+            app.overlays
                 .keymap_pane_mut()
                 .viewport_mut()
                 .set_len(keymap_ui::selectable_row_count());

@@ -157,13 +157,13 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     );
     app.toasts.set_hits(toast_result.hitboxes);
 
-    if app.overlays().is_settings_open() {
+    if app.overlays.is_settings_open() {
         settings::render_settings_popup(frame, app);
     }
-    if app.overlays().is_keymap_open() {
+    if app.overlays.is_keymap_open() {
         keymap_ui::render_keymap_popup(frame, app);
     }
-    if app.overlays().is_finder_open() {
+    if app.overlays.is_finder_open() {
         finder::render_finder_popup(frame, app);
     }
     if let Some(action) = app.confirm() {

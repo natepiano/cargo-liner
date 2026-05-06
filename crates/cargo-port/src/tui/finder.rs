@@ -567,32 +567,32 @@ pub(super) fn search_finder(
 pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc => {
-            app.overlays_mut().close_finder();
+            app.overlays.close_finder();
             app.finder_mut().query.clear();
             app.finder_mut().results.clear();
-            app.overlays_mut().finder_pane_mut().viewport_mut().home();
+            app.overlays.finder_pane_mut().viewport_mut().home();
             app.focus.close_overlay();
         },
         KeyCode::Enter => {
             confirm_finder(app);
         },
         KeyCode::Up => {
-            app.overlays_mut().finder_pane_mut().viewport_mut().up();
+            app.overlays.finder_pane_mut().viewport_mut().up();
         },
         KeyCode::Down => {
-            app.overlays_mut().finder_pane_mut().viewport_mut().down();
+            app.overlays.finder_pane_mut().viewport_mut().down();
         },
         KeyCode::Home => {
-            app.overlays_mut().finder_pane_mut().viewport_mut().home();
+            app.overlays.finder_pane_mut().viewport_mut().home();
         },
         KeyCode::End => {
-            app.overlays_mut().finder_pane_mut().viewport_mut().end();
+            app.overlays.finder_pane_mut().viewport_mut().end();
         },
         KeyCode::Backspace => {
             if app.finder().query.is_empty() {
-                app.overlays_mut().close_finder();
+                app.overlays.close_finder();
                 app.finder_mut().results.clear();
-                app.overlays_mut().finder_pane_mut().viewport_mut().home();
+                app.overlays.finder_pane_mut().viewport_mut().home();
                 app.focus.close_overlay();
             } else {
                 app.finder_mut().query.pop();
@@ -615,24 +615,24 @@ fn refresh_finder_results(app: &mut App) {
     let finder = app.finder_mut();
     finder.results = results;
     finder.total = total;
-    app.overlays_mut().finder_pane_mut().viewport_mut().home();
+    app.overlays.finder_pane_mut().viewport_mut().home();
 }
 
 fn confirm_finder(app: &mut App) {
     let Some(&idx) = app
         .finder()
         .results
-        .get(app.overlays().finder_pane().viewport().pos())
+        .get(app.overlays.finder_pane().viewport().pos())
     else {
         return;
     };
     let item = app.finder().index[idx].clone();
 
     // Close finder
-    app.overlays_mut().close_finder();
+    app.overlays.close_finder();
     app.finder_mut().query.clear();
     app.finder_mut().results.clear();
-    app.overlays_mut().finder_pane_mut().viewport_mut().home();
+    app.overlays.finder_pane_mut().viewport_mut().home();
     app.focus.close_overlay();
 
     // Navigate to the project
@@ -762,11 +762,11 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     };
 
     let result_count = app.finder().results.len();
-    app.overlays_mut()
+    app.overlays
         .finder_pane_mut()
         .viewport_mut()
         .set_len(result_count);
-    app.overlays_mut()
+    app.overlays
         .finder_pane_mut()
         .viewport_mut()
         .set_content_area(results_area);
@@ -891,7 +891,7 @@ fn render_finder_results(
                 )),
             ])
             .style(
-                app.overlays()
+                app.overlays
                     .finder_pane()
                     .viewport()
                     .selection_state(row_index, app.focus.pane_state(PaneId::Finder))
@@ -917,9 +917,9 @@ fn render_finder_results(
         .row_highlight_style(Style::default());
 
     let mut table_state =
-        TableState::default().with_selected(Some(app.overlays().finder_pane().viewport().pos()));
+        TableState::default().with_selected(Some(app.overlays.finder_pane().viewport().pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.overlays_mut()
+    app.overlays
         .finder_pane_mut()
         .viewport_mut()
         .set_scroll_offset(table_state.offset());
