@@ -3,11 +3,11 @@ use ratatui::layout::Rect;
 
 use super::app::App;
 use super::app::HoveredPaneRow;
+use super::pane::HITTABLE_Z_ORDER;
 use super::pane::Hittable;
 use super::pane::HittableId;
 use super::pane::HoverTarget;
 use super::pane::Viewport;
-use super::pane::HITTABLE_Z_ORDER;
 use super::panes::PaneId;
 
 /// Per-toast hit-test rects produced by `toasts::render_toasts`
@@ -145,9 +145,9 @@ const fn clear_all_hover(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::sync::mpsc;
     use std::sync::Arc;
     use std::sync::Mutex;
+    use std::sync::mpsc;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -159,9 +159,9 @@ mod tests {
     use crossterm::event::MouseButton;
     use crossterm::event::MouseEvent;
     use crossterm::event::MouseEventKind;
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
-    use ratatui::Terminal;
 
     use super::HoveredPaneRow;
     use crate::ci::CiJob;
@@ -317,9 +317,9 @@ mod tests {
             url: format!("https://github.com/natepiano/demo/actions/runs/{run_id}"),
             ci_status: conclusion,
             jobs: vec![CiJob {
-                name: "build".to_string(),
-                ci_status,
-                duration: "1m".to_string(),
+                name:          "build".to_string(),
+                ci_status:     conclusion,
+                duration:      "1m".to_string(),
                 duration_secs: Some(60),
             }],
             wall_clock_secs: Some(60),
@@ -1097,9 +1097,9 @@ mod tests {
 
     #[test]
     fn targets_pane_row_click_selects_target() {
-        use cargo_metadata::semver::Version;
         use cargo_metadata::PackageId;
         use cargo_metadata::TargetKind;
+        use cargo_metadata::semver::Version;
         // Step 3b: Targets pane now sources its data from the
         // `cargo metadata` result; the old hand-parsed Cargo
         // fallback is retired. Populate two Example targets via
@@ -1260,8 +1260,8 @@ mod tests {
         homepage: Option<&str>,
         repository: Option<&str>,
     ) {
-        use cargo_metadata::semver::Version;
         use cargo_metadata::PackageId;
+        use cargo_metadata::semver::Version;
         let root = AbsolutePath::from(project_dir);
         let manifest = AbsolutePath::from(project_dir.join("Cargo.toml"));
         let pkg = PackageRecord {
@@ -1467,8 +1467,8 @@ mod tests {
         sibling_dirs: &[&Path],
         target_dir: &Path,
     ) {
-        use cargo_metadata::semver::Version;
         use cargo_metadata::PackageId;
+        use cargo_metadata::semver::Version;
         for dir in std::iter::once(primary_dir).chain(sibling_dirs.iter().copied()) {
             let root = AbsolutePath::from(dir);
             let manifest = AbsolutePath::from(dir.join("Cargo.toml"));

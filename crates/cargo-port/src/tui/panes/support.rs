@@ -1528,7 +1528,8 @@ fn resolve_disk_and_ci(
     wt_item.map_or_else(
         || {
             let ci = if app.project_list.is_rust_at_path(abs_path) {
-                app.ci_for(abs_path)
+                app.project_list
+                    .ci_status_for(abs_path, app.ci.display_mode_for(abs_path))
             } else {
                 None
             };

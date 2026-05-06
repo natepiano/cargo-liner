@@ -557,7 +557,10 @@ fn ci_display_style(display: &super::CiDisplay) -> Style {
         CiDisplay::NoWorkflow | CiDisplay::UnpublishedBranch | CiDisplay::NoRuns => {
             Style::default().fg(INACTIVE_BORDER_COLOR)
         },
-        CiDisplay::Runs { ci_status: conclusion, .. } => render::conclusion_style(*conclusion),
+        CiDisplay::Runs {
+            ci_status: conclusion,
+            ..
+        } => render::conclusion_style(*conclusion),
     }
 }
 

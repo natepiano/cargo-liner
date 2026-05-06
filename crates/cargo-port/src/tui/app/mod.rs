@@ -401,19 +401,6 @@ impl App {
             .map_or_else(Vec::new, |path| self.ci_runs_for_display(path))
     }
 
-    pub(super) fn ci_for(&self, path: &Path) -> Option<CiStatus> {
-        // A branch with no upstream tracking can't have CI runs — don't
-        // show the parent repo's result for an unpushed worktree branch.
-        if self.project_list.unpublished_ci_branch_name(path).is_some() {
-            return None;
-        }
-        let display_mode = self.ci.display_mode_for(path);
-        self.project_list
-            .ci_info_for(path)
-            .and_then(|_| self.project_list.latest_ci_run_for_path(path, display_mode))
-            .map(|run| run.ci_status)
-    }
-
     pub(super) fn ci_is_fetching(&self, path: &Path) -> bool {
         self.project_list
             .entry_containing(path)
@@ -428,7 +415,9 @@ impl App {
     pub(super) fn ci_for_item(&self, item: &RootItem) -> Option<CiStatus> {
         let paths = item.unique_paths();
         if paths.len() == 1 {
-            return self.ci_for(&paths[0]);
+            return self
+                .project_list
+                .ci_status_for(&paths[0], self.ci.display_mode_for(&paths[0]));
         }
         let mut any_red = false;
         let mut all_green = true;

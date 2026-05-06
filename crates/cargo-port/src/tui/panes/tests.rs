@@ -1,10 +1,10 @@
 use ratatui::text::Line;
 
-use super::support as model;
+use super::CI_COMPACT_DURATION_WIDTH;
 use super::DetailField;
 use super::GitData;
 use super::PackageData;
-use super::CI_COMPACT_DURATION_WIDTH;
+use super::support as model;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
@@ -304,9 +304,9 @@ fn ci_table_keeps_durations_when_fixed_columns_fit() {
 mod targets_from_metadata {
     use std::path::PathBuf;
 
-    use cargo_metadata::semver::Version;
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
+    use cargo_metadata::semver::Version;
 
     use crate::project::AbsolutePath;
     use crate::project::PackageRecord;

@@ -18,8 +18,8 @@ use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
 use crate::scan::CargoMetadataError;
-use crate::tui::app::target_index::CleanSelection;
 use crate::tui::app::Startup;
+use crate::tui::app::target_index::CleanSelection;
 use crate::tui::panes;
 
 #[test]
@@ -60,7 +60,10 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
     );
 
     assert_eq!(
-        app.ci_for(test_path("~/ws").as_path()),
+        app.project_list.ci_status_for(
+            test_path("~/ws").as_path(),
+            app.ci.display_mode_for(test_path("~/ws").as_path()),
+        ),
         Some(CiStatus::Passed)
     );
     assert!(matches!(
@@ -68,13 +71,17 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
         Some(crate::project::ProjectCiData::Loaded(_))
     ));
     assert_eq!(
-        app.ci_for(test_path("~/ws/core").as_path()),
+        app.project_list.ci_status_for(
+            test_path("~/ws/core").as_path(),
+            app.ci.display_mode_for(test_path("~/ws/core").as_path()),
+        ),
         Some(CiStatus::Passed)
     );
-    assert!(app
-        .project_list
-        .ci_info_for(test_path("~/ws/core").as_path())
-        .is_some());
+    assert!(
+        app.project_list
+            .ci_info_for(test_path("~/ws/core").as_path())
+            .is_some()
+    );
     // Member resolves to the same entry-level ci_data as the workspace root.
     assert!(matches!(
         app.project_list
@@ -251,7 +258,11 @@ fn ci_for_prefers_runs_matching_local_branch() {
         0,
     );
 
-    assert_eq!(app.ci_for(project.path()), Some(CiStatus::Failed));
+    assert_eq!(
+        app.project_list
+            .ci_status_for(project.path(), app.ci.display_mode_for(project.path())),
+        Some(CiStatus::Failed)
+    );
 }
 
 #[test]
@@ -304,7 +315,11 @@ fn ci_for_default_branch_prefers_matching_branch_runs() {
         0,
     );
 
-    assert_eq!(app.ci_for(project.path()), Some(CiStatus::Passed));
+    assert_eq!(
+        app.project_list
+            .ci_status_for(project.path(), app.ci.display_mode_for(project.path())),
+        Some(CiStatus::Passed)
+    );
     assert_eq!(
         app.ci_runs_for_display(project.path())
             .iter()
@@ -364,7 +379,11 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
         0,
     );
 
-    assert_eq!(app.ci_for(project.path()), Some(CiStatus::Failed));
+    assert_eq!(
+        app.project_list
+            .ci_status_for(project.path(), app.ci.display_mode_for(project.path())),
+        Some(CiStatus::Failed)
+    );
     assert_eq!(
         app.ci_runs_for_display(project.path())
             .iter()
@@ -375,7 +394,11 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
 
     app.toggle_ci_display_mode_for(project.path());
 
-    assert_eq!(app.ci_for(project.path()), Some(CiStatus::Passed));
+    assert_eq!(
+        app.project_list
+            .ci_status_for(project.path(), app.ci.display_mode_for(project.path())),
+        Some(CiStatus::Passed)
+    );
     assert_eq!(
         app.ci_runs_for_display(project.path())
             .iter()
@@ -416,11 +439,12 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(project_a.path().as_path()));
-    assert!(!app
-        .startup
-        .lint_phase
-        .seen
-        .contains(project_a.path().as_path()));
+    assert!(
+        !app.startup
+            .lint_phase
+            .seen
+            .contains(project_a.path().as_path())
+    );
     assert!(app.lint.running().running.contains_key(project_a.path()));
     assert!(app.lint.running().toast.is_some());
 
@@ -543,11 +567,12 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 
     apply_git_info(&mut app, member_dir.as_path(), make_git_info(None));
 
-    assert!(app
-        .startup
-        .git
-        .seen
-        .contains(workspace_dir.join(".git").as_path()));
+    assert!(
+        app.startup
+            .git
+            .seen
+            .contains(workspace_dir.join(".git").as_path())
+    );
 }
 
 #[test]
@@ -1799,11 +1824,12 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
         app.start_clean(&project_path),
         "out-of-tree target dir exists → clean is queued (would have missed with join(\"target\"))"
     );
-    assert!(app
-        .inflight
-        .clean()
-        .running
-        .contains_key(project_path.as_path()));
+    assert!(
+        app.inflight
+            .clean()
+            .running
+            .contains_key(project_path.as_path())
+    );
 }
 
 #[test]
@@ -1863,11 +1889,12 @@ fn start_clean_falls_back_to_literal_target_when_no_metadata_yet() {
         app.start_clean(&project_path),
         "no metadata → falls back to <project>/target, which exists → clean queued"
     );
-    assert!(app
-        .inflight
-        .clean()
-        .running
-        .contains_key(project_path.as_path()));
+    assert!(
+        app.inflight
+            .clean()
+            .running
+            .contains_key(project_path.as_path())
+    );
 }
 
 /// The metadata phase gates `startup_complete_at`: with disk, git, repo
@@ -2126,9 +2153,9 @@ fn out_of_tree_target_size_message_stamps_metadata() {
 
 #[test]
 fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
-    use cargo_metadata::semver::Version;
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
+    use cargo_metadata::semver::Version;
 
     let project_path = AbsolutePath::from(PathBuf::from("/abs/demo"));
     let pkg_item = RootItem::Rust(RustProject::Package(crate::project::Package {

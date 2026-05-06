@@ -411,7 +411,9 @@ fn render_child_item<P: project::ProjectFields>(
     } else {
         crate::tui::columns::LintCell::hidden()
     };
-    let ci = app.ci_for(path);
+    let ci = app
+        .project_list
+        .ci_status_for(path, app.ci.display_mode_for(path));
     let hide_git_status = app.project_list.is_workspace_member_path(path);
     let origin_sync = if hide_git_status
         || matches!(
@@ -510,7 +512,9 @@ fn render_worktree_entry<'a>(
     let lint_cell = app.lint_cell(&crate::tui::lint_state::Lint::status_for_worktree(
         &item.item, wi,
     ));
-    let ci = app.ci_for(wt_abs);
+    let ci = app
+        .project_list
+        .ci_status_for(wt_abs, app.ci.display_mode_for(wt_abs));
     let origin_sync = app.project_list.git_sync(wt_abs);
     let main_sync = app.project_list.git_main(wt_abs);
     let deleted = app.project_list.is_deleted(wt_abs);

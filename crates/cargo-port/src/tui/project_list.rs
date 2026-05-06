@@ -16,6 +16,7 @@ use super::app::SelectionSync;
 use super::columns::ProjectListWidths;
 use crate::ci;
 use crate::ci::CiRun;
+use crate::ci::CiStatus;
 use crate::ci::OwnerRepo;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
@@ -508,6 +509,20 @@ impl ProjectList {
         (git.primary_tracked_ref().is_none() && git.branch.as_deref() != default_branch)
             .then(|| git.branch.clone())
             .flatten()
+    }
+
+    /// Latest CI status at `path` filtered through `display_mode`, suppressed
+    /// for unpublished worktree branches whose parent-repo CI doesn't apply.
+    pub(super) fn ci_status_for(
+        &self,
+        path: &Path,
+        display_mode: CiRunDisplayMode,
+    ) -> Option<CiStatus> {
+        if self.unpublished_ci_branch_name(path).is_some() {
+            return None;
+        }
+        self.latest_ci_run_for_path(path, display_mode)
+            .map(|run| run.ci_status)
     }
 
     pub(super) fn is_deleted(&self, path: &Path) -> bool {

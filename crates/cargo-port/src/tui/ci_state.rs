@@ -19,9 +19,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 
+use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
-use ratatui::Frame;
 
 use super::app::CiRunDisplayMode;
 use super::pane::Hittable;
@@ -50,7 +50,7 @@ use crate::project::RepoInfo;
 /// - `UnpublishedBranch` — branch has no upstream tracking and isn't the repo's default branch; the
 ///   parent repo's CI doesn't apply to this checkout.
 /// - `NoRuns` — workflows present, branch published, but zero local runs and zero `github_total`.
-/// - `Runs { conclusion, local, github_total }` — at least one run is known. `conclusion` is the
+/// - `Runs { ci_status, local, github_total }` — at least one run is known. `ci_status` is the
 ///   latest run's outcome (renderer applies `CiStatus::icon()` at render time); `local` is the
 ///   count of runs after display-mode filtering; `github_total` drives the "/ github N" suffix when
 ///   > 0.
@@ -166,11 +166,10 @@ impl Ci {
     ///   `github_total`. Run counts are NOT aggregated across worktree-group checkouts (matches
     ///   today's `resolve_ci_display` behavior, which reads `ci_data_for(abs_path)` for the primary
     ///   only).
-    /// - `latest_conclusion` via `App::ci_for(path)` for single-project rows /
-    ///   `App::ci_for_item(item)` for worktree-group rollup rows. The aggregator at
-    ///   `app/query.rs:424-452` walks all worktree paths and returns `Failure` if any-red,
-    ///   `Success` if all-green, else `None`. The rollup is the only group-level distinction;
-    ///   everything else is primary-checkout data.
+    /// - `latest_ci_status` via `ProjectList::ci_status_for(path, display_mode)` for single-project
+    ///   rows / `App::ci_for_item(item)` for worktree-group rollup rows. The aggregator walks all
+    ///   worktree paths and returns `Failed` if any-red, `Passed` if all-green, else `None`. The
+    ///   rollup is the only group-level distinction; everything else is primary-checkout data.
     /// - `is_worktree_group` — kept for signature symmetry with `Lint::package_display`. Today's CI
     ///   display logic doesn't branch on it (the caller's pre-resolution of `latest_conclusion`
     ///   already handles the rollup); reserved in case future variants need group-aware text.

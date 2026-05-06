@@ -1,3 +1,4 @@
+use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
@@ -7,7 +8,6 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
-use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiData;
