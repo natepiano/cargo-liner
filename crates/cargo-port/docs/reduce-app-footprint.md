@@ -1310,129 +1310,61 @@ to match the same rule.
 - F7 — applied (per user direction): `RunningTracker::iter_running` / `toast` / `set_toast` / `running_map` accessor cleanup folded into Phase 15. Publishes `running` / `toast` fields, deletes the four accessors, rewrites ~10 caller sites (test-only + relocated `running_items_for_toast` body).
 - F8 — noted: Phase 14's `pub` field publication on Panes/ToastManager doesn't simplify Phase 15 caller rewrites (relocations are `Self::foo` → `Type::foo`, not field-traversing). Retro claim holds.
 
-### Phase 15 — Relocate Group W static helpers to their data owners
+### Phase 15 — Relocate Group W static helpers to their data owners + final accessor cleanups
 
-23 of Group W's 27 entries are `Self::foo(...)` associated functions inside
-`impl App` — they don't take `&self` and have nothing to do with App's state.
-They're declared in `impl App` for convenience but they're really utility
-functions over `RootItem` / `WorktreeGroup` / iterators. Move each to its
-data owner.
+Phase 15 is the final reduction phase. **All remaining coding work in the plan lives
+here.** No carryovers, no future-tidy. After 15, the codebase is at its end-state.
 
-**Phase 11 update.** 11 of the helpers below were relocated from `impl App`
-to `impl ProjectList` in Phase 11 (cascade because relocated navigation
-methods called them via `Self::`). Phase 15 either drops them (already off
-App; `impl ProjectList` is a fine resting place) or moves them a second hop
-to `RootItem` / `WorktreeGroup`. Either way, App's count is unchanged by
-the second hop — the count drop happened in Phase 11. Subtract 11 from
-Phase 15's "23" headline.
+#### Scope summary (everything Phase 15 touches)
 
-**Relocation rule (precedent: Phase 12's `VisibleRow::collapse_anchor`).**
-For each helper of the form `fn helper(arg: &T, …) -> U`, the canonical home is
-`impl T` — the type whose argument is being indexed/inspected. For
-`worktree_*(item: &RootItem, wi: usize, …)`, the home is the type that
-indexes by `wi`: a method on `RootItem` or `WorktreeGroup` taking `wi` as a
-worktree index. **Decision: `impl WorktreeGroup`** — the helper bodies all
-match on `RootItem::Worktrees(WorktreeGroup::...)` and do nothing on the
-non-worktree branches; `WorktreeGroup` is the type that's actually being
-indexed by `wi`. Apply uniformly across all worktree helpers; don't mix-and-
-match per helper.
+A. **Group W relocations from `impl App` → owning data type** — 10 helpers (post Phase 11/12 cascades; original 23 - 13 already-relocated):
+  1. `unique_item_paths` (`mod.rs:527`) → `impl RootItem::unique_paths(&self)` (F3).
+  2. `resolve_member`, `resolve_vendored`, `worktree_member_ref`, `worktree_vendored_ref` (`navigation/pane_data.rs`) → `impl WorktreeGroup` (each takes `&RootItem` + `wi`; bodies match on `RootItem::Worktrees(WorktreeGroup::...)`, never on non-worktree branches).
+  3. `running_items_for_toast` (`running_toasts.rs:41`) → `impl<K> RunningTracker<K>` (F1a).
+  4. `tracked_items_for_startup` (`startup_phase/toast_bodies.rs`) → `impl<K> KeyedPhase<K>` (F2).
+  5. `startup_lint_toast_body_for` (`startup_phase/toast_bodies.rs`) → `impl Startup` (decision: method form, not free fn — symmetric with the Phase 13 `*_toast_body` relocations on `Startup`).
+  6. `record_background_msg_kind`, `log_saturated_background_batch` (`async_tasks/poll.rs`) → free `pub(super) fn`s in `poll.rs` (decision: free fn, not method on a tracing type — these are diagnostics over closure-captured state, no canonical owner).
 
-**Worktree helpers** → `RootItem` / `WorktreeGroup` (already on `impl ProjectList` post-Phase-11):
-- `worktree_display_path`, `worktree_member_display_path`, `worktree_vendored_display_path`
-- `worktree_abs_path`, `worktree_member_abs_path`, `worktree_vendored_abs_path`
-- `worktree_path_ref`, `worktree_member_path_ref`, `worktree_vendored_path_ref`
-- `unique_item_paths` (`mod.rs:527`) → `impl RootItem` as `unique_paths(&self)` (still on App;
-  review F3 confirms target — non-worktree branch returns `vec![item.path().clone()]` so the
-  helper does real work for both arms, `RootItem` is the right home, not `WorktreeGroup`).
-- **Naming caveat (review F5):** when relocating to method form on `RootItem`/`WorktreeGroup`,
-  keep the `worktree_` prefix (`worktree_display_path(&self, wi)`) — a no-arg `display_path()`
-  already exists on `RootItem` via `ProjectFields`, so a method named `display_path_for_worktree`
-  would shadow nothing but a method named `display_path(&self, wi)` would conflict.
+B. **Group W second-hop on `impl ProjectList`** — 11 helpers already off App since Phase 11; second hop to `RootItem`/`WorktreeGroup` for canonical-home consistency (App count unchanged by these):
+  - `worktree_display_path`, `worktree_member_display_path`, `worktree_vendored_display_path`
+  - `worktree_abs_path`, `worktree_member_abs_path`, `worktree_vendored_abs_path`
+  - `worktree_path_ref`, `worktree_member_path_ref`, `worktree_vendored_path_ref`
+  - `member_path_ref`, `vendored_path_ref`
+  - **Per-helper target:** the type whose `wi` (worktree index) is being indexed. Bodies match on `RootItem::Worktrees(WorktreeGroup::...)` only — `WorktreeGroup` is the indexed type. **Target: `impl WorktreeGroup`** for all `worktree_*` helpers (uniform — don't mix per-helper). `member_path_ref` / `vendored_path_ref` go to `impl RootItem` since they're path-on-RootItem readers, no `wi`.
+  - **Naming caveat (F5):** keep the `worktree_` prefix when these become methods (`worktree_display_path(&self, wi)`) — a no-arg `display_path()` already exists on `RootItem` via `ProjectFields`, so a `display_path(&self, wi)` method would shadow it.
 
-**Member/vendored helpers** → `RustProject` / `Workspace` / `Package`:
-- `resolve_member`, `resolve_vendored`, `worktree_member_ref`, `worktree_vendored_ref`
-  (`navigation/pane_data.rs`) → `RootItem` or `WorktreeGroup` (still on App)
-- `member_path_ref`, `vendored_path_ref` — already on `impl ProjectList` post-Phase-11.
+C. **`Net::http_client_ref` cleanup (Phase 14 miss).** Phase 14's recursive purge regex required field-name and accessor-name to match; `http_client_ref(&self) -> &HttpClient { &self.http_client }` slipped through. Publish `Net.http_client` as `pub`, delete the accessor, rewrite the one caller (`app.net.http_client_ref()` at `mod.rs:743` → `&app.net.http_client`).
 
-**Toast/tracker helpers** → their respective owners:
-- `running_items_for_toast` (`running_toasts.rs:41`) → `impl<K> RunningTracker<K>`
-  (review F1, decision (a)). Adds `use TrackedItem; use TrackedItemKey;` to
-  `running_tracker.rs` and the `for<'a> &'a K: Into<TrackedItemKey>` bound enters the
-  impl. Body uses `self.running` / `self.toast` as fields (depends on F7's field
-  publication). Caller becomes `tracker.running_items_for_toast(label_fn)` at the three
-  App-side sync sites (`sync_running_clean_toast`, `sync_running_lint_toast`,
-  `sync_running_repo_fetch_toast`).
-- `tracked_items_for_startup` (`startup_phase/toast_bodies.rs`) → `impl<K> KeyedPhase<K>`
-  (review F2: `KeyedPhase` is the type that already owns `expected: Option<HashSet<K>>` /
-  `seen: HashSet<K>` as `pub` fields, called once per phase; canonical home per the
-  helper-on-data-owner rule).
-- `startup_lint_toast_body_for` (`startup_phase/toast_bodies.rs`) → `Startup` (or free
-  function in the `startup_phase` module)
-- `startup_remaining_toast_body` — **already-resident**: extracted as a free
-  `pub(super) fn remaining_toast_body` in `toast_bodies.rs` during Phase 13
-  (drag-along when `Startup::*_toast_body` methods relocated). No Phase 15
-  action.
+D. **`RunningTracker` accessor cleanup (F7).** Publish `RunningTracker.running` and `RunningTracker.toast` as `pub` fields. Delete four trivial accessors:
+  - `iter_running(&self) -> impl Iterator<Item = (&K, &Instant)>` — `self.running.iter()`
+  - `toast(&self) -> Option<ToastTaskId>` — copies `self.toast`
+  - `set_toast(&mut self, id: Option<ToastTaskId>)` — assigns `self.toast`
+  - `running_map(&self) -> &HashMap<K, Instant>` — borrows `self.running`
 
-**Diagnostic helpers** — relocate or leave:
-- `record_background_msg_kind`, `log_saturated_background_batch` (`async_tasks/poll.rs`):
-  these are tracing/diagnostic helpers used inside `poll_background`. Either move to
-  free functions in `poll.rs` (cleaner), or leave (low priority).
+  Callers: test-only sites in `lint_state.rs` and `inflight.rs`, plus the relocated `running_items_for_toast` body (which uses `self.running` / `self.toast` directly). ~10 sites.
 
-**Navigation cursor helper (already done in Phase 12):**
-- `collapse_anchor_row` was relocated to `impl VisibleRow::collapse_anchor` in
-  Phase 12 (its `VisibleRow → VisibleRow` body belongs on the indexed type).
-  No Phase 15 action.
+#### Sequencing within Phase 15
 
-**Already-resident helpers (no Phase 15 action):**
-- `ProjectList::replace_roots_from` (introduced in Phase 2) is a static-helper-on-data-owner
-  that already lives on `ProjectList`. After Phase 11, called by
-  `TreeMutation::replace_all` and the lone test caller in `interaction.rs` directly
-  (the `App::set_projects` shim was deleted in Phase 11). Listed here so future passes
-  don't relitigate moving it.
+- **D before A.3.** F1a's relocation of `running_items_for_toast` to `impl<K> RunningTracker<K>` uses `self.running` / `self.toast` as fields — F7's field publication must land first.
+- **A.5 before B.** The worktree second-hop on `impl ProjectList` may incidentally cite `member_path_ref` / `vendored_path_ref`; relocate the App-resident helpers first so the second-hop pass doesn't rewrite callers twice.
+- Otherwise A and B are independent.
 
-**`Net::http_client_ref` cleanup (Phase 14 miss).** Phase 14's recursive purge regex
-required field-name and accessor-name to match; `http_client_ref(&self) -> &HttpClient
-{ &self.http_client }` slipped through. Publish `Net.http_client` as `pub`, delete the
-accessor, rewrite the one caller (`app.net.http_client_ref()` at `mod.rs:743` →
-`&app.net.http_client`).
+#### What stays put (already-resident or by-design)
 
-**NewType accessors stay (intentional API, not in Phase 15).** `AbsolutePath::as_path`,
-`DisplayPath::as_str`, `RootDirectoryName::as_str`, `PackageName::as_str`,
-`OwnerRepo::owner` / `repo`, `TrackedItemKey::as_str`, `SettingsEditBuffer::buf`,
-`LintRuns::status` are the documented readers for their NewType wrappers. Their bodies
-are `&self.0` / `&self.<name>` but their job is type discipline (e.g. `AbsolutePath`
-exists to give "is absolute" a type; `as_path()` is its canonical entry point), not
-field-hiding. Callers writing `&path.0` would dissolve the abstraction. These are not
-swept under the universal decision rule's "trivial accessor" clause — that clause
-targets hidden-field accessors, not NewType readers.
+- **NewType accessors** — `AbsolutePath::as_path`, `DisplayPath::as_str`, `RootDirectoryName::as_str`, `PackageName::as_str`, `OwnerRepo::owner` / `repo`, `TrackedItemKey::as_str`, `SettingsEditBuffer::buf`, `LintRuns::status`. Bodies are `&self.0` / `&self.<name>` but their job is type discipline (`AbsolutePath` exists to give "is absolute" a type; `as_path()` is its canonical entry point), not field-hiding. The universal decision rule's "trivial accessor" clause targets hidden-field accessors only — NewType readers stay.
+- `startup_remaining_toast_body` — extracted as `pub(super) fn remaining_toast_body` in `toast_bodies.rs` during Phase 13 (helper drag-along). No action.
+- `collapse_anchor_row` — relocated to `impl VisibleRow::collapse_anchor` in Phase 12. No action.
+- `ProjectList::replace_roots_from` — already a static-helper-on-data-owner since Phase 2. No action.
+- `ToastManager::start_task` / `mark_tracked_item_completed` / `focused_toast_id` — Phase 14 attempted to tighten `pub` → `pub(super)` and reverted (deep nesting prevents `pub(super)` from reaching `tui/app/async_tasks/` callers). Stays `pub`. Not a trivial accessor — has logic; not in Phase 15 scope.
 
-**RunningTracker accessor cleanup (Phase 14 carryover, F7).** Phase 14's recursive
-purge missed four trivial accessors on `RunningTracker<K>`:
-- `iter_running(&self) -> impl Iterator<Item = (&K, &Instant)>` — wraps `self.running.iter()`
-- `toast(&self) -> Option<ToastTaskId>` — copies `self.toast`
-- `set_toast(&mut self, id: Option<ToastTaskId>)` — assigns `self.toast`
-- `running_map(&self) -> &HashMap<K, Instant>` — borrows `self.running`
+#### Counts
 
-Phase 15 publishes `RunningTracker.running` and `RunningTracker.toast` as `pub` fields,
-deletes the four accessors, and rewrites callers (test-only callers in `lint_state.rs`
-and `inflight.rs` plus the relocated `running_items_for_toast` body which uses
-`self.running` / `self.toast` directly). This piggybacks on the worktree-helper
-caller-rewrite pass — same mechanic, ~10 additional caller sites total. Bumps Phase 15's
-"Methods removed from App" count by 0 (these are subsystem-internal, not on App) but
-removes 4 more crate-wide trivial accessors.
+- **Methods removed from App:** ~10 (the A-list above).
+- **Subsystem accessors removed:** 5 (4 RunningTracker + 1 Net).
+- **Caller rewrites:** ~30–40 total. Re-baseline at phase start with `rg --count-matches` per helper.
+- **Relocation rule precedent:** Phase 12's `VisibleRow::collapse_anchor` (`fn helper(arg: &T, …) -> U` belongs on `impl T`).
 
-**Methods removed from App:** ~12 (post-review F6: 11 of the 23 originally listed are
-already off App since Phase 11 / 12; remaining App-resident helpers are
-`unique_item_paths`, `resolve_member`, `resolve_vendored`, `worktree_member_ref`,
-`worktree_vendored_ref`, `running_items_for_toast`, `tracked_items_for_startup`,
-`startup_lint_toast_body_for`, `record_background_msg_kind`,
-`log_saturated_background_batch` plus diagnostics). **Caller rewrites:** ~25–30
-total (review F4 corrects the prior 80–120 estimate — Phase 14 didn't move call
-sites; Phase 11/12 already collapsed the worktree-family fanout). Re-baseline at
-phase start with `rg --count-matches` per helper.
-
-After 15, App's method count drops from 163 → **~151** (post-Phase-14 baseline,
-delta ~12 per F6).
+After 15, App's method count drops from 163 → **~153** (delta ~10).
 Group W's instance methods that genuinely belong on App (`set_confirm`,
 `confirm`, `take_confirm`, `build_worktree_detail`) stay.
 
@@ -1557,9 +1489,9 @@ sits.
 | **12** | **`project_list` absorption II — action methods (with `include_non_rust` arg threading)** | **24 (19 main + 2 helper statics + 1 to `impl VisibleRow` + 2 ci holdovers; 3 Phase-11 holdovers reclassified as Group X)** | **~80 src + ~10 tests** | **193 ✅** |
 | **13** | **Non-`project_list` S relocations** | **17 (5 startup + 3 toasts + 2 scan + 2 net + 1 background + 1 inflight + 1 ci + 1 `handle_repo_meta` → `impl ProjectList` via plan-phase-review F5; 2 of plan's 18 reclassified as carryovers — `handle_git_first_commit`, `push_service_unavailable_toast` reclassified as X)** | **~30 src** | **176 ✅** |
 | **14** | **Recursive trivial-accessor purge** (5 App-local accessors + 7 `project_list` pass-throughs + 1 Phase-13 ci shim + 3 empty placeholder modules + ResolvedPaneLayout::panes + Panes::worktree_summary_or_compute + recursive sweep on ProjectList/Panes/Overlays/Net/CiState/LintState/ConfigState/ScanState/WatchedFile/ToastsManager + 50 ProjectList visibility tightenings + 4 Phase-13 pub fn → pub(super)) | **13 (App), ~30 crate-wide** | **~400 src + ~50 tests** | **163 ✅** |
-| 15 | Relocate Group W static helpers to their data owners (after 10) + F7 RunningTracker accessor cleanup + `Net::http_client_ref` cleanup | ~12 App + 5 crate-wide (4 RunningTracker + 1 Net) | ~30–40 (review F4 + F7 + http_client_ref) | **~151** |
+| 15 | Group W relocations (10 App-resident + 11 second-hop) + F7 RunningTracker accessor cleanup + `Net::http_client_ref` cleanup | ~10 App + 5 crate-wide (4 RunningTracker + 1 Net) | ~30–40 | **~153** |
 
-**Net: 308 → 176 on App after Phase 13, → 163 after Phase 14, → ~151 after Phase 15.**
+**Net: 308 → 176 on App after Phase 13, → 163 after Phase 14, → ~153 after Phase 15.**
 Phase 12 came in 3 under plan (24 vs ~27); end-state slides from ~148 to
 ~152, a 4-method drift from the original ~146 estimate (well within the
 ±5/phase tolerance). The 3 Phase-12 carryovers (`build_selected_pane_data`,
@@ -1614,7 +1546,7 @@ All 308 App methods, hand-classified by reading each body. Six agents in paralle
 
 **Phases 3–9 delete trivial-accessor + pass-through = ~88 methods.**  
 **Phases 10–13 absorb/relocate ~64 S methods.**  
-**App's final method count ≈ 151 after Phase 15 (down from 308, ~51% reduction).** Phase-by-phase math: 3–13 land App at 176, Phase 14 removes 13 (App-local + project_list pass-throughs + ci shim) → 163, Phase 15 relocates ~12 still-App-resident Group W helpers → ~151. Phase 14's main work was crate-wide trivial-accessor cleanup (review F6 corrected ~152/~156 figures to ~151 post-Phase-14 baseline).
+**App's final method count ≈ 153 after Phase 15 (down from 308, ~50% reduction).** Phase-by-phase math: 3–13 land App at 176, Phase 14 removes 13 (App-local + project_list pass-throughs + ci shim) → 163, Phase 15 relocates ~10 still-App-resident Group W helpers → ~153.
 
 ### Group S — relocation list (single-subsystem orchestrators)
 
