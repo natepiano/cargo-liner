@@ -45,7 +45,7 @@ use super::shortcuts;
 use super::shortcuts::Shortcut;
 use super::shortcuts::ShortcutState;
 use super::toasts;
-use crate::ci::Conclusion;
+use crate::ci::CiStatus;
 use crate::project;
 use crate::project::AbsolutePath;
 
@@ -103,10 +103,10 @@ pub(super) fn format_bytes(bytes: u64) -> String {
     }
 }
 
-pub(super) fn conclusion_style(conclusion: Option<Conclusion>) -> Style {
-    match conclusion {
-        Some(Conclusion::Success) => Style::default().fg(SUCCESS_COLOR),
-        Some(Conclusion::Failure) => Style::default().fg(ERROR_COLOR),
+pub(super) fn conclusion_style(ci_status: Option<CiStatus>) -> Style {
+    match ci_status {
+        Some(CiStatus::Passed) => Style::default().fg(SUCCESS_COLOR),
+        Some(CiStatus::Failed) => Style::default().fg(ERROR_COLOR),
         _ => Style::default(),
     }
 }

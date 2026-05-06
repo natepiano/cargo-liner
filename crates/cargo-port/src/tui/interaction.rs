@@ -3,11 +3,11 @@ use ratatui::layout::Rect;
 
 use super::app::App;
 use super::app::HoveredPaneRow;
-use super::pane::HITTABLE_Z_ORDER;
 use super::pane::Hittable;
 use super::pane::HittableId;
 use super::pane::HoverTarget;
 use super::pane::Viewport;
+use super::pane::HITTABLE_Z_ORDER;
 use super::panes::PaneId;
 
 /// Per-toast hit-test rects produced by `toasts::render_toasts`
@@ -145,9 +145,9 @@ const fn clear_all_hover(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::mpsc;
     use std::sync::Arc;
     use std::sync::Mutex;
-    use std::sync::mpsc;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -159,14 +159,14 @@ mod tests {
     use crossterm::event::MouseButton;
     use crossterm::event::MouseEvent;
     use crossterm::event::MouseEventKind;
-    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
+    use ratatui::Terminal;
 
     use super::HoveredPaneRow;
     use crate::ci::CiJob;
     use crate::ci::CiRun;
-    use crate::ci::Conclusion;
+    use crate::ci::CiStatus;
     use crate::ci::FetchStatus;
     use crate::config::CargoPortConfig;
     use crate::http::HttpClient;
@@ -309,16 +309,16 @@ mod tests {
         (checkout, repo)
     }
 
-    fn make_ci_run(run_id: u64, conclusion: Conclusion) -> CiRun {
+    fn make_ci_run(run_id: u64, conclusion: CiStatus) -> CiRun {
         CiRun {
             run_id,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             branch: "main".to_string(),
             url: format!("https://github.com/natepiano/demo/actions/runs/{run_id}"),
-            conclusion,
+            ci_status: conclusion,
             jobs: vec![CiJob {
                 name: "build".to_string(),
-                conclusion,
+                ci_status,
                 duration: "1m".to_string(),
                 duration_secs: Some(60),
             }],
@@ -896,8 +896,8 @@ mod tests {
             },
         )]);
         let runs = vec![
-            make_ci_run(1, Conclusion::Success),
-            make_ci_run(2, Conclusion::Failure),
+            make_ci_run(1, CiStatus::Passed),
+            make_ci_run(2, CiStatus::Failed),
         ];
         render_ci_panel(&mut app, &runs);
 
@@ -1097,9 +1097,9 @@ mod tests {
 
     #[test]
     fn targets_pane_row_click_selects_target() {
+        use cargo_metadata::semver::Version;
         use cargo_metadata::PackageId;
         use cargo_metadata::TargetKind;
-        use cargo_metadata::semver::Version;
         // Step 3b: Targets pane now sources its data from the
         // `cargo metadata` result; the old hand-parsed Cargo
         // fallback is retired. Populate two Example targets via
@@ -1260,8 +1260,8 @@ mod tests {
         homepage: Option<&str>,
         repository: Option<&str>,
     ) {
-        use cargo_metadata::PackageId;
         use cargo_metadata::semver::Version;
+        use cargo_metadata::PackageId;
         let root = AbsolutePath::from(project_dir);
         let manifest = AbsolutePath::from(project_dir.join("Cargo.toml"));
         let pkg = PackageRecord {
@@ -1467,8 +1467,8 @@ mod tests {
         sibling_dirs: &[&Path],
         target_dir: &Path,
     ) {
-        use cargo_metadata::PackageId;
         use cargo_metadata::semver::Version;
+        use cargo_metadata::PackageId;
         for dir in std::iter::once(primary_dir).chain(sibling_dirs.iter().copied()) {
             let root = AbsolutePath::from(dir);
             let manifest = AbsolutePath::from(dir.join("Cargo.toml"));

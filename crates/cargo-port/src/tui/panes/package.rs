@@ -557,13 +557,13 @@ fn ci_display_style(display: &super::CiDisplay) -> Style {
         CiDisplay::NoWorkflow | CiDisplay::UnpublishedBranch | CiDisplay::NoRuns => {
             Style::default().fg(INACTIVE_BORDER_COLOR)
         },
-        CiDisplay::Runs { conclusion, .. } => render::conclusion_style(*conclusion),
+        CiDisplay::Runs { ci_status: conclusion, .. } => render::conclusion_style(*conclusion),
     }
 }
 
 /// Render a typed [`CiDisplay`] to the string shown in the
 /// Package detail row. The conclusion icon is read from
-/// `Conclusion::icon()` at render time, in parallel with
+/// `CiStatus::icon()` at render time, in parallel with
 /// `lint_display_to_string`.
 fn ci_display_to_string(display: &super::CiDisplay) -> String {
     use super::CiDisplay;
@@ -573,7 +573,7 @@ fn ci_display_to_string(display: &super::CiDisplay) -> String {
         CiDisplay::UnpublishedBranch => "unpublished branch".to_string(),
         CiDisplay::NoRuns => "No CI runs".to_string(),
         CiDisplay::Runs {
-            conclusion,
+            ci_status: conclusion,
             local,
             github_total,
         } => {

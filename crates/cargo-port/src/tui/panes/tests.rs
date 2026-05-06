@@ -1,13 +1,13 @@
 use ratatui::text::Line;
 
-use super::CI_COMPACT_DURATION_WIDTH;
+use super::support as model;
 use super::DetailField;
 use super::GitData;
 use super::PackageData;
-use super::support as model;
+use super::CI_COMPACT_DURATION_WIDTH;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
-use crate::ci::Conclusion;
+use crate::ci::CiStatus;
 use crate::ci::FetchStatus::Fetched;
 use crate::project::GitStatus;
 use crate::tui::app::AvailabilityStatus;
@@ -71,7 +71,7 @@ fn ci_run_with_jobs(jobs: Vec<CiJob>) -> CiRun {
         created_at: "2026-04-01T21:00:00-04:00".to_string(),
         branch: "feat/box-select".to_string(),
         url: "https://example.com/run/1".to_string(),
-        conclusion: Conclusion::Success,
+        ci_status: CiStatus::Passed,
         jobs,
         wall_clock_secs: Some(17),
         commit_title: Some("feat: add box select".to_string()),
@@ -265,13 +265,13 @@ fn ci_table_hides_durations_when_fixed_columns_overflow() {
     let runs = vec![ci_run_with_jobs(vec![
         CiJob {
             name:          "fmt".to_string(),
-            conclusion:    Conclusion::Success,
+            ci_status:     CiStatus::Passed,
             duration:      "17s".to_string(),
             duration_secs: Some(17),
         },
         CiJob {
             name:          "clippy".to_string(),
-            conclusion:    Conclusion::Success,
+            ci_status:     CiStatus::Passed,
             duration:      "21s".to_string(),
             duration_secs: Some(21),
         },
@@ -289,7 +289,7 @@ fn ci_table_hides_durations_when_fixed_columns_overflow() {
 fn ci_table_keeps_durations_when_fixed_columns_fit() {
     let runs = vec![ci_run_with_jobs(vec![CiJob {
         name:          "fmt".to_string(),
-        conclusion:    Conclusion::Success,
+        ci_status:     CiStatus::Passed,
         duration:      "17s".to_string(),
         duration_secs: Some(17),
     }])];
@@ -304,9 +304,9 @@ fn ci_table_keeps_durations_when_fixed_columns_fit() {
 mod targets_from_metadata {
     use std::path::PathBuf;
 
+    use cargo_metadata::semver::Version;
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
-    use cargo_metadata::semver::Version;
 
     use crate::project::AbsolutePath;
     use crate::project::PackageRecord;

@@ -16,7 +16,7 @@ use super::constants::LABEL_COLOR;
 use super::constants::SECONDARY_TEXT_COLOR;
 use super::constants::TITLE_COLOR;
 use super::render;
-use crate::ci::Conclusion;
+use crate::ci::CiStatus;
 use crate::constants::GIT_IGNORED_COLOR;
 use crate::constants::GIT_MODIFIED_COLOR;
 use crate::constants::GIT_UNTRACKED_COLOR;
@@ -257,7 +257,7 @@ pub(super) struct ProjectRow<'a> {
     pub lang_icon:         &'a str,
     pub git_origin_sync:   &'a str,
     pub git_main:          &'a str,
-    pub ci:                Option<Conclusion>,
+    pub ci:                Option<CiStatus>,
     pub deleted:           bool,
     pub worktree_health:   WorktreeHealth,
 }
@@ -910,7 +910,7 @@ mod tests {
             lang_icon:         "🦀",
             git_origin_sync:   "↑2",
             git_main:          "",
-            ci:                Some(Conclusion::Success),
+            ci:                Some(CiStatus::Passed),
             deleted:           false,
             worktree_health:   WorktreeHealth::Normal,
         });
@@ -927,7 +927,7 @@ mod tests {
             lang_icon:         "🦀",
             git_origin_sync:   "↑2",
             git_main:          "",
-            ci:                Some(Conclusion::Success),
+            ci:                Some(CiStatus::Passed),
             deleted:           false,
             worktree_health:   WorktreeHealth::Normal,
         });
@@ -1014,7 +1014,7 @@ mod tests {
             lang_icon:         "🦀",
             git_origin_sync:   "↑2",
             git_main:          "",
-            ci:                Some(Conclusion::Success),
+            ci:                Some(CiStatus::Passed),
             deleted:           false,
             worktree_health:   WorktreeHealth::Normal,
         });
@@ -1023,7 +1023,7 @@ mod tests {
         assert_eq!(display_width(line.spans[COL_LINT].content.as_ref()), 0);
         assert_eq!(
             line.spans[COL_CI].content.as_ref(),
-            &format!(" {}", Conclusion::Success.icon())
+            &format!(" {}", CiStatus::Passed.icon())
         );
         assert_eq!(line.width(), widths.total_width());
     }

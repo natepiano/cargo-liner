@@ -1,4 +1,3 @@
-use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
@@ -8,12 +7,13 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiData;
 use crate::ci;
 use crate::ci::CiRun;
-use crate::ci::Conclusion;
+use crate::ci::CiStatus;
 use crate::tui::ci_state::Ci;
 use crate::tui::columns::ColumnSpec;
 use crate::tui::columns::ColumnWidths;
@@ -75,7 +75,7 @@ fn build_ci_data_row(
     for col in cols {
         let job = ci_run.jobs.iter().find(|job| col.matches(&job.name));
         if let Some(job) = job {
-            let style = render::conclusion_style(Some(job.conclusion));
+            let style = render::conclusion_style(Some(job.ci_status));
             cells.push(
                 Cell::from(
                     ratatui::text::Line::from(if show_durations {
@@ -87,7 +87,7 @@ fn build_ci_data_row(
                 )
                 .style(style),
             );
-            cells.push(Cell::from(job.conclusion.icon().to_string()).style(style));
+            cells.push(Cell::from(job.ci_status.icon().to_string()).style(style));
         } else {
             cells.push(
                 Cell::from(ratatui::text::Line::from("—").alignment(Alignment::Right))
@@ -97,7 +97,7 @@ fn build_ci_data_row(
         }
     }
 
-    let total_style = render::conclusion_style(Some(ci_run.conclusion));
+    let total_style = render::conclusion_style(Some(ci_run.ci_status));
     cells.push(
         Cell::from(
             ratatui::text::Line::from(if show_durations {
@@ -109,17 +109,17 @@ fn build_ci_data_row(
         )
         .style(total_style),
     );
-    cells.push(Cell::from(ci_run.conclusion.icon().to_string()).style(total_style));
+    cells.push(Cell::from(ci_run.ci_status.icon().to_string()).style(total_style));
 
     Row::new(cells).style(selection.overlay_style())
 }
 
 fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -> Vec<Constraint> {
     let glyph_width = u16::try_from(
-        Conclusion::Success
+        CiStatus::Passed
             .icon()
             .width()
-            .max(Conclusion::Failure.icon().width()),
+            .max(CiStatus::Failed.icon().width()),
     )
     .unwrap_or(u16::MAX);
 
@@ -217,10 +217,10 @@ fn ci_total_min_width(ci_runs: &[CiRun]) -> usize {
 }
 
 fn ci_table_fixed_width(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -> usize {
-    let glyph_width = Conclusion::Success
+    let glyph_width = CiStatus::Passed
         .icon()
         .width()
-        .max(Conclusion::Failure.icon().width());
+        .max(CiStatus::Failed.icon().width());
     let branch_width = ci_runs
         .iter()
         .map(|run| run.branch.len())
@@ -352,7 +352,7 @@ fn render_empty_ci_block(frame: &mut Frame, title: &str, area: Rect) {
 mod tests {
     use super::ci_panel_title;
     use crate::ci::CiRun;
-    use crate::ci::Conclusion;
+    use crate::ci::CiStatus;
     use crate::ci::FetchStatus;
     use crate::tui::panes::CiData;
     use crate::tui::panes::CiEmptyState;
@@ -363,7 +363,7 @@ mod tests {
             created_at:      "2026-04-01T21:00:00-04:00".to_string(),
             branch:          branch.to_string(),
             url:             "https://example.com/run/1".to_string(),
-            conclusion:      Conclusion::Success,
+            ci_status:       CiStatus::Passed,
             jobs:            Vec::new(),
             wall_clock_secs: Some(17),
             commit_title:    Some("feat: add box select".to_string()),

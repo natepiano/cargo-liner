@@ -19,9 +19,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 
-use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use ratatui::Frame;
 
 use super::app::CiRunDisplayMode;
 use super::pane::Hittable;
@@ -35,7 +35,7 @@ use super::panes::PaneId;
 use super::toasts::ToastTaskId;
 #[cfg(test)]
 use crate::ci::CiRun;
-use crate::ci::Conclusion;
+use crate::ci::CiStatus;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ProjectCiInfo;
@@ -51,7 +51,7 @@ use crate::project::RepoInfo;
 ///   parent repo's CI doesn't apply to this checkout.
 /// - `NoRuns` — workflows present, branch published, but zero local runs and zero `github_total`.
 /// - `Runs { conclusion, local, github_total }` — at least one run is known. `conclusion` is the
-///   latest run's outcome (renderer applies `Conclusion::icon()` at render time); `local` is the
+///   latest run's outcome (renderer applies `CiStatus::icon()` at render time); `local` is the
 ///   count of runs after display-mode filtering; `github_total` drives the "/ github N" suffix when
 ///   > 0.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -61,7 +61,7 @@ pub enum CiDisplay {
     UnpublishedBranch,
     NoRuns,
     Runs {
-        conclusion:   Option<Conclusion>,
+        ci_status:    Option<CiStatus>,
         local:        usize,
         github_total: u32,
     },
@@ -184,7 +184,7 @@ impl Ci {
         repo_info: Option<&RepoInfo>,
         git_info: Option<&CheckoutInfo>,
         ci_info: Option<&ProjectCiInfo>,
-        latest_conclusion: Option<Conclusion>,
+        latest_conclusion: Option<CiStatus>,
         is_worktree_group: bool,
     ) -> CiDisplay {
         let _ = is_worktree_group;
@@ -205,7 +205,7 @@ impl Ci {
             CiDisplay::NoRuns
         } else {
             CiDisplay::Runs {
-                conclusion: latest_conclusion,
+                ci_status: latest_conclusion,
                 local,
                 github_total,
             }

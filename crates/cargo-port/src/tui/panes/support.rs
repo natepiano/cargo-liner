@@ -8,7 +8,7 @@ use ratatui::style::Color;
 
 use crate::ci;
 use crate::ci::CiRun;
-use crate::ci::Conclusion;
+use crate::ci::CiStatus;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
@@ -1524,7 +1524,7 @@ fn resolve_disk_and_ci(
     app: &App,
     abs_path: &Path,
     wt_item: Option<&RootItem>,
-) -> (String, Option<Conclusion>) {
+) -> (String, Option<CiStatus>) {
     wt_item.map_or_else(
         || {
             let ci = if app.project_list.is_rust_at_path(abs_path) {

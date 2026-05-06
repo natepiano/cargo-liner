@@ -450,7 +450,7 @@ fn fetch_recent_runs(
     for gh_run in gh_runs {
         match load_cached_run(owner, repo, gh_run.id) {
             Some(cached)
-                if cached.conclusion.is_failure()
+                if cached.ci_status.is_failure()
                     && cached.updated_at.as_deref() != Some(&gh_run.updated_at) =>
             {
                 uncached.push(gh_run);

@@ -2,9 +2,9 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::mpsc;
 use std::time::Instant;
 
 use chrono::DateTime;
@@ -18,11 +18,11 @@ use ratatui::style::Style;
 use ratatui::widgets::List;
 use ratatui::widgets::Widget;
 
+use super::types::*;
 pub(super) use super::App;
 use super::DismissTarget;
-use super::types::*;
 use crate::ci::CiRun;
-use crate::ci::Conclusion;
+use crate::ci::CiStatus;
 use crate::ci::FetchStatus;
 use crate::config::CargoPortConfig;
 use crate::config::NonRustInclusion;
@@ -499,13 +499,13 @@ fn parse_ts(ts: &str) -> DateTime<FixedOffset> {
     DateTime::parse_from_rfc3339(ts).unwrap_or_else(|_| std::process::abort())
 }
 
-fn make_ci_run(run_id: u64, conclusion: Conclusion) -> CiRun {
+fn make_ci_run(run_id: u64, conclusion: CiStatus) -> CiRun {
     CiRun {
         run_id,
         created_at: "2026-03-30T14:22:18Z".to_string(),
         branch: "main".to_string(),
         url: format!("https://github.com/natepiano/demo/actions/runs/{run_id}"),
-        conclusion,
+        ci_status: conclusion,
         jobs: Vec::new(),
         wall_clock_secs: Some(1),
         commit_title: Some(format!("run {run_id}")),
@@ -792,16 +792,12 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
                 panic!("expected existing root to remain a package worktree group");
             };
             assert_eq!(linked.len(), 2);
-            assert!(
-                linked
-                    .iter()
-                    .any(|l| l.path() == Path::new(existing_linked_path))
-            );
-            assert!(
-                linked
-                    .iter()
-                    .any(|l| l.path() == Path::new(new_linked_path))
-            );
+            assert!(linked
+                .iter()
+                .any(|l| l.path() == Path::new(existing_linked_path)));
+            assert!(linked
+                .iter()
+                .any(|l| l.path() == Path::new(new_linked_path)));
         },
         WorktreeProjectKind::Workspace => {
             let primary_path = "/abs/obsidian_knife";
@@ -842,16 +838,12 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
                 panic!("expected existing root to remain a workspace worktree group");
             };
             assert_eq!(linked.len(), 2);
-            assert!(
-                linked
-                    .iter()
-                    .any(|l| l.path() == Path::new(existing_linked_path))
-            );
-            assert!(
-                linked
-                    .iter()
-                    .any(|l| l.path() == Path::new(new_linked_path))
-            );
+            assert!(linked
+                .iter()
+                .any(|l| l.path() == Path::new(existing_linked_path)));
+            assert!(linked
+                .iter()
+                .any(|l| l.path() == Path::new(new_linked_path)));
         },
     }
 }

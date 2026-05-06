@@ -4,9 +4,9 @@ use std::fmt::Formatter;
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::constants::CANCELLED;
-use super::constants::FAILING;
-use super::constants::PASSING;
+use super::constants::CI_CANCELLED;
+use super::constants::CI_FAILED;
+use super::constants::CI_PASSED;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct OwnerRepo {
@@ -65,27 +65,27 @@ pub(crate) enum FetchStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Conclusion {
-    Success,
-    Failure,
+pub(crate) enum CiStatus {
+    Passed,
+    Failed,
     Cancelled,
 }
 
-impl Conclusion {
+impl CiStatus {
     pub(crate) const fn icon(self) -> &'static str {
         match self {
-            Self::Success => PASSING,
-            Self::Failure => FAILING,
-            Self::Cancelled => CANCELLED,
+            Self::Passed => CI_PASSED,
+            Self::Failed => CI_FAILED,
+            Self::Cancelled => CI_CANCELLED,
         }
     }
 
-    pub(crate) const fn is_success(self) -> bool { matches!(self, Self::Success) }
+    pub(crate) const fn is_success(self) -> bool { matches!(self, Self::Passed) }
 
-    pub(crate) const fn is_failure(self) -> bool { matches!(self, Self::Failure) }
+    pub(crate) const fn is_failure(self) -> bool { matches!(self, Self::Failed) }
 }
 
-impl Display for Conclusion {
+impl Display for CiStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { f.write_str(self.icon()) }
 }
 
@@ -95,7 +95,7 @@ pub(crate) struct CiRun {
     pub created_at:      String,
     pub branch:          String,
     pub url:             String,
-    pub conclusion:      Conclusion,
+    pub ci_status:       CiStatus,
     pub jobs:            Vec<CiJob>,
     pub wall_clock_secs: Option<u64>,
     #[serde(default)]
@@ -109,7 +109,7 @@ pub(crate) struct CiRun {
 #[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct CiJob {
     pub name:          String,
-    pub conclusion:    Conclusion,
+    pub ci_status:     CiStatus,
     pub duration:      String,
     pub duration_secs: Option<u64>,
 }
@@ -140,7 +140,7 @@ pub(crate) fn build_ci_run(gh_run: &GhRun, check_runs: Vec<GqlCheckRun>, repo_ur
             let duration = duration_secs.map_or_else(|| "—".to_string(), format_secs);
             CiJob {
                 name: job.name,
-                conclusion,
+                ci_status: conclusion,
                 duration,
                 duration_secs,
             }
@@ -158,7 +158,7 @@ pub(crate) fn build_ci_run(gh_run: &GhRun, check_runs: Vec<GqlCheckRun>, repo_ur
         created_at: gh_run.created_at.clone(),
         branch: gh_run.head_branch.clone(),
         url: format!("{repo_url}/actions/runs/{}", gh_run.id),
-        conclusion,
+        ci_status: conclusion,
         wall_clock_secs,
         jobs: ci_jobs,
         commit_title: gh_run.display_title.clone(),
@@ -179,23 +179,23 @@ pub(crate) fn parse_owner_repo(url: &str) -> Option<OwnerRepo> {
     Some(OwnerRepo::new(owner, repo))
 }
 
-fn run_conclusion(jobs: &[CiJob]) -> Conclusion {
-    if jobs.iter().any(|j| j.conclusion.is_failure()) {
-        return Conclusion::Failure;
+fn run_conclusion(jobs: &[CiJob]) -> CiStatus {
+    if jobs.iter().any(|j| j.ci_status.is_failure()) {
+        return CiStatus::Failed;
     }
-    if jobs.iter().any(|j| j.conclusion == Conclusion::Cancelled) {
-        return Conclusion::Cancelled;
+    if jobs.iter().any(|j| j.ci_status == CiStatus::Cancelled) {
+        return CiStatus::Cancelled;
     }
-    Conclusion::Success
+    CiStatus::Passed
 }
 
 /// Parse conclusion from GraphQL `CheckRun` (`SUCCESS`, `FAILURE`,
 /// `CANCELLED`).
-fn parse_gql_conclusion(conclusion: Option<&str>) -> Conclusion {
+fn parse_gql_conclusion(conclusion: Option<&str>) -> CiStatus {
     match conclusion {
-        Some("SUCCESS") => Conclusion::Success,
-        Some("FAILURE") => Conclusion::Failure,
-        _ => Conclusion::Cancelled,
+        Some("SUCCESS") => CiStatus::Passed,
+        Some("FAILURE") => CiStatus::Failed,
+        _ => CiStatus::Cancelled,
     }
 }
 

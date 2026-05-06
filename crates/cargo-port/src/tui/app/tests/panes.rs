@@ -75,9 +75,9 @@ fn name_width_with_gutter_reserves_space_before_lint() {
 /// pane becomes tabbable. Keeps the per-test setup out of line when
 /// the test's focus is pane behavior, not metadata plumbing.
 fn seed_single_example_metadata(app: &App, project_path: &AbsolutePath, example_name: &str) {
+    use cargo_metadata::semver::Version;
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
-    use cargo_metadata::semver::Version;
     let pkg = PackageRecord {
         id:            PackageId {
             repr: "demo-id".into(),
@@ -176,7 +176,7 @@ fn tabbable_panes_follow_canonical_order() {
     set_loaded_ci(
         &mut app,
         project.path(),
-        vec![make_ci_run(1, Conclusion::Success)],
+        vec![make_ci_run(1, CiStatus::Passed)],
         false,
         0,
     );
@@ -255,9 +255,9 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
     // (ExampleGroup on the Cargo struct); rewritten to confirm
     // the metadata-driven path: a CargoMetadata arrival with an
     // Example target lights up the pane.
+    use cargo_metadata::semver::Version;
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
-    use cargo_metadata::semver::Version;
 
     let project = make_project(Some("demo"), "/never-real/demo");
     let mut app = make_app(std::slice::from_ref(&project));

@@ -4,9 +4,9 @@ use ratatui::style::Color;
 
 // ── Shared icons ─────────────────────────────────────────────────────
 
-pub(crate) const PASSING: &str = "🟢";
-pub(crate) const FAILING: &str = "🔴";
-pub(crate) const CANCELLED: &str = "🌑";
+pub(crate) const CI_PASSED: &str = "🟢";
+pub(crate) const CI_FAILED: &str = "🔴";
+pub(crate) const CI_CANCELLED: &str = "🌑";
 pub(crate) const IN_SYNC: &str = "☑️";
 pub(crate) const NO_REMOTE_SYNC: &str = "──";
 pub(crate) const SYNC_UP: &str = "↑";
