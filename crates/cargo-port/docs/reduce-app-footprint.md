@@ -1390,6 +1390,22 @@ match per helper.
   (the `App::set_projects` shim was deleted in Phase 11). Listed here so future passes
   don't relitigate moving it.
 
+**`Net::http_client_ref` cleanup (Phase 14 miss).** Phase 14's recursive purge regex
+required field-name and accessor-name to match; `http_client_ref(&self) -> &HttpClient
+{ &self.http_client }` slipped through. Publish `Net.http_client` as `pub`, delete the
+accessor, rewrite the one caller (`app.net.http_client_ref()` at `mod.rs:743` →
+`&app.net.http_client`).
+
+**NewType accessors stay (intentional API, not in Phase 15).** `AbsolutePath::as_path`,
+`DisplayPath::as_str`, `RootDirectoryName::as_str`, `PackageName::as_str`,
+`OwnerRepo::owner` / `repo`, `TrackedItemKey::as_str`, `SettingsEditBuffer::buf`,
+`LintRuns::status` are the documented readers for their NewType wrappers. Their bodies
+are `&self.0` / `&self.<name>` but their job is type discipline (e.g. `AbsolutePath`
+exists to give "is absolute" a type; `as_path()` is its canonical entry point), not
+field-hiding. Callers writing `&path.0` would dissolve the abstraction. These are not
+swept under the universal decision rule's "trivial accessor" clause — that clause
+targets hidden-field accessors, not NewType readers.
+
 **RunningTracker accessor cleanup (Phase 14 carryover, F7).** Phase 14's recursive
 purge missed four trivial accessors on `RunningTracker<K>`:
 - `iter_running(&self) -> impl Iterator<Item = (&K, &Instant)>` — wraps `self.running.iter()`
@@ -1514,8 +1530,10 @@ completes (sample, will be firmed up by the deep-dive):
   `scripts/count_app_methods.py`.
 - All 599 tests still pass after each phase.
 - Clippy stays green under `--all-features -- -D warnings` after each phase.
-- Trivial-accessor count crate-wide drops to 0 after Phase 14 (all data fields `pub(super)` or
-  carry real logic).
+- Hidden-field-accessor count crate-wide drops to 0 after Phase 15 (all data fields `pub(super)`
+  / `pub` or carry real logic). NewType reader accessors (`AbsolutePath::as_path`,
+  `OwnerRepo::owner`, etc.) are intentional API surfaces — type-discipline entry points,
+  not hidden-field accessors — and are kept.
 
 ## Phase summary
 
@@ -1539,7 +1557,7 @@ sits.
 | **12** | **`project_list` absorption II — action methods (with `include_non_rust` arg threading)** | **24 (19 main + 2 helper statics + 1 to `impl VisibleRow` + 2 ci holdovers; 3 Phase-11 holdovers reclassified as Group X)** | **~80 src + ~10 tests** | **193 ✅** |
 | **13** | **Non-`project_list` S relocations** | **17 (5 startup + 3 toasts + 2 scan + 2 net + 1 background + 1 inflight + 1 ci + 1 `handle_repo_meta` → `impl ProjectList` via plan-phase-review F5; 2 of plan's 18 reclassified as carryovers — `handle_git_first_commit`, `push_service_unavailable_toast` reclassified as X)** | **~30 src** | **176 ✅** |
 | **14** | **Recursive trivial-accessor purge** (5 App-local accessors + 7 `project_list` pass-throughs + 1 Phase-13 ci shim + 3 empty placeholder modules + ResolvedPaneLayout::panes + Panes::worktree_summary_or_compute + recursive sweep on ProjectList/Panes/Overlays/Net/CiState/LintState/ConfigState/ScanState/WatchedFile/ToastsManager + 50 ProjectList visibility tightenings + 4 Phase-13 pub fn → pub(super)) | **13 (App), ~30 crate-wide** | **~400 src + ~50 tests** | **163 ✅** |
-| 15 | Relocate Group W static helpers to their data owners (after 10) | ~12 (review F6: 11 off App since Phase 11, `collapse_anchor_row` off App since Phase 12; remaining App-resident helpers count to ~12) | ~25–30 (review F4) | **~151** |
+| 15 | Relocate Group W static helpers to their data owners (after 10) + F7 RunningTracker accessor cleanup + `Net::http_client_ref` cleanup | ~12 App + 5 crate-wide (4 RunningTracker + 1 Net) | ~30–40 (review F4 + F7 + http_client_ref) | **~151** |
 
 **Net: 308 → 176 on App after Phase 13, → 163 after Phase 14, → ~151 after Phase 15.**
 Phase 12 came in 3 under plan (24 vs ~27); end-state slides from ~148 to
