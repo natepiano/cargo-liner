@@ -1,4 +1,5 @@
 use crate::project::AbsolutePath;
+use crate::project::ProjectCiData;
 use crate::tui::app::App;
 use crate::tui::panes;
 use crate::tui::panes::DetailField;
@@ -86,7 +87,11 @@ impl App {
                 let selected_path = self.project_list.selected_project_path();
                 if self.ci.viewport.pos() == run_count
                     && !selected_path.is_some_and(|path| self.ci.fetch_tracker.is_fetching(path))
-                    && !selected_path.is_some_and(|path| self.ci_is_exhausted(path))
+                    && !selected_path.is_some_and(|path| {
+                        self.project_list
+                            .ci_data_for(path)
+                            .is_some_and(ProjectCiData::is_exhausted)
+                    })
                 {
                     Some("fetch")
                 } else {
