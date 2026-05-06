@@ -56,8 +56,10 @@ The shortcut bar is a thin renderer over the keymap. It contributes nothing stru
 
 ### Trait surface
 
+The trait, the dispatch accessor, and the `GlobalActions` impl all live in a new module **`src/tui/app/bar_renderer.rs`**. That keeps the bar-rendering machinery in one file, off `app/mod.rs`, and easy to find. Module is declared in `src/tui/app/mod.rs` as `mod bar_renderer;` (private to `app/`); the trait itself is `pub(crate)` so pane host files in sibling `tui::*` modules can write `impl BarRenderer for …`. `Shortcut` stays `pub(super)` — still reachable from pane modules under `crate::tui::*`.
+
 ```rust
-pub trait BarRenderer {
+pub(crate) trait BarRenderer {
     /// Push this renderer's contribution into the supplied vecs.
     /// `nav` carries left-side navigation hints; `actions` carries the
     /// center action strip; `globals` carries the right-side global strip.
@@ -123,9 +125,9 @@ impl PackagePane {
 
 `bar_label` returns `None` to skip a row, `Some("…")` to render with that label. The match-on-action body keeps the per-action logic together; `enabled` and `activate_label` stay private to the impl. Every per-pane impl follows the same internal layout.
 
-### Globals as a `BarRenderer`
+### Globals as a `BarRenderer` (in `app/bar_renderer.rs`)
 
-Globals get the same trait, not a special-case path. Define a unit struct that implements `BarRenderer`:
+Globals get the same trait, not a special-case path. Define a unit struct that implements `BarRenderer`, in the same `app/bar_renderer.rs` module:
 
 ```rust
 pub struct GlobalActions;
@@ -209,38 +211,51 @@ if !context.is_overlay() && !context.is_text_input() {
 }
 ```
 
-### Dispatch — extend the existing `Pane` trait
+### Dispatch — `App::bar_renderer_for_focus()` (in `app/bar_renderer.rs`)
 
-`pane/dispatch.rs:38` already has a `Pane` trait. Extend it:
+The codebase does **not** today have a `&dyn Pane` accessor on `App`. Pane structs are scattered across host fields: `app.panes.package`, `app.panes.git`, `app.panes.targets`, `app.ci` (`Ci` struct in `ci_state.rs:272`, focused as `PaneId::CiRuns`), `app.lint` (`Lint` struct in `lint_state.rs:214`, focused as `PaneId::Lints`), `app.project_list`. Pane render is dispatched today via per-`PaneId` match arms in `render.rs:405-450` calling typed functions; there is no `match PaneId -> &dyn Pane` accessor to reuse.
+
+Rather than extend the `Pane` trait at `pane/dispatch.rs:38` (which would force adding `bar_renderer` to every pane impl plus inventing `App::focused_pane()` to traverse the scattered hosts), add a dedicated single-purpose accessor on `App`:
 
 ```rust
-pub trait Pane {
-    // existing methods …
-    fn bar_renderer(&self) -> Option<&dyn BarRenderer> { None }
+impl App {
+    pub(super) fn bar_renderer_for_focus(&self) -> Option<&dyn BarRenderer> {
+        match self.focus.base() {
+            PaneId::Package     => Some(&self.panes.package),
+            PaneId::Git         => Some(&self.panes.git),
+            PaneId::Targets     => Some(&self.panes.targets),
+            PaneId::CiRuns      => Some(&self.ci),
+            PaneId::Lints       => Some(&self.lint),
+            PaneId::ProjectList => Some(&self.project_list),
+            _ => None,
+        }
+    }
 }
 ```
 
-Default returns `None` — a pane with no shortcut contribution. Six panes override (`Package`, `Git`, `Targets`, `CiRuns`, `Lints`, `ProjectList`).
+The match owns the only `PaneId -> pane host` lookup the bar needs. It's one place, named for its purpose, and doesn't bloat the existing `Pane` trait. Each of the six host fields implements `BarRenderer` directly (alongside their existing `Pane` impl).
 
-The existing focus-resolution path produces the focused `&dyn Pane`. The bar asks `app.focused_pane().bar_renderer()` — one method call, no manual `match` on `PaneId` in `App`.
+Panes without a scope enum (`Lang`, `Cpu`, `Output`, plus all overlay/static panes) fall through to `None`; the bar emits an empty action group for them or routes to a static-only arm.
 
-Panes without a scope enum (`Lang`, `Cpu`, `Output`) keep the default `None`. Their action group is empty when focused.
+**Borrow story.** `bar_renderer_for_focus` returns `&dyn BarRenderer` borrowed from `&self`. The bar then calls `renderer.render_into(app, km, …)` with another `&App` reference. Both are shared borrows of `App`, so the double-borrow type-checks. No `&mut` paths involved.
 
 ### Pane coverage table
 
-| `PaneId` | Has scope enum? | Plan |
-|---|---|---|
-| `ProjectList` | `ProjectListAction` | impl `BarRenderer` |
-| `Package` | `PackageAction` | impl `BarRenderer` |
-| `Git` | `GitAction` | impl `BarRenderer` |
-| `Targets` | `TargetsAction` | impl `BarRenderer` |
-| `CiRuns` | `CiRunsAction` | impl `BarRenderer` |
-| `Lints` | `LintsAction` | impl `BarRenderer` |
-| `Lang` | none | default `bar_renderer() -> None` |
-| `Cpu` | none | default `bar_renderer() -> None` |
-| `Output` | none | default `bar_renderer() -> None` |
-| `Toasts` | none (uses `GlobalAction::Dismiss`) | static-only arm in `for_status_bar` |
-| `Finder` / `Settings` / `Keymap` | none | static-only arms |
+The "host struct" column is the actual struct that implements `BarRenderer`. Some panes' host structs are not `*Pane`-named (`Ci`/`Lint` are subsystem structs that play the pane role for `PaneId::CiRuns`/`Lints`).
+
+| `PaneId` | Has scope enum? | Host struct | impl location |
+|---|---|---|---|
+| `ProjectList` | `ProjectListAction` | `ProjectList` | `src/tui/project_list.rs` |
+| `Package` | `PackageAction` | `panes::PackagePane` (or wherever today's `impl Pane for X` for Package lives) | alongside the existing `Pane` impl |
+| `Git` | `GitAction` | the Git-pane struct (same — sibling of the existing `Pane` impl) | sibling file |
+| `Targets` | `TargetsAction` | the Targets-pane struct | sibling file |
+| `CiRuns` | `CiRunsAction` | `Ci` (`src/tui/ci_state.rs:272`) | `ci_state.rs` |
+| `Lints` | `LintsAction` | `Lint` (`src/tui/lint_state.rs:214`) | `lint_state.rs` |
+| `Lang` | none | n/a | `bar_renderer_for_focus` returns `None` |
+| `Cpu` | none | n/a | `bar_renderer_for_focus` returns `None` |
+| `Output` | none | n/a | `bar_renderer_for_focus` returns `None` |
+| `Toasts` | none (uses `GlobalAction::Dismiss`) | n/a | static-only arm in `for_status_bar` |
+| `Finder` / `Settings` / `Keymap` | none | n/a | static-only arms |
 
 ### Static-only arms
 
@@ -286,21 +301,21 @@ If a future shared predicate appears across multiple panes, the same rule applie
 
 `enter_action`'s `CiRuns` branch returns `Some("fetch")` at end-of-list, but the dispatcher does nothing at EOL. Fix:
 
-- `CiRunsPane`'s `bar_label(CiRunsAction::Activate, ...)` returns `Some("open")` when the cursor is on an actual run; `None` otherwise.
+- `Ci`'s `bar_label(CiRunsAction::Activate, ...)` returns `Some("open")` when the cursor is on an actual run; `None` otherwise.
 - Promoting Activate-at-EOL to FetchMore is a dispatcher change in `panes/actions.rs:handle_ci_enter` — not part of this refactor. Add a `// TODO` and move on.
 
 ## Concrete refactor sequence — three PRs
 
 **PR 1 — additive.** Lands alone; nothing breaks.
-- Define the `BarRenderer` trait in `src/tui/shortcuts.rs` (or a sibling `shortcuts/render.rs`).
-- Implement `BarRenderer` for `Package`, `Git`, `Targets`, `CiRuns`, `Lints`, `ProjectList`. Each impl absorbs its share of `enter_action`'s body and the corresponding `*_groups`'s logic.
-- Add `ProjectList::clean_available()` accessor (replaces every per-pane `is_rust` thread of the same predicate).
-- Add the `GlobalActions` unit struct, its `RENDER_ORDER` slice, and its `BarRenderer` impl. `enabled` body delegates to existing accessors (`Config::terminal_command_configured`, `ProjectList::selected_project_is_deleted`).
-- Extend the `Pane` trait at `pane/dispatch.rs:38` with `fn bar_renderer(&self) -> Option<&dyn BarRenderer> { None }`. Default returns `None`. Non-shortcut panes (`Lang`, `Cpu`, `Output`) keep the default; the six shortcut panes override.
+- Create `src/tui/app/bar_renderer.rs`. Declare it in `src/tui/app/mod.rs` (`mod bar_renderer;`, private to `app/`).
+- In `app/bar_renderer.rs`: define `pub(crate) trait BarRenderer`. Define `pub(crate) struct GlobalActions;` with its `RENDER_ORDER` slice and `BarRenderer` impl. Define an `impl App` block holding `pub(super) fn bar_renderer_for_focus(&self) -> Option<&dyn BarRenderer>` (the `match focus.base()` accessor).
+- Implement `BarRenderer` for the six pane host structs alongside their existing `Pane` impls: `panes::PackagePane`, `panes::GitPane`, `panes::TargetsPane`, `Ci` (`src/tui/ci_state.rs`), `Lint` (`src/tui/lint_state.rs`), `ProjectList` (`src/tui/project_list.rs`).
+- Add `ProjectList::clean_available()` accessor in `src/tui/project_list.rs` (replaces every per-pane `is_rust` thread of the same predicate).
+- No change to the `Pane` trait at `pane/dispatch.rs:38`.
 
 **PR 2 — the swap.**
-- Hoist `make_app` from `src/tui/app/tests/mod.rs:115` (or `src/tui/interaction.rs:350`) to a shared `src/tui/test_support.rs` module gated on `#[cfg(test)]`, with `pub(super)` visibility, accessible from all `tui::*::tests` modules. (Can't be reused as-is — both definitions are module-private, neither reachable from `shortcuts.rs::tests`.)
-- Rewrite `for_status_bar` body. Action-bound contexts dispatch through `app.focused_pane().bar_renderer()`, push into `nav` / `actions`. Static-only arms stay inline. Globals: external context gate, then `GlobalActions.render_into(app, km, …)` pushes into `globals`.
+- Hoist `make_app` from `src/tui/app/tests/mod.rs:115` (or `src/tui/interaction.rs:350`) to a shared `src/tui/test_support.rs` module gated on `#[cfg(test)]`, with `pub(super)` visibility. The module is declared in `src/tui/mod.rs` as `#[cfg(test)] mod test_support;` (no `pub` needed — `pub(super)` items inside reach every `tui::*::tests` sibling module). `shortcuts.rs::tests` imports via `use super::test_support::make_app;`. (Can't be reused as-is — both existing definitions are module-private, neither reachable from `shortcuts.rs::tests`.)
+- Rewrite `for_status_bar` body. Action-bound contexts dispatch through `app.bar_renderer_for_focus()`; if `Some`, call `render_into` to push into `nav` / `actions`. Static-only arms stay inline. Globals: external context gate (`if !context.is_overlay() && !context.is_text_input()`), then `GlobalActions.render_into(app, km, …)` pushes into `globals`.
 - Delete `App::enter_action` and its single call site at `render.rs:538`.
 - Delete `detail_groups` / `ci_groups` / `lints_groups` / `project_list_groups`. The dead `enter_action` arm in `project_list_groups` goes with them.
 
@@ -320,6 +335,8 @@ If a future shared predicate appears across multiple panes, the same rule applie
 - **Re-binding mid-frame.** `app.keymap.current()` reads once per frame; no mid-frame mutation hazard.
 - **`focus.base()` vs `is_overlay()` asymmetry.** `PaneId::is_overlay()` (`spec.rs:23`) excludes `Keymap`; `InputContext::is_overlay()` (`shortcuts.rs:46`) includes it. The bar dispatches via `InputContext` for the static-only arms, sidestepping the asymmetry. Document but don't fix here.
 - **Render order vs `<Action>::ALL`.** Per-pane scopes today happen to render in declaration order (verified by reading `*_groups` against the enum definitions). `GlobalAction` is the only scope where order disagrees, hence `GlobalActions::RENDER_ORDER`. Keep the convention: any per-pane impl whose render order disagrees with `<Self::Action>::ALL` declares its own ordered slice. PR1 doesn't need any per-pane override — they all match today.
+- **Trait grants write access to every vec.** `render_into` takes `&mut Vec<Shortcut>` for `nav`, `actions`, and `globals`. Nothing prevents an impl from accidentally pushing into the wrong vec (e.g. `PackagePane` writing to `globals`). Convention: each impl pushes only into vecs it owns content for. Enforced at PR review, not by the trait. Six impls reviewed in one PR; the surface is small enough that this is a non-issue in practice.
+- **`unreachable!()` in `GlobalActions::bar_label`.** The `Dismiss` / `NextPane` / `PrevPane` arms panic if reached, but they're only reached if iteration accidentally uses `GlobalAction::ALL` instead of `RENDER_ORDER`. PR2 includes the regression test that locks the `RENDER_ORDER` ordering; future iteration mistakes are caught there. A `debug_assert!(false, …)` plus empty-string return is an alternative; either is fine.
 
 ## Non-goals
 
@@ -335,12 +352,13 @@ If a future shared predicate appears across multiple panes, the same rule applie
 - No literal `"Enter"` string in `src/tui/shortcuts.rs` for action-bound rows.
 - `for_status_bar` signature is `pub(super) fn for_status_bar(app: &App) -> StatusBarGroups`.
 - The four per-context helper fns (`detail_groups` / `ci_groups` / `lints_groups` / `project_list_groups`) are deleted; their logic lives in per-pane `BarRenderer` impls.
-- `BarRenderer` trait exists in one place; six panes (`Package`, `Git`, `Targets`, `CiRuns`, `Lints`, `ProjectList`) implement it.
-- `Lang`, `Cpu`, `Output` panes keep the default `bar_renderer() -> None`.
+- `BarRenderer` trait exists in `src/tui/app/bar_renderer.rs` with `pub(crate)` visibility; six host structs implement it: `panes::PackagePane`, `panes::GitPane`, `panes::TargetsPane`, `Ci`, `Lint`, `ProjectList`.
+- `GlobalActions` struct (with `RENDER_ORDER` slice) and `App::bar_renderer_for_focus(&self)` both live in `src/tui/app/bar_renderer.rs`.
+- `Lang`, `Cpu`, `Output` paneIds fall through to `None` in `bar_renderer_for_focus`.
 - `ProjectList::clean_available()` accessor exists; every per-pane `enabled(*::Clean, app)` calls it. No `clean_enabled` free fn anywhere.
 - `GlobalActions: BarRenderer` exists with explicit `RENDER_ORDER` slice; `terminal_command_configured` / `selected_project_is_deleted` gating lives inside its `enabled` body, delegating to existing accessors. No `global_action_state` free fn.
 - Globals' context-gating is external (caller-side: `if !context.is_overlay() && !context.is_text_input()`).
-- The CiRuns `Some("fetch")` label is gone; `CiRunsPane::bar_label(Activate, ...)` returns `None` at EOL.
+- The CiRuns `Some("fetch")` label is gone; `Ci::bar_label(Activate, ...)` returns `None` at EOL.
 - The dead `enter_action` arm inside `project_list_groups` is gone with the rest of the function.
 - The bogus `const` on `Shortcut::from_keymap` / `disabled_from_keymap` is removed.
 - `make_app` is hoisted to `src/tui/test_support.rs` (or equivalent shared module) and reachable from `shortcuts.rs::tests`.
