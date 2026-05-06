@@ -1614,6 +1614,59 @@ fn resolve_worktrees(app: &App, wt_item: Option<&RootItem>) -> Vec<WorktreeInfo>
     })
 }
 
+fn compute_in_project_bytes(
+    pl: &crate::tui::project_list::ProjectList,
+    abs_path: &Path,
+) -> (Option<u64>, Option<u64>) {
+    pl.at_path(abs_path).map_or((None, None), |pi| {
+        (pi.in_project_target, pi.in_project_non_target)
+    })
+}
+
+fn compute_ci_status(
+    app: &App,
+    abs_path: &Path,
+    wt_item: Option<&RootItem>,
+) -> Option<ci::CiStatus> {
+    wt_item.map_or_else(
+        || {
+            if app.project_list.is_rust_at_path(abs_path) {
+                app.project_list
+                    .ci_status_for(abs_path, app.ci.display_mode_for(abs_path))
+            } else {
+                None
+            }
+        },
+        |item| {
+            item.ci_status(|p| {
+                app.project_list
+                    .ci_status_for(p, app.ci.display_mode_for(p))
+            })
+        },
+    )
+}
+
+fn compute_package_displays(
+    app: &App,
+    abs_path: &AbsolutePath,
+    ci_status: Option<ci::CiStatus>,
+    package_title: &str,
+) -> (super::LintDisplay, super::CiDisplay) {
+    let pl = &app.project_list;
+    let is_worktree_group = package_title == "Worktree Group";
+    let is_rust = pl.is_rust_at_path(abs_path.as_path());
+    let lint_display = super::Lint::package_display(pl, abs_path, is_worktree_group, is_rust);
+    let ci_display = app.ci.package_display(
+        abs_path,
+        pl.repo_info_for(abs_path.as_path()),
+        pl.git_info_for(abs_path.as_path()),
+        pl.ci_info_for(abs_path.as_path()),
+        ci_status,
+        is_worktree_group,
+    );
+    (lint_display, ci_display)
+}
+
 fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData {
     let PaneDataSource {
         abs_path,
@@ -1637,22 +1690,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         || super::formatted_disk(app, abs_path),
         super::formatted_disk_for_item,
     );
-    let ci = wt_item.map_or_else(
-        || {
-            if app.project_list.is_rust_at_path(abs_path) {
-                app.project_list
-                    .ci_status_for(abs_path, app.ci.display_mode_for(abs_path))
-            } else {
-                None
-            }
-        },
-        |item| {
-            item.ci_status(|p| {
-                app.project_list
-                    .ci_status_for(p, app.ci.display_mode_for(p))
-            })
-        },
-    );
+    let ci = compute_ci_status(app, abs_path, wt_item);
     let disk_ms = perf_log::ms(t_disk.elapsed().as_millis());
 
     let t_wt = std::time::Instant::now();
@@ -1673,11 +1711,8 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let metadata_ms = perf_log::ms(t_meta.elapsed().as_millis());
     let manifest = manifest_fields_from(package_record.as_ref());
 
-    let pl = &app.project_list;
     let (in_project_target, in_project_non_target) =
-        pl.at_path(abs_path).map_or((None, None), |pi| {
-            (pi.in_project_target, pi.in_project_non_target)
-        });
+        compute_in_project_bytes(&app.project_list, abs_path);
     let t_oot = std::time::Instant::now();
     let out_of_tree_target_bytes = lookup_out_of_tree_target_bytes(app, &abs_path_owned);
     let oot_ms = perf_log::ms(t_oot.elapsed().as_millis());
@@ -1703,18 +1738,8 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let crates_version = crates_io.version;
     let crates_downloads = crates_io.downloads;
 
-    let is_worktree_group = package_title == "Worktree Group";
-    let is_rust = pl.is_rust_at_path(abs_path_owned.as_path());
-    let lint_display =
-        super::Lint::package_display(pl, &abs_path_owned, is_worktree_group, is_rust);
-    let ci_display = app.ci.package_display(
-        &abs_path_owned,
-        pl.repo_info_for(abs_path_owned.as_path()),
-        pl.git_info_for(abs_path_owned.as_path()),
-        pl.ci_info_for(abs_path_owned.as_path()),
-        ci,
-        is_worktree_group,
-    );
+    let (lint_display, ci_display) =
+        compute_package_displays(app, &abs_path_owned, ci, &package_title);
     let package = build_package_data(BuildPackageDataArgs {
         package_title,
         title_name,
