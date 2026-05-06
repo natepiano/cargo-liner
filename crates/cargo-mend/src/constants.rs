@@ -37,6 +37,24 @@ pub(crate) const TERM_DUMB_VALUE: &str = "dumb";
 
 // config
 pub(crate) const APP_NAME: &str = "cargo-mend";
+pub(crate) const DEFAULT_GLOBAL_CONFIG_TOML: &str = r"# cargo-mend global configuration
+# See https://github.com/natepiano/cargo-mend#diagnostics for details on each rule.
+# Per-project overrides go in mend.toml at your project or workspace root.
+
+[diagnostics]
+forbidden_pub_crate = true
+forbidden_pub_in_crate = true
+review_pub_mod = true
+suspicious_pub = true
+prefer_module_import = true
+inline_path_qualified_type = true
+shorten_local_crate_import = true
+replace_deep_super_import = true
+wildcard_parent_pub_use = true
+internal_parent_pub_use_facade = true
+narrow_to_pub_crate = true
+field_visibility_wider_than_type = true
+";
 pub(crate) const GLOBAL_CONFIG_FILE: &str = "config.toml";
 
 // diagnostics help
@@ -69,6 +87,11 @@ pub(crate) const RUST_MODULE_FILE: &str = "mod.rs";
 
 // findings
 pub(crate) const FINDINGS_SCHEMA_VERSION: u32 = 13;
+
+// fix execution
+/// Maximum number of mend passes during `--fix-all`. Prevents an infinite
+/// loop if a fix oscillates; in practice convergence happens in 1–2 passes.
+pub(crate) const FIX_ALL_MAX_PASSES: usize = 5;
 
 // path keywords
 pub(crate) const PATH_KEYWORD_CRATE: &str = "crate";

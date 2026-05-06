@@ -177,6 +177,7 @@ mod tests {
     use crate::cli::TargetSelection;
     use crate::selection::PackageMetadata;
     use crate::selection::TargetMetadata;
+    use crate::selection::TargetSupport;
 
     fn target(kind: &str, name: &str, src_path: &str) -> TargetMetadata {
         TargetMetadata {
@@ -186,9 +187,9 @@ mod tests {
             src_path:          PathBuf::from(src_path),
             edition:           "2024".to_string(),
             required_features: Vec::new(),
-            doc:               false,
-            doctest:           false,
-            test:              false,
+            doc:               TargetSupport::Disabled,
+            doctest:           TargetSupport::Disabled,
+            test:              TargetSupport::Disabled,
         }
     }
 

@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::constants::APP_NAME;
+use super::constants::DEFAULT_GLOBAL_CONFIG_TOML;
 use super::constants::GLOBAL_CONFIG_FILE;
 
 // --- Diagnostic codes ---
@@ -154,25 +155,6 @@ pub(crate) fn load_global_diagnostics() -> DiagnosticsConfig {
         |file| file.diagnostics_config,
     )
 }
-
-const DEFAULT_GLOBAL_CONFIG_TOML: &str = r"# cargo-mend global configuration
-# See https://github.com/natepiano/cargo-mend#diagnostics for details on each rule.
-# Per-project overrides go in mend.toml at your project or workspace root.
-
-[diagnostics]
-forbidden_pub_crate = true
-forbidden_pub_in_crate = true
-review_pub_mod = true
-suspicious_pub = true
-prefer_module_import = true
-inline_path_qualified_type = true
-shorten_local_crate_import = true
-replace_deep_super_import = true
-wildcard_parent_pub_use = true
-internal_parent_pub_use_facade = true
-narrow_to_pub_crate = true
-field_visibility_wider_than_type = true
-";
 
 fn create_default_global_config(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {

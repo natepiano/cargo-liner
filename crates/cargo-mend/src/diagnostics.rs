@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use serde::Serialize;
+use serde::Serializer;
 
 use super::config::DiagnosticCode;
 use super::fix_support::FixSummaryBucket;
@@ -210,8 +211,33 @@ pub(crate) enum CompilerWarningFacts {
     UnusedImportWarnings,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BuildOutcome {
+    Failed,
+    Succeeded,
+}
+
+impl BuildOutcome {
+    pub(crate) const fn is_success(self) -> bool { matches!(self, Self::Succeeded) }
+}
+
+impl Serialize for BuildOutcome {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bool(self.is_success())
+    }
+}
+
 impl Report {
-    pub(crate) const fn has_errors(&self) -> bool { self.summary.errors > 0 }
+    pub(crate) const fn outcome(&self) -> BuildOutcome {
+        if self.summary.errors > 0 {
+            BuildOutcome::Failed
+        } else {
+            BuildOutcome::Succeeded
+        }
+    }
 
     pub(crate) const fn has_warnings(&self) -> bool { self.summary.warnings > 0 }
 

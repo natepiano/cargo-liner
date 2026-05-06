@@ -47,8 +47,10 @@ use constants::DIAGNOSTICS_HELP_NAME_COLUMN_WIDTH;
 use constants::DRIVER_ENV;
 use constants::EXIT_CODE_ERROR;
 use constants::EXIT_CODE_WARNING;
+use constants::FIX_ALL_MAX_PASSES;
 use constants::TERM_DUMB_VALUE;
 use constants::TERM_ENV;
+use diagnostics::BuildOutcome;
 use diagnostics::CompilerWarningFacts;
 use display_filter::DisplayFilter;
 use outcome::ExecutionOutcome;
@@ -59,10 +61,6 @@ use render::OutputFormat;
 use run_mode::OperationMode;
 use runner::MendRunner;
 use selection::Selection;
-
-/// Maximum number of mend passes during `--fix-all`. Prevents an infinite
-/// loop if a fix oscillates; in practice convergence happens in 1–2 passes.
-const FIX_ALL_MAX_PASSES: usize = 5;
 
 fn main() -> ExitCode {
     if std::env::var_os(DRIVER_ENV).is_some() {
@@ -208,7 +206,7 @@ fn run() -> Result<ExitCode, MendFailure> {
         check_duration,
     )?;
 
-    if outcome.report.has_errors() {
+    if outcome.report.outcome() == BuildOutcome::Failed {
         return Ok(ExitCode::from(EXIT_CODE_ERROR));
     }
     if cli.warning_policy == WarningPolicy::Fail && outcome.report.has_warnings() {

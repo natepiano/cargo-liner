@@ -12,12 +12,14 @@ use super::constants::RUST_LIB_FILE;
 use super::constants::RUST_MAIN_FILE;
 use super::constants::SOURCE_DIR_SRC;
 use super::diagnostics;
+use super::diagnostics::BuildOutcome;
 use super::diagnostics::Finding;
 use super::diagnostics::Report;
 use super::diagnostics::Severity;
 use super::selection::PackageMetadata;
 use super::selection::Selection;
 use super::selection::TargetMetadata;
+use super::selection::TargetSupport;
 
 pub(crate) fn render_report(report: &Report, selection: &Selection) -> Result<String> {
     let mut output = String::new();
@@ -28,7 +30,7 @@ pub(crate) fn render_report(report: &Report, selection: &Selection) -> Result<St
     }
     output.push_str(&serde_json::to_string(&BuildFinished {
         reason:  "build-finished",
-        success: !report.has_errors(),
+        success: report.outcome(),
     })?);
     output.push('\n');
     Ok(output)
@@ -52,9 +54,9 @@ struct CargoTarget {
     edition:           String,
     #[serde(rename = "required-features", skip_serializing_if = "Vec::is_empty")]
     required_features: Vec<String>,
-    doc:               bool,
-    doctest:           bool,
-    test:              bool,
+    doc:               TargetSupport,
+    doctest:           TargetSupport,
+    test:              TargetSupport,
 }
 
 #[derive(Serialize)]
@@ -112,7 +114,7 @@ struct RustcSpanText {
 #[derive(Serialize)]
 struct BuildFinished {
     reason:  &'static str,
-    success: bool,
+    success: BuildOutcome,
 }
 
 fn compiler_message<'a>(

@@ -9,6 +9,8 @@ use cargo_metadata::Metadata;
 use cargo_metadata::MetadataCommand;
 use cargo_metadata::Package;
 use cargo_metadata::Target;
+use serde::Serialize;
+use serde::Serializer;
 
 use super::cli::CargoCheckCli;
 use super::cli::WorkspaceSelection;
@@ -54,6 +56,29 @@ pub(crate) struct PackageMetadata {
     pub targets:       Vec<TargetMetadata>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetSupport {
+    Disabled,
+    Enabled,
+}
+
+impl TargetSupport {
+    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
+}
+
+impl From<bool> for TargetSupport {
+    fn from(value: bool) -> Self { if value { Self::Enabled } else { Self::Disabled } }
+}
+
+impl Serialize for TargetSupport {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bool(self.is_enabled())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TargetMetadata {
     pub kind:              Vec<String>,
@@ -62,9 +87,9 @@ pub(crate) struct TargetMetadata {
     pub src_path:          PathBuf,
     pub edition:           String,
     pub required_features: Vec<String>,
-    pub doc:               bool,
-    pub doctest:           bool,
-    pub test:              bool,
+    pub doc:               TargetSupport,
+    pub doctest:           TargetSupport,
+    pub test:              TargetSupport,
 }
 
 pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Selection> {
@@ -218,9 +243,9 @@ fn target_metadata_from_cargo(target: &Target) -> TargetMetadata {
         src_path:          target.src_path.clone().into_std_path_buf(),
         edition:           target.edition.to_string(),
         required_features: target.required_features.clone(),
-        doc:               target.doc,
-        doctest:           target.doctest,
-        test:              target.test,
+        doc:               TargetSupport::from(target.doc),
+        doctest:           TargetSupport::from(target.doctest),
+        test:              TargetSupport::from(target.test),
     }
 }
 
@@ -274,6 +299,7 @@ mod tests {
     use super::Selection;
     use super::SelectionScope;
     use super::TargetMetadata;
+    use super::TargetSupport;
     use super::build_cargo_check_plan;
     use super::resolve_cargo_selection;
     use crate::cli::CargoCheckCli;
@@ -300,9 +326,9 @@ mod tests {
                     src_path:          PathBuf::from("/workspace/member/src/lib.rs"),
                     edition:           String::from("2024"),
                     required_features: Vec::new(),
-                    doc:               true,
-                    doctest:           true,
-                    test:              true,
+                    doc:               TargetSupport::Enabled,
+                    doctest:           TargetSupport::Enabled,
+                    test:              TargetSupport::Enabled,
                 }],
             }],
         }
