@@ -156,19 +156,12 @@ impl App {
         while let Ok(msg) = self.background.example_rx().try_recv() {
             match msg {
                 ExampleMsg::Output(line) => self.inflight.example_output_mut().push(line),
-                ExampleMsg::Progress(line) => self.apply_example_progress(line),
+                ExampleMsg::Progress(line) => self.inflight.apply_example_progress(line),
                 ExampleMsg::Finished => self.finish_example_run(),
             }
             count += 1;
         }
         count
-    }
-    pub(super) fn apply_example_progress(&mut self, line: String) {
-        if let Some(last) = self.inflight.example_output_mut().last_mut() {
-            *last = line;
-        } else {
-            self.inflight.example_output_mut().push(line);
-        }
     }
     pub(super) fn finish_example_run(&mut self) {
         self.inflight.set_example_running(None);

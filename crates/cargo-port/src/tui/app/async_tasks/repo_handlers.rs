@@ -8,7 +8,6 @@ use crate::ci;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
-use crate::project::GitHubInfo;
 use crate::project::LocalGitState;
 use crate::project::RepoInfo;
 use crate::project::RootItem;
@@ -117,7 +116,8 @@ impl App {
                 .unwrap_or_else(|| AbsolutePath::from(path));
             self.startup.git.seen.insert(git_dir.clone());
             if let Some(git_toast) = self.startup.git.toast {
-                self.mark_tracked_item_completed(git_toast, &git_dir.to_string());
+                self.toasts
+                    .mark_tracked_item_completed(git_toast, &git_dir.to_string());
             }
             self.maybe_log_startup_phase_completions();
         }
@@ -260,12 +260,6 @@ impl App {
         self.maybe_log_startup_phase_completions();
         self.sync_running_repo_fetch_toast();
     }
-    pub fn handle_repo_meta(&mut self, path: &Path, stars: u64, description: Option<String>) {
-        if let Some(entry) = self.project_list.entry_containing_mut(path) {
-            let repo = entry.git_repo.get_or_insert_with(Default::default);
-            repo.github_info = Some(GitHubInfo { stars, description });
-        }
-    }
     pub fn handle_project_discovered(&mut self, item: RootItem) -> bool {
         let legacy_expansions = self.project_list.capture_legacy_root_expansions();
         let discovered_path = item.path().to_path_buf();
@@ -279,7 +273,7 @@ impl App {
             return false;
         }
 
-        self.register_item_background_services(&item);
+        self.background.register_item_background_services(&item);
         // Insert into the hierarchy directly — under a parent workspace if
         // one exists, otherwise as a top-level peer.
         let discovered_path = item.path().to_path_buf();

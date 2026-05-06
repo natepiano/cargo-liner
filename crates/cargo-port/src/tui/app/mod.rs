@@ -85,7 +85,6 @@ use super::panes::Panes;
 use super::project_list::ProjectList;
 use super::scan_state::Scan;
 use super::toasts::ToastStyle::Warning;
-use super::toasts::ToastView;
 use super::toasts::TrackedItem;
 use crate::ci::CiRun;
 use crate::ci::Conclusion;
@@ -322,11 +321,6 @@ impl App {
         Duration::from_secs_f64(self.config.current().tui.status_flash_secs)
     }
 
-    pub(super) fn focused_toast_id(&self) -> Option<u64> {
-        let active = self.toasts.active_now();
-        active.get(self.toasts.viewport().pos()).map(ToastView::id)
-    }
-
     pub(super) fn prune_toasts(&mut self) {
         let now = Instant::now();
         let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
@@ -356,17 +350,6 @@ impl App {
         self.toasts.viewport_mut().set_len(toast_len);
     }
 
-    pub(super) fn start_task_toast(
-        &mut self,
-        title: impl Into<String>,
-        body: impl Into<String>,
-    ) -> ToastTaskId {
-        let task_id = self.toasts.push_task(title, body, 1);
-        let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport_mut().set_len(toast_len);
-        task_id
-    }
-
     pub(super) fn finish_task_toast(&mut self, task_id: ToastTaskId) {
         let linger = if self.toasts.tracked_item_count(task_id) > 0 {
             Duration::from_secs_f64(self.config.current().tui.task_linger_secs)
@@ -380,12 +363,6 @@ impl App {
     pub(super) fn set_task_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) {
         let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
         self.toasts.set_tracked_items(task_id, items, linger);
-        let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport_mut().set_len(toast_len);
-    }
-
-    pub(super) fn mark_tracked_item_completed(&mut self, task_id: ToastTaskId, key: &str) {
-        self.toasts.mark_item_completed(task_id, key);
         let toast_len = self.toasts.active_now().len();
         self.toasts.viewport_mut().set_len(toast_len);
     }
@@ -725,7 +702,7 @@ impl App {
     /// mark the confirm as verifying (popup blocks `y` until the
     /// refresh lands). On match: open the confirm Ready immediately.
     pub fn request_clean_confirm(&mut self, project_path: AbsolutePath) {
-        if self.should_verify_before_clean(&project_path) {
+        if self.scan.should_verify_before_clean(&project_path) {
             let dispatch = self.clean_metadata_dispatch();
             scan::spawn_cargo_metadata_refresh(dispatch, project_path.clone());
             self.scan.set_confirm_verifying(Some(project_path.clone()));
@@ -748,7 +725,7 @@ impl App {
         primary: AbsolutePath,
         linked: Vec<AbsolutePath>,
     ) {
-        if self.should_verify_before_clean(&primary) {
+        if self.scan.should_verify_before_clean(&primary) {
             let dispatch = self.clean_metadata_dispatch();
             scan::spawn_cargo_metadata_refresh(dispatch, primary.clone());
             self.scan.set_confirm_verifying(Some(primary.clone()));
@@ -756,29 +733,6 @@ impl App {
             self.scan.set_confirm_verifying(None);
         }
         self.confirm = Some(ConfirmAction::CleanGroup { primary, linked });
-    }
-
-    /// Does the workspace covering `project_path` need a re-fetch
-    /// before the confirm opens? True when the on-disk manifest
-    /// fingerprint differs from the stored metadata's fingerprint
-    /// (a `.cargo/config.toml` edit, a manifest save, etc.), OR when
-    /// no metadata covers `project_path` at all.
-    fn should_verify_before_clean(&self, project_path: &AbsolutePath) -> bool {
-        let Ok(store) = self.scan.metadata_store().lock() else {
-            return false;
-        };
-        let Some(workspace_root) = store.containing_workspace_root(project_path) else {
-            // No metadata covers this path — nothing to verify against.
-            return true;
-        };
-        let Some(metadata) = store.get(workspace_root) else {
-            return true;
-        };
-        let Ok(current) = crate::project::ManifestFingerprint::capture(workspace_root.as_path())
-        else {
-            return false;
-        };
-        current != metadata.fingerprint
     }
 
     /// The scan's `MetadataDispatchContext` refreshed from the current
@@ -846,7 +800,7 @@ impl App {
     }
 
     pub(super) fn ci_display_mode_label_for(&self, path: &Path) -> &'static str {
-        self.ci_display_mode_label_for_inner(path)
+        self.ci.display_mode_label_for(path)
     }
 
     pub(super) fn ci_toggle_available_for(&self, path: &Path) -> bool {

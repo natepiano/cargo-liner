@@ -22,7 +22,10 @@ use std::sync::mpsc::Sender;
 use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
 use super::terminal::ExampleMsg;
+use crate::project;
+use crate::project::RootItem;
 use crate::scan::BackgroundMsg;
+use crate::watcher::WatchRequest;
 use crate::watcher::WatcherMsg;
 
 /// Bundle the four channel pairs plus the watcher sender that
@@ -115,6 +118,24 @@ impl Background {
     /// Replace the watcher sender, used by `App::respawn_watcher`
     /// after a config reload changes the watch roots.
     pub(super) fn replace_watcher_sender(&mut self, tx: Sender<WatcherMsg>) { self.watch_tx = tx; }
+
+    pub(super) fn register_item_background_services(&self, item: &RootItem) {
+        let started = std::time::Instant::now();
+        let abs_path = crate::project::AbsolutePath::from(item.path().to_path_buf());
+        let repo_root = project::git_repo_root(&abs_path);
+        let has_repo_root = repo_root.is_some();
+        let _ = self.send_watcher(WatcherMsg::Register(WatchRequest {
+            project_label: abs_path.to_string_lossy().to_string(),
+            abs_path: abs_path.clone(),
+            repo_root,
+        }));
+        tracing::info!(
+            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+            path = %item.display_path(),
+            has_repo_root,
+            "app_register_project_background_services"
+        );
+    }
 }
 
 #[cfg(test)]

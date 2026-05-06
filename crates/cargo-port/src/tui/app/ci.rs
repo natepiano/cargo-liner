@@ -150,13 +150,6 @@ impl App {
         self.ci.display_mode_for(path)
     }
 
-    pub(super) fn ci_display_mode_label_for_inner(&self, path: &Path) -> &'static str {
-        match self.ci_display_mode_for(path) {
-            CiRunDisplayMode::BranchOnly => "branch",
-            CiRunDisplayMode::All => "all",
-        }
-    }
-
     pub(super) fn toggle_ci_display_mode_for_inner(&mut self, path: &Path) {
         if !self.project_list.ci_toggle_available_for_inner(path) {
             self.ci.remove_display_mode(path);

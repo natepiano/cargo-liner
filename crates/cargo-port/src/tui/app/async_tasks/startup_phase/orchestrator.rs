@@ -40,7 +40,7 @@ pub struct Startup {
     /// on project path; `seen` counts only terminal arrivals.
     pub lint_phase: KeyedPhase<AbsolutePath>,
     /// Counts startup-time lint completions across the project tree.
-    /// Used by `App::maybe_complete_startup_lints` to decide when the
+    /// Used by `Startup::maybe_complete_lints` to decide when the
     /// startup-lint pass is done.
     pub lint_count: CountedPhase,
 }

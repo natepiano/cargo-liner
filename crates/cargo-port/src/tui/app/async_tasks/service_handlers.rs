@@ -6,7 +6,6 @@ use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
 use crate::scan;
 use crate::tui::app::App;
-use crate::tui::net_state::ServiceAvailability;
 use crate::tui::toasts::ToastStyle::Warning;
 
 impl App {
@@ -29,7 +28,7 @@ impl App {
     /// recovery work fires only on the actual state transition, so
     /// steady-state success signals stay silent.
     pub(super) fn handle_service_reachable(&mut self, service: ServiceKind) {
-        let Some(toast_id) = self.availability_for(service).mark_reachable() else {
+        let Some(toast_id) = self.net.availability_for(service).mark_reachable() else {
             return;
         };
         self.toasts.dismiss(toast_id);
@@ -38,7 +37,7 @@ impl App {
     }
     pub(super) fn apply_unavailability(&mut self, service: ServiceKind, kind: AvailabilityKind) {
         let (spawn_retry, prior_toast) = {
-            let avail = self.availability_for(service);
+            let avail = self.net.availability_for(service);
             let spawn_retry = match kind {
                 AvailabilityKind::Unreachable => avail.mark_unreachable(),
                 AvailabilityKind::RateLimited => avail.mark_rate_limited(),
@@ -57,16 +56,7 @@ impl App {
         let alive = prior_toast.is_some_and(|id| self.toasts.is_alive(id));
         if !alive {
             let toast_id = self.push_service_unavailable_toast(service, kind);
-            self.availability_for(service).set_toast(toast_id);
-        }
-    }
-    pub(super) const fn availability_for(
-        &mut self,
-        service: ServiceKind,
-    ) -> &mut ServiceAvailability {
-        match service {
-            ServiceKind::GitHub => self.net.github_mut().availability_mut(),
-            ServiceKind::CratesIo => self.net.crates_io_mut().availability_mut(),
+            self.net.availability_for(service).set_toast(toast_id);
         }
     }
     pub(super) fn push_service_unavailable_toast(
@@ -98,24 +88,8 @@ impl App {
             }
         });
     }
-    /// One-shot: hit GitHub's `/rate_limit` endpoint so the shared
-    /// rate-limit cache is populated before any real request. The endpoint
-    /// is quota-exempt, so this is safe to run even when GitHub is
-    /// refusing other calls. Logged via `rate_limit_prime_ok` /
-    /// `rate_limit_prime_failed`.
-    pub fn spawn_rate_limit_prime(&self) {
-        let client = self.net.http_client();
-        thread::spawn(move || {
-            let (rate_limit, _signal) = client.fetch_rate_limit();
-            if rate_limit.is_some() {
-                tracing::info!("rate_limit_prime_ok");
-            } else {
-                tracing::info!("rate_limit_prime_failed");
-            }
-        });
-    }
     pub(super) fn mark_service_recovered(&mut self, service: ServiceKind) {
-        let Some(toast_id) = self.availability_for(service).mark_recovered() else {
+        let Some(toast_id) = self.net.availability_for(service).mark_recovered() else {
             return;
         };
         self.toasts.dismiss(toast_id);

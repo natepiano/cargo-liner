@@ -8,26 +8,6 @@ use crate::tui::app::App;
 use crate::tui::app::target_index::TargetDirMember;
 
 impl App {
-    /// Merge an out-of-tree target walk result into the metadata cache.
-    /// Declines when the cached metadata's `target_directory` has since been
-    /// redirected — a fresh walk is already in flight under the new dir.
-    pub(super) fn handle_out_of_tree_target_size(
-        &self,
-        workspace_root: &AbsolutePath,
-        target_dir: &AbsolutePath,
-        bytes: u64,
-    ) {
-        let Ok(mut store) = self.scan.metadata_store().lock() else {
-            return;
-        };
-        if !store.set_out_of_tree_target_bytes(workspace_root, target_dir, bytes) {
-            tracing::debug!(
-                workspace_root = %workspace_root.as_path().display(),
-                target_dir = %target_dir.as_path().display(),
-                "out_of_tree_target_size_discarded_stale"
-            );
-        }
-    }
     /// Merge a `cargo metadata` arrival back into the process-wide store and
     /// advance the startup metadata phase. The startup path drives UI
     /// feedback via the grouped "Running cargo metadata" tracked toast

@@ -104,7 +104,7 @@ impl App {
         } else {
             let labels: Vec<&str> = running_items.iter().map(|i| i.label.as_str()).collect();
             let body = toasts::format_toast_items(&labels, toasts::toast_body_width());
-            let task_id = self.start_task_toast(title, body);
+            let task_id = self.toasts.start_task(title, body);
             self.set_task_tracked_items(task_id, running_items);
             Some(task_id)
         }

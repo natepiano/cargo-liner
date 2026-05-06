@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crate::perf_log;
 use crate::tui::app::App;
+use crate::tui::app::Startup;
 use crate::tui::app::phase_state::PhaseCompletion;
 use crate::tui::app::startup;
 use crate::tui::constants::STARTUP_PHASE_DISK;
@@ -12,12 +13,49 @@ use crate::tui::constants::STARTUP_PHASE_LINT;
 use crate::tui::constants::STARTUP_PHASE_METADATA;
 use crate::tui::toasts::TrackedItem;
 
+impl Startup {
+    pub(super) fn log_phase_plan(&self) {
+        tracing::info!(
+            disk_expected = self.disk.expected_len(),
+            git_expected = self.git.expected_len(),
+            repo_expected = self.repo.expected_len(),
+            lint_expected = self.lint_phase.expected_len(),
+            metadata_expected = self.metadata.expected_len(),
+            "startup_phase_plan"
+        );
+    }
+    pub(super) fn maybe_complete_lints(&mut self, now: Instant, scan_complete_at: Instant) {
+        // Lint is only "complete" once real lint work has been registered —
+        // an initialized-empty expected set stays open. This diverges from
+        // the generic `PhaseCompletion::is_complete` semantics on purpose,
+        // so the check stays inline rather than going through the trait.
+        let lint = &self.lint_phase;
+        let should_complete = lint.complete_at.is_none()
+            && lint
+                .expected
+                .as_ref()
+                .is_some_and(|expected| !expected.is_empty() && lint.seen.len() >= expected.len());
+        if !should_complete {
+            return;
+        }
+        self.lint_phase.complete_at = Some(now);
+        tracing::info!(
+            phase = "lint_terminal_applied",
+            since_scan_complete_ms =
+                crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+            seen = self.lint_phase.seen.len(),
+            expected = self.lint_phase.expected_len(),
+            "startup_phase_complete"
+        );
+    }
+}
+
 impl App {
     pub fn initialize_startup_phase_tracker(&mut self) {
         self.reset_startup_phase_state();
         self.start_startup_toast();
         self.start_startup_detail_toasts();
-        self.log_startup_phase_plan();
+        self.startup.log_phase_plan();
         self.maybe_log_startup_phase_completions();
     }
     pub(super) fn reset_startup_phase_state(&mut self) {
@@ -72,7 +110,7 @@ impl App {
                 completed_at: None,
             },
         ];
-        let task_id = self.start_task_toast("Startup", "");
+        let task_id = self.toasts.start_task("Startup", "");
         self.set_task_tracked_items(task_id, &startup_items);
         self.startup.toast = Some(task_id);
     }
@@ -81,8 +119,8 @@ impl App {
             let disk_items =
                 Self::tracked_items_for_startup(&disk_expected, &self.startup.disk.seen);
             if !disk_items.is_empty() {
-                let body = self.startup_disk_toast_body();
-                let task_id = self.start_task_toast("Calculating disk usage", &body);
+                let body = self.startup.disk_toast_body();
+                let task_id = self.toasts.start_task("Calculating disk usage", &body);
                 self.set_task_tracked_items(task_id, &disk_items);
                 self.startup.disk.toast = Some(task_id);
             }
@@ -91,8 +129,8 @@ impl App {
         if let Some(git_expected) = self.startup.git.expected.clone() {
             let git_items = Self::tracked_items_for_startup(&git_expected, &self.startup.git.seen);
             if !git_items.is_empty() {
-                let body = self.startup_git_toast_body();
-                let task_id = self.start_task_toast("Scanning local git repos", &body);
+                let body = self.startup.git_toast_body();
+                let task_id = self.toasts.start_task("Scanning local git repos", &body);
                 self.set_task_tracked_items(task_id, &git_items);
                 self.startup.git.toast = Some(task_id);
             }
@@ -101,8 +139,8 @@ impl App {
             let metadata_items =
                 Self::tracked_items_for_startup(&metadata_expected, &self.startup.metadata.seen);
             if !metadata_items.is_empty() {
-                let body = self.startup_metadata_toast_body();
-                let task_id = self.start_task_toast("Running cargo metadata", &body);
+                let body = self.startup.metadata_toast_body();
+                let task_id = self.toasts.start_task("Running cargo metadata", &body);
                 self.set_task_tracked_items(task_id, &metadata_items);
                 self.startup.metadata.toast = Some(task_id);
             }
@@ -110,16 +148,6 @@ impl App {
         // The "Retrieving GitHub repo details" toast is driven by
         // `sync_running_repo_fetch_toast` from live `RepoFetchQueued`
         // messages — no separate startup-phase toast here.
-    }
-    pub(super) fn log_startup_phase_plan(&self) {
-        tracing::info!(
-            disk_expected = self.startup.disk.expected_len(),
-            git_expected = self.startup.git.expected_len(),
-            repo_expected = self.startup.repo.expected_len(),
-            lint_expected = self.startup.lint_phase.expected_len(),
-            metadata_expected = self.startup.metadata.expected_len(),
-            "startup_phase_plan"
-        );
     }
     pub fn maybe_log_startup_phase_completions(&mut self) {
         let Some(scan_complete_at) = self.startup.scan_complete_at else {
@@ -130,7 +158,7 @@ impl App {
         self.maybe_complete_startup_git(now, scan_complete_at);
         self.maybe_complete_startup_repo(now, scan_complete_at);
         self.maybe_complete_startup_metadata(now, scan_complete_at);
-        self.maybe_complete_startup_lints(now, scan_complete_at);
+        self.startup.maybe_complete_lints(now, scan_complete_at);
         self.maybe_complete_startup_ready(now, scan_complete_at);
     }
     pub fn maybe_complete_startup_disk(&mut self, now: Instant, scan_complete_at: Instant) {
@@ -141,7 +169,8 @@ impl App {
             self.finish_task_toast(disk_toast);
         }
         if let Some(toast) = self.startup.toast {
-            self.mark_tracked_item_completed(toast, STARTUP_PHASE_DISK);
+            self.toasts
+                .mark_tracked_item_completed(toast, STARTUP_PHASE_DISK);
         }
         tracing::info!(
             phase = "disk_applied",
@@ -160,7 +189,8 @@ impl App {
             self.finish_task_toast(git_toast);
         }
         if let Some(toast) = self.startup.toast {
-            self.mark_tracked_item_completed(toast, STARTUP_PHASE_GIT);
+            self.toasts
+                .mark_tracked_item_completed(toast, STARTUP_PHASE_GIT);
         }
         tracing::info!(
             phase = "git_local_applied",
@@ -185,7 +215,8 @@ impl App {
             return;
         }
         if let Some(toast) = self.startup.toast {
-            self.mark_tracked_item_completed(toast, STARTUP_PHASE_GITHUB);
+            self.toasts
+                .mark_tracked_item_completed(toast, STARTUP_PHASE_GITHUB);
         }
         tracing::info!(
             phase = "repo_fetch_applied",
@@ -208,7 +239,8 @@ impl App {
             self.finish_task_toast(metadata_toast);
         }
         if let Some(toast) = self.startup.toast {
-            self.mark_tracked_item_completed(toast, STARTUP_PHASE_METADATA);
+            self.toasts
+                .mark_tracked_item_completed(toast, STARTUP_PHASE_METADATA);
         }
         tracing::info!(
             phase = "metadata_applied",
@@ -216,30 +248,6 @@ impl App {
                 crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
             seen = self.startup.metadata.seen.len(),
             expected = self.startup.metadata.expected_len(),
-            "startup_phase_complete"
-        );
-    }
-    pub(super) fn maybe_complete_startup_lints(&mut self, now: Instant, scan_complete_at: Instant) {
-        // Lint is only "complete" once real lint work has been registered —
-        // an initialized-empty expected set stays open. This diverges from
-        // the generic `PhaseCompletion::is_complete` semantics on purpose,
-        // so the check stays inline rather than going through the trait.
-        let lint = &self.startup.lint_phase;
-        let should_complete = lint.complete_at.is_none()
-            && lint
-                .expected
-                .as_ref()
-                .is_some_and(|expected| !expected.is_empty() && lint.seen.len() >= expected.len());
-        if !should_complete {
-            return;
-        }
-        self.startup.lint_phase.complete_at = Some(now);
-        tracing::info!(
-            phase = "lint_terminal_applied",
-            since_scan_complete_ms =
-                crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
-            seen = self.startup.lint_phase.seen.len(),
-            expected = self.startup.lint_phase.expected_len(),
             "startup_phase_complete"
         );
     }

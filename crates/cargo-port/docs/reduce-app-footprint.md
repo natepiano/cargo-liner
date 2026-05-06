@@ -1032,9 +1032,20 @@ shrinks substantially; most of `navigation/` becomes `impl ProjectList`.
 
 #### Phase 12 Review
 
-(plan-phase-review pending)
+- F1 — Phase 15 Group W deduction confirmed correct (11 worktree helpers off App since Phase 11). No action.
+- F2 — Phase 15 enumerated list updated: `collapse_anchor_row` removed from "Navigation cursor helper" (already on `impl VisibleRow::collapse_anchor` since Phase 12). Phase 15 headline drops 12 → 11.
+- F3 — Phase 13 reclassifies `ci_runs_for_display` and `selected_ci_runs` as Group X (cross-subsystem ci ↔ project_list shims), not relocated; Phase 13 method count unchanged at 18.
+- F4 — Phase 13 reclassifies `build_selected_pane_data` as Group X (entangled with `tui::panes::build_pane_data*` family). No relocation in Phase 13.
+- F5 — Phase 14 explicitly includes deletion of empty placeholder modules `navigation/{bulk,worktree_paths,movement}.rs` and their `mod ...;` declarations.
+- F6 — Phase 14 pre-flight grep step added: `rg --count-matches '\.NAME\(' src` per the 7 surviving project_list pass-throughs; skip any with 0 hits.
+- F7 — Phase summary table re-baselined: Phase 12 row now `24 | ~80 src + ~10 tests | 193 ✅`; downstream "App after" cells re-baselined (13 → ~175, 14 → ~163, 15 → ~152). End-state slides from ~148 to ~152.
+- F8 — `register_item_background_services` Phase 13 pre-flight clean. No action.
+- F9 — Phase 13 startup helpers + toasts come through clean; added `dismiss_keymap_diagnostics` re-grep to Phase 13 pre-flight.
+- F10 — Phase 15 helper-relocation rule canonized: `fn helper(arg: &T, …)` belongs on `impl T` (precedent: Phase 12's `VisibleRow::collapse_anchor`); apply uniformly.
+- F11 — Phase 13 small-struct drag-along note added (precedent: Phase 12's `LegacyRootExpansion` co-relocation).
+- F12 — Phase 14 visibility-tightening list reframed as a representative subset; pre-flight must re-grep `pub(crate) fn` inside `src/tui/project_list.rs` for the authoritative list.
 
-### Phase 13 — Non-`project_list` S relocations
+### Phase 13 — Non-`project_list` S relocations ✅
 
 Relocate the remaining S methods to their owning subsystems:
 
@@ -1054,7 +1065,73 @@ Relocate the remaining S methods to their owning subsystems:
 - → `inflight` (1): `apply_example_progress`.
 - → `ci` (1): `ci_display_mode_label_for_inner`.
 
+**Phase 12 carryovers — reclassify, do not relocate.** Three methods left on
+App by Phase 12 are Group X (cross-subsystem orchestrators), not deferred S
+relocations:
+- `build_selected_pane_data` (`navigation/pane_data.rs:15`) — calls 5 entry
+  points in `tui::panes::build_pane_data*` plus `build_worktree_detail`, all of
+  which take `&App`. Restructuring the panes layer to take `&ProjectList` is a
+  larger refactor than Phase 13's scope.
+- `ci_runs_for_display` (`mod.rs:870-ish`) — extracts `display_mode` from
+  `self.ci` and forwards to `self.project_list.ci_runs_for_display_inner(path,
+  display_mode)`. Touches ci + project_list — canonical Group X shim.
+- `selected_ci_runs` (`mod.rs:430-ish`) — composes `selected_project_path` +
+  `ci_runs_for_display`. Same Group X classification.
+
+These three stay on App as Group X and are removed from Phase 13's
+relocation count (no caller rewrites for them in this phase).
+
+**Small-struct drag-along note.** Phase 13 may hit private helper structs/enums
+declared inside `async_tasks/*` whose visibility is `pub(super)` of the source
+file. When relocating their owning method to a subsystem outside that scope,
+the type's visibility must widen or the type must move alongside (Phase 12's
+`LegacyRootExpansion` precedent: moved from `pub(super)` of `async_tasks/` to
+`tui::project_list` alongside its 2 methods, since callers only pass references
+and field privacy was preserved).
+
+**Pre-flight re-grep `dismiss_keymap_diagnostics`.** Plan asserts it stays on
+App as Group X. Phase 12 didn't touch it; quick spot-check before bulk pass.
+
 **Methods relocated:** 18. **Caller rewrites:** ~100.
+
+### Retrospective
+
+**Count:** 193 → 176 (delta 17). Planned 18; 2 reclassified as carryovers, 1 added back via plan-phase-review F5 (`handle_repo_meta` → `impl ProjectList`).
+
+**What worked:**
+- Per-subsystem one-at-a-time pass kept blast radius small; each step ended with a clean `cargo check`.
+- Bulk perl rewrite `\bself\.NAME\(` → `self.SUBSYSTEM.NAME(` produced no false positives at this fanout (only 1–4 sites per method).
+- Helper drag-along: `startup_remaining_toast_body` extracted as a free `pub(super) fn remaining_toast_body` in `toast_bodies.rs`, callable from both `impl App` (for `tracked_items_for_startup` / `startup_lint_toast_body_for`, still on App pending Phase 15) and the new `impl Startup` toast-body methods. No `pub(in <path>)` needed.
+- Renames on relocation: dropped redundant subsystem prefixes — `startup_disk_toast_body` → `Startup::disk_toast_body`, `log_startup_phase_plan` → `Startup::log_phase_plan`, `maybe_complete_startup_lints` → `Startup::maybe_complete_lints`, `start_task_toast` → `ToastManager::start_task`, `ci_display_mode_label_for_inner` → `Ci::display_mode_label_for`. The names read better at the call site.
+
+**What deviated from the plan:**
+- Plan listed 4 scan relocations; only 2 turned out to be truly single-subsystem. `handle_git_first_commit` touches both `self.project_list` and `self.scan.pending_git_first_commit_mut()` — Group X by the body inspection, kept on App. `handle_repo_meta`'s body only writes through `self.project_list.entry_containing_mut(...).git_repo.github_info`, no scan access — plan misclassified as scan; relocated to `impl ProjectList` per F5 of the plan-phase-review (matching the Phase-12 precedent for `handle_crates_io_version_msg` / `handle_language_stats_batch`).
+- Plan listed 4 toasts relocations; only 3 were truly clean. `push_service_unavailable_toast` only field-touches `self.toasts`, but its parameters (`ServiceKind`, `AvailabilityKind` — the latter `pub(super)` of `service_handlers.rs`) couple it to the service-handler module. Reclassified as Group X to avoid widening `AvailabilityKind` or moving message-text helpers to `tui::toasts`.
+- Drag-along scope grew slightly: `Net::crates_io_mut()` (sole caller was the relocated `availability_for`) became dead and was deleted. Plan didn't predict this — recursive trivial-accessor decay from S-relocations.
+
+**Surprises:**
+- `ci_display_mode_label_for` shim on App (`mod.rs:803`) is a P-class pass-through — calls the `_inner` that just got relocated. Not in Phase 13's enumerated list, but the shim now reads as `self.ci.display_mode_label_for(path)` (one-line wrapper, will go in Phase 14).
+- Stale rustc diagnostics persisted in the editor after bulk rewrites. `cargo check` was the authoritative signal; trust the build, not the IDE.
+- Rust `\b` word-boundary in perl matches `(self|app)` after a non-word char (whitespace, parens, `=`, etc.) — no false negatives at this scope, even with chained `.method()` calls all on one line.
+
+**Implications for remaining phases:**
+- Phase 14 inherits 5 carryovers (X) instead of the planned 3: `build_selected_pane_data`, `ci_runs_for_display`, `selected_ci_runs` (from Phase 12) plus `handle_git_first_commit`, `push_service_unavailable_toast` (new). These stay on App. (`handle_repo_meta` was reclassified as a fourth carryover during the retro but the plan-phase-review F5 reverted that — relocated to `impl ProjectList`.)
+- Phase 14 picks up an additional small candidate: the `ci_display_mode_label_for` shim on App is now a clean one-line P pass-through to `self.ci.display_mode_label_for(path)`.
+- Phase summary table re-baseline: end of Phase 13 is **176** (after F5). Downstream cells: 14 → ~163, 15 → ~152.
+
+### Phase 13 Review
+
+- F1 — Phase 14's App-local trivial accessors list grew by 1: `ci_display_mode_label_for` (`mod.rs:802`) added as a one-line P pass-through; App-side delta in Phase 14 raised from 12 to ≤13.
+- F2 — Re-grep confirmed all 7 surviving project_list pass-throughs still have App-side callers; Phase-12 review's hopeful "may now have zero callers" did not materialize. No plan edit; ~200 caller-rewrite estimate stays.
+- F3 — Empty-placeholder-module count unchanged at 3 after Phase 13. No action.
+- F4 — Phase 14's visibility tightening pass widened to cover the new `pub fn` methods on `ToastManager`, `Ci`, `Net`, `Inflight`, `Background`, `Scan`, `Startup` added/touched in Phase 13.
+- F5 — **Significant, applied:** `handle_repo_meta` relocated to `impl ProjectList` in this turn (matching `handle_crates_io_version_msg` precedent). App count: 177 → 176.
+- F6 — `handle_git_first_commit` and `push_service_unavailable_toast` confirmed Group X. No action.
+- F7 — Phase 15 worktree-helper canonical home set to `impl WorktreeGroup` (body inspection: `RootItem::Worktrees(WorktreeGroup::...)` is the only branch that does work).
+- F8 — Phase 15 marked `startup_remaining_toast_body` as already-resident (Phase 13 drag-along extracted it as a free `pub(super) fn` in `toast_bodies.rs`).
+- F9 — Phase 14 baseline updated to 176 (was 181); stale `181 → 169` text rewritten to `176 → ~163`.
+- F10 — Phase 14 inventory step 5 added: scan for accessors orphaned by Phase-13 relocations (precedent: `Net::crates_io_mut()`).
+- F11 — No new sequencing constraints between 14 and 15 from Phase 13.
 
 ### Phase 14 — Recursive trivial-accessor purge inside subsystems
 
@@ -1091,6 +1168,9 @@ and delete the accessor:
   `show_timed_warning_toast` and delete.
 - `resolved_dirs` — one-line wrapper over `scan::resolve_include_dirs`.
   Inline at call sites.
+- `ci_display_mode_label_for` (`mod.rs:802`) — one-line forward to
+  `self.ci.display_mode_label_for(path)` after Phase 13. P-class pass-through;
+  inline at all call sites and delete (raises Phase-14 App delta from 12 to 13).
 
 **Project-list pass-throughs surviving Phase 10** (surfaced by Phase 9 review).
 Phase 10 only deletes `projects()` / `projects_mut()`. Seven other
@@ -1127,31 +1207,73 @@ start that:
    field-publish pass begins.
 4. Re-baselines the headline counts: run `count_app_methods.py` plus
    `rg --count-matches 'pub(super) const fn .* -> &.* \{ &self\.'`
-   crate-wide. Phase 10's actuals ran 24% over plan; Phase 12 may run
-   30%+ under. The plan's `~50–80 crate-wide` and `~200 caller rewrites`
-   numbers may be stale by ±50%. Scope the phase off the live numbers.
+   crate-wide. Live baseline at start of 14 is **App = 176** (Phase 13
+   actual); the prior plan numbers `181 → 169` are stale. Plan's `~50–80
+   crate-wide` and `~200 caller rewrites` numbers may be off by ±50%.
+   Scope the phase off the live numbers.
+5. **Scan for orphaned accessors from Phase 13 relocations** — when an S
+   method moves to its subsystem, accessors that existed solely to feed
+   it (e.g., `Net::crates_io_mut()` after `availability_for` moved) lose
+   their callers. `pub(super)` visibility hides them from `dead_code`
+   warnings inside the subsystem module. `rg --count-matches '\.NAME\('
+   src` per accessor; delete the ones at 0.
 
-The 12 App-local accessors above (5 owned-field + 7 project_list
-pass-throughs surviving Phase 10) are the *known* candidates from prior
-phases; the inventory pass may surface more.
+The 13 App-local accessors above (5 owned-field + 7 project_list
+pass-throughs surviving Phase 10 + 1 Phase-13 ci shim) are the *known*
+candidates from prior phases; the inventory pass may surface more.
+
+**Phase 12 follow-up: empty placeholder modules.** Phase 12 reduced
+`navigation/bulk.rs`, `navigation/worktree_paths.rs`, and `navigation/movement.rs`
+to 1-line comment-only placeholders (all method bodies relocated to `impl
+ProjectList`). Phase 14 must:
+1. Delete those three module files outright.
+2. Remove their `mod ...;` declarations from `navigation/mod.rs`.
+3. Re-grep callers of any types that were re-exported through those modules.
+This is independent of the trivial-accessor work and can run in either order.
+
+**Phase 12 follow-up: re-grep the 7 surviving project_list pass-throughs.**
+Phase 12's bulk caller rewrites turned several internal `app.X` call sites
+into direct `app.project_list.X` access; some of the 7 listed pass-throughs
+(`cached_fit_widths`, `cached_root_sorted`, `cached_child_sorted`, `expanded`,
+`expanded_mut`, `finder`, `finder_mut`) may now have zero remaining App-side
+callers. Phase 14 pre-flight should run `rg --count-matches '\.NAME\(' src`
+per name and skip any with 0 hits — they delete with no rewrites, shrinking
+the ~200 caller-rewrite estimate.
 
 **Visibility tightening on relocated types.** Phase 2 moved `ProjectList` from
 `src/project_list.rs` (top-level) to `src/tui/project_list.rs` (nested).
-Pre-existing `pub(crate)` methods on `ProjectList` (`new`, `len`, `is_empty`,
-`iter`, `compute_visible_rows`, `at_path`, `entry_containing`,
+Pre-existing `pub(crate)` methods on `ProjectList` should tighten to
+`pub(super)` unless a non-tui consumer is identified (none currently). The
+enumeration below is a representative subset; **Phase 14 pre-flight must
+re-grep `pub(crate) fn` inside `src/tui/project_list.rs`** for the
+authoritative list (Phases 11/12 added ~30 more methods, all already at
+`pub(super)` per the relocation default — those don't need tightening). The
+~38 estimate covers tightening only; zero caller rewrites (visibility
+narrowing is invisible to call sites already inside `tui/`).
+
+**Phase 13 also added new `pub fn` methods on subsystem types** —
+`ToastManager::focused_toast_id`, `ToastManager::start_task`,
+`ToastManager::mark_tracked_item_completed`, and `Ci::display_mode_label_for`
+all match the pre-existing `pub` style on those types but are only consumed
+inside `tui/`. Phase 14's tightening pass should `rg "pub fn" src/tui/toasts/manager.rs
+src/tui/ci_state.rs src/tui/net_state.rs src/tui/inflight.rs src/tui/background.rs
+src/tui/scan_state.rs src/tui/app/async_tasks/startup_phase/*.rs` — anything not
+referenced from outside `tui/` tightens to `pub(super)`.
+
+Representative pre-existing `pub(crate)` candidates: `new`, `len`,
+`is_empty`, `iter`, `compute_visible_rows`, `at_path`, `entry_containing`,
 `git_directories`, `for_each_leaf`, `for_each_leaf_path`, `lint_at_path`,
 `lint_at_path_mut`, `entry_containing_mut`, `replace_ci_data_for_path`,
 `ci_info_for`, `unpublished_ci_branch_name`, `is_deleted`, `regroup_members`,
 `regroup_top_level_worktrees`, `insert_into_hierarchy`, `replace_leaf_by_path`,
-`clear`, `resolved_root_labels`, `is_submodule_path`, ~14 more) all stay
-`pub(crate)`. Tighten each to `pub(super)` unless a non-tui consumer is
-identified (none currently). ~38 visibility tightenings; zero caller rewrites
-(visibility narrowing is invisible to call sites already inside `tui/`).
+`clear`, `resolved_root_labels`, `is_submodule_path`.
 
 Headline metric for 14: **crate-wide trivial-accessor count** (reported by
-`count_app_methods.py`). App's count drops by 12 in 14 (5 App-local accessors
-+ 7 project_list pass-throughs surviving Phase 10) — 181 → 169 after Phase 14.
-Phase 14 also cleans the rest of the codebase to match the same rule.
+`count_app_methods.py`). App's count drops by ≤13 in 14 (5 App-local accessors
++ ≤7 project_list pass-throughs surviving Phase 10 + 1 Phase-13 ci shim)
+— **176 → ~163 after Phase 14** (live baseline; the prior plan's `181 → 169`
+was Phase-12-era and is stale). Phase 14 also cleans the rest of the codebase
+to match the same rule.
 
 ### Phase 15 — Relocate Group W static helpers to their data owners
 
@@ -1169,6 +1291,17 @@ to `RootItem` / `WorktreeGroup`. Either way, App's count is unchanged by
 the second hop — the count drop happened in Phase 11. Subtract 11 from
 Phase 15's "23" headline.
 
+**Relocation rule (precedent: Phase 12's `VisibleRow::collapse_anchor`).**
+For each helper of the form `fn helper(arg: &T, …) -> U`, the canonical home is
+`impl T` — the type whose argument is being indexed/inspected. For
+`worktree_*(item: &RootItem, wi: usize, …)`, the home is the type that
+indexes by `wi`: a method on `RootItem` or `WorktreeGroup` taking `wi` as a
+worktree index. **Decision: `impl WorktreeGroup`** — the helper bodies all
+match on `RootItem::Worktrees(WorktreeGroup::...)` and do nothing on the
+non-worktree branches; `WorktreeGroup` is the type that's actually being
+indexed by `wi`. Apply uniformly across all worktree helpers; don't mix-and-
+match per helper.
+
 **Worktree helpers** → `RootItem` / `WorktreeGroup` (already on `impl ProjectList` post-Phase-11):
 - `worktree_display_path`, `worktree_member_display_path`, `worktree_vendored_display_path`
 - `worktree_abs_path`, `worktree_member_abs_path`, `worktree_vendored_abs_path`
@@ -1182,18 +1315,23 @@ Phase 15's "23" headline.
 
 **Toast/tracker helpers** → their respective owners:
 - `running_items_for_toast` (`running_toasts.rs:41`) → `RunningTracker`
-- `tracked_items_for_startup`, `startup_remaining_toast_body`,
-  `startup_lint_toast_body_for` (`startup_phase/toast_bodies.rs`) → `Startup` (or
-  free functions in the `startup_phase` module)
+- `tracked_items_for_startup`, `startup_lint_toast_body_for`
+  (`startup_phase/toast_bodies.rs`) → `Startup` (or free functions in the
+  `startup_phase` module)
+- `startup_remaining_toast_body` — **already-resident**: extracted as a free
+  `pub(super) fn remaining_toast_body` in `toast_bodies.rs` during Phase 13
+  (drag-along when `Startup::*_toast_body` methods relocated). No Phase 15
+  action.
 
 **Diagnostic helpers** — relocate or leave:
 - `record_background_msg_kind`, `log_saturated_background_batch` (`async_tasks/poll.rs`):
   these are tracing/diagnostic helpers used inside `poll_background`. Either move to
   free functions in `poll.rs` (cleaner), or leave (low priority).
 
-**Navigation cursor helper:**
-- `collapse_anchor_row` (`navigation/movement.rs:5`) — `const fn` over a `VisibleRow`
-  arg. Move to `impl VisibleRow`.
+**Navigation cursor helper (already done in Phase 12):**
+- `collapse_anchor_row` was relocated to `impl VisibleRow::collapse_anchor` in
+  Phase 12 (its `VisibleRow → VisibleRow` body belongs on the indexed type).
+  No Phase 15 action.
 
 **Already-resident helpers (no Phase 15 action):**
 - `ProjectList::replace_roots_from` (introduced in Phase 2) is a static-helper-on-data-owner
@@ -1329,15 +1467,19 @@ sits.
 | 9 | trivial-accessor / pass-through delete: Startup | 2 | 26 | 245 ✅ |
 | **10** | **Delete `App::projects()` / `projects_mut()`** | **2** | **341 (261 read + 80 mut + 12 borrow-mode fixups)** | **243 ✅** |
 | **11** | **`project_list` absorption I — row-navigation read-side** | **26 (14 main + 11 helper statics + 1 test helper; 3 cross-subsystem stayed on App)** | **80** | **217 ✅** |
-| 12 | `project_list` absorption II — action methods (with `include_non_rust` arg threading) | ~27 (or 30 if Phase 12 picks up the 3 Phase 11 holdovers) | ~80 in `src/` plus ~50 in `tests/` | ~190 |
-| 13 | Non-`project_list` S relocations | 18 | ~95 | ~172 |
-| 14 | Recursive trivial-accessor purge (crate-wide + 5 App-local accessors + 7 project_list pass-throughs) | ~50–80 (crate-wide), 12 (App) | ~200 | ~160 |
-| 15 | Relocate Group W static helpers to their data owners (after 10) | 12 (was 23; 11 already off App since Phase 11) | ~50 | **~148** |
+| **12** | **`project_list` absorption II — action methods (with `include_non_rust` arg threading)** | **24 (19 main + 2 helper statics + 1 to `impl VisibleRow` + 2 ci holdovers; 3 Phase-11 holdovers reclassified as Group X)** | **~80 src + ~10 tests** | **193 ✅** |
+| **13** | **Non-`project_list` S relocations** | **17 (5 startup + 3 toasts + 2 scan + 2 net + 1 background + 1 inflight + 1 ci + 1 `handle_repo_meta` → `impl ProjectList` via plan-phase-review F5; 2 of plan's 18 reclassified as carryovers — `handle_git_first_commit`, `push_service_unavailable_toast` reclassified as X)** | **~30 src** | **176 ✅** |
+| 14 | Recursive trivial-accessor purge (crate-wide + 5 App-local accessors + ≤7 project_list pass-throughs after pre-flight grep + delete 3 empty placeholder modules + Phase-13 ci shim) | ~50–80 (crate-wide), ≤13 (App) | ~200 | ~163 |
+| 15 | Relocate Group W static helpers to their data owners (after 10) | ~11 (was 23; 11 off App since Phase 11; `collapse_anchor_row` off App since Phase 12) | ~50 | **~152** |
 
-**Net: 308 → 172 on App after Phase 13, → 160 after Phase 14, → 148 after Phase 15.**
+**Net: 308 → 176 on App after Phase 13, → ~163 after Phase 14, → ~152 after Phase 15.**
+Phase 12 came in 3 under plan (24 vs ~27); end-state slides from ~148 to
+~152, a 4-method drift from the original ~146 estimate (well within the
+±5/phase tolerance). The 3 Phase-12 carryovers (`build_selected_pane_data`,
+`ci_runs_for_display`, `selected_ci_runs`) are Group X and stay on App.
 Phase 11 over-delivered by 9 (planned ~17, actual 26) and Phase 15's headline
-removal drops by 11 (already done in Phase 11). End-state ~148 vs the
-original ~146 estimate — a 2-method drift, well within the ±5/phase tolerance.
+removal drops by 12 (11 helpers off App since Phase 11, `collapse_anchor_row`
+off App since Phase 12).
 Per review-finding C2, six methods (`expand_all`, `collapse_all`,
 `select_matching_visible_row`, `select_project_in_tree`,
 `expand_path_in_tree`, `collapse_to`) keep their S →

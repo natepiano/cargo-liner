@@ -137,7 +137,9 @@ impl App {
                 path,
                 stars,
                 description,
-            } => self.handle_repo_meta(path.as_path(), stars, description),
+            } => self
+                .project_list
+                .handle_repo_meta(path.as_path(), stars, description),
             BackgroundMsg::ScanResult {
                 projects,
                 disk_entries,
@@ -190,7 +192,8 @@ impl App {
                 target_dir,
                 bytes,
             } => {
-                self.handle_out_of_tree_target_size(&workspace_root, &target_dir, bytes);
+                self.scan
+                    .handle_out_of_tree_target_size(&workspace_root, &target_dir, bytes);
             },
         }
         false

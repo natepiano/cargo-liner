@@ -200,6 +200,50 @@ impl Scan {
     pub(super) const fn set_retry_spawn_mode(&mut self, mode: RetrySpawnMode) {
         self.retry_spawn_mode = mode;
     }
+
+    /// Does the workspace covering `project_path` need a re-fetch
+    /// before the confirm opens? True when the on-disk manifest
+    /// fingerprint differs from the stored metadata's fingerprint
+    /// (a `.cargo/config.toml` edit, a manifest save, etc.), OR when
+    /// no metadata covers `project_path` at all.
+    pub(super) fn should_verify_before_clean(&self, project_path: &AbsolutePath) -> bool {
+        let Ok(store) = self.metadata_store.lock() else {
+            return false;
+        };
+        let Some(workspace_root) = store.containing_workspace_root(project_path) else {
+            // No metadata covers this path — nothing to verify against.
+            return true;
+        };
+        let Some(metadata) = store.get(workspace_root) else {
+            return true;
+        };
+        let Ok(current) = crate::project::ManifestFingerprint::capture(workspace_root.as_path())
+        else {
+            return false;
+        };
+        current != metadata.fingerprint
+    }
+
+    /// Merge an out-of-tree target walk result into the metadata cache.
+    /// Declines when the cached metadata's `target_directory` has since been
+    /// redirected — a fresh walk is already in flight under the new dir.
+    pub(super) fn handle_out_of_tree_target_size(
+        &self,
+        workspace_root: &AbsolutePath,
+        target_dir: &AbsolutePath,
+        bytes: u64,
+    ) {
+        let Ok(mut store) = self.metadata_store.lock() else {
+            return;
+        };
+        if !store.set_out_of_tree_target_bytes(workspace_root, target_dir, bytes) {
+            tracing::debug!(
+                workspace_root = %workspace_root.as_path().display(),
+                target_dir = %target_dir.as_path().display(),
+                "out_of_tree_target_size_discarded_stale"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

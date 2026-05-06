@@ -240,7 +240,9 @@ fn new_toasts_do_not_steal_focus() {
     app.show_timed_toast("Settings", "Updated");
     assert_eq!(app.focus.current(), PaneId::Git);
 
-    let _task = app.start_task_toast("Startup lints", "Running startup lint jobs...");
+    let _task = app
+        .toasts
+        .start_task("Startup lints", "Running startup lint jobs...");
     assert_eq!(app.focus.current(), PaneId::Git);
 }
 

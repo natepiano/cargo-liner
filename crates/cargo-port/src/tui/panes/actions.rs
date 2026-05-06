@@ -267,7 +267,7 @@ fn handle_ci_fetch_more(app: &mut App) {
         oldest_created_at,
         kind,
     });
-    let task_id = app.start_task_toast("Fetching CI", &project_name);
+    let task_id = app.toasts.start_task("Fetching CI", &project_name);
     let item = TrackedItem {
         label:        project_name,
         key:          ci_path.into(),

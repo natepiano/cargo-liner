@@ -673,6 +673,24 @@ impl ToastManager {
             })
             .collect()
     }
+
+    pub fn focused_toast_id(&self) -> Option<u64> {
+        let active = self.active_now();
+        active.get(self.viewport.pos()).map(ToastView::id)
+    }
+
+    pub fn start_task(&mut self, title: impl Into<String>, body: impl Into<String>) -> ToastTaskId {
+        let task_id = self.push_task(title, body, 1);
+        let toast_len = self.active_now().len();
+        self.viewport.set_len(toast_len);
+        task_id
+    }
+
+    pub fn mark_tracked_item_completed(&mut self, task_id: ToastTaskId, key: &str) {
+        self.mark_item_completed(task_id, key);
+        let toast_len = self.active_now().len();
+        self.viewport.set_len(toast_len);
+    }
 }
 
 /// Compute the target (fully-revealed) height for a toast based on its

@@ -11,8 +11,6 @@ use crate::scan::BackgroundMsg;
 use crate::scan::FetchContext;
 use crate::scan::ProjectDetailRequest;
 use crate::tui::app::App;
-use crate::watcher::WatchRequest;
-use crate::watcher::WatcherMsg;
 
 impl App {
     /// Register file-system watchers for every item in the tree after a
@@ -21,32 +19,13 @@ impl App {
         let started = Instant::now();
         let mut count = 0usize;
         self.project_list.for_each_leaf(|item| {
-            self.register_item_background_services(item);
+            self.background.register_item_background_services(item);
             count += 1;
         });
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
             count,
             "register_background_services_for_tree"
-        );
-    }
-    pub(super) fn register_item_background_services(&self, item: &RootItem) {
-        let started = Instant::now();
-        let abs_path = AbsolutePath::from(item.path().to_path_buf());
-        let repo_root = project::git_repo_root(&abs_path);
-        let has_repo_root = repo_root.is_some();
-        let _ = self
-            .background
-            .send_watcher(WatcherMsg::Register(WatchRequest {
-                project_label: abs_path.to_string_lossy().to_string(),
-                abs_path: abs_path.clone(),
-                repo_root,
-            }));
-        tracing::info!(
-            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
-            path = %item.display_path(),
-            has_repo_root,
-            "app_register_project_background_services"
         );
     }
     pub(super) fn schedule_startup_project_details(&self) {

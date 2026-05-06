@@ -242,6 +242,6 @@ impl App {
         self.refresh_lint_runs_from_disk();
         self.net
             .set_force_github_rate_limit(self.config.current().debug.force_github_rate_limit);
-        self.spawn_rate_limit_prime();
+        self.net.spawn_rate_limit_prime();
     }
 }

@@ -28,7 +28,7 @@ impl App {
     }
     pub fn register_existing_projects(&self) {
         self.project_list.for_each_leaf(|item| {
-            self.register_item_background_services(item);
+            self.background.register_item_background_services(item);
         });
     }
     pub fn finish_watcher_registration_batch(&self) {

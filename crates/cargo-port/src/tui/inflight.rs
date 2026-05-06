@@ -108,6 +108,14 @@ impl Inflight {
     }
 
     pub(super) const fn example_output_is_empty(&self) -> bool { self.example_output.is_empty() }
+
+    pub(super) fn apply_example_progress(&mut self, line: String) {
+        if let Some(last) = self.example_output.last_mut() {
+            *last = line;
+        } else {
+            self.example_output.push(line);
+        }
+    }
 }
 
 #[cfg(test)]

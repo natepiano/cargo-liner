@@ -18,7 +18,7 @@ impl App {
     /// Resolve the currently focused pane into a dismiss target, if one exists.
     pub fn focused_dismiss_target(&self) -> Option<DismissTarget> {
         match self.focus.current() {
-            PaneId::Toasts => self.focused_toast_id().map(DismissTarget::Toast),
+            PaneId::Toasts => self.toasts.focused_toast_id().map(DismissTarget::Toast),
             PaneId::ProjectList => self
                 .project_list
                 .selected_row()

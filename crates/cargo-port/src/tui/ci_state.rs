@@ -142,6 +142,13 @@ impl Ci {
         self.display_modes.get(path).copied().unwrap_or_default()
     }
 
+    pub fn display_mode_label_for(&self, path: &Path) -> &'static str {
+        match self.display_mode_for(path) {
+            CiRunDisplayMode::BranchOnly => "branch",
+            CiRunDisplayMode::All => "all",
+        }
+    }
+
     pub fn set_display_mode(&mut self, path: AbsolutePath, mode: CiRunDisplayMode) {
         self.display_modes.insert(path, mode);
     }

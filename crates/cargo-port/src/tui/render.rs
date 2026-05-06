@@ -153,7 +153,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         outer_layout[0],
         &app.toasts.active_now(),
         app.focus.is(PaneId::Toasts),
-        app.focused_toast_id(),
+        app.toasts.focused_toast_id(),
     );
     app.toasts.set_hits(toast_result.hitboxes);
 

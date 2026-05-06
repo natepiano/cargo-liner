@@ -24,6 +24,7 @@ use super::running_tracker::RunningTracker;
 use crate::ci::OwnerRepo;
 use crate::http::GitHubRateLimit;
 use crate::http::HttpClient;
+use crate::http::ServiceKind;
 use crate::scan;
 use crate::scan::RepoCache;
 
@@ -222,8 +223,6 @@ impl Net {
     #[cfg(test)]
     pub const fn crates_io(&self) -> &CratesIo { &self.crates_io }
 
-    pub const fn crates_io_mut(&mut self) -> &mut CratesIo { &mut self.crates_io }
-
     pub const fn github_status(&self) -> AvailabilityStatus { self.github.availability.status() }
 
     /// Clear the GitHub sub-state on rescan: drop the repo-fetch
@@ -231,4 +230,31 @@ impl Net {
     /// fetches map + toast slot). Crates.io and the `HttpClient`
     /// keep their state across rescans.
     pub fn clear_for_tree_change(&mut self) { self.github.clear_for_tree_change(); }
+
+    pub(super) const fn availability_for(
+        &mut self,
+        service: ServiceKind,
+    ) -> &mut ServiceAvailability {
+        match service {
+            ServiceKind::GitHub => self.github.availability_mut(),
+            ServiceKind::CratesIo => self.crates_io.availability_mut(),
+        }
+    }
+
+    /// One-shot: hit GitHub's `/rate_limit` endpoint so the shared
+    /// rate-limit cache is populated before any real request. The endpoint
+    /// is quota-exempt, so this is safe to run even when GitHub is
+    /// refusing other calls. Logged via `rate_limit_prime_ok` /
+    /// `rate_limit_prime_failed`.
+    pub fn spawn_rate_limit_prime(&self) {
+        let client = self.http_client();
+        std::thread::spawn(move || {
+            let (rate_limit, _signal) = client.fetch_rate_limit();
+            if rate_limit.is_some() {
+                tracing::info!("rate_limit_prime_ok");
+            } else {
+                tracing::info!("rate_limit_prime_failed");
+            }
+        });
+    }
 }
