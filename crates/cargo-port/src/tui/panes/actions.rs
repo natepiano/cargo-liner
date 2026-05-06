@@ -35,7 +35,7 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
     };
     let entries = build_target_list_from_data(&targets_data);
     if let Some(entry) = entries.get(app.panes.targets().viewport().pos())
-        && let Some(abs_path) = app.selected_project_path()
+        && let Some(abs_path) = app.project_list.selected_project_path()
     {
         let package_name = app.panes.package().content().and_then(|d| {
             if d.title_name == "-" {
@@ -194,7 +194,11 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
         CiRunsAction::Activate => handle_ci_enter(app),
         CiRunsAction::FetchMore => handle_ci_fetch_more(app),
         CiRunsAction::ToggleView => {
-            if let Some(path) = app.selected_project_path().map(Path::to_path_buf) {
+            if let Some(path) = app
+                .project_list
+                .selected_project_path()
+                .map(Path::to_path_buf)
+            {
                 app.toggle_ci_display_mode_for(&path);
             }
         },
@@ -220,6 +224,7 @@ fn handle_ci_enter(app: &App) {
 
 fn handle_ci_fetch_more(app: &mut App) {
     let is_fetching = app
+        .project_list
         .selected_project_path()
         .is_some_and(|path| app.ci_is_fetching(path));
     if is_fetching {
@@ -229,6 +234,7 @@ fn handle_ci_fetch_more(app: &mut App) {
         return;
     };
     let project_name = app
+        .project_list
         .selected_project_path()
         .and_then(|path| {
             app.project_list
@@ -242,6 +248,7 @@ fn handle_ci_fetch_more(app: &mut App) {
     // would re-fetch older-than-filtered runs that are already cached on
     // other branches, returning zero "new" runs.
     let oldest_created_at = app
+        .project_list
         .selected_project_path()
         .and_then(|path| app.project_list.ci_info_for(path))
         .and_then(|info| info.runs.last().map(|r| r.created_at.clone()));
@@ -322,7 +329,11 @@ fn clear_lint_history(app: &mut App) {
     if !app.selected_row_owns_lint() {
         return;
     }
-    let Some(abs_path) = app.selected_project_path().map(Path::to_path_buf) else {
+    let Some(abs_path) = app
+        .project_list
+        .selected_project_path()
+        .map(Path::to_path_buf)
+    else {
         return;
     };
     let project_cache_dir = lint::project_dir(&abs_path);
@@ -341,7 +352,7 @@ fn open_lint_run_output(app: &App) {
     if !app.selected_row_owns_lint() {
         return;
     }
-    let Some(abs_path) = app.selected_project_path() else {
+    let Some(abs_path) = app.project_list.selected_project_path() else {
         return;
     };
     let Some(runs) = app.lint.content().map(|data| data.runs.as_slice()) else {

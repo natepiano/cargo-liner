@@ -30,7 +30,10 @@ fn collapse_all_anchors_member_selection_to_root() {
 
     app.collapse_all();
 
-    assert_eq!(app.selected_row(), Some(VisibleRow::Root { node_index: 0 }));
+    assert_eq!(
+        app.project_list.selected_row(),
+        Some(VisibleRow::Root { node_index: 0 })
+    );
 }
 
 #[test]
@@ -53,7 +56,10 @@ fn expand_all_preserves_selected_project_path() {
 
     app.expand_all();
 
-    assert_eq!(app.selected_project_path(), Some(member.path().as_path()));
+    assert_eq!(
+        app.project_list.selected_project_path(),
+        Some(member.path().as_path())
+    );
 }
 
 #[test]
@@ -455,7 +461,7 @@ fn project_change_resets_project_dependent_panes() {
             .selected_project
             .as_ref()
             .map(crate::project::AbsolutePath::as_path),
-        app.selected_project_path()
+        app.project_list.selected_project_path()
     );
 }
 

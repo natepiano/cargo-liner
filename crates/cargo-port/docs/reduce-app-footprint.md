@@ -764,6 +764,17 @@ the standard mechanic:
 - The "field publish" mechanic must check the field's actual visibility before assuming it's already `pub(super)`. Phases 11+ should explicitly verify `grep 'pub(super) project_list'` (or whichever field) at pre-flight.
 - Plan-stated caller-count estimates may run low by 20–200%. Phase 11/12/14 should re-baseline with `count_app_methods.py` and live `rg --count-matches` at phase start (Phase 11 already has this directive; Phase 12 has it; Phase 14 should add it).
 
+### Phase 10 Review
+
+- Phase 11: added missing section header (was running into Phase 10 retrospective without one). Added field-visibility pre-flight check; mandated `pub(super)` default for relocated methods. Split the 5 `selected_project_path_for_render` callers — render.rs (3) needs split-borrow inversion; interaction.rs (2) likely uses plain `app.project_list.selected_project_path()`. Added borrow-mode risk note for `selected_project_path` (37 sites). Promoted self-rewrite note to a per-method checklist (move body → rewrite `self.project_list.X` → `self.X` → `cargo check`).
+- Phase 12: added per-method audit pre-step for `include_non_rust` threading (need to thread top-down through internal call graph). Clarified that `ensure_visible_rows_cached` is *already* on `ProjectList` and is not relocated by Phase 12. Re-baselined estimate against Phase 10 actuals (Phase 10 ran 24% over plan; spot-survey suggests Phase 12 may run 30%+ under). Mandated `pub(super)` default visibility.
+- Phase 13: added `register_existing_projects` → `register_item_background_services` call-graph pre-flight check.
+- Phase 14: corrected `cached_fit_widths` Inventory entry — its body is `self.project_list.fit_widths()`, not `cached_fit_widths()`, so call-site rewrites are renames. Updated visibility-of-field claim — `project_list` was published in Phase 10, not Phase 1. Added re-baseline directive (count_app_methods.py + crate-wide `pub(super) const fn x(&self) -> &X { &self.x }` count).
+- Phase 15: added re-baseline directive for the `~50` site estimate; the `worktree_*` family may push actual to 80–120.
+- Phase summary table: Phase 14 cell label fixed to "5 App-local + 7 project_list pass-throughs" to match the body's breakdown.
+
+### Phase 11 — `project_list` absorption I (row-navigation read-side) ✅
+
 Relocate row-navigation single-subsystem read methods to `impl ProjectList`
 (post-Phase-2). These are pure queries over `ProjectList` state with no
 `include_non_rust` threading — the read-side commits as one bounded phase
@@ -784,19 +795,43 @@ because the work is project_list-side, not Scan-side.
 **Methods relocated:** ~17 + 1 test-only delete. **Caller rewrites:** ~80.
 
 **Pre-flight validate.** Re-run `count_app_methods.py` at phase start. Phases
-7/8/9 touched files in the same sprawl (`async_tasks/*`, `navigation/*`,
+7/8/9/10 touched files in the same sprawl (`async_tasks/*`, `navigation/*`,
 `tests/*`); some Phase 11 sites may have been moved. Confirm the live numbers
-before bulk rewrites.
+before bulk rewrites. Phase 10 also published `project_list` as `pub(super)`
+on App; verify with `grep 'pub(super) project_list' src/tui/app/mod.rs` before
+the bulk pass relies on the field being directly visible to callers.
+
+**Default visibility for relocated methods.** Mandate `pub(super)` on every
+method moved to `impl ProjectList` (the destination is `tui::project_list`,
+so `pub(super)` resolves to `tui` — visible to callers in `tui::app::*`,
+`tui::panes::*`, etc.). Phase 14's later visibility tightening pass already
+targets `pub(super)` for `ProjectList` methods; setting it correctly at
+relocation time avoids a redundant tighten-pass.
 
 **Render-path decision (post-Phase-1):** `tui/render.rs::dispatch_via_trait`,
 `render_lints_pane`, and `render_ci_pane` currently call
 `app.selected_project_path_for_render()` *before* split-borrowing. After Phase
-2, `selected_project_path` is a pure `ProjectList` query. **Phase 11 inverts
-the order in render.rs** (split-borrow first, then call
-`projects.selected_project_path()` on the borrowed `&ProjectList`). Inverting
-drops one App-level method (the shim wrapper) and avoids leaving a leftover
-trivial-accessor on App. 5 callers (3 in `render.rs`, 2 in `interaction.rs`)
-— bounded cost.
+2, `selected_project_path` is a pure `ProjectList` query. **Phase 11 splits
+the 5 callers by context.** The 3 render.rs sites (`dispatch_via_trait`,
+`render_lints_pane`, `render_ci_pane`) need order-inversion: split-borrow
+first, then call `projects.selected_project_path()` on the borrowed
+`&ProjectList`. The 2 `interaction.rs` sites likely live in normal `&mut App`
+methods where `app.project_list.selected_project_path()` works directly with
+no inversion. Inspect each at relocation time. Inverting drops one App-level
+method (the shim wrapper) and avoids leaving a leftover trivial-accessor on
+App.
+
+**Borrow-mode risk on `selected_project_path` (37 sites).** Phase 11's largest
+single relocation by call-site count. Many sites today are
+`if let Some(path) = self.selected_project_path() { … self.foo(path) }`;
+after relocation the LHS becomes `self.project_list.selected_project_path()`
+which borrows `&self.project_list`, then the RHS `self.foo(path)` re-borrows
+`&self` — Rust's NLL usually allows this (LHS borrow ends at the `?`/`if let`
+binding), but if `path` is borrowed into the body and `self.foo` takes
+`&mut self`, the conflict fires. Audit the 37 sites: any RHS that takes
+`&mut self` while holding a `&ProjectList`-derived borrow needs the path to
+be cloned or the call sequence re-ordered. This is the same pattern that hit
+Phase 10's 12 borrow-mode fixups, scaled up.
 
 **Self-rewrite note for relocated bodies.** When a method like
 `selected_project_path` (today at `navigation/selection.rs:63`) calls
@@ -804,10 +839,50 @@ trivial-accessor on App. 5 callers (3 in `render.rs`, 2 in `interaction.rs`)
 into `self.project_list.X` while it still lives on App. When Phase 11 moves the
 method body to `impl ProjectList`, the body must be re-rewritten: the new
 `self: &ProjectList` reads `self.X` directly, not `self.project_list.X`.
-Apply this transformation per-method during the relocation; it's mechanical
-but easy to miss.
+Add this to the per-method relocation checklist:
 
-### Phase 12 — `project_list` absorption II (action methods + `include_non_rust` threading)
+1. Move method body to `impl ProjectList` with `pub(super)` visibility.
+2. `sed`-equivalent rewrite of the body's `self.project_list.` → `self.`.
+3. Update any internal `self.X(...)` calls that referenced now-moved
+   methods to use the local-impl form.
+4. Run `cargo check` after each method to catch remaining mismatches.
+
+#### Retrospective
+
+**What worked:**
+- Pre-flight verification of `pub(super) project_list` field paid off — the bulk regex was ready to compile cleanly against the field rather than a method. No Phase-10-style "private field" surprise.
+- Single-shot append of new `impl ProjectList` block at end of `src/tui/project_list.rs` plus delete-from-originals plus bulk perl rewrite kept the diff coherent and reviewable.
+- No borrow-mode fixups required at the 37 `selected_project_path` call sites. Return type stayed `Option<&Path>`; callers either converted to owned (`AbsolutePath::from`, `Path::to_path_buf`) or used the borrow inside the same statement.
+
+**What deviated from the plan:**
+- **3 of the 17 methods stayed on App, not relocated.** `build_selected_pane_data` calls `tui::panes::build_pane_data(self, item)` which requires `&App`. `latest_ci_run_for_path` and `ci_runs_for_display_inner` call `self.ci_display_mode_for(path)` which reads `self.ci`. None are pure `ProjectList` queries; relocating them would force restructuring `tui::panes::build_pane_data` (drop `&App` arg) or threading `CiRunDisplayMode` through ProjectList — both are bigger structural moves than Phase 11 named.
+- **11 helper static methods relocated alongside the main 14.** `worktree_*_path_ref`/`worktree_*_display_path`/`worktree_*_abs_path` (9 helpers in `navigation/worktree_paths.rs`) plus `member_path_ref`/`vendored_path_ref` (2 helpers in `navigation/selection.rs`) are called via `Self::xxx` from inside the relocated methods. They had to move to `impl ProjectList` so the `Self::` calls keep resolving. All 11 are `pub(super)` on ProjectList (one — `worktree_path_ref` — is also called externally by `App::clean_selection`, which now uses `ProjectList::worktree_path_ref(...)`).
+- App count dropped 243 → 217 (delta **26**, vs the planned ~17). The extra 9 came from the helper statics and 1 from `set_projects`.
+
+**Surprises:**
+- Clippy `too_many_lines` fired in two places after `cargo +nightly fmt --all` — not from the relocations themselves but from fmt expanding longer chains. `display_path_for_row` (101 lines) was fixed by promoting an inline `use crate::project::DisplayPath;` into a module-level import. `build_pane_data_common` in `panes/support.rs` (105 lines) was fixed by introducing `let pl = &app.project_list;` and using `pl` in place of `app.project_list` across 6 call sites — fmt was wrapping `app\n    .project_list\n    .X` chains across multiple lines.
+- Multi-line caller patterns (`expr\n        .selected_project_path()`) were missed by the first single-line perl regex pass and required a second pass with `perl -0pe` and `(\s*\n\s*)` capture group. ~8 sites fell into this category.
+
+**Implications for remaining phases:**
+- **Phase 12 must reckon with the 3 cross-subsystem methods that stayed on App.** Phase 12 is the action-methods phase; if Phase 12 wants those 3 methods relocated, it must either restructure `tui::panes::build_pane_data` (~5 callers) to not take `&App`, or thread `CiRunDisplayMode` through new ProjectList method signatures. Otherwise leave them on App and update the inventory.
+- **Helper-static cascade is now a pattern.** When relocating a method that calls `Self::xxx` static helpers, the helpers must move too. Phase 12's `collapse_to`/`collapse_row` action methods may pull in similar helpers — pre-audit `Self::` calls inside each before sizing.
+- **`pl = &app.project_list` rebind shortens long chains.** Useful where chains push functions over `too_many_lines`. Phase 12's heavier action-method bodies may need this routinely.
+- **App count is 217 with 26 removed (vs ~17 planned).** Re-baseline Phase 12: subtract 9 from any "expected after Phase 12" estimates that assumed Phase 11 would only remove 17.
+
+#### Phase 11 Review
+
+- F1 — Phase summary table updated: Phase 11 row now `26 | 80 | 217 ✅`; downstream "App after" cells re-baselined (12 → ~190, 13 → ~172, 14 → ~160, 15 → ~148). End-state ~148 vs original ~146 estimate.
+- F2 — Phase 15 inventory updated: 11 worktree/member/vendored helpers already on `impl ProjectList` post-Phase-11; Phase 15 either drops them or moves them a second hop. Phase 15 headline removal dropped from 23 → 12.
+- F3 — Phase 12 added "Phase 11 holdover" note for the 3 cross-subsystem methods (`build_selected_pane_data`, `latest_ci_run_for_path`, `ci_runs_for_display_inner`) with options A/B/C for restructuring vs reclassifying.
+- F4 — Phase 15 "Already-resident helpers" updated to drop the deleted `App::set_projects` shim from the caller list.
+- F5 — Phase 12 added helper-static cascade pre-audit step (grep `Self::` in each candidate body before sizing).
+- F6 — Phase 12 added validation-order rule: `cargo +nightly fmt` BEFORE clippy, with two named fix patterns for `clippy::too_many_lines`.
+- F7 — Phase 14 dropped the stale `mod.rs:704–727` line range; re-grep at phase start.
+- F8 — Phase 12 caller-rewrite line reframed to highlight tests/ as the load-bearing chunk and refine `src/` estimate to ~80.
+- F9 — Phase 12 "Default visibility" paragraph extended with explicit "external `Self::xxx` callers must rewrite to `ProjectList::xxx(...)`" note (Phase 11 hit this once at `App::clean_selection`).
+- F10 — Final-count targets recomputed in summary table per F1; will need a second pass once F2/F3 architectural choices are decided.
+
+ — `project_list` absorption II (action methods + `include_non_rust` threading)
 
 Relocate the remaining `project_list` S methods (mutating, expansion-affecting,
 or threaded through `include_non_rust`): `expand_all`, `collapse_all`,
@@ -822,12 +897,60 @@ or threaded through `include_non_rust`): `expand_all`, `collapse_all`,
 (`register_existing_projects` stays on App as Group X — it touches `project_list`
 and `background` together when registering new items' watchers.)
 
-**Methods relocated:** ~27. **Caller rewrites:** ~120 in `src/` plus ~50 in
-`tests/` (the `include_non_rust` flag must be passed at every test call site of
-the threaded methods — `tests/rows.rs`, `tests/panes.rs`, `tests/worktrees.rs`,
-`tests/mod.rs`). Re-run `count_app_methods.py` at phase start — Phase 2's
-absorbed-Selection rewrites (38 files / +536/-316) absorbed several call sites
-the original estimate counted twice; the live number may be lower.
+**Methods relocated:** ~27. **Caller rewrites:** ~80 in `src/` plus ~50 in
+`tests/`. The `tests/` count is load-bearing — each test site of an
+`include_non_rust`-threaded method gets a new bool arg, and that's where
+the work concentrates, not in the call-site count. The `src/` chunk sits
+around 80 (Phase 10's actuals ran high at 341, but Phase 11's 80 came in
+on plan; Phase 12's spot-survey of the 13 highest-fanout targets puts the
+live total closer to ~70–100). Re-run `count_app_methods.py` and
+`rg --count-matches` for each method at phase start; if the live `src/`
+total is materially below 80, scope the phase off the
+live number, not the plan estimate. Phase 2's absorbed-Selection rewrites (38
+files / +536/-316) absorbed several call sites the original estimate counted
+twice.
+
+**Default visibility for relocated methods.** Same as Phase 11: `pub(super)`
+on every method moved to `impl ProjectList`. The destination resolves to
+`tui::project_list`, so `pub(super)` covers callers in `tui::app::*` and
+`tui::panes::*`. External `Self::xxx` callers (i.e. callers outside the
+relocated method's source file that referenced an App-static helper) must
+rewrite to `ProjectList::xxx(...)`. Phase 11 hit this once at
+`App::clean_selection`.
+
+**Phase 11 holdover — 3 cross-subsystem methods stayed on App.**
+`build_selected_pane_data` (calls `tui::panes::build_pane_data(&App, …)`),
+`latest_ci_run_for_path`, and `ci_runs_for_display_inner` (both call
+`self.ci_display_mode_for(path)` which reads `self.ci`) were on the Phase 11
+list but did not relocate — none are pure ProjectList queries. Phase 12
+must pick one of:
+- **(A)** Restructure `tui::panes::build_pane_data` and friends (5 callers
+  in `panes/support.rs:1270–1334`) to take `&ProjectList` + auxiliary args
+  instead of `&App`, then move `build_selected_pane_data` to `impl ProjectList`.
+- **(B)** Add `display_mode: CiRunDisplayMode` parameter to
+  `latest_ci_run_for_path` / `ci_runs_for_display_inner`, then move; thin
+  App shims read `self.ci.display_mode_for(path)` and forward.
+- **(C)** Reclassify all 3 as Group X (cross-subsystem) and update inventory
+  + final count. App stays at +3 vs the Phase 11 plan estimate.
+
+**Helper-static cascade pre-audit.** Phase 11 pulled 11 `Self::worktree_*` /
+`Self::member_path_ref` / `Self::vendored_path_ref` helpers into
+`impl ProjectList` because the relocated bodies called them via `Self::`.
+Phase 12 candidates likely to drag callees similarly: `collapse_to` (calls
+`Self::xxx`?), `expand_path_in_tree`, `migrate_legacy_root_expansions`.
+For each Phase 12 method, grep the body for `Self::` before sizing — pull
+the helpers in alongside, or restructure if the helper has cross-subsystem
+internals.
+
+**Validation order: clippy AFTER fmt.** Phase 11 hit `clippy::too_many_lines`
+at two sites (`display_path_for_row`, `build_pane_data_common`) only after
+`cargo +nightly fmt --all` expanded `app.project_list.X` chains across more
+lines. Always: `cargo +nightly fmt --all` → `cargo clippy …`. The fix
+patterns are:
+1. Inline `use crate::project::Foo;` inside a function body adds 1 line —
+   promote to module-level import.
+2. `let pl = &app.project_list;` + use `pl` everywhere shortens the chains
+   enough that fmt collapses them onto fewer lines.
 
 **Pattern from Phase 2:** the relocated methods that walk projects while
 mutating `expanded` (e.g. `expand_path_in_tree`, `select_project_in_tree`,
@@ -839,11 +962,11 @@ mutating `expanded` (e.g. `expand_path_in_tree`, `select_project_in_tree`,
 **`include_non_rust` parameter threading.** Per review-finding C2, eight
 methods (`expand_all`, `collapse_all`, `collapse_row`, `collapse`,
 `select_matching_visible_row`, `select_project_in_tree`, `expand_path_in_tree`,
-`collapse_to`) plus `ensure_visible_rows_cached` currently read
-`self.config().include_non_rust()` to decide whether to filter non-Rust rows.
-To keep them on `ProjectList` as S relocations rather than X cross-subsystem,
-change their signatures to take `include_non_rust: bool` as an argument; each
-App-side caller extracts the value from config first:
+`collapse_to`) currently read `self.config().include_non_rust()` to decide
+whether to filter non-Rust rows. To keep them on `ProjectList` as S
+relocations rather than X cross-subsystem, change their signatures to take
+`include_non_rust: bool` as an argument; each App-side caller extracts the
+value from config first:
 
 ```rust
 let include_non_rust = app.config.current().tui.include_non_rust.includes_non_rust();
@@ -852,6 +975,25 @@ app.project_list.expand_all(include_non_rust);
 
 The flag is small and stable (it changes only on config save). Threading it
 explicitly is cleaner than coupling `ProjectList` to `Config`.
+
+**`ensure_visible_rows_cached` clarification.** This method is *already* on
+`ProjectList` (`src/tui/project_list.rs`, takes a `&CargoPortConfig`
+internally to read `include_non_rust`). It is not relocated by Phase 12. Its
+config read is internal to the `ProjectList` helper and stays as-is — the
+plan does not change it.
+
+**Pre-flight per-method audit.** Before threading the `include_non_rust`
+parameter, grep each of the 8 methods' bodies for *internal* calls to other
+methods on the same list. Example: `expand_all` may call `collapse_all` or
+`select_matching_visible_row` internally; once those callees take a new
+parameter, the caller's body must be updated to pass it through. Without this
+audit, the bulk-rewrite hits the external call sites cleanly but leaves
+internal call sites broken (compile error). Capture the call graph as a
+pre-flight artifact, then thread top-down.
+
+**Per-method body self-rewrite.** Same checklist as Phase 11: after
+relocation, rewrite the body's `self.project_list.X` references to `self.X`
+and run `cargo check` per-method.
 
 After Phases 7 and 8, ProjectList absorbs the navigation/data layer it
 conceptually owned all along. The `impl App` block in `tui/app/navigation/*`
@@ -873,7 +1015,7 @@ Relocate the remaining S methods to their owning subsystems:
   net+background+scan and dispatch across every BackgroundMsg variant respectively.)
 - → `net` (2): `availability_for`, `spawn_rate_limit_prime`.
 - → `background` (1): `register_item_background_services`. (`finish_watcher_registration_batch`
-  is a P-category one-line shim handled in the Phase 4–9 trivial-accessor / pass-through sweep, not an S relocation.)
+  is a P-category one-line shim handled in the Phase 4–9 trivial-accessor / pass-through sweep, not an S relocation.) **Pre-flight call-graph check:** verify whether `register_existing_projects` (Group X, stays on App) calls `register_item_background_services` — if so, the X method's body needs to call `app.background.register_item_background_services(...)` after the relocation. 30-second `grep` confirmation, not a re-design.
 - → `inflight` (1): `apply_example_progress`.
 - → `ci` (1): `ci_display_mode_label_for_inner`.
 
@@ -917,11 +1059,13 @@ and delete the accessor:
 
 **Project-list pass-throughs surviving Phase 10** (surfaced by Phase 9 review).
 Phase 10 only deletes `projects()` / `projects_mut()`. Seven other
-trivial pass-throughs to `project_list` survive at `mod.rs:704–727` and need
+trivial pass-throughs to `project_list` survive in `app/mod.rs` and need
 deletion via the same field-already-published mechanic (`project_list` is
-`pub(super)` since Phase 1):
+`pub(super)` since Phase 10). Re-grep at phase start — Phase 11 edits
+shifted line numbers; the seven names below are authoritative, not the
+range:
 
-- `cached_fit_widths` → `&self.project_list.cached_fit_widths()` shim. Inline.
+- `cached_fit_widths` → `&self.project_list.fit_widths()` shim (App accessor renames the underlying method). Inline; rewrite **renames** — `app.cached_fit_widths()` → `app.project_list.fit_widths()`, not `cached_fit_widths()`.
 - `cached_root_sorted` → `&self.project_list.cached_root_sorted()` shim. Inline.
 - `cached_child_sorted` → `&self.project_list.cached_child_sorted()` shim. Inline.
 - `expanded`, `expanded_mut` → `self.project_list.expanded()` /
@@ -946,8 +1090,14 @@ start that:
    recursive purge.
 3. Adds any newly-found accessors to the deletion list before the
    field-publish pass begins.
+4. Re-baselines the headline counts: run `count_app_methods.py` plus
+   `rg --count-matches 'pub(super) const fn .* -> &.* \{ &self\.'`
+   crate-wide. Phase 10's actuals ran 24% over plan; Phase 12 may run
+   30%+ under. The plan's `~50–80 crate-wide` and `~200 caller rewrites`
+   numbers may be stale by ±50%. Scope the phase off the live numbers.
 
-The 5 App-local accessors above are the *known* candidates from prior
+The 12 App-local accessors above (5 owned-field + 7 project_list
+pass-throughs surviving Phase 10) are the *known* candidates from prior
 phases; the inventory pass may surface more.
 
 **Visibility tightening on relocated types.** Phase 2 moved `ProjectList` from
@@ -976,16 +1126,24 @@ They're declared in `impl App` for convenience but they're really utility
 functions over `RootItem` / `WorktreeGroup` / iterators. Move each to its
 data owner.
 
-**Worktree helpers** → `RootItem` / `WorktreeGroup`:
+**Phase 11 update.** 11 of the helpers below were relocated from `impl App`
+to `impl ProjectList` in Phase 11 (cascade because relocated navigation
+methods called them via `Self::`). Phase 15 either drops them (already off
+App; `impl ProjectList` is a fine resting place) or moves them a second hop
+to `RootItem` / `WorktreeGroup`. Either way, App's count is unchanged by
+the second hop — the count drop happened in Phase 11. Subtract 11 from
+Phase 15's "23" headline.
+
+**Worktree helpers** → `RootItem` / `WorktreeGroup` (already on `impl ProjectList` post-Phase-11):
 - `worktree_display_path`, `worktree_member_display_path`, `worktree_vendored_display_path`
 - `worktree_abs_path`, `worktree_member_abs_path`, `worktree_vendored_abs_path`
 - `worktree_path_ref`, `worktree_member_path_ref`, `worktree_vendored_path_ref`
-- `unique_item_paths` (`mod.rs:527`) → `RootItem`
+- `unique_item_paths` (`mod.rs:527`) → `RootItem` (still on App)
 
 **Member/vendored helpers** → `RustProject` / `Workspace` / `Package`:
 - `resolve_member`, `resolve_vendored`, `worktree_member_ref`, `worktree_vendored_ref`
-  (`navigation/pane_data.rs`) → `RootItem` or `WorktreeGroup`
-- `member_path_ref`, `vendored_path_ref` (`navigation/selection.rs`) → `RootItem`
+  (`navigation/pane_data.rs`) → `RootItem` or `WorktreeGroup` (still on App)
+- `member_path_ref`, `vendored_path_ref` — already on `impl ProjectList` post-Phase-11.
 
 **Toast/tracker helpers** → their respective owners:
 - `running_items_for_toast` (`running_toasts.rs:41`) → `RunningTracker`
@@ -1004,13 +1162,19 @@ data owner.
 
 **Already-resident helpers (no Phase 15 action):**
 - `ProjectList::replace_roots_from` (introduced in Phase 2) is a static-helper-on-data-owner
-  that already lives on `ProjectList`. Called by `App::set_projects` (test-only) and
-  `TreeMutation::replace_all`. Listed here so future passes don't relitigate moving it.
+  that already lives on `ProjectList`. After Phase 11, called by
+  `TreeMutation::replace_all` and the lone test caller in `interaction.rs` directly
+  (the `App::set_projects` shim was deleted in Phase 11). Listed here so future passes
+  don't relitigate moving it.
 
 **Methods removed from App:** ~23. **Caller rewrites:** mostly `Self::foo(...)` →
-`Type::foo(...)` plus method-call form where it makes sense (~50 sites total).
+`Type::foo(...)` plus method-call form where it makes sense. Plan estimate ~50
+sites; the `worktree_*` family in particular is heavily used in
+`navigation/pane_data.rs`, `dismiss.rs`, and `panes/system.rs`, so the actual
+number could land 80–120. Re-baseline at phase start with `rg --count-matches`
+per helper.
 
-After 15, App's method count drops from 179 → **~156** (exact: 179 − 23 = 156).
+After 15, App's method count drops from 169 → **146** (exact: 169 − 23 = 146).
 Group W's instance methods that genuinely belong on App (`set_confirm`,
 `confirm`, `take_confirm`, `build_worktree_detail`) stay.
 
@@ -1129,13 +1293,16 @@ sits.
 | 8 | trivial-accessor / pass-through delete: Scan | 7 | ~95 | 247 ✅ |
 | 9 | trivial-accessor / pass-through delete: Startup | 2 | 26 | 245 ✅ |
 | **10** | **Delete `App::projects()` / `projects_mut()`** | **2** | **341 (261 read + 80 mut + 12 borrow-mode fixups)** | **243 ✅** |
-| 11 | `project_list` absorption I — row-navigation read-side | ~17 | ~85 | 226 |
-| 12 | `project_list` absorption II — action methods (with `include_non_rust` arg threading) | ~27 | ~170 | 199 |
-| 13 | Non-`project_list` S relocations | 18 | ~95 | 181 |
-| 14 | Recursive trivial-accessor purge (crate-wide + 12 App-local accessors) | ~50–80 (crate-wide), 12 (App) | ~200 | 169 |
-| 15 | Relocate Group W static helpers to their data owners (after 10) | 23 | ~50 | **146** |
+| **11** | **`project_list` absorption I — row-navigation read-side** | **26 (14 main + 11 helper statics + 1 test helper; 3 cross-subsystem stayed on App)** | **80** | **217 ✅** |
+| 12 | `project_list` absorption II — action methods (with `include_non_rust` arg threading) | ~27 (or 30 if Phase 12 picks up the 3 Phase 11 holdovers) | ~80 in `src/` plus ~50 in `tests/` | ~190 |
+| 13 | Non-`project_list` S relocations | 18 | ~95 | ~172 |
+| 14 | Recursive trivial-accessor purge (crate-wide + 5 App-local accessors + 7 project_list pass-throughs) | ~50–80 (crate-wide), 12 (App) | ~200 | ~160 |
+| 15 | Relocate Group W static helpers to their data owners (after 10) | 12 (was 23; 11 already off App since Phase 11) | ~50 | **~148** |
 
-**Net: 308 → 181 on App after Phase 13, → 169 after Phase 14, → 146 after Phase 15.**
+**Net: 308 → 172 on App after Phase 13, → 160 after Phase 14, → 148 after Phase 15.**
+Phase 11 over-delivered by 9 (planned ~17, actual 26) and Phase 15's headline
+removal drops by 11 (already done in Phase 11). End-state ~148 vs the
+original ~146 estimate — a 2-method drift, well within the ±5/phase tolerance.
 Per review-finding C2, six methods (`expand_all`, `collapse_all`,
 `select_matching_visible_row`, `select_project_in_tree`,
 `expand_path_in_tree`, `collapse_to`) keep their S →

@@ -102,7 +102,9 @@ fn linked_worktree_entry_builds_detail_for_selected_row() {
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.selected_project_path().map(Path::to_path_buf),
+        app.project_list
+            .selected_project_path()
+            .map(Path::to_path_buf),
         Some(linked_ws.path().to_path_buf())
     );
     assert_eq!(

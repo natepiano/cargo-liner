@@ -272,7 +272,7 @@ impl App {
     /// Declared in `mod.rs` (not `lint.rs`) so `pub(super)` reaches
     /// `tui` and satisfies the caller in `tui/panes/actions.rs`.
     pub(super) fn selected_row_owns_lint(&self) -> bool {
-        match self.selected_row() {
+        match self.project_list.selected_row() {
             Some(
                 VisibleRow::Root { .. }
                 | VisibleRow::WorktreeEntry { .. }
@@ -422,13 +422,14 @@ impl App {
     }
 
     pub(super) fn selected_ci_path(&self) -> Option<AbsolutePath> {
-        let path = self.selected_project_path()?;
+        let path = self.project_list.selected_project_path()?;
         let entry = self.project_list.entry_containing(path)?;
         Some(entry.item.path().clone())
     }
 
     pub(super) fn selected_ci_runs(&self) -> Vec<CiRun> {
-        self.selected_project_path()
+        self.project_list
+            .selected_project_path()
             .map_or_else(Vec::new, |path| self.ci_runs_for_display(path))
     }
 
@@ -445,11 +446,13 @@ impl App {
     }
 
     pub(super) fn ci_is_fetching(&self, path: &Path) -> bool {
-        self.project_list.entry_containing(path).is_some_and(|entry| {
-            self.ci
-                .fetch_tracker()
-                .is_fetching(entry.item.path().as_path())
-        })
+        self.project_list
+            .entry_containing(path)
+            .is_some_and(|entry| {
+                self.ci
+                    .fetch_tracker()
+                    .is_fetching(entry.item.path().as_path())
+            })
     }
 
     /// All absolute paths for a `RootItem` (root + worktrees).
@@ -612,7 +615,8 @@ impl App {
     }
 
     pub(super) fn selected_project_is_deleted(&self) -> bool {
-        self.selected_project_path()
+        self.project_list
+            .selected_project_path()
             .is_some_and(|path| self.project_list.is_deleted(path))
     }
 
@@ -686,7 +690,7 @@ impl App {
     /// a path), so panes can't recompute it from disjoint borrows
     /// after the dispatcher has split them.
     pub(super) fn selected_project_path_for_render(&self) -> Option<&Path> {
-        self.selected_project_path()
+        self.project_list.selected_project_path()
     }
 
     pub(super) const fn mouse_pos(&self) -> Option<Position> { self.mouse_pos }
@@ -717,10 +721,6 @@ impl App {
     pub(super) const fn finder(&self) -> &FinderState { self.project_list.finder() }
 
     pub(super) const fn finder_mut(&mut self) -> &mut FinderState { self.project_list.finder_mut() }
-
-    pub(super) const fn last_selected_path(&self) -> Option<&AbsolutePath> {
-        self.project_list.paths().last_selected.as_ref()
-    }
 
     #[cfg(test)]
     pub(super) fn set_confirm(&mut self, action: ConfirmAction) { self.confirm = Some(action); }
@@ -847,17 +847,12 @@ impl App {
 
     pub(super) const fn take_confirm(&mut self) -> Option<ConfirmAction> { self.confirm.take() }
 
-    #[cfg(test)]
-    pub(super) fn set_projects(&mut self, projects: ProjectList) {
-        self.project_list.replace_roots_from(projects);
-    }
-
     pub(super) fn dismiss_target_for_row(&self, row: VisibleRow) -> Option<DismissTarget> {
-        self.dismiss_target_for_row_inner(row)
+        self.project_list.dismiss_target_for_row_inner(row)
     }
 
     pub(super) fn owner_repo_for_path(&self, path: &Path) -> Option<OwnerRepo> {
-        self.owner_repo_for_path_inner(path)
+        self.project_list.owner_repo_for_path_inner(path)
     }
 
     pub(super) fn ci_display_mode_label_for(&self, path: &Path) -> &'static str {
@@ -865,7 +860,7 @@ impl App {
     }
 
     pub(super) fn ci_toggle_available_for(&self, path: &Path) -> bool {
-        self.ci_toggle_available_for_inner(path)
+        self.project_list.ci_toggle_available_for_inner(path)
     }
 
     pub(super) fn toggle_ci_display_mode_for(&mut self, path: &Path) {
@@ -948,13 +943,16 @@ impl App {
         match panes::behavior(pane) {
             PaneBehavior::ProjectList => true,
             PaneBehavior::DetailFields => match pane {
-                PaneId::Package => self.selected_project_path().is_some(),
-                PaneId::Lang => self.selected_project_path().is_some_and(|path| {
-                    self.project_list
-                        .at_path(path)
-                        .and_then(|p| p.language_stats.as_ref())
-                        .is_some_and(|ls| !ls.entries.is_empty())
-                }),
+                PaneId::Package => self.project_list.selected_project_path().is_some(),
+                PaneId::Lang => self
+                    .project_list
+                    .selected_project_path()
+                    .is_some_and(|path| {
+                        self.project_list
+                            .at_path(path)
+                            .and_then(|p| p.language_stats.as_ref())
+                            .is_some_and(|ls| !ls.entries.is_empty())
+                    }),
                 PaneId::Git => self.panes.git().content().is_some_and(|g| {
                     g.branch.is_some() || !g.remotes.is_empty() || !g.worktrees.is_empty()
                 }),

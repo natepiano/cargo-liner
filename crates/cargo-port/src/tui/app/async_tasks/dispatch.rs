@@ -53,6 +53,7 @@ impl App {
         // Apply tree (same as apply_tree_build but inlined to avoid redundant
         // rebuild scheduling).
         let selected_path = self
+            .project_list
             .selected_project_path()
             .map(AbsolutePath::from)
             .or_else(|| self.project_list.paths_mut().last_selected.clone());

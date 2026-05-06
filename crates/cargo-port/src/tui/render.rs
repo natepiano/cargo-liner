@@ -545,6 +545,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // heuristic disabled Clean on WorktreeEntry rows.
     let clean_enabled = app.clean_selection().is_some();
     let clear_lint_action = app
+        .project_list
         .selected_project_path()
         .and_then(|path| app.lint_at_path(path))
         .filter(|lr| !lr.runs().is_empty())

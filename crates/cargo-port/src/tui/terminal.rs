@@ -304,7 +304,7 @@ fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> (usize, Dur
 
 fn flush_deferred_selection(app: &mut App) {
     if app.project_list.sync().is_changed()
-        && let Some(path) = app.last_selected_path()
+        && let Some(path) = app.project_list.last_selected_path()
     {
         save_last_selected(path);
         app.project_list.mark_sync_stable();
@@ -313,7 +313,7 @@ fn flush_deferred_selection(app: &mut App) {
 
 fn flush_pending_selection(app: &App) {
     if app.project_list.sync().is_changed()
-        && let Some(path) = app.last_selected_path()
+        && let Some(path) = app.project_list.last_selected_path()
     {
         save_last_selected(path);
     }

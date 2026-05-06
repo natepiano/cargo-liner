@@ -38,7 +38,7 @@ impl App {
     /// inputs to `build_selected_pane_data`, so a matching stamp means the
     /// stored detail is still correct.
     pub fn ensure_detail_cached(&mut self) {
-        let desired = self.selected_row().map(|row| DetailCacheKey {
+        let desired = self.project_list.selected_row().map(|row| DetailCacheKey {
             row,
             generation: self.scan.generation(),
         });

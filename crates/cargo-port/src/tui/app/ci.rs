@@ -6,7 +6,6 @@ use super::App;
 use super::types::CiRunDisplayMode;
 use crate::ci;
 use crate::ci::CiRun;
-use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
@@ -16,13 +15,6 @@ use crate::scan::CiFetchResult;
 use crate::tui::panes::CiFetchKind;
 
 impl App {
-    pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<OwnerRepo> {
-        let entry_path = self.project_list.entry_containing(path)?.item.path().clone();
-        self.project_list
-            .primary_url_for(entry_path.as_path())
-            .and_then(ci::parse_owner_repo)
-    }
-
     /// Insert CI runs from the initial scan for the entry containing `path`.
     pub(super) fn insert_ci_runs(&mut self, path: &Path, runs: Vec<CiRun>, github_total: u32) {
         let exhausted = self
@@ -129,7 +121,7 @@ impl App {
         };
 
         self.ci.viewport_mut().set_pos(merged.len());
-        if let Some(repo) = self.owner_repo_for_path_inner(&abs) {
+        if let Some(repo) = self.project_list.owner_repo_for_path_inner(&abs) {
             let meta = scan::load_cached_repo_data(self.net.github().fetch_cache(), &repo)
                 .and_then(|cached| cached.meta);
             scan::store_cached_repo_data(
@@ -165,16 +157,8 @@ impl App {
         }
     }
 
-    fn current_branch_for(&self, path: &Path) -> Option<&str> {
-        self.project_list.git_info_for(path)?.branch.as_deref()
-    }
-
-    pub(super) fn ci_toggle_available_for_inner(&self, path: &Path) -> bool {
-        self.current_branch_for(path).is_some()
-    }
-
     pub(super) fn toggle_ci_display_mode_for_inner(&mut self, path: &Path) {
-        if !self.ci_toggle_available_for_inner(path) {
+        if !self.project_list.ci_toggle_available_for_inner(path) {
             self.ci.remove_display_mode(path);
             return;
         }
@@ -191,7 +175,7 @@ impl App {
         let Some(info) = self.project_list.ci_info_for(path) else {
             return Vec::new();
         };
-        let Some(branch) = self.current_branch_for(path) else {
+        let Some(branch) = self.project_list.current_branch_for(path) else {
             return info.runs.clone();
         };
         if self.ci_display_mode_for(path) == CiRunDisplayMode::All {
@@ -207,7 +191,7 @@ impl App {
     pub(super) fn latest_ci_run_for_path(&self, path: &Path) -> Option<&CiRun> {
         let info = self.project_list.ci_info_for(path)?;
         let runs = info.runs.as_slice();
-        let Some(branch) = self.current_branch_for(path) else {
+        let Some(branch) = self.project_list.current_branch_for(path) else {
             return runs.first();
         };
         if self.ci_display_mode_for(path) == CiRunDisplayMode::All {

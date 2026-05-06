@@ -19,6 +19,7 @@ impl App {
     #[cfg(test)]
     pub fn apply_tree_build(&mut self, projects: ProjectList) {
         let selected_path = self
+            .project_list
             .selected_project_path()
             .map(AbsolutePath::from)
             .or_else(|| self.project_list.paths_mut().last_selected.clone());

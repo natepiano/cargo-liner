@@ -13,7 +13,7 @@ impl App {
     /// Build per-pane data for the currently selected row, resolving through
     /// the `project_list_items` hierarchy.
     pub(super) fn build_selected_pane_data(&self) -> Option<DetailPaneData> {
-        let row = self.selected_row()?;
+        let row = self.project_list.selected_row()?;
         match row {
             VisibleRow::Root { node_index } => {
                 let item = self.project_list.get(node_index)?;

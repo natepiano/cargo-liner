@@ -1,12 +1,7 @@
-use std::path::Path;
-
 use super::App;
 use super::VisibleRow;
 use crate::project::AbsolutePath;
-use crate::project::ProjectFields;
-use crate::project::RootItem;
 use crate::project::Visibility::Dismissed;
-use crate::project::WorktreeGroup;
 use crate::tui::panes::PaneId;
 
 // ── Dismiss target ──────────────────────────────────────────────
@@ -21,73 +16,14 @@ pub enum DismissTarget {
 // ── Resolution + dispatch ───────────────────────────────────────
 
 impl App {
-    pub(super) fn dismiss_target_for_row_inner(&self, row: VisibleRow) -> Option<DismissTarget> {
-        let dismiss_path = match row {
-            VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => self
-                .project_list
-                .get(node_index)
-                .map(|item| item.path().clone()),
-            VisibleRow::Member { node_index, .. }
-            | VisibleRow::Vendored { node_index, .. }
-            | VisibleRow::Submodule { node_index, .. } => self
-                .project_list
-                .get(node_index)
-                .map(|item| item.path().clone()),
-            VisibleRow::WorktreeEntry {
-                node_index,
-                worktree_index,
-            }
-            | VisibleRow::WorktreeGroupHeader {
-                node_index,
-                worktree_index,
-                ..
-            }
-            | VisibleRow::WorktreeMember {
-                node_index,
-                worktree_index,
-                ..
-            }
-            | VisibleRow::WorktreeVendored {
-                node_index,
-                worktree_index,
-                ..
-            } => match &self.project_list.get(node_index)?.item {
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    if worktree_index == 0 {
-                        Some(primary.path().clone())
-                    } else {
-                        linked.get(worktree_index - 1).map(|ws| ws.path().clone())
-                    }
-                },
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => {
-                    if worktree_index == 0 {
-                        Some(primary.path().clone())
-                    } else {
-                        linked.get(worktree_index - 1).map(|pkg| pkg.path().clone())
-                    }
-                },
-                _ => None,
-            },
-        }?;
-
-        if self.project_list.is_deleted(&dismiss_path) {
-            Some(DismissTarget::DeletedProject(dismiss_path))
-        } else {
-            None
-        }
-    }
-
     /// Resolve the currently focused pane into a dismiss target, if one exists.
     pub fn focused_dismiss_target(&self) -> Option<DismissTarget> {
         match self.focus.current() {
             PaneId::Toasts => self.focused_toast_id().map(DismissTarget::Toast),
             PaneId::ProjectList => self
+                .project_list
                 .selected_row()
-                .and_then(|row| self.dismiss_target_for_row_inner(row)),
+                .and_then(|row| self.project_list.dismiss_target_for_row_inner(row)),
             _ => None,
         }
     }
@@ -97,7 +33,7 @@ impl App {
         match target {
             DismissTarget::Toast(id) => self.dismiss_toast(id),
             DismissTarget::DeletedProject(path) => {
-                let parent_node_index = self.worktree_parent_node_index(&path);
+                let parent_node_index = self.project_list.worktree_parent_node_index(&path);
                 if let Some(project) = self.project_list.at_path_mut(&path) {
                     project.visibility = Dismissed;
                 }
@@ -113,31 +49,6 @@ impl App {
                 }
             },
         }
-    }
-
-    /// If `path` is a worktree entry's project path, return the parent
-    /// node index so the selection can jump to the Root row after dismiss.
-    fn worktree_parent_node_index(&self, path: &Path) -> Option<usize> {
-        self.project_list
-            .iter()
-            .enumerate()
-            .find_map(|(ni, item)| match &item.item {
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    let has_match =
-                        primary.path() == path || linked.iter().any(|l| l.path() == path);
-                    has_match.then_some(ni)
-                },
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => {
-                    let has_match =
-                        primary.path() == path || linked.iter().any(|l| l.path() == path);
-                    has_match.then_some(ni)
-                },
-                _ => None,
-            })
     }
 
     /// Select the `Root` row for the given node index.

@@ -7,7 +7,6 @@ use crate::project::RustProject;
 use crate::project::WorktreeGroup;
 use crate::tui::app::App;
 use crate::tui::app::ExpandKey;
-use crate::tui::app::VisibleRow;
 
 impl App {
     pub fn expand_all(&mut self) {
@@ -16,7 +15,11 @@ impl App {
             .paths_mut()
             .collapsed_selected
             .take()
-            .or_else(|| self.selected_project_path().map(AbsolutePath::from));
+            .or_else(|| {
+                self.project_list
+                    .selected_project_path()
+                    .map(AbsolutePath::from)
+            });
         self.project_list.paths_mut().collapsed_anchor = None;
         let (roots, expanded) = self.project_list.iter_with_expanded_mut();
         for (ni, entry) in roots.enumerate() {
@@ -54,8 +57,14 @@ impl App {
     }
 
     pub fn collapse_all(&mut self) {
-        let selected_path = self.selected_project_path().map(AbsolutePath::from);
-        let anchor = self.selected_row().map(Self::collapse_anchor_row);
+        let selected_path = self
+            .project_list
+            .selected_project_path()
+            .map(AbsolutePath::from);
+        let anchor = self
+            .project_list
+            .selected_row()
+            .map(Self::collapse_anchor_row);
         self.project_list.expanded_mut().clear();
         self.ensure_visible_rows_cached();
         if let Some(anchor) = anchor
@@ -63,7 +72,10 @@ impl App {
         {
             self.project_list.set_cursor(pos);
         }
-        let anchor_path = self.selected_project_path().map(AbsolutePath::from);
+        let anchor_path = self
+            .project_list
+            .selected_project_path()
+            .map(AbsolutePath::from);
         if selected_path == anchor_path {
             self.project_list.paths_mut().collapsed_selected = None;
             self.project_list.paths_mut().collapsed_anchor = None;
@@ -147,17 +159,12 @@ impl App {
         }
     }
 
-    pub(super) fn row_matches_project_path(&self, row: VisibleRow, target_path: &Path) -> bool {
-        self.path_for_row(row)
-            .is_some_and(|path| path == target_path)
-    }
-
     pub(super) fn select_matching_visible_row(&mut self, target_path: &Path) {
         self.ensure_visible_rows_cached();
-        let selected_index = self
-            .visible_rows()
-            .iter()
-            .position(|row| self.row_matches_project_path(*row, target_path));
+        let selected_index = self.visible_rows().iter().position(|row| {
+            self.project_list
+                .row_matches_project_path(*row, target_path)
+        });
         if let Some(selected_index) = selected_index {
             self.project_list.set_cursor(selected_index);
         }

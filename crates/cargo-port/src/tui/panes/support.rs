@@ -1668,8 +1668,9 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let metadata_ms = perf_log::ms(t_meta.elapsed().as_millis());
     let manifest = manifest_fields_from(package_record.as_ref());
 
+    let pl = &app.project_list;
     let (in_project_target, in_project_non_target) =
-        app.project_list.at_path(abs_path).map_or((None, None), |pi| {
+        pl.at_path(abs_path).map_or((None, None), |pi| {
             (pi.in_project_target, pi.in_project_non_target)
         });
     let t_oot = std::time::Instant::now();
@@ -1698,14 +1699,14 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let crates_downloads = crates_io.downloads;
 
     let is_worktree_group = package_title == "Worktree Group";
-    let is_rust = app.project_list.is_rust_at_path(abs_path_owned.as_path());
+    let is_rust = pl.is_rust_at_path(abs_path_owned.as_path());
     let lint_display =
-        super::Lint::package_display(&app.project_list, &abs_path_owned, is_worktree_group, is_rust);
+        super::Lint::package_display(pl, &abs_path_owned, is_worktree_group, is_rust);
     let ci_display = app.ci.package_display(
         &abs_path_owned,
-        app.project_list.repo_info_for(abs_path_owned.as_path()),
-        app.project_list.git_info_for(abs_path_owned.as_path()),
-        app.project_list.ci_info_for(abs_path_owned.as_path()),
+        pl.repo_info_for(abs_path_owned.as_path()),
+        pl.git_info_for(abs_path_owned.as_path()),
+        pl.ci_info_for(abs_path_owned.as_path()),
         ci,
         is_worktree_group,
     );
@@ -1778,7 +1779,7 @@ fn assemble_detail_pane_data(
 }
 
 pub fn build_ci_data(app: &App) -> CiData {
-    let selected_path = app.selected_project_path();
+    let selected_path = app.project_list.selected_project_path();
     let has_ci_owner = app.selected_ci_path().is_some();
     let git_info = selected_path.and_then(|path| app.project_list.git_info_for(path));
     let repo_info = selected_path.and_then(|path| app.project_list.repo_info_for(path));
@@ -1847,7 +1848,7 @@ pub fn build_ci_data(app: &App) -> CiData {
 }
 
 pub fn build_lints_data(app: &App) -> LintsData {
-    let selected_path = app.selected_project_path();
+    let selected_path = app.project_list.selected_project_path();
     let lint_runs = selected_path.and_then(|path| {
         app.lint_at_path(path)
             .or_else(|| app.project_list.vendored_owner_lint(path))

@@ -2,7 +2,6 @@ mod cargo;
 mod cargo_metadata_store;
 mod git;
 mod info;
-mod language;
 mod member_group;
 mod non_rust;
 mod package;
@@ -59,8 +58,6 @@ pub(crate) use info::ProjectCiInfo;
 pub(crate) use info::ProjectInfo;
 pub(crate) use info::Visibility;
 pub(crate) use info::WorktreeHealth;
-// ── Language helpers ────────────────────────────────────────────────
-pub(crate) use language::language_icon;
 // ── Project types ────────────────────────────────────────────────────
 pub(crate) use member_group::MemberGroup;
 pub(crate) use non_rust::NonRustProject;

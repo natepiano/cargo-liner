@@ -651,7 +651,9 @@ mod tests {
         assert_eq!(app.focus.current(), PaneId::ProjectList);
         assert_eq!(app.project_list.cursor(), 1);
         assert_eq!(
-            app.selected_project_path().map(Path::to_path_buf),
+            app.project_list
+                .selected_project_path()
+                .map(Path::to_path_buf),
             Some(second),
         );
     }
@@ -931,24 +933,25 @@ mod tests {
         app.expanded_mut().insert(ExpandKey::Node(0));
         render_ui(&mut app);
 
-        app.set_projects(ProjectList::new(vec![RootItem::Worktrees(
-            WorktreeGroup::new_packages(
-                make_package_worktree("app", &primary, false, Some(primary.as_path())),
-                vec![make_package_worktree(
-                    "app",
-                    &linked,
-                    true,
-                    Some(primary.as_path()),
-                )],
-            ),
-        )]));
+        app.project_list
+            .replace_roots_from(ProjectList::new(vec![RootItem::Worktrees(
+                WorktreeGroup::new_packages(
+                    make_package_worktree("app", &primary, false, Some(primary.as_path())),
+                    vec![make_package_worktree(
+                        "app",
+                        &linked,
+                        true,
+                        Some(primary.as_path()),
+                    )],
+                ),
+            )]));
         render_ui(&mut app);
 
         let (x, y) = row_body_point(&app, 2);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.selected_project_path(),
+            app.project_list.selected_project_path(),
             Some(linked.as_path()),
             "clicking the linked worktree row after regroup should select it"
         );
@@ -987,7 +990,9 @@ mod tests {
             "clicking the old dismiss location after rerender must not dismiss the surviving row"
         );
         assert_eq!(
-            app.selected_project_path().map(Path::to_path_buf),
+            app.project_list
+                .selected_project_path()
+                .map(Path::to_path_buf),
             Some(live_dir),
             "the surviving row may be selected, but it must not be dismissed by stale geometry"
         );

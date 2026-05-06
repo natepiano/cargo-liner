@@ -34,6 +34,7 @@ use super::constants::PREFIX_WT_GROUP_EXPANDED;
 use super::constants::PREFIX_WT_MEMBER_INLINE;
 use super::constants::PREFIX_WT_MEMBER_NAMED;
 use super::constants::PREFIX_WT_VENDORED;
+use super::lang;
 use super::spec::PaneId;
 use crate::project;
 use crate::project::MemberGroup;
@@ -343,7 +344,7 @@ fn render_root_item(
             .at_path(item.path())
             .and_then(|p| p.language_stats.as_ref())
             .and_then(|ls| ls.entries.first())
-            .map_or("  ", |e| project::language_icon(&e.language))
+            .map_or("  ", |e| lang::language_icon(&e.language))
     };
     let lint_cell = app.lint_cell(&crate::tui::lint_state::Lint::status_for_root(&item.item));
     let origin_sync = app.project_list.git_sync(item.path());
@@ -471,15 +472,19 @@ fn render_worktree_entry<'a>(
     widths: &ProjectListWidths,
 ) -> ListItem<'a> {
     let item = &app.project_list[ni];
-    let display_path = app.display_path_for_row(VisibleRow::WorktreeEntry {
-        node_index:     ni,
-        worktree_index: wi,
-    });
+    let display_path = app
+        .project_list
+        .display_path_for_row(VisibleRow::WorktreeEntry {
+            node_index:     ni,
+            worktree_index: wi,
+        });
     let dp = display_path.unwrap_or_default().to_string();
-    let abs_path = app.abs_path_for_row(VisibleRow::WorktreeEntry {
-        node_index:     ni,
-        worktree_index: wi,
-    });
+    let abs_path = app
+        .project_list
+        .abs_path_for_row(VisibleRow::WorktreeEntry {
+            node_index:     ni,
+            worktree_index: wi,
+        });
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 

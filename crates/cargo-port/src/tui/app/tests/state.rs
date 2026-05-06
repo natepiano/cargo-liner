@@ -77,7 +77,8 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
     );
     // Member resolves to the same entry-level ci_data as the workspace root.
     assert!(matches!(
-        app.project_list.ci_data_for(test_path("~/ws/core").as_path()),
+        app.project_list
+            .ci_data_for(test_path("~/ws/core").as_path()),
         Some(crate::project::ProjectCiData::Loaded(_))
     ));
 }

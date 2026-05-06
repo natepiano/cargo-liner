@@ -78,7 +78,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
             kind = %event_label(event),
             focus = pane_label(app.focus.current()),
             scan_complete = app.scan.is_complete(),
-            selected = %app.selected_project_path()
+            selected = %app.project_list.selected_project_path()
                 .map_or_else(|| "-".to_string(), |path| path.display().to_string()),
             "input_event"
         );
@@ -364,7 +364,8 @@ fn selected_project_display_name(app: &App) -> String {
     if let Some(name) = app.selected_item().and_then(crate::project::RootItem::name) {
         return name.to_owned();
     }
-    app.selected_project_path()
+    app.project_list
+        .selected_project_path()
         .and_then(Path::file_name)
         .map_or_else(
             || "selected project".to_owned(),
@@ -382,6 +383,7 @@ fn open_in_editor(app: &mut App) {
         return;
     }
     let Some(selected_path) = app
+        .project_list
         .selected_project_path()
         .map(std::path::Path::to_path_buf)
     else {
@@ -547,6 +549,7 @@ fn open_terminal(app: &mut App) {
     }
 
     let Some(selected_path) = app
+        .project_list
         .selected_project_path()
         .map(std::path::Path::to_path_buf)
     else {

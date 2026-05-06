@@ -12,7 +12,6 @@ use ratatui::widgets::TableState;
 
 use super::package::RenderStyles;
 use super::pane_impls::LangPane;
-use crate::project;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
@@ -24,6 +23,35 @@ use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::Viewport;
 use crate::tui::render;
+
+/// Map a tokei language name to a 2-char icon for the Lang column.
+pub(super) fn language_icon(language: &str) -> &'static str {
+    match language.to_ascii_lowercase().as_str() {
+        "rust" => "\u{1f980}",                                                 // 🦀
+        "c" | "c++" | "c header" | "c++ header" | "c++ module" => "\u{1f30a}", // 🌊
+        "go" => "Go",
+        "python" => "\u{1f40d}", // 🐍
+        "javascript" | "jsx" => "JS",
+        "typescript" | "tsx" => "TS",
+        "markdown" => "M\u{2193}", // M↓
+        "shell" | "bash" | "zsh" | "fish" => "$_",
+        "liquid" => "\u{1f4a7}",      // 💧
+        "toml" => "\u{2699}\u{fe0f}", // ⚙️
+        "json" => "{}",
+        "html" => "\u{1f310}",       // 🌐
+        "plain text" => "\u{1f4c4}", // 📄
+        "xml" => "<>",
+        "glsl" => "\u{1f53a}", // 🔺
+        "yaml" => "Y:",
+        "bitbake" => "\u{1f35e}",          // 🍞
+        "cmake" => "\u{1f528}",            // 🔨
+        "makefile" => "\u{1f6e0}\u{fe0f}", // 🛠️
+        "autoconf" => "\u{1f527}",         // 🔧
+        "asciidoc" => "A\u{2193}",         // A↓
+        "batch" => "C:",
+        _ => "  ",
+    }
+}
 
 /// Fixed numeric column width for language stats.
 const LANG_NUM_COL: u16 = 8;
@@ -87,7 +115,7 @@ fn lang_footer_row(stats: &LanguageStats) -> Row<'static> {
 }
 
 fn lang_entry_row(entry: &LangEntry, name_width: usize) -> Row<'static> {
-    let icon = project::language_icon(&entry.language);
+    let icon = language_icon(&entry.language);
     let name = render::truncate_with_ellipsis(&entry.language, name_width, "\u{2026}");
     let total = entry.code + entry.comments + entry.blanks;
     let num_style = Style::default().fg(TITLE_COLOR);

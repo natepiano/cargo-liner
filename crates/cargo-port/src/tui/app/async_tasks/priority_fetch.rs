@@ -6,7 +6,7 @@ use crate::tui::terminal;
 
 impl App {
     pub(super) fn detail_path_is_affected(&self, path: &Path) -> bool {
-        let Some(selected_path) = self.selected_project_path() else {
+        let Some(selected_path) = self.project_list.selected_project_path() else {
             return false;
         };
         if selected_path == path {
@@ -22,7 +22,11 @@ impl App {
     }
     /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.
     pub fn maybe_priority_fetch(&mut self) {
-        let Some(abs_path) = self.selected_project_path().map(Path::to_path_buf) else {
+        let Some(abs_path) = self
+            .project_list
+            .selected_project_path()
+            .map(Path::to_path_buf)
+        else {
             return;
         };
         let abs_key: AbsolutePath = abs_path.clone().into();

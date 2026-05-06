@@ -362,7 +362,7 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
         "the remaining primary should no longer render as a worktree group"
     );
     assert_eq!(
-        app.selected_project_path(),
+        app.project_list.selected_project_path(),
         Some(Path::new(&primary_path)),
         "selection should move back to the surviving top-level project"
     );

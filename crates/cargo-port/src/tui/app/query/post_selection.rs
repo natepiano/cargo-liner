@@ -9,7 +9,10 @@ use crate::tui::shortcuts::InputContext;
 impl App {
     pub fn sync_selected_project(&mut self) {
         self.ensure_visible_rows_cached();
-        let current = self.selected_project_path().map(AbsolutePath::from);
+        let current = self
+            .project_list
+            .selected_project_path()
+            .map(AbsolutePath::from);
         if self
             .project_list
             .paths()
@@ -76,10 +79,11 @@ impl App {
             },
             InputContext::CiRuns => {
                 let ci_info = self
+                    .project_list
                     .selected_project_path()
                     .and_then(|path| self.project_list.ci_info_for(path));
                 let run_count = ci_info.map_or(0, |info| info.runs.len());
-                let selected_path = self.selected_project_path();
+                let selected_path = self.project_list.selected_project_path();
                 if self.ci.viewport().pos() == run_count
                     && !selected_path.is_some_and(|path| self.ci_is_fetching(path))
                     && !selected_path.is_some_and(|path| self.ci_is_exhausted(path))
