@@ -1631,18 +1631,12 @@ fn compute_ci_status(
     wt_item.map_or_else(
         || {
             if app.project_list.is_rust_at_path(abs_path) {
-                app.project_list
-                    .ci_status_for(abs_path, app.ci.display_mode_for(abs_path))
+                app.project_list.ci_status_for(abs_path, &app.ci)
             } else {
                 None
             }
         },
-        |item| {
-            item.ci_status(|p| {
-                app.project_list
-                    .ci_status_for(p, app.ci.display_mode_for(p))
-            })
-        },
+        |item| app.project_list.ci_status_for_root_item(item, &app.ci),
     )
 }
 
@@ -1821,7 +1815,12 @@ pub fn build_ci_data(app: &App) -> CiData {
     });
     let unpublished_branch_name =
         selected_path.and_then(|path| app.project_list.unpublished_ci_branch_name(path));
-    let runs = app.selected_ci_runs();
+    let runs = app
+        .project_list
+        .selected_project_path()
+        .map_or_else(Vec::new, |path| {
+            app.project_list.ci_runs_for_ci_pane(path, &app.ci)
+        });
     let is_fetching = selected_path.is_some_and(|path| app.ci.fetch_tracker.is_fetching(path));
     let branch_filtered_empty = selected_path.is_some_and(|path| {
         app.ci_toggle_available_for(path) && app.ci.display_mode_label_for(path) == "branch"

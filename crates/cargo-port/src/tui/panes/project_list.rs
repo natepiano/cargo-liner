@@ -331,10 +331,9 @@ fn render_root_item(
     let disk = formatted_disk_for_item(item);
     let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
-    let ci = item.ci_status(|p| {
-        app.project_list
-            .ci_status_for(p, app.ci.display_mode_for(p))
-    });
+    let ci = app
+        .project_list
+        .ci_status_for_root_item(&item.item, &app.ci);
     let lang = if item.is_rust() {
         item.lang_icon()
     } else {
@@ -414,9 +413,7 @@ fn render_child_item<P: project::ProjectFields>(
     } else {
         crate::tui::columns::LintCell::hidden()
     };
-    let ci = app
-        .project_list
-        .ci_status_for(path, app.ci.display_mode_for(path));
+    let ci = app.project_list.ci_status_for(path, &app.ci);
     let hide_git_status = app.project_list.is_workspace_member_path(path);
     let origin_sync = if hide_git_status
         || matches!(
@@ -515,9 +512,7 @@ fn render_worktree_entry<'a>(
     let lint_cell = app.lint_cell(&crate::tui::lint_state::Lint::status_for_worktree(
         &item.item, wi,
     ));
-    let ci = app
-        .project_list
-        .ci_status_for(wt_abs, app.ci.display_mode_for(wt_abs));
+    let ci = app.project_list.ci_status_for(wt_abs, &app.ci);
     let origin_sync = app.project_list.git_sync(wt_abs);
     let main_sync = app.project_list.git_main(wt_abs);
     let deleted = app.project_list.is_deleted(wt_abs);

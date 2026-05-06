@@ -166,11 +166,10 @@ impl Ci {
     ///   `github_total`. Run counts are NOT aggregated across worktree-group checkouts (matches
     ///   today's `resolve_ci_display` behavior, which reads `ci_data_for(abs_path)` for the primary
     ///   only).
-    /// - `latest_ci_status` via `ProjectList::ci_status_for(path, display_mode)` for single-project
-    ///   rows / `RootItem::ci_status(resolver)` for worktree-group rollup rows. The aggregator
-    ///   walks all worktree paths and returns `Failed` if any-red, `Passed` if all-green, else
-    ///   `None`. The rollup is the only group-level distinction; everything else is
-    ///   primary-checkout data.
+    /// - `latest_ci_status` via `ProjectList::ci_status_for(path, ci)` for single-project rows /
+    ///   `RootItem::ci_status(resolver)` for worktree-group rollup rows. The aggregator walks all
+    ///   worktree paths and returns `Failed` if any-red, `Passed` if all-green, else `None`. The
+    ///   rollup is the only group-level distinction; everything else is primary-checkout data.
     /// - `is_worktree_group` — kept for signature symmetry with `Lint::package_display`. Today's CI
     ///   display logic doesn't branch on it (the caller's pre-resolution of `latest_conclusion`
     ///   already handles the rollup); reserved in case future variants need group-aware text.
@@ -231,7 +230,7 @@ impl Ci {
     /// filter. `BranchOnly` keeps only runs matching the
     /// current branch (when available); `All` keeps every
     /// run. Mirrors the filtering in
-    /// `App::ci_runs_for_display_inner`.
+    /// `ProjectList::ci_runs_for_ci_pane`.
     fn filtered_run_count(
         info: &ProjectCiInfo,
         git_info: Option<&CheckoutInfo>,

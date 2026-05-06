@@ -85,7 +85,6 @@ use super::project_list::ProjectList;
 use super::scan_state::Scan;
 use super::toasts::ToastStyle::Warning;
 use super::toasts::TrackedItem;
-use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
@@ -394,12 +393,6 @@ impl App {
         self.prune_toasts();
     }
 
-    pub(super) fn selected_ci_runs(&self) -> Vec<CiRun> {
-        self.project_list
-            .selected_project_path()
-            .map_or_else(Vec::new, |path| self.ci_runs_for_display(path))
-    }
-
     pub(super) fn register_discovery_shimmer(&mut self, path: &Path) {
         if !self.scan.is_complete() || !self.config.discovery_shimmer_enabled() {
             return;
@@ -693,12 +686,6 @@ impl App {
 
     pub(super) fn toggle_ci_display_mode_for(&mut self, path: &Path) {
         self.toggle_ci_display_mode_for_inner(path);
-    }
-
-    pub(super) fn ci_runs_for_display(&self, path: &Path) -> Vec<CiRun> {
-        let display_mode = self.ci.display_mode_for(path);
-        self.project_list
-            .ci_runs_for_display_inner(path, display_mode)
     }
 
     pub(super) fn reset_cpu_placeholder(&mut self) {

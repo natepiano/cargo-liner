@@ -60,10 +60,8 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
     );
 
     assert_eq!(
-        app.project_list.ci_status_for(
-            test_path("~/ws").as_path(),
-            app.ci.display_mode_for(test_path("~/ws").as_path()),
-        ),
+        app.project_list
+            .ci_status_for(test_path("~/ws").as_path(), &app.ci),
         Some(CiStatus::Passed)
     );
     assert!(matches!(
@@ -71,10 +69,8 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
         Some(crate::project::ProjectCiData::Loaded(_))
     ));
     assert_eq!(
-        app.project_list.ci_status_for(
-            test_path("~/ws/core").as_path(),
-            app.ci.display_mode_for(test_path("~/ws/core").as_path()),
-        ),
+        app.project_list
+            .ci_status_for(test_path("~/ws/core").as_path(), &app.ci),
         Some(CiStatus::Passed)
     );
     assert!(
@@ -259,8 +255,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
     );
 
     assert_eq!(
-        app.project_list
-            .ci_status_for(project.path(), app.ci.display_mode_for(project.path())),
+        app.project_list.ci_status_for(project.path(), &app.ci),
         Some(CiStatus::Failed)
     );
 }
@@ -316,12 +311,12 @@ fn ci_for_default_branch_prefers_matching_branch_runs() {
     );
 
     assert_eq!(
-        app.project_list
-            .ci_status_for(project.path(), app.ci.display_mode_for(project.path())),
+        app.project_list.ci_status_for(project.path(), &app.ci),
         Some(CiStatus::Passed)
     );
     assert_eq!(
-        app.ci_runs_for_display(project.path())
+        app.project_list
+            .ci_runs_for_ci_pane(project.path(), &app.ci)
             .iter()
             .map(|run| run.branch.as_str())
             .collect::<Vec<_>>(),
@@ -380,12 +375,12 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
     );
 
     assert_eq!(
-        app.project_list
-            .ci_status_for(project.path(), app.ci.display_mode_for(project.path())),
+        app.project_list.ci_status_for(project.path(), &app.ci),
         Some(CiStatus::Failed)
     );
     assert_eq!(
-        app.ci_runs_for_display(project.path())
+        app.project_list
+            .ci_runs_for_ci_pane(project.path(), &app.ci)
             .iter()
             .map(|run| run.branch.as_str())
             .collect::<Vec<_>>(),
@@ -395,12 +390,12 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
     app.toggle_ci_display_mode_for(project.path());
 
     assert_eq!(
-        app.project_list
-            .ci_status_for(project.path(), app.ci.display_mode_for(project.path())),
+        app.project_list.ci_status_for(project.path(), &app.ci),
         Some(CiStatus::Passed)
     );
     assert_eq!(
-        app.ci_runs_for_display(project.path())
+        app.project_list
+            .ci_runs_for_ci_pane(project.path(), &app.ci)
             .iter()
             .map(|run| run.branch.as_str())
             .collect::<Vec<_>>(),

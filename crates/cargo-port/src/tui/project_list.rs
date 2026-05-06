@@ -13,6 +13,7 @@ use super::app::CleanSelection;
 use super::app::FinderState;
 use super::app::SelectionPaths;
 use super::app::SelectionSync;
+use super::ci_state::Ci;
 use super::columns::ProjectListWidths;
 use crate::ci;
 use crate::ci::CiRun;
@@ -511,18 +512,30 @@ impl ProjectList {
             .flatten()
     }
 
-    /// Latest CI status at `path` filtered through `display_mode`, suppressed
-    /// for unpublished worktree branches whose parent-repo CI doesn't apply.
-    pub(super) fn ci_status_for(
-        &self,
-        path: &Path,
-        display_mode: CiRunDisplayMode,
-    ) -> Option<CiStatus> {
+    /// Latest CI status at `path`, with display-mode resolved internally
+    /// against `ci`. Suppressed for unpublished worktree branches whose
+    /// parent-repo CI doesn't apply.
+    pub(super) fn ci_status_for(&self, path: &Path, ci: &Ci) -> Option<CiStatus> {
         if self.unpublished_ci_branch_name(path).is_some() {
             return None;
         }
-        self.latest_ci_run_for_path(path, display_mode)
-            .map(|run| run.ci_status)
+        let display_mode = ci.display_mode_for(path);
+        let info = self.ci_info_for(path)?;
+        let runs = info.runs.as_slice();
+        let latest = match self.current_branch_for(path) {
+            None => runs.first(),
+            Some(_) if display_mode == CiRunDisplayMode::All => runs.first(),
+            Some(branch) => runs.iter().find(|run| run.branch == branch),
+        };
+        latest.map(|run| run.ci_status)
+    }
+
+    /// Latest CI status for a `RootItem`, dispatching to either the path-keyed
+    /// lookup or `RootItem::ci_status`'s aggregator (for `WorktreeGroup`,
+    /// which spans multiple checkouts and therefore can't be addressed by a
+    /// single path).
+    pub(super) fn ci_status_for_root_item(&self, item: &RootItem, ci: &Ci) -> Option<CiStatus> {
+        item.ci_status(|p| self.ci_status_for(p, ci))
     }
 
     pub(super) fn is_deleted(&self, path: &Path) -> bool {
@@ -1547,12 +1560,11 @@ impl Drop for SelectionMutation<'_> {
     }
 }
 
-// ── Phase 11 row-navigation read-side ────────────────────────────────────
+// ── Row-navigation read-side ─────────────────────────────────────────────
 //
 // Pure ProjectList queries: row → path resolution, expand-key lookup,
 // dismiss-target lookup, CI/branch lookups that don't cross into Ci/panes
-// state. Cross-subsystem methods (build_selected_pane_data,
-// latest_ci_run_for_path, ci_runs_for_display_inner) remain on App.
+// state.
 impl ProjectList {
     pub(super) fn selected_row(&self) -> Option<VisibleRow> {
         let rows = self.visible_rows();
@@ -2491,36 +2503,16 @@ impl ProjectList {
         Some(entry.item.path().clone())
     }
 
-    /// Latest CI run for `path` filtered through `display_mode`.
-    pub(super) fn latest_ci_run_for_path(
-        &self,
-        path: &Path,
-        display_mode: CiRunDisplayMode,
-    ) -> Option<&CiRun> {
-        let info = self.ci_info_for(path)?;
-        let runs = info.runs.as_slice();
-        let Some(branch) = self.current_branch_for(path) else {
-            return runs.first();
-        };
-        if display_mode == CiRunDisplayMode::All {
-            return runs.first();
-        }
-        runs.iter().find(|run| run.branch == branch)
-    }
-
-    /// CI runs at `path` filtered through `display_mode`.
-    pub(super) fn ci_runs_for_display_inner(
-        &self,
-        path: &Path,
-        display_mode: CiRunDisplayMode,
-    ) -> Vec<CiRun> {
+    /// CI runs at `path`, with display-mode resolved against `ci`.
+    /// Consumed by the CI-runs detail pane.
+    pub(super) fn ci_runs_for_ci_pane(&self, path: &Path, ci: &Ci) -> Vec<CiRun> {
         let Some(info) = self.ci_info_for(path) else {
             return Vec::new();
         };
         let Some(branch) = self.current_branch_for(path) else {
             return info.runs.clone();
         };
-        if display_mode == CiRunDisplayMode::All {
+        if ci.display_mode_for(path) == CiRunDisplayMode::All {
             return info.runs.clone();
         }
         info.runs
