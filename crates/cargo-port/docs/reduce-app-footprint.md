@@ -1301,7 +1301,14 @@ to match the same rule.
 
 ### Phase 14 Review
 
-(To be filled in after dispatching the Plan subagent forward review.)
+- F1 — applied (user chose option a): `running_items_for_toast` relocates to `impl<K> RunningTracker<K>`. Adds `TrackedItem` / `TrackedItemKey` imports to `running_tracker.rs`; body uses `self.running` / `self.toast` directly (depends on F7's field publication, so F1 + F7 are sequenced together).
+- F2 — applied: `tracked_items_for_startup` retargeted from `Startup` to `impl<K> KeyedPhase<K>` (helper-on-data-owner rule; KeyedPhase already exposes the fields).
+- F3 — applied: `unique_item_paths` confirmed targeting `impl RootItem`, not `WorktreeGroup` (non-worktree branch does real work).
+- F4 — applied: Phase 15 caller-rewrite estimate corrected from 80–120 to ~25–30 (Phase 11/12 already collapsed the worktree-family fanout).
+- F5 — applied: naming caveat added — relocations must keep `worktree_` prefix to avoid shadowing the no-arg `display_path()` already on `RootItem` via `ProjectFields`.
+- F6 — applied: Phase 15 final-count math rebased — App count after Phase 15 is ~151 (was ~146/~152/~156 in stale estimates); Phase 15 App delta is ~12 (was ~11/~23 in stale estimates).
+- F7 — applied (per user direction): `RunningTracker::iter_running` / `toast` / `set_toast` / `running_map` accessor cleanup folded into Phase 15. Publishes `running` / `toast` fields, deletes the four accessors, rewrites ~10 caller sites (test-only + relocated `running_items_for_toast` body).
+- F8 — noted: Phase 14's `pub` field publication on Panes/ToastManager doesn't simplify Phase 15 caller rewrites (relocations are `Self::foo` → `Type::foo`, not field-traversing). Retro claim holds.
 
 ### Phase 15 — Relocate Group W static helpers to their data owners
 
@@ -1334,7 +1341,13 @@ match per helper.
 - `worktree_display_path`, `worktree_member_display_path`, `worktree_vendored_display_path`
 - `worktree_abs_path`, `worktree_member_abs_path`, `worktree_vendored_abs_path`
 - `worktree_path_ref`, `worktree_member_path_ref`, `worktree_vendored_path_ref`
-- `unique_item_paths` (`mod.rs:527`) → `RootItem` (still on App)
+- `unique_item_paths` (`mod.rs:527`) → `impl RootItem` as `unique_paths(&self)` (still on App;
+  review F3 confirms target — non-worktree branch returns `vec![item.path().clone()]` so the
+  helper does real work for both arms, `RootItem` is the right home, not `WorktreeGroup`).
+- **Naming caveat (review F5):** when relocating to method form on `RootItem`/`WorktreeGroup`,
+  keep the `worktree_` prefix (`worktree_display_path(&self, wi)`) — a no-arg `display_path()`
+  already exists on `RootItem` via `ProjectFields`, so a method named `display_path_for_worktree`
+  would shadow nothing but a method named `display_path(&self, wi)` would conflict.
 
 **Member/vendored helpers** → `RustProject` / `Workspace` / `Package`:
 - `resolve_member`, `resolve_vendored`, `worktree_member_ref`, `worktree_vendored_ref`
@@ -1342,10 +1355,19 @@ match per helper.
 - `member_path_ref`, `vendored_path_ref` — already on `impl ProjectList` post-Phase-11.
 
 **Toast/tracker helpers** → their respective owners:
-- `running_items_for_toast` (`running_toasts.rs:41`) → `RunningTracker`
-- `tracked_items_for_startup`, `startup_lint_toast_body_for`
-  (`startup_phase/toast_bodies.rs`) → `Startup` (or free functions in the
-  `startup_phase` module)
+- `running_items_for_toast` (`running_toasts.rs:41`) → `impl<K> RunningTracker<K>`
+  (review F1, decision (a)). Adds `use TrackedItem; use TrackedItemKey;` to
+  `running_tracker.rs` and the `for<'a> &'a K: Into<TrackedItemKey>` bound enters the
+  impl. Body uses `self.running` / `self.toast` as fields (depends on F7's field
+  publication). Caller becomes `tracker.running_items_for_toast(label_fn)` at the three
+  App-side sync sites (`sync_running_clean_toast`, `sync_running_lint_toast`,
+  `sync_running_repo_fetch_toast`).
+- `tracked_items_for_startup` (`startup_phase/toast_bodies.rs`) → `impl<K> KeyedPhase<K>`
+  (review F2: `KeyedPhase` is the type that already owns `expected: Option<HashSet<K>>` /
+  `seen: HashSet<K>` as `pub` fields, called once per phase; canonical home per the
+  helper-on-data-owner rule).
+- `startup_lint_toast_body_for` (`startup_phase/toast_bodies.rs`) → `Startup` (or free
+  function in the `startup_phase` module)
 - `startup_remaining_toast_body` — **already-resident**: extracted as a free
   `pub(super) fn remaining_toast_body` in `toast_bodies.rs` during Phase 13
   (drag-along when `Startup::*_toast_body` methods relocated). No Phase 15
@@ -1368,14 +1390,33 @@ match per helper.
   (the `App::set_projects` shim was deleted in Phase 11). Listed here so future passes
   don't relitigate moving it.
 
-**Methods removed from App:** ~23. **Caller rewrites:** mostly `Self::foo(...)` →
-`Type::foo(...)` plus method-call form where it makes sense. Plan estimate ~50
-sites; the `worktree_*` family in particular is heavily used in
-`navigation/pane_data.rs`, `dismiss.rs`, and `panes/system.rs`, so the actual
-number could land 80–120. Re-baseline at phase start with `rg --count-matches`
-per helper.
+**RunningTracker accessor cleanup (Phase 14 carryover, F7).** Phase 14's recursive
+purge missed four trivial accessors on `RunningTracker<K>`:
+- `iter_running(&self) -> impl Iterator<Item = (&K, &Instant)>` — wraps `self.running.iter()`
+- `toast(&self) -> Option<ToastTaskId>` — copies `self.toast`
+- `set_toast(&mut self, id: Option<ToastTaskId>)` — assigns `self.toast`
+- `running_map(&self) -> &HashMap<K, Instant>` — borrows `self.running`
 
-After 15, App's method count drops from 169 → **146** (exact: 169 − 23 = 146).
+Phase 15 publishes `RunningTracker.running` and `RunningTracker.toast` as `pub` fields,
+deletes the four accessors, and rewrites callers (test-only callers in `lint_state.rs`
+and `inflight.rs` plus the relocated `running_items_for_toast` body which uses
+`self.running` / `self.toast` directly). This piggybacks on the worktree-helper
+caller-rewrite pass — same mechanic, ~10 additional caller sites total. Bumps Phase 15's
+"Methods removed from App" count by 0 (these are subsystem-internal, not on App) but
+removes 4 more crate-wide trivial accessors.
+
+**Methods removed from App:** ~12 (post-review F6: 11 of the 23 originally listed are
+already off App since Phase 11 / 12; remaining App-resident helpers are
+`unique_item_paths`, `resolve_member`, `resolve_vendored`, `worktree_member_ref`,
+`worktree_vendored_ref`, `running_items_for_toast`, `tracked_items_for_startup`,
+`startup_lint_toast_body_for`, `record_background_msg_kind`,
+`log_saturated_background_batch` plus diagnostics). **Caller rewrites:** ~25–30
+total (review F4 corrects the prior 80–120 estimate — Phase 14 didn't move call
+sites; Phase 11/12 already collapsed the worktree-family fanout). Re-baseline at
+phase start with `rg --count-matches` per helper.
+
+After 15, App's method count drops from 163 → **~151** (post-Phase-14 baseline,
+delta ~12 per F6).
 Group W's instance methods that genuinely belong on App (`set_confirm`,
 `confirm`, `take_confirm`, `build_worktree_detail`) stay.
 
@@ -1498,9 +1539,9 @@ sits.
 | **12** | **`project_list` absorption II — action methods (with `include_non_rust` arg threading)** | **24 (19 main + 2 helper statics + 1 to `impl VisibleRow` + 2 ci holdovers; 3 Phase-11 holdovers reclassified as Group X)** | **~80 src + ~10 tests** | **193 ✅** |
 | **13** | **Non-`project_list` S relocations** | **17 (5 startup + 3 toasts + 2 scan + 2 net + 1 background + 1 inflight + 1 ci + 1 `handle_repo_meta` → `impl ProjectList` via plan-phase-review F5; 2 of plan's 18 reclassified as carryovers — `handle_git_first_commit`, `push_service_unavailable_toast` reclassified as X)** | **~30 src** | **176 ✅** |
 | **14** | **Recursive trivial-accessor purge** (5 App-local accessors + 7 `project_list` pass-throughs + 1 Phase-13 ci shim + 3 empty placeholder modules + ResolvedPaneLayout::panes + Panes::worktree_summary_or_compute + recursive sweep on ProjectList/Panes/Overlays/Net/CiState/LintState/ConfigState/ScanState/WatchedFile/ToastsManager + 50 ProjectList visibility tightenings + 4 Phase-13 pub fn → pub(super)) | **13 (App), ~30 crate-wide** | **~400 src + ~50 tests** | **163 ✅** |
-| 15 | Relocate Group W static helpers to their data owners (after 10) | ~11 (was 23; 11 off App since Phase 11; `collapse_anchor_row` off App since Phase 12) | ~50 | **~152** |
+| 15 | Relocate Group W static helpers to their data owners (after 10) | ~12 (review F6: 11 off App since Phase 11, `collapse_anchor_row` off App since Phase 12; remaining App-resident helpers count to ~12) | ~25–30 (review F4) | **~151** |
 
-**Net: 308 → 176 on App after Phase 13, → 163 after Phase 14, → ~152 after Phase 15.**
+**Net: 308 → 176 on App after Phase 13, → 163 after Phase 14, → ~151 after Phase 15.**
 Phase 12 came in 3 under plan (24 vs ~27); end-state slides from ~148 to
 ~152, a 4-method drift from the original ~146 estimate (well within the
 ±5/phase tolerance). The 3 Phase-12 carryovers (`build_selected_pane_data`,
@@ -1555,7 +1596,7 @@ All 308 App methods, hand-classified by reading each body. Six agents in paralle
 
 **Phases 3–9 delete trivial-accessor + pass-through = ~88 methods.**  
 **Phases 10–13 absorb/relocate ~64 S methods.**  
-**App's final method count ≈ 156 after Phase 15 (down from 308, ~49% reduction).** Phase-by-phase math: 3–13 remove T + P + S to land App at 184, Phase 14 removes 5 App-local accessors (lands at 179), then Phase 15 relocates 23 static helpers from Group W (lands at ~156). Phase 14's main work is crate-wide trivial-accessor cleanup.
+**App's final method count ≈ 151 after Phase 15 (down from 308, ~51% reduction).** Phase-by-phase math: 3–13 land App at 176, Phase 14 removes 13 (App-local + project_list pass-throughs + ci shim) → 163, Phase 15 relocates ~12 still-App-resident Group W helpers → ~151. Phase 14's main work was crate-wide trivial-accessor cleanup (review F6 corrected ~152/~156 figures to ~151 post-Phase-14 baseline).
 
 ### Group S — relocation list (single-subsystem orchestrators)
 
