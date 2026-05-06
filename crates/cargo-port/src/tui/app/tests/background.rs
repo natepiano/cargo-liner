@@ -160,7 +160,7 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     let mut app = make_app_with_config(&[rust_project, non_rust_project], &cfg);
     app.scan.scan_state_mut().phase = ScanPhase::Complete;
 
-    assert_eq!(app.projects().len(), 2);
+    assert_eq!(app.project_list.len(), 2);
 
     let mut hide_cfg = cfg.clone();
     hide_cfg.tui.include_non_rust = NonRustInclusion::Exclude;
@@ -168,13 +168,13 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     wait_for_tree_build(&mut app);
 
     assert!(app.scan.is_complete());
-    assert_eq!(app.projects().len(), 2);
+    assert_eq!(app.project_list.len(), 2);
     app.ensure_visible_rows_cached();
     let visible: Vec<_> = app
         .visible_rows()
         .iter()
         .filter_map(|row| match row {
-            VisibleRow::Root { node_index } => Some(app.projects()[*node_index].path().clone()),
+            VisibleRow::Root { node_index } => Some(app.project_list[*node_index].path().clone()),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -185,9 +185,9 @@ fn completed_scan_hides_and_restores_cached_non_rust_projects_without_rescan() {
     wait_for_tree_build(&mut app);
 
     assert!(app.scan.is_complete());
-    assert_eq!(app.projects().len(), 2);
+    assert_eq!(app.project_list.len(), 2);
     assert!(
-        app.projects()
+        app.project_list
             .iter()
             .any(|entry| entry.item.path() == test_path("~/js").as_path())
     );
@@ -203,7 +203,7 @@ fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
     cfg.tui.include_non_rust = NonRustInclusion::Include;
     app.apply_config(&cfg);
 
-    assert!(app.projects().is_empty());
+    assert!(app.project_list.is_empty());
     assert!(!app.scan.is_complete());
 }
 

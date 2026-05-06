@@ -16,7 +16,7 @@ fn submodule_rows_render_disk_usage() {
     let mut app = make_app(&[root]);
 
     let root_info = app
-        .projects_mut()
+        .project_list
         .at_path_mut(Path::new(&root_path))
         .unwrap_or_else(|| std::process::abort());
     root_info.submodules.push(Submodule {
@@ -33,7 +33,7 @@ fn submodule_rows_render_disk_usage() {
     app.handle_disk_usage(Path::new(&sub_path), 1_234_567);
     app.ensure_visible_rows_cached();
 
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(app.expand(), "root with submodule should expand");
     app.ensure_visible_rows_cached();
 
@@ -171,7 +171,7 @@ fn expand_linked_workspace_worktree_renders_its_members() {
         "expanding the root should show primary and linked worktree rows"
     );
 
-    app.projects_mut().set_cursor(2);
+    app.project_list.set_cursor(2);
     assert!(app.expand(), "linked workspace worktree row should expand");
     app.ensure_visible_rows_cached();
     assert_eq!(
@@ -195,7 +195,7 @@ fn expand_linked_workspace_worktree_renders_its_members() {
         "expanding the linked workspace worktree should show its member group"
     );
 
-    app.projects_mut().set_cursor(3);
+    app.project_list.set_cursor(3);
     assert!(app.expand(), "linked workspace member group should expand");
     app.ensure_visible_rows_cached();
     assert_eq!(
@@ -315,7 +315,7 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
     );
     let mut app = make_app(&[root]);
 
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(app.expand(), "root worktree group should expand");
     app.ensure_visible_rows_cached();
     assert_eq!(app.visible_rows().len(), 3, "root + 2 worktree entries");
@@ -325,7 +325,7 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
 
     let linked_abs = AbsolutePath::from(linked_path.clone());
     assert!(
-        app.projects().is_deleted(&linked_abs),
+        app.project_list.is_deleted(&linked_abs),
         "linked worktree should be deleted"
     );
 
@@ -336,7 +336,7 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
         "deleted worktree should still render until dismissed"
     );
 
-    app.projects_mut().set_cursor(2);
+    app.project_list.set_cursor(2);
     let target = app
         .focused_dismiss_target()
         .expect("deleted linked worktree should be dismissable");
@@ -349,7 +349,7 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
         "dismissing the deleted worktree should collapse the group to the root row"
     );
     assert_eq!(
-        match &app.projects()[0].item {
+        match &app.project_list[0].item {
             RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. }) => {
                 assert_eq!(wtg.live_entry_count(), 1);
                 usize::from(wtg.renders_as_group())
@@ -367,7 +367,7 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
         "selection should move back to the surviving top-level project"
     );
     assert_eq!(
-        app.projects()
+        app.project_list
             .at_path(&linked_abs)
             .expect("linked worktree should remain in the hierarchy")
             .visibility,
@@ -396,7 +396,7 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
     );
     let mut app = make_app(&[root]);
 
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(app.expand(), "root worktree group should expand");
     app.ensure_visible_rows_cached();
     assert_eq!(app.visible_rows().len(), 3, "root + 2 worktree entries");
@@ -412,7 +412,7 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
 
     let linked_abs = AbsolutePath::from(linked_path);
     assert!(
-        app.projects().is_deleted(&linked_abs),
+        app.project_list.is_deleted(&linked_abs),
         "linked workspace should be deleted"
     );
     assert_eq!(
@@ -421,7 +421,7 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
         "deleted linked workspace should still render until dismissed"
     );
 
-    app.projects_mut().set_cursor(2);
+    app.project_list.set_cursor(2);
     let target = app
         .focused_dismiss_target()
         .expect("deleted linked workspace should be dismissable");
@@ -434,7 +434,7 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
         "dismissing the deleted workspace worktree should collapse to the root row"
     );
     assert_eq!(
-        match &app.projects()[0].item {
+        match &app.project_list[0].item {
             RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) => {
                 assert_eq!(wtg.live_entry_count(), 1);
                 usize::from(wtg.renders_as_group())
@@ -476,7 +476,7 @@ fn dismissing_deleted_linked_workspace_worktree_keeps_primary_member_rows_render
     let root = make_workspace_worktrees_item(primary, vec![linked]);
     let mut app = make_app(&[root]);
 
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(app.expand(), "root worktree group should expand");
     app.ensure_visible_rows_cached();
 
@@ -489,7 +489,7 @@ fn dismissing_deleted_linked_workspace_worktree_keeps_primary_member_rows_render
         },
     );
 
-    app.projects_mut().set_cursor(2);
+    app.project_list.set_cursor(2);
     let target = app
         .focused_dismiss_target()
         .expect("deleted linked workspace should be dismissable");
@@ -546,12 +546,12 @@ fn dismissing_deleted_linked_workspace_worktree_preserves_primary_member_disk_si
     let root = make_workspace_worktrees_item(primary, vec![linked]);
     let mut app = make_app(&[root]);
 
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(app.expand(), "root worktree group should expand");
     app.handle_disk_usage(Path::new(&primary_path), 2_000_000);
     app.handle_disk_usage(Path::new(&member_path), 1_234_567);
     assert_eq!(
-        app.projects()
+        app.project_list
             .at_path(Path::new(&member_path))
             .and_then(|info| info.disk_usage_bytes),
         Some(1_234_567)
@@ -567,7 +567,7 @@ fn dismissing_deleted_linked_workspace_worktree_preserves_primary_member_disk_si
         },
     );
 
-    app.projects_mut().set_cursor(2);
+    app.project_list.set_cursor(2);
     let target = app
         .focused_dismiss_target()
         .expect("deleted linked workspace should be dismissable");
@@ -575,7 +575,7 @@ fn dismissing_deleted_linked_workspace_worktree_preserves_primary_member_disk_si
     app.ensure_visible_rows_cached();
 
     assert_eq!(
-        app.projects()
+        app.project_list
             .at_path(Path::new(&member_path))
             .and_then(|info| info.disk_usage_bytes),
         Some(1_234_567),
@@ -622,10 +622,10 @@ fn deleted_linked_workspace_children_render_crossed_out_before_dismiss() {
     let root = make_workspace_worktrees_item(primary, vec![linked]);
     let mut app = make_app(&[root]);
 
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(app.expand(), "root worktree group should expand");
     app.ensure_visible_rows_cached();
-    app.projects_mut().set_cursor(2);
+    app.project_list.set_cursor(2);
     assert!(app.expand(), "linked worktree row should expand");
     app.ensure_visible_rows_cached();
 
@@ -639,7 +639,7 @@ fn deleted_linked_workspace_children_render_crossed_out_before_dismiss() {
     );
 
     assert!(
-        app.projects().is_deleted(Path::new(&linked_path)),
+        app.project_list.is_deleted(Path::new(&linked_path)),
         "linked workspace should be marked deleted"
     );
     assert!(
@@ -689,10 +689,10 @@ fn dismissing_deleted_linked_workspace_member_dismisses_whole_worktree() {
     let root = make_workspace_worktrees_item(primary, vec![linked]);
     let mut app = make_app(&[root]);
 
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(app.expand(), "root worktree group should expand");
     app.ensure_visible_rows_cached();
-    app.projects_mut().set_cursor(2);
+    app.project_list.set_cursor(2);
     assert!(app.expand(), "linked worktree row should expand");
     app.ensure_visible_rows_cached();
 
@@ -705,7 +705,7 @@ fn dismissing_deleted_linked_workspace_member_dismisses_whole_worktree() {
         },
     );
 
-    app.projects_mut().set_cursor(3);
+    app.project_list.set_cursor(3);
     let target = app
         .focused_dismiss_target()
         .expect("deleted linked workspace member should dismiss its worktree");

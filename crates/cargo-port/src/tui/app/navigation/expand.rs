@@ -17,7 +17,7 @@ impl App {
     pub(super) fn expand_key_for_row(&self, row: VisibleRow) -> Option<ExpandKey> {
         match row {
             VisibleRow::Root { node_index } => self
-                .projects()
+                .project_list
                 .get(node_index)?
                 .has_children()
                 .then_some(ExpandKey::Node(node_index)),
@@ -31,7 +31,7 @@ impl App {
             } => {
                 // In the new model, worktree entries don't expand themselves.
                 // But we keep the expand key for backward compat with workspace worktrees.
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 match &item.item {
                     RootItem::Worktrees(WorktreeGroup::Workspaces {
                         primary, linked, ..

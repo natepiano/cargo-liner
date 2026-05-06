@@ -21,19 +21,19 @@ impl App {
         self.maybe_log_startup_phase_completions();
     }
     pub(super) fn reset_startup_phase_state(&mut self) {
-        let disk_expected = startup::initial_disk_roots(self.projects());
+        let disk_expected = startup::initial_disk_roots(&self.project_list);
         let git_expected = self
-            .projects()
+            .project_list
             .git_directories()
             .into_iter()
             .collect::<HashSet<_>>();
         let git_seen = self
-            .projects()
+            .project_list
             .iter()
             .filter(|entry| entry.item.git_info().is_some())
             .filter_map(|entry| entry.item.git_directory())
             .collect::<HashSet<_>>();
-        let metadata_expected = startup::initial_metadata_roots(self.projects());
+        let metadata_expected = startup::initial_metadata_roots(&self.project_list);
         self.startup.scan_complete_at = Some(Instant::now());
         self.startup.toast = None;
         self.startup.complete_at = None;

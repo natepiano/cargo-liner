@@ -110,7 +110,7 @@ fn disk_color(percentile: Option<f64>) -> Style {
 
 pub fn formatted_disk(app: &App, path: &Path) -> String {
     let bytes = app
-        .projects()
+        .project_list
         .at_path(path)
         .and_then(|project| project.disk_usage_bytes)
         .unwrap_or(0);
@@ -127,7 +127,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
         let widths = app.cached_fit_widths();
         let items: Vec<ListItem> = render_tree_items(app, widths);
         let total_str = render::format_bytes(
-            app.projects()
+            app.project_list
                 .iter()
                 .filter_map(|entry| entry.item.disk_usage_bytes())
                 .sum(),
@@ -201,7 +201,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .viewport_mut()
         .set_viewport_rows(usize::from(list_area.height));
     let project_list = List::new(items);
-    let mut list_state = ListState::default().with_selected(Some(app.projects().cursor()));
+    let mut list_state = ListState::default().with_selected(Some(app.project_list.cursor()));
     *list_state.offset_mut() = app.panes.project_list().viewport().scroll_offset();
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
     app.layout_cache.project_list_body = list_area;
@@ -209,7 +209,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .project_list_mut()
         .viewport_mut()
         .set_scroll_offset(list_state.offset());
-    app.projects_mut()
+    app.project_list
         .set_cursor(list_state.selected().unwrap_or(0));
     set_project_list_dismiss_actions(app, list_area, row_width);
 
@@ -270,7 +270,7 @@ fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<
 
 fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
     let focused = app.focus.is(PaneId::ProjectList);
-    let cursor = app.projects().cursor();
+    let cursor = app.project_list.cursor();
     let roots = app.resolved_dirs();
 
     // Count visible rows per root directory and determine which root the
@@ -279,7 +279,7 @@ fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
     for root_path in &roots {
         let name = project::home_relative_path(root_path.as_path());
         let count = app
-            .projects()
+            .project_list
             .iter()
             .filter(|item| item.path().starts_with(root_path.as_path()))
             .count();
@@ -330,7 +330,7 @@ fn render_root_item(
     root_sorted: &[u64],
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
-    let item = &app.projects()[node_index];
+    let item = &app.project_list[node_index];
     let name = &root_labels[node_index];
     let disk = formatted_disk_for_item(item);
     let disk_bytes = item.disk_usage_bytes();
@@ -339,16 +339,16 @@ fn render_root_item(
     let lang = if item.is_rust() {
         item.lang_icon()
     } else {
-        app.projects()
+        app.project_list
             .at_path(item.path())
             .and_then(|p| p.language_stats.as_ref())
             .and_then(|ls| ls.entries.first())
             .map_or("  ", |e| project::language_icon(&e.language))
     };
     let lint_cell = app.lint_cell(&crate::tui::lint_state::Lint::status_for_root(&item.item));
-    let origin_sync = app.projects().git_sync(item.path());
-    let main_sync = app.projects().git_main(item.path());
-    let git_status = app.projects().git_status_for_item(item);
+    let origin_sync = app.project_list.git_sync(item.path());
+    let main_sync = app.project_list.git_main(item.path());
+    let git_status = app.project_list.git_status_for_item(item);
     let prefix = if item.has_children() {
         if app.expanded().contains(&ExpandKey::Node(node_index)) {
             PREFIX_ROOT_EXPANDED
@@ -358,7 +358,7 @@ fn render_root_item(
     } else {
         PREFIX_ROOT_LEAF
     };
-    let deleted = app.projects().is_deleted(item.path());
+    let deleted = app.project_list.is_deleted(item.path());
     let wt_health = item.worktree_health();
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, wt_health);
@@ -403,36 +403,36 @@ fn render_child_item<P: project::ProjectFields>(
     let disk_bytes = project.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project::Package::lang_icon();
-    let lint_cell = if app.projects().is_rust_at_path(path) {
+    let lint_cell = if app.project_list.is_rust_at_path(path) {
         app.lint_cell(&crate::tui::lint_state::Lint::status_for_path(
-            app.projects(),
+            &app.project_list,
             path,
         ))
     } else {
         crate::tui::columns::LintCell::hidden()
     };
     let ci = app.ci_for(path);
-    let hide_git_status = app.projects().is_workspace_member_path(path);
+    let hide_git_status = app.project_list.is_workspace_member_path(path);
     let origin_sync = if hide_git_status
         || matches!(
-            app.projects().git_status_for(path),
+            app.project_list.git_status_for(path),
             Some(crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored)
         ) {
         String::new()
     } else {
-        app.projects().git_sync(path)
+        app.project_list.git_sync(path)
     };
     let main_sync = if hide_git_status
         || matches!(
-            app.projects().git_status_for(path),
+            app.project_list.git_status_for(path),
             Some(crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored)
         ) {
         String::new()
     } else {
-        app.projects().git_main(path)
+        app.project_list.git_main(path)
     };
-    let deleted = inherited_deleted || app.projects().is_deleted(project.path());
-    let git_status = app.projects().git_status_for(path);
+    let deleted = inherited_deleted || app.project_list.is_deleted(project.path());
+    let git_status = app.project_list.git_status_for(path);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
     } else {
@@ -470,7 +470,7 @@ fn render_worktree_entry<'a>(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'a> {
-    let item = &app.projects()[ni];
+    let item = &app.project_list[ni];
     let display_path = app.display_path_for_row(VisibleRow::WorktreeEntry {
         node_index:     ni,
         worktree_index: wi,
@@ -503,10 +503,10 @@ fn render_worktree_entry<'a>(
         &item.item, wi,
     ));
     let ci = app.ci_for(wt_abs);
-    let origin_sync = app.projects().git_sync(wt_abs);
-    let main_sync = app.projects().git_main(wt_abs);
-    let deleted = app.projects().is_deleted(wt_abs);
-    let git_status = app.projects().git_status_for(wt_abs);
+    let origin_sync = app.project_list.git_sync(wt_abs);
+    let main_sync = app.project_list.git_main(wt_abs);
+    let deleted = app.project_list.is_deleted(wt_abs);
+    let git_status = app.project_list.git_status_for(wt_abs);
     let wt_health = worktree_health_for_entry(item, wi);
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, wt_health);
@@ -634,7 +634,7 @@ fn render_wt_group_header<'a>(
     gi: usize,
     widths: &ProjectListWidths,
 ) -> ListItem<'a> {
-    let item = &app.projects()[ni];
+    let item = &app.project_list[ni];
     let (group_name, member_count) = match &item.item {
         RootItem::Worktrees(WorktreeGroup::Workspaces {
             primary, linked, ..
@@ -671,7 +671,7 @@ fn render_wt_member<'a>(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'a> {
-    let item = &app.projects()[ni];
+    let item = &app.project_list[ni];
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
@@ -710,7 +710,7 @@ fn render_wt_member<'a>(
                     } else {
                         linked.get(wi - 1).unwrap_or(primary)
                     };
-                    app.projects().is_deleted(ws.path())
+                    app.project_list.is_deleted(ws.path())
                 },
                 _ => false,
             };
@@ -735,7 +735,7 @@ fn render_member_item(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
-    let item = &app.projects()[node_index];
+    let item = &app.project_list[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (member, member_name, is_named) = match &item.item {
@@ -765,7 +765,7 @@ fn render_member_item(
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |m| {
-            let inherited_deleted = app.projects().is_deleted(item.path());
+            let inherited_deleted = app.project_list.is_deleted(item.path());
             render_child_item(
                 app,
                 m,
@@ -786,7 +786,7 @@ fn render_vendored_item(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
-    let item = &app.projects()[node_index];
+    let item = &app.project_list[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (vendored, vendored_display_name) = match &item.item {
@@ -821,7 +821,7 @@ fn render_vendored_item(
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |v| {
-            let inherited_deleted = app.projects().is_deleted(item.path());
+            let inherited_deleted = app.project_list.is_deleted(item.path());
             render_child_item(
                 app,
                 v,
@@ -842,7 +842,7 @@ fn render_submodule_item(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
-    let item = &app.projects()[node_index];
+    let item = &app.project_list[node_index];
     let Some(submodule) = item.submodules().get(submodule_index) else {
         let row = columns::build_group_header_cells(PREFIX_SUBMODULE, "");
         return ListItem::new(columns::row_to_line(&row, widths));
@@ -872,9 +872,9 @@ fn render_path_only_entry(
     let path = entry.path().as_path();
     let disk = formatted_disk(app, path);
     let ds = disk_color(disk_percentile(entry.info().disk_usage_bytes, sorted));
-    let git_status = app.projects().git_status_for(path);
+    let git_status = app.project_list.git_status_for(path);
     let deleted =
-        app.projects().is_deleted(inherited_deleted_path) || app.projects().is_deleted(path);
+        app.project_list.is_deleted(inherited_deleted_path) || app.project_list.is_deleted(path);
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, entry.info().worktree_health);
     let row = columns::build_row_cells(ProjectRow {
@@ -910,7 +910,7 @@ fn render_wt_vendored_item(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
-    let item = &app.projects()[node_index];
+    let item = &app.project_list[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let vendored_pkg = match &item.item {
@@ -954,7 +954,7 @@ fn render_wt_vendored_item(
                     } else {
                         linked.get(worktree_index - 1).unwrap_or(primary)
                     };
-                    app.projects().is_deleted(ws.path())
+                    app.project_list.is_deleted(ws.path())
                 },
                 RootItem::Worktrees(WorktreeGroup::Packages {
                     primary, linked, ..
@@ -964,7 +964,7 @@ fn render_wt_vendored_item(
                     } else {
                         linked.get(worktree_index - 1).unwrap_or(primary)
                     };
-                    app.projects().is_deleted(pkg.path())
+                    app.project_list.is_deleted(pkg.path())
                 },
                 _ => false,
             };
@@ -985,11 +985,11 @@ pub fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<ListItem<
     let root_sorted = app.cached_root_sorted();
     let child_sorted = app.cached_child_sorted();
     let root_labels = app
-        .projects()
+        .project_list
         .resolved_root_labels(app.config.include_non_rust().includes_non_rust());
     let focus = app.focus.pane_state(PaneId::ProjectList);
     let pane = app.panes.project_list().viewport();
-    let cursor = app.projects().cursor();
+    let cursor = app.project_list.cursor();
 
     let rows = app.visible_rows();
     rows.iter()
@@ -1020,7 +1020,7 @@ fn render_tree_item(
             node_index,
             group_index,
         } => {
-            let item = &app.projects()[*node_index];
+            let item = &app.project_list[*node_index];
             let (group_name, member_count) = match &item.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     let group = &ws.groups()[*group_index];

@@ -23,7 +23,7 @@ impl App {
     /// lint-runtime registration) by reusing that helper for the
     /// total — the new breakdown fields just ride alongside.
     pub(super) fn apply_disk_usage_breakdown(&mut self, path: &Path, sizes: DirSizes) {
-        if let Some(project) = self.projects_mut().at_path_mut(path) {
+        if let Some(project) = self.project_list.at_path_mut(path) {
             project.in_project_target = Some(sizes.in_project_target);
             project.in_project_non_target = Some(sizes.in_project_non_target);
         }
@@ -32,7 +32,7 @@ impl App {
     pub(super) fn apply_disk_usage(&mut self, path: &Path, bytes: u64) {
         // Set disk usage on the matching project item and update visibility.
         let mut lint_runtime_changed = false;
-        if let Some(project) = self.projects_mut().at_path_mut(path) {
+        if let Some(project) = self.project_list.at_path_mut(path) {
             project.disk_usage_bytes = Some(bytes);
             if bytes == 0 && !path.exists() && project.visibility != Deleted {
                 project.visibility = Deleted;

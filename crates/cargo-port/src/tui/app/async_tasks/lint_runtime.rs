@@ -29,7 +29,7 @@ impl App {
         self.background.replace_watcher_sender(new_watcher);
     }
     pub fn register_existing_projects(&self) {
-        self.projects().for_each_leaf(|item| {
+        self.project_list.for_each_leaf(|item| {
             self.register_item_background_services(item);
         });
     }
@@ -45,7 +45,7 @@ impl App {
     }
     pub fn refresh_lint_runs_from_disk(&mut self) {
         let mut paths = Vec::new();
-        self.projects().for_each_leaf_path(|path, is_rust| {
+        self.project_list.for_each_leaf_path(|path, is_rust| {
             if is_rust {
                 paths.push(path.to_path_buf());
             }
@@ -59,7 +59,7 @@ impl App {
         self.refresh_lint_cache_usage_from_disk();
     }
     pub(super) fn reload_lint_history(&mut self, project_path: &Path) {
-        if !self.projects().is_rust_at_path(project_path) {
+        if !self.project_list.is_rust_at_path(project_path) {
             return;
         }
         let runs = lint::read_history(project_path);
@@ -82,7 +82,7 @@ impl App {
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
 
-        for entry in self.projects() {
+        for entry in &self.project_list {
             let items: Vec<(&AbsolutePath, bool)> = match &entry.item {
                 RootItem::Worktrees(WorktreeGroup::Workspaces {
                     primary, linked, ..
@@ -114,7 +114,7 @@ impl App {
         }
         self.lint_runtime_root_entries()
             .into_iter()
-            .filter(|(path, _)| !self.projects().is_deleted(path))
+            .filter(|(path, _)| !self.project_list.is_deleted(path))
             .map(|(abs_path, is_rust)| RegisterProjectRequest {
                 project_label: project::home_relative_path(&abs_path),
                 abs_path,
@@ -133,7 +133,7 @@ impl App {
             return 0;
         };
         let mut count = 0;
-        for entry in self.projects() {
+        for entry in &self.project_list {
             match &entry.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     runtime.register_project(RegisterProjectRequest {
@@ -189,7 +189,7 @@ impl App {
         let path = item.path();
         // Skip workspace members — the workspace root's watcher covers them.
         let mut is_member = false;
-        self.projects().for_each_leaf(|existing| {
+        self.project_list.for_each_leaf(|existing| {
             if matches!(
                 &existing.item,
                 RootItem::Rust(crate::project::RustProject::Workspace(_))
@@ -215,7 +215,7 @@ impl App {
         });
     }
     pub(super) fn register_lint_for_path(&self, path: &Path) {
-        if let Some(item) = self.projects().iter().find(|i| i.path() == path) {
+        if let Some(item) = self.project_list.iter().find(|i| i.path() == path) {
             self.register_lint_project_if_eligible(item);
         }
     }

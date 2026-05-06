@@ -63,7 +63,7 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
         Some(Conclusion::Success)
     );
     assert!(matches!(
-        app.projects().ci_data_for(test_path("~/ws").as_path()),
+        app.project_list.ci_data_for(test_path("~/ws").as_path()),
         Some(crate::project::ProjectCiData::Loaded(_))
     ));
     assert_eq!(
@@ -71,13 +71,13 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
         Some(Conclusion::Success)
     );
     assert!(
-        app.projects()
+        app.project_list
             .ci_info_for(test_path("~/ws/core").as_path())
             .is_some()
     );
     // Member resolves to the same entry-level ci_data as the workspace root.
     assert!(matches!(
-        app.projects().ci_data_for(test_path("~/ws/core").as_path()),
+        app.project_list.ci_data_for(test_path("~/ws/core").as_path()),
         Some(crate::project::ProjectCiData::Loaded(_))
     ));
 }
@@ -137,7 +137,7 @@ fn linked_worktree_shares_github_metadata_with_primary_after_repo_meta_fetch() {
     app.handle_repo_meta(primary_path.as_path(), 42, Some("a great repo".to_string()));
 
     let read_description = |p: &Path| {
-        app.projects()
+        app.project_list
             .entry_containing(p)
             .and_then(|entry| entry.git_repo.as_ref())
             .and_then(|repo| repo.github_info.as_ref())
@@ -191,11 +191,11 @@ fn worktree_group_shares_ci_data_across_primary_and_linked() {
 
     // Linked worktree resolves to the same per-repo ci_data slot.
     assert!(matches!(
-        app.projects().ci_data_for(feature_path.as_path()),
+        app.project_list.ci_data_for(feature_path.as_path()),
         Some(crate::project::ProjectCiData::Loaded(_))
     ));
     // Member inside the workspace also shares the entry-level ci_data.
-    assert!(app.projects().ci_info_for(member.path()).is_some());
+    assert!(app.project_list.ci_info_for(member.path()).is_some());
 }
 
 #[test]
@@ -656,9 +656,9 @@ fn vendored_path_dependency_becomes_ci_owner() {
     let mut app = make_app(&[make_project(Some("app"), "~/app"), vendored.clone()]);
     apply_items(&mut app, &[root_item]);
 
-    assert!(app.projects().is_vendored_path(vendored.path()));
+    assert!(app.project_list.is_vendored_path(vendored.path()));
     assert!(
-        app.projects().entry_containing(vendored.path()).is_some(),
+        app.project_list.entry_containing(vendored.path()).is_some(),
         "vendored path should resolve to an owning ProjectEntry"
     );
 }
@@ -703,14 +703,14 @@ fn git_status_suppresses_sync_for_untracked_and_ignored() {
         info.0.status = GitStatus::Untracked;
         info
     });
-    assert!(app.projects().git_sync(project.path()).is_empty());
+    assert!(app.project_list.git_sync(project.path()).is_empty());
 
     apply_git_info(&mut app, project.path(), {
         let mut info = base_info();
         info.0.status = GitStatus::Ignored;
         info
     });
-    assert!(app.projects().git_sync(project.path()).is_empty());
+    assert!(app.project_list.git_sync(project.path()).is_empty());
 }
 
 #[test]
@@ -755,7 +755,7 @@ fn background_git_info_updates_rendered_git_status() {
         },
     );
     assert_eq!(
-        app.projects().git_status_for(project.path()),
+        app.project_list.git_status_for(project.path()),
         Some(GitStatus::Modified)
     );
 
@@ -795,7 +795,7 @@ fn background_git_info_updates_rendered_git_status() {
         },
     );
     assert_eq!(
-        app.projects().git_status_for(project.path()),
+        app.project_list.git_status_for(project.path()),
         Some(GitStatus::Clean)
     );
 }
@@ -835,7 +835,7 @@ fn git_sync_shows_ascii_fill_for_local_only_branch() {
         ),
     );
 
-    assert_eq!(app.projects().git_sync(project.path()), NO_REMOTE_SYNC);
+    assert_eq!(app.project_list.git_sync(project.path()), NO_REMOTE_SYNC);
 }
 
 #[test]
@@ -873,7 +873,7 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
         ),
     );
 
-    assert_eq!(app.projects().git_sync(project.path()), NO_REMOTE_SYNC);
+    assert_eq!(app.project_list.git_sync(project.path()), NO_REMOTE_SYNC);
 }
 
 #[test]
@@ -933,7 +933,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     app.scan.scan_state_mut().phase = ScanPhase::Complete;
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     app.sync_selected_project();
 
     apply_git_info(
@@ -1022,14 +1022,14 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
         ),
     );
 
-    assert_eq!(app.projects().git_main(project.path()), IN_SYNC);
+    assert_eq!(app.project_list.git_main(project.path()), IN_SYNC);
 }
 
 #[test]
 fn git_first_commit_arriving_before_git_info_is_preserved() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     app.sync_selected_project();
 
     apply_bg_msg(
@@ -1058,7 +1058,7 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
     app.ensure_detail_cached();
 
     assert_eq!(
-        app.projects()
+        app.project_list
             .repo_info_for(test_path("~/demo").as_path())
             .and_then(|repo| repo.first_commit.as_deref()),
         Some("2026-03-12T21:18:54-04:00")
@@ -1077,7 +1077,7 @@ fn git_first_commit_arriving_before_git_info_is_preserved() {
 fn git_info_invalidates_selected_git_pane_cache() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
 
@@ -1112,7 +1112,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     let project_a = make_project(Some("alpha"), "~/alpha");
     let project_b = make_project(Some("beta"), "~/beta");
     let mut app = make_app(&[project_a, project_b]);
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     app.sync_selected_project();
 
     // Seed the cache.
@@ -1140,7 +1140,7 @@ fn ensure_detail_cached_short_circuits_when_nothing_changed() {
     );
 
     // Changing the selected row invalidates the stamp → must rebuild.
-    app.projects_mut().set_cursor(1);
+    app.project_list.set_cursor(1);
     app.sync_selected_project();
     app.ensure_detail_cached();
     assert_eq!(
@@ -1212,7 +1212,7 @@ fn background_message_for_unselected_path_does_not_invalidate_detail() {
     let project_a = make_project(Some("alpha"), "~/alpha");
     let project_b = make_project(Some("beta"), "~/beta");
     let mut app = make_app(&[project_a, project_b]);
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
     let baseline = app.panes.pane_data().detail_build_count();
@@ -1271,19 +1271,19 @@ fn lint_rollups_distinguish_root_from_primary_worktree() {
     let mut app = make_app(&[make_project(None, "~/ws")]);
     app.config.current_mut().lint.enabled = true;
     apply_items(&mut app, &[root]);
-    app.projects_mut()
+    app.project_list
         .lint_at_path_mut(&test_path("~/ws"))
         .unwrap()
         .set_status(LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")));
-    app.projects_mut()
+    app.project_list
         .lint_at_path_mut(&test_path("~/ws_feat"))
         .unwrap()
         .set_status(LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")));
 
-    let root_status = app.projects().first().unwrap().lint_rollup_status();
+    let root_status = app.project_list.first().unwrap().lint_rollup_status();
     assert!(matches!(root_status, LintStatus::Failed(_)));
 
-    let RootItem::Worktrees(g) = &app.projects().first().unwrap().item else {
+    let RootItem::Worktrees(g) = &app.project_list.first().unwrap().item else {
         panic!("expected Worktrees");
     };
     assert!(matches!(
@@ -1307,12 +1307,12 @@ fn lint_rollup_prefers_running_root_over_member_history() {
     let mut app = make_app(&[make_workspace_project(None, "~/ws")]);
     app.config.current_mut().lint.enabled = true;
     apply_items(&mut app, &[root]);
-    app.projects_mut()
+    app.project_list
         .lint_at_path_mut(&test_path("~/ws"))
         .unwrap()
         .set_status(LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")));
 
-    let root_status = app.projects().first().unwrap().lint_rollup_status();
+    let root_status = app.project_list.first().unwrap().lint_rollup_status();
     assert!(matches!(root_status, LintStatus::Running(_)));
 }
 
@@ -1326,19 +1326,19 @@ fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
     let mut app = make_app(&[make_project(None, "~/ws")]);
     app.config.current_mut().lint.enabled = true;
     apply_items(&mut app, &[root]);
-    app.projects_mut()
+    app.project_list
         .lint_at_path_mut(&test_path("~/ws"))
         .unwrap()
         .set_status(LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")));
-    app.projects_mut()
+    app.project_list
         .lint_at_path_mut(&test_path("~/ws_feat"))
         .unwrap()
         .set_status(LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")));
 
-    let root_status = app.projects().first().unwrap().lint_rollup_status();
+    let root_status = app.project_list.first().unwrap().lint_rollup_status();
     assert!(matches!(root_status, LintStatus::Running(_)));
 
-    let RootItem::Worktrees(g) = &app.projects().first().unwrap().item else {
+    let RootItem::Worktrees(g) = &app.project_list.first().unwrap().item else {
         panic!("expected Worktrees");
     };
     assert!(matches!(
@@ -1941,7 +1941,7 @@ fn startup_ready_waits_on_metadata_phase() {
 fn clean_selection_on_root_rust_project_returns_project_selection() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(std::slice::from_ref(&project));
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
 
     let selection = app
         .clean_selection()
@@ -1962,7 +1962,7 @@ fn clean_selection_on_non_rust_root_is_none() {
     // clean-ineligible so the shortcut is dimmed in the status bar.
     let non_rust = make_non_rust_project(Some("notes"), "~/notes");
     let mut app = make_app(std::slice::from_ref(&non_rust));
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(app.clean_selection().is_none());
 }
 
@@ -1996,7 +1996,7 @@ fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
         vec![linked],
     ));
     let mut app = make_app(std::slice::from_ref(&worktrees));
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
 
     match app.clean_selection().expect("group root is clean-eligible") {
         CleanSelection::WorktreeGroup { primary, linked } => {
@@ -2138,7 +2138,7 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     // Before metadata arrival: Cargo::default() → publishable true but
     // empty types / examples / benches / test_count.
     let pre_types = app
-        .projects()
+        .project_list
         .rust_info_at_path(project_path.as_path())
         .map_or(0, |r| r.cargo().types().len());
     assert_eq!(pre_types, 0, "pre-metadata types stay empty");
@@ -2202,7 +2202,7 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     });
 
     let cargo = app
-        .projects()
+        .project_list
         .rust_info_at_path(project_path.as_path())
         .map_or_else(|| std::process::abort(), |r| r.cargo().clone());
     assert!(
@@ -2241,10 +2241,10 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     // can prove reset_fit_widths fired (reset re-seeds with
     // `generation: u64::MAX`, which is the construct-time default).
     {
-        let widths = app.projects_mut().fit_widths_mut();
+        let widths = app.project_list.fit_widths_mut();
         widths.generation = 0;
     }
-    assert_eq!(app.projects().fit_widths().generation, 0);
+    assert_eq!(app.project_list.fit_widths().generation, 0);
 
     let cfg = app.config.current().clone();
     app.apply_lint_config_change(&cfg);
@@ -2263,7 +2263,7 @@ fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
     );
     // Selection: fit_widths reset (back to construct-time sentinel).
     assert_eq!(
-        app.projects().fit_widths().generation,
+        app.project_list.fit_widths().generation,
         u64::MAX,
         "apply_lint_config_change must reset fit_widths"
     );

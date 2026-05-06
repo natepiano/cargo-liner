@@ -11,7 +11,7 @@ use crate::tui::app::App;
 impl App {
     /// Check if a group at the given indices is an inline (unnamed) group.
     pub(super) fn is_inline_group(&self, ni: usize, gi: usize) -> bool {
-        let Some(item) = self.projects().get(ni) else {
+        let Some(item) = self.project_list.get(ni) else {
             return true;
         };
         match &item.item {
@@ -24,7 +24,7 @@ impl App {
 
     /// Check if a worktree group at the given indices is an inline (unnamed) group.
     pub(super) fn is_worktree_inline_group(&self, ni: usize, wi: usize, gi: usize) -> bool {
-        let Some(item) = self.projects().get(ni) else {
+        let Some(item) = self.project_list.get(ni) else {
             return true;
         };
         match &item.item {

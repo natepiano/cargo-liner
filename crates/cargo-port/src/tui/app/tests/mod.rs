@@ -139,7 +139,7 @@ fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
 
 fn set_loaded_ci(app: &mut App, path: &Path, runs: Vec<CiRun>, exhausted: bool, github_total: u32) {
     let entry = app
-        .projects_mut()
+        .project_list
         .entry_containing_mut(path)
         .unwrap_or_else(|| std::process::abort());
     let repo = entry.git_repo.get_or_insert_with(Default::default);
@@ -152,7 +152,7 @@ fn set_loaded_ci(app: &mut App, path: &Path, runs: Vec<CiRun>, exhausted: bool, 
 
 fn loaded_ci<'a>(app: &'a App, path: &Path) -> &'a ProjectCiInfo {
     match &app
-        .projects()
+        .project_list
         .entry_containing(path)
         .and_then(|entry| entry.git_repo.as_ref())
         .unwrap_or_else(|| std::process::abort())
@@ -166,10 +166,10 @@ fn loaded_ci<'a>(app: &'a App, path: &Path) -> &'a ProjectCiInfo {
 fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
     app.ensure_visible_rows_cached();
     let labels = app
-        .projects()
+        .project_list
         .resolved_root_labels(app.config.include_non_rust().includes_non_rust());
     let widths = crate::tui::panes::compute_project_list_widths(
-        app.projects(),
+        &app.project_list,
         &labels,
         app.config.lint_enabled(),
         0,
@@ -198,10 +198,10 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
 fn render_tree_buffer(app: &mut App) -> (Buffer, ProjectListWidths) {
     app.ensure_visible_rows_cached();
     let labels = app
-        .projects()
+        .project_list
         .resolved_root_labels(app.config.include_non_rust().includes_non_rust());
     let widths = crate::tui::panes::compute_project_list_widths(
-        app.projects(),
+        &app.project_list,
         &labels,
         app.config.lint_enabled(),
         0,
@@ -605,8 +605,8 @@ impl WorktreeProjectKind {
     fn root_item(dir: &Path) -> RootItem { item_from_project_dir(dir) }
 
     fn assert_group_layout(self, app: &App, linked_len: usize, context: &str) {
-        assert_eq!(app.projects().len(), 1, "{context}");
-        match (self, &app.projects()[0].item) {
+        assert_eq!(app.project_list.len(), 1, "{context}");
+        match (self, &app.project_list[0].item) {
             (Self::Package, RootItem::Worktrees(WorktreeGroup::Packages { linked, .. })) => {
                 assert_eq!(linked.len(), linked_len, "{context}");
             },
@@ -645,7 +645,7 @@ fn expect_real_discovery_creates_group(kind: WorktreeProjectKind) {
         "real worktree discovery should create a worktree group",
     );
 
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(app.expand(), "root should expand into worktree entries");
     app.ensure_visible_rows_cached();
     assert_eq!(app.visible_rows().len(), 3);
@@ -707,11 +707,11 @@ fn expect_synthetic_discovery_creates_group(kind: WorktreeProjectKind) {
 
             let mut app = make_app(&[primary]);
             assert!(app.handle_project_discovered(linked));
-            assert_eq!(app.projects().len(), 1);
+            assert_eq!(app.project_list.len(), 1);
 
             let RootItem::Worktrees(WorktreeGroup::Packages {
                 primary, linked, ..
-            }) = &app.projects()[0].item
+            }) = &app.project_list[0].item
             else {
                 panic!("expected discovered worktree to create a package worktree group");
             };
@@ -739,11 +739,11 @@ fn expect_synthetic_discovery_creates_group(kind: WorktreeProjectKind) {
 
             let mut app = make_app(&[primary]);
             assert!(app.handle_project_discovered(linked));
-            assert_eq!(app.projects().len(), 1);
+            assert_eq!(app.project_list.len(), 1);
 
             let RootItem::Worktrees(WorktreeGroup::Workspaces {
                 primary, linked, ..
-            }) = &app.projects()[0].item
+            }) = &app.project_list[0].item
             else {
                 panic!("expected discovered workspace worktree to create a worktree group");
             };
@@ -783,11 +783,11 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
 
             let mut app = make_app(&[root]);
             assert!(app.handle_project_discovered(new_linked));
-            assert_eq!(app.projects().len(), 1);
+            assert_eq!(app.project_list.len(), 1);
 
             let RootItem::Worktrees(WorktreeGroup::Packages {
                 primary: _, linked, ..
-            }) = &app.projects()[0].item
+            }) = &app.project_list[0].item
             else {
                 panic!("expected existing root to remain a package worktree group");
             };
@@ -834,10 +834,10 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
 
             let mut app = make_app(&[root]);
             assert!(app.handle_project_discovered(new_linked));
-            assert_eq!(app.projects().len(), 1);
+            assert_eq!(app.project_list.len(), 1);
 
             let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) =
-                &app.projects()[0].item
+                &app.project_list[0].item
             else {
                 panic!("expected existing root to remain a workspace worktree group");
             };
@@ -891,7 +891,7 @@ fn expect_refresh_regroups_stale_top_level_discovery(kind: WorktreeProjectKind) 
             item: stale_discovery,
         },
     );
-    assert_eq!(app.projects().len(), 2);
+    assert_eq!(app.project_list.len(), 2);
 
     let refreshed = WorktreeProjectKind::root_item(&linked_dir);
     apply_bg_msg(
@@ -904,7 +904,7 @@ fn expect_refresh_regroups_stale_top_level_discovery(kind: WorktreeProjectKind) 
         1,
         "refreshing the stale top-level row should regroup it under the primary worktree container",
     );
-    match (kind, &app.projects()[0].item) {
+    match (kind, &app.project_list[0].item) {
         (
             WorktreeProjectKind::Package,
             RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }),
@@ -963,7 +963,7 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
             item: stale_discovery,
         },
     );
-    assert_eq!(app.projects().len(), 2);
+    assert_eq!(app.project_list.len(), 2);
 
     let refreshed = WorktreeProjectKind::root_item(&linked_two_dir);
     apply_bg_msg(
@@ -976,7 +976,7 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
         2,
         "refresh should fold the stale row into the existing worktree group",
     );
-    match (kind, &app.projects()[0].item) {
+    match (kind, &app.project_list[0].item) {
         (
             WorktreeProjectKind::Package,
             RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }),
@@ -996,7 +996,7 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
 }
 
 fn assert_deleted_linked_worktree_dismisses_to_root(app: &mut App, linked_dir: &Path) {
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(
         app.expand(),
         "root should expand into worktree entries after regroup"
@@ -1012,8 +1012,8 @@ fn assert_deleted_linked_worktree_dismisses_to_root(app: &mut App, linked_dir: &
             bytes: 0,
         },
     );
-    assert!(app.projects().is_deleted(linked_dir));
-    app.projects_mut().set_cursor(2);
+    assert!(app.project_list.is_deleted(linked_dir));
+    app.project_list.set_cursor(2);
     let target = app
         .focused_dismiss_target()
         .expect("deleted linked worktree should be dismissable");

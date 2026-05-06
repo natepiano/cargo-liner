@@ -54,7 +54,7 @@ impl App {
                 fit_results = stats.fit_results,
                 disk_results = stats.disk_results,
                 needs_rebuild = stats.needs_rebuild,
-                items = self.projects().len(),
+                items = self.project_list.len(),
                 "poll_background"
             );
         }
@@ -115,12 +115,12 @@ impl App {
             match msg {
                 CiFetchMsg::Complete { path, result, kind } => {
                     let before = self
-                        .projects()
+                        .project_list
                         .ci_info_for(Path::new(&path))
                         .map_or(0, |info| info.runs.len());
                     self.handle_ci_fetch_complete(&path, result, kind);
                     let after = self
-                        .projects()
+                        .project_list
                         .ci_info_for(Path::new(&path))
                         .map_or(0, |info| info.runs.len());
                     let new_runs = after.saturating_sub(before);

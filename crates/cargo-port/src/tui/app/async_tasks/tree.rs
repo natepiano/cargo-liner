@@ -32,7 +32,7 @@ impl App {
         // Try to restore selection
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
-        } else if !self.projects().is_empty() {
+        } else if !self.project_list.is_empty() {
             self.project_list.set_cursor(0);
         }
         if should_focus_project_list {
@@ -41,7 +41,7 @@ impl App {
         self.sync_selected_project();
     }
     pub(super) fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
-        self.projects()
+        self.project_list
             .iter()
             .enumerate()
             .filter_map(|(ni, entry)| {

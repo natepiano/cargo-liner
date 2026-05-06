@@ -23,16 +23,16 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
     app.expanded_mut().insert(ExpandKey::Node(0));
     app.ensure_visible_rows_cached();
 
-    app.projects_mut()
+    app.project_list
         .lint_at_path_mut(&test_path("~/ws"))
         .unwrap()
         .set_status(LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")));
-    app.projects_mut()
+    app.project_list
         .lint_at_path_mut(&test_path("~/ws_feat"))
         .unwrap()
         .set_status(LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")));
 
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     app.sync_selected_project();
     app.ensure_detail_cached();
     let root_worktrees = app.panes.git().content().map(|g| g.worktrees.clone());
@@ -45,7 +45,7 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
         Some("ws_feat")
     );
 
-    app.projects_mut().set_cursor(1);
+    app.project_list.set_cursor(1);
     app.sync_selected_project();
     app.ensure_detail_cached();
     assert_eq!(
@@ -97,7 +97,7 @@ fn linked_worktree_entry_builds_detail_for_selected_row() {
         ]
     );
 
-    app.projects_mut().set_cursor(2);
+    app.project_list.set_cursor(2);
     app.sync_selected_project();
     app.ensure_detail_cached();
 
@@ -127,9 +127,9 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
     app.handle_disk_usage(test_path("~/ws").as_path(), 15);
     app.handle_disk_usage(test_path("~/ws_feat").as_path(), 21);
 
-    assert_eq!(app.projects()[0].disk_usage_bytes(), Some(36));
+    assert_eq!(app.project_list[0].disk_usage_bytes(), Some(36));
     assert_eq!(
-        crate::tui::panes::formatted_disk_for_item(&app.projects()[0].item),
+        crate::tui::panes::formatted_disk_for_item(&app.project_list[0].item),
         crate::tui::render::format_bytes(36)
     );
 }
@@ -157,7 +157,7 @@ fn handle_project_discovered_deduplicates_by_path() {
     app.handle_project_discovered(pkg1);
     app.handle_project_discovered(pkg2);
     app.handle_project_discovered(pkg3);
-    assert_eq!(app.projects().len(), 2);
+    assert_eq!(app.project_list.len(), 2);
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn handle_project_discovered_inserts_new_root_in_sorted_position() {
     )));
 
     let actual: Vec<_> = app
-        .projects()
+        .project_list
         .iter()
         .map(|entry| entry.item.path())
         .collect();
@@ -237,7 +237,7 @@ fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace
         BackgroundMsg::ProjectDiscovered { item: linked_item },
     );
 
-    let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) = &app.projects()[0].item
+    let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) = &app.project_list[0].item
     else {
         panic!("expected discovered workspace worktree to form a worktree group");
     };
@@ -247,7 +247,7 @@ fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace
         "linked workspace worktree should arrive with member groups populated"
     );
 
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(app.expand(), "root should expand into worktree entries");
     app.ensure_visible_rows_cached();
     assert_eq!(
@@ -265,7 +265,7 @@ fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace
         ]
     );
 
-    app.projects_mut().set_cursor(2);
+    app.project_list.set_cursor(2);
     assert!(
         app.expand(),
         "linked workspace worktree should expand into its workspace members"
@@ -634,7 +634,7 @@ fn handle_project_discovered_does_not_allocate_per_comparison() {
         app.handle_project_discovered(item);
     }
     let elapsed = start.elapsed();
-    assert_eq!(app.projects().len(), 200);
+    assert_eq!(app.project_list.len(), 200);
     assert!(
         elapsed.as_millis() < 100,
         "discovery of 200 projects took {elapsed:?} - possible display_path allocation regression"
@@ -647,16 +647,16 @@ fn is_deleted_does_not_allocate_display_paths() {
     for i in 0..200 {
         let path = format!("/abs/project_{i}");
         let item = RootItem::Rust(RustProject::Package(make_package_raw(None, &path, None)));
-        app.projects_mut().push(item);
+        app.project_list.push(item);
     }
-    let target = app.projects()[100].path().to_path_buf();
-    app.projects_mut()
+    let target = app.project_list[100].path().to_path_buf();
+    app.project_list
         .at_path_mut(&target)
         .expect("target project should exist")
         .visibility = Deleted;
     let start = std::time::Instant::now();
     for _ in 0..1000 {
-        let _ = app.projects().is_deleted(&target);
+        let _ = app.project_list.is_deleted(&target);
     }
     let elapsed = start.elapsed();
     assert!(

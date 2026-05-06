@@ -44,7 +44,7 @@ fn expanded_workspace_members_use_the_parent_shimmer_owner() {
     app.scan.scan_state_mut().phase = ScanPhase::Complete;
 
     assert!(app.handle_project_discovered(workspace));
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(app.expand());
     app.ensure_visible_rows_cached();
 

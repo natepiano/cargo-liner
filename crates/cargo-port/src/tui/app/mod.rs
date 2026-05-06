@@ -202,7 +202,7 @@ pub(super) struct App {
     /// info, language stats, package/workspace fields, and disk usage
     /// all live inside the tree. Every subsystem that produces
     /// per-project data writes into it.
-    project_list:            ProjectList,
+    pub(super) project_list: ProjectList,
     /// Scan subsystem. Owns `scan` (`ScanState`),
     /// `dirty`, `data_generation`, `discovery_shimmers`,
     /// `pending_git_first_commit`, `metadata_store`,
@@ -421,13 +421,9 @@ impl App {
         self.prune_toasts();
     }
 
-    pub(super) const fn projects(&self) -> &ProjectList { &self.project_list }
-
-    pub(super) const fn projects_mut(&mut self) -> &mut ProjectList { &mut self.project_list }
-
     pub(super) fn selected_ci_path(&self) -> Option<AbsolutePath> {
         let path = self.selected_project_path()?;
-        let entry = self.projects().entry_containing(path)?;
+        let entry = self.project_list.entry_containing(path)?;
         Some(entry.item.path().clone())
     }
 
@@ -439,17 +435,17 @@ impl App {
     pub(super) fn ci_for(&self, path: &Path) -> Option<Conclusion> {
         // A branch with no upstream tracking can't have CI runs — don't
         // show the parent repo's result for an unpushed worktree branch.
-        if self.projects().unpublished_ci_branch_name(path).is_some() {
+        if self.project_list.unpublished_ci_branch_name(path).is_some() {
             return None;
         }
-        self.projects()
+        self.project_list
             .ci_info_for(path)
             .and_then(|_| self.latest_ci_run_for_path(path))
             .map(|run| run.conclusion)
     }
 
     pub(super) fn ci_is_fetching(&self, path: &Path) -> bool {
-        self.projects().entry_containing(path).is_some_and(|entry| {
+        self.project_list.entry_containing(path).is_some_and(|entry| {
             self.ci
                 .fetch_tracker()
                 .is_fetching(entry.item.path().as_path())
@@ -604,25 +600,25 @@ impl App {
     }
 
     fn discovery_scope_contains(&self, session_path: &Path, row_path: &Path) -> bool {
-        self.projects()
+        self.project_list
             .iter()
             .any(|item| root_item_scope_contains(item, session_path, row_path))
     }
 
     fn discovery_parent_row(&self, session_path: &Path) -> Option<DiscoveryParentRow> {
-        self.projects()
+        self.project_list
             .iter()
             .find_map(|item| root_item_parent_row(item, session_path))
     }
 
     pub(super) fn selected_project_is_deleted(&self) -> bool {
         self.selected_project_path()
-            .is_some_and(|path| self.projects().is_deleted(path))
+            .is_some_and(|path| self.project_list.is_deleted(path))
     }
 
     pub(super) fn prune_inactive_project_state(&mut self) {
         let mut all_paths: HashSet<AbsolutePath> = HashSet::new();
-        self.projects().for_each_leaf_path(|path, _| {
+        self.project_list.for_each_leaf_path(|path, _| {
             all_paths.insert(AbsolutePath::from(path));
         });
         self.scan
@@ -634,22 +630,22 @@ impl App {
     }
 
     pub(super) fn lint_at_path(&self, path: &Path) -> Option<&LintRuns> {
-        self.projects().lint_at_path(path)
+        self.project_list.lint_at_path(path)
     }
 
     pub(super) fn lint_at_path_mut(&mut self, path: &Path) -> Option<&mut LintRuns> {
-        self.projects_mut().lint_at_path_mut(path)
+        self.project_list.lint_at_path_mut(path)
     }
 
     pub(super) fn clear_all_lint_state(&mut self) {
         let mut paths = Vec::new();
-        self.projects().for_each_leaf_path(|path, is_rust| {
+        self.project_list.for_each_leaf_path(|path, is_rust| {
             if is_rust {
                 paths.push(path.to_path_buf());
             }
         });
         for path in &paths {
-            if let Some(lr) = self.projects_mut().lint_at_path_mut(path) {
+            if let Some(lr) = self.project_list.lint_at_path_mut(path) {
                 lr.clear_runs();
             }
         }
@@ -954,7 +950,7 @@ impl App {
             PaneBehavior::DetailFields => match pane {
                 PaneId::Package => self.selected_project_path().is_some(),
                 PaneId::Lang => self.selected_project_path().is_some_and(|path| {
-                    self.projects()
+                    self.project_list
                         .at_path(path)
                         .and_then(|p| p.language_stats.as_ref())
                         .is_some_and(|ls| !ls.entries.is_empty())

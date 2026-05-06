@@ -15,9 +15,9 @@ impl App {
         version: String,
         downloads: u64,
     ) {
-        if let Some(rust_info) = self.projects_mut().rust_info_at_path_mut(path) {
+        if let Some(rust_info) = self.project_list.rust_info_at_path_mut(path) {
             rust_info.set_crates_io(version, downloads);
-        } else if let Some(vendored) = self.projects_mut().vendored_at_path_mut(path) {
+        } else if let Some(vendored) = self.project_list.vendored_at_path_mut(path) {
             vendored.set_crates_io(version, downloads);
         }
     }
@@ -68,14 +68,14 @@ impl App {
             status,
             LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog
         );
-        if !self.projects().is_rust_at_path(path) {
+        if !self.project_list.is_rust_at_path(path) {
             if let Some(lr) = self.project_list.lint_at_path_mut(path) {
                 lr.clear_runs();
             }
             return;
         }
         let mut is_rust = false;
-        self.projects().for_each_leaf_path(|p, rust| {
+        self.project_list.for_each_leaf_path(|p, rust| {
             if p == path {
                 is_rust = rust;
             }

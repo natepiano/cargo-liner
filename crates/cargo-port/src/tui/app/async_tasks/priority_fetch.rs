@@ -15,9 +15,9 @@ impl App {
         // Check if both paths resolve to the same lint-owning node (e.g.,
         // a worktree group where one entry's status change affects the
         // root rollup displayed in the detail pane).
-        self.projects()
+        self.project_list
             .lint_at_path(selected_path)
-            .zip(self.projects().lint_at_path(path))
+            .zip(self.project_list.lint_at_path(path))
             .is_some_and(|(a, b)| std::ptr::eq(a, b))
     }
     /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.
@@ -36,7 +36,7 @@ impl App {
             .map(|d| d.title_name.clone())
             .filter(|n| n != "-");
         if self
-            .projects()
+            .project_list
             .at_path(abs_key.as_path())
             .is_none_or(|p| p.disk_usage_bytes.is_none())
             && self.scan.priority_fetch_path() != Some(&abs_key)

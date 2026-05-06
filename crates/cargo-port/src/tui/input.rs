@@ -266,9 +266,9 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
 
     if app.layout_cache.project_list_body.contains(pos) {
         if up {
-            app.projects_mut().move_up();
+            app.project_list.move_up();
         } else {
-            app.projects_mut().move_down();
+            app.project_list.move_down();
         }
         return;
     }
@@ -388,7 +388,7 @@ fn open_in_editor(app: &mut App) {
         return;
     };
     let abs_path = app
-        .projects()
+        .project_list
         .iter()
         .find_map(|item| match &item.item {
             RootItem::Rust(RustProject::Workspace(ws))
@@ -482,7 +482,7 @@ fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
 }
 
 fn open_finder(app: &mut App) {
-    let (index, col_widths) = finder::build_finder_index(app.projects());
+    let (index, col_widths) = finder::build_finder_index(&app.project_list);
     let finder = app.finder_mut();
     finder.index = index;
     finder.col_widths = col_widths;
@@ -598,19 +598,19 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
 fn handle_normal_key(app: &mut App, event: &KeyEvent) {
     // Navigation keys stay hardcoded.
     match event.code {
-        KeyCode::Up => return app.projects_mut().move_up(),
-        KeyCode::Down => return app.projects_mut().move_down(),
-        KeyCode::Home => return app.projects_mut().move_to_top(),
-        KeyCode::End => return app.projects_mut().move_to_bottom(),
+        KeyCode::Up => return app.project_list.move_up(),
+        KeyCode::Down => return app.project_list.move_down(),
+        KeyCode::Home => return app.project_list.move_to_top(),
+        KeyCode::End => return app.project_list.move_to_bottom(),
         KeyCode::Right => {
             if !app.expand() {
-                app.projects_mut().move_down();
+                app.project_list.move_down();
             }
             return;
         },
         KeyCode::Left => {
             if !app.collapse() {
-                app.projects_mut().move_up();
+                app.project_list.move_up();
             }
             return;
         },

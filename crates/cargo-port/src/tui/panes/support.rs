@@ -1047,7 +1047,7 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
     if !item.is_rust() {
         return "Project".to_string();
     }
-    if app.projects().is_vendored_path(item.path()) {
+    if app.project_list.is_vendored_path(item.path()) {
         return "Vendored Crate".to_string();
     }
     if matches!(item, RootItem::Worktrees(_)) {
@@ -1056,7 +1056,7 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
     if matches!(item, RootItem::Rust(RustProject::Workspace(_))) {
         return "Workspace".to_string();
     }
-    if app.projects().is_workspace_member_path(item.path()) {
+    if app.project_list.is_workspace_member_path(item.path()) {
         "Workspace Member".to_string()
     } else {
         "Package".to_string()
@@ -1065,9 +1065,9 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
 
 /// Resolve the package title for a non-root package (member or vendored).
 fn resolve_package_title_for_package(app: &App, pkg: &Package) -> String {
-    if app.projects().is_vendored_path(pkg.path()) {
+    if app.project_list.is_vendored_path(pkg.path()) {
         "Vendored Crate".to_string()
-    } else if app.projects().is_workspace_member_path(pkg.path()) {
+    } else if app.project_list.is_workspace_member_path(pkg.path()) {
         "Workspace Member".to_string()
     } else {
         "Package".to_string()
@@ -1124,10 +1124,10 @@ struct GitDetailFields {
 }
 
 fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
-    let entry = app.projects().entry_containing(abs_path);
+    let entry = app.project_list.entry_containing(abs_path);
     let git_repo = entry.and_then(|entry| entry.git_repo.as_ref());
     let repo_info = git_repo.and_then(|repo| repo.repo_info.as_ref());
-    let checkout = app.projects().git_info_for(abs_path);
+    let checkout = app.project_list.git_info_for(abs_path);
 
     let branch = checkout.and_then(|info| info.branch.clone());
     let vs_local = checkout
@@ -1152,7 +1152,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let rate_limit = app.net.rate_limit();
     GitDetailFields {
         branch,
-        path: app.projects().git_status_for(abs_path),
+        path: app.project_list.git_status_for(abs_path),
         vs_local,
         local_main_branch,
         main_branch_label,
@@ -1249,7 +1249,7 @@ fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
         .into_iter()
         .map(|(path, name)| {
             let branch = app
-                .projects()
+                .project_list
                 .git_info_for(path.as_path())
                 .and_then(|info| info.branch.clone());
             let ahead_behind = if path.as_path() == primary_path.as_path() {
@@ -1508,8 +1508,8 @@ struct CratesIoFields {
 }
 
 fn resolve_crates_io_fields(app: &App, abs_path: &Path) -> CratesIoFields {
-    let rust_info = app.projects().rust_info_at_path(abs_path);
-    let vendored = app.projects().vendored_at_path(abs_path);
+    let rust_info = app.project_list.rust_info_at_path(abs_path);
+    let vendored = app.project_list.vendored_at_path(abs_path);
     CratesIoFields {
         version:   rust_info
             .and_then(|r| r.crates_version().map(String::from))
@@ -1527,7 +1527,7 @@ fn resolve_disk_and_ci(
 ) -> (String, Option<Conclusion>) {
     wt_item.map_or_else(
         || {
-            let ci = if app.projects().is_rust_at_path(abs_path) {
+            let ci = if app.project_list.is_rust_at_path(abs_path) {
                 app.ci_for(abs_path)
             } else {
                 None
@@ -1669,7 +1669,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let manifest = manifest_fields_from(package_record.as_ref());
 
     let (in_project_target, in_project_non_target) =
-        app.projects().at_path(abs_path).map_or((None, None), |pi| {
+        app.project_list.at_path(abs_path).map_or((None, None), |pi| {
             (pi.in_project_target, pi.in_project_non_target)
         });
     let t_oot = std::time::Instant::now();
@@ -1698,14 +1698,14 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let crates_downloads = crates_io.downloads;
 
     let is_worktree_group = package_title == "Worktree Group";
-    let is_rust = app.projects().is_rust_at_path(abs_path_owned.as_path());
+    let is_rust = app.project_list.is_rust_at_path(abs_path_owned.as_path());
     let lint_display =
-        super::Lint::package_display(app.projects(), &abs_path_owned, is_worktree_group, is_rust);
+        super::Lint::package_display(&app.project_list, &abs_path_owned, is_worktree_group, is_rust);
     let ci_display = app.ci.package_display(
         &abs_path_owned,
-        app.projects().repo_info_for(abs_path_owned.as_path()),
-        app.projects().git_info_for(abs_path_owned.as_path()),
-        app.projects().ci_info_for(abs_path_owned.as_path()),
+        app.project_list.repo_info_for(abs_path_owned.as_path()),
+        app.project_list.git_info_for(abs_path_owned.as_path()),
+        app.project_list.ci_info_for(abs_path_owned.as_path()),
         ci,
         is_worktree_group,
     );
@@ -1780,16 +1780,16 @@ fn assemble_detail_pane_data(
 pub fn build_ci_data(app: &App) -> CiData {
     let selected_path = app.selected_project_path();
     let has_ci_owner = app.selected_ci_path().is_some();
-    let git_info = selected_path.and_then(|path| app.projects().git_info_for(path));
-    let repo_info = selected_path.and_then(|path| app.projects().repo_info_for(path));
-    let ci_info = selected_path.and_then(|path| app.projects().ci_info_for(path));
+    let git_info = selected_path.and_then(|path| app.project_list.git_info_for(path));
+    let repo_info = selected_path.and_then(|path| app.project_list.repo_info_for(path));
+    let ci_info = selected_path.and_then(|path| app.project_list.ci_info_for(path));
     let current_branch = selected_path.and_then(|path| {
-        app.projects()
+        app.project_list
             .git_info_for(path)
             .and_then(|git| git.branch.clone())
     });
     let unpublished_branch_name =
-        selected_path.and_then(|path| app.projects().unpublished_ci_branch_name(path));
+        selected_path.and_then(|path| app.project_list.unpublished_ci_branch_name(path));
     let runs = app.selected_ci_runs();
     let is_fetching = selected_path.is_some_and(|path| app.ci_is_fetching(path));
     let branch_filtered_empty = selected_path.is_some_and(|path| {
@@ -1850,7 +1850,7 @@ pub fn build_lints_data(app: &App) -> LintsData {
     let selected_path = app.selected_project_path();
     let lint_runs = selected_path.and_then(|path| {
         app.lint_at_path(path)
-            .or_else(|| app.projects().vendored_owner_lint(path))
+            .or_else(|| app.project_list.vendored_owner_lint(path))
     });
     let (runs, sizes) = lint_runs.map_or_else(
         || (Vec::new(), Vec::new()),
@@ -1866,7 +1866,7 @@ pub fn build_lints_data(app: &App) -> LintsData {
     LintsData {
         runs,
         sizes,
-        is_rust: selected_path.is_some_and(|path| app.projects().is_rust_at_path(path)),
+        is_rust: selected_path.is_some_and(|path| app.project_list.is_rust_at_path(path)),
     }
 }
 

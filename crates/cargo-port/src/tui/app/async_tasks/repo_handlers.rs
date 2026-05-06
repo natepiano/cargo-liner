@@ -101,7 +101,7 @@ impl App {
             "checkout_info_applied"
         );
 
-        if let Some(project) = self.projects_mut().at_path_mut(path) {
+        if let Some(project) = self.project_list.at_path_mut(path) {
             project.local_git_state = LocalGitState::Detected(Box::new(info));
         }
         // Detected git state implies the entry is in a git repo. Ensure
@@ -136,7 +136,7 @@ impl App {
         // filled in either by a prior `handle_git_first_commit` write
         // or via the `pending_git_first_commit` map below.
         let preserved_first_commit = self
-            .projects()
+            .project_list
             .repo_info_for(path)
             .and_then(|existing| existing.first_commit.clone());
         if info.first_commit.is_none() {
@@ -150,7 +150,7 @@ impl App {
         // burning REST quota. ISO 8601 strings compare lexically in
         // chronological order, so `!=` captures advance reliably.
         let previous_last_fetched = self
-            .projects()
+            .project_list
             .repo_info_for(path)
             .and_then(|existing| existing.last_fetched.clone());
         let fetch_head_advanced =
@@ -167,7 +167,7 @@ impl App {
 
         if fetch_head_advanced
             && self.scan.is_complete()
-            && let Some(url) = self.projects().fetch_url_for(path)
+            && let Some(url) = self.project_list.fetch_url_for(path)
             && let Some(owner_repo) = ci::parse_owner_repo(&url)
             && !self.net.github().contains_in_flight(&owner_repo)
         {
@@ -183,10 +183,10 @@ impl App {
     /// `handle_repo_info` by `last_fetched` advance. Submodule paths are
     /// excluded — submodule CI/metadata is shown on the parent project.
     pub(super) fn maybe_trigger_repo_fetch(&mut self, path: &Path) {
-        if self.projects().is_submodule_path(path) {
+        if self.project_list.is_submodule_path(path) {
             return;
         }
-        let Some(url) = self.projects().fetch_url_for(path) else {
+        let Some(url) = self.project_list.fetch_url_for(path) else {
             return;
         };
         self.spawn_repo_fetch_for_git_info(path, &url);
@@ -270,7 +270,7 @@ impl App {
         let legacy_expansions = self.capture_legacy_root_expansions();
         let discovered_path = item.path().to_path_buf();
         let mut already_exists = false;
-        self.projects().for_each_leaf_path(|path, _| {
+        self.project_list.for_each_leaf_path(|path, _| {
             if path == discovered_path {
                 already_exists = true;
             }
@@ -336,7 +336,7 @@ impl App {
     }
 
     fn startup_git_directory_for_path(&self, path: &Path) -> Option<AbsolutePath> {
-        self.projects()
+        self.project_list
             .iter()
             .find(|entry| entry.item.at_path(path).is_some())
             .and_then(|entry| entry.item.git_directory())

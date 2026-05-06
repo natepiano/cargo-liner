@@ -34,7 +34,7 @@ impl App {
         entries: Vec<(AbsolutePath, LanguageStats)>,
     ) {
         for (path, stats) in entries {
-            if let Some(project) = self.projects_mut().at_path_mut(path.as_path()) {
+            if let Some(project) = self.project_list.at_path_mut(path.as_path()) {
                 project.language_stats = Some(stats);
             }
         }
@@ -207,10 +207,10 @@ impl App {
                 continue;
             };
             let cargo = Cargo::from_package_record(record);
-            if let Some(rust_info) = self.projects_mut().rust_info_at_path_mut(manifest_dir) {
+            if let Some(rust_info) = self.project_list.rust_info_at_path_mut(manifest_dir) {
                 rust_info.cargo = cargo.clone();
             }
-            if let Some(vendored) = self.projects_mut().vendored_at_path_mut(manifest_dir) {
+            if let Some(vendored) = self.project_list.vendored_at_path_mut(manifest_dir) {
                 vendored.cargo = cargo;
             }
         }

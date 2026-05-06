@@ -74,7 +74,7 @@ impl App {
         // Restore selection.
         if let Some(path) = selected_path {
             self.select_project_in_tree(path.as_path());
-        } else if !self.projects().is_empty() {
+        } else if !self.project_list.is_empty() {
             self.project_list.set_cursor(0);
         }
         self.sync_selected_project();
@@ -120,7 +120,7 @@ impl App {
                 self.handle_git_first_commit(path.as_path(), first_commit.as_deref());
             },
             BackgroundMsg::Submodules { path, submodules } => {
-                if let Some(info) = self.projects_mut().at_path_mut(path.as_path()) {
+                if let Some(info) = self.project_list.at_path_mut(path.as_path()) {
                     info.submodules = submodules;
                 }
             },

@@ -303,16 +303,16 @@ fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> (usize, Dur
 }
 
 fn flush_deferred_selection(app: &mut App) {
-    if app.projects().sync().is_changed()
+    if app.project_list.sync().is_changed()
         && let Some(path) = app.last_selected_path()
     {
         save_last_selected(path);
-        app.projects_mut().mark_sync_stable();
+        app.project_list.mark_sync_stable();
     }
 }
 
 fn flush_pending_selection(app: &App) {
-    if app.projects().sync().is_changed()
+    if app.project_list.sync().is_changed()
         && let Some(path) = app.last_selected_path()
     {
         save_last_selected(path);
@@ -406,7 +406,7 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         fit_results = bg_stats.fit_results,
         disk_results = bg_stats.disk_results,
         needs_rebuild = bg_stats.needs_rebuild,
-        items = app.projects().len(),
+        items = app.project_list.len(),
         scan_complete = app.scan.is_complete(),
         "slow_frame"
     );
@@ -543,7 +543,7 @@ fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
 fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     // Derive (repo_url, owner, repo) from local git info — no network needed
     let path = Path::new(&fetch.project_path);
-    let Some(repo_url) = app.projects().primary_url_for(path) else {
+    let Some(repo_url) = app.project_list.primary_url_for(path) else {
         return;
     };
     let Some(owner_repo) = ci::parse_owner_repo(repo_url) else {

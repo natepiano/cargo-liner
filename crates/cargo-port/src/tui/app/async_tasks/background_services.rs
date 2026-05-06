@@ -20,7 +20,7 @@ impl App {
     pub(super) fn register_background_services_for_tree(&self) {
         let started = Instant::now();
         let mut count = 0usize;
-        self.projects().for_each_leaf(|item| {
+        self.project_list.for_each_leaf(|item| {
             self.register_item_background_services(item);
             count += 1;
         });
@@ -54,7 +54,7 @@ impl App {
         let fetch_context = std::sync::Arc::new(FetchContext {
             client: self.net.http_client(),
         });
-        self.projects().for_each_leaf(|item| {
+        self.project_list.for_each_leaf(|item| {
             let abs_path = item.path().to_path_buf();
             let display_path = item.display_path().into_string();
             let project_name = item
@@ -62,7 +62,7 @@ impl App {
                 .then(|| item.name().map(str::to_string))
                 .flatten()
                 .filter(|_| {
-                    self.projects()
+                    self.project_list
                         .rust_info_at_path(item.path())
                         .is_some_and(|r| r.cargo().publishable())
                 });
@@ -98,7 +98,7 @@ impl App {
         let tx = self.background.bg_sender();
         let client = self.net.http_client();
         let mut targets: Vec<(AbsolutePath, String)> = Vec::new();
-        for entry in self.projects() {
+        for entry in &self.project_list {
             collect_publishable_children(&entry.item, &mut targets);
         }
         if targets.is_empty() {
@@ -121,7 +121,7 @@ impl App {
     pub(super) fn schedule_git_first_commit_refreshes(&self) {
         let tx = self.background.bg_sender();
         let mut projects_by_repo: HashMap<AbsolutePath, Vec<AbsolutePath>> = HashMap::new();
-        self.projects().for_each_leaf_path(|path, _| {
+        self.project_list.for_each_leaf_path(|path, _| {
             let abs_path = AbsolutePath::from(path);
             let Some(repo_root) = project::git_repo_root(&abs_path) else {
                 return;

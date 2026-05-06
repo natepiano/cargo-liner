@@ -686,7 +686,15 @@ accessors. Also grep `let .* = .*\.startup_mut\(\)` for `let`-binding rewrites.
 
 **Implications for remaining phases:** None. Phase 9 confirmed the field-publish mechanic is robust on the smallest possible sweep. Phase 10 (`projects()` / `projects_mut()` deletion, ~275 callers) is now next and is the largest single phase by call-site count.
 
-### Phase 10 — Delete `App::projects()` / `projects_mut()` (highest-fanout rewrite)
+### Phase 9 Review
+
+- Phase 14: added 7 project_list pass-throughs surviving Phase 10 (`expanded`, `expanded_mut`, `finder`, `finder_mut`, `cached_fit_widths`, `cached_root_sorted`, `cached_child_sorted`) to the App-local accessor list. App-delta in Phase 14 raised 5 → 12; "App after Phase 14" 176 → 169; final floor 153 → 146.
+- Phase 10 pre-flight: added "grep `impl App` across all of `src/tui/app/`" (Phase 8's lesson generalized) and "grep `if let .* = .*projects_mut\(\)`" alongside the existing `let` pattern (12 chained `projects_mut().X(...)` sites enumerated). Also a one-sentence note on the `app.project_list` (field) vs `app.panes.project_list()` (pane accessor) diff-review distinction.
+- Phase 10 dependency note on Phase 2 step 5: marked ✅ satisfied; preserved verbatim for plan archeology.
+- Phase 11: replaced the open "either keep wrapper or invert" choice for `selected_project_path_for_render` with an explicit decision to invert in render.rs (drops one App method; bounded by 5 callers). Added a "self-rewrite" note: relocated method bodies must change `self.project_list.X` → `self.X` once they live on `impl ProjectList`. Added pre-flight `count_app_methods.py` validation step.
+- Phase summary headline: `308 → 181 → 176 → 153` updated to `308 → 181 → 169 → 146`.
+
+### Phase 10 — Delete `App::projects()` / `projects_mut()` (highest-fanout rewrite) ✅
 
 These two pass-throughs survived 1/2 (1 lifted the field; 2 renamed it
 `project_list`). After 5 publishes other subsystems' fields, the only remaining
@@ -702,24 +710,31 @@ Rewrite each to `app.project_list.X` (or `&mut app.project_list.X`). Delete both
 **Methods removed:** 2. **Caller rewrites:** ~275. **Largest single phase by
 call-site count in the entire plan.**
 
-**Ordering: Phase 10 depends on Phase 2 step 5 (field rename) being complete.**
-`tui/render.rs::dispatch_via_trait`, `render_lints_pane`, and `render_ci_pane` call
-`app.selected_project_path_for_render()` before split-borrowing, which routes through
-`self.projects()`. If Phase 10 deletes `App::projects()` before Phase 2 has renamed the
-field `projects` → `project_list`, that call path breaks. The plan's overall 1→2→…→10
-order handles this implicitly; making the dependency explicit guards against
-phase reordering silently introducing the bug.
+**Ordering: Phase 10 depends on Phase 2 step 5 (field rename) being complete.** ✅ satisfied
+(Phase 2 complete; field is named `project_list` at `mod.rs:205`). Note kept verbatim for
+plan archeology: `tui/render.rs::dispatch_via_trait`, `render_lints_pane`, and
+`render_ci_pane` call `app.selected_project_path_for_render()` before split-borrowing,
+which routes through `self.projects()`. If Phase 10 deleted `App::projects()` before
+Phase 2 had renamed the field `projects` → `project_list`, that call path would have
+broken. The plan's overall 1→2→…→10 order handled this implicitly.
 
 **Rewrite mechanism:** This is a *substitution* (method call → field
 access), not a rename — `project_list` is already a field on `App`
 (post-Phase-2), so an editor "rename" refactor isn't applicable. Use
 the standard mechanic:
 
-1. **Pre-flight.** Verify `fn projects` / `fn projects_mut` exist only on App
-   (they will — `Panes::project_list()` returns the pane, identifier is
-   `project_list` not `projects`, so no name collision). Run the let-binding
-   grep `let .* = .*\.projects_mut\(\)` — Phase 8's discipline; with 25
-   `projects_mut()` sites across many test files, let-bindings are likely.
+1. **Pre-flight.** Grep `impl App` across all of `src/tui/app/` (not just
+   `mod.rs`) — Phase 8's lesson: methods can live in any file under the App
+   tree (`async_tasks/tree.rs::refresh_derived_state` was Phase 8's surprise).
+   Verify `fn projects` / `fn projects_mut` exist only on App (they will —
+   `Panes::project_list()` at `panes/system.rs:123` returns the pane, identifier
+   is `project_list` not `projects`, so no name collision). Note the post-Phase-10
+   diff-review distinction: `app.project_list` (field) vs `app.panes.project_list()`
+   (pane accessor) differ only by trailing `.()` — easy to confuse on review.
+   Run two let-binding greps: `let .* = .*\.projects_mut\(\)` and
+   `if let .* = .*\.projects_mut\(\)` (12 chained `projects_mut().X(...)` sites
+   across `dismiss.rs:101`, `repo_handlers.rs:104`, `metadata_handlers.rs:37,210,213`,
+   `dispatch.rs:123`, `disk_handlers.rs:26,35`, `lint_handlers.rs:18,20`, `mod.rs:641,652`).
 2. **Bulk regex.** `\.projects_mut\(\)` → `.project_list` first (so partial
    matches with the read-side don't fire), then `\.projects\(\)` →
    `.project_list`.
@@ -730,7 +745,24 @@ the standard mechanic:
    250+25 count still holds (Phase 8 did not touch these callers, so the
    number should hold, but verify before the bulk pass).
 
-### Phase 11 — `project_list` absorption I (row-navigation read-side)
+### Retrospective
+
+**What worked:**
+- Pre-flight chained `if let` grep (12 sites) accurately predicted that all `if let Some(X) = self.projects_mut().Y(...)` patterns rewrite cleanly to `if let Some(X) = self.project_list.Y(...)` — zero borrow-checker errors on those.
+- `_mut` first then read order avoided double-prefix collision (Phase 8 lesson held again).
+- `cargo check` localized borrow-mode fixups to 12 sites — small enough to fix by hand without re-tooling.
+
+**What deviated from the plan:**
+- Live caller counts were higher than the plan predicted: 261 read-side (vs 250) + 80 mut (vs 25) = 341 total (vs ~275). The `_mut` count was 3× the estimate; suggests the original "25" was a stale snapshot from before later phases bulked up `_mut` usage.
+- The plan did not anticipate that the `project_list` field itself was still privately scoped (no `pub(super)`). Phase 1 lifted the field into App and Phase 2 renamed it, but neither published its visibility. Adding `pub(super) project_list:` was a required first step before the bulk regex (otherwise 129 "private field" errors fire across `src/tui/render.rs`, `src/tui/terminal.rs`, etc.).
+
+**Surprises:**
+- 12 borrow-mode fixups (not the "borrow-checker errors" the plan predicted, but `expected &ProjectList, found ProjectList` mismatched-type errors at function call sites and for-loop heads). The original `.projects()` returned `&ProjectList`; the field access yields by value, requiring `&` prefix at function-arg and for-loop sites. Fixed in `lint_runtime.rs`, `background_services.rs`, `startup_phase/tracker.rs`, `navigation/cache.rs`, `interaction.rs`, `input.rs`, `panes/project_list.rs`, `panes/support.rs`, `tests/mod.rs`.
+- One stale comment at `interaction.rs:89` (a doc-comment referencing `app.projects_mut().set_cursor(row)`) was rewritten by the bulk perl to `app.project_list.set_cursor(row)`. Comment stays accurate; nothing to undo.
+
+**Implications for remaining phases:**
+- The "field publish" mechanic must check the field's actual visibility before assuming it's already `pub(super)`. Phases 11+ should explicitly verify `grep 'pub(super) project_list'` (or whichever field) at pre-flight.
+- Plan-stated caller-count estimates may run low by 20–200%. Phase 11/12/14 should re-baseline with `count_app_methods.py` and live `rg --count-matches` at phase start (Phase 11 already has this directive; Phase 12 has it; Phase 14 should add it).
 
 Relocate row-navigation single-subsystem read methods to `impl ProjectList`
 (post-Phase-2). These are pure queries over `ProjectList` state with no
@@ -751,14 +783,29 @@ because the work is project_list-side, not Scan-side.
 
 **Methods relocated:** ~17 + 1 test-only delete. **Caller rewrites:** ~80.
 
-**Render-path note (post-Phase-1):** `tui/render.rs::dispatch_via_trait`,
+**Pre-flight validate.** Re-run `count_app_methods.py` at phase start. Phases
+7/8/9 touched files in the same sprawl (`async_tasks/*`, `navigation/*`,
+`tests/*`); some Phase 11 sites may have been moved. Confirm the live numbers
+before bulk rewrites.
+
+**Render-path decision (post-Phase-1):** `tui/render.rs::dispatch_via_trait`,
 `render_lints_pane`, and `render_ci_pane` currently call
 `app.selected_project_path_for_render()` *before* split-borrowing. After Phase
-2, `selected_project_path` is a pure `ProjectList` query (Selection's cursor
-field having merged in), so Phase 11 can either keep that App-shim wrapper or
-invert the order in render.rs (split-borrow first, then call
+2, `selected_project_path` is a pure `ProjectList` query. **Phase 11 inverts
+the order in render.rs** (split-borrow first, then call
 `projects.selected_project_path()` on the borrowed `&ProjectList`). Inverting
-drops one App-level method.
+drops one App-level method (the shim wrapper) and avoids leaving a leftover
+trivial-accessor on App. 5 callers (3 in `render.rs`, 2 in `interaction.rs`)
+— bounded cost.
+
+**Self-rewrite note for relocated bodies.** When a method like
+`selected_project_path` (today at `navigation/selection.rs:63`) calls
+`self.path_for_row(row)`, Phase 10's bulk regex turns its body's `self.projects()`
+into `self.project_list.X` while it still lives on App. When Phase 11 moves the
+method body to `impl ProjectList`, the body must be re-rewritten: the new
+`self: &ProjectList` reads `self.X` directly, not `self.project_list.X`.
+Apply this transformation per-method during the relocation; it's mechanical
+but easy to miss.
 
 ### Phase 12 — `project_list` absorption II (action methods + `include_non_rust` threading)
 
@@ -868,6 +915,22 @@ and delete the accessor:
 - `resolved_dirs` — one-line wrapper over `scan::resolve_include_dirs`.
   Inline at call sites.
 
+**Project-list pass-throughs surviving Phase 10** (surfaced by Phase 9 review).
+Phase 10 only deletes `projects()` / `projects_mut()`. Seven other
+trivial pass-throughs to `project_list` survive at `mod.rs:704–727` and need
+deletion via the same field-already-published mechanic (`project_list` is
+`pub(super)` since Phase 1):
+
+- `cached_fit_widths` → `&self.project_list.cached_fit_widths()` shim. Inline.
+- `cached_root_sorted` → `&self.project_list.cached_root_sorted()` shim. Inline.
+- `cached_child_sorted` → `&self.project_list.cached_child_sorted()` shim. Inline.
+- `expanded`, `expanded_mut` → `self.project_list.expanded()` /
+  `self.project_list.expanded_mut()` shims. Rewrite callers to direct calls.
+- `finder`, `finder_mut` → `self.project_list.finder()` /
+  `self.project_list.finder_mut()` shims. Rewrite callers to direct calls.
+
+7 method deletes. Caller-rewrite count rolled into Phase 14's `~200`.
+
 **Pre-Phase-14 inventory pass (Phase 8 lesson).** Phase 8 deleted
 `refresh_derived_state` from `src/tui/app/async_tasks/tree.rs` — an `impl App`
 method living outside `mod.rs`. There are ~25 `impl App` blocks across the
@@ -901,9 +964,9 @@ identified (none currently). ~38 visibility tightenings; zero caller rewrites
 (visibility narrowing is invisible to call sites already inside `tui/`).
 
 Headline metric for 14: **crate-wide trivial-accessor count** (reported by
-`count_app_methods.py`). App's count drops by 5 in 14 (the App-local accessors
-listed above) — it lands at ~179 after Phase 14. Phase 14 also cleans the rest
-of the codebase to match the same rule.
+`count_app_methods.py`). App's count drops by 12 in 14 (5 App-local accessors
++ 7 project_list pass-throughs surviving Phase 10) — 181 → 169 after Phase 14.
+Phase 14 also cleans the rest of the codebase to match the same rule.
 
 ### Phase 15 — Relocate Group W static helpers to their data owners
 
@@ -1065,14 +1128,14 @@ sits.
 | 7 | trivial-accessor / pass-through delete: Overlays | 2 | 127 | 254 ✅ |
 | 8 | trivial-accessor / pass-through delete: Scan | 7 | ~95 | 247 ✅ |
 | 9 | trivial-accessor / pass-through delete: Startup | 2 | 26 | 245 ✅ |
-| **10** | **Delete `App::projects()` / `projects_mut()`** | **2** | **~275** | **243** |
+| **10** | **Delete `App::projects()` / `projects_mut()`** | **2** | **341 (261 read + 80 mut + 12 borrow-mode fixups)** | **243 ✅** |
 | 11 | `project_list` absorption I — row-navigation read-side | ~17 | ~85 | 226 |
 | 12 | `project_list` absorption II — action methods (with `include_non_rust` arg threading) | ~27 | ~170 | 199 |
 | 13 | Non-`project_list` S relocations | 18 | ~95 | 181 |
-| 14 | Recursive trivial-accessor purge (crate-wide + 5 App-local accessors) | ~50–80 (crate-wide), 5 (App) | ~200 | 176 |
-| 15 | Relocate Group W static helpers to their data owners (after 10) | 23 | ~50 | **153** |
+| 14 | Recursive trivial-accessor purge (crate-wide + 12 App-local accessors) | ~50–80 (crate-wide), 12 (App) | ~200 | 169 |
+| 15 | Relocate Group W static helpers to their data owners (after 10) | 23 | ~50 | **146** |
 
-**Net: 308 → 181 on App after Phase 13, → 176 after Phase 14, → ~153 after Phase 15.**
+**Net: 308 → 181 on App after Phase 13, → 169 after Phase 14, → 146 after Phase 15.**
 Per review-finding C2, six methods (`expand_all`, `collapse_all`,
 `select_matching_visible_row`, `select_project_in_tree`,
 `expand_path_in_tree`, `collapse_to`) keep their S →

@@ -77,7 +77,7 @@ impl App {
             InputContext::CiRuns => {
                 let ci_info = self
                     .selected_project_path()
-                    .and_then(|path| self.projects().ci_info_for(path));
+                    .and_then(|path| self.project_list.ci_info_for(path));
                 let run_count = ci_info.map_or(0, |info| info.runs.len());
                 let selected_path = self.selected_project_path();
                 if self.ci.viewport().pos() == run_count

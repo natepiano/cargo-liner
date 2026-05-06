@@ -231,7 +231,7 @@ fn handle_ci_fetch_more(app: &mut App) {
     let project_name = app
         .selected_project_path()
         .and_then(|path| {
-            app.projects()
+            app.project_list
                 .iter()
                 .find(|item| item.path() == path)
                 .and_then(|item| item.name().map(str::to_string))
@@ -243,7 +243,7 @@ fn handle_ci_fetch_more(app: &mut App) {
     // other branches, returning zero "new" runs.
     let oldest_created_at = app
         .selected_project_path()
-        .and_then(|path| app.projects().ci_info_for(path))
+        .and_then(|path| app.project_list.ci_info_for(path))
         .and_then(|info| info.runs.last().map(|r| r.created_at.clone()));
     // FetchOlder whenever we have a date cursor. Explicit F presses should
     // try to fetch more even if the repo was previously marked exhausted —
@@ -302,10 +302,10 @@ fn clear_ci_cache(app: &mut App, abs: &Path) {
         }
     }
     let prev_total = app
-        .projects()
+        .project_list
         .ci_data_for(abs)
         .map_or(0, ProjectCiData::github_total);
-    app.projects_mut().replace_ci_data_for_path(
+    app.project_list.replace_ci_data_for_path(
         abs,
         ProjectCiData::Loaded(ProjectCiInfo {
             runs:         Vec::new(),

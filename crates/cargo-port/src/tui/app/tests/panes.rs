@@ -216,7 +216,7 @@ fn cpu_pane_selection_persists_across_project_changes() {
     let mut app = make_app(&[project_a, project_b]);
     app.focus.set(PaneId::Cpu);
     app.panes.cpu_mut().viewport_mut().set_pos(1);
-    app.projects_mut().set_cursor(1);
+    app.project_list.set_cursor(1);
 
     app.sync_selected_project();
 
@@ -252,7 +252,7 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
     let project = make_project(Some("demo"), "/never-real/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     app.scan.scan_state_mut().phase = ScanPhase::Complete;
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     app.sync_selected_project();
 
     app.ensure_detail_cached();
@@ -345,7 +345,7 @@ fn first_non_empty_tree_build_focuses_project_list() {
     apply_items(&mut app, &[project]);
 
     assert_eq!(app.focus.current(), PaneId::ProjectList);
-    assert_eq!(app.projects().cursor(), 0);
+    assert_eq!(app.project_list.cursor(), 0);
 }
 
 #[test]
@@ -438,7 +438,7 @@ fn project_change_resets_project_dependent_panes() {
     app.panes.git_mut().viewport_mut().set_pos(4);
     app.panes.targets_mut().viewport_mut().set_pos(5);
     app.ci.viewport_mut().set_pos(6);
-    app.projects_mut().set_cursor(1);
+    app.project_list.set_cursor(1);
     app.sync_selected_project();
 
     assert_eq!(app.panes.package().viewport().pos(), 0);
@@ -450,7 +450,7 @@ fn project_change_resets_project_dependent_panes() {
     assert!(!app.focus.remembers_visited(PaneId::Targets));
     assert!(!app.focus.remembers_visited(PaneId::CiRuns));
     assert_eq!(
-        app.projects()
+        app.project_list
             .paths()
             .selected_project
             .as_ref()
@@ -525,11 +525,11 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
 
     let abs_path = AbsolutePath::from(project_path.clone());
     assert!(
-        app.projects().is_deleted(&abs_path),
+        app.project_list.is_deleted(&abs_path),
         "top-level project should be deleted"
     );
     assert_eq!(
-        app.projects()
+        app.project_list
             .at_path(&abs_path)
             .expect("top-level project should still exist in hierarchy")
             .visibility,
@@ -543,26 +543,26 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         "deleted top-level project should still render before dismiss"
     );
 
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     assert!(
         app.focused_dismiss_target().is_some(),
         "deleted top-level project should expose dismiss affordance"
     );
 
-    let item = &app.projects()[0].item;
+    let item = &app.project_list[0].item;
     let row = columns::build_row_cells(ProjectRow {
         prefix:            crate::tui::panes::PREFIX_ROOT_LEAF,
         name:              &item.root_directory_name().into_string(),
         name_segments:     None,
-        git_status:        app.projects().git_status_for(item.path()),
+        git_status:        app.project_list.git_status_for(item.path()),
         lint:              app.lint_cell(&crate::tui::lint_state::Lint::status_for_root(item)),
         disk:              "0.0",
         disk_style:        Style::default(),
         disk_suffix:       Some(" [x]"),
         disk_suffix_style: Some(Style::default().fg(Color::DarkGray)),
         lang_icon:         item.lang_icon(),
-        git_origin_sync:   &app.projects().git_sync(item.path()),
-        git_main:          &app.projects().git_main(item.path()),
+        git_origin_sync:   &app.project_list.git_sync(item.path()),
+        git_main:          &app.project_list.git_main(item.path()),
         ci:                app.ci_for_item(item),
         deleted:           true,
         worktree_health:   Normal,
@@ -614,18 +614,18 @@ fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
 
     let abs_path = AbsolutePath::from(project_path.clone());
     assert!(
-        app.projects().is_deleted(&abs_path),
+        app.project_list.is_deleted(&abs_path),
         "top-level project should be deleted"
     );
     assert_eq!(
-        app.projects()
+        app.project_list
             .at_path(&abs_path)
             .expect("top-level project should still exist in hierarchy")
             .visibility,
         Deleted
     );
 
-    app.projects_mut().set_cursor(0);
+    app.project_list.set_cursor(0);
     let target = app
         .focused_dismiss_target()
         .expect("deleted top-level project should be dismissable");
@@ -638,7 +638,7 @@ fn top_level_deleted_project_can_be_dismissed_and_stops_rendering() {
         "dismissed top-level deleted project should no longer render"
     );
     assert_eq!(
-        app.projects()
+        app.project_list
             .at_path(&abs_path)
             .expect("top-level project should remain in hierarchy after dismiss")
             .visibility,

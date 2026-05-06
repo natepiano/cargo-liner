@@ -22,7 +22,7 @@ impl App {
     pub fn selected_item(&self) -> Option<&RootItem> {
         match self.selected_row()? {
             VisibleRow::Root { node_index } => {
-                self.projects().get(node_index).map(|entry| &entry.item)
+                self.project_list.get(node_index).map(|entry| &entry.item)
             },
             _ => None,
         }
@@ -34,7 +34,7 @@ impl App {
         let row = self.selected_row()?;
         match row {
             VisibleRow::Root { node_index } => {
-                let entry = self.projects().get(node_index)?;
+                let entry = self.project_list.get(node_index)?;
                 match &entry.item {
                     RootItem::Rust(rust) => Some(CleanSelection::Project {
                         root: rust.path().clone(),
@@ -47,7 +47,7 @@ impl App {
                 node_index,
                 worktree_index,
             } => {
-                let entry = self.projects().get(node_index)?;
+                let entry = self.project_list.get(node_index)?;
                 Self::worktree_path_ref(&entry.item, worktree_index).map(|path| {
                     CleanSelection::Project {
                         root: AbsolutePath::from(path),
@@ -70,21 +70,21 @@ impl App {
     pub(super) fn path_for_row(&self, row: VisibleRow) -> Option<&Path> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                Some(self.projects().get(node_index)?.path().as_path())
+                Some(self.project_list.get(node_index)?.path().as_path())
             },
             VisibleRow::Member {
                 node_index,
                 group_index,
                 member_index,
             } => Self::member_path_ref(
-                &self.projects().get(node_index)?.item,
+                &self.project_list.get(node_index)?.item,
                 group_index,
                 member_index,
             ),
             VisibleRow::Vendored {
                 node_index,
                 vendored_index,
-            } => Self::vendored_path_ref(&self.projects().get(node_index)?.item, vendored_index),
+            } => Self::vendored_path_ref(&self.project_list.get(node_index)?.item, vendored_index),
             VisibleRow::WorktreeEntry {
                 node_index,
                 worktree_index,
@@ -93,14 +93,14 @@ impl App {
                 node_index,
                 worktree_index,
                 ..
-            } => Self::worktree_path_ref(&self.projects().get(node_index)?.item, worktree_index),
+            } => Self::worktree_path_ref(&self.project_list.get(node_index)?.item, worktree_index),
             VisibleRow::WorktreeMember {
                 node_index,
                 worktree_index,
                 group_index,
                 member_index,
             } => Self::worktree_member_path_ref(
-                &self.projects().get(node_index)?.item,
+                &self.project_list.get(node_index)?.item,
                 worktree_index,
                 group_index,
                 member_index,
@@ -110,7 +110,7 @@ impl App {
                 worktree_index,
                 vendored_index,
             } => Self::worktree_vendored_path_ref(
-                &self.projects().get(node_index)?.item,
+                &self.project_list.get(node_index)?.item,
                 worktree_index,
                 vendored_index,
             ),
@@ -118,7 +118,7 @@ impl App {
                 node_index,
                 submodule_index,
             } => self
-                .projects()
+                .project_list
                 .get(node_index)?
                 .submodules()
                 .get(submodule_index)
@@ -186,7 +186,7 @@ impl App {
     pub fn display_path_for_row(&self, row: VisibleRow) -> Option<DisplayPath> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 Some(item.display_path())
             },
             VisibleRow::Member {
@@ -194,7 +194,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => {
                         let group = ws.groups().get(group_index)?;
@@ -215,7 +215,7 @@ impl App {
                 node_index,
                 vendored_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => ws
                         .vendored()
@@ -253,7 +253,7 @@ impl App {
                 worktree_index,
                 ..
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 Self::worktree_display_path(item, worktree_index)
             },
             VisibleRow::WorktreeMember {
@@ -262,7 +262,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 Self::worktree_member_display_path(item, worktree_index, group_index, member_index)
             },
             VisibleRow::WorktreeVendored {
@@ -270,14 +270,14 @@ impl App {
                 worktree_index,
                 vendored_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 Self::worktree_vendored_display_path(item, worktree_index, vendored_index)
             },
             VisibleRow::Submodule {
                 node_index,
                 submodule_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 let submodule = item.submodules().get(submodule_index)?;
                 Some(DisplayPath::new(project::home_relative_path(
                     &submodule.path,
@@ -290,7 +290,7 @@ impl App {
     pub fn abs_path_for_row(&self, row: VisibleRow) -> Option<AbsolutePath> {
         match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 Some(item.path().clone())
             },
             VisibleRow::Member {
@@ -298,7 +298,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => {
                         let group = ws.groups().get(group_index)?;
@@ -319,7 +319,7 @@ impl App {
                 node_index,
                 vendored_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 match &item.item {
                     RootItem::Rust(RustProject::Workspace(ws)) => {
                         ws.vendored().get(vendored_index).map(|p| p.path().clone())
@@ -355,7 +355,7 @@ impl App {
                 worktree_index,
                 ..
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 Self::worktree_abs_path(item, worktree_index)
             },
             VisibleRow::WorktreeMember {
@@ -364,7 +364,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 Self::worktree_member_abs_path(item, worktree_index, group_index, member_index)
             },
             VisibleRow::WorktreeVendored {
@@ -372,14 +372,14 @@ impl App {
                 worktree_index,
                 vendored_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 Self::worktree_vendored_abs_path(item, worktree_index, vendored_index)
             },
             VisibleRow::Submodule {
                 node_index,
                 submodule_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 item.submodules()
                     .get(submodule_index)
                     .map(|s| s.path.clone())

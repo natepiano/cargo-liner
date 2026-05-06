@@ -16,7 +16,7 @@ impl App {
         let row = self.selected_row()?;
         match row {
             VisibleRow::Root { node_index } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 Some(tui::panes::build_pane_data(self, item))
             },
             VisibleRow::Member {
@@ -24,7 +24,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 let pkg = Self::resolve_member(item, group_index, member_index)?;
                 Some(tui::panes::build_pane_data_for_member(self, pkg))
             },
@@ -32,13 +32,13 @@ impl App {
                 node_index,
                 vendored_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 let vendored = Self::resolve_vendored(item, vendored_index)?;
                 Some(tui::panes::build_pane_data_for_vendored(self, vendored))
             },
             VisibleRow::GroupHeader { node_index, .. } => {
                 // Group headers show the parent project's detail
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 Some(tui::panes::build_pane_data(self, item))
             },
             VisibleRow::WorktreeEntry {
@@ -50,7 +50,7 @@ impl App {
                 worktree_index,
                 ..
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 self.build_worktree_detail(item, worktree_index)
             },
             VisibleRow::WorktreeMember {
@@ -59,7 +59,7 @@ impl App {
                 group_index,
                 member_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 let pkg =
                     Self::worktree_member_ref(item, worktree_index, group_index, member_index)?;
                 Some(tui::panes::build_pane_data_for_member(self, pkg))
@@ -69,7 +69,7 @@ impl App {
                 worktree_index,
                 vendored_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 let vendored = Self::worktree_vendored_ref(item, worktree_index, vendored_index)?;
                 Some(tui::panes::build_pane_data_for_vendored(self, vendored))
             },
@@ -77,7 +77,7 @@ impl App {
                 node_index,
                 submodule_index,
             } => {
-                let item = self.projects().get(node_index)?;
+                let item = self.project_list.get(node_index)?;
                 let submodule = item.submodules().get(submodule_index)?;
                 Some(tui::panes::build_pane_data_for_submodule(self, submodule))
             },

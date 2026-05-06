@@ -16,10 +16,10 @@ impl App {
 
     pub fn ensure_fit_widths_cached(&mut self) {
         let root_labels = self
-            .projects()
+            .project_list
             .resolved_root_labels(self.config.include_non_rust().includes_non_rust());
         let widths = panes::compute_project_list_widths(
-            self.projects(),
+            &self.project_list,
             &root_labels,
             self.config.lint_enabled(),
             0,
@@ -28,7 +28,7 @@ impl App {
     }
 
     pub fn ensure_disk_cache(&mut self) {
-        let (root_sorted, child_sorted) = panes::compute_disk_cache(self.projects());
+        let (root_sorted, child_sorted) = panes::compute_disk_cache(&self.project_list);
         self.project_list.set_disk_caches(root_sorted, child_sorted);
     }
 

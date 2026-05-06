@@ -225,7 +225,7 @@ impl AppBuilder<Started> {
 impl App {
     pub(super) fn has_cached_non_rust_projects(&self) -> bool {
         let mut found = false;
-        self.projects().for_each_leaf(|item| {
+        self.project_list.for_each_leaf(|item| {
             if !item.is_rust() {
                 found = true;
             }
@@ -246,7 +246,7 @@ impl App {
         self.force_settings_if_unconfigured();
         self.prune_inactive_project_state();
         self.register_existing_projects();
-        if !self.projects().is_empty() {
+        if !self.project_list.is_empty() {
             self.finish_watcher_registration_batch();
         }
         self.refresh_lint_runs_from_disk();

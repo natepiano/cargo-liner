@@ -28,7 +28,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
         HoverTarget::PaneRow { pane, row } => {
             app.focus.set(pane);
             if pane == PaneId::ProjectList {
-                app.projects_mut().set_cursor(row);
+                app.project_list.set_cursor(row);
             } else {
                 set_pane_pos(app, pane, row);
             }
@@ -86,7 +86,7 @@ pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
 /// Set the cursor position for `id`'s viewport. Phase 13 relocation:
 /// matches by `PaneId` to whichever owner holds the target viewport.
 /// `ProjectList`'s cursor lives on `Selection.cursor`; callers route
-/// through `app.projects_mut().set_cursor(row)`, not this fn.
+/// through `app.project_list.set_cursor(row)`, not this fn.
 pub(super) fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
     if id == PaneId::ProjectList {
         return;
@@ -573,7 +573,7 @@ mod tests {
 
     fn mark_deleted(app: &mut App, path: &Path) {
         let project = app
-            .projects_mut()
+            .project_list
             .at_path_mut(path)
             .unwrap_or_else(|| std::process::abort());
         project.disk_usage_bytes = Some(0);
@@ -608,7 +608,7 @@ mod tests {
 
         let mut app = make_app(&[make_package("deleted", &deleted_dir)]);
         mark_deleted(&mut app, &deleted_dir);
-        app.projects_mut().set_cursor(0);
+        app.project_list.set_cursor(0);
         render_ui(&mut app);
 
         let keyboard_target = app
@@ -649,7 +649,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(app.focus.current(), PaneId::ProjectList);
-        assert_eq!(app.projects().cursor(), 1);
+        assert_eq!(app.project_list.cursor(), 1);
         assert_eq!(
             app.selected_project_path().map(Path::to_path_buf),
             Some(second),
@@ -695,7 +695,7 @@ mod tests {
         std::fs::create_dir_all(&beta).unwrap_or_else(|_| std::process::abort());
 
         let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
-        let (index, col_widths) = finder::build_finder_index(app.projects());
+        let (index, col_widths) = finder::build_finder_index(&app.project_list);
         let finder = app.finder_mut();
         finder.index = index;
         finder.col_widths = col_widths;
@@ -730,7 +730,7 @@ mod tests {
         let mut app = make_app(&[root]);
         app.expanded_mut().insert(ExpandKey::Node(0));
         app.ensure_visible_rows_cached();
-        app.projects_mut().move_down();
+        app.project_list.move_down();
         let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
         app.handle_repo_info(&workspace, repo);
         app.handle_checkout_info(&workspace, checkout);
@@ -970,7 +970,7 @@ mod tests {
         render_ui(&mut app);
         let stale_click = row_dismiss_point(&app, 0);
 
-        app.projects_mut().set_cursor(0);
+        app.project_list.set_cursor(0);
         let target = app
             .focused_dismiss_target()
             .unwrap_or_else(|| std::process::abort());
@@ -981,7 +981,7 @@ mod tests {
         render_ui(&mut app);
 
         assert!(
-            app.projects()
+            app.project_list
                 .at_path(&live_dir)
                 .is_some_and(|info| info.visibility == Visibility::Visible),
             "clicking the old dismiss location after rerender must not dismiss the surviving row"
@@ -1050,7 +1050,7 @@ mod tests {
         std::fs::create_dir_all(&beta).unwrap_or_else(|_| std::process::abort());
 
         let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
-        let (index, col_widths) = finder::build_finder_index(app.projects());
+        let (index, col_widths) = finder::build_finder_index(&app.project_list);
         let finder = app.finder_mut();
         finder.index = index;
         finder.col_widths = col_widths;
