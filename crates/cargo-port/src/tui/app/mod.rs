@@ -86,7 +86,6 @@ use super::scan_state::Scan;
 use super::toasts::ToastStyle::Warning;
 use super::toasts::TrackedItem;
 use crate::ci::CiRun;
-use crate::ci::CiStatus;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
@@ -409,40 +408,6 @@ impl App {
                     .fetch_tracker
                     .is_fetching(entry.item.path().as_path())
             })
-    }
-
-    /// Aggregate CI for a `RootItem`.
-    pub(super) fn ci_for_item(&self, item: &RootItem) -> Option<CiStatus> {
-        let paths = item.unique_paths();
-        if paths.len() == 1 {
-            return self
-                .project_list
-                .ci_status_for(&paths[0], self.ci.display_mode_for(&paths[0]));
-        }
-        let mut any_red = false;
-        let mut all_green = true;
-        let mut any_data = false;
-        for path in &paths {
-            let display_mode = self.ci.display_mode_for(path);
-            if let Some(run) = self.project_list.latest_ci_run_for_path(path, display_mode) {
-                any_data = true;
-                if run.ci_status.is_failure() {
-                    any_red = true;
-                    all_green = false;
-                } else if !run.ci_status.is_success() {
-                    all_green = false;
-                }
-            }
-        }
-        if !any_data {
-            None
-        } else if any_red {
-            Some(CiStatus::Failed)
-        } else if all_green {
-            Some(CiStatus::Passed)
-        } else {
-            None
-        }
     }
 
     pub(super) fn register_discovery_shimmer(&mut self, path: &Path) {

@@ -331,7 +331,10 @@ fn render_root_item(
     let disk = formatted_disk_for_item(item);
     let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
-    let ci = app.ci_for_item(item);
+    let ci = item.ci_status(|p| {
+        app.project_list
+            .ci_status_for(p, app.ci.display_mode_for(p))
+    });
     let lang = if item.is_rust() {
         item.lang_icon()
     } else {

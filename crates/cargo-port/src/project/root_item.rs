@@ -14,6 +14,7 @@ use super::rust_project::RustProject;
 use super::submodule::Submodule;
 use super::vendored_package::VendoredPackage;
 use super::worktree_group::WorktreeGroup;
+use crate::ci::CiStatus;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
 
@@ -572,6 +573,47 @@ impl RootItem {
                 wtg.single_live_package()?.vendored().get(vendored_index)
             },
             _ => None,
+        }
+    }
+
+    /// Aggregate CI status across this item's paths.
+    ///
+    /// `status_for_path` resolves each path's status (caller threads
+    /// display-mode and unpublished-branch suppression). Single-path items
+    /// return the resolver's answer directly. Multi-path items reduce:
+    /// any-`Failed` → `Failed`; every path with data is `Passed` → `Passed`;
+    /// no path has data → `None`; mixed non-`Failed` (some `Passed`, some
+    /// `Cancelled`) → `None`.
+    pub(crate) fn ci_status<F>(&self, status_for_path: F) -> Option<CiStatus>
+    where
+        F: Fn(&Path) -> Option<CiStatus>,
+    {
+        let paths = self.unique_paths();
+        if paths.len() == 1 {
+            return status_for_path(&paths[0]);
+        }
+        let mut any_failure = false;
+        let mut all_success = true;
+        let mut any_data = false;
+        for path in &paths {
+            if let Some(status) = status_for_path(path) {
+                any_data = true;
+                if status.is_failure() {
+                    any_failure = true;
+                    all_success = false;
+                } else if !status.is_success() {
+                    all_success = false;
+                }
+            }
+        }
+        if !any_data {
+            None
+        } else if any_failure {
+            Some(CiStatus::Failed)
+        } else if all_success {
+            Some(CiStatus::Passed)
+        } else {
+            None
         }
     }
 

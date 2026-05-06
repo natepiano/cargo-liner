@@ -8,7 +8,6 @@ use ratatui::style::Color;
 
 use crate::ci;
 use crate::ci::CiRun;
-use crate::ci::CiStatus;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
@@ -1520,25 +1519,6 @@ fn resolve_crates_io_fields(app: &App, abs_path: &Path) -> CratesIoFields {
     }
 }
 
-fn resolve_disk_and_ci(
-    app: &App,
-    abs_path: &Path,
-    wt_item: Option<&RootItem>,
-) -> (String, Option<CiStatus>) {
-    wt_item.map_or_else(
-        || {
-            let ci = if app.project_list.is_rust_at_path(abs_path) {
-                app.project_list
-                    .ci_status_for(abs_path, app.ci.display_mode_for(abs_path))
-            } else {
-                None
-            };
-            (super::formatted_disk(app, abs_path), ci)
-        },
-        |item| (super::formatted_disk_for_item(item), app.ci_for_item(item)),
-    )
-}
-
 fn lookup_package_record(app: &App, abs_path: &AbsolutePath) -> Option<PackageRecord> {
     app.scan
         .metadata_store_handle()
@@ -1653,7 +1633,26 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let crates_io = resolve_crates_io_fields(app, abs_path);
 
     let t_disk = std::time::Instant::now();
-    let (disk, ci) = resolve_disk_and_ci(app, abs_path, wt_item);
+    let disk = wt_item.map_or_else(
+        || super::formatted_disk(app, abs_path),
+        super::formatted_disk_for_item,
+    );
+    let ci = wt_item.map_or_else(
+        || {
+            if app.project_list.is_rust_at_path(abs_path) {
+                app.project_list
+                    .ci_status_for(abs_path, app.ci.display_mode_for(abs_path))
+            } else {
+                None
+            }
+        },
+        |item| {
+            item.ci_status(|p| {
+                app.project_list
+                    .ci_status_for(p, app.ci.display_mode_for(p))
+            })
+        },
+    );
     let disk_ms = perf_log::ms(t_disk.elapsed().as_millis());
 
     let t_wt = std::time::Instant::now();

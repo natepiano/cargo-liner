@@ -167,9 +167,10 @@ impl Ci {
     ///   today's `resolve_ci_display` behavior, which reads `ci_data_for(abs_path)` for the primary
     ///   only).
     /// - `latest_ci_status` via `ProjectList::ci_status_for(path, display_mode)` for single-project
-    ///   rows / `App::ci_for_item(item)` for worktree-group rollup rows. The aggregator walks all
-    ///   worktree paths and returns `Failed` if any-red, `Passed` if all-green, else `None`. The
-    ///   rollup is the only group-level distinction; everything else is primary-checkout data.
+    ///   rows / `RootItem::ci_status(resolver)` for worktree-group rollup rows. The aggregator
+    ///   walks all worktree paths and returns `Failed` if any-red, `Passed` if all-green, else
+    ///   `None`. The rollup is the only group-level distinction; everything else is
+    ///   primary-checkout data.
     /// - `is_worktree_group` — kept for signature symmetry with `Lint::package_display`. Today's CI
     ///   display logic doesn't branch on it (the caller's pre-resolution of `latest_conclusion`
     ///   already handles the rollup); reserved in case future variants need group-aware text.
