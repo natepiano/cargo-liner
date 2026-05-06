@@ -107,9 +107,7 @@ impl App {
                 path,
                 runs,
                 github_total,
-            } => {
-                self.insert_ci_runs(path.as_path(), runs, github_total);
-            },
+            } => self.insert_ci_runs(path.as_path(), runs, github_total),
             BackgroundMsg::RepoFetchQueued { repo } => self.handle_repo_fetch_queued(repo),
             BackgroundMsg::RepoFetchComplete { repo } => self.handle_repo_fetch_complete(repo),
             BackgroundMsg::CheckoutInfo { path, info } => {
@@ -184,17 +182,14 @@ impl App {
                 generation,
                 fingerprint,
                 result,
-            } => {
-                self.handle_cargo_metadata_msg(workspace_root, generation, &fingerprint, result);
-            },
+            } => self.handle_cargo_metadata_msg(workspace_root, generation, &fingerprint, result),
             BackgroundMsg::OutOfTreeTargetSize {
                 workspace_root,
                 target_dir,
                 bytes,
-            } => {
-                self.scan
-                    .handle_out_of_tree_target_size(&workspace_root, &target_dir, bytes);
-            },
+            } => self
+                .scan
+                .handle_out_of_tree_target_size(&workspace_root, &target_dir, bytes),
         }
         false
     }

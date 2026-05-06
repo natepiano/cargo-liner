@@ -27,6 +27,7 @@ use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::CheckoutInfo;
 use crate::project::DisplayPath;
+use crate::project::GitHubInfo;
 use crate::project::GitStatus;
 use crate::project::LanguageStats;
 use crate::project::MemberGroup;
@@ -2774,6 +2775,13 @@ impl ProjectList {
             rust_info.set_crates_io(version, downloads);
         } else if let Some(vendored) = self.vendored_at_path_mut(path) {
             vendored.set_crates_io(version, downloads);
+        }
+    }
+
+    pub fn handle_repo_meta(&mut self, path: &Path, stars: u64, description: Option<String>) {
+        if let Some(entry) = self.entry_containing_mut(path) {
+            let repo = entry.git_repo.get_or_insert_with(Default::default);
+            repo.github_info = Some(GitHubInfo { stars, description });
         }
     }
 

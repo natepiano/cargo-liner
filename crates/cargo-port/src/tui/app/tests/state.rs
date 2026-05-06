@@ -136,7 +136,8 @@ fn linked_worktree_shares_github_metadata_with_primary_after_repo_meta_fetch() {
     let mut app = make_app(&[make_workspace_project(Some("ws"), "~/ws")]);
     apply_items(&mut app, &[root]);
 
-    app.handle_repo_meta(primary_path.as_path(), 42, Some("a great repo".to_string()));
+    app.project_list
+        .handle_repo_meta(primary_path.as_path(), 42, Some("a great repo".to_string()));
 
     let read_description = |p: &Path| {
         app.project_list
