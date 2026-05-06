@@ -237,19 +237,19 @@ mod tests {
         let lint = Lint::new(None);
         assert!(lint.runtime().is_none());
         assert!(lint.running().is_empty());
-        assert!(lint.running().toast().is_none());
+        assert!(lint.running().toast.is_none());
     }
 
     #[test]
     fn running_toast_round_trip() {
         let mut lint = Lint::new(None);
-        lint.running_mut().set_toast(Some(ToastTaskId(7)));
+        lint.running_mut().toast = Some(ToastTaskId(7));
         assert_eq!(
-            lint.running().toast(),
+            lint.running().toast,
             Some(crate::tui::toasts::ToastTaskId(7))
         );
-        lint.running_mut().set_toast(None);
-        assert!(lint.running().toast().is_none());
+        lint.running_mut().toast = None;
+        assert!(lint.running().toast.is_none());
     }
 
     #[test]

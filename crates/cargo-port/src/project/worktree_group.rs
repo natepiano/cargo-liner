@@ -1,9 +1,13 @@
+use std::path::Path;
+
 use super::info::Visibility;
 use super::info::WorktreeHealth;
 use super::package::Package;
 use super::paths::AbsolutePath;
+use super::paths::DisplayPath;
 use super::project_fields::ProjectFields;
 use super::root_item;
+use super::vendored_package::VendoredPackage;
 use super::workspace::Workspace;
 use crate::lint::LintStatus;
 
@@ -164,6 +168,282 @@ impl WorktreeGroup {
             Self::Packages { primary, linked } => Box::new(
                 std::iter::once(primary.visibility()).chain(linked.iter().map(Package::visibility)),
             ),
+        }
+    }
+
+    /// Resolve a member `Package` inside a worktree entry (0 = primary).
+    /// Returns `None` for `Packages` variants (no member-of-workspace).
+    pub(crate) fn member_ref(
+        &self,
+        worktree_index: usize,
+        group_index: usize,
+        member_index: usize,
+    ) -> Option<&Package> {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => {
+                let ws = if worktree_index == 0 {
+                    primary
+                } else {
+                    linked.get(worktree_index - 1)?
+                };
+                ws.groups().get(group_index)?.members().get(member_index)
+            },
+            Self::Packages { .. } => None,
+        }
+    }
+
+    /// Resolve a vendored package inside a worktree entry (0 = primary).
+    pub(crate) fn vendored_ref(
+        &self,
+        worktree_index: usize,
+        vendored_index: usize,
+    ) -> Option<&VendoredPackage> {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => {
+                let ws = if worktree_index == 0 {
+                    primary
+                } else {
+                    linked.get(worktree_index - 1)?
+                };
+                ws.vendored().get(vendored_index)
+            },
+            Self::Packages {
+                primary, linked, ..
+            } => {
+                let pkg = if worktree_index == 0 {
+                    primary
+                } else {
+                    linked.get(worktree_index - 1)?
+                };
+                pkg.vendored().get(vendored_index)
+            },
+        }
+    }
+
+    /// Display path for a single worktree entry (0 = primary).
+    pub(crate) fn worktree_display_path(&self, wi: usize) -> Option<DisplayPath> {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => {
+                if wi == 0 {
+                    Some(primary.display_path())
+                } else {
+                    linked.get(wi - 1).map(ProjectFields::display_path)
+                }
+            },
+            Self::Packages {
+                primary, linked, ..
+            } => {
+                if wi == 0 {
+                    Some(primary.display_path())
+                } else {
+                    linked.get(wi - 1).map(ProjectFields::display_path)
+                }
+            },
+        }
+    }
+
+    /// Display path for a member inside a worktree workspace entry.
+    pub(crate) fn worktree_member_display_path(
+        &self,
+        wi: usize,
+        gi: usize,
+        mi: usize,
+    ) -> Option<DisplayPath> {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => {
+                let ws = if wi == 0 {
+                    primary
+                } else {
+                    linked.get(wi - 1)?
+                };
+                let group = ws.groups().get(gi)?;
+                group.members().get(mi).map(ProjectFields::display_path)
+            },
+            Self::Packages { .. } => None,
+        }
+    }
+
+    /// Display path for a vendored package inside a worktree entry.
+    pub(crate) fn worktree_vendored_display_path(
+        &self,
+        wi: usize,
+        vi: usize,
+    ) -> Option<DisplayPath> {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => {
+                let ws = if wi == 0 {
+                    primary
+                } else {
+                    linked.get(wi - 1)?
+                };
+                ws.vendored().get(vi).map(ProjectFields::display_path)
+            },
+            Self::Packages {
+                primary, linked, ..
+            } => {
+                let pkg = if wi == 0 {
+                    primary
+                } else {
+                    linked.get(wi - 1)?
+                };
+                pkg.vendored().get(vi).map(ProjectFields::display_path)
+            },
+        }
+    }
+
+    /// Owned absolute path for a worktree entry.
+    pub(crate) fn worktree_abs_path(&self, wi: usize) -> Option<AbsolutePath> {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => {
+                if wi == 0 {
+                    Some(primary.path().clone())
+                } else {
+                    linked.get(wi - 1).map(|p| p.path().clone())
+                }
+            },
+            Self::Packages {
+                primary, linked, ..
+            } => {
+                if wi == 0 {
+                    Some(primary.path().clone())
+                } else {
+                    linked.get(wi - 1).map(|p| p.path().clone())
+                }
+            },
+        }
+    }
+
+    /// Owned absolute path for a member inside a worktree workspace entry.
+    pub(crate) fn worktree_member_abs_path(
+        &self,
+        wi: usize,
+        gi: usize,
+        mi: usize,
+    ) -> Option<AbsolutePath> {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => {
+                let ws = if wi == 0 {
+                    primary
+                } else {
+                    linked.get(wi - 1)?
+                };
+                let group = ws.groups().get(gi)?;
+                group.members().get(mi).map(|p| p.path().clone())
+            },
+            Self::Packages { .. } => None,
+        }
+    }
+
+    /// Owned absolute path for a vendored package inside a worktree entry.
+    pub(crate) fn worktree_vendored_abs_path(&self, wi: usize, vi: usize) -> Option<AbsolutePath> {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => {
+                let ws = if wi == 0 {
+                    primary
+                } else {
+                    linked.get(wi - 1)?
+                };
+                ws.vendored().get(vi).map(|p| p.path().clone())
+            },
+            Self::Packages {
+                primary, linked, ..
+            } => {
+                let pkg = if wi == 0 {
+                    primary
+                } else {
+                    linked.get(wi - 1)?
+                };
+                pkg.vendored().get(vi).map(|p| p.path().clone())
+            },
+        }
+    }
+
+    /// Borrowed `Path` for a worktree entry.
+    pub(crate) fn worktree_path_ref(&self, wi: usize) -> Option<&Path> {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => {
+                if wi == 0 {
+                    Some(primary.path().as_path())
+                } else {
+                    linked.get(wi - 1).map(|p| p.path().as_path())
+                }
+            },
+            Self::Packages {
+                primary, linked, ..
+            } => {
+                if wi == 0 {
+                    Some(primary.path().as_path())
+                } else {
+                    linked.get(wi - 1).map(|p| p.path().as_path())
+                }
+            },
+        }
+    }
+
+    /// Borrowed `Path` for a member inside a worktree workspace entry.
+    pub(crate) fn worktree_member_path_ref(
+        &self,
+        wi: usize,
+        gi: usize,
+        mi: usize,
+    ) -> Option<&Path> {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => {
+                let ws = if wi == 0 {
+                    primary
+                } else {
+                    linked.get(wi - 1)?
+                };
+                let group = ws.groups().get(gi)?;
+                group.members().get(mi).map(|p| p.path().as_path())
+            },
+            Self::Packages { .. } => None,
+        }
+    }
+
+    /// Borrowed `Path` for a vendored package inside a worktree entry.
+    pub(crate) fn worktree_vendored_path_ref(&self, wi: usize, vi: usize) -> Option<&Path> {
+        match self {
+            Self::Workspaces {
+                primary, linked, ..
+            } => {
+                let ws = if wi == 0 {
+                    primary
+                } else {
+                    linked.get(wi - 1)?
+                };
+                ws.vendored().get(vi).map(|p| p.path().as_path())
+            },
+            Self::Packages {
+                primary, linked, ..
+            } => {
+                let pkg = if wi == 0 {
+                    primary
+                } else {
+                    linked.get(wi - 1)?
+                };
+                pkg.vendored().get(vi).map(|p| p.path().as_path())
+            },
         }
     }
 

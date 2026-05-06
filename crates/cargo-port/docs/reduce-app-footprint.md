@@ -1310,7 +1310,7 @@ to match the same rule.
 - F7 — applied (per user direction): `RunningTracker::iter_running` / `toast` / `set_toast` / `running_map` accessor cleanup folded into Phase 15. Publishes `running` / `toast` fields, deletes the four accessors, rewrites ~10 caller sites (test-only + relocated `running_items_for_toast` body).
 - F8 — noted: Phase 14's `pub` field publication on Panes/ToastManager doesn't simplify Phase 15 caller rewrites (relocations are `Self::foo` → `Type::foo`, not field-traversing). Retro claim holds.
 
-### Phase 15 — Relocate Group W static helpers to their data owners + final accessor cleanups
+### Phase 15 — Relocate Group W static helpers to their data owners + final accessor cleanups ✅
 
 Phase 15 is the final reduction phase. **All remaining coding work in the plan lives
 here.** No carryovers, no future-tidy. After 15, the codebase is at its end-state.
@@ -1375,6 +1375,29 @@ Phase 10 deletes the `projects()` accessor. After both, those callers use
 `self.project_list` directly; relocating Phase 15 helpers before 2 or 6 would land them
 referencing a still-named field or a still-live accessor and need re-rewriting. Phase 15
 is otherwise independent of Phases 7 and 8.
+
+#### Retrospective
+
+**What worked:**
+- D-before-A.3 sequencing held. Publishing `RunningTracker.running` / `.toast` first let the relocated `items_for_toast` use field access directly with no transitional shim.
+- The `WorktreeGroup` enum dispatch (Workspaces / Packages, no `_` arm) made the relocated `worktree_*` methods exhaustive without a sentinel `_ => None` clause; the `_ => None` lives once at each call site after the `RootItem::Worktrees(wtg) => …` extraction.
+- App count landed at exactly **153** (the plan's target), measured by `scripts/count_app_methods.py`.
+
+**What deviated from the plan:**
+- A.2 plan said all four pane_data helpers go to `impl WorktreeGroup` (claim: "bodies match on `RootItem::Worktrees(WorktreeGroup::...)`, never on non-worktree branches"). That was wrong for `resolve_member` / `resolve_vendored` — both have `RootItem::Rust(RustProject::Workspace(_))` and `RustProject::Package(_)` arms. Relocated `resolve_member` / `resolve_vendored` to `impl RootItem` (matches the dispatch they perform), and `worktree_member_ref` / `worktree_vendored_ref` (renamed `member_ref` / `vendored_ref`) to `impl WorktreeGroup`.
+- B simplified `display_path_for_row` and `abs_path_for_row` further by routing the `Member` and `Vendored` arms through `RootItem::resolve_member` / `resolve_vendored` (added in A.2), eliminating the inline workspace-vs-worktree dispatch. Came out of clippy `too_many_lines` triggering at 104/100 and 101/100 — the simpler arms shrank both functions well under the threshold without an `#[allow]`.
+- A.5 made `Startup::lint_toast_body_for` an associated `#[cfg(test)]` function rather than an instance method. The helper takes arbitrary expected/seen sets (a test fixture pattern), so it can't read from `&self` — but living on `Startup` keeps it adjacent to the `disk_toast_body` / `git_toast_body` / `metadata_toast_body` peers as the plan intended.
+
+**Surprises:**
+- `ProjectEntry: Deref<Target=RootItem>` works for method calls (e.g. `item.resolve_member(...)` through Deref auto-dispatch) but NOT for pattern matching — `let RootItem::Worktrees(wtg) = item else …` fails with "expected ProjectEntry, found RootItem". Fix: `&**item` or `&self.get(idx)?.item` for explicit field access. Worth noting in the Mechanics section if a future phase pattern-matches enums through `ProjectEntry`.
+- `KeyedPhase::tracked_items` (the relocated `tracked_items_for_startup`) released the borrow on `self.startup.disk` cleanly, letting `self.startup.disk_toast_body()` follow without the `disk_expected.clone()` workaround the original required. Net code is simpler and avoids three `HashSet<AbsolutePath>` clones per startup-detail-toast batch.
+
+**Implications for remaining phases:**
+- None — Phase 15 is the final phase. End state reached.
+
+### Phase 15 Review
+
+Plan-phase-review skipped: Phase 15 was named the final phase and delivered the planned end state (App = 153, target 153). No remaining phases to re-evaluate.
 
 
 ## Mechanics of a collapse step
@@ -1489,9 +1512,9 @@ sits.
 | **12** | **`project_list` absorption II — action methods (with `include_non_rust` arg threading)** | **24 (19 main + 2 helper statics + 1 to `impl VisibleRow` + 2 ci holdovers; 3 Phase-11 holdovers reclassified as Group X)** | **~80 src + ~10 tests** | **193 ✅** |
 | **13** | **Non-`project_list` S relocations** | **17 (5 startup + 3 toasts + 2 scan + 2 net + 1 background + 1 inflight + 1 ci + 1 `handle_repo_meta` → `impl ProjectList` via plan-phase-review F5; 2 of plan's 18 reclassified as carryovers — `handle_git_first_commit`, `push_service_unavailable_toast` reclassified as X)** | **~30 src** | **176 ✅** |
 | **14** | **Recursive trivial-accessor purge** (5 App-local accessors + 7 `project_list` pass-throughs + 1 Phase-13 ci shim + 3 empty placeholder modules + ResolvedPaneLayout::panes + Panes::worktree_summary_or_compute + recursive sweep on ProjectList/Panes/Overlays/Net/CiState/LintState/ConfigState/ScanState/WatchedFile/ToastsManager + 50 ProjectList visibility tightenings + 4 Phase-13 pub fn → pub(super)) | **13 (App), ~30 crate-wide** | **~400 src + ~50 tests** | **163 ✅** |
-| 15 | Group W relocations (10 App-resident + 11 second-hop) + F7 RunningTracker accessor cleanup + `Net::http_client_ref` cleanup | ~10 App + 5 crate-wide (4 RunningTracker + 1 Net) | ~30–40 | **~153** |
+| **15** | **Group W relocations (10 App-resident + 11 second-hop) + F7 RunningTracker accessor cleanup + `Net::http_client_ref` cleanup** | **10 App + 5 crate-wide (4 RunningTracker + 1 Net)** | **~30** | **153 ✅** |
 
-**Net: 308 → 176 on App after Phase 13, → 163 after Phase 14, → ~153 after Phase 15.**
+**Net: 308 → 176 on App after Phase 13, → 163 after Phase 14, → 153 after Phase 15.**
 Phase 12 came in 3 under plan (24 vs ~27); end-state slides from ~148 to
 ~152, a 4-method drift from the original ~146 estimate (well within the
 ±5/phase tolerance). The 3 Phase-12 carryovers (`build_selected_pane_data`,

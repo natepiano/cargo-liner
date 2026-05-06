@@ -3,66 +3,43 @@ use std::time::Duration;
 
 use crate::project;
 use crate::tui::app::App;
-use crate::tui::running_tracker::RunningTracker;
 use crate::tui::toasts;
 use crate::tui::toasts::ToastTaskId;
 use crate::tui::toasts::TrackedItem;
-use crate::tui::toasts::TrackedItemKey;
 
 impl App {
     pub fn sync_running_clean_toast(&mut self) {
-        let (toast_slot, items) = Self::running_items_for_toast(self.inflight.clean(), |p| {
-            project::home_relative_path(p.as_path())
-        });
+        let (toast_slot, items) = self
+            .inflight
+            .clean()
+            .items_for_toast(|p| project::home_relative_path(p.as_path()));
         let next = self.sync_running_toast(toast_slot, "cargo clean", &items[..]);
-        self.inflight.clean_mut().set_toast(next);
+        self.inflight.clean_mut().toast = next;
     }
     pub(super) fn sync_running_lint_toast(&mut self) {
-        let (toast_slot, items) = Self::running_items_for_toast(self.lint.running(), |p| {
-            project::home_relative_path(p.as_path())
-        });
+        let (toast_slot, items) = self
+            .lint
+            .running()
+            .items_for_toast(|p| project::home_relative_path(p.as_path()));
         let next = self.sync_running_toast(toast_slot, "Lints", &items);
-        self.lint.running_mut().set_toast(next);
+        self.lint.running_mut().toast = next;
     }
     /// Keep a single "Retrieving GitHub repo details" toast in sync
     /// with the live in-flight repo fetches.
     pub(super) fn sync_running_repo_fetch_toast(&mut self) {
-        let (toast_slot, items) =
-            Self::running_items_for_toast(self.net.github.running(), ToString::to_string);
+        let (toast_slot, items) = self
+            .net
+            .github
+            .running()
+            .items_for_toast(ToString::to_string);
         let next = self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &items);
-        self.net.github.running_mut().set_toast(next);
-    }
-    /// Collect a `RunningTracker<K>` into the data the toast helper
-    /// needs: the current toast slot plus a `TrackedItem` per running
-    /// key. Done as a `&self`-free helper so the borrow on the
-    /// subsystem-owned tracker is released before the caller hands
-    /// the items to [`Self::sync_running_toast`] (which takes
-    /// `&mut self`).
-    pub(super) fn running_items_for_toast<K, F>(
-        tracker: &RunningTracker<K>,
-        label_fn: F,
-    ) -> (Option<ToastTaskId>, Vec<TrackedItem>)
-    where
-        K: Eq + std::hash::Hash,
-        for<'a> &'a K: Into<TrackedItemKey>,
-        F: Fn(&K) -> String,
-    {
-        let items = tracker
-            .iter_running()
-            .map(|(k, &started)| TrackedItem {
-                label:        label_fn(k),
-                key:          k.into(),
-                started_at:   Some(started),
-                completed_at: None,
-            })
-            .collect();
-        (tracker.toast(), items)
+        self.net.github.running_mut().toast = next;
     }
     /// Shared tracked-task toast sync. Grows as new items appear,
     /// marks items completed (freezing elapsed + starting strikethrough)
     /// as items disappear, and begins the toast-level linger
     /// countdown once the tracker drains. Used by lint, clean, and
-    /// GitHub repo-fetch flows via [`Self::running_items_for_toast`].
+    /// GitHub repo-fetch flows via [`RunningTracker::items_for_toast`].
     pub(super) fn sync_running_toast(
         &mut self,
         toast_slot: Option<ToastTaskId>,

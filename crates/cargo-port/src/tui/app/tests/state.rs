@@ -19,6 +19,7 @@ use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
 use crate::scan::CargoMetadataError;
 use crate::tui::app::target_index::CleanSelection;
+use crate::tui::app::Startup;
 use crate::tui::panes;
 
 #[test]
@@ -54,13 +55,13 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
 
     app.insert_ci_runs(
         test_path("~/ws").as_path(),
-        vec![make_ci_run(1, Conclusion::Success)],
+        vec![make_ci_run(1, CiStatus::Passed)],
         0,
     );
 
     assert_eq!(
         app.ci_for(test_path("~/ws").as_path()),
-        Some(Conclusion::Success)
+        Some(CiStatus::Passed)
     );
     assert!(matches!(
         app.project_list.ci_data_for(test_path("~/ws").as_path()),
@@ -68,13 +69,12 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
     ));
     assert_eq!(
         app.ci_for(test_path("~/ws/core").as_path()),
-        Some(Conclusion::Success)
+        Some(CiStatus::Passed)
     );
-    assert!(
-        app.project_list
-            .ci_info_for(test_path("~/ws/core").as_path())
-            .is_some()
-    );
+    assert!(app
+        .project_list
+        .ci_info_for(test_path("~/ws/core").as_path())
+        .is_some());
     // Member resolves to the same entry-level ci_data as the workspace root.
     assert!(matches!(
         app.project_list
@@ -187,7 +187,7 @@ fn worktree_group_shares_ci_data_across_primary_and_linked() {
     set_loaded_ci(
         &mut app,
         root_path.as_path(),
-        vec![make_ci_run(3, Conclusion::Success)],
+        vec![make_ci_run(3, CiStatus::Passed)],
         false,
         0,
     );
@@ -240,18 +240,18 @@ fn ci_for_prefers_runs_matching_local_branch() {
         vec![
             CiRun {
                 branch: "main".to_string(),
-                ..make_ci_run(9, Conclusion::Success)
+                ..make_ci_run(9, CiStatus::Passed)
             },
             CiRun {
                 branch: "feat/demo".to_string(),
-                ..make_ci_run(8, Conclusion::Failure)
+                ..make_ci_run(8, CiStatus::Failed)
             },
         ],
         false,
         0,
     );
 
-    assert_eq!(app.ci_for(project.path()), Some(Conclusion::Failure));
+    assert_eq!(app.ci_for(project.path()), Some(CiStatus::Failed));
 }
 
 #[test]
@@ -293,18 +293,18 @@ fn ci_for_default_branch_prefers_matching_branch_runs() {
         vec![
             CiRun {
                 branch: "release".to_string(),
-                ..make_ci_run(9, Conclusion::Failure)
+                ..make_ci_run(9, CiStatus::Failed)
             },
             CiRun {
                 branch: "main".to_string(),
-                ..make_ci_run(8, Conclusion::Success)
+                ..make_ci_run(8, CiStatus::Passed)
             },
         ],
         false,
         0,
     );
 
-    assert_eq!(app.ci_for(project.path()), Some(Conclusion::Success));
+    assert_eq!(app.ci_for(project.path()), Some(CiStatus::Passed));
     assert_eq!(
         app.ci_runs_for_display(project.path())
             .iter()
@@ -353,18 +353,18 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
         vec![
             CiRun {
                 branch: "main".to_string(),
-                ..make_ci_run(9, Conclusion::Success)
+                ..make_ci_run(9, CiStatus::Passed)
             },
             CiRun {
                 branch: "feat/demo".to_string(),
-                ..make_ci_run(8, Conclusion::Failure)
+                ..make_ci_run(8, CiStatus::Failed)
             },
         ],
         false,
         0,
     );
 
-    assert_eq!(app.ci_for(project.path()), Some(Conclusion::Failure));
+    assert_eq!(app.ci_for(project.path()), Some(CiStatus::Failed));
     assert_eq!(
         app.ci_runs_for_display(project.path())
             .iter()
@@ -375,7 +375,7 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
 
     app.toggle_ci_display_mode_for(project.path());
 
-    assert_eq!(app.ci_for(project.path()), Some(Conclusion::Success));
+    assert_eq!(app.ci_for(project.path()), Some(CiStatus::Passed));
     assert_eq!(
         app.ci_runs_for_display(project.path())
             .iter()
@@ -401,7 +401,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .as_ref()
         .expect("lint expected");
     assert!(expected.is_empty());
-    assert!(app.lint.running().toast().is_none());
+    assert!(app.lint.running().toast.is_none());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_a.path().to_path_buf().into(),
@@ -416,19 +416,13 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         .expect("lint expected");
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(project_a.path().as_path()));
-    assert!(
-        !app.startup
-            .lint_phase
-            .seen
-            .contains(project_a.path().as_path())
-    );
-    assert!(
-        app.lint
-            .running()
-            .running_map()
-            .contains_key(project_a.path())
-    );
-    assert!(app.lint.running().toast().is_some());
+    assert!(!app
+        .startup
+        .lint_phase
+        .seen
+        .contains(project_a.path().as_path()));
+    assert!(app.lint.running().running.contains_key(project_a.path()));
+    assert!(app.lint.running().toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project_a.path().to_path_buf().into(),
@@ -451,7 +445,7 @@ fn startup_lint_toast_body_shows_paths_then_others() {
     ]);
     let seen = HashSet::from([test_path("~/e")]);
 
-    let body = App::startup_lint_toast_body_for(&expected, &seen);
+    let body = Startup::lint_toast_body_for(&expected, &seen);
     let lines: Vec<&str> = body.lines().collect();
 
     assert_eq!(lines.len(), 4);
@@ -549,12 +543,11 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
 
     apply_git_info(&mut app, member_dir.as_path(), make_git_info(None));
 
-    assert!(
-        app.startup
-            .git
-            .seen
-            .contains(workspace_dir.join(".git").as_path())
-    );
+    assert!(app
+        .startup
+        .git
+        .seen
+        .contains(workspace_dir.join(".git").as_path()));
 }
 
 #[test]
@@ -567,20 +560,20 @@ fn lint_toast_reuses_existing_on_restart() {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:22:18-05:00")),
     });
-    let first_toast = app.lint.running().toast();
+    let first_toast = app.lint.running().toast;
     assert!(first_toast.is_some());
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
-    assert_eq!(app.lint.running().toast(), first_toast);
+    assert_eq!(app.lint.running().toast, first_toast);
 
     app.handle_bg_msg(BackgroundMsg::LintStatus {
         path:   project.path().to_path_buf().into(),
         status: LintStatus::Running(parse_ts("2026-03-30T14:24:18-05:00")),
     });
-    assert_eq!(app.lint.running().toast(), first_toast);
+    assert_eq!(app.lint.running().toast, first_toast);
 }
 
 #[test]
@@ -918,7 +911,7 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
         project.path(),
         vec![CiRun {
             branch: "main".to_string(),
-            ..make_ci_run(9, Conclusion::Success)
+            ..make_ci_run(9, CiStatus::Passed)
         }],
         false,
         0,
@@ -973,7 +966,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
         project.path(),
         vec![CiRun {
             branch: "main".to_string(),
-            ..make_ci_run(57, Conclusion::Success)
+            ..make_ci_run(57, CiStatus::Passed)
         }],
         false,
         1,
@@ -1364,7 +1357,7 @@ fn sync_does_not_mark_exhausted_when_no_new_runs() {
     set_loaded_ci(
         &mut app,
         project.path(),
-        vec![make_ci_run(5, Conclusion::Success)],
+        vec![make_ci_run(5, CiStatus::Passed)],
         false,
         10,
     );
@@ -1373,7 +1366,7 @@ fn sync_does_not_mark_exhausted_when_no_new_runs() {
     app.handle_ci_fetch_complete(
         &path,
         CiFetchResult::Loaded {
-            runs:         vec![make_ci_run(5, Conclusion::Success)],
+            runs:         vec![make_ci_run(5, CiStatus::Passed)],
             github_total: 10,
         },
         CiFetchKind::Sync,
@@ -1395,7 +1388,7 @@ fn fetch_older_marks_exhausted_when_no_new_runs() {
     set_loaded_ci(
         &mut app,
         project.path(),
-        vec![make_ci_run(5, Conclusion::Success)],
+        vec![make_ci_run(5, CiStatus::Passed)],
         false,
         10,
     );
@@ -1404,7 +1397,7 @@ fn fetch_older_marks_exhausted_when_no_new_runs() {
     app.handle_ci_fetch_complete(
         &path,
         CiFetchResult::Loaded {
-            runs:         vec![make_ci_run(5, Conclusion::Success)],
+            runs:         vec![make_ci_run(5, CiStatus::Passed)],
             github_total: 10,
         },
         CiFetchKind::FetchOlder,
@@ -1426,7 +1419,7 @@ fn cache_only_preserves_github_total() {
     set_loaded_ci(
         &mut app,
         project.path(),
-        vec![make_ci_run(5, Conclusion::Success)],
+        vec![make_ci_run(5, CiStatus::Passed)],
         false,
         57,
     );
@@ -1434,7 +1427,7 @@ fn cache_only_preserves_github_total() {
     // CacheOnly (network failed) should preserve the previous github_total.
     app.handle_ci_fetch_complete(
         &path,
-        CiFetchResult::CacheOnly(vec![make_ci_run(5, Conclusion::Success)]),
+        CiFetchResult::CacheOnly(vec![make_ci_run(5, CiStatus::Passed)]),
         CiFetchKind::Sync,
     );
 
@@ -1454,7 +1447,7 @@ fn sync_clears_exhaustion_when_new_runs_found() {
     set_loaded_ci(
         &mut app,
         project.path(),
-        vec![make_ci_run(5, Conclusion::Success)],
+        vec![make_ci_run(5, CiStatus::Passed)],
         true,
         10,
     );
@@ -1464,8 +1457,8 @@ fn sync_clears_exhaustion_when_new_runs_found() {
         &path,
         CiFetchResult::Loaded {
             runs:         vec![
-                make_ci_run(6, Conclusion::Success),
-                make_ci_run(5, Conclusion::Success),
+                make_ci_run(6, CiStatus::Passed),
+                make_ci_run(5, CiStatus::Passed),
             ],
             github_total: 11,
         },
@@ -1806,12 +1799,11 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
         app.start_clean(&project_path),
         "out-of-tree target dir exists → clean is queued (would have missed with join(\"target\"))"
     );
-    assert!(
-        app.inflight
-            .clean()
-            .running_map()
-            .contains_key(project_path.as_path())
-    );
+    assert!(app
+        .inflight
+        .clean()
+        .running
+        .contains_key(project_path.as_path()));
 }
 
 #[test]
@@ -1871,12 +1863,11 @@ fn start_clean_falls_back_to_literal_target_when_no_metadata_yet() {
         app.start_clean(&project_path),
         "no metadata → falls back to <project>/target, which exists → clean queued"
     );
-    assert!(
-        app.inflight
-            .clean()
-            .running_map()
-            .contains_key(project_path.as_path())
-    );
+    assert!(app
+        .inflight
+        .clean()
+        .running
+        .contains_key(project_path.as_path()));
 }
 
 /// The metadata phase gates `startup_complete_at`: with disk, git, repo
@@ -2135,9 +2126,9 @@ fn out_of_tree_target_size_message_stamps_metadata() {
 
 #[test]
 fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
+    use cargo_metadata::semver::Version;
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
-    use cargo_metadata::semver::Version;
 
     let project_path = AbsolutePath::from(PathBuf::from("/abs/demo"));
     let pkg_item = RootItem::Rust(RustProject::Package(crate::project::Package {

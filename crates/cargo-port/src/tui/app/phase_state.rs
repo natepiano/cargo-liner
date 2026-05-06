@@ -3,6 +3,8 @@ use std::hash::Hash;
 use std::time::Instant;
 
 use crate::tui::toasts::ToastTaskId;
+use crate::tui::toasts::TrackedItem;
+use crate::tui::toasts::TrackedItemKey;
 
 /// A phase that tracks a finite set of identities. `expected = None` is the
 /// "Unknown" state (nothing has been recorded yet); `Some(HashSet::new())` is
@@ -44,6 +46,33 @@ impl<K: Eq + Hash> KeyedPhase<K> {
         self.seen.clear();
         self.complete_at = None;
         self.toast = None;
+    }
+
+    /// Build tracked items from this phase's expected/seen sets.
+    /// Already-seen keys are pre-marked as completed (renderer shows
+    /// them with strikethrough); pending keys get `started_at = now`
+    /// so they render with a live spinner + ticking duration that
+    /// freezes when the item completes.
+    pub(super) fn tracked_items<F>(&self, label_fn: F) -> Vec<TrackedItem>
+    where
+        for<'a> &'a K: Into<TrackedItemKey>,
+        F: Fn(&K) -> String,
+    {
+        let now = Instant::now();
+        let empty = HashSet::new();
+        let expected = self.expected.as_ref().unwrap_or(&empty);
+        expected
+            .iter()
+            .map(|k| {
+                let is_seen = self.seen.contains(k);
+                TrackedItem {
+                    label:        label_fn(k),
+                    key:          k.into(),
+                    started_at:   if is_seen { None } else { Some(now) },
+                    completed_at: if is_seen { Some(now) } else { None },
+                }
+            })
+            .collect()
     }
 }
 

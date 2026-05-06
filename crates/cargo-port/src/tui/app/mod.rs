@@ -86,7 +86,7 @@ use super::scan_state::Scan;
 use super::toasts::ToastStyle::Warning;
 use super::toasts::TrackedItem;
 use crate::ci::CiRun;
-use crate::ci::Conclusion;
+use crate::ci::CiStatus;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
@@ -401,7 +401,7 @@ impl App {
             .map_or_else(Vec::new, |path| self.ci_runs_for_display(path))
     }
 
-    pub(super) fn ci_for(&self, path: &Path) -> Option<Conclusion> {
+    pub(super) fn ci_for(&self, path: &Path) -> Option<CiStatus> {
         // A branch with no upstream tracking can't have CI runs — don't
         // show the parent repo's result for an unpushed worktree branch.
         if self.project_list.unpublished_ci_branch_name(path).is_some() {
@@ -411,7 +411,7 @@ impl App {
         self.project_list
             .ci_info_for(path)
             .and_then(|_| self.project_list.latest_ci_run_for_path(path, display_mode))
-            .map(|run| run.conclusion)
+            .map(|run| run.ci_status)
     }
 
     pub(super) fn ci_is_fetching(&self, path: &Path) -> bool {
@@ -424,35 +424,9 @@ impl App {
             })
     }
 
-    /// All absolute paths for a `RootItem` (root + worktrees).
-    fn unique_item_paths(item: &RootItem) -> Vec<AbsolutePath> {
-        let mut paths = Vec::new();
-        paths.push(item.path().clone());
-        match item {
-            RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) => {
-                for l in linked {
-                    let p = l.path().clone();
-                    if !paths.contains(&p) {
-                        paths.push(p);
-                    }
-                }
-            },
-            RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }) => {
-                for l in linked {
-                    let p = l.path().clone();
-                    if !paths.contains(&p) {
-                        paths.push(p);
-                    }
-                }
-            },
-            _ => {},
-        }
-        paths
-    }
-
     /// Aggregate CI for a `RootItem`.
-    pub(super) fn ci_for_item(&self, item: &RootItem) -> Option<Conclusion> {
-        let paths = Self::unique_item_paths(item);
+    pub(super) fn ci_for_item(&self, item: &RootItem) -> Option<CiStatus> {
+        let paths = item.unique_paths();
         if paths.len() == 1 {
             return self.ci_for(&paths[0]);
         }
@@ -463,10 +437,10 @@ impl App {
             let display_mode = self.ci.display_mode_for(path);
             if let Some(run) = self.project_list.latest_ci_run_for_path(path, display_mode) {
                 any_data = true;
-                if run.conclusion.is_failure() {
+                if run.ci_status.is_failure() {
                     any_red = true;
                     all_green = false;
-                } else if !run.conclusion.is_success() {
+                } else if !run.ci_status.is_success() {
                     all_green = false;
                 }
             }
@@ -474,9 +448,9 @@ impl App {
         if !any_data {
             None
         } else if any_red {
-            Some(Conclusion::Failure)
+            Some(CiStatus::Failed)
         } else if all_green {
-            Some(Conclusion::Success)
+            Some(CiStatus::Passed)
         } else {
             None
         }
@@ -710,7 +684,7 @@ impl App {
     /// fingerprint drift.
     fn clean_metadata_dispatch(&self) -> MetadataDispatchContext {
         MetadataDispatchContext {
-            handle:         self.net.http_client_ref().handle.clone(),
+            handle:         self.net.http_client.handle.clone(),
             tx:             self.background.bg_sender(),
             metadata_store: Arc::clone(self.scan.metadata_store()),
             // Use the shared scan-concurrency cap so confirm-triggered

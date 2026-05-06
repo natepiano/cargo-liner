@@ -139,7 +139,7 @@ mod tests {
     fn new_starts_empty() {
         let inflight = fresh();
         assert!(inflight.clean().is_empty());
-        assert!(inflight.clean().toast().is_none());
+        assert!(inflight.clean().toast.is_none());
         assert!(inflight.example_running().is_none());
         assert!(inflight.example_output_is_empty());
     }
@@ -149,7 +149,7 @@ mod tests {
         let mut inflight = fresh();
         let p = abs("/tmp/foo");
         inflight.clean_mut().insert(p.clone(), Instant::now());
-        assert!(inflight.clean().running_map().contains_key(&p));
+        assert!(inflight.clean().running.contains_key(&p));
         let removed = inflight.clean_mut().remove(&p);
         assert!(removed.is_some());
         assert!(inflight.clean().is_empty());
@@ -158,10 +158,10 @@ mod tests {
     #[test]
     fn clean_toast_round_trip() {
         let mut inflight = fresh();
-        inflight.clean_mut().set_toast(Some(ToastTaskId(7)));
-        assert_eq!(inflight.clean().toast(), Some(ToastTaskId(7)));
-        inflight.clean_mut().set_toast(None);
-        assert!(inflight.clean().toast().is_none());
+        inflight.clean_mut().toast = Some(ToastTaskId(7));
+        assert_eq!(inflight.clean().toast, Some(ToastTaskId(7)));
+        inflight.clean_mut().toast = None;
+        assert!(inflight.clean().toast.is_none());
     }
 
     #[test]

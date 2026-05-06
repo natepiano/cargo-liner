@@ -5,6 +5,7 @@ use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
 use super::non_rust::NonRustProject;
+use super::package::Package;
 use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
@@ -491,6 +492,114 @@ impl RootItem {
         }
         out
     }
+
+    /// Borrowed `Path` for a member by group/member index (workspace
+    /// member or single-live worktree-workspace member).
+    pub(crate) fn member_path_ref(&self, group_index: usize, member_index: usize) -> Option<&Path> {
+        match self {
+            Self::Rust(RustProject::Workspace(ws)) => {
+                let group = ws.groups().get(group_index)?;
+                let member = group.members().get(member_index)?;
+                Some(member.path().as_path())
+            },
+            Self::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) if !wtg.renders_as_group() => {
+                let group = wtg.single_live_workspace()?.groups().get(group_index)?;
+                let member = group.members().get(member_index)?;
+                Some(member.path().as_path())
+            },
+            _ => None,
+        }
+    }
+
+    /// Borrowed `Path` for a vendored package by index.
+    pub(crate) fn vendored_path_ref(&self, vendored_index: usize) -> Option<&Path> {
+        match self {
+            Self::Rust(RustProject::Workspace(ws)) => ws
+                .vendored()
+                .get(vendored_index)
+                .map(|p| p.path().as_path()),
+            Self::Rust(RustProject::Package(pkg)) => pkg
+                .vendored()
+                .get(vendored_index)
+                .map(|p| p.path().as_path()),
+            Self::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) if !wtg.renders_as_group() => {
+                wtg.single_live_workspace()?
+                    .vendored()
+                    .get(vendored_index)
+                    .map(|p| p.path().as_path())
+            },
+            Self::Worktrees(wtg @ WorktreeGroup::Packages { .. }) if !wtg.renders_as_group() => wtg
+                .single_live_package()?
+                .vendored()
+                .get(vendored_index)
+                .map(|p| p.path().as_path()),
+            _ => None,
+        }
+    }
+
+    /// Resolve a member `Package` from this item (workspace member or
+    /// single-live worktree-workspace member).
+    pub(crate) fn resolve_member(
+        &self,
+        group_index: usize,
+        member_index: usize,
+    ) -> Option<&Package> {
+        match self {
+            Self::Rust(RustProject::Workspace(ws)) => {
+                ws.groups().get(group_index)?.members().get(member_index)
+            },
+            Self::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) if !wtg.renders_as_group() => {
+                wtg.single_live_workspace()?
+                    .groups()
+                    .get(group_index)?
+                    .members()
+                    .get(member_index)
+            },
+            _ => None,
+        }
+    }
+
+    /// Resolve a vendored package from this item (workspace, package,
+    /// or single-live worktree workspace/package).
+    pub(crate) fn resolve_vendored(&self, vendored_index: usize) -> Option<&VendoredPackage> {
+        match self {
+            Self::Rust(RustProject::Workspace(ws)) => ws.vendored().get(vendored_index),
+            Self::Rust(RustProject::Package(pkg)) => pkg.vendored().get(vendored_index),
+            Self::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) if !wtg.renders_as_group() => {
+                wtg.single_live_workspace()?.vendored().get(vendored_index)
+            },
+            Self::Worktrees(wtg @ WorktreeGroup::Packages { .. }) if !wtg.renders_as_group() => {
+                wtg.single_live_package()?.vendored().get(vendored_index)
+            },
+            _ => None,
+        }
+    }
+
+    /// All absolute paths for this item (root + worktrees, deduplicated).
+    pub(crate) fn unique_paths(&self) -> Vec<AbsolutePath> {
+        let mut paths = Vec::new();
+        paths.push(self.path().clone());
+        match self {
+            Self::Worktrees(WorktreeGroup::Workspaces { linked, .. }) => {
+                for l in linked {
+                    let p = l.path().clone();
+                    if !paths.contains(&p) {
+                        paths.push(p);
+                    }
+                }
+            },
+            Self::Worktrees(WorktreeGroup::Packages { linked, .. }) => {
+                for l in linked {
+                    let p = l.path().clone();
+                    if !paths.contains(&p) {
+                        paths.push(p);
+                    }
+                }
+            },
+            _ => {},
+        }
+        paths
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -547,7 +656,6 @@ fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> 
 }
 
 use super::git;
-use super::package::Package;
 use super::rust_info::RustInfo;
 use super::rust_project;
 use super::workspace::Workspace;

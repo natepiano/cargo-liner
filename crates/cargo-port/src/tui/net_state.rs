@@ -180,9 +180,9 @@ impl CratesIo {
 }
 
 pub struct Net {
-    http_client:   HttpClient,
-    pub github:    Github,
-    pub crates_io: CratesIo,
+    pub http_client: HttpClient,
+    pub github:      Github,
+    pub crates_io:   CratesIo,
 }
 
 impl Net {
@@ -195,8 +195,6 @@ impl Net {
     }
 
     pub fn http_client(&self) -> HttpClient { self.http_client.clone() }
-
-    pub const fn http_client_ref(&self) -> &HttpClient { &self.http_client }
 
     pub fn rate_limit(&self) -> GitHubRateLimit { self.http_client.rate_limit() }
 

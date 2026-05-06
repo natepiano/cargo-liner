@@ -136,7 +136,7 @@ impl App {
         }
         if needs_out_of_tree_walk {
             scan::spawn_out_of_tree_target_walk(
-                &self.net.http_client_ref().handle,
+                &self.net.http_client.handle,
                 self.background.bg_sender(),
                 workspace_root.clone(),
                 target_directory.clone(),

@@ -12,8 +12,7 @@
 //!
 //! The tracker only owns state — it does not drive the toast itself.
 //! Callers sync the toast via `App::sync_tracked_path_toast` (and its
-//! GitHub counterpart), reading [`Self::running_map`] /
-//! [`Self::toast`] and writing back through [`Self::set_toast`].
+//! GitHub counterpart), reading the `running` / `toast` fields directly.
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -21,10 +20,12 @@ use std::hash::Hash;
 use std::time::Instant;
 
 use super::toasts::ToastTaskId;
+use super::toasts::TrackedItem;
+use super::toasts::TrackedItemKey;
 
 pub struct RunningTracker<K: Eq + Hash> {
-    running: HashMap<K, Instant>,
-    toast:   Option<ToastTaskId>,
+    pub running: HashMap<K, Instant>,
+    pub toast:   Option<ToastTaskId>,
 }
 
 impl<K: Eq + Hash> Default for RunningTracker<K> {
@@ -59,22 +60,32 @@ impl<K: Eq + Hash> RunningTracker<K> {
         self.running.remove(k)
     }
 
-    pub fn iter_running(&self) -> impl Iterator<Item = (&K, &Instant)> { self.running.iter() }
-
-    /// Borrow the underlying map. Test-only today (`contains_key`
-    /// assertions); production callers iterate via
-    /// [`Self::iter_running`] or read the `Vec<TrackedItem>` built
-    /// by the caller.
-    #[cfg(test)]
-    pub const fn running_map(&self) -> &HashMap<K, Instant> { &self.running }
-
-    pub const fn toast(&self) -> Option<ToastTaskId> { self.toast }
-
-    pub const fn set_toast(&mut self, t: Option<ToastTaskId>) { self.toast = t; }
-
     pub fn clear(&mut self) {
         self.running.clear();
         self.toast = None;
+    }
+
+    /// Collect this tracker into the data the toast helper needs:
+    /// the current toast slot plus a `TrackedItem` per running key.
+    /// Done as a non-`&mut` reader so the borrow on the
+    /// subsystem-owned tracker is released before the caller hands
+    /// the items to the toast-sync sink (which takes `&mut self`).
+    pub fn items_for_toast<F>(&self, label_fn: F) -> (Option<ToastTaskId>, Vec<TrackedItem>)
+    where
+        for<'a> &'a K: Into<TrackedItemKey>,
+        F: Fn(&K) -> String,
+    {
+        let items = self
+            .running
+            .iter()
+            .map(|(k, &started)| TrackedItem {
+                label:        label_fn(k),
+                key:          k.into(),
+                started_at:   Some(started),
+                completed_at: None,
+            })
+            .collect();
+        (self.toast, items)
     }
 }
 
@@ -86,8 +97,8 @@ mod tests {
     fn new_is_empty_with_no_toast() {
         let t: RunningTracker<String> = RunningTracker::new();
         assert!(t.is_empty());
-        assert!(t.toast().is_none());
-        assert!(t.running_map().is_empty());
+        assert!(t.toast.is_none());
+        assert!(t.running.is_empty());
     }
 
     #[test]
@@ -97,7 +108,7 @@ mod tests {
         assert!(t.insert("a".into(), now));
         assert!(!t.insert("a".into(), now));
         assert!(t.insert("b".into(), now));
-        assert_eq!(t.running_map().len(), 2);
+        assert_eq!(t.running.len(), 2);
     }
 
     #[test]
@@ -113,19 +124,19 @@ mod tests {
     #[test]
     fn toast_round_trip() {
         let mut t: RunningTracker<String> = RunningTracker::new();
-        t.set_toast(Some(ToastTaskId(42)));
-        assert_eq!(t.toast(), Some(ToastTaskId(42)));
-        t.set_toast(None);
-        assert!(t.toast().is_none());
+        t.toast = Some(ToastTaskId(42));
+        assert_eq!(t.toast, Some(ToastTaskId(42)));
+        t.toast = None;
+        assert!(t.toast.is_none());
     }
 
     #[test]
     fn clear_drops_running_and_toast() {
         let mut t: RunningTracker<String> = RunningTracker::new();
         t.insert("a".into(), Instant::now());
-        t.set_toast(Some(ToastTaskId(1)));
+        t.toast = Some(ToastTaskId(1));
         t.clear();
         assert!(t.is_empty());
-        assert!(t.toast().is_none());
+        assert!(t.toast.is_none());
     }
 }

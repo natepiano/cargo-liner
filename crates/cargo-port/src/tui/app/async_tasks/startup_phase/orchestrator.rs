@@ -14,6 +14,8 @@
 //! `ToastManager`, and tracing, and have no single subsystem they
 //! belong to.
 
+#[cfg(test)]
+use std::collections::HashSet;
 use std::time::Instant;
 
 use crate::ci::OwnerRepo;
@@ -52,4 +54,17 @@ impl Startup {
     /// from `App::rescan` so a fresh scan starts the startup-phase
     /// state machine over.
     pub fn reset(&mut self) { *self = Self::default(); }
+
+    /// Test-only constructor for the startup-lint toast body from
+    /// arbitrary expected/seen sets. Symmetric with `disk_toast_body`,
+    /// `git_toast_body`, `metadata_toast_body` (instance-level reads
+    /// of the matching `KeyedPhase`); kept on `Startup` rather than
+    /// as a free fn so the lint toast lives next to its peers.
+    #[cfg(test)]
+    pub fn lint_toast_body_for(
+        expected: &HashSet<AbsolutePath>,
+        seen: &HashSet<AbsolutePath>,
+    ) -> String {
+        super::toast_bodies::remaining_toast_body(expected, seen)
+    }
 }

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use crate::perf_log;
+use crate::project;
 use crate::tui::app::App;
 use crate::tui::app::Startup;
 use crate::tui::app::phase_state::PhaseCompletion;
@@ -115,9 +116,11 @@ impl App {
         self.startup.toast = Some(task_id);
     }
     pub(super) fn start_startup_detail_toasts(&mut self) {
-        if let Some(disk_expected) = self.startup.disk.expected.clone() {
-            let disk_items =
-                Self::tracked_items_for_startup(&disk_expected, &self.startup.disk.seen);
+        if self.startup.disk.expected.is_some() {
+            let disk_items = self
+                .startup
+                .disk
+                .tracked_items(|p| project::home_relative_path(p.as_path()));
             if !disk_items.is_empty() {
                 let body = self.startup.disk_toast_body();
                 let task_id = self.toasts.start_task("Calculating disk usage", &body);
@@ -126,8 +129,11 @@ impl App {
             }
         }
 
-        if let Some(git_expected) = self.startup.git.expected.clone() {
-            let git_items = Self::tracked_items_for_startup(&git_expected, &self.startup.git.seen);
+        if self.startup.git.expected.is_some() {
+            let git_items = self
+                .startup
+                .git
+                .tracked_items(|p| project::home_relative_path(p.as_path()));
             if !git_items.is_empty() {
                 let body = self.startup.git_toast_body();
                 let task_id = self.toasts.start_task("Scanning local git repos", &body);
@@ -135,9 +141,11 @@ impl App {
                 self.startup.git.toast = Some(task_id);
             }
         }
-        if let Some(metadata_expected) = self.startup.metadata.expected.clone() {
-            let metadata_items =
-                Self::tracked_items_for_startup(&metadata_expected, &self.startup.metadata.seen);
+        if self.startup.metadata.expected.is_some() {
+            let metadata_items = self
+                .startup
+                .metadata
+                .tracked_items(|p| project::home_relative_path(p.as_path()));
             if !metadata_items.is_empty() {
                 let body = self.startup.metadata_toast_body();
                 let task_id = self.toasts.start_task("Running cargo metadata", &body);

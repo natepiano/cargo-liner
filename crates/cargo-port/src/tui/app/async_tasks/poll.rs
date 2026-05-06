@@ -23,12 +23,12 @@ impl App {
             let Ok(msg) = self.background.bg_rx().try_recv() else {
                 break;
             };
-            Self::record_background_msg_kind(&mut stats, &msg);
+            record_background_msg_kind(&mut stats, &msg);
             msg_count += 1;
             needs_rebuild |= self.handle_bg_msg(msg);
         }
         stats.bg_msgs = msg_count;
-        Self::log_saturated_background_batch(&stats);
+        log_saturated_background_batch(&stats);
         stats.ci_msgs = self.poll_ci_fetches();
         stats.example_msgs = self.poll_example_msgs();
         self.poll_clean_msgs();
@@ -59,55 +59,6 @@ impl App {
             );
         }
         stats
-    }
-    pub(super) const fn record_background_msg_kind(
-        stats: &mut PollBackgroundStats,
-        msg: &BackgroundMsg,
-    ) {
-        match msg {
-            BackgroundMsg::DiskUsage { .. } | BackgroundMsg::DiskUsageBatch { .. } => {
-                stats.disk_usage_msgs += 1;
-            },
-            BackgroundMsg::CheckoutInfo { .. }
-            | BackgroundMsg::RepoInfo { .. }
-            | BackgroundMsg::GitFirstCommit { .. } => {
-                stats.git_info_msgs += 1;
-            },
-            BackgroundMsg::LintStatus { .. } | BackgroundMsg::LintStartupStatus { .. } => {
-                stats.lint_status_msgs += 1;
-            },
-            BackgroundMsg::CiRuns { .. }
-            | BackgroundMsg::RepoFetchQueued { .. }
-            | BackgroundMsg::RepoFetchComplete { .. }
-            | BackgroundMsg::CratesIoVersion { .. }
-            | BackgroundMsg::RepoMeta { .. }
-            | BackgroundMsg::Submodules { .. }
-            | BackgroundMsg::ScanResult { .. }
-            | BackgroundMsg::ProjectDiscovered { .. }
-            | BackgroundMsg::ProjectRefreshed { .. }
-            | BackgroundMsg::LintCachePruned { .. }
-            | BackgroundMsg::ServiceReachable { .. }
-            | BackgroundMsg::ServiceRecovered { .. }
-            | BackgroundMsg::ServiceUnreachable { .. }
-            | BackgroundMsg::ServiceRateLimited { .. }
-            | BackgroundMsg::LanguageStatsBatch { .. }
-            | BackgroundMsg::CargoMetadata { .. }
-            | BackgroundMsg::OutOfTreeTargetSize { .. } => {},
-        }
-    }
-    pub(super) fn log_saturated_background_batch(stats: &PollBackgroundStats) {
-        const MAX_MSGS_PER_FRAME: usize = 50;
-        if stats.bg_msgs != MAX_MSGS_PER_FRAME {
-            return;
-        }
-
-        tracing::info!(
-            bg_msgs = stats.bg_msgs,
-            disk_usage_msgs = stats.disk_usage_msgs,
-            git_info_msgs = stats.git_info_msgs,
-            lint_status_msgs = stats.lint_status_msgs,
-            "poll_background_saturated"
-        );
     }
     pub(super) fn poll_ci_fetches(&mut self) -> usize {
         let mut count = 0;
@@ -190,4 +141,55 @@ impl App {
             }
         }
     }
+}
+
+pub(super) const fn record_background_msg_kind(
+    stats: &mut PollBackgroundStats,
+    msg: &BackgroundMsg,
+) {
+    match msg {
+        BackgroundMsg::DiskUsage { .. } | BackgroundMsg::DiskUsageBatch { .. } => {
+            stats.disk_usage_msgs += 1;
+        },
+        BackgroundMsg::CheckoutInfo { .. }
+        | BackgroundMsg::RepoInfo { .. }
+        | BackgroundMsg::GitFirstCommit { .. } => {
+            stats.git_info_msgs += 1;
+        },
+        BackgroundMsg::LintStatus { .. } | BackgroundMsg::LintStartupStatus { .. } => {
+            stats.lint_status_msgs += 1;
+        },
+        BackgroundMsg::CiRuns { .. }
+        | BackgroundMsg::RepoFetchQueued { .. }
+        | BackgroundMsg::RepoFetchComplete { .. }
+        | BackgroundMsg::CratesIoVersion { .. }
+        | BackgroundMsg::RepoMeta { .. }
+        | BackgroundMsg::Submodules { .. }
+        | BackgroundMsg::ScanResult { .. }
+        | BackgroundMsg::ProjectDiscovered { .. }
+        | BackgroundMsg::ProjectRefreshed { .. }
+        | BackgroundMsg::LintCachePruned { .. }
+        | BackgroundMsg::ServiceReachable { .. }
+        | BackgroundMsg::ServiceRecovered { .. }
+        | BackgroundMsg::ServiceUnreachable { .. }
+        | BackgroundMsg::ServiceRateLimited { .. }
+        | BackgroundMsg::LanguageStatsBatch { .. }
+        | BackgroundMsg::CargoMetadata { .. }
+        | BackgroundMsg::OutOfTreeTargetSize { .. } => {},
+    }
+}
+
+pub(super) fn log_saturated_background_batch(stats: &PollBackgroundStats) {
+    const MAX_MSGS_PER_FRAME: usize = 50;
+    if stats.bg_msgs != MAX_MSGS_PER_FRAME {
+        return;
+    }
+
+    tracing::info!(
+        bg_msgs = stats.bg_msgs,
+        disk_usage_msgs = stats.disk_usage_msgs,
+        git_info_msgs = stats.git_info_msgs,
+        lint_status_msgs = stats.lint_status_msgs,
+        "poll_background_saturated"
+    );
 }
