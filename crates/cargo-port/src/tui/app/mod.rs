@@ -864,6 +864,51 @@ impl App {
         self.focus.unvisit(PaneId::Targets);
         self.focus.unvisit(PaneId::CiRuns);
     }
+
+    pub fn sync_selected_project(&mut self) {
+        self.ensure_visible_rows_cached();
+        let current = self
+            .project_list
+            .selected_project_path()
+            .map(AbsolutePath::from);
+        if self
+            .project_list
+            .paths
+            .collapsed_anchor
+            .as_ref()
+            .is_some_and(|anchor| current.as_ref() != Some(anchor))
+        {
+            self.project_list.paths.collapsed_selected = None;
+            self.project_list.paths.collapsed_anchor = None;
+        }
+        if self.project_list.paths.selected_project == current {
+            return;
+        }
+
+        self.project_list
+            .paths
+            .selected_project
+            .clone_from(&current);
+        self.reset_project_panes();
+
+        let panes = self.tabbable_panes();
+        if !panes.contains(&self.focus.base()) {
+            self.focus.set(PaneId::ProjectList);
+        }
+
+        if self.focus.overlay_return().is_some() && !self.focus.overlay_return_is_in(&panes) {
+            self.focus.retarget_overlay_return(PaneId::ProjectList);
+        }
+
+        if let Some(abs_path) = current
+            && self.project_list.paths.last_selected.as_ref() != Some(&abs_path)
+        {
+            self.scan.bump_generation();
+            self.project_list.paths.last_selected = Some(abs_path);
+            self.project_list.mark_sync_changed();
+            self.maybe_priority_fetch();
+        }
+    }
 }
 
 /// RAII guard for structural mutations of the project tree.
