@@ -278,17 +278,18 @@ pub trait ActionEnum: Copy + Eq + std::hash::Hash + 'static {
 /// the registry on `TypeId<P>` and stores `fn` pointers — both demand
 /// `'static`. Pane *instances* live on the binary's `App`; the trait
 /// impl itself never holds borrowed data.
-pub trait Shortcuts<Ctx>: 'static {
+pub trait Shortcuts<Ctx: AppContext>: 'static {
     /// The pane's action enum.
     type Action: ActionEnum;
 
     /// TOML table name. Survives type renames; one-line cost. Required.
     const SCOPE_NAME: &'static str;
 
-    /// Stable per-instance identity used by the framework's per-pane
-    /// query registry (e.g. `input_mode_queries`). One variant per
-    /// registered pane; the binary defines this enum.
-    fn pane_id() -> PaneId;
+    /// Stable per-pane identity used by the framework's per-pane
+    /// query registry (e.g. `input_mode_queries`). The trait covers
+    /// app panes only — framework panes (Keymap, Settings, Toasts) are
+    /// special-cased — so the variant is always an `AppPaneId`.
+    const APP_PANE_ID: Ctx::AppPaneId;
 
     /// Default keybindings. No framework default — every pane declares
     /// its own keys.
@@ -339,7 +340,7 @@ pub trait Shortcuts<Ctx>: 'static {
 /// `AppNavigation` zero-sized type and impls this trait for it).
 ///
 /// `'static` is implied by the `ActionEnum` bound on `Action`.
-pub trait Navigation<Ctx>: 'static {
+pub trait Navigation<Ctx: AppContext>: 'static {
     type Action: ActionEnum;
 
     const SCOPE_NAME: &'static str = "navigation";
@@ -351,14 +352,15 @@ pub trait Navigation<Ctx>: 'static {
     fn defaults() -> Bindings<Self::Action>;
 
     /// Free fn the framework calls when any navigation action fires.
-    /// `focused` lets the dispatcher pick the right scrollable surface.
-    fn dispatcher() -> fn(Self::Action, focused: PaneId, ctx: &mut Ctx);
+    /// `focused` lets the dispatcher pick the right scrollable surface;
+    /// callers read `ctx.framework().focused()` and pass it through.
+    fn dispatcher() -> fn(Self::Action, focused: FocusedPane<Ctx::AppPaneId>, ctx: &mut Ctx);
 }
 
 /// App-extension globals scope. One impl per app. The framework's own
-/// pane-management/lifecycle globals live in `BaseGlobalAction` and are
+/// pane-management/lifecycle globals live in `GlobalAction` and are
 /// not part of this scope.
-pub trait Globals<Ctx>: 'static {
+pub trait Globals<Ctx: AppContext>: 'static {
     type Action: ActionEnum;
 
     const SCOPE_NAME: &'static str = "global";
@@ -418,7 +420,7 @@ pub enum BarRegion {
     Nav,
     /// Per-action rows from the focused pane.
     PaneAction,
-    /// `BaseGlobalAction` strip + `Globals::render_order()`.
+    /// `GlobalAction` strip + `Globals::render_order()`.
     Global,
 }
 
@@ -464,11 +466,11 @@ use std::path::PathBuf;
 /// `HashMap<TypeId, Box<dyn Any + Send + Sync>>` interior.
 pub struct Keymap<Ctx> {
     scopes: HashMap<TypeId, Box<dyn std::any::Any + Send + Sync>>,
-    base_globals: ScopeMap<BaseGlobalAction>,
+    base_globals: ScopeMap<GlobalAction>,
     _ctx: PhantomData<fn(&mut Ctx)>,
 }
 
-impl<Ctx: 'static> Keymap<Ctx> {
+impl<Ctx: AppContext> Keymap<Ctx> {
     /// Entry point. Three positional dispatch hooks are required;
     /// omitting any is a compile error rather than a runtime panic.
     pub fn builder(
@@ -503,8 +505,8 @@ impl<Ctx: 'static> Keymap<Ctx> {
 
     /// Framework-internal scope. `pub(crate)` — only the framework
     /// dispatcher and the bar's `Global` region read it; the binary
-    /// never names `BaseGlobalAction` directly.
-    pub(crate) fn base_globals(&self) -> &ScopeMap<BaseGlobalAction> {
+    /// never names `GlobalAction` directly.
+    pub(crate) fn base_globals(&self) -> &ScopeMap<GlobalAction> {
         &self.base_globals
     }
 
@@ -535,7 +537,7 @@ use std::path::Path;
 /// type-state) — the binary calls `register` and friends in any order,
 /// and `build()` validates required pieces at runtime by returning
 /// `Result<Keymap<Ctx>, BuilderError>`.
-pub struct KeymapBuilder<Ctx> {
+pub struct KeymapBuilder<Ctx: AppContext> {
     // construction state — all private
     quit:    fn(&mut Ctx),
     restart: fn(&mut Ctx),
@@ -544,16 +546,15 @@ pub struct KeymapBuilder<Ctx> {
     /// Per-scope `Bindings<A>` boxed via `Any`, keyed by `TypeId<P>` /
     /// `TypeId<N>` / `TypeId<G>`.
     pending: HashMap<TypeId, PendingScope<Ctx>>,
-    /// Per-PaneId input-mode queries, captured at `register::<P>()`.
-    input_mode_queries: HashMap<PaneId, fn(&Ctx) -> InputMode>,
+    /// Per-AppPaneId input-mode queries, captured at `register::<P>()`.
+    input_mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>,
     settings:    SettingsRegistry<Ctx>,
-    framework_accessor: Option<fn(&mut Ctx) -> &mut Framework<Ctx>>,
     nav_registered: bool,
     globals_registered: bool,
     toml_path: Option<PathBuf>,
 }
 
-impl<Ctx: 'static> KeymapBuilder<Ctx> {
+impl<Ctx: AppContext> KeymapBuilder<Ctx> {
     /// Toggle vim mode. Optional — defaults to `VimMode::Disabled`.
     pub fn vim_mode(mut self, mode: VimMode) -> Self { self.vim = mode; self }
 
@@ -580,16 +581,6 @@ impl<Ctx: 'static> KeymapBuilder<Ctx> {
         self
     }
 
-    /// Register the accessor that takes `&mut Ctx` and yields a
-    /// `&mut Framework<Ctx>`. **Required.** Framework panes (Toasts,
-    /// SettingsPane, KeymapPane) need this to mutate their own state
-    /// from a free-fn dispatcher. `build()` returns
-    /// `Err(BuilderError::FrameworkAccessorMissing)` if omitted.
-    pub fn with_framework_accessor(
-        mut self,
-        accessor: fn(&mut Ctx) -> &mut Framework<Ctx>,
-    ) -> Self { self.framework_accessor = Some(accessor); self }
-
     /// Optionally apply user TOML. Returns `Self` (not `Result<Self>`)
     /// because TOML errors are deferred to `build()` — the chain stays
     /// fluent. Errors surface as `BuilderError::Toml(KeymapError)`.
@@ -612,8 +603,6 @@ pub enum BuilderError {
     NavigationMissing,
     /// `with_globals::<G>()` was never called.
     GlobalsMissing,
-    /// `with_framework_accessor(…)` was never called.
-    FrameworkAccessorMissing,
     /// TOML file present but unreadable / unparseable / contains
     /// cross-action collisions.
     Toml(KeymapError),
@@ -625,9 +614,9 @@ impl std::fmt::Display for BuilderError { /* … */ }
 impl std::error::Error for BuilderError {}
 ```
 
-**Tradeoff.** Flat builder + `Result<Keymap<Ctx>, BuilderError>` from `build()` over a type-state builder. Type-state would catch the three required-method omissions at compile time but at the cost of three extra type parameters on `KeymapBuilder` and a less-readable signature for every intermediate state. The runtime `Result` matches Rust idiom for fallible startup config (TOML errors are fallible regardless), and the binary calls `build()` exactly once at startup so the cost of catching the error there is one `?`.
+**Tradeoff.** Flat builder + `Result<Keymap<Ctx>, BuilderError>` from `build()` over a type-state builder. Type-state would catch the two required-method omissions at compile time but at the cost of two extra type parameters on `KeymapBuilder` and a less-readable signature for every intermediate state. The runtime `Result` matches Rust idiom for fallible startup config (TOML errors are fallible regardless), and the binary calls `build()` exactly once at startup so the cost of catching the error there is one `?`.
 
-`load_toml` defers errors to `build()` so the chain reads top-to-bottom without a `?` mid-chain. The framework_accessor requirement is there because the framework panes need to mutate their own state from a free-fn dispatcher (the only place the `&mut Ctx → &mut Framework<Ctx>` projection is known to the framework).
+`load_toml` defers errors to `build()` so the chain reads top-to-bottom without a `?` mid-chain. Framework panes (Toasts, SettingsPane, KeymapPane) reach `&mut Framework<Ctx>` from their free-fn dispatchers via `ctx.framework_mut()` on the `AppContext` trait — no separate accessor hook is needed.
 
 ---
 
@@ -635,63 +624,84 @@ impl std::error::Error for BuilderError {}
 
 ```rust
 /// Aggregator owned by the binary's `App`. Holds the three framework
-/// panes and the per-PaneId query registry.
+/// panes, the per-AppPaneId input-mode query registry, and the
+/// currently focused pane. Focus is owned here (not on the
+/// `AppContext` trait) so framework code reads `self.focused` instead
+/// of calling back through `Ctx`.
 ///
 /// All three pane fields are `pub` so the binary can pass references
 /// directly to its bar-render dispatch (`bar::render(&app.framework.toasts, …)`)
 /// without going through accessor methods. Mutation goes through each
 /// pane's typed methods, not field assignment.
-pub struct Framework<Ctx> {
+pub struct Framework<Ctx: AppContext> {
     pub keymap_pane:   KeymapPane<Ctx>,
     pub settings_pane: SettingsPane<Ctx>,
     pub toasts:        Toasts<Ctx>,
-    /// Per-PaneId input-mode queries, populated by `KeymapBuilder::register`.
-    pub(crate) input_mode_queries: HashMap<PaneId, fn(&Ctx) -> InputMode>,
+    /// Currently focused pane. The binary's `Focus` subsystem (richer
+    /// policy: overlay-return memory, visited set, `pane_state`) is a
+    /// layer above this field — it writes here as part of every
+    /// transition.
+    focused: FocusedPane<Ctx::AppPaneId>,
+    /// Per-AppPaneId input-mode queries, populated by
+    /// `KeymapBuilder::register`. Framework panes (Keymap, Settings,
+    /// Toasts) are special-cased in `focused_pane_input_mode` and do
+    /// not appear here.
+    pub(crate) input_mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>,
 }
 
-impl<Ctx> Framework<Ctx> {
-    /// Construct an empty framework. The binary creates one at startup
-    /// and stores it on `App`. `KeymapBuilder::build` later moves the
-    /// `input_mode_queries` map into it (via the framework_accessor).
-    pub fn new() -> Self {
+impl<Ctx: AppContext> Framework<Ctx> {
+    /// Construct an empty framework with an explicit initial focus.
+    /// The binary creates one at startup and stores it on `App`.
+    /// `KeymapBuilder::build` later writes the `input_mode_queries`
+    /// map into it via `ctx.framework_mut()`.
+    pub fn new(initial_focus: FocusedPane<Ctx::AppPaneId>) -> Self {
         Self {
             keymap_pane:   KeymapPane::new(),
             settings_pane: SettingsPane::new(),
             toasts:        Toasts::new(),
+            focused:       initial_focus,
             input_mode_queries: HashMap::new(),
         }
     }
 
+    /// Returns the currently focused pane.
+    pub fn focused(&self) -> FocusedPane<Ctx::AppPaneId> { self.focused }
+
+    /// Sets the focused pane. The binary's `Focus` subsystem calls
+    /// this from its existing transitions; framework code dispatching
+    /// `GlobalAction::{NextPane, PrevPane, OpenKeymap, OpenSettings,
+    /// Dismiss}` routes through the binary's `Focus` adapter, which
+    /// in turn calls here.
+    pub fn set_focused(&mut self, focus: FocusedPane<Ctx::AppPaneId>) {
+        self.focused = focus;
+    }
+
     /// Editor-target path for the focused overlay pane (Settings or
     /// Keymap). Replaces today's `overlay_editor_target_path` helper.
-    pub fn editor_target_path(&self, focus: PaneId) -> Option<&Path> {
-        match focus {
-            PaneId::Keymap   => self.keymap_pane.editor_target(),
-            PaneId::Settings => self.settings_pane.editor_target(),
+    pub fn editor_target_path(&self) -> Option<&Path> {
+        match self.focused {
+            FocusedPane::Framework(FrameworkPaneId::Keymap)   => self.keymap_pane.editor_target(),
+            FocusedPane::Framework(FrameworkPaneId::Settings) => self.settings_pane.editor_target(),
             _ => None,
         }
     }
 
     /// Resolve the focused pane's `InputMode`. Used by the structural
     /// Esc pre-handler and the bar-region suppression logic.
-    pub fn focused_pane_input_mode(&self, focus: PaneId, ctx: &Ctx) -> InputMode {
-        match focus {
-            PaneId::Settings => self.settings_pane.input_mode(),
-            PaneId::Keymap   => self.keymap_pane.input_mode(),
-            PaneId::Toasts   => InputMode::Static,
-            other => self.input_mode_queries
-                .get(&other)
+    pub fn focused_pane_input_mode(&self, ctx: &Ctx) -> InputMode {
+        match self.focused {
+            FocusedPane::Framework(FrameworkPaneId::Settings) => self.settings_pane.input_mode(),
+            FocusedPane::Framework(FrameworkPaneId::Keymap)   => self.keymap_pane.input_mode(),
+            FocusedPane::Framework(FrameworkPaneId::Toasts)   => InputMode::Static,
+            FocusedPane::App(app)                              => self.input_mode_queries
+                .get(&app)
                 .map_or(InputMode::Navigable, |q| q(ctx)),
         }
     }
 }
-
-impl<Ctx> Default for Framework<Ctx> {
-    fn default() -> Self { Self::new() }
-}
 ```
 
-**Tradeoff.** Public fields for the three framework panes match the design's intent — the binary uses them directly in `bar::render` dispatch and in input routing. The `input_mode_queries` map is `pub(crate)` because only `KeymapBuilder` (via the framework_accessor) writes it and only `focused_pane_input_mode` reads it.
+**Tradeoff.** Public fields for the three framework panes — the binary uses them directly in `bar::render` dispatch and input routing. The `focused` field is private (read via `focused()`, written via `set_focused`) so the binary's `Focus` subsystem stays the only writer. The `input_mode_queries` map is `pub(crate)` because only `KeymapBuilder` writes it (through `ctx.framework_mut()` at `build()` time) and only `focused_pane_input_mode` reads it. `Framework::new` takes an explicit `initial_focus` rather than implementing `Default`; the binary picks the starting pane.
 
 ---
 
@@ -778,7 +788,7 @@ pub(crate) enum SettingKind<Ctx> {
 
 ---
 
-## 10. `BaseGlobalAction`, `VimMode`, `KeymapError`
+## 10. `GlobalAction`, `VimMode`, `KeymapError`
 
 ```rust
 /// Framework-owned global actions. Defaults: q/R/Tab/Shift+Tab/Ctrl+K/s/x.
@@ -787,7 +797,7 @@ pub(crate) enum SettingKind<Ctx> {
 /// arguments. `NextPane`/`PrevPane`/`OpenKeymap`/`OpenSettings` dispatch
 /// is owned entirely by the framework (it knows the pane registry).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum BaseGlobalAction {
+pub enum GlobalAction {
     Quit,
     Restart,
     NextPane,
@@ -797,7 +807,7 @@ pub enum BaseGlobalAction {
     Dismiss,
 }
 
-impl ActionEnum for BaseGlobalAction {
+impl ActionEnum for GlobalAction {
     const ALL: &'static [Self] = &[
         Self::Quit, Self::Restart, Self::NextPane, Self::PrevPane,
         Self::OpenKeymap, Self::OpenSettings, Self::Dismiss,
@@ -870,11 +880,13 @@ impl std::fmt::Display for KeymapError { /* … */ }
 impl std::error::Error for KeymapError {}
 ```
 
-**Tradeoff.** `BaseGlobalAction` impls `ActionEnum` so it can flow through the same `ScopeMap` / TOML / display machinery as every other scope. The binary never names it; the impl exists purely so framework-internal code reuses one path.
+**Tradeoff.** `GlobalAction` impls `ActionEnum` so it can flow through the same `ScopeMap` / TOML / display machinery as every other scope. The binary never names it; the impl exists purely so framework-internal code reuses one path.
 
 ---
 
-## 11. `lib.rs` re-exports
+## 11. Module hierarchy and `lib.rs` re-exports
+
+**Canonical source.** This section is the single authoritative definition of the `tui_pane` Phase 2 module hierarchy. `tui-pane-lib.md` Phase 2 references this section instead of restating it; do not duplicate the file list elsewhere. The directories declared here (`keymap/`, `bar/`, `panes/`, plus `settings.rs`) are the same skeletons that Phases 3 and 4 fill in.
 
 ```rust
 //! `tui_pane` — keymap-driven pane framework on top of crossterm + ratatui.
@@ -892,7 +904,7 @@ mod settings;
 
 // --- Keymap core -----------------------------------------------------
 pub use crate::keymap::{
-    base_globals::BaseGlobalAction,
+    base_globals::GlobalAction,
     bindings::Bindings,
     builder::{BuilderError, KeymapBuilder},
     key_bind::{KeyBind, KeyParseError},
@@ -925,7 +937,7 @@ pub use crate::settings::SettingsRegistry;
 // the binary's pane id. `AppContext` is the trait every `Ctx` must impl.
 // See `phase-02-paneid-ctx.md` for the full split rationale (option (d)).
 pub use crate::app_context::AppContext;
-pub use crate::pane_id::{BaseFrameworkPaneId, FocusedPane};
+pub use crate::pane_id::{FrameworkPaneId, FocusedPane};
 
 // --- Macros (re-exported at the crate root) -------------------------
 pub use crate::keymap::bindings::bindings;
@@ -934,13 +946,13 @@ pub use crate::keymap::traits::action_enum;
 
 **Final list of exported names** (alphabetical, grouped):
 
-- **Action machinery:** `ActionEnum`, `BaseGlobalAction`, `action_enum!`
+- **Action machinery:** `ActionEnum`, `GlobalAction`, `action_enum!`
 - **Keys:** `KeyBind`, `KeyParseError`
 - **Bindings & maps:** `Bindings`, `ScopeMap`, `bindings!`
 - **Keymap:** `Keymap`, `KeymapBuilder`, `BuilderError`, `KeymapError`, `VimMode`
 - **Traits:** `Shortcuts`, `Navigation`, `Globals`
 - **Bar:** `BarRegion`, `BarRow`, `Shortcut`, `ShortcutState`, `InputMode`
 - **Framework panes & aggregator:** `Framework`, `KeymapPane`, `SettingsPane`, `Toasts`, `ToastsAction`, `SettingsRegistry`
-- **Pane identity & context:** `AppContext`, `BaseFrameworkPaneId`, `FocusedPane`
+- **Pane identity & context:** `AppContext`, `FrameworkPaneId`, `FocusedPane`
 
 **Tradeoff.** Every `pub use` is from one of five top-level modules (`bar`, `framework`, `keymap`, `panes`, `settings`). The crate root is the only public path; internal module paths are not part of the API. This keeps the binary's `use tui_pane::{KeyBind, Keymap, Shortcuts, …};` flat and stable across internal reorganisations.

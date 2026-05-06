@@ -26,7 +26,7 @@ the two for code that needs to talk about either kind.
 - (a) **Framework-only `PaneId` for its three panes, separate binary
   enum.** Forces `Framework::editor_target_path` /
   `Framework::focused_pane_input_mode` to take *two* params (a
-  framework id and an opaque app id), and leaves `BaseGlobalAction::
+  framework id and an opaque app id), and leaves `GlobalAction::
   NextPane` unable to cycle across the union. Doesn't match the plan's
   `match focus { … }` rendering site.
 - (b) **Generic associated `type PaneId`.** Adds a generic parameter to
@@ -35,7 +35,7 @@ the two for code that needs to talk about either kind.
   without `TypeId` keying or a per-`Ctx` map. The plan uses `PaneId`
   as a HashMap key; that requires a concrete type.
 - (c) **`PaneId` stays in the binary, framework reaches it via `Ctx`.**
-  The framework needs `BaseGlobalAction::OpenKeymap` to know *which
+  The framework needs `GlobalAction::OpenKeymap` to know *which
   pane id* maps to its KeymapPane. With `PaneId` opaque to the
   framework, that requires a callback per framework pane to query
   "which app id is this framework pane?" — net loss of clarity.
@@ -49,13 +49,13 @@ the two for code that needs to talk about either kind.
 // tui_pane/src/framework.rs (or a sibling pane_id.rs)
 /// Identifies one of the framework-internal panes.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub enum BaseFrameworkPaneId {
+pub enum FrameworkPaneId {
     Keymap,
     Settings,
     Toasts,
 }
 
-impl BaseFrameworkPaneId {
+impl FrameworkPaneId {
     pub const ALL: &'static [Self] = &[Self::Keymap, Self::Settings, Self::Toasts];
 }
 ```
@@ -87,26 +87,26 @@ pub enum AppPaneId {
 pub enum PaneId {
     #[default]
     App(AppPaneId),
-    Framework(BaseFrameworkPaneId),
+    Framework(FrameworkPaneId),
 }
 
 impl PaneId {
     pub const fn project_list() -> Self { Self::App(AppPaneId::ProjectList) }
-    pub const fn keymap() -> Self { Self::Framework(BaseFrameworkPaneId::Keymap) }
-    pub const fn settings() -> Self { Self::Framework(BaseFrameworkPaneId::Settings) }
-    pub const fn toasts() -> Self { Self::Framework(BaseFrameworkPaneId::Toasts) }
+    pub const fn keymap() -> Self { Self::Framework(FrameworkPaneId::Keymap) }
+    pub const fn settings() -> Self { Self::Framework(FrameworkPaneId::Settings) }
+    pub const fn toasts() -> Self { Self::Framework(FrameworkPaneId::Toasts) }
     pub const fn finder() -> Self { Self::App(AppPaneId::Finder) }
 
     pub const fn is_overlay(self) -> bool {
         matches!(
             self,
             Self::App(AppPaneId::Finder)
-                | Self::Framework(BaseFrameworkPaneId::Settings)
-                | Self::Framework(BaseFrameworkPaneId::Keymap),
+                | Self::Framework(FrameworkPaneId::Settings)
+                | Self::Framework(FrameworkPaneId::Keymap),
         )
     }
 
-    pub const fn as_framework(self) -> Option<BaseFrameworkPaneId> {
+    pub const fn as_framework(self) -> Option<FrameworkPaneId> {
         match self {
             Self::Framework(id) => Some(id),
             Self::App(_) => None,
@@ -124,9 +124,9 @@ impl PaneId {
 
 The framework never names the binary's `PaneId` or `AppPaneId`. Where
 it needs to talk about its own three panes, it uses
-`BaseFrameworkPaneId`. Where the binary calls into the framework with
+`FrameworkPaneId`. Where the binary calls into the framework with
 "the focused pane is one of yours", it passes a
-`BaseFrameworkPaneId`. Where the binary asks "look up the app pane's
+`FrameworkPaneId`. Where the binary asks "look up the app pane's
 input mode", it passes an `AppPaneId`.
 
 ### Plan call site rewrites
@@ -135,11 +135,11 @@ Every place in `docs/tui-pane-lib.md` that currently takes `PaneId`:
 
 | Plan site | Today's signature | Rewritten signature |
 |---|---|---|
-| `Navigation::dispatcher` (line 198) | `fn(Self::Action, focused: PaneId, &mut Ctx)` | `fn(Self::Action, focused: BaseFrameworkPaneId \| AppPaneId, &mut Ctx)` — see note below |
-| `Framework::editor_target_path` (line 946) | `fn(&self, focus: PaneId) -> Option<&Path>` | `fn(&self, focus: BaseFrameworkPaneId) -> Option<&Path>` |
-| `Framework::focused_pane_input_mode` (line 954) | `fn(&self, focus: PaneId, ctx: &Ctx) -> InputMode` | `fn(&self, focus: FocusedPane, ctx: &Ctx) -> InputMode` where `enum FocusedPane { App(AppPaneId), Framework(BaseFrameworkPaneId) }` is defined in `tui_pane` |
+| `Navigation::dispatcher` (line 198) | `fn(Self::Action, focused: PaneId, &mut Ctx)` | `fn(Self::Action, focused: FrameworkPaneId \| AppPaneId, &mut Ctx)` — see note below |
+| `Framework::editor_target_path` (line 946) | `fn(&self, focus: PaneId) -> Option<&Path>` | `fn(&self, focus: FrameworkPaneId) -> Option<&Path>` |
+| `Framework::focused_pane_input_mode` (line 954) | `fn(&self, focus: PaneId, ctx: &Ctx) -> InputMode` | `fn(&self, ctx: &Ctx) -> InputMode` — reads `self.focused()` internally; `enum FocusedPane { App(AppPaneId), Framework(FrameworkPaneId) }` is defined in `tui_pane` |
 | `Framework::input_mode_queries` (line 942) | `HashMap<PaneId, fn(&Ctx) -> InputMode>` | `HashMap<AppPaneId, fn(&Ctx) -> InputMode>` |
-| `BaseGlobalAction::OpenKeymap` (line 495) | "focus framework's KeymapPane overlay" — implicit `PaneId::Keymap` | dispatch sets focus to `BaseFrameworkPaneId::Keymap`; binding to a binary `PaneId` happens in the `set_focus` adapter (see §3) |
+| `GlobalAction::OpenKeymap` (line 495) | "focus framework's KeymapPane overlay" — implicit `PaneId::Keymap` | dispatch sets focus to `FrameworkPaneId::Keymap`; binding to a binary `PaneId` happens in the `set_focus` adapter (see §3) |
 
 To avoid leaking two types into trait signatures the framework defines
 one shared enum:
@@ -149,7 +149,7 @@ one shared enum:
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum FocusedPane<AppPaneId> {
     App(AppPaneId),
-    Framework(BaseFrameworkPaneId),
+    Framework(FrameworkPaneId),
 }
 ```
 
@@ -188,7 +188,7 @@ fn render_status_bar(app: &App, frame: &mut Frame) {
 }
 ```
 
-`bar::render_framework(id: BaseFrameworkPaneId, &Framework<App>, &App, &Keymap<App>)`
+`bar::render_framework(id: FrameworkPaneId, &Framework<App>, &App, &Keymap<App>)`
 is a single framework helper that internally dispatches over its three
 panes — the binary doesn't repeat the framework-pane match.
 
@@ -196,39 +196,30 @@ panes — the binary doesn't repeat the framework-pane match.
 
 ## 2. The minimum `Ctx` contract
 
-The framework needs three things from `Ctx`:
+The framework needs two things from `Ctx`:
 
 1. The associated `AppPaneId` enum so signatures can be generic without
    the binary plumbing it through every call.
-2. A way to read the current focus.
-3. A way to reach the `Framework<Ctx>` field.
+2. A way to reach the `Framework<Ctx>` field. Focus is read and written
+   through that field — see §3.
 
 A trait carries this. Today the plan implies `Ctx: 'static` only; that
-is not enough — the framework has nowhere to find `app.focus.current()`
-or `app.framework`. Pure-structural (free-fn at builder time) works for
-some of these but not for the associated `AppPaneId` type. Use a trait.
+is not enough — the framework has nowhere to find `app.framework`.
+Pure-structural (free-fn at builder time) works for some of these but
+not for the associated `AppPaneId` type. Use a trait.
 
 ### `AppContext` trait
 
 ```rust
-// tui_pane/src/framework.rs
+// tui_pane/src/app_context.rs
 pub trait AppContext: 'static {
     /// The binary's enum of app-defined pane identifiers. Distinct
-    /// from `BaseFrameworkPaneId`.
+    /// from `FrameworkPaneId`.
     type AppPaneId: Copy + Eq + Hash + std::fmt::Debug + 'static;
 
-    /// Returns the currently focused pane.
-    fn focused_pane(&self) -> FocusedPane<Self::AppPaneId>;
-
-    /// Sets focus. Used by `BaseGlobalAction::{NextPane, PrevPane,
-    /// OpenKeymap, OpenSettings, Dismiss}`. The binary is free to
-    /// route through its `Focus` subsystem (open_overlay /
-    /// close_overlay / set) per the existing semantics.
-    fn set_focused_pane(&mut self, focus: FocusedPane<Self::AppPaneId>);
-
     /// Mutable access to the framework aggregator the binary owns.
-    /// The framework calls this from contexts where it holds `&mut
-    /// Ctx`, replacing the `with_framework_accessor` builder hook.
+    /// Framework dispatchers call this from contexts where they hold
+    /// `&mut Ctx` to mutate framework-pane state.
     fn framework_mut(&mut self) -> &mut Framework<Self>;
 
     /// Shared access to the same field. Bar rendering needs
@@ -236,8 +227,27 @@ pub trait AppContext: 'static {
     /// implementation must return a borrow that does not conflict
     /// with other shared reads — a plain field reference works.
     fn framework(&self) -> &Framework<Self>;
+
+    /// Request a focus change. Framework dispatchers call this for
+    /// `GlobalAction::{NextPane, PrevPane, OpenKeymap,
+    /// OpenSettings, Dismiss}`. The binary's implementation routes
+    /// through its `Focus` subsystem (overlay-return memory, visited
+    /// set, `pane_state` lookup) which in turn writes
+    /// `self.framework.set_focused(...)`.
+    ///
+    /// Invariant: framework code never calls `framework.set_focused`
+    /// directly — every focus transition originating in the framework
+    /// goes through this method so the binary's `Focus` policy fires.
+    fn set_focus(&mut self, focus: FocusedPane<Self::AppPaneId>);
 }
 ```
+
+Focus reads happen on `Framework<Ctx>` (`framework.focused()`); focus
+writes go through `AppContext::set_focus`. Reads stay on the framework
+side so framework code (bar rendering, dispatch routing) never calls
+back through `Ctx` to learn what's focused. Writes go through the trait
+so the binary's `Focus` subsystem (richer policy) is the single point
+that updates the framework's `focused` field.
 
 Wherever the plan writes `Ctx`, it now writes `Ctx: AppContext`. The
 trait carries the associated `AppPaneId`, so traits like `Navigation`
@@ -262,30 +272,32 @@ own state is reached via the per-pane dispatcher's free fn navigating
 through `Ctx` (`&mut ctx.panes.package`, etc.). The trait only carries
 the cross-cutting plumbing the framework genuinely needs.
 
-The `with_framework_accessor` builder hook from Phase 3 (was line 928 of
-the plan) goes away; `framework_mut()` on the trait subsumes it. One
-mechanism, one place to look.
-
 ---
 
 ## 3. Focus tracking
 
-**Pick: trait method on `AppContext`.**
+**Reads on the framework, writes through the trait.**
 
-`Ctx::focused_pane(&self) -> FocusedPane<Self::AppPaneId>` and the
-matching `set_focused_pane`. Reasons:
+`Framework<Ctx>` carries `focused: FocusedPane<Ctx::AppPaneId>` and
+exposes `focused(&self) -> FocusedPane<Ctx::AppPaneId>` plus
+`set_focused(&mut self, FocusedPane<Ctx::AppPaneId>)`. The trait
+surfaces a single write method, `AppContext::set_focus`, which framework
+dispatchers call for every focus transition.
 
-- The binary already owns a real `Focus` subsystem (`src/tui/focus.rs`)
-  with overlay-return memory, visited tracking, `pane_state` lookup,
-  etc. Moving that into the framework would force every framework
-  consumer to inherit cargo-port's overlay-return policy.
-- Free-fn registration at builder time (`with_focus_query(fn(&Ctx) ->
-  FocusedPane)`) works but adds a second mechanism alongside
-  `framework_mut`. One mechanism (the trait) is simpler.
-- Framework owning `Focus` directly inverts the relationship: the
-  binary's `Focus` is a richer thing than the framework needs and
-  exists for binary-only reasons (`PaneFocusState`, visited set, the
-  remembered overlay-return). Keep it in the binary.
+Why this split:
+
+- The dependency goes binary → framework for reads. Framework code
+  that needs to know what's focused (bar rendering, dispatch routing)
+  reads `self.focused` directly; it never calls back through `Ctx`.
+- Writes route through the binary so cargo-port's `Focus` subsystem
+  (`src/tui/focus.rs` — overlay-return memory, visited tracking,
+  `pane_state` lookup) is the single place focus transitions land.
+  Pulling that policy into the framework would force every consumer
+  to inherit cargo-port-specific overlay rules; making the framework
+  write `set_focused` directly bypasses the policy.
+- Invariant: only the binary's `Focus` adapter calls
+  `framework.set_focused`. Every framework-originated transition goes
+  through `ctx.set_focus`.
 
 Concretely the binary implements:
 
@@ -294,43 +306,63 @@ Concretely the binary implements:
 impl AppContext for App {
     type AppPaneId = crate::tui::panes::AppPaneId;
 
-    fn focused_pane(&self) -> FocusedPane<Self::AppPaneId> {
-        match self.focus.current() {
-            PaneId::App(id) => FocusedPane::App(id),
-            PaneId::Framework(id) => FocusedPane::Framework(id),
-        }
-    }
-
-    fn set_focused_pane(&mut self, focus: FocusedPane<Self::AppPaneId>) {
-        let pane = match focus {
-            FocusedPane::App(id) => PaneId::App(id),
-            FocusedPane::Framework(id) => PaneId::Framework(id),
-        };
-        if pane.is_overlay() {
-            self.focus.open_overlay(pane);
-        } else {
-            self.focus.set(pane);
-        }
-    }
-
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
     fn framework(&self) -> &Framework<Self> { &self.framework }
+
+    fn set_focus(&mut self, focus: FocusedPane<Self::AppPaneId>) {
+        // Route through the existing Focus subsystem so visited /
+        // pane_state / overlay-return bookkeeping fires on every
+        // transition. Focus::set then writes self.framework.set_focused.
+        let pane: PaneId = focus.into();   // FocusedPane → PaneId
+        if pane.is_overlay() {
+            self.focus.open_overlay(&mut self.framework, pane);
+        } else {
+            self.focus.set(&mut self.framework, pane);
+        }
+    }
+}
+```
+
+The binary's `Focus` subsystem owns the actual `framework.set_focused`
+call:
+
+```rust
+// src/tui/focus.rs
+impl Focus {
+    pub fn set(&mut self, framework: &mut Framework<App>, pane: PaneId) {
+        // ...existing visited / pane_state bookkeeping...
+        framework.set_focused(pane.into());
+    }
+    pub fn open_overlay(&mut self, framework: &mut Framework<App>, pane: PaneId) { /* ... */ }
 }
 ```
 
 `PaneId` and `FocusedPane` are isomorphic by construction — the binary
 defined `PaneId` as a thin wrapper over the framework's `FocusedPane`
-value (App / Framework split). The two `match` adapters above are
-fully exhaustive and drop out at compile time.
+value (App / Framework split). The `From` adapters drop out at compile
+time.
 
-Plan call sites that consult focus:
+**Sync invariant:** `app.focus.current()` and `app.framework.focused()`
+always agree. `Focus::set` and `Focus::open_overlay` write
+`framework.set_focused` synchronously as part of their existing
+bookkeeping; no other code path mutates either side. Reads can use
+whichever is convenient at the call site (the binary tends to use
+`focus.current()` for its `PaneId` flavor; framework code reads
+`self.focused`).
 
-- `Framework::focused_pane_input_mode` — already takes `focus`;
-  callers now write `framework.focused_pane_input_mode(ctx.focused_pane(), ctx)`.
-- `BaseGlobalAction::Dismiss` dispatch — calls `ctx.set_focused_pane(...)`
-  to close overlays through the binary's `Focus` subsystem.
-- `BaseGlobalAction::NextPane` / `PrevPane` — read
-  `ctx.focused_pane()`, compute next, call `ctx.set_focused_pane(next)`.
+Call sites:
+
+- `Framework::focused_pane_input_mode` — reads `self.focused()`
+  internally; callers write `framework.focused_pane_input_mode(ctx)`.
+- `GlobalAction::Dismiss` dispatch — reads
+  `ctx.framework().focused()` to compute the dismiss target, then
+  calls `ctx.set_focus(target)`.
+- `GlobalAction::NextPane` / `PrevPane` — read
+  `ctx.framework().focused()`, compute next, call
+  `ctx.set_focus(next)`.
+- `GlobalAction::OpenKeymap` / `OpenSettings` — call
+  `ctx.set_focus(FocusedPane::Framework(FrameworkPaneId::Keymap))` /
+  `…::Settings` directly.
 
 ---
 
@@ -394,7 +426,7 @@ Net diff against today's `App` struct:
 |---|---|---|
 | `App::input_context()` (line 722) | Returns the `InputContext` enum tag based on `focus` + overlay flags | **Deleted.** Bar render and input router consult `app.focus.current()` directly per §3. |
 | `App::enter_action(...)` family | Per-pane label resolution for the bar | **Deleted.** Each pane's `Shortcuts::shortcut(action, ctx)` impl returns the label. |
-| `shortcuts::InputContext` enum | App-side enum for routing | **Deleted.** Use `PaneId::App(AppPaneId::…)` / `PaneId::Framework(BaseFrameworkPaneId::…)` everywhere. |
+| `shortcuts::InputContext` enum | App-side enum for routing | **Deleted.** Use `PaneId::App(AppPaneId::…)` / `PaneId::Framework(FrameworkPaneId::…)` everywhere. |
 
 ### Free-fn dispatchers
 
@@ -485,7 +517,7 @@ binary.
 | Plan phase | App change |
 |---|---|
 | **3** | Framework defines `tui_pane::PaneId`, `FocusedPane`, `AppContext` trait, `Framework<Ctx>` aggregator. No App impact. |
-| **5** | Binary defines `AppPaneId`, refactors `PaneId` to the wrapping enum from §1, adds new action enums (`NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction`). Adds `ExpandRow`/`CollapseRow` to `ProjectListAction`. Writes `impl Shortcuts<App>` for each app pane and `impl AppContext for App` — `App` gains the `framework: Framework<App>` field, the new `keymap: Keymap<App>` field, and `Focus`-bridging `focused_pane`/`set_focused_pane` methods. The `Keymap::<App>::builder(quit, restart, dismiss)…build()` chain runs at startup. Old `App::enter_action` and old `for_status_bar` *both still exist* per the plan; new code paths are populated but not consumed yet. |
+| **5** | Binary defines `AppPaneId`, refactors `PaneId` to the wrapping enum from §1, adds new action enums (`NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction`). Adds `ExpandRow`/`CollapseRow` to `ProjectListAction`. Writes `impl Shortcuts<App>` for each app pane and `impl AppContext for App` — `App` gains the `framework: Framework<App>` field and the new `keymap: Keymap<App>` field. The binary's `Focus` subsystem writes `framework.set_focused(...)` as part of its existing transitions. The `Keymap::<App>::builder(quit, restart, dismiss)…build()` chain runs at startup. Old `App::enter_action` and old `for_status_bar` *both still exist* per the plan; new code paths are populated but not consumed yet. |
 | **6** | Overlay handlers (`handle_finder_key`, `handle_settings_key`, `handle_keymap_key`) reroute through scope dispatch. The old `app.overlays.is_*_open()` flags can collapse onto `matches!(app.focus.current(), PaneId::Framework(_))`. |
 | **7** | Base-pane navigation handlers consult `NavigationAction`. `App` unchanged. |
 | **8** | Toasts/Output/structural-Esc rerouting. The Open Issue above (toasts ownership) resolves here: `ToastManager` either stays on `App` or moves into `Framework<App>::toasts`. |
@@ -583,15 +615,19 @@ on `&self`.
 ## Summary of new types in `tui_pane`
 
 ```rust
-pub enum BaseFrameworkPaneId { Keymap, Settings, Toasts }
-pub enum FocusedPane<AppPaneId> { App(AppPaneId), Framework(BaseFrameworkPaneId) }
+pub enum FrameworkPaneId { Keymap, Settings, Toasts }
+pub enum FocusedPane<AppPaneId> { App(AppPaneId), Framework(FrameworkPaneId) }
 
 pub trait AppContext: 'static {
     type AppPaneId: Copy + Eq + Hash + std::fmt::Debug + 'static;
-    fn focused_pane(&self)     -> FocusedPane<Self::AppPaneId>;
-    fn set_focused_pane(&mut self, focus: FocusedPane<Self::AppPaneId>);
     fn framework(&self)        -> &Framework<Self>;
     fn framework_mut(&mut self) -> &mut Framework<Self>;
+}
+
+// Focus lives on Framework<Ctx>, not the trait:
+impl<Ctx: AppContext> Framework<Ctx> {
+    pub fn focused(&self) -> FocusedPane<Ctx::AppPaneId> { /* ... */ }
+    pub fn set_focused(&mut self, focus: FocusedPane<Ctx::AppPaneId>) { /* ... */ }
 }
 ```
 
@@ -600,7 +636,7 @@ pub trait AppContext: 'static {
 ```rust
 // src/tui/panes/spec.rs
 pub enum AppPaneId { ProjectList, Package, Lang, Cpu, Git, Targets, Lints, CiRuns, Output, Finder }
-pub enum PaneId    { App(AppPaneId), Framework(BaseFrameworkPaneId) }
+pub enum PaneId    { App(AppPaneId), Framework(FrameworkPaneId) }
 
 // src/tui/app/mod.rs — App gains:
 pub(super) framework: Framework<App>,

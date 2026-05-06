@@ -17,7 +17,7 @@ A `keymap.toml` file is a sequence of TOML tables. Each top-level table name is 
 
 | Table header | Source | Action enum |
 |---|---|---|
-| `[base_global]` | `BaseGlobals` (framework) | `BaseGlobalAction` |
+| `[base_global]` | `BaseGlobals` (framework) | `GlobalAction` |
 | `[global]` | `AppGlobals` impl | `AppGlobalAction` |
 | `[navigation]` | `Navigation` impl | `NavigationAction` |
 | `[project_list]` | `ProjectListPane` | `ProjectListAction` |

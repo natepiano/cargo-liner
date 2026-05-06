@@ -179,7 +179,7 @@ Input:
 ```rust
 bindings! {
     KeyBind::shift('g') => SettingsAction::ToggleNext,
-    KeyBind::ctrl('k')  => BaseGlobalAction::OpenKeymap,
+    KeyBind::ctrl('k')  => GlobalAction::OpenKeymap,
 }
 ```
 
@@ -189,7 +189,7 @@ Expansion:
 {
     let mut __b: ::tui_pane::Bindings<_> = ::tui_pane::Bindings::new();
     __b.bind(KeyBind::shift('g'), SettingsAction::ToggleNext);
-    __b.bind(KeyBind::ctrl('k'),  BaseGlobalAction::OpenKeymap);
+    __b.bind(KeyBind::ctrl('k'),  GlobalAction::OpenKeymap);
     __b
 }
 ```
