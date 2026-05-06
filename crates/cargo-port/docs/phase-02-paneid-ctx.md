@@ -262,7 +262,7 @@ own state is reached via the per-pane dispatcher's free fn navigating
 through `Ctx` (`&mut ctx.panes.package`, etc.). The trait only carries
 the cross-cutting plumbing the framework genuinely needs.
 
-The `with_framework_accessor` builder hook from Phase 3 (line 928 of
+The `with_framework_accessor` builder hook from Phase 3 (was line 928 of
 the plan) goes away; `framework_mut()` on the trait subsumes it. One
 mechanism, one place to look.
 
@@ -478,20 +478,19 @@ decision rather than picking it silently here.
 
 ## 6. Migration order
 
-Map each App-side change to one of the plan's phases (1–11). Phases
+Map each App-side change to one of the plan's phases (1–10). Phases
 1–4 are framework-only and don't touch `App`. Phases 5+ touch the
 binary.
 
 | Plan phase | App change |
 |---|---|
-| **3** | Framework defines `BaseFrameworkPaneId`, `FocusedPane`, `AppContext` trait, `Framework<Ctx>` aggregator. No App impact. |
-| **5** | Binary defines `AppPaneId`, refactors `PaneId` to the wrapping enum from §1, adds new action enums (`NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction`). Adds `ExpandRow`/`CollapseRow` to `ProjectListAction`. `App` itself is unchanged in this phase; existing call sites that pattern-match on `PaneId::Settings` etc. update to `PaneId::Framework(BaseFrameworkPaneId::Settings)`. |
-| **6** | Binary writes `impl Shortcuts<App>` for each app pane (next to each pane). Per-pane free-fn dispatchers land next to each impl. `impl AppContext for App` lands here — `App` gains the `framework: Framework<App>` field, the new `keymap: Keymap<App>` field, and `Focus`-bridging `focused_pane`/`set_focused_pane` methods. The `Keymap::<App>::builder(quit, restart, dismiss)…build()` chain runs at startup. Old `App::enter_action` and old `for_status_bar` *both still exist* per the plan; new code paths are populated but not consumed yet. |
-| **7** | Overlay handlers (`handle_finder_key`, `handle_settings_key`, `handle_keymap_key`) reroute through scope dispatch. The old `app.overlays.is_*_open()` flags can collapse onto `matches!(app.focus.current(), PaneId::Framework(_))` — but that conversion is part of Phase 7's input-routing work, not this design. |
-| **8** | Base-pane navigation handlers consult `NavigationAction`. `App` unchanged. |
-| **9** | Toasts/Output/structural-Esc rerouting. The Open Issue above (toasts ownership) resolves here: `ToastManager` either stays on `App` or moves into `Framework<App>::toasts`. |
-| **10** | Delete `App::enter_action`, `App::input_context`, `shortcuts::InputContext`, the seven `Shortcut::fixed` constants, the four group helpers. The `keymap: Keymap<App>` field replaces the old `keymap: crate::tui::keymap_state::Keymap` — the `WatchedFile`-based reload machinery either composes the new type or the binary keeps both fields side-by-side until the reload path is rewritten (call this out in the Phase 10 retro). |
-| **11** | Regression tests only — no `App` changes. |
+| **3** | Framework defines `tui_pane::PaneId`, `FocusedPane`, `AppContext` trait, `Framework<Ctx>` aggregator. No App impact. |
+| **5** | Binary defines `AppPaneId`, refactors `PaneId` to the wrapping enum from §1, adds new action enums (`NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction`). Adds `ExpandRow`/`CollapseRow` to `ProjectListAction`. Writes `impl Shortcuts<App>` for each app pane and `impl AppContext for App` — `App` gains the `framework: Framework<App>` field, the new `keymap: Keymap<App>` field, and `Focus`-bridging `focused_pane`/`set_focused_pane` methods. The `Keymap::<App>::builder(quit, restart, dismiss)…build()` chain runs at startup. Old `App::enter_action` and old `for_status_bar` *both still exist* per the plan; new code paths are populated but not consumed yet. |
+| **6** | Overlay handlers (`handle_finder_key`, `handle_settings_key`, `handle_keymap_key`) reroute through scope dispatch. The old `app.overlays.is_*_open()` flags can collapse onto `matches!(app.focus.current(), PaneId::Framework(_))`. |
+| **7** | Base-pane navigation handlers consult `NavigationAction`. `App` unchanged. |
+| **8** | Toasts/Output/structural-Esc rerouting. The Open Issue above (toasts ownership) resolves here: `ToastManager` either stays on `App` or moves into `Framework<App>::toasts`. |
+| **9** | Delete `App::enter_action`, `App::input_context`, `shortcuts::InputContext`, the seven `Shortcut::fixed` constants, the four group helpers. The `keymap: Keymap<App>` field replaces the old `keymap: crate::tui::keymap_state::Keymap` — the `WatchedFile`-based reload machinery either composes the new type or the binary keeps both fields side-by-side until the reload path is rewritten. |
+| **10** | Regression tests only — no `App` changes. |
 
 ---
 

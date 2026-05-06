@@ -801,7 +801,7 @@ Integration tests cannot reach `test_support` (it's `pub(crate)`), so each integ
 
 ## 6. Boundary with the binary's `tui_test_support`
 
-The binary already owns `src/tui/tui_test_support.rs` (per Phase 10 of `tui-pane-lib.md`, line 1075). It contains `pub(super) fn make_app` and binary-only test fixtures (`App` constructors, project-tree fixtures, etc.).
+The binary already owns `src/tui/tui_test_support.rs` (per Phase 9 of `tui-pane-lib.md`). It contains `pub(super) fn make_app` and binary-only test fixtures (`App` constructors, project-tree fixtures, etc.).
 
 Confirmation:
 

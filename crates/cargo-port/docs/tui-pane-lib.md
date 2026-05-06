@@ -6,13 +6,13 @@ This doc is the high-level plan + roadmap. Formal specs live in sibling files:
 
 | Spec | Covers |
 |---|---|
-| `design-cargo-mechanics.md` | Root + library `Cargo.toml`, workspace lints (incl. `missing_docs = "deny"` from day one), resolver, `cargo install --path .` behavior, stale-path sweep, per-phase rustdoc precondition |
-| `design-ci-tooling.md` | CI invocation inventory, per-invocation scope decisions, auto-memory implications, recommended commit ordering |
-| `design-test-infra.md` | Public fixture `DocCtx` type, doctest patterns for every public item, private `test_support/` module, integration-test layout |
-| `design-core-api.md` | Full public API: `KeyBind`, `Bindings<A>`, `ScopeMap<A>`, traits, `Keymap<Ctx>`, `KeymapBuilder<Ctx>`, `Framework<Ctx>`, `SettingsRegistry<Ctx>`, errors, re-exports |
-| `design-macros.md` | `bindings!` and `action_enum!` formal grammar + expansion + hygiene |
-| `design-paneid-ctx.md` | `tui_pane::PaneId` (framework panes) / `AppPaneId` (binary) / `FocusedPane` (wrapping), `AppContext` trait, focus tracking, `App` field changes, migration order, `InputMode` query plumbing |
-| `design-toml-keys.md` | TOML grammar, error taxonomy, vim-after-TOML worked examples, full `KeyBind::display` / `display_short` mapping tables |
+| `phase-01-cargo-mechanics.md` | Root + library `Cargo.toml`, workspace lints (incl. `missing_docs = "deny"` from day one), resolver, `cargo install --path .` behavior, stale-path sweep, per-phase rustdoc precondition |
+| `phase-01-ci-tooling.md` | CI invocation inventory, per-invocation scope decisions, auto-memory implications, recommended commit ordering |
+| `phase-02-test-infra.md` | Public fixture `DocCtx` type, doctest patterns for every public item, private `test_support/` module, integration-test layout |
+| `phase-02-core-api.md` | Full public API: `KeyBind`, `Bindings<A>`, `ScopeMap<A>`, traits, `Keymap<Ctx>`, `KeymapBuilder<Ctx>`, `Framework<Ctx>`, `SettingsRegistry<Ctx>`, errors, re-exports |
+| `phase-02-macros.md` | `bindings!` and `action_enum!` formal grammar + expansion + hygiene |
+| `phase-02-paneid-ctx.md` | `tui_pane::PaneId` (framework panes) / `AppPaneId` (binary) / `FocusedPane` (wrapping), `AppContext` trait, focus tracking, `App` field changes, migration order, `InputMode` query plumbing |
+| `phase-02-toml-keys.md` | TOML grammar, error taxonomy, vim-after-TOML worked examples, full `KeyBind::display` / `display_short` mapping tables |
 
 The plan body below summarizes; the specs are authoritative for their topics.
 
@@ -123,7 +123,7 @@ The trait does **not** require `Ctx` to expose pane state — every pane's own s
 
 `AppContext` subsumes the earlier `with_framework_accessor` builder hook. One trait, one place to look.
 
-For the rest of this doc, signatures use `Ctx` (or `Ctx: AppContext`) when referring to the app context. See `design-paneid-ctx.md` §2 for the full trait.
+For the rest of this doc, signatures use `Ctx` (or `Ctx: AppContext`) when referring to the app context. See `phase-02-paneid-ctx.md` §2 for the full trait.
 
 ### `PaneId` design
 
@@ -137,7 +137,7 @@ Linking the runtime tag to the compile-time pane type: every `Shortcuts<App>` im
 
 Cargo-port's existing `tui::panes::PaneId` enum becomes a type alias `pub type PaneId = tui_pane::FocusedPane<AppPaneId>;` so existing call sites that name `PaneId` keep compiling; only the framework variants move out of the enum body.
 
-See `design-paneid-ctx.md` §1 for full type definitions and call-site rewrites.
+See `phase-02-paneid-ctx.md` §1 for full type definitions and call-site rewrites.
 
 ### `Shortcuts` — pane scopes (state-bearing)
 
@@ -266,7 +266,7 @@ The app's *additional* globals scope (Find, OpenEditor, Rescan, etc.). The frame
 
 ## `Keymap<Ctx>` runtime container
 
-> Formal API in `design-core-api.md` §6 (`Keymap<Ctx>`) and §7 (`KeymapBuilder<Ctx>`, including the type-state choice, `BuilderError` variants, required vs optional methods).
+> Formal API in `phase-02-core-api.md` §6 (`Keymap<Ctx>`) and §7 (`KeymapBuilder<Ctx>`, including the type-state choice, `BuilderError` variants, required vs optional methods).
 
 Struct name: `Keymap<Ctx>`. Built once at startup, read every frame. Framework-owned, internally TypeId-keyed.
 
@@ -388,7 +388,7 @@ International-character support: crossterm's `KeyCode::Char(char)` already cover
 
 ## `Bindings<A>` builder
 
-> Formal API in `design-core-api.md` §2; macro grammar + expansion in `design-macros.md` §1.
+> Formal API in `phase-02-core-api.md` §2; macro grammar + expansion in `phase-02-macros.md` §1.
 
 ```rust
 pub struct Bindings<A> { … }
@@ -429,7 +429,7 @@ Today's `parse_keybind` at `keymap.rs:140-142` maps both TOML strings `"="` and 
 
 ## `ScopeMap<A>` — multi-bind support
 
-> Formal API in `design-core-api.md` §3.
+> Formal API in `phase-02-core-api.md` §3.
 
 `by_key` stays 1-to-1 within a scope (dispatch). `by_action` becomes `HashMap<A, Vec<KeyBind>>`:
 
@@ -529,7 +529,7 @@ Rule: free fn whenever the framework holds `&mut Ctx` while invoking your callba
 
 ## Settings registry — framework UI, app data
 
-> Formal API in `design-core-api.md` §9 (closure signatures, persistence semantics).
+> Formal API in `phase-02-core-api.md` §9 (closure signatures, persistence semantics).
 
 Each setting carries: TOML key, display label, value-getter closure, value-setter closure. Three value flavors covered: `bool`, `enum` (closed string set), `int` (with optional min/max).
 
@@ -539,7 +539,7 @@ The app provides only data + closures. It writes no `Shortcuts` impl, no mode st
 
 ## `GlobalAction` — framework base, app extension
 
-> Formal enum + dispatch hooks in `design-core-api.md` §10. TOML grammar for the merged `[global]` table in `design-toml-keys.md` §1–2.
+> Formal enum + dispatch hooks in `phase-02-core-api.md` §10. TOML grammar for the merged `[global]` table in `phase-02-toml-keys.md` §1–2.
 
 Framework owns pane-management, lifecycle, and the framework overlays:
 
@@ -631,7 +631,7 @@ Today `keymap_ui.rs:236-250` calls `is_navigation_reserved` during binding captu
 
 ## TOML loading — framework
 
-> Full grammar, error taxonomy, vim-after-TOML worked examples, and `KeyBind::display` / `display_short` mapping tables in `design-toml-keys.md`.
+> Full grammar, error taxonomy, vim-after-TOML worked examples, and `KeyBind::display` / `display_short` mapping tables in `phase-02-toml-keys.md`.
 
 Framework handles all TOML loading. Each registered scope's `SCOPE_NAME` constant drives table lookup; framework parses every recognized table, replaces that scope's bindings, leaves missing tables at their declared defaults+vim. App provides no TOML hooks.
 
@@ -643,7 +643,7 @@ Framework handles all TOML loading. Each registered scope's `SCOPE_NAME` constan
 
 The `ScopeMap::insert` `debug_assert` catches the same conditions for `defaults()` builders; the TOML loader returns them as real errors or warnings.
 
-See `design-toml-keys.md` for the full grammar, error taxonomy, and worked vim-after-TOML examples.
+See `phase-02-toml-keys.md` for the full grammar, error taxonomy, and worked vim-after-TOML examples.
 
 `keymap_path()` is framework-provided via the `dirs` crate. App supplies its name at builder time:
 
@@ -966,7 +966,7 @@ Each phase is a single mergeable commit. Each commit must build green and pass `
 
 ### Phase 1 — Workspace conversion
 
-Convert `cargo-port-api-fix` into a Cargo workspace. See `design-cargo-mechanics.md` for full TOML and `design-ci-tooling.md` for the CI updates.
+Convert `cargo-port-api-fix` into a Cargo workspace. See `phase-01-cargo-mechanics.md` for full TOML and `phase-01-ci-tooling.md` for the CI updates.
 
 Concrete steps:
 
@@ -974,12 +974,12 @@ Concrete steps:
 2. Promote the existing `[lints.clippy]` and `[lints.rust]` blocks verbatim to `[workspace.lints.clippy]` / `[workspace.lints.rust]` (including `missing_docs = "deny"` from day one). Root `[lints]` becomes `workspace = true`.
 3. Create `tui_pane/` as a sibling directory (not `crates/tui_pane/`) with `Cargo.toml` (`crossterm`, `ratatui`, `dirs` deps; `[lints] workspace = true`) and `src/lib.rs` carrying crate-level rustdoc.
 4. Add `tui_pane = { path = "tui_pane", version = "0.0.4-dev" }` to the binary's `[dependencies]`.
-5. Apply the CI flag updates flagged in `design-ci-tooling.md` §2 (e.g. `cargo +nightly fmt --all`, `cargo mend --workspace --all-targets`, `cargo check --workspace` in the post-tool-use hook). Per the spec these can ship in a separate prior commit since they're no-ops on the current single-crate layout.
+5. Apply the CI flag updates flagged in `phase-01-ci-tooling.md` §2 (e.g. `cargo +nightly fmt --all`, `cargo mend --workspace --all-targets`, `cargo check --workspace` in the post-tool-use hook). Per the spec these can ship in a separate prior commit since they're no-ops on the current single-crate layout.
 6. Update auto-memory `feedback_cargo_nextest.md` to clarify default `cargo nextest run` only tests the root package; iteration loops should pass `-p` or `--workspace`. `feedback_cargo_install.md` is unchanged (the binary stays at root).
 
 After Phase 1: `cargo build` from the root builds both crates; `cargo install --path .` still installs the binary; `Cargo.lock` and `target/` stay at the workspace root.
 
-**Per-phase rustdoc precondition.** Phases 2–11 add `pub` items to `tui_pane`. Each pub item ships with rustdoc as a precondition for the phase landing — `missing_docs = "deny"` is workspace-wide from Phase 1 onward, so a missing doc breaks the build, not just CI. Per-phase PR-checklist bullet: "Every new `pub` item in `tui_pane` has a rustdoc summary line and at least one runnable doctest (or doctests covered at the trait level for trait methods)."
+**Per-phase rustdoc precondition.** Phases 2–10 add `pub` items to `tui_pane`. Each pub item ships with rustdoc as a precondition for the phase landing — `missing_docs = "deny"` is workspace-wide from Phase 1 onward, so a missing doc breaks the build, not just CI. Per-phase PR-checklist bullet: "Every new `pub` item in `tui_pane` has a rustdoc summary line and at least one runnable doctest (or doctests covered at the trait level for trait methods)."
 
 ### Phase 2 — `tui_pane` foundations
 
@@ -1047,7 +1047,7 @@ impl<Ctx> Framework<Ctx> {
 
 The registry is populated by `KeymapBuilder::register::<P>()`: each pane's impl provides a free fn `fn pane_input_mode(ctx: &App) -> InputMode` (reads pane state from `ctx`) that the registration step files into `Framework::input_mode_queries[PaneId::P]`.
 
-`Framework<Ctx>` lives in `tui_pane`. The `App.framework: Framework<App>` field-add lands in **Phase 7**, when the framework panes' input paths replace the old `handle_settings_key` / `handle_keymap_key`. Before Phase 7 the framework type is dead code and should not be wired into `App`.
+`Framework<Ctx>` lives in `tui_pane`. The `App.framework: Framework<App>` field-add lands in **Phase 6**, when the framework panes' input paths replace the old `handle_settings_key` / `handle_keymap_key`. Before Phase 6 the framework type is dead code and should not be wired into `App`.
 
 ### Phase 4 — Framework bar renderer
 
@@ -1063,38 +1063,30 @@ Add `tui_pane/src/bar/` per the BarRegion model:
 
 Depends on Phase 3 (`Framework<Ctx>` exists; framework-pane `Shortcuts<Ctx>` impls exist) plus Phase 2's `Keymap<Ctx>` lookups.
 
-Snapshot tests in this phase cover the framework panes only (Settings Browse / Settings Editing / Keymap Browse / Keymap Awaiting / Keymap Conflict / Toasts) plus a fixture pane exercising every `BarRegion` rule. App-pane snapshots land in Phase 6 once their `Shortcuts<App>` impls exist.
+Snapshot tests in this phase cover the framework panes only (Settings Browse / Settings Editing / Keymap Browse / Keymap Awaiting / Keymap Conflict / Toasts) plus a fixture pane exercising every `BarRegion` rule. App-pane snapshots land in Phase 5 once their `Shortcuts<App>` impls exist.
 
-### Phase 5 — App-side action enums
+### Phase 5 — App action enums + `Shortcuts<App>` impls
 
 In the cargo-port binary crate:
 
 - Define `NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction`.
 - Add `ExpandRow` / `CollapseRow` to `ProjectListAction`.
+- Implement `Shortcuts<App>` for each app pane (Package, Git, ProjectList, CiRuns, Lints, Targets, Output, Lang, Cpu, Finder). Each pane:
+  - Owns `defaults() -> Bindings<Action>`.
+  - Owns `shortcut(&self, action, ctx) -> Option<Shortcut>` — moves cursor-position-dependent label logic out of `App::enter_action` into the four affected impls (Package Activate label "open" for `CratesIo`, Git Activate label, Targets Activate label, CiRuns Activate hidden at EOL).
+  - Registers a free dispatcher `fn(Action, &mut App)`.
+  - Optionally overrides `bar_rows(ctx)` for paired layouts and data-dependent omission (ProjectList: emits `(Nav, Paired(CollapseRow, ExpandRow, "expand"))` and `(Nav, Paired(ExpandAll, CollapseAll, "all"))`; CiRuns: omits toggle row when no ci data).
+  - Overrides `input_mode` for `FinderPane` → `TextInput`, `OutputPane` → `Static`. App list panes accept the default `Navigable`.
+  - Overrides `vim_extras` to declare pane-action vim binds (`ProjectListAction::ExpandRow → 'l'`, `CollapseRow → 'h'`).
+- Implement `Navigation<App> for AppNavigation` and `Globals<App> for AppGlobalAction`.
+- Build the app's `Keymap` at startup. Old `App::enter_action` and old `for_status_bar` still exist; the new keymap is populated but not consumed yet.
 
-No `Shortcuts` impls yet. New action enums compile and have `ALL` slices but are unused.
-
-### Phase 6 — App pane `Shortcuts` impls
-
-Implement `Shortcuts<App>` for each app pane (Package, Git, ProjectList, CiRuns, Lints, Targets, Output, Lang, Cpu, Finder). Each pane:
-
-- Owns `defaults() -> Bindings<Action>`.
-- Owns `shortcut(&self, action, ctx) -> Option<Shortcut>` — moves cursor-position-dependent label logic out of `App::enter_action` into the four affected impls (Package Activate label "open" for `CratesIo`, Git Activate label, Targets Activate label, CiRuns Activate hidden at EOL).
-- Registers a free dispatcher `fn(Action, &mut App)`.
-- Optionally overrides `bar_rows(ctx)` for paired layouts and data-dependent omission (ProjectList: emits `(Nav, Paired(CollapseRow, ExpandRow, "expand"))` and `(Nav, Paired(ExpandAll, CollapseAll, "all"))`; CiRuns: omits toggle row when no ci data).
-- Overrides `input_mode` for `FinderPane` → `TextInput`, `OutputPane` → `Static`. App list panes accept the default `Navigable`.
-- Overrides `vim_extras` to declare pane-action vim binds (`ProjectListAction::ExpandRow → 'l'`, `CollapseRow → 'h'`).
-
-Implement `Navigation for AppNavigation` and `Globals for AppGlobalAction`.
-
-Build the app's `Keymap` at startup. Old `App::enter_action` and old `for_status_bar` still exist; the new keymap is populated but not consumed yet.
-
-**Phase 6 tests:**
+**Phase 5 tests:**
 - CiRuns `pane.shortcut(Activate, ctx)` returns `None` when the viewport cursor is at EOL.
 - Package `pane.shortcut(Activate, ctx)` returns `Some("open")` when on `CratesIo` field with a version, else `None`.
 - App-pane bar snapshot tests under default bindings: one snapshot per focused-pane context (Package / Git / ProjectList / CiRuns / Lints / Targets / Output / Lang / Cpu / Finder).
 
-### Phase 7 — Reroute overlay input handlers
+### Phase 6 — Reroute overlay input handlers
 
 Convert overlay handlers to scope dispatch:
 
@@ -1102,19 +1094,19 @@ Convert overlay handlers to scope dispatch:
 - Framework `SettingsPane`'s input path replaces today's `handle_settings_key` + `handle_settings_adjust_key` + `handle_settings_edit_key`. Browse/Editing modes route through internal mode flag.
 - Framework `KeymapPane`'s input path replaces `handle_keymap_key`. Browse/Awaiting/Conflict modes route through internal mode flag.
 
-**Phase 7 tests:**
+**Phase 6 tests:**
 - Rebinding `FinderAction::Cancel` to `'q'` closes finder; `'k'` typed in finder inserts `'k'` even with vim mode on.
 - Binding any action to `Up` while in Awaiting capture mode produces a "reserved for navigation" rejection (replaces today's `is_navigation_reserved` semantics via scope lookup).
 
-### Phase 8 — Reroute base-pane navigation
+### Phase 7 — Reroute base-pane navigation
 
 `KeyCode::Up`/`Down`/`Left`/`Right`/`PageUp`/`PageDown`/`Home`/`End` in `handle_normal_key` (`input.rs:580-622`), `handle_detail_key`, `handle_lints_key`, `handle_ci_runs_key` consult `NavigationAction` after the pane scope. ProjectList's `Left`/`Right` route via `ProjectListAction::CollapseRow` / `ExpandRow` (pane-scope precedence). Delete `NAVIGATION_RESERVED` (`keymap.rs:794-799`) and `is_navigation_reserved` — replaced by scope lookup against `NavigationAction`.
 
-**Phase 8 tests:**
+**Phase 7 tests:**
 - Rebinding `NavigationAction::Down` to `'j'` (vim-off) moves cursor.
 - Rebinding `ProjectListAction::ExpandRow` to `Tab` (with `GlobalAction::NextPane` rebound away) expands current row.
 
-### Phase 9 — Reroute Toasts, Output, structural Esc
+### Phase 8 — Reroute Toasts, Output, structural Esc
 
 Convert `handle_toast_key` (`input.rs:657-684`) to consult `ToastsAction::Dismiss`. The Esc-on-output structural pre-handler at `input.rs:112-119` runs before overlays/globals/pane handlers — so pressing Esc clears `example_output` from any pane. Preserve the cross-pane semantics but route the key check through the framework:
 
@@ -1134,14 +1126,14 @@ if !app.inflight.example_output().is_empty()
 
 `focused_pane_input_mode()` returns the focused pane's `InputMode`. The check `!= InputMode::TextInput` prevents the structural Esc from firing while a Settings numeric edit is active (where Esc means "discard edit", not "clear example_output").
 
-After Phase 9: every key dispatches through the keymap. No `KeyCode::*` direct match for command keys remains.
+After Phase 8: every key dispatches through the keymap. No `KeyCode::*` direct match for command keys remains.
 
-**Phase 9 tests:**
+**Phase 8 tests:**
 - Rebinding `OutputAction::Cancel` to `'q'` clears example_output from any pane.
 - Rebinding `ToastsAction::Dismiss` to `'d'` dismisses focused toast via `'d'`.
 - With Settings in Editing mode, pressing Esc cancels the edit instead of clearing example_output (text-input gating).
 
-### Phase 10 — Bar swap and cleanup
+### Phase 9 — Bar swap and cleanup
 
 Delete:
 
@@ -1153,11 +1145,11 @@ Delete:
 - The CiRuns `Some("fetch")` label at EOL (the bar bug).
 - The bogus `const` on `Shortcut::from_keymap` / `disabled_from_keymap`.
 
-After Phase 10, `shortcuts.rs` contains only legacy types pending removal (or is deleted entirely if all callers have flipped to `Shortcuts::shortcut`). The `InputContext` enum is deleted; tests under `src/tui/app/tests/` referencing it migrate to `app.focus.current()`-based lookups in this phase.
+After Phase 9, `shortcuts.rs` contains only legacy types pending removal (or is deleted entirely if all callers have flipped to `Shortcuts::shortcut`). The `InputContext` enum is deleted; tests under `src/tui/app/tests/` referencing it migrate to `app.focus.current()`-based lookups in this phase.
 
 Hoist `make_app` from `tests/mod.rs` to `src/tui/tui_test_support.rs` (`pub(super) fn make_app`); declare `#[cfg(test)] mod tui_test_support;` in `src/tui/mod.rs`.
 
-### Phase 11 — Regression tests
+### Phase 10 — Regression tests
 
 Bar-on-rebind:
 
@@ -1230,7 +1222,7 @@ Verify CI invocations operate on the intended scope before Phase 1 lands. Tools 
 
 ## Doctest + test infrastructure
 
-> Full design in `design-test-infra.md`.
+> Full design in `phase-02-test-infra.md`.
 
 Summary:
 
@@ -1267,7 +1259,7 @@ Summary:
 - Framework owns the bar; cargo-port has zero bar-layout code.
 - `make_app` hoisted to `src/tui/tui_test_support.rs`.
 - Bar output for every focused-pane context is byte-identical to the pre-refactor bar under default bindings (snapshot-locked).
-- All Phase 11 regression tests pass.
+- All Phase 10 regression tests pass.
 
 ---
 
