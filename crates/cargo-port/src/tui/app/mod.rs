@@ -421,12 +421,6 @@ impl App {
         self.prune_toasts();
     }
 
-    pub(super) fn selected_ci_path(&self) -> Option<AbsolutePath> {
-        let path = self.project_list.selected_project_path()?;
-        let entry = self.project_list.entry_containing(path)?;
-        Some(entry.item.path().clone())
-    }
-
     pub(super) fn selected_ci_runs(&self) -> Vec<CiRun> {
         self.project_list
             .selected_project_path()
@@ -439,9 +433,10 @@ impl App {
         if self.project_list.unpublished_ci_branch_name(path).is_some() {
             return None;
         }
+        let display_mode = self.ci.display_mode_for(path);
         self.project_list
             .ci_info_for(path)
-            .and_then(|_| self.latest_ci_run_for_path(path))
+            .and_then(|_| self.project_list.latest_ci_run_for_path(path, display_mode))
             .map(|run| run.conclusion)
     }
 
@@ -491,7 +486,8 @@ impl App {
         let mut all_green = true;
         let mut any_data = false;
         for path in &paths {
-            if let Some(run) = self.latest_ci_run_for_path(path) {
+            let display_mode = self.ci.display_mode_for(path);
+            if let Some(run) = self.project_list.latest_ci_run_for_path(path, display_mode) {
                 any_data = true;
                 if run.conclusion.is_failure() {
                     any_red = true;
@@ -612,12 +608,6 @@ impl App {
         self.project_list
             .iter()
             .find_map(|item| root_item_parent_row(item, session_path))
-    }
-
-    pub(super) fn selected_project_is_deleted(&self) -> bool {
-        self.project_list
-            .selected_project_path()
-            .is_some_and(|path| self.project_list.is_deleted(path))
     }
 
     pub(super) fn prune_inactive_project_state(&mut self) {
@@ -868,7 +858,9 @@ impl App {
     }
 
     pub(super) fn ci_runs_for_display(&self, path: &Path) -> Vec<CiRun> {
-        self.ci_runs_for_display_inner(path)
+        let display_mode = self.ci.display_mode_for(path);
+        self.project_list
+            .ci_runs_for_display_inner(path, display_mode)
     }
 
     pub(super) fn reset_cpu_placeholder(&mut self) {

@@ -74,7 +74,10 @@ impl App {
 
         // Restore selection.
         if let Some(path) = selected_path {
-            self.select_project_in_tree(path.as_path());
+            self.project_list.select_project_in_tree(
+                path.as_path(),
+                self.config.include_non_rust().includes_non_rust(),
+            );
         } else if !self.project_list.is_empty() {
             self.project_list.set_cursor(0);
         }
@@ -107,9 +110,7 @@ impl App {
             } => {
                 self.insert_ci_runs(path.as_path(), runs, github_total);
             },
-            BackgroundMsg::RepoFetchQueued { repo } => {
-                self.handle_repo_fetch_queued(repo);
-            },
+            BackgroundMsg::RepoFetchQueued { repo } => self.handle_repo_fetch_queued(repo),
             BackgroundMsg::RepoFetchComplete { repo } => self.handle_repo_fetch_complete(repo),
             BackgroundMsg::CheckoutInfo { path, info } => {
                 self.handle_checkout_info(path.as_path(), info);
@@ -129,7 +130,9 @@ impl App {
                 path,
                 version,
                 downloads,
-            } => self.handle_crates_io_version_msg(path.as_path(), version, downloads),
+            } => self
+                .project_list
+                .handle_crates_io_version_msg(path.as_path(), version, downloads),
             BackgroundMsg::RepoMeta {
                 path,
                 stars,
@@ -172,7 +175,7 @@ impl App {
                 self.apply_service_signal(ServiceSignal::RateLimited(service));
             },
             BackgroundMsg::LanguageStatsBatch { entries } => {
-                self.handle_language_stats_batch(entries);
+                self.project_list.handle_language_stats_batch(entries);
             },
             BackgroundMsg::CargoMetadata {
                 workspace_root,

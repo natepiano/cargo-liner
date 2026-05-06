@@ -543,7 +543,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // fix): the flag is whether *some* clean is possible from the
     // current row, not whether the Root item is Rust — that old
     // heuristic disabled Clean on WorktreeEntry rows.
-    let clean_enabled = app.clean_selection().is_some();
+    let clean_enabled = app.project_list.clean_selection().is_some();
     let clear_lint_action = app
         .project_list
         .selected_project_path()
@@ -557,7 +557,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         clear_lint_action,
         app.keymap.current(),
         app.config.terminal_command_configured(),
-        app.selected_project_is_deleted(),
+        app.project_list.selected_project_is_deleted(),
     );
 
     let mut left_spans = Vec::new();

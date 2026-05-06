@@ -97,7 +97,8 @@ fn ci_fetch_on_member_targets_workspace_owner_path() {
     apply_items(&mut app, &[root]);
     app.expanded_mut().insert(ExpandKey::Node(0));
     app.ensure_visible_rows_cached();
-    app.select_project_in_tree(member.path());
+    app.project_list
+        .select_project_in_tree(member.path(), false);
 
     apply_git_info(
         &mut app,
@@ -1488,7 +1489,8 @@ fn fetch_more_uses_sync_when_no_cached_runs() {
     // Empty CI state — no cached runs.
     set_loaded_ci(&mut app, project.path(), Vec::new(), false, 57);
 
-    app.select_project_in_tree(project.path());
+    app.project_list
+        .select_project_in_tree(project.path(), false);
 
     panes::handle_ci_runs_key(
         &mut app,
@@ -1945,6 +1947,7 @@ fn clean_selection_on_root_rust_project_returns_project_selection() {
     app.project_list.set_cursor(0);
 
     let selection = app
+        .project_list
         .clean_selection()
         .expect("Rust root should be clean-eligible");
     match selection {
@@ -1964,7 +1967,7 @@ fn clean_selection_on_non_rust_root_is_none() {
     let non_rust = make_non_rust_project(Some("notes"), "~/notes");
     let mut app = make_app(std::slice::from_ref(&non_rust));
     app.project_list.set_cursor(0);
-    assert!(app.clean_selection().is_none());
+    assert!(app.project_list.clean_selection().is_none());
 }
 
 #[test]
@@ -1999,7 +2002,11 @@ fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
     let mut app = make_app(std::slice::from_ref(&worktrees));
     app.project_list.set_cursor(0);
 
-    match app.clean_selection().expect("group root is clean-eligible") {
+    match app
+        .project_list
+        .clean_selection()
+        .expect("group root is clean-eligible")
+    {
         CleanSelection::WorktreeGroup { primary, linked } => {
             assert_eq!(primary, primary_path);
             assert_eq!(linked, vec![linked_path]);

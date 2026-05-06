@@ -86,7 +86,7 @@ fn expanded_workspace_members_use_the_parent_shimmer_owner() {
         "parent workspace row should also shimmer while the discovered member is active"
     );
 
-    assert!(app.collapse());
+    assert!(app.project_list.collapse(false));
     app.ensure_visible_rows_cached();
     assert!(
         !app.visible_rows()

@@ -374,7 +374,7 @@ fn selected_project_display_name(app: &App) -> String {
 }
 
 fn open_in_editor(app: &mut App) {
-    if app.selected_project_is_deleted() {
+    if app.project_list.selected_project_is_deleted() {
         let name = selected_project_display_name(app);
         app.show_timed_warning_toast(
             "Editor unavailable",
@@ -534,7 +534,7 @@ fn spawn_terminal_command(command: &str, cwd: &Path) -> Result<()> {
 }
 
 fn open_terminal(app: &mut App) {
-    if app.selected_project_is_deleted() {
+    if app.project_list.selected_project_is_deleted() {
         let name = selected_project_display_name(app);
         app.show_timed_warning_toast(
             "Terminal unavailable",
@@ -612,7 +612,8 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
             return;
         },
         KeyCode::Left => {
-            if !app.collapse() {
+            let include_non_rust = app.config.include_non_rust().includes_non_rust();
+            if !app.project_list.collapse(include_non_rust) {
                 app.project_list.move_up();
             }
             return;
@@ -625,16 +626,17 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
     let Some(action) = app.keymap.current().project_list.action_for(&bind) else {
         return;
     };
+    let include_non_rust = app.config.include_non_rust().includes_non_rust();
     match action {
-        ProjectListAction::ExpandAll => app.expand_all(),
-        ProjectListAction::CollapseAll => app.collapse_all(),
+        ProjectListAction::ExpandAll => app.project_list.expand_all(include_non_rust),
+        ProjectListAction::CollapseAll => app.project_list.collapse_all(include_non_rust),
         ProjectListAction::Clean => {
             // Gate through App::clean_selection — the single source of
             // truth for clean eligibility (design plan → gating fix).
             // Previously this asked for `selected_item().is_rust()`
             // which returns None for WorktreeEntry rows, dropping the
             // per-worktree Clean shortcut.
-            if let Some(selection) = app.clean_selection() {
+            if let Some(selection) = app.project_list.clean_selection() {
                 match selection {
                     CleanSelection::Project { root } => {
                         // Step 6e: request_clean_confirm re-fingerprints

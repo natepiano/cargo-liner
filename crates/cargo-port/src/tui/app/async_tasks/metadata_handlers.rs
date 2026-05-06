@@ -1,6 +1,5 @@
 use crate::project;
 use crate::project::AbsolutePath;
-use crate::project::LanguageStats;
 use crate::project::ManifestFingerprint;
 use crate::project::WorkspaceMetadata;
 use crate::scan;
@@ -27,16 +26,6 @@ impl App {
                 target_dir = %target_dir.as_path().display(),
                 "out_of_tree_target_size_discarded_stale"
             );
-        }
-    }
-    pub(super) fn handle_language_stats_batch(
-        &mut self,
-        entries: Vec<(AbsolutePath, LanguageStats)>,
-    ) {
-        for (path, stats) in entries {
-            if let Some(project) = self.project_list.at_path_mut(path.as_path()) {
-                project.language_stats = Some(stats);
-            }
         }
     }
     /// Merge a `cargo metadata` arrival back into the process-wide store and
@@ -160,7 +149,8 @@ impl App {
         // project list. Retires the hand-parsed defaults left in
         // place by `from_cargo_toml`; the authoritative view is the
         // workspace metadata.
-        self.apply_cargo_fields_from_workspace_metadata(&workspace_metadata);
+        self.project_list
+            .apply_cargo_fields_from_workspace_metadata(&workspace_metadata);
         if let Ok(mut store) = self.scan.metadata_store().lock() {
             store.upsert(workspace_metadata);
         }
@@ -190,30 +180,6 @@ impl App {
             "cargo_metadata_applied"
         );
         true
-    }
-    /// Step 3b: derive [`Cargo`] fields from every [`PackageRecord`] in
-    /// `workspace_metadata` and stamp them onto the matching live project
-    /// entry (standalone package, workspace member, or vendored package).
-    /// Workspaces themselves keep the empty-default `Cargo` the parser
-    /// produces — they have no single `PackageRecord`; members fan out
-    /// into individual packages underneath.
-    pub(super) fn apply_cargo_fields_from_workspace_metadata(
-        &mut self,
-        metadata: &WorkspaceMetadata,
-    ) {
-        use crate::project::Cargo;
-        for record in metadata.packages.values() {
-            let Some(manifest_dir) = record.manifest_path.as_path().parent() else {
-                continue;
-            };
-            let cargo = Cargo::from_package_record(record);
-            if let Some(rust_info) = self.project_list.rust_info_at_path_mut(manifest_dir) {
-                rust_info.cargo = cargo.clone();
-            }
-            if let Some(vendored) = self.project_list.vendored_at_path_mut(manifest_dir) {
-                vendored.cargo = cargo;
-            }
-        }
     }
 }
 

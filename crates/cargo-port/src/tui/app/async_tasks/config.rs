@@ -147,7 +147,7 @@ impl App {
             cfg,
             ReloadContext {
                 scan_complete:       self.scan.is_complete(),
-                has_cached_non_rust: self.has_cached_non_rust_projects(),
+                has_cached_non_rust: self.project_list.has_cached_non_rust_projects(),
             },
         );
         config::set_active_config(cfg);

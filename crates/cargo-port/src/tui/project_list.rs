@@ -8,11 +8,14 @@ use indexmap::IndexMap;
 use indexmap::map::Values;
 use indexmap::map::ValuesMut;
 
+use super::app::CiRunDisplayMode;
+use super::app::CleanSelection;
 use super::app::FinderState;
 use super::app::SelectionPaths;
 use super::app::SelectionSync;
 use super::columns::ProjectListWidths;
 use crate::ci;
+use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
@@ -21,9 +24,11 @@ use crate::constants::SYNC_UP;
 use crate::lint::LintRuns;
 use crate::project;
 use crate::project::AbsolutePath;
+use crate::project::Cargo;
 use crate::project::CheckoutInfo;
 use crate::project::DisplayPath;
 use crate::project::GitStatus;
+use crate::project::LanguageStats;
 use crate::project::MemberGroup;
 use crate::project::Package;
 use crate::project::ProjectCiData;
@@ -39,6 +44,7 @@ use crate::project::Submodule;
 use crate::project::VendoredPackage;
 use crate::project::Visibility;
 use crate::project::Workspace;
+use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeGroup;
 use crate::project::WorktreeStatus;
 use crate::scan;
@@ -2264,6 +2270,661 @@ impl ProjectList {
                 pkg.vendored().get(vi).map(|p| p.path().as_path())
             },
             _ => None,
+        }
+    }
+}
+
+// ── Phase 12: absorbed action-side navigation methods ──────────────
+impl ProjectList {
+    /// Expand every node and named group, restoring selection after recompute.
+    pub(super) fn expand_all(&mut self, include_non_rust: bool) {
+        let selected_path = self
+            .paths_mut()
+            .collapsed_selected
+            .take()
+            .or_else(|| self.selected_project_path().map(AbsolutePath::from));
+        self.paths_mut().collapsed_anchor = None;
+        let (roots, expanded) = self.iter_with_expanded_mut();
+        for (ni, entry) in roots.enumerate() {
+            if entry.item.has_children() {
+                expanded.insert(ExpandKey::Node(ni));
+            }
+            match &entry.item {
+                RootItem::Rust(RustProject::Workspace(ws)) => {
+                    for (gi, group) in ws.groups().iter().enumerate() {
+                        if group.is_named() {
+                            expanded.insert(ExpandKey::Group(ni, gi));
+                        }
+                    }
+                },
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => {
+                    for (wi, ws) in std::iter::once(primary).chain(linked.iter()).enumerate() {
+                        if ws.has_members() {
+                            expanded.insert(ExpandKey::Worktree(ni, wi));
+                        }
+                        for (gi, group) in ws.groups().iter().enumerate() {
+                            if group.is_named() {
+                                expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                            }
+                        }
+                    }
+                },
+                _ => {},
+            }
+        }
+        if let Some(path) = selected_path {
+            self.select_project_in_tree(path.as_path(), include_non_rust);
+        }
+    }
+
+    /// Clear all expansions, then recompute and restore selection.
+    pub(super) fn collapse_all(&mut self, include_non_rust: bool) {
+        let selected_path = self.selected_project_path().map(AbsolutePath::from);
+        let anchor = self.selected_row().map(VisibleRow::collapse_anchor);
+        self.expanded_mut().clear();
+        self.recompute_visibility(include_non_rust);
+        if let Some(anchor) = anchor
+            && let Some(pos) = self.visible_rows().iter().position(|row| *row == anchor)
+        {
+            self.set_cursor(pos);
+        }
+        let anchor_path = self.selected_project_path().map(AbsolutePath::from);
+        if selected_path == anchor_path {
+            self.paths_mut().collapsed_selected = None;
+            self.paths_mut().collapsed_anchor = None;
+        } else {
+            self.paths_mut().collapsed_selected = selected_path;
+            self.paths_mut().collapsed_anchor = anchor_path;
+        }
+    }
+
+    /// Mark all nodes containing `target_path` as expanded.
+    pub(super) fn expand_path_in_tree(&mut self, target_path: &Path) {
+        let (roots, expanded) = self.iter_with_expanded_mut();
+        for (ni, entry) in roots.enumerate() {
+            match &entry.item {
+                RootItem::Rust(RustProject::Workspace(ws)) => {
+                    for (gi, group) in ws.groups().iter().enumerate() {
+                        for member in group.members() {
+                            if member.path() == target_path {
+                                expanded.insert(ExpandKey::Node(ni));
+                                if group.is_named() {
+                                    expanded.insert(ExpandKey::Group(ni, gi));
+                                }
+                            }
+                        }
+                    }
+                    for vendored in ws.vendored() {
+                        if vendored.path() == target_path {
+                            expanded.insert(ExpandKey::Node(ni));
+                        }
+                    }
+                },
+                RootItem::Rust(RustProject::Package(pkg)) => {
+                    for vendored in pkg.vendored() {
+                        if vendored.path() == target_path {
+                            expanded.insert(ExpandKey::Node(ni));
+                        }
+                    }
+                },
+                RootItem::NonRust(_) => {},
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => {
+                    for (wi, ws) in std::iter::once(primary).chain(linked.iter()).enumerate() {
+                        if ws.path() == target_path {
+                            expanded.insert(ExpandKey::Node(ni));
+                        }
+                        for (gi, group) in ws.groups().iter().enumerate() {
+                            for member in group.members() {
+                                if member.path() == target_path {
+                                    expanded.insert(ExpandKey::Node(ni));
+                                    expanded.insert(ExpandKey::Worktree(ni, wi));
+                                    if group.is_named() {
+                                        expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                                    }
+                                }
+                            }
+                        }
+                        for vendored in ws.vendored() {
+                            if vendored.path() == target_path {
+                                expanded.insert(ExpandKey::Node(ni));
+                                expanded.insert(ExpandKey::Worktree(ni, wi));
+                            }
+                        }
+                    }
+                },
+                RootItem::Worktrees(WorktreeGroup::Packages {
+                    primary, linked, ..
+                }) => {
+                    for (wi, pkg) in std::iter::once(primary).chain(linked.iter()).enumerate() {
+                        if pkg.path() == target_path {
+                            expanded.insert(ExpandKey::Node(ni));
+                        }
+                        for vendored in pkg.vendored() {
+                            if vendored.path() == target_path {
+                                expanded.insert(ExpandKey::Node(ni));
+                                expanded.insert(ExpandKey::Worktree(ni, wi));
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+
+    /// After expanding a path, find the visible row matching it and put
+    /// the cursor on it (no-op if none match).
+    pub(super) fn select_matching_visible_row(
+        &mut self,
+        target_path: &Path,
+        include_non_rust: bool,
+    ) {
+        self.recompute_visibility(include_non_rust);
+        let selected_index = self
+            .visible_rows()
+            .iter()
+            .position(|row| self.row_matches_project_path(*row, target_path));
+        if let Some(selected_index) = selected_index {
+            self.set_cursor(selected_index);
+        }
+    }
+
+    /// Composes `expand_path_in_tree` + `select_matching_visible_row`.
+    pub(super) fn select_project_in_tree(&mut self, target_path: &Path, include_non_rust: bool) {
+        self.expand_path_in_tree(target_path);
+        self.select_matching_visible_row(target_path, include_non_rust);
+    }
+
+    /// Remove `key` from expanded, recompute rows, and move cursor to
+    /// `target` if it appears in the new visible row set.
+    pub(super) fn collapse_to(
+        &mut self,
+        key: &ExpandKey,
+        target: VisibleRow,
+        include_non_rust: bool,
+    ) {
+        self.expanded_mut().remove(key);
+        self.recompute_visibility(include_non_rust);
+        if let Some(pos) = self.visible_rows().iter().position(|r| *r == target) {
+            self.set_cursor(pos);
+        }
+    }
+
+    /// Collapse the row at `row` to its nearest ancestor anchor.
+    pub(super) fn collapse_row(&mut self, row: VisibleRow, include_non_rust: bool) {
+        match row {
+            VisibleRow::Root { node_index: ni } => {
+                self.try_collapse(&ExpandKey::Node(ni));
+            },
+            VisibleRow::GroupHeader {
+                node_index: ni,
+                group_index: gi,
+            } => {
+                if !self.try_collapse(&ExpandKey::Group(ni, gi)) {
+                    self.collapse_to_root(ni, include_non_rust);
+                }
+            },
+            VisibleRow::Member {
+                node_index: ni,
+                group_index: gi,
+                ..
+            } => {
+                if self.is_inline_group(ni, gi) {
+                    self.collapse_to_root(ni, include_non_rust);
+                } else {
+                    self.collapse_to(
+                        &ExpandKey::Group(ni, gi),
+                        VisibleRow::GroupHeader {
+                            node_index:  ni,
+                            group_index: gi,
+                        },
+                        include_non_rust,
+                    );
+                }
+            },
+            VisibleRow::Vendored { node_index: ni, .. }
+            | VisibleRow::Submodule { node_index: ni, .. } => {
+                self.collapse_to_root(ni, include_non_rust);
+            },
+            VisibleRow::WorktreeEntry {
+                node_index: ni,
+                worktree_index: wi,
+            } => {
+                if !self.try_collapse(&ExpandKey::Worktree(ni, wi)) {
+                    self.collapse_to_root(ni, include_non_rust);
+                }
+            },
+            VisibleRow::WorktreeGroupHeader {
+                node_index: ni,
+                worktree_index: wi,
+                group_index: gi,
+            } => {
+                if !self.try_collapse(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
+                    self.collapse_to_worktree_entry(ni, wi, include_non_rust);
+                }
+            },
+            VisibleRow::WorktreeMember {
+                node_index: ni,
+                worktree_index: wi,
+                group_index: gi,
+                ..
+            } => {
+                if self.is_worktree_inline_group(ni, wi, gi) {
+                    self.collapse_to_worktree_entry(ni, wi, include_non_rust);
+                } else {
+                    self.collapse_to(
+                        &ExpandKey::WorktreeGroup(ni, wi, gi),
+                        VisibleRow::WorktreeGroupHeader {
+                            node_index:     ni,
+                            worktree_index: wi,
+                            group_index:    gi,
+                        },
+                        include_non_rust,
+                    );
+                }
+            },
+            VisibleRow::WorktreeVendored {
+                node_index: ni,
+                worktree_index: wi,
+                ..
+            } => {
+                self.collapse_to_worktree_entry(ni, wi, include_non_rust);
+            },
+        }
+    }
+
+    fn collapse_to_root(&mut self, ni: usize, include_non_rust: bool) {
+        self.collapse_to(
+            &ExpandKey::Node(ni),
+            VisibleRow::Root { node_index: ni },
+            include_non_rust,
+        );
+    }
+
+    fn collapse_to_worktree_entry(&mut self, ni: usize, wi: usize, include_non_rust: bool) {
+        self.collapse_to(
+            &ExpandKey::Worktree(ni, wi),
+            VisibleRow::WorktreeEntry {
+                node_index:     ni,
+                worktree_index: wi,
+            },
+            include_non_rust,
+        );
+    }
+
+    /// Public collapse entry point. Returns whether anything visibly changed.
+    pub(super) fn collapse(&mut self, include_non_rust: bool) -> bool {
+        let selected = self.cursor();
+        let Some(row) = self.visible_rows().get(selected).copied() else {
+            return false;
+        };
+        let expanded_before = self.expanded().len();
+        let selected_before = self.cursor();
+        self.collapse_row(row, include_non_rust);
+        self.expanded().len() != expanded_before || self.cursor() != selected_before
+    }
+
+    /// Whether the group at `(ni, gi)` is an inline (unnamed) group.
+    pub(super) fn is_inline_group(&self, ni: usize, gi: usize) -> bool {
+        let Some(item) = self.get(ni) else {
+            return true;
+        };
+        match &item.item {
+            RootItem::Rust(RustProject::Workspace(ws)) => {
+                ws.groups().get(gi).is_some_and(|g| !g.is_named())
+            },
+            _ => true,
+        }
+    }
+
+    /// Whether the worktree group at `(ni, wi, gi)` is an inline (unnamed) group.
+    pub(super) fn is_worktree_inline_group(&self, ni: usize, wi: usize, gi: usize) -> bool {
+        let Some(item) = self.get(ni) else {
+            return true;
+        };
+        match &item.item {
+            RootItem::Worktrees(WorktreeGroup::Workspaces {
+                primary, linked, ..
+            }) => {
+                let ws = if wi == 0 {
+                    primary
+                } else {
+                    match linked.get(wi - 1) {
+                        Some(ws) => ws,
+                        None => return true,
+                    }
+                };
+                ws.groups().get(gi).is_some_and(|g| !g.is_named())
+            },
+            _ => true,
+        }
+    }
+
+    /// Map the currently selected row to a [`CleanSelection`] when the
+    /// Clean shortcut should be enabled on it.
+    pub(super) fn clean_selection(&self) -> Option<CleanSelection> {
+        let row = self.selected_row()?;
+        match row {
+            VisibleRow::Root { node_index } => {
+                let entry = self.get(node_index)?;
+                match &entry.item {
+                    RootItem::Rust(rust) => Some(CleanSelection::Project {
+                        root: rust.path().clone(),
+                    }),
+                    RootItem::Worktrees(group) => Some(worktree_group_selection(group)),
+                    RootItem::NonRust(_) => None,
+                }
+            },
+            VisibleRow::WorktreeEntry {
+                node_index,
+                worktree_index,
+            } => {
+                let entry = self.get(node_index)?;
+                Self::worktree_path_ref(&entry.item, worktree_index).map(|path| {
+                    CleanSelection::Project {
+                        root: AbsolutePath::from(path),
+                    }
+                })
+            },
+            _ => None,
+        }
+    }
+
+    /// Move the cursor to the `Root` row for `node_index`, if visible.
+    pub(super) fn select_root_row(&mut self, node_index: usize) {
+        if let Some(pos) = self
+            .visible_rows()
+            .iter()
+            .position(|row| matches!(row, VisibleRow::Root { node_index: ni } if *ni == node_index))
+        {
+            self.set_cursor(pos);
+        }
+    }
+
+    /// Snapshot expansion of every top-level node so a tree rebuild can
+    /// re-apply the same logical expansions to a re-indexed layout.
+    pub(super) fn capture_legacy_root_expansions(&self) -> Vec<LegacyRootExpansion> {
+        self.iter()
+            .enumerate()
+            .filter_map(|(ni, entry)| {
+                if !self.expanded().contains(&ExpandKey::Node(ni)) {
+                    return None;
+                }
+                match &entry.item {
+                    RootItem::Rust(RustProject::Workspace(ws)) => Some(LegacyRootExpansion {
+                        root_path:      ws.path().clone(),
+                        old_node_index: ni,
+                        had_children:   ws.has_members() || !ws.vendored().is_empty(),
+                        named_groups:   ws
+                            .groups()
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(gi, group)| {
+                                group
+                                    .is_named()
+                                    .then(|| self.expanded().contains(&ExpandKey::Group(ni, gi)))
+                                    .filter(|expanded| *expanded)
+                                    .map(|_| gi)
+                            })
+                            .collect(),
+                    }),
+                    RootItem::Rust(RustProject::Package(pkg)) => Some(LegacyRootExpansion {
+                        root_path:      pkg.path().clone(),
+                        old_node_index: ni,
+                        had_children:   !pkg.vendored().is_empty(),
+                        named_groups:   Vec::new(),
+                    }),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// Re-apply expansions captured by `capture_legacy_root_expansions`,
+    /// adapting old node indices to the post-rebuild layout.
+    pub(super) fn migrate_legacy_root_expansions(&mut self, legacy: &[LegacyRootExpansion]) {
+        let (roots, expanded) = self.iter_with_expanded_mut();
+        let entries: Vec<(usize, &RootItem)> = roots
+            .enumerate()
+            .map(|(idx, entry)| (idx, &entry.item))
+            .collect();
+        for legacy_root in legacy {
+            let Some((current_index, item)) = entries
+                .iter()
+                .find(|(_, item)| item.path() == legacy_root.root_path.as_path())
+                .map(|(idx, item)| (*idx, *item))
+            else {
+                continue;
+            };
+            match item {
+                RootItem::Worktrees(group @ WorktreeGroup::Workspaces { primary, .. })
+                    if group.renders_as_group() =>
+                {
+                    expanded.insert(ExpandKey::Node(current_index));
+                    if legacy_root.had_children {
+                        expanded.insert(ExpandKey::Worktree(current_index, 0));
+                    }
+                    for &group_index in &legacy_root.named_groups {
+                        if primary.groups().get(group_index).is_some() {
+                            expanded.insert(ExpandKey::WorktreeGroup(
+                                current_index,
+                                0,
+                                group_index,
+                            ));
+                        }
+                        expanded.remove(&ExpandKey::Group(legacy_root.old_node_index, group_index));
+                    }
+                },
+                RootItem::Worktrees(group @ WorktreeGroup::Packages { .. })
+                    if group.renders_as_group() =>
+                {
+                    expanded.insert(ExpandKey::Node(current_index));
+                    if legacy_root.had_children {
+                        expanded.insert(ExpandKey::Worktree(current_index, 0));
+                    }
+                },
+                _ => {},
+            }
+        }
+    }
+
+    /// Stamp each [`PackageRecord`]'s derived [`Cargo`] fields onto the
+    /// matching package / workspace member / vendored package.
+    pub(super) fn apply_cargo_fields_from_workspace_metadata(
+        &mut self,
+        metadata: &WorkspaceMetadata,
+    ) {
+        for record in metadata.packages.values() {
+            let Some(manifest_dir) = record.manifest_path.as_path().parent() else {
+                continue;
+            };
+            let cargo = Cargo::from_package_record(record);
+            if let Some(rust_info) = self.rust_info_at_path_mut(manifest_dir) {
+                rust_info.cargo = cargo.clone();
+            }
+            if let Some(vendored) = self.vendored_at_path_mut(manifest_dir) {
+                vendored.cargo = cargo;
+            }
+        }
+    }
+
+    /// Apply a batch of `LanguageStats` to matching projects.
+    pub(super) fn handle_language_stats_batch(
+        &mut self,
+        entries: Vec<(AbsolutePath, LanguageStats)>,
+    ) {
+        for (path, stats) in entries {
+            if let Some(project) = self.at_path_mut(path.as_path()) {
+                project.language_stats = Some(stats);
+            }
+        }
+    }
+
+    /// Stamp crates.io version+downloads onto the matching project.
+    pub(super) fn handle_crates_io_version_msg(
+        &mut self,
+        path: &Path,
+        version: String,
+        downloads: u64,
+    ) {
+        if let Some(rust_info) = self.rust_info_at_path_mut(path) {
+            rust_info.set_crates_io(version, downloads);
+        } else if let Some(vendored) = self.vendored_at_path_mut(path) {
+            vendored.set_crates_io(version, downloads);
+        }
+    }
+
+    /// Collect root project paths and metadata for the lint runtime.
+    pub(super) fn lint_runtime_root_entries(&self) -> Vec<(AbsolutePath, bool)> {
+        let mut seen = HashSet::new();
+        let mut entries = Vec::new();
+        for entry in self {
+            let items: Vec<(&AbsolutePath, bool)> = match &entry.item {
+                RootItem::Worktrees(WorktreeGroup::Workspaces {
+                    primary, linked, ..
+                }) => std::iter::once(primary)
+                    .chain(linked.iter())
+                    .map(|p| (p.path(), true))
+                    .collect(),
+                RootItem::Worktrees(WorktreeGroup::Packages {
+                    primary, linked, ..
+                }) => std::iter::once(primary)
+                    .chain(linked.iter())
+                    .map(|p| (p.path(), true))
+                    .collect(),
+                _ => vec![(entry.item.path(), entry.item.is_rust())],
+            };
+            for (path, is_rust) in items {
+                let owned = path.clone();
+                if seen.insert(owned.clone()) {
+                    entries.push((owned, is_rust));
+                }
+            }
+        }
+        entries
+    }
+
+    /// Whether any project in the current snapshot is non-Rust.
+    pub(super) fn has_cached_non_rust_projects(&self) -> bool {
+        let mut found = false;
+        self.for_each_leaf(|item| {
+            if !item.is_rust() {
+                found = true;
+            }
+        });
+        found
+    }
+
+    /// Whether the currently-selected project's path has been dismissed.
+    pub(super) fn selected_project_is_deleted(&self) -> bool {
+        self.selected_project_path()
+            .is_some_and(|path| self.is_deleted(path))
+    }
+
+    /// Resolve the current selection to the absolute path of its
+    /// containing root entry (Workspace, Package, or worktree primary).
+    pub(super) fn selected_ci_path(&self) -> Option<AbsolutePath> {
+        let path = self.selected_project_path()?;
+        let entry = self.entry_containing(path)?;
+        Some(entry.item.path().clone())
+    }
+
+    /// Latest CI run for `path` filtered through `display_mode`.
+    pub(super) fn latest_ci_run_for_path(
+        &self,
+        path: &Path,
+        display_mode: CiRunDisplayMode,
+    ) -> Option<&CiRun> {
+        let info = self.ci_info_for(path)?;
+        let runs = info.runs.as_slice();
+        let Some(branch) = self.current_branch_for(path) else {
+            return runs.first();
+        };
+        if display_mode == CiRunDisplayMode::All {
+            return runs.first();
+        }
+        runs.iter().find(|run| run.branch == branch)
+    }
+
+    /// CI runs at `path` filtered through `display_mode`.
+    pub(super) fn ci_runs_for_display_inner(
+        &self,
+        path: &Path,
+        display_mode: CiRunDisplayMode,
+    ) -> Vec<CiRun> {
+        let Some(info) = self.ci_info_for(path) else {
+            return Vec::new();
+        };
+        let Some(branch) = self.current_branch_for(path) else {
+            return info.runs.clone();
+        };
+        if display_mode == CiRunDisplayMode::All {
+            return info.runs.clone();
+        }
+        info.runs
+            .iter()
+            .filter(|run| run.branch == branch)
+            .cloned()
+            .collect()
+    }
+}
+
+/// Build a `CleanSelection::WorktreeGroup` from a live `WorktreeGroup`.
+fn worktree_group_selection(group: &WorktreeGroup) -> CleanSelection {
+    match group {
+        WorktreeGroup::Workspaces { primary, linked } => CleanSelection::WorktreeGroup {
+            primary: primary.path().clone(),
+            linked:  linked.iter().map(|ws| ws.path().clone()).collect(),
+        },
+        WorktreeGroup::Packages { primary, linked } => CleanSelection::WorktreeGroup {
+            primary: primary.path().clone(),
+            linked:  linked.iter().map(|pkg| pkg.path().clone()).collect(),
+        },
+    }
+}
+
+/// Snapshot of a top-level expansion captured before a tree rebuild
+/// reorders node indices. Used to re-apply the same logical expansions
+/// to the new layout.
+#[derive(Clone)]
+pub(super) struct LegacyRootExpansion {
+    root_path:      AbsolutePath,
+    old_node_index: usize,
+    had_children:   bool,
+    named_groups:   Vec<usize>,
+}
+
+impl VisibleRow {
+    /// Anchor row to fall back to when collapsing this row — the parent
+    /// row that should receive the cursor after the collapse.
+    pub(super) const fn collapse_anchor(self) -> Self {
+        match self {
+            Self::GroupHeader { node_index, .. }
+            | Self::Member { node_index, .. }
+            | Self::Vendored { node_index, .. }
+            | Self::Submodule { node_index, .. } => Self::Root { node_index },
+            Self::Root { .. } | Self::WorktreeEntry { .. } => self,
+            Self::WorktreeGroupHeader {
+                node_index,
+                worktree_index,
+                ..
+            }
+            | Self::WorktreeMember {
+                node_index,
+                worktree_index,
+                ..
+            }
+            | Self::WorktreeVendored {
+                node_index,
+                worktree_index,
+                ..
+            } => Self::WorktreeEntry {
+                node_index,
+                worktree_index,
+            },
         }
     }
 }

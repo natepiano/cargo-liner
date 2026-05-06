@@ -170,33 +170,4 @@ impl App {
         self.ci.viewport_mut().home();
         self.scan.bump_generation();
     }
-
-    pub(super) fn ci_runs_for_display_inner(&self, path: &Path) -> Vec<CiRun> {
-        let Some(info) = self.project_list.ci_info_for(path) else {
-            return Vec::new();
-        };
-        let Some(branch) = self.project_list.current_branch_for(path) else {
-            return info.runs.clone();
-        };
-        if self.ci_display_mode_for(path) == CiRunDisplayMode::All {
-            return info.runs.clone();
-        }
-        info.runs
-            .iter()
-            .filter(|run| run.branch == branch)
-            .cloned()
-            .collect()
-    }
-
-    pub(super) fn latest_ci_run_for_path(&self, path: &Path) -> Option<&CiRun> {
-        let info = self.project_list.ci_info_for(path)?;
-        let runs = info.runs.as_slice();
-        let Some(branch) = self.project_list.current_branch_for(path) else {
-            return runs.first();
-        };
-        if self.ci_display_mode_for(path) == CiRunDisplayMode::All {
-            return runs.first();
-        }
-        runs.iter().find(|run| run.branch == branch)
-    }
 }

@@ -9,18 +9,6 @@ use crate::tui::app::phase_state::PhaseCompletion;
 use crate::tui::constants::STARTUP_PHASE_LINT;
 
 impl App {
-    pub(super) fn handle_crates_io_version_msg(
-        &mut self,
-        path: &Path,
-        version: String,
-        downloads: u64,
-    ) {
-        if let Some(rust_info) = self.project_list.rust_info_at_path_mut(path) {
-            rust_info.set_crates_io(version, downloads);
-        } else if let Some(vendored) = self.project_list.vendored_at_path_mut(path) {
-            vendored.set_crates_io(version, downloads);
-        }
-    }
     pub(super) fn handle_lint_startup_status_msg(
         &mut self,
         path: &AbsolutePath,

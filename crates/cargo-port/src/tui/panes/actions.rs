@@ -103,7 +103,7 @@ pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
 fn request_clean(app: &mut App) {
     // Gated through App::clean_selection (design plan → gating fix);
     // see src/tui/input.rs for the symmetric site.
-    if let Some(selection) = app.clean_selection() {
+    if let Some(selection) = app.project_list.clean_selection() {
         match selection {
             CleanSelection::Project { root } => {
                 // Step 6e: fingerprint re-check + possible Verifying
@@ -203,7 +203,7 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
             }
         },
         CiRunsAction::ClearCache => {
-            if let Some(path) = app.selected_ci_path() {
+            if let Some(path) = app.project_list.selected_ci_path() {
                 clear_ci_cache(app, &path);
             }
         },
@@ -230,7 +230,7 @@ fn handle_ci_fetch_more(app: &mut App) {
     if is_fetching {
         return;
     }
-    let Some(ci_path) = app.selected_ci_path() else {
+    let Some(ci_path) = app.project_list.selected_ci_path() else {
         return;
     };
     let project_name = app

@@ -26,9 +26,10 @@ fn collapse_all_anchors_member_selection_to_root() {
     let mut app = make_app(&[workspace, member.clone()]);
     apply_items(&mut app, &[root]);
     app.expanded_mut().insert(ExpandKey::Node(0));
-    app.select_project_in_tree(member.path());
+    app.project_list
+        .select_project_in_tree(member.path(), false);
 
-    app.collapse_all();
+    app.project_list.collapse_all(false);
 
     assert_eq!(
         app.project_list.selected_row(),
@@ -51,10 +52,11 @@ fn expand_all_preserves_selected_project_path() {
 
     let mut app = make_app(&[workspace, member.clone()]);
     apply_items(&mut app, &[root]);
-    app.select_project_in_tree(member.path());
-    app.collapse_all();
+    app.project_list
+        .select_project_in_tree(member.path(), false);
+    app.project_list.collapse_all(false);
 
-    app.expand_all();
+    app.project_list.expand_all(false);
 
     assert_eq!(
         app.project_list.selected_project_path(),

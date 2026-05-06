@@ -267,7 +267,7 @@ impl App {
         }
     }
     pub fn handle_project_discovered(&mut self, item: RootItem) -> bool {
-        let legacy_expansions = self.capture_legacy_root_expansions();
+        let legacy_expansions = self.project_list.capture_legacy_root_expansions();
         let discovered_path = item.path().to_path_buf();
         let mut already_exists = false;
         self.project_list.for_each_leaf_path(|path, _| {
@@ -290,14 +290,15 @@ impl App {
             tree.regroup_members(&inline_dirs);
         }
         self.register_discovery_shimmer(discovered_path.as_path());
-        self.migrate_legacy_root_expansions(&legacy_expansions);
+        self.project_list
+            .migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
         // Signal that derived state and caches need refresh.
         // The caller batches multiple discoveries before refreshing once.
         true
     }
     pub fn handle_project_refreshed(&mut self, item: RootItem) -> bool {
-        let legacy_expansions = self.capture_legacy_root_expansions();
+        let legacy_expansions = self.project_list.capture_legacy_root_expansions();
         let path = item.path().to_path_buf();
 
         // Replace the leaf in project_list_items, transferring runtime data
@@ -326,7 +327,8 @@ impl App {
             tree.regroup_top_level_worktrees();
         }
         self.reload_lint_history(&path);
-        self.migrate_legacy_root_expansions(&legacy_expansions);
+        self.project_list
+            .migrate_legacy_root_expansions(&legacy_expansions);
         self.rebuild_visible_rows_now();
         self.ci.clear_content();
         self.lint.clear_content();

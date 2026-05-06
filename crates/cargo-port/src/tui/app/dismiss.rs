@@ -1,5 +1,4 @@
 use super::App;
-use super::VisibleRow;
 use crate::project::AbsolutePath;
 use crate::project::Visibility::Dismissed;
 use crate::tui::panes::PaneId;
@@ -39,7 +38,7 @@ impl App {
                 }
                 self.ensure_visible_rows_cached();
                 if let Some(ni) = parent_node_index {
-                    self.select_root_row(ni);
+                    self.project_list.select_root_row(ni);
                 } else {
                     let count = self.project_list.row_count();
                     let selected = self.project_list.cursor();
@@ -48,17 +47,6 @@ impl App {
                     }
                 }
             },
-        }
-    }
-
-    /// Select the `Root` row for the given node index.
-    fn select_root_row(&mut self, node_index: usize) {
-        let rows = self.visible_rows();
-        if let Some(pos) = rows
-            .iter()
-            .position(|row| matches!(row, VisibleRow::Root { node_index: ni } if *ni == node_index))
-        {
-            self.project_list.set_cursor(pos);
         }
     }
 }

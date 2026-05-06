@@ -1780,7 +1780,7 @@ fn assemble_detail_pane_data(
 
 pub fn build_ci_data(app: &App) -> CiData {
     let selected_path = app.project_list.selected_project_path();
-    let has_ci_owner = app.selected_ci_path().is_some();
+    let has_ci_owner = app.project_list.selected_ci_path().is_some();
     let git_info = selected_path.and_then(|path| app.project_list.git_info_for(path));
     let repo_info = selected_path.and_then(|path| app.project_list.repo_info_for(path));
     let ci_info = selected_path.and_then(|path| app.project_list.ci_info_for(path));

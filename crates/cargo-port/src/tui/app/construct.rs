@@ -223,16 +223,6 @@ impl AppBuilder<Started> {
 }
 
 impl App {
-    pub(super) fn has_cached_non_rust_projects(&self) -> bool {
-        let mut found = false;
-        self.project_list.for_each_leaf(|item| {
-            if !item.is_rust() {
-                found = true;
-            }
-        });
-        found
-    }
-
     fn finish_new(&mut self) {
         self.panes.install_cpu_placeholder();
         self.load_initial_keymap();

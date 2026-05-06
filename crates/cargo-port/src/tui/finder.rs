@@ -636,7 +636,9 @@ fn confirm_finder(app: &mut App) {
     app.focus.close_overlay();
 
     // Navigate to the project
-    app.select_project_in_tree(item.project_path.as_path());
+    let include_non_rust = app.config.include_non_rust().includes_non_rust();
+    app.project_list
+        .select_project_in_tree(item.project_path.as_path(), include_non_rust);
 
     match item.kind {
         FinderKind::Project => {

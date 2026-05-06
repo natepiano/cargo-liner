@@ -1,10 +1,8 @@
-use std::collections::HashSet;
 use std::path::Path;
 
 use crate::lint;
 use crate::lint::RegisterProjectRequest;
 use crate::project;
-use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
@@ -77,42 +75,12 @@ impl App {
         self.lint
             .set_cache_usage(lint::retained_cache_usage(cache_size_bytes));
     }
-    /// Collect root project paths and metadata for the lint runtime.
-    pub(super) fn lint_runtime_root_entries(&self) -> Vec<(AbsolutePath, bool)> {
-        let mut seen = HashSet::new();
-        let mut entries = Vec::new();
-
-        for entry in &self.project_list {
-            let items: Vec<(&AbsolutePath, bool)> = match &entry.item {
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => std::iter::once(primary)
-                    .chain(linked.iter())
-                    .map(|p| (p.path(), true))
-                    .collect(),
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => std::iter::once(primary)
-                    .chain(linked.iter())
-                    .map(|p| (p.path(), true))
-                    .collect(),
-                _ => vec![(entry.item.path(), entry.item.is_rust())],
-            };
-            for (path, is_rust) in items {
-                let owned = path.clone();
-                if seen.insert(owned.clone()) {
-                    entries.push((owned, is_rust));
-                }
-            }
-        }
-
-        entries
-    }
     pub fn lint_runtime_projects(&self) -> Vec<RegisterProjectRequest> {
         if !self.scan.is_complete() {
             return Vec::new();
         }
-        self.lint_runtime_root_entries()
+        self.project_list
+            .lint_runtime_root_entries()
             .into_iter()
             .filter(|(path, _)| !self.project_list.is_deleted(path))
             .map(|(abs_path, is_rust)| RegisterProjectRequest {

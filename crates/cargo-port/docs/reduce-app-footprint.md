@@ -882,7 +882,7 @@ Add this to the per-method relocation checklist:
 - F9 — Phase 12 "Default visibility" paragraph extended with explicit "external `Self::xxx` callers must rewrite to `ProjectList::xxx(...)`" note (Phase 11 hit this once at `App::clean_selection`).
 - F10 — Final-count targets recomputed in summary table per F1; will need a second pass once F2/F3 architectural choices are decided.
 
- — `project_list` absorption II (action methods + `include_non_rust` threading)
+### Phase 12 — `project_list` absorption II (action methods + `include_non_rust` threading) ✅
 
 Relocate the remaining `project_list` S methods (mutating, expansion-affecting,
 or threaded through `include_non_rust`): `expand_all`, `collapse_all`,
@@ -998,6 +998,41 @@ and run `cargo check` per-method.
 After Phases 7 and 8, ProjectList absorbs the navigation/data layer it
 conceptually owned all along. The `impl App` block in `tui/app/navigation/*`
 shrinks substantially; most of `navigation/` becomes `impl ProjectList`.
+
+#### Retrospective
+
+**What worked:**
+- Helper-static cascade pre-audit (Phase 11 retrospective F5) caught `Self::collapse_anchor_row`, `is_inline_group`, `is_worktree_inline_group` ahead of relocation. `collapse_anchor_row` moved onto `impl VisibleRow` (its proper home — F3 confirmed in Phase 11 review); the two `is_*_inline_group` helpers moved onto `impl ProjectList` alongside `collapse_row`.
+- Threading `include_non_rust: bool` through 7 of 8 named methods was straightforward; each `&mut self` callee that previously called `self.ensure_visible_rows_cached()` now calls `self.recompute_visibility(include_non_rust)` directly. No internal call-graph surprises — the dependency tree (`expand_all → select_project_in_tree → expand_path_in_tree + select_matching_visible_row`, `collapse → collapse_row → collapse_to`) flowed top-down cleanly.
+- Multi-line perl regex (Phase 11 lesson) caught chained `app\n        .X()` patterns from the start; no second pass needed.
+- Phase 11 holdover option B for the 2 ci methods (`latest_ci_run_for_path`, `ci_runs_for_display_inner`) worked: each grew a `display_mode: CiRunDisplayMode` parameter, callers extract `self.ci.display_mode_for(path)` first then forward. ~4 caller sites total.
+- `pl = &app.project_list` rebind was not needed — the action-method bodies did not form the long `app.project_list.X.Y.Z` chains Phase 11 hit. fmt kept the relocated bodies under `clippy::too_many_lines` once `collapse_row` was decomposed.
+
+**What deviated from the plan:**
+- **Of the 27 listed methods, only 19 actually relocated.** 5 (`move_up`, `move_down`, `move_to_top`, `move_to_bottom`, `toggle_expand`) were already on `impl ProjectList` from earlier phases. 2 (`select_root`, `apply_finder`) are phantoms — they don't exist as `fn`. Plan should have cross-checked against `count_app_methods.py` per-method when sizing.
+- **Threading: 7 of 8 listed methods got `include_non_rust: bool`, not 8.** `expand_path_in_tree` is pure mutation over `iter_with_expanded_mut()` and never calls `recompute_visibility` / `ensure_visible_rows_cached` — threading it would add an unused parameter. Dropped from the threaded list.
+- **Phase 11 holdover: `build_selected_pane_data` chose option C (stays on App), not B.** It calls `tui::panes::build_pane_data*` (5 entry points: `build_pane_data`, `build_pane_data_for_member`, `build_pane_data_for_vendored`, `build_pane_data_for_workspace_ref`, `build_pane_data_for_submodule`) plus its own `build_worktree_detail` helper, all of which take `&App`. Restructuring those to take `&ProjectList` is a Phase-13-or-later task; see follow-up below.
+- **2 helper static methods cascaded that were not in the plan list.** `is_inline_group` and `is_worktree_inline_group` were called via `Self::` from the `collapse_row` body and had to move to `impl ProjectList`.
+- **`LegacyRootExpansion` struct relocated alongside its 2 methods.** The struct was `pub(super)` of `async_tasks/`, invisible from `tui::project_list`. Moving it preserved private-fields encapsulation since callers in `repo_handlers.rs` only pass references.
+- **`worktree_group_selection` free fn moved alongside `clean_selection`.** Called only from `clean_selection`'s body; trivially relocated as a private free fn in `project_list.rs`.
+- **`bulk.rs`, `worktree_paths.rs`, `movement.rs` reduced to placeholder comments.** All their method bodies relocated; the files contain only a 1-line note. Module-file removal deferred to a later tidy.
+- **App count dropped 217 → 193 (delta 24, vs the planned ~27).** The 3 missing came from: 1 `build_selected_pane_data` holdover staying on App (option C), 2 ci shims kept on App (`ci_runs_for_display`, `selected_ci_runs`) because they're called from outside the project_list module and routing the display-mode extraction through ProjectList would need a Group X reclassification.
+
+**Surprises:**
+- `clippy::too_many_lines` fired on 2 sites after `cargo +nightly fmt --all` (same pattern as Phase 11): `collapse_row` (116 lines, fmt expanded each `self.collapse_to(&KEY, TARGET, bool)` to 4–5 lines × 7 arms), and `handle_bg_msg` in `dispatch.rs` (101 lines, +1 from the new `self.project_list.X` chain in `CratesIoVersion`/`LanguageStatsBatch` arms). Fixed by: (a) extracting two private helpers `collapse_to_root(ni, …)` and `collapse_to_worktree_entry(ni, wi, …)` on `impl ProjectList` to fold each fmt-expanded `collapse_to` call to one line; (b) collapsing one trivial 3-line arm (`RepoFetchQueued`) to a 1-line `=> self.X(...)` form to recover 2 lines elsewhere.
+- Test sites use `false` for `include_non_rust` — fine because the test fixtures don't include non-Rust projects, but future tests for non-Rust visibility behavior will need to thread `true`.
+- Heredoc `\!` escaping: appending the new impl block via `cat >> ... << 'RUST_EOF'` escaped `!` characters in `matches!`, `vec!`, `if !`. Fixed via a global `\\!→!` perl pass. Future appends should use a single-quoted heredoc with care.
+
+**Implications for remaining phases:**
+- **Phase 13 inventory needs re-baselining.** Phase 12 actually removed 24, not 27; Phase 13's "App after" target slides from ~172 to ~175 unless Phase 13 picks up the 3 carryovers (`build_selected_pane_data`, `ci_runs_for_display`, `selected_ci_runs`) — see follow-up.
+- **`collapse_anchor_row` (now `VisibleRow::collapse_anchor`) is off App.** Phase 15 should drop it from the Group W relocation list.
+- **`is_inline_group` / `is_worktree_inline_group` are on `impl ProjectList`.** Phase 14's recursive trivial-accessor purge can ignore them on the App side.
+- **`worktree_paths.rs`, `movement.rs`, `bulk.rs` are empty placeholders.** Phase 14 (or a follow-up tidy) should delete these module files entirely and remove the `mod ...;` declarations from `navigation/mod.rs`.
+- **Helper extraction pattern (`collapse_to_root`, `collapse_to_worktree_entry`) is reusable.** Phase 13/14 method bodies that call a relocated method with similar structural arguments may benefit from a similar extract step before clippy validation.
+
+#### Phase 12 Review
+
+(plan-phase-review pending)
 
 ### Phase 13 — Non-`project_list` S relocations
 
