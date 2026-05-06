@@ -400,16 +400,6 @@ impl App {
             .map_or_else(Vec::new, |path| self.ci_runs_for_display(path))
     }
 
-    pub(super) fn ci_is_fetching(&self, path: &Path) -> bool {
-        self.project_list
-            .entry_containing(path)
-            .is_some_and(|entry| {
-                self.ci
-                    .fetch_tracker
-                    .is_fetching(entry.item.path().as_path())
-            })
-    }
-
     pub(super) fn register_discovery_shimmer(&mut self, path: &Path) {
         if !self.scan.is_complete() || !self.config.discovery_shimmer_enabled() {
             return;

@@ -226,7 +226,7 @@ fn handle_ci_fetch_more(app: &mut App) {
     let is_fetching = app
         .project_list
         .selected_project_path()
-        .is_some_and(|path| app.ci_is_fetching(path));
+        .is_some_and(|path| app.ci.fetch_tracker.is_fetching(path));
     if is_fetching {
         return;
     }

@@ -18,6 +18,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use super::toast_bodies;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::tui::app::CountedPhase;
@@ -65,6 +66,6 @@ impl Startup {
         expected: &HashSet<AbsolutePath>,
         seen: &HashSet<AbsolutePath>,
     ) -> String {
-        super::toast_bodies::remaining_toast_body(expected, seen)
+        toast_bodies::remaining_toast_body(expected, seen)
     }
 }

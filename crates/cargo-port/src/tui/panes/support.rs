@@ -1797,7 +1797,7 @@ pub fn build_ci_data(app: &App) -> CiData {
     let unpublished_branch_name =
         selected_path.and_then(|path| app.project_list.unpublished_ci_branch_name(path));
     let runs = app.selected_ci_runs();
-    let is_fetching = selected_path.is_some_and(|path| app.ci_is_fetching(path));
+    let is_fetching = selected_path.is_some_and(|path| app.ci.fetch_tracker.is_fetching(path));
     let branch_filtered_empty = selected_path.is_some_and(|path| {
         app.ci_toggle_available_for(path) && app.ci.display_mode_label_for(path) == "branch"
     }) && ci_info.is_some_and(|info| !info.runs.is_empty())

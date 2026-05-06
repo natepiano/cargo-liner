@@ -85,7 +85,7 @@ impl App {
                 let run_count = ci_info.map_or(0, |info| info.runs.len());
                 let selected_path = self.project_list.selected_project_path();
                 if self.ci.viewport.pos() == run_count
-                    && !selected_path.is_some_and(|path| self.ci_is_fetching(path))
+                    && !selected_path.is_some_and(|path| self.ci.fetch_tracker.is_fetching(path))
                     && !selected_path.is_some_and(|path| self.ci_is_exhausted(path))
                 {
                     Some("fetch")
