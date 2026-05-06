@@ -1629,13 +1629,7 @@ fn compute_ci_status(
     wt_item: Option<&RootItem>,
 ) -> Option<ci::CiStatus> {
     wt_item.map_or_else(
-        || {
-            if app.project_list.is_rust_at_path(abs_path) {
-                app.project_list.ci_status_for(abs_path, &app.ci)
-            } else {
-                None
-            }
-        },
+        || app.project_list.ci_status_for(abs_path, &app.ci),
         |item| app.project_list.ci_status_for_root_item(item, &app.ci),
     )
 }
