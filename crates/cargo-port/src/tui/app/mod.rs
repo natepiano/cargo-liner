@@ -215,7 +215,7 @@ pub(super) struct App {
     /// `lint_count`) plus the `scan_complete_at`, `toast`, and
     /// `complete_at` slots that drive the umbrella "Startup" toast
     /// and its detail toasts.
-    startup:                 Startup,
+    pub(super) startup:      Startup,
     pub(super) focus:        Focus,
     /// Overlays subsystem. Owns the four overlay-mode enums
     /// (`FinderMode`, `SettingsMode`, `KeymapMode`, `ExitMode`),
@@ -855,14 +855,6 @@ impl App {
     pub(super) fn set_projects(&mut self, projects: ProjectList) {
         self.project_list.replace_roots_from(projects);
     }
-
-    /// `Startup` subsystem accessor. Test-only — production paths
-    /// reach the field directly via `self.startup`.
-    #[cfg(test)]
-    pub(super) const fn startup(&self) -> &Startup { &self.startup }
-
-    #[cfg(test)]
-    pub(super) const fn startup_mut(&mut self) -> &mut Startup { &mut self.startup }
 
     pub(super) fn dismiss_target_for_row(&self, row: VisibleRow) -> Option<DismissTarget> {
         self.dismiss_target_for_row_inner(row)

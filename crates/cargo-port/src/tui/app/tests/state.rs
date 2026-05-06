@@ -392,7 +392,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     app.initialize_startup_phase_tracker();
 
     let expected = app
-        .startup()
+        .startup
         .lint_phase
         .expected
         .as_ref()
@@ -406,7 +406,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     });
 
     let expected = app
-        .startup()
+        .startup
         .lint_phase
         .expected
         .as_ref()
@@ -414,7 +414,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
     assert_eq!(expected.len(), 1);
     assert!(expected.contains(project_a.path().as_path()));
     assert!(
-        !app.startup()
+        !app.startup
             .lint_phase
             .seen
             .contains(project_a.path().as_path())
@@ -432,7 +432,7 @@ fn startup_lint_expectation_tracks_running_startup_lints() {
         status: LintStatus::Passed(parse_ts("2026-03-30T14:23:18-05:00")),
     });
 
-    assert!(app.startup().lint_phase.complete_at.is_some());
+    assert!(app.startup.lint_phase.complete_at.is_some());
     assert!(app.lint.running().is_empty());
     app.prune_toasts();
 }
@@ -511,7 +511,7 @@ fn startup_git_expected_uses_top_level_git_directories() {
     app.initialize_startup_phase_tracker();
 
     assert_eq!(
-        app.startup_mut().git.expected,
+        app.startup.git.expected,
         Some(HashSet::from([
             AbsolutePath::from(non_rust_dir.join(".git")),
             AbsolutePath::from(workspace_dir.join(".git")),
@@ -547,7 +547,7 @@ fn startup_git_seen_marks_owner_git_directory_for_member_updates() {
     apply_git_info(&mut app, member_dir.as_path(), make_git_info(None));
 
     assert!(
-        app.startup()
+        app.startup
             .git
             .seen
             .contains(workspace_dir.join(".git").as_path())
@@ -1562,7 +1562,7 @@ fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
     app.initialize_startup_phase_tracker();
 
     let expected = app
-        .startup()
+        .startup
         .metadata
         .expected
         .as_ref()
@@ -1576,7 +1576,7 @@ fn initialize_startup_phase_seeds_metadata_expected_and_grouped_toast() {
     assert!(expected.contains(project_b.path()));
 
     assert!(
-        app.startup_mut().metadata.toast.is_some(),
+        app.startup.metadata.toast.is_some(),
         "a grouped 'Running cargo metadata' detail toast is created when expected is non-empty"
     );
     let items = metadata_toast_items(&app);
@@ -1609,7 +1609,7 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
     });
 
     assert!(
-        app.startup().metadata.seen.contains(&workspace_root),
+        app.startup.metadata.seen.contains(&workspace_root),
         "metadata.seen records the arrived workspace"
     );
     assert!(
@@ -1622,7 +1622,7 @@ fn successful_metadata_arrival_advances_phase_and_tracked_item() {
         "successful metadata was upserted into the store"
     );
     assert!(
-        app.startup_mut().metadata.complete_at.is_some(),
+        app.startup.metadata.complete_at.is_some(),
         "with only one expected root, the phase completes on arrival"
     );
 }
@@ -1659,7 +1659,7 @@ fn stale_generation_metadata_arrival_is_dropped() {
     });
 
     assert!(
-        !app.startup().metadata.seen.contains(&workspace_root),
+        !app.startup.metadata.seen.contains(&workspace_root),
         "stale-generation arrival does not advance metadata.seen"
     );
     assert!(
@@ -1710,7 +1710,7 @@ fn failed_metadata_arrival_surfaces_error_toast() {
         "failure raises a timed error toast starting with 'cargo metadata failed'"
     );
     assert!(
-        app.startup().metadata.seen.contains(&workspace_root),
+        app.startup.metadata.seen.contains(&workspace_root),
         "failure still ticks the phase forward so startup doesn't wedge"
     );
 }
@@ -1730,7 +1730,7 @@ fn cargo_metadata_workspace_missing_does_not_raise_toast() {
         ..crate::project::Package::default()
     }));
     let mut app = make_app(&[pkg]);
-    app.startup_mut()
+    app.startup
         .metadata
         .reset_with_expected(std::iter::once(workspace_root.clone()).collect());
 
@@ -1755,7 +1755,7 @@ fn cargo_metadata_workspace_missing_does_not_raise_toast() {
         "WorkspaceMissing must not add any toast"
     );
     assert!(
-        app.startup().metadata.seen.contains(&workspace_root),
+        app.startup.metadata.seen.contains(&workspace_root),
         "WorkspaceMissing must still tick the phase forward"
     );
 }
@@ -1883,30 +1883,30 @@ fn startup_ready_waits_on_metadata_phase() {
     app.initialize_startup_phase_tracker();
 
     let now = std::time::Instant::now();
-    let scan_started = app.startup().scan_complete_at.expect("scan complete at");
+    let scan_started = app.startup.scan_complete_at.expect("scan complete at");
 
     // Force disk/git/repo phases complete so only metadata is left
     // gating startup_complete_at.
-    app.startup_mut().disk.expected = Some(HashSet::new());
-    app.startup_mut().git.expected = Some(HashSet::new());
-    app.startup_mut().repo.expected = Some(HashSet::new());
+    app.startup.disk.expected = Some(HashSet::new());
+    app.startup.git.expected = Some(HashSet::new());
+    app.startup.repo.expected = Some(HashSet::new());
     app.maybe_complete_startup_disk(now, scan_started);
     app.maybe_complete_startup_git(now, scan_started);
     app.maybe_complete_startup_repo(now, scan_started);
 
     assert!(
-        app.startup_mut().disk.complete_at.is_some()
-            && app.startup_mut().git.complete_at.is_some()
-            && app.startup_mut().repo.complete_at.is_some(),
+        app.startup.disk.complete_at.is_some()
+            && app.startup.git.complete_at.is_some()
+            && app.startup.repo.complete_at.is_some(),
         "disk/git/repo phases are now complete"
     );
     assert!(
-        app.startup_mut().metadata.complete_at.is_none(),
+        app.startup.metadata.complete_at.is_none(),
         "metadata still pending"
     );
     app.maybe_complete_startup_ready(now, scan_started);
     assert!(
-        app.startup_mut().complete_at.is_none(),
+        app.startup.complete_at.is_none(),
         "startup doesn't complete while metadata is still pending"
     );
 
@@ -1926,11 +1926,11 @@ fn startup_ready_waits_on_metadata_phase() {
     });
 
     assert!(
-        app.startup_mut().metadata.complete_at.is_some(),
+        app.startup.metadata.complete_at.is_some(),
         "metadata phase completes after the arrival"
     );
     assert!(
-        app.startup_mut().complete_at.is_some(),
+        app.startup.complete_at.is_some(),
         "startup is now ready once every phase has resolved"
     );
 }

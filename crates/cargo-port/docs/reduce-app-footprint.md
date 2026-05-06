@@ -640,10 +640,11 @@ Per mechanics step 3 category (d), rewrite all five chain expansions
 **before** deleting `scan` / `scan_mut`, otherwise the bulk pass on `scan`
 will see them as already-published-field uses and skip the chain expansion.
 
-**Methods removed:** ~9. **Caller rewrites:** ~95 (live count, all five
-chain-expansion methods plus `\.scan\(\)`/`\.scan_mut\(\)`). ~30 of the 34
-`scan_state_mut` callers live in
-`src/tui/app/tests/{panes,discovery_shimmer,state}.rs`.
+**Methods removed:** 7 (live; original `~9` over-counted because
+`set_projects` was already moved to Phase 11). **Caller rewrites:**
+~95 (live count, all five chain-expansion methods plus
+`\.scan\(\)`/`\.scan_mut\(\)`). ~30 of the 34 `scan_state_mut` callers
+live in `src/tui/app/tests/{panes,discovery_shimmer,state}.rs`.
 
 ### Retrospective
 
@@ -652,7 +653,17 @@ chain-expansion methods plus `\.scan\(\)`/`\.scan_mut\(\)`). ~30 of the 34
 **Surprises:** The collision-revert pass was unnecessary because the chain-expansion regex `\.scan_state_mut\(\)` → `.scan.scan_state_mut()` only matched `app.scan_state_mut()` call sites; it did not re-match the already-correct `self.scan.scan_state_mut()` because perl's substitution operates left-to-right and consumes `.scan_state_mut()` once. Today's already-correct sites had a `.scan.` prefix that perl did not touch.
 **Implications for remaining phases:** The mechanic now stands tested against the hardest expected case (5 chain expansions + name-collision in the same phase). Phases 9 (Startup) and 10 (`projects`/`projects_mut`) are mechanically simpler. The `refresh_derived_state` deletion in `async_tasks/tree.rs` confirms that App methods can live outside `app/mod.rs` — the count_app_methods.py script picks them up automatically, but the deletion list in future phases must scan all of `src/tui/app/` not just `mod.rs`.
 
-### Phase 9 — Startup trivial-accessor / pass-through delete
+### Phase 8 Review
+
+- Phase 8 body: corrected `Methods removed: ~9` to `7 (live)`; explained the over-count came from `set_projects` already being moved to Phase 11.
+- Mechanics step 5: re-framed the collision-revert pass as "defensive backup, not guaranteed to fire" and recorded the perl-left-to-right-consumption observation that explains why Phase 8's expected double-prefix collision did not materialize.
+- Phase 10: replaced the editor-rename recommendation (mechanically wrong — `project_list` is already a field, not a rename target) with the standard chain-expansion mechanic (pre-flight → bulk regex `_mut` first → borrow-mode fixups → validate). Added explicit let-binding pre-flight per Phase 8's discipline.
+- Phase 14: added a "pre-Phase-14 inventory pass" subsection requiring an `impl App` grep across all of `src/tui/app/` (not just `mod.rs`), plus an inventory of internal types declared inside `src/tui/app/` (e.g. `PhaseState`). The 5 App-local accessors enumerated in Phase 14 are the known candidates from prior phases; the inventory pass may surface more.
+- Phase summary table: Phase 8 row updated to `7 methods removed, 247 ✅`. Downstream Phases 9–15 "App after" shifted +2 (Phase 8 removed 7, not 9 as planned); final post-15 floor moved from ~151 to ~153.
+- Phases 9, 11, 12, 13, 15: confirmed clean — no edits needed. Phase 9 pre-flight (`fn startup`/`startup_mut` only on App; no Startup-method collision) verified; Phase 9 should compile clean on first attempt.
+- Phase 10: name-collision check against `Panes::project_list()` confirmed safe — different identifier, regex `\.projects\(\)` does not match.
+
+### Phase 9 — Startup trivial-accessor / pass-through delete ✅
 
 Publish `startup` as `pub(super)`. Delete `startup`/`_mut`. Rewrite call sites.
 
@@ -660,7 +671,20 @@ Publish `startup` as `pub(super)`. Delete `startup`/`_mut`. Rewrite call sites.
 own methods (`new`, `reset`, phase trackers) don't share names with App's
 accessors. Also grep `let .* = .*\.startup_mut\(\)` for `let`-binding rewrites.
 
-**Methods removed:** ~2. **Caller rewrites:** ~25.
+**Methods removed:** 2. **Caller rewrites:** 26 (all in `tests/state.rs`).
+
+### Retrospective
+
+**What worked:**
+- Smallest sweep so far — both accessors `#[cfg(test)]`-only, all 26 call sites in one file (`tests/state.rs`).
+- Pre-flight let-binding grep found one site (`let scan_started = app.startup().scan_complete_at.expect(...)`) that turned out to be safe under field rewrite (the `let` binds `.expect`'s return value, not a reference to startup).
+- `_mut` first then read order avoided any double-prefix collision.
+
+**What deviated from the plan:** Nothing. Caller-rewrite estimate ~25 was 26.
+
+**Surprises:** None. Methods removed: 2 (matched estimate exactly).
+
+**Implications for remaining phases:** None. Phase 9 confirmed the field-publish mechanic is robust on the smallest possible sweep. Phase 10 (`projects()` / `projects_mut()` deletion, ~275 callers) is now next and is the largest single phase by call-site count.
 
 ### Phase 10 — Delete `App::projects()` / `projects_mut()` (highest-fanout rewrite)
 
@@ -686,10 +710,25 @@ field `projects` → `project_list`, that call path breaks. The plan's overall 1
 order handles this implicitly; making the dependency explicit guards against
 phase reordering silently introducing the bug.
 
-Recommend the user run a global rename (`projects()` → `project_list`,
-`projects_mut()` → `project_list`) via the editor's rename feature — see CLAUDE.md
-note about rename support. Falls back to mechanical perl substitution otherwise
-(handle the rustfmt-wrapped chain pattern).
+**Rewrite mechanism:** This is a *substitution* (method call → field
+access), not a rename — `project_list` is already a field on `App`
+(post-Phase-2), so an editor "rename" refactor isn't applicable. Use
+the standard mechanic:
+
+1. **Pre-flight.** Verify `fn projects` / `fn projects_mut` exist only on App
+   (they will — `Panes::project_list()` returns the pane, identifier is
+   `project_list` not `projects`, so no name collision). Run the let-binding
+   grep `let .* = .*\.projects_mut\(\)` — Phase 8's discipline; with 25
+   `projects_mut()` sites across many test files, let-bindings are likely.
+2. **Bulk regex.** `\.projects_mut\(\)` → `.project_list` first (so partial
+   matches with the read-side don't fire), then `\.projects\(\)` →
+   `.project_list`.
+3. **Borrow-mode fixups.** Some `_mut` sites that today take `&mut self` and
+   call a chained method may need `&mut app.project_list.X` — handle
+   per-file when the bulk pass leaves a borrow-checker error.
+4. **Validate.** Re-run `count_app_methods.py` at phase start to confirm the
+   250+25 count still holds (Phase 8 did not touch these callers, so the
+   number should hold, but verify before the bulk pass).
 
 ### Phase 11 — `project_list` absorption I (row-navigation read-side)
 
@@ -829,6 +868,25 @@ and delete the accessor:
 - `resolved_dirs` — one-line wrapper over `scan::resolve_include_dirs`.
   Inline at call sites.
 
+**Pre-Phase-14 inventory pass (Phase 8 lesson).** Phase 8 deleted
+`refresh_derived_state` from `src/tui/app/async_tasks/tree.rs` — an `impl App`
+method living outside `mod.rs`. There are ~25 `impl App` blocks across the
+`src/tui/app/` tree (in `async_tasks/*.rs`, `navigation/*.rs`, `query/*.rs`,
+`ci.rs`, `dismiss.rs`, etc.). Phase 14 must run an inventory pass at phase
+start that:
+
+1. Greps `impl App` across all of `src/tui/app/` (not just `mod.rs`) and
+   enumerates every trivial accessor or one-line pass-through found there.
+2. Extends the same scan to internal types declared inside `src/tui/app/` —
+   e.g. `PhaseState` in `src/tui/app/phase_state.rs` exposes its own
+   trivial accessors (`expected_len`, etc.) which become candidates for the
+   recursive purge.
+3. Adds any newly-found accessors to the deletion list before the
+   field-publish pass begins.
+
+The 5 App-local accessors above are the *known* candidates from prior
+phases; the inventory pass may surface more.
+
 **Visibility tightening on relocated types.** Phase 2 moved `ProjectList` from
 `src/project_list.rs` (top-level) to `src/tui/project_list.rs` (nested).
 Pre-existing `pub(crate)` methods on `ProjectList` (`new`, `len`, `is_empty`,
@@ -940,11 +998,17 @@ For each candidate App method `app.foo(args)` whose body is
 4. **Apply the rewrites.** Bulk perl per the regex; Edit per file for arity-changing
    rewrites (e.g. `set_ci_fetch_toast(x)` → `ci.set_fetch_toast(Some(x))`). Use the
    multi-line `\s*` pattern when rustfmt has wrapped a call.
-5. **Revert double-prefix patterns.** `\.subsystem\.subsystem\.` → `.subsystem.`,
-   plus the no-leading-dot variant `\bsubsystem\.subsystem\.` → `subsystem.` for
-   tests/inner code where a local var is named the same as the field (Phase 5
-   hit this at `panes/system.rs` test sites). Required when step 2 flagged a
-   collision; cheap to run unconditionally.
+5. **Revert double-prefix patterns (defensive).** `\.subsystem\.subsystem\.` →
+   `.subsystem.`, plus the no-leading-dot variant `\bsubsystem\.subsystem\.` →
+   `subsystem.` for tests/inner code where a local var is named the same as the
+   field (Phase 5 hit this at `panes/system.rs` test sites). **Defensive backup
+   pass, not guaranteed to fire** — Phase 8 had a real collision
+   (`Scan::scan_state_mut`) and the chain-expansion regex
+   `\.scan_state_mut\(\)` → `.scan.scan_state_mut()` did NOT re-match
+   already-correct `self.scan.scan_state_mut()` sites because perl substitution
+   consumes left-to-right and consumes each match once. Run the revert
+   unconditionally — cheap, but expect it to be a no-op when the chain-expansion
+   regex did not produce the doubled prefix.
 6. **Delete the App method.** No transitional `#[deprecated]` shim.
 7. **Clean up unused imports.** Pass-through deletions often orphan imports
    (`GitHubRateLimit`, `RepoCache`, message types). Remove them when warnings surface.
@@ -1000,7 +1064,7 @@ sits.
 | 6 | trivial-accessor / pass-through delete: Focus | 3 | ~93 | 256 ✅ |
 | 7 | trivial-accessor / pass-through delete: Overlays | 2 | 127 | 254 ✅ |
 | 8 | trivial-accessor / pass-through delete: Scan | 7 | ~95 | 247 ✅ |
-| 9 | trivial-accessor / pass-through delete: Startup | ~2 | ~25 | 245 |
+| 9 | trivial-accessor / pass-through delete: Startup | 2 | 26 | 245 ✅ |
 | **10** | **Delete `App::projects()` / `projects_mut()`** | **2** | **~275** | **243** |
 | 11 | `project_list` absorption I — row-navigation read-side | ~17 | ~85 | 226 |
 | 12 | `project_list` absorption II — action methods (with `include_non_rust` arg threading) | ~27 | ~170 | 199 |
