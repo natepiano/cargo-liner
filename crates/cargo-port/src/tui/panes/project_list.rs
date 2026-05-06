@@ -142,7 +142,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let total_project_rows = items.len();
 
     let title = project_panel_title_with_counts(app, area.width.saturating_sub(2).into());
-    let block = pane::default_pane_chrome().block(title, app.focus().is(PaneId::ProjectList));
+    let block = pane::default_pane_chrome().block(title, app.focus.is(PaneId::ProjectList));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
@@ -274,7 +274,7 @@ fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<
 }
 
 fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
-    let focused = app.focus().is(PaneId::ProjectList);
+    let focused = app.focus.is(PaneId::ProjectList);
     let cursor = app.projects().cursor();
     let roots = app.resolved_dirs();
 
@@ -992,7 +992,7 @@ pub fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<ListItem<
     let root_labels = app
         .projects()
         .resolved_root_labels(app.config.include_non_rust().includes_non_rust());
-    let focus = app.focus().pane_state(PaneId::ProjectList);
+    let focus = app.focus.pane_state(PaneId::ProjectList);
     let pane = app.panes.project_list().viewport();
     let cursor = app.projects().cursor();
 

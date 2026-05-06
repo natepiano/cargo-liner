@@ -26,7 +26,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
     };
     match hit {
         HoverTarget::PaneRow { pane, row } => {
-            app.focus_mut().set(pane);
+            app.focus.set(pane);
             if pane == PaneId::ProjectList {
                 app.projects_mut().set_cursor(row);
             } else {
@@ -42,7 +42,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
             let active = app.toasts.active_now();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
                 app.toasts.viewport_mut().set_pos(index);
-                app.focus_mut().set(PaneId::Toasts);
+                app.focus.set(PaneId::Toasts);
             }
             true
         },
@@ -393,8 +393,8 @@ mod tests {
         });
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
-        let focus_state = app.focus().pane_state(PaneId::Lints);
-        let is_focused = app.focus().is(PaneId::Lints);
+        let focus_state = app.focus.pane_state(PaneId::Lints);
+        let is_focused = app.focus.is(PaneId::Lints);
         let animation_elapsed = app.animation_elapsed();
         let selected_path = app
             .selected_project_path_for_render()
@@ -421,8 +421,8 @@ mod tests {
         app.ci.override_runs_for_test(runs.to_vec());
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
-        let focus_state = app.focus().pane_state(PaneId::CiRuns);
-        let is_focused = app.focus().is(PaneId::CiRuns);
+        let focus_state = app.focus.pane_state(PaneId::CiRuns);
+        let is_focused = app.focus.is(PaneId::CiRuns);
         let animation_elapsed = app.animation_elapsed();
         let selected_path = app
             .selected_project_path_for_render()
@@ -648,7 +648,7 @@ mod tests {
         let (x, y) = row_body_point(&app, 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.focused_pane(), PaneId::ProjectList);
+        assert_eq!(app.focus.current(), PaneId::ProjectList);
         assert_eq!(app.projects().cursor(), 1);
         assert_eq!(
             app.selected_project_path().map(Path::to_path_buf),
@@ -701,7 +701,7 @@ mod tests {
         finder.col_widths = col_widths;
         finder.results = vec![0, 1];
         finder.total = 2;
-        app.focus_mut().open_overlay(PaneId::Finder);
+        app.focus.open_overlay(PaneId::Finder);
         app.overlays_mut().open_finder();
         render_ui(&mut app);
 
@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn settings_row_click_uses_setting_index_not_visual_line() {
         let mut app = make_app(&[]);
-        app.focus_mut().open_overlay(PaneId::Settings);
+        app.focus.open_overlay(PaneId::Settings);
         app.overlays_mut().open_settings();
         render_ui(&mut app);
 
@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn keyboard_navigation_clears_stale_settings_hover() {
         let mut app = make_app(&[]);
-        app.focus_mut().open_overlay(PaneId::Settings);
+        app.focus.open_overlay(PaneId::Settings);
         app.overlays_mut().open_settings();
         render_ui(&mut app);
 
@@ -780,7 +780,7 @@ mod tests {
             app.overlays()
                 .settings_pane()
                 .viewport()
-                .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
+                .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
             PaneSelectionState::Hovered,
         );
 
@@ -792,14 +792,14 @@ mod tests {
             app.overlays()
                 .settings_pane()
                 .viewport()
-                .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
+                .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
             PaneSelectionState::Unselected,
         );
         assert_eq!(
             app.overlays()
                 .settings_pane()
                 .viewport()
-                .selection_state(1, app.focus().pane_state(PaneId::Settings)),
+                .selection_state(1, app.focus.pane_state(PaneId::Settings)),
             PaneSelectionState::Active,
         );
     }
@@ -807,7 +807,7 @@ mod tests {
     #[test]
     fn mouse_move_restores_hover_after_keyboard_navigation() {
         let mut app = make_app(&[]);
-        app.focus_mut().open_overlay(PaneId::Settings);
+        app.focus.open_overlay(PaneId::Settings);
         app.overlays_mut().open_settings();
         render_ui(&mut app);
 
@@ -822,7 +822,7 @@ mod tests {
             app.overlays()
                 .settings_pane()
                 .viewport()
-                .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
+                .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
             PaneSelectionState::Unselected,
         );
 
@@ -833,7 +833,7 @@ mod tests {
             app.overlays()
                 .settings_pane()
                 .viewport()
-                .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
+                .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
             PaneSelectionState::Hovered,
         );
     }
@@ -841,7 +841,7 @@ mod tests {
     #[test]
     fn focus_gained_restores_selection_from_last_mouse_position() {
         let mut app = make_app(&[]);
-        app.focus_mut().open_overlay(PaneId::Settings);
+        app.focus.open_overlay(PaneId::Settings);
         app.overlays_mut().open_settings();
         render_ui(&mut app);
 
@@ -856,7 +856,7 @@ mod tests {
             app.overlays()
                 .settings_pane()
                 .viewport()
-                .selection_state(hovered_row, app.focus().pane_state(PaneId::Settings)),
+                .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
             PaneSelectionState::Active,
         );
     }
@@ -1035,7 +1035,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.focused_pane(),
+            app.focus.current(),
             PaneId::Toasts,
             "toast body click should focus the toast surface over underlying content"
         );
@@ -1057,7 +1057,7 @@ mod tests {
         finder.query = "a".to_string();
         finder.results = vec![0, 1];
         finder.total = 2;
-        app.focus_mut().open_overlay(PaneId::Finder);
+        app.focus.open_overlay(PaneId::Finder);
         app.overlays_mut().open_finder();
         render_ui(&mut app);
 
@@ -1070,7 +1070,7 @@ mod tests {
     #[test]
     fn settings_row_click_selects_setting() {
         let mut app = make_app(&[]);
-        app.focus_mut().open_overlay(PaneId::Settings);
+        app.focus.open_overlay(PaneId::Settings);
         app.overlays_mut().open_settings();
         render_ui(&mut app);
 
@@ -1095,7 +1095,7 @@ mod tests {
         let (x, y) = pane_row_point(app.panes.package().viewport(), 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.focused_pane(), PaneId::Package);
+        assert_eq!(app.focus.current(), PaneId::Package);
         assert_eq!(app.panes.package().viewport().pos(), 1);
     }
 
@@ -1165,7 +1165,7 @@ mod tests {
         let (x, y) = pane_row_point(app.panes.targets().viewport(), 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.focused_pane(), PaneId::Targets);
+        assert_eq!(app.focus.current(), PaneId::Targets);
         assert_eq!(app.panes.targets().viewport().pos(), 1);
     }
 
@@ -1184,7 +1184,7 @@ mod tests {
         let (x, y) = pane_row_point(app.panes.git().viewport(), 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.focused_pane(), PaneId::Git);
+        assert_eq!(app.focus.current(), PaneId::Git);
         assert_eq!(app.panes.git().viewport().pos(), 1);
     }
 

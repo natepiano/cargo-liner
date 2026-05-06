@@ -76,7 +76,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
             kind = %event_label(event),
-            focus = pane_label(app.focused_pane()),
+            focus = pane_label(app.focus.current()),
             scan_complete = app.scan().is_complete(),
             selected = %app.selected_project_path()
                 .map_or_else(|| "-".to_string(), |path| path.display().to_string()),
@@ -110,10 +110,10 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
     if code == KeyCode::Esc && !app.inflight.example_output().is_empty() {
-        let was_on_output = app.focus().is(PaneId::Output);
+        let was_on_output = app.focus.is(PaneId::Output);
         app.inflight.example_output_mut().clear();
         if was_on_output {
-            app.focus_mut().set(PaneId::Targets);
+            app.focus.set(PaneId::Targets);
         }
         return;
     }
@@ -139,7 +139,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
 
-    match panes::behavior(app.focused_pane()) {
+    match panes::behavior(app.focus.current()) {
         PaneBehavior::DetailFields | PaneBehavior::DetailTargets | PaneBehavior::Cpu => {
             panes::handle_detail_key(app, &normalized);
         },
@@ -165,7 +165,7 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
     }
 
     let code = if raw.modifiers == KeyModifiers::NONE && app.config.navigation_keys().uses_vim() {
-        match panes::behavior(app.focused_pane()) {
+        match panes::behavior(app.focus.current()) {
             PaneBehavior::DetailFields
             | PaneBehavior::DetailTargets
             | PaneBehavior::Cpu
@@ -189,7 +189,7 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
 
     // In list panes, bare left/right map to up/down.
     let code = if raw.modifiers == KeyModifiers::NONE {
-        match panes::behavior(app.focused_pane()) {
+        match panes::behavior(app.focus.current()) {
             PaneBehavior::DetailFields
             | PaneBehavior::DetailTargets
             | PaneBehavior::Cpu
@@ -348,13 +348,13 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         .collect::<Vec<_>>();
 
     if project_list.contains(pos) {
-        app.focus_mut().set(PaneId::ProjectList);
+        app.focus.set(PaneId::ProjectList);
         return;
     }
 
     for (pane_id, pane_rect) in pane_regions {
         if pane_id != PaneId::ProjectList && pane_rect.contains(pos) {
-            app.focus_mut().set(pane_id);
+            app.focus.set(pane_id);
             return;
         }
     }
@@ -486,7 +486,7 @@ fn open_finder(app: &mut App) {
     let finder = app.finder_mut();
     finder.index = index;
     finder.col_widths = col_widths;
-    app.focus_mut().open_overlay(PaneId::Finder);
+    app.focus.open_overlay(PaneId::Finder);
     app.overlays_mut().open_finder();
     let finder = app.finder_mut();
     finder.query.clear();
@@ -508,7 +508,7 @@ fn terminal_shell_command(command: &str, selected_path: &Path) -> String {
 }
 
 fn open_settings_to_terminal_command(app: &mut App) {
-    app.focus_mut().open_overlay(PaneId::Settings);
+    app.focus.open_overlay(PaneId::Settings);
     app.overlays_mut().open_settings();
     settings::focus_terminal_command(app);
 }
@@ -572,13 +572,13 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
         GlobalAction::OpenEditor => open_in_editor(app),
         GlobalAction::OpenTerminal => open_terminal(app),
         GlobalAction::Settings => {
-            app.focus_mut().open_overlay(PaneId::Settings);
+            app.focus.open_overlay(PaneId::Settings);
             app.overlays_mut().open_settings();
         },
         GlobalAction::NextPane => app.focus_next_pane(),
         GlobalAction::PrevPane => app.focus_previous_pane(),
         GlobalAction::OpenKeymap => {
-            app.focus_mut().open_overlay(PaneId::Keymap);
+            app.focus.open_overlay(PaneId::Keymap);
             app.overlays_mut().open_keymap();
             app.overlays_mut()
                 .keymap_pane_mut()

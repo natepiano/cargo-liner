@@ -45,7 +45,7 @@ pub fn render_targets_panel(
     let ex_count: usize = data.examples.iter().map(|group| group.names.len()).sum();
     let bench_count = data.benches.len();
 
-    let focus = app.focus().pane_state(PaneId::Targets);
+    let focus = app.focus.pane_state(PaneId::Targets);
     let cursor = app.panes.targets().viewport().pos();
 
     let targets_title = {

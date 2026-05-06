@@ -216,7 +216,7 @@ pub(super) struct App {
     /// `complete_at` slots that drive the umbrella "Startup" toast
     /// and its detail toasts.
     startup:                 Startup,
-    focus:                   Focus,
+    pub(super) focus:        Focus,
     /// Overlays subsystem. Owns the four overlay-mode enums
     /// (`FinderMode`, `SettingsMode`, `KeymapMode`, `ExitMode`),
     /// the transient `inline_error` UI feedback, and the
@@ -710,12 +710,6 @@ impl App {
     pub(super) const fn cached_child_sorted(&self) -> &HashMap<usize, Vec<u64>> {
         self.project_list.cached_child_sorted()
     }
-
-    pub(super) const fn focused_pane(&self) -> PaneId { self.focus.current() }
-
-    pub(super) const fn focus(&self) -> &Focus { &self.focus }
-
-    pub(super) const fn focus_mut(&mut self) -> &mut Focus { &mut self.focus }
 
     pub(super) const fn expanded(&self) -> &HashSet<ExpandKey> { self.project_list.expanded() }
 

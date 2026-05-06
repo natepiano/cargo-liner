@@ -480,7 +480,7 @@ patterns referencing `panes` before assuming the bulk-replace is complete.
 - Mechanics step 3: enumerated three rewrite categories — plain field access, trait-object coercion (need `&app.field`), `let`-binding from `_mut()` accessor (need `&mut app.field`).
 - Mechanics step 5: added the no-leading-dot revert variant `\bsubsystem\.subsystem\.` for inner-scope sites where a local var shares the field name.
 
-### Phase 6 — Focus trivial-accessor / pass-through delete
+### Phase 6 — Focus trivial-accessor / pass-through delete ✅
 
 Publish `focus` as `pub(super)`. Delete `focus`/`_mut`, `focused_pane`. Rewrite
 call sites.
@@ -491,7 +491,66 @@ slated for deletion. Also grep `let .* = .*\.focus_mut\(\)` to find any
 `let`-binding sites that need explicit `&mut app.focus` after the bulk
 rewrite (per Phase 5's `interaction.rs:144` lesson).
 
-**Methods removed:** ~3. **Caller rewrites:** ~85.
+**Methods removed:** 3. **Caller rewrites:** ~93.
+
+### Retrospective
+
+**What worked:**
+- Pre-flight grep for `let .* = .*\.focus_mut\(\)` returned zero hits — every
+  `_mut` call site was an immediate method chain (`app.focus_mut().set(...)`),
+  not a let-binding. No manual `&mut app.focus` rewrite needed.
+- No name collisions on `Focus`: the type's methods (`current`, `set`,
+  `pane_state`, `is`, etc.) don't overlap with the App-side accessors. Bulk
+  perl rewrite landed clean — no double-prefix revert pass needed.
+- Rewrite ordering mattered and worked as planned: `_mut` first, then
+  `focused_pane` (pass-through, expanded inline), then `focus` last. Doing
+  `focus` first would have over-replaced `focus_mut`.
+- `focused_pane()` pass-through was inlined to `.focus.current()` in one bulk
+  pass — no follow-up touchups needed.
+
+**What deviated from the plan:**
+- Caller rewrite count was ~93, not the estimated ~85 (42 `.focus()` + 35
+  `.focus_mut()` + 16 `.focused_pane()`).
+
+**Surprises:**
+- First Phase since 3 to compile clean on the first `cargo check` with no
+  manual touchups. Pre-flight discipline (collision grep + let-binding grep)
+  caught everything before the bulk pass.
+- `focused_pane()` is the first pass-through inlined as a chain expansion
+  (`.focus.current()`) rather than a single-token replacement. The mechanics
+  step 4 already covers "arity-changing rewrites"; chain-expansion fits the
+  same category and worked via plain perl.
+
+**Implications for remaining phases:**
+- Phase 7 (Overlays) follows the same low-risk profile: no name collisions
+  flagged, similar caller volume (~130). Pre-flight discipline is the gate;
+  if collision and let-binding greps both come back empty, expect
+  compile-clean on first attempt.
+- The chain-expansion rewrite category should be added to mechanics step 3
+  as category (d): pass-through inlining (`app.foo()` → `app.subsystem.bar()`
+  when `app.foo()` body is `self.subsystem.bar()`). Phase 7's overlays don't
+  have any such pass-throughs, but Phase 8/9 may.
+
+### Phase 6 Review
+
+- Phase 7: noted that `Overlays` itself exposes trivial-accessor methods
+  (`finder_pane`, `settings_pane`, plus `_mut` variants) which are candidates
+  for Phase 14's recursive purge — flagged in Phase 7's body so the Phase 7
+  retrospective picks them up.
+- Phase 8: corrected caller estimate from "~40–50" to "~50" based on live
+  count of 51.
+- Phase 8: added explicit revert pass for `scan_state_mut` collision —
+  `Scan` has its own `scan_state_mut` method, so the bulk regex
+  `\.scan_state_mut\(\)` will create double-prefix patterns that need the
+  step-5 revert.
+- Phase 8: added within-phase ordering note — pass-through chain expansions
+  (`increment_data_generation` → `.scan.bump_generation()`,
+  `data_generation_for_test` → `.scan.generation()`) must be rewritten
+  before the underlying `scan`/`scan_mut` accessors are deleted.
+- Mechanics: added rewrite category (d) — pass-through inlining /
+  chain-expansion — to step 3.
+- Mechanics: promoted let-binding grep from a Phase 5 lesson into step 2's
+  pre-flight checklist.
 
 ### Phase 7 — Overlays trivial-accessor / pass-through delete
 
@@ -507,7 +566,11 @@ from `app.overlays().finder_pane()` etc. After publish, the rewrite
 auto-borrow is preserved — no `&app.overlays` injection needed (unlike Phase 4's
 `&app.toasts` case).
 
-**Methods removed:** ~2. **Caller rewrites:** ~130.
+**Methods removed:** ~2. **Caller rewrites:** ~127 (live count).
+
+**Note for Phase 14:** `Overlays` itself exposes trivial-accessor methods
+(`finder_pane`, `settings_pane`, plus `_mut` variants) which become
+candidates for the recursive purge once Phase 7 publishes the field.
 
 ### Phase 8 — Scan trivial-accessor / pass-through delete
 
@@ -528,10 +591,20 @@ sweep — no `tui/render.rs` or `tui/panes/*` touches needed for `scan()` /
 **Pre-flight check:** Verified `fn scan` is only defined on App in
 `src/tui/app/mod.rs` — no unrelated type has a method named `scan` that
 the bulk regex `\.scan\(\)` → `.scan` could clobber. Same for `scan_mut`.
-Every deleted-from-App accessor name is also unique to App, so no double-prefix
-fix-up is needed on the first pass.
+**Known collision:** `Scan` itself has its own `scan_state_mut` method, so
+the bulk regex `\.scan_state_mut\(\)` will turn already-correct
+`self.scan.scan_state_mut()` into `self.scan.scan.scan_state_mut()`. The
+step-5 revert pass (`\.scan\.scan\.` → `.scan.` plus the no-leading-dot
+variant `\bscan\.scan\.` → `scan.`) is required, not optional.
 
-**Methods removed:** ~10. **Caller rewrites:** ~40–50.
+**Within-phase ordering:** This phase has two pass-through chain expansions
+queued — `increment_data_generation` (body: `self.scan.bump_generation()`)
+and `data_generation_for_test` (body: `self.scan.generation()`). Per the
+new mechanics step 3 category (d), rewrite these chain expansions
+**before** deleting `scan` / `scan_mut`, otherwise the bulk pass on `scan`
+will see them as already-published-field uses and skip the chain expansion.
+
+**Methods removed:** ~9. **Caller rewrites:** ~50 (live count: 51).
 
 ### Phase 9 — Startup trivial-accessor / pass-through delete
 
@@ -791,18 +864,32 @@ For each candidate App method `app.foo(args)` whose body is
 1. **Find call sites.** `rg -n '\.foo\(' src/ --type rust`. The leading `\.` plus
    open-paren matches both `app.foo(` and rustfmt-wrapped `\n    .foo(` patterns. Filter
    to actual calls (not the def line, not doc comments).
-2. **Pre-flight name-collision check.** For each accessor name being deleted, grep
-   for a same-named method on the underlying type:
-   `grep "fn $NAME\b" src/tui/$SUBSYSTEM*.rs`. If a collision exists, the bulk regex
-   will over-replace `self.subsystem.X()` (already correct) into
-   `self.subsystem.subsystem.X()`. Plan for a step-4.5 revert pass.
-3. **Inspect each call site.** Three rewrite categories to watch for:
+2. **Pre-flight checklist.** Run all three before the bulk pass:
+   - **Name-collision check:** For each accessor name being deleted, grep
+     for a same-named method on the underlying type:
+     `grep "fn $NAME\b" src/tui/$SUBSYSTEM*.rs`. If a collision exists, the bulk regex
+     will over-replace `self.subsystem.X()` (already correct) into
+     `self.subsystem.subsystem.X()`. Plan for a step-5 revert pass.
+   - **Let-binding grep:** `rg -n 'let .* = .*\.${NAME}_mut\(\)' src/ --type rust`.
+     Each hit becomes a manual rewrite (`let x = &mut app.field;`) after the bulk
+     pass — the bulk regex turns it into a value move, which won't compile.
+     (Phase 5 hit this at `interaction.rs:144`.)
+   - **Chain-expansion review:** For each pass-through to be deleted (body is
+     `self.subsystem.bar(...)` not `&self.subsystem`), note that the rewrite is
+     a chain expansion (`.foo()` → `.subsystem.bar()`), not a single-token
+     swap. These must run **before** the underlying field accessor is deleted
+     so the bulk pass on `field`/`field_mut` doesn't strand them.
+3. **Inspect each call site.** Four rewrite categories to watch for:
    (a) plain method call → field access — the common case;
    (b) trait-object coercion sites (`&dyn Hittable` arms, `&dyn Renderable` etc.)
        lose the auto-borrow that the accessor provided — need explicit `&app.field`;
    (c) `let` bindings from a `_mut()` accessor (e.g. `let panes = app.panes_mut();`)
        become a value move once the accessor is gone — need explicit
        `let panes = &mut app.panes;`. (Phase 5 hit this at `interaction.rs:144`.)
+   (d) pass-through inlining / chain-expansion: when `app.foo()` body is
+       `self.subsystem.bar()`, the rewrite is `app.foo()` → `app.subsystem.bar()`
+       (e.g., Phase 6's `focused_pane()` → `.focus.current()`). Run these
+       chain-expansion rewrites before deleting the underlying field accessor.
    For internal callers (`self.foo()`), the rewrite is `self.subsystem.bar()`.
 4. **Apply the rewrites.** Bulk perl per the regex; Edit per file for arity-changing
    rewrites (e.g. `set_ci_fetch_toast(x)` → `ci.set_fetch_toast(Some(x))`). Use the
@@ -864,7 +951,7 @@ sits.
 | 3 | Tooling + trivial-accessor / pass-through delete: Config, Keymap, LayoutCache | 13 | ~140 | 293 ✅ |
 | 4 | trivial-accessor / pass-through delete: Lint, Ci, Toasts, Net, Background, Inflight | 28 | ~250 | 265 ✅ |
 | 5 | trivial-accessor / pass-through delete: Panes | 6 | ~110 | 259 ✅ |
-| 6 | trivial-accessor / pass-through delete: Focus | ~3 | ~85 | 262 |
+| 6 | trivial-accessor / pass-through delete: Focus | 3 | ~93 | 256 ✅ |
 | 7 | trivial-accessor / pass-through delete: Overlays | ~2 | ~130 | 260 |
 | 8 | trivial-accessor / pass-through delete: Scan | ~9 | ~40–50 | 251 |
 | 9 | trivial-accessor / pass-through delete: Startup | ~2 | ~25 | 248 |

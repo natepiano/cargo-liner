@@ -198,7 +198,7 @@ pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyE
     match normalized.code {
         KeyCode::Esc => {
             app.overlays_mut().close_keymap();
-            app.focus_mut().close_overlay();
+            app.focus.close_overlay();
         },
         KeyCode::Up => app.overlays_mut().keymap_pane_mut().viewport_mut().up(),
         KeyCode::Down => app.overlays_mut().keymap_pane_mut().viewport_mut().down(),
@@ -505,7 +505,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
             .overlays()
             .keymap_pane()
             .viewport()
-            .selection_state(selectable_index, app.focus().pane_state(PaneId::Keymap));
+            .selection_state(selectable_index, app.focus.pane_state(PaneId::Keymap));
         let key_text = if selection != PaneSelectionState::Unselected && is_awaiting {
             app.overlays()
                 .inline_error()

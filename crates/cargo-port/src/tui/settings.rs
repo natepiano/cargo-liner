@@ -796,7 +796,7 @@ pub(super) fn build_settings_lines(
             .overlays()
             .settings_pane()
             .viewport()
-            .selection_state(selection_index, app.focus().pane_state(PaneId::Settings));
+            .selection_state(selection_index, app.focus.pane_state(PaneId::Settings));
         let setting = *setting;
         let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
         let ctx = SettingsLineContext {
@@ -850,7 +850,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 return;
             }
             app.overlays_mut().close_settings();
-            app.focus_mut().close_overlay();
+            app.focus.close_overlay();
         },
         KeyCode::Up => {
             app.overlays_mut().clear_inline_error();

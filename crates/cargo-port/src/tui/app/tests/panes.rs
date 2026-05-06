@@ -200,11 +200,11 @@ fn tabbable_panes_follow_canonical_order() {
 
     for &pane in &expected_with_toasts[1..] {
         app.focus_next_pane();
-        assert_eq!(app.focused_pane(), pane);
+        assert_eq!(app.focus.current(), pane);
     }
     app.focus_previous_pane();
     assert_eq!(
-        app.focused_pane(),
+        app.focus.current(),
         expected_with_toasts[expected_with_toasts.len() - 2]
     );
 }
@@ -214,7 +214,7 @@ fn cpu_pane_selection_persists_across_project_changes() {
     let project_a = make_project(Some("a"), "~/a");
     let project_b = make_project(Some("b"), "~/b");
     let mut app = make_app(&[project_a, project_b]);
-    app.focus_mut().set(PaneId::Cpu);
+    app.focus.set(PaneId::Cpu);
     app.panes.cpu_mut().viewport_mut().set_pos(1);
     app.projects_mut().set_cursor(1);
 
@@ -227,13 +227,13 @@ fn cpu_pane_selection_persists_across_project_changes() {
 fn new_toasts_do_not_steal_focus() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
-    app.focus_mut().set(PaneId::Git);
+    app.focus.set(PaneId::Git);
 
     app.show_timed_toast("Settings", "Updated");
-    assert_eq!(app.focused_pane(), PaneId::Git);
+    assert_eq!(app.focus.current(), PaneId::Git);
 
     let _task = app.start_task_toast("Startup lints", "Running startup lint jobs...");
-    assert_eq!(app.focused_pane(), PaneId::Git);
+    assert_eq!(app.focus.current(), PaneId::Git);
 }
 
 #[test]
@@ -344,7 +344,7 @@ fn first_non_empty_tree_build_focuses_project_list() {
     let mut app = make_app(std::slice::from_ref(&project));
     apply_items(&mut app, &[project]);
 
-    assert_eq!(app.focused_pane(), PaneId::ProjectList);
+    assert_eq!(app.focus.current(), PaneId::ProjectList);
     assert_eq!(app.projects().cursor(), 0);
 }
 
@@ -396,17 +396,17 @@ fn initial_metadata_roots_skips_non_rust_leaves() {
 fn overlays_restore_prior_focus() {
     let app_project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[app_project]);
-    app.focus_mut().set(PaneId::Git);
+    app.focus.set(PaneId::Git);
 
-    app.focus_mut().open_overlay(PaneId::Settings);
+    app.focus.open_overlay(PaneId::Settings);
     app.overlays_mut().open_settings();
-    assert_eq!(app.focused_pane(), PaneId::Settings);
-    assert_eq!(app.focus().overlay_return(), Some(PaneId::Git));
+    assert_eq!(app.focus.current(), PaneId::Settings);
+    assert_eq!(app.focus.overlay_return(), Some(PaneId::Git));
 
     app.overlays_mut().close_settings();
-    app.focus_mut().close_overlay();
-    assert_eq!(app.focused_pane(), PaneId::Git);
-    assert!(app.focus().overlay_return().is_none());
+    app.focus.close_overlay();
+    assert_eq!(app.focus.current(), PaneId::Git);
+    assert!(app.focus.overlay_return().is_none());
 }
 
 #[test]
@@ -414,14 +414,14 @@ fn detail_panes_do_not_remember_selection_until_focused() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
 
-    assert!(app.focus().remembers_visited(PaneId::ProjectList));
-    assert!(!app.focus().remembers_visited(PaneId::Package));
-    assert!(!app.focus().remembers_visited(PaneId::Git));
-    assert!(!app.focus().remembers_visited(PaneId::Targets));
-    assert!(!app.focus().remembers_visited(PaneId::CiRuns));
+    assert!(app.focus.remembers_visited(PaneId::ProjectList));
+    assert!(!app.focus.remembers_visited(PaneId::Package));
+    assert!(!app.focus.remembers_visited(PaneId::Git));
+    assert!(!app.focus.remembers_visited(PaneId::Targets));
+    assert!(!app.focus.remembers_visited(PaneId::CiRuns));
 
-    app.focus_mut().set(PaneId::Package);
-    assert!(app.focus().remembers_visited(PaneId::Package));
+    app.focus.set(PaneId::Package);
+    assert!(app.focus.remembers_visited(PaneId::Package));
 }
 
 #[test]
@@ -430,10 +430,10 @@ fn project_change_resets_project_dependent_panes() {
     let project_b = make_project(Some("b"), "~/b");
     let mut app = make_app(&[project_a, project_b]);
 
-    app.focus_mut().set(PaneId::Package);
-    app.focus_mut().set(PaneId::Git);
-    app.focus_mut().set(PaneId::Targets);
-    app.focus_mut().set(PaneId::CiRuns);
+    app.focus.set(PaneId::Package);
+    app.focus.set(PaneId::Git);
+    app.focus.set(PaneId::Targets);
+    app.focus.set(PaneId::CiRuns);
     app.panes.package_mut().viewport_mut().set_pos(3);
     app.panes.git_mut().viewport_mut().set_pos(4);
     app.panes.targets_mut().viewport_mut().set_pos(5);
@@ -445,10 +445,10 @@ fn project_change_resets_project_dependent_panes() {
     assert_eq!(app.panes.git().viewport().pos(), 0);
     assert_eq!(app.panes.targets().viewport().pos(), 0);
     assert_eq!(app.ci.viewport().pos(), 0);
-    assert!(!app.focus().remembers_visited(PaneId::Package));
-    assert!(!app.focus().remembers_visited(PaneId::Git));
-    assert!(!app.focus().remembers_visited(PaneId::Targets));
-    assert!(!app.focus().remembers_visited(PaneId::CiRuns));
+    assert!(!app.focus.remembers_visited(PaneId::Package));
+    assert!(!app.focus.remembers_visited(PaneId::Git));
+    assert!(!app.focus.remembers_visited(PaneId::Targets));
+    assert!(!app.focus.remembers_visited(PaneId::CiRuns));
     assert_eq!(
         app.projects()
             .paths()

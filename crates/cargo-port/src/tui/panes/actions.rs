@@ -69,7 +69,7 @@ pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
 
     // Action keys through per-pane keymap.
     let bind = KeyBind::new(event.code, event.modifiers);
-    match app.focus().base() {
+    match app.focus.base() {
         PaneId::Cpu => {},
         PaneId::Targets => {
             if let Some(action) = app.keymap.current().targets.action_for(&bind) {
@@ -120,7 +120,7 @@ fn request_clean(app: &mut App) {
 /// Return a mutable reference to the pane that owns the cursor for the
 /// currently active detail column.
 fn active_detail_pane(app: &mut App) -> &mut Viewport {
-    match app.focus().base() {
+    match app.focus.base() {
         PaneId::Targets => app.panes.targets_mut().viewport_mut(),
         PaneId::Lang => app.panes.lang_mut().viewport_mut(),
         PaneId::Cpu => app.panes.cpu_mut().viewport_mut(),
@@ -139,9 +139,9 @@ fn active_detail_pane(app: &mut App) -> &mut Viewport {
 
 /// Handle the Enter key in the detail panel.
 fn handle_detail_enter(app: &mut App) {
-    if app.focus().is(PaneId::Targets) {
+    if app.focus.is(PaneId::Targets) {
         handle_target_action(app, BuildMode::Debug);
-    } else if app.focus().base() == PaneId::Package {
+    } else if app.focus.base() == PaneId::Package {
         if let Some(pkg) = app.panes.package().content() {
             let fields = super::package_fields_from_data(pkg);
             if matches!(
@@ -332,7 +332,7 @@ fn clear_lint_history(app: &mut App) {
         lr.clear_runs();
     }
     app.lint.viewport_mut().home();
-    app.focus_mut().set(PaneId::ProjectList);
+    app.focus.set(PaneId::ProjectList);
     app.refresh_lint_cache_usage_from_disk();
     app.increment_data_generation();
 }
