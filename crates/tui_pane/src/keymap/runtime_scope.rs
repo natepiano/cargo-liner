@@ -1,24 +1,18 @@
-//! `ErasedScope<Ctx>`: type-erased pane-scope contract stored in the
-//! [`Keymap`](super::Keymap).
+//! Runtime-scope vtable for per-pane keymap operations.
 //!
-//! The keymap holds per-pane scopes behind a trait object so it can
-//! key them by `TypeId<P>` and `Ctx::AppPaneId` without dragging the
-//! pane's `<P>` parameter through every getter. Each method on the
-//! trait is a complete pane operation — typed access happens **inside**
-//! the [`ConcreteScope<Ctx, P>`] impl block, where
-//! `P: Shortcuts<Ctx>` is in scope; the trait surface itself is
-//! type-parameter-free.
+//! [`Keymap<Ctx>`](super::Keymap) stores one trait object per
+//! registered pane behind [`RuntimeScope<Ctx>`]. The trait is
+//! `pub(crate)` — only the keymap and its builder name it. Public
+//! callers reach pane operations through the convenience methods on
+//! [`Keymap`](super::Keymap) ([`dispatch_app_pane`](super::Keymap::dispatch_app_pane),
+//! [`render_app_pane_bar_slots`](super::Keymap::render_app_pane_bar_slots),
+//! [`key_for_toml_key`](super::Keymap::key_for_toml_key)).
 //!
-//! Returning `&dyn Action` from the trait would not work: [`Action`] is
-//! not object-safe (`const ALL: &'static [Self]` and `Copy + 'static`),
-//! and even if it were, the typed dispatcher signature
-//! `fn(P::Actions, &mut Ctx)` cannot be reached from a `&dyn Action`
-//! at the framework's dispatch site, because the framework has no
-//! `<P>` parameter there. The fix is to bake every typed step into
-//! the impl at registration time and expose only erased-uniform
-//! return values.
-
-use sealed::Sealed;
+//! Each trait method is a complete pane operation: typed access to
+//! `P::Actions` happens **inside** [`PaneScope<Ctx, P>`]'s impl, where
+//! `P: Shortcuts<Ctx>` is in scope. The trait surface itself stays
+//! type-parameter-free so the keymap can hold heterogeneous panes in
+//! one map.
 
 use super::Action;
 use super::KeyBind;
@@ -30,23 +24,8 @@ use crate::BarRegion;
 use crate::ShortcutState;
 use crate::Visibility;
 
-mod sealed {
-    /// Sealed marker so external crates cannot add their own
-    /// [`super::ErasedScope`] implementors. Only [`super::ConcreteScope`]
-    /// implements this.
-    pub trait Sealed {}
-}
-
-/// Type-erased pane scope. One trait object per registered
-/// [`Shortcuts<Ctx>`] impl, stored inside [`Keymap<Ctx>`](super::Keymap).
-///
-/// **Sealed**: only [`ConcreteScope`] inside this crate implements it.
-/// External crates can name the trait but not extend it. Type erasure
-/// lets [`Keymap`](super::Keymap) hold heterogeneous scopes in one map
-/// without leaking the pane's `<P>` parameter through every getter —
-/// every method is a complete pane operation whose typed parts run
-/// inside [`ConcreteScope`]'s impl.
-pub trait ErasedScope<Ctx: AppContext>: sealed::Sealed + 'static {
+/// Crate-private vtable for per-pane keymap operations.
+pub(crate) trait RuntimeScope<Ctx: AppContext>: 'static {
     /// Resolve `bind` to an action and call the pane's dispatcher.
     /// Returns [`KeyOutcome::Consumed`] on a hit; [`KeyOutcome::Unhandled`]
     /// when no binding matches.
@@ -66,10 +45,10 @@ pub trait ErasedScope<Ctx: AppContext>: sealed::Sealed + 'static {
 /// One bar slot, fully resolved for the renderer.
 ///
 /// Pre-resolves everything the typed scope used to expose piecemeal so
-/// no typed action enum has to cross the trait. Hidden slots are
-/// dropped before this struct is built; `visibility` is preserved on
-/// the struct so renderers can still distinguish current visible-ness
-/// without requiring another lookup.
+/// no typed action enum has to cross the trait. Hidden slots and
+/// unbound slots are dropped before this struct is built; `visibility`
+/// is preserved on the struct so renderers can still distinguish
+/// current visible-ness without requiring another lookup.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RenderedSlot {
     /// Which bar region this slot belongs to.
@@ -86,24 +65,16 @@ pub struct RenderedSlot {
     pub visibility: Visibility,
 }
 
-/// The single implementor of [`ErasedScope<Ctx>`]. Captures the typed
-/// pane and its bindings at registration time so the impl block can
+/// The single implementor of [`RuntimeScope<Ctx>`]. Captures the
+/// typed pane and its bindings at registration time so the impl can
 /// call `P::dispatcher()`, `P::Actions::from_toml_key`, `P::bar_slots`,
 /// etc. without leaking `P` into the trait.
-pub(crate) struct ConcreteScope<Ctx: AppContext, P: Shortcuts<Ctx>> {
-    pane:     P,
-    bindings: ScopeMap<P::Actions>,
+pub(super) struct PaneScope<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> {
+    pub(super) pane:     P,
+    pub(super) bindings: ScopeMap<P::Actions>,
 }
 
-impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> Sealed for ConcreteScope<Ctx, P> {}
-
-impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> ConcreteScope<Ctx, P> {
-    pub(crate) const fn new(pane: P, bindings: ScopeMap<P::Actions>) -> Self {
-        Self { pane, bindings }
-    }
-}
-
-impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> ErasedScope<Ctx> for ConcreteScope<Ctx, P> {
+impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneScope<Ctx, P> {
     fn dispatch_key(&self, bind: &KeyBind, ctx: &mut Ctx) -> KeyOutcome {
         self.bindings
             .action_for(bind)
@@ -154,9 +125,9 @@ mod tests {
 
     use crossterm::event::KeyCode;
 
-    use super::ConcreteScope;
-    use super::ErasedScope;
+    use super::PaneScope;
     use super::RenderedSlot;
+    use super::RuntimeScope;
     use crate::AppContext;
     use crate::BarRegion;
     use crate::BarSlot;
@@ -227,8 +198,11 @@ mod tests {
         }
     }
 
-    fn fresh_scope() -> ConcreteScope<TestApp, FooPane> {
-        ConcreteScope::new(FooPane, FooPane::defaults().into_scope_map())
+    fn fresh_scope() -> PaneScope<TestApp, FooPane> {
+        PaneScope {
+            pane:     FooPane,
+            bindings: FooPane::defaults().into_scope_map(),
+        }
     }
 
     #[test]
@@ -296,7 +270,10 @@ mod tests {
             }
         }
 
-        let scope = ConcreteScope::new(HidesActivate, HidesActivate::defaults().into_scope_map());
+        let scope = PaneScope {
+            pane:     HidesActivate,
+            bindings: HidesActivate::defaults().into_scope_map(),
+        };
         let app = fresh_app();
         let slots = scope.render_bar_slots(&app);
         assert_eq!(slots.len(), 1);
@@ -322,7 +299,10 @@ mod tests {
             }
         }
 
-        let scope = ConcreteScope::new(PairedPane, PairedPane::defaults().into_scope_map());
+        let scope = PaneScope {
+            pane:     PairedPane,
+            bindings: PairedPane::defaults().into_scope_map(),
+        };
         let app = fresh_app();
         let slots = scope.render_bar_slots(&app);
         assert_eq!(slots.len(), 1);
@@ -349,7 +329,7 @@ mod tests {
     #[test]
     fn dispatch_through_trait_object() {
         let scope = fresh_scope();
-        let erased: &dyn ErasedScope<TestApp> = &scope;
+        let erased: &dyn RuntimeScope<TestApp> = &scope;
         let mut app = fresh_app();
         let outcome = erased.dispatch_key(&KeyCode::Enter.into(), &mut app);
         assert_eq!(outcome, KeyOutcome::Consumed);

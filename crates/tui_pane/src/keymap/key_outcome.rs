@@ -2,7 +2,7 @@
 //! framework-pane key handlers.
 //!
 //! Unifies the dispatch loop so the caller reads one return type across
-//! [`ErasedScope::dispatch_key`](super::erased_scope::ErasedScope::dispatch_key)
+//! [`Keymap::dispatch_app_pane`](super::Keymap::dispatch_app_pane)
 //! (app panes) and the framework panes' inherent `handle_key` methods
 //! (Phase 11). [`Self::Unhandled`] tells the caller to continue down
 //! the dispatch chain (globals → dismiss → fallback).

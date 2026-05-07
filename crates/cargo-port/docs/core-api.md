@@ -521,194 +521,195 @@ pub enum Mode<Ctx> {
 ## 6. `Keymap<Ctx>`
 
 ```rust
-use std::any::TypeId;
 use std::collections::HashMap;
-use std::marker::PhantomData;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Built-once, read-every-frame container. TypeId-keyed per scope.
-///
-/// `PhantomData<fn(&mut Ctx)>` (rather than `PhantomData<Ctx>`) keeps
-/// `Keymap<Ctx>` invariant in `Ctx` and *not* auto-`Send`/`Sync` from
-/// `Ctx` alone — the actual `Send`/`Sync` impls flow from the
-/// `HashMap<TypeId, Box<dyn Any + Send + Sync>>` interior.
-pub struct Keymap<Ctx> {
-    scopes: HashMap<TypeId, Box<dyn std::any::Any + Send + Sync>>,
-    framework_globals: ScopeMap<GlobalAction>,
-    _ctx: PhantomData<fn(&mut Ctx)>,
+/// Built-once, read-every-frame container. `AppPaneId`-keyed per
+/// app-pane scope. Internal storage uses a crate-private
+/// `RuntimeScope<Ctx>` trait object per registered pane; public
+/// callers reach pane operations through the convenience methods on
+/// `Keymap<Ctx>` and never name the trait.
+pub struct Keymap<Ctx: AppContext + 'static> {
+    scopes:      HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
+    /// Phase 10: `Option<ScopeMap<N::Actions>>` for navigation,
+    /// `Option<ScopeMap<G::Actions>>` for app globals (typed
+    /// singletons; downcast at the getter), and the framework's
+    /// own `ScopeMap<GlobalAction>` for `Quit`/`Restart`/etc.
+    config_path: Option<PathBuf>,
 }
 
-impl<Ctx: AppContext> Keymap<Ctx> {
-    /// Entry point. No required dispatch hooks — under the post-Phase-3
-    /// design the framework owns dispatch for every `GlobalAction`
-    /// variant. The binary registers optional hooks on the builder
-    /// (`KeymapBuilder::on_quit` / `on_restart` / `dismiss_fallback`).
-    pub fn builder() -> KeymapBuilder<Ctx> { KeymapBuilder::new() }
+impl<Ctx: AppContext + 'static> Keymap<Ctx> {
+    /// Entry point. Returns the builder in `Configuring` state — the
+    /// settings phase. The first `register::<P>` call transitions the
+    /// type to `KeymapBuilder<Ctx, Registering>`, after which settings
+    /// methods (`config_path`, Phase 10's `load_toml` / `vim_mode` /
+    /// etc.) drop off the type. Compile-time enforced ordering.
+    pub fn builder() -> KeymapBuilder<Ctx, Configuring> { KeymapBuilder::new() }
 
-    /// Pane scope lookup. `pub` — input handlers and bar code call this.
-    pub fn scope_for<P: Shortcuts<Ctx>>(&self) -> &ScopeMap<P::Actions> {
-        self.scopes
-            .get(&TypeId::of::<P>())
-            .and_then(|b| b.downcast_ref::<ScopeMap<P::Actions>>())
-            .expect("scope_for: pane not registered")
-    }
+    /// Path to the config file the loader will read (Phase 10) — set
+    /// via `KeymapBuilder::config_path`. `None` when no path was
+    /// configured.
+    pub fn config_path(&self) -> Option<&Path> { self.config_path.as_deref() }
 
-    /// Navigation scope lookup. `pub` — base-pane input handlers call.
-    pub fn navigation<N: Navigation<Ctx>>(&self) -> &ScopeMap<N::Actions> {
-        self.scopes
-            .get(&TypeId::of::<N>())
-            .and_then(|b| b.downcast_ref::<ScopeMap<N::Actions>>())
-            .expect("navigation: scope not registered")
-    }
+    /// Resolve `bind` to an action in the scope registered for `id`
+    /// and call its dispatcher. Returns `KeyOutcome::Unhandled` if no
+    /// scope is registered for `id` or no binding matches; the caller
+    /// continues its dispatch chain (globals, dismiss, fallback) on
+    /// `Unhandled`. Public — the framework input dispatcher calls this
+    /// when it walks `FocusedPane::App(id)`.
+    pub fn dispatch_app_pane(
+        &self,
+        id: Ctx::AppPaneId,
+        bind: &KeyBind,
+        ctx: &mut Ctx,
+    ) -> KeyOutcome { /* … */ }
 
-    /// App-globals scope lookup. `pub`.
-    pub fn globals<G: Globals<Ctx>>(&self) -> &ScopeMap<G::Actions> {
-        self.scopes
-            .get(&TypeId::of::<G>())
-            .and_then(|b| b.downcast_ref::<ScopeMap<G::Actions>>())
-            .expect("globals: scope not registered")
-    }
+    /// Bar slots for the scope registered for `id`, fully resolved to
+    /// `RenderedSlot { region, label, key, state, visibility }`.
+    /// Returns an empty `Vec` if no scope is registered. Public — the
+    /// bar renderer calls this when it walks `FocusedPane::App(id)`.
+    pub fn render_app_pane_bar_slots(
+        &self,
+        id: Ctx::AppPaneId,
+        ctx: &Ctx,
+    ) -> Vec<RenderedSlot> { /* … */ }
 
-    /// Framework-internal scope. `pub(crate)` — only the framework
-    /// dispatcher and the bar's `Global` region read it; the binary
-    /// never names `GlobalAction` directly.
-    pub(crate) fn framework_globals(&self) -> &ScopeMap<GlobalAction> {
-        &self.framework_globals
-    }
+    /// Reverse lookup: TOML action key string → currently bound
+    /// `KeyBind` in the scope registered for `id`. Returns `None` if
+    /// `id` is unregistered, the action name is not recognized, or the
+    /// named action has no binding. Used by display code that needs to
+    /// show the user's currently bound key for a named action.
+    pub fn key_for_toml_key(
+        &self,
+        id: Ctx::AppPaneId,
+        action: &str,
+    ) -> Option<KeyBind> { /* … */ }
 
-    /// Returns `{dirs::config_dir()}/<name>/keymap.toml` for use with
-    /// `KeymapBuilder::load_toml`. App supplies its own name (e.g.
-    /// `"cargo-port"`). `pub` and free of `Ctx` because it does not
-    /// touch the keymap state.
-    pub fn config_path(name: &str) -> PathBuf {
-        let mut p = dirs::config_dir().unwrap_or_default();
-        p.push(name);
-        p.push("keymap.toml");
-        p
-    }
+    // Phase 10 additions (typed singleton getters):
+    //   pub fn navigation<N: Navigation<Ctx>>(&self) -> &ScopeMap<N::Actions>
+    //   pub fn globals<G: Globals<Ctx>>(&self)       -> &ScopeMap<G::Actions>
+    // Both downcast at the getter from a typed `Option<Box<dyn Any>>`
+    // singleton slot populated at `KeymapBuilder::register_navigation`
+    // / `register_globals` time. Pane scopes stay erased
+    // (heterogeneous); singletons stay typed (one impl each per
+    // binary).
+    //
+    //   pub(crate) fn framework_globals(&self) -> &ScopeMap<GlobalAction>
+    // Used only by the framework's built-in `GlobalAction` dispatcher
+    // and the bar's `Global` region; the binary never names it.
+    //
+    //   pub fn config_path_for(name: &str) -> PathBuf
+    // Returns `{dirs::config_dir()}/<name>/keymap.toml`. Free fn
+    // helper for the binary to compute the default config path.
 }
 ```
 
-**Tradeoff.** `framework_globals` is `pub(crate)` — exposing it would let app code rebind framework-owned actions outside the builder, which the design explicitly rejects: framework dispatch of `GlobalAction` is non-overridable. `config_path` is associated rather than free so callers find it on the type they already mention.
+**Tradeoff.** `RuntimeScope<Ctx>` is crate-private, so the public surface is three concrete methods rather than a `scope_for_app_pane(id) -> Option<&dyn RuntimeScope<Ctx>>` getter. External callers never name the trait. Phase-10 typed singletons (`navigation` / `globals`) downcast at the getter; pane scopes stay erased because they're heterogeneous (one per pane, typed differently).
 
 ---
 
-## 7. `KeymapBuilder<Ctx>`
+## 7. `KeymapBuilder<Ctx, State>`
 
 ```rust
+use core::marker::PhantomData;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// Builder for `Keymap<Ctx>`. Construction is a flat builder (no
-/// type-state) — the binary calls `register` and friends in any order,
-/// and `build()` validates required pieces at runtime by returning
-/// `Result<Keymap<Ctx>, BuilderError>`.
-pub struct KeymapBuilder<Ctx: AppContext> {
-    // Optional framework-lifecycle cleanup hooks (post-Phase-3 design:
-    // framework owns Quit/Restart/Dismiss dispatch; binary opts in to
-    // notification via these hooks). All three default to `None`.
-    on_quit:          Option<fn(&mut Ctx)>,
-    on_restart:       Option<fn(&mut Ctx)>,
-    dismiss_fallback: Option<fn(&mut Ctx) -> bool>,
-    vim:              VimMode,
-    /// Per-scope `Bindings<A>` boxed via `Any`, keyed by `TypeId<P>` /
-    /// `TypeId<N>` / `TypeId<G>`.
-    pending: HashMap<TypeId, PendingScope<Ctx>>,
-    /// Per-AppPaneId mode queries, captured at
-    /// `KeymapBuilder::build_into` time through
-    /// `Framework::register_app_pane`.
-    mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> Mode<Ctx>>,
-    settings:    SettingsRegistry<Ctx>,
-    nav_registered: bool,
-    globals_registered: bool,
-    toml_path: Option<PathBuf>,
+/// Settings phase: state when `KeymapBuilder` accepts settings methods
+/// (`config_path`, `load_toml`, `vim_mode`, `with_settings`,
+/// `on_quit`, `on_restart`, `dismiss_fallback`). The first
+/// `register::<P>` call transitions to `Registering`.
+pub struct Configuring;
+
+/// Panes phase: state after the first `register::<P>` call. Settings
+/// methods are no longer reachable on the type — the compiler enforces
+/// "settings before panes."
+pub struct Registering;
+
+/// Builder for `Keymap<Ctx>`. Two-state typestate.
+///
+/// The `State` parameter defaults to `Configuring`; consumers rarely
+/// name it explicitly. The first `register::<P>` call returns
+/// `KeymapBuilder<Ctx, Registering>`, after which only `register` and
+/// `build` (and Phase 10's `build_into`) are reachable.
+pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
+    scopes:      HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
+    config_path: Option<PathBuf>,
+    // Phase 10 fields (settings collected during Configuring,
+    // consumed eagerly by each register::<P> call):
+    //   toml:        Option<TomlTable>      // result of load_toml(path)
+    //   vim_mode:    VimMode                // default VimMode::Disabled
+    //   settings:    SettingsRegistry<Ctx>
+    //   on_quit:     Option<fn(&mut Ctx)>
+    //   on_restart:  Option<fn(&mut Ctx)>
+    //   dismiss_fallback: Option<fn(&mut Ctx) -> bool>
+    //   nav, globals: typed singleton slots populated by
+    //                 register_navigation::<N>() / register_globals::<G>()
+    _state: PhantomData<State>,
 }
 
-impl<Ctx: AppContext> KeymapBuilder<Ctx> {
-    /// Optional cleanup hook fired after the framework processes a
-    /// `Quit` action (just before the main loop exits).
-    pub fn on_quit(mut self, f: fn(&mut Ctx)) -> Self { self.on_quit = Some(f); self }
+impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
+    /// Override the config path the loader will read.
+    pub fn config_path(self, path: PathBuf) -> Self;
 
-    /// Optional cleanup hook fired after the framework processes a
-    /// `Restart` action (just before the main loop tears down).
-    pub fn on_restart(mut self, f: fn(&mut Ctx)) -> Self { self.on_restart = Some(f); self }
+    /// Register a `Shortcuts<Ctx>` impl. Eagerly collapses
+    /// `P::defaults()` (after applying any TOML overlay and vim
+    /// extras the builder has accumulated) into a
+    /// `ScopeMap<P::Actions>` and stores the typed pane behind a
+    /// crate-private `RuntimeScope` trait object keyed on
+    /// `P::APP_PANE_ID`. Transitions to `Registering`.
+    pub fn register<P: Shortcuts<Ctx>>(self, pane: P) -> KeymapBuilder<Ctx, Registering>;
 
-    /// Optional fallback dismiss handler. The framework's own dismiss
-    /// chain (toasts, focused framework overlay) runs first; if nothing
-    /// is dismissed at the framework level, this fn is called. Returns
-    /// `true` if the binary handled the dismiss, `false` to no-op.
-    pub fn dismiss_fallback(mut self, f: fn(&mut Ctx) -> bool) -> Self {
-        self.dismiss_fallback = Some(f);
-        self
-    }
+    /// Finalize an empty keymap (no panes). Returns `Result` for
+    /// uniformity with the `Registering` form; Phase 10 may surface
+    /// `KeymapError::NavigationMissing` / `GlobalsMissing` here once
+    /// those singletons become required.
+    pub fn build(self) -> Result<Keymap<Ctx>, KeymapError>;
 
-    /// Toggle vim mode. Optional — defaults to `VimMode::Disabled`.
-    pub fn vim_mode(mut self, mode: VimMode) -> Self { self.vim = mode; self }
-
-    /// Register a pane's `Shortcuts<Ctx>` impl. Repeatable. Required
-    /// at least once in practice (a keymap with zero pane scopes has
-    /// nothing to dispatch), but not enforced — `build()` succeeds.
-    pub fn register<P: Shortcuts<Ctx>>(mut self) -> Self { /* … */ self }
-
-    /// Register the navigation scope. **Required.** `build()` returns
-    /// `Err(BuilderError::NavigationMissing)` if omitted.
-    pub fn with_navigation<N: Navigation<Ctx>>(mut self) -> Self { /* … */ self }
-
-    /// Register the app-globals scope. **Required.** `build()` returns
-    /// `Err(BuilderError::GlobalsMissing)` if omitted.
-    pub fn with_globals<G: Globals<Ctx>>(mut self) -> Self { /* … */ self }
-
-    /// Populate the settings registry. Optional — apps with no
-    /// configurable settings skip it.
-    pub fn with_settings(
-        mut self,
-        f: impl FnOnce(&mut SettingsRegistry<Ctx>),
-    ) -> Self {
-        f(&mut self.settings);
-        self
-    }
-
-    /// Optionally apply user TOML. Returns `Self` (not `Result<Self>`)
-    /// because TOML errors are deferred to `build()` — the chain stays
-    /// fluent. Errors surface as `BuilderError::Toml(KeymapError)`.
-    pub fn load_toml(mut self, path: impl AsRef<Path>) -> Self {
-        self.toml_path = Some(path.as_ref().to_path_buf());
-        self
-    }
-
-    /// Validate, fold defaults + TOML + vim, populate the framework's
-    /// per-`AppPaneId` registries (one `register_app_pane` call per
-    /// `Shortcuts<Ctx>` registered), and produce the final
-    /// `Keymap<Ctx>`. The framework is constructed first by the binary
-    /// (`Framework::new(initial_focus)`) and then handed to
-    /// `build_into` so the registry write is a single locus.
-    pub fn build_into(
-        self,
-        framework: &mut Framework<Ctx>,
-    ) -> Result<Keymap<Ctx>, BuilderError> { /* … */ unimplemented!() }
+    // Phase 10 additions (Configuring-state only):
+    //
+    //   pub fn load_toml(self, path: impl AsRef<Path>) -> Self
+    //     Reads the TOML config file. Returns Self (not Result<Self>)
+    //     so the chain stays fluent; errors surface from build().
+    //
+    //   pub fn vim_mode(self, mode: VimMode) -> Self
+    //   pub fn with_settings(self, f: impl FnOnce(&mut SettingsRegistry<Ctx>)) -> Self
+    //   pub fn register_navigation<N: Navigation<Ctx>>(self, nav: N) -> Self
+    //   pub fn register_globals<G: Globals<Ctx>>(self, globals: G) -> Self
+    //   pub fn on_quit(self, f: fn(&mut Ctx)) -> Self
+    //   pub fn on_restart(self, f: fn(&mut Ctx)) -> Self
+    //   pub fn dismiss_fallback(self, f: fn(&mut Ctx) -> bool) -> Self
 }
 
-/// Errors the builder can surface at `build()` time. All required
-/// pieces missing produce a distinct variant — the binary fixes the
-/// call site rather than running into a panic.
-#[derive(Debug)]
-pub enum BuilderError {
-    /// `with_navigation::<N>()` was never called.
-    NavigationMissing,
-    /// `with_globals::<G>()` was never called.
-    GlobalsMissing,
-    /// TOML file present but unreadable / unparseable / contains
-    /// cross-action collisions.
-    Toml(KeymapError),
-    /// The same pane type was registered twice.
-    DuplicateScope { type_name: &'static str },
-}
+impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
+    /// Register an additional `Shortcuts<Ctx>` impl. Same body as the
+    /// `Configuring`-state form, but stays in `Registering`.
+    pub fn register<P: Shortcuts<Ctx>>(self, pane: P) -> Self;
 
-impl std::fmt::Display for BuilderError { /* … */ }
-impl std::error::Error for BuilderError {}
+    /// Finalize the builder. Returns the built `Keymap<Ctx>` or the
+    /// first loader / validation error encountered.
+    pub fn build(self) -> Result<Keymap<Ctx>, KeymapError>;
+
+    // Phase 10 addition (Registering-state only):
+    //
+    //   pub fn build_into(
+    //       self,
+    //       framework: &mut Framework<Ctx>,
+    //   ) -> Result<Keymap<Ctx>, KeymapError>
+    //
+    // Same as build(), but also populates the framework's per-AppPaneId
+    // mode_queries registry by calling
+    // `framework.register_app_pane(P::APP_PANE_ID, P::mode())` for each
+    // `P` registered on the builder. This keeps `Framework<Ctx>` and
+    // `Keymap<Ctx>` independently constructible.
+}
 ```
 
-**Tradeoff.** Flat builder + `Result<Keymap<Ctx>, BuilderError>` from `build()` over a type-state builder. Type-state would catch the two required-method omissions at compile time but at the cost of two extra type parameters on `KeymapBuilder` and a less-readable signature for every intermediate state. The runtime `Result` matches Rust idiom for fallible startup config (TOML errors are fallible regardless), and the binary calls `build()` exactly once at startup so the cost of catching the error there is one `?`.
+**Tradeoffs.**
+
+- **Typestate over flat builder + runtime check.** The earlier draft used a flat builder that returned `Err(BuilderError::NavigationMissing)` from `build()` when the binary forgot a required step. The typestate gates the ordering rule (`load_toml` / `vim_mode` must come before `register::<P>`) at compile time, so the compiler catches the misuse with a "method not found" error. Phase 10 will still need *runtime* checks for `NavigationMissing` / `GlobalsMissing` because those singletons can be omitted entirely; those land as `KeymapError` variants surfaced from `build` / `build_into`.
+- **Eager collapse over deferred `PendingScope`.** `register::<P>` does the typed work inline (TOML lookup via `P::Actions::from_toml_key`, vim extras via `P::vim_extras()`, then `Bindings::into_scope_map`). No deferred storage, no module-private `PendingEntry` trait, no `Box<dyn Any>`. The cost: ordering matters (settings before panes); the typestate already enforces it.
+- **Single error type (`KeymapError`).** Earlier drafts split into `KeymapError` (loader) and `BuilderError` (builder validation). The shipped form keeps one type — the binary's startup path renders both the same way. Phase 10 adds `NavigationMissing`, `GlobalsMissing`, `DuplicateScope { type_name: &'static str }` as new `KeymapError` variants.
 
 `load_toml` defers errors to `build()` so the chain reads top-to-bottom without a `?` mid-chain. Framework panes (Toasts, SettingsPane, KeymapPane) reach `&mut Framework<Ctx>` from their free-fn dispatchers via `ctx.framework_mut()` on the `AppContext` trait — no separate accessor hook is needed.
 
