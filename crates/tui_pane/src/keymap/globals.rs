@@ -7,9 +7,9 @@
 //! extension point for app-specific globals (e.g. find, rescan) that
 //! share the `[global]` TOML table at load time.
 
+use super::Action;
+use super::Bindings;
 use crate::AppContext;
-use crate::keymap::Action;
-use crate::keymap::Bindings;
 
 /// App-extension globals scope. One impl per app.
 ///

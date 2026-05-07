@@ -5,10 +5,10 @@
 //! actions to whichever pane is focused; `Ctx::AppPaneId` lives in the
 //! signature so the dispatcher can pick the correct surface.
 
+use super::Action;
+use super::Bindings;
 use crate::AppContext;
 use crate::FocusedPane;
-use crate::keymap::Action;
-use crate::keymap::Bindings;
 
 /// App-wide navigation scope. One impl per app.
 ///

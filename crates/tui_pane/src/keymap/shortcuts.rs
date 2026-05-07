@@ -5,15 +5,15 @@
 //! identity and the input-mode query live on the
 //! [`Pane<Ctx>`](crate::Pane) supertrait, not here.
 
+use super::Action;
+use super::Bindings;
+use super::KeyBind;
 use crate::AppContext;
 use crate::BarRegion;
 use crate::BarSlot;
 use crate::Pane;
 use crate::ShortcutState;
 use crate::Visibility;
-use crate::keymap::Action;
-use crate::keymap::Bindings;
-use crate::keymap::KeyBind;
 
 /// Per-pane scope: state-bearing, one impl per pane type.
 ///
