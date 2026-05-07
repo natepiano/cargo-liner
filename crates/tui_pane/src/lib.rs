@@ -5,11 +5,16 @@
 //! `AppContext` trait. Later phases add the public API one trait
 //! family at a time.
 
+mod bar;
 mod keymap;
 
 // Crate-root re-exports. The `action_enum!` and `bindings!` macros
 // reference these types via `$crate::*` paths, which requires them at
 // the crate root. `tests/macro_use.rs` locks the path stability.
+pub use bar::BarRegion;
+pub use bar::BarSlot;
+pub use bar::InputMode;
+pub use bar::ShortcutState;
 pub use keymap::ActionEnum;
 pub use keymap::Bindings;
 pub use keymap::GlobalAction;

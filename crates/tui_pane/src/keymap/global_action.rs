@@ -91,6 +91,18 @@ impl ActionEnum for GlobalAction {
         }
     }
 
+    fn bar_label(self) -> &'static str {
+        match self {
+            Self::Quit => "quit",
+            Self::Restart => "restart",
+            Self::NextPane => "next",
+            Self::PrevPane => "prev",
+            Self::OpenKeymap => "keymap",
+            Self::OpenSettings => "settings",
+            Self::Dismiss => "dismiss",
+        }
+    }
+
     fn description(self) -> &'static str {
         match self {
             Self::Quit => "Quit",
@@ -167,6 +179,20 @@ mod tests {
         for variant in GlobalAction::ALL {
             assert!(!variant.description().is_empty());
         }
+    }
+
+    #[test]
+    fn bar_labels_are_non_empty_for_every_variant() {
+        for variant in GlobalAction::ALL {
+            assert!(!variant.bar_label().is_empty());
+        }
+    }
+
+    #[test]
+    fn bar_labels_match_canonical_form() {
+        assert_eq!(GlobalAction::Quit.bar_label(), "quit");
+        assert_eq!(GlobalAction::NextPane.bar_label(), "next");
+        assert_eq!(GlobalAction::OpenKeymap.bar_label(), "keymap");
     }
 
     #[test]

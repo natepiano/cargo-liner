@@ -24,7 +24,12 @@ pub trait ActionEnum: Copy + Eq + Hash + Debug + Display + 'static {
     /// `"expand_all"`). Must be stable — TOML files are user-edited.
     fn toml_key(self) -> &'static str;
 
-    /// Human-readable label rendered in the bar and the keymap overlay.
+    /// Default short label rendered in the bar (e.g. `"activate"`,
+    /// `"clean"`). The pane's `Shortcuts::label` returns this by
+    /// default; overrides only fire when the label is state-dependent.
+    fn bar_label(self) -> &'static str;
+
+    /// Human-readable description used by the keymap-overlay help.
     /// `Display::fmt` delegates to this.
     fn description(self) -> &'static str;
 
@@ -43,7 +48,7 @@ pub trait ActionEnum: Copy + Eq + Hash + Debug + Display + 'static {
 /// action_enum! {
 ///     #[derive(...)]
 ///     pub enum Name {
-///         Variant => "toml_key", "description";
+///         Variant => ("toml_key", "bar_label", "description");
 ///         ...
 ///     }
 /// }
@@ -61,8 +66,8 @@ pub trait ActionEnum: Copy + Eq + Hash + Debug + Display + 'static {
 /// tui_pane::action_enum! {
 ///     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 ///     pub enum NavAction {
-///         Up   => "up",   "Move up";
-///         Down => "down", "Move down";
+///         Up   => ("up",   "up",   "Move up");
+///         Down => ("down", "down", "Move down");
 ///     }
 /// }
 /// ```
@@ -71,7 +76,7 @@ macro_rules! action_enum {
     (
         $(#[$meta:meta])*
         $vis:vis enum $Name:ident {
-            $( $Variant:ident => $toml_key:literal, $desc:literal ; )+
+            $( $Variant:ident => ( $toml_key:literal , $bar:literal , $desc:literal ) ; )+
         }
     ) => {
         $(#[$meta])*
@@ -85,6 +90,12 @@ macro_rules! action_enum {
             fn toml_key(self) -> &'static str {
                 match self {
                     $( Self::$Variant => $toml_key, )+
+                }
+            }
+
+            fn bar_label(self) -> &'static str {
+                match self {
+                    $( Self::$Variant => $bar, )+
                 }
             }
 
@@ -123,8 +134,8 @@ mod tests {
     crate::action_enum! {
         #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
         pub enum Foo {
-            A => "a", "alpha";
-            B => "b", "beta";
+            A => ("a", "alpha", "alpha-desc");
+            B => ("b", "beta",  "beta-desc");
         }
     }
 
@@ -140,9 +151,15 @@ mod tests {
     }
 
     #[test]
+    fn bar_labels_match_declaration() {
+        assert_eq!(Foo::A.bar_label(), "alpha");
+        assert_eq!(Foo::B.bar_label(), "beta");
+    }
+
+    #[test]
     fn descriptions_match_declaration() {
-        assert_eq!(Foo::A.description(), "alpha");
-        assert_eq!(Foo::B.description(), "beta");
+        assert_eq!(Foo::A.description(), "alpha-desc");
+        assert_eq!(Foo::B.description(), "beta-desc");
     }
 
     #[test]
@@ -160,7 +177,7 @@ mod tests {
 
     #[test]
     fn display_delegates_to_description() {
-        assert_eq!(format!("{}", Foo::A), "alpha");
-        assert_eq!(format!("{}", Foo::B), "beta");
+        assert_eq!(format!("{}", Foo::A), "alpha-desc");
+        assert_eq!(format!("{}", Foo::B), "beta-desc");
     }
 }

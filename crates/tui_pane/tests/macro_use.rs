@@ -1,8 +1,10 @@
-//! Cross-crate use of the `tui_pane` macros.
+//! Cross-crate use of the `tui_pane` macros and public types.
 //!
 //! Compiled as a separate crate that depends on `tui_pane`. Locks the
-//! `$crate::*` paths inside the macro expansions against accidental
-//! breakage when the trait or re-export layout shifts.
+//! `$crate::*` paths inside the macro expansions and the flat-namespace
+//! root re-exports (`tui_pane::BarSlot`, `tui_pane::BarRegion`, etc.)
+//! against accidental breakage when the trait or re-export layout
+//! shifts.
 
 #![allow(
     missing_docs,
@@ -12,14 +14,18 @@
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
 use tui_pane::ActionEnum;
+use tui_pane::BarRegion;
+use tui_pane::BarSlot;
+use tui_pane::InputMode;
 use tui_pane::KeyBind;
+use tui_pane::ShortcutState;
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum CrossCrateAction {
-        Alpha => "alpha", "Alpha";
-        Beta  => "beta",  "Beta";
-        Gamma => "gamma", "Gamma";
+        Alpha => ("alpha", "alpha", "Alpha");
+        Beta  => ("beta",  "beta",  "Beta");
+        Gamma => ("gamma", "gamma", "Gamma");
     }
 }
 
@@ -34,6 +40,7 @@ fn action_enum_macro_works_from_outside_crate() {
         ]
     );
     assert_eq!(CrossCrateAction::Alpha.toml_key(), "alpha");
+    assert_eq!(CrossCrateAction::Beta.bar_label(), "beta");
     assert_eq!(CrossCrateAction::Beta.description(), "Beta");
     assert_eq!(
         CrossCrateAction::from_toml_key("gamma"),
@@ -83,4 +90,29 @@ fn bindings_macro_works_from_outside_crate() {
         Some(CrossCrateAction::Gamma),
         "Ctrl+Shift composition survives macro expansion",
     );
+}
+
+#[test]
+fn bar_primitives_reachable_from_outside_crate() {
+    let single: BarSlot<CrossCrateAction> = BarSlot::Single(CrossCrateAction::Alpha);
+    let paired: BarSlot<CrossCrateAction> =
+        BarSlot::Paired(CrossCrateAction::Alpha, CrossCrateAction::Beta, "/");
+
+    assert_eq!(single, BarSlot::Single(CrossCrateAction::Alpha));
+    assert_eq!(
+        paired,
+        BarSlot::Paired(CrossCrateAction::Alpha, CrossCrateAction::Beta, "/"),
+    );
+
+    assert_eq!(
+        BarRegion::ALL,
+        &[BarRegion::Nav, BarRegion::PaneAction, BarRegion::Global],
+    );
+
+    assert_ne!(ShortcutState::Enabled, ShortcutState::Disabled);
+
+    let mode = InputMode::Navigable;
+    assert_eq!(mode, InputMode::Navigable);
+    assert_ne!(mode, InputMode::Static);
+    assert_ne!(mode, InputMode::TextInput);
 }

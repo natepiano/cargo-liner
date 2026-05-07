@@ -1185,7 +1185,7 @@ These apply to every remaining phase without further mention; phase blocks below
 6. **New `#[macro_export]` extends `tests/macro_use.rs`.** Cross-crate path stability is locked by that file; any new exported macro adds an invocation there.
 7. **Phase-completion gates.** `cargo build`, `cargo nextest run`, `cargo +nightly fmt`, `cargo clippy --workspace --all-targets`, `cargo mend --fail-on-warn` — all clean before the phase is marked ✅.
 
-### Phase 5 — Bar primitives
+### Phase 5 — Bar primitives ✅
 
 Add `tui_pane/src/bar/region.rs` (`BarRegion::{Nav, PaneAction, Global}` + `ALL`), `tui_pane/src/bar/slot.rs` (`BarSlot<A>` + `ShortcutState`), and `InputMode` in `bar/mod.rs`. All per §5.
 
@@ -1212,6 +1212,39 @@ Leaf types only — the renderer that consumes them lands in Phase 11.
 **`Globals::bar_label` removed.** With `ActionEnum::bar_label` available on every action enum, the redundant `fn bar_label(action: Self::Action) -> &'static str` method on the `Globals<Ctx>` trait (Phase 7) is dropped. Bar code calls `action.bar_label()` regardless of which scope the action came from.
 
 **No pre-existing call sites for `Shortcuts::label` / `state`.** The `Shortcuts<Ctx>` trait itself lands in Phase 7, so Phase 5 has nothing to migrate beyond the `action_enum!` arms. `tests/macro_use.rs` extends with a smoke test constructing `tui_pane::BarSlot::Single(...)`, `tui_pane::BarRegion::Nav`, and `tui_pane::ShortcutState::Enabled` from outside the crate to lock the flat-namespace public path.
+
+#### Retrospective
+
+**What worked:**
+- `bar/region.rs`, `bar/slot.rs`, `bar/mod.rs` landed as flat `mod`-private files with crate-root re-exports — standing rules 1 + 2 applied without friction.
+- Macro grammar change to `Variant => ("toml_key", "bar_label", "description");` was a single `macro_rules!` arm edit; both the inline `Foo` test enum and `tests/macro_use.rs` migrated trivially.
+- Cross-crate test (`bar_primitives_reachable_from_outside_crate`) caught the public path before any consumer needed it — `tui_pane::BarSlot::Single`, `tui_pane::BarRegion::ALL`, `tui_pane::ShortcutState::Enabled`, `tui_pane::InputMode::Navigable` all reachable.
+- 59 tui_pane tests pass; 659 workspace tests pass; clippy + mend clean.
+
+**What deviated from the plan:**
+- **Doc backticks needed on `BarRegion` variant references in `InputMode` docstrings.** Pedantic clippy `doc_markdown` flagged `PaneAction` mid-doc; wrapped `Nav`/`PaneAction`/`Global` in backticks. Standing rule 4 (`#[must_use]`) is the per-getter form of this same broader pedantic-clippy posture; bar primitives have no getters, so #4 didn't apply this phase.
+- **`GlobalAction::bar_label` strings chosen explicitly.** Plan said "match arms per variant (`Quit => "quit"`, etc.)" without committing the full set. Shipped: `quit`, `restart`, `next`, `prev`, `keymap`, `settings`, `dismiss` — short forms for `NextPane`/`PrevPane`/`OpenKeymap`/`OpenSettings` (the `Open` prefix and `Pane` suffix are bar noise).
+
+**Surprises:**
+- **`bar_label` shorter than `toml_key` for `GlobalAction`.** Pattern: `toml_key = "open_keymap"`, `bar_label = "keymap"`, `description = "Open keymap viewer"`. Three-axis labelling (config-stable / bar-terse / human-readable) is the value the macro grammar buys us; the example arms in the plan all happened to use identical `toml_key`/`bar_label`, masking this.
+
+**Implications for remaining phases:**
+- **Phase 7 `Shortcuts::label` default body is one line.** `fn label(&self, action: Self::Action, _ctx: &Ctx) -> Option<&'static str> { Some(action.bar_label()) }` — `ActionEnum::bar_label` is implemented on every action enum (macro + the hand-rolled `GlobalAction`), so the trait default has zero per-impl boilerplate.
+- **Phase 7 `Shortcuts::state` default is `ShortcutState::Enabled`.** Same: zero per-impl boilerplate.
+- **Phase 12 cargo-port `action_enum!` migrations need the third positional string.** Every existing app-side invocation gains a bar label between the toml key and description. For app actions where the bar text matches the toml key, just duplicate the literal — no design decision per arm.
+- **Phase 11 bar renderer reads `BarRegion::ALL` for layout order.** Already reflected in trait def — `Vec<(BarRegion, BarSlot<Self::Action>)>` returned, renderer groups by region.
+- **No new public types added to `tui_pane::*` beyond the four announced** (`BarRegion`, `BarSlot`, `InputMode`, `ShortcutState`). Every later-phase reference to `tui_pane::Shortcut` (the deleted wrapping struct) is dead — caught any in Phase 5's plan-doc sweep, but Phase 7 implementers should not pattern-match on `Shortcut` in muscle memory.
+
+#### Phase 5 Review
+
+- **Phase 7 (Scope traits)** plan body now enumerates the full `Shortcuts<Ctx>` method set (cross-references `core-api.md` §4) and explicitly states the `label` / `state` default bodies leveraging `ActionEnum::bar_label` and `ShortcutState::Enabled`.
+- **Phase 7** also explicitly states `Globals<Ctx>` has no `bar_label` method, and adds a `Shortcut` (singular wrapping struct) doc-grep step to confirm zero residue.
+- **Phase 8 (Keymap container)** plan gains a one-line clarification that `bar_label` is code-side only — the TOML loader never reads or writes it.
+- **Phase 11 (Bar renderer)** plan now states the per-region `InputMode` suppression rules in line with shipped `bar/mod.rs` docstrings (Static suppresses `Nav`, `TextInput` suppresses Nav + PaneAction + Global).
+- **Phase 12 (App swap)** gains an explicit migration-cost callout that every existing `action_enum!` invocation in `src/tui/` needs a third positional `bar_label` literal.
+- **Phase 17 (Regression tests)** reworded to assert each global slot's bar text comes from `action.bar_label()`, not a `Globals` trait method.
+- **Doc-spec sync (`core-api.md`):** `ScopeMap::new`/`insert` migrated from `pub(crate)` → `pub(super)` to match shipped code (Phase 4 retrospective decision; finalized here per post-phase doc-sync rule).
+- **Reviewed and not changed:** `Globals::render_order` (subagent finding #6 — already declared at `core-api.md:423`, plan unchanged); binary-side `pub mod` audit in Phase 12 (subagent finding #11 — grep of `src/tui/**/*.rs` found zero `pub mod`, no audit needed); `__bindings_arms!` cross-crate test (subagent finding #10 — `#[doc(hidden)]` is supported-surface-out, not worth dedicated test); `set_focused` consistency (subagent finding #4 — already consistent); Phase 9 builder-level cross-crate test (subagent finding #15 — Phase 9 already lists end-to-end builder tests).
 
 ### Phase 6 — Pane identity, ctx, Framework skeleton
 
@@ -1251,11 +1284,13 @@ No pane fields, no `input_mode_queries`, no `editor_target_path`, no `focused_pa
 
 Split §4 into one file per trait (each is independent, the heaviest is `Shortcuts<Ctx>` with 10+ items):
 
-- `tui_pane/src/keymap/shortcuts.rs` — `Shortcuts<Ctx>`. Includes `vim_extras() -> &'static [(Self::Action, KeyBind)]` with default `&[]` (per-pane vim-mode extras consumed by the builder in Phase 9; cargo-port's `ProjectListAction` overrides for `'l'`/`'h'` in Phase 12).
+- `tui_pane/src/keymap/shortcuts.rs` — `Shortcuts<Ctx>`. Method set per `core-api.md` §4: `defaults`, `label`, `state`, `bar_slots`, `input_mode`, `input_mode_query`, `vim_extras`, `dispatcher`, plus `SCOPE_NAME` and `APP_PANE_ID` consts. `vim_extras() -> &'static [(Self::Action, KeyBind)]` defaults to `&[]` (per-pane vim-mode extras consumed by the builder in Phase 9; cargo-port's `ProjectListAction` overrides for `'l'`/`'h'` in Phase 12). Default `label` returns `Some(action.bar_label())` and default `state` returns `ShortcutState::Enabled` — both leverage Phase 5's `ActionEnum::bar_label` and the orthogonal-axis `ShortcutState` enum, so per-pane impls override only when label/state is state-dependent.
 - `tui_pane/src/keymap/navigation.rs` — `Navigation<Ctx>`.
-- `tui_pane/src/keymap/globals.rs` — `Globals<Ctx>` (app-extension globals, separate from the framework's own `GlobalAction` from Phase 3).
+- `tui_pane/src/keymap/globals.rs` — `Globals<Ctx>` (app-extension globals, separate from the framework's own `GlobalAction` from Phase 3). The trait has **no** `bar_label(action) -> &'static str` method — Phase 5's `ActionEnum::bar_label` (live on every action enum, including the macro-generated and the hand-rolled `GlobalAction`) is the single source. Bar code calls `action.bar_label()` regardless of scope.
 
 `keymap/action_enum.rs` (added in Phase 3) keeps `ActionEnum` + `action_enum!` only.
+
+**`Shortcut` wrapping struct is dead.** Phase 5 collapsed it into the orthogonal `Option<&'static str>` (label) + `ShortcutState` (axis) split. Phase 7 prep verifies `core-api.md` and `paneid-ctx.md` reference no `Shortcut\b` (singular wrapping struct) — `Shortcuts`, `ShortcutState` are the only valid forms.
 
 **Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use keymap::{Shortcuts, Navigation, Globals};`. `keymap/mod.rs` adds `pub use shortcuts::Shortcuts; pub use navigation::Navigation; pub use globals::Globals;`. Inner files declare `mod shortcuts; mod navigation; mod globals;` (private — standing rule 1).
 
@@ -1266,6 +1301,7 @@ Add `Keymap<Ctx>` in `tui_pane/src/keymap/mod.rs` (the keymap module's anchor ty
 **Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use keymap::Keymap;`. The `Keymap::new`-style internal constructor that the builder calls is `pub(super)` (standing rule 3 — framework-only construction). Apply `#[must_use]` (standing rule 4) to every getter on `Keymap<Ctx>`.
 
 **Loader-layer decisions established here (Zed/VSCode/Helix-aligned):**
+- **`bar_label` is code-side only.** The third positional literal in every `action_enum!` arm is a compile-time string; the TOML loader never reads or writes it, and there is no `[bar_labels]` (or analogous) table.
 - **Letter-case normalization.** `KeyBind::parse` (Phase 2) preserves case verbatim — `"Ctrl+K"` parses to `KeyCode::Char('K')`, not `Char('k')`. The TOML loader normalizes:
   - **Single-letter keys are lowercased.** `"Q"` and `"q"` both bind `Char('q')`. `"Shift+q"` is the only way to bind Shift+q (canonical), and `"Shift+Q"` normalizes to the same. Bare `"Q"` is treated as user typo for `"q"`, not as `Shift+q`.
   - **Multi-char tokens are not normalized.** `"Tab"`, `"F1"`, `"PageUp"` parse via Phase 2's case-sensitive `parse_keycode` — lowercase variants like `"tab"` are rejected. (If we later want case-insensitive named tokens, that's a Phase 2 parser change, not a loader change.)
@@ -1405,8 +1441,8 @@ Add `tui_pane/src/bar/` per the BarRegion model:
 - `region.rs` — `BarRegion::{Nav, PaneAction, Global}` + `ALL` (added Phase 5).
 - `slot.rs` — `BarSlot<A>`, `ShortcutState` (added Phase 5).
 - `support.rs` — `format_action_keys(&[KeyBind]) -> String`, `push_cancel_row`, shared row builders.
-- `nav_region.rs` — emits framework's nav + pane-cycle rows when `pane.input_mode(ctx) == Navigable`, then pane's `(Nav, _)` rows.
-- `pane_action_region.rs` — emits pane's `(PaneAction, _)` rows.
+- `nav_region.rs` — emits framework's nav + pane-cycle rows when `pane.input_mode(ctx) == Navigable`, then pane's `(Nav, _)` rows. Suppressed entirely when `input_mode == Static` or `TextInput`.
+- `pane_action_region.rs` — emits pane's `(PaneAction, _)` rows. Renders for `Navigable` and `Static`; suppressed for `TextInput`.
 - `global_region.rs` — emits `GlobalAction` + `AppGlobals::render_order()`; suppressed when `pane.input_mode(ctx) == TextInput`.
 
 Depends on Phase 10 (`Framework<Ctx>` exists; framework-pane `Shortcuts<Ctx>` impls exist) plus Phase 8's `Keymap<Ctx>` lookups.
@@ -1427,6 +1463,7 @@ Snapshot tests in this phase cover the framework panes only (Settings Browse / S
 
 In the cargo-port binary crate:
 
+- **`action_enum!` migration cost.** Every existing `action_enum!` invocation in `src/tui/` gains a third positional `bar_label` literal between the toml key and description, per Phase 5's grammar amendment. When the bar text matches the toml key, just duplicate the literal — no per-arm design decision. The hand-rolled `tui_pane::GlobalAction` already ships its own `bar_label` (Phase 5).
 - Define `NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction`.
 - **Split today's `GlobalAction`** in `src/tui/keymap.rs` into `tui_pane::GlobalAction` (the framework half: Quit/Restart/NextPane/PrevPane/OpenKeymap/OpenSettings/Dismiss) and `AppGlobalAction` (binary-owned). During Phases 12–15 the binary's existing `GlobalAction` stays in place; references to the framework's enum are path-qualified as `tui_pane::GlobalAction` to disambiguate. Phase 16 deletes the binary's old enum and `use tui_pane::GlobalAction` makes the name available unqualified. (Requires `pub use keymap::GlobalAction;` at `tui_pane/src/lib.rs` crate root — add this re-export when Phase 12 lands, mirroring the Phase 3 `ActionEnum` precedent.)
 - Add `ExpandRow` / `CollapseRow` to `ProjectListAction`.
@@ -1531,7 +1568,7 @@ Bar-on-rebind:
 
 Globals + precedence:
 
-- Globals render order matches the framework's render order then `AppGlobals::render_order()`.
+- Globals render order matches the framework's render order then `AppGlobals::render_order()`; each slot's bar text comes from `action.bar_label()` (Phase 5's `ActionEnum::bar_label`), not a `Globals` trait method.
 - CiRuns Activate at EOL renders no Enter row.
 - `key_for(NavigationAction::Up) == KeyBind::from(KeyCode::Up)` even when vim mode is on.
 - Rebinding `GlobalAction::Quit` to `q` keeps `q` quitting from any pane (global beats unbound).

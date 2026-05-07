@@ -227,22 +227,22 @@ pub struct ScopeMap<A: Copy + Eq + Hash> {
 }
 
 impl<A: Copy + Eq + Hash> ScopeMap<A> {
-    /// Empty map. `pub(crate)` — only `Bindings::into_scope_map` and the
-    /// TOML loader construct one; consumers always receive a built map
-    /// from the `Keymap`.
-    pub(crate) fn new() -> Self {
+    /// Empty map. `pub(super)` — only `Bindings::into_scope_map` and the
+    /// TOML loader (sibling modules in `keymap/`) construct one;
+    /// consumers always receive a built map from the `Keymap`.
+    pub(super) fn new() -> Self {
         Self { by_key: HashMap::new(), by_action: HashMap::new() }
     }
 
     /// Insert one (key, action) pair.
     ///
-    /// `pub(crate)` — same reason as `new`.
+    /// `pub(super)` — same reason as `new`.
     ///
     /// `debug_assert!`s that `key` is either unbound or already bound
     /// to the same `action`. Cross-action collisions inside one scope
     /// are bugs in `defaults()`; the TOML loader catches the same
     /// condition for user input and returns `Err` instead of panicking.
-    pub(crate) fn insert(&mut self, key: KeyBind, action: A) {
+    pub(super) fn insert(&mut self, key: KeyBind, action: A) {
         debug_assert!(
             self.by_key.get(&key).is_none_or(|&existing| existing == action),
             "ScopeMap::insert: key {key:?} already maps to a different action",
@@ -278,7 +278,7 @@ impl<A: Copy + Eq + Hash> ScopeMap<A> {
 }
 ```
 
-**Tradeoff.** `new` and `insert` are `pub(crate)` — the framework owns construction. App code only ever receives a built `&ScopeMap<A>` via `Keymap::scope_for`, so a public mutable surface would be a hazard with no caller. `action_for` / `key_for` / `display_key_for` / `display_keys_for` are all `pub` because the bar code (in `tui_pane`) and the input handlers (in the binary) both call them.
+**Tradeoff.** `new` and `insert` are `pub(super)` — the framework owns construction. App code only ever receives a built `&ScopeMap<A>` via `Keymap::scope_for`, so a public mutable surface would be a hazard with no caller. `pub(super)` (not `pub(crate)`) per Phase 5+ standing rule 3: in nested modules, narrow to siblings. `action_for` / `key_for` / `display_key_for` / `display_keys_for` are all `pub` because the bar code (in `tui_pane`) and the input handlers (in the binary) both call them.
 
 ---
 
@@ -557,7 +557,7 @@ impl<Ctx: AppContext> Keymap<Ctx> {
 }
 ```
 
-**Tradeoff.** `framework_globals` is `pub(crate)` — exposing it would let app code rebind framework-owned actions outside the builder, which the design explicitly rejects (the framework owns `GlobalAction` dispatch, full stop). `config_path` is associated rather than free so callers find it on the type they already mention.
+**Tradeoff.** `framework_globals` is `pub(crate)` — exposing it would let app code rebind framework-owned actions outside the builder, which the design explicitly rejects: framework dispatch of `GlobalAction` is non-overridable. `config_path` is associated rather than free so callers find it on the type they already mention.
 
 ---
 
