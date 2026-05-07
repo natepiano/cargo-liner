@@ -330,7 +330,8 @@ pub trait Shortcuts<Ctx: AppContext>: 'static {
     const SCOPE_NAME: &'static str;
 
     /// Stable per-pane identity used by the framework's per-pane
-    /// query registry (e.g. `input_mode_queries`). The trait covers
+    /// query registry (populated through
+    /// `Framework::register_app_pane`). The trait covers
     /// app panes only — framework panes (Keymap, Settings, Toasts) are
     /// special-cased — so the variant is always an `AppPaneId`.
     const APP_PANE_ID: Ctx::AppPaneId;
@@ -372,7 +373,8 @@ pub trait Shortcuts<Ctx: AppContext>: 'static {
     ///
     /// Returns a `fn(&Ctx) -> InputMode` so the framework can store
     /// the pointer in `Framework<Ctx>::input_mode_queries`, keyed by
-    /// `AppPaneId`, populated at `register::<P>()` time. The framework
+    /// `AppPaneId`, populated through `Framework::register_app_pane`
+    /// at `KeymapBuilder::build_into` time. The framework
     /// holds `&Ctx` and an `AppPaneId` at query time, never a typed
     /// `&PaneStruct`, so the closure does the navigation from `Ctx`
     /// to whatever pane state determines the mode.
@@ -432,7 +434,7 @@ pub trait Globals<Ctx: AppContext>: 'static {
 
 **Tradeoff.** All three traits are `'static`. The framework stores `fn` pointers and TypeId-keyed lookups; both require `'static`. App pane structs are owned by `App` and are themselves `'static`, so the bound costs nothing in practice.
 
-`Shortcuts::input_mode` returns a `fn(&Ctx) -> InputMode`. The framework's structural-Esc gate and bar-region suppression run with `&Ctx` and an `AppPaneId`, never with a typed `&PaneStruct`, so it stores the returned pointer in `Framework<Ctx>::input_mode_queries`, populated at `register::<P>()` time. Pane-internal callers write `Self::input_mode()(ctx)`. Default returns `Navigable`; panes whose mode varies with `Ctx` state (Finder, Output, Settings) override.
+`Shortcuts::input_mode` returns a `fn(&Ctx) -> InputMode`. The framework's structural-Esc gate and bar-region suppression run with `&Ctx` and an `AppPaneId`, never with a typed `&PaneStruct`, so it stores the returned pointer in `Framework<Ctx>::input_mode_queries`, populated through `Framework::register_app_pane` at `KeymapBuilder::build_into` time. Pane-internal callers write `Self::input_mode()(ctx)`. Default returns `Navigable`; panes whose mode varies with `Ctx` state (Finder, Output, Settings) override.
 
 ---
 
@@ -586,7 +588,9 @@ pub struct KeymapBuilder<Ctx: AppContext> {
     /// Per-scope `Bindings<A>` boxed via `Any`, keyed by `TypeId<P>` /
     /// `TypeId<N>` / `TypeId<G>`.
     pending: HashMap<TypeId, PendingScope<Ctx>>,
-    /// Per-AppPaneId input-mode queries, captured at `register::<P>()`.
+    /// Per-AppPaneId input-mode queries, captured at
+    /// `KeymapBuilder::build_into` time through
+    /// `Framework::register_app_pane`.
     input_mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>,
     settings:    SettingsRegistry<Ctx>,
     nav_registered: bool,
@@ -646,9 +650,16 @@ impl<Ctx: AppContext> KeymapBuilder<Ctx> {
         self
     }
 
-    /// Validate, fold defaults + TOML + vim, and produce the final
-    /// `Keymap<Ctx>`.
-    pub fn build(self) -> Result<Keymap<Ctx>, BuilderError> { /* … */ unimplemented!() }
+    /// Validate, fold defaults + TOML + vim, populate the framework's
+    /// per-`AppPaneId` registries (one `register_app_pane` call per
+    /// `Shortcuts<Ctx>` registered), and produce the final
+    /// `Keymap<Ctx>`. The framework is constructed first by the binary
+    /// (`Framework::new(initial_focus)`) and then handed to
+    /// `build_into` so the registry write is a single locus.
+    pub fn build_into(
+        self,
+        framework: &mut Framework<Ctx>,
+    ) -> Result<Keymap<Ctx>, BuilderError> { /* … */ unimplemented!() }
 }
 
 /// Errors the builder can surface at `build()` time. All required
@@ -700,17 +711,19 @@ pub struct Framework<Ctx: AppContext> {
     /// transition.
     focused: FocusedPane<Ctx::AppPaneId>,
     /// Per-AppPaneId input-mode queries, populated by
-    /// `KeymapBuilder::register`. Framework panes (Keymap, Settings,
-    /// Toasts) are special-cased in `focused_pane_input_mode` and do
-    /// not appear here.
-    pub(crate) input_mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>,
+    /// `KeymapBuilder::build_into(&mut framework)` through
+    /// `register_app_pane`. Framework panes (Keymap, Settings, Toasts)
+    /// are special-cased in `focused_pane_input_mode` and do not appear
+    /// here. Private; written only through `pub(super) fn
+    /// register_app_pane`.
+    input_mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>,
 }
 
 impl<Ctx: AppContext> Framework<Ctx> {
     /// Construct an empty framework with an explicit initial focus.
     /// The binary creates one at startup and stores it on `App`.
-    /// `KeymapBuilder::build` later writes the `input_mode_queries`
-    /// map into it via `ctx.framework_mut()`.
+    /// `KeymapBuilder::build_into(&mut framework)` later populates
+    /// `input_mode_queries` through `register_app_pane`.
     pub fn new(initial_focus: FocusedPane<Ctx::AppPaneId>) -> Self {
         Self {
             keymap_pane:   KeymapPane::new(),
@@ -743,6 +756,19 @@ impl<Ctx: AppContext> Framework<Ctx> {
         }
     }
 
+    /// Register one app pane's input-mode query. Called once per
+    /// `P: Shortcuts<Ctx>` from inside
+    /// `KeymapBuilder::build_into(&mut framework)`. `pub(super)` so
+    /// only the keymap builder (a sibling under `tui_pane`) can write
+    /// the registry; the field stays private.
+    pub(super) fn register_app_pane(
+        &mut self,
+        id: Ctx::AppPaneId,
+        query: fn(&Ctx) -> InputMode,
+    ) {
+        self.input_mode_queries.insert(id, query);
+    }
+
     /// Resolve the focused pane's `InputMode`. Used by the structural
     /// Esc pre-handler and the bar-region suppression logic.
     pub fn focused_pane_input_mode(&self, ctx: &Ctx) -> InputMode {
@@ -758,7 +784,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
 }
 ```
 
-**Tradeoff.** Public fields for the three framework panes — the binary uses them directly in `bar::render` dispatch and input routing. The `focused` field is private (read via `focused()`, written via `set_focused`) so the binary's `Focus` subsystem stays the only writer. The `input_mode_queries` map is `pub(crate)` because only `KeymapBuilder` writes it (through `ctx.framework_mut()` at `build()` time) and only `focused_pane_input_mode` reads it. `Framework::new` takes an explicit `initial_focus` rather than implementing `Default`; the binary picks the starting pane.
+**Tradeoff.** Public fields for the three framework panes — the binary uses them directly in `bar::render` dispatch and input routing. The `focused` field is private (read via `focused()`, written via `set_focused`) so the binary's `Focus` subsystem stays the only writer. The `input_mode_queries` map is private; the only writer is `pub(super) fn register_app_pane`, called by `KeymapBuilder::build_into(&mut framework)` once per registered `Shortcuts<Ctx>` impl. The only reader is `focused_pane_input_mode`. `Framework::new` takes an explicit `initial_focus` rather than implementing `Default`; the binary picks the starting pane.
 
 ---
 
