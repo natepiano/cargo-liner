@@ -117,7 +117,7 @@ pub(crate) fn dispatch_mock(action: MockAction, ctx: &mut TestCtx) {
 }
 
 impl Shortcuts<TestCtx> for MockPane {
-    type Action = MockAction;
+    type Variant = MockAction;
     const SCOPE_NAME: &'static str = "mock";
 
     fn defaults() -> Bindings<MockAction> {

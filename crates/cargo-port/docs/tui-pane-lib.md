@@ -48,8 +48,8 @@ cargo-port-api-fix/
         │   ├── bindings.rs         # Bindings<A> builder + bindings! macro
         │   ├── scope_map.rs        # ScopeMap<A>, display_keys_for,
         │   │                       #   primary-key invariants
-        │   ├── action_enum.rs     # ActionEnum trait + action_enum! macro
-        │   ├── global_action.rs   # GlobalAction enum + ActionEnum impl
+        │   ├── action_enum.rs     # Action trait + action_enum! macro
+        │   ├── global_action.rs   # GlobalAction enum + Action impl
         │   │                       #   + GlobalAction::defaults() (added Phase 4)
         │   ├── shortcuts.rs        # Shortcuts<Ctx> trait (Phase 7)
         │   ├── navigation.rs       # Navigation<Ctx> trait (Phase 7)
@@ -145,24 +145,24 @@ See `paneid-ctx.md` §1 for full type definitions and call-site rewrites.
 
 ```rust
 pub trait Shortcuts<Ctx: AppContext>: 'static {
-    type Action: ActionEnum + 'static;
+    type Variant: Action + 'static;
     const SCOPE_NAME: &'static str;
 
-    fn defaults() -> Bindings<Self::Action>;
+    fn defaults() -> Bindings<Self::Variant>;
 
     /// Per-frame bar label for `action`. `None` hides the slot.
     /// Default returns `Some(action.bar_label())` (the static label
     /// declared in `action_enum!`). Override only when the label
     /// depends on pane state — e.g. `PackageAction::Activate` reads
     /// `"open"` on `CratesIo` fields and `"activate"` elsewhere.
-    fn label(&self, action: Self::Action, _ctx: &Ctx) -> Option<&'static str> {
+    fn label(&self, action: Self::Variant, _ctx: &Ctx) -> Option<&'static str> {
         Some(action.bar_label())
     }
 
     /// Per-frame enabled / disabled status for `action`. Default
     /// `Enabled`. Override when the action is visible but inert (e.g.
     /// `PackageAction::Clean` grayed out when no target dir exists).
-    fn state(&self, _action: Self::Action, _ctx: &Ctx) -> ShortcutState {
+    fn state(&self, _action: Self::Variant, _ctx: &Ctx) -> ShortcutState {
         ShortcutState::Enabled
     }
 
@@ -175,8 +175,8 @@ pub trait Shortcuts<Ctx: AppContext>: 'static {
     /// `(PaneAction, Single(action))` per `Action::ALL` in declaration
     /// order; override to introduce paired slots, route into `Nav`, or
     /// to omit data-dependent slots.
-    fn bar_slots(&self, ctx: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Action>)> {
-        Self::Action::ALL
+    fn bar_slots(&self, ctx: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Variant>)> {
+        Self::Variant::ALL
             .iter()
             .copied()
             .map(|a| (BarRegion::PaneAction, BarSlot::Single(a)))
@@ -199,7 +199,7 @@ pub trait Shortcuts<Ctx: AppContext>: 'static {
     /// `ProjectListAction::ExpandRow` (binds `'l'`) /
     /// `CollapseRow` (binds `'h'`). `KeyBind` (not `char`) so future
     /// extras can include modifier keys.
-    fn vim_extras() -> &'static [(Self::Action, KeyBind)] { &[] }
+    fn vim_extras() -> &'static [(Self::Variant, KeyBind)] { &[] }
 
     /// Returns a free function the framework calls to dispatch an
     /// action. The function takes `&mut Ctx` so the framework holds
@@ -210,10 +210,10 @@ pub trait Shortcuts<Ctx: AppContext>: 'static {
     /// ```rust
     /// fn dispatch_package(action: PackageAction, app: &mut App) { … }
     /// impl Shortcuts<App> for PackagePane {
-    ///     fn dispatcher() -> fn(Self::Action, &mut App) { dispatch_package }
+    ///     fn dispatcher() -> fn(Self::Variant, &mut App) { dispatch_package }
     /// }
     /// ```
-    fn dispatcher() -> fn(Self::Action, &mut Ctx);
+    fn dispatcher() -> fn(Self::Variant, &mut Ctx);
 }
 ```
 
@@ -247,19 +247,19 @@ Framework rendering:
 
 ```rust
 pub trait Navigation<Ctx: AppContext> {
-    type Action: ActionEnum + 'static;
+    type Variant: Action + 'static;
     const SCOPE_NAME: &'static str = "navigation";
-    const UP:    Self::Action;
-    const DOWN:  Self::Action;
-    const LEFT:  Self::Action;
-    const RIGHT: Self::Action;
-    fn defaults() -> Bindings<Self::Action>;
+    const UP:    Self::Variant;
+    const DOWN:  Self::Variant;
+    const LEFT:  Self::Variant;
+    const RIGHT: Self::Variant;
+    fn defaults() -> Bindings<Self::Variant>;
 
     /// Free function the framework calls when any navigation action fires.
     /// `focused` lets the app dispatch to whichever scrollable surface
     /// owns the focused pane. One match arm per action, mirroring the
     /// `Shortcuts::dispatcher` and `Globals::dispatcher` pattern.
-    fn dispatcher() -> fn(Self::Action, FocusedPane<Ctx::AppPaneId>, &mut Ctx);
+    fn dispatcher() -> fn(Self::Variant, FocusedPane<Ctx::AppPaneId>, &mut Ctx);
 }
 ```
 
@@ -269,11 +269,11 @@ Pane scopes carry per-instance state and dispatch logic; their bar contribution 
 
 ```rust
 pub trait Globals<Ctx: AppContext> {
-    type Action: ActionEnum + 'static;
+    type Variant: Action + 'static;
     const SCOPE_NAME: &'static str = "global";
-    fn render_order() -> &'static [Self::Action];
-    fn defaults() -> Bindings<Self::Action>;
-    fn dispatcher() -> fn(Self::Action, &mut Ctx);
+    fn render_order() -> &'static [Self::Variant];
+    fn defaults() -> Bindings<Self::Variant>;
+    fn dispatcher() -> fn(Self::Variant, &mut Ctx);
 }
 ```
 
@@ -725,8 +725,8 @@ A pane indicates *which region* each of its rows lands in. Most pane rows go int
 `Shortcuts::bar_slots` returns `(region, row)` pairs:
 
 ```rust
-fn bar_slots(&self, ctx: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Action>)> {
-    Self::Action::ALL.iter()
+fn bar_slots(&self, ctx: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Variant>)> {
+    Self::Variant::ALL.iter()
         .copied()
         .map(|a| (BarRegion::PaneAction, BarSlot::Single(a)))
         .collect()
@@ -1035,7 +1035,7 @@ Unit tests:
 
 #### Phase 2 Review
 
-- Phase 3: rename `keymap/traits.rs` → `keymap/action_enum.rs` so the file name matches its sole resident (`ActionEnum` + `action_enum!`) and does not collide with Phase 7's per-trait file split.
+- Phase 3: rename `keymap/traits.rs` → `keymap/action_enum.rs` so the file name matches its sole resident (`Action` + `action_enum!`) and does not collide with Phase 7's per-trait file split.
 - Phase 4: `KeymapError` ships with `#[derive(thiserror::Error)]` + `#[from] KeyParseError` for source chaining, and unit tests are rescoped to constructs that exist by end of Phase 4 (vim-application test deferred to Phase 9). `bindings!` macro tests now cover composed `KeyBind::ctrl(KeyBind::shift('g'))`.
 - Phase 8: loader explicitly lowercases single-letter TOML keys (so `quit = "Q"` binds `Char('q')`); modifier display order is canonical `Ctrl+Alt+Shift+key` (no round-trip ordering preservation); vim-mode skip-already-bound is keyed on full `KeyBind` equality (code + mods); `KeymapError` source chain from `KeyParseError` is asserted.
 - Phase 11: paired-row separator policy made explicit — `Paired::debug_assert!` covers only the parser-producible `KeyCode` set; exotic variants may panic, and widening the bindable set requires widening Phase 2's `display_short_no_separators` test in lockstep.
@@ -1048,7 +1048,7 @@ Unit tests:
 
 ### Phase 3 — Action machinery ✅
 
-Add `tui_pane/src/keymap/action_enum.rs` with `ActionEnum` + `action_enum!` (per §4 — the trait part; the three scope traits land in Phase 7). Add `tui_pane/src/keymap/global_action.rs` with `GlobalAction` and its `ActionEnum` impl (§10). Add `tui_pane/src/keymap/vim.rs` with `VimMode::{Disabled, Enabled}` (§10).
+Add `tui_pane/src/keymap/action_enum.rs` with `Action` + `action_enum!` (per §4 — the trait part; the three scope traits land in Phase 7). Add `tui_pane/src/keymap/global_action.rs` with `GlobalAction` and its `Action` impl (§10). Add `tui_pane/src/keymap/vim.rs` with `VimMode::{Disabled, Enabled}` (§10).
 
 > File `action_enum.rs` (not `traits.rs`) and `global_action.rs` (not `base_globals.rs`) — the file name matches the contained type. The three scope traits live in their own files (`shortcuts.rs` / `navigation.rs` / `globals.rs`) per Phase 7.
 
@@ -1056,19 +1056,19 @@ Add `tui_pane/src/keymap/action_enum.rs` with `ActionEnum` + `action_enum!` (per
 
 **What worked:**
 - Three-file split (`action_enum.rs` / `global_action.rs` / `vim.rs`) lined up one-to-one with shipped code — no scope drift. 12 unit tests cover macro expansion (`action_enum!` against a fixture `Foo` enum) and the hand-rolled `GlobalAction` impl. Workspace clippy clean under `pedantic` + `nursery` + `all` + `cargo`.
-- `pub use keymap::ActionEnum;` at crate root in `lib.rs` keeps the macro's `$crate::ActionEnum` path stable regardless of the trait's true module location. The macro can be re-homed later without breaking any expansion site.
+- `pub use keymap::Action;` at crate root in `lib.rs` keeps the macro's `$crate::Action` path stable regardless of the trait's true module location. The macro can be re-homed later without breaking any expansion site.
 - `VimMode` defaults to `Disabled` via `#[derive(Default)]` + `#[default]` on the variant — no hand-written `Default` impl needed.
 
 **What deviated from the plan:**
-- Hand-rolled `impl Display for GlobalAction` (delegates to `description()`) — not strictly required by the spec but mirrors what the macro generates for `action_enum!`-produced enums, so all `ActionEnum` impls render the same way under `format!("{action}")`. Cost: 4 lines.
-- `crate::ActionEnum` (root re-export) is the trait path used inside `global_action.rs`'s test module rather than a longer `super::super::action_enum::ActionEnum` — single-`super::` is fine in normal code, double-`super::` is banned by project policy.
+- Hand-rolled `impl Display for GlobalAction` (delegates to `description()`) — not strictly required by the spec but mirrors what the macro generates for `action_enum!`-produced enums, so all `Action` impls render the same way under `format!("{action}")`. Cost: 4 lines.
+- `crate::Action` (root re-export) is the trait path used inside `global_action.rs`'s test module rather than a longer `super::super::action_enum::Action` — single-`super::` is fine in normal code, double-`super::` is banned by project policy.
 
 **Surprises:**
 - `clippy::too_long_first_doc_paragraph` (nursery) fires on multi-sentence module headers. `global_action.rs`'s opening `//!` block had to be split into a one-line summary + blank `//!` + body. Likely to fire elsewhere when later phases ship docs. No code change required, but worth knowing for module-doc authoring.
 - The `from_toml_key` returning `Option<Self>` (not `Result`) is intentional and the trait method has no scope context to attach. The TOML loader (Phase 4 skeleton, Phase 8 fill) lifts `None` into `KeymapError::UnknownAction { scope, action }`. Recorded explicitly here so Phase 4/8 don't accidentally widen the trait.
 
 **Implications for remaining phases:**
-- `macros.md` §3 still references `crate::keymap::traits::ActionEnum` — needs to be `crate::keymap::action_enum::ActionEnum`. Synced as part of this review.
+- `macros.md` §3 still references `crate::keymap::traits::Action` — needs to be `crate::keymap::action_enum::Action`. Synced as part of this review.
 - `core-api.md` §10 `KeymapError` snippet has `impl Display { /* … */ }` placeholder — Phase 4 lands the real impl via `#[derive(thiserror::Error)]` per the Phase 2 retrospective decision.
 - Phase 4 (`bindings!` macro) follows the same `#[macro_export] macro_rules!` declaration template used here; the doctest pattern can mirror Phase 3's approach (`crate::action_enum! { … }` inside an internal `mod tests`).
 - Phase 12 (binary swap to `tui_pane::action_enum!`): seven existing `action_enum!` invocations in `src/keymap.rs` swap to the `tui_pane::` prefix; the macro's grammar is identical, so each invocation needs only the prefix change.
@@ -1091,13 +1091,13 @@ Architectural review of remaining phases (4-17) returned 18 findings — 13 mino
 - **Cross-crate macro integration test (item 5):** `tui_pane/tests/macro_use.rs` lands as a Phase 3 follow-up — exercises `tui_pane::action_enum!` from outside the crate. Phase 4 extends it for `tui_pane::bindings!`.
 
 Minor findings applied directly (no user gating):
-- Stale `keymap::traits::ActionEnum` references in `macros.md` synced to `keymap::action_enum::ActionEnum`.
+- Stale `keymap::traits::Action` references in `macros.md` synced to `keymap::action_enum::Action`.
 - Phase 4 root re-exports (`Bindings`, `KeyBind`) called out for the `bindings!` macro's `$crate::` paths.
 - `KeymapError` variant set spelled out in Phase 4 + `core-api.md` §10 (with `#[derive(thiserror::Error)]`).
-- `Shortcuts::vim_extras() -> &'static [(Self::Action, KeyBind)]` called out in Phase 7 with default `&[]`.
+- `Shortcuts::vim_extras() -> &'static [(Self::Variant, KeyBind)]` called out in Phase 7 with default `&[]`.
 - Vim-mode skip-already-bound test moved Phase 8 → Phase 9 (vim application is the builder's job per "Vim mode — framework capability" §).
 - `AppContext::AppPaneId: Copy + Eq + Hash + 'static` super-trait set added to Phase 6 (required by Phase 10's `HashMap<AppPaneId, fn(&Ctx) -> InputMode>`).
-- `core-api.md` §4 `ActionEnum` super-trait set synced to shipped code (`Copy + Eq + Hash + Debug + Display + 'static` — adds `Debug` + `Display`).
+- `core-api.md` §4 `Action` super-trait set synced to shipped code (`Copy + Eq + Hash + Debug + Display + 'static` — adds `Debug` + `Display`).
 - Phase 8 explicit "loader lifts `None` from `from_toml_key` into `KeymapError::UnknownAction`" wording added.
 - `clippy::too_long_first_doc_paragraph` (nursery) guidance added to the per-phase rustdoc precondition.
 - `pub use keymap::GlobalAction;` at crate root noted in Phase 12.
@@ -1109,7 +1109,7 @@ Add `tui_pane/src/keymap/bindings.rs` (`Bindings<A>` + `bindings!`, §2), `tui_p
 
 **Also lands in Phase 4 (post-Phase-3 review):** `pub fn defaults() -> Bindings<Self>` on `GlobalAction` in `tui_pane/src/keymap/global_action.rs` — returns the canonical `q` / `R` / `Tab` / `Shift+Tab` / `Ctrl+K` / `s` / `x` bindings using the `bindings!` macro that ships in this phase. Co-located with the enum (matches the convention every `Shortcuts<P>::defaults()` impl follows). Tested in `global_action.rs` directly; loader and builder consume it.
 
-**Root re-exports (shipped form).** As implemented, `tui_pane/src/lib.rs` is `mod keymap;` (private) plus crate-root `pub use` for every public type: `ActionEnum`, `Bindings`, `GlobalAction`, `KeyBind`, `KeyInput`, `KeyParseError`, `KeymapError`, `ScopeMap`, `VimMode`. The speculative `pub use keymap::bindings::bindings;` from earlier drafts proved unnecessary — `#[macro_export]` already places the macro at the crate root.
+**Root re-exports (shipped form).** As implemented, `tui_pane/src/lib.rs` is `mod keymap;` (private) plus crate-root `pub use` for every public type: `Action`, `Bindings`, `GlobalAction`, `KeyBind`, `KeyInput`, `KeyParseError`, `KeymapError`, `ScopeMap`, `VimMode`. The speculative `pub use keymap::bindings::bindings;` from earlier drafts proved unnecessary — `#[macro_export]` already places the macro at the crate root.
 
 `KeymapError` is `#[derive(thiserror::Error)]` and ships with seven variants (the loader and builder consume them in Phases 8 and 9):
 - `Io(#[from] std::io::Error)` — file-open failure.
@@ -1140,10 +1140,10 @@ Unit tests (this phase, scoped to what exists by end of Phase 4):
 - 49 tui_pane tests pass; 599 workspace tests pass; `cargo mend --fail-on-warn` reports no findings.
 
 **What deviated from the plan:**
-- **`pub mod` removed everywhere.** Plan said "extend root re-exports for `Bindings`, `KeyBind`." Per `cargo mend` (which denies `pub mod` workspace-wide) and direct user instruction, `tui_pane/src/lib.rs` was reduced to `mod keymap;` (private) plus crate-root `pub use` for every public type: `ActionEnum`, `Bindings`, `GlobalAction`, `KeyBind`, `KeyInput`, `KeyParseError`, `KeymapError`, `ScopeMap`, `VimMode`. `keymap/mod.rs` similarly switched all `pub mod foo;` to `mod foo;` + facade `pub use`. **Public-API change:** the `tui_pane::keymap::*` namespace no longer exists — every type is now flat at `tui_pane::*`.
+- **`pub mod` removed everywhere.** Plan said "extend root re-exports for `Bindings`, `KeyBind`." Per `cargo mend` (which denies `pub mod` workspace-wide) and direct user instruction, `tui_pane/src/lib.rs` was reduced to `mod keymap;` (private) plus crate-root `pub use` for every public type: `Action`, `Bindings`, `GlobalAction`, `KeyBind`, `KeyInput`, `KeyParseError`, `KeymapError`, `ScopeMap`, `VimMode`. `keymap/mod.rs` similarly switched all `pub mod foo;` to `mod foo;` + facade `pub use`. **Public-API change:** the `tui_pane::keymap::*` namespace no longer exists — every type is now flat at `tui_pane::*`.
 - **`bindings!` macro is a two-step expansion.** Spec'd as a single `macro_rules!` with one block-returning arm. A single arm cannot recurse to handle mixed `KEY => ACTION` / `[KEYS] => ACTION` lines, so the macro now delegates to a `#[doc(hidden)] #[macro_export] macro_rules! __bindings_arms!` incremental TT muncher. Public surface unchanged; `__bindings_arms!` is the implementation detail.
 - **`ScopeMap::new` / `insert` are `pub(super)`, not `pub(crate)`.** The design doc said `pub(crate)`; project memory `feedback_no_pub_crate.md` (use `pub(super)` in nested modules — `pub(crate)` reserved for top-level files) overruled. Same author intent (framework-only construction), narrower scope.
-- **`bind_many` requires `A: Clone`, not just `A: Copy`.** The loop body needs to clone the action per key; `Copy` only matters when the entire `Bindings` is consumed. Trivial in practice — every `ActionEnum` is `Copy + Clone`.
+- **`bind_many` requires `A: Clone`, not just `A: Copy`.** The loop body needs to clone the action per key; `Copy` only matters when the entire `Bindings` is consumed. Trivial in practice — every `Action` is `Copy + Clone`.
 - **`bindings!` uses `$crate::KeyBind`, not `$crate::keymap::KeyBind`.** Falls out of the `pub mod keymap` removal: the macro's `$crate::*` paths now reach the flat root re-exports.
 
 **Surprises:**
@@ -1173,7 +1173,7 @@ Unit tests (this phase, scoped to what exists by end of Phase 4):
 - **New "Phase 5+ standing rules" subsection** added after the Phase 4 retrospective: locks the seven standing rules (private `mod`, flat re-exports, `pub(super)` for framework-internal, `#[must_use]` on getters, flat `$crate::*` macro paths, new `#[macro_export]` extends `tests/macro_use.rs`, `cargo mend --fail-on-warn` as phase-completion gate).
 - **Definition of done** rewritten to enumerate every public type at crate-root flat paths and to call out `__bindings_arms!` as `#[doc(hidden)]` but technically reachable.
 - **Spec docs swept** (`core-api.md`, `macros.md`): stale `crate::keymap::<submod>::Foo` sub-paths replaced with the facade-path form `crate::keymap::{Foo, ...}`; explanatory comments added about why the public API is flat.
-- **Reviewed and not changed:** `tui_pane/README.md` deferred to Phase 16 (subagent finding #20 — no earlier baseline justified). `bind_many` requiring `A: Clone` (subagent finding #10 — auto-satisfied because `ActionEnum: Copy`, no plan change needed).
+- **Reviewed and not changed:** `tui_pane/README.md` deferred to Phase 16 (subagent finding #20 — no earlier baseline justified). `bind_many` requiring `A: Clone` (subagent finding #10 — auto-satisfied because `Action: Copy`, no plan change needed).
 
 These apply to every remaining phase without further mention; phase blocks below assume them. Restate only where a phase has a specific exception.
 
@@ -1181,15 +1181,16 @@ These apply to every remaining phase without further mention; phase blocks below
 2. **Public types live at the crate root.** Every `tui_pane` public type re-exports from `tui_pane/src/lib.rs` so callers write `tui_pane::Foo` (flat). The `tui_pane::keymap::*` namespace does not exist publicly.
 3. **Framework-internal construction is `pub(super)`.** New / insert / build methods that only the framework's own siblings call use `pub(super)`, never `pub(crate)`. Project memory `feedback_no_pub_crate.md` for rationale.
 4. **Public getters get `#[must_use]` pre-emptively.** Clippy `must_use_candidate` (pedantic, denied) fires on every getter that returns a value the caller can ignore.
-5. **Macros use flat `$crate::*` paths.** Every `#[macro_export]` macro references re-exported root types: `$crate::Bindings`, `$crate::KeyBind`, `$crate::ActionEnum`. Never `$crate::keymap::Foo`.
+5. **Macros use flat `$crate::*` paths.** Every `#[macro_export]` macro references re-exported root types: `$crate::Bindings`, `$crate::KeyBind`, `$crate::Action`. Never `$crate::keymap::Foo`.
 6. **New `#[macro_export]` extends `tests/macro_use.rs`.** Cross-crate path stability is locked by that file; any new exported macro adds an invocation there.
 7. **Phase-completion gates.** `cargo build`, `cargo nextest run`, `cargo +nightly fmt`, `cargo clippy --workspace --all-targets`, `cargo mend --fail-on-warn` — all clean before the phase is marked ✅.
+8. **Every new pub item gets a doc comment; every new module gets a `//!` header.** Module `//!` explains what lives in the file and why; type `///` explains the role; method `///` explains what callers get back; variant `///` explains the case. One-liners are fine where the name carries the meaning. The Phase 5 files (`bar/region.rs`, `bar/slot.rs`, `bar/mod.rs`) and Phase 3's `keymap/action_enum.rs` / `keymap/global_action.rs` are the reference baseline — match that density.
 
 ### Phase 5 — Bar primitives ✅
 
 Add `tui_pane/src/bar/region.rs` (`BarRegion::{Nav, PaneAction, Global}` + `ALL`), `tui_pane/src/bar/slot.rs` (`BarSlot<A>` + `ShortcutState`), and `InputMode` in `bar/mod.rs`. All per §5.
 
-Phase 5 also amends Phase 3's `ActionEnum` trait to add `fn bar_label(self) -> &'static str` and extends the `action_enum!` macro grammar to take a tuple of three string literals per arm:
+Phase 5 also amends Phase 3's `Action` trait to add `fn bar_label(self) -> &'static str` and extends the `action_enum!` macro grammar to take a tuple of three string literals per arm:
 
 ```rust
 action_enum! {
@@ -1207,9 +1208,9 @@ Leaf types only — the renderer that consumes them lands in Phase 11.
 
 **No `Shortcut` wrapping struct.** Phase 7's `Shortcuts<Ctx>` trait splits the bar-entry payload across two methods: `fn label(&self, action, ctx) -> Option<&'static str>` (default `Some(action.bar_label())`, `None` hides the slot) and `fn state(&self, action, ctx) -> ShortcutState` (default `Enabled`). The label string lives in exactly one return value; enabled/disabled is a separate orthogonal axis.
 
-**`action_enum!` grammar amendment.** The macro arm changes from `Variant => "key", "desc";` to `Variant => ("key", "bar", "desc");`. Phase 3's existing `action_enum!` invocations in the keymap module and the `tests/macro_use.rs` smoke test must be updated in this phase. The 12-arm cargo-port migration in Phase 12 inherits the new grammar. The hand-rolled `GlobalAction` `ActionEnum` impl shipped in Phase 3 also needs a `bar_label()` method body — one match arm per variant (`Quit => "quit"`, `Restart => "restart"`, etc.).
+**`action_enum!` grammar amendment.** The macro arm changes from `Variant => "key", "desc";` to `Variant => ("key", "bar", "desc");`. Phase 3's existing `action_enum!` invocations in the keymap module and the `tests/macro_use.rs` smoke test must be updated in this phase. The 12-arm cargo-port migration in Phase 12 inherits the new grammar. The hand-rolled `GlobalAction` `Action` impl shipped in Phase 3 also needs a `bar_label()` method body — one match arm per variant (`Quit => "quit"`, `Restart => "restart"`, etc.).
 
-**`Globals::bar_label` removed.** With `ActionEnum::bar_label` available on every action enum, the redundant `fn bar_label(action: Self::Action) -> &'static str` method on the `Globals<Ctx>` trait (Phase 7) is dropped. Bar code calls `action.bar_label()` regardless of which scope the action came from.
+**`Globals::bar_label` removed.** With `Action::bar_label` available on every action enum, the redundant `fn bar_label(action: Self::Variant) -> &'static str` method on the `Globals<Ctx>` trait (Phase 7) is dropped. Bar code calls `action.bar_label()` regardless of which scope the action came from.
 
 **No pre-existing call sites for `Shortcuts::label` / `state`.** The `Shortcuts<Ctx>` trait itself lands in Phase 7, so Phase 5 has nothing to migrate beyond the `action_enum!` arms. `tests/macro_use.rs` extends with a smoke test constructing `tui_pane::BarSlot::Single(...)`, `tui_pane::BarRegion::Nav`, and `tui_pane::ShortcutState::Enabled` from outside the crate to lock the flat-namespace public path.
 
@@ -1229,15 +1230,15 @@ Leaf types only — the renderer that consumes them lands in Phase 11.
 - **`bar_label` shorter than `toml_key` for `GlobalAction`.** Pattern: `toml_key = "open_keymap"`, `bar_label = "keymap"`, `description = "Open keymap viewer"`. Three-axis labelling (config-stable / bar-terse / human-readable) is the value the macro grammar buys us; the example arms in the plan all happened to use identical `toml_key`/`bar_label`, masking this.
 
 **Implications for remaining phases:**
-- **Phase 7 `Shortcuts::label` default body is one line.** `fn label(&self, action: Self::Action, _ctx: &Ctx) -> Option<&'static str> { Some(action.bar_label()) }` — `ActionEnum::bar_label` is implemented on every action enum (macro + the hand-rolled `GlobalAction`), so the trait default has zero per-impl boilerplate.
+- **Phase 7 `Shortcuts::label` default body is one line.** `fn label(&self, action: Self::Variant, _ctx: &Ctx) -> Option<&'static str> { Some(action.bar_label()) }` — `Action::bar_label` is implemented on every action enum (macro + the hand-rolled `GlobalAction`), so the trait default has zero per-impl boilerplate.
 - **Phase 7 `Shortcuts::state` default is `ShortcutState::Enabled`.** Same: zero per-impl boilerplate.
 - **Phase 12 cargo-port `action_enum!` migrations need the third positional string.** Every existing app-side invocation gains a bar label between the toml key and description. For app actions where the bar text matches the toml key, just duplicate the literal — no design decision per arm.
-- **Phase 11 bar renderer reads `BarRegion::ALL` for layout order.** Already reflected in trait def — `Vec<(BarRegion, BarSlot<Self::Action>)>` returned, renderer groups by region.
+- **Phase 11 bar renderer reads `BarRegion::ALL` for layout order.** Already reflected in trait def — `Vec<(BarRegion, BarSlot<Self::Variant>)>` returned, renderer groups by region.
 - **No new public types added to `tui_pane::*` beyond the four announced** (`BarRegion`, `BarSlot`, `InputMode`, `ShortcutState`). Every later-phase reference to `tui_pane::Shortcut` (the deleted wrapping struct) is dead — caught any in Phase 5's plan-doc sweep, but Phase 7 implementers should not pattern-match on `Shortcut` in muscle memory.
 
 #### Phase 5 Review
 
-- **Phase 7 (Scope traits)** plan body now enumerates the full `Shortcuts<Ctx>` method set (cross-references `core-api.md` §4) and explicitly states the `label` / `state` default bodies leveraging `ActionEnum::bar_label` and `ShortcutState::Enabled`.
+- **Phase 7 (Scope traits)** plan body now enumerates the full `Shortcuts<Ctx>` method set (cross-references `core-api.md` §4) and explicitly states the `label` / `state` default bodies leveraging `Action::bar_label` and `ShortcutState::Enabled`.
 - **Phase 7** also explicitly states `Globals<Ctx>` has no `bar_label` method, and adds a `Shortcut` (singular wrapping struct) doc-grep step to confirm zero residue.
 - **Phase 8 (Keymap container)** plan gains a one-line clarification that `bar_label` is code-side only — the TOML loader never reads or writes it.
 - **Phase 11 (Bar renderer)** plan now states the per-region `InputMode` suppression rules in line with shipped `bar/mod.rs` docstrings (Static suppresses `Nav`, `TextInput` suppresses Nav + PaneAction + Global).
@@ -1253,7 +1254,7 @@ The chicken-and-egg unit. `AppContext::framework()` returns `&Framework<Self>` a
 Add:
 
 - `tui_pane/src/pane_id.rs` — `FrameworkPaneId::{Keymap, Settings, Toasts}`, `FocusedPane<AppPaneId>::{App, Framework}`.
-- `tui_pane/src/app_context.rs` — `AppContext` trait (`type AppPaneId: Copy + Eq + Hash + 'static`, `framework`, `framework_mut`, `set_focus`). The `AppPaneId` super-trait set mirrors `ActionEnum` (Phase 3) and is required by Phase 10's `HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>` registry.
+- `tui_pane/src/app_context.rs` — `AppContext` trait (`type AppPaneId: Copy + Eq + Hash + 'static`, `framework`, `framework_mut`, `set_focus`). The `AppPaneId` super-trait set mirrors `Action` (Phase 3, renamed from `Action` in Phase 7 prep) and is required by Phase 10's `HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>` registry. **`set_focus` ships with a default body** that delegates to `self.framework_mut().set_focused(focus)` — binaries override only when they need extra side-effects (logging, telemetry). The two required methods are then just `framework()` / `framework_mut()`.
 - `tui_pane/src/framework/mod.rs` — `Framework<Ctx>` **skeleton** (three fields, five methods, frozen):
 
 ```rust
@@ -1282,13 +1283,15 @@ No pane fields, no `input_mode_queries`, no `editor_target_path`, no `focused_pa
 
 ### Phase 7 — Scope traits
 
+**Phase 7 prep — `Action` → `Action` rename.** Before adding the scope traits, rename the Phase 3 trait `Action` to `Action` everywhere it appears: trait definition (`keymap/action_enum.rs`), macro internals (`$crate::Action` → `$crate::Action`), `lib.rs` re-export, hand-rolled `impl Action for GlobalAction`, the cross-crate test (`tests/macro_use.rs`), and any cargo-port binary code that already references it. The file `keymap/action_enum.rs` keeps its name (the macro is still `action_enum!`); only the trait inside is renamed. Rationale: the new scope traits (`Shortcuts<Ctx>`, `Navigation<Ctx>`, `Globals<Ctx>`) carry an associated type whose role-name is `Action`-the-thing — calling the trait `Action` and the assoc type `Variant: Action` lets `Self::Variant` read cleanly at every dispatcher / bar / vim-extras call site (see Phase 5+ retrospective discussion). The `Enum` suffix on the trait is structural noise.
+
 Split §4 into one file per trait (each is independent, the heaviest is `Shortcuts<Ctx>` with 10+ items):
 
-- `tui_pane/src/keymap/shortcuts.rs` — `Shortcuts<Ctx>`. Method set per `core-api.md` §4: `defaults`, `label`, `state`, `bar_slots`, `input_mode`, `input_mode_query`, `vim_extras`, `dispatcher`, plus `SCOPE_NAME` and `APP_PANE_ID` consts. `vim_extras() -> &'static [(Self::Action, KeyBind)]` defaults to `&[]` (per-pane vim-mode extras consumed by the builder in Phase 9; cargo-port's `ProjectListAction` overrides for `'l'`/`'h'` in Phase 12). Default `label` returns `Some(action.bar_label())` and default `state` returns `ShortcutState::Enabled` — both leverage Phase 5's `ActionEnum::bar_label` and the orthogonal-axis `ShortcutState` enum, so per-pane impls override only when label/state is state-dependent.
-- `tui_pane/src/keymap/navigation.rs` — `Navigation<Ctx>`.
-- `tui_pane/src/keymap/globals.rs` — `Globals<Ctx>` (app-extension globals, separate from the framework's own `GlobalAction` from Phase 3). The trait has **no** `bar_label(action) -> &'static str` method — Phase 5's `ActionEnum::bar_label` (live on every action enum, including the macro-generated and the hand-rolled `GlobalAction`) is the single source. Bar code calls `action.bar_label()` regardless of scope.
+- `tui_pane/src/keymap/shortcuts.rs` — `Shortcuts<Ctx>` with `type Variant: Action;`. Method set per `core-api.md` §4: `defaults`, `label`, `state`, `bar_slots`, `input_mode`, `input_mode_query`, `vim_extras`, `dispatcher`, plus `SCOPE_NAME` and `APP_PANE_ID` consts. `vim_extras() -> &'static [(Self::Variant, KeyBind)]` defaults to `&[]` (per-pane vim-mode extras consumed by the builder in Phase 9; cargo-port's `ProjectListAction` overrides for `'l'`/`'h'` in Phase 12). Default `label` returns `Some(action.bar_label())` and default `state` returns `ShortcutState::Enabled` — both leverage Phase 5's `Action::bar_label` and the orthogonal-axis `ShortcutState` enum, so per-pane impls override only when label/state is state-dependent.
+- `tui_pane/src/keymap/navigation.rs` — `Navigation<Ctx>` with `type Variant: Action;`.
+- `tui_pane/src/keymap/globals.rs` — `Globals<Ctx>` with `type Variant: Action;` (app-extension globals, separate from the framework's own `GlobalAction` from Phase 3). The trait has **no** `bar_label(action) -> &'static str` method — Phase 5's `Action::bar_label` (live on every action enum, including the macro-generated and the hand-rolled `GlobalAction`) is the single source. Bar code calls `action.bar_label()` regardless of scope.
 
-`keymap/action_enum.rs` (added in Phase 3) keeps `ActionEnum` + `action_enum!` only.
+`keymap/action_enum.rs` (added in Phase 3, renamed contents in Phase 7 prep) keeps `Action` + `action_enum!` only.
 
 **`Shortcut` wrapping struct is dead.** Phase 5 collapsed it into the orthogonal `Option<&'static str>` (label) + `ShortcutState` (axis) split. Phase 7 prep verifies `core-api.md` and `paneid-ctx.md` reference no `Shortcut\b` (singular wrapping struct) — `Shortcuts`, `ShortcutState` are the only valid forms.
 
@@ -1465,7 +1468,7 @@ In the cargo-port binary crate:
 
 - **`action_enum!` migration cost.** Every existing `action_enum!` invocation in `src/tui/` gains a third positional `bar_label` literal between the toml key and description, per Phase 5's grammar amendment. When the bar text matches the toml key, just duplicate the literal — no per-arm design decision. The hand-rolled `tui_pane::GlobalAction` already ships its own `bar_label` (Phase 5).
 - Define `NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction`.
-- **Split today's `GlobalAction`** in `src/tui/keymap.rs` into `tui_pane::GlobalAction` (the framework half: Quit/Restart/NextPane/PrevPane/OpenKeymap/OpenSettings/Dismiss) and `AppGlobalAction` (binary-owned). During Phases 12–15 the binary's existing `GlobalAction` stays in place; references to the framework's enum are path-qualified as `tui_pane::GlobalAction` to disambiguate. Phase 16 deletes the binary's old enum and `use tui_pane::GlobalAction` makes the name available unqualified. (Requires `pub use keymap::GlobalAction;` at `tui_pane/src/lib.rs` crate root — add this re-export when Phase 12 lands, mirroring the Phase 3 `ActionEnum` precedent.)
+- **Split today's `GlobalAction`** in `src/tui/keymap.rs` into `tui_pane::GlobalAction` (the framework half: Quit/Restart/NextPane/PrevPane/OpenKeymap/OpenSettings/Dismiss) and `AppGlobalAction` (binary-owned). During Phases 12–15 the binary's existing `GlobalAction` stays in place; references to the framework's enum are path-qualified as `tui_pane::GlobalAction` to disambiguate. Phase 16 deletes the binary's old enum and `use tui_pane::GlobalAction` makes the name available unqualified. (Requires `pub use keymap::GlobalAction;` at `tui_pane/src/lib.rs` crate root — add this re-export when Phase 12 lands, mirroring the Phase 3 `Action` precedent.)
 - Add `ExpandRow` / `CollapseRow` to `ProjectListAction`.
 - Implement `Shortcuts<App>` for each app pane (Package, Git, ProjectList, CiRuns, Lints, Targets, Output, Lang, Cpu, Finder). Each pane:
   - Owns `defaults() -> Bindings<Action>`.
@@ -1568,7 +1571,7 @@ Bar-on-rebind:
 
 Globals + precedence:
 
-- Globals render order matches the framework's render order then `AppGlobals::render_order()`; each slot's bar text comes from `action.bar_label()` (Phase 5's `ActionEnum::bar_label`), not a `Globals` trait method.
+- Globals render order matches the framework's render order then `AppGlobals::render_order()`; each slot's bar text comes from `action.bar_label()` (Phase 5's `Action::bar_label`), not a `Globals` trait method.
 - CiRuns Activate at EOL renders no Enter row.
 - `key_for(NavigationAction::Up) == KeyBind::from(KeyCode::Up)` even when vim mode is on.
 - Rebinding `GlobalAction::Quit` to `q` keeps `q` quitting from any pane (global beats unbound).
@@ -1651,7 +1654,7 @@ Summary:
 ## Definition of done
 
 - Workspace exists with `tui_pane` member crate; binary crate consumes it.
-- `tui_pane` exposes (every type is at the crate root — `tui_pane::Foo` flat, never `tui_pane::keymap::Foo`): `KeyBind`, `KeyInput`, `KeyParseError`, `Bindings<A>`, `bindings!`, `ScopeMap<A>`, `Keymap<Ctx>` + `KeymapBuilder<Ctx>`, `KeymapError`, `Shortcuts<Ctx>`, `Navigation<Ctx>`, `Globals<Ctx>`, `ShortcutState`, `BarSlot<A>`, `BarRegion`, `InputMode`, `ActionEnum` + `action_enum!`, `GlobalAction`, `VimMode`, `KeymapPane<Ctx>`, `SettingsPane<Ctx>`, `Toasts<Ctx>`, `SettingsRegistry<Ctx>`, `Framework<Ctx>`, `AppContext`, `FocusedPane`, `FrameworkPaneId`. The `__bindings_arms!` helper macro is `#[doc(hidden)]` but technically reachable as `tui_pane::__bindings_arms!` (a side-effect of `#[macro_export]`); it is not part of the supported surface.
+- `tui_pane` exposes (every type is at the crate root — `tui_pane::Foo` flat, never `tui_pane::keymap::Foo`): `KeyBind`, `KeyInput`, `KeyParseError`, `Bindings<A>`, `bindings!`, `ScopeMap<A>`, `Keymap<Ctx>` + `KeymapBuilder<Ctx>`, `KeymapError`, `Shortcuts<Ctx>`, `Navigation<Ctx>`, `Globals<Ctx>`, `ShortcutState`, `BarSlot<A>`, `BarRegion`, `InputMode`, `Action` + `action_enum!`, `GlobalAction`, `VimMode`, `KeymapPane<Ctx>`, `SettingsPane<Ctx>`, `Toasts<Ctx>`, `SettingsRegistry<Ctx>`, `Framework<Ctx>`, `AppContext`, `FocusedPane`, `FrameworkPaneId`. The `__bindings_arms!` helper macro is `#[doc(hidden)]` but technically reachable as `tui_pane::__bindings_arms!` (a side-effect of `#[macro_export]`); it is not part of the supported surface.
 - `ScopeMap::by_action: HashMap<A, Vec<KeyBind>>`; `display_keys_for(action) -> &[KeyBind]` exists; primary-key invariant locked.
 - TOML parser accepts `key = "Enter"` and `key = ["Enter", "Return"]`; rejects in-array duplicates and cross-action collisions within a scope.
 - `NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction` exist in cargo-port. `ProjectListAction` has `ExpandRow` / `CollapseRow`.

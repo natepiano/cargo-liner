@@ -15,7 +15,7 @@ pub use bar::BarRegion;
 pub use bar::BarSlot;
 pub use bar::InputMode;
 pub use bar::ShortcutState;
-pub use keymap::ActionEnum;
+pub use keymap::Action;
 pub use keymap::Bindings;
 pub use keymap::GlobalAction;
 pub use keymap::KeyBind;

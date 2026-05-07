@@ -102,13 +102,13 @@ impl<A: Clone> Clone for Bindings<A> {
 /// [`Bindings::bind`] / [`Bindings::bind_many`].
 ///
 /// Trailing commas are permitted on every line. The action expression
-/// must be `Copy + Clone` (already required by [`ActionEnum`] super-
+/// must be `Copy + Clone` (already required by [`Action`] super-
 /// traits) so multi-key list arms can clone per element.
 ///
 /// [`KeyCode`]: crossterm::event::KeyCode
 /// [`KeyBind::shift`]: crate::KeyBind::shift
 /// [`KeyBind::ctrl`]: crate::KeyBind::ctrl
-/// [`ActionEnum`]: crate::ActionEnum
+/// [`Action`]: crate::Action
 ///
 /// Example:
 ///

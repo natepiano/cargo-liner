@@ -135,7 +135,7 @@ Every place in `docs/tui-pane-lib.md` that currently takes `PaneId`:
 
 | Plan site | Today's signature | Rewritten signature |
 |---|---|---|
-| `Navigation::dispatcher` (line 198) | `fn(Self::Action, focused: PaneId, &mut Ctx)` | `fn(Self::Action, focused: FrameworkPaneId \| AppPaneId, &mut Ctx)` — see note below |
+| `Navigation::dispatcher` (line 198) | `fn(Self::Variant, focused: PaneId, &mut Ctx)` | `fn(Self::Variant, focused: FrameworkPaneId \| AppPaneId, &mut Ctx)` — see note below |
 | `Framework::editor_target_path` (line 946) | `fn(&self, focus: PaneId) -> Option<&Path>` | `fn(&self, focus: FrameworkPaneId) -> Option<&Path>` |
 | `Framework::focused_pane_input_mode` (line 954) | `fn(&self, focus: PaneId, ctx: &Ctx) -> InputMode` | `fn(&self, ctx: &Ctx) -> InputMode` — reads `self.focused()` internally; `enum FocusedPane { App(AppPaneId), Framework(FrameworkPaneId) }` is defined in `tui_pane` |
 | `Framework::input_mode_queries` (line 942) | `HashMap<PaneId, fn(&Ctx) -> InputMode>` | `HashMap<AppPaneId, fn(&Ctx) -> InputMode>` |
@@ -162,7 +162,7 @@ giving framework signatures one parameter, not two.
 `Navigation::dispatcher` (line 198) becomes:
 
 ```rust
-fn dispatcher() -> fn(Self::Action, focused: FocusedPane<AppPaneId>, ctx: &mut Ctx);
+fn dispatcher() -> fn(Self::Variant, focused: FocusedPane<AppPaneId>, ctx: &mut Ctx);
 ```
 
 `AppPaneId` is an associated type on the `Ctx` trait — see §2.
@@ -255,14 +255,14 @@ become:
 
 ```rust
 pub trait Navigation<Ctx: AppContext> {
-    type Action: ActionEnum + 'static;
+    type Variant: Action + 'static;
     const SCOPE_NAME: &'static str = "navigation";
-    const UP:    Self::Action;
-    const DOWN:  Self::Action;
-    const LEFT:  Self::Action;
-    const RIGHT: Self::Action;
-    fn defaults() -> Bindings<Self::Action>;
-    fn dispatcher() -> fn(Self::Action, focused: FocusedPane<Ctx::AppPaneId>, ctx: &mut Ctx);
+    const UP:    Self::Variant;
+    const DOWN:  Self::Variant;
+    const LEFT:  Self::Variant;
+    const RIGHT: Self::Variant;
+    fn defaults() -> Bindings<Self::Variant>;
+    fn dispatcher() -> fn(Self::Variant, focused: FocusedPane<Ctx::AppPaneId>, ctx: &mut Ctx);
 }
 ```
 
@@ -456,7 +456,7 @@ pub(crate) fn dispatch_package(action: PackageAction, app: &mut App) {
 }
 
 impl Shortcuts<App> for PackagePane {
-    type Action = PackageAction;
+    type Variant = PackageAction;
     const SCOPE_NAME: &'static str = "package";
     fn defaults() -> Bindings<PackageAction> { /* … */ }
     fn label(&self, action: PackageAction, ctx: &App) -> Option<&'static str> { /* … */ }

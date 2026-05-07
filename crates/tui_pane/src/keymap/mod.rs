@@ -8,7 +8,7 @@ mod load;
 mod scope_map;
 mod vim;
 
-pub use action_enum::ActionEnum;
+pub use action_enum::Action;
 pub use bindings::Bindings;
 pub use global_action::GlobalAction;
 pub use key_bind::KeyBind;

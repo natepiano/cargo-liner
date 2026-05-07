@@ -13,7 +13,7 @@
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
-use tui_pane::ActionEnum;
+use tui_pane::Action;
 use tui_pane::BarRegion;
 use tui_pane::BarSlot;
 use tui_pane::InputMode;

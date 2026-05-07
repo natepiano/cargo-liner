@@ -17,8 +17,8 @@ pub enum ShortcutState {
 
 /// Per-slot payload emitted by a pane and consumed by the bar renderer.
 ///
-/// Generic over an action type `A` (typically `A: ActionEnum`); the
-/// renderer pairs each action with its `ActionEnum::bar_label` and the
+/// Generic over an action type `A` (typically `A: Action`); the
+/// renderer pairs each action with its `Action::bar_label` and the
 /// pane's `Shortcuts::label` override (Phase 7).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum BarSlot<A> {

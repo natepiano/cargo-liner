@@ -9,7 +9,7 @@ use core::fmt::Formatter;
 
 use crossterm::event::KeyCode;
 
-use super::action_enum::ActionEnum;
+use super::action_enum::Action;
 use super::bindings::Bindings;
 use super::key_bind::KeyBind;
 
@@ -25,7 +25,7 @@ use super::key_bind::KeyBind;
 /// [`Self::OpenKeymap`], [`Self::OpenSettings`]) are dispatched
 /// entirely by the framework, which owns the registered pane set.
 ///
-/// [`ActionEnum`] is implemented by hand here rather than through
+/// [`Action`] is implemented by hand here rather than through
 /// [`action_enum!`](crate::action_enum) because the strings are
 /// framework-canonical and the variant set is closed.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -68,7 +68,7 @@ impl GlobalAction {
     }
 }
 
-impl ActionEnum for GlobalAction {
+impl Action for GlobalAction {
     const ALL: &'static [Self] = &[
         Self::Quit,
         Self::Restart,
@@ -146,7 +146,7 @@ mod tests {
 
     use super::GlobalAction;
     use super::KeyBind;
-    use crate::ActionEnum;
+    use crate::Action;
 
     #[test]
     fn all_has_seven_variants_in_declaration_order() {

@@ -293,7 +293,7 @@ impl<A: Copy + Eq + Hash> ScopeMap<A> {
 /// §2.3): `Copy + Eq + Hash + Debug + Display + 'static`. The macro
 /// generates the `Display` impl (delegating to `description()`); hand-
 /// rolled impls (e.g. `GlobalAction`) must do the same.
-pub trait ActionEnum:
+pub trait Action:
     Copy + Eq + std::hash::Hash + std::fmt::Debug + std::fmt::Display + 'static
 {
     /// Every variant in declaration order.
@@ -324,7 +324,7 @@ pub trait ActionEnum:
 /// impl itself never holds borrowed data.
 pub trait Shortcuts<Ctx: AppContext>: 'static {
     /// The pane's action enum.
-    type Action: ActionEnum;
+    type Variant: Action;
 
     /// TOML table name. Survives type renames; one-line cost. Required.
     const SCOPE_NAME: &'static str;
@@ -337,21 +337,21 @@ pub trait Shortcuts<Ctx: AppContext>: 'static {
 
     /// Default keybindings. No framework default — every pane declares
     /// its own keys.
-    fn defaults() -> Bindings<Self::Action>;
+    fn defaults() -> Bindings<Self::Variant>;
 
     /// Per-action bar label. `None` hides the slot. Default returns
     /// `Some(action.bar_label())` (the static label declared in
     /// `action_enum!`). Override only when the label depends on pane
     /// state (e.g. `PackageAction::Activate` reads `"open"` on
     /// `CratesIo` fields, `"activate"` elsewhere).
-    fn label(&self, action: Self::Action, _ctx: &Ctx) -> Option<&'static str> {
+    fn label(&self, action: Self::Variant, _ctx: &Ctx) -> Option<&'static str> {
         Some(action.bar_label())
     }
 
     /// Per-action enabled / disabled status. Default `Enabled`.
     /// Override when the action is visible but inert (e.g.
     /// `PackageAction::Clean` grayed out when no target dir exists).
-    fn state(&self, _action: Self::Action, _ctx: &Ctx) -> ShortcutState {
+    fn state(&self, _action: Self::Variant, _ctx: &Ctx) -> ShortcutState {
         ShortcutState::Enabled
     }
 
@@ -359,8 +359,8 @@ pub trait Shortcuts<Ctx: AppContext>: 'static {
     /// `Action::ALL` in declaration order. Override to introduce
     /// `Paired` slots, route into `BarRegion::Nav`, or omit
     /// data-dependent slots.
-    fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Action>)> {
-        Self::Action::ALL
+    fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Variant>)> {
+        Self::Variant::ALL
             .iter()
             .copied()
             .map(|a| (BarRegion::PaneAction, BarSlot::Single(a)))
@@ -382,47 +382,47 @@ pub trait Shortcuts<Ctx: AppContext>: 'static {
     /// Optional vim-extras: pane actions that gain a vim binding when
     /// `VimMode::Enabled`. Default empty. Used by
     /// `ProjectListAction::ExpandRow` (`'l'`) and `CollapseRow` (`'h'`).
-    fn vim_extras() -> &'static [(Self::Action, KeyBind)] { &[] }
+    fn vim_extras() -> &'static [(Self::Variant, KeyBind)] { &[] }
 
     /// Free-function dispatcher. Framework calls
     /// `Self::dispatcher()(action, ctx)` while holding `&mut Ctx`.
     /// Implementations navigate from the `Ctx` root rather than
     /// holding a `&mut self` borrow (split-borrow rule).
-    fn dispatcher() -> fn(Self::Action, &mut Ctx);
+    fn dispatcher() -> fn(Self::Variant, &mut Ctx);
 }
 
 /// Navigation scope. One impl per app (the binary defines a single
 /// `AppNavigation` zero-sized type and impls this trait for it).
 ///
-/// `'static` is implied by the `ActionEnum` bound on `Action`.
+/// `'static` is implied by the `Action` bound on `Action`.
 pub trait Navigation<Ctx: AppContext>: 'static {
-    type Action: ActionEnum;
+    type Variant: Action;
 
     const SCOPE_NAME: &'static str = "navigation";
-    const UP:    Self::Action;
-    const DOWN:  Self::Action;
-    const LEFT:  Self::Action;
-    const RIGHT: Self::Action;
+    const UP:    Self::Variant;
+    const DOWN:  Self::Variant;
+    const LEFT:  Self::Variant;
+    const RIGHT: Self::Variant;
 
-    fn defaults() -> Bindings<Self::Action>;
+    fn defaults() -> Bindings<Self::Variant>;
 
     /// Free fn the framework calls when any navigation action fires.
     /// `focused` lets the dispatcher pick the right scrollable surface;
     /// callers read `ctx.framework().focused()` and pass it through.
-    fn dispatcher() -> fn(Self::Action, focused: FocusedPane<Ctx::AppPaneId>, ctx: &mut Ctx);
+    fn dispatcher() -> fn(Self::Variant, focused: FocusedPane<Ctx::AppPaneId>, ctx: &mut Ctx);
 }
 
 /// App-extension globals scope. One impl per app. The framework's own
 /// pane-management/lifecycle globals live in `GlobalAction` and are
 /// not part of this scope.
 pub trait Globals<Ctx: AppContext>: 'static {
-    type Action: ActionEnum;
+    type Variant: Action;
 
     const SCOPE_NAME: &'static str = "global";
 
-    fn render_order() -> &'static [Self::Action];
-    fn defaults() -> Bindings<Self::Action>;
-    fn dispatcher() -> fn(Self::Action, &mut Ctx);
+    fn render_order() -> &'static [Self::Variant];
+    fn defaults() -> Bindings<Self::Variant>;
+    fn dispatcher() -> fn(Self::Variant, &mut Ctx);
 }
 ```
 
@@ -860,7 +860,7 @@ pub enum GlobalAction {
     Dismiss,
 }
 
-impl ActionEnum for GlobalAction {
+impl Action for GlobalAction {
     const ALL: &'static [Self] = &[
         Self::Quit, Self::Restart, Self::NextPane, Self::PrevPane,
         Self::OpenKeymap, Self::OpenSettings, Self::Dismiss,
@@ -971,7 +971,7 @@ pub enum KeymapError {
 }
 ```
 
-**Tradeoff.** `GlobalAction` impls `ActionEnum` so it can flow through the same `ScopeMap` / TOML / display machinery as every other scope. The binary never names it; the impl exists purely so framework-internal code reuses one path.
+**Tradeoff.** `GlobalAction` impls `Action` so it can flow through the same `ScopeMap` / TOML / display machinery as every other scope. The binary never names it; the impl exists purely so framework-internal code reuses one path.
 
 ---
 
@@ -1002,7 +1002,7 @@ mod settings;
 
 // --- Keymap core -----------------------------------------------------
 pub use crate::keymap::{
-    ActionEnum, Bindings, BuilderError, GlobalAction, Globals, KeyBind,
+    Action, Bindings, BuilderError, GlobalAction, Globals, KeyBind,
     KeyInput, KeyParseError, Keymap, KeymapBuilder, KeymapError, Navigation,
     ScopeMap, Shortcuts, VimMode,
 };
@@ -1033,7 +1033,7 @@ pub use crate::pane_id::{FrameworkPaneId, FocusedPane};
 
 **Final list of exported names** (alphabetical, grouped):
 
-- **Action machinery:** `ActionEnum`, `GlobalAction`, `action_enum!`
+- **Action machinery:** `Action`, `GlobalAction`, `action_enum!`
 - **Keys:** `KeyBind`, `KeyParseError`
 - **Bindings & maps:** `Bindings`, `ScopeMap`, `bindings!`
 - **Keymap:** `Keymap`, `KeymapBuilder`, `BuilderError`, `KeymapError`, `VimMode`

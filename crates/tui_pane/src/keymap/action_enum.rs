@@ -1,4 +1,4 @@
-//! `ActionEnum` trait + `action_enum!` macro: vocabulary every action
+//! `Action` trait + `action_enum!` macro: vocabulary every action
 //! enum implements so it can flow through `ScopeMap`, the bar, and the
 //! TOML loader behind a single bound.
 
@@ -13,10 +13,10 @@ use core::hash::Hash;
 /// own [`GlobalAction`](crate::keymap::GlobalAction) is the one
 /// hand-rolled case.
 ///
-/// Super-traits chosen so generic code (`ScopeMap<A: ActionEnum>`,
+/// Super-traits chosen so generic code (`ScopeMap<A: Action>`,
 /// keymap-overlay rendering, TOML round-trip) needs only one bound,
 /// not five.
-pub trait ActionEnum: Copy + Eq + Hash + Debug + Display + 'static {
+pub trait Action: Copy + Eq + Hash + Debug + Display + 'static {
     /// Every variant of `Self`, in declaration order. Stable across runs.
     const ALL: &'static [Self];
 
@@ -39,7 +39,7 @@ pub trait ActionEnum: Copy + Eq + Hash + Debug + Display + 'static {
     fn from_toml_key(key: &str) -> Option<Self>;
 }
 
-/// Declares an action enum and implements [`ActionEnum`] +
+/// Declares an action enum and implements [`Action`] +
 /// [`Display`](core::fmt::Display) for it.
 ///
 /// Grammar:
@@ -57,7 +57,7 @@ pub trait ActionEnum: Copy + Eq + Hash + Debug + Display + 'static {
 /// At least one variant is required — empty bodies are rejected at
 /// expansion time. The caller supplies
 /// `#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]`; those are
-/// super-trait requirements of [`ActionEnum`] that the macro does not
+/// super-trait requirements of [`Action`] that the macro does not
 /// inject silently.
 ///
 /// Example:
@@ -84,7 +84,7 @@ macro_rules! action_enum {
             $( $Variant, )+
         }
 
-        impl $crate::ActionEnum for $Name {
+        impl $crate::Action for $Name {
             const ALL: &'static [Self] = &[ $( Self::$Variant, )+ ];
 
             fn toml_key(self) -> &'static str {
@@ -115,7 +115,7 @@ macro_rules! action_enum {
 
         impl ::core::fmt::Display for $Name {
             fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                f.write_str(<Self as $crate::ActionEnum>::description(*self))
+                f.write_str(<Self as $crate::Action>::description(*self))
             }
         }
     };
@@ -129,7 +129,7 @@ macro_rules! action_enum {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use super::ActionEnum;
+    use super::Action;
 
     crate::action_enum! {
         #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
