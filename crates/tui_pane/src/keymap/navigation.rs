@@ -19,31 +19,31 @@ use crate::keymap::Bindings;
 /// the right scrollable surface.
 ///
 /// `'static` is implied by the [`Action`] super-trait on
-/// [`Self::Variant`].
+/// [`Self::Actions`].
 pub trait Navigation<Ctx: AppContext>: 'static {
     /// The app's navigation-action enum.
-    type Variant: Action;
+    type Actions: Action;
 
     /// TOML table name. Defaults to `"navigation"` — apps rarely
     /// override.
     const SCOPE_NAME: &'static str = "navigation";
 
     /// The variant for "move up".
-    const UP: Self::Variant;
+    const UP: Self::Actions;
     /// The variant for "move down".
-    const DOWN: Self::Variant;
+    const DOWN: Self::Actions;
     /// The variant for "move left".
-    const LEFT: Self::Variant;
+    const LEFT: Self::Actions;
     /// The variant for "move right".
-    const RIGHT: Self::Variant;
+    const RIGHT: Self::Actions;
 
     /// Default keybindings.
-    fn defaults() -> Bindings<Self::Variant>;
+    fn defaults() -> Bindings<Self::Actions>;
 
     /// Free fn the framework calls when any navigation action fires.
     /// `focused` lets the dispatcher pick the right scrollable surface;
     /// callers read `ctx.framework().focused()` and pass it through.
-    fn dispatcher() -> fn(Self::Variant, focused: FocusedPane<Ctx::AppPaneId>, ctx: &mut Ctx);
+    fn dispatcher() -> fn(Self::Actions, focused: FocusedPane<Ctx::AppPaneId>, ctx: &mut Ctx);
 }
 
 #[cfg(test)]
@@ -91,14 +91,14 @@ mod tests {
     struct AppNavigation;
 
     impl Navigation<TestApp> for AppNavigation {
-        type Variant = NavAction;
+        type Actions = NavAction;
 
-        const DOWN: Self::Variant = NavAction::Down;
-        const LEFT: Self::Variant = NavAction::Left;
-        const RIGHT: Self::Variant = NavAction::Right;
-        const UP: Self::Variant = NavAction::Up;
+        const DOWN: Self::Actions = NavAction::Down;
+        const LEFT: Self::Actions = NavAction::Left;
+        const RIGHT: Self::Actions = NavAction::Right;
+        const UP: Self::Actions = NavAction::Up;
 
-        fn defaults() -> Bindings<Self::Variant> {
+        fn defaults() -> Bindings<Self::Actions> {
             crate::bindings! {
                 KeyCode::Up    => NavAction::Up,
                 KeyCode::Down  => NavAction::Down,
@@ -107,7 +107,7 @@ mod tests {
             }
         }
 
-        fn dispatcher() -> fn(Self::Variant, FocusedPane<TestPaneId>, &mut TestApp) {
+        fn dispatcher() -> fn(Self::Actions, FocusedPane<TestPaneId>, &mut TestApp) {
             |_action, _focused, _ctx| { /* no-op for the test impl */ }
         }
     }

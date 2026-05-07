@@ -91,7 +91,7 @@ impl KeyBind {
     /// `KeyCode::Char('+')`. Accepts `"Control"` as a synonym for `"Ctrl"`,
     /// and `"Space"` for `KeyCode::Char(' ')`. Letter case is preserved
     /// verbatim — `"Ctrl+K"` parses to `Char('K')`, not `Char('k')`. Any
-    /// case-insensitive lookup is a keymap-layer concern (Phase 8 loader),
+    /// case-insensitive lookup is a keymap-layer concern (Phase 9 loader),
     /// not a parser concern.
     pub fn parse(s: &str) -> Result<Self, KeyParseError> { /* see source */ }
 }
@@ -546,26 +546,26 @@ impl<Ctx: AppContext> Keymap<Ctx> {
     pub fn builder() -> KeymapBuilder<Ctx> { KeymapBuilder::new() }
 
     /// Pane scope lookup. `pub` — input handlers and bar code call this.
-    pub fn scope_for<P: Shortcuts<Ctx>>(&self) -> &ScopeMap<P::Action> {
+    pub fn scope_for<P: Shortcuts<Ctx>>(&self) -> &ScopeMap<P::Actions> {
         self.scopes
             .get(&TypeId::of::<P>())
-            .and_then(|b| b.downcast_ref::<ScopeMap<P::Action>>())
+            .and_then(|b| b.downcast_ref::<ScopeMap<P::Actions>>())
             .expect("scope_for: pane not registered")
     }
 
     /// Navigation scope lookup. `pub` — base-pane input handlers call.
-    pub fn navigation<N: Navigation<Ctx>>(&self) -> &ScopeMap<N::Action> {
+    pub fn navigation<N: Navigation<Ctx>>(&self) -> &ScopeMap<N::Actions> {
         self.scopes
             .get(&TypeId::of::<N>())
-            .and_then(|b| b.downcast_ref::<ScopeMap<N::Action>>())
+            .and_then(|b| b.downcast_ref::<ScopeMap<N::Actions>>())
             .expect("navigation: scope not registered")
     }
 
     /// App-globals scope lookup. `pub`.
-    pub fn globals<G: Globals<Ctx>>(&self) -> &ScopeMap<G::Action> {
+    pub fn globals<G: Globals<Ctx>>(&self) -> &ScopeMap<G::Actions> {
         self.scopes
             .get(&TypeId::of::<G>())
-            .and_then(|b| b.downcast_ref::<ScopeMap<G::Action>>())
+            .and_then(|b| b.downcast_ref::<ScopeMap<G::Actions>>())
             .expect("globals: scope not registered")
     }
 
@@ -1035,7 +1035,7 @@ pub enum KeymapError {
 
 ## 11. Module hierarchy and `lib.rs` re-exports
 
-**Canonical source.** This section is the single authoritative definition of the `tui_pane` foundations module hierarchy (split across Phases 2–9 of `tui-pane-lib.md`). Each sub-phase references this section for its file list; do not duplicate the file list elsewhere. The directories declared here (`keymap/`, `bar/`, `panes/`, plus `settings.rs`) are the same skeletons that Phases 10 and 11 fill in.
+**Canonical source.** This section is the single authoritative definition of the `tui_pane` foundations module hierarchy (split across Phases 2–10 of `tui-pane-lib.md`). Each sub-phase references this section for its file list; do not duplicate the file list elsewhere. The directories declared here (`keymap/`, `bar/`, `panes/`, plus `settings.rs`) are the same skeletons that Phases 10 and 11 fill in.
 
 ```rust
 //! `tui_pane` — keymap-driven pane framework on top of crossterm + ratatui.

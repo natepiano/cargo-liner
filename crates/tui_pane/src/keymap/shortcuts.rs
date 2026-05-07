@@ -1,103 +1,82 @@
 //! `Shortcuts<Ctx>`: per-pane scope trait.
 //!
 //! State-bearing scope — one impl per app pane type. Drives bar
-//! rendering, keymap-overlay help, and per-action dispatch. The
-//! framework keys its per-pane query registry (e.g.
-//! `input_mode_queries`) on
-//! [`AppContext::AppPaneId`](crate::AppContext::AppPaneId), which is
-//! why each impl declares its [`Self::APP_PANE_ID`] variant.
+//! rendering, keymap-overlay help, and per-action dispatch. Pane
+//! identity and the input-mode query live on the
+//! [`Pane<Ctx>`](crate::Pane) supertrait, not here.
 
 use crate::AppContext;
 use crate::BarRegion;
 use crate::BarSlot;
-use crate::InputMode;
+use crate::Pane;
 use crate::ShortcutState;
+use crate::Visibility;
 use crate::keymap::Action;
 use crate::keymap::Bindings;
 use crate::keymap::KeyBind;
 
 /// Per-pane scope: state-bearing, one impl per pane type.
 ///
-/// Each implementor declares its action-enum [`Self::Variant`], a
-/// stable [`Self::SCOPE_NAME`] for TOML, and a [`Self::APP_PANE_ID`]
-/// the framework uses to key its per-pane registries. Methods cover
-/// default bindings, bar rendering, label/state overrides, input-mode
-/// query, vim-mode extras, and the free-function dispatcher.
+/// Each implementor declares its action-enum [`Self::Actions`] and a
+/// stable [`Self::SCOPE_NAME`] for TOML. Methods cover default
+/// bindings, bar rendering, per-action visibility / state overrides,
+/// vim-mode extras, and the free-function dispatcher. Pane identity
+/// (`APP_PANE_ID`) and input-mode query (`mode`) come from
+/// [`Pane<Ctx>`](crate::Pane).
 ///
-/// `'static` is required because the framework keys its registries on
-/// `TypeId<P>` and stores `fn` pointers — both demand `'static`. Pane
-/// instances live on the binary's `App`; the trait impl itself never
-/// holds borrowed data.
-pub trait Shortcuts<Ctx: AppContext>: 'static {
+/// `'static` is inherited from [`Pane<Ctx>`](crate::Pane); the
+/// framework keys its registries on `TypeId<P>` and stores `fn`
+/// pointers, both of which require `'static`.
+pub trait Shortcuts<Ctx: AppContext>: Pane<Ctx> {
     /// The pane's action enum.
-    type Variant: Action;
+    type Actions: Action;
 
     /// TOML table name for this scope (e.g. `"project_list"`). Must be
     /// stable — TOML files are user-edited.
     const SCOPE_NAME: &'static str;
 
-    /// Stable per-pane identity used by the framework's per-pane
-    /// query registry (e.g. `input_mode_queries`). The trait covers
-    /// app panes only — framework panes (Keymap, Settings, Toasts) are
-    /// special-cased — so the variant is always an `AppPaneId`.
-    const APP_PANE_ID: Ctx::AppPaneId;
-
     /// Default keybindings. No framework default — every pane declares
     /// its own keys.
-    fn defaults() -> Bindings<Self::Variant>;
+    fn defaults() -> Bindings<Self::Actions>;
 
-    /// Per-action bar label. `None` hides the slot. Default returns
-    /// `Some(action.bar_label())` (the static label declared in
-    /// `action_enum!`). Override only when the label depends on pane
-    /// state.
-    fn label(&self, action: Self::Variant, _ctx: &Ctx) -> Option<&'static str> {
-        Some(action.bar_label())
-    }
+    /// Per-action show/hide. Default [`Visibility::Visible`]. Override
+    /// when a slot drops from the bar based on pane state — e.g.
+    /// `Activate` returning [`Visibility::Hidden`] when no row is
+    /// selected. Distinct from [`Self::state`], which keeps the slot
+    /// in the bar but grays it out.
+    fn visibility(&self, _action: Self::Actions, _ctx: &Ctx) -> Visibility { Visibility::Visible }
 
     /// Per-action enabled / disabled status. Default
     /// [`ShortcutState::Enabled`]. Override when the action is visible
     /// but inert (e.g. an action grayed out when no target exists).
-    fn state(&self, _action: Self::Variant, _ctx: &Ctx) -> ShortcutState { ShortcutState::Enabled }
+    fn state(&self, _action: Self::Actions, _ctx: &Ctx) -> ShortcutState { ShortcutState::Enabled }
 
     /// Bar slot layout. Default: one
     /// `(BarRegion::PaneAction, BarSlot::Single(action))` per
     /// [`Action::ALL`] in declaration order. Override to introduce
     /// `Paired` slots, route into [`BarRegion::Nav`], or omit
     /// data-dependent slots.
-    fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Variant>)> {
-        Self::Variant::ALL
+    fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Actions>)> {
+        Self::Actions::ALL
             .iter()
             .copied()
             .map(|a| (BarRegion::PaneAction, BarSlot::Single(a)))
             .collect()
     }
 
-    /// Pane's current input mode (Navigable / Static / TextInput).
-    /// Drives bar-region suppression and the structural Esc gate.
-    ///
-    /// Returns a `fn(&Ctx) -> InputMode` so the framework can store
-    /// the pointer in `Framework<Ctx>::input_mode_queries`, keyed by
-    /// `AppPaneId`, populated at `register::<P>()` time. The framework
-    /// holds `&Ctx` and an `AppPaneId` at query time, never a typed
-    /// `&PaneStruct`, so the closure does the navigation from `Ctx` to
-    /// whatever pane state determines the mode.
-    ///
-    /// Default returns [`InputMode::Navigable`]. Panes whose mode
-    /// varies with `Ctx` state override.
-    fn input_mode() -> fn(&Ctx) -> InputMode { |_ctx| InputMode::Navigable }
-
     /// Pane actions that gain a vim binding when
     /// [`VimMode::Enabled`](crate::VimMode::Enabled). Default empty.
     /// Consumed by the keymap builder, which appends each
     /// `(action, key)` pair to the pane's scope after the TOML overlay.
-    fn vim_extras() -> &'static [(Self::Variant, KeyBind)] { &[] }
+    #[must_use]
+    fn vim_extras() -> &'static [(Self::Actions, KeyBind)] { &[] }
 
     /// Free-function dispatcher. The framework calls
     /// `Self::dispatcher()(action, ctx)` while holding `&mut Ctx`.
     /// Implementations navigate from the `Ctx` root rather than
     /// holding a `&mut self` borrow — the framework never owns a typed
     /// `&PaneStruct` at dispatch time.
-    fn dispatcher() -> fn(Self::Variant, &mut Ctx);
+    fn dispatcher() -> fn(Self::Actions, &mut Ctx);
 }
 
 #[cfg(test)]
@@ -116,8 +95,10 @@ mod tests {
     use crate::BarSlot;
     use crate::FocusedPane;
     use crate::Framework;
-    use crate::InputMode;
+    use crate::Mode;
+    use crate::Pane;
     use crate::ShortcutState;
+    use crate::Visibility;
     use crate::keymap::Bindings;
 
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -146,20 +127,23 @@ mod tests {
 
     struct FooPane;
 
-    impl Shortcuts<TestApp> for FooPane {
-        type Variant = FooAction;
-
+    impl Pane<TestApp> for FooPane {
         const APP_PANE_ID: TestPaneId = TestPaneId::Foo;
+    }
+
+    impl Shortcuts<TestApp> for FooPane {
+        type Actions = FooAction;
+
         const SCOPE_NAME: &'static str = "foo";
 
-        fn defaults() -> Bindings<Self::Variant> {
+        fn defaults() -> Bindings<Self::Actions> {
             crate::bindings! {
                 KeyCode::Enter => FooAction::Activate,
                 'c' => FooAction::Clean,
             }
         }
 
-        fn dispatcher() -> fn(Self::Variant, &mut TestApp) {
+        fn dispatcher() -> fn(Self::Actions, &mut TestApp) {
             |_action, _ctx| { /* no-op for the test impl */ }
         }
     }
@@ -181,11 +165,14 @@ mod tests {
     }
 
     #[test]
-    fn default_label_returns_action_bar_label() {
+    fn default_visibility_returns_visible() {
         let pane = FooPane;
         let app = fresh_app();
-        assert_eq!(pane.label(FooAction::Activate, &app), Some("activate"));
-        assert_eq!(pane.label(FooAction::Clean, &app), Some("clean"));
+        assert_eq!(
+            pane.visibility(FooAction::Activate, &app),
+            Visibility::Visible,
+        );
+        assert_eq!(pane.visibility(FooAction::Clean, &app), Visibility::Visible);
     }
 
     #[test]
@@ -212,10 +199,17 @@ mod tests {
     }
 
     #[test]
-    fn default_input_mode_returns_navigable() {
+    fn default_mode_returns_navigable() {
         let app = fresh_app();
-        let query: fn(&TestApp) -> InputMode = FooPane::input_mode();
-        assert_eq!(query(&app), InputMode::Navigable);
+        let query: fn(&TestApp) -> Mode<TestApp> = <FooPane as Pane<TestApp>>::mode();
+        assert!(matches!(query(&app), Mode::Navigable));
+    }
+
+    #[test]
+    fn text_input_mode_carries_handler() {
+        fn no_op(_key: crate::KeyBind, _ctx: &mut TestApp) {}
+        let mode: Mode<TestApp> = Mode::TextInput(no_op);
+        assert!(matches!(mode, Mode::TextInput(_)));
     }
 
     #[test]
@@ -233,9 +227,6 @@ mod tests {
     #[test]
     fn const_identifiers_are_reachable() {
         assert_eq!(<FooPane as Shortcuts<TestApp>>::SCOPE_NAME, "foo");
-        assert_eq!(
-            <FooPane as Shortcuts<TestApp>>::APP_PANE_ID,
-            TestPaneId::Foo,
-        );
+        assert_eq!(<FooPane as Pane<TestApp>>::APP_PANE_ID, TestPaneId::Foo);
     }
 }

@@ -22,11 +22,13 @@ use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::FrameworkPaneId;
 use tui_pane::Globals;
-use tui_pane::InputMode;
 use tui_pane::KeyBind;
+use tui_pane::Mode;
 use tui_pane::Navigation;
+use tui_pane::Pane;
 use tui_pane::ShortcutState;
 use tui_pane::Shortcuts;
+use tui_pane::Visibility;
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -136,6 +138,8 @@ fn framework_skeleton_reachable_from_outside_crate() {
     );
 }
 
+const fn no_op_text_input(_key: KeyBind, _ctx: &mut CrossCrateApp) {}
+
 #[test]
 fn bar_primitives_reachable_from_outside_crate() {
     let single: BarSlot<CrossCrateAction> = BarSlot::Single(CrossCrateAction::Alpha);
@@ -155,10 +159,15 @@ fn bar_primitives_reachable_from_outside_crate() {
 
     assert_ne!(ShortcutState::Enabled, ShortcutState::Disabled);
 
-    let mode = InputMode::Navigable;
-    assert_eq!(mode, InputMode::Navigable);
-    assert_ne!(mode, InputMode::Static);
-    assert_ne!(mode, InputMode::TextInput);
+    let navigable: Mode<CrossCrateApp> = Mode::Navigable;
+    let static_mode: Mode<CrossCrateApp> = Mode::Static;
+    let text_input: Mode<CrossCrateApp> = Mode::TextInput(no_op_text_input);
+    assert!(matches!(navigable, Mode::Navigable));
+    assert!(matches!(static_mode, Mode::Static));
+    assert!(matches!(text_input, Mode::TextInput(_)));
+
+    assert_eq!(Visibility::Visible, Visibility::Visible);
+    assert_ne!(Visibility::Visible, Visibility::Hidden);
 }
 
 tui_pane::action_enum! {
@@ -181,13 +190,16 @@ tui_pane::action_enum! {
 
 struct CrossCratePane;
 
-impl Shortcuts<CrossCrateApp> for CrossCratePane {
-    type Variant = CrossCrateAction;
-
+impl Pane<CrossCrateApp> for CrossCratePane {
     const APP_PANE_ID: CrossCratePaneId = CrossCratePaneId::Alpha;
+}
+
+impl Shortcuts<CrossCrateApp> for CrossCratePane {
+    type Actions = CrossCrateAction;
+
     const SCOPE_NAME: &'static str = "cross_crate";
 
-    fn defaults() -> Bindings<Self::Variant> {
+    fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
             KeyCode::Enter => CrossCrateAction::Alpha,
             'b' => CrossCrateAction::Beta,
@@ -195,7 +207,7 @@ impl Shortcuts<CrossCrateApp> for CrossCratePane {
         }
     }
 
-    fn dispatcher() -> fn(Self::Variant, &mut CrossCrateApp) {
+    fn dispatcher() -> fn(Self::Actions, &mut CrossCrateApp) {
         |_action, _ctx| { /* no-op for the smoke test */ }
     }
 }
@@ -203,14 +215,14 @@ impl Shortcuts<CrossCrateApp> for CrossCratePane {
 struct CrossCrateNavigation;
 
 impl Navigation<CrossCrateApp> for CrossCrateNavigation {
-    type Variant = CrossCrateNavAction;
+    type Actions = CrossCrateNavAction;
 
-    const DOWN: Self::Variant = CrossCrateNavAction::Down;
-    const LEFT: Self::Variant = CrossCrateNavAction::Left;
-    const RIGHT: Self::Variant = CrossCrateNavAction::Right;
-    const UP: Self::Variant = CrossCrateNavAction::Up;
+    const DOWN: Self::Actions = CrossCrateNavAction::Down;
+    const LEFT: Self::Actions = CrossCrateNavAction::Left;
+    const RIGHT: Self::Actions = CrossCrateNavAction::Right;
+    const UP: Self::Actions = CrossCrateNavAction::Up;
 
-    fn defaults() -> Bindings<Self::Variant> {
+    fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
             KeyCode::Up    => CrossCrateNavAction::Up,
             KeyCode::Down  => CrossCrateNavAction::Down,
@@ -219,7 +231,7 @@ impl Navigation<CrossCrateApp> for CrossCrateNavigation {
         }
     }
 
-    fn dispatcher() -> fn(Self::Variant, FocusedPane<CrossCratePaneId>, &mut CrossCrateApp) {
+    fn dispatcher() -> fn(Self::Actions, FocusedPane<CrossCratePaneId>, &mut CrossCrateApp) {
         |_action, _focused, _ctx| { /* no-op for the smoke test */ }
     }
 }
@@ -227,20 +239,20 @@ impl Navigation<CrossCrateApp> for CrossCrateNavigation {
 struct CrossCrateGlobals;
 
 impl Globals<CrossCrateApp> for CrossCrateGlobals {
-    type Variant = CrossCrateGlobalAction;
+    type Actions = CrossCrateGlobalAction;
 
-    fn render_order() -> &'static [Self::Variant] {
+    fn render_order() -> &'static [Self::Actions] {
         &[CrossCrateGlobalAction::Find, CrossCrateGlobalAction::Rescan]
     }
 
-    fn defaults() -> Bindings<Self::Variant> {
+    fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
             'f' => CrossCrateGlobalAction::Find,
             KeyCode::F(5) => CrossCrateGlobalAction::Rescan,
         }
     }
 
-    fn dispatcher() -> fn(Self::Variant, &mut CrossCrateApp) {
+    fn dispatcher() -> fn(Self::Actions, &mut CrossCrateApp) {
         |_action, _ctx| { /* no-op for the smoke test */ }
     }
 }
@@ -257,10 +269,13 @@ fn shortcuts_trait_works_from_outside_crate() {
         "cross_crate"
     );
     assert_eq!(
-        <CrossCratePane as Shortcuts<CrossCrateApp>>::APP_PANE_ID,
+        <CrossCratePane as Pane<CrossCrateApp>>::APP_PANE_ID,
         CrossCratePaneId::Alpha,
     );
-    assert_eq!(pane.label(CrossCrateAction::Alpha, &app), Some("alpha"));
+    assert_eq!(
+        pane.visibility(CrossCrateAction::Alpha, &app),
+        Visibility::Visible,
+    );
     assert_eq!(
         pane.state(CrossCrateAction::Beta, &app),
         ShortcutState::Enabled
@@ -276,8 +291,9 @@ fn shortcuts_trait_works_from_outside_crate() {
         )
     );
 
-    let query: fn(&CrossCrateApp) -> InputMode = CrossCratePane::input_mode();
-    assert_eq!(query(&app), InputMode::Navigable);
+    let query: fn(&CrossCrateApp) -> Mode<CrossCrateApp> =
+        <CrossCratePane as Pane<CrossCrateApp>>::mode();
+    assert!(matches!(query(&app), Mode::Navigable));
     assert!(CrossCratePane::vim_extras().is_empty());
 
     let map = CrossCratePane::defaults().into_scope_map();

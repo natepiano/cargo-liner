@@ -9,6 +9,7 @@ mod app_context;
 mod bar;
 mod framework;
 mod keymap;
+mod pane;
 mod pane_id;
 
 // Crate-root re-exports. The `action_enum!` and `bindings!` macros
@@ -17,8 +18,8 @@ mod pane_id;
 pub use app_context::AppContext;
 pub use bar::BarRegion;
 pub use bar::BarSlot;
-pub use bar::InputMode;
 pub use bar::ShortcutState;
+pub use bar::Visibility;
 pub use framework::Framework;
 pub use keymap::Action;
 pub use keymap::Bindings;
@@ -32,5 +33,7 @@ pub use keymap::Navigation;
 pub use keymap::ScopeMap;
 pub use keymap::Shortcuts;
 pub use keymap::VimMode;
+pub use pane::Mode;
+pub use pane::Pane;
 pub use pane_id::FocusedPane;
 pub use pane_id::FrameworkPaneId;

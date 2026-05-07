@@ -20,7 +20,7 @@ use crate::keymap::Bindings;
 /// calls `action.bar_label()` regardless of scope.
 pub trait Globals<Ctx: AppContext>: 'static {
     /// The app-globals action enum.
-    type Variant: Action;
+    type Actions: Action;
 
     /// TOML table name. Defaults to `"global"` so app and framework
     /// globals share one table at load time.
@@ -28,13 +28,13 @@ pub trait Globals<Ctx: AppContext>: 'static {
 
     /// Bar render order for the global region. The bar walks this
     /// slice in order, emitting one slot per variant.
-    fn render_order() -> &'static [Self::Variant];
+    fn render_order() -> &'static [Self::Actions];
 
     /// Default keybindings.
-    fn defaults() -> Bindings<Self::Variant>;
+    fn defaults() -> Bindings<Self::Actions>;
 
     /// Free fn the framework calls when an app-globals action fires.
-    fn dispatcher() -> fn(Self::Variant, &mut Ctx);
+    fn dispatcher() -> fn(Self::Actions, &mut Ctx);
 }
 
 #[cfg(test)]
@@ -80,20 +80,20 @@ mod tests {
     struct AppGlobals;
 
     impl Globals<TestApp> for AppGlobals {
-        type Variant = AppGlobalAction;
+        type Actions = AppGlobalAction;
 
-        fn render_order() -> &'static [Self::Variant] {
+        fn render_order() -> &'static [Self::Actions] {
             &[AppGlobalAction::Find, AppGlobalAction::Rescan]
         }
 
-        fn defaults() -> Bindings<Self::Variant> {
+        fn defaults() -> Bindings<Self::Actions> {
             crate::bindings! {
                 'f' => AppGlobalAction::Find,
                 KeyCode::F(5) => AppGlobalAction::Rescan,
             }
         }
 
-        fn dispatcher() -> fn(Self::Variant, &mut TestApp) {
+        fn dispatcher() -> fn(Self::Actions, &mut TestApp) {
             |_action, _ctx| { /* no-op for the test impl */ }
         }
     }
