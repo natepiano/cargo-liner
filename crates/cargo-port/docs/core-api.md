@@ -289,7 +289,7 @@ impl<A: Copy + Eq + Hash> ScopeMap<A> {
 /// `action_enum!` macro). Provides a static `ALL` slice for
 /// declaration-order rendering and the per-variant TOML key + label.
 ///
-/// Super-trait set (matches Phase 3 shipped code + `phase-02-macros.md`
+/// Super-trait set (matches Phase 3 shipped code + `macros.md`
 /// §2.3): `Copy + Eq + Hash + Debug + Display + 'static`. The macro
 /// generates the `Display` impl (delegating to `description()`); hand-
 /// rolled impls (e.g. `GlobalAction`) must do the same.
@@ -1029,7 +1029,7 @@ pub use crate::settings::SettingsRegistry;
 //
 // The framework defines its own three-variant pane id and a wrapper over
 // the binary's pane id. `AppContext` is the trait every `Ctx` must impl.
-// See `phase-02-paneid-ctx.md` for the full split rationale (option (d)).
+// See `paneid-ctx.md` for the full split rationale (option (d)).
 pub use crate::app_context::AppContext;
 pub use crate::pane_id::{FrameworkPaneId, FocusedPane};
 

@@ -6,13 +6,13 @@ This doc is the high-level plan + roadmap. Formal specs live in sibling files:
 
 | Spec | Covers |
 |---|---|
-| `phase-01-cargo-mechanics.md` | Root + library `Cargo.toml`, workspace lints (incl. `missing_docs = "deny"` from day one), resolver, `cargo install --path .` behavior, stale-path sweep, per-phase rustdoc precondition |
-| `phase-01-ci-tooling.md` | CI invocation inventory, per-invocation scope decisions, auto-memory implications, recommended commit ordering |
-| `phase-02-test-infra.md` | Private `test_support/` module, `cfg(test)` `TestCtx` fixture, unit-test placement, integration-test layout |
-| `phase-02-core-api.md` | Full public API: `KeyBind`, `Bindings<A>`, `ScopeMap<A>`, traits, `Keymap<Ctx>`, `KeymapBuilder<Ctx>`, `Framework<Ctx>`, `SettingsRegistry<Ctx>`, errors, re-exports |
-| `phase-02-macros.md` | `bindings!` and `action_enum!` formal grammar + expansion + hygiene |
-| `phase-02-paneid-ctx.md` | `tui_pane::PaneId` (framework panes) / `AppPaneId` (binary) / `FocusedPane` (wrapping), `AppContext` trait, focus tracking, `App` field changes, migration order, `InputMode` query plumbing |
-| `phase-02-toml-keys.md` | TOML grammar, error taxonomy, vim-after-TOML worked examples, full `KeyBind::display` / `display_short` mapping tables |
+| `phase-01-cargo-mechanics-DONE.md` | Root + library `Cargo.toml`, workspace lints (incl. `missing_docs = "deny"` from day one), resolver, `cargo install --path .` behavior, stale-path sweep, per-phase rustdoc precondition |
+| `phase-01-ci-tooling-DONE.md` | CI invocation inventory, per-invocation scope decisions, auto-memory implications, recommended commit ordering |
+| `test-infra.md` | Private `test_support/` module, `cfg(test)` `TestCtx` fixture, unit-test placement, integration-test layout |
+| `core-api.md` | Full public API: `KeyBind`, `Bindings<A>`, `ScopeMap<A>`, traits, `Keymap<Ctx>`, `KeymapBuilder<Ctx>`, `Framework<Ctx>`, `SettingsRegistry<Ctx>`, errors, re-exports |
+| `macros.md` | `bindings!` and `action_enum!` formal grammar + expansion + hygiene |
+| `paneid-ctx.md` | `tui_pane::PaneId` (framework panes) / `AppPaneId` (binary) / `FocusedPane` (wrapping), `AppContext` trait, focus tracking, `App` field changes, migration order, `InputMode` query plumbing |
+| `toml-keys.md` | TOML grammar, error taxonomy, vim-after-TOML worked examples, full `KeyBind::display` / `display_short` mapping tables |
 
 The plan body below summarizes; the specs are authoritative for their topics.
 
@@ -125,7 +125,7 @@ Focus reads happen on `Framework<Ctx>` (`framework.focused()`); focus writes go 
 
 The trait does **not** require `Ctx` to expose pane state — every pane's own state is reached via the per-pane dispatcher's free fn navigating through `Ctx` (`&mut ctx.panes.package`, etc.).
 
-For the rest of this doc, signatures use `Ctx` (or `Ctx: AppContext`) when referring to the app context. See `phase-02-paneid-ctx.md` §2 for the full trait.
+For the rest of this doc, signatures use `Ctx` (or `Ctx: AppContext`) when referring to the app context. See `paneid-ctx.md` §2 for the full trait.
 
 ### Pane id design
 
@@ -139,7 +139,7 @@ Linking the runtime tag to the compile-time pane type: every `Shortcuts<App>` im
 
 Cargo-port's existing `tui::panes::PaneId` enum becomes a type alias `pub type PaneId = tui_pane::FocusedPane<AppPaneId>;` so existing call sites that name `PaneId` keep compiling; only the framework variants move out of the enum body.
 
-See `phase-02-paneid-ctx.md` §1 for full type definitions and call-site rewrites.
+See `paneid-ctx.md` §1 for full type definitions and call-site rewrites.
 
 ### `Shortcuts` — pane scopes (state-bearing)
 
@@ -268,7 +268,7 @@ The app's *additional* globals scope (Find, OpenEditor, Rescan, etc.). The frame
 
 ## `Keymap<Ctx>` runtime container
 
-> Formal API in `phase-02-core-api.md` §6 (`Keymap<Ctx>`) and §7 (`KeymapBuilder<Ctx>`, including the type-state choice, `BuilderError` variants, required vs optional methods).
+> Formal API in `core-api.md` §6 (`Keymap<Ctx>`) and §7 (`KeymapBuilder<Ctx>`, including the type-state choice, `BuilderError` variants, required vs optional methods).
 
 Struct name: `Keymap<Ctx>`. Built once at startup, read every frame. Framework-owned, internally TypeId-keyed.
 
@@ -399,7 +399,7 @@ International-character support: crossterm's `KeyCode::Char(char)` already cover
 
 ## `Bindings<A>` builder
 
-> Formal API in `phase-02-core-api.md` §2; macro grammar + expansion in `phase-02-macros.md` §1.
+> Formal API in `core-api.md` §2; macro grammar + expansion in `macros.md` §1.
 
 ```rust
 pub struct Bindings<A> { … }
@@ -440,7 +440,7 @@ Today's `parse_keybind` at `keymap.rs:140-142` maps both TOML strings `"="` and 
 
 ## `ScopeMap<A>` — multi-bind support
 
-> Formal API in `phase-02-core-api.md` §3.
+> Formal API in `core-api.md` §3.
 
 `by_key` stays 1-to-1 within a scope (dispatch). `by_action` becomes `HashMap<A, Vec<KeyBind>>`:
 
@@ -540,7 +540,7 @@ Rule: free fn whenever the framework holds `&mut Ctx` while invoking your callba
 
 ## Settings registry — framework UI, app data
 
-> Formal API in `phase-02-core-api.md` §9 (closure signatures, persistence semantics).
+> Formal API in `core-api.md` §9 (closure signatures, persistence semantics).
 
 Each setting carries: TOML key, display label, value-getter closure, value-setter closure. Three value flavors covered: `bool`, `enum` (closed string set), `int` (with optional min/max).
 
@@ -550,7 +550,7 @@ The app provides only data + closures. It writes no `Shortcuts` impl, no mode st
 
 ## `GlobalAction` — framework base, app extension
 
-> Formal enum + dispatch hooks in `phase-02-core-api.md` §10. TOML grammar for the merged `[global]` table in `phase-02-toml-keys.md` §1–2.
+> Formal enum + dispatch hooks in `core-api.md` §10. TOML grammar for the merged `[global]` table in `toml-keys.md` §1–2.
 
 Framework owns pane-management, lifecycle, and the framework overlays:
 
@@ -650,7 +650,7 @@ Today `keymap_ui.rs:236-250` calls `is_navigation_reserved` during binding captu
 
 ## TOML loading — framework
 
-> Full grammar, error taxonomy, vim-after-TOML worked examples, and `KeyBind::display` / `display_short` mapping tables in `phase-02-toml-keys.md`.
+> Full grammar, error taxonomy, vim-after-TOML worked examples, and `KeyBind::display` / `display_short` mapping tables in `toml-keys.md`.
 
 Framework handles all TOML loading. Each registered scope's `SCOPE_NAME` constant drives table lookup; framework parses every recognized table, replaces that scope's bindings, leaves missing tables at their declared defaults+vim. App provides no TOML hooks.
 
@@ -662,7 +662,7 @@ Framework handles all TOML loading. Each registered scope's `SCOPE_NAME` constan
 
 The `ScopeMap::insert` `debug_assert` catches the same conditions for `defaults()` builders; the TOML loader returns them as real errors or warnings.
 
-See `phase-02-toml-keys.md` for the full grammar, error taxonomy, and worked vim-after-TOML examples.
+See `toml-keys.md` for the full grammar, error taxonomy, and worked vim-after-TOML examples.
 
 `keymap_path()` is framework-provided via the `dirs` crate. App supplies its name at builder time:
 
@@ -950,7 +950,7 @@ No double-binding conflict, no `'x'` shadow. The bar's per-Toasts row sources `d
 
 ## Bar render — concrete dispatch
 
-`render.rs:531-558` today calls `app.input_context()`-driven `for_status_bar`. Post-deletion, the framework call dispatches off `app.focus.current()` (split between `PaneId::App(_)` and `PaneId::Framework(_)` per the wrapper enum). See `phase-02-paneid-ctx.md` §1 for the canonical dispatch site — the framework's three panes are routed through a single `bar::render_framework(id, ...)` arm rather than enumerated inline.
+`render.rs:531-558` today calls `app.input_context()`-driven `for_status_bar`. Post-deletion, the framework call dispatches off `app.focus.current()` (split between `PaneId::App(_)` and `PaneId::Framework(_)` per the wrapper enum). See `paneid-ctx.md` §1 for the canonical dispatch site — the framework's three panes are routed through a single `bar::render_framework(id, ...)` arm rather than enumerated inline.
 
 The `Settings` / `Keymap` / `Toasts` panes use their internal mode flags (Browse/Editing, Browse/Awaiting/Conflict, etc.) to vary `bar_rows` and `shortcut` output. The current `InputContext::SettingsEditing` / `KeymapAwaiting` / `KeymapConflict` arms collapse into pane-internal mode dispatch.
 
@@ -964,7 +964,7 @@ Each phase is a single mergeable commit. Each commit must build green and pass `
 
 ### Phase 1 — Workspace conversion ✅
 
-Convert `cargo-port-api-fix` into a Cargo workspace. See `phase-01-cargo-mechanics.md` for full TOML and `phase-01-ci-tooling.md` for the CI updates.
+Convert `cargo-port-api-fix` into a Cargo workspace. See `phase-01-cargo-mechanics-DONE.md` for full TOML and `phase-01-ci-tooling-DONE.md` for the CI updates.
 
 Concrete steps:
 
@@ -972,7 +972,7 @@ Concrete steps:
 2. Promote the existing `[lints.clippy]` and `[lints.rust]` blocks verbatim to `[workspace.lints.clippy]` / `[workspace.lints.rust]` (including `missing_docs = "deny"` from day one). Root `[lints]` becomes `workspace = true`.
 3. Create `tui_pane/` as a sibling directory (not `crates/tui_pane/`) with `Cargo.toml` (`crossterm`, `ratatui`, `dirs` deps; `[lints] workspace = true`) and `src/lib.rs` carrying crate-level rustdoc.
 4. Add `tui_pane = { path = "tui_pane", version = "0.0.4-dev" }` to the binary's `[dependencies]`.
-5. Apply the CI flag updates flagged in `phase-01-ci-tooling.md` §2 (e.g. `cargo +nightly fmt --all`, `cargo mend --workspace --all-targets`, `cargo check --workspace` in the post-tool-use hook). Per the spec these can ship in a separate prior commit since they're no-ops on the current single-crate layout.
+5. Apply the CI flag updates flagged in `phase-01-ci-tooling-DONE.md` §2 (e.g. `cargo +nightly fmt --all`, `cargo mend --workspace --all-targets`, `cargo check --workspace` in the post-tool-use hook). Per the spec these can ship in a separate prior commit since they're no-ops on the current single-crate layout.
 6. Update auto-memory `feedback_cargo_nextest.md` to clarify default `cargo nextest run` only tests the root package; iteration loops should pass `-p` or `--workspace`. `feedback_cargo_install.md` is unchanged (the binary stays at root).
 
 After Phase 1: `cargo build` from the root builds both crates; `cargo install --path .` still installs the binary; `Cargo.lock` and `target/` stay at the workspace root.
@@ -981,7 +981,7 @@ After Phase 1: `cargo build` from the root builds both crates; `cargo install --
 
 ### Phases 2–9 — `tui_pane` foundations
 
-Phases 2–9 land the entire `tui_pane` public surface in dependency order, one mergeable commit per phase. The canonical type spec is `phase-02-core-api.md` (sections referenced from each sub-phase below); §11 is the canonical module hierarchy and the public re-export set in `lib.rs`. Type detail per file is in `phase-02-core-api.md` §§1–10.
+Phases 2–9 land the entire `tui_pane` public surface in dependency order, one mergeable commit per phase. The canonical type spec is `core-api.md` (sections referenced from each sub-phase below); §11 is the canonical module hierarchy and the public re-export set in `lib.rs`. Type detail per file is in `core-api.md` §§1–10.
 
 **Strictly additive across Phases 2–9.** Nothing moves out of the binary in this group. The binary continues to use its in-tree `keymap_state::Keymap`, `shortcuts::*`, etc., untouched. The migration starts in Phase 12.
 
@@ -991,7 +991,7 @@ Phases 2–9 land the entire `tui_pane` public surface in dependency order, one 
 
 ### Phase 2 — Keys ✅
 
-Add `tui_pane/src/keymap/key_bind.rs` (`KeyBind`, `KeyInput`, `KeyParseError`) per `phase-02-core-api.md` §1. Leaf types — nothing else in `tui_pane` depends on them yet.
+Add `tui_pane/src/keymap/key_bind.rs` (`KeyBind`, `KeyInput`, `KeyParseError`) per `core-api.md` §1. Leaf types — nothing else in `tui_pane` depends on them yet.
 
 Construction surface for `KeyBind`: `From<KeyCode>`, `From<char>` (modifier-free); `KeyBind::shift(impl Into<Self>)`, `KeyBind::ctrl(impl Into<Self>)` (modifier-bearing, OR-composable). **No** `From<KeyEvent>` — the kind discriminant must not be silently dropped.
 
@@ -1011,8 +1011,8 @@ Unit tests:
 - 10 unit tests pass; clippy clean under workspace pedantic+nursery+all lint stack.
 
 **What deviated from the plan:**
-- `KeyBind::shift` / `ctrl` were respec'd to take `impl Into<Self>` (i.e. `impl Into<KeyBind>`) rather than `impl Into<KeyCode>`. Reason: crossterm's `KeyCode` does not implement `From<char>`, so the planned `impl Into<KeyCode>` bound rejects `KeyBind::shift('g')`. Taking `Into<KeyBind>` reuses the three `From` impls and makes `shift`/`ctrl` composable (`KeyBind::ctrl(KeyBind::shift('g'))` → CTRL|SHIFT). `phase-02-core-api.md` §1 still lists the old signature.
-- `KeyParseError` ships with 3 variants (`Empty`, `UnknownKey`, `UnknownModifier`) — `InvalidChar` from the spec was dropped because no parser path emits it. `phase-02-core-api.md` §1 still lists 4 variants.
+- `KeyBind::shift` / `ctrl` were respec'd to take `impl Into<Self>` (i.e. `impl Into<KeyBind>`) rather than `impl Into<KeyCode>`. Reason: crossterm's `KeyCode` does not implement `From<char>`, so the planned `impl Into<KeyCode>` bound rejects `KeyBind::shift('g')`. Taking `Into<KeyBind>` reuses the three `From` impls and makes `shift`/`ctrl` composable (`KeyBind::ctrl(KeyBind::shift('g'))` → CTRL|SHIFT). `core-api.md` §1 still lists the old signature.
+- `KeyParseError` ships with 3 variants (`Empty`, `UnknownKey`, `UnknownModifier`) — `InvalidChar` from the spec was dropped because no parser path emits it. `core-api.md` §1 still lists 4 variants.
 - Parser supports `"Control"` as a synonym for `"Ctrl"` (both produce `KeyModifiers::CONTROL`); `"Space"` parses to `KeyCode::Char(' ')`. Neither was called out in the plan.
 
 **Surprises:**
@@ -1020,7 +1020,7 @@ Unit tests:
 - Modifier display order (`Ctrl` → `Alt` → `Shift`) and the case-preservation policy in `parse` (`"Ctrl+K"` → `Char('K')`, not `Char('k')`) are now baked into Phase 2 tests. Phase 8 (TOML loader) inherits both as facts; if the loader needs case-insensitive letter lookup, that is a *keymap-layer* normalization, not a `KeyBind::parse` concern.
 
 **Implications for remaining phases:**
-- `phase-02-core-api.md` §1 is out of sync with shipped code (signatures + error variants). Update before any later phase reads it as canonical.
+- `core-api.md` §1 is out of sync with shipped code (signatures + error variants). Update before any later phase reads it as canonical.
 - Phase 8 (`Keymap<Ctx>` + TOML loader) must decide letter-case normalization policy explicitly — `parse` preserves case as-is.
 - Future framework error types (`KeymapError` Phase 4 skeleton, fill in Phase 8) should use `#[derive(thiserror::Error)]` with `#[from] KeyParseError` for source chaining, per the pattern established here.
 
@@ -1032,8 +1032,8 @@ Unit tests:
 - Phase 11: paired-row separator policy made explicit — `Paired::debug_assert!` covers only the parser-producible `KeyCode` set; exotic variants may panic, and widening the bindable set requires widening Phase 2's `display_short_no_separators` test in lockstep.
 - Phase 12: `anyhow = "1"` lands in the binary's `Cargo.toml` here (first call site that needs context wrapping is `Keymap::<App>::builder(...).load_toml(?)?.build()?`).
 - §1 (`Pane id design`): `PaneId` → `FrameworkPaneId` everywhere, including the inside-the-crate short form, so the type name is one-to-one across library and binary call sites.
-- `phase-02-core-api.md` §1 + `tui-pane-lib.md` §11 lib.rs sketch synced to shipped Phase 2 code: `shift`/`ctrl` take `impl Into<Self>`, `From<KeyEvent>` documented, 3-variant `KeyParseError` (`InvalidChar` dropped), parser policy (`"Control"` synonym, `"Space"` token, case-preserving) called out.
-- `phase-02-toml-keys.md` synced to the Zed/VSCode/Helix-aligned letter-case decision: loader lowercases single-letter ASCII keys (`"Q"` → `Char('q')`, never `Shift+q`); modifier tokens are case-insensitive on input but writeback canonical capitalized; named-key tokens (`Enter`, `Tab`, `F1`, …) are case-sensitive with no aliases; non-ASCII letters not lowercased; modifier repeats silently OR'd (not rejected — bitwise OR is idempotent).
+- `core-api.md` §1 + `tui-pane-lib.md` §11 lib.rs sketch synced to shipped Phase 2 code: `shift`/`ctrl` take `impl Into<Self>`, `From<KeyEvent>` documented, 3-variant `KeyParseError` (`InvalidChar` dropped), parser policy (`"Control"` synonym, `"Space"` token, case-preserving) called out.
+- `toml-keys.md` synced to the Zed/VSCode/Helix-aligned letter-case decision: loader lowercases single-letter ASCII keys (`"Q"` → `Char('q')`, never `Shift+q`); modifier tokens are case-insensitive on input but writeback canonical capitalized; named-key tokens (`Enter`, `Tab`, `F1`, …) are case-sensitive with no aliases; non-ASCII letters not lowercased; modifier repeats silently OR'd (not rejected — bitwise OR is idempotent).
 - Phase 6 + Phase 10 now spell out the **Phase 6 → Phase 10 contract**: Phase 6 freezes a 1-field / 3-method `Framework<Ctx>` skeleton (`focused` field, `new`/`focused()`/`set_focused()`); Phase 10 is purely additive on top. Mirrored at both phase blocks so neither side can drift independently.
 - Decided: `KeyEvent` press/release/repeat handling uses a typed wrapper enum (`KeyInput { Press, Release, Repeat }`) at the framework boundary, not a runtime check at each dispatch site and not a fallible `Option`-returning conversion. Modeled after Zed/GPUI's typed-event split. Repeat is preserved (not collapsed into Press) so future handlers can opt into auto-repeat behavior. Phases 13–15 dispatch sites pattern-match `KeyInput::Press(bind)` (or call `.press()`); the event-loop entry produces `KeyInput` once.
 
@@ -1059,8 +1059,8 @@ Add `tui_pane/src/keymap/action_enum.rs` with `ActionEnum` + `action_enum!` (per
 - The `from_toml_key` returning `Option<Self>` (not `Result`) is intentional and the trait method has no scope context to attach. The TOML loader (Phase 4 skeleton, Phase 8 fill) lifts `None` into `KeymapError::UnknownAction { scope, action }`. Recorded explicitly here so Phase 4/8 don't accidentally widen the trait.
 
 **Implications for remaining phases:**
-- `phase-02-macros.md` §3 still references `crate::keymap::traits::ActionEnum` — needs to be `crate::keymap::action_enum::ActionEnum`. Synced as part of this review.
-- `phase-02-core-api.md` §10 `KeymapError` snippet has `impl Display { /* … */ }` placeholder — Phase 4 lands the real impl via `#[derive(thiserror::Error)]` per the Phase 2 retrospective decision.
+- `macros.md` §3 still references `crate::keymap::traits::ActionEnum` — needs to be `crate::keymap::action_enum::ActionEnum`. Synced as part of this review.
+- `core-api.md` §10 `KeymapError` snippet has `impl Display { /* … */ }` placeholder — Phase 4 lands the real impl via `#[derive(thiserror::Error)]` per the Phase 2 retrospective decision.
 - Phase 4 (`bindings!` macro) follows the same `#[macro_export] macro_rules!` declaration template used here; the doctest pattern can mirror Phase 3's approach (`crate::action_enum! { … }` inside an internal `mod tests`).
 - Phase 12 (binary swap to `tui_pane::action_enum!`): seven existing `action_enum!` invocations in `src/keymap.rs` swap to the `tui_pane::` prefix; the macro's grammar is identical, so each invocation needs only the prefix change.
 
@@ -1082,13 +1082,13 @@ Architectural review of remaining phases (4-17) returned 18 findings — 13 mino
 - **Cross-crate macro integration test (item 5):** `tui_pane/tests/macro_use.rs` lands as a Phase 3 follow-up — exercises `tui_pane::action_enum!` from outside the crate. Phase 4 extends it for `tui_pane::bindings!`.
 
 Minor findings applied directly (no user gating):
-- Stale `keymap::traits::ActionEnum` references in `phase-02-macros.md` synced to `keymap::action_enum::ActionEnum`.
+- Stale `keymap::traits::ActionEnum` references in `macros.md` synced to `keymap::action_enum::ActionEnum`.
 - Phase 4 root re-exports (`Bindings`, `KeyBind`) called out for the `bindings!` macro's `$crate::` paths.
-- `KeymapError` variant set spelled out in Phase 4 + `phase-02-core-api.md` §10 (with `#[derive(thiserror::Error)]`).
+- `KeymapError` variant set spelled out in Phase 4 + `core-api.md` §10 (with `#[derive(thiserror::Error)]`).
 - `Shortcuts::vim_extras() -> &'static [(Self::Action, KeyBind)]` called out in Phase 7 with default `&[]`.
 - Vim-mode skip-already-bound test moved Phase 8 → Phase 9 (vim application is the builder's job per "Vim mode — framework capability" §).
 - `AppContext::AppPaneId: Copy + Eq + Hash + 'static` super-trait set added to Phase 6 (required by Phase 10's `HashMap<AppPaneId, fn(&Ctx) -> InputMode>`).
-- `phase-02-core-api.md` §4 `ActionEnum` super-trait set synced to shipped code (`Copy + Eq + Hash + Debug + Display + 'static` — adds `Debug` + `Display`).
+- `core-api.md` §4 `ActionEnum` super-trait set synced to shipped code (`Copy + Eq + Hash + Debug + Display + 'static` — adds `Debug` + `Display`).
 - Phase 8 explicit "loader lifts `None` from `from_toml_key` into `KeymapError::UnknownAction`" wording added.
 - `clippy::too_long_first_doc_paragraph` (nursery) guidance added to the per-phase rustdoc precondition.
 - `pub use keymap::GlobalAction;` at crate root noted in Phase 12.
@@ -1480,7 +1480,7 @@ Verify CI invocations operate on the intended scope before Phase 1 lands. Tools 
 
 ## Doctest + test infrastructure
 
-> Full design in `phase-02-test-infra.md`.
+> Full design in `test-infra.md`.
 
 Summary:
 
