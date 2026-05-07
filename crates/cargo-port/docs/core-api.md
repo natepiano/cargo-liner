@@ -303,7 +303,7 @@ pub trait Action:
     fn toml_key(self) -> &'static str;
 
     /// Default short label rendered in the bar (e.g. `"activate"`,
-    /// `"clean"`). The pane's `Shortcuts::label` returns this by
+    /// `"clean"`). The bar renderer reads this directly through
     /// default; overrides only fire when the label is state-dependent.
     fn bar_label(self) -> &'static str;
 
@@ -322,133 +322,153 @@ pub trait Action:
 /// the registry on `TypeId<P>` and stores `fn` pointers — both demand
 /// `'static`. Pane *instances* live on the binary's `App`; the trait
 /// impl itself never holds borrowed data.
-pub trait Shortcuts<Ctx: AppContext>: 'static {
+///
+/// `Pane<Ctx>` carries the per-pane identity and the per-frame mode
+/// query. `Shortcuts<Ctx>: Pane<Ctx>` adds the shortcut-config surface.
+/// Splitting them lets a future per-pane trait (e.g. `MouseInput<Ctx>:
+/// Pane<Ctx>`) attach without bloating `Shortcuts`, and lets a pane
+/// without shortcuts (e.g. a pure text-input overlay) impl just `Pane`.
+pub trait Pane<Ctx: AppContext>: 'static {
+    /// Stable per-pane identity used by the framework's per-pane
+    /// query registry (populated through `Framework::register_app_pane`).
+    /// The trait covers app panes only — framework panes (Keymap,
+    /// Settings, Toasts) are special-cased — so the variant is always
+    /// an `AppPaneId`.
+    const APP_PANE_ID: Ctx::AppPaneId;
+
+    /// Per-frame mode. Drives bar-region suppression, structural Esc
+    /// gate, and key dispatch. The `TextInput(handler)` variant carries
+    /// the handler inline so "TextInput without a handler" is
+    /// unrepresentable.
+    ///
+    /// Returns a `fn(&Ctx) -> Mode<Ctx>` so the framework can store
+    /// the pointer in `Framework<Ctx>::mode_queries`, keyed by
+    /// `AppPaneId`, populated through `Framework::register_app_pane`
+    /// at `KeymapBuilder::build_into` time. The framework holds `&Ctx`
+    /// and an `AppPaneId` at query time, never a typed `&PaneStruct`,
+    /// so the closure does the navigation from `Ctx` to whatever state
+    /// determines the mode.
+    ///
+    /// Default returns `Mode::Navigable`. Panes whose mode varies with
+    /// `Ctx` state (Finder, Output, Settings) override.
+    fn mode() -> fn(&Ctx) -> Mode<Ctx> {
+        |_ctx| Mode::Navigable
+    }
+}
+
+pub trait Shortcuts<Ctx: AppContext>: Pane<Ctx> {
     /// The pane's action enum.
-    type Variant: Action;
+    type Actions: Action;
 
     /// TOML table name. Survives type renames; one-line cost. Required.
     const SCOPE_NAME: &'static str;
 
-    /// Stable per-pane identity used by the framework's per-pane
-    /// query registry (populated through
-    /// `Framework::register_app_pane`). The trait covers
-    /// app panes only — framework panes (Keymap, Settings, Toasts) are
-    /// special-cased — so the variant is always an `AppPaneId`.
-    const APP_PANE_ID: Ctx::AppPaneId;
-
     /// Default keybindings. No framework default — every pane declares
     /// its own keys.
-    fn defaults() -> Bindings<Self::Variant>;
+    fn defaults() -> Bindings<Self::Actions>;
 
-    /// Per-action bar label. `None` hides the slot. Default returns
-    /// `Some(action.bar_label())` (the static label declared in
-    /// `action_enum!`). Override only when the label depends on pane
-    /// state (e.g. `PackageAction::Activate` reads `"open"` on
-    /// `CratesIo` fields, `"activate"` elsewhere).
-    fn label(&self, action: Self::Variant, _ctx: &Ctx) -> Option<&'static str> {
-        Some(action.bar_label())
+    /// Per-action visibility. `Visible` (default) renders the slot;
+    /// `Hidden` removes it. The bar **label** is always
+    /// `Action::bar_label()` declared in `action_enum!` — no per-frame
+    /// label override on the trait. Override `visibility` when the
+    /// slot's presence is state-dependent (e.g. `CiRunsAction::Activate`
+    /// `Hidden` at EOL).
+    fn visibility(&self, _action: Self::Actions, _ctx: &Ctx) -> Visibility {
+        Visibility::Visible
     }
 
     /// Per-action enabled / disabled status. Default `Enabled`.
     /// Override when the action is visible but inert (e.g.
     /// `PackageAction::Clean` grayed out when no target dir exists).
-    fn state(&self, _action: Self::Variant, _ctx: &Ctx) -> ShortcutState {
+    fn state(&self, _action: Self::Actions, _ctx: &Ctx) -> ShortcutState {
         ShortcutState::Enabled
     }
 
     /// Bar slot layout. Default: one `(PaneAction, Single(action))` per
-    /// `Action::ALL` in declaration order. Override to introduce
+    /// `Self::Actions::ALL` in declaration order. Override to introduce
     /// `Paired` slots, route into `BarRegion::Nav`, or omit
     /// data-dependent slots.
-    fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Variant>)> {
-        Self::Variant::ALL
+    fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Actions>)> {
+        Self::Actions::ALL
             .iter()
             .copied()
             .map(|a| (BarRegion::PaneAction, BarSlot::Single(a)))
             .collect()
     }
 
-    /// Pane's current input mode (Navigable / Static / TextInput).
-    /// Drives bar-region suppression and the structural Esc gate.
-    ///
-    /// Returns a `fn(&Ctx) -> InputMode` so the framework can store
-    /// the pointer in `Framework<Ctx>::input_mode_queries`, keyed by
-    /// `AppPaneId`, populated through `Framework::register_app_pane`
-    /// at `KeymapBuilder::build_into` time. The framework
-    /// holds `&Ctx` and an `AppPaneId` at query time, never a typed
-    /// `&PaneStruct`, so the closure does the navigation from `Ctx`
-    /// to whatever pane state determines the mode.
-    ///
-    /// Default returns `Navigable`. Panes whose mode varies with `Ctx`
-    /// state (Finder, Output, Settings) override.
-    fn input_mode() -> fn(&Ctx) -> InputMode {
-        |_ctx| InputMode::Navigable
-    }
-
     /// Optional vim-extras: pane actions that gain a vim binding when
     /// `VimMode::Enabled`. Default empty. Used by
     /// `ProjectListAction::ExpandRow` (`'l'`) and `CollapseRow` (`'h'`).
-    fn vim_extras() -> &'static [(Self::Variant, KeyBind)] { &[] }
+    fn vim_extras() -> &'static [(Self::Actions, KeyBind)] { &[] }
 
     /// Free-function dispatcher. Framework calls
     /// `Self::dispatcher()(action, ctx)` while holding `&mut Ctx`.
     /// Implementations navigate from the `Ctx` root rather than
     /// holding a `&mut self` borrow (split-borrow rule).
-    fn dispatcher() -> fn(Self::Variant, &mut Ctx);
+    fn dispatcher() -> fn(Self::Actions, &mut Ctx);
 }
 
 /// Navigation scope. One impl per app (the binary defines a single
 /// `AppNavigation` zero-sized type and impls this trait for it).
 ///
-/// `'static` is implied by the `Action` bound on `Action`.
+/// `'static` is implied by the `Action` bound on `Actions`.
 pub trait Navigation<Ctx: AppContext>: 'static {
-    type Variant: Action;
+    type Actions: Action;
 
     const SCOPE_NAME: &'static str = "navigation";
-    const UP:    Self::Variant;
-    const DOWN:  Self::Variant;
-    const LEFT:  Self::Variant;
-    const RIGHT: Self::Variant;
+    const UP:    Self::Actions;
+    const DOWN:  Self::Actions;
+    const LEFT:  Self::Actions;
+    const RIGHT: Self::Actions;
 
-    fn defaults() -> Bindings<Self::Variant>;
+    fn defaults() -> Bindings<Self::Actions>;
 
     /// Free fn the framework calls when any navigation action fires.
     /// `focused` lets the dispatcher pick the right scrollable surface;
     /// callers read `ctx.framework().focused()` and pass it through.
-    fn dispatcher() -> fn(Self::Variant, focused: FocusedPane<Ctx::AppPaneId>, ctx: &mut Ctx);
+    fn dispatcher() -> fn(Self::Actions, focused: FocusedPane<Ctx::AppPaneId>, ctx: &mut Ctx);
 }
 
 /// App-extension globals scope. One impl per app. The framework's own
 /// pane-management/lifecycle globals live in `GlobalAction` and are
 /// not part of this scope.
 pub trait Globals<Ctx: AppContext>: 'static {
-    type Variant: Action;
+    type Actions: Action;
 
     const SCOPE_NAME: &'static str = "global";
 
-    fn render_order() -> &'static [Self::Variant];
-    fn defaults() -> Bindings<Self::Variant>;
-    fn dispatcher() -> fn(Self::Variant, &mut Ctx);
+    fn render_order() -> &'static [Self::Actions];
+    fn defaults() -> Bindings<Self::Actions>;
+    fn dispatcher() -> fn(Self::Actions, &mut Ctx);
 }
 ```
 
-**Tradeoff.** All three traits are `'static`. The framework stores `fn` pointers and TypeId-keyed lookups; both require `'static`. App pane structs are owned by `App` and are themselves `'static`, so the bound costs nothing in practice.
+**Tradeoff.** All four traits are `'static` (`Pane<Ctx>: 'static` is the supertrait; `Shortcuts<Ctx>` inherits it). The framework stores `fn` pointers and TypeId-keyed lookups; both require `'static`. App pane structs are owned by `App` and are themselves `'static`, so the bound costs nothing in practice.
 
-`Shortcuts::input_mode` returns a `fn(&Ctx) -> InputMode`. The framework's structural-Esc gate and bar-region suppression run with `&Ctx` and an `AppPaneId`, never with a typed `&PaneStruct`, so it stores the returned pointer in `Framework<Ctx>::input_mode_queries`, populated through `Framework::register_app_pane` at `KeymapBuilder::build_into` time. Pane-internal callers write `Self::input_mode()(ctx)`. Default returns `Navigable`; panes whose mode varies with `Ctx` state (Finder, Output, Settings) override.
+`Pane::mode` returns a `fn(&Ctx) -> Mode<Ctx>`. The framework's structural-Esc gate, bar-region suppression, and key dispatch all run with `&Ctx` and an `AppPaneId`, never with a typed `&PaneStruct`, so it stores the returned pointer in `Framework<Ctx>::mode_queries`, populated through `Framework::register_app_pane` at `KeymapBuilder::build_into` time. Pane-internal callers write `Self::mode()(ctx)`. Default returns `Mode::Navigable`; panes whose mode varies with `Ctx` state (Finder, Output, Settings) override. The `Mode::TextInput(handler)` variant carries the handler inline — when the focused pane returns `TextInput(h)`, the framework calls `h(key, ctx)` for every keystroke; the handler is the sole authority for keys while the pane is in TextInput. To exit, the handler mutates `ctx` so `mode()` next frame returns `Navigable`/`Static`.
 
 ---
 
-## 5. `ShortcutState` / `BarSlot<A>` / `BarRegion` / `InputMode`
+## 5. `ShortcutState` / `Visibility` / `BarSlot<A>` / `BarRegion` / `Mode<Ctx>`
 
 ```rust
 /// Per-action enabled/disabled flag, returned by `Shortcuts::state`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShortcutState { Enabled, Disabled }
 
+/// Per-action visibility, returned by `Shortcuts::visibility`.
+/// Variant names match Bevy's `bevy::render::view::Visibility` for the
+/// variants we need (`Inherited` is not modeled — bar slots have no
+/// visibility hierarchy to inherit from).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Visibility { Visible, Hidden }
+
 /// One slot in the bar. `Single` shows every key bound to one action,
 /// joined by `,`. `Paired` glues two actions with `/` under one label,
 /// using **primary keys only** — alternative bindings for paired
-/// actions never appear in paired slots.
+/// actions never appear in paired slots. If either half of a `Paired`
+/// is `Hidden` per `Shortcuts::visibility`, the whole slot hides
+/// (all-or-nothing — paired slots represent one conceptual operation).
 #[derive(Clone, Copy, Debug)]
 pub enum BarSlot<A> {
     Single(A),
@@ -471,10 +491,12 @@ impl BarRegion {
         &[BarRegion::Nav, BarRegion::PaneAction, BarRegion::Global];
 }
 
-/// Pane's current typing/scrolling mode. Drives bar-region suppression
-/// and the structural Esc pre-handler.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InputMode {
+/// Pane's current typing/scrolling mode. Drives bar-region suppression,
+/// structural Esc gate, and key dispatch.
+///
+/// The `TextInput` variant carries its key handler inline so the
+/// invariant "TextInput-without-handler" is unrepresentable.
+pub enum Mode<Ctx> {
     /// List/cursor pane. `NavigationAction` drives it; `Nav` region
     /// emitted; `Global` emitted; structural Esc enabled.
     Navigable,
@@ -483,12 +505,16 @@ pub enum InputMode {
     Static,
     /// Pane consumes typed characters (Finder, Settings Editing,
     /// KeymapPane Awaiting). `Nav` and `Global` suppressed; structural
-    /// Esc suppressed.
-    TextInput,
+    /// Esc suppressed. The handler is the sole authority for keys while
+    /// the pane is in this mode — there is no fall-through to global
+    /// dispatch. To exit, the handler mutates `ctx` so `mode()` next
+    /// frame returns `Navigable`/`Static`. To honor any global key
+    /// (Ctrl+Q, etc.), the handler implements it itself.
+    TextInput(fn(KeyBind, &mut Ctx)),
 }
 ```
 
-**Tradeoff.** `Shortcuts::label` returns `Option<&'static str>` because every label in cargo-port today is a literal; supporting owned strings would cost an allocation per bar render with no caller asking for it. If a future pane needs a runtime-computed label, lift the return type to `Option<Cow<'static, str>>` then.
+**Tradeoff.** `Visibility` is a separate axis from `ShortcutState` (visible-but-grayed). `Hidden` removes the slot entirely; `Disabled` keeps it visible-but-inert. Together they cover all per-frame slot presentations without growing the bar-label surface — the label itself is always `Action::bar_label()` declared once in `action_enum!`.
 
 ---
 
@@ -588,10 +614,10 @@ pub struct KeymapBuilder<Ctx: AppContext> {
     /// Per-scope `Bindings<A>` boxed via `Any`, keyed by `TypeId<P>` /
     /// `TypeId<N>` / `TypeId<G>`.
     pending: HashMap<TypeId, PendingScope<Ctx>>,
-    /// Per-AppPaneId input-mode queries, captured at
+    /// Per-AppPaneId mode queries, captured at
     /// `KeymapBuilder::build_into` time through
     /// `Framework::register_app_pane`.
-    input_mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>,
+    mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> Mode<Ctx>>,
     settings:    SettingsRegistry<Ctx>,
     nav_registered: bool,
     globals_registered: bool,
@@ -713,24 +739,24 @@ pub struct Framework<Ctx: AppContext> {
     /// Per-AppPaneId input-mode queries, populated by
     /// `KeymapBuilder::build_into(&mut framework)` through
     /// `register_app_pane`. Framework panes (Keymap, Settings, Toasts)
-    /// are special-cased in `focused_pane_input_mode` and do not appear
+    /// are special-cased in `focused_pane_mode` and do not appear
     /// here. Private; written only through `pub(super) fn
     /// register_app_pane`.
-    input_mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>,
+    mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> Mode<Ctx>>,
 }
 
 impl<Ctx: AppContext> Framework<Ctx> {
     /// Construct an empty framework with an explicit initial focus.
     /// The binary creates one at startup and stores it on `App`.
     /// `KeymapBuilder::build_into(&mut framework)` later populates
-    /// `input_mode_queries` through `register_app_pane`.
+    /// `mode_queries` through `register_app_pane`.
     pub fn new(initial_focus: FocusedPane<Ctx::AppPaneId>) -> Self {
         Self {
             keymap_pane:   KeymapPane::new(),
             settings_pane: SettingsPane::new(),
             toasts:        Toasts::new(),
             focused:       initial_focus,
-            input_mode_queries: HashMap::new(),
+            mode_queries:  HashMap::new(),
         }
     }
 
@@ -756,35 +782,37 @@ impl<Ctx: AppContext> Framework<Ctx> {
         }
     }
 
-    /// Register one app pane's input-mode query. Called once per
-    /// `P: Shortcuts<Ctx>` from inside
+    /// Register one app pane's mode query. Called once per
+    /// `P: Pane<Ctx>` from inside
     /// `KeymapBuilder::build_into(&mut framework)`. `pub(super)` so
     /// only the keymap builder (a sibling under `tui_pane`) can write
     /// the registry; the field stays private.
     pub(super) fn register_app_pane(
         &mut self,
         id: Ctx::AppPaneId,
-        query: fn(&Ctx) -> InputMode,
+        query: fn(&Ctx) -> Mode<Ctx>,
     ) {
-        self.input_mode_queries.insert(id, query);
+        self.mode_queries.insert(id, query);
     }
 
-    /// Resolve the focused pane's `InputMode`. Used by the structural
-    /// Esc pre-handler and the bar-region suppression logic.
-    pub fn focused_pane_input_mode(&self, ctx: &Ctx) -> InputMode {
+    /// Resolve the focused pane's `Mode<Ctx>`. Used by the structural
+    /// Esc pre-handler, the bar-region suppression logic, and the key
+    /// dispatcher (which reads `Mode::TextInput(handler)` to route
+    /// keystrokes directly to the pane's text-input handler).
+    pub fn focused_pane_mode(&self, ctx: &Ctx) -> Mode<Ctx> {
         match self.focused {
-            FocusedPane::Framework(FrameworkPaneId::Settings) => self.settings_pane.input_mode(ctx),
-            FocusedPane::Framework(FrameworkPaneId::Keymap)   => self.keymap_pane.input_mode(ctx),
-            FocusedPane::Framework(FrameworkPaneId::Toasts)   => InputMode::Static,
-            FocusedPane::App(app)                              => self.input_mode_queries
+            FocusedPane::Framework(FrameworkPaneId::Settings) => self.settings_pane.mode(ctx),
+            FocusedPane::Framework(FrameworkPaneId::Keymap)   => self.keymap_pane.mode(ctx),
+            FocusedPane::Framework(FrameworkPaneId::Toasts)   => Mode::Static,
+            FocusedPane::App(app)                              => self.mode_queries
                 .get(&app)
-                .map_or(InputMode::Navigable, |q| q(ctx)),
+                .map_or(Mode::Navigable, |q| q(ctx)),
         }
     }
 }
 ```
 
-**Tradeoff.** Public fields for the three framework panes — the binary uses them directly in `bar::render` dispatch and input routing. The `focused` field is private (read via `focused()`, written via `set_focused`) so the binary's `Focus` subsystem stays the only writer. The `input_mode_queries` map is private; the only writer is `pub(super) fn register_app_pane`, called by `KeymapBuilder::build_into(&mut framework)` once per registered `Shortcuts<Ctx>` impl. The only reader is `focused_pane_input_mode`. `Framework::new` takes an explicit `initial_focus` rather than implementing `Default`; the binary picks the starting pane.
+**Tradeoff.** Public fields for the three framework panes — the binary uses them directly in `bar::render` dispatch and input routing. The `focused` field is private (read via `focused()`, written via `set_focused`) so the binary's `Focus` subsystem stays the only writer. The `mode_queries` map is private; the only writer is `pub(super) fn register_app_pane`, called by `KeymapBuilder::build_into(&mut framework)` once per registered `Pane<Ctx>` impl. The only reader is `focused_pane_mode`. `Framework::new` takes an explicit `initial_focus` rather than implementing `Default`; the binary picks the starting pane.
 
 ---
 
@@ -1038,7 +1066,8 @@ pub use crate::keymap::{
 };
 
 // --- Bar -------------------------------------------------------------
-pub use crate::bar::{BarRegion, BarSlot, InputMode, ShortcutState};
+pub use crate::bar::{BarRegion, BarSlot, Mode, ShortcutState, Visibility};
+pub use crate::pane::Pane;
 
 // --- Framework panes + aggregator -----------------------------------
 pub use crate::framework::Framework;
@@ -1068,7 +1097,7 @@ pub use crate::pane_id::{FrameworkPaneId, FocusedPane};
 - **Bindings & maps:** `Bindings`, `ScopeMap`, `bindings!`
 - **Keymap:** `Keymap`, `KeymapBuilder`, `BuilderError`, `KeymapError`, `VimMode`
 - **Traits:** `Shortcuts`, `Navigation`, `Globals`
-- **Bar:** `BarRegion`, `BarSlot`, `ShortcutState`, `InputMode`
+- **Bar:** `BarRegion`, `BarSlot`, `ShortcutState`, `Visibility`, `Mode<Ctx>`
 - **Framework panes & aggregator:** `Framework`, `KeymapPane`, `SettingsPane`, `Toasts`, `ToastsAction`, `SettingsRegistry`
 - **Pane identity & context:** `AppContext`, `FrameworkPaneId`, `FocusedPane`
 
