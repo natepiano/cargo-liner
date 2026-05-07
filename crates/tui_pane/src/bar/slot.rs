@@ -29,6 +29,21 @@ pub enum BarSlot<A> {
     Paired(A, A, &'static str),
 }
 
+impl<A: Copy> BarSlot<A> {
+    /// The slot's primary action — the one used for label, key, and
+    /// state lookup.
+    ///
+    /// `Single(a)` returns `a`; `Paired(a, _, _)` returns `a`. The
+    /// second action in a paired slot is rendered alongside as the
+    /// "alternate" indicator and does not get a separate state lookup.
+    #[must_use]
+    pub const fn primary(self) -> A {
+        match self {
+            Self::Single(a) | Self::Paired(a, _, _) => a,
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -64,5 +79,17 @@ mod tests {
     #[test]
     fn shortcut_state_distinct() {
         assert_ne!(ShortcutState::Enabled, ShortcutState::Disabled);
+    }
+
+    #[test]
+    fn single_primary_returns_inner_action() {
+        let slot = BarSlot::Single(DummyAction::Up);
+        assert_eq!(slot.primary(), DummyAction::Up);
+    }
+
+    #[test]
+    fn paired_primary_returns_first_action() {
+        let slot = BarSlot::Paired(DummyAction::Up, DummyAction::Down, "/");
+        assert_eq!(slot.primary(), DummyAction::Up);
     }
 }

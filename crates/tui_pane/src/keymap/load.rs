@@ -31,6 +31,13 @@ pub enum KeymapError {
     #[error("TOML parse error in keymap config")]
     Parse(#[from] toml::de::Error),
 
+    /// A key string failed [`KeyBind::parse`](super::key_bind::KeyBind::parse)
+    /// in a context with no scope/action attribution available — used
+    /// for direct `?` propagation. Loader paths that already know their
+    /// scope/action prefer [`Self::InvalidBinding`].
+    #[error("invalid key binding")]
+    KeyParse(#[from] KeyParseError),
+
     /// Two TOML keys in the same array refer to the same physical key.
     #[error("duplicate key '{key}' in {scope}.{action}")]
     InArrayDuplicate {
@@ -167,6 +174,16 @@ mod tests {
             action: "activate".to_string(),
             source,
         };
+        let chained = std::error::Error::source(&err).expect("source must be set");
+        assert!(chained.to_string().contains("Bogus"));
+    }
+
+    #[test]
+    fn from_key_parse_error_propagates_via_question_mark() {
+        let source = KeyParseError::UnknownKey("Bogus".to_string());
+        let err: KeymapError = source.into();
+        assert!(matches!(err, KeymapError::KeyParse(_)));
+        assert_eq!(err.to_string(), "invalid key binding");
         let chained = std::error::Error::source(&err).expect("source must be set");
         assert!(chained.to_string().contains("Bogus"));
     }
