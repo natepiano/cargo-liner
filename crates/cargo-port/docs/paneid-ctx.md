@@ -425,7 +425,7 @@ Net diff against today's `App` struct:
 | Item | Today | After refactor |
 |---|---|---|
 | `App::input_context()` (line 722) | Returns the `InputContext` enum tag based on `focus` + overlay flags | **Deleted.** Bar render and input router consult `app.focus.current()` directly per §3. |
-| `App::enter_action(...)` family | Per-pane label resolution for the bar | **Deleted.** Each pane's `Shortcuts::shortcut(action, ctx)` impl returns the label. |
+| `App::enter_action(...)` family | Per-pane label resolution for the bar | **Deleted.** Each pane's `Shortcuts::label(action, ctx)` impl returns the label (defaults to `Some(action.bar_label())`; pane overrides only for state-dependent labels). |
 | `shortcuts::InputContext` enum | App-side enum for routing | **Deleted.** Use `PaneId::App(AppPaneId::…)` / `PaneId::Framework(FrameworkPaneId::…)` everywhere. |
 
 ### Free-fn dispatchers
@@ -459,7 +459,8 @@ impl Shortcuts<App> for PackagePane {
     type Action = PackageAction;
     const SCOPE_NAME: &'static str = "package";
     fn defaults() -> Bindings<PackageAction> { /* … */ }
-    fn shortcut(&self, action: PackageAction, ctx: &App) -> Option<Shortcut> { /* … */ }
+    fn label(&self, action: PackageAction, ctx: &App) -> Option<&'static str> { /* … */ }
+    fn state(&self, action: PackageAction, ctx: &App) -> ShortcutState { /* … */ }
     fn dispatcher() -> fn(PackageAction, &mut App) { dispatch_package }
 }
 ```

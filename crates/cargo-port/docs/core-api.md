@@ -258,7 +258,7 @@ impl<A: Copy + Eq + Hash> ScopeMap<A> {
     }
 
     /// Primary-key lookup (the first key bound to `action`). `pub` —
-    /// the bar reads this when rendering a `BarRow::Paired` slot.
+    /// the bar reads this when rendering a `BarSlot::Paired` slot.
     pub fn key_for(&self, action: A) -> Option<&KeyBind> {
         self.by_action.get(&action).and_then(|v| v.first())
     }
@@ -302,6 +302,11 @@ pub trait ActionEnum:
     /// TOML key for this variant (e.g. `"activate"`).
     fn toml_key(self) -> &'static str;
 
+    /// Default short label rendered in the bar (e.g. `"activate"`,
+    /// `"clean"`). The pane's `Shortcuts::label` returns this by
+    /// default; overrides only fire when the label is state-dependent.
+    fn bar_label(self) -> &'static str;
+
     /// Human-readable description (used by the keymap-overlay help).
     fn description(self) -> &'static str;
 
@@ -334,20 +339,31 @@ pub trait Shortcuts<Ctx: AppContext>: 'static {
     /// its own keys.
     fn defaults() -> Bindings<Self::Action>;
 
-    /// Per-action bar entry: `None` hides the row, `Some(Enabled(label))`
-    /// shows it active, `Some(Disabled(label))` shows it greyed out.
-    /// Cursor-position-dependent label logic lives here.
-    fn shortcut(&self, action: Self::Action, ctx: &Ctx) -> Option<Shortcut>;
+    /// Per-action bar label. `None` hides the slot. Default returns
+    /// `Some(action.bar_label())` (the static label declared in
+    /// `action_enum!`). Override only when the label depends on pane
+    /// state (e.g. `PackageAction::Activate` reads `"open"` on
+    /// `CratesIo` fields, `"activate"` elsewhere).
+    fn label(&self, action: Self::Action, _ctx: &Ctx) -> Option<&'static str> {
+        Some(action.bar_label())
+    }
 
-    /// Bar row layout. Default: one `(PaneAction, Single(action))` per
+    /// Per-action enabled / disabled status. Default `Enabled`.
+    /// Override when the action is visible but inert (e.g.
+    /// `PackageAction::Clean` grayed out when no target dir exists).
+    fn state(&self, _action: Self::Action, _ctx: &Ctx) -> ShortcutState {
+        ShortcutState::Enabled
+    }
+
+    /// Bar slot layout. Default: one `(PaneAction, Single(action))` per
     /// `Action::ALL` in declaration order. Override to introduce
-    /// `Paired` rows, route into `BarRegion::Nav`, or omit
-    /// data-dependent rows.
-    fn bar_rows(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarRow<Self::Action>)> {
+    /// `Paired` slots, route into `BarRegion::Nav`, or omit
+    /// data-dependent slots.
+    fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<Self::Action>)> {
         Self::Action::ALL
             .iter()
             .copied()
-            .map(|a| (BarRegion::PaneAction, BarRow::Single(a)))
+            .map(|a| (BarRegion::PaneAction, BarSlot::Single(a)))
             .collect()
     }
 
@@ -406,7 +422,6 @@ pub trait Globals<Ctx: AppContext>: 'static {
 
     fn render_order() -> &'static [Self::Action];
     fn defaults() -> Bindings<Self::Action>;
-    fn bar_label(action: Self::Action) -> &'static str;
     fn dispatcher() -> fn(Self::Action, &mut Ctx);
 }
 ```
@@ -417,37 +432,19 @@ pub trait Globals<Ctx: AppContext>: 'static {
 
 ---
 
-## 5. `Shortcut` / `ShortcutState` / `BarRow<A>` / `BarRegion` / `InputMode`
+## 5. `ShortcutState` / `BarSlot<A>` / `BarRegion` / `InputMode`
 
 ```rust
-/// Per-action enabled/disabled flag.
+/// Per-action enabled/disabled flag, returned by `Shortcuts::state`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShortcutState { Enabled, Disabled }
 
-/// One bar entry's renderable payload (label + state). The framework
-/// adds the bound key on the side via `display_keys_for(action)`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Shortcut {
-    pub label: &'static str,
-    pub state: ShortcutState,
-}
-
-impl Shortcut {
-    pub fn enabled(label: &'static str) -> Self {
-        Self { label, state: ShortcutState::Enabled }
-    }
-
-    pub fn disabled(label: &'static str) -> Self {
-        Self { label, state: ShortcutState::Disabled }
-    }
-}
-
-/// One row in the bar. `Single` shows every key bound to one action,
+/// One slot in the bar. `Single` shows every key bound to one action,
 /// joined by `,`. `Paired` glues two actions with `/` under one label,
 /// using **primary keys only** — alternative bindings for paired
 /// actions never appear in paired slots.
 #[derive(Clone, Copy, Debug)]
-pub enum BarRow<A> {
+pub enum BarSlot<A> {
     Single(A),
     Paired(A, A, &'static str),
 }
@@ -485,7 +482,7 @@ pub enum InputMode {
 }
 ```
 
-**Tradeoff.** `Shortcut::label` is `&'static str` because every label in cargo-port today is a literal; supporting owned strings would cost an allocation per bar render with no caller asking for it. If a future pane needs a runtime-computed label, lift the field to `Cow<'static, str>` then.
+**Tradeoff.** `Shortcuts::label` returns `Option<&'static str>` because every label in cargo-port today is a literal; supporting owned strings would cost an allocation per bar render with no caller asking for it. If a future pane needs a runtime-computed label, lift the return type to `Option<Cow<'static, str>>` then.
 
 ---
 
@@ -746,8 +743,8 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// Esc pre-handler and the bar-region suppression logic.
     pub fn focused_pane_input_mode(&self, ctx: &Ctx) -> InputMode {
         match self.focused {
-            FocusedPane::Framework(FrameworkPaneId::Settings) => self.settings_pane.input_mode(),
-            FocusedPane::Framework(FrameworkPaneId::Keymap)   => self.keymap_pane.input_mode(),
+            FocusedPane::Framework(FrameworkPaneId::Settings) => self.settings_pane.input_mode(ctx),
+            FocusedPane::Framework(FrameworkPaneId::Keymap)   => self.keymap_pane.input_mode(ctx),
             FocusedPane::Framework(FrameworkPaneId::Toasts)   => InputMode::Static,
             FocusedPane::App(app)                              => self.input_mode_queries
                 .get(&app)
@@ -1011,7 +1008,7 @@ pub use crate::keymap::{
 };
 
 // --- Bar -------------------------------------------------------------
-pub use crate::bar::{BarRegion, BarRow, InputMode, Shortcut, ShortcutState};
+pub use crate::bar::{BarRegion, BarSlot, InputMode, ShortcutState};
 
 // --- Framework panes + aggregator -----------------------------------
 pub use crate::framework::Framework;
@@ -1041,7 +1038,7 @@ pub use crate::pane_id::{FrameworkPaneId, FocusedPane};
 - **Bindings & maps:** `Bindings`, `ScopeMap`, `bindings!`
 - **Keymap:** `Keymap`, `KeymapBuilder`, `BuilderError`, `KeymapError`, `VimMode`
 - **Traits:** `Shortcuts`, `Navigation`, `Globals`
-- **Bar:** `BarRegion`, `BarRow`, `Shortcut`, `ShortcutState`, `InputMode`
+- **Bar:** `BarRegion`, `BarSlot`, `ShortcutState`, `InputMode`
 - **Framework panes & aggregator:** `Framework`, `KeymapPane`, `SettingsPane`, `Toasts`, `ToastsAction`, `SettingsRegistry`
 - **Pane identity & context:** `AppContext`, `FrameworkPaneId`, `FocusedPane`
 

@@ -223,8 +223,8 @@ homogeneous array.
 /// action_enum! {
 ///     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 ///     pub enum NavAction {
-///         Up   => "up",   "Move up";
-///         Down => "down", "Move down";
+///         Up   => ("up",   "up",   "Move up");
+///         Down => ("down", "down", "Move down");
 ///     }
 /// }
 ///
@@ -321,10 +321,13 @@ It does **not** generate:
 | `impl ::core::fmt::Display for $Name` generated, delegating to `description()` | The bar and the keymap-overlay UI both render action labels; today they call `description()` directly. With `Display`, `{action}` works in `format!` / `write!` and the renderers stop threading `description()` through their public APIs. |
 | `from_toml_key` becomes a trait method on `ActionEnum` | TOML parsing in `tui_pane` is generic over the action type; it needs a trait-dispatched constructor. |
 | `ALL` becomes a trait-associated constant | Same reason — generic code that walks every variant of an action enum needs trait-level access. |
+| Macro arms switch from `Variant => "key", "desc";` to `Variant => ("key", "bar", "desc");` (Phase 5) | Adds a third positional string — the default bar label. Tuple delimiters group the metadata as one unit and read as Rust-like syntax. `Shortcuts::label`'s default returns `Some(action.bar_label())` so panes only override when the label is state-dependent. |
+| `bar_label()` added to the `ActionEnum` trait (Phase 5) | The bar reads `action.bar_label()` once per slot per frame; making it a trait method gives generic bar code a single source for the static label. |
 | `$crate::` prefix throughout | The macro is `#[macro_export]`ed from `tui_pane`; expansions land in downstream crates (cargo-port) that import `tui_pane` under whatever name they choose. |
 
 The behaviour of `toml_key` / `description` / `ALL` is preserved verbatim;
-only the surface (trait impls + `Display`) grows.
+the surface grows (trait impls + `Display` + `bar_label`) and the arm
+grammar gains a tuple delimiter pair.
 
 ### 2.3 `ActionEnum` trait — formal definition
 
@@ -345,7 +348,12 @@ pub trait ActionEnum:
     /// `"expand_all"`). Must be stable — TOML files are user-edited.
     fn toml_key(self) -> &'static str;
 
-    /// Human-readable label shown in the bar / keymap overlay.
+    /// Default short label shown in the bar (e.g. `"activate"`,
+    /// `"clean"`). The pane's `Shortcuts::label` returns this by
+    /// default; overrides only fire when the label is state-dependent.
+    fn bar_label(self) -> &'static str;
+
+    /// Human-readable description (used by the keymap-overlay help).
     /// `Display::fmt` delegates to this.
     fn description(self) -> &'static str;
 
@@ -368,7 +376,7 @@ macro_rules! action_enum {
     (
         $(#[$meta:meta])*
         $vis:vis enum $Name:ident {
-            $( $Variant:ident => $toml_key:literal, $desc:literal ; )+
+            $( $Variant:ident => ( $toml_key:literal , $bar:literal , $desc:literal ) ; )+
         }
     ) => {
         $(#[$meta])*
@@ -382,6 +390,12 @@ macro_rules! action_enum {
             fn toml_key(self) -> &'static str {
                 match self {
                     $( Self::$Variant => $toml_key, )+
+                }
+            }
+
+            fn bar_label(self) -> &'static str {
+                match self {
+                    $( Self::$Variant => $bar, )+
                 }
             }
 
@@ -430,12 +444,13 @@ Differences from the cargo-port version:
 
 ### 2.5 Items the macro generates — checklist
 
-For `action_enum! { pub enum Foo { A => "a", "alpha"; B => "b", "beta"; } }`:
+For `action_enum! { pub enum Foo { A => ("a", "a-bar", "alpha"); B => ("b", "b-bar", "beta"); } }`:
 
 - `pub enum Foo { A, B }` — the enum.
 - `impl tui_pane::ActionEnum for Foo` with:
   - `const ALL: &'static [Self] = &[Self::A, Self::B];`
   - `fn toml_key(self) -> &'static str` mapping `A => "a"`, `B => "b"`.
+  - `fn bar_label(self) -> &'static str` mapping `A => "a-bar"`, `B => "b-bar"`.
   - `fn description(self) -> &'static str` mapping `A => "alpha"`, `B => "beta"`.
   - `fn from_toml_key("a") -> Some(A)`, `("b") -> Some(B)`, else `None`.
 - `impl core::fmt::Display for Foo` delegating to `description`.
@@ -456,8 +471,8 @@ satisfied by the user's derives, not by the macro.
 /// action_enum! {
 ///     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 ///     pub enum DemoAction {
-///         Activate => "activate", "Open / activate selected field";
-///         Clean    => "clean",    "Clean target dir";
+///         Activate => ("activate", "activate", "Open / activate selected field");
+///         Clean    => ("clean",    "clean",    "Clean target dir");
 ///     }
 /// }
 ///
@@ -469,6 +484,9 @@ satisfied by the user's derives, not by the macro.
 /// assert_eq!(DemoAction::Activate.toml_key(), "activate");
 /// assert_eq!(DemoAction::from_toml_key("clean"), Some(DemoAction::Clean));
 /// assert_eq!(DemoAction::from_toml_key("nope"),  None);
+///
+/// // Bar-label default consumed by Shortcuts::label.
+/// assert_eq!(DemoAction::Activate.bar_label(), "activate");
 ///
 /// // Display delegates to description.
 /// assert_eq!(format!("{}", DemoAction::Activate), "Open / activate selected field");
