@@ -4,19 +4,24 @@
 //! globals (Find, Rescan, etc.) live in a separate `Globals<Ctx>` impl
 //! and share the `[global]` TOML table at load time.
 
-use core::fmt;
+use core::fmt::Display;
+use core::fmt::Formatter;
+
+use crossterm::event::KeyCode;
 
 use super::action_enum::ActionEnum;
+use super::bindings::Bindings;
+use super::key_bind::KeyBind;
 
 /// Framework-owned global actions.
 ///
-/// Defaults: `q` / `R` / `Tab` / `Shift+Tab` / `Ctrl+K` / `s` / `x`
-/// (resolved at builder time in Phase 8).
-///
-/// Dispatch for [`Self::Quit`], [`Self::Restart`], and [`Self::Dismiss`]
-/// is supplied by the binary as the three positional
-/// `Keymap::builder(quit, restart, dismiss)` arguments. The four
-/// pane-focus variants ([`Self::NextPane`], [`Self::PrevPane`],
+/// The framework owns dispatch for every variant. [`Self::Quit`] and
+/// [`Self::Restart`] set lifecycle flags on the framework; the binary
+/// can register `on_quit` / `on_restart` hooks to observe them.
+/// [`Self::Dismiss`] runs the framework's overlay/toast chain first
+/// and then bubbles to an optional `dismiss_fallback` hook for app-
+/// owned dismissables (e.g. collapsing a deleted-row placeholder).
+/// The four pane-focus variants ([`Self::NextPane`], [`Self::PrevPane`],
 /// [`Self::OpenKeymap`], [`Self::OpenSettings`]) are dispatched
 /// entirely by the framework, which owns the registered pane set.
 ///
@@ -25,10 +30,9 @@ use super::action_enum::ActionEnum;
 /// framework-canonical and the variant set is closed.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum GlobalAction {
-    /// Quit the application. Dispatched by the binary-supplied `quit` fn.
+    /// Quit the application. Sets the framework's `quit_requested` flag.
     Quit,
-    /// Restart the application. Dispatched by the binary-supplied
-    /// `restart` fn.
+    /// Restart the application. Sets the framework's `restart_requested` flag.
     Restart,
     /// Move focus to the next registered pane.
     NextPane,
@@ -38,9 +42,30 @@ pub enum GlobalAction {
     OpenKeymap,
     /// Focus the framework-provided settings overlay.
     OpenSettings,
-    /// Close the current overlay or dismiss the focused dismissable
-    /// item. Dispatched by the binary-supplied `dismiss` fn.
+    /// Close the current overlay, dismiss a focused toast, or — if no
+    /// framework dismissable matches — bubble to the binary's optional
+    /// `dismiss_fallback` hook.
     Dismiss,
+}
+
+impl GlobalAction {
+    /// Canonical default key bindings for the framework's globals.
+    ///
+    /// Loaded into the `[global]` scope's [`ScopeMap`](super::scope_map::ScopeMap)
+    /// at builder time (Phase 9), then merged with any user overrides
+    /// from the TOML loader (Phase 8).
+    #[must_use]
+    pub fn defaults() -> Bindings<Self> {
+        crate::bindings! {
+            'q' => Self::Quit,
+            'R' => Self::Restart,
+            KeyCode::Tab => Self::NextPane,
+            KeyBind::shift(KeyCode::Tab) => Self::PrevPane,
+            KeyBind::ctrl('k') => Self::OpenKeymap,
+            's' => Self::OpenSettings,
+            'x' => Self::Dismiss,
+        }
+    }
 }
 
 impl ActionEnum for GlobalAction {
@@ -92,8 +117,8 @@ impl ActionEnum for GlobalAction {
     }
 }
 
-impl fmt::Display for GlobalAction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.description()) }
+impl Display for GlobalAction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result { f.write_str(self.description()) }
 }
 
 #[cfg(test)]
@@ -104,7 +129,11 @@ impl fmt::Display for GlobalAction {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use crossterm::event::KeyCode;
+    use crossterm::event::KeyModifiers;
+
     use super::GlobalAction;
+    use super::KeyBind;
     use crate::ActionEnum;
 
     #[test]
@@ -150,5 +179,41 @@ mod tests {
     fn from_toml_key_unknown_returns_none() {
         assert!(GlobalAction::from_toml_key("nope").is_none());
         assert!(GlobalAction::from_toml_key("").is_none());
+    }
+
+    #[test]
+    fn defaults_produce_canonical_seven_bindings() {
+        let map = GlobalAction::defaults().into_scope_map();
+
+        let cases: [(KeyBind, GlobalAction); 7] = [
+            (KeyBind::from('q'), GlobalAction::Quit),
+            (KeyBind::from('R'), GlobalAction::Restart),
+            (KeyBind::from(KeyCode::Tab), GlobalAction::NextPane),
+            (
+                KeyBind {
+                    code: KeyCode::Tab,
+                    mods: KeyModifiers::SHIFT,
+                },
+                GlobalAction::PrevPane,
+            ),
+            (KeyBind::ctrl('k'), GlobalAction::OpenKeymap),
+            (KeyBind::from('s'), GlobalAction::OpenSettings),
+            (KeyBind::from('x'), GlobalAction::Dismiss),
+        ];
+
+        for (key, expected) in cases {
+            assert_eq!(
+                map.action_for(&key),
+                Some(expected),
+                "expected {key:?} → {expected:?}",
+            );
+        }
+
+        for variant in GlobalAction::ALL {
+            assert!(
+                !map.display_keys_for(*variant).is_empty(),
+                "every default variant must be bound: {variant:?}",
+            );
+        }
     }
 }

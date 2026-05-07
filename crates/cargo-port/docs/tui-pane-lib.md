@@ -1094,15 +1094,24 @@ Minor findings applied directly (no user gating):
 - `pub use keymap::GlobalAction;` at crate root noted in Phase 12.
 - Paired-row separator policy in Phase 11 shortened to a one-line cross-reference of Phase 2's locked decision.
 
-### Phase 4 — Bindings, scope map, loader errors
+### Phase 4 — Bindings, scope map, loader errors ✅
 
 Add `tui_pane/src/keymap/bindings.rs` (`Bindings<A>` + `bindings!`, §2), `tui_pane/src/keymap/scope_map.rs` (`ScopeMap<A>`, §3), and `tui_pane/src/keymap/load.rs` skeleton holding `KeymapError` (§10). The loader's actual TOML-parsing impl lands in Phase 8 alongside `Keymap<Ctx>`.
 
 **Also lands in Phase 4 (post-Phase-3 review):** `pub fn defaults() -> Bindings<Self>` on `GlobalAction` in `tui_pane/src/keymap/global_action.rs` — returns the canonical `q` / `R` / `Tab` / `Shift+Tab` / `Ctrl+K` / `s` / `x` bindings using the `bindings!` macro that ships in this phase. Co-located with the enum (matches the convention every `Shortcuts<P>::defaults()` impl follows). Tested in `global_action.rs` directly; loader and builder consume it.
 
-**Extend root re-exports.** Following the Phase 3 precedent (`pub use keymap::ActionEnum;` in `lib.rs` so the macro's `$crate::ActionEnum` resolves), Phase 4 adds the same root re-exports for every type the `bindings!` macro touches via `$crate::`: `Bindings`, `KeyBind`. Also add `pub use keymap::bindings::bindings;` if any path-resolution issue surfaces (`#[macro_export]` already places the macro at the crate root).
+**Root re-exports (shipped form).** As implemented, `tui_pane/src/lib.rs` is `mod keymap;` (private) plus crate-root `pub use` for every public type: `ActionEnum`, `Bindings`, `GlobalAction`, `KeyBind`, `KeyInput`, `KeyParseError`, `KeymapError`, `ScopeMap`, `VimMode`. The speculative `pub use keymap::bindings::bindings;` from earlier drafts proved unnecessary — `#[macro_export]` already places the macro at the crate root.
 
-`KeymapError` is `#[derive(thiserror::Error)]`, includes `#[from] KeyParseError` on the variant that wraps a parse failure, and ships with the full variant set the loader (Phase 8) and the builder (Phase 9) need: `InvalidBinding { scope, action, #[from] source: KeyParseError }`, `UnknownAction { scope, action }`, `UnknownScope { scope }`, `InArrayDuplicate { scope, action, key }`, `CrossActionCollision { scope, key, actions }`. Phase 4 ships the `enum` definition; Phase 8 wires the actual loader paths that emit each variant. (`BuilderError` from Phase 9 is a separate enum at the builder layer — see Phase 9.)
+`KeymapError` is `#[derive(thiserror::Error)]` and ships with seven variants (the loader and builder consume them in Phases 8 and 9):
+- `Io(#[from] std::io::Error)` — file-open failure.
+- `Parse(#[from] toml::de::Error)` — top-level TOML parse failure.
+- `InArrayDuplicate { scope, action, key }` — duplicate key inside one TOML array.
+- `CrossActionCollision { scope, key, actions: (String, String) }` — same key bound to two actions.
+- `InvalidBinding { scope, action, #[source] source: KeyParseError }` — `KeyBind::parse` failure with chained source.
+- `UnknownAction { scope, action }` — `A::from_toml_key(key)` returned `None`; loader attaches the scope.
+- `UnknownScope { scope }` — TOML referenced an unknown top-level table.
+
+Phase 4 ships the `enum` definition; Phase 8 wires the actual loader paths that emit each variant. (`BuilderError` from Phase 9 is a separate enum at the builder layer — see Phase 9.)
 
 `bindings!` macro grammar must accept arbitrary `impl Into<KeyBind>` expressions on the RHS — including composed forms like `KeyBind::ctrl(KeyBind::shift('g'))` (CTRL|SHIFT, established by Phase 2). The macro's unit tests cover the composed case.
 
@@ -1114,11 +1123,66 @@ Unit tests (this phase, scoped to what exists by end of Phase 4):
 - `bindings!` accepts `KeyBind::ctrl(KeyBind::shift('g'))` and stores `KeyModifiers::CONTROL | SHIFT`.
 - (Deferred to Phase 9, when the builder + `VimMode::Enabled` application pipeline exist:) `MockNavigation::Up` keeps its primary as the inserted `KeyCode::Up` even with `VimMode::Enabled` applied — insertion-order primary.
 
+#### Retrospective
+
+**What worked:**
+- `bindings!` macro grammar (`KEY => ACTION` and `[KEYS] => ACTION` arms with optional trailing commas) accepted every authoring case the test suite threw at it, including `KeyBind::ctrl(KeyBind::shift('g'))` composed modifiers.
+- `tests/macro_use.rs` cross-crate test caught a `$crate::*` path break the moment we flipped `pub mod keymap` → `mod keymap` (cross-crate paths started failing immediately, before any consumer noticed).
+- 49 tui_pane tests pass; 599 workspace tests pass; `cargo mend --fail-on-warn` reports no findings.
+
+**What deviated from the plan:**
+- **`pub mod` removed everywhere.** Plan said "extend root re-exports for `Bindings`, `KeyBind`." Per `cargo mend` (which denies `pub mod` workspace-wide) and direct user instruction, `tui_pane/src/lib.rs` was reduced to `mod keymap;` (private) plus crate-root `pub use` for every public type: `ActionEnum`, `Bindings`, `GlobalAction`, `KeyBind`, `KeyInput`, `KeyParseError`, `KeymapError`, `ScopeMap`, `VimMode`. `keymap/mod.rs` similarly switched all `pub mod foo;` to `mod foo;` + facade `pub use`. **Public-API change:** the `tui_pane::keymap::*` namespace no longer exists — every type is now flat at `tui_pane::*`.
+- **`bindings!` macro is a two-step expansion.** Spec'd as a single `macro_rules!` with one block-returning arm. A single arm cannot recurse to handle mixed `KEY => ACTION` / `[KEYS] => ACTION` lines, so the macro now delegates to a `#[doc(hidden)] #[macro_export] macro_rules! __bindings_arms!` incremental TT muncher. Public surface unchanged; `__bindings_arms!` is the implementation detail.
+- **`ScopeMap::new` / `insert` are `pub(super)`, not `pub(crate)`.** The design doc said `pub(crate)`; project memory `feedback_no_pub_crate.md` (use `pub(super)` in nested modules — `pub(crate)` reserved for top-level files) overruled. Same author intent (framework-only construction), narrower scope.
+- **`bind_many` requires `A: Clone`, not just `A: Copy`.** The loop body needs to clone the action per key; `Copy` only matters when the entire `Bindings` is consumed. Trivial in practice — every `ActionEnum` is `Copy + Clone`.
+- **`bindings!` uses `$crate::KeyBind`, not `$crate::keymap::KeyBind`.** Falls out of the `pub mod keymap` removal: the macro's `$crate::*` paths now reach the flat root re-exports.
+
+**Surprises:**
+- **clippy `must_use_candidate` (pedantic) fires on every getter.** Each new public method that returns a value needs `#[must_use]`. Apply pre-emptively in Phase 5+.
+- **`cargo mend` denies `pub mod` workspace-wide and there is no `mend.toml` allowlist.** Phases 5–11 must declare every new module as private `mod foo;` plus `pub use foo::Type;` at the parent facade — never `pub mod foo;`.
+- **`src/tui/panes/support.rs` had three pre-existing mend warnings** (inline path-qualified types) that auto-resolved during the Phase 4 build cycle — picked up "for free." Not part of Phase 4 scope but landed in the same diff.
+
+**Implications for remaining phases:**
+- **Every Phase 5+ module declaration must be `mod foo;`** (not `pub mod foo;`) at every level. Affects Phase 5 (`bar/region.rs`, `bar/shortcut.rs`), Phase 6 (`framework/`), Phase 7 (scope traits), Phase 8 (`keymap/container.rs` or wherever `Keymap<Ctx>` lands), Phase 9 (`keymap/builder.rs`), Phase 10 (`panes/*`), Phase 11 (`bar/render.rs`).
+- **Every `tui_pane::keymap::*` path in design docs is now stale.** `phase-02-core-api.md`, `phase-02-macros.md`, `phase-02-test-infra.md`, `phase-02-toml-keys.md`, and the rest of `tui-pane-lib.md` need a sweep: `crate::keymap::Foo` → `crate::Foo` (and `tui_pane::keymap::Foo` → `tui_pane::Foo` in public-API examples).
+- **Phase 12 binary swap uses flat paths.** `use tui_pane::KeyBind;` not `use tui_pane::keymap::KeyBind;`. Every file in `src/tui/` that touches keymap types will see this.
+- **`pub(super)` is the visibility default for framework-internal construction.** Phase 8's `Keymap<Ctx>` constructor, Phase 9's `KeymapBuilder::build()` — apply the same rule: `pub(super)` for sites only the framework's own `keymap/` siblings call.
+- **Pre-emptive `#[must_use]` on every Phase 5+ public getter** saves a clippy round-trip per phase.
+
+#### Phase 4 Review
+
+- **Phase 4 plan text reconciled** with shipped `KeymapError` (added `Io(#[from])` and `Parse(#[from] toml::de::Error)` — the previous variant list of 5 omitted them).
+- **Stale "Extend root re-exports" paragraph rewritten** to reflect the shipped lib.rs (every public type re-exported flat at crate root; no `pub use keymap::bindings::bindings;`).
+- **Phase 5 (Bar primitives)** gains an explicit "Root re-exports" line: `lib.rs` adds `pub use bar::{BarRegion, BarRow, InputMode, Shortcut, ShortcutState};`.
+- **Phase 6 (Framework skeleton)** gains an explicit "Root re-exports" line: `pub use framework::Framework;`, `pub use pane_id::{FocusedPane, FrameworkPaneId};`, `pub use app_context::AppContext;` plus `#[must_use]` directive.
+- **Phase 7 (Scope traits)** gains: `pub use keymap::{Shortcuts, Navigation, Globals};` plus standing-rule 1 reminder.
+- **Phase 8 (Keymap container)** gains: `pub use keymap::Keymap;`, `pub(super)` for `Keymap::new`, `#[must_use]` on getters.
+- **Phase 9 (Keymap builder)** gains: `pub use keymap::{KeymapBuilder, BuilderError};`, `pub use settings::SettingsRegistry;`, `pub(super)` for builder internals.
+- **Phase 10 (Framework panes)** gains: `pub use panes::{KeymapPane, SettingsPane, Toasts};`, panes/mod.rs declared `mod` (private) per standing rule 1.
+- **Phase 11 (Bar renderer)** gains: `pub use bar::StatusBar;` plus standing-rule 1 reminder.
+- **Phase 12 (App swap)** gains: flat-namespace import note (`use tui_pane::KeyBind;` not `use tui_pane::keymap::KeyBind;`) and binary-side `mod` rule reminder.
+- **New "Phase 5+ standing rules" subsection** added after the Phase 4 retrospective: locks the seven standing rules (private `mod`, flat re-exports, `pub(super)` for framework-internal, `#[must_use]` on getters, flat `$crate::*` macro paths, new `#[macro_export]` extends `tests/macro_use.rs`, `cargo mend --fail-on-warn` as phase-completion gate).
+- **Definition of done** rewritten to enumerate every public type at crate-root flat paths and to call out `__bindings_arms!` as `#[doc(hidden)]` but technically reachable.
+- **Spec docs swept** (`core-api.md`, `macros.md`): stale `crate::keymap::<submod>::Foo` sub-paths replaced with the facade-path form `crate::keymap::{Foo, ...}`; explanatory comments added about why the public API is flat.
+- **Reviewed and not changed:** `tui_pane/README.md` deferred to Phase 16 (subagent finding #20 — no earlier baseline justified). `bind_many` requiring `A: Clone` (subagent finding #10 — auto-satisfied because `ActionEnum: Copy`, no plan change needed).
+
+These apply to every remaining phase without further mention; phase blocks below assume them. Restate only where a phase has a specific exception.
+
+1. **Module declarations are `mod foo;`** at every level — never `pub mod foo;`. Parents expose the API via `pub use foo::Type;` re-exports. `cargo mend` denies `pub mod` workspace-wide, including the binary side (`src/tui/...` in Phase 12).
+2. **Public types live at the crate root.** Every `tui_pane` public type re-exports from `tui_pane/src/lib.rs` so callers write `tui_pane::Foo` (flat). The `tui_pane::keymap::*` namespace does not exist publicly.
+3. **Framework-internal construction is `pub(super)`.** New / insert / build methods that only the framework's own siblings call use `pub(super)`, never `pub(crate)`. Project memory `feedback_no_pub_crate.md` for rationale.
+4. **Public getters get `#[must_use]` pre-emptively.** Clippy `must_use_candidate` (pedantic, denied) fires on every getter that returns a value the caller can ignore.
+5. **Macros use flat `$crate::*` paths.** Every `#[macro_export]` macro references re-exported root types: `$crate::Bindings`, `$crate::KeyBind`, `$crate::ActionEnum`. Never `$crate::keymap::Foo`.
+6. **New `#[macro_export]` extends `tests/macro_use.rs`.** Cross-crate path stability is locked by that file; any new exported macro adds an invocation there.
+7. **Phase-completion gates.** `cargo build`, `cargo nextest run`, `cargo +nightly fmt`, `cargo clippy --workspace --all-targets`, `cargo mend --fail-on-warn` — all clean before the phase is marked ✅.
+
 ### Phase 5 — Bar primitives
 
 Add `tui_pane/src/bar/region.rs` (`BarRegion::{Nav, PaneAction, Global}` + `ALL`), `tui_pane/src/bar/shortcut.rs` (`Shortcut`, `ShortcutState`, `BarRow<A>`), and `InputMode` in `bar/mod.rs`. All per §5.
 
 Leaf types. First consumed by the scope traits in Phase 7.
+
+**Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use bar::{BarRegion, BarRow, InputMode, Shortcut, ShortcutState};`. `bar/mod.rs` is `mod region; mod shortcut; pub use region::BarRegion; pub use shortcut::{Shortcut, ShortcutState, BarRow}; pub use ...InputMode;` (or wherever `InputMode` lands).
 
 ### Phase 6 — Pane identity, ctx, Framework skeleton
 
@@ -1152,6 +1216,8 @@ The `quit_requested` / `restart_requested` flags are set by the framework's inte
 
 No pane fields, no `input_mode_queries`, no `editor_target_path`, no `focused_pane_input_mode` in Phase 6 — those land in Phase 10 once framework panes exist.
 
+**Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use framework::Framework;`, `pub use pane_id::{FocusedPane, FrameworkPaneId};`, `pub use app_context::AppContext;`. Apply rule 4 (`#[must_use]`) to every getter on `Framework<Ctx>`.
+
 ### Phase 7 — Scope traits
 
 Split §4 into one file per trait (each is independent, the heaviest is `Shortcuts<Ctx>` with 10+ items):
@@ -1162,9 +1228,13 @@ Split §4 into one file per trait (each is independent, the heaviest is `Shortcu
 
 `keymap/action_enum.rs` (added in Phase 3) keeps `ActionEnum` + `action_enum!` only.
 
+**Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use keymap::{Shortcuts, Navigation, Globals};`. `keymap/mod.rs` adds `pub use shortcuts::Shortcuts; pub use navigation::Navigation; pub use globals::Globals;`. Inner files declare `mod shortcuts; mod navigation; mod globals;` (private — standing rule 1).
+
 ### Phase 8 — Keymap container
 
 Add `Keymap<Ctx>` in `tui_pane/src/keymap/mod.rs` (the keymap module's anchor type lives in its `mod.rs` file, mirroring the Phase 6 precedent of `Framework<Ctx>` in `framework/mod.rs`). `Keymap<Ctx>` exposes `scope_for` / `navigation` / `globals` / `framework_globals` / `config_path` (per §6). Fill in the actual TOML-parsing implementation in `keymap/load.rs` (skeleton + `KeymapError` from Phase 4). Construction is via `Keymap::builder()` (no positionals — the framework owns `GlobalAction` dispatch, see Phase 3 review for full rationale); the builder itself lands in Phase 9.
+
+**Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use keymap::Keymap;`. The `Keymap::new`-style internal constructor that the builder calls is `pub(super)` (standing rule 3 — framework-only construction). Apply `#[must_use]` (standing rule 4) to every getter on `Keymap<Ctx>`.
 
 **Loader-layer decisions established here (Zed/VSCode/Helix-aligned):**
 - **Letter-case normalization.** `KeyBind::parse` (Phase 2) preserves case verbatim — `"Ctrl+K"` parses to `KeyCode::Char('K')`, not `Char('k')`. The TOML loader normalizes:
@@ -1207,6 +1277,8 @@ Unit tests:
 - `MockNavigation::Up` keeps its primary as the inserted `KeyCode::Up` even with `VimMode::Enabled` applied — insertion-order primary preserved (deferred from Phase 4).
 
 After Phase 9 the entire `tui_pane` foundation is in place: keys, action machinery, bindings, scope map, bar primitives, pane id + ctx + framework skeleton, scope traits, keymap, builder, settings registry. Framework panes (`KeymapPane`, `SettingsPane`, `Toasts`) and the `Framework` aggregator's pane fields + helper methods land in Phase 10.
+
+**Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use keymap::{KeymapBuilder, BuilderError};` and `pub use settings::SettingsRegistry;`. `KeymapBuilder::build` and any internal helpers it calls into other keymap files are `pub(super)` (standing rule 3).
 
 ### Phase 10 — Framework panes
 
@@ -1294,6 +1366,8 @@ The registry is populated by `KeymapBuilder::register::<P>()`: each pane's impl 
 
 `Framework<Ctx>` lives in `tui_pane` (skeleton from Phase 6; filled in here). The `App.framework: Framework<App>` field-add lands in **Phase 13**, when the framework panes' input paths replace the old `handle_settings_key` / `handle_keymap_key`. Before Phase 13 the filled-in framework type is exercised only by `tui_pane`'s own `cfg(test)` units and `tui_pane/tests/` integration files.
 
+**Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use panes::{KeymapPane, SettingsPane, Toasts};`. `panes/mod.rs` is `mod keymap_pane; mod settings_pane; mod toasts; pub use keymap_pane::KeymapPane; pub use settings_pane::SettingsPane; pub use toasts::Toasts;` (standing rule 1). New `Framework<Ctx>` getters (`editor_target_path`, `focused_pane_input_mode`, `dismiss`, etc.) get `#[must_use]` per standing rule 4 where applicable.
+
 ### Phase 11 — Framework bar renderer
 
 Add `tui_pane/src/bar/` per the BarRegion model:
@@ -1312,9 +1386,15 @@ Snapshot tests in this phase cover the framework panes only (Settings Browse / S
 
 **Paired-row separator policy.** Inherited from the Phase 2 retrospective decision: the `Paired` row's `debug_assert!` covers only the parser-producible `KeyCode` set; widening the bindable set requires widening Phase 2's `display_short_no_separators` test in lockstep. See Phase 2 review block (line 1020) for full text.
 
+**Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use bar::StatusBar;` (and any other public bar types not already exported in Phase 5). All `bar/` submodules declared `mod` (private) in `bar/mod.rs` per standing rule 1.
+
 ### Phase 12 — App action enums + `Shortcuts<App>` impls
 
 **Parallel-path invariant for Phases 12–15.** The new dispatch path lands alongside the old one. The old path stays the source of truth for behavior; the new path is exercised by tests added in each phase. **Phase 16 is the only phase that deletes** old code.
+
+**Flat-namespace paths (per Phase 5+ standing rule 2).** Every `tui_pane` import in this phase uses flat paths: `use tui_pane::KeyBind;`, `use tui_pane::GlobalAction;`, `use tui_pane::Shortcuts;`, `tui_pane::action_enum! { ... }`, `tui_pane::bindings! { ... }`. Never `tui_pane::keymap::Foo`.
+
+**Binary-side `mod` rule (per Phase 5+ standing rule 1).** New module files added to `src/tui/` for the new action enums (e.g. `app_global_action.rs`, `navigation_action.rs`) are declared `mod foo;` at their parent (never `pub mod foo;`); facades re-export with `pub use foo::Type;`. `cargo mend` denies `pub mod` workspace-wide.
 
 In the cargo-port binary crate:
 
@@ -1505,7 +1585,7 @@ Summary:
 ## Definition of done
 
 - Workspace exists with `tui_pane` member crate; binary crate consumes it.
-- `tui_pane` exposes: `KeyBind`, `Bindings<A>`, `bindings!`, `ScopeMap<A>`, `Keymap<Ctx>` + `KeymapBuilder<Ctx>`, `Shortcuts<Ctx>`, `Navigation<Ctx>`, `Globals<Ctx>`, `Shortcut` + `ShortcutState`, `BarRow<A>`, `GlobalAction`, `VimMode`, `KeymapPane<Ctx>`, `SettingsPane<Ctx>`, `Toasts<Ctx>`, `SettingsRegistry<Ctx>`, `Framework<Ctx>`.
+- `tui_pane` exposes (every type is at the crate root — `tui_pane::Foo` flat, never `tui_pane::keymap::Foo`): `KeyBind`, `KeyInput`, `KeyParseError`, `Bindings<A>`, `bindings!`, `ScopeMap<A>`, `Keymap<Ctx>` + `KeymapBuilder<Ctx>`, `KeymapError`, `Shortcuts<Ctx>`, `Navigation<Ctx>`, `Globals<Ctx>`, `Shortcut` + `ShortcutState`, `BarRow<A>`, `BarRegion`, `InputMode`, `ActionEnum` + `action_enum!`, `GlobalAction`, `VimMode`, `KeymapPane<Ctx>`, `SettingsPane<Ctx>`, `Toasts<Ctx>`, `SettingsRegistry<Ctx>`, `Framework<Ctx>`, `AppContext`, `FocusedPane`, `FrameworkPaneId`. The `__bindings_arms!` helper macro is `#[doc(hidden)]` but technically reachable as `tui_pane::__bindings_arms!` (a side-effect of `#[macro_export]`); it is not part of the supported surface.
 - `ScopeMap::by_action: HashMap<A, Vec<KeyBind>>`; `display_keys_for(action) -> &[KeyBind]` exists; primary-key invariant locked.
 - TOML parser accepts `key = "Enter"` and `key = ["Enter", "Return"]`; rejects in-array duplicates and cross-action collisions within a scope.
 - `NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction` exist in cargo-port. `ProjectListAction` has `ExpandRow` / `CollapseRow`.

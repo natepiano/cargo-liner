@@ -996,33 +996,26 @@ mod keymap;
 mod panes;
 mod settings;
 
+// All submodules are private (`mod`, never `pub mod` — `cargo mend` denies
+// `pub mod` workspace-wide). Public types re-export from the crate root,
+// so callers write `tui_pane::Foo` flat — never `tui_pane::keymap::Foo`.
+// The sub-path forms below (`crate::keymap::Foo`) are the *facade* paths
+// that `keymap/mod.rs` exposes via its own `pub use` chain; they resolve
+// from inside `lib.rs` because `keymap` is a child of the crate root.
+
 // --- Keymap core -----------------------------------------------------
 pub use crate::keymap::{
-    global_action::GlobalAction,
-    bindings::Bindings,
-    builder::{BuilderError, KeymapBuilder},
-    key_bind::{KeyBind, KeyParseError},
-    load::KeymapError,
-    mod_::Keymap,
-    scope_map::ScopeMap,
-    traits::{ActionEnum, Globals, Navigation, Shortcuts},
-    vim::VimMode,
+    ActionEnum, Bindings, BuilderError, GlobalAction, Globals, KeyBind,
+    KeyInput, KeyParseError, Keymap, KeymapBuilder, KeymapError, Navigation,
+    ScopeMap, Shortcuts, VimMode,
 };
 
 // --- Bar -------------------------------------------------------------
-pub use crate::bar::{
-    region::BarRegion,
-    shortcut::{BarRow, Shortcut, ShortcutState},
-    InputMode,
-};
+pub use crate::bar::{BarRegion, BarRow, InputMode, Shortcut, ShortcutState};
 
 // --- Framework panes + aggregator -----------------------------------
 pub use crate::framework::Framework;
-pub use crate::panes::{
-    keymap_pane::KeymapPane,
-    settings_pane::SettingsPane,
-    toasts::{Toasts, ToastsAction},
-};
+pub use crate::panes::{KeymapPane, SettingsPane, Toasts, ToastsAction};
 pub use crate::settings::SettingsRegistry;
 
 // --- Pane identity ---------------------------------------------------
@@ -1033,9 +1026,12 @@ pub use crate::settings::SettingsRegistry;
 pub use crate::app_context::AppContext;
 pub use crate::pane_id::{FrameworkPaneId, FocusedPane};
 
-// --- Macros (re-exported at the crate root) -------------------------
-pub use crate::keymap::bindings::bindings;
-pub use crate::keymap::action_enum::action_enum;
+// --- Macros -----------------------------------------------------------
+//
+// `#[macro_export]` already places `bindings!` and `action_enum!` at the
+// crate root — no `pub use` needed. The Phase 4 retrospective confirmed
+// the speculative `pub use crate::keymap::bindings::bindings;` line was
+// unnecessary; do not add it.
 ```
 
 **Final list of exported names** (alphabetical, grouped):

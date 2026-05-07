@@ -8,6 +8,7 @@ use ratatui::style::Color;
 
 use crate::ci;
 use crate::ci::CiRun;
+use crate::ci::CiStatus;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
@@ -37,6 +38,7 @@ use crate::project::Workspace;
 use crate::project::WorktreeGroup;
 use crate::tui::app::App;
 use crate::tui::app::AvailabilityStatus;
+use crate::tui::project_list::ProjectList;
 use crate::tui::render;
 
 /// Get the local UTC offset in seconds (e.g., -28800 for PST).
@@ -1614,20 +1616,13 @@ fn resolve_worktrees(app: &App, wt_item: Option<&RootItem>) -> Vec<WorktreeInfo>
     })
 }
 
-fn compute_in_project_bytes(
-    pl: &crate::tui::project_list::ProjectList,
-    abs_path: &Path,
-) -> (Option<u64>, Option<u64>) {
+fn compute_in_project_bytes(pl: &ProjectList, abs_path: &Path) -> (Option<u64>, Option<u64>) {
     pl.at_path(abs_path).map_or((None, None), |pi| {
         (pi.in_project_target, pi.in_project_non_target)
     })
 }
 
-fn compute_ci_status(
-    app: &App,
-    abs_path: &Path,
-    wt_item: Option<&RootItem>,
-) -> Option<ci::CiStatus> {
+fn compute_ci_status(app: &App, abs_path: &Path, wt_item: Option<&RootItem>) -> Option<CiStatus> {
     wt_item.map_or_else(
         || app.project_list.ci_status_for(abs_path, &app.ci),
         |item| app.project_list.ci_status_for_root_item(item, &app.ci),
@@ -1637,7 +1632,7 @@ fn compute_ci_status(
 fn compute_package_displays(
     app: &App,
     abs_path: &AbsolutePath,
-    ci_status: Option<ci::CiStatus>,
+    ci_status: Option<CiStatus>,
     package_title: &str,
 ) -> (super::LintDisplay, super::CiDisplay) {
     let pl = &app.project_list;

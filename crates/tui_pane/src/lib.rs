@@ -5,9 +5,17 @@
 //! `AppContext` trait. Later phases add the public API one trait
 //! family at a time.
 
-pub mod keymap;
+mod keymap;
 
-// Re-exported at crate root so the `action_enum!` macro can use the
-// `$crate::ActionEnum` path regardless of where the trait lives in the
-// module hierarchy.
+// Crate-root re-exports. The `action_enum!` and `bindings!` macros
+// reference these types via `$crate::*` paths, which requires them at
+// the crate root. `tests/macro_use.rs` locks the path stability.
 pub use keymap::ActionEnum;
+pub use keymap::Bindings;
+pub use keymap::GlobalAction;
+pub use keymap::KeyBind;
+pub use keymap::KeyInput;
+pub use keymap::KeyParseError;
+pub use keymap::KeymapError;
+pub use keymap::ScopeMap;
+pub use keymap::VimMode;
