@@ -819,7 +819,7 @@ fn resolve_from_table(table: &Table, vim_mode: NavigationKeys) -> KeymapLoadResu
     let mut missing_actions = Vec::new();
     let no_globals = HashMap::new();
 
-    // Phase 1: resolve globals (with intra-scope duplicate check).
+    // Resolve globals first (with intra-scope duplicate check).
     let mut ctx = ScopeResolveContext {
         table,
         errors: &mut errors,
@@ -837,7 +837,7 @@ fn resolve_from_table(table: &Table, vim_mode: NavigationKeys) -> KeymapLoadResu
         &mut keymap.global,
     );
 
-    // Phase 2: resolve each pane scope against the accepted globals.
+    // Then resolve each pane scope against the accepted globals.
     let global_keys: HashMap<KeyBind, String> = keymap
         .global
         .by_key

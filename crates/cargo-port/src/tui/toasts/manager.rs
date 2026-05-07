@@ -236,9 +236,8 @@ impl<'a> ToastView<'a> {
 pub struct ToastManager {
     next_id:      u64,
     toasts:       Vec<Toast>,
-    /// Per-pane cursor for the toasts overlay. Phase 14 absorption:
-    /// the toasts viewport lives with its data, not on a separate
-    /// `ToastsPane` wrapper.
+    /// Per-pane cursor for the toasts overlay. The toasts viewport
+    /// lives with its data, not on a separate `ToastsPane` wrapper.
     pub viewport: Viewport,
     /// Per-toast hit rects recorded each frame by `render_toasts`
     /// (card body + close `[x]` action). Walked top-down by
@@ -753,9 +752,9 @@ fn wrapped_line_count(line: &str, width: usize) -> usize {
     rows.max(1)
 }
 
-// Phase 14 absorption: `ToastManager` impls `Pane` and `Hittable`
-// directly. Pane render is a no-op (toasts render via the overlay
-// path in `render.rs`); Hittable walks the recorded hit rects.
+// `ToastManager` impls `Pane` and `Hittable` directly. Pane render is
+// a no-op (toasts render via the overlay path in `render.rs`);
+// Hittable walks the recorded hit rects.
 
 impl Pane for ToastManager {
     fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}

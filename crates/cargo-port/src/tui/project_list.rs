@@ -347,7 +347,7 @@ impl ProjectList {
         }
     }
 
-    // -- Git/Repo reads (Phase 3) ----------------------------------------
+    // -- Git/Repo reads --------------------------------------------------
 
     pub(super) fn git_info_for(&self, path: &Path) -> Option<&CheckoutInfo> {
         self.at_path(path)
@@ -1748,7 +1748,6 @@ impl ProjectList {
     }
 }
 
-// ── Phase 12: absorbed action-side navigation methods ──────────────
 impl ProjectList {
     /// Expand every node and named group, restoring selection after recompute.
     pub(super) fn expand_all(&mut self, include_non_rust: bool) {

@@ -585,16 +585,16 @@ Routing confirmation, every pane:
 | `Output` | `output_input_mode` | `Static` |
 | `Finder` | `finder_input_mode` | `TextInput` when focused, else `Navigable` |
 
-`KeymapBuilder::register::<P>()` reads `P::input_mode_query()` (a new
-inherent fn returning `fn(&Ctx) -> InputMode`) plus `P::APP_PANE_ID`
-(a new associated const of `AppPaneId` value) and inserts into
-`Framework::input_mode_queries`. Sketch:
+`KeymapBuilder::register::<P>()` reads `P::input_mode()` (the trait
+method on `Shortcuts<Ctx>` returning `fn(&Ctx) -> InputMode`) plus
+`P::APP_PANE_ID` (an associated const of `AppPaneId` value) and inserts
+into `Framework::input_mode_queries`. Sketch:
 
 ```rust
 // On each Shortcuts<App> impl:
 impl Shortcuts<App> for FinderPane {
     /* … */
-    fn input_mode_query() -> fn(&App) -> InputMode { finder_input_mode }
+    fn input_mode() -> fn(&App) -> InputMode { finder_input_mode }
     const APP_PANE_ID: AppPaneId = AppPaneId::Finder;
 }
 ```

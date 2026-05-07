@@ -283,10 +283,6 @@ impl Hittable for GitPane {
     }
 }
 
-// Phase 17 absorbed `KeymapPane`, `SettingsPane`, `FinderPane` into
-// `crate::tui::overlays`. `Overlays` now owns the three viewports +
-// `line_targets`; the impls live in `tui/overlays/pane_impls.rs`.
-
 // ── Targets ─────────────────────────────────────────────────────
 pub struct TargetsPane {
     pub viewport: Viewport,

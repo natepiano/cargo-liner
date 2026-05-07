@@ -1,9 +1,8 @@
 //! Per-overlay-pane render state.
 //!
 //! Each of the three overlay panes (Keymap, Settings, Finder) carries
-//! a small viewport-bearing struct here. They were absorbed from
-//! `tui/panes/pane_impls.rs` in Phase 17. `Overlays` (in `mod.rs`)
-//! owns one of each as fields.
+//! a small viewport-bearing struct here. `Overlays` (in `mod.rs`) owns
+//! one of each as fields.
 //!
 //! Render is a no-op (the popup body lives in `keymap_ui.rs`,
 //! `settings.rs`, `finder.rs`); these structs only exist so the three

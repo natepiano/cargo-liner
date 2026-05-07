@@ -1,9 +1,8 @@
-//! Keymap loader skeleton.
+//! Keymap loader error type.
 //!
-//! Phase 4 ships only [`KeymapError`]: the variant set the Phase 8 TOML
-//! loader and the Phase 9 builder need at compile time. The actual
-//! parsing logic — file read, table walk, per-scope merge — lands in
-//! Phase 8 alongside `Keymap<Ctx>`.
+//! [`KeymapError`] is the variant set the TOML loader and the builder
+//! emit. Parsing logic — file read, table walk, per-scope merge — lives
+//! alongside `Keymap<Ctx>`.
 
 use thiserror::Error;
 

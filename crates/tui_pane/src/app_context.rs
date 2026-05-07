@@ -23,8 +23,9 @@ use crate::Framework;
 pub trait AppContext: Sized {
     /// The binary's pane-id enum (one variant per app-side pane).
     ///
-    /// Bounds mirror [`Action`](crate::Action) and are required by
-    /// Phase 10's `HashMap<AppPaneId, fn(&Ctx) -> InputMode>` registry.
+    /// Bounds mirror [`Action`](crate::Action); the `HashMap<AppPaneId,
+    /// fn(&Ctx) -> InputMode>` registry stored on `Framework<Ctx>` keys
+    /// off this type.
     type AppPaneId: Copy + Eq + Hash + 'static;
 
     /// Borrow the framework state owned by this app.

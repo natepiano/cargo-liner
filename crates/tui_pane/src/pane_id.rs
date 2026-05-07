@@ -1,8 +1,8 @@
 //! Pane identity types: framework's built-in panes and the
 //! discriminant covering both framework and binary-supplied panes.
 //!
-//! Phase 6 of the workspace plan. Used by [`Framework<Ctx>`](crate::Framework)
-//! to track focus without naming the binary's concrete pane enum.
+//! Used by [`Framework<Ctx>`](crate::Framework) to track focus without
+//! naming the binary's concrete pane enum.
 
 /// One of the framework's built-in overlay panes.
 ///

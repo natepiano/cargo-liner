@@ -1,12 +1,5 @@
 //! `Framework<Ctx>`: the framework aggregator owned by every binary
 //! that uses `tui_pane`.
-//!
-//! Phase 6 ships the **skeleton** — three fields and five methods,
-//! frozen by the Phase 6 → Phase 10 contract. Phase 10 fills in the
-//! framework panes (keymap viewer, settings, toasts), the dismiss
-//! chain, and the input-mode plumbing as a purely additive extension;
-//! the Phase 6 surface stays verbatim so tests written in Phases 7–9
-//! against this skeleton continue to pass.
 
 use crate::AppContext;
 use crate::FocusedPane;
@@ -20,10 +13,6 @@ use crate::FocusedPane;
 /// or [`GlobalAction::Restart`](crate::GlobalAction::Restart) fires.
 /// The binary's main loop polls those flags every tick and tears down
 /// accordingly.
-///
-/// Phase 10 adds: framework pane fields (`keymap_pane`,
-/// `settings_pane`, `toasts`), the `dismiss()` chain, and per-pane
-/// input-mode queries.
 pub struct Framework<Ctx: AppContext> {
     focused:           FocusedPane<Ctx::AppPaneId>,
     quit_requested:    bool,

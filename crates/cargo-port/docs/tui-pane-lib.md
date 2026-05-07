@@ -192,7 +192,16 @@ pub trait Shortcuts<Ctx: AppContext>: 'static {
     ///      SettingsPane Editing, KeymapPane Awaiting). `Nav` and
     ///      `Global` regions both suppressed; structural Esc
     ///      pre-handler also suppressed.
-    fn input_mode(&self, _ctx: &Ctx) -> InputMode { InputMode::Navigable }
+    ///
+    /// Returns a `fn(&Ctx) -> InputMode` because the framework's
+    /// structural-Esc gate and bar-region suppression run with `&Ctx`
+    /// and an `AppPaneId`, never with a typed `&PaneStruct`. The
+    /// pointer is stored in `Framework<Ctx>::input_mode_queries`,
+    /// populated at `register::<P>()` time. Pane-internal callers
+    /// write `Self::input_mode()(ctx)`.
+    fn input_mode() -> fn(&Ctx) -> InputMode {
+        |_ctx| InputMode::Navigable
+    }
 
     /// Optional vim-extras: pane actions that should also bind to a
     /// keybind when `VimMode::Enabled`. Default empty. Used by
@@ -679,7 +688,7 @@ let path = Keymap::config_path("cargo-port");
 // → {dirs::config_dir()}/cargo-port/keymap.toml
 ```
 
-`is_legacy_removed_action` is dropped — `tui_pane` carries no legacy migration. If cargo-port needs to handle removed-action TOML keys, it does so before calling `load_toml`.
+`tui_pane` carries no removed-action migration. Binaries that need to handle removed-action TOML keys do so before calling `load_toml`.
 
 ---
 
@@ -742,7 +751,7 @@ The default `(PaneAction, Single(action))` covers the common case. ProjectList o
 
 ### Render orchestration
 
-`bar/mod.rs::render()` calls `pane.bar_slots(ctx)` once, reads `pane.input_mode(ctx)`, then walks `BarRegion::ALL` and dispatches:
+`bar/mod.rs::render()` calls `pane.bar_slots(ctx)` once, reads `P::input_mode()(ctx)`, then walks `BarRegion::ALL` and dispatches:
 
 - `BarRegion::Nav` → `nav_region::render(pane, ctx, keymap, &rows)` — emits framework's nav + pane-cycle rows plus any `(Nav, _)` rows from `rows`. Skipped unless `input_mode == Navigable`.
 - `BarRegion::PaneAction` → `pane_action_region::render(pane, ctx, keymap, &rows)` — emits every `(PaneAction, _)` row, calling `pane.label(action, ctx)` and `pane.state(action, ctx)` to assemble the slot.
@@ -757,9 +766,9 @@ The status bar is a framework feature. App authors write no bar layout code. See
 | Concern | Owner |
 |---|---|
 | Region orchestration | Framework — `bar/mod.rs` walks `BarRegion::ALL` |
-| `Nav` region (paired rows from `Navigation` + pane-cycle from `GlobalAction::NextPane`) | Framework — `bar/nav_region.rs`; emitted only when `pane.input_mode(ctx) == Navigable` |
+| `Nav` region (paired rows from `Navigation` + pane-cycle from `GlobalAction::NextPane`) | Framework — `bar/nav_region.rs`; emitted only when `P::input_mode()(ctx) == Navigable` |
 | `PaneAction` region | Framework — `bar/pane_action_region.rs`; emits `(PaneAction, _)` rows from `pane.bar_slots(ctx)`, calling `pane.label(action, ctx)` + `pane.state(action, ctx)` to assemble the slot |
-| `Global` region (`GlobalAction` + `AppGlobals::render_order()`) | Framework — `bar/global_region.rs`; suppressed when `pane.input_mode(ctx) == TextInput` |
+| `Global` region (`GlobalAction` + `AppGlobals::render_order()`) | Framework — `bar/global_region.rs`; suppressed when `P::input_mode()(ctx) == TextInput` |
 | Color / style / spacing | Framework |
 | Per-action label & enabled state | Pane (via `Shortcuts::label` + `Shortcuts::state`; `label` defaults to `Some(action.bar_label())`) |
 | Snapshot under default bindings | Framework — parity with current cargo-port bar |
@@ -778,7 +787,7 @@ where
     G: Globals<Ctx>;
 ```
 
-Pane is the focused one. Framework calls `pane.bar_slots(ctx)` once, then walks `BarRegion::ALL`: each region module filters for its own region tag and emits spans. Region rendering consults `pane.input_mode(ctx)` for suppression (`Nav` skipped unless `Navigable`; `Global` skipped on `TextInput`). Result is a single `StatusBar` value the binary draws to the frame.
+Pane is the focused one. Framework calls `pane.bar_slots(ctx)` once, then walks `BarRegion::ALL`: each region module filters for its own region tag and emits spans. Region rendering consults `P::input_mode()(ctx)` for suppression (`Nav` skipped unless `Navigable`; `Global` skipped on `TextInput`). Result is a single `StatusBar` value the binary draws to the frame.
 
 **Monomorphization boundary:** `render_status_bar` is monomorphized per pane type at the binary's match-on-`focus.current()` site (see "Bar render — concrete dispatch" below). Each instantiation produces a `StatusBar`. The framework never holds a heterogeneous `Vec<BarSlot<dyn Action>>`; pane types are concrete at the call site.
 
@@ -830,7 +839,7 @@ action_enum! {
 // CiRunsAction, LintsAction. Each gains its own pane-local file.
 ```
 
-New action enums for previously-hardcoded surfaces:
+New action enums for surfaces today driven by hardcoded key matches:
 
 ```rust
 // app's NavigationAction (one per app — implements Navigation trait)
@@ -929,7 +938,7 @@ Existing pane scopes' defaults are unchanged. Settings / Keymap / Toasts default
 
 Resolution order at the input router (preserving today's behavior):
 
-1. **Structural pre-handler** — `GlobalAction::Dismiss` when `app.has_dismissable_output()` is true *and* focus is not a text-input pane (today this is the Esc-clears-`example_output` path at `input.rs:112-119`). Gated on `focused_pane.input_mode() != InputMode::TextInput` so typed keys can't trigger structural dismiss while the user is typing into Finder.
+1. **Structural pre-handler** — `GlobalAction::Dismiss` when `app.has_dismissable_output()` is true *and* focus is not a text-input pane (today this is the Esc-clears-`example_output` path at `input.rs:112-119`). Gated on `framework.focused_pane_input_mode(ctx) != InputMode::TextInput` so typed keys can't trigger structural dismiss while the user is typing into Finder.
 2. **Overlay-scope** (if focus is an overlay pane: KeymapPane / SettingsPane / FinderPane) — full handler. Toasts is *not* an overlay (`PaneId::is_overlay` excludes it today; same after the refactor).
 3. **`GlobalAction`** — Quit, Restart, NextPane/PrevPane, OpenKeymap/OpenSettings, Dismiss.
 4. **`AppGlobalAction`** — Find, OpenEditor, OpenTerminal, Rescan.
@@ -1109,7 +1118,7 @@ Add `tui_pane/src/keymap/bindings.rs` (`Bindings<A>` + `bindings!`, §2), `tui_p
 
 **Also lands in Phase 4 (post-Phase-3 review):** `pub fn defaults() -> Bindings<Self>` on `GlobalAction` in `tui_pane/src/keymap/global_action.rs` — returns the canonical `q` / `R` / `Tab` / `Shift+Tab` / `Ctrl+K` / `s` / `x` bindings using the `bindings!` macro that ships in this phase. Co-located with the enum (matches the convention every `Shortcuts<P>::defaults()` impl follows). Tested in `global_action.rs` directly; loader and builder consume it.
 
-**Root re-exports (shipped form).** As implemented, `tui_pane/src/lib.rs` is `mod keymap;` (private) plus crate-root `pub use` for every public type: `Action`, `Bindings`, `GlobalAction`, `KeyBind`, `KeyInput`, `KeyParseError`, `KeymapError`, `ScopeMap`, `VimMode`. The speculative `pub use keymap::bindings::bindings;` from earlier drafts proved unnecessary — `#[macro_export]` already places the macro at the crate root.
+**Root re-exports.** `tui_pane/src/lib.rs` is `mod keymap;` (private) plus crate-root `pub use` for every public type: `Action`, `Bindings`, `GlobalAction`, `KeyBind`, `KeyInput`, `KeyParseError`, `KeymapError`, `ScopeMap`, `VimMode`. The `bindings!` macro lands at the crate root via `#[macro_export]`, so no explicit re-export is needed.
 
 `KeymapError` is `#[derive(thiserror::Error)]` and ships with seven variants (the loader and builder consume them in Phases 8 and 9):
 - `Io(#[from] std::io::Error)` — file-open failure.
@@ -1322,17 +1331,15 @@ No pane fields, no `input_mode_queries`, no `editor_target_path`, no `focused_pa
 
 ### Phase 7 — Scope traits
 
-**Phase 7 prep — `ActionEnum` → `Action` rename (done).** Completed in the commit preceding Phase 6. The Phase 3 trait `ActionEnum` was renamed to `Action` everywhere it appeared: trait definition (`keymap/action_enum.rs`), macro internals (now `$crate::Action`), `lib.rs` re-export, hand-rolled `impl Action for GlobalAction`, cross-crate test (`tests/macro_use.rs`). The file `keymap/action_enum.rs` keeps its name (the macro is still `action_enum!`); only the trait inside was renamed. Rationale: the scope traits (`Shortcuts<Ctx>`, `Navigation<Ctx>`, `Globals<Ctx>`) carry an associated type whose role-name is `Action`-the-thing — calling the trait `Action` and the assoc type `Variant: Action` lets `Self::Variant` read cleanly at every dispatcher / bar / vim-extras call site. The `Enum` suffix on the trait was structural noise.
-
 **Cross-crate test fixtures must use multi-variant enums.** Phase 7 will add `Shortcuts<Ctx>` / `Navigation<Ctx>` / `Globals<Ctx>` smoke tests in `tests/macro_use.rs` (standing rule 6). Per the Phase 6 retrospective surprise: single-variant test enums emit `dead_code` because the lint ignores derived impls. Use multi-variant fixtures (e.g. `CrossCrateNavAction::{Up, Down, Left, Right}`); if a single-variant fixture is unavoidable, gate the unused variant with `#[allow(dead_code, reason = "...")]`.
 
 Split §4 into one file per trait (each is independent, the heaviest is `Shortcuts<Ctx>` with 10+ items):
 
-- `tui_pane/src/keymap/shortcuts.rs` — `Shortcuts<Ctx>` with `type Variant: Action;`. Method set per `core-api.md` §4: `defaults`, `label`, `state`, `bar_slots`, `input_mode`, `input_mode_query`, `vim_extras`, `dispatcher`, plus `SCOPE_NAME` and `APP_PANE_ID` consts. `vim_extras() -> &'static [(Self::Variant, KeyBind)]` defaults to `&[]` (per-pane vim-mode extras consumed by the builder in Phase 9; cargo-port's `ProjectListAction` overrides for `'l'`/`'h'` in Phase 12). Default `label` returns `Some(action.bar_label())` and default `state` returns `ShortcutState::Enabled` — both leverage Phase 5's `Action::bar_label` and the orthogonal-axis `ShortcutState` enum, so per-pane impls override only when label/state is state-dependent. **Default bodies are `const fn` where eligible** (per standing rule 9): `state` (returns a `Copy` enum) and `vim_extras` (returns a `&'static`) are unambiguously const-eligible; `label`'s default body is const-eligible iff `Action::bar_label` is `const fn` — pin this in the Phase 7 prep block (see significant finding #6 from Phase 6 review).
+- `tui_pane/src/keymap/shortcuts.rs` — `Shortcuts<Ctx>` with `type Variant: Action;`. Method set per `core-api.md` §4: `defaults`, `label`, `state`, `bar_slots`, `input_mode`, `vim_extras`, `dispatcher`, plus `SCOPE_NAME` and `APP_PANE_ID` consts. `input_mode() -> fn(&Ctx) -> InputMode` is the **single form** — free fn only, no `&self` instance variant. The framework registry stores the returned pointer keyed by `AppPaneId`; pane-internal callers write `Self::input_mode()(ctx)`. `vim_extras() -> &'static [(Self::Variant, KeyBind)]` defaults to `&[]` (per-pane vim-mode extras consumed by the builder in Phase 9; cargo-port's `ProjectListAction` overrides for `'l'`/`'h'` in Phase 12). Default `label` returns `Some(action.bar_label())` and default `state` returns `ShortcutState::Enabled` — both leverage Phase 5's `Action::bar_label` and the orthogonal-axis `ShortcutState` enum, so per-pane impls override only when label/state is state-dependent. **Default bodies are `const fn` where eligible** (per standing rule 9): `state` (returns a `Copy` enum) and `vim_extras` (returns a `&'static`) are unambiguously const-eligible; `label`'s default body is const-eligible iff `Action::bar_label` is `const fn` — pin this in the Phase 7 prep block (see significant finding #6 from Phase 6 review).
 - `tui_pane/src/keymap/navigation.rs` — `Navigation<Ctx>` with `type Variant: Action;`.
 - `tui_pane/src/keymap/globals.rs` — `Globals<Ctx>` with `type Variant: Action;` (app-extension globals, separate from the framework's own `GlobalAction` from Phase 3). The trait has **no** `bar_label(action) -> &'static str` method — Phase 5's `Action::bar_label` (live on every action enum, including the macro-generated and the hand-rolled `GlobalAction`) is the single source. Bar code calls `action.bar_label()` regardless of scope.
 
-`keymap/action_enum.rs` (added in Phase 3, renamed contents in Phase 7 prep) keeps `Action` + `action_enum!` only.
+`keymap/action_enum.rs` holds the `Action` trait and the `action_enum!` macro.
 
 **`Shortcut` wrapping struct is dead.** Phase 5 collapsed it into the orthogonal `Option<&'static str>` (label) + `ShortcutState` (axis) split. Phase 7 prep verifies `core-api.md` and `paneid-ctx.md` reference no `Shortcut\b` (singular wrapping struct) — `Shortcuts`, `ShortcutState` are the only valid forms.
 
@@ -1468,9 +1475,9 @@ pub struct Framework<Ctx: AppContext> {
     pub settings_pane: SettingsPane<Ctx>,
     pub toasts:        Toasts<Ctx>,
     /// Per-AppPaneId queries supplied by the app at registration. Each
-    /// app pane's `Shortcuts::input_mode` becomes a free fn
-    /// `fn(&Ctx) -> InputMode` registered alongside its dispatcher.
-    /// Framework panes are special-cased and do not appear here.
+    /// app pane's `Shortcuts::input_mode()` returns a `fn(&Ctx) ->
+    /// InputMode` registered alongside its dispatcher. Framework panes
+    /// are special-cased and do not appear here.
     input_mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>,
 }
 ```
@@ -1501,7 +1508,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
 
 Callers pass the same `&App` they hold; the method takes `&Ctx` because the framework is generic, but `Ctx == App` in cargo-port and the `&App` derefs cleanly.
 
-The registry is populated by `KeymapBuilder::register::<P>()`: each pane's impl provides a free fn `fn pane_input_mode(ctx: &App) -> InputMode` (reads pane state from `ctx`) that the registration step files into `Framework::input_mode_queries[AppPaneId::P]`.
+The registry is populated by `KeymapBuilder::register::<P>()`: it calls `P::input_mode()` (the trait method on `Shortcuts<Ctx>`) to obtain the `fn(&Ctx) -> InputMode` pointer and files it into `Framework::input_mode_queries[P::APP_PANE_ID]`.
 
 `Framework<Ctx>` lives in `tui_pane` (skeleton from Phase 6; filled in here). The `App.framework: Framework<App>` field-add lands in **Phase 13**, when the framework panes' input paths replace the old `handle_settings_key` / `handle_keymap_key`. Before Phase 13 the filled-in framework type is exercised only by `tui_pane`'s own `cfg(test)` units and `tui_pane/tests/` integration files.
 
@@ -1515,9 +1522,9 @@ Add `tui_pane/src/bar/` per the BarRegion model:
 - `region.rs` — `BarRegion::{Nav, PaneAction, Global}` + `ALL` (added Phase 5).
 - `slot.rs` — `BarSlot<A>`, `ShortcutState` (added Phase 5).
 - `support.rs` — `format_action_keys(&[KeyBind]) -> String`, `push_cancel_row`, shared row builders.
-- `nav_region.rs` — emits framework's nav + pane-cycle rows when `pane.input_mode(ctx) == Navigable`, then pane's `(Nav, _)` rows. Suppressed entirely when `input_mode == Static` or `TextInput`.
+- `nav_region.rs` — emits framework's nav + pane-cycle rows when `P::input_mode()(ctx) == Navigable`, then pane's `(Nav, _)` rows. Suppressed entirely when `input_mode == Static` or `TextInput`.
 - `pane_action_region.rs` — emits pane's `(PaneAction, _)` rows. Renders for `Navigable` and `Static`; suppressed for `TextInput`.
-- `global_region.rs` — emits `GlobalAction` + `AppGlobals::render_order()`; suppressed when `pane.input_mode(ctx) == TextInput`.
+- `global_region.rs` — emits `GlobalAction` + `AppGlobals::render_order()`; suppressed when `P::input_mode()(ctx) == TextInput`.
 
 Depends on Phase 10 (`Framework<Ctx>` exists; framework-pane `Shortcuts<Ctx>` impls exist) plus Phase 8's `Keymap<Ctx>` lookups.
 

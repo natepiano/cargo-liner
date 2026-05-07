@@ -57,9 +57,8 @@ pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPan
 }
 
 /// Walk `HITTABLE_Z_ORDER` top-to-bottom and return the first pane's
-/// `hit_test_at` answer. Phase 13 relocation: lives at App-level so
-/// per-arm reach can resolve to whichever owner holds the pane (Panes
-/// for survivors; subsystems on App after Phases 14–17).
+/// `hit_test_at` answer. Lives at App-level so per-arm reach can
+/// resolve to whichever owner holds the pane.
 pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
     for id in HITTABLE_Z_ORDER {
         let pane: &dyn Hittable = match id {
@@ -83,10 +82,10 @@ pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
     None
 }
 
-/// Set the cursor position for `id`'s viewport. Phase 13 relocation:
-/// matches by `PaneId` to whichever owner holds the target viewport.
-/// `ProjectList`'s cursor lives on `Selection.cursor`; callers route
-/// through `app.project_list.set_cursor(row)`, not this fn.
+/// Set the cursor position for `id`'s viewport. Matches by `PaneId`
+/// to whichever owner holds the target viewport. `ProjectList`'s
+/// cursor lives on `Selection.cursor`; callers route through
+/// `app.project_list.set_cursor(row)`, not this fn.
 pub(super) fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
     if id == PaneId::ProjectList {
         return;
@@ -94,9 +93,7 @@ pub(super) fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
     viewport_mut_for(app, id).set_pos(row);
 }
 
-/// Mutable viewport accessor by `PaneId`. Phase 13 relocation —
-/// per-arm reach swaps to subsystem owners as Phases 14–17 absorb
-/// wrappers.
+/// Mutable viewport accessor by `PaneId`.
 pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> &mut Viewport {
     match id {
         PaneId::Toasts => &mut app.toasts.viewport,

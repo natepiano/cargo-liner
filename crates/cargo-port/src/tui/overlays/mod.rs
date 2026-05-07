@@ -1,19 +1,18 @@
 //! `Overlays` subsystem — owns `UiModes` (finder / settings / keymap /
 //! exit modes), the transient `inline_error` UI feedback, the
 //! transient `status_flash` slot, and the three overlay pane render
-//! states (Phase 17 absorption).
+//! states.
 //!
-//! Hosting at `crate::tui::overlays` (outside `tui/app/`) lets methods
-//! be `pub(crate)` per the post-Phase-4 location decision; mend's
-//! `pub(crate)` policy forbids that visibility inside `tui/app/`.
+//! Lives at `crate::tui::overlays` (outside `tui/app/`) so methods can
+//! be `pub(crate)`; mend's `pub(crate)` policy forbids that visibility
+//! inside `tui/app/`.
 //!
 //! Module split:
 //! - `mod.rs` (this file) — mode state (Finder / Settings / Keymap / Exit), inline-error /
 //!   status-flash, plus the `Overlays` struct that owns all of the above.
 //! - `render_state.rs` — the three pane-render-state types (`KeymapPane`, `SettingsPane`,
-//!   `FinderPane`) plus the accessor `impl Overlays` block. Phase 17 absorbed these from
-//!   `tui/panes/pane_impls.rs`; they live with `Overlays` because `Overlays` already owns the
-//!   open/closed mode state for each.
+//!   `FinderPane`) plus the accessor `impl Overlays` block. They live with `Overlays` because
+//!   `Overlays` already owns the open/closed mode state for each.
 //! - `pane_impls.rs` — `Pane` and `Hittable` impls for the three render-state types.
 
 mod pane_impls;

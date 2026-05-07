@@ -3,8 +3,8 @@
 //! [`BarSlot<A>`] carries either one action ([`Self::Single`]) or two
 //! actions joined by a static separator ([`Self::Paired`], used for
 //! pairs like `j/k` or `←/→`). [`ShortcutState`] is the orthogonal
-//! enabled/disabled axis returned by the pane's
-//! `Shortcuts::state` method (added in Phase 7).
+//! enabled/disabled axis returned by the pane's `Shortcuts::state`
+//! method.
 
 /// Whether a bar slot is currently active or greyed out.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -19,7 +19,7 @@ pub enum ShortcutState {
 ///
 /// Generic over an action type `A` (typically `A: Action`); the
 /// renderer pairs each action with its `Action::bar_label` and the
-/// pane's `Shortcuts::label` override (Phase 7).
+/// pane's `Shortcuts::label` override.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum BarSlot<A> {
     /// One action, one label.

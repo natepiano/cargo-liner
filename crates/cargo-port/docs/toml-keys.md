@@ -264,9 +264,9 @@ pub enum KeymapErrorReason {
     /// `other_action` names the action this key was already assigned to.
     CrossActionCollision { other_action: String },
 
-    /// Action TOML key was removed in a previous version; the binary
-    /// chose to filter it before passing to `tui_pane`. Reported only
-    /// when the binary opts into legacy reporting.
+    /// Action TOML key was filtered by the binary before reaching
+    /// `tui_pane` (e.g. an action the binary recognises as removed).
+    /// Reported only when the binary opts into legacy reporting.
     LegacyAction,
 
     /// Key parses but is reserved by the active vim mode (`'h'`, `'j'`,

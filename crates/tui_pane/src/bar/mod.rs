@@ -1,8 +1,4 @@
 //! Bar primitives: regions, per-action slot payloads, and input mode.
-//!
-//! Leaf types only — Phase 5 of the workspace plan. The renderer that
-//! consumes `BarSlot` / `BarRegion` lands in Phase 11; the per-pane
-//! `Shortcuts<Ctx>` trait that emits them lands in Phase 7.
 
 mod region;
 mod slot;
@@ -15,7 +11,7 @@ pub use slot::ShortcutState;
 ///
 /// Controls which bar regions are emitted for the pane and whether the
 /// keymap arbitration short-circuits navigation/global keys. Returned
-/// by `Shortcuts::input_mode` (Phase 7).
+/// by `Shortcuts::input_mode`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum InputMode {
     /// Standard navigable pane — `Nav`, `PaneAction`, and `Global`

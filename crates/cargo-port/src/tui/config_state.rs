@@ -93,7 +93,7 @@ impl Config {
     /// rescan / toast logic on the outcome.
     pub(super) fn take_stamp_change(&mut self) -> Option<&Path> { self.file.take_stamp_change() }
 
-    // ── flag accessors (Phase 1 of pass-through collapse) ───────────
+    // ── flag accessors ──────────────────────────────────────────────
 
     pub(super) const fn lint_enabled(&self) -> bool { self.current().lint.enabled }
 

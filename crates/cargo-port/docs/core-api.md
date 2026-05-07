@@ -113,7 +113,7 @@ pub enum KeyParseError {
 }
 ```
 
-**Tradeoff.** `shift` / `ctrl` take `impl Into<Self>` rather than `impl Into<KeyCode>` because crossterm's `KeyCode` does not implement `From<char>` (and orphan rules block adding it). Routing through `Into<KeyBind>` reuses the two `From` impls and makes the constructors composable. `KeyParseError` derives `thiserror::Error` so downstream wrappers (e.g. `KeymapError`) get automatic `#[source]` chaining via `#[from]`. The `InvalidChar` variant from earlier drafts was dropped — no parser path emits it.
+**Tradeoff.** `shift` / `ctrl` take `impl Into<Self>` rather than `impl Into<KeyCode>` because crossterm's `KeyCode` does not implement `From<char>` (and orphan rules block adding it). Routing through `Into<KeyBind>` reuses the two `From` impls and makes the constructors composable. `KeyParseError` derives `thiserror::Error` so downstream wrappers (e.g. `KeymapError`) get automatic `#[source]` chaining via `#[from]`.
 
 **Press/Release/Repeat split.** Crossterm hands us a single `KeyEvent` with a `kind: KeyEventKind` discriminant. Rather than a lossy `From<KeyEvent> for KeyBind` (which silently drops `kind` and lets `Release` events fire keymap actions), the framework uses a separate kind-tagged enum `KeyInput` that the event loop produces. Keymap dispatch sites pattern-match `KeyInput::Press(bind)` (or call `.press()`) — Release / Repeat events flow through unchanged for handlers that opt in. Modeled after Zed/GPUI (which type-splits `KeyDownEvent` / `KeyUpEvent`) and bevy_enhanced_input (which lifts the press-state lifecycle into the action API). Crossterm doesn't give us either affordance directly, so we add the type discipline at our boundary.
 
@@ -369,13 +369,17 @@ pub trait Shortcuts<Ctx: AppContext>: 'static {
 
     /// Pane's current input mode (Navigable / Static / TextInput).
     /// Drives bar-region suppression and the structural Esc gate.
-    fn input_mode(&self, _ctx: &Ctx) -> InputMode { InputMode::Navigable }
-
-    /// Free-fn variant of `input_mode`, registered with the
-    /// `Framework<Ctx>::input_mode_queries` map at `register::<P>()`
-    /// time. Default forwards to a dummy that returns `Navigable`;
-    /// panes whose mode varies with `Ctx` state override.
-    fn input_mode_query() -> fn(&Ctx) -> InputMode {
+    ///
+    /// Returns a `fn(&Ctx) -> InputMode` so the framework can store
+    /// the pointer in `Framework<Ctx>::input_mode_queries`, keyed by
+    /// `AppPaneId`, populated at `register::<P>()` time. The framework
+    /// holds `&Ctx` and an `AppPaneId` at query time, never a typed
+    /// `&PaneStruct`, so the closure does the navigation from `Ctx`
+    /// to whatever pane state determines the mode.
+    ///
+    /// Default returns `Navigable`. Panes whose mode varies with `Ctx`
+    /// state (Finder, Output, Settings) override.
+    fn input_mode() -> fn(&Ctx) -> InputMode {
         |_ctx| InputMode::Navigable
     }
 
@@ -428,7 +432,7 @@ pub trait Globals<Ctx: AppContext>: 'static {
 
 **Tradeoff.** All three traits are `'static`. The framework stores `fn` pointers and TypeId-keyed lookups; both require `'static`. App pane structs are owned by `App` and are themselves `'static`, so the bound costs nothing in practice.
 
-`Shortcuts::input_mode` exists in two forms — an instance method (`&self`) callers can use directly when they hold the pane, and a free-fn `input_mode_query()` registered with the framework. The free-fn form is what `Framework<Ctx>::input_mode_queries` stores, because the framework only knows the `PaneId` and `&Ctx` at query time. The default `input_mode_query` returns `Navigable`; panes whose mode varies (Finder, Output, Settings) override it explicitly.
+`Shortcuts::input_mode` returns a `fn(&Ctx) -> InputMode`. The framework's structural-Esc gate and bar-region suppression run with `&Ctx` and an `AppPaneId`, never with a typed `&PaneStruct`, so it stores the returned pointer in `Framework<Ctx>::input_mode_queries`, populated at `register::<P>()` time. Pane-internal callers write `Self::input_mode()(ctx)`. Default returns `Navigable`; panes whose mode varies with `Ctx` state (Finder, Output, Settings) override.
 
 ---
 

@@ -7,7 +7,7 @@
 //!   `Vec<KeyBind>` is the action's primary key (what the bar renders when only one key fits).
 //!
 //! Constructed by [`Bindings::into_scope_map`](super::bindings::Bindings::into_scope_map)
-//! and the Phase 8 TOML loader. App code never builds one directly — it
+//! and the TOML loader. App code never builds one directly — it
 //! always receives `&ScopeMap<A>` from the keymap.
 
 use std::collections::HashMap;
@@ -33,7 +33,7 @@ pub struct ScopeMap<A: Copy + Eq + Hash> {
 
 impl<A: Copy + Eq + Hash> ScopeMap<A> {
     /// Empty map. `pub(super)` because only [`Bindings::into_scope_map`]
-    /// (sibling) and the Phase 8 TOML loader build one.
+    /// (sibling) and the TOML loader build one.
     pub(super) fn new() -> Self {
         Self {
             by_key:    HashMap::new(),

@@ -52,8 +52,8 @@ impl GlobalAction {
     /// Canonical default key bindings for the framework's globals.
     ///
     /// Loaded into the `[global]` scope's [`ScopeMap`](super::scope_map::ScopeMap)
-    /// at builder time (Phase 9), then merged with any user overrides
-    /// from the TOML loader (Phase 8).
+    /// at builder time, then merged with any user overrides from the
+    /// TOML loader.
     #[must_use]
     pub fn defaults() -> Bindings<Self> {
         crate::bindings! {

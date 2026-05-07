@@ -4,9 +4,9 @@
 /// Whether vim-mode extras (`h` / `j` / `k` / `l` navigation and each
 /// pane's `vim_extras()`) are appended to the keymap at build time.
 ///
-/// Inert flag in this module — the `KeymapBuilder` consumes it in
-/// Phase 9 to apply the extras after TOML overlay (so the user's
-/// `[navigation]` table replacement does not disable vim-mode).
+/// Inert flag in this module — the `KeymapBuilder` consumes it to
+/// apply the extras after TOML overlay (so the user's `[navigation]`
+/// table replacement does not disable vim-mode).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum VimMode {
     /// Vim navigation extras are not applied. The default.

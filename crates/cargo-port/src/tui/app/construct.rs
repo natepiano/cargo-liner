@@ -49,9 +49,9 @@ use crate::tui::toasts::ToastManager;
 use crate::watcher;
 use crate::watcher::WatcherMsg;
 
-/// Phase 1: caller's raw arguments. Held by value (the slice and config
-/// reference are cloned at the entry point so the builder can outlive its
-/// caller's stack frame).
+/// Caller's raw arguments. Held by value (the slice and config
+/// reference are cloned at the entry point so the builder can outlive
+/// its caller's stack frame).
 pub(super) struct Inputs {
     bg_tx:           Sender<BackgroundMsg>,
     bg_rx:           Receiver<BackgroundMsg>,
@@ -62,8 +62,8 @@ pub(super) struct Inputs {
     raw_projects:    Vec<RootItem>,
 }
 
-/// Phase 2: phase 1 plus the three internal mpsc channel pairs (example,
-/// CI fetch, clean) routed through `Background`.
+/// `Inputs` plus the three internal mpsc channel pairs (example, CI
+/// fetch, clean) routed through `Background`.
 pub(super) struct Channeled {
     inputs:      Inputs,
     example_tx:  Sender<ExampleMsg>,
@@ -74,8 +74,7 @@ pub(super) struct Channeled {
     clean_rx:    mpsc::Receiver<CleanMsg>,
 }
 
-/// Phase 3: phase 2 plus the startup I/O products. Replaces the prior
-/// `AppInit` scaffolding struct.
+/// `Channeled` plus the startup I/O products.
 pub(super) struct Started {
     channeled:    Channeled,
     config_path:  Option<AbsolutePath>,
@@ -85,8 +84,8 @@ pub(super) struct Started {
     projects:     ProjectList,
 }
 
-/// Builder progressing through the three phases. The phase parameter is the
-/// state struct itself (not a marker), so each phase carries its own data.
+/// Typestate builder. The state parameter is the stage struct itself
+/// (not a marker), so each stage carries its own data.
 pub(super) struct AppBuilder<S> {
     state: S,
 }
