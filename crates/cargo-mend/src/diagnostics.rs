@@ -113,7 +113,7 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         inline_help: None,
         help_anchor: "field-visibility-wider-than-type",
         detail_mode: DetailMode::MessageRelatedAndFix,
-        fixability:  FixSupport::FixFieldVisibility,
+        fixability:  FixSupport::FieldVisibility,
     };
 
     match code {
@@ -262,7 +262,7 @@ impl Report {
                 .findings
                 .iter()
                 .filter(|f| {
-                    effective_fixability(f).summary_bucket() == Some(FixSummaryBucket::FixPubUse)
+                    effective_fixability(f).summary_bucket() == Some(FixSummaryBucket::PubUse)
                 })
                 .count(),
         };

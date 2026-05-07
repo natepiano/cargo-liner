@@ -86,6 +86,21 @@ impl RunPlan {
     }
 }
 
+impl FixScans<'_> {
+    fn import_fix_notice_count(self) -> Option<usize> {
+        [
+            self.imports.map(|scan| scan.findings.len()),
+            self.module_imports.map(|scan| scan.findings.len()),
+            self.inline_types.map(|scan| scan.findings.len()),
+            self.narrowed_pub.map(|scan| scan.fixes.len()),
+            self.field_visibility.map(|scan| scan.fixes.len()),
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(|total, count| total + count)
+    }
+}
+
 impl<'a> MendRunner<'a> {
     pub(crate) const fn new(
         selection: &'a Selection,
@@ -114,7 +129,7 @@ impl<'a> MendRunner<'a> {
     fn plan(&self, operation_mode: OperationMode) -> Result<RunPlan, MendFailure> {
         let output_mode = if self.output_format == OutputFormat::Json {
             BuildOutputMode::Json
-        } else if operation_mode.fixes.contains(FixKind::FixPubUse) {
+        } else if operation_mode.fixes.contains(FixKind::PubUse) {
             BuildOutputMode::SuppressUnusedImportWarnings
         } else {
             BuildOutputMode::Full
@@ -154,16 +169,15 @@ impl<'a> MendRunner<'a> {
             .then(|| narrow_pub_crate::scan_from_report(&report))
             .transpose()
             .map_err(MendFailure::Unexpected)?;
-        let field_visibility_fix_scan =
-            (operation_mode.fixes.contains(FixKind::FixFieldVisibility)
-                && diagnostics_config.is_enabled(DiagnosticCode::FieldVisibilityWiderThanType)
-                    == DiagnosticStatus::Enabled)
-                .then(|| field_visibility_fix::scan_from_report(&report))
-                .transpose()
-                .map_err(MendFailure::Unexpected)?;
+        let field_visibility_fix_scan = (operation_mode.fixes.contains(FixKind::FieldVisibility)
+            && diagnostics_config.is_enabled(DiagnosticCode::FieldVisibilityWiderThanType)
+                == DiagnosticStatus::Enabled)
+            .then(|| field_visibility_fix::scan_from_report(&report))
+            .transpose()
+            .map_err(MendFailure::Unexpected)?;
         let pub_use_scan = operation_mode
             .fixes
-            .contains(FixKind::FixPubUse)
+            .contains(FixKind::PubUse)
             .then(|| pub_use_fixes::scan_selection(self.selection, &report))
             .transpose()
             .map_err(MendFailure::Unexpected)?;
@@ -330,20 +344,7 @@ impl<'a> MendRunner<'a> {
         fix_scans: FixScans<'_>,
     ) -> Option<ExecutionNotice> {
         let mut notices = Vec::new();
-        let import_fix_count = fix_scans.imports.map_or(0, |scan| scan.findings.len())
-            + fix_scans
-                .module_imports
-                .map_or(0, |scan| scan.findings.len())
-            + fix_scans.inline_types.map_or(0, |scan| scan.findings.len())
-            + fix_scans.narrowed_pub.map_or(0, |scan| scan.fixes.len())
-            + fix_scans
-                .field_visibility
-                .map_or(0, |scan| scan.fixes.len());
-        if fix_scans.imports.is_some()
-            || fix_scans.module_imports.is_some()
-            || fix_scans.inline_types.is_some()
-            || fix_scans.narrowed_pub.is_some()
-        {
+        if let Some(import_fix_count) = fix_scans.import_fix_notice_count() {
             notices.push(NoticeKind::ImportFixes(FixNotice::from_intent(
                 intent,
                 import_fix_count,
@@ -494,16 +495,16 @@ fn drop_conflicting_import_groups(fixes: Vec<imports::UseFix>) -> Vec<imports::U
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use std::path::PathBuf;
 
+    use super::FieldVisibilityFixScan;
+    use super::FixScans;
+    use super::MendRunner;
     use super::drop_conflicting_import_groups;
     use super::imports::ImportGroup;
     use super::imports::UseFix;
+    use crate::run_mode::OperationIntent;
 
     fn tagged(path: &str, start: usize, replacement: &str, bare: &str, full: &str) -> UseFix {
         UseFix {
@@ -526,6 +527,53 @@ mod tests {
             replacement: replacement.to_string(),
             import_group: None,
         }
+    }
+
+    fn fix_scans_with_field_visibility(field_visibility: &FieldVisibilityFixScan) -> FixScans<'_> {
+        FixScans {
+            imports:          None,
+            module_imports:   None,
+            inline_types:     None,
+            narrowed_pub:     None,
+            field_visibility: Some(field_visibility),
+            pub_use:          None,
+        }
+    }
+
+    fn field_visibility_scan(fixes: Vec<UseFix>) -> FieldVisibilityFixScan {
+        FieldVisibilityFixScan { fixes }
+    }
+
+    fn field_visibility_fix() -> UseFix { untagged("src/lib.rs", 10, "") }
+
+    #[test]
+    fn field_visibility_scan_emits_import_fix_notice() {
+        let field_visibility = field_visibility_scan(vec![field_visibility_fix()]);
+        let notice = MendRunner::build_fix_notice(
+            OperationIntent::Apply,
+            None,
+            fix_scans_with_field_visibility(&field_visibility),
+        );
+
+        assert_eq!(
+            notice.map(|notice| notice.render()),
+            Some("mend: applied 1 import fix(es)".to_string())
+        );
+    }
+
+    #[test]
+    fn empty_field_visibility_scan_emits_noop_import_fix_notice() {
+        let field_visibility = field_visibility_scan(Vec::new());
+        let notice = MendRunner::build_fix_notice(
+            OperationIntent::Apply,
+            None,
+            fix_scans_with_field_visibility(&field_visibility),
+        );
+
+        assert_eq!(
+            notice.map(|notice| notice.render()),
+            Some("mend: no import fixes available".to_string())
+        );
     }
 
     #[test]

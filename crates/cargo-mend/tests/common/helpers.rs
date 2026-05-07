@@ -69,7 +69,7 @@ fn expected_summary(report: &Report) -> Summary {
         };
         match fix_support.summary_bucket() {
             Some(FixSummaryBucket::Fix) => summary.fixable_with_fix += 1,
-            Some(FixSummaryBucket::FixPubUse) => summary.fixable_with_fix_pub_use += 1,
+            Some(FixSummaryBucket::PubUse) => summary.fixable_with_fix_pub_use += 1,
             None => {},
         }
     }
@@ -114,7 +114,7 @@ pub(super) fn expected_summary_from_findings(expected_findings: &[ExpectedFindin
 
         match fix_support.summary_bucket() {
             Some(FixSummaryBucket::Fix) => summary.fixable_with_fix += 1,
-            Some(FixSummaryBucket::FixPubUse) => summary.fixable_with_fix_pub_use += 1,
+            Some(FixSummaryBucket::PubUse) => summary.fixable_with_fix_pub_use += 1,
             None => {},
         }
     }
@@ -278,7 +278,7 @@ fn fix_support_from_diagnostic_children(diagnostic: &Value) -> FixSupport {
 
     for message in child_messages {
         if message.contains("`cargo mend --fix-pub-use`") {
-            return FixSupport::FixPubUse;
+            return FixSupport::PubUse;
         }
     }
 

@@ -301,6 +301,13 @@ mod tests {
     use super::build_info_text;
     use super::color_mode;
     use super::render::ColorMode;
+    use crate::constants::CARGO_TERM_COLOR_ALWAYS;
+    use crate::constants::CARGO_TERM_COLOR_ENV;
+    use crate::constants::CARGO_TERM_COLOR_NEVER;
+    use crate::constants::CLICOLOR_DISABLED_VALUE;
+    use crate::constants::CLICOLOR_ENV;
+    use crate::constants::CLICOLOR_FORCE_ENV;
+    use crate::constants::TERM_ENV;
 
     struct EnvGuard {
         key:      &'static str,
@@ -333,29 +340,29 @@ mod tests {
 
     #[test]
     fn cargo_term_color_never_disables_color() {
-        let _guard = EnvGuard::set("CARGO_TERM_COLOR", "never");
+        let _guard = EnvGuard::set(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_NEVER);
         assert!(matches!(color_mode(), ColorMode::Disabled));
     }
 
     #[test]
     fn cargo_term_color_always_enables_color() {
-        let _guard = EnvGuard::set("CARGO_TERM_COLOR", "always");
+        let _guard = EnvGuard::set(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
         assert!(matches!(color_mode(), ColorMode::Enabled));
     }
 
     #[test]
     fn clicolor_zero_disables_color() {
-        let _guard = EnvGuard::set("CLICOLOR", "0");
-        let _cargo_term_color = EnvGuard::remove("CARGO_TERM_COLOR");
+        let _guard = EnvGuard::set(CLICOLOR_ENV, CLICOLOR_DISABLED_VALUE);
+        let _cargo_term_color = EnvGuard::remove(CARGO_TERM_COLOR_ENV);
         assert!(matches!(color_mode(), ColorMode::Disabled));
     }
 
     #[test]
     fn term_enables_color_when_terminal_detection_is_unavailable() {
-        let _cargo_term_color = EnvGuard::remove("CARGO_TERM_COLOR");
-        let _clicolor = EnvGuard::remove("CLICOLOR");
-        let _clicolor_force = EnvGuard::remove("CLICOLOR_FORCE");
-        let _term = EnvGuard::set("TERM", "xterm-256color");
+        let _cargo_term_color = EnvGuard::remove(CARGO_TERM_COLOR_ENV);
+        let _clicolor = EnvGuard::remove(CLICOLOR_ENV);
+        let _clicolor_force = EnvGuard::remove(CLICOLOR_FORCE_ENV);
+        let _term = EnvGuard::set(TERM_ENV, "xterm-256color");
         assert!(matches!(color_mode(), ColorMode::Enabled));
     }
 

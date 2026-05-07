@@ -10,8 +10,8 @@ pub(crate) enum FixKind {
     PreferModuleImport,
     InlinePathQualifiedType,
     NarrowToPubCrate,
-    FixFieldVisibility,
-    FixPubUse,
+    FieldVisibility,
+    PubUse,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -31,10 +31,10 @@ impl From<&FixCli> for FixSelection {
                     fix_kinds.insert(FixKind::PreferModuleImport);
                     fix_kinds.insert(FixKind::InlinePathQualifiedType);
                     fix_kinds.insert(FixKind::NarrowToPubCrate);
-                    fix_kinds.insert(FixKind::FixFieldVisibility);
+                    fix_kinds.insert(FixKind::FieldVisibility);
                 }
                 if fix_cli.includes(FixRequest::PubUse) {
-                    fix_kinds.insert(FixKind::FixPubUse);
+                    fix_kinds.insert(FixKind::PubUse);
                 }
                 Self { fix_kinds }
             },
@@ -49,8 +49,8 @@ impl FixSelection {
         fix_kinds.insert(FixKind::PreferModuleImport);
         fix_kinds.insert(FixKind::InlinePathQualifiedType);
         fix_kinds.insert(FixKind::NarrowToPubCrate);
-        fix_kinds.insert(FixKind::FixFieldVisibility);
-        fix_kinds.insert(FixKind::FixPubUse);
+        fix_kinds.insert(FixKind::FieldVisibility);
+        fix_kinds.insert(FixKind::PubUse);
         Self { fix_kinds }
     }
 
@@ -124,7 +124,7 @@ mod tests {
                 .contains(FixKind::InlinePathQualifiedType)
         );
         assert!(operation_mode.fixes.contains(FixKind::NarrowToPubCrate));
-        assert!(operation_mode.fixes.contains(FixKind::FixPubUse));
+        assert!(operation_mode.fixes.contains(FixKind::PubUse));
     }
 
     #[test]
@@ -137,7 +137,7 @@ mod tests {
         assert_eq!(operation_mode.intent, OperationIntent::DryRun);
         assert!(operation_mode.fixes.contains(FixKind::ShortenImport));
         assert!(operation_mode.fixes.contains(FixKind::NarrowToPubCrate));
-        assert!(operation_mode.fixes.contains(FixKind::FixPubUse));
+        assert!(operation_mode.fixes.contains(FixKind::PubUse));
     }
 
     #[test]
@@ -150,6 +150,6 @@ mod tests {
         assert_eq!(operation_mode.intent, OperationIntent::Apply);
         assert!(operation_mode.fixes.contains(FixKind::ShortenImport));
         assert!(operation_mode.fixes.contains(FixKind::NarrowToPubCrate));
-        assert!(operation_mode.fixes.contains(FixKind::FixPubUse));
+        assert!(operation_mode.fixes.contains(FixKind::PubUse));
     }
 }

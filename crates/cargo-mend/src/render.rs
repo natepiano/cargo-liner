@@ -528,7 +528,7 @@ mod tests {
                 item:          None,
                 message:       "example".to_string(),
                 suggestion:    None,
-                fixability:    FixSupport::FixPubUse,
+                fixability:    FixSupport::PubUse,
                 related:       None,
             }],
             ..Report::default()

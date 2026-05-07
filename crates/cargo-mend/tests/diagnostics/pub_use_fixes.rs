@@ -592,11 +592,11 @@ edition = "2024"
     let expected_findings = [
         ExpectedFinding {
             code:        DiagnosticCode::SuspiciousPub,
-            fix_support: FixSupport::FixPubUse,
+            fix_support: FixSupport::PubUse,
         },
         ExpectedFinding {
             code:        DiagnosticCode::SuspiciousPub,
-            fix_support: FixSupport::FixPubUse,
+            fix_support: FixSupport::PubUse,
         },
     ];
     let expected_summary = expected_summary_from_findings(&expected_findings);
@@ -1016,23 +1016,23 @@ fn fix_pub_use_preserves_exports_used_outside_parent_via_normal_paths() {
     let expected_findings = [
         ExpectedFinding {
             code:        DiagnosticCode::SuspiciousPub,
-            fix_support: FixSupport::FixPubUse,
+            fix_support: FixSupport::PubUse,
         },
         ExpectedFinding {
             code:        DiagnosticCode::SuspiciousPub,
-            fix_support: FixSupport::FixPubUse,
+            fix_support: FixSupport::PubUse,
         },
         ExpectedFinding {
             code:        DiagnosticCode::SuspiciousPub,
-            fix_support: FixSupport::FixPubUse,
+            fix_support: FixSupport::PubUse,
         },
         ExpectedFinding {
             code:        DiagnosticCode::SuspiciousPub,
-            fix_support: FixSupport::FixPubUse,
+            fix_support: FixSupport::PubUse,
         },
         ExpectedFinding {
             code:        DiagnosticCode::SuspiciousPub,
-            fix_support: FixSupport::FixPubUse,
+            fix_support: FixSupport::PubUse,
         },
     ];
     let expected_summary = expected_summary_from_findings(&expected_findings);
@@ -1146,7 +1146,7 @@ edition = "2024"
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     let expected_findings = [ExpectedFinding {
         code:        DiagnosticCode::SuspiciousPub,
-        fix_support: FixSupport::FixPubUse,
+        fix_support: FixSupport::PubUse,
     }];
     let expected_summary = expected_summary_from_findings(&expected_findings);
     assert_eq!(

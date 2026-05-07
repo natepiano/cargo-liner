@@ -430,7 +430,7 @@ fn apply_cross_compilation_intersection(reports: &mut [StoredReport]) {
             .push(idx);
     }
 
-    for (_crate_root, indices) in groups {
+    for indices in groups.into_values() {
         if indices.len() < 2 {
             continue;
         }

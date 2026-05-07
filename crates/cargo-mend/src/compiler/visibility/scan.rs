@@ -661,7 +661,7 @@ fn maybe_record_suspicious_pub(
                 },
             )?);
             if let (Some(status), Some(item_name)) = (stale_parent_pub_use, input.name)
-                && fixability == FixSupport::FixPubUse
+                && fixability == FixSupport::PubUse
             {
                 let child_line = ctx
                     .tcx

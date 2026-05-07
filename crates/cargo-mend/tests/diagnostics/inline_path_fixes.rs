@@ -1413,9 +1413,12 @@ pub fn next_idx<Idx: Iterator>(it: &mut Idx) -> Option<Idx::Item> {
     it.next()
 }
 
-// Non-idiomatic lowercase generic. `non_camel_case_types` warns but the
-// compiler accepts it; the lint must not trip.
-#[allow(non_camel_case_types)]
+// Non-idiomatic lowercase generic. `non_camel_case_types` warns, but this
+// verifies generic tracking comes from syntax, not naming convention.
+#[allow(
+    non_camel_case_types,
+    reason = "fixture intentionally covers lowercase generic parameters"
+)]
 pub fn lower<t: Bucket>(_b: &t) -> Option<t::Item> {
     None
 }

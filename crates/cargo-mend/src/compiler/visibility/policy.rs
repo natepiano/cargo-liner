@@ -94,7 +94,7 @@ pub(super) fn classify_suspicious_pub(
     let (related, fixability, stale_parent_pub_use) = match stale_result {
         Some((message, status)) => {
             let fixability = if status.fix_supported == ParentFacadeFixSupport::Supported {
-                FixSupport::FixPubUse
+                FixSupport::PubUse
             } else {
                 FixSupport::NeedsManualPubUseCleanup
             };

@@ -305,10 +305,25 @@ mod tests {
     use crate::cli::CargoCheckCli;
     use crate::cli::TargetSelection;
     use crate::cli::WorkspaceSelection;
+    use crate::constants::CARGO_FLAG_ALL_TARGETS;
+    use crate::constants::CARGO_FLAG_EXCLUDE;
+    use crate::constants::CARGO_FLAG_MANIFEST_PATH;
+    use crate::constants::CARGO_FLAG_PACKAGE;
+    use crate::constants::CARGO_FLAG_WORKSPACE;
+    use crate::constants::CARGO_MANIFEST_FILE;
+    use crate::constants::CARGO_TARGET_KIND_LIB;
+
+    fn workspace_manifest_path() -> PathBuf {
+        PathBuf::from("/workspace").join(CARGO_MANIFEST_FILE)
+    }
+
+    fn workspace_manifest_arg() -> String {
+        workspace_manifest_path().to_string_lossy().into_owned()
+    }
 
     fn fixture_selection(scope: SelectionScope) -> Selection {
         Selection {
-            manifest_path: PathBuf::from("/workspace/Cargo.toml"),
+            manifest_path: workspace_manifest_path(),
             manifest_dir: PathBuf::from("/workspace"),
             workspace_root: PathBuf::from("/workspace"),
             target_directory: PathBuf::from("/workspace/target"),
@@ -317,11 +332,11 @@ mod tests {
             package_roots: vec![PathBuf::from("/workspace/member")],
             packages: vec![PackageMetadata {
                 id:            String::from("path+file:///workspace/member#member@0.1.0"),
-                manifest_path: PathBuf::from("/workspace/member/Cargo.toml"),
+                manifest_path: PathBuf::from("/workspace/member").join(CARGO_MANIFEST_FILE),
                 root:          PathBuf::from("/workspace/member"),
                 targets:       vec![TargetMetadata {
-                    kind:              vec![String::from("lib")],
-                    crate_types:       vec![String::from("lib")],
+                    kind:              vec![String::from(CARGO_TARGET_KIND_LIB)],
+                    crate_types:       vec![String::from(CARGO_TARGET_KIND_LIB)],
                     name:              String::from("member"),
                     src_path:          PathBuf::from("/workspace/member/src/lib.rs"),
                     edition:           String::from("2024"),
@@ -355,10 +370,10 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--manifest-path",
-                "/workspace/Cargo.toml",
-                "--workspace",
-                "--all-targets",
+                CARGO_FLAG_MANIFEST_PATH.to_string(),
+                workspace_manifest_arg(),
+                CARGO_FLAG_WORKSPACE.to_string(),
+                CARGO_FLAG_ALL_TARGETS.to_string(),
             ]
         );
     }
@@ -374,7 +389,11 @@ mod tests {
 
         assert_eq!(
             args,
-            vec!["--manifest-path", "/workspace/Cargo.toml", "--all-targets"]
+            vec![
+                CARGO_FLAG_MANIFEST_PATH.to_string(),
+                workspace_manifest_arg(),
+                CARGO_FLAG_ALL_TARGETS.to_string(),
+            ]
         );
     }
 
@@ -394,10 +413,10 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--manifest-path",
-                "/workspace/Cargo.toml",
-                "--workspace",
-                "--all-targets",
+                CARGO_FLAG_MANIFEST_PATH.to_string(),
+                workspace_manifest_arg(),
+                CARGO_FLAG_WORKSPACE.to_string(),
+                CARGO_FLAG_ALL_TARGETS.to_string(),
             ]
         );
     }
@@ -416,11 +435,11 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--manifest-path",
-                "/workspace/Cargo.toml",
-                "--package",
-                "demo",
-                "--all-targets",
+                CARGO_FLAG_MANIFEST_PATH.to_string(),
+                workspace_manifest_arg(),
+                CARGO_FLAG_PACKAGE.to_string(),
+                "demo".to_string(),
+                CARGO_FLAG_ALL_TARGETS.to_string(),
             ]
         );
     }
@@ -438,12 +457,12 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "--manifest-path",
-                "/workspace/Cargo.toml",
-                "--workspace",
-                "--exclude",
-                "demo",
-                "--all-targets",
+                CARGO_FLAG_MANIFEST_PATH.to_string(),
+                workspace_manifest_arg(),
+                CARGO_FLAG_WORKSPACE.to_string(),
+                CARGO_FLAG_EXCLUDE.to_string(),
+                "demo".to_string(),
+                CARGO_FLAG_ALL_TARGETS.to_string(),
             ]
         );
     }
@@ -465,7 +484,11 @@ mod tests {
 
         assert_eq!(
             args,
-            vec!["--manifest-path", "/workspace/Cargo.toml", "--all-targets",]
+            vec![
+                CARGO_FLAG_MANIFEST_PATH.to_string(),
+                workspace_manifest_arg(),
+                CARGO_FLAG_ALL_TARGETS.to_string(),
+            ]
         );
     }
 
@@ -476,19 +499,19 @@ mod tests {
         std::fs::create_dir_all(temp.path().join("member/src"))
             .unwrap_or_else(|error| panic!("create member src dir: {error}"));
         std::fs::write(
-            temp.path().join("Cargo.toml"),
+            temp.path().join(CARGO_MANIFEST_FILE),
             "[workspace]\nmembers = [\"member\"]\nresolver = \"3\"\n",
         )
         .unwrap_or_else(|error| panic!("write workspace manifest: {error}"));
         std::fs::write(
-            temp.path().join("member/Cargo.toml"),
+            temp.path().join("member").join(CARGO_MANIFEST_FILE),
             "[package]\nname = \"member_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .unwrap_or_else(|error| panic!("write member manifest: {error}"));
         std::fs::write(temp.path().join("member/src/main.rs"), "fn main() {}\n")
             .unwrap_or_else(|error| panic!("write member main: {error}"));
 
-        let selection = resolve_cargo_selection(Some(&temp.path().join("Cargo.toml")))
+        let selection = resolve_cargo_selection(Some(&temp.path().join(CARGO_MANIFEST_FILE)))
             .unwrap_or_else(|error| panic!("resolve workspace selection: {error}"));
 
         assert_eq!(selection.scope, SelectionScope::Workspace);
@@ -508,7 +531,7 @@ mod tests {
         std::fs::create_dir_all(temp.path().join("src"))
             .unwrap_or_else(|error| panic!("create src dir: {error}"));
         std::fs::write(
-            temp.path().join("Cargo.toml"),
+            temp.path().join(CARGO_MANIFEST_FILE),
             "[package]\nname = \"dir_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .unwrap_or_else(|error| panic!("write manifest: {error}"));
@@ -520,7 +543,7 @@ mod tests {
 
         assert_eq!(
             selection.manifest_path,
-            std::fs::canonicalize(temp.path().join("Cargo.toml"))
+            std::fs::canonicalize(temp.path().join(CARGO_MANIFEST_FILE))
                 .unwrap_or_else(|error| panic!("canonicalize manifest: {error}"))
         );
         assert_eq!(selection.scope, SelectionScope::SinglePackage);

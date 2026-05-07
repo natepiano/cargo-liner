@@ -32,6 +32,12 @@ pub(crate) enum DisplayFilter {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LibraryTargetSelection {
+    Included,
+    Omitted,
+}
+
 impl DisplayFilter {
     pub(crate) fn from_cli(cli: &CargoCheckCli, packages: &[PackageMetadata]) -> Self {
         let asks_for_all = cli.target_selections.contains(&TargetSelection::All);
@@ -47,7 +53,7 @@ impl DisplayFilter {
         let mut allowed = Vec::new();
         let mut excluded_dirs = Vec::new();
         let mut package_root = PathBuf::new();
-        let mut lib_included = false;
+        let mut library_target_selection = LibraryTargetSelection::Omitted;
         for package in packages {
             package_root.clone_from(&package.root);
             for target in &package.targets {
@@ -55,14 +61,14 @@ impl DisplayFilter {
                 if cli_includes_target(cli, target) {
                     allowed.push(dir.clone());
                     if target.kind.iter().any(|k| k == CARGO_TARGET_KIND_LIB) {
-                        lib_included = true;
+                        library_target_selection = LibraryTargetSelection::Included;
                     }
                 }
             }
             // When lib is included, subtract every other target directory
             // under the package root so `src/bin/foo.rs` etc. stay out of
             // the lib's allow set.
-            if lib_included {
+            if matches!(library_target_selection, LibraryTargetSelection::Included) {
                 for target in &package.targets {
                     if !target.kind.iter().any(|k| k == CARGO_TARGET_KIND_LIB) {
                         let dir = target_directory(target);
@@ -166,15 +172,15 @@ fn cli_includes_target(cli: &CargoCheckCli, target: &TargetMetadata) -> bool {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
     use crate::cli::TargetSelection;
+    use crate::constants::CARGO_MANIFEST_FILE;
+    use crate::constants::CARGO_TARGET_KIND_BIN;
+    use crate::constants::CARGO_TARGET_KIND_EXAMPLE;
+    use crate::constants::CARGO_TARGET_KIND_LIB;
     use crate::selection::PackageMetadata;
     use crate::selection::TargetMetadata;
     use crate::selection::TargetSupport;
@@ -196,11 +202,15 @@ mod tests {
     fn package_with_lib_and_example() -> PackageMetadata {
         PackageMetadata {
             id:            "pkg".to_string(),
-            manifest_path: PathBuf::from("/proj/Cargo.toml"),
+            manifest_path: PathBuf::from("/proj").join(CARGO_MANIFEST_FILE),
             root:          PathBuf::from("/proj"),
             targets:       vec![
-                target("lib", "pkg", "/proj/src/lib.rs"),
-                target("example", "demo", "/proj/examples/demo/main.rs"),
+                target(CARGO_TARGET_KIND_LIB, "pkg", "/proj/src/lib.rs"),
+                target(
+                    CARGO_TARGET_KIND_EXAMPLE,
+                    "demo",
+                    "/proj/examples/demo/main.rs",
+                ),
             ],
         }
     }
@@ -239,11 +249,11 @@ mod tests {
     fn lib_flag_excludes_src_bin_subdirectory() {
         let pkg = PackageMetadata {
             id:            "pkg".to_string(),
-            manifest_path: PathBuf::from("/proj/Cargo.toml"),
+            manifest_path: PathBuf::from("/proj").join(CARGO_MANIFEST_FILE),
             root:          PathBuf::from("/proj"),
             targets:       vec![
-                target("lib", "pkg", "/proj/src/lib.rs"),
-                target("bin", "tool", "/proj/src/bin/tool.rs"),
+                target(CARGO_TARGET_KIND_LIB, "pkg", "/proj/src/lib.rs"),
+                target(CARGO_TARGET_KIND_BIN, "tool", "/proj/src/bin/tool.rs"),
             ],
         };
         let cli = CargoCheckCli {

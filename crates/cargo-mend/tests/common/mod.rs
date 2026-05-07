@@ -108,17 +108,19 @@ pub(super) enum FixSupport {
     ShortenImport,
     PreferModuleImport,
     InlinePathQualifiedType,
-    FixPubUse,
+    #[serde(rename = "fix_pub_use")]
+    PubUse,
     NeedsManualPubUseCleanup,
     InternalParentFacade,
     NarrowToPubCrate,
-    FixFieldVisibility,
+    #[serde(rename = "fix_field_visibility")]
+    FieldVisibility,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FixSummaryBucket {
     Fix,
-    FixPubUse,
+    PubUse,
 }
 
 impl FixSupport {
@@ -129,10 +131,8 @@ impl FixSupport {
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
             | Self::NarrowToPubCrate
-            | Self::FixFieldVisibility => {
-                Some("this warning is auto-fixable with `cargo mend --fix`")
-            },
-            Self::FixPubUse => Some("this warning is auto-fixable with `cargo mend --fix-pub-use`"),
+            | Self::FieldVisibility => Some("this warning is auto-fixable with `cargo mend --fix`"),
+            Self::PubUse => Some("this warning is auto-fixable with `cargo mend --fix-pub-use`"),
         }
     }
 
@@ -143,8 +143,8 @@ impl FixSupport {
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
             | Self::NarrowToPubCrate
-            | Self::FixFieldVisibility => Some(FixSummaryBucket::Fix),
-            Self::FixPubUse => Some(FixSummaryBucket::FixPubUse),
+            | Self::FieldVisibility => Some(FixSummaryBucket::Fix),
+            Self::PubUse => Some(FixSummaryBucket::PubUse),
         }
     }
 }
@@ -215,7 +215,7 @@ pub(super) const fn diagnostic_spec(code: DiagnosticCode) -> &'static Diagnostic
     const FIELD_VISIBILITY_WIDER_THAN_TYPE: DiagnosticSpec = DiagnosticSpec {
         headline:    "field visibility is wider than its containing type",
         help_anchor: "field-visibility-wider-than-type",
-        fix_support: FixSupport::FixFieldVisibility,
+        fix_support: FixSupport::FieldVisibility,
     };
 
     match code {
