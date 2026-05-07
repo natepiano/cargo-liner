@@ -162,9 +162,16 @@ pub(crate) fn noop_quit(_ctx: &mut TestCtx)    {}
 pub(crate) fn noop_restart(_ctx: &mut TestCtx) {}
 pub(crate) fn noop_dismiss(_ctx: &mut TestCtx) {}
 
-/// Smallest valid keymap: no panes, no nav, no globals — just the three
-/// required builder positionals. Useful for tests of `BaseGlobals` and
-/// scope lookup edge cases.
+/// Smallest valid keymap: no panes, no nav, no app globals — just the
+/// framework's own `GlobalAction` defaults. Useful for tests of
+/// `GlobalAction` and scope lookup edge cases.
+///
+/// (Phase 3 review note: under the post-Phase-3 design, `KeymapBuilder`
+/// no longer takes `(quit, restart, dismiss)` positionals — the
+/// framework owns dispatch and the binary registers optional
+/// `.on_quit()` / `.on_restart()` / `.dismiss_fallback()` hooks. The
+/// `noop_quit`/`noop_restart`/`noop_dismiss` fns above will be deleted
+/// when Phase 9 lands. Test fixtures will not need to supply them.)
 pub(crate) fn build_minimal_keymap() -> Keymap<TestCtx> {
     Keymap::<TestCtx>::builder(noop_quit, noop_restart, noop_dismiss)
         .vim_mode(VimMode::Disabled)
@@ -274,14 +281,14 @@ Modules with non-trivial coverage needs (each owns its own `#[cfg(test)] mod tes
 | `keymap/scope_map.rs`           | `insert` rejects same-key→different-action; `by_key.len() == sum(by_action.values().len())`; `key_for` returns insertion-order primary; `display_keys_for` order. |
 | `keymap/load.rs`                | Each `samples.rs` constant produces the documented outcome; replace-not-merge semantics; `config_path` return value per platform. |
 | `keymap/vim.rs`                 | Vim extras layered after TOML; arrows remain primary; `vim_mode_conflicts` detection; `is_vim_reserved` reads live `Navigation` scope. |
-| `keymap/builder.rs`             | Required positionals (`quit`, `restart`, `dismiss`); registration order; `BuilderError::{NavigationMissing, GlobalsMissing}` raised when those `with_*` calls are skipped. |
-| `keymap/base_globals.rs`        | Framework-owned defaults (`q`, `R`, `Tab`, etc.); `Dismiss` calls injected hook; `OpenKeymap`/`OpenSettings` reach the framework panes. |
+| `keymap/builder.rs`             | Optional `.on_quit()` / `.on_restart()` / `.dismiss_fallback()` hooks (post-Phase-3 design); registration order; `BuilderError::{NavigationMissing, GlobalsMissing}` raised when those `with_*` calls are skipped. |
+| `keymap/global_action.rs`       | Framework-owned defaults (`q`, `R`, `Tab`, etc.); `GlobalAction::defaults()` returns the canonical `Bindings<GlobalAction>`; framework-internal dispatch reaches `Quit` / `Restart` flags and the framework dismiss chain; `OpenKeymap`/`OpenSettings` reach the framework panes. |
 | `bar/region.rs`                 | `BarRegion::ALL` order matches render walk.                                                                     |
 | `bar/shortcut.rs`               | `Shortcut::enabled` / `disabled` constructors; `BarRow` exhaustive match.                                       |
 | `bar/support.rs`                | `format_action_keys` joins via `,`; `push_cancel_row` produces the expected row.                                                    |
 | `bar/nav_region.rs`             | `Navigable`/`TextInput`/`Static` suppression; pane-cycle row pulled from `GlobalAction::NextPane`.          |
 | `bar/pane_action_region.rs`     | Per-action labels read from `Shortcut`; `ShortcutState::Disabled` rendering.                                    |
-| `bar/global_region.rs`          | `BaseGlobals` first, `AppGlobals::render_order()` after; `TextInput` suppression.                               |
+| `bar/global_region.rs`          | `GlobalAction` first, `Globals::render_order()` after; `TextInput` suppression.                                 |
 | `bar/mod.rs`                    | End-to-end snapshot per fixture pane (drives `MockPane`, `MockTextInputPane`, `MockStaticPane`, `MockPairedNavPane`). |
 | `panes/keymap_pane.rs`          | Mode transitions Browse → Awaiting → Conflict; `editor_target` reflects current state.                          |
 | `panes/settings_pane.rs`        | Mode transitions Browse ↔ Editing; `is_text_input` flips correctly; `add_bool`/`add_enum`/`add_int` round-trips. |

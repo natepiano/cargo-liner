@@ -6,3 +6,8 @@
 //! family at a time.
 
 pub mod keymap;
+
+// Re-exported at crate root so the `action_enum!` macro can use the
+// `$crate::ActionEnum` path regardless of where the trait lives in the
+// module hierarchy.
+pub use keymap::ActionEnum;

@@ -17,8 +17,7 @@ A `keymap.toml` file is a sequence of TOML tables. Each top-level table name is 
 
 | Table header | Source | Action enum |
 |---|---|---|
-| `[base_global]` | `BaseGlobals` (framework) | `GlobalAction` |
-| `[global]` | `AppGlobals` impl | `AppGlobalAction` |
+| `[global]` | `GlobalAction` (framework) **and** `AppGlobalAction` (binary) | both — see below |
 | `[navigation]` | `Navigation` impl | `NavigationAction` |
 | `[project_list]` | `ProjectListPane` | `ProjectListAction` |
 | `[package]` | `PackagePane` | `PackageAction` |
@@ -33,6 +32,10 @@ A `keymap.toml` file is a sequence of TOML tables. Each top-level table name is 
 | `[toasts]` | `Toasts` (framework) | `ToastsAction` |
 
 A header that does not match any registered `SCOPE_NAME` produces `KeymapError::UnknownScope`. Scope names are matched literally and case-sensitively (TOML's own table-name semantics).
+
+**`[global]` is a unified table.** Both the framework's `GlobalAction` and the binary's `AppGlobalAction` impls share the single `[global]` TOML table. The loader matches each TOML key against both enums (via `from_toml_key`); whichever variant accepts the key is the action that gets bound. From the user's perspective there is one `global` namespace.
+
+If the same TOML key resolves in both enums (e.g. the binary's `AppGlobalAction` defines a variant whose `toml_key()` matches one of `GlobalAction`'s seven), the loader emits `KeymapError::CrossEnumCollision { key, framework_action, app_action }` at load time. This is a **definition-time** error — the app dev must rename one of the two `toml_key` strings before the binary can `cargo run` cleanly. Detected once per startup; the framework's seven keys are stable, so the rename is always app-side.
 
 ### 1.2 Per-scope grammar
 

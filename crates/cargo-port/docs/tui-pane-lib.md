@@ -48,14 +48,18 @@ cargo-port-api-fix/
         │   ├── bindings.rs         # Bindings<A> builder + bindings! macro
         │   ├── scope_map.rs        # ScopeMap<A>, display_keys_for,
         │   │                       #   primary-key invariants
-        │   ├── traits.rs           # Shortcuts<Ctx>, Navigation<Ctx>, Globals<Ctx>,
-        │   │                       #   InputMode, ActionEnum marker, action_enum! macro
+        │   ├── action_enum.rs     # ActionEnum trait + action_enum! macro
+        │   ├── global_action.rs   # GlobalAction enum + ActionEnum impl
+        │   │                       #   + GlobalAction::defaults() (added Phase 4)
+        │   ├── shortcuts.rs        # Shortcuts<Ctx> trait (Phase 7)
+        │   ├── navigation.rs       # Navigation<Ctx> trait (Phase 7)
+        │   ├── globals.rs          # Globals<Ctx> trait (Phase 7)
         │   ├── builder.rs          # KeymapBuilder<Ctx>; register, with_navigation,
         │   │                       #   with_globals, with_settings, vim_mode,
         │   │                       #   builder(quit, restart, dismiss)
-        │   ├── global.rs           # GlobalAction enum + framework dispatch
-        │   ├── vim.rs              # VimMode, vim-binding application,
-        │   │                       #   vim_mode_conflicts, is_vim_reserved
+        │   ├── vim.rs              # VimMode enum (Phase 3); vim-binding
+        │   │                       #   application + vim_mode_conflicts +
+        │   │                       #   is_vim_reserved fns added in Phase 9
         │   └── load.rs             # TOML parsing, scope replace semantics,
         │                           #   collision errors, config_path() via dirs
         ├── bar/                    # framework-owned bar renderer
@@ -563,29 +567,35 @@ pub enum GlobalAction {
 }
 ```
 
-Framework owns defaults (`q` → Quit, `R` → Restart, `Tab` → NextPane, `Shift+Tab` → PrevPane, `Ctrl+K` → OpenKeymap, `s` → OpenSettings, `x` → Dismiss), the bar entries, and most dispatch.
+Framework owns defaults (`q` → Quit, `R` → Restart, `Tab` → NextPane, `Shift+Tab` → PrevPane, `Ctrl+K` → OpenKeymap, `s` → OpenSettings, `x` → Dismiss), the bar entries, **and dispatch for all seven variants** (post-Phase-3 review decision).
 
-### App-injected dispatch hooks
+### Framework-owned dispatch + optional binary hooks
 
-`Quit`, `Restart`, `Dismiss` need to reach app state (`app.dismiss(focused_dismiss_target())`, the quit/restart flags). All three are **required**: the builder takes them as positional arguments to `Keymap::builder(quit, restart, dismiss)` so omission is a compile error rather than a panic at dispatch.
+Per the Phase 3 review, the framework owns dispatch for every `GlobalAction` variant. The binary opts in to *notification* via three optional builder hooks; all default to no-op.
+
+| Variant            | Framework behavior                                                                 | Binary opt-in                              |
+|--------------------|------------------------------------------------------------------------------------|--------------------------------------------|
+| `Quit`             | Sets `Framework<Ctx>::quit_requested = true`. Binary's main loop polls and exits.  | `.on_quit(\|app\| { /* save state */ })`   |
+| `Restart`          | Sets `Framework<Ctx>::restart_requested = true`. Binary's main loop polls.         | `.on_restart(\|app\| { /* save state */ })`|
+| `Dismiss`          | Runs framework dismiss chain: top toast, then focused framework overlay. If nothing dismissed, calls binary's `dismiss_fallback`. | `.dismiss_fallback(\|app\| -> bool { app.try_dismiss_focused_app_thing() })` |
+| `NextPane`         | Pure pane-focus — framework knows the registered pane set.                         | (none — binary doesn't see this)           |
+| `PrevPane`         | Pure pane-focus.                                                                   | (none)                                     |
+| `OpenKeymap`       | Focuses framework's `KeymapPane` overlay.                                          | (none)                                     |
+| `OpenSettings`     | Focuses framework's `SettingsPane` overlay.                                        | (none)                                     |
 
 ```rust
-fn quit(app: &mut App) { app.set_quit() }
-fn restart(app: &mut App) { app.set_restart() }
-fn dismiss(app: &mut App) {
-    let target = app.focused_dismiss_target();
-    app.dismiss(target);
-}
-
-Keymap::<App>::builder(quit, restart, dismiss)
+Keymap::<App>::builder()
+    .on_quit(|app| { app.persist_state() })           // optional
+    .on_restart(|app| { app.persist_state() })        // optional
+    .dismiss_fallback(|app| -> bool {                 // optional
+        app.try_dismiss_focused_app_thing()
+    })
     .vim_mode(VimMode::Enabled)
     .register::<PackagePane>()
     // …
 ```
 
-The two-step bind in `dismiss` resolves the borrow conflict that `|app| app.dismiss(app.focused_dismiss_target())` would otherwise hit.
-
-`NextPane` / `PrevPane` / `OpenKeymap` / `OpenSettings` are pure pane-focus operations the framework owns directly (it knows the registered pane set).
+The dismiss chain rationale: the mouse-click hit-test for the X button on framework overlays already lives in the framework. Splitting Esc-key dismiss between framework (overlays) and binary (everything else) duplicates that logic. One owner — framework — for both Esc and mouse, with a one-fn fallback for app-level dismissables.
 
 ### App globals
 
@@ -599,6 +609,8 @@ impl Globals<App> for AppGlobalAction { … }
 
 Both `GlobalAction` and `AppGlobalAction` share a single TOML table named `[global]`. The loader matches each TOML key against both enums; whichever variant accepts the key is the action that gets bound. From the user's perspective there's one globals namespace — they write `[global] quit = "q"` (framework variant) and `[global] find = "/"` (app variant) into the same table.
 
+If the same TOML key resolves in **both** enums (e.g. binary's `AppGlobalAction` defines a variant whose `toml_key()` collides with one of `GlobalAction`'s seven), the loader emits `KeymapError::CrossEnumCollision { key, framework_action, app_action }` at load time. This is a definition-time error — the app dev must rename the colliding `toml_key` string in `AppGlobalAction` before the binary can run. The framework's seven keys are stable, so the rename is always app-side.
+
 Bar's right-hand strip: framework renders `GlobalAction` items first, then `AppGlobals::render_order()`.
 
 ### Per-action revert policy for `[global]`
@@ -607,8 +619,8 @@ The `[global]` scope uses a more permissive error policy than other scopes (whic
 
 - Each TOML entry in `[global]` is processed independently.
 - If the value parses cleanly and doesn't collide with another binding in `[global]`, apply it.
-- If the value fails to parse OR collides → emit a warning, revert *just that action* to its default, continue processing the rest of the table.
-- Required actions (`Quit`, `Restart`, `Dismiss`) that the user accidentally drops or invalidates are restored to their defaults at the end of the pass.
+- If the value fails to parse OR collides at the binding level → emit a warning, revert *just that action* to its default, continue processing the rest of the table. (Cross-enum `toml_key` collision is a definition-time error, not a per-binding revert — see above.)
+- Framework-owned actions (`Quit`, `Restart`, `Dismiss`) that the user accidentally drops or invalidates are restored to their defaults at the end of the pass — the framework always has working lifecycle keys.
 
 Result: the framework always has working base globals, while the user's customizations to `Find` / `OpenEditor` / etc. survive intact even if one binding broke. Other scopes (per-pane, navigation) keep the simpler "TOML replaces entirely" rule.
 
@@ -965,7 +977,7 @@ Concrete steps:
 
 After Phase 1: `cargo build` from the root builds both crates; `cargo install --path .` still installs the binary; `Cargo.lock` and `target/` stay at the workspace root.
 
-**Per-phase rustdoc precondition.** Phases 2–17 add `pub` items to `tui_pane`. Each pub item ships with a rustdoc summary line — `missing_docs = "deny"` is workspace-wide from Phase 1, so a missing doc breaks the build.
+**Per-phase rustdoc precondition.** Phases 2–17 add `pub` items to `tui_pane`. Each pub item ships with a rustdoc summary line — `missing_docs = "deny"` is workspace-wide from Phase 1, so a missing doc breaks the build. Module headers (`//!` blocks) must use the format **one-line summary, blank `//!`, then body** — `clippy::too_long_first_doc_paragraph` (nursery) rejects multi-sentence opening paragraphs (Phase 3 retrospective surfaced this).
 
 ### Phases 2–9 — `tui_pane` foundations
 
@@ -1025,19 +1037,76 @@ Unit tests:
 - Phase 6 + Phase 10 now spell out the **Phase 6 → Phase 10 contract**: Phase 6 freezes a 1-field / 3-method `Framework<Ctx>` skeleton (`focused` field, `new`/`focused()`/`set_focused()`); Phase 10 is purely additive on top. Mirrored at both phase blocks so neither side can drift independently.
 - Decided: `KeyEvent` press/release/repeat handling uses a typed wrapper enum (`KeyInput { Press, Release, Repeat }`) at the framework boundary, not a runtime check at each dispatch site and not a fallible `Option`-returning conversion. Modeled after Zed/GPUI's typed-event split. Repeat is preserved (not collapsed into Press) so future handlers can opt into auto-repeat behavior. Phases 13–15 dispatch sites pattern-match `KeyInput::Press(bind)` (or call `.press()`); the event-loop entry produces `KeyInput` once.
 
-### Phase 3 — Action machinery
+### Phase 3 — Action machinery ✅
 
-Add `tui_pane/src/keymap/action_enum.rs` with `ActionEnum` + `action_enum!` (per §4 — the trait part; the three scope traits land in Phase 7). Add `tui_pane/src/keymap/base_globals.rs` with `GlobalAction` and its `ActionEnum` impl (§10). Add `tui_pane/src/keymap/vim.rs` with `VimMode::{Disabled, Enabled}` (§10).
+Add `tui_pane/src/keymap/action_enum.rs` with `ActionEnum` + `action_enum!` (per §4 — the trait part; the three scope traits land in Phase 7). Add `tui_pane/src/keymap/global_action.rs` with `GlobalAction` and its `ActionEnum` impl (§10). Add `tui_pane/src/keymap/vim.rs` with `VimMode::{Disabled, Enabled}` (§10).
 
-> File renamed from `traits.rs` to `action_enum.rs` so its name matches its contents — the three scope traits live in their own files (`shortcuts.rs` / `navigation.rs` / `globals.rs`) per Phase 7. A file called `traits.rs` holding just one marker trait would mislead.
+> File `action_enum.rs` (not `traits.rs`) and `global_action.rs` (not `base_globals.rs`) — the file name matches the contained type. The three scope traits live in their own files (`shortcuts.rs` / `navigation.rs` / `globals.rs`) per Phase 7.
+
+#### Retrospective
+
+**What worked:**
+- Three-file split (`action_enum.rs` / `global_action.rs` / `vim.rs`) lined up one-to-one with shipped code — no scope drift. 12 unit tests cover macro expansion (`action_enum!` against a fixture `Foo` enum) and the hand-rolled `GlobalAction` impl. Workspace clippy clean under `pedantic` + `nursery` + `all` + `cargo`.
+- `pub use keymap::ActionEnum;` at crate root in `lib.rs` keeps the macro's `$crate::ActionEnum` path stable regardless of the trait's true module location. The macro can be re-homed later without breaking any expansion site.
+- `VimMode` defaults to `Disabled` via `#[derive(Default)]` + `#[default]` on the variant — no hand-written `Default` impl needed.
+
+**What deviated from the plan:**
+- Hand-rolled `impl Display for GlobalAction` (delegates to `description()`) — not strictly required by the spec but mirrors what the macro generates for `action_enum!`-produced enums, so all `ActionEnum` impls render the same way under `format!("{action}")`. Cost: 4 lines.
+- `crate::ActionEnum` (root re-export) is the trait path used inside `global_action.rs`'s test module rather than a longer `super::super::action_enum::ActionEnum` — single-`super::` is fine in normal code, double-`super::` is banned by project policy.
+
+**Surprises:**
+- `clippy::too_long_first_doc_paragraph` (nursery) fires on multi-sentence module headers. `global_action.rs`'s opening `//!` block had to be split into a one-line summary + blank `//!` + body. Likely to fire elsewhere when later phases ship docs. No code change required, but worth knowing for module-doc authoring.
+- The `from_toml_key` returning `Option<Self>` (not `Result`) is intentional and the trait method has no scope context to attach. The TOML loader (Phase 4 skeleton, Phase 8 fill) lifts `None` into `KeymapError::UnknownAction { scope, action }`. Recorded explicitly here so Phase 4/8 don't accidentally widen the trait.
+
+**Implications for remaining phases:**
+- `phase-02-macros.md` §3 still references `crate::keymap::traits::ActionEnum` — needs to be `crate::keymap::action_enum::ActionEnum`. Synced as part of this review.
+- `phase-02-core-api.md` §10 `KeymapError` snippet has `impl Display { /* … */ }` placeholder — Phase 4 lands the real impl via `#[derive(thiserror::Error)]` per the Phase 2 retrospective decision.
+- Phase 4 (`bindings!` macro) follows the same `#[macro_export] macro_rules!` declaration template used here; the doctest pattern can mirror Phase 3's approach (`crate::action_enum! { … }` inside an internal `mod tests`).
+- Phase 12 (binary swap to `tui_pane::action_enum!`): seven existing `action_enum!` invocations in `src/keymap.rs` swap to the `tui_pane::` prefix; the macro's grammar is identical, so each invocation needs only the prefix change.
+
+#### Phase 3 Review
+
+Architectural review of remaining phases (4-17) returned 18 findings — 13 minor (applied directly), 5 significant (decided with the user). Resolved outcomes:
+
+- **Renamed `keymap/base_globals.rs` → `keymap/global_action.rs`** so the file name matches the contained type (`GlobalAction`). User did the file rename in their editor; doc references and `mod.rs` synced. No `BaseGlobals` type ever existed; the "base" prefix earned nothing and broke the established `key_bind.rs → KeyBind` convention.
+- **Phase 8 anchor type:** `Keymap<Ctx>` lives in `keymap/mod.rs` (option c). Workspace lint `self_named_module_files = "deny"` rules out `keymap.rs` + `keymap/` sibling layout, and `clippy::module_inception` rules out `keymap/keymap.rs`. Phase 6 already follows the same convention with `framework/mod.rs` holding `Framework<Ctx>`. Plan's prior `keymap/mod_.rs` was a typo.
+- **Framework owns `GlobalAction` dispatch (significant pivot, item 2):** `KeymapBuilder` no longer takes positional `(quit, restart, dismiss)` callbacks. Framework dispatches all seven variants:
+  - `Quit` / `Restart` set `Framework<Ctx>::quit_requested` / `restart_requested` flags; binary's main loop polls.
+  - `Dismiss` runs framework chain (toasts → focused framework overlay), then bubbles to optional `dismiss_fallback`.
+  - `NextPane` / `PrevPane` / `OpenKeymap` / `OpenSettings` framework-internal as before.
+  - Binary opts in via optional `.on_quit()` / `.on_restart()` / `.dismiss_fallback()` chained methods on `KeymapBuilder`.
+  - Rationale: hit-test for the mouse close-X on framework overlays already lives in the framework. Splitting Esc-key dismiss between framework (overlays) and binary (everything else) duplicates that ownership.
+  - Touches Phase 6 (Framework skeleton +2 fields, +2 methods), Phase 9 (KeymapBuilder drops 3 args, gains 3 chained hooks), Phase 10 (Toasts dismiss participation, `Framework::dismiss()` method), Phase 16 (binary main loop polls flags, deletes `Overlays::should_quit`).
+- **Cross-enum `[global]` collision = hard error (item 3):** `KeymapError::CrossEnumCollision { key, framework_action, app_action }` at load time. Definition-time error — app dev renames their colliding `AppGlobalAction::toml_key` string. Per-binding revert policy still handles user typos.
+- **`GlobalAction::defaults()` lives on the enum (item 4):** `pub fn defaults() -> Bindings<Self>` lands in Phase 4 (when `Bindings` + `bindings!` exist) inside `global_action.rs`. Loader and builder consume it.
+- **Cross-crate macro integration test (item 5):** `tui_pane/tests/macro_use.rs` lands as a Phase 3 follow-up — exercises `tui_pane::action_enum!` from outside the crate. Phase 4 extends it for `tui_pane::bindings!`.
+
+Minor findings applied directly (no user gating):
+- Stale `keymap::traits::ActionEnum` references in `phase-02-macros.md` synced to `keymap::action_enum::ActionEnum`.
+- Phase 4 root re-exports (`Bindings`, `KeyBind`) called out for the `bindings!` macro's `$crate::` paths.
+- `KeymapError` variant set spelled out in Phase 4 + `phase-02-core-api.md` §10 (with `#[derive(thiserror::Error)]`).
+- `Shortcuts::vim_extras() -> &'static [(Self::Action, KeyBind)]` called out in Phase 7 with default `&[]`.
+- Vim-mode skip-already-bound test moved Phase 8 → Phase 9 (vim application is the builder's job per "Vim mode — framework capability" §).
+- `AppContext::AppPaneId: Copy + Eq + Hash + 'static` super-trait set added to Phase 6 (required by Phase 10's `HashMap<AppPaneId, fn(&Ctx) -> InputMode>`).
+- `phase-02-core-api.md` §4 `ActionEnum` super-trait set synced to shipped code (`Copy + Eq + Hash + Debug + Display + 'static` — adds `Debug` + `Display`).
+- Phase 8 explicit "loader lifts `None` from `from_toml_key` into `KeymapError::UnknownAction`" wording added.
+- `clippy::too_long_first_doc_paragraph` (nursery) guidance added to the per-phase rustdoc precondition.
+- `pub use keymap::GlobalAction;` at crate root noted in Phase 12.
+- Paired-row separator policy in Phase 11 shortened to a one-line cross-reference of Phase 2's locked decision.
 
 ### Phase 4 — Bindings, scope map, loader errors
 
 Add `tui_pane/src/keymap/bindings.rs` (`Bindings<A>` + `bindings!`, §2), `tui_pane/src/keymap/scope_map.rs` (`ScopeMap<A>`, §3), and `tui_pane/src/keymap/load.rs` skeleton holding `KeymapError` (§10). The loader's actual TOML-parsing impl lands in Phase 8 alongside `Keymap<Ctx>`.
 
-`KeymapError` is `#[derive(thiserror::Error)]` and includes `#[from] KeyParseError` on whichever variant wraps a parse failure (e.g. `InvalidBinding { line: usize, #[from] source: KeyParseError }`). This gives Phase 8's TOML loader free `?` propagation from `KeyBind::parse` and free `Display` chains via `thiserror`'s source linking.
+**Also lands in Phase 4 (post-Phase-3 review):** `pub fn defaults() -> Bindings<Self>` on `GlobalAction` in `tui_pane/src/keymap/global_action.rs` — returns the canonical `q` / `R` / `Tab` / `Shift+Tab` / `Ctrl+K` / `s` / `x` bindings using the `bindings!` macro that ships in this phase. Co-located with the enum (matches the convention every `Shortcuts<P>::defaults()` impl follows). Tested in `global_action.rs` directly; loader and builder consume it.
+
+**Extend root re-exports.** Following the Phase 3 precedent (`pub use keymap::ActionEnum;` in `lib.rs` so the macro's `$crate::ActionEnum` resolves), Phase 4 adds the same root re-exports for every type the `bindings!` macro touches via `$crate::`: `Bindings`, `KeyBind`. Also add `pub use keymap::bindings::bindings;` if any path-resolution issue surfaces (`#[macro_export]` already places the macro at the crate root).
+
+`KeymapError` is `#[derive(thiserror::Error)]`, includes `#[from] KeyParseError` on the variant that wraps a parse failure, and ships with the full variant set the loader (Phase 8) and the builder (Phase 9) need: `InvalidBinding { scope, action, #[from] source: KeyParseError }`, `UnknownAction { scope, action }`, `UnknownScope { scope }`, `InArrayDuplicate { scope, action, key }`, `CrossActionCollision { scope, key, actions }`. Phase 4 ships the `enum` definition; Phase 8 wires the actual loader paths that emit each variant. (`BuilderError` from Phase 9 is a separate enum at the builder layer — see Phase 9.)
 
 `bindings!` macro grammar must accept arbitrary `impl Into<KeyBind>` expressions on the RHS — including composed forms like `KeyBind::ctrl(KeyBind::shift('g'))` (CTRL|SHIFT, established by Phase 2). The macro's unit tests cover the composed case.
+
+**Cross-crate macro integration test.** Extend `tui_pane/tests/macro_use.rs` (the scaffolding lands as a Phase 3 follow-up exercising `action_enum!` only) to add a `bindings!` invocation. Both macros are compiled here from outside the defining crate — `#[macro_export]` + `$crate::` paths are easy to break under cross-crate use, and this test locks the public path before Phase 12's binary swap depends on it.
 
 Unit tests (this phase, scoped to what exists by end of Phase 4):
 - `Bindings::insert` preserves insertion order; first key for an action is the primary.
@@ -1058,22 +1127,28 @@ The chicken-and-egg unit. `AppContext::framework()` returns `&Framework<Self>` a
 Add:
 
 - `tui_pane/src/pane_id.rs` — `FrameworkPaneId::{Keymap, Settings, Toasts}`, `FocusedPane<AppPaneId>::{App, Framework}`.
-- `tui_pane/src/app_context.rs` — `AppContext` trait (`type AppPaneId`, `framework`, `framework_mut`, `set_focus`).
-- `tui_pane/src/framework/mod.rs` — `Framework<Ctx>` **skeleton** (one field, three methods, frozen):
+- `tui_pane/src/app_context.rs` — `AppContext` trait (`type AppPaneId: Copy + Eq + Hash + 'static`, `framework`, `framework_mut`, `set_focus`). The `AppPaneId` super-trait set mirrors `ActionEnum` (Phase 3) and is required by Phase 10's `HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>` registry.
+- `tui_pane/src/framework/mod.rs` — `Framework<Ctx>` **skeleton** (three fields, five methods, frozen):
 
 ```rust
 pub struct Framework<Ctx: AppContext> {
     focused: FocusedPane<Ctx::AppPaneId>,
+    quit_requested:    bool,
+    restart_requested: bool,
 }
 
 impl<Ctx: AppContext> Framework<Ctx> {
     pub fn new(initial_focus: FocusedPane<Ctx::AppPaneId>) -> Self { ... }
-    pub fn focused(&self) -> &FocusedPane<Ctx::AppPaneId>     { ... }
+    pub fn focused(&self) -> &FocusedPane<Ctx::AppPaneId>           { ... }
     pub fn set_focused(&mut self, focus: FocusedPane<Ctx::AppPaneId>) { ... }
+    pub fn quit_requested(&self) -> bool                            { ... }
+    pub fn restart_requested(&self) -> bool                         { ... }
 }
 ```
 
-> **Phase 6 → Phase 10 contract.** This 1-field / 3-method API is **frozen at Phase 6 and must survive Phase 10 verbatim.** Phase 10 is purely additive: it adds the `keymap_pane` / `settings_pane` / `toasts` fields, the `input_mode_queries` / `editor_target_path` / `focused_pane_input_mode` plumbing, and any new query methods — but it **never renames** `focused`, `new`, `focused()`, or `set_focused()`. Tests written in Phases 7–9 against this surface stay green when Phase 10 lands. The cost: Phase 6 has to commit to method names that still read right after Phase 10 fills the struct out — if Phase 10 wishes one were called something else, too late.
+The `quit_requested` / `restart_requested` flags are set by the framework's internal dispatch when the user fires `GlobalAction::Quit` / `Restart` (post-Phase-3 review decision: framework owns dispatch). The binary's main loop polls these every tick and tears down accordingly. This replaces the pre-review design where the binary supplied positional `quit` / `restart` callbacks.
+
+> **Phase 6 → Phase 10 contract.** This 3-field / 5-method API is **frozen at Phase 6 and must survive Phase 10 verbatim.** Phase 10 is purely additive: it adds the `keymap_pane` / `settings_pane` / `toasts` fields, the `input_mode_queries` / `editor_target_path` / `focused_pane_input_mode` plumbing, the `dismiss()` method (framework dismiss chain), and any new query methods — but it **never renames** the five frozen methods or the three frozen fields. Tests written in Phases 7–9 against this surface stay green when Phase 10 lands.
 
 No pane fields, no `input_mode_queries`, no `editor_target_path`, no `focused_pane_input_mode` in Phase 6 — those land in Phase 10 once framework panes exist.
 
@@ -1081,7 +1156,7 @@ No pane fields, no `input_mode_queries`, no `editor_target_path`, no `focused_pa
 
 Split §4 into one file per trait (each is independent, the heaviest is `Shortcuts<Ctx>` with 10+ items):
 
-- `tui_pane/src/keymap/shortcuts.rs` — `Shortcuts<Ctx>`.
+- `tui_pane/src/keymap/shortcuts.rs` — `Shortcuts<Ctx>`. Includes `vim_extras() -> &'static [(Self::Action, KeyBind)]` with default `&[]` (per-pane vim-mode extras consumed by the builder in Phase 9; cargo-port's `ProjectListAction` overrides for `'l'`/`'h'` in Phase 12).
 - `tui_pane/src/keymap/navigation.rs` — `Navigation<Ctx>`.
 - `tui_pane/src/keymap/globals.rs` — `Globals<Ctx>` (app-extension globals, separate from the framework's own `GlobalAction` from Phase 3).
 
@@ -1089,7 +1164,7 @@ Split §4 into one file per trait (each is independent, the heaviest is `Shortcu
 
 ### Phase 8 — Keymap container
 
-Add `tui_pane/src/keymap/mod_.rs` with `Keymap<Ctx>` + `scope_for` / `navigation` / `globals` / `base_globals` / `config_path` (per §6). Fill in the actual TOML-parsing implementation in `keymap/load.rs` (skeleton + `KeymapError` from Phase 4). Construction is via `Keymap::builder(quit, restart, dismiss)` — the builder itself lands in Phase 9.
+Add `Keymap<Ctx>` in `tui_pane/src/keymap/mod.rs` (the keymap module's anchor type lives in its `mod.rs` file, mirroring the Phase 6 precedent of `Framework<Ctx>` in `framework/mod.rs`). `Keymap<Ctx>` exposes `scope_for` / `navigation` / `globals` / `framework_globals` / `config_path` (per §6). Fill in the actual TOML-parsing implementation in `keymap/load.rs` (skeleton + `KeymapError` from Phase 4). Construction is via `Keymap::builder()` (no positionals — the framework owns `GlobalAction` dispatch, see Phase 3 review for full rationale); the builder itself lands in Phase 9.
 
 **Loader-layer decisions established here (Zed/VSCode/Helix-aligned):**
 - **Letter-case normalization.** `KeyBind::parse` (Phase 2) preserves case verbatim — `"Ctrl+K"` parses to `KeyCode::Char('K')`, not `Char('k')`. The TOML loader normalizes:
@@ -1105,8 +1180,10 @@ Unit tests (additions for this phase):
 - `quit = "Shift+Ctrl+k"` binds `Char('k')` with `CONTROL | SHIFT` (commutative parse).
 - `quit = "ctrl+q"` and `quit = "CTRL+q"` parse identically to `"Ctrl+q"` (loader lowercases modifier tokens before parse, then `KeyBind::parse` accepts canonical).
 - `quit = "tab"` is **rejected** with `KeymapError` (multi-char tokens are case-sensitive — Phase 2 parser contract).
-- Vim-mode skip-already-bound is keyed on full `KeyBind` equality (code + mods), not just `code`: if user binds `Shift+k` to anything, vim's `'k'` for `NavigationAction::Down` still applies (different mods).
 - `KeyParseError` from `KeyBind::parse` chains into `KeymapError` via `#[from]` — round-trip a malformed binding string and assert the source error is preserved (`err.source().is_some()`).
+- Unknown action in TOML (e.g. `[project_list] activte = "a"`) surfaces `KeymapError::UnknownAction { scope: "project_list", action: "activte" }` — the loader calls `A::from_toml_key(key)` and lifts `None` into the error variant with the scope name attached. Trait method stays as `Option<Self>` (no scope context); error context lives at the loader.
+
+Vim-mode handling moved to Phase 9 (see "Vim mode — framework capability" §): vim binds are applied **inside `KeymapBuilder::build()`**, not the loader. Phase 8's loader is vim-agnostic.
 
 ### Phase 9 — Keymap builder + settings registry
 
@@ -1115,9 +1192,19 @@ Two tightly-coupled additions in one commit because `KeymapBuilder::with_setting
 - `tui_pane/src/settings.rs` — `SettingsRegistry<Ctx>` + `add_bool` / `add_enum` / `add_int` / `with_bounds` (§9).
 - `tui_pane/src/keymap/builder.rs` — `KeymapBuilder<Ctx>` + `BuilderError` (§7).
 
+**Builder hooks (post-Phase-3 review).** `KeymapBuilder` no longer takes positional `(quit, restart, dismiss)` args — framework owns those dispatches. Three optional chained hooks let the binary opt in to notification:
+- `.on_quit(fn(&mut Ctx))` — fires after framework processes `GlobalAction::Quit`.
+- `.on_restart(fn(&mut Ctx))` — fires after framework processes `GlobalAction::Restart`.
+- `.dismiss_fallback(fn(&mut Ctx) -> bool)` — fires when framework's own dismiss chain finds nothing to dismiss; returns `true` if binary handled it.
+
+`KeymapBuilder::build()` is where vim-mode extras are applied (per "Vim mode — framework capability" §): if `VimMode::Enabled`, append `'k'/'j'/'h'/'l'` to `Navigation::UP/DOWN/LEFT/RIGHT` (skipping any already bound on the full `KeyBind`, not just the `KeyCode`), then walk every registered `Shortcuts::vim_extras()` and append. Applied **after** TOML overlay so `[navigation]` user replacement does not disable vim.
+
 Unit tests:
 - TOML round-trip through the builder: single-key form, array form, in-array duplicate rejection.
 - `BuilderError::NavigationMissing` / `GlobalsMissing` / `DuplicateScope` surface from `build()`.
+- `.on_quit()` / `.on_restart()` / `.dismiss_fallback()` are reachable and stored — a unit test fires the corresponding `GlobalAction` and asserts the registered hook ran (or, for dismiss, that the fallback fires only when framework dismiss chain finds nothing).
+- Vim-mode skip-already-bound is keyed on full `KeyBind` equality (code + mods), not just `code`: if user binds `Shift+k` to anything, vim's `'k'` for `NavigationAction::Down` still applies (different mods). (Migrated from Phase 8 — vim application is the builder's job.)
+- `MockNavigation::Up` keeps its primary as the inserted `KeyCode::Up` even with `VimMode::Enabled` applied — insertion-order primary preserved (deferred from Phase 4).
 
 After Phase 9 the entire `tui_pane` foundation is in place: keys, action machinery, bindings, scope map, bar primitives, pane id + ctx + framework skeleton, scope traits, keymap, builder, settings registry. Framework panes (`KeymapPane`, `SettingsPane`, `Toasts`) and the `Framework` aggregator's pane fields + helper methods land in Phase 10.
 
@@ -1125,13 +1212,32 @@ After Phase 9 the entire `tui_pane` foundation is in place: keys, action machine
 
 Phase 10 fills in the framework panes inside the **existing** `Framework<Ctx>` skeleton from Phase 6. The struct's pane fields and helper methods land here; the type itself, `AppContext`, and `FocusedPane` already exist.
 
-> **Phase 6 → Phase 10 contract (mirror).** Purely additive: this phase adds fields and methods, but the Phase 6 surface (`focused` field, `new(initial_focus)`, `focused()`, `set_focused(...)`) is **frozen verbatim**. Tests written in Phases 7–9 against the skeleton must continue to pass at the end of Phase 10. If Phase 10 implementation surfaces a better name or signature for any of those four, that is a deliberate breaking change — surface it as a follow-up, not a silent rename.
+> **Phase 6 → Phase 10 contract (mirror).** Purely additive: this phase adds fields and methods, but the Phase 6 surface (3 frozen fields: `focused`, `quit_requested`, `restart_requested`; 5 frozen methods: `new`, `focused`, `set_focused`, `quit_requested`, `restart_requested`) is **frozen verbatim**. Tests written in Phases 7–9 against the skeleton must continue to pass at the end of Phase 10. If Phase 10 implementation surfaces a better name or signature for any of the frozen items, that is a deliberate breaking change — surface it as a follow-up, not a silent rename.
 
 Add to `tui_pane/src/panes/`:
 
 - `keymap_pane.rs` — `KeymapPane<Ctx>` with internal `Mode::{Browse, Awaiting, Conflict}`. Method `editor_target(&self) -> Option<&Path>`.
 - `settings_pane.rs` — `SettingsPane<Ctx>` with internal `Mode::{Browse, Editing}`; uses `SettingsRegistry<Ctx>`. Method `editor_target(&self) -> Option<&Path>`. `input_mode()` returns `TextInput` when `Mode == Editing`, `Navigable` otherwise.
-- `toasts.rs` — `Toasts<Ctx>` stack with `ToastsAction::Dismiss` (defaults to `Esc`). The framework supplies a built-in `Shortcuts<Ctx>` impl whose dispatcher needs to reach the toasts stack via `AppContext::framework_mut()`. Toasts' dispatcher is a free fn `fn dismiss_toast<Ctx: AppContext>(_: ToastsAction, ctx: &mut Ctx)` that calls `ctx.framework_mut()`.
+- `toasts.rs` — `Toasts<Ctx>` stack with `ToastsAction::Dismiss` (defaults to `Esc`). The framework supplies a built-in `Shortcuts<Ctx>` impl whose dispatcher reaches the toasts stack via `AppContext::framework_mut()`. Under the post-Phase-3 design, `Toasts` also participates in the framework's `dismiss()` chain: when `GlobalAction::Dismiss` fires, framework first asks `toasts.try_pop_top()`; if nothing was on the stack, framework checks the focused framework overlay; if still nothing, falls through to the binary's `dismiss_fallback`.
+
+**`Framework<Ctx>::dismiss()`** is added in this phase (the Phase 6 skeleton did not have it):
+
+```rust
+impl<Ctx: AppContext> Framework<Ctx> {
+    /// Run the framework dismiss chain. Returns `true` if anything was
+    /// dismissed at the framework level. Caller (the `GlobalAction::Dismiss`
+    /// dispatcher) consults this; on `false`, calls the binary's
+    /// registered `dismiss_fallback` (if any).
+    pub fn dismiss(&mut self) -> bool {
+        if self.toasts.try_pop_top() { return true; }
+        match self.focused {
+            FocusedPane::Framework(FrameworkPaneId::Keymap)   => { self.set_focused(self.previous_focus()); true }
+            FocusedPane::Framework(FrameworkPaneId::Settings) => { self.set_focused(self.previous_focus()); true }
+            _ => false,
+        }
+    }
+}
+```
 
 Add `tui_pane/src/settings.rs` — `SettingsRegistry<Ctx>` + `add_bool` / `add_enum` / `add_int` builders. Each closure takes `&Ctx` / `&mut Ctx`.
 
@@ -1147,6 +1253,12 @@ pub struct Framework<Ctx> {
     /// written via `set_focused(...)` — the binary's `Focus` subsystem
     /// is the only writer.
     focused: FocusedPane<Ctx::AppPaneId>,
+    /// Lifecycle flags set by framework dispatch when `GlobalAction::Quit`
+    /// / `Restart` fires. Phase 6 already added these on the skeleton;
+    /// Phase 10 keeps them in place. Binary's main loop polls
+    /// `quit_requested()` / `restart_requested()` every tick.
+    quit_requested:    bool,
+    restart_requested: bool,
     /// Per-AppPaneId queries supplied by the app at registration. Each
     /// app pane's `Shortcuts::input_mode` becomes a free fn
     /// `fn(&Ctx) -> InputMode` registered alongside its dispatcher.
@@ -1198,7 +1310,7 @@ Depends on Phase 10 (`Framework<Ctx>` exists; framework-pane `Shortcuts<Ctx>` im
 
 Snapshot tests in this phase cover the framework panes only (Settings Browse / Settings Editing / Keymap Browse / Keymap Awaiting / Keymap Conflict / Toasts) plus a fixture pane exercising every `BarRegion` rule. App-pane snapshots land in Phase 12 once their `Shortcuts<App>` impls exist.
 
-**Paired-row separator policy.** Phase 2 tests assert `display_short` never emits `,` or `/` for keys the parser produces (named keys, F1–F12, printable ASCII excluding `,` and `/`). The `Paired` row's `debug_assert!` inherits that contract: bindings constructed from `KeyCode::Media(_)`, `KeyCode::Modifier(_)`, or other exotic variants the parser does not emit are **not covered** and may panic in `Paired` slots. Acceptable trade — the framework owns the `Paired` separator format and only the parser-producible set is bindable from user TOML. If a future binding source widens that set, Phase 2's `display_short_no_separators` test must be widened in lockstep.
+**Paired-row separator policy.** Inherited from the Phase 2 retrospective decision: the `Paired` row's `debug_assert!` covers only the parser-producible `KeyCode` set; widening the bindable set requires widening Phase 2's `display_short_no_separators` test in lockstep. See Phase 2 review block (line 1020) for full text.
 
 ### Phase 12 — App action enums + `Shortcuts<App>` impls
 
@@ -1207,7 +1319,7 @@ Snapshot tests in this phase cover the framework panes only (Settings Browse / S
 In the cargo-port binary crate:
 
 - Define `NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction`.
-- **Split today's `GlobalAction`** in `src/tui/keymap.rs` into `tui_pane::GlobalAction` (the framework half: Quit/Restart/NextPane/PrevPane/OpenKeymap/OpenSettings/Dismiss) and `AppGlobalAction` (binary-owned). During Phases 12–15 the binary's existing `GlobalAction` stays in place; references to the framework's enum are path-qualified as `tui_pane::GlobalAction` to disambiguate. Phase 16 deletes the binary's old enum and `use tui_pane::GlobalAction` makes the name available unqualified.
+- **Split today's `GlobalAction`** in `src/tui/keymap.rs` into `tui_pane::GlobalAction` (the framework half: Quit/Restart/NextPane/PrevPane/OpenKeymap/OpenSettings/Dismiss) and `AppGlobalAction` (binary-owned). During Phases 12–15 the binary's existing `GlobalAction` stays in place; references to the framework's enum are path-qualified as `tui_pane::GlobalAction` to disambiguate. Phase 16 deletes the binary's old enum and `use tui_pane::GlobalAction` makes the name available unqualified. (Requires `pub use keymap::GlobalAction;` at `tui_pane/src/lib.rs` crate root — add this re-export when Phase 12 lands, mirroring the Phase 3 `ActionEnum` precedent.)
 - Add `ExpandRow` / `CollapseRow` to `ProjectListAction`.
 - Implement `Shortcuts<App>` for each app pane (Package, Git, ProjectList, CiRuns, Lints, Targets, Output, Lang, Cpu, Finder). Each pane:
   - Owns `defaults() -> Bindings<Action>`.
@@ -1277,10 +1389,13 @@ After Phase 15: every key dispatches through the keymap. No `KeyCode::*` direct 
 
 Add the `What dissolves` / `What survives` summary (currently in this doc) as user-facing notes inside `tui_pane/README.md` so the published library has its own change log of what the framework absorbed.
 
+**Binary main loop change (post-Phase-3 review).** The binary's main loop in `src/tui/terminal.rs` switches from polling `app.overlays.should_quit()` to polling `app.framework.quit_requested()` and `app.framework.restart_requested()`. The `should_quit()` accessor on `overlays` deletes; the framework owns the lifecycle flags now. If the binary needs cleanup, it registers `.on_quit(|app| { app.persist_state() })` on the builder.
+
 Delete:
 
 - `App::enter_action`, `shortcuts::enter()` const fn.
 - The old combined `GlobalAction` enum in `src/tui/keymap.rs` (split into `tui_pane::GlobalAction` + `AppGlobalAction` in Phase 12).
+- `Overlays::should_quit` accessor and the `should_quit` flag on `Overlays` — replaced by `framework.quit_requested()`.
 - The seven static constants (`NAV`, `ARROWS_EXPAND`, `ARROWS_TOGGLE`, `TAB_PANE`, `ESC_CANCEL`, `ESC_CLOSE`, `EXPAND_COLLAPSE_ALL`) and all their call sites.
 - `detail_groups` / `ci_groups` / `lints_groups` / `project_list_groups` per-context helpers.
 - Threaded `enter_action` / `is_rust` / `clear_lint_action` / `terminal_command_configured` / `selected_project_is_deleted` parameters.

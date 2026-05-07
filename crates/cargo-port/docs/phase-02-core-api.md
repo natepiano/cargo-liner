@@ -288,7 +288,14 @@ impl<A: Copy + Eq + Hash> ScopeMap<A> {
 /// Marker trait every action enum implements (typically via the
 /// `action_enum!` macro). Provides a static `ALL` slice for
 /// declaration-order rendering and the per-variant TOML key + label.
-pub trait ActionEnum: Copy + Eq + std::hash::Hash + 'static {
+///
+/// Super-trait set (matches Phase 3 shipped code + `phase-02-macros.md`
+/// §2.3): `Copy + Eq + Hash + Debug + Display + 'static`. The macro
+/// generates the `Display` impl (delegating to `description()`); hand-
+/// rolled impls (e.g. `GlobalAction`) must do the same.
+pub trait ActionEnum:
+    Copy + Eq + std::hash::Hash + std::fmt::Debug + std::fmt::Display + 'static
+{
     /// Every variant in declaration order.
     const ALL: &'static [Self];
 
@@ -297,6 +304,11 @@ pub trait ActionEnum: Copy + Eq + std::hash::Hash + 'static {
 
     /// Human-readable description (used by the keymap-overlay help).
     fn description(self) -> &'static str;
+
+    /// Inverse of `toml_key`. Returns `None` for unknown identifiers;
+    /// the TOML loader attaches scope context and surfaces a
+    /// `KeymapError::UnknownAction`.
+    fn from_toml_key(key: &str) -> Option<Self>;
 }
 
 /// Pane scope: state-bearing, one impl per pane type.
@@ -493,18 +505,16 @@ use std::path::PathBuf;
 /// `HashMap<TypeId, Box<dyn Any + Send + Sync>>` interior.
 pub struct Keymap<Ctx> {
     scopes: HashMap<TypeId, Box<dyn std::any::Any + Send + Sync>>,
-    base_globals: ScopeMap<GlobalAction>,
+    framework_globals: ScopeMap<GlobalAction>,
     _ctx: PhantomData<fn(&mut Ctx)>,
 }
 
 impl<Ctx: AppContext> Keymap<Ctx> {
-    /// Entry point. Three positional dispatch hooks are required;
-    /// omitting any is a compile error rather than a runtime panic.
-    pub fn builder(
-        quit:    fn(&mut Ctx),
-        restart: fn(&mut Ctx),
-        dismiss: fn(&mut Ctx),
-    ) -> KeymapBuilder<Ctx> { KeymapBuilder::new(quit, restart, dismiss) }
+    /// Entry point. No required dispatch hooks — under the post-Phase-3
+    /// design the framework owns dispatch for every `GlobalAction`
+    /// variant. The binary registers optional hooks on the builder
+    /// (`KeymapBuilder::on_quit` / `on_restart` / `dismiss_fallback`).
+    pub fn builder() -> KeymapBuilder<Ctx> { KeymapBuilder::new() }
 
     /// Pane scope lookup. `pub` — input handlers and bar code call this.
     pub fn scope_for<P: Shortcuts<Ctx>>(&self) -> &ScopeMap<P::Action> {
@@ -533,8 +543,8 @@ impl<Ctx: AppContext> Keymap<Ctx> {
     /// Framework-internal scope. `pub(crate)` — only the framework
     /// dispatcher and the bar's `Global` region read it; the binary
     /// never names `GlobalAction` directly.
-    pub(crate) fn base_globals(&self) -> &ScopeMap<GlobalAction> {
-        &self.base_globals
+    pub(crate) fn framework_globals(&self) -> &ScopeMap<GlobalAction> {
+        &self.framework_globals
     }
 
     /// Returns `{dirs::config_dir()}/<name>/keymap.toml` for use with
@@ -550,7 +560,7 @@ impl<Ctx: AppContext> Keymap<Ctx> {
 }
 ```
 
-**Tradeoff.** `base_globals` is `pub(crate)` — exposing it would let app code rebind framework-owned actions outside the builder, which the design explicitly rejects (the binary supplies dispatch hooks via `Keymap::builder(quit, restart, dismiss)`, full stop). `config_path` is associated rather than free so callers find it on the type they already mention.
+**Tradeoff.** `framework_globals` is `pub(crate)` — exposing it would let app code rebind framework-owned actions outside the builder, which the design explicitly rejects (the framework owns `GlobalAction` dispatch, full stop). `config_path` is associated rather than free so callers find it on the type they already mention.
 
 ---
 
@@ -565,11 +575,13 @@ use std::path::Path;
 /// and `build()` validates required pieces at runtime by returning
 /// `Result<Keymap<Ctx>, BuilderError>`.
 pub struct KeymapBuilder<Ctx: AppContext> {
-    // construction state — all private
-    quit:    fn(&mut Ctx),
-    restart: fn(&mut Ctx),
-    dismiss: fn(&mut Ctx),
-    vim:     VimMode,
+    // Optional framework-lifecycle cleanup hooks (post-Phase-3 design:
+    // framework owns Quit/Restart/Dismiss dispatch; binary opts in to
+    // notification via these hooks). All three default to `None`.
+    on_quit:          Option<fn(&mut Ctx)>,
+    on_restart:       Option<fn(&mut Ctx)>,
+    dismiss_fallback: Option<fn(&mut Ctx) -> bool>,
+    vim:              VimMode,
     /// Per-scope `Bindings<A>` boxed via `Any`, keyed by `TypeId<P>` /
     /// `TypeId<N>` / `TypeId<G>`.
     pending: HashMap<TypeId, PendingScope<Ctx>>,
@@ -582,6 +594,23 @@ pub struct KeymapBuilder<Ctx: AppContext> {
 }
 
 impl<Ctx: AppContext> KeymapBuilder<Ctx> {
+    /// Optional cleanup hook fired after the framework processes a
+    /// `Quit` action (just before the main loop exits).
+    pub fn on_quit(mut self, f: fn(&mut Ctx)) -> Self { self.on_quit = Some(f); self }
+
+    /// Optional cleanup hook fired after the framework processes a
+    /// `Restart` action (just before the main loop tears down).
+    pub fn on_restart(mut self, f: fn(&mut Ctx)) -> Self { self.on_restart = Some(f); self }
+
+    /// Optional fallback dismiss handler. The framework's own dismiss
+    /// chain (toasts, focused framework overlay) runs first; if nothing
+    /// is dismissed at the framework level, this fn is called. Returns
+    /// `true` if the binary handled the dismiss, `false` to no-op.
+    pub fn dismiss_fallback(mut self, f: fn(&mut Ctx) -> bool) -> Self {
+        self.dismiss_fallback = Some(f);
+        self
+    }
+
     /// Toggle vim mode. Optional — defaults to `VimMode::Disabled`.
     pub fn vim_mode(mut self, mode: VimMode) -> Self { self.vim = mode; self }
 
@@ -865,6 +894,33 @@ impl ActionEnum for GlobalAction {
     }
 }
 
+// `Keymap::<Ctx>::builder()` takes no positional dispatch callbacks.
+// Under the post-Phase-3 design the framework owns dispatch for every
+// `GlobalAction` variant:
+//
+//   - Quit:        framework sets `Framework<Ctx>::quit_requested = true`.
+//                  Binary's main loop polls `framework.quit_requested()`
+//                  and exits cleanly.
+//   - Restart:     framework sets `Framework<Ctx>::restart_requested = true`.
+//                  Binary's main loop polls and re-launches.
+//   - Dismiss:     framework runs its own dismiss chain (toasts → focused
+//                  framework overlay), then bubbles to the binary's
+//                  registered `dismiss_fallback` (returns `bool`: did I
+//                  handle it?) for app-level dismissables (finder,
+//                  output, deleted ProjectList row, etc.).
+//   - NextPane / PrevPane / OpenKeymap / OpenSettings:
+//                  framework dispatches via its own pane registry. Binary
+//                  never sees these.
+//
+// Optional cleanup hooks the binary may register on the builder:
+//
+//     Keymap::<App>::builder()
+//         .on_quit(|app| { /* save state */ })          // optional
+//         .on_restart(|app| { /* save state */ })       // optional
+//         .dismiss_fallback(|app| -> bool {              // optional
+//             app.try_dismiss_focused_app_thing()
+//         })
+
 /// Vim-mode flag passed to `KeymapBuilder::vim_mode`. When `Enabled`,
 /// the framework appends `'k'/'j'/'h'/'l'` to `Navigation::UP/DOWN/LEFT/RIGHT`
 /// and walks every registered `Shortcuts::vim_extras()` after TOML.
@@ -880,31 +936,42 @@ impl Default for VimMode {
 
 /// Errors surfaced by the TOML loader. Wrapped by
 /// `BuilderError::Toml` when surfaced from `build()`.
-#[derive(Debug)]
+///
+/// Per Phase 2 retrospective, `KeymapError` is `#[derive(thiserror::Error)]`
+/// with `#[error("…")]` per variant. The `BadKey` variant wraps
+/// `KeyParseError` via `#[from]` for `?` propagation from `KeyBind::parse`
+/// and `Display` source-chaining.
+#[derive(Debug, thiserror::Error)]
 pub enum KeymapError {
     /// `std::io::Error` opening the file. Missing file is **not** an
     /// error — the loader treats it as "use defaults" and returns `Ok`.
-    Io(std::io::Error),
+    #[error("I/O error reading keymap config")]
+    Io(#[from] std::io::Error),
     /// Top-level TOML parse failure.
-    Parse(toml::de::Error),
+    #[error("TOML parse error in keymap config")]
+    Parse(#[from] toml::de::Error),
     /// Two TOML keys in the same array refer to the same physical key.
+    #[error("duplicate key '{key}' in {scope}.{action}")]
     InArrayDuplicate { scope: String, action: String, key: String },
     /// Two actions in the same scope bind to the same key.
+    #[error("key '{key}' bound to both {} and {} in [{scope}]", actions.0, actions.1)]
     CrossActionCollision {
         scope: String,
         key: String,
         actions: (String, String),
     },
     /// A TOML key string failed `KeyBind::parse`.
-    BadKey { scope: String, action: String, source: KeyParseError },
-    /// TOML referenced an unknown action in a known scope.
+    #[error("invalid binding for {scope}.{action}")]
+    InvalidBinding { scope: String, action: String, #[source] source: KeyParseError },
+    /// TOML referenced an unknown action in a known scope. Constructed
+    /// at the loader: `A::from_toml_key(key)` returned `None` and the
+    /// loader attaches the scope name.
+    #[error("unknown action '{action}' in [{scope}]")]
     UnknownAction { scope: String, action: String },
     /// TOML referenced an unknown scope name.
+    #[error("unknown scope [{scope}]")]
     UnknownScope { scope: String },
 }
-
-impl std::fmt::Display for KeymapError { /* … */ }
-impl std::error::Error for KeymapError {}
 ```
 
 **Tradeoff.** `GlobalAction` impls `ActionEnum` so it can flow through the same `ScopeMap` / TOML / display machinery as every other scope. The binary never names it; the impl exists purely so framework-internal code reuses one path.
@@ -931,7 +998,7 @@ mod settings;
 
 // --- Keymap core -----------------------------------------------------
 pub use crate::keymap::{
-    base_globals::GlobalAction,
+    global_action::GlobalAction,
     bindings::Bindings,
     builder::{BuilderError, KeymapBuilder},
     key_bind::{KeyBind, KeyParseError},
@@ -968,7 +1035,7 @@ pub use crate::pane_id::{FrameworkPaneId, FocusedPane};
 
 // --- Macros (re-exported at the crate root) -------------------------
 pub use crate::keymap::bindings::bindings;
-pub use crate::keymap::traits::action_enum;
+pub use crate::keymap::action_enum::action_enum;
 ```
 
 **Final list of exported names** (alphabetical, grouped):
