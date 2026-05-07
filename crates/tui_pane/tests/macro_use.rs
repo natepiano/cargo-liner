@@ -14,8 +14,12 @@
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
 use tui_pane::Action;
+use tui_pane::AppContext;
 use tui_pane::BarRegion;
 use tui_pane::BarSlot;
+use tui_pane::FocusedPane;
+use tui_pane::Framework;
+use tui_pane::FrameworkPaneId;
 use tui_pane::InputMode;
 use tui_pane::KeyBind;
 use tui_pane::ShortcutState;
@@ -89,6 +93,42 @@ fn bindings_macro_works_from_outside_crate() {
         map.action_for(&composed),
         Some(CrossCrateAction::Gamma),
         "Ctrl+Shift composition survives macro expansion",
+    );
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum CrossCratePaneId {
+    Alpha,
+}
+
+struct CrossCrateApp {
+    framework: Framework<Self>,
+}
+
+impl AppContext for CrossCrateApp {
+    type AppPaneId = CrossCratePaneId;
+
+    fn framework(&self) -> &Framework<Self> { &self.framework }
+    fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+}
+
+#[test]
+fn framework_skeleton_reachable_from_outside_crate() {
+    let mut app = CrossCrateApp {
+        framework: Framework::new(FocusedPane::App(CrossCratePaneId::Alpha)),
+    };
+
+    assert_eq!(
+        app.framework().focused(),
+        &FocusedPane::App(CrossCratePaneId::Alpha),
+    );
+    assert!(!app.framework().quit_requested());
+    assert!(!app.framework().restart_requested());
+
+    app.set_focus(FocusedPane::Framework(FrameworkPaneId::Toasts));
+    assert_eq!(
+        app.framework().focused(),
+        &FocusedPane::Framework(FrameworkPaneId::Toasts),
     );
 }
 

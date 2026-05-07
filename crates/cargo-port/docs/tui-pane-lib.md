@@ -1185,6 +1185,7 @@ These apply to every remaining phase without further mention; phase blocks below
 6. **New `#[macro_export]` extends `tests/macro_use.rs`.** Cross-crate path stability is locked by that file; any new exported macro adds an invocation there.
 7. **Phase-completion gates.** `cargo build`, `cargo nextest run`, `cargo +nightly fmt`, `cargo clippy --workspace --all-targets`, `cargo mend --fail-on-warn` — all clean before the phase is marked ✅.
 8. **Every new pub item gets a doc comment; every new module gets a `//!` header.** Module `//!` explains what lives in the file and why; type `///` explains the role; method `///` explains what callers get back; variant `///` explains the case. One-liners are fine where the name carries the meaning. The Phase 5 files (`bar/region.rs`, `bar/slot.rs`, `bar/mod.rs`) and Phase 3's `keymap/action_enum.rs` / `keymap/global_action.rs` are the reference baseline — match that density.
+9. **Public `&self` value-returning methods carry both `#[must_use]` and `const fn`.** Setters (`&mut self`) carry `const fn` when the body is const-eligible (Rust 1.83+ permits `&mut` in const fn). Clippy nursery `missing_const_for_fn` is denied workspace-wide and fires on every getter / setter that could be const. Phase 6's `Framework<Ctx>` (5 methods, all `const fn`) is the reference baseline.
 
 ### Phase 5 — Bar primitives ✅
 
@@ -1247,14 +1248,14 @@ Leaf types only — the renderer that consumes them lands in Phase 11.
 - **Doc-spec sync (`core-api.md`):** `ScopeMap::new`/`insert` migrated from `pub(crate)` → `pub(super)` to match shipped code (Phase 4 retrospective decision; finalized here per post-phase doc-sync rule).
 - **Reviewed and not changed:** `Globals::render_order` (subagent finding #6 — already declared at `core-api.md:423`, plan unchanged); binary-side `pub mod` audit in Phase 12 (subagent finding #11 — grep of `src/tui/**/*.rs` found zero `pub mod`, no audit needed); `__bindings_arms!` cross-crate test (subagent finding #10 — `#[doc(hidden)]` is supported-surface-out, not worth dedicated test); `set_focused` consistency (subagent finding #4 — already consistent); Phase 9 builder-level cross-crate test (subagent finding #15 — Phase 9 already lists end-to-end builder tests).
 
-### Phase 6 — Pane identity, ctx, Framework skeleton
+### Phase 6 — Pane identity, ctx, Framework skeleton ✅
 
 The chicken-and-egg unit. `AppContext::framework()` returns `&Framework<Self>` and `Framework<Ctx>` requires `Ctx: AppContext`, so they must land together. `AppContext::set_focus` takes `FocusedPane<Self::AppPaneId>`, so the pane-id types come along.
 
 Add:
 
 - `tui_pane/src/pane_id.rs` — `FrameworkPaneId::{Keymap, Settings, Toasts}`, `FocusedPane<AppPaneId>::{App, Framework}`.
-- `tui_pane/src/app_context.rs` — `AppContext` trait (`type AppPaneId: Copy + Eq + Hash + 'static`, `framework`, `framework_mut`, `set_focus`). The `AppPaneId` super-trait set mirrors `Action` (Phase 3, renamed from `Action` in Phase 7 prep) and is required by Phase 10's `HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>` registry. **`set_focus` ships with a default body** that delegates to `self.framework_mut().set_focused(focus)` — binaries override only when they need extra side-effects (logging, telemetry). The two required methods are then just `framework()` / `framework_mut()`.
+- `tui_pane/src/app_context.rs` — `AppContext` trait (`type AppPaneId: Copy + Eq + Hash + 'static`, `framework`, `framework_mut`, `set_focus`). The `AppPaneId` super-trait set mirrors the `Action` trait (Phase 3, renamed from `ActionEnum` in the commit preceding Phase 6) and is required by Phase 10's `HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>` registry. **`set_focus` ships with a default body** that delegates to `self.framework_mut().set_focused(focus)` — binaries override only when they need extra side-effects (logging, telemetry). The two required methods are then just `framework()` / `framework_mut()`.
 - `tui_pane/src/framework/mod.rs` — `Framework<Ctx>` **skeleton** (three fields, five methods, frozen):
 
 ```rust
@@ -1275,19 +1276,59 @@ impl<Ctx: AppContext> Framework<Ctx> {
 
 The `quit_requested` / `restart_requested` flags are set by the framework's internal dispatch when the user fires `GlobalAction::Quit` / `Restart` (post-Phase-3 review decision: framework owns dispatch). The binary's main loop polls these every tick and tears down accordingly. This replaces the pre-review design where the binary supplied positional `quit` / `restart` callbacks.
 
-> **Phase 6 → Phase 10 contract.** This 3-field / 5-method API is **frozen at Phase 6 and must survive Phase 10 verbatim.** Phase 10 is purely additive: it adds the `keymap_pane` / `settings_pane` / `toasts` fields, the `input_mode_queries` / `editor_target_path` / `focused_pane_input_mode` plumbing, the `dismiss()` method (framework dismiss chain), and any new query methods — but it **never renames** the five frozen methods or the three frozen fields. Tests written in Phases 7–9 against this surface stay green when Phase 10 lands.
+> **Phase 6 → Phase 10 contract.** This 3-field / 5-method API (all five methods `const fn`) is **frozen at Phase 6 and must survive Phase 10 verbatim.** Phase 10 is purely additive: it adds the `keymap_pane` / `settings_pane` / `toasts` fields, the `input_mode_queries` / `editor_target_path` / `focused_pane_input_mode` plumbing, the `dismiss()` method (framework dismiss chain), and any new query methods — but it **never renames** the five frozen methods or the three frozen fields, and **never drops `const`** from any of them. Tests written in Phases 7–9 against this surface stay green when Phase 10 lands.
 
 No pane fields, no `input_mode_queries`, no `editor_target_path`, no `focused_pane_input_mode` in Phase 6 — those land in Phase 10 once framework panes exist.
 
 **Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use framework::Framework;`, `pub use pane_id::{FocusedPane, FrameworkPaneId};`, `pub use app_context::AppContext;`. Apply rule 4 (`#[must_use]`) to every getter on `Framework<Ctx>`.
 
+#### Retrospective
+
+**What worked:**
+- The 3-file split (`pane_id.rs`, `app_context.rs`, `framework/mod.rs`) compiled together cleanly — the chicken-and-egg between `Framework<Ctx>` and `AppContext` resolved without a single forward-declaration tweak.
+- `set_focus` default body (added during planning Q&A) means cargo-port's eventual `impl AppContext for App` will need only `framework()` + `framework_mut()`. Implementor surface is now 2 required methods, not 3.
+- Cross-crate test in `tests/macro_use.rs` exercises the full `Framework::new` / `set_focus` / `focused()` chain through a fresh `CrossCrateApp` — locked by standing rule 6.
+
+**What deviated from the plan:**
+- **All five `Framework<Ctx>` methods are `const fn`.** Plan signatures showed plain `fn`; clippy `missing_const_for_fn` (nursery) flagged every one (including `set_focused(&mut self)` since Rust 1.83 const-mut). Result: `Framework::new`, `focused`, `set_focused`, `quit_requested`, `restart_requested` are all const. The 3-field / 5-method frozen contract is unchanged in name and signature, but the const qualifier is now part of the surface.
+- **`framework/` directory holds only `mod.rs`.** Per the plan, Phase 10 fills in *panes* under `panes/`, not under `framework/`. So `framework/` will have only `mod.rs` for the foreseeable future. Kept the directory layout per plan rather than collapsing to `framework.rs`.
+
+**Surprises:**
+- **`clippy::use_self` (nursery) fires inside struct definitions, not just impl blocks.** Test-side `struct TestApp { framework: Framework<TestApp> }` was flagged; fix is `Framework<Self>`. Same applied to `CrossCrateApp` in `tests/macro_use.rs`. Worth noting for any future test fixture that holds back-references.
+- **Single-variant test enums emit `dead_code` on unused variants.** `CrossCratePaneId` initially had `Alpha + Beta`; `Beta` was for "demonstrate the enum has multiple variants" but never constructed. Compiler flagged it. Reduced to `Alpha` only — the Phase 6 cross-crate test does not need to demonstrate variant distinction (that's `pane_id.rs`'s internal job).
+
+**Implications for remaining phases:**
+- **Standing rule 4 (`#[must_use]`) and clippy nursery's `missing_const_for_fn` overlap.** Every getter that's `&self` returning a value needs *both* `#[must_use]` and `const`. Apply pre-emptively in Phase 7 (`Shortcuts::label`/`state`/`vim_extras`/`dispatcher`), Phase 8 (`Keymap` getters), Phase 10 (new `Framework` getters added by panes).
+- **`AppContext::set_focus` already exists with a default body.** Phase 7's `Shortcuts::dispatcher` and Phase 9's builder hooks call into `Framework::set_focused` via the context, not directly. No new surface needed in those phases just for focus changes.
+- **Phase 10's "purely additive" rule must include `const fn`.** Adding non-const methods to `Framework<Ctx>` is fine, but any *modification* of an existing const fn signature (e.g. dropping `const`) is a regression of the Phase 6 surface.
+- **`framework/` will grow with Phase 10.** Even though the plan says Phase 10 adds files to `panes/`, the additive Phase 10 work *inside* `Framework<Ctx>` will likely justify `framework/dispatch.rs` or similar private siblings. Standing rule 1 still applies — `mod` (private) declarations only.
+
+#### Phase 6 Review
+
+- **Standing rule 9 added** (`#[must_use]` + `const fn` on every `&self` value-returning method; `const fn` on `&mut self` setters where eligible). Codifies the Phase 6 retrospective lesson into a numbered standing rule.
+- **Phase 6 → Phase 10 contract** (both the original block and its Phase 10 mirror) amended to read "5 frozen methods, all `const fn`" — `const` is now part of the frozen surface, not just an implementation detail.
+- **Phase 7 prep block** adds a doc-only note that cross-crate test fixtures use multi-variant enums to avoid `dead_code` on derived impls; defaults `state` / `vim_extras` are flagged as const-eligible while `label`'s const-ness is deferred to clippy.
+- **Phase 9 plan body** gains the framework-dispatcher landing: `tui_pane/src/framework/dispatch.rs` (private sibling) wires `GlobalAction` to `Framework`'s `pub(super) const fn request_quit` / `request_restart` setters, focus changes, and the optional `on_quit` / `on_restart` / `dismiss_fallback` hooks.
+- **Phase 9 builder hooks** firing-order pinned: `on_quit` / `on_restart` fire **after** the framework flag is set; hook bodies can rely on `ctx.framework().quit_requested() == true`.
+- **Phase 9 `dismiss_fallback` test** weakened to "hook is reachable and stored"; full chain integration moves to Phase 10 once the framework dismiss chain exists.
+- **Phase 10 prelude** acknowledges that mixing `const fn` (Phase 6 methods) and plain `fn` (Phase 10 additions like `dismiss`, `editor_target_path`, `focused_pane_input_mode`) inside the same `impl Framework<Ctx>` is intentional. Adds explicit "`Toasts<Ctx>` is held inline, not boxed" ownership note.
+- **Phase 10 `Framework` struct rewrite** restructured into "Phase 6 frozen fields (unchanged)" and "Phase 10 additions" sections so a literal-reading implementer cannot accidentally drop the frozen fields.
+- **Phase 10 `focused_pane_input_mode` callsite** documented: `&App` is passed where `&Ctx` is expected; `Ctx == App` for cargo-port.
+- **Phase 12** adds an `impl AppContext for App` line item with a note that `set_focus` defaults out — only `framework()` / `framework_mut()` are required.
+- **Phase 17 regression suite** adds a "set_focus is the single funnel" test: an override impl that counts calls observes every framework focus change.
+
+**Reviewed and not changed:**
+- Finding #6 (macro-emitted const fn): user feedback — const is opportunistic, clippy gates it; do not escalate const-eligibility as a finding requiring approval (saved as `feedback_const_opportunistic.md`).
+
 ### Phase 7 — Scope traits
 
-**Phase 7 prep — `Action` → `Action` rename.** Before adding the scope traits, rename the Phase 3 trait `Action` to `Action` everywhere it appears: trait definition (`keymap/action_enum.rs`), macro internals (`$crate::Action` → `$crate::Action`), `lib.rs` re-export, hand-rolled `impl Action for GlobalAction`, the cross-crate test (`tests/macro_use.rs`), and any cargo-port binary code that already references it. The file `keymap/action_enum.rs` keeps its name (the macro is still `action_enum!`); only the trait inside is renamed. Rationale: the new scope traits (`Shortcuts<Ctx>`, `Navigation<Ctx>`, `Globals<Ctx>`) carry an associated type whose role-name is `Action`-the-thing — calling the trait `Action` and the assoc type `Variant: Action` lets `Self::Variant` read cleanly at every dispatcher / bar / vim-extras call site (see Phase 5+ retrospective discussion). The `Enum` suffix on the trait is structural noise.
+**Phase 7 prep — `ActionEnum` → `Action` rename (done).** Completed in the commit preceding Phase 6. The Phase 3 trait `ActionEnum` was renamed to `Action` everywhere it appeared: trait definition (`keymap/action_enum.rs`), macro internals (now `$crate::Action`), `lib.rs` re-export, hand-rolled `impl Action for GlobalAction`, cross-crate test (`tests/macro_use.rs`). The file `keymap/action_enum.rs` keeps its name (the macro is still `action_enum!`); only the trait inside was renamed. Rationale: the scope traits (`Shortcuts<Ctx>`, `Navigation<Ctx>`, `Globals<Ctx>`) carry an associated type whose role-name is `Action`-the-thing — calling the trait `Action` and the assoc type `Variant: Action` lets `Self::Variant` read cleanly at every dispatcher / bar / vim-extras call site. The `Enum` suffix on the trait was structural noise.
+
+**Cross-crate test fixtures must use multi-variant enums.** Phase 7 will add `Shortcuts<Ctx>` / `Navigation<Ctx>` / `Globals<Ctx>` smoke tests in `tests/macro_use.rs` (standing rule 6). Per the Phase 6 retrospective surprise: single-variant test enums emit `dead_code` because the lint ignores derived impls. Use multi-variant fixtures (e.g. `CrossCrateNavAction::{Up, Down, Left, Right}`); if a single-variant fixture is unavoidable, gate the unused variant with `#[allow(dead_code, reason = "...")]`.
 
 Split §4 into one file per trait (each is independent, the heaviest is `Shortcuts<Ctx>` with 10+ items):
 
-- `tui_pane/src/keymap/shortcuts.rs` — `Shortcuts<Ctx>` with `type Variant: Action;`. Method set per `core-api.md` §4: `defaults`, `label`, `state`, `bar_slots`, `input_mode`, `input_mode_query`, `vim_extras`, `dispatcher`, plus `SCOPE_NAME` and `APP_PANE_ID` consts. `vim_extras() -> &'static [(Self::Variant, KeyBind)]` defaults to `&[]` (per-pane vim-mode extras consumed by the builder in Phase 9; cargo-port's `ProjectListAction` overrides for `'l'`/`'h'` in Phase 12). Default `label` returns `Some(action.bar_label())` and default `state` returns `ShortcutState::Enabled` — both leverage Phase 5's `Action::bar_label` and the orthogonal-axis `ShortcutState` enum, so per-pane impls override only when label/state is state-dependent.
+- `tui_pane/src/keymap/shortcuts.rs` — `Shortcuts<Ctx>` with `type Variant: Action;`. Method set per `core-api.md` §4: `defaults`, `label`, `state`, `bar_slots`, `input_mode`, `input_mode_query`, `vim_extras`, `dispatcher`, plus `SCOPE_NAME` and `APP_PANE_ID` consts. `vim_extras() -> &'static [(Self::Variant, KeyBind)]` defaults to `&[]` (per-pane vim-mode extras consumed by the builder in Phase 9; cargo-port's `ProjectListAction` overrides for `'l'`/`'h'` in Phase 12). Default `label` returns `Some(action.bar_label())` and default `state` returns `ShortcutState::Enabled` — both leverage Phase 5's `Action::bar_label` and the orthogonal-axis `ShortcutState` enum, so per-pane impls override only when label/state is state-dependent. **Default bodies are `const fn` where eligible** (per standing rule 9): `state` (returns a `Copy` enum) and `vim_extras` (returns a `&'static`) are unambiguously const-eligible; `label`'s default body is const-eligible iff `Action::bar_label` is `const fn` — pin this in the Phase 7 prep block (see significant finding #6 from Phase 6 review).
 - `tui_pane/src/keymap/navigation.rs` — `Navigation<Ctx>` with `type Variant: Action;`.
 - `tui_pane/src/keymap/globals.rs` — `Globals<Ctx>` with `type Variant: Action;` (app-extension globals, separate from the framework's own `GlobalAction` from Phase 3). The trait has **no** `bar_label(action) -> &'static str` method — Phase 5's `Action::bar_label` (live on every action enum, including the macro-generated and the hand-rolled `GlobalAction`) is the single source. Bar code calls `action.bar_label()` regardless of scope.
 
@@ -1331,16 +1372,42 @@ Two tightly-coupled additions in one commit because `KeymapBuilder::with_setting
 - `tui_pane/src/keymap/builder.rs` — `KeymapBuilder<Ctx>` + `BuilderError` (§7).
 
 **Builder hooks (post-Phase-3 review).** `KeymapBuilder` no longer takes positional `(quit, restart, dismiss)` args — framework owns those dispatches. Three optional chained hooks let the binary opt in to notification:
-- `.on_quit(fn(&mut Ctx))` — fires after framework processes `GlobalAction::Quit`.
-- `.on_restart(fn(&mut Ctx))` — fires after framework processes `GlobalAction::Restart`.
+- `.on_quit(fn(&mut Ctx))` — fires **after** `framework.quit_requested` is set to `true`. Hook body can rely on `ctx.framework().quit_requested() == true`.
+- `.on_restart(fn(&mut Ctx))` — fires **after** `framework.restart_requested` is set to `true`. Hook body can rely on `ctx.framework().restart_requested() == true`.
 - `.dismiss_fallback(fn(&mut Ctx) -> bool)` — fires when framework's own dismiss chain finds nothing to dismiss; returns `true` if binary handled it.
 
 `KeymapBuilder::build()` is where vim-mode extras are applied (per "Vim mode — framework capability" §): if `VimMode::Enabled`, append `'k'/'j'/'h'/'l'` to `Navigation::UP/DOWN/LEFT/RIGHT` (skipping any already bound on the full `KeyBind`, not just the `KeyCode`), then walk every registered `Shortcuts::vim_extras()` and append. Applied **after** TOML overlay so `[navigation]` user replacement does not disable vim.
 
+**Framework dispatcher lands here.** `KeymapBuilder::build()` also wires the framework's built-in dispatcher for every `GlobalAction` variant. The dispatcher is a free fn `fn dispatch_global<Ctx: AppContext>(action: GlobalAction, ctx: &mut Ctx)` living in a new private sibling `tui_pane/src/framework/dispatch.rs` (declared `mod dispatch;` from `framework/mod.rs` per standing rule 1). It closes over the `.on_quit` / `.on_restart` / `.dismiss_fallback` hooks the binary registered on the builder. Per `GlobalAction` variant:
+
+- `Quit` → calls `ctx.framework_mut().request_quit()` (new `pub(super)` setter on `Framework` — see below); then fires `on_quit` if registered.
+- `Restart` → `ctx.framework_mut().request_restart()` (new `pub(super)` setter); then fires `on_restart` if registered.
+- `NextPane` / `PrevPane` → consults the registered pane set, computes next/prev focus, calls `ctx.set_focus(new_focus)` (the `AppContext` default funnels into `framework_mut().set_focused(...)`).
+- `OpenKeymap` / `OpenSettings` → `ctx.set_focus(FocusedPane::Framework(FrameworkPaneId::Keymap | Settings))`.
+- `Dismiss` → end-to-end chain lands in Phase 10 (toasts → focused framework overlay → `dismiss_fallback`); Phase 9's dispatcher arm calls a Phase-10-supplied `Framework::dismiss()` method that returns `bool`. Until Phase 10, the Phase 9 dispatcher arm for `Dismiss` calls `dismiss_fallback` directly — Phase 10 inserts the framework chain in front.
+
+**Phase 6 → Phase 10 contract addendum: `pub(super)` setters on `Framework`.** Phase 9 adds two write methods to `Framework<Ctx>` so the dispatcher (sibling of `framework/mod.rs`) can flip lifecycle flags without breaking encapsulation:
+
+```rust
+impl<Ctx: AppContext> Framework<Ctx> {
+    /// Flip `quit_requested` to `true`. Called by the framework's
+    /// built-in `GlobalAction::Quit` dispatcher; not part of the
+    /// public surface.
+    pub(super) const fn request_quit(&mut self) { self.quit_requested = true; }
+
+    /// Flip `restart_requested` to `true`. Called by the framework's
+    /// built-in `GlobalAction::Restart` dispatcher; not part of the
+    /// public surface.
+    pub(super) const fn request_restart(&mut self) { self.restart_requested = true; }
+}
+```
+
+These are `pub(super)` per standing rule 3 (framework-internal construction / mutation), which makes them invisible to the binary while accessible to `framework/dispatch.rs`. The Phase 6 → Phase 10 contract speaks to *public* surface; `pub(super)` additions do not violate the freeze.
+
 Unit tests:
 - TOML round-trip through the builder: single-key form, array form, in-array duplicate rejection.
 - `BuilderError::NavigationMissing` / `GlobalsMissing` / `DuplicateScope` surface from `build()`.
-- `.on_quit()` / `.on_restart()` / `.dismiss_fallback()` are reachable and stored — a unit test fires the corresponding `GlobalAction` and asserts the registered hook ran (or, for dismiss, that the fallback fires only when framework dismiss chain finds nothing).
+- `.on_quit()` / `.on_restart()` are reachable and stored — a unit test fires the corresponding `GlobalAction` and asserts the registered hook ran. (`.dismiss_fallback()` end-to-end firing requires Phase 10's dismiss chain — the Phase 9 test only asserts the hook is reachable and stored; the chain integration test moves to Phase 10.)
 - Vim-mode skip-already-bound is keyed on full `KeyBind` equality (code + mods), not just `code`: if user binds `Shift+k` to anything, vim's `'k'` for `NavigationAction::Down` still applies (different mods). (Migrated from Phase 8 — vim application is the builder's job.)
 - `MockNavigation::Up` keeps its primary as the inserted `KeyCode::Up` even with `VimMode::Enabled` applied — insertion-order primary preserved (deferred from Phase 4).
 
@@ -1352,7 +1419,11 @@ After Phase 9 the entire `tui_pane` foundation is in place: keys, action machine
 
 Phase 10 fills in the framework panes inside the **existing** `Framework<Ctx>` skeleton from Phase 6. The struct's pane fields and helper methods land here; the type itself, `AppContext`, and `FocusedPane` already exist.
 
-> **Phase 6 → Phase 10 contract (mirror).** Purely additive: this phase adds fields and methods, but the Phase 6 surface (3 frozen fields: `focused`, `quit_requested`, `restart_requested`; 5 frozen methods: `new`, `focused`, `set_focused`, `quit_requested`, `restart_requested`) is **frozen verbatim**. Tests written in Phases 7–9 against the skeleton must continue to pass at the end of Phase 10. If Phase 10 implementation surfaces a better name or signature for any of the frozen items, that is a deliberate breaking change — surface it as a follow-up, not a silent rename.
+**Mixing const and non-const inside `impl Framework<Ctx>` is intentional.** The five Phase 6 methods (`new`, `focused`, `set_focused`, `quit_requested`, `restart_requested`) stay `const fn` verbatim. The Phase 10 additions (`dismiss`, `editor_target_path`, `focused_pane_input_mode`, etc.) call into `HashMap` lookups and pane state, neither of which is const-eligible — those land as plain `fn`. Standing rule 9 still applies (every `&self` value-returning method gets `#[must_use]`; const where eligible).
+
+**`Toasts<Ctx>` is held inline, not boxed.** The new `toasts: Toasts<Ctx>` field lives directly on `Framework<Ctx>`. Dispatchers reach it via `ctx.framework_mut().toasts.try_pop_top()`. No `Rc`/`RefCell`/`Cell` wrappers — single-threaded ownership through `&mut Ctx` is the contract.
+
+> **Phase 6 → Phase 10 contract (mirror).** Purely additive: this phase adds fields and methods, but the Phase 6 surface (3 frozen fields: `focused`, `quit_requested`, `restart_requested`; 5 frozen methods, **all `const fn`**: `new`, `focused`, `set_focused`, `quit_requested`, `restart_requested`) is **frozen verbatim** — names, signatures, and `const` qualifier alike. Tests written in Phases 7–9 against the skeleton must continue to pass at the end of Phase 10. If Phase 10 implementation surfaces a better name or signature for any of the frozen items, that is a deliberate breaking change — surface it as a follow-up, not a silent rename.
 
 Add to `tui_pane/src/panes/`:
 
@@ -1381,35 +1452,33 @@ impl<Ctx: AppContext> Framework<Ctx> {
 
 Add `tui_pane/src/settings.rs` — `SettingsRegistry<Ctx>` + `add_bool` / `add_enum` / `add_int` builders. Each closure takes `&Ctx` / `&mut Ctx`.
 
-**Fill in `tui_pane/src/framework/mod.rs`** — replace the Phase 6 skeleton with the real `Framework<Ctx>` aggregator owning the three framework panes plus a registry of app-pane queries:
+**Extend `tui_pane/src/framework/mod.rs`** — keep the three frozen Phase 6 fields and five frozen const-fn methods verbatim; add the new pane fields, the registry field, and the new methods. Do *not* rewrite the struct as a wholesale replacement; this is a strict superset of the Phase 6 skeleton.
+
+Fields added in Phase 10 (the three Phase 6 fields stay verbatim, in their original positions):
 
 ```rust
-pub struct Framework<Ctx> {
+pub struct Framework<Ctx: AppContext> {
+    // ── Phase 6 frozen fields (unchanged) ──
+    focused:           FocusedPane<Ctx::AppPaneId>,
+    quit_requested:    bool,
+    restart_requested: bool,
+
+    // ── Phase 10 additions ──
     pub keymap_pane:   KeymapPane<Ctx>,
     pub settings_pane: SettingsPane<Ctx>,
     pub toasts:        Toasts<Ctx>,
-    /// Currently focused pane. Phase 6 already added this field on the
-    /// skeleton; Phase 10 keeps it in place. Read via `focused()`,
-    /// written via `set_focused(...)` — the binary's `Focus` subsystem
-    /// is the only writer.
-    focused: FocusedPane<Ctx::AppPaneId>,
-    /// Lifecycle flags set by framework dispatch when `GlobalAction::Quit`
-    /// / `Restart` fires. Phase 6 already added these on the skeleton;
-    /// Phase 10 keeps them in place. Binary's main loop polls
-    /// `quit_requested()` / `restart_requested()` every tick.
-    quit_requested:    bool,
-    restart_requested: bool,
     /// Per-AppPaneId queries supplied by the app at registration. Each
     /// app pane's `Shortcuts::input_mode` becomes a free fn
     /// `fn(&Ctx) -> InputMode` registered alongside its dispatcher.
     /// Framework panes are special-cased and do not appear here.
     input_mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> InputMode>,
 }
+```
 
+Methods added in Phase 10 (the five Phase 6 const-fn methods stay verbatim — `new`, `focused`, `set_focused`, `quit_requested`, `restart_requested`):
+
+```rust
 impl<Ctx: AppContext> Framework<Ctx> {
-    pub fn focused(&self) -> FocusedPane<Ctx::AppPaneId> { self.focused }
-    pub fn set_focused(&mut self, focus: FocusedPane<Ctx::AppPaneId>) { self.focused = focus; }
-
     pub fn editor_target_path(&self) -> Option<&Path> {
         match self.focused {
             FocusedPane::Framework(FrameworkPaneId::Keymap)   => self.keymap_pane.editor_target(),
@@ -1429,6 +1498,8 @@ impl<Ctx: AppContext> Framework<Ctx> {
     }
 }
 ```
+
+Callers pass the same `&App` they hold; the method takes `&Ctx` because the framework is generic, but `Ctx == App` in cargo-port and the `&App` derefs cleanly.
 
 The registry is populated by `KeymapBuilder::register::<P>()`: each pane's impl provides a free fn `fn pane_input_mode(ctx: &App) -> InputMode` (reads pane state from `ctx`) that the registration step files into `Framework::input_mode_queries[AppPaneId::P]`.
 
@@ -1478,6 +1549,7 @@ In the cargo-port binary crate:
   - Overrides `input_mode` for `FinderPane` → `TextInput`, `OutputPane` → `Static`. App list panes accept the default `Navigable`.
   - Overrides `vim_extras` to declare pane-action vim binds (`ProjectListAction::ExpandRow → 'l'`, `CollapseRow → 'h'`).
 - Implement `Navigation<App> for AppNavigation` and `Globals<App> for AppGlobalAction`.
+- **`impl AppContext for App`** — required for `Framework<App>` to instantiate. Per Phase 6's narrowed surface, only `framework()` and `framework_mut()` need bodies; `set_focus` ships with a default that delegates to `self.framework_mut().set_focused(focus)`. cargo-port takes the default unless a focus-change side-effect (logging, telemetry) becomes useful — decide at impl time.
 - Build the app's `Keymap` at startup. Old `App::enter_action` and old `for_status_bar` still exist; the new keymap is populated but not consumed yet.
 
 **`anyhow` lands in the binary in this phase.** This is the first call site that benefits from context wrapping (`Keymap::<App>::builder(...).load_toml(path)?.build()?` → wrap with `.with_context(|| format!("loading keymap from {path:?}"))`). Add `anyhow = "1"` to the root `Cargo.toml` `[dependencies]`. The library (`tui_pane`) does not depend on `anyhow` — only typed `KeymapError` / `KeyParseError` / etc. cross the framework boundary, and the binary adds context at the boundary.
@@ -1578,6 +1650,7 @@ Globals + precedence:
 - Rebinding `GlobalAction::NextPane` to `j` (vim-off) cycles panes from any base pane.
 - Rebinding `ProjectListAction::ExpandRow` makes the pane-scope binding fire instead of `NavigationAction::Right`.
 - Rebinding `FinderAction::Activate` to `Tab` while finder is open fires Activate, NOT `GlobalAction::NextPane`.
+- **`AppContext::set_focus` is the single funnel.** A test impl that overrides `set_focus` to count calls observes every framework focus change (NextPane/PrevPane, OpenKeymap, OpenSettings, return-from-overlay) — locks the Phase 6 narrowed-implementor-surface contract.
 
 Dispatch parity (per pane, the highest-risk path):
 
