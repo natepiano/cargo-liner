@@ -273,11 +273,17 @@ fn make_member(name: Option<&str>, path: &str) -> Package {
 }
 
 fn make_workspace_worktrees_item(primary: Workspace, linked: Vec<Workspace>) -> RootItem {
-    RootItem::Worktrees(WorktreeGroup::new_workspaces(primary, linked))
+    RootItem::Worktrees(WorktreeGroup::new(
+        RustProject::Workspace(primary),
+        linked.into_iter().map(RustProject::Workspace).collect(),
+    ))
 }
 
 fn make_package_worktrees_item(primary: Package, linked: Vec<Package>) -> RootItem {
-    RootItem::Worktrees(WorktreeGroup::new_packages(primary, linked))
+    RootItem::Worktrees(WorktreeGroup::new(
+        RustProject::Package(primary),
+        linked.into_iter().map(RustProject::Package).collect(),
+    ))
 }
 
 fn make_package_raw(name: Option<&str>, path: &str, worktree_marker: Option<&str>) -> Package {
@@ -606,12 +612,13 @@ impl WorktreeProjectKind {
 
     fn assert_group_layout(self, app: &App, linked_len: usize, context: &str) {
         assert_eq!(app.project_list.len(), 1, "{context}");
-        match (self, &app.project_list[0].item) {
-            (Self::Package, RootItem::Worktrees(WorktreeGroup::Packages { linked, .. })) => {
-                assert_eq!(linked.len(), linked_len, "{context}");
-            },
-            (Self::Workspace, RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. })) => {
-                assert_eq!(linked.len(), linked_len, "{context}");
+        let RootItem::Worktrees(group) = &app.project_list[0].item else {
+            panic!("expected worktree group: {context}");
+        };
+        match (self, &group.primary) {
+            (Self::Package, RustProject::Package(_))
+            | (Self::Workspace, RustProject::Workspace(_)) => {
+                assert_eq!(group.linked.len(), linked_len, "{context}");
             },
             (Self::Package, _) => panic!("expected package worktree group: {context}"),
             (Self::Workspace, _) => panic!("expected workspace worktree group: {context}"),
@@ -709,15 +716,13 @@ fn expect_synthetic_discovery_creates_group(kind: WorktreeProjectKind) {
             assert!(app.handle_project_discovered(linked));
             assert_eq!(app.project_list.len(), 1);
 
-            let RootItem::Worktrees(WorktreeGroup::Packages {
-                primary, linked, ..
-            }) = &app.project_list[0].item
-            else {
+            let RootItem::Worktrees(group) = &app.project_list[0].item else {
                 panic!("expected discovered worktree to create a package worktree group");
             };
-            assert_eq!(primary.path(), Path::new(primary_path));
-            assert_eq!(linked.len(), 1);
-            assert_eq!(linked[0].path(), Path::new(linked_path));
+            assert!(matches!(&group.primary, RustProject::Package(_)));
+            assert_eq!(group.primary.path(), Path::new(primary_path));
+            assert_eq!(group.linked.len(), 1);
+            assert_eq!(group.linked[0].path(), Path::new(linked_path));
         },
         WorktreeProjectKind::Workspace => {
             let primary_path = "/abs/obsidian_knife";
@@ -741,15 +746,13 @@ fn expect_synthetic_discovery_creates_group(kind: WorktreeProjectKind) {
             assert!(app.handle_project_discovered(linked));
             assert_eq!(app.project_list.len(), 1);
 
-            let RootItem::Worktrees(WorktreeGroup::Workspaces {
-                primary, linked, ..
-            }) = &app.project_list[0].item
-            else {
+            let RootItem::Worktrees(group) = &app.project_list[0].item else {
                 panic!("expected discovered workspace worktree to create a worktree group");
             };
-            assert_eq!(primary.path(), Path::new(primary_path));
-            assert_eq!(linked.len(), 1);
-            assert_eq!(linked[0].path(), Path::new(linked_path));
+            assert!(matches!(&group.primary, RustProject::Workspace(_)));
+            assert_eq!(group.primary.path(), Path::new(primary_path));
+            assert_eq!(group.linked.len(), 1);
+            assert_eq!(group.linked[0].path(), Path::new(linked_path));
         },
     }
 }
@@ -785,20 +788,20 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
             assert!(app.handle_project_discovered(new_linked));
             assert_eq!(app.project_list.len(), 1);
 
-            let RootItem::Worktrees(WorktreeGroup::Packages {
-                primary: _, linked, ..
-            }) = &app.project_list[0].item
-            else {
+            let RootItem::Worktrees(group) = &app.project_list[0].item else {
                 panic!("expected existing root to remain a package worktree group");
             };
-            assert_eq!(linked.len(), 2);
+            assert!(matches!(&group.primary, RustProject::Package(_)));
+            assert_eq!(group.linked.len(), 2);
             assert!(
-                linked
+                group
+                    .linked
                     .iter()
                     .any(|l| l.path() == Path::new(existing_linked_path))
             );
             assert!(
-                linked
+                group
+                    .linked
                     .iter()
                     .any(|l| l.path() == Path::new(new_linked_path))
             );
@@ -836,19 +839,20 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
             assert!(app.handle_project_discovered(new_linked));
             assert_eq!(app.project_list.len(), 1);
 
-            let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) =
-                &app.project_list[0].item
-            else {
+            let RootItem::Worktrees(group) = &app.project_list[0].item else {
                 panic!("expected existing root to remain a workspace worktree group");
             };
-            assert_eq!(linked.len(), 2);
+            assert!(matches!(&group.primary, RustProject::Workspace(_)));
+            assert_eq!(group.linked.len(), 2);
             assert!(
-                linked
+                group
+                    .linked
                     .iter()
                     .any(|l| l.path() == Path::new(existing_linked_path))
             );
             assert!(
-                linked
+                group
+                    .linked
                     .iter()
                     .any(|l| l.path() == Path::new(new_linked_path))
             );
@@ -904,21 +908,11 @@ fn expect_refresh_regroups_stale_top_level_discovery(kind: WorktreeProjectKind) 
         1,
         "refreshing the stale top-level row should regroup it under the primary worktree container",
     );
-    match (kind, &app.project_list[0].item) {
-        (
-            WorktreeProjectKind::Package,
-            RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }),
-        ) => {
-            assert_eq!(linked[0].path(), linked_dir.as_path());
-        },
-        (
-            WorktreeProjectKind::Workspace,
-            RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }),
-        ) => {
-            assert_eq!(linked[0].path(), linked_dir.as_path());
-        },
-        _ => unreachable!(),
-    }
+    let RootItem::Worktrees(group) = &app.project_list[0].item else {
+        unreachable!();
+    };
+    let _ = kind;
+    assert_eq!(group.linked[0].path(), linked_dir.as_path());
 }
 
 fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProjectKind) {
@@ -976,23 +970,22 @@ fn expect_refresh_appends_stale_discovery_into_existing_group(kind: WorktreeProj
         2,
         "refresh should fold the stale row into the existing worktree group",
     );
-    match (kind, &app.project_list[0].item) {
-        (
-            WorktreeProjectKind::Package,
-            RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }),
-        ) => {
-            assert!(linked.iter().any(|l| l.path() == linked_one_dir.as_path()));
-            assert!(linked.iter().any(|l| l.path() == linked_two_dir.as_path()));
-        },
-        (
-            WorktreeProjectKind::Workspace,
-            RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }),
-        ) => {
-            assert!(linked.iter().any(|l| l.path() == linked_one_dir.as_path()));
-            assert!(linked.iter().any(|l| l.path() == linked_two_dir.as_path()));
-        },
-        _ => unreachable!(),
-    }
+    let RootItem::Worktrees(group) = &app.project_list[0].item else {
+        unreachable!();
+    };
+    let _ = kind;
+    assert!(
+        group
+            .linked
+            .iter()
+            .any(|l| l.path() == linked_one_dir.as_path())
+    );
+    assert!(
+        group
+            .linked
+            .iter()
+            .any(|l| l.path() == linked_two_dir.as_path())
+    );
 }
 
 fn assert_deleted_linked_worktree_dismisses_to_root(app: &mut App, linked_dir: &Path) {

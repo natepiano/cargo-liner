@@ -6,7 +6,6 @@ use crate::project;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
-use crate::project::WorktreeGroup;
 use crate::scan;
 use crate::tui::app::App;
 use crate::watcher;
@@ -119,25 +118,11 @@ impl App {
                     });
                     count += 1;
                 },
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    for ws in std::iter::once(primary).chain(linked.iter()) {
+                RootItem::Worktrees(group) => {
+                    for entry in group.iter_entries() {
                         runtime.register_project(RegisterProjectRequest {
-                            project_label: ws.display_path().into_string(),
-                            abs_path:      ws.path().clone(),
-                            is_rust:       true,
-                        });
-                        count += 1;
-                    }
-                },
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => {
-                    for pkg in std::iter::once(primary).chain(linked.iter()) {
-                        runtime.register_project(RegisterProjectRequest {
-                            project_label: pkg.display_path().into_string(),
-                            abs_path:      pkg.path().clone(),
+                            project_label: entry.display_path().into_string(),
+                            abs_path:      entry.path().clone(),
                             is_rust:       true,
                         });
                         count += 1;

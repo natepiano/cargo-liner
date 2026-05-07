@@ -99,11 +99,8 @@ fn observe_item_fit_widths(widths: &mut ProjectListWidths, entry: &ProjectEntry,
             observe_typed_vendored_fit_widths(widths, pkg.vendored(), PREFIX_VENDORED);
         },
         RootItem::NonRust(_) => {},
-        RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) => {
-            observe_workspace_worktree_group_fit_widths(widths, wtg, repo_info);
-        },
-        RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. }) => {
-            observe_package_worktree_group_fit_widths(widths, wtg, repo_info);
+        RootItem::Worktrees(wtg) => {
+            observe_worktree_group_fit_widths(widths, wtg, repo_info);
         },
     }
     for submodule in item.submodules() {
@@ -206,37 +203,20 @@ fn observe_package_worktree_entry_fit_widths(
     observe_typed_vendored_fit_widths(widths, pkg.vendored(), PREFIX_WT_VENDORED);
 }
 
-fn observe_workspace_worktree_group_fit_widths(
+fn observe_worktree_group_fit_widths(
     widths: &mut ProjectListWidths,
     wtg: &WorktreeGroup,
     repo_info: Option<&RepoInfo>,
 ) {
-    let WorktreeGroup::Workspaces {
-        primary, linked, ..
-    } = wtg
-    else {
-        return;
-    };
-    observe_workspace_worktree_entry_fit_widths(widths, primary, repo_info);
-    for ws in linked {
-        observe_workspace_worktree_entry_fit_widths(widths, ws, repo_info);
-    }
-}
-
-fn observe_package_worktree_group_fit_widths(
-    widths: &mut ProjectListWidths,
-    wtg: &WorktreeGroup,
-    repo_info: Option<&RepoInfo>,
-) {
-    let WorktreeGroup::Packages {
-        primary, linked, ..
-    } = wtg
-    else {
-        return;
-    };
-    observe_package_worktree_entry_fit_widths(widths, primary, repo_info);
-    for pkg in linked {
-        observe_package_worktree_entry_fit_widths(widths, pkg, repo_info);
+    for entry in wtg.iter_entries() {
+        match entry {
+            RustProject::Workspace(ws) => {
+                observe_workspace_worktree_entry_fit_widths(widths, ws, repo_info);
+            },
+            RustProject::Package(pkg) => {
+                observe_package_worktree_entry_fit_widths(widths, pkg, repo_info);
+            },
+        }
     }
 }
 

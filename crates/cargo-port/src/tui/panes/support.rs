@@ -35,7 +35,6 @@ use crate::project::RustProject;
 use crate::project::Submodule;
 use crate::project::VendoredPackage;
 use crate::project::Workspace;
-use crate::project::WorktreeGroup;
 use crate::tui::app::App;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::project_list::ProjectList;
@@ -1223,23 +1222,11 @@ const fn is_worktree_group(item: &RootItem) -> bool { matches!(item, RootItem::W
 /// pair pays at most once.
 fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
     let (paths_and_names, primary_path) = match item {
-        RootItem::Worktrees(WorktreeGroup::Workspaces {
-            primary, linked, ..
-        }) => {
-            let primary_path = primary.path().clone();
-            let entries: Vec<(AbsolutePath, String)> = std::iter::once(primary)
-                .chain(linked.iter())
-                .map(|ws| (ws.path().clone(), ws.root_directory_name().into_string()))
-                .collect();
-            (entries, primary_path)
-        },
-        RootItem::Worktrees(WorktreeGroup::Packages {
-            primary, linked, ..
-        }) => {
-            let primary_path = primary.path().clone();
-            let entries: Vec<(AbsolutePath, String)> = std::iter::once(primary)
-                .chain(linked.iter())
-                .map(|pkg| (pkg.path().clone(), pkg.root_directory_name().into_string()))
+        RootItem::Worktrees(group) => {
+            let primary_path = group.primary.path().clone();
+            let entries: Vec<(AbsolutePath, String)> = group
+                .iter_entries()
+                .map(|p| (p.path().clone(), p.root_directory_name().into_string()))
                 .collect();
             (entries, primary_path)
         },
@@ -1282,11 +1269,13 @@ pub fn build_pane_data(app: &App, item: &RootItem) -> DetailPaneData {
         RootItem::NonRust(nr) => {
             build_pane_data_non_rust(app, nr, &display_path, is_wt_group, Some(item))
         },
-        RootItem::Worktrees(WorktreeGroup::Workspaces { primary, .. }) => {
-            build_pane_data_for_workspace(app, primary, &display_path, true, Some(item))
-        },
-        RootItem::Worktrees(WorktreeGroup::Packages { primary, .. }) => {
-            build_pane_data_for_package(app, primary, &display_path, true, Some(item))
+        RootItem::Worktrees(group) => match &group.primary {
+            RustProject::Workspace(ws) => {
+                build_pane_data_for_workspace(app, ws, &display_path, true, Some(item))
+            },
+            RustProject::Package(pkg) => {
+                build_pane_data_for_package(app, pkg, &display_path, true, Some(item))
+            },
         },
     }
 }

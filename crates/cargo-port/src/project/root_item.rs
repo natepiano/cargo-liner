@@ -56,10 +56,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.name(),
             Self::NonRust(p) => p.name(),
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces { primary, .. } => primary.name(),
-                WorktreeGroup::Packages { primary, .. } => primary.name(),
-            },
+            Self::Worktrees(g) => g.primary.name(),
         }
     }
 
@@ -67,10 +64,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.display_path(),
             Self::NonRust(p) => p.display_path(),
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces { primary, .. } => primary.display_path(),
-                WorktreeGroup::Packages { primary, .. } => primary.display_path(),
-            },
+            Self::Worktrees(g) => g.primary.display_path(),
         }
     }
 
@@ -81,10 +75,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.root_directory_name(),
             Self::NonRust(p) => p.root_directory_name(),
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces { primary, .. } => primary.root_directory_name(),
-                WorktreeGroup::Packages { primary, .. } => primary.root_directory_name(),
-            },
+            Self::Worktrees(g) => g.primary.root_directory_name(),
         }
     }
 
@@ -110,19 +101,12 @@ impl RootItem {
             Self::NonRust(_) => false,
             Self::Worktrees(g) => {
                 if g.renders_as_group() {
-                    true
-                } else {
-                    match g {
-                        WorktreeGroup::Workspaces {
-                            primary, linked, ..
-                        } => single_live_workspace(primary, linked)
-                            .is_some_and(|ws| ws.has_members() || !ws.vendored().is_empty()),
-                        WorktreeGroup::Packages {
-                            primary, linked, ..
-                        } => single_live_package(primary, linked)
-                            .is_some_and(|pkg| !pkg.vendored().is_empty()),
-                    }
+                    return true;
                 }
+                g.single_live().is_some_and(|p| match p {
+                    RustProject::Workspace(ws) => ws.has_members() || !ws.vendored().is_empty(),
+                    RustProject::Package(pkg) => !pkg.vendored().is_empty(),
+                })
             },
         }
     }
@@ -141,10 +125,7 @@ impl RootItem {
             Self::Rust(RustProject::Workspace(ws)) => &ws.info.submodules,
             Self::Rust(RustProject::Package(pkg)) => &pkg.info.submodules,
             Self::NonRust(p) => &p.info.submodules,
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces { primary, .. } => &primary.info.submodules,
-                WorktreeGroup::Packages { primary, .. } => &primary.info.submodules,
-            },
+            Self::Worktrees(g) => &g.primary.rust_info().info.submodules,
         }
     }
 
@@ -158,20 +139,10 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.disk_usage_bytes(),
             Self::NonRust(p) => p.disk_usage_bytes(),
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                } => sum_disk(
-                    primary.disk_usage_bytes(),
-                    linked.iter().map(ProjectFields::disk_usage_bytes),
-                ),
-                WorktreeGroup::Packages {
-                    primary, linked, ..
-                } => sum_disk(
-                    primary.disk_usage_bytes(),
-                    linked.iter().map(ProjectFields::disk_usage_bytes),
-                ),
-            },
+            Self::Worktrees(g) => sum_disk(
+                g.primary.disk_usage_bytes(),
+                g.linked.iter().map(ProjectFields::disk_usage_bytes),
+            ),
         }
     }
 
@@ -179,10 +150,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.git_info(),
             Self::NonRust(p) => p.git_info(),
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces { primary, .. } => primary.git_info(),
-                WorktreeGroup::Packages { primary, .. } => primary.git_info(),
-            },
+            Self::Worktrees(g) => g.primary.git_info(),
         }
     }
 
@@ -190,22 +158,7 @@ impl RootItem {
         let result = match self {
             Self::Rust(p) => p.at_path(path),
             Self::NonRust(p) => (p.path() == path).then_some(&p.info),
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                } => rust_project::info_in_workspace(primary, path).or_else(|| {
-                    linked
-                        .iter()
-                        .find_map(|l| rust_project::info_in_workspace(l, path))
-                }),
-                WorktreeGroup::Packages {
-                    primary, linked, ..
-                } => rust_project::info_in_package(primary, path).or_else(|| {
-                    linked
-                        .iter()
-                        .find_map(|l| rust_project::info_in_package(l, path))
-                }),
-            },
+            Self::Worktrees(g) => g.iter_entries().find_map(|p| p.at_path(path)),
         };
         result.or_else(|| {
             self.submodules()
@@ -219,22 +172,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.rust_info_at_path(path),
             Self::NonRust(_) => None,
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                } => rust_project::rust_info_in_workspace(primary, path).or_else(|| {
-                    linked
-                        .iter()
-                        .find_map(|l| rust_project::rust_info_in_workspace(l, path))
-                }),
-                WorktreeGroup::Packages {
-                    primary, linked, ..
-                } => rust_project::rust_info_in_package(primary, path).or_else(|| {
-                    linked
-                        .iter()
-                        .find_map(|l| rust_project::rust_info_in_package(l, path))
-                }),
-            },
+            Self::Worktrees(g) => g.iter_entries().find_map(|p| p.rust_info_at_path(path)),
         }
     }
 
@@ -247,30 +185,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.at_path_mut(path),
             Self::NonRust(p) => (p.path() == path).then_some(&mut p.info),
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                } => {
-                    if rust_project::info_in_workspace(primary, path).is_some() {
-                        return rust_project::info_in_workspace_mut(primary, path);
-                    }
-                    let idx = linked
-                        .iter()
-                        .position(|l| rust_project::info_in_workspace(l, path).is_some())?;
-                    rust_project::info_in_workspace_mut(&mut linked[idx], path)
-                },
-                WorktreeGroup::Packages {
-                    primary, linked, ..
-                } => {
-                    if rust_project::info_in_package(primary, path).is_some() {
-                        return rust_project::info_in_package_mut(primary, path);
-                    }
-                    let idx = linked
-                        .iter()
-                        .position(|l| rust_project::info_in_package(l, path).is_some())?;
-                    rust_project::info_in_package_mut(&mut linked[idx], path)
-                },
-            },
+            Self::Worktrees(g) => find_in_group_mut(g, path, RustProject::at_path_mut),
         }
     }
 
@@ -278,30 +193,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.rust_info_at_path_mut(path),
             Self::NonRust(_) => None,
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                } => {
-                    if rust_project::info_in_workspace(primary, path).is_some() {
-                        return rust_project::rust_info_in_workspace_mut(primary, path);
-                    }
-                    let idx = linked
-                        .iter()
-                        .position(|l| rust_project::info_in_workspace(l, path).is_some())?;
-                    rust_project::rust_info_in_workspace_mut(&mut linked[idx], path)
-                },
-                WorktreeGroup::Packages {
-                    primary, linked, ..
-                } => {
-                    if rust_project::info_in_package(primary, path).is_some() {
-                        return rust_project::rust_info_in_package_mut(primary, path);
-                    }
-                    let idx = linked
-                        .iter()
-                        .position(|l| rust_project::info_in_package(l, path).is_some())?;
-                    rust_project::rust_info_in_package_mut(&mut linked[idx], path)
-                },
-            },
+            Self::Worktrees(g) => find_in_group_mut(g, path, RustProject::rust_info_at_path_mut),
         }
     }
 
@@ -310,22 +202,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.lint_at_path(path),
             Self::NonRust(_) => None,
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                } => rust_project::lint_in_workspace(primary, path).or_else(|| {
-                    linked
-                        .iter()
-                        .find_map(|l| rust_project::lint_in_workspace(l, path))
-                }),
-                WorktreeGroup::Packages {
-                    primary, linked, ..
-                } => rust_project::lint_in_package(primary, path).or_else(|| {
-                    linked
-                        .iter()
-                        .find_map(|l| rust_project::lint_in_package(l, path))
-                }),
-            },
+            Self::Worktrees(g) => g.iter_entries().find_map(|p| p.lint_at_path(path)),
         }
     }
 
@@ -333,22 +210,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.vendored_at_path(path),
             Self::NonRust(_) => None,
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                } => rust_project::vendored_in_workspace(primary, path).or_else(|| {
-                    linked
-                        .iter()
-                        .find_map(|l| rust_project::vendored_in_workspace(l, path))
-                }),
-                WorktreeGroup::Packages {
-                    primary, linked, ..
-                } => rust_project::vendored_in_package(primary, path).or_else(|| {
-                    linked
-                        .iter()
-                        .find_map(|l| rust_project::vendored_in_package(l, path))
-                }),
-            },
+            Self::Worktrees(g) => g.iter_entries().find_map(|p| p.vendored_at_path(path)),
         }
     }
 
@@ -356,30 +218,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.vendored_at_path_mut(path),
             Self::NonRust(_) => None,
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                } => {
-                    if rust_project::vendored_in_workspace(primary, path).is_some() {
-                        return rust_project::vendored_in_workspace_mut(primary, path);
-                    }
-                    let idx = linked
-                        .iter()
-                        .position(|l| rust_project::vendored_in_workspace(l, path).is_some())?;
-                    rust_project::vendored_in_workspace_mut(&mut linked[idx], path)
-                },
-                WorktreeGroup::Packages {
-                    primary, linked, ..
-                } => {
-                    if rust_project::vendored_in_package(primary, path).is_some() {
-                        return rust_project::vendored_in_package_mut(primary, path);
-                    }
-                    let idx = linked
-                        .iter()
-                        .position(|l| rust_project::vendored_in_package(l, path).is_some())?;
-                    rust_project::vendored_in_package_mut(&mut linked[idx], path)
-                },
-            },
+            Self::Worktrees(g) => find_in_group_mut(g, path, RustProject::vendored_at_path_mut),
         }
     }
 
@@ -387,30 +226,7 @@ impl RootItem {
         match self {
             Self::Rust(p) => p.lint_at_path_mut(path),
             Self::NonRust(_) => None,
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                } => {
-                    if rust_project::lint_in_workspace(primary, path).is_some() {
-                        return rust_project::lint_in_workspace_mut(primary, path);
-                    }
-                    let idx = linked
-                        .iter()
-                        .position(|l| rust_project::lint_in_workspace(l, path).is_some())?;
-                    rust_project::lint_in_workspace_mut(&mut linked[idx], path)
-                },
-                WorktreeGroup::Packages {
-                    primary, linked, ..
-                } => {
-                    if rust_project::lint_in_package(primary, path).is_some() {
-                        return rust_project::lint_in_package_mut(primary, path);
-                    }
-                    let idx = linked
-                        .iter()
-                        .position(|l| rust_project::lint_in_package(l, path).is_some())?;
-                    rust_project::lint_in_package_mut(&mut linked[idx], path)
-                },
-            },
+            Self::Worktrees(g) => find_in_group_mut(g, path, RustProject::lint_at_path_mut),
         }
     }
 
@@ -433,20 +249,10 @@ impl RootItem {
                 .any(|v| v.path() == path)
                 .then_some(&pkg.rust.lint_runs),
             Self::NonRust(_) => None,
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                } => std::iter::once(primary)
-                    .chain(linked.iter())
-                    .find(|ws| ws.vendored().iter().any(|v| v.path() == path))
-                    .map(|ws| &ws.rust.lint_runs),
-                WorktreeGroup::Packages {
-                    primary, linked, ..
-                } => std::iter::once(primary)
-                    .chain(linked.iter())
-                    .find(|pkg| pkg.vendored().iter().any(|v| v.path() == path))
-                    .map(|pkg| &pkg.rust.lint_runs),
-            },
+            Self::Worktrees(g) => g
+                .iter_entries()
+                .find(|p| p.rust_info().vendored().iter().any(|v| v.path() == path))
+                .map(|p| &p.rust_info().lint_runs),
         }
     }
 
@@ -472,23 +278,10 @@ impl RootItem {
             Self::NonRust(p) => {
                 out.push((p.path().clone(), p.info.clone()));
             },
-            Self::Worktrees(g) => match g {
-                WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                } => {
-                    RustProject::Workspace(primary.clone()).collect_project_info(&mut out);
-                    for l in linked {
-                        RustProject::Workspace(l.clone()).collect_project_info(&mut out);
-                    }
-                },
-                WorktreeGroup::Packages {
-                    primary, linked, ..
-                } => {
-                    RustProject::Package(primary.clone()).collect_project_info(&mut out);
-                    for l in linked {
-                        RustProject::Package(l.clone()).collect_project_info(&mut out);
-                    }
-                },
+            Self::Worktrees(g) => {
+                for entry in g.iter_entries() {
+                    entry.collect_project_info(&mut out);
+                }
             },
         }
         out
@@ -503,7 +296,7 @@ impl RootItem {
                 let member = group.members().get(member_index)?;
                 Some(member.path().as_path())
             },
-            Self::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) if !wtg.renders_as_group() => {
+            Self::Worktrees(wtg) if !wtg.renders_as_group() => {
                 let group = wtg.single_live_workspace()?.groups().get(group_index)?;
                 let member = group.members().get(member_index)?;
                 Some(member.path().as_path())
@@ -523,14 +316,9 @@ impl RootItem {
                 .vendored()
                 .get(vendored_index)
                 .map(|p| p.path().as_path()),
-            Self::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) if !wtg.renders_as_group() => {
-                wtg.single_live_workspace()?
-                    .vendored()
-                    .get(vendored_index)
-                    .map(|p| p.path().as_path())
-            },
-            Self::Worktrees(wtg @ WorktreeGroup::Packages { .. }) if !wtg.renders_as_group() => wtg
-                .single_live_package()?
+            Self::Worktrees(wtg) if !wtg.renders_as_group() => wtg
+                .single_live()?
+                .rust_info()
                 .vendored()
                 .get(vendored_index)
                 .map(|p| p.path().as_path()),
@@ -549,13 +337,12 @@ impl RootItem {
             Self::Rust(RustProject::Workspace(ws)) => {
                 ws.groups().get(group_index)?.members().get(member_index)
             },
-            Self::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) if !wtg.renders_as_group() => {
-                wtg.single_live_workspace()?
-                    .groups()
-                    .get(group_index)?
-                    .members()
-                    .get(member_index)
-            },
+            Self::Worktrees(wtg) if !wtg.renders_as_group() => wtg
+                .single_live_workspace()?
+                .groups()
+                .get(group_index)?
+                .members()
+                .get(member_index),
             _ => None,
         }
     }
@@ -566,12 +353,11 @@ impl RootItem {
         match self {
             Self::Rust(RustProject::Workspace(ws)) => ws.vendored().get(vendored_index),
             Self::Rust(RustProject::Package(pkg)) => pkg.vendored().get(vendored_index),
-            Self::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) if !wtg.renders_as_group() => {
-                wtg.single_live_workspace()?.vendored().get(vendored_index)
-            },
-            Self::Worktrees(wtg @ WorktreeGroup::Packages { .. }) if !wtg.renders_as_group() => {
-                wtg.single_live_package()?.vendored().get(vendored_index)
-            },
+            Self::Worktrees(wtg) if !wtg.renders_as_group() => wtg
+                .single_live()?
+                .rust_info()
+                .vendored()
+                .get(vendored_index),
             _ => None,
         }
     }
@@ -621,24 +407,13 @@ impl RootItem {
     pub(crate) fn unique_paths(&self) -> Vec<AbsolutePath> {
         let mut paths = Vec::new();
         paths.push(self.path().clone());
-        match self {
-            Self::Worktrees(WorktreeGroup::Workspaces { linked, .. }) => {
-                for l in linked {
-                    let p = l.path().clone();
-                    if !paths.contains(&p) {
-                        paths.push(p);
-                    }
+        if let Self::Worktrees(g) = self {
+            for l in &g.linked {
+                let p = l.path().clone();
+                if !paths.contains(&p) {
+                    paths.push(p);
                 }
-            },
-            Self::Worktrees(WorktreeGroup::Packages { linked, .. }) => {
-                for l in linked {
-                    let p = l.path().clone();
-                    if !paths.contains(&p) {
-                        paths.push(p);
-                    }
-                }
-            },
-            _ => {},
+            }
         }
         paths
     }
@@ -651,40 +426,40 @@ impl RootItem {
 /// Separated from `at_path_mut` to avoid borrow-checker conflicts when
 /// the caller has already borrowed `self` immutably for the submodule check.
 fn submodule_info_mut<'a>(item: &'a mut RootItem, path: &Path) -> Option<&'a mut ProjectInfo> {
-    match item {
-        RootItem::Rust(RustProject::Workspace(ws)) => ws
-            .info
-            .submodules
-            .iter_mut()
-            .find(|s| s.path.as_path() == path)
-            .map(|s| &mut s.info),
-        RootItem::Rust(RustProject::Package(pkg)) => pkg
-            .info
-            .submodules
-            .iter_mut()
-            .find(|s| s.path.as_path() == path)
-            .map(|s| &mut s.info),
-        RootItem::NonRust(nr) => nr
-            .info
-            .submodules
-            .iter_mut()
-            .find(|s| s.path.as_path() == path)
-            .map(|s| &mut s.info),
-        RootItem::Worktrees(g) => match g {
-            WorktreeGroup::Workspaces { primary, .. } => primary
-                .info
-                .submodules
-                .iter_mut()
-                .find(|s| s.path.as_path() == path)
-                .map(|s| &mut s.info),
-            WorktreeGroup::Packages { primary, .. } => primary
-                .info
-                .submodules
-                .iter_mut()
-                .find(|s| s.path.as_path() == path)
-                .map(|s| &mut s.info),
-        },
+    let submodules = match item {
+        RootItem::Rust(RustProject::Workspace(ws)) => &mut ws.info.submodules,
+        RootItem::Rust(RustProject::Package(pkg)) => &mut pkg.info.submodules,
+        RootItem::NonRust(nr) => &mut nr.info.submodules,
+        RootItem::Worktrees(g) => &mut g.primary.rust_info_mut().info.submodules,
+    };
+    submodules
+        .iter_mut()
+        .find(|s| s.path.as_path() == path)
+        .map(|s| &mut s.info)
+}
+
+/// Apply a per-entry mutable accessor across primary + linked, returning the
+/// first match. Encapsulates the "find which entry contains `path`, then take
+/// `&mut`" pattern used by `at_path_mut` / `lint_at_path_mut` / etc.
+fn find_in_group_mut<'a, T, F>(
+    group: &'a mut WorktreeGroup,
+    path: &Path,
+    accessor: F,
+) -> Option<&'a mut T>
+where
+    F: Fn(&'a mut RustProject, &Path) -> Option<&'a mut T>,
+    T: ?Sized,
+{
+    let WorktreeGroup { primary, linked } = group;
+    if let Some(found) = accessor(primary, path) {
+        return Some(found);
     }
+    for entry in linked {
+        if let Some(found) = accessor(entry, path) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> Option<u64> {
@@ -699,37 +474,3 @@ fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> 
 
 use super::git;
 use super::rust_info::RustInfo;
-use super::rust_project;
-use super::workspace::Workspace;
-
-pub(super) fn single_live_workspace<'a>(
-    primary: &'a Workspace,
-    linked: &'a [Workspace],
-) -> Option<&'a Workspace> {
-    let live_count = std::iter::once(primary.visibility())
-        .chain(linked.iter().map(Workspace::visibility))
-        .filter(|v| !matches!(v, Visibility::Dismissed))
-        .count();
-    if live_count != 1 {
-        return None;
-    }
-    std::iter::once(primary)
-        .chain(linked.iter())
-        .find(|p| !matches!(p.visibility(), Visibility::Dismissed))
-}
-
-pub(super) fn single_live_package<'a>(
-    primary: &'a Package,
-    linked: &'a [Package],
-) -> Option<&'a Package> {
-    let live_count = std::iter::once(primary.visibility())
-        .chain(linked.iter().map(Package::visibility))
-        .filter(|v| !matches!(v, Visibility::Dismissed))
-        .count();
-    if live_count != 1 {
-        return None;
-    }
-    std::iter::once(primary)
-        .chain(linked.iter())
-        .find(|p| !matches!(p.visibility(), Visibility::Dismissed))
-}

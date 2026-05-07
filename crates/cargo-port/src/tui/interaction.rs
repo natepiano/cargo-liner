@@ -926,14 +926,19 @@ mod tests {
 
         app.project_list
             .replace_roots_from(ProjectList::new(vec![RootItem::Worktrees(
-                WorktreeGroup::new_packages(
-                    make_package_worktree("app", &primary, false, Some(primary.as_path())),
-                    vec![make_package_worktree(
+                WorktreeGroup::new(
+                    RustProject::Package(make_package_worktree(
+                        "app",
+                        &primary,
+                        false,
+                        Some(primary.as_path()),
+                    )),
+                    vec![RustProject::Package(make_package_worktree(
                         "app",
                         &linked,
                         true,
                         Some(primary.as_path()),
-                    )],
+                    ))],
                 ),
             )]));
         render_ui(&mut app);

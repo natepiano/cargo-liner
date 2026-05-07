@@ -518,7 +518,10 @@ fn startup_git_expected_uses_top_level_git_directories() {
         },
         ..Package::default()
     };
-    let worktrees = RootItem::Worktrees(WorktreeGroup::new_packages(primary, vec![linked]));
+    let worktrees = RootItem::Worktrees(WorktreeGroup::new(
+        RustProject::Package(primary),
+        vec![RustProject::Package(linked)],
+    ));
 
     let mut app = make_app(&[]);
     apply_items(&mut app, &[non_rust, workspace, worktrees]);
@@ -2012,9 +2015,9 @@ fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
         },
         ..crate::project::Package::default()
     };
-    let worktrees = RootItem::Worktrees(crate::project::WorktreeGroup::new_packages(
-        primary,
-        vec![linked],
+    let worktrees = RootItem::Worktrees(crate::project::WorktreeGroup::new(
+        RustProject::Package(primary),
+        vec![crate::project::RustProject::Package(linked)],
     ));
     let mut app = make_app(std::slice::from_ref(&worktrees));
     app.project_list.set_cursor(0);

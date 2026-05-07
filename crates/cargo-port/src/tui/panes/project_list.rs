@@ -42,7 +42,6 @@ use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::VendoredPackage;
-use crate::project::WorktreeGroup;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
 use crate::scan;
@@ -550,44 +549,15 @@ fn worktree_entry_name_and_expandable(
     wi: usize,
     fallback: &str,
 ) -> (String, bool) {
-    let name = match item {
-        RootItem::Worktrees(WorktreeGroup::Workspaces {
-            primary, linked, ..
-        }) => {
-            let ws = if wi == 0 {
-                primary
-            } else {
-                linked.get(wi - 1).unwrap_or(primary)
-            };
-            ws.root_directory_name().into_string()
-        },
-        RootItem::Worktrees(WorktreeGroup::Packages {
-            primary, linked, ..
-        }) => {
-            let pkg = if wi == 0 {
-                primary
-            } else {
-                linked.get(wi - 1).unwrap_or(primary)
-            };
-            pkg.root_directory_name().into_string()
-        },
-        _ => fallback.to_string(),
+    let RootItem::Worktrees(group) = item else {
+        return (fallback.to_string(), false);
     };
-
-    let expandable = match item {
-        RootItem::Worktrees(WorktreeGroup::Workspaces {
-            primary, linked, ..
-        }) => {
-            let ws = if wi == 0 {
-                primary
-            } else {
-                linked.get(wi - 1).unwrap_or(primary)
-            };
-            ws.has_members()
-        },
-        _ => false,
+    let entry = group.entry(wi).unwrap_or(&group.primary);
+    let name = entry.root_directory_name().into_string();
+    let expandable = match entry {
+        RustProject::Workspace(ws) => ws.has_members(),
+        RustProject::Package(_) => false,
     };
-
     (name, expandable)
 }
 
@@ -610,31 +580,12 @@ fn disk_suffix_for_state(
 }
 
 fn worktree_health_for_entry(item: &RootItem, wi: usize) -> WorktreeHealth {
-    match item {
-        RootItem::Worktrees(WorktreeGroup::Workspaces {
-            primary, linked, ..
-        }) => {
-            if wi == 0 {
-                primary.worktree_health()
-            } else {
-                linked
-                    .get(wi - 1)
-                    .map_or(Normal, ProjectFields::worktree_health)
-            }
-        },
-        RootItem::Worktrees(WorktreeGroup::Packages {
-            primary, linked, ..
-        }) => {
-            if wi == 0 {
-                primary.worktree_health()
-            } else {
-                linked
-                    .get(wi - 1)
-                    .map_or(Normal, ProjectFields::worktree_health)
-            }
-        },
-        _ => Normal,
-    }
+    let RootItem::Worktrees(group) = item else {
+        return Normal;
+    };
+    group
+        .entry(wi)
+        .map_or(Normal, ProjectFields::worktree_health)
 }
 
 fn render_wt_group_header<'a>(
@@ -646,16 +597,12 @@ fn render_wt_group_header<'a>(
 ) -> ListItem<'a> {
     let item = &app.project_list[ni];
     let (group_name, member_count) = match &item.item {
-        RootItem::Worktrees(WorktreeGroup::Workspaces {
-            primary, linked, ..
-        }) => {
-            let ws = if wi == 0 {
-                primary
-            } else {
-                linked.get(wi - 1).unwrap_or(primary)
-            };
-            let group = &ws.groups()[gi];
-            (group.group_name().to_string(), group.members().len())
+        RootItem::Worktrees(group) => match group.entry(wi).unwrap_or(&group.primary) {
+            RustProject::Workspace(ws) => {
+                let g = &ws.groups()[gi];
+                (g.group_name().to_string(), g.members().len())
+            },
+            RustProject::Package(_) => (String::new(), 0),
         },
         _ => (String::new(), 0),
     };
@@ -687,17 +634,13 @@ fn render_wt_member<'a>(
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
     let (member, member_name, is_named_group) = match &item.item {
-        RootItem::Worktrees(WorktreeGroup::Workspaces {
-            primary, linked, ..
-        }) => {
-            let ws = if wi == 0 {
-                primary
-            } else {
-                linked.get(wi - 1).unwrap_or(primary)
-            };
-            let group = &ws.groups()[gi];
-            let m = &group.members()[mi];
-            (Some(m), m.package_name().into_string(), group.is_named())
+        RootItem::Worktrees(group) => match group.entry(wi).unwrap_or(&group.primary) {
+            RustProject::Workspace(ws) => {
+                let g = &ws.groups()[gi];
+                let m = &g.members()[mi];
+                (Some(m), m.package_name().into_string(), g.is_named())
+            },
+            RustProject::Package(_) => (None, String::new(), false),
         },
         _ => (None, String::new(), false),
     };
@@ -713,16 +656,9 @@ fn render_wt_member<'a>(
         },
         |m| {
             let inherited_deleted = match &item.item {
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    let ws = if wi == 0 {
-                        primary
-                    } else {
-                        linked.get(wi - 1).unwrap_or(primary)
-                    };
-                    app.project_list.is_deleted(ws.path())
-                },
+                RootItem::Worktrees(group) => app
+                    .project_list
+                    .is_deleted(group.entry(wi).unwrap_or(&group.primary).path()),
                 _ => false,
             };
             render_child_item(
@@ -755,10 +691,13 @@ fn render_member_item(
             let m = &group.members()[member_index];
             (Some(m), m.package_name().into_string(), group.is_named())
         },
-        RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { primary, .. })
-            if !wtg.renders_as_group() =>
-        {
-            let ws = wtg.single_live_workspace().unwrap_or(primary);
+        RootItem::Worktrees(wtg) if !wtg.renders_as_group() => {
+            let Some(ws) = wtg.single_live_workspace() else {
+                return ListItem::new(columns::row_to_line(
+                    &columns::build_group_header_cells(PREFIX_MEMBER_INLINE, ""),
+                    widths,
+                ));
+            };
             let group = &ws.groups()[group_index];
             let m = &group.members()[member_index];
             (Some(m), m.package_name().into_string(), group.is_named())
@@ -805,22 +744,13 @@ fn render_vendored_item(
             let v = &ws.vendored()[vendored_index];
             (Some(v), v.package_name().into_string())
         },
-        RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { primary, .. })
-            if !wtg.renders_as_group() =>
-        {
-            let ws = wtg.single_live_workspace().unwrap_or(primary);
-            let v = &ws.vendored()[vendored_index];
-            (Some(v), v.package_name().into_string())
-        },
         RootItem::Rust(RustProject::Package(pkg)) => {
             let v = &pkg.vendored()[vendored_index];
             (Some(v), v.package_name().into_string())
         },
-        RootItem::Worktrees(wtg @ WorktreeGroup::Packages { primary, .. })
-            if !wtg.renders_as_group() =>
-        {
-            let pkg = wtg.single_live_package().unwrap_or(primary);
-            let v = &pkg.vendored()[vendored_index];
+        RootItem::Worktrees(wtg) if !wtg.renders_as_group() => {
+            let entry = wtg.single_live().unwrap_or(&wtg.primary);
+            let v = &entry.rust_info().vendored()[vendored_index];
             (Some(v), v.package_name().into_string())
         },
         _ => (None, String::new()),
@@ -925,26 +855,12 @@ fn render_wt_vendored_item(
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let vendored_pkg = match &item.item {
-        RootItem::Worktrees(WorktreeGroup::Workspaces {
-            primary, linked, ..
-        }) => {
-            let ws = if worktree_index == 0 {
-                primary
-            } else {
-                linked.get(worktree_index - 1).unwrap_or(primary)
-            };
-            ws.vendored().get(vendored_index)
-        },
-        RootItem::Worktrees(WorktreeGroup::Packages {
-            primary, linked, ..
-        }) => {
-            let pkg = if worktree_index == 0 {
-                primary
-            } else {
-                linked.get(worktree_index - 1).unwrap_or(primary)
-            };
-            pkg.vendored().get(vendored_index)
-        },
+        RootItem::Worktrees(group) => group
+            .entry(worktree_index)
+            .unwrap_or(&group.primary)
+            .rust_info()
+            .vendored()
+            .get(vendored_index),
         _ => None,
     };
     let vendored_display_name =
@@ -957,26 +873,9 @@ fn render_wt_vendored_item(
         },
         |v| {
             let inherited_deleted = match &item.item {
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    let ws = if worktree_index == 0 {
-                        primary
-                    } else {
-                        linked.get(worktree_index - 1).unwrap_or(primary)
-                    };
-                    app.project_list.is_deleted(ws.path())
-                },
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => {
-                    let pkg = if worktree_index == 0 {
-                        primary
-                    } else {
-                        linked.get(worktree_index - 1).unwrap_or(primary)
-                    };
-                    app.project_list.is_deleted(pkg.path())
-                },
+                RootItem::Worktrees(group) => app
+                    .project_list
+                    .is_deleted(group.entry(worktree_index).unwrap_or(&group.primary).path()),
                 _ => false,
             };
             render_child_item(
@@ -1139,7 +1038,6 @@ pub fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Ve
 fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {
     use crate::project::RootItem;
     use crate::project::RustProject;
-    use crate::project::WorktreeGroup;
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             collect_member_group_disk(ws.groups(), values);
@@ -1149,25 +1047,15 @@ fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {
             collect_vendored_disk(pkg.vendored(), values);
         },
         RootItem::NonRust(_) => {},
-        RootItem::Worktrees(WorktreeGroup::Workspaces {
-            primary, linked, ..
-        }) => {
-            for ws in std::iter::once(primary).chain(linked.iter()) {
-                if let Some(bytes) = ws.disk_usage_bytes() {
+        RootItem::Worktrees(group) => {
+            for entry in group.iter_entries() {
+                if let Some(bytes) = entry.disk_usage_bytes() {
                     values.push(bytes);
                 }
-                collect_member_group_disk(ws.groups(), values);
-                collect_vendored_disk(ws.vendored(), values);
-            }
-        },
-        RootItem::Worktrees(WorktreeGroup::Packages {
-            primary, linked, ..
-        }) => {
-            for pkg in std::iter::once(primary).chain(linked.iter()) {
-                if let Some(bytes) = pkg.disk_usage_bytes() {
-                    values.push(bytes);
+                if let RustProject::Workspace(ws) = entry {
+                    collect_member_group_disk(ws.groups(), values);
                 }
-                collect_vendored_disk(pkg.vendored(), values);
+                collect_vendored_disk(entry.rust_info().vendored(), values);
             }
         },
     }

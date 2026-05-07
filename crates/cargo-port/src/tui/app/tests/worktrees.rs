@@ -236,13 +236,15 @@ fn discovered_workspace_worktree_with_members_expands_as_worktree_then_workspace
         BackgroundMsg::ProjectDiscovered { item: linked_item },
     );
 
-    let RootItem::Worktrees(WorktreeGroup::Workspaces { linked, .. }) = &app.project_list[0].item
-    else {
+    let RootItem::Worktrees(group) = &app.project_list[0].item else {
         panic!("expected discovered workspace worktree to form a worktree group");
     };
-    assert_eq!(linked.len(), 1);
+    assert_eq!(group.linked.len(), 1);
+    let RustProject::Workspace(linked_ws) = &group.linked[0] else {
+        panic!("linked entry should be a workspace");
+    };
     assert!(
-        linked[0].has_members(),
+        linked_ws.has_members(),
         "linked workspace worktree should arrive with member groups populated"
     );
 

@@ -44,7 +44,6 @@ use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::VendoredPackage;
 use crate::project::Workspace;
-use crate::project::WorktreeGroup;
 
 /// A searchable item in the universal finder.
 #[derive(Clone)]
@@ -133,26 +132,18 @@ pub(super) fn build_finder_index(
                 };
                 add_project_items_from_typed(&mut items, &context, &[], &[], &[]);
             },
-            RootItem::Worktrees(WorktreeGroup::Workspaces {
-                primary, linked, ..
-            }) => {
-                add_workspace_items(&mut items, primary);
-                for l in linked {
-                    if l.path() == primary.path() {
+            RootItem::Worktrees(group) => {
+                let primary_path = group.primary.path().clone();
+                let mut emit = |entry: &RustProject| match entry {
+                    RustProject::Workspace(ws) => add_workspace_items(&mut items, ws),
+                    RustProject::Package(pkg) => add_package_items(&mut items, pkg),
+                };
+                emit(&group.primary);
+                for l in &group.linked {
+                    if l.path() == &primary_path {
                         continue;
                     }
-                    add_workspace_items(&mut items, l);
-                }
-            },
-            RootItem::Worktrees(WorktreeGroup::Packages {
-                primary, linked, ..
-            }) => {
-                add_package_items(&mut items, primary);
-                for l in linked {
-                    if l.path() == primary.path() {
-                        continue;
-                    }
-                    add_package_items(&mut items, l);
+                    emit(l);
                 }
             },
         }

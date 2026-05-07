@@ -89,6 +89,20 @@ impl RustProject {
         }
     }
 
+    pub(crate) const fn rust_info(&self) -> &RustInfo {
+        match self {
+            Self::Workspace(ws) => &ws.rust,
+            Self::Package(pkg) => &pkg.rust,
+        }
+    }
+
+    pub(crate) const fn rust_info_mut(&mut self) -> &mut RustInfo {
+        match self {
+            Self::Workspace(ws) => &mut ws.rust,
+            Self::Package(pkg) => &mut pkg.rust,
+        }
+    }
+
     pub(crate) fn at_path(&self, path: &Path) -> Option<&ProjectInfo> {
         match self {
             Self::Workspace(ws) => info_in_workspace(ws, path),
@@ -153,6 +167,40 @@ impl RustProject {
         match self {
             Self::Workspace(ws) => collect_project_info_from_workspace(ws, out),
             Self::Package(pkg) => collect_project_info_from_package(pkg, out),
+        }
+    }
+}
+
+impl ProjectFields for RustProject {
+    fn path(&self) -> &AbsolutePath { Self::path(self) }
+
+    fn name(&self) -> Option<&str> { Self::name(self) }
+
+    fn visibility(&self) -> Visibility { Self::visibility(self) }
+
+    fn worktree_health(&self) -> WorktreeHealth { Self::worktree_health(self) }
+
+    fn disk_usage_bytes(&self) -> Option<u64> { Self::disk_usage_bytes(self) }
+
+    fn git_info(&self) -> Option<&CheckoutInfo> { Self::git_info(self) }
+
+    fn info(&self) -> &ProjectInfo {
+        match self {
+            Self::Workspace(ws) => ws.info(),
+            Self::Package(pkg) => pkg.info(),
+        }
+    }
+
+    fn display_path(&self) -> DisplayPath { Self::display_path(self) }
+
+    fn root_directory_name(&self) -> RootDirectoryName { Self::root_directory_name(self) }
+
+    fn worktree_status(&self) -> &WorktreeStatus { Self::worktree_status(self) }
+
+    fn crates_io_name(&self) -> Option<&str> {
+        match self {
+            Self::Workspace(ws) => ws.crates_io_name(),
+            Self::Package(pkg) => pkg.crates_io_name(),
         }
     }
 }

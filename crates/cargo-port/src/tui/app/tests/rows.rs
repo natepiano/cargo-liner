@@ -277,9 +277,7 @@ fn worktree_section_collapses_when_one_dismissed() {
 
     let mut items = vec![root];
     let linked_path = match &items[0] {
-        RootItem::Worktrees(WorktreeGroup::Packages { linked, .. }) => {
-            linked[0].path().to_path_buf()
-        },
+        RootItem::Worktrees(group) => group.linked[0].path().to_path_buf(),
         _ => unreachable!("expected package worktrees"),
     };
     items[0]
@@ -350,13 +348,11 @@ fn dismissing_deleted_linked_worktree_promotes_primary_back_to_root() {
     );
     assert_eq!(
         match &app.project_list[0].item {
-            RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. }) => {
+            RootItem::Worktrees(wtg) if matches!(&wtg.primary, RustProject::Package(_)) => {
                 assert_eq!(wtg.live_entry_count(), 1);
                 usize::from(wtg.renders_as_group())
             },
-            RootItem::Rust(_)
-            | RootItem::NonRust(_)
-            | RootItem::Worktrees(WorktreeGroup::Workspaces { .. }) => 0,
+            RootItem::Rust(_) | RootItem::NonRust(_) | RootItem::Worktrees(_) => 0,
         },
         0,
         "the remaining primary should no longer render as a worktree group"
@@ -435,13 +431,11 @@ fn dismissing_deleted_linked_workspace_worktree_promotes_primary_back_to_root() 
     );
     assert_eq!(
         match &app.project_list[0].item {
-            RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) => {
+            RootItem::Worktrees(wtg) if matches!(&wtg.primary, RustProject::Workspace(_)) => {
                 assert_eq!(wtg.live_entry_count(), 1);
                 usize::from(wtg.renders_as_group())
             },
-            RootItem::Rust(_)
-            | RootItem::NonRust(_)
-            | RootItem::Worktrees(WorktreeGroup::Packages { .. }) => 0,
+            RootItem::Rust(_) | RootItem::NonRust(_) | RootItem::Worktrees(_) => 0,
         },
         0,
         "the remaining primary should no longer render as a worktree group"

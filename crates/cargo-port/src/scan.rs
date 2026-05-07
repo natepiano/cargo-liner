@@ -57,6 +57,7 @@ use super::project::RustProject;
 use super::project::Submodule;
 use super::project::TargetRecord;
 use super::project::VendoredPackage;
+#[cfg(test)]
 use super::project::Workspace;
 use super::project::WorkspaceMetadata;
 use super::project::WorkspaceMetadataStore;
@@ -789,10 +790,11 @@ fn workspace_pattern_matches_segment(pattern: &str, value: &str) -> bool {
 
 /// Group worktree checkouts under their primary project.
 ///
-/// Projects sharing the same `worktree_primary_abs_path` are grouped
-/// into `Worktrees(WorktreeGroup::Workspaces { .. })` or
-/// `Worktrees(WorktreeGroup::Packages { .. })`.
-/// `NonRust` projects are not grouped into worktree variants.
+/// Projects sharing the same `worktree_primary_abs_path` are wrapped in a
+/// `Worktrees(WorktreeGroup { primary, linked })`. Each entry independently
+/// carries its own `RustProject` kind, so a primary `Package` can hold a
+/// linked `Workspace` (or vice versa) when one checkout has been converted
+/// and another has not. `NonRust` projects are not grouped.
 fn item_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
     match item {
         RootItem::Rust(p) => p.worktree_status().primary_root(),
@@ -870,41 +872,22 @@ fn merge_worktrees_new(items: &mut Vec<RootItem>) {
         linked_by_id.entry(id).or_default().push(item);
     }
 
-    // Replace each primary with its WorktreeGroup variant
-    // Process in reverse to avoid index shifting
+    // Replace each primary with a WorktreeGroup wrapping primary + linked.
+    // Process in reverse to avoid index shifting.
     let mut replacements: Vec<(usize, RootItem)> = Vec::new();
     for (id, idx) in &primary_map {
         let linked = linked_by_id.remove(id).unwrap_or_default();
-        let primary_item = &items[*idx];
-        let replacement = match primary_item {
-            RootItem::Rust(RustProject::Workspace(ws)) => {
-                let linked_ws: Vec<Workspace> = linked
-                    .into_iter()
-                    .filter_map(|item| {
-                        if let RootItem::Rust(RustProject::Workspace(linked_ws)) = item {
-                            Some(linked_ws)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                RootItem::Worktrees(WorktreeGroup::new_workspaces(ws.clone(), linked_ws))
-            },
-            RootItem::Rust(RustProject::Package(pkg)) => {
-                let linked_pkg: Vec<Package> = linked
-                    .into_iter()
-                    .filter_map(|item| {
-                        if let RootItem::Rust(RustProject::Package(linked_pkg)) = item {
-                            Some(linked_pkg)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                RootItem::Worktrees(WorktreeGroup::new_packages(pkg.clone(), linked_pkg))
-            },
-            _ => continue,
+        let RootItem::Rust(primary) = &items[*idx] else {
+            continue;
         };
+        let linked_projects: Vec<RustProject> = linked
+            .into_iter()
+            .filter_map(|item| match item {
+                RootItem::Rust(p) => Some(p),
+                _ => None,
+            })
+            .collect();
+        let replacement = RootItem::Worktrees(WorktreeGroup::new(primary.clone(), linked_projects));
         replacements.push((*idx, replacement));
     }
 
@@ -1341,16 +1324,7 @@ fn collect_cargo_metadata_roots(projects: &[RootItem]) -> Vec<AbsolutePath> {
 fn cargo_metadata_roots_for_item(item: &RootItem) -> Vec<AbsolutePath> {
     match item {
         RootItem::Rust(rust) => vec![rust.path().clone()],
-        RootItem::Worktrees(WorktreeGroup::Workspaces {
-            primary, linked, ..
-        }) => std::iter::once(primary.path().clone())
-            .chain(linked.iter().map(|ws| ws.path().clone()))
-            .collect(),
-        RootItem::Worktrees(WorktreeGroup::Packages {
-            primary, linked, ..
-        }) => std::iter::once(primary.path().clone())
-            .chain(linked.iter().map(|pkg| pkg.path().clone()))
-            .collect(),
+        RootItem::Worktrees(group) => group.iter_paths().cloned().collect(),
         RootItem::NonRust(_) => Vec::new(),
     }
 }
@@ -2076,10 +2050,14 @@ mod tests {
         merge_worktrees_new(&mut items);
 
         assert_eq!(items.len(), 1, "worktree should be merged into primary");
-        let RootItem::Worktrees(WorktreeGroup::Workspaces { ref linked, .. }) = items[0] else {
+        let RootItem::Worktrees(group) = &items[0] else {
             std::process::abort()
         };
-        assert_eq!(linked.len(), 1, "should have one linked worktree");
+        assert!(
+            matches!(&group.primary, RustProject::Workspace(_)),
+            "primary should be a workspace"
+        );
+        assert_eq!(group.linked.len(), 1, "should have one linked worktree");
     }
 
     #[test]
@@ -2090,10 +2068,14 @@ mod tests {
         merge_worktrees_new(&mut items);
 
         assert_eq!(items.len(), 1);
-        let RootItem::Worktrees(WorktreeGroup::Workspaces { ref linked, .. }) = items[0] else {
+        let RootItem::Worktrees(group) = &items[0] else {
             std::process::abort()
         };
-        assert_eq!(linked.len(), 1);
+        assert!(
+            matches!(&group.primary, RustProject::Workspace(_)),
+            "primary should be a workspace"
+        );
+        assert_eq!(group.linked.len(), 1);
     }
 
     #[test]
@@ -2165,10 +2147,14 @@ mod tests {
         merge_worktrees_new(&mut items);
 
         assert_eq!(items.len(), 1);
-        let RootItem::Worktrees(WorktreeGroup::Packages { ref linked, .. }) = items[0] else {
+        let RootItem::Worktrees(group) = &items[0] else {
             std::process::abort()
         };
-        assert_eq!(linked.len(), 1);
+        assert!(
+            matches!(&group.primary, RustProject::Package(_)),
+            "primary should be a package"
+        );
+        assert_eq!(group.linked.len(), 1);
     }
 
     #[test]

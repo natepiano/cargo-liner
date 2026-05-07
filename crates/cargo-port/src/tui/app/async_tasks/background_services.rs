@@ -138,7 +138,6 @@ fn collect_publishable_children(item: &RootItem, out: &mut Vec<(AbsolutePath, St
     use crate::project::Package;
     use crate::project::RustProject;
     use crate::project::Workspace;
-    use crate::project::WorktreeGroup;
 
     pub(super) fn push_workspace(ws: &Workspace, out: &mut Vec<(AbsolutePath, String)>) {
         for group in ws.groups() {
@@ -165,20 +164,12 @@ fn collect_publishable_children(item: &RootItem, out: &mut Vec<(AbsolutePath, St
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => push_workspace(ws, out),
         RootItem::Rust(RustProject::Package(pkg)) => push_package_vendored(pkg, out),
-        RootItem::Worktrees(WorktreeGroup::Workspaces {
-            primary, linked, ..
-        }) => {
-            push_workspace(primary, out);
-            for ws in linked {
-                push_workspace(ws, out);
-            }
-        },
-        RootItem::Worktrees(WorktreeGroup::Packages {
-            primary, linked, ..
-        }) => {
-            push_package_vendored(primary, out);
-            for pkg in linked {
-                push_package_vendored(pkg, out);
+        RootItem::Worktrees(group) => {
+            for entry in group.iter_entries() {
+                match entry {
+                    RustProject::Workspace(ws) => push_workspace(ws, out),
+                    RustProject::Package(pkg) => push_package_vendored(pkg, out),
+                }
             }
         },
         RootItem::NonRust(_) => {},

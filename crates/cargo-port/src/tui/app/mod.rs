@@ -97,7 +97,6 @@ use crate::project::ProjectFields;
 use crate::project::RustProject;
 use crate::project::Workspace;
 use crate::project::WorkspaceMetadataStore;
-use crate::project::WorktreeGroup;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 
@@ -1046,22 +1045,10 @@ fn root_item_scope_contains(item: &RootItem, session_path: &Path, row_path: &Pat
             package_scope_contains(pkg, session_path, row_path)
         },
         RootItem::NonRust(project) => project.path() == session_path && project.path() == row_path,
-        RootItem::Worktrees(WorktreeGroup::Workspaces {
-            primary, linked, ..
-        }) => {
-            workspace_scope_contains(primary, session_path, row_path)
-                || linked
-                    .iter()
-                    .any(|l| workspace_scope_contains(l, session_path, row_path))
-        },
-        RootItem::Worktrees(WorktreeGroup::Packages {
-            primary, linked, ..
-        }) => {
-            package_scope_contains(primary, session_path, row_path)
-                || linked
-                    .iter()
-                    .any(|l| package_scope_contains(l, session_path, row_path))
-        },
+        RootItem::Worktrees(group) => group.iter_entries().any(|entry| match entry {
+            RustProject::Workspace(ws) => workspace_scope_contains(ws, session_path, row_path),
+            RustProject::Package(pkg) => package_scope_contains(pkg, session_path, row_path),
+        }),
     }
 }
 
@@ -1102,45 +1089,24 @@ fn root_item_parent_row(item: &RootItem, session_path: &Path) -> Option<Discover
             package_parent_row(pkg, session_path, DiscoveryRowKind::Root)
         },
         RootItem::NonRust(_) => None,
-        RootItem::Worktrees(WorktreeGroup::Workspaces {
-            primary, linked, ..
-        }) => {
-            if primary.path() == session_path {
+        RootItem::Worktrees(group) => {
+            if group.primary.path() == session_path {
                 return None;
             }
-            if linked.iter().any(|l| l.path() == session_path) {
+            if group.linked.iter().any(|l| l.path() == session_path) {
                 return Some(DiscoveryParentRow {
-                    path: primary.path().clone(),
+                    path: group.primary.path().clone(),
                     kind: DiscoveryRowKind::Root,
                 });
             }
-            workspace_parent_row(primary, session_path, DiscoveryRowKind::WorktreeEntry).or_else(
-                || {
-                    linked.iter().find_map(|l| {
-                        workspace_parent_row(l, session_path, DiscoveryRowKind::WorktreeEntry)
-                    })
+            group.iter_entries().find_map(|entry| match entry {
+                RustProject::Workspace(ws) => {
+                    workspace_parent_row(ws, session_path, DiscoveryRowKind::WorktreeEntry)
                 },
-            )
-        },
-        RootItem::Worktrees(WorktreeGroup::Packages {
-            primary, linked, ..
-        }) => {
-            if primary.path() == session_path {
-                return None;
-            }
-            if linked.iter().any(|l| l.path() == session_path) {
-                return Some(DiscoveryParentRow {
-                    path: primary.path().clone(),
-                    kind: DiscoveryRowKind::Root,
-                });
-            }
-            package_parent_row(primary, session_path, DiscoveryRowKind::WorktreeEntry).or_else(
-                || {
-                    linked.iter().find_map(|l| {
-                        package_parent_row(l, session_path, DiscoveryRowKind::WorktreeEntry)
-                    })
+                RustProject::Package(pkg) => {
+                    package_parent_row(pkg, session_path, DiscoveryRowKind::WorktreeEntry)
                 },
-            )
+            })
         },
     }
 }

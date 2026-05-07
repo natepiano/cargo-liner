@@ -208,32 +208,12 @@ impl ProjectList {
     pub(super) fn for_each_leaf(&self, mut f: impl FnMut(&ProjectEntry)) {
         for entry in self.roots.values() {
             match &entry.item {
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    let synth = |ws: &Workspace| {
-                        ProjectEntry::with_repo(
-                            RootItem::Rust(RustProject::Workspace(ws.clone())),
+                RootItem::Worktrees(group) => {
+                    for project in group.iter_entries() {
+                        f(&ProjectEntry::with_repo(
+                            RootItem::Rust(project.clone()),
                             entry.git_repo.clone(),
-                        )
-                    };
-                    f(&synth(primary));
-                    for l in linked {
-                        f(&synth(l));
-                    }
-                },
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => {
-                    let synth = |pkg: &Package| {
-                        ProjectEntry::with_repo(
-                            RootItem::Rust(RustProject::Package(pkg.clone())),
-                            entry.git_repo.clone(),
-                        )
-                    };
-                    f(&synth(primary));
-                    for l in linked {
-                        f(&synth(l));
+                        ));
                     }
                 },
                 _ => f(entry),
@@ -246,18 +226,9 @@ impl ProjectList {
     pub(super) fn for_each_leaf_path(&self, mut f: impl FnMut(&Path, bool)) {
         for entry in self.roots.values() {
             match &entry.item {
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    for ws in std::iter::once(primary).chain(linked) {
-                        f(ws.path(), true);
-                    }
-                },
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => {
-                    for pkg in std::iter::once(primary).chain(linked) {
-                        f(pkg.path(), true);
+                RootItem::Worktrees(group) => {
+                    for project in group.iter_entries() {
+                        f(project.path(), true);
                     }
                 },
                 other => f(other.path(), other.is_rust()),
@@ -442,31 +413,14 @@ impl ProjectList {
     /// entries. For everything else, returns the state for the single path.
     pub(super) fn git_status_for_item(&self, item: &RootItem) -> Option<GitStatus> {
         match item {
-            RootItem::Worktrees(g) => {
-                let states: Box<dyn Iterator<Item = Option<GitStatus>>> = match g {
-                    WorktreeGroup::Workspaces {
-                        primary, linked, ..
-                    } => Box::new(
-                        std::iter::once(self.git_status_for(primary.path())).chain(
-                            linked
-                                .iter()
-                                .filter(|l| l.visibility() == Visibility::Visible)
-                                .map(|l| self.git_status_for(l.path())),
-                        ),
-                    ),
-                    WorktreeGroup::Packages {
-                        primary, linked, ..
-                    } => Box::new(
-                        std::iter::once(self.git_status_for(primary.path())).chain(
-                            linked
-                                .iter()
-                                .filter(|l| l.visibility() == Visibility::Visible)
-                                .map(|l| self.git_status_for(l.path())),
-                        ),
-                    ),
-                };
-                worst_git_status(states)
-            },
+            RootItem::Worktrees(g) => worst_git_status(
+                std::iter::once(self.git_status_for(g.primary.path())).chain(
+                    g.linked
+                        .iter()
+                        .filter(|l| l.visibility() == Visibility::Visible)
+                        .map(|l| self.git_status_for(l.path())),
+                ),
+            ),
             _ => self.git_status_for(item.path()),
         }
     }
@@ -564,16 +518,13 @@ impl ProjectList {
             RootItem::Rust(RustProject::Package(pkg)) => {
                 pkg.vendored().iter().any(|v| v.path() == path)
             },
-            RootItem::Worktrees(WorktreeGroup::Workspaces {
-                primary, linked, ..
-            }) => std::iter::once(primary)
-                .chain(linked.iter())
-                .any(|ws| ws.vendored().iter().any(|v| v.path() == path)),
-            RootItem::Worktrees(WorktreeGroup::Packages {
-                primary, linked, ..
-            }) => std::iter::once(primary)
-                .chain(linked.iter())
-                .any(|pkg| pkg.vendored().iter().any(|v| v.path() == path)),
+            RootItem::Worktrees(group) => group.iter_entries().any(|entry| {
+                entry
+                    .rust_info()
+                    .vendored()
+                    .iter()
+                    .any(|v| v.path() == path)
+            }),
             RootItem::NonRust(_) => false,
         })
     }
@@ -584,12 +535,14 @@ impl ProjectList {
                 .groups()
                 .iter()
                 .any(|g| g.members().iter().any(|m| m.path() == path)),
-            RootItem::Worktrees(WorktreeGroup::Workspaces {
-                primary, linked, ..
-            }) => std::iter::once(primary).chain(linked.iter()).any(|ws| {
-                ws.groups()
-                    .iter()
-                    .any(|g| g.members().iter().any(|m| m.path() == path))
+            RootItem::Worktrees(group) => group.iter_entries().any(|entry| {
+                if let RustProject::Workspace(ws) = entry {
+                    ws.groups()
+                        .iter()
+                        .any(|g| g.members().iter().any(|m| m.path() == path))
+                } else {
+                    false
+                }
             }),
             _ => false,
         })
@@ -641,43 +594,19 @@ impl ProjectList {
                         return Some(replacement);
                     }
                 },
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    if primary.path() == path
-                        && let RootItem::Rust(RustProject::Workspace(ws)) = replacement
+                RootItem::Worktrees(group) => {
+                    if group.primary.path() == path
+                        && let RootItem::Rust(rp) = replacement
                     {
-                        let old = primary.clone();
-                        *primary = ws;
-                        return Some(RootItem::Rust(RustProject::Workspace(old)));
+                        let old = std::mem::replace(&mut group.primary, rp);
+                        return Some(RootItem::Rust(old));
                     }
-                    for l in linked {
+                    for l in &mut group.linked {
                         if l.path() == path
-                            && let RootItem::Rust(RustProject::Workspace(ws)) = replacement
+                            && let RootItem::Rust(rp) = replacement
                         {
-                            let old = l.clone();
-                            *l = ws;
-                            return Some(RootItem::Rust(RustProject::Workspace(old)));
-                        }
-                    }
-                },
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => {
-                    if primary.path() == path
-                        && let RootItem::Rust(RustProject::Package(pkg)) = replacement
-                    {
-                        let old = primary.clone();
-                        *primary = pkg;
-                        return Some(RootItem::Rust(RustProject::Package(old)));
-                    }
-                    for l in linked {
-                        if l.path() == path
-                            && let RootItem::Rust(RustProject::Package(pkg)) = replacement
-                        {
-                            let old = l.clone();
-                            *l = pkg;
-                            return Some(RootItem::Rust(RustProject::Package(old)));
+                            let old = std::mem::replace(l, rp);
+                            return Some(RootItem::Rust(old));
                         }
                     }
                 },
@@ -723,14 +652,15 @@ impl ProjectList {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     try_insert_member(ws, &item_path, &item)
                 },
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    try_insert_member(primary, &item_path, &item)
-                        || linked
-                            .iter_mut()
-                            .any(|ws| try_insert_member(ws, &item_path, &item))
-                },
+                RootItem::Worktrees(group) => std::iter::once(&mut group.primary)
+                    .chain(group.linked.iter_mut())
+                    .any(|entry| {
+                        if let RustProject::Workspace(ws) = entry {
+                            try_insert_member(ws, &item_path, &item)
+                        } else {
+                            false
+                        }
+                    }),
                 _ => false,
             };
             if inserted {
@@ -762,12 +692,12 @@ impl ProjectList {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     regroup_workspace(ws, inline_dirs);
                 },
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    regroup_workspace(primary, inline_dirs);
-                    for l in linked {
-                        regroup_workspace(l, inline_dirs);
+                RootItem::Worktrees(group) => {
+                    for entry in std::iter::once(&mut group.primary).chain(group.linked.iter_mut())
+                    {
+                        if let RustProject::Workspace(ws) = entry {
+                            regroup_workspace(ws, inline_dirs);
+                        }
                     }
                 },
                 _ => {},
@@ -869,68 +799,35 @@ fn join_suffix(segments: &[&str], suffix_len: usize) -> String {
 }
 
 fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
+    let RootItem::Rust(linked) = item else {
+        return false;
+    };
+    if !linked.worktree_status().is_linked_worktree() {
+        return false;
+    }
     let existing_identity = item_worktree_identity(existing).cloned();
-
-    if let RootItem::Rust(RustProject::Workspace(linked)) = item
-        && linked.worktree_status().is_linked_worktree()
-    {
-        match existing {
-            RootItem::Rust(RustProject::Workspace(primary))
-                if linked.worktree_status().primary_root() == existing_identity.as_ref() =>
-            {
-                let primary = primary.clone();
-                *existing = RootItem::Worktrees(WorktreeGroup::new_workspaces(
-                    primary,
-                    vec![linked.clone()],
-                ));
-                return true;
-            },
-            RootItem::Worktrees(WorktreeGroup::Workspaces {
-                linked: group_linked,
-                ..
-            }) if linked.worktree_status().primary_root() == existing_identity.as_ref() => {
-                group_linked.push(linked.clone());
-                return true;
-            },
-            _ => {},
-        }
+    if linked.worktree_status().primary_root() != existing_identity.as_ref() {
+        return false;
     }
 
-    if let RootItem::Rust(RustProject::Package(linked)) = item
-        && linked.worktree_status().is_linked_worktree()
-    {
-        match existing {
-            RootItem::Rust(RustProject::Package(primary))
-                if linked.worktree_status().primary_root() == existing_identity.as_ref() =>
-            {
-                let primary = primary.clone();
-                *existing =
-                    RootItem::Worktrees(WorktreeGroup::new_packages(primary, vec![linked.clone()]));
-                return true;
-            },
-            RootItem::Worktrees(WorktreeGroup::Packages {
-                linked: group_linked,
-                ..
-            }) if linked.worktree_status().primary_root() == existing_identity.as_ref() => {
-                group_linked.push(linked.clone());
-                return true;
-            },
-            _ => {},
-        }
+    match existing {
+        RootItem::Rust(primary) => {
+            let primary = primary.clone();
+            *existing = RootItem::Worktrees(WorktreeGroup::new(primary, vec![linked.clone()]));
+            true
+        },
+        RootItem::Worktrees(group) => {
+            group.linked.push(linked.clone());
+            true
+        },
+        RootItem::NonRust(_) => false,
     }
-
-    false
 }
 
 fn item_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
     match item {
         RootItem::Rust(p) => p.worktree_status().primary_root(),
-        RootItem::Worktrees(WorktreeGroup::Workspaces { primary, .. }) => {
-            primary.worktree_status().primary_root()
-        },
-        RootItem::Worktrees(WorktreeGroup::Packages { primary, .. }) => {
-            primary.worktree_status().primary_root()
-        },
+        RootItem::Worktrees(group) => group.primary.worktree_status().primary_root(),
         RootItem::NonRust(_) => None,
     }
 }
@@ -1157,19 +1054,14 @@ impl ProjectList {
                     emit_vendored_rows(&mut rows, ni, pkg.vendored());
                 },
                 RootItem::NonRust(_) => {},
-                RootItem::Worktrees(wtg @ WorktreeGroup::Workspaces { .. }) => {
+                RootItem::Worktrees(wtg) => {
                     if wtg.renders_as_group() {
-                        emit_workspace_worktree_group(&mut rows, ni, wtg, expanded);
-                    } else if let Some(workspace) = wtg.single_live_workspace() {
-                        emit_groups(&mut rows, ni, workspace.groups(), expanded);
-                        emit_vendored_rows(&mut rows, ni, workspace.vendored());
-                    }
-                },
-                RootItem::Worktrees(wtg @ WorktreeGroup::Packages { .. }) => {
-                    if wtg.renders_as_group() {
-                        emit_package_worktree_group(&mut rows, ni, wtg, expanded);
-                    } else if let Some(package) = wtg.single_live_package() {
-                        emit_vendored_rows(&mut rows, ni, package.vendored());
+                        emit_worktree_group(&mut rows, ni, wtg, expanded);
+                    } else if let Some(entry) = wtg.single_live() {
+                        if let RustProject::Workspace(ws) = entry {
+                            emit_groups(&mut rows, ni, ws.groups(), expanded);
+                        }
+                        emit_vendored_rows(&mut rows, ni, entry.rust_info().vendored());
                     }
                 },
             }
@@ -1233,69 +1125,26 @@ fn emit_submodule_rows(rows: &mut Vec<VisibleRow>, ni: usize, submodules: &[Subm
     }
 }
 
-fn emit_workspace_worktree_group(
+fn emit_worktree_group(
     rows: &mut Vec<VisibleRow>,
     ni: usize,
     wtg: &WorktreeGroup,
     expanded: &HashSet<ExpandKey>,
 ) {
-    let WorktreeGroup::Workspaces {
-        primary, linked, ..
-    } = wtg
-    else {
-        return;
-    };
-    if !matches!(primary.visibility(), Visibility::Dismissed) {
-        let wi = 0;
-        rows.push(VisibleRow::WorktreeEntry {
-            node_index:     ni,
-            worktree_index: wi,
-        });
-        if primary.has_members() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
-            emit_worktree_children(rows, ni, wi, primary.groups(), primary.vendored(), expanded);
-        }
-    }
-    for (i, ws) in linked.iter().enumerate() {
-        if matches!(ws.visibility(), Visibility::Dismissed) {
+    for (wi, entry) in wtg.iter_entries().enumerate() {
+        if matches!(entry.visibility(), Visibility::Dismissed) {
             continue;
         }
-        let wi = i + 1;
         rows.push(VisibleRow::WorktreeEntry {
             node_index:     ni,
             worktree_index: wi,
         });
-        if ws.has_members() && expanded.contains(&ExpandKey::Worktree(ni, wi)) {
+        if let RustProject::Workspace(ws) = entry
+            && ws.has_members()
+            && expanded.contains(&ExpandKey::Worktree(ni, wi))
+        {
             emit_worktree_children(rows, ni, wi, ws.groups(), ws.vendored(), expanded);
         }
-    }
-}
-
-fn emit_package_worktree_group(
-    rows: &mut Vec<VisibleRow>,
-    ni: usize,
-    wtg: &WorktreeGroup,
-    _expanded: &HashSet<ExpandKey>,
-) {
-    let WorktreeGroup::Packages {
-        primary, linked, ..
-    } = wtg
-    else {
-        return;
-    };
-    if !matches!(primary.visibility(), Visibility::Dismissed) {
-        rows.push(VisibleRow::WorktreeEntry {
-            node_index:     ni,
-            worktree_index: 0,
-        });
-    }
-    for (i, pkg) in linked.iter().enumerate() {
-        if matches!(pkg.visibility(), Visibility::Dismissed) {
-            continue;
-        }
-        rows.push(VisibleRow::WorktreeEntry {
-            node_index:     ni,
-            worktree_index: i + 1,
-        });
     }
 }
 
@@ -1791,16 +1640,11 @@ impl ProjectList {
             } => {
                 let item = self.get(node_index)?;
                 match &item.item {
-                    RootItem::Worktrees(WorktreeGroup::Workspaces {
-                        primary, linked, ..
-                    }) => {
-                        let ws = if worktree_index == 0 {
-                            primary
-                        } else {
-                            linked.get(worktree_index - 1)?
-                        };
-                        ws.has_members()
-                            .then_some(ExpandKey::Worktree(node_index, worktree_index))
+                    RootItem::Worktrees(group) => match group.entry(worktree_index)? {
+                        RustProject::Workspace(ws) => ws
+                            .has_members()
+                            .then_some(ExpandKey::Worktree(node_index, worktree_index)),
+                        RustProject::Package(_) => None,
                     },
                     _ => None,
                 }
@@ -1857,24 +1701,7 @@ impl ProjectList {
                 worktree_index,
                 ..
             } => match &self.get(node_index)?.item {
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    if worktree_index == 0 {
-                        Some(primary.path().clone())
-                    } else {
-                        linked.get(worktree_index - 1).map(|ws| ws.path().clone())
-                    }
-                },
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => {
-                    if worktree_index == 0 {
-                        Some(primary.path().clone())
-                    } else {
-                        linked.get(worktree_index - 1).map(|pkg| pkg.path().clone())
-                    }
-                },
+                RootItem::Worktrees(group) => group.entry(worktree_index).map(|p| p.path().clone()),
                 _ => None,
             },
         }?;
@@ -1890,19 +1717,8 @@ impl ProjectList {
         self.iter()
             .enumerate()
             .find_map(|(ni, item)| match &item.item {
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    let has_match =
-                        primary.path() == path || linked.iter().any(|l| l.path() == path);
-                    has_match.then_some(ni)
-                },
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => {
-                    let has_match =
-                        primary.path() == path || linked.iter().any(|l| l.path() == path);
-                    has_match.then_some(ni)
+                RootItem::Worktrees(group) => {
+                    group.iter_entries().any(|p| p.path() == path).then_some(ni)
                 },
                 _ => None,
             })
@@ -1955,16 +1771,16 @@ impl ProjectList {
                         }
                     }
                 },
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    for (wi, ws) in std::iter::once(primary).chain(linked.iter()).enumerate() {
-                        if ws.has_members() {
-                            expanded.insert(ExpandKey::Worktree(ni, wi));
-                        }
-                        for (gi, group) in ws.groups().iter().enumerate() {
-                            if group.is_named() {
-                                expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                RootItem::Worktrees(group) => {
+                    for (wi, entry) in group.iter_entries().enumerate() {
+                        if let RustProject::Workspace(ws) = entry {
+                            if ws.has_members() {
+                                expanded.insert(ExpandKey::Worktree(ni, wi));
+                            }
+                            for (gi, g) in ws.groups().iter().enumerate() {
+                                if g.is_named() {
+                                    expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                                }
                             }
                         }
                     }
@@ -2028,40 +1844,25 @@ impl ProjectList {
                     }
                 },
                 RootItem::NonRust(_) => {},
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => {
-                    for (wi, ws) in std::iter::once(primary).chain(linked.iter()).enumerate() {
-                        if ws.path() == target_path {
+                RootItem::Worktrees(group) => {
+                    for (wi, entry) in group.iter_entries().enumerate() {
+                        if entry.path() == target_path {
                             expanded.insert(ExpandKey::Node(ni));
                         }
-                        for (gi, group) in ws.groups().iter().enumerate() {
-                            for member in group.members() {
-                                if member.path() == target_path {
-                                    expanded.insert(ExpandKey::Node(ni));
-                                    expanded.insert(ExpandKey::Worktree(ni, wi));
-                                    if group.is_named() {
-                                        expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                        if let RustProject::Workspace(ws) = entry {
+                            for (gi, g) in ws.groups().iter().enumerate() {
+                                for member in g.members() {
+                                    if member.path() == target_path {
+                                        expanded.insert(ExpandKey::Node(ni));
+                                        expanded.insert(ExpandKey::Worktree(ni, wi));
+                                        if g.is_named() {
+                                            expanded.insert(ExpandKey::WorktreeGroup(ni, wi, gi));
+                                        }
                                     }
                                 }
                             }
                         }
-                        for vendored in ws.vendored() {
-                            if vendored.path() == target_path {
-                                expanded.insert(ExpandKey::Node(ni));
-                                expanded.insert(ExpandKey::Worktree(ni, wi));
-                            }
-                        }
-                    }
-                },
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => {
-                    for (wi, pkg) in std::iter::once(primary).chain(linked.iter()).enumerate() {
-                        if pkg.path() == target_path {
-                            expanded.insert(ExpandKey::Node(ni));
-                        }
-                        for vendored in pkg.vendored() {
+                        for vendored in entry.rust_info().vendored() {
                             if vendored.path() == target_path {
                                 expanded.insert(ExpandKey::Node(ni));
                                 expanded.insert(ExpandKey::Worktree(ni, wi));
@@ -2244,18 +2045,11 @@ impl ProjectList {
             return true;
         };
         match &item.item {
-            RootItem::Worktrees(WorktreeGroup::Workspaces {
-                primary, linked, ..
-            }) => {
-                let ws = if wi == 0 {
-                    primary
-                } else {
-                    match linked.get(wi - 1) {
-                        Some(ws) => ws,
-                        None => return true,
-                    }
-                };
-                ws.groups().get(gi).is_some_and(|g| !g.is_named())
+            RootItem::Worktrees(group) => match group.entry(wi) {
+                Some(RustProject::Workspace(ws)) => {
+                    ws.groups().get(gi).is_some_and(|g| !g.is_named())
+                },
+                _ => true,
             },
             _ => true,
         }
@@ -2359,30 +2153,23 @@ impl ProjectList {
                 continue;
             };
             match item {
-                RootItem::Worktrees(group @ WorktreeGroup::Workspaces { primary, .. })
-                    if group.renders_as_group() =>
-                {
+                RootItem::Worktrees(group) if group.renders_as_group() => {
                     expanded.insert(ExpandKey::Node(current_index));
                     if legacy_root.had_children {
                         expanded.insert(ExpandKey::Worktree(current_index, 0));
                     }
-                    for &group_index in &legacy_root.named_groups {
-                        if primary.groups().get(group_index).is_some() {
-                            expanded.insert(ExpandKey::WorktreeGroup(
-                                current_index,
-                                0,
-                                group_index,
-                            ));
+                    if let RustProject::Workspace(ws) = &group.primary {
+                        for &group_index in &legacy_root.named_groups {
+                            if ws.groups().get(group_index).is_some() {
+                                expanded.insert(ExpandKey::WorktreeGroup(
+                                    current_index,
+                                    0,
+                                    group_index,
+                                ));
+                            }
+                            expanded
+                                .remove(&ExpandKey::Group(legacy_root.old_node_index, group_index));
                         }
-                        expanded.remove(&ExpandKey::Group(legacy_root.old_node_index, group_index));
-                    }
-                },
-                RootItem::Worktrees(group @ WorktreeGroup::Packages { .. })
-                    if group.renders_as_group() =>
-                {
-                    expanded.insert(ExpandKey::Node(current_index));
-                    if legacy_root.had_children {
-                        expanded.insert(ExpandKey::Worktree(current_index, 0));
                     }
                 },
                 _ => {},
@@ -2454,18 +2241,9 @@ impl ProjectList {
         let mut entries = Vec::new();
         for entry in self {
             let items: Vec<(&AbsolutePath, bool)> = match &entry.item {
-                RootItem::Worktrees(WorktreeGroup::Workspaces {
-                    primary, linked, ..
-                }) => std::iter::once(primary)
-                    .chain(linked.iter())
-                    .map(|p| (p.path(), true))
-                    .collect(),
-                RootItem::Worktrees(WorktreeGroup::Packages {
-                    primary, linked, ..
-                }) => std::iter::once(primary)
-                    .chain(linked.iter())
-                    .map(|p| (p.path(), true))
-                    .collect(),
+                RootItem::Worktrees(group) => {
+                    group.iter_entries().map(|p| (p.path(), true)).collect()
+                },
                 _ => vec![(entry.item.path(), entry.item.is_rust())],
             };
             for (path, is_rust) in items {
@@ -2525,15 +2303,9 @@ impl ProjectList {
 
 /// Build a `CleanSelection::WorktreeGroup` from a live `WorktreeGroup`.
 fn worktree_group_selection(group: &WorktreeGroup) -> CleanSelection {
-    match group {
-        WorktreeGroup::Workspaces { primary, linked } => CleanSelection::WorktreeGroup {
-            primary: primary.path().clone(),
-            linked:  linked.iter().map(|ws| ws.path().clone()).collect(),
-        },
-        WorktreeGroup::Packages { primary, linked } => CleanSelection::WorktreeGroup {
-            primary: primary.path().clone(),
-            linked:  linked.iter().map(|pkg| pkg.path().clone()).collect(),
-        },
+    CleanSelection::WorktreeGroup {
+        primary: group.primary.path().clone(),
+        linked:  group.linked.iter().map(|p| p.path().clone()).collect(),
     }
 }
 

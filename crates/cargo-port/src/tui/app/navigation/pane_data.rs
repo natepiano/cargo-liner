@@ -1,6 +1,6 @@
 use crate::project::ProjectFields;
 use crate::project::RootItem;
-use crate::project::WorktreeGroup;
+use crate::project::RustProject;
 use crate::tui;
 use crate::tui::app::App;
 use crate::tui::app::VisibleRow;
@@ -93,30 +93,18 @@ impl App {
         worktree_index: usize,
     ) -> Option<DetailPaneData> {
         match item {
-            RootItem::Worktrees(WorktreeGroup::Workspaces {
-                primary, linked, ..
-            }) => {
-                let ws = if worktree_index == 0 {
-                    primary
-                } else {
-                    linked.get(worktree_index - 1)?
-                };
-                let display_path = ws.display_path();
-                Some(tui::panes::build_pane_data_for_workspace_ref(
-                    self,
-                    ws,
-                    display_path.as_str(),
-                ))
-            },
-            RootItem::Worktrees(WorktreeGroup::Packages {
-                primary, linked, ..
-            }) => {
-                let pkg = if worktree_index == 0 {
-                    primary
-                } else {
-                    linked.get(worktree_index - 1)?
-                };
-                Some(tui::panes::build_pane_data_for_member(self, pkg))
+            RootItem::Worktrees(group) => match group.entry(worktree_index)? {
+                RustProject::Workspace(ws) => {
+                    let display_path = ws.display_path();
+                    Some(tui::panes::build_pane_data_for_workspace_ref(
+                        self,
+                        ws,
+                        display_path.as_str(),
+                    ))
+                },
+                RustProject::Package(pkg) => {
+                    Some(tui::panes::build_pane_data_for_member(self, pkg))
+                },
             },
             _ => None,
         }
