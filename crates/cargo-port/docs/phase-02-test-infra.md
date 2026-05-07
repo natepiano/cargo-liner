@@ -67,8 +67,8 @@ tui_pane/src/test_support/
 │                       #   noop dispatchers
 ├── samples.rs          # SAMPLE_TOML_BASIC, SAMPLE_TOML_MULTIBIND,
 │                       #   SAMPLE_TOML_DUPLICATE, SAMPLE_TOML_BAD_KEY
-├── keys.rs             # plain(KeyCode), shift_char(char),
-│                       #   ctrl_char(char), key_event(KeyCode)
+├── keys.rs             # shift_char(char), ctrl_char(char),
+│                       #   key_event(KeyCode)
 └── ctx.rs              # build_test_ctx(), assert_dispatch_count(...)
 ```
 
@@ -224,9 +224,7 @@ activate = "NotAKey"
 use crate::KeyBind;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-pub(crate) fn plain(code: KeyCode) -> KeyBind {
-    KeyBind { code, mods: KeyModifiers::NONE }
-}
+// Modifier-free binds use `KeyBind::from(KeyCode::…)` directly — no helper.
 
 pub(crate) fn shift_char(c: char) -> KeyBind { KeyBind::shift(c) }
 pub(crate) fn ctrl_char(c: char)  -> KeyBind { KeyBind::ctrl(c) }
@@ -335,7 +333,7 @@ Files under `tui_pane/tests/`:
 
 ## 4. Boundary with the binary's `tui_test_support`
 
-The binary already owns `src/tui/tui_test_support.rs` (per Phase 9 of `tui-pane-lib.md`). It contains `pub(super) fn make_app` and binary-only test fixtures (`App` constructors, project-tree fixtures, etc.).
+The binary already owns `src/tui/tui_test_support.rs` (per Phase 16 of `tui-pane-lib.md`). It contains `pub(super) fn make_app` and binary-only test fixtures (`App` constructors, project-tree fixtures, etc.).
 
 - `tui_pane::test_support` is `#[cfg(test)] pub(crate)`. It cannot leak across the workspace boundary — even `dev-dependencies` cannot reach a `cfg(test)`-gated module of an upstream crate. The binary's tests literally cannot `use tui_pane::test_support::…`; the path does not resolve.
 - `src/tui/tui_test_support.rs` is `pub(super)` inside the binary crate; `tui_pane` cannot depend on the binary crate (dependency direction is binary → library only), so `tui_pane`'s tests cannot import binary fixtures.

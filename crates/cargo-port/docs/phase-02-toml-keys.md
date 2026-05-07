@@ -71,24 +71,25 @@ A binding string is a `+`-separated list of modifier names followed by exactly o
 
 Rules:
 
-- Modifier names: `Ctrl`, `Alt`, `Shift`. Aliases: `Control` for `Ctrl`, `Option` for `Alt`. Case-insensitive (`ctrl`, `CTRL`, `Ctrl` all parse).
-- **Order is canonical: `Ctrl+Alt+Shift+<key>`.** The parser accepts any order; the formatter (`KeyBind::to_toml_string`) always emits canonical order.
-- **At most one of each modifier.** Repeats (e.g. `"Ctrl+Ctrl+k"`) are rejected.
+- Modifier names: `Ctrl`, `Alt`, `Shift`. Alias: `Control` for `Ctrl`. Case-insensitive on input (`ctrl`, `CTRL`, `Ctrl` all parse to `CONTROL`); the loader lowercases modifier tokens before handing the string to `KeyBind::parse`. Writeback emits canonical capitalized form.
+- **Order is canonical: `Ctrl+Alt+Shift+<key>`.** The parser accepts any order; the loader's writeback path emits canonical order via `KeyBind::display`.
+- **Repeats are silently OR'd.** `"Ctrl+Ctrl+k"` parses identically to `"Ctrl+k"` — bitwise OR on the modifier flags is idempotent. Not a hard rejection (Phase 2 parser contract).
 - The key token is the **last** segment after the final `+`. It is parsed by the rules in §1.5.
 - The literal `"+"` and `"="` are special: a binding string of exactly `"+"` or `"="` is the `Char('+')` / `Char('=')` key with no modifiers (see §1.5 and §5).
 
 ### 1.5 Special key names
 
-Recognized special-key tokens (case-insensitive). Each binds to a `KeyCode` directly with no modifier transformation:
+Recognized special-key tokens. **Case-sensitive** — Phase 2's `KeyBind::parse` matches these exact strings. (Modifier tokens are case-insensitive per §1.4; named-key tokens are not. Aligned with Zed/VSCode/Helix where the canonical form is the only accepted form.)
 
 | Token | `KeyCode` |
 |---|---|
-| `Enter` (alias `Return`) | `KeyCode::Enter` |
-| `Esc` (alias `Escape`) | `KeyCode::Esc` |
+| `Enter` | `KeyCode::Enter` |
+| `Esc` | `KeyCode::Esc` |
 | `Tab` | `KeyCode::Tab` |
+| `BackTab` | `KeyCode::BackTab` |
 | `Backspace` | `KeyCode::Backspace` |
-| `Delete` (alias `Del`) | `KeyCode::Delete` |
-| `Insert` (alias `Ins`) | `KeyCode::Insert` |
+| `Delete` | `KeyCode::Delete` |
+| `Insert` | `KeyCode::Insert` |
 | `Home` | `KeyCode::Home` |
 | `End` | `KeyCode::End` |
 | `PageUp` | `KeyCode::PageUp` |
@@ -100,7 +101,7 @@ Recognized special-key tokens (case-insensitive). Each binds to a `KeyCode` dire
 | `Space` | `KeyCode::Char(' ')` |
 | `F1` … `F12` | `KeyCode::F(1)` … `KeyCode::F(12)` |
 
-`F0` and `F13`+ are rejected (`InvalidKeyBind { reason: UnknownKeyToken }`).
+`F0` and `F13`+ are rejected with `KeyParseError::UnknownKey`. Lowercase or alias forms (`enter`, `tab`, `Return`, `Escape`, `Del`, `Ins`, `Option`) are **rejected** — single canonical name only.
 
 ### 1.6 Char syntax
 
@@ -108,13 +109,14 @@ Any single Unicode scalar value not consumed by the special-name table parses as
 
 ```
 "a"   → Char('a')
-"A"   → Char('A')           # uppercase implies Shift; Shift modifier is stripped
+"A"   → Char('a')           # loader lowercases single-letter keys; bare "A" is treated as "a"
 "="   → Char('=')
 "+"   → Char('+')           # bare "+" parses as plus-key, not "modifier with no key"
 "-"   → Char('-')
 "/"   → Char('/')
 " "   → Char(' ')           # but prefer "Space" for readability
-"é"   → Char('é')
+"é"   → Char('é')           # non-ASCII letters are not lowercased — the loader's
+                            # case-fold rule is ASCII-only, matching Zed/Helix behavior
 ```
 
 **No escape sequences.** TOML's own string escapes (`"\""`, `"\\"`) are the only mechanism for embedding `"` or `\`. The `,` `=` `+` characters need no escaping inside TOML strings; `=` and `+` parse as their `Char` codes when standing alone, and as modifier separators when surrounded by other tokens. To bind `Ctrl+=`, write `"Ctrl+="`; to bind `Ctrl++`, write `"Ctrl++"`.

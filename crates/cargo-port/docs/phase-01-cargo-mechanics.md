@@ -130,16 +130,18 @@ crossterm = "0.29.0"
 dirs      = "6.0.0"
 ratatui   = "0.30.0"
 serde     = { version = "1", features = ["derive"] }
+thiserror = "2"
 toml      = "1.1.2"
 
 [dev-dependencies]
-# none in Phase 1; Phase 2 invariant tests use only std + the crate's own types.
+# none in Phase 1; Phase 4 invariant tests use only std + the crate's own types.
 ```
 
 Notes:
 - Crate name `tui_pane` (snake_case) per `user_crate_naming.md` — only `cargo-*` bin crates use hyphens.
 - Versions for `crossterm` / `ratatui` / `dirs` match the root manifest verbatim. Cargo deduplicates because the version requirements are identical.
-- `serde` + `toml` are required by `keymap/load.rs` (Phase 2). Including them in Phase 1 keeps Phase 2 a pure-source diff.
+- `serde` + `toml` are required by `keymap/load.rs` (skeleton in Phase 4, filled in at Phase 8). Including them in Phase 1 keeps the foundations phases pure-source diffs.
+- `thiserror` is the framework's only error-derivation dep — every `tui_pane` error type (`KeyParseError` from Phase 2, `KeymapError` from Phase 4, etc.) is `#[derive(thiserror::Error)]`. `tui_pane` itself never depends on `anyhow` because library callers want typed variants, not opaque `anyhow::Error`. The binary adds `anyhow` to its own `[dependencies]` in whichever phase first wraps a `tui_pane` error with context (not Phase 1 — the binary does not use `anyhow` today).
 - No `[features]`. The framework is generic; no opt-in surface area.
 - `categories` / `keywords` / `homepage` omitted — the crate is not separately published in this plan. Add them if/when publishing to crates.io.
 
@@ -207,4 +209,4 @@ State this as a phase precondition: **every `pub` item ships with rustdoc as a p
 - [ ] Every new `pub` item in `tui_pane` has a rustdoc comment (`missing_docs = "deny"` is workspace-wide).
 ```
 
-This bullet belongs in the checklist for Phases 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 — every phase that touches `tui_pane`'s public surface. (Phase 1 itself only adds `lib.rs` with a crate-level doc comment, so the bullet is degenerate but worth keeping for uniformity.)
+This bullet belongs in the checklist for Phases 2–17 — every phase that touches `tui_pane`'s public surface. (Phase 1 itself only adds `lib.rs` with a crate-level doc comment, so the bullet is degenerate but worth keeping for uniformity.)

@@ -10,12 +10,13 @@ The crate is generic over a single app context type `Ctx` (the binary supplies `
 
 ```rust
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use thiserror::Error;
 
 /// A single keystroke: a `KeyCode` plus its modifier flags.
 ///
-/// Values are constructed with `From<KeyCode>` / `From<char>` for the
-/// modifier-free common case, the `shift` / `ctrl` / `plain` constructors
-/// when modifiers matter, and `from_event` when bridging from crossterm.
+/// Values are constructed with `From<KeyCode>` / `From<char>` /
+/// `From<KeyEvent>` for the conversion cases, and the `shift` / `ctrl`
+/// constructors when modifiers matter.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct KeyBind {
     pub code: KeyCode,
@@ -36,59 +37,85 @@ impl From<char> for KeyBind {
     }
 }
 
-impl KeyBind {
-    /// Modifier-free bind. Equivalent to `KeyBind::from(code.into())`.
-    pub fn plain(code: impl Into<KeyCode>) -> Self {
-        Self { code: code.into(), mods: KeyModifiers::NONE }
-    }
+/// Kind-tagged keyboard event. The framework's event-loop entry converts
+/// each crossterm `KeyEvent` into a `KeyInput`; downstream dispatch
+/// pattern-matches on the variant. Keymap dispatch only handles
+/// `KeyInput::Press`. `state` (CapsLock / NumLock) is dropped.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum KeyInput {
+    Press(KeyBind),
+    Release(KeyBind),
+    Repeat(KeyBind),
+}
 
+impl KeyInput {
+    pub const fn from_event(event: KeyEvent) -> Self { /* see source */ }
+    pub const fn bind(&self)  -> &KeyBind          { /* … */ }
+    pub const fn press(&self) -> Option<&KeyBind>  { /* Some(b) only on Press */ }
+}
+
+impl KeyBind {
     /// Shift-modified bind. `KeyBind::shift('g')` → `KeyBind { Char('g'), SHIFT }`.
-    pub fn shift(code: impl Into<KeyCode>) -> Self {
-        Self { code: code.into(), mods: KeyModifiers::SHIFT }
+    /// Accepts anything convertible to `KeyBind` (`KeyCode` or `char`);
+    /// composes with `ctrl` (`KeyBind::ctrl(KeyBind::shift('g'))` → `Char('g') + CONTROL | SHIFT`).
+    #[must_use]
+    pub fn shift(into: impl Into<Self>) -> Self {
+        let kb = into.into();
+        Self { code: kb.code, mods: kb.mods | KeyModifiers::SHIFT }
     }
 
     /// Control-modified bind. `KeyBind::ctrl('k')` → `KeyBind { Char('k'), CONTROL }`.
-    pub fn ctrl(code: impl Into<KeyCode>) -> Self {
-        Self { code: code.into(), mods: KeyModifiers::CONTROL }
-    }
-
-    /// Build a `KeyBind` from a crossterm `KeyEvent`. Drops fields the
-    /// framework does not bind on (`kind`, `state`).
-    pub fn from_event(event: KeyEvent) -> Self {
-        Self { code: event.code, mods: event.modifiers }
+    /// Same input/composition rules as `shift`.
+    #[must_use]
+    pub fn ctrl(into: impl Into<Self>) -> Self {
+        let kb = into.into();
+        Self { code: kb.code, mods: kb.mods | KeyModifiers::CONTROL }
     }
 
     /// Full display name, e.g. `"Up"`, `"Enter"`, `"Esc"`, `"Ctrl+K"`,
-    /// `"Shift+Tab"`. Used by the keymap-overlay help screen.
-    pub fn display(&self) -> String { /* … */ unimplemented!() }
+    /// `"Shift+Tab"`. Modifier order is canonical `Ctrl+Alt+Shift+key`.
+    /// Used by the keymap-overlay help screen.
+    #[must_use]
+    pub fn display(&self) -> String { /* see tui_pane/src/keymap/key_bind.rs */ }
 
     /// Compact display: arrow keys render as glyphs (`↑`, `↓`, `←`, `→`),
     /// every other key delegates to `display`. Used by the status bar.
     /// Must not produce a string containing `,` or `/` for any key the
-    /// app uses in a `BarRow::Paired` slot — `bar/` `debug_assert!`s this.
-    pub fn display_short(&self) -> String { /* … */ unimplemented!() }
+    /// parser can produce — `bar/` `Paired` row `debug_assert!`s this.
+    #[must_use]
+    pub fn display_short(&self) -> String { /* see source */ }
 
     /// Parse a TOML-style key string (e.g. `"Enter"`, `"Ctrl+K"`,
     /// `"Shift+Tab"`, `"+"`, `"="`). The pre-refactor `+`/`=` collapse
     /// is dropped — `"="` parses to `KeyCode::Char('=')` and `"+"` to
-    /// `KeyCode::Char('+')`.
-    pub fn parse(s: &str) -> Result<Self, KeyParseError> { /* … */ unimplemented!() }
+    /// `KeyCode::Char('+')`. Accepts `"Control"` as a synonym for `"Ctrl"`,
+    /// and `"Space"` for `KeyCode::Char(' ')`. Letter case is preserved
+    /// verbatim — `"Ctrl+K"` parses to `Char('K')`, not `Char('k')`. Any
+    /// case-insensitive lookup is a keymap-layer concern (Phase 8 loader),
+    /// not a parser concern.
+    pub fn parse(s: &str) -> Result<Self, KeyParseError> { /* see source */ }
 }
 
 /// Error returned by `KeyBind::parse`.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum KeyParseError {
+    /// Input was the empty string.
+    #[error("empty key string")]
     Empty,
+    /// Input contained a key token that was neither a recognized name
+    /// nor a single character.
+    #[error("unknown key: {0:?}")]
     UnknownKey(String),
+    /// Input contained a modifier token that was not `Ctrl` / `Control`
+    /// / `Shift` / `Alt`.
+    #[error("unknown modifier: {0:?}")]
     UnknownModifier(String),
-    InvalidChar(String),
 }
-
-impl std::fmt::Display for KeyParseError { /* … */ }
-impl std::error::Error for KeyParseError {}
 ```
 
-**Tradeoff.** Free constructors (`plain` / `shift` / `ctrl`) over a builder so multi-key literals stay one line. `From<KeyCode>` / `From<char>` keep the `bindings!` macro arms terse.
+**Tradeoff.** `shift` / `ctrl` take `impl Into<Self>` rather than `impl Into<KeyCode>` because crossterm's `KeyCode` does not implement `From<char>` (and orphan rules block adding it). Routing through `Into<KeyBind>` reuses the two `From` impls and makes the constructors composable. `KeyParseError` derives `thiserror::Error` so downstream wrappers (e.g. `KeymapError`) get automatic `#[source]` chaining via `#[from]`. The `InvalidChar` variant from earlier drafts was dropped — no parser path emits it.
+
+**Press/Release/Repeat split.** Crossterm hands us a single `KeyEvent` with a `kind: KeyEventKind` discriminant. Rather than a lossy `From<KeyEvent> for KeyBind` (which silently drops `kind` and lets `Release` events fire keymap actions), the framework uses a separate kind-tagged enum `KeyInput` that the event loop produces. Keymap dispatch sites pattern-match `KeyInput::Press(bind)` (or call `.press()`) — Release / Repeat events flow through unchanged for handlers that opt in. Modeled after Zed/GPUI (which type-splits `KeyDownEvent` / `KeyUpEvent`) and bevy_enhanced_input (which lifts the press-state lifecycle into the action API). Crossterm doesn't give us either affordance directly, so we add the type discipline at our boundary.
 
 ---
 
@@ -886,7 +913,7 @@ impl std::error::Error for KeymapError {}
 
 ## 11. Module hierarchy and `lib.rs` re-exports
 
-**Canonical source.** This section is the single authoritative definition of the `tui_pane` Phase 2 module hierarchy. `tui-pane-lib.md` Phase 2 references this section instead of restating it; do not duplicate the file list elsewhere. The directories declared here (`keymap/`, `bar/`, `panes/`, plus `settings.rs`) are the same skeletons that Phases 3 and 4 fill in.
+**Canonical source.** This section is the single authoritative definition of the `tui_pane` foundations module hierarchy (split across Phases 2–9 of `tui-pane-lib.md`). Each sub-phase references this section for its file list; do not duplicate the file list elsewhere. The directories declared here (`keymap/`, `bar/`, `panes/`, plus `settings.rs`) are the same skeletons that Phases 10 and 11 fill in.
 
 ```rust
 //! `tui_pane` — keymap-driven pane framework on top of crossterm + ratatui.
