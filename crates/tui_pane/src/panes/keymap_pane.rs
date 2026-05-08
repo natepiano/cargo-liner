@@ -118,8 +118,8 @@ impl<Ctx: AppContext> KeymapPane<Ctx> {
     pub fn editor_target(&self) -> Option<&Path> { self.editor_target.as_deref() }
 
     /// Bar slots for the overlay's local actions. The bar renderer
-    /// (Phase 12) consults this when [`Framework::overlay`](crate::Framework::overlay)
-    /// is `Some(FrameworkPaneId::Keymap)`.
+    /// (Phase 13) consults this when [`Framework::overlay`](crate::Framework::overlay)
+    /// is `Some(FrameworkOverlayId::Keymap)`.
     #[must_use]
     pub fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<KeymapPaneAction>)> {
         KeymapPaneAction::ALL

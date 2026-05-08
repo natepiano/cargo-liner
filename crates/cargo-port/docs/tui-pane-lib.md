@@ -2168,7 +2168,7 @@ The registry is populated by `KeymapBuilder::build_into(&mut framework)`: for ea
 - **`Framework<Ctx>` post-Phase-11 surface:** Phase-10-shipped fields (`mode_queries`, `pane_order`, `overlay`) plus Phase-11 additions (three pane fields, `dismiss`, `editor_target_path`, overlay-first `focused_pane_mode`).
 - **Toasts placeholder narrowed; framework-owned redesign moves to Phase 12.** `Toasts<Ctx>` ships as a `Vec<String>` message stack with `ToastsAction::Dismiss`, `Mode::Static`, and `Framework::dismiss(&mut self)` as the dismiss method — the minimum viable framework pane. Investigation (cargo-port `ToastManager` at `src/tui/toasts/manager.rs:236`) confirms a real toast subsystem belongs in `tui_pane`: the framework should own toast data, lifecycle, viewport, hitboxes, and dismiss semantics. Phase 12 replaces the placeholder with the typed manager, splits `FrameworkPaneId` into focus/overlay enums, and rewires the focus cycle and dismiss chain accordingly.
 
-### Phase 12 — Framework Toasts skeleton
+### Phase 12 — Framework Toasts skeleton ✅
 
 Phase 12 pivots `Toasts<Ctx>` from the Phase 11 placeholder to a framework-owned typed pane that owns the toast data model. The work splits into five connected pieces, all landing in this phase:
 
@@ -2391,6 +2391,45 @@ pub(super) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx)
 - `tui_pane/src/lib.rs` — re-export `FrameworkOverlayId`, `FrameworkFocusId`, `Toast`, `ToastId`, `ToastStyle`, `ListNavigation`; drop `FrameworkPaneId`.
 - `tui_pane/src/framework/mod.rs` test module — rewrite cases that named `FrameworkPaneId`.
 
+### Retrospective
+
+**What worked:**
+- Five-piece split (id enums / typed manager / dismiss chain / focus cycle / Navigation extension) landed without rework — each piece compiled cleanly against the previous one in order.
+- 11 integration tests in `tui_pane/tests/framework_toasts.rs` exercise the full chain through `Keymap::dispatch_framework_global`; one (`focus_changes_route_through_app_context_set_focus`) locks the Phase-19 invariant that focus changes route through `ctx.set_focus(...)`.
+
+**What deviated from the plan:**
+- `ToastsAction` was hand-rolled (empty enum + manual `Action` + `Display` impls) because `action_enum!` requires ≥1 variant. The plan's `pub enum ToastsAction { /* empty */ }` snippet is correct but does not flow through the macro.
+- Added `CycleDirection { Next, Prev }` (a closed enum) for `Toasts::try_consume_cycle_step`'s `direction` parameter — the plan said `direction: Direction` but did not define `Direction`. Lives next to `ListNavigation` in `framework/list_navigation.rs` and re-exported at the crate root.
+- Renamed the inner `toasts` field on `Toasts<Ctx>` to `entries` to clear the `clippy::struct_field_names` lint. Public surface unchanged.
+- `Display` for the empty `ToastsAction` returns `Ok(())` rather than `match *self {}` — clippy's `uninhabited_references` flags the deref, and `unreachable!()` is forbidden by the workspace's `clippy::unreachable` lint.
+- `framework::list_navigation` is a sub-module of `framework/`, but the public re-exports (`crate::ListNavigation`, `crate::CycleDirection`) flow through `framework/mod.rs`. `framework/list_navigation.rs` itself is not declared at the crate root — matches the existing `framework/dispatch.rs` pattern.
+
+**Surprises:**
+- `clippy::option_if_let_else` (nursery) flagged the `match cycle.iter().position(...) { Some(idx) => ..., None => ... }` arm in `focus_step`. Rewrote with `.map_or_else(|| fallback, |idx| advance)` — equivalent control flow, different expression.
+- The Display impl for an uninhabited type is genuinely awkward in this lint stack: `match *self {}` is UB-flagged, `unreachable!()` is banned, `match self {}` (without deref) needs nightly `exhaustive_patterns`. Returning `Ok(())` is the only path that compiles clean — and it is sound because the method cannot be called.
+- Integration test files at `tui_pane/tests/` need their own `#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]` block; the workspace's lint config does not exempt integration tests automatically.
+
+**Implications for remaining phases:**
+- **Phase 13 — bar renderer:** The Toasts arm of the bar adapter calls `framework.toasts.bar_slots(ctx).resolve_keys(...)`, which returns an empty `Vec<RenderedSlot>` in Phase 12 because `ToastsAction::ALL = &[]`. The "concrete arm per pane" walk handles this without a special case; no Phase-13 logic change beyond what the plan already names.
+- **Phase 13 — `Mode::Navigable` for focused Toasts:** the plan already states this; Phase 12 confirms `Toasts::mode` returns `Mode::Navigable`, so the `Nav`-region rule (suppress when mode is `Static` / `TextInput` / `None`) emits the nav row for Toasts as expected.
+- **Phase 14 — `Navigation<App>` impl needs HOME / END:** cargo-port's `NavigationAction` enum gains `Home` / `End` variants (with TOML keys `"home"` / `"end"`) and bindings (default `KeyCode::Home` / `KeyCode::End`). `list_navigation` default impl takes care of the translation; no per-impl override needed.
+- **Phase 15 — focused-Toasts dispatch chain:** Phase 12 owns the input path on the framework side (`dismiss_chain` / `on_navigation` / `try_consume_cycle_step`). Phase 15's "Toasts focus gate" subsection now reduces to wiring the inbound key through the Navigation scope, calling the right framework method, and recognising that `ToastsAction::Dismiss` is gone (Esc-on-Toasts flows through `GlobalAction::Dismiss`).
+- **Phase 17 — structural Esc preflight:** unchanged. With Toasts focused and `example_output` non-empty, the preflight still wins; `dismiss_chain` only fires when the preflight does not match the bound key.
+- **Phase 22 — toast manager migration:** the typed `Toast<Ctx>` / `Toasts<Ctx>` skeleton is in place. Phase 22 grows the field set (lifecycle, tracked items, phase) and adds the rendering / hitbox / format modules. No struct-level renames; Phase 22 also replaces the private `body: String` storage with a typed `ToastBody` (see Phase 22 §1) — an intentional internal representation change, not purely additive. The `Toasts::active()` slice is read-only and stable.
+- **`CycleDirection` is now a public framework type.** Phase 22's prune-on-tick path will use it where the existing `i32 direction` argument was implied; binaries that drive focus programmatically (cargo-port does not, today) get a cleaner enum.
+
+### Phase 12 Review
+
+- **Phase 13** — added one sentence under the "concrete arm per pane" prose noting `Toasts::bar_slots` returns an empty `Vec<RenderedSlot>` in Phase 12 because `ToastsAction::ALL = &[]`; the Nav/Global regions still emit. Phase 20 re-snapshots after `Activate` lands.
+- **Phase 14** — `NavigationAction` line now spells out the six variants (`Up`/`Down`/`Left`/`Right`/`Home`/`End`), TOML keys `"home"`/`"end"`, default bindings `KeyCode::Home`/`KeyCode::End`, and that the `Navigation<App>` impl inherits the trait's default `list_navigation` (no override).
+- **Phase 15** — Toasts focus gate prose collapsed to a one-line preface ("Framework owns the input path per Phase 12; Phase 15 wires the inbound key through these hooks"). Step 1 now names the typed `CycleDirection::Next` / `CycleDirection::Prev` argument and clarifies that the matched-action branch picks which is passed. Step 2 notes that `dismiss_chain` calls `reconcile_focus_after_toast_change(ctx)` automatically, so dispatch needs no extra Phase-15 call site. Closing line records that `ToastsAction::Dismiss` is gone (Phase 12).
+- **Phase 17** — Esc-preflight tradeoff sentence widened to `dismiss_chain → dismiss_framework → toasts.dismiss_focused()` for symmetry with the rest of the doc.
+- **Phase 18** — top of the section now states that framework-side cleanup (`FrameworkPaneId`, `Framework::dismiss`, `try_pop_top`, `ToastsAction::Dismiss`, `Vec<String>` placeholder, `Mode::Static` for Toasts) all landed in Phase 12; Phase 18 deletes binary-side artifacts only.
+- **Phase 19** — bar-on-rebind list now includes a `key_for(NavigationAction::Home/End)` round-trip assertion. The `AppContext::set_focus is the single funnel` bullet now cross-references Phase 12's `focus_changes_route_through_app_context_set_focus` test (focused-Toasts arm already covered) and frames Phase 19 as widening to overlay open/close + pane cycling.
+- **Phase 20** — §3 now states explicitly that the Phase-12 hand-rolled `Action` / `Display` impls on `ToastsAction` are deleted, and `ToastsAction::Activate` is declared via the standard `action_enum!` macro (`Activate => ("activate", "open", "Activate focused toast")`).
+- **Phase 22** — §1 now flags `body: String → body: ToastBody` as an intentional internal representation change (not purely additive), shows the `ToastBody { Line, Lines }` enum with `From<String>` / `From<&str>` impls, and lists which push entry points keep `impl Into<String>` boundary conversion. Adds the `Toast::body()` accessor decision: returns `&ToastBody` (public-API change in this phase). §2 now prefaces the new method list with the Phase 12 / Phase 20 surface so a reader does not assume those methods are missing; `push_timed` / `push_task` arguments clarified to take raw `Duration` (not `ToastDuration` — that newtype validates TOML, not in-code Durations). §5 adds that the dispatch-time call site to `reconcile_focus_after_toast_change` was wired in Phase 12; Phase 22 only adds the tick-driver call site. §6 collapsed to a single-sentence cross-reference. Cross-crate test note clarifies `NoToastAction`-typed test pushes use `action: None` only (the type is uninhabited).
+- **Phase 12 retrospective wording** — softened from "field-set growth, no renames" to "no struct-level renames; Phase 22 also replaces the private `body: String` storage with `ToastBody`," matching the friend's review.
+
 ### Phase 13 — Framework bar renderer
 
 Add `tui_pane/src/bar/` per the BarRegion model:
@@ -2415,7 +2454,7 @@ let pane_slots: Vec<RenderedSlot> = match framework.overlay() {
 // region modules then partition pane_slots by `region` field.
 ```
 
-The three framework panes (`KeymapPane`, `SettingsPane`, `Toasts`) each return a concrete `Vec<(BarRegion, BarSlot<{Pane}Action>)>` from their inherent `bar_slots()`. The bar adapter walks one concrete arm per pane, not one generic helper. Each pane's `defaults()` is **public** (Phase 11), so the adapter calls `pane.defaults().into_scope_map()` and uses the public `ScopeMap::key_for` / `display_keys_for` accessors to pair labels with keys — no `Bindings::entries` widening needed. `framework_globals` resolves through the existing `Keymap::framework_globals()` accessor (which returns `&ScopeMap<GlobalAction>` directly — typed, no downcast). The result: every region module sees `Vec<RenderedSlot>` regardless of source.
+The three framework panes (`KeymapPane`, `SettingsPane`, `Toasts`) each return a concrete `Vec<(BarRegion, BarSlot<{Pane}Action>)>` from their inherent `bar_slots()`. The bar adapter walks one concrete arm per pane, not one generic helper. Each pane's `defaults()` is **public** (Phase 11), so the adapter calls `pane.defaults().into_scope_map()` and uses the public `ScopeMap::key_for` / `display_keys_for` accessors to pair labels with keys — no `Bindings::entries` widening needed. `framework_globals` resolves through the existing `Keymap::framework_globals()` accessor (which returns `&ScopeMap<GlobalAction>` directly — typed, no downcast). The result: every region module sees `Vec<RenderedSlot>` regardless of source. In Phase 12's state `Toasts::bar_slots` returns an empty `Vec<RenderedSlot>` (because `ToastsAction::ALL = &[]`); the `Nav` and `Global` regions still emit. Phase 20 re-snapshots once `Activate` lands and `Toasts::bar_slots` produces a non-empty `PaneAction` row.
 
 **Editor-target wire-deferred.** `KeymapPane::editor_target()` and `SettingsPane::editor_target()` ship in Phase 11 but always return `None` until Phase 15 wires the `Awaiting`/`Editing` transitions. Phase 13's snapshot fixtures construct only `Browse`-state framework panes unless they synthesize the editor state per the test scaffolding called out below.
 
@@ -2446,7 +2485,7 @@ Snapshot tests in this phase cover the framework panes only (Settings Browse / S
 In the cargo-port binary crate:
 
 - **`action_enum!` migration cost.** Every existing `action_enum!` invocation in `src/tui/` gains a third positional `bar_label` literal between the toml key and description, per Phase 5's grammar amendment. When the bar text matches the toml key, just duplicate the literal — no per-arm design decision. The hand-rolled `tui_pane::GlobalAction` already ships its own `bar_label` (Phase 5). The macro itself was already updated in Phase 5 and the cross-crate fixtures in `tui_pane/tests/macro_use.rs` already use the 3-positional form (verified Phase 7) — Phase 14's binary-side migration is purely a per-call-site update, not a grammar change.
-- Define `NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction`.
+- Define `NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction`. **`NavigationAction` carries six variants** (`Up`, `Down`, `Left`, `Right`, `Home`, `End`) per the Phase 12 trait extension; the new `Home` / `End` variants take TOML keys `"home"` / `"end"` and default bindings `KeyCode::Home` / `KeyCode::End`. The cargo-port `Navigation<App>` impl supplies `const HOME` / `const END` and inherits the trait's default `list_navigation` (no per-impl override — the four directional consts plus `HOME` / `END` are sufficient).
 - **Split today's `GlobalAction`** in `src/tui/keymap.rs` into `tui_pane::GlobalAction` (the framework half: Quit/Restart/NextPane/PrevPane/OpenKeymap/OpenSettings/Dismiss) and `AppGlobalAction` (binary-owned). During Phases 14–17 the binary's existing `GlobalAction` stays in place; references to the framework's enum are path-qualified as `tui_pane::GlobalAction` to disambiguate. Phase 18 deletes the binary's old enum and `use tui_pane::GlobalAction` makes the name available unqualified. (Requires `pub use keymap::GlobalAction;` at `tui_pane/src/lib.rs` crate root — add this re-export when Phase 14 lands, mirroring the Phase 3 `Action` precedent.)
 - Add `ExpandRow` / `CollapseRow` to `ProjectListAction`.
 - Implement `Pane<App>` and `Shortcuts<App>` for each app pane (Package, Git, ProjectList, CiRuns, Lints, Targets, Output, Lang, Cpu, Finder). Each pane:
@@ -2478,15 +2517,15 @@ Convert overlay handlers to scope dispatch:
 - The Finder's TextInput handler is the free fn `finder_keys(KeyBind, &mut App)` referenced from `Pane<App>::mode()`'s `Mode::TextInput(finder_keys)` return. While the Finder is focused and its mode is `TextInput`, the framework dispatch routes every keystroke to that handler — globals/nav scopes do not fire (the handler is sole authority). The handler dispatches Finder action keys (`Confirm`, `Cancel`) through `keymap.dispatch_app_pane(FinderPane::APP_PANE_ID, &bind, ctx)` — `KeyOutcome::Consumed` means a Finder action fired and consumed the keystroke; `KeyOutcome::Unhandled` falls through to the literal `Char(c)` / `Backspace` / `Delete` text-input behavior. (Pre-Phase-9-reset drafts read action enum values via a typed accessor; that accessor was dropped — dispatch-and-observe replaces it.)
 - Framework `SettingsPane::handle_key(&mut self, ctx, &bind) -> KeyOutcome` replaces today's `handle_settings_key` + `handle_settings_adjust_key` + `handle_settings_edit_key`. Browse/Editing modes route through internal mode flag. The dispatch caller checks the return: `KeyOutcome::Consumed` halts; `KeyOutcome::Unhandled` falls through to globals/dismiss. **Phase 15 production transitions** wire the `Browse → Editing` step (Enter/Space on a row), the Save/Cancel returns to `Browse`, and the `settings_edit_keys` `fn(KeyBind, &mut Ctx)` swap from a stub to a real handler that mutates the focused setting's editing buffer.
 - Framework `KeymapPane::handle_key(&mut self, ctx, &bind) -> KeyOutcome` replaces `handle_keymap_key`. Browse/Awaiting/Conflict modes route through internal mode flag. Same `KeyOutcome` return contract. **Phase 15 production transitions** wire `Browse → Awaiting` (Enter on a row), `Awaiting → Conflict` (captured key collides) or `Awaiting → Browse` (clean rebind), and `Conflict → Browse` (resolve). The `keymap_capture_keys` `fn(KeyBind, &mut Ctx)` swaps from a stub to a real handler that records the captured `KeyBind`. The `#[allow(dead_code, reason = "Phase 15 transitions...")]` on the `EditState` variants in both panes comes off in this phase.
-- **Toasts focus gate.** When current focus is `FocusedPane::Framework(FrameworkFocusId::Toasts)`, dispatch runs the focused-Toasts chain in this order:
-  1. **Pre-globals**: if the inbound key matches the live keymap entry for `GlobalAction::NextPane` or `PrevPane`, call `framework.toasts.try_consume_cycle_step(direction)`. If it returns `true` (scroll room), consume the key and stop. Otherwise continue.
-  2. **Framework globals** (incl. `Dismiss`) — `GlobalAction::Dismiss` flows through `dismiss_chain → dismiss_framework → toasts.dismiss_focused()`.
+- **Toasts focus gate.** Framework owns the input path per Phase 12 (`dismiss_chain`, `on_navigation`, `try_consume_cycle_step`); Phase 15 wires the inbound key through these hooks. When current focus is `FocusedPane::Framework(FrameworkFocusId::Toasts)`, dispatch runs the focused-Toasts chain in this order:
+  1. **Pre-globals**: if the inbound key matches the live keymap entry for `GlobalAction::NextPane`, call `framework.toasts.try_consume_cycle_step(CycleDirection::Next)`; for `PrevPane`, call it with `CycleDirection::Prev`. If it returns `true` (scroll room), consume the key and stop. Otherwise continue. The `CycleDirection` arg is determined by which matched action's keymap entry the inbound key hit; the hook never runs for any other key.
+  2. **Framework globals** (incl. `Dismiss`) — `GlobalAction::Dismiss` flows through `dismiss_chain → dismiss_framework → toasts.dismiss_focused()`. `dismiss_chain` calls `reconcile_focus_after_toast_change(ctx)` automatically when the toast vec drops to empty (Phase 12), so dispatch-time post-dismiss focus repair needs no extra Phase 15 call site.
   3. **App globals**.
   4. **Focused-pane scope** — `ToastsAction` is empty in Phase 12 (Phase 20 adds `Activate`); this slot is reserved in the chain order so Phase 20 can wire `Activate` without restructuring dispatch.
   5. **Resolved navigation**: if the inbound key resolves to a `NavigationAction` through the keymap, translate to `ListNavigation` via `Navigation::list_navigation` (default impl matches against the trait's `UP`/`DOWN`/`HOME`/`END` constants) and call `framework.toasts.on_navigation(list_nav)`. Pure pane-local viewport mutation; no `&mut Ctx` needed.
   6. **Unhandled** — drop.
 
-  Phase 14 has no Toasts work — the framework already owns the input path. The borrow trap that Phase 11's review flagged is avoided structurally: every focused-Toasts entry point takes `&mut self` only.
+  Phase 14 has no Toasts work — the framework already owns the input path. `ToastsAction::Dismiss` is gone (Phase 12); Esc-on-Toasts flows through `GlobalAction::Dismiss`. The borrow trap that Phase 11's review flagged is avoided structurally: every focused-Toasts entry point takes `&mut self` only.
 
 **`KeyOutcome` enum (introduced in Phase 9, broadened in Phase 15).** Public, two-variant: `Consumed` (pane handled the key; caller stops dispatch), `Unhandled` (caller continues to the globals chain / dismiss fallback). First defined in Phase 9 as the return type of `RuntimeScope::dispatch_key` (app-pane dispatch path, surfaced publicly through `Keymap::dispatch_app_pane`). Phase 11 re-uses the same enum on framework-pane inherent `handle_key` methods so the dispatch loop reads one return type across both surfaces. Boolean would compile, but standing rule "enums over `bool` for owned booleans" applies — the return is a domain decision (handled vs not handled), not a generic flag.
 
@@ -2540,7 +2579,7 @@ The reverse-lookup form (`Action → KeyBind`) is the inverse of dispatch (`KeyB
 
 After Phase 17: every key dispatches through the keymap. No `KeyCode::*` direct match for command keys remains.
 
-**Pre-flight ordering vs. dispatch chain.** The Esc-on-output preflight runs **before** the dispatch chain (overlay layer → focused-pane match → globals → navigation → per-pane scope → `dismiss_chain`). With Toasts focused and `example_output` non-empty, an Esc therefore clears the output (the preflight fires) rather than firing `dismiss_chain` (which would have dismissed the focused toast). This matches today's binary, where the `input.rs:112` Esc-on-output gate also runs before the per-pane `handle_toast_key` arm. The `!matches!(..., Mode::TextInput(_))` guard suppresses the preflight when the focused pane is in text-input mode (Settings Editing, Keymap Awaiting, or the Finder); focused Toasts is `Mode::Navigable`, not `Mode::TextInput`, so the preflight does fire on a focused-toasts Esc.
+**Pre-flight ordering vs. dispatch chain.** The Esc-on-output preflight runs **before** the dispatch chain (overlay layer → focused-pane match → globals → navigation → per-pane scope → `dismiss_chain`). With Toasts focused and `example_output` non-empty, an Esc therefore clears the output (the preflight fires) rather than `dismiss_chain → dismiss_framework → toasts.dismiss_focused()` (which would have dismissed the focused toast). This matches today's binary, where the `input.rs:112` Esc-on-output gate also runs before the per-pane `handle_toast_key` arm. The `!matches!(..., Mode::TextInput(_))` guard suppresses the preflight when the focused pane is in text-input mode (Settings Editing, Keymap Awaiting, or the Finder); focused Toasts is `Mode::Navigable`, not `Mode::TextInput`, so the preflight does fire on a focused-toasts Esc.
 
 **Phase 17 tests:**
 - Rebinding `OutputAction::Cancel` to `'q'` clears example_output from any pane.
@@ -2548,6 +2587,8 @@ After Phase 17: every key dispatches through the keymap. No `KeyCode::*` direct 
 - With Settings in Editing mode, pressing Esc cancels the edit instead of clearing example_output (text-input gating).
 
 ### Phase 18 — Bar swap and cleanup
+
+**Framework-side cleanup landed in Phase 12.** `FrameworkPaneId` (split into `FrameworkOverlayId` + `FrameworkFocusId`), `Framework::dismiss` (renamed `dismiss_framework`), `Toasts::try_pop_top`, `ToastsAction::Dismiss`, the `Vec<String>` placeholder, and `Mode::Static` for Toasts are all already gone. Phase 18 deletes binary-side artifacts only.
 
 Add the `What dissolves` / `What survives` summary (currently in this doc) as user-facing notes inside `tui_pane/README.md` so the published library has its own change log of what the framework absorbed.
 
@@ -2579,6 +2620,7 @@ Bar-on-rebind:
 
 - Rebinding each `*Action::Activate` (`Package`, `Git`, `Targets`, `CiRuns`, `Lints`) updates that pane's bar.
 - Rebinding `NavigationAction::Up` / `Down` / `Left` / `Right` updates the `↑/↓` nav row in every base-pane bar that uses it.
+- `key_for(NavigationAction::Home) == KeyCode::Home` and `key_for(NavigationAction::End) == KeyCode::End` round-trip after a default build (locks the Phase 12 `Navigation` trait extension).
 - Rebinding `GlobalAction::NextPane` updates the pane-cycle row.
 - Rebinding `ProjectListAction::ExpandAll` / `CollapseAll` updates the `+/-` row.
 - Rebinding `ProjectListAction::ExpandRow` / `CollapseRow` updates the `←/→ expand` row.
@@ -2596,7 +2638,7 @@ Globals + precedence:
 - Rebinding `GlobalAction::NextPane` to `j` (vim-off) cycles panes from any base pane.
 - Rebinding `ProjectListAction::ExpandRow` makes the pane-scope binding fire instead of `NavigationAction::Right`.
 - Rebinding `FinderAction::Activate` to `Tab` while finder is open fires Activate, NOT `GlobalAction::NextPane`.
-- **`AppContext::set_focus` is the single funnel.** A test impl that overrides `set_focus` to count calls observes every framework focus change (NextPane/PrevPane, OpenKeymap, OpenSettings, return-from-overlay) — locks the Phase 6 narrowed-implementor-surface contract.
+- **`AppContext::set_focus` is the single funnel.** A test impl that overrides `set_focus` to count calls observes every framework focus change (NextPane/PrevPane, OpenKeymap, OpenSettings, return-from-overlay) — locks the Phase 6 narrowed-implementor-surface contract. Phase 12's `tui_pane/tests/framework_toasts.rs::focus_changes_route_through_app_context_set_focus` already covers the focused-Toasts arm; Phase 19 widens it to overlay open/close and pane cycling.
 
 Dispatch parity (per pane, the highest-risk path):
 
@@ -2668,10 +2710,16 @@ impl<Ctx: AppContext> Toasts<Ctx> {
 }
 ```
 
-**3. `ToastsAction::Activate` and `ToastCommand<A>`.** Phase 20 adds `Activate` to the previously empty `ToastsAction` enum. Navigation does not flow through `ToastsAction` — it routes through `on_navigation(ListNavigation)` from Phase 12. `Toasts::handle_key` returns a command rather than mutating cross-borrow state directly:
+**3. `ToastsAction::Activate` and `ToastCommand<A>`.** Phase 20 adds `Activate` to the previously empty `ToastsAction` enum. Navigation does not flow through `ToastsAction` — it routes through `on_navigation(ListNavigation)` from Phase 12. **Delete the Phase-12 hand-rolled `Action` / `Display` impls on `ToastsAction`** — now that the enum has a variant, declare it through the standard `action_enum!` macro so the impls are generated and consistent with every other action enum. `Toasts::handle_key` returns a command rather than mutating cross-borrow state directly:
 
 ```rust
-pub enum ToastsAction { Activate }
+crate::action_enum! {
+    /// Actions reachable on the toast stack's local bar.
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    pub enum ToastsAction {
+        Activate => ("activate", "open", "Activate focused toast");
+    }
+}
 
 pub enum ToastCommand<A> {
     None,
@@ -2859,7 +2907,7 @@ tui_pane/src/toasts/
   tracked_item.rs — TrackedItem + TrackedItemKey + TrackedItemView
 ```
 
-`Toasts<Ctx>` from Phase 12 absorbs `ToastManager`'s methods directly — it is the manager. `Toast<Ctx>` (generic since Phase 12) extends to carry the lifecycle — public signature unchanged, the field set grows:
+`Toasts<Ctx>` from Phase 12 absorbs `ToastManager`'s methods directly — it is the manager. `Toast<Ctx>` (generic since Phase 12) extends to carry the lifecycle. The fields are private, so this is not a public-field break, but the storage type for the body changes from `String` to a typed `ToastBody` enum — an intentional internal representation change called out here so future implementers do not mistake it for a purely additive growth:
 
 ```rust
 pub enum ToastLifetime {
@@ -2888,17 +2936,54 @@ pub struct Toast<Ctx: AppContext> {
     action:         Option<Ctx::ToastAction>,
     tracked_items:  Vec<TrackedItem>,
 }
+
+/// Typed toast body. Replaces Phase 12's `body: String` storage so the
+/// renderer reads typed structure instead of treating multi-line /
+/// item-list / single-line content as one undifferentiated string.
+pub enum ToastBody {
+    /// One-line body — the common case.
+    Line(String),
+    /// Multi-line body — rendered as separate rows.
+    Lines(Vec<String>),
+}
+
+impl From<String> for ToastBody { /* … */ }
+impl From<&str>   for ToastBody { /* … */ }
 ```
+
+**Boundary conversions stay stable.** Every public push entry point keeps
+accepting `impl Into<String>` and converts at the boundary, so cargo-port's
+existing call sites are not affected by the storage change:
+
+- Phase 12: `Toasts::push(title: impl Into<String>, body: impl Into<String>)`,
+  `Toasts::push_styled(...)`.
+- Phase 20: `Toasts::push_with_action(...)`.
+- Phase 22: `Toasts::push_timed(...)`, `Toasts::push_task(...)`,
+  `Toasts::push_persistent(...)` — all take `body: impl Into<String>` and
+  convert via `ToastBody::from(s.into())`.
+
+A second push surface for explicit multi-line bodies (`push_lines` /
+`push_styled_lines`) ships in Phase 22 so call sites that already build a
+`Vec<String>` do not round-trip through a single joined `String`.
+
+**Public accessor decision: `Toast::body()` returns `&ToastBody`.** Phase 12
+ships `Toast::body(&self) -> &str`; Phase 22 widens the return to
+`&ToastBody`. This is the actual public-API migration. Cargo-port's
+renderer is moving into `tui_pane/src/toasts/render.rs` in this same phase,
+so the only out-of-tree caller is the new in-crate renderer; no binary
+call sites need updating beyond the move. A `Toast::body_text()` thin
+wrapper returning a flattened single-line `&str` (for tests / one-off
+debug) can ship alongside if needed; if no caller wants it, drop it.
 
 The lifetime / phase / status enums collapse cargo-port's flag set (`timeout_at` + `task_id` + `dismissed` + `finished_task` + `finished_at` + `linger_duration` + `exit_started_at` + `persistence`) into states that cannot represent invalid combinations.
 
-**2. Move generic API onto `Toasts<Ctx>`.** Public surface (additions to Phase 12 / 20):
+**2. Move generic API onto `Toasts<Ctx>`.** Phase 12 already ships the generic skeleton: `new`, `push`, `push_styled`, `dismiss`, `dismiss_focused`, `focused_id`, `has_active`, `active`, `reset_to_first`, `reset_to_last`, `on_navigation`, `try_consume_cycle_step`, `handle_key`, `mode`, `defaults`, `bar_slots`. Phase 20 adds `push_with_action` + `handle_key_command`. Phase 22 adds:
 
 ```rust
 impl<Ctx: AppContext> Toasts<Ctx> {
-    pub fn push_timed     (&mut self, title: …, body: …, timeout: Duration) -> ToastId;
-    pub fn push_task      (&mut self, title: …, body: …, linger: Duration) -> (ToastId, ToastTaskId);
-    pub fn push_persistent(&mut self, title: …, body: …) -> ToastId;
+    pub fn push_timed     (&mut self, title: impl Into<String>, body: impl Into<String>, timeout: Duration) -> ToastId;
+    pub fn push_task      (&mut self, title: impl Into<String>, body: impl Into<String>, linger:  Duration) -> (ToastId, ToastTaskId);
+    pub fn push_persistent(&mut self, title: impl Into<String>, body: impl Into<String>) -> ToastId;
     pub fn finish_task    (&mut self, task_id: ToastTaskId);
     pub fn reactivate_task(&mut self, task_id: ToastTaskId);
     pub fn set_tracked_items(&mut self, id: ToastId, items: Vec<TrackedItem>);
@@ -2907,6 +2992,8 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     pub fn render         (&self, area: Rect, buf: &mut Buffer, settings: &ToastSettings) -> Vec<ToastHitbox>;
 }
 ```
+
+The `push_*` entry points take raw `Duration`, not `ToastDuration` (the validated newtype from Phase 21). `ToastDuration` validates user-supplied TOML values; `push_timed` / `push_task` callers pass durations they computed in code, so the validating wrapper is unnecessary at this boundary.
 
 Render reads width/gap/placement/animation from the `ToastSettings` argument the bar code passes in (sourced from `framework.toast_settings()`). `prune` reads `default_timeout` / `task_linger` from a settings reference threaded through the framework's tick loop.
 
@@ -2918,9 +3005,9 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 
 **4. Boundary conversions.** cargo-port's existing `From` impls (`TrackedItemKey::from(path.to_string())`, `TrackedItemKey::from(owner_repo)`) move with the type into `tui_pane`; the cargo-port-specific `From<AbsolutePath>` and `From<OwnerRepo>` impls stay in cargo-port (newtype + `From` on cargo-port's side; library's `TrackedItemKey` has `From<String>`/`From<&str>` only).
 
-**5. Focus reconciliation hooks into `prune`.** Phase 12's `reconcile_focus_after_toast_change<Ctx>(ctx: &mut Ctx)` free fn runs from the framework's tick driver after `framework.prune(now)` returns — call site holds `&mut Ctx`, so the reconciler can route through `ctx.set_focus(...)` like the dispatch-time path. Toast mutations that can drop the active count to zero (`dismiss`, `dismiss_focused`, `prune`, `finish_task` when linger is zero) only mutate the toast vec; they never touch focus directly. Focus repair is always a separate post-mutation step at a `&mut Ctx`-holding call site.
+**5. Focus reconciliation hooks into `prune`.** Phase 12's `reconcile_focus_after_toast_change<Ctx>(ctx: &mut Ctx)` free fn runs from the framework's tick driver after `framework.prune(now)` returns — call site holds `&mut Ctx`, so the reconciler can route through `ctx.set_focus(...)` like the dispatch-time path. The dispatch-time call site (`dismiss_chain`) was wired in Phase 12 and stays untouched in Phase 22; only the new tick-driver call site is added here. Toast mutations that can drop the active count to zero (`dismiss`, `dismiss_focused`, `prune`, `finish_task` when linger is zero) only mutate the toast vec; they never touch focus directly. Focus repair is always a separate post-mutation step at a `&mut Ctx`-holding call site.
 
-**6. Mode integration.** `Toasts::mode(&Ctx) -> Mode<Ctx>` is **not** `Mode::Static` — focused toasts behave like a list. Phase 12 already returns `Mode::Navigable`; Phase 22 keeps that.
+**6. Mode integration.** Phase 12 already returns `Mode::Navigable` for focused Toasts; Phase 22 has no work here.
 
 **7. Delete the binary's `handle_toast_key`.** `src/tui/input.rs:657-684` deletes alongside the `app.toasts` field. The binary's `handle_toast_key` no longer has an owning ToastManager to drive; focused-toasts dismiss already routes through `GlobalAction::Dismiss → dismiss_chain → dismiss_framework → toasts.dismiss_focused()` (Phase 12), and viewport scrolling already routes through the keymap (Phase 12 `on_navigation` + `try_consume_cycle_step`).
 
@@ -2929,7 +3016,7 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 - Tracked items: `set_tracked_items_then_mark_completed_renders_strikethrough`, `prune_tracked_items_removes_finished_after_linger`.
 - Hitboxes: `render_emits_card_and_close_hitbox_per_visible_toast`.
 - Focus reconciliation: `prune_emptying_active_set_while_focused_moves_focus_to_first_app_pane`.
-- Cross-crate: cargo-port's `App::push_timed_toast` test moves to a `tui_pane/tests/` integration test that uses a `MockApp` with `type ToastAction = NoToastAction;`.
+- Cross-crate: cargo-port's `App::push_timed_toast` test moves to a `tui_pane/tests/` integration test that uses a `MockApp` with `type ToastAction = NoToastAction;` (test pushes `action: None` only — `NoToastAction` is uninhabited, so any `Some(action)` constructor is statically impossible).
 - Settings round-trip: `render_uses_framework_toast_settings_width` — render output reflects a non-default `ToastWidth` set on `Framework::toast_settings`.
 
 **Code touched in Phase 22:**

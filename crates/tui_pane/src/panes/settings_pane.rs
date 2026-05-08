@@ -111,8 +111,8 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     pub fn editor_target(&self) -> Option<&Path> { self.editor_target.as_deref() }
 
     /// Bar slots for the overlay's local actions. The bar renderer
-    /// (Phase 12) consults this when [`Framework::overlay`](crate::Framework::overlay)
-    /// is `Some(FrameworkPaneId::Settings)`.
+    /// (Phase 13) consults this when [`Framework::overlay`](crate::Framework::overlay)
+    /// is `Some(FrameworkOverlayId::Settings)`.
     #[must_use]
     pub fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<SettingsPaneAction>)> {
         SettingsPaneAction::ALL

@@ -2,14 +2,18 @@
 //! that uses `tui_pane`.
 
 mod dispatch;
+mod list_navigation;
 
 use std::collections::HashMap;
 use std::path::Path;
 
 pub(crate) use self::dispatch::dispatch_global;
+pub use self::list_navigation::CycleDirection;
+pub use self::list_navigation::ListNavigation;
 use crate::AppContext;
 use crate::FocusedPane;
-use crate::FrameworkPaneId;
+use crate::FrameworkFocusId;
+use crate::FrameworkOverlayId;
 use crate::KeymapPane;
 use crate::Mode;
 use crate::SettingsPane;
@@ -22,24 +26,32 @@ pub(crate) type ModeQuery<Ctx> = fn(&Ctx) -> Mode<Ctx>;
 /// The framework aggregator owned by every binary that uses
 /// `tui_pane`.
 ///
-/// Tracks the currently focused pane and the lifecycle flags
-/// (`quit_requested`, `restart_requested`) that the framework's own
-/// dispatch flips when [`GlobalAction::Quit`](crate::GlobalAction::Quit)
-/// or [`GlobalAction::Restart`](crate::GlobalAction::Restart) fires.
-/// The binary's main loop polls those flags every tick and tears down
+/// Tracks the currently focused pane, the open framework overlay (if
+/// any), and the lifecycle flags (`quit_requested`, `restart_requested`)
+/// that the framework's own dispatch flips when
+/// [`GlobalAction::Quit`](crate::GlobalAction::Quit) or
+/// [`GlobalAction::Restart`](crate::GlobalAction::Restart) fires. The
+/// binary's main loop polls those flags every tick and tears down
 /// accordingly.
+///
+/// The overlay layer ([`Self::overlay`]) and the focus layer
+/// ([`Self::focused`]) are orthogonal: opening an overlay does not
+/// move focus, and Toasts is reachable through focus without ever
+/// being an overlay. The two id enums ([`FrameworkOverlayId`] and
+/// [`FrameworkFocusId`]) keep that distinction enforced at the type
+/// level.
 pub struct Framework<Ctx: AppContext> {
     focused:           FocusedPane<Ctx::AppPaneId>,
     quit_requested:    bool,
     restart_requested: bool,
     mode_queries:      HashMap<Ctx::AppPaneId, ModeQuery<Ctx>>,
     pane_order:        Vec<Ctx::AppPaneId>,
-    overlay:           Option<FrameworkPaneId>,
+    overlay:           Option<FrameworkOverlayId>,
     /// Keymap viewer/editor overlay, held inline. Reachable when
-    /// [`Self::overlay`] is `Some(FrameworkPaneId::Keymap)`.
+    /// [`Self::overlay`] is `Some(FrameworkOverlayId::Keymap)`.
     pub keymap_pane:   KeymapPane<Ctx>,
     /// Settings overlay, held inline. Reachable when
-    /// [`Self::overlay`] is `Some(FrameworkPaneId::Settings)`.
+    /// [`Self::overlay`] is `Some(FrameworkOverlayId::Settings)`.
     pub settings_pane: SettingsPane<Ctx>,
     /// Transient notification stack. Tab-focusable when
     /// [`Toasts::has_active`](crate::Toasts::has_active) returns `true`.
@@ -116,33 +128,28 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// Otherwise dispatches by focus:
     ///
     /// - [`FocusedPane::App`] → looks up the registered mode query.
-    /// - [`FocusedPane::Framework(Toasts)`](crate::FocusedPane) → [`Mode::Static`].
-    /// - [`FocusedPane::Framework(Keymap | Settings)`](crate::FocusedPane) is unreachable
-    ///   post-overlay-switch (the dispatcher writes only the overlay layer, never these focus
-    ///   states); the arm is left in place to keep [`FrameworkPaneId`] unified.
+    /// - [`FocusedPane::Framework(FrameworkFocusId::Toasts)`](crate::FocusedPane) → the toast
+    ///   manager's [`Mode`] (`Navigable` in Phase 12+).
     #[must_use]
     pub fn focused_pane_mode(&self, ctx: &Ctx) -> Option<Mode<Ctx>> {
         if let Some(overlay) = self.overlay {
             return Some(match overlay {
-                FrameworkPaneId::Keymap => self.keymap_pane.mode(ctx),
-                FrameworkPaneId::Settings => self.settings_pane.mode(ctx),
-                FrameworkPaneId::Toasts => self.toasts.mode(ctx),
+                FrameworkOverlayId::Keymap => self.keymap_pane.mode(ctx),
+                FrameworkOverlayId::Settings => self.settings_pane.mode(ctx),
             });
         }
         match self.focused {
             FocusedPane::App(id) => self.mode_queries.get(&id).map(|q| q(ctx)),
-            FocusedPane::Framework(FrameworkPaneId::Toasts) => Some(self.toasts.mode(ctx)),
-            // unreachable post-overlay-switch
-            FocusedPane::Framework(FrameworkPaneId::Keymap | FrameworkPaneId::Settings) => None,
+            FocusedPane::Framework(FrameworkFocusId::Toasts) => Some(self.toasts.mode(ctx)),
         }
     }
 
     /// Registered app-pane ids in registration order. The
     /// [`GlobalAction::NextPane`](crate::GlobalAction::NextPane) /
     /// [`GlobalAction::PrevPane`](crate::GlobalAction::PrevPane)
-    /// dispatchers walk this slice; Phase 12's bar renderer and
-    /// Phase 18's regression tests also need it through the public
-    /// surface, hence the `pub` visibility.
+    /// dispatchers walk this slice; the bar renderer (Phase 13) and
+    /// the regression tests (Phase 19) also need it through the
+    /// public surface, hence the `pub` visibility.
     #[must_use]
     pub fn pane_order(&self) -> &[Ctx::AppPaneId] { &self.pane_order }
 
@@ -151,22 +158,21 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// [`Self::focused`] keeps tracking the underlying pane while
     /// `overlay` is `Some(_)`.
     #[must_use]
-    pub const fn overlay(&self) -> Option<FrameworkPaneId> { self.overlay }
+    pub const fn overlay(&self) -> Option<FrameworkOverlayId> { self.overlay }
 
     /// Open a framework overlay over the currently focused pane.
     /// `pub(super)` so only the framework's own dispatch (sibling:
     /// `framework/dispatch.rs`) can call it; the binary opens overlays
     /// by firing [`GlobalAction::OpenKeymap`](crate::GlobalAction::OpenKeymap)
     /// or [`GlobalAction::OpenSettings`](crate::GlobalAction::OpenSettings).
-    pub(super) const fn open_overlay(&mut self, overlay: FrameworkPaneId) {
+    pub(super) const fn open_overlay(&mut self, overlay: FrameworkOverlayId) {
         self.overlay = Some(overlay);
     }
 
     /// Close any open framework overlay. Returns `true` if an overlay
-    /// was open and is now cleared, `false` otherwise. Phase 11 wraps
-    /// this in a full [`Self::dismiss`] chain (toasts → overlay →
-    /// fallback); the dispatcher routes through `dismiss` rather than
-    /// calling this directly.
+    /// was open and is now cleared, `false` otherwise. `pub(super)`
+    /// because the dispatcher routes through [`Self::dismiss_framework`]
+    /// rather than calling this directly.
     pub(super) const fn close_overlay(&mut self) -> bool {
         if self.overlay.is_some() {
             self.overlay = None;
@@ -176,21 +182,24 @@ impl<Ctx: AppContext> Framework<Ctx> {
         }
     }
 
-    /// Run the framework dismiss chain. Returns `true` if anything was
-    /// dismissed at the framework level. The
+    /// Run the framework dismiss chain. Returns `true` when something
+    /// was dismissed at the framework level. The free
+    /// [`dismiss_chain`](crate::framework::dispatch::dismiss_chain)
+    /// helper (called from the
     /// [`GlobalAction::Dismiss`](crate::GlobalAction::Dismiss)
-    /// dispatcher consults this; on `false`, it falls through to the
+    /// dispatcher) consults this; on `false`, it falls through to the
     /// binary's registered `dismiss_fallback` hook (if any).
     ///
     /// Order:
-    /// 1. If [`Self::focused`] is the toast stack, pop the top toast.
+    /// 1. If [`Self::focused`] is the toast stack, pop the focused toast via
+    ///    [`Toasts::dismiss_focused`](crate::Toasts::dismiss_focused).
     /// 2. Else if an overlay is open, close it.
     /// 3. Else return `false`.
-    pub fn dismiss(&mut self) -> bool {
+    pub fn dismiss_framework(&mut self) -> bool {
         if matches!(
             self.focused,
-            FocusedPane::Framework(FrameworkPaneId::Toasts)
-        ) && self.toasts.try_pop_top()
+            FocusedPane::Framework(FrameworkFocusId::Toasts)
+        ) && self.toasts.dismiss_focused()
         {
             return true;
         }
@@ -205,9 +214,9 @@ impl<Ctx: AppContext> Framework<Ctx> {
     #[must_use]
     pub fn editor_target_path(&self) -> Option<&Path> {
         match self.overlay {
-            Some(FrameworkPaneId::Keymap) => self.keymap_pane.editor_target(),
-            Some(FrameworkPaneId::Settings) => self.settings_pane.editor_target(),
-            Some(FrameworkPaneId::Toasts) | None => None,
+            Some(FrameworkOverlayId::Keymap) => self.keymap_pane.editor_target(),
+            Some(FrameworkOverlayId::Settings) => self.settings_pane.editor_target(),
+            None => None,
         }
     }
 }
@@ -223,7 +232,7 @@ mod tests {
     use super::Framework;
     use crate::AppContext;
     use crate::FocusedPane;
-    use crate::FrameworkPaneId;
+    use crate::FrameworkFocusId;
 
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     enum TestPaneId {
@@ -270,20 +279,20 @@ mod tests {
         );
 
         app.framework_mut()
-            .set_focused(FocusedPane::Framework(FrameworkPaneId::Keymap));
+            .set_focused(FocusedPane::Framework(FrameworkFocusId::Toasts));
         assert_eq!(
             app.framework().focused(),
-            &FocusedPane::Framework(FrameworkPaneId::Keymap),
+            &FocusedPane::Framework(FrameworkFocusId::Toasts),
         );
     }
 
     #[test]
     fn default_set_focus_on_app_context_delegates_to_framework() {
         let mut app = fresh_app(FocusedPane::App(TestPaneId::Foo));
-        app.set_focus(FocusedPane::Framework(FrameworkPaneId::Settings));
+        app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
         assert_eq!(
             app.framework().focused(),
-            &FocusedPane::Framework(FrameworkPaneId::Settings),
+            &FocusedPane::Framework(FrameworkFocusId::Toasts),
         );
     }
 }

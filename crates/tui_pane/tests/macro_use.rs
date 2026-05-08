@@ -20,7 +20,7 @@ use tui_pane::BarSlot;
 use tui_pane::Bindings;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
-use tui_pane::FrameworkPaneId;
+use tui_pane::FrameworkFocusId;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
 use tui_pane::Mode;
@@ -131,10 +131,10 @@ fn framework_skeleton_reachable_from_outside_crate() {
     assert!(!app.framework().quit_requested());
     assert!(!app.framework().restart_requested());
 
-    app.set_focus(FocusedPane::Framework(FrameworkPaneId::Toasts));
+    app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
     assert_eq!(
         app.framework().focused(),
-        &FocusedPane::Framework(FrameworkPaneId::Toasts),
+        &FocusedPane::Framework(FrameworkFocusId::Toasts),
     );
 }
 
@@ -177,6 +177,8 @@ tui_pane::action_enum! {
         Down  => ("down",  "down",  "Move down");
         Left  => ("left",  "left",  "Move left");
         Right => ("right", "right", "Move right");
+        Home  => ("home",  "home",  "Jump to start");
+        End   => ("end",   "end",   "Jump to end");
     }
 }
 
@@ -218,6 +220,8 @@ impl Navigation<CrossCrateApp> for CrossCrateNavigation {
     type Actions = CrossCrateNavAction;
 
     const DOWN: Self::Actions = CrossCrateNavAction::Down;
+    const END: Self::Actions = CrossCrateNavAction::End;
+    const HOME: Self::Actions = CrossCrateNavAction::Home;
     const LEFT: Self::Actions = CrossCrateNavAction::Left;
     const RIGHT: Self::Actions = CrossCrateNavAction::Right;
     const UP: Self::Actions = CrossCrateNavAction::Up;
@@ -228,6 +232,8 @@ impl Navigation<CrossCrateApp> for CrossCrateNavigation {
             KeyCode::Down  => CrossCrateNavAction::Down,
             KeyCode::Left  => CrossCrateNavAction::Left,
             KeyCode::Right => CrossCrateNavAction::Right,
+            KeyCode::Home  => CrossCrateNavAction::Home,
+            KeyCode::End   => CrossCrateNavAction::End,
         }
     }
 

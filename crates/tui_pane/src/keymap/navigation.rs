@@ -9,14 +9,15 @@ use super::Action;
 use super::Bindings;
 use crate::AppContext;
 use crate::FocusedPane;
+use crate::ListNavigation;
 
 /// App-wide navigation scope. One impl per app.
 ///
-/// Carries four canonical directional variants ([`Self::UP`],
-/// [`Self::DOWN`], [`Self::LEFT`], [`Self::RIGHT`]) so the framework
-/// can name them without knowing the app's concrete enum. The
-/// dispatcher receives the current [`FocusedPane`] so it can route to
-/// the right scrollable surface.
+/// Carries six canonical directional variants ([`Self::UP`],
+/// [`Self::DOWN`], [`Self::LEFT`], [`Self::RIGHT`], [`Self::HOME`],
+/// [`Self::END`]) so the framework can name them without knowing the
+/// app's concrete enum. The dispatcher receives the current
+/// [`FocusedPane`] so it can route to the right scrollable surface.
 ///
 /// `'static` is implied by the [`Action`] super-trait on
 /// [`Self::Actions`].
@@ -36,6 +37,10 @@ pub trait Navigation<Ctx: AppContext>: 'static {
     const LEFT: Self::Actions;
     /// The variant for "move right".
     const RIGHT: Self::Actions;
+    /// The variant for "jump to start" (Home / first entry).
+    const HOME: Self::Actions;
+    /// The variant for "jump to end" (End / last entry).
+    const END: Self::Actions;
 
     /// Default keybindings.
     fn defaults() -> Bindings<Self::Actions>;
@@ -44,6 +49,28 @@ pub trait Navigation<Ctx: AppContext>: 'static {
     /// `focused` lets the dispatcher pick the right scrollable surface;
     /// callers read `ctx.framework().focused()` and pass it through.
     fn dispatcher() -> fn(Self::Actions, focused: FocusedPane<Ctx::AppPaneId>, ctx: &mut Ctx);
+
+    /// Translate a resolved app navigation action into the framework's
+    /// list-navigation vocabulary.
+    ///
+    /// Default impl matches `action` against the trait's [`Self::UP`],
+    /// [`Self::DOWN`], [`Self::HOME`], [`Self::END`] consts; non-list
+    /// directions ([`Self::LEFT`], [`Self::RIGHT`]) return `None` so a
+    /// focused list pane (e.g. [`Toasts`](crate::Toasts)) ignores them.
+    /// Apps almost never override.
+    fn list_navigation(action: Self::Actions) -> Option<ListNavigation> {
+        if action == Self::UP {
+            Some(ListNavigation::Up)
+        } else if action == Self::DOWN {
+            Some(ListNavigation::Down)
+        } else if action == Self::HOME {
+            Some(ListNavigation::Home)
+        } else if action == Self::END {
+            Some(ListNavigation::End)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -74,6 +101,8 @@ mod tests {
             Down  => ("down",  "down",  "Move down");
             Left  => ("left",  "left",  "Move left");
             Right => ("right", "right", "Move right");
+            Home  => ("home",  "home",  "Jump to start");
+            End   => ("end",   "end",   "Jump to end");
         }
     }
 
@@ -94,6 +123,8 @@ mod tests {
         type Actions = NavAction;
 
         const DOWN: Self::Actions = NavAction::Down;
+        const END: Self::Actions = NavAction::End;
+        const HOME: Self::Actions = NavAction::Home;
         const LEFT: Self::Actions = NavAction::Left;
         const RIGHT: Self::Actions = NavAction::Right;
         const UP: Self::Actions = NavAction::Up;
@@ -104,6 +135,8 @@ mod tests {
                 KeyCode::Down  => NavAction::Down,
                 KeyCode::Left  => NavAction::Left,
                 KeyCode::Right => NavAction::Right,
+                KeyCode::Home  => NavAction::Home,
+                KeyCode::End   => NavAction::End,
             }
         }
 

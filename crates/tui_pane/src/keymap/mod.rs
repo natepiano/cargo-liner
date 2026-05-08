@@ -302,6 +302,8 @@ mod tests {
             Down  => ("down",  "down",  "Move down");
             Left  => ("left",  "left",  "Move left");
             Right => ("right", "right", "Move right");
+            Home  => ("home",  "home",  "Jump to start");
+            End   => ("end",   "end",   "Jump to end");
         }
     }
 
@@ -352,6 +354,8 @@ mod tests {
         type Actions = NavAction;
 
         const DOWN: Self::Actions = NavAction::Down;
+        const END: Self::Actions = NavAction::End;
+        const HOME: Self::Actions = NavAction::Home;
         const LEFT: Self::Actions = NavAction::Left;
         const RIGHT: Self::Actions = NavAction::Right;
         const UP: Self::Actions = NavAction::Up;
@@ -362,6 +366,8 @@ mod tests {
                 KeyCode::Down  => NavAction::Down,
                 KeyCode::Left  => NavAction::Left,
                 KeyCode::Right => NavAction::Right,
+                KeyCode::Home  => NavAction::Home,
+                KeyCode::End   => NavAction::End,
             }
         }
 

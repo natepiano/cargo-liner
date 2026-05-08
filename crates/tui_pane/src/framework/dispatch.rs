@@ -1,13 +1,25 @@
-//! Framework's built-in dispatcher for [`GlobalAction`] variants.
+//! Framework's built-in dispatcher for [`GlobalAction`] variants and
+//! the focus-cycle helpers that act over `&mut Ctx`.
 //!
 //! Sibling of `framework/mod.rs` so it can reach the `pub(super)`
 //! lifecycle setters on [`Framework<Ctx>`] (`request_quit`,
-//! `request_restart`) and the `pub(super)` `pane_order()` getter
-//! without widening the public surface.
+//! `request_restart`) and the `pub(super)` overlay setter
+//! (`open_overlay`) without widening the public surface.
+//!
+//! The dismiss chain and the focus reconciler live here as **free fns**
+//! over `&mut Ctx` so they can route through
+//! [`AppContext::set_focus`](crate::AppContext::set_focus). A method
+//! on `Framework<Ctx>` could not — the framework borrow holds `&mut
+//! Framework`, with no path back to `&mut Ctx`. Routing through
+//! `ctx.set_focus(...)` lets binaries that override
+//! [`AppContext::set_focus`](crate::AppContext::set_focus) (logging,
+//! telemetry, the Focus subsystem's overlay-return memory) observe
+//! every framework focus change.
 
 use crate::AppContext;
 use crate::FocusedPane;
-use crate::FrameworkPaneId;
+use crate::FrameworkFocusId;
+use crate::FrameworkOverlayId;
 use crate::GlobalAction;
 use crate::Keymap;
 
@@ -19,13 +31,12 @@ use crate::Keymap;
 /// - [`GlobalAction::Quit`] / [`GlobalAction::Restart`] flip the matching lifecycle flag on
 ///   [`Framework<Ctx>`](crate::Framework) and then fire the optional `on_quit` / `on_restart` hook
 ///   the binary registered on the builder.
-/// - [`GlobalAction::NextPane`] / [`GlobalAction::PrevPane`] walk the registered pane order and
-///   update focus.
+/// - [`GlobalAction::NextPane`] / [`GlobalAction::PrevPane`] walk the focus cycle (registered app
+///   panes plus, when active, [`Toasts`](crate::Toasts)) and update focus.
 /// - [`GlobalAction::OpenKeymap`] / [`GlobalAction::OpenSettings`] open the matching framework
 ///   overlay over the focused pane (orthogonal modal layer; focus does not move).
-/// - [`GlobalAction::Dismiss`] runs the framework's [`dismiss`](crate::Framework::dismiss) chain
-///   (focused-toast pop → close overlay); if `dismiss` returns `false`, falls through to the
-///   binary's optional `dismiss_fallback` hook.
+/// - [`GlobalAction::Dismiss`] runs [`dismiss_chain`] (focused-toast pop → close overlay → fall
+///   through to the binary's optional `dismiss_fallback` hook).
 ///
 /// Re-exported at `crate::framework::dispatch_global` so the keymap's
 /// public dispatch entry point can route to it.
@@ -50,41 +61,127 @@ pub(crate) fn dispatch_global<Ctx: AppContext>(
         GlobalAction::NextPane => focus_step(ctx, 1),
         GlobalAction::PrevPane => focus_step(ctx, -1),
         GlobalAction::OpenKeymap => {
-            ctx.framework_mut().open_overlay(FrameworkPaneId::Keymap);
+            ctx.framework_mut().open_overlay(FrameworkOverlayId::Keymap);
         },
         GlobalAction::OpenSettings => {
-            ctx.framework_mut().open_overlay(FrameworkPaneId::Settings);
+            ctx.framework_mut()
+                .open_overlay(FrameworkOverlayId::Settings);
         },
         GlobalAction::Dismiss => {
-            if ctx.framework_mut().dismiss() {
-                return;
-            }
-            if let Some(hook) = keymap.dismiss_fallback_hook() {
-                let _ = hook(ctx);
-            }
+            let _ = dismiss_chain(ctx, keymap.dismiss_fallback_hook());
         },
     }
 }
 
-/// Move focus to the next/previous registered app pane. `direction`
-/// is `+1` for next, `-1` for prev. No-op when the registered pane
-/// order is empty or focus is on a framework overlay.
+/// Run the framework dismiss chain and reconcile focus.
+///
+/// 1. Call `framework.dismiss_framework()` (focused-toast → close overlay). If something was
+///    dismissed, the framework borrow drops and we route focus repair through
+///    [`AppContext::set_focus`] so binary-side overrides observe the transition.
+/// 2. Otherwise, fall through to the binary's `dismiss_fallback` hook.
+///
+/// `pub(crate)` so [`crate::Keymap::dispatch_framework_global`] can
+/// call it via [`dispatch_global`]; the binary cannot bypass this
+/// routing.
+pub(crate) fn dismiss_chain<Ctx: AppContext>(
+    ctx: &mut Ctx,
+    fallback: Option<fn(&mut Ctx) -> bool>,
+) -> bool {
+    if ctx.framework_mut().dismiss_framework() {
+        reconcile_focus_after_toast_change(ctx);
+        return true;
+    }
+    fallback.is_some_and(|hook| hook(ctx))
+}
+
+/// Reconcile focus after a focused-toast dismiss or a Phase-22 prune
+/// empties the active set.
+///
+/// No-op when current focus is not on Toasts, or when toasts are still
+/// active. When focus is on Toasts and the active set is empty, move
+/// focus to the first registered app pane (no-op if `pane_order()` is
+/// empty). Routes through [`AppContext::set_focus`] so binary-side
+/// overrides observe the transition.
+pub(crate) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx) {
+    {
+        let framework = ctx.framework();
+        if !matches!(
+            framework.focused(),
+            FocusedPane::Framework(FrameworkFocusId::Toasts)
+        ) {
+            return;
+        }
+        if framework.toasts.has_active() {
+            return;
+        }
+    }
+    let target = ctx
+        .framework()
+        .pane_order()
+        .first()
+        .copied()
+        .map(FocusedPane::App);
+    if let Some(target) = target {
+        ctx.set_focus(target);
+    }
+}
+
+/// Move focus to the next/previous step in the cycle. `direction` is
+/// `+1` for next, `-1` for prev. The cycle is the registered app panes
+/// (in registration order) plus, when [`Toasts::has_active`] returns
+/// `true`, [`Framework(FrameworkFocusId::Toasts)`] appended at the end.
+///
+/// On entry into Toasts focus, the manager's viewport is reset to the
+/// first or last toast based on direction (mirrors cargo-port's
+/// existing `focus_next_pane` / `focus_previous_pane` viewport reset).
 fn focus_step<Ctx: AppContext>(ctx: &mut Ctx, direction: i32) {
-    let panes = ctx.framework().pane_order().to_vec();
-    if panes.is_empty() {
+    let cycle = focus_cycle(ctx);
+    if cycle.is_empty() {
         return;
     }
-    let current = match ctx.framework().focused() {
-        FocusedPane::App(id) => *id,
-        FocusedPane::Framework(_) => return,
-    };
-    let Some(idx) = panes.iter().position(|p| *p == current) else {
-        return;
-    };
-    let len = i32::try_from(panes.len()).unwrap_or(i32::MAX);
-    let cur_i = i32::try_from(idx).unwrap_or(0);
-    let next_i = ((cur_i + direction).rem_euclid(len)) as usize;
-    if let Some(next) = panes.get(next_i).copied() {
-        ctx.set_focus(FocusedPane::App(next));
+
+    let current = *ctx.framework().focused();
+    let len = i32::try_from(cycle.len()).unwrap_or(i32::MAX);
+    let next = cycle.iter().position(|p| *p == current).map_or_else(
+        || {
+            if direction >= 0 {
+                cycle[0]
+            } else {
+                cycle[cycle.len() - 1]
+            }
+        },
+        |idx| {
+            let cur = i32::try_from(idx).unwrap_or(0);
+            let next_i = ((cur + direction).rem_euclid(len)) as usize;
+            cycle[next_i]
+        },
+    );
+
+    let entering_toasts = matches!(next, FocusedPane::Framework(FrameworkFocusId::Toasts))
+        && !matches!(current, FocusedPane::Framework(FrameworkFocusId::Toasts));
+    ctx.set_focus(next);
+    if entering_toasts {
+        if direction >= 0 {
+            ctx.framework_mut().toasts.reset_to_first();
+        } else {
+            ctx.framework_mut().toasts.reset_to_last();
+        }
     }
+}
+
+/// Build the focus cycle for the current framework state. Registered
+/// app panes (in registration order) come first; Toasts is appended
+/// when [`Toasts::has_active`] returns `true`.
+fn focus_cycle<Ctx: AppContext>(ctx: &Ctx) -> Vec<FocusedPane<Ctx::AppPaneId>> {
+    let mut cycle: Vec<FocusedPane<Ctx::AppPaneId>> = ctx
+        .framework()
+        .pane_order()
+        .iter()
+        .copied()
+        .map(FocusedPane::App)
+        .collect();
+    if ctx.framework().toasts.has_active() {
+        cycle.push(FocusedPane::Framework(FrameworkFocusId::Toasts));
+    }
+    cycle
 }

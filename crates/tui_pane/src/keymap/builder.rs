@@ -632,7 +632,7 @@ mod tests {
     use crate::AppContext;
     use crate::FocusedPane;
     use crate::Framework;
-    use crate::FrameworkPaneId;
+    use crate::FrameworkOverlayId;
     use crate::GlobalAction;
     use crate::KeyBind;
     use crate::Pane;
@@ -664,6 +664,8 @@ mod tests {
             Down  => ("down",  "down",  "Move down");
             Left  => ("left",  "left",  "Move left");
             Right => ("right", "right", "Move right");
+            Home  => ("home",  "home",  "Jump to start");
+            End   => ("end",   "end",   "Jump to end");
         }
     }
 
@@ -723,6 +725,8 @@ mod tests {
         type Actions = NavAction;
 
         const DOWN: Self::Actions = NavAction::Down;
+        const END: Self::Actions = NavAction::End;
+        const HOME: Self::Actions = NavAction::Home;
         const LEFT: Self::Actions = NavAction::Left;
         const RIGHT: Self::Actions = NavAction::Right;
         const UP: Self::Actions = NavAction::Up;
@@ -733,6 +737,8 @@ mod tests {
                 KeyCode::Down  => NavAction::Down,
                 KeyCode::Left  => NavAction::Left,
                 KeyCode::Right => NavAction::Right,
+                KeyCode::Home  => NavAction::Home,
+                KeyCode::End   => NavAction::End,
             }
         }
 
@@ -1090,6 +1096,8 @@ mod tests {
             type Actions = NavAction;
 
             const DOWN: Self::Actions = NavAction::Down;
+            const END: Self::Actions = NavAction::End;
+            const HOME: Self::Actions = NavAction::Home;
             const LEFT: Self::Actions = NavAction::Left;
             const RIGHT: Self::Actions = NavAction::Right;
             const UP: Self::Actions = NavAction::Up;
@@ -1100,6 +1108,8 @@ mod tests {
                     KeyCode::Down  => NavAction::Down,
                     KeyCode::Left  => NavAction::Left,
                     KeyCode::Right => NavAction::Right,
+                    KeyCode::Home  => NavAction::Home,
+                    KeyCode::End   => NavAction::End,
                     KeyBind::shift('K') => NavAction::Right,
                 }
             }
@@ -1253,11 +1263,14 @@ mod tests {
         let initial_focus = *app.framework().focused();
 
         keymap.dispatch_framework_global(GlobalAction::OpenKeymap, &mut app);
-        assert_eq!(app.framework().overlay(), Some(FrameworkPaneId::Keymap));
+        assert_eq!(app.framework().overlay(), Some(FrameworkOverlayId::Keymap));
         assert_eq!(*app.framework().focused(), initial_focus);
 
         keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut app);
-        assert_eq!(app.framework().overlay(), Some(FrameworkPaneId::Settings));
+        assert_eq!(
+            app.framework().overlay(),
+            Some(FrameworkOverlayId::Settings)
+        );
         assert_eq!(*app.framework().focused(), initial_focus);
 
         keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut app);
