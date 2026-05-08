@@ -52,6 +52,32 @@ impl<A> Bindings<A> {
         self
     }
 
+    /// Replace every entry whose action equals `action` with one entry
+    /// per element of `keys`, in iteration order. The new entries are
+    /// appended to the end of the table; original primary slots are
+    /// not preserved (TOML overlay redefines the action's keys
+    /// outright). `pub(super)` because only the keymap loader (sibling)
+    /// applies overrides.
+    pub(super) fn override_action(&mut self, action: &A, keys: Vec<KeyBind>)
+    where
+        A: PartialEq + Clone,
+    {
+        self.entries.retain(|(_, a)| *a != *action);
+        for key in keys {
+            self.entries.push((key, action.clone()));
+        }
+    }
+
+    /// True if `key` is already bound on any action. `pub(super)`
+    /// because only the vim-extras applier (sibling) checks this.
+    pub(super) fn has_key(&self, key: &KeyBind) -> bool {
+        self.entries.iter().any(|(k, _)| k == key)
+    }
+
+    /// Borrow every `(key, action)` entry in insertion order.
+    /// `pub(super)` because only loader validators (siblings) iterate.
+    pub(super) fn entries(&self) -> &[(KeyBind, A)] { &self.entries }
+
     /// Consume the builder and return the fully indexed [`ScopeMap`].
     ///
     /// `debug_assert!`s on cross-action collision (defaults are author-

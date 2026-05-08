@@ -1004,6 +1004,34 @@ The `Settings` / `Keymap` / `Toasts` panes use their internal mode flags (Browse
 
 Each phase is a single mergeable commit. Each commit must build green and pass `cargo nextest run`. No sub-phases (`Na/Nb/Nc`) — every increment gets its own integer.
 
+### Current state after Phase 10
+
+Phases 1–10 are complete. The shipped surface now includes the workspace crate, key/action/binding primitives, flat crate-root exports, `Pane` / `Shortcuts` / `Navigation` / `Globals`, `Framework<Ctx>` skeleton plus lifecycle dispatch, the post-reset `Keymap<Ctx>` boundary (`dispatch_app_pane`, `render_app_pane_bar_slots`, `key_for_toml_key`), typestate `KeymapBuilder`, typed `navigation` / `globals` singleton storage, framework globals, settings registry, TOML overlay, and vim extras.
+
+The remaining work starts at Phase 11. Do not reintroduce reset-removed surfaces (`scope_for`, `scope_for_typed`, public erased traits, `PendingEntry`, TypeId primary indices). Production construction is `build_into(&mut framework)`; `build()` is only for tests that do not query `Framework::focused_pane_mode`.
+
+### Remaining architecture review before Phase 11
+
+The remaining architecture needs a tightening pass before implementation. These are not Phase-10 code bugs; they are places where the plan still assumes surfaces that either do not exist after the Phase 9 reset or will not compose cleanly with real cargo-port state.
+
+1. **`Shortcuts` should not require owned pane instances in the keymap.** The shipped builder stores `pane: P` inside `PaneScope<Ctx, P>`, and `Shortcuts::{visibility,state,bar_slots}` take `&self`. Cargo-port pane structs are stateful render/hit-test owners (`Viewport`, caches, pollers, row rects), so registering a second pane instance in `Keymap` duplicates state and invites stale reads. Before Phase 13, either make these `Shortcuts` methods associated functions (`fn visibility(action, ctx)`, `fn state(action, ctx)`, `fn bar_slots(ctx)`) and return to type-only registration, or introduce explicit zero-state adapter types for shortcut scopes. Type-only associated functions match the existing dispatcher/mode design better.
+
+2. **Framework-pane handlers must avoid the `&mut Framework` + `&mut Ctx` split-borrow trap.** The Phase 11 surface says `KeymapPane::handle_key(&mut self, ctx: &mut Ctx, ...)`, `SettingsPane::handle_key(&mut self, ctx: &mut Ctx, ...)`, and `Toasts::handle_key(&mut self, ctx: &mut Ctx, ...)`. If the pane is stored inside `ctx.framework_mut()`, calling that method while also passing `&mut ctx` will not compile without take/replace or interior mutability. Prefer command-returning pane methods that only mutate pane-local state while borrowed, then apply the returned command to `Ctx` after the pane borrow ends. Free dispatcher functions can orchestrate the borrow scopes.
+
+3. **Framework-pane access to keymap/settings data is under-specified.** `SettingsRegistry<Ctx>` currently lives on `Keymap<Ctx>`, while Phase 11 puts `SettingsPane<Ctx>` on `Framework<Ctx>`. `KeymapPane` also needs keymap metadata and mutation/persistence support. Decide ownership before implementing panes: either keep registries/metadata on `Keymap` and pass `&Keymap` into framework-pane operations, or transfer the settings registry into `Framework` during `build_into`. The current plan gives framework panes neither a clean read path nor a clean mutation path.
+
+4. **`RenderedSlot` is too flat for the planned bar.** It carries one `key` and one `label`, so `RuntimeScope::render_bar_slots` loses `BarSlot::Paired(left, right, shared_label)` shape and drops alternate bindings for `Single(action)`. That conflicts with ProjectList rows (`←/→ expand`, `+/- all`, `→/l`) and with the original multi-bind bar requirement. Before Phase 12, replace `RenderedSlot` with a resolved slot enum such as `Single { keys: Vec<KeyBind>, label, state }` / `Paired { left_key, right_key, label, state }`, or otherwise preserve enough shape for region renderers to format paired and multi-key rows correctly.
+
+5. **App dispatch order must keep pane scope before navigation.** The Phase 11 dispatch chain currently says framework globals → app globals → navigation → per-pane scope. That breaks the documented precedence where `ProjectListAction::ExpandRow` wins over `NavigationAction::Right`. The app-pane branch should be framework globals → app globals → focused pane scope → navigation → unhandled.
+
+6. **Text-input mode should not blanket-suppress `PaneAction` rows.** Phase 12 currently suppresses `PaneAction` for `Mode::TextInput(_)`, but Settings Editing and Keymap Awaiting still need local actions like Cancel/Confirm visible. Text input should suppress `Nav` and usually `Global`; the focused pane should decide whether it has `PaneAction` slots by returning them from `bar_slots`.
+
+7. **Primary-key reverse lookup is not enough for structural checks.** `key_for_toml_key(id, action)` returns one primary key. Phase 16 uses it to decide whether the inbound key should clear output, but multi-bind actions can have several keys. Add a predicate (`is_key_bound_to_toml_key`) or all-key getter (`keys_for_toml_key`) before using this for structural preflight or the keymap overlay.
+
+8. **The framework-owned keymap overlay needs registered metadata and mutation APIs.** The plan says the binary supplies `(P::APP_PANE_ID, P::Actions::ALL)` pairs, but `KeymapPane` is moving into `tui_pane`. Better: collect scope/action metadata during `register::<P>` while `P::Actions::ALL` is typed, store an erased metadata table on `Keymap`, and expose framework-owned rebind operations that update the live scope and persistence target. Otherwise Phase 11/14 will have to reach back into binary-specific keymap UI logic.
+
+One stale-plan cleanup item folds into the same pass: Phase 18's TOML/vim test currently contradicts the shipped builder (vim extras apply after TOML overlays).
+
 ### Phase 1 — Workspace conversion ✅
 
 Convert `cargo-port-api-fix` into a Cargo workspace. See `phase-01-cargo-mechanics-DONE.md` for full TOML and `phase-01-ci-tooling-DONE.md` for the CI updates.
@@ -1780,7 +1808,7 @@ arm). Visible-but-not-focused toasts ignore key input.
 
 **Doc-sync:** core-api.md §6/§7 are now synced to the post-reset surface (typestate builder, `pub(crate) RuntimeScope`, three concrete public methods on `Keymap`, no `BuilderError`, single `KeymapError`, `Ctx: AppContext + 'static`). No further §6/§7 work required at the start of Phase 10.
 
-### Phase 10 — Keymap builder + settings registry
+### Phase 10 — Keymap builder + settings registry ✅
 
 **Phase 9 reset already shipped:** the builder skeleton has the typestate (`Configuring` → `Registering`), `register::<P>` does eager collapse, the public surface is three concrete methods on `Keymap` (`dispatch_app_pane` / `render_app_pane_bar_slots` / `key_for_toml_key`), and the trait is `pub(crate) RuntimeScope<Ctx>`. core-api.md §6/§7 are synced. Phase 10 adds the settings phase methods and the framework integration that hook onto that scaffolding.
 
@@ -1794,14 +1822,14 @@ Two tightly-coupled additions in one commit because `KeymapBuilder::with_setting
 ```rust
 pub struct Keymap<Ctx: AppContext + 'static> {
     scopes:            HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>, // pane scopes (erased — heterogeneous)
-    navigation:        Option<Box<dyn Any + Send + Sync>>,                  // Some(ScopeMap<N::Actions>) post-build
-    globals:           Option<Box<dyn Any + Send + Sync>>,                  // Some(ScopeMap<G::Actions>) post-build
+    navigation:        Option<Box<dyn Any>>,                                // Some(ScopeMap<N::Actions>) post-build
+    globals:           Option<Box<dyn Any>>,                                // Some(ScopeMap<G::Actions>) post-build
     framework_globals: ScopeMap<GlobalAction>,                              // already typed (no <Ctx>)
     config_path:       Option<PathBuf>,
 }
 
-pub fn navigation<N: Navigation<Ctx>>(&self) -> &ScopeMap<N::Actions> { /* downcast */ }
-pub fn globals<G: Globals<Ctx>>(&self)       -> &ScopeMap<G::Actions> { /* downcast */ }
+pub fn navigation<N: Navigation<Ctx>>(&self) -> Option<&ScopeMap<N::Actions>> { /* downcast */ }
+pub fn globals<G: Globals<Ctx>>(&self)       -> Option<&ScopeMap<G::Actions>> { /* downcast */ }
 ```
 
 Pane scopes stay erased (heterogeneity is the reason). Singletons stay typed — Phase 18's `key_for(NavigationAction::Up)` reads through the public getter without a downcast at the call site (the getter does it). Framework globals stay typed inline.
@@ -1828,8 +1856,8 @@ All three live on the `Configuring`-state impl block — the typestate enforces 
 - `Quit` → calls `ctx.framework_mut().request_quit()` (new `pub(super)` setter on `Framework` — see below); then fires `on_quit` if registered.
 - `Restart` → `ctx.framework_mut().request_restart()` (new `pub(super)` setter); then fires `on_restart` if registered.
 - `NextPane` / `PrevPane` → consults the registered pane set, computes next/prev focus, calls `ctx.set_focus(new_focus)` (the `AppContext` default funnels into `framework_mut().set_focused(...)`).
-- `OpenKeymap` / `OpenSettings` → `ctx.set_focus(FocusedPane::Framework(FrameworkPaneId::Keymap | Settings))`.
-- `Dismiss` → end-to-end chain lands in Phase 11 (toasts → focused framework overlay → `dismiss_fallback`); Phase 10's dispatcher arm calls a Phase-10-supplied `Framework::dismiss()` method that returns `bool`. Until Phase 11, the Phase 10 dispatcher arm for `Dismiss` calls `dismiss_fallback` directly — Phase 11 inserts the framework chain in front.
+- `OpenKeymap` / `OpenSettings` → `ctx.framework_mut().open_overlay(FrameworkPaneId::Keymap | Settings)`. The overlay layer is orthogonal to focus — `focused` is left untouched. (Closure-of-Phase-10 amendment; the originally-shipped `set_focus(...)` form was switched to `open_overlay(...)` to match the binary's existing modal-layer model.)
+- `Dismiss` → calls `ctx.framework_mut().close_overlay()`; if it returns `true`, the dispatcher returns. Otherwise it falls through to the optional `dismiss_fallback` hook. Phase 11 inserts the toasts arm in front of the overlay-clear step (full chain: focused-toasts pop → overlay close → `dismiss_fallback`).
 
 **Phase 6 → Phase 11 contract addendum: `pub(super)` setters on `Framework`.** Phase 10 adds two write methods to `Framework<Ctx>` so the dispatcher (sibling of `framework/mod.rs`) can flip lifecycle flags without breaking encapsulation:
 
@@ -1864,9 +1892,86 @@ After Phase 10 the entire `tui_pane` foundation is in place: keys, action machin
 
 **Standing rule 9 applies to inherent methods only (per Phase 7 retro).** Trait-default method bodies cannot be `const fn` in stable Rust. For `KeymapBuilder<Ctx>`'s chain methods (`fn on_quit(mut self, …) -> Self`, `with_*`, etc.), apply `#[must_use]` — clippy's `must_use_candidate` catches the omission anyway, and the chain-style return-`Self` form is the canonical builder pattern. `Keymap<Ctx>`'s inherent getters get the full `#[must_use]` + `const fn where eligible` treatment.
 
+### Retrospective
+
+**What worked:**
+- Typestate transition `Configuring → Registering` enforces "settings before panes" at compile time — the `compile_fail` doctest on `KeymapBuilder` locks the contract and survived clippy / fmt without changes.
+- `Box<dyn Any>` typed-singleton storage with `downcast_ref::<ScopeMap<X::Actions>>` keeps `Keymap<Ctx>` heterogeneous across `<N::Actions>` / `<G::Actions>` without forcing `Send + Sync` bounds on every action enum.
+- Eager TOML overlay inline at `register::<P>` (per the Phase 9 reset) was straightforward to write — no `PendingEntry` deferred-collapse state to thread through. Vim extras append in the same spot, after TOML.
+- Deferred-error capture (`deferred_error: Option<KeymapError>` on the builder) lets `register::<P>` keep its `Self`-returning chain signature while still surfacing per-pane overlay failures from `build` / `build_into`.
+- TOML loader surface — `load_toml(PathBuf) -> Result<Self, KeymapError>` with `NotFound` treated as "no overlay" — round-tripped cleanly through every test path on the first attempt.
+
+**What deviated from the plan:**
+- `Keymap::navigation::<N>()` / `globals::<G>()` return `Option<&ScopeMap<...>>` instead of `&ScopeMap<...>`. Reason: `clippy::expect_used` is in the workspace lint config and the panic path needed a per-method `#[allow]` to satisfy it. Returning `Option` matches the underlying storage state and shifts the unwrap to call sites (Phase 11 dispatcher, binary code).
+- `register_navigation::<N>()` / `register_globals::<G>()` take no value parameter (plan: `register_navigation(N)`). Reason: `clippy::needless_pass_by_value` rejected an unused `_navigation: N` arg, and `N` / `G` are typically ZST markers — the value carries no data.
+- `Framework::new` is no longer `const fn`. The Phase 6 contract said the five frozen methods stay `const`, but `HashMap::new()` is not `const fn` in stable Rust; adding the `mode_queries` / `pane_order` fields broke const-eligibility for `new`. The other four frozen methods (`focused`, `set_focused`, `quit_requested`, `restart_requested`) stayed `const`.
+- `on_quit` / `on_restart` / `dismiss_fallback` hooks live on `Keymap<Ctx>`, not on `Framework<Ctx>`. The plan said the dispatcher "closes over" them, but a free `fn` cannot close over anything; routing through `&Keymap<Ctx>` is the actual mechanism.
+- `dispatch_global` signature is `(action, &Keymap<Ctx>, &mut Ctx)` not `(action, &mut Ctx)` — same reason as above. `Keymap::dispatch_framework_global(action, ctx)` is the public call-site entry point that wraps the free fn.
+- Cross-action collision validation uses a new `pub(super) Bindings::entries()` accessor + a small `bindings_entries` helper in `builder.rs`. The plan didn't call this out; it fell out of needing to walk a `Bindings` after overlay without re-collapsing into a `ScopeMap` first.
+
+**Surprises:**
+- `Box<dyn Any + Send + Sync>` (the plan's storage type for typed singletons) refused to compile against generic `<N::Actions>` because the `Action` trait does not bound `Send + Sync`. Dropped to `Box<dyn Any>` — this is single-threaded UI code; nothing on the call path actually requires the bounds.
+- `Keymap` cannot `derive(Debug)` because `Box<dyn Any>` is not `Debug`. Manual `impl Debug` with `finish_non_exhaustive` was needed for the test suite (`expect_err` requires `Debug` on the `Ok` payload).
+- `clippy::expect_used` and `clippy::needless_pass_by_value` together drove three small API changes (typed-singleton getters return `Option`, `register_navigation` / `register_globals` drop their value parameter, `load_toml` consumes its `PathBuf` directly). None changed the user-facing contract — production callers still get the same chain.
+- TOML overlay's "replace-per-action" semantics required adding `Bindings::override_action(&A, Vec<KeyBind>)` (drops existing entries for the action, pushes the new ones). No public surface impact; `pub(super)` keeps it loader-internal.
+
+**Implications for remaining phases:**
+- Phase 11 input dispatcher: route `GlobalAction` hits through `keymap.dispatch_framework_global(action, ctx)`, not the free fn directly. The dispatcher chain in Phase 11's plan body still names the free fn — sync the doc to the public method.
+- Phase 11 Navigation / Globals dispatch sites must unwrap `keymap.navigation::<N>()` / `keymap.globals::<G>()` (e.g. with `.expect("registered")` or a `let Some(_) = ... else { return; }`). Production callers can rely on `Some(_)` because `KeymapError::NavigationMissing` / `GlobalsMissing` block any build with registered panes, but the type now demands the unwrap.
+- Phase 11 dismiss chain: extend the Phase-10-closure `Dismiss` arm (currently `close_overlay()` → `dismiss_fallback`) to the full chain (`Framework::dismiss()` covering focused-toasts pop → overlay close → return false → `dismiss_fallback`). The toasts pop is the only piece Phase 11 still needs to add; overlay close already shipped.
+- Phase 11 / docs: `Framework::new` is plain `fn`, not `const fn`. Anything in the remaining-phase plan that treats `Framework::new(initial_focus)` as const-evaluable is now wrong — sync.
+- Phase 11 `Framework` access: `pane_order()` is `pub(super)` (Phase 10 added it for `dispatch_global`'s `NextPane` / `PrevPane`). If Phase 11's bar renderer or input dispatcher needs the order, it has to widen visibility or call through the framework's existing methods.
+- Test gaps documented in `missing_tests.md` at repo root: items 1 (vim full-`KeyBind` equality), 2 (cross-action collision via TOML), 5 (`with_settings` round-trip), 7 (`[global]` TOML overlay onto framework globals), 8 (`NextPane` / `PrevPane` dispatch), 9 (`OpenKeymap` / `OpenSettings` dispatch) belong in Phase 10's closure or fold into Phase 11's first commit; items 3 (`InvalidBinding`), 4 (`UnknownAction`), 10 (`DuplicateScope` `type_name` payload assertion) are nice-to-have.
+- `bindings.rs` now exposes `pub(super) override_action` / `has_key` / `entries()`. Phase 14+ retrospective tests can read `entries()` directly instead of round-tripping through `ScopeMap`.
+
+### Phase 10 Review
+
+- **Phase 10 body (lines 1797–1798):** synced typed-singleton storage type from `Box<dyn Any + Send + Sync>` → `Box<dyn Any>` and getter return from `&ScopeMap<...>` → `Option<&ScopeMap<...>>` to match shipped code.
+- **Phase 11 `focused_pane_mode` block:** updated return from `Mode<Ctx>` → `Option<Mode<Ctx>>` and added a paragraph noting Phase 10 shipped the `Option` form; Phase 11 fills in framework-pane arms.
+- **Phase 11 dispatch chain:** rewrote arms (a)/(b)/(c) to name `keymap.dispatch_framework_global(action, ctx)` and to use `if let Some(scope) = keymap.{globals,navigation}::<_>()` patterns matching the shipped getter signatures.
+- **Phase 11 Dismiss arm:** added the explicit instruction to modify `framework/dispatch.rs`'s Phase-10 Dismiss arm to call `framework_mut().dismiss()` first, falling through to `dismiss_fallback` only on `false`.
+- **Phase 11 framework-pane wording:** tightened — framework panes lack `APP_PANE_ID` because `Pane<Ctx>` (the supertrait of `Shortcuts<Ctx>`) declares it.
+- **Phase 11 `pane_order()` visibility:** added a Phase-11 step to widen from `pub(super)` to `pub` for Phase 12 / 18 callers.
+- **Phase 12 region modules:** updated all `matches!(focused_pane_mode(ctx), Mode::X)` predicates to `Some(Mode::X)`; spelled out the framework-pane bar adapter (walks `bar_slots()` + `Bindings::entries()` from inherent `defaults()`; widen `Bindings::entries` from `pub(super)` to `pub(crate)` in Phase 12).
+- **Phase 13 tests:** added `build_into` preflight requirement — tests that exercise `framework.focused_pane_mode(ctx)` must build the keymap with `build_into(&mut framework)`, not `build()`.
+- **Phase 16 structural Esc snippet:** updated `focused_pane_mode` match to `Some(Mode::TextInput(_))`.
+- **Phase 17 deletion list:** added the rule that any pre-existing pre-quit / pre-restart cleanup paths in the binary move into `.on_quit` / `.on_restart` closures registered on the keymap builder.
+- **Phase 11 — significant, approved & integrated:** Phase 11 body rewritten to re-architect overlays as a separate `overlay: Option<FrameworkPaneId>` modal layer (matches binary's existing model) instead of moving `framework.focused`. Drops the need for any `previous_focus` field. Affected sections: Phase 11 focus-model intro, the dispatch chain code block (overlay-first), `Framework::dismiss()` body, `focused_pane_mode` (consults overlay first), `editor_target_path` (consults overlay first), `Framework<Ctx>` fields (adds `overlay`), methods (adds `overlay()` getter + `pub(super) open_overlay`), Phase 12 bar renderer top-level dispatch, Phase 10 dispatcher table footnote.
+- **Phase 11 — significant, approved & integrated:** Toasts model integrated — `FocusedPane::Framework(Toasts)` stays a real focus state (Tab-focusable when `toasts.has_active()`); `dismiss()` calls `try_pop_top()` only when focused on Toasts; no auto-focus when a toast appears.
+
+#### Phase 10 closure (overlay scaffolding pulled forward from Phase 11)
+
+Done at the request to clear the deck before Phase 11. Two flagged items, both shipped:
+
+1. **Overlay field + accessors on `Framework<Ctx>`.** Added `overlay: Option<FrameworkPaneId>` with `pub const fn overlay()` getter, `pub(super) const fn open_overlay(FrameworkPaneId)` setter, and `pub(super) const fn close_overlay() -> bool` setter. Phase 11's full `Framework::dismiss()` chain reuses `close_overlay()` as its middle arm.
+2. **Dispatcher rewrite.** `framework/dispatch.rs` `OpenKeymap` / `OpenSettings` now call `framework_mut().open_overlay(...)` instead of `set_focus(FocusedPane::Framework(...))`. `Dismiss` calls `framework_mut().close_overlay()` first; if it returns `true`, the dispatcher returns; otherwise it falls through to `dismiss_fallback`. The orthogonal-overlay model now matches the binary's existing modal-layer behavior 1:1.
+3. **Test rewrite.** `tui_pane/src/keymap/builder.rs` test renamed `open_keymap_and_open_settings_focus_framework_overlays` → `open_keymap_and_open_settings_open_framework_overlays`; now asserts `framework.overlay() == Some(...)` and that `framework.focused()` does not move during open. Extended to also assert `Dismiss` clears the overlay.
+4. **Variant decision (resolved).** Kept `FrameworkPaneId` unified (`Keymap | Settings | Toasts`); the `FocusedPane::Framework(Keymap | Settings)` focus arms are unreachable post-overlay-switch but remain valid payloads. Phase 11 match sites mark those arms with `// unreachable post-overlay-switch` comments rather than panicking. Recorded under Phase 11 focus-model intro.
+
+`cargo build -p tui_pane` clean, `cargo nextest run -p tui_pane` 142/142 pass, `cargo clippy -p tui_pane --all-targets --all-features -- -D warnings` clean.
+
 ### Phase 11 — Framework panes
 
 Phase 11 fills in the framework panes inside the **existing** `Framework<Ctx>` skeleton from Phase 6. The struct's pane fields and helper methods land here; the type itself, `AppContext`, and `FocusedPane` already exist.
+
+**Focus model — overlays are orthogonal to focus, matching the binary 1:1.** Audit of `src/tui/overlays/mod.rs` and `src/tui/input.rs:126-137` confirmed: today's binary keeps `app.focus` on the underlying pane while Settings/Keymap/Finder open/close as separate modal-mode state. Only `PaneId::Toasts` is ever directly focused (via Tab). Phase 11 mirrors that:
+
+- `Framework<Ctx>` carries an `overlay: Option<FrameworkPaneId>` field, separate from `focused`. `None` = no overlay, `Some(Keymap)` / `Some(Settings)` = the overlay is open over the underlying focused pane. *(Shipped at Phase 10 closure: field + `pub const fn overlay()` getter + `pub(super) const fn open_overlay(FrameworkPaneId)` setter + `pub(super) const fn close_overlay() -> bool` setter.)*
+- `OpenKeymap` / `OpenSettings` write `overlay`, never `focused`. *(Shipped at Phase 10 closure: `framework/dispatch.rs` calls `ctx.framework_mut().open_overlay(...)` directly.)* The Phase 10 dispatcher also already wires the `Dismiss` arm to call `close_overlay()` and fall through to `dismiss_fallback` only when no overlay was open.
+- `Framework::dismiss()` (Phase 11) becomes the full chain: focused-toasts pop → `close_overlay()` → return `false`. Phase 11 reuses the existing `close_overlay()` method as the middle arm. No `previous_focus` field, no prior-focus tracking — focus never moves.
+- `focused_pane_mode`, the bar renderer (Phase 12), and the dispatch chain consult `overlay` first; fall through to `focused` when `None`.
+- `set_focused` stays a frozen Phase 6 `const fn` setter — no overlay-aware branching, no contract change.
+- `FocusedPane::Framework(Toasts)` stays valid as a Tab-focusable state (matches binary's `PaneId::Toasts` Tab behavior). `FocusedPane::Framework(Keymap | Settings)` is unreachable by construction (the dispatcher never writes those focus states post-Phase-10 closure). *(Shipped at Phase 10 closure: the test `open_keymap_and_open_settings_open_framework_overlays` at `tui_pane/src/keymap/builder.rs` asserts against `framework.overlay()` and confirms `framework.focused()` does not move.)*
+
+**Phase 11 variant decision (resolved): keep `FocusedPane::Framework(Keymap | Settings)`, mark unreachable.** Picked the lowest-churn option: leave `FrameworkPaneId` unified (still carries `Keymap | Settings | Toasts`); the `Keymap | Settings` arms remain valid `FocusedPane::Framework(...)` payloads but are unreachable in practice — the dispatcher never writes them post-overlay-switch. Phase 11 match sites for `focused_pane_mode`, `editor_target_path`, and the bar renderer mark those arms with `// unreachable post-overlay-switch` comments instead of an `unreachable!()` that could panic. The (rejected) "drop" option would have split `FrameworkPaneId` into focus-only (`Toasts`) and overlay-only (`Keymap | Settings`) enums; cleaner long term but ripples through every existing match site, and the unified enum reads naturally as a "framework pane id" set.
+
+**Toasts focus model — match the binary verbatim.** Toasts is the one framework pane that *is* a real focus state, tab-focusable like the binary's `PaneId::Toasts`. Concretely:
+
+- `FocusedPane::Framework(Toasts)` is the toast-focus state.
+- Toasts land in `framework.toasts` silently — no auto-focus when a toast appears.
+- Tab / NextPane gates `Framework(Toasts)` on `toasts.has_active()` returning `true`, mirroring the binary's `is_pane_tabbable(PaneId::Toasts)` (`src/tui/app/mod.rs:805-806`). Phase 11's `pane_order()` walk must consult this gate.
+- `Toasts::handle_key` fires only when `FocusedPane::Framework(Toasts)` is the current focus.
+- **`Framework::dismiss()` calls `toasts.try_pop_top()` only when `matches!(self.focused, FocusedPane::Framework(FrameworkPaneId::Toasts))`** — not unconditionally. Otherwise `dismiss()` clears `overlay` (when `Some`) or returns `false` so the `dispatch_global` Dismiss arm falls through to the binary's `dismiss_fallback`. Matches binary's `focused_dismiss_target()` (`src/tui/app/dismiss.rs:19-28`).
 
 **Hard dependency on Phase 10.** The dispatcher chain below calls `keymap.framework_globals()`, `keymap.globals::<G>()`, and `keymap.navigation::<N>()` — all three are added by Phase 10 (typed singleton getters + the storage they read). Phase 11 cannot land until Phase 10 ships those.
 
@@ -1880,7 +1985,7 @@ Add to `tui_pane/src/panes/`:
 
 - `keymap_pane.rs` — `KeymapPane<Ctx>` with internal `EditState::{Browse, Awaiting, Conflict}`. Method `editor_target(&self) -> Option<&Path>`. `mode(&self, ctx) -> Mode<Ctx>` returns `TextInput(keymap_capture_keys)` when `EditState == Awaiting`, `Static` when `Conflict`, `Navigable` when `Browse`.
 - `settings_pane.rs` — `SettingsPane<Ctx>` with internal `EditState::{Browse, Editing}`; uses `SettingsRegistry<Ctx>`. Method `editor_target(&self) -> Option<&Path>`. `mode(&self, ctx) -> Mode<Ctx>` returns `TextInput(settings_edit_keys)` when `EditState == Editing`, `Navigable` otherwise.
-- `toasts.rs` — `Toasts<Ctx>` stack with `ToastsAction::Dismiss` (defaults to `Esc`). Framework panes do **not** implement `Shortcuts<Ctx>` (the trait requires `APP_PANE_ID: Ctx::AppPaneId`, which framework panes lack — they carry `FrameworkPaneId` instead). Instead, `Toasts<Ctx>` exposes the same inherent surface as the other framework panes (see the "Framework panes carry inherent action machinery" paragraph below): `defaults()`, `handle_key()`, `mode()`, `bar_slots()` — directly on the struct, no trait. The bar renderer and dismiss chain special-case `FocusedPane::Framework(...)` arms. Under the post-Phase-3 design, `Toasts` participates in the framework's `dismiss()` chain: when `GlobalAction::Dismiss` fires, framework first asks `toasts.try_pop_top()`; if nothing was on the stack, framework checks the focused framework overlay; if still nothing, falls through to the binary's `dismiss_fallback`.
+- `toasts.rs` — `Toasts<Ctx>` stack with `ToastsAction::Dismiss` (defaults to `Esc`). Framework panes do **not** implement `Pane<Ctx>` or `Shortcuts<Ctx>` (`Pane<Ctx>` declares `const APP_PANE_ID: Ctx::AppPaneId`, and `Shortcuts<Ctx>: Pane<Ctx>` inherits the constraint — framework panes lack an `AppPaneId` because they carry `FrameworkPaneId` instead). Instead, `Toasts<Ctx>` exposes the same inherent surface as the other framework panes (see the "Framework panes carry inherent action machinery" paragraph below): `defaults()`, `handle_key()`, `mode()`, `bar_slots()` — directly on the struct, no trait. The bar renderer and dismiss chain special-case `FocusedPane::Framework(Toasts)` and `framework.overlay()`. `Toasts` participates in the framework's `dismiss()` chain: when `GlobalAction::Dismiss` fires, framework's `dismiss()` checks (1) is the focus on Toasts? if yes, `try_pop_top` and return on hit; (2) is an overlay open? if yes, clear `overlay` and return; (3) otherwise return `false` so the dispatcher falls through to the binary's `dismiss_fallback`.
 
 **Framework panes carry inherent action machinery, not a `Pane<Ctx>` / `Shortcuts<Ctx>` impl.** Each of `KeymapPane<Ctx>`, `SettingsPane<Ctx>`, `Toasts<Ctx>` ships:
 - `pub fn defaults() -> Bindings<Self::Action>` — same role as `Shortcuts::defaults`, no trait.
@@ -1898,46 +2003,73 @@ Pre-flight (binary-specific structural escapes — keep cargo-port behavior verb
   2. Esc + non-empty output buffer → clear output, refocus, return.
   3. Confirm modal active → consume key (y/n only), return.
 
+Overlay layer first (overlays sit on top of the focused pane):
+
+  if let Some(overlay) = framework.overlay():
+    Some(Keymap)   → framework.keymap_pane.handle_key(ctx, &bind)
+    Some(Settings) → framework.settings_pane.handle_key(ctx, &bind)
+    Both overlays intercept ALL keys when open and return
+    KeyOutcome::Consumed regardless (matches existing cargo-port
+    `keymap_open` / `settings_open` short-circuit behavior). Return.
+
 Then match focused pane:
 
-  FocusedPane::Framework(fw_id):
-    fw_pane.handle_key(ctx, &bind)  // overlay takes the key
-    Overlays return KeyOutcome::Consumed regardless. Toasts may return
-    Unhandled (key fell through Toasts' own bindings). On Unhandled,
+  FocusedPane::Framework(Toasts):
+    framework.toasts.handle_key(ctx, &bind)
+    Toasts may return KeyOutcome::Consumed (a ToastsAction binding fired)
+    or Unhandled (key fell through Toasts' own bindings). On Unhandled,
     fall through to step (a) below.
 
   FocusedPane::App(id) (or Framework(Toasts) → Unhandled fall-through):
     a. Framework globals first: keymap.framework_globals().action_for(&bind)
-       → if Some, framework dispatches (Quit/Restart/NextPane/PrevPane/
-       OpenKeymap/OpenSettings/Dismiss). Returns Consumed on hit.
-    b. App globals next: keymap.globals::<G>().action_for(&bind) → if Some,
-       G::dispatcher() runs. Returns Consumed on hit. (The shared
-       [global] TOML table merges both sources at load time — Phase 9
-       loader-decisions.)
-    c. Navigation scope: keymap.navigation::<N>().action_for(&bind) → if
-       Some, N::dispatcher() routes by FocusedPane to the focused
-       scrollable surface. Returns Consumed on hit.
+       → if Some(action), call keymap.dispatch_framework_global(action, ctx)
+       (the public wrapper around the pub(crate) free fn dispatch_global,
+       which closes over the keymap's hook fn pointers). Handles
+       Quit/Restart/NextPane/PrevPane/OpenKeymap/OpenSettings/Dismiss.
+       Returns Consumed on hit.
+    b. App globals next: if let Some(scope) = keymap.globals::<G>() then
+       scope.action_for(&bind) → if Some, G::dispatcher() runs. Returns
+       Consumed on hit. The Some(scope) branch is the production path —
+       KeymapError::GlobalsMissing already blocks any build with
+       registered panes but no globals registered, so production code can
+       rely on Some, while test code that builds without globals takes
+       the None branch as a no-op. (The shared [global] TOML table merges
+       both sources at load time — Phase 9 loader-decisions.)
+    c. Navigation scope: same Option-handling pattern —
+       if let Some(scope) = keymap.navigation::<N>() { scope.action_for(&bind) }
+       — if Some(action), N::dispatcher() routes by FocusedPane to the
+       focused scrollable surface. Returns Consumed on hit. Same
+       missing-singleton invariant as (b): KeymapError::NavigationMissing
+       blocks production builds.
     d. Per-pane scope: keymap.dispatch_app_pane(id, &bind, ctx).
        Returns Consumed or Unhandled (Unhandled if no scope is
        registered for `id` or no binding matches).
     e. Unhandled → drop the key (no further fallback).
 
 Dismiss is the named global action, not an Unhandled fallback:
-  GlobalAction::Dismiss → Framework::dismiss(focused_dismiss_target())
-    → toasts.try_pop_top() (when toasts is the dismiss target)
-    → focused-overlay close (Keymap / Settings)
-    → dismiss_fallback hook (binary's optional opt-in)
+  GlobalAction::Dismiss → Framework::dismiss()
+    Order inside dismiss():
+      1. If focused on Toasts → toasts.try_pop_top(); return true on hit.
+      2. If overlay.is_some() → close overlay (overlay = None); return true.
+      3. Otherwise → return false; the dispatcher falls through to the
+         binary's dismiss_fallback hook.
   This fires only when the bound key resolves to Dismiss — never on
   every Unhandled.
+
+  Implementation: Phase 10 shipped `framework/dispatch.rs` with the
+  Dismiss arm calling the binary's `dismiss_fallback` hook directly.
+  Phase 11 modifies that arm to call `ctx.framework_mut().dismiss()`
+  first, then fall through to `dismiss_fallback` only when `dismiss()`
+  returns `false`.
 
 Toasts::handle_key fires only when FocusedPane::Framework(Toasts) is
 focused (matching cargo-port's PaneBehavior::Toasts arm). Visible-but-
 not-focused toasts ignore key input.
 ```
 
-This is a strict generalization of today's `handle_key_event` order. The `keymap_open` / `settings_open` short-circuits become the `Framework(KeymapPane | SettingsPane)` overlay arm. The `handle_global_key` step becomes (a)+(b). `handle_normal_key`'s hardcoded nav becomes (c). Per-pane keymap dispatch becomes (d). The cargo-port behavior stays byte-identical under default bindings.
+This is a strict generalization of today's `handle_key_event` order. The `keymap_open` / `settings_open` short-circuits become the overlay-layer arm at the top of dispatch (consulting `framework.overlay()`). The `handle_global_key` step becomes (a)+(b). `handle_normal_key`'s hardcoded nav becomes (c). Per-pane keymap dispatch becomes (d). The cargo-port behavior stays byte-identical under default bindings.
 
-**`Framework<Ctx>::dismiss()`** is added in this phase (the Phase 6 skeleton did not have it):
+**`Framework<Ctx>::dismiss()`** is added in this phase (the Phase 6 skeleton did not have it). The body checks Toasts focus before popping, then closes any open overlay, then signals "no framework-level dismiss happened" so the dispatcher can fall through to the binary's hook:
 
 ```rust
 impl<Ctx: AppContext> Framework<Ctx> {
@@ -1946,19 +2078,23 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// dispatcher) consults this; on `false`, calls the binary's
     /// registered `dismiss_fallback` (if any).
     pub fn dismiss(&mut self) -> bool {
-        if self.toasts.try_pop_top() { return true; }
-        match self.focused {
-            FocusedPane::Framework(FrameworkPaneId::Keymap)   => { self.set_focused(self.previous_focus()); true }
-            FocusedPane::Framework(FrameworkPaneId::Settings) => { self.set_focused(self.previous_focus()); true }
-            _ => false,
+        if matches!(self.focused, FocusedPane::Framework(FrameworkPaneId::Toasts))
+           && self.toasts.try_pop_top()
+        {
+            return true;
         }
+        if self.overlay.is_some() {
+            self.overlay = None;
+            return true;
+        }
+        false
     }
 }
 ```
 
-**Extend `tui_pane/src/framework/mod.rs`** — keep the three frozen Phase 6 fields and five frozen const-fn methods verbatim; add the new pane fields, the registry field, and the new methods. Do *not* rewrite the struct as a wholesale replacement; this is a strict superset of the Phase 6 skeleton.
+**Extend `tui_pane/src/framework/mod.rs`** — keep the three frozen Phase 6 fields and five frozen const-fn methods verbatim; keep the four Phase-10 / Phase-10-closure additions verbatim (`mode_queries`, `pane_order`, `overlay`, plus the four accessor methods); add the new pane fields and the new methods. Do *not* rewrite the struct as a wholesale replacement; this is a strict superset of what Phases 6 / 10 already shipped.
 
-Fields added in Phase 11 (the three Phase 6 fields stay verbatim, in their original positions):
+Fields after Phase 11 (Phase 6 frozen fields and Phase-10-shipped fields stay verbatim, in their original positions):
 
 ```rust
 pub struct Framework<Ctx: AppContext> {
@@ -1967,49 +2103,59 @@ pub struct Framework<Ctx: AppContext> {
     quit_requested:    bool,
     restart_requested: bool,
 
+    // ── Phase 10 / Phase-10-closure shipped fields ──
+    mode_queries:      HashMap<Ctx::AppPaneId, ModeQuery<Ctx>>,
+    pane_order:        Vec<Ctx::AppPaneId>,
+    overlay:           Option<FrameworkPaneId>,
+
     // ── Phase 11 additions ──
     pub keymap_pane:   KeymapPane<Ctx>,
     pub settings_pane: SettingsPane<Ctx>,
     pub toasts:        Toasts<Ctx>,
-    /// Per-AppPaneId queries supplied by the app at registration. Each
-    /// app pane's `Pane::mode()` returns a `fn(&Ctx) -> Mode<Ctx>`
-    /// registered alongside its dispatcher. Framework panes are
-    /// special-cased and do not appear here. Private; populated
-    /// through `pub(super) fn register_app_pane`, which
-    /// `KeymapBuilder::build_into` calls per registered pane.
-    mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> Mode<Ctx>>,
 }
 ```
 
-Methods added in Phase 11 (the five Phase 6 const-fn methods stay verbatim — `new`, `focused`, `set_focused`, `quit_requested`, `restart_requested`). `editor_target_path`, `focused_pane_mode`, and `dismiss` are Phase-11 additions not yet documented in `core-api.md` §10 — fold them into §10 as part of this phase's doc-sync sweep:
+Methods after Phase 11 (the five Phase 6 const-fn methods plus the four Phase-10 / Phase-10-closure methods — `register_app_pane`, `pane_order`, `overlay`, `open_overlay`, `close_overlay` — stay verbatim). `editor_target_path`, `focused_pane_mode`, and `dismiss` are Phase-11 additions not yet documented in `core-api.md` §10 — fold them into §10 as part of this phase's doc-sync sweep. Phase 11 also rewrites `focused_pane_mode` to consult `overlay` first (currently it returns `None` for any framework focus state):
 
 ```rust
 impl<Ctx: AppContext> Framework<Ctx> {
+    // overlay() / open_overlay() / close_overlay() shipped at Phase 10
+    // closure — keep verbatim. Phase 11 only reads them.
+
     pub fn editor_target_path(&self) -> Option<&Path> {
-        match self.focused {
-            FocusedPane::Framework(FrameworkPaneId::Keymap)   => self.keymap_pane.editor_target(),
-            FocusedPane::Framework(FrameworkPaneId::Settings) => self.settings_pane.editor_target(),
-            _ => None,
+        match self.overlay {
+            Some(FrameworkPaneId::Keymap)   => self.keymap_pane.editor_target(),
+            Some(FrameworkPaneId::Settings) => self.settings_pane.editor_target(),
+            Some(FrameworkPaneId::Toasts) | None => None,
         }
     }
 
-    pub fn focused_pane_mode(&self, ctx: &Ctx) -> Mode<Ctx> {
+    pub fn focused_pane_mode(&self, ctx: &Ctx) -> Option<Mode<Ctx>> {
+        // Overlay layer wins over focus when open.
+        match self.overlay {
+            Some(FrameworkPaneId::Keymap)   => return Some(self.keymap_pane.mode(ctx)),
+            Some(FrameworkPaneId::Settings) => return Some(self.settings_pane.mode(ctx)),
+            Some(FrameworkPaneId::Toasts) | None => {} // fall through
+        }
         match self.focused {
-            FocusedPane::Framework(FrameworkPaneId::Settings) => self.settings_pane.mode(ctx),
-            FocusedPane::Framework(FrameworkPaneId::Keymap)   => self.keymap_pane.mode(ctx),
-            FocusedPane::Framework(FrameworkPaneId::Toasts)   => Mode::Static,
-            FocusedPane::App(app)                              => self.mode_queries.get(&app)
-                .map_or(Mode::Navigable, |q| q(ctx)),
+            FocusedPane::Framework(FrameworkPaneId::Toasts)    => Some(Mode::Static),
+            FocusedPane::Framework(FrameworkPaneId::Keymap
+                                  | FrameworkPaneId::Settings) => None, // not reachable post-Phase-11
+            FocusedPane::App(app)                                => self.mode_queries.get(&app).map(|q| q(ctx)),
         }
     }
 }
 ```
+
+**Phase 10 already shipped `focused_pane_mode` with the `Option<Mode<Ctx>>` return type** (returns `None` for any `FocusedPane::Framework(_)` arm because Phase 10 had no framework-pane structs to query). Phase 11 modifies the body to consult `overlay` first; the focus-arm match remains as the second tier. Callers in Phases 12 and 16 must handle `Option` (e.g. `matches!(focused_pane_mode(ctx), Some(Mode::Navigable))`).
 
 Callers pass the same `&App` they hold; the method takes `&Ctx` because the framework is generic, but `Ctx == App` in cargo-port and the `&App` derefs cleanly.
 
 The registry is populated by `KeymapBuilder::build_into(&mut framework)`: for each `P: Pane<Ctx>` registered on the builder, the chain calls `P::mode()` (the trait associated function on `Pane<Ctx>`) to obtain the `fn(&Ctx) -> Mode<Ctx>` pointer and hands it to `framework.register_app_pane(P::APP_PANE_ID, query)`. `register_app_pane` is `pub(super)` so only the builder writes the registry; the field stays private.
 
 `Framework<Ctx>` lives in `tui_pane` (skeleton from Phase 6; filled in here). The `App.framework: Framework<App>` field-add lands in **Phase 14**, when the framework panes' input paths replace the old `handle_settings_key` / `handle_keymap_key`. Before Phase 14 the filled-in framework type is exercised only by `tui_pane`'s own `cfg(test)` units and `tui_pane/tests/` integration files.
+
+**Widen `pane_order()` from `pub(super)` to `pub` in Phase 11.** Phase 10 shipped it as `pub(super)` (only the dispatcher needed it). Phase 12's bar renderer and Phase 18's `NextPane`/`PrevPane` regression tests in `tui_pane/tests/` need to observe registration order through the public surface. Rename consideration: keep the name `pane_order()` — it returns `&[Ctx::AppPaneId]` and the meaning is exact.
 
 **Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use panes::{KeymapPane, SettingsPane, Toasts};`. `panes/mod.rs` is `mod keymap_pane; mod settings_pane; mod toasts; pub use keymap_pane::KeymapPane; pub use settings_pane::SettingsPane; pub use toasts::Toasts;` (standing rule 1). New `Framework<Ctx>` getters (`editor_target_path`, `focused_pane_mode`, `dismiss`, etc.) get `#[must_use]` per standing rule 4 where applicable.
 
@@ -2022,25 +2168,30 @@ Add `tui_pane/src/bar/` per the BarRegion model:
 - `slot.rs` — `BarSlot<A>`, `ShortcutState`, `BarSlot::primary` (added Phase 5 / 9).
 - `support.rs` — `format_action_keys(&[KeyBind]) -> String`, `push_cancel_row`, shared row builders.
 
-**Top-level dispatch matches `FocusedPane` first.** App panes flow through the keymap; framework panes never touch the keymap (no scope registered under their pane id):
+**Top-level dispatch is overlay-first, then `FocusedPane`.** Overlays render their own bar; otherwise app panes flow through the keymap and the `Framework(Toasts)` focus-state arm reads from the toast stack. Overlays render *over* the underlying pane, mirroring the binary's existing keymap/settings overlay rendering:
 
 ```rust
-let pane_slots: Vec<RenderedSlot> = match focused {
-    FocusedPane::App(id) => keymap.render_app_pane_bar_slots(*id, ctx),
-    FocusedPane::Framework(FrameworkPaneId::Keymap)   => framework.keymap_pane.bar_slots(ctx)   .resolve_keys(...),
-    FocusedPane::Framework(FrameworkPaneId::Settings) => framework.settings_pane.bar_slots(ctx) .resolve_keys(...),
-    FocusedPane::Framework(FrameworkPaneId::Toasts)   => framework.toasts.bar_slots(ctx)        .resolve_keys(...),
+let pane_slots: Vec<RenderedSlot> = match framework.overlay() {
+    Some(FrameworkPaneId::Keymap)   => framework.keymap_pane.bar_slots(ctx).resolve_keys(...),
+    Some(FrameworkPaneId::Settings) => framework.settings_pane.bar_slots(ctx).resolve_keys(...),
+    Some(FrameworkPaneId::Toasts) | None => match focused {
+        FocusedPane::App(id) => keymap.render_app_pane_bar_slots(*id, ctx),
+        FocusedPane::Framework(FrameworkPaneId::Toasts) =>
+            framework.toasts.bar_slots(ctx).resolve_keys(...),
+        FocusedPane::Framework(FrameworkPaneId::Keymap | FrameworkPaneId::Settings) =>
+            Vec::new(), // not reachable post-Phase-11 — overlay is the live state
+    },
 };
 // region modules then partition pane_slots by `region` field.
 ```
 
-Framework panes return `Vec<(BarRegion, BarSlot<Self::Action>)>` from their inherent `bar_slots()`; a small adapter resolves each to `RenderedSlot` using the framework pane's own bindings (the keymap's `framework_globals` and the inherent default keys), so every region module sees the same `RenderedSlot` value type regardless of source.
+Framework panes return `Vec<(BarRegion, BarSlot<Self::Action>)>` from their inherent `bar_slots()`. Each framework pane also exposes its own `Bindings<Action>` via the inherent `defaults()` — Phase 10 added `pub(super) Bindings::entries() -> &[(KeyBind, A)]`, so an adapter in `bar/mod.rs` walks the returned `BarSlot<A>` values, looks up each action's keys through `Bindings::entries()` on the pane's `defaults()`, and folds them into `RenderedSlot { region, label, keys }`. `framework_globals` resolves through the existing `Keymap::framework_globals()` accessor (which returns `&ScopeMap<GlobalAction>` directly — typed, no downcast). The result: every region module sees `Vec<RenderedSlot>` regardless of source. To support this, widen `Bindings::entries` from `pub(super)` to `pub(crate)` in Phase 12 (or re-export through a `pub(crate)` keymap helper) so `bar/` can read it cross-module.
 
 **Region modules walk `RenderedSlot { region, .. }`, not typed `BarSlot<A>` tuples.** With Phase 9's `RenderedSlot` carrying `region: BarRegion` as a flat field, the per-region modules filter by field-match — they no longer thread an `A` type parameter:
 
-- `nav_region.rs` — emits framework's nav + pane-cycle rows when `matches!(framework.focused_pane_mode(ctx), Mode::Navigable)`, then `pane_slots.iter().filter(|s| s.region == BarRegion::Nav)`. Suppressed entirely when the mode is `Static` or `TextInput(_)`.
-- `pane_action_region.rs` — emits `pane_slots.iter().filter(|s| s.region == BarRegion::PaneAction)`. Renders for `Navigable` and `Static`; suppressed for `TextInput(_)`.
-- `global_region.rs` — emits `GlobalAction` + `AppGlobals::render_order()` (resolved through the same `RenderedSlot` adapter); suppressed when `matches!(framework.focused_pane_mode(ctx), Mode::TextInput(_))`.
+- `nav_region.rs` — emits framework's nav + pane-cycle rows when `matches!(framework.focused_pane_mode(ctx), Some(Mode::Navigable))`, then `pane_slots.iter().filter(|s| s.region == BarRegion::Nav)`. Suppressed entirely when the mode is `Static`, `TextInput(_)`, or `None` (no pane registered for the focused id).
+- `pane_action_region.rs` — emits `pane_slots.iter().filter(|s| s.region == BarRegion::PaneAction)`. Renders for `Some(Mode::Navigable)` and `Some(Mode::Static)`; suppressed for `Some(Mode::TextInput(_))` and `None`.
+- `global_region.rs` — emits `GlobalAction` + `AppGlobals::render_order()` (resolved through the same `RenderedSlot` adapter); suppressed when `matches!(framework.focused_pane_mode(ctx), Some(Mode::TextInput(_)))`.
 
 Depends on Phase 11 (`Framework<Ctx>` exists; framework-pane `Shortcuts<Ctx>` impls exist) plus Phase 9's `Keymap<Ctx>` lookups.
 
@@ -2084,6 +2235,8 @@ In the cargo-port binary crate:
 - Finder migration: typing `'k'` in the search box inserts `'k'` into the query (handler is sole authority — vim keybinds in other scopes do not fire).
 - App-pane bar snapshot tests under default bindings: one snapshot per focused-pane context (Package / Git / ProjectList / CiRuns / Lints / Targets / Output / Lang / Cpu / Finder).
 
+**`build_into` preflight for tests that go through `framework.focused_pane_mode(ctx)`.** Phase 10 made `focused_pane_mode` read from `mode_queries`, which is populated only by `KeymapBuilder::build_into(&mut framework)`. Tests in Phases 12, 13, and 18 that assert on `focused_pane_mode` (bar snapshots, finder mode override, etc.) **must** build the keymap with `build_into`, never `build()` — the latter leaves `mode_queries` empty and silently returns `None` for every `FocusedPane::App(_)` arm. Tests that exercise `Pane::mode()` directly (the trait associated function, no `Framework`) can use `build()` because they don't touch the registry.
+
 ### Phase 14 — Reroute overlay input handlers
 
 Convert overlay handlers to scope dispatch:
@@ -2113,7 +2266,7 @@ Convert `handle_toast_key` (`input.rs:657-684`) to consult `ToastsAction::Dismis
 ```rust
 let bind = KeyBind::from(event);
 if !app.inflight.example_output().is_empty()
-   && !matches!(app.framework.focused_pane_mode(app), Mode::TextInput(_))
+   && !matches!(app.framework.focused_pane_mode(app), Some(Mode::TextInput(_)))
 {
     // Cancel-on-output is a structural preflight that fires from any
     // pane, not just OutputPane. We need to know "would `bind`
@@ -2154,6 +2307,8 @@ After Phase 16: every key dispatches through the keymap. No `KeyCode::*` direct 
 Add the `What dissolves` / `What survives` summary (currently in this doc) as user-facing notes inside `tui_pane/README.md` so the published library has its own change log of what the framework absorbed.
 
 **Binary main loop change (post-Phase-3 review).** The binary's main loop in `src/tui/terminal.rs` switches from polling `app.overlays.should_quit()` to polling `app.framework.quit_requested()` and `app.framework.restart_requested()`. The `should_quit()` accessor on `overlays` deletes; the framework owns the lifecycle flags now. If the binary needs cleanup, it registers `.on_quit(|app| { app.persist_state() })` on the builder.
+
+**Re-route any existing pre-quit / pre-restart cleanup paths into the keymap-builder hooks.** Phase 10 shipped `KeymapBuilder::on_quit(fn(&mut Ctx))` / `on_restart(fn(&mut Ctx))` / `dismiss_fallback(fn(&mut Ctx) -> bool)` — Phase 17 walks the binary for any code that runs on quit/restart (state persistence, watcher shutdown, terminal-cleanup hooks beyond what ratatui handles) and moves those bodies into closures registered on the builder during keymap construction. The post-Phase-17 binary touches the lifecycle flags only by reading them from the main loop; mutation flows exclusively through the framework's `GlobalAction` dispatcher.
 
 Delete:
 

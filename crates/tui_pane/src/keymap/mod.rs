@@ -14,6 +14,8 @@ mod scope_map;
 mod shortcuts;
 mod vim;
 
+use core::fmt::Formatter;
+use std::any::Any;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -22,7 +24,10 @@ pub use action_enum::Action;
 pub use bindings::Bindings;
 pub use builder::Configuring;
 pub use builder::KeymapBuilder;
-#[allow(unused_imports, reason = "re-exported at crate root for callers naming the typestate")]
+#[allow(
+    unused_imports,
+    reason = "re-exported at crate root for callers naming the typestate"
+)]
 pub use builder::Registering;
 pub use global_action::GlobalAction;
 pub use globals::Globals;
@@ -39,6 +44,8 @@ pub use vim::VimMode;
 
 use self::runtime_scope::RuntimeScope;
 use crate::AppContext;
+use crate::SettingsRegistry;
+use crate::framework;
 
 /// The keymap container: anchor for every binding the framework
 /// resolves at runtime.
@@ -61,8 +68,15 @@ use crate::AppContext;
 /// by [`FocusedPane::Framework`](crate::FocusedPane::Framework) arms in
 /// callers (see Phase 11).
 pub struct Keymap<Ctx: AppContext + 'static> {
-    scopes:      HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
-    config_path: Option<PathBuf>,
+    scopes:            HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
+    navigation:        Option<Box<dyn Any>>,
+    globals:           Option<Box<dyn Any>>,
+    framework_globals: ScopeMap<GlobalAction>,
+    settings:          Option<SettingsRegistry<Ctx>>,
+    on_quit:           Option<fn(&mut Ctx)>,
+    on_restart:        Option<fn(&mut Ctx)>,
+    dismiss_fallback:  Option<fn(&mut Ctx) -> bool>,
+    config_path:       Option<PathBuf>,
 }
 
 impl<Ctx: AppContext + 'static> Keymap<Ctx> {
@@ -77,17 +91,60 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     pub(super) fn new(config_path: Option<PathBuf>) -> Self {
         Self {
             scopes: HashMap::new(),
+            navigation: None,
+            globals: None,
+            framework_globals: GlobalAction::defaults().into_scope_map(),
+            settings: None,
+            on_quit: None,
+            on_restart: None,
+            dismiss_fallback: None,
             config_path,
         }
     }
 
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// constructs one.
+    pub(super) fn set_navigation(&mut self, scope_map: Box<dyn Any>) {
+        self.navigation = Some(scope_map);
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// constructs one.
+    pub(super) fn set_globals(&mut self, scope_map: Box<dyn Any>) {
+        self.globals = Some(scope_map);
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// constructs one.
+    pub(super) fn set_framework_globals(&mut self, map: ScopeMap<GlobalAction>) {
+        self.framework_globals = map;
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// constructs one.
+    pub(super) fn set_settings(&mut self, settings: SettingsRegistry<Ctx>) {
+        self.settings = Some(settings);
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// constructs one.
+    pub(super) const fn set_on_quit(&mut self, hook: fn(&mut Ctx)) { self.on_quit = Some(hook); }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// constructs one.
+    pub(super) const fn set_on_restart(&mut self, hook: fn(&mut Ctx)) {
+        self.on_restart = Some(hook);
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// constructs one.
+    pub(super) const fn set_dismiss_fallback(&mut self, hook: fn(&mut Ctx) -> bool) {
+        self.dismiss_fallback = Some(hook);
+    }
+
     /// Insert one scope under its `AppPaneId`. `pub(super)` so only
     /// the builder writes.
-    pub(super) fn insert_scope(
-        &mut self,
-        id: Ctx::AppPaneId,
-        scope: Box<dyn RuntimeScope<Ctx>>,
-    ) {
+    pub(super) fn insert_scope(&mut self, id: Ctx::AppPaneId, scope: Box<dyn RuntimeScope<Ctx>>) {
         self.scopes.insert(id, scope);
     }
 
@@ -118,11 +175,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// (label / key / state / visibility). Returns an empty `Vec` if
     /// no scope is registered.
     #[must_use]
-    pub fn render_app_pane_bar_slots(
-        &self,
-        id: Ctx::AppPaneId,
-        ctx: &Ctx,
-    ) -> Vec<RenderedSlot> {
+    pub fn render_app_pane_bar_slots(&self, id: Ctx::AppPaneId, ctx: &Ctx) -> Vec<RenderedSlot> {
         self.scopes
             .get(&id)
             .map_or_else(Vec::new, |s| s.render_bar_slots(ctx))
@@ -135,6 +188,73 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     #[must_use]
     pub fn key_for_toml_key(&self, id: Ctx::AppPaneId, action: &str) -> Option<KeyBind> {
         self.scopes.get(&id)?.key_for_toml_key(action)
+    }
+
+    /// The framework-globals scope ([`GlobalAction`] →
+    /// [`KeyBind`]). Built from
+    /// [`GlobalAction::defaults`](GlobalAction::defaults) plus any
+    /// `[global]` overrides at builder time.
+    #[must_use]
+    pub const fn framework_globals(&self) -> &ScopeMap<GlobalAction> { &self.framework_globals }
+
+    /// Typed singleton getter for the registered [`Navigation`] impl.
+    ///
+    /// Returns `None` when [`KeymapBuilder::register_navigation`] was
+    /// not called, or when the caller asks for a `N` that does not
+    /// match the type the builder stored. The builder rejects
+    /// missing-navigation builds with [`KeymapError::NavigationMissing`]
+    /// for any non-empty pane set, so production callers can rely on
+    /// `Some(_)`.
+    #[must_use]
+    pub fn navigation<N: Navigation<Ctx>>(&self) -> Option<&ScopeMap<N::Actions>> {
+        self.navigation
+            .as_ref()
+            .and_then(|stored| stored.downcast_ref::<ScopeMap<N::Actions>>())
+    }
+
+    /// Typed singleton getter for the registered [`Globals`] impl.
+    ///
+    /// Returns `None` for the same reasons as [`Self::navigation`].
+    #[must_use]
+    pub fn globals<G: Globals<Ctx>>(&self) -> Option<&ScopeMap<G::Actions>> {
+        self.globals
+            .as_ref()
+            .and_then(|stored| stored.downcast_ref::<ScopeMap<G::Actions>>())
+    }
+
+    /// Borrow the binary's settings registry, if one was supplied via
+    /// [`KeymapBuilder::with_settings`].
+    #[must_use]
+    pub const fn settings(&self) -> Option<&SettingsRegistry<Ctx>> { self.settings.as_ref() }
+
+    /// `pub(crate)` so [`crate::framework::dispatch_global`] can read
+    /// the hook without widening the public surface.
+    pub(crate) const fn on_quit_hook(&self) -> Option<fn(&mut Ctx)> { self.on_quit }
+
+    /// `pub(crate)` so [`crate::framework::dispatch_global`] can read
+    /// the hook without widening the public surface.
+    pub(crate) const fn on_restart_hook(&self) -> Option<fn(&mut Ctx)> { self.on_restart }
+
+    /// `pub(crate)` so [`crate::framework::dispatch_global`] can read
+    /// the hook without widening the public surface.
+    pub(crate) const fn dismiss_fallback_hook(&self) -> Option<fn(&mut Ctx) -> bool> {
+        self.dismiss_fallback
+    }
+
+    /// Dispatch one [`GlobalAction`] through the framework's built-in
+    /// behavior. Phase 11's input dispatcher calls this on every
+    /// framework-global hit.
+    pub fn dispatch_framework_global(&self, action: GlobalAction, ctx: &mut Ctx) {
+        framework::dispatch_global(action, self, ctx);
+    }
+}
+
+impl<Ctx: AppContext + 'static> core::fmt::Debug for Keymap<Ctx> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Keymap")
+            .field("scopes", &self.scopes.len())
+            .field("config_path", &self.config_path)
+            .finish_non_exhaustive()
     }
 }
 
@@ -149,9 +269,12 @@ mod tests {
     use crossterm::event::KeyCode;
 
     use super::Bindings;
+    use super::Globals;
     use super::KeyBind;
     use super::KeyOutcome;
     use super::Keymap;
+    use super::KeymapBuilder;
+    use super::Navigation;
     use super::Shortcuts;
     use crate::AppContext;
     use crate::FocusedPane;
@@ -169,6 +292,23 @@ mod tests {
         pub enum FooAction {
             Activate => ("activate", "go",    "Activate row");
             Clean    => ("clean",    "clean", "Clean target");
+        }
+    }
+
+    crate::action_enum! {
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        pub enum NavAction {
+            Up    => ("up",    "up",    "Move up");
+            Down  => ("down",  "down",  "Move down");
+            Left  => ("left",  "left",  "Move left");
+            Right => ("right", "right", "Move right");
+        }
+    }
+
+    crate::action_enum! {
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        pub enum AppGlobalAction {
+            Find => ("find", "find", "Open find");
         }
     }
 
@@ -206,10 +346,58 @@ mod tests {
         }
     }
 
+    struct AppNav;
+
+    impl Navigation<TestApp> for AppNav {
+        type Actions = NavAction;
+
+        const DOWN: Self::Actions = NavAction::Down;
+        const LEFT: Self::Actions = NavAction::Left;
+        const RIGHT: Self::Actions = NavAction::Right;
+        const UP: Self::Actions = NavAction::Up;
+
+        fn defaults() -> Bindings<Self::Actions> {
+            crate::bindings! {
+                KeyCode::Up    => NavAction::Up,
+                KeyCode::Down  => NavAction::Down,
+                KeyCode::Left  => NavAction::Left,
+                KeyCode::Right => NavAction::Right,
+            }
+        }
+
+        fn dispatcher() -> fn(Self::Actions, FocusedPane<TestPaneId>, &mut TestApp) {
+            |_action, _focused, _ctx| { /* no-op */ }
+        }
+    }
+
+    struct AppGlobals;
+
+    impl Globals<TestApp> for AppGlobals {
+        type Actions = AppGlobalAction;
+
+        fn render_order() -> &'static [Self::Actions] { &[AppGlobalAction::Find] }
+
+        fn defaults() -> Bindings<Self::Actions> {
+            crate::bindings! { 'f' => AppGlobalAction::Find }
+        }
+
+        fn dispatcher() -> fn(Self::Actions, &mut TestApp) {
+            |_action, _ctx| { /* no-op */ }
+        }
+    }
+
     fn fresh_app() -> TestApp {
         TestApp {
             framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
         }
+    }
+
+    fn fresh_builder() -> KeymapBuilder<TestApp, super::builder::Configuring> {
+        Keymap::<TestApp>::builder()
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
     }
 
     #[test]
@@ -225,39 +413,41 @@ mod tests {
                 .render_app_pane_bar_slots(TestPaneId::Foo, &fresh_app())
                 .is_empty(),
         );
-        assert!(keymap.key_for_toml_key(TestPaneId::Foo, "activate").is_none());
+        assert!(
+            keymap
+                .key_for_toml_key(TestPaneId::Foo, "activate")
+                .is_none()
+        );
         assert!(keymap.config_path().is_none());
     }
 
     #[test]
     fn registered_scope_dispatches_keys() {
-        let keymap = Keymap::<TestApp>::builder()
+        let keymap = fresh_builder()
             .register::<FooPane>(FooPane)
             .build()
             .expect("build keymap with one scope");
 
         let mut app = fresh_app();
-        let outcome =
-            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app);
+        let outcome = keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app);
         assert_eq!(outcome, KeyOutcome::Consumed);
     }
 
     #[test]
     fn unregistered_pane_id_returns_unhandled() {
-        let keymap = Keymap::<TestApp>::builder()
+        let keymap = fresh_builder()
             .register::<FooPane>(FooPane)
             .build()
             .expect("build keymap with one scope");
 
         let mut app = fresh_app();
-        let outcome =
-            keymap.dispatch_app_pane(TestPaneId::Bar, &KeyCode::Enter.into(), &mut app);
+        let outcome = keymap.dispatch_app_pane(TestPaneId::Bar, &KeyCode::Enter.into(), &mut app);
         assert_eq!(outcome, KeyOutcome::Unhandled);
     }
 
     #[test]
     fn render_app_pane_bar_slots_resolves_through_keymap() {
-        let keymap = Keymap::<TestApp>::builder()
+        let keymap = fresh_builder()
             .register::<FooPane>(FooPane)
             .build()
             .expect("build keymap with one scope");
@@ -268,7 +458,7 @@ mod tests {
 
     #[test]
     fn render_app_pane_bar_slots_empty_for_unregistered_pane() {
-        let keymap = Keymap::<TestApp>::builder()
+        let keymap = fresh_builder()
             .register::<FooPane>(FooPane)
             .build()
             .expect("build keymap with one scope");
@@ -281,7 +471,7 @@ mod tests {
 
     #[test]
     fn key_for_toml_key_round_trips_through_keymap() {
-        let keymap = Keymap::<TestApp>::builder()
+        let keymap = fresh_builder()
             .register::<FooPane>(FooPane)
             .build()
             .expect("build keymap with one scope");
@@ -294,7 +484,15 @@ mod tests {
             keymap.key_for_toml_key(TestPaneId::Foo, "clean"),
             Some(KeyBind::from('c')),
         );
-        assert!(keymap.key_for_toml_key(TestPaneId::Foo, "frobnicate").is_none());
-        assert!(keymap.key_for_toml_key(TestPaneId::Bar, "activate").is_none());
+        assert!(
+            keymap
+                .key_for_toml_key(TestPaneId::Foo, "frobnicate")
+                .is_none()
+        );
+        assert!(
+            keymap
+                .key_for_toml_key(TestPaneId::Bar, "activate")
+                .is_none()
+        );
     }
 }

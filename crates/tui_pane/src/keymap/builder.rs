@@ -3,25 +3,48 @@
 //!
 //! Two states:
 //!
-//! - [`Configuring`]: settings phase. Only state where settings
-//!   methods (`config_path` now; Phase 10's `load_toml`, `vim_mode`,
-//!   `with_settings`, `on_quit`, `on_restart`, `dismiss_fallback`)
-//!   are reachable.
-//! - [`Registering`]: panes phase. Entered on the first
-//!   [`KeymapBuilder::register`] call. Settings methods drop off the
-//!   type — the compiler enforces "settings before panes" at compile
-//!   time.
+//! - [`Configuring`]: settings phase. Settings methods (`config_path`, `load_toml`, `vim_mode`,
+//!   `with_settings`, `on_quit`, `on_restart`, `dismiss_fallback`, `register_navigation`,
+//!   `register_globals`) are reachable here only.
+//! - [`Registering`]: panes phase. Entered on the first [`KeymapBuilder::register`] call. Settings
+//!   methods drop off the type — the compiler enforces "settings before panes" at compile time.
+//!   `build_into(&mut Framework<Ctx>)` is the production finalizer.
 
+use core::any::Any;
+use core::any::type_name;
 use core::marker::PhantomData;
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 
+use toml::Table;
+use toml::Value;
+
+use super::Bindings;
+use super::Globals;
 use super::Keymap;
+use super::Navigation;
 use super::Shortcuts;
+use super::action_enum::Action;
+use super::global_action::GlobalAction;
+use super::key_bind::KeyBind;
+use super::key_bind::KeyParseError;
 use super::load::KeymapError;
 use super::runtime_scope::PaneScope;
 use super::runtime_scope::RuntimeScope;
+use super::scope_map::ScopeMap;
+use super::vim::VimMode;
 use crate::AppContext;
+use crate::Framework;
+use crate::Pane;
+use crate::SettingsRegistry;
+use crate::framework::ModeQuery;
+
+/// `Box<dyn Any>`-erased typed singleton. The builder stores the
+/// `ScopeMap<X::Actions>` from a `Navigation` / `Globals` impl behind
+/// this so [`Keymap`] can hold heterogeneous singletons in one field.
+type ErasedSingleton = Box<dyn Any>;
 
 /// Marker: builder is in the settings phase. Consumes settings
 /// chained methods (`config_path`, etc.). Transitions to
@@ -38,8 +61,8 @@ pub struct Registering;
 /// `State` is one of [`Configuring`] (default) or [`Registering`];
 /// the first [`Self::register`] call transitions the type.
 ///
-/// `build()` returns [`Result<Keymap<Ctx>, KeymapError>`] so loader /
-/// validation failures (Phase 10+) surface uniformly.
+/// `build()` returns [`Result<Keymap<Ctx>, KeymapError>`] so loader
+/// and validation failures surface uniformly.
 ///
 /// # Compile-time ordering
 ///
@@ -57,18 +80,46 @@ pub struct Registering;
 /// }
 /// ```
 pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
-    scopes:      HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
-    config_path: Option<PathBuf>,
-    _state:      PhantomData<State>,
+    scopes:                HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
+    pane_modes:            Vec<(Ctx::AppPaneId, ModeQuery<Ctx>)>,
+    registered_scopes:     HashSet<&'static str>,
+    duplicate_scope:       Option<&'static str>,
+    config_path:           Option<PathBuf>,
+    toml_table:            Option<Table>,
+    vim_mode:              VimMode,
+    settings:              Option<SettingsRegistry<Ctx>>,
+    on_quit:               Option<fn(&mut Ctx)>,
+    on_restart:            Option<fn(&mut Ctx)>,
+    dismiss_fallback:      Option<fn(&mut Ctx) -> bool>,
+    navigation_scope:      Option<ErasedSingleton>,
+    navigation_scope_name: Option<&'static str>,
+    globals_scope:         Option<ErasedSingleton>,
+    globals_scope_name:    Option<&'static str>,
+    deferred_error:        Option<KeymapError>,
+    _state:                PhantomData<State>,
 }
 
 impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     /// Empty builder.
     pub(super) fn new() -> Self {
         Self {
-            scopes:      HashMap::new(),
-            config_path: None,
-            _state:      PhantomData,
+            scopes:                HashMap::new(),
+            pane_modes:            Vec::new(),
+            registered_scopes:     HashSet::new(),
+            duplicate_scope:       None,
+            config_path:           None,
+            toml_table:            None,
+            vim_mode:              VimMode::Disabled,
+            settings:              None,
+            on_quit:               None,
+            on_restart:            None,
+            dismiss_fallback:      None,
+            navigation_scope:      None,
+            navigation_scope_name: None,
+            globals_scope:         None,
+            globals_scope_name:    None,
+            deferred_error:        None,
+            _state:                PhantomData,
         }
     }
 
@@ -79,22 +130,141 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
         self
     }
 
-    /// Register a [`Shortcuts<Ctx>`] impl. Eagerly collapses
-    /// [`P::defaults()`](Shortcuts::defaults) into a
-    /// [`ScopeMap<P::Actions>`](super::ScopeMap) and stores the typed
-    /// pane behind a [`RuntimeScope`] trait object keyed on
-    /// `P::APP_PANE_ID`. Transitions the builder to [`Registering`].
+    /// Read and parse the keymap TOML file at `path`. The parsed table
+    /// is stored on the builder; subsequent `register*` calls overlay
+    /// each scope's overrides onto its defaults.
+    ///
+    /// A missing file is treated as "use defaults" — `Ok(self)` is
+    /// returned with no overlay table set. Parse failures and
+    /// non-`NotFound` I/O errors surface as [`KeymapError`].
+    ///
+    /// Also records the path on the builder, equivalent to calling
+    /// [`Self::config_path`] with the same path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeymapError::Io`] on a read failure other than
+    /// `NotFound`, or [`KeymapError::Parse`] on a TOML syntax error.
+    pub fn load_toml(mut self, path: PathBuf) -> Result<Self, KeymapError> {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                self.config_path = Some(path);
+                return Ok(self);
+            },
+            Err(err) => return Err(KeymapError::Io(err)),
+        };
+        let table: Table = toml::from_str(&text)?;
+        self.toml_table = Some(table);
+        self.config_path = Some(path);
+        Ok(self)
+    }
+
+    /// Set the [`VimMode`] flag. When [`VimMode::Enabled`], each
+    /// subsequent `register*` call appends vim navigation extras after
+    /// applying TOML overrides.
     #[must_use]
-    pub fn register<P: Shortcuts<Ctx>>(
-        mut self,
-        pane: P,
-    ) -> KeymapBuilder<Ctx, Registering> {
-        self.scopes.insert(P::APP_PANE_ID, make_pane_scope::<Ctx, P>(pane));
-        KeymapBuilder {
-            scopes:      self.scopes,
-            config_path: self.config_path,
-            _state:      PhantomData,
+    pub const fn vim_mode(mut self, mode: VimMode) -> Self {
+        self.vim_mode = mode;
+        self
+    }
+
+    /// Attach a [`SettingsRegistry`] for the binary's settings.
+    /// Surfaced to the settings overlay in Phase 11+.
+    #[must_use]
+    pub fn with_settings(mut self, settings: SettingsRegistry<Ctx>) -> Self {
+        self.settings = Some(settings);
+        self
+    }
+
+    /// Register a hook called after [`GlobalAction::Quit`] flips
+    /// `framework.quit_requested`. The hook can rely on
+    /// `ctx.framework().quit_requested() == true`.
+    #[must_use]
+    pub const fn on_quit(mut self, hook: fn(&mut Ctx)) -> Self {
+        self.on_quit = Some(hook);
+        self
+    }
+
+    /// Register a hook called after [`GlobalAction::Restart`] flips
+    /// `framework.restart_requested`.
+    #[must_use]
+    pub const fn on_restart(mut self, hook: fn(&mut Ctx)) -> Self {
+        self.on_restart = Some(hook);
+        self
+    }
+
+    /// Register a fallback the framework calls when its own dismiss
+    /// chain matches nothing. Returns `true` if the binary handled the
+    /// dismiss (so the dispatcher can stop), `false` otherwise.
+    #[must_use]
+    pub const fn dismiss_fallback(mut self, hook: fn(&mut Ctx) -> bool) -> Self {
+        self.dismiss_fallback = Some(hook);
+        self
+    }
+
+    /// Register the [`Navigation`] singleton. Eagerly collapses
+    /// [`N::defaults()`](Navigation::defaults) (with TOML and vim
+    /// extras overlay) into a [`ScopeMap<N::Actions>`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeymapError`] on TOML parse / validation failures
+    /// inside the `[N::SCOPE_NAME]` table.
+    pub fn register_navigation<N: Navigation<Ctx>>(mut self) -> Result<Self, KeymapError> {
+        let defaults = N::defaults();
+        let scope_name = <N as Navigation<Ctx>>::SCOPE_NAME;
+        let mut bindings =
+            apply_toml_overlay::<N::Actions>(scope_name, defaults, self.toml_table.as_ref())?;
+        if matches!(self.vim_mode, VimMode::Enabled) {
+            apply_vim_navigation_extras::<Ctx, N>(&mut bindings);
         }
+        let scope_map: ScopeMap<N::Actions> = bindings.into_scope_map();
+        self.navigation_scope = Some(Box::new(scope_map));
+        self.navigation_scope_name = Some(scope_name);
+        self.registered_scopes.insert(scope_name);
+        Ok(self)
+    }
+
+    /// Register the [`Globals`] singleton. Eagerly collapses
+    /// [`G::defaults()`](Globals::defaults) (with TOML overlay from
+    /// the shared `[global]` table) into a [`ScopeMap<G::Actions>`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeymapError`] on TOML parse / validation failures
+    /// inside the `[G::SCOPE_NAME]` table.
+    pub fn register_globals<G: Globals<Ctx>>(mut self) -> Result<Self, KeymapError> {
+        let defaults = G::defaults();
+        let scope_name = <G as Globals<Ctx>>::SCOPE_NAME;
+        let bindings =
+            apply_toml_overlay::<G::Actions>(scope_name, defaults, self.toml_table.as_ref())?;
+        let scope_map: ScopeMap<G::Actions> = bindings.into_scope_map();
+        self.globals_scope = Some(Box::new(scope_map));
+        self.globals_scope_name = Some(scope_name);
+        self.registered_scopes.insert(scope_name);
+        Ok(self)
+    }
+
+    /// Register a [`Shortcuts<Ctx>`] impl. Eagerly collapses
+    /// [`P::defaults()`](Shortcuts::defaults) (with TOML and vim
+    /// extras overlay) into a [`ScopeMap<P::Actions>`] and stores the
+    /// typed pane behind a [`RuntimeScope`] trait object keyed on
+    /// `P::APP_PANE_ID`. Transitions the builder to [`Registering`].
+    ///
+    /// Errors during overlay are deferred until [`Self::build`] /
+    /// [`Self::build_into`] so the chain stays a `Self`-returning
+    /// flow. Phase 9 / Phase 10's overlay logic does not currently
+    /// emit deferred errors per pane; that becomes relevant only when
+    /// the loader's validation surface widens.
+    ///
+    /// Duplicate `APP_PANE_ID`s — two distinct `P` types claiming the
+    /// same id — are recorded and surfaced as
+    /// [`KeymapError::DuplicateScope`] from `build` / `build_into`.
+    pub fn register<P: Shortcuts<Ctx>>(self, pane: P) -> KeymapBuilder<Ctx, Registering> {
+        let mut next = transition::<Ctx>(self);
+        next.insert_pane::<P>(pane);
+        next
     }
 
     /// Finalize the builder with no scopes registered. Returns the
@@ -102,14 +272,11 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     ///
     /// # Errors
     ///
-    /// Returns a [`KeymapError`] when the loader (Phase 10+) fails —
-    /// I/O, TOML parse, unknown action / scope, duplicate or colliding
-    /// bindings, or a key string that fails [`KeyBind::parse`](super::KeyBind::parse).
-    /// Phase 9 always returns `Ok` because no loader has been wired
-    /// yet.
-    pub fn build(self) -> Result<Keymap<Ctx>, KeymapError> {
-        Ok(finalize(self.scopes, self.config_path))
-    }
+    /// Returns [`KeymapError::NavigationMissing`] /
+    /// [`KeymapError::GlobalsMissing`] when the matching singleton
+    /// was not registered. Loader / overlay errors propagate from the
+    /// `register*` methods that ran earlier.
+    pub fn build(self) -> Result<Keymap<Ctx>, KeymapError> { finalize(self) }
 }
 
 impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
@@ -117,41 +284,337 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
     /// the [`Configuring`]-state form, but stays in [`Registering`].
     #[must_use]
     pub fn register<P: Shortcuts<Ctx>>(mut self, pane: P) -> Self {
-        self.scopes.insert(P::APP_PANE_ID, make_pane_scope::<Ctx, P>(pane));
+        self.insert_pane::<P>(pane);
         self
     }
 
     /// Finalize the builder. Returns the built [`Keymap<Ctx>`].
     ///
+    /// Production code should call [`Self::build_into`] instead so
+    /// the framework's per-pane mode-query registry is populated.
+    ///
     /// # Errors
     ///
-    /// Returns a [`KeymapError`] when the loader (Phase 10+) fails —
-    /// I/O, TOML parse, unknown action / scope, duplicate or colliding
-    /// bindings, or a key string that fails [`KeyBind::parse`](super::KeyBind::parse).
-    /// Phase 9 always returns `Ok`.
-    pub fn build(self) -> Result<Keymap<Ctx>, KeymapError> {
-        Ok(finalize(self.scopes, self.config_path))
+    /// Same as [`KeymapBuilder::<Configuring>::build`].
+    pub fn build(self) -> Result<Keymap<Ctx>, KeymapError> { finalize(self) }
+
+    /// Production finalizer. Builds the [`Keymap<Ctx>`] *and* writes
+    /// the registered `(AppPaneId, mode_fn)` pairs into the
+    /// framework's per-pane registry so
+    /// [`Framework::focused_pane_mode`](crate::Framework::focused_pane_mode)
+    /// can answer for every registered pane.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::build`].
+    pub fn build_into(self, framework: &mut Framework<Ctx>) -> Result<Keymap<Ctx>, KeymapError> {
+        for &(id, mode_fn) in &self.pane_modes {
+            framework.register_app_pane(id, mode_fn);
+        }
+        finalize(self)
     }
 }
 
-fn make_pane_scope<Ctx: AppContext + 'static, P: Shortcuts<Ctx>>(
-    pane: P,
-) -> Box<dyn RuntimeScope<Ctx>> {
-    Box::new(PaneScope {
-        pane,
-        bindings: P::defaults().into_scope_map(),
-    })
+impl<Ctx: AppContext + 'static, State> KeymapBuilder<Ctx, State> {
+    /// Insert one pane scope. Records the `(id, mode_fn)` pair for
+    /// `build_into` and the `SCOPE_NAME` for cross-scope validation.
+    /// Detects `APP_PANE_ID` duplicates and stashes the offender's
+    /// type name for `build` / `build_into` to surface as
+    /// [`KeymapError::DuplicateScope`].
+    fn insert_pane<P: Shortcuts<Ctx>>(&mut self, pane: P) {
+        if self.scopes.contains_key(&P::APP_PANE_ID) && self.duplicate_scope.is_none() {
+            self.duplicate_scope = Some(type_name::<P>());
+        }
+        let bindings = match build_pane_bindings::<Ctx, P>(self.toml_table.as_ref(), self.vim_mode)
+        {
+            Ok(b) => b,
+            Err(err) => {
+                if self.deferred_error.is_none() {
+                    self.deferred_error = Some(err);
+                }
+                Bindings::new()
+            },
+        };
+        let scope: Box<dyn RuntimeScope<Ctx>> = Box::new(PaneScope {
+            pane,
+            bindings: bindings.into_scope_map(),
+        });
+        self.scopes.insert(P::APP_PANE_ID, scope);
+        self.pane_modes
+            .push((P::APP_PANE_ID, <P as Pane<Ctx>>::mode()));
+        self.registered_scopes
+            .insert(<P as Shortcuts<Ctx>>::SCOPE_NAME);
+    }
 }
 
-fn finalize<Ctx: AppContext + 'static>(
-    scopes: HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
-    config_path: Option<PathBuf>,
-) -> Keymap<Ctx> {
-    let mut keymap = Keymap::<Ctx>::new(config_path);
-    for (id, scope) in scopes {
+/// Move from the [`Configuring`] type to [`Registering`]. Field-by-
+/// field move so the typestate transition is purely a type change at
+/// runtime.
+fn transition<Ctx: AppContext + 'static>(
+    src: KeymapBuilder<Ctx, Configuring>,
+) -> KeymapBuilder<Ctx, Registering> {
+    KeymapBuilder {
+        scopes:                src.scopes,
+        pane_modes:            src.pane_modes,
+        registered_scopes:     src.registered_scopes,
+        duplicate_scope:       src.duplicate_scope,
+        config_path:           src.config_path,
+        toml_table:            src.toml_table,
+        vim_mode:              src.vim_mode,
+        settings:              src.settings,
+        on_quit:               src.on_quit,
+        on_restart:            src.on_restart,
+        dismiss_fallback:      src.dismiss_fallback,
+        navigation_scope:      src.navigation_scope,
+        navigation_scope_name: src.navigation_scope_name,
+        globals_scope:         src.globals_scope,
+        globals_scope_name:    src.globals_scope_name,
+        deferred_error:        src.deferred_error,
+        _state:                PhantomData,
+    }
+}
+
+/// Apply TOML and vim overlay onto a pane's defaults.
+///
+/// Returns `Err(KeymapError)` for overlay failures; the per-state
+/// `register::<P>` wrappers swallow that into a deferred record (see
+/// `insert_pane`) so the chain stays `Self`-returning. Phase 10
+/// silently propagates overlay failures via `build()` once we widen
+/// the error pathway; today the helper is `Result`-typed in
+/// preparation.
+fn build_pane_bindings<Ctx: AppContext + 'static, P: Shortcuts<Ctx>>(
+    toml_table: Option<&Table>,
+    vim_mode: VimMode,
+) -> Result<Bindings<P::Actions>, KeymapError> {
+    let scope_name = <P as Shortcuts<Ctx>>::SCOPE_NAME;
+    let mut bindings = apply_toml_overlay::<P::Actions>(scope_name, P::defaults(), toml_table)?;
+    if matches!(vim_mode, VimMode::Enabled) {
+        for (action, key) in P::vim_extras() {
+            if !bindings.has_key(key) {
+                bindings.bind(*key, *action);
+            }
+        }
+    }
+    Ok(bindings)
+}
+
+/// Append vim navigation extras (`h` / `j` / `k` / `l`) to
+/// `Navigation::LEFT` / `DOWN` / `UP` / `RIGHT`. Skips any letter
+/// already bound to a different action on the full [`KeyBind`] (code
+/// + mods).
+fn apply_vim_navigation_extras<Ctx: AppContext + 'static, N: Navigation<Ctx>>(
+    bindings: &mut Bindings<N::Actions>,
+) {
+    let pairs: [(char, N::Actions); 4] = [
+        ('h', <N as Navigation<Ctx>>::LEFT),
+        ('j', <N as Navigation<Ctx>>::DOWN),
+        ('k', <N as Navigation<Ctx>>::UP),
+        ('l', <N as Navigation<Ctx>>::RIGHT),
+    ];
+    for (c, action) in pairs {
+        let key = KeyBind::from(c);
+        if !bindings.has_key(&key) {
+            bindings.bind(key, action);
+        }
+    }
+}
+
+/// Walk `[scope_name]` in the parsed TOML table (if present) and
+/// override matching actions in `defaults`. Returns the overlaid
+/// `Bindings` (replace-per-action semantics: TOML keys for an action
+/// fully replace the action's defaults).
+fn apply_toml_overlay<A>(
+    scope_name: &str,
+    mut defaults: Bindings<A>,
+    table: Option<&Table>,
+) -> Result<Bindings<A>, KeymapError>
+where
+    A: Action,
+{
+    let Some(table) = table else {
+        return Ok(defaults);
+    };
+    let Some(scope_value) = table.get(scope_name) else {
+        return Ok(defaults);
+    };
+    let Some(scope_table) = scope_value.as_table() else {
+        return Ok(defaults);
+    };
+
+    for (action_key, value) in scope_table {
+        let Some(action) = A::from_toml_key(action_key) else {
+            return Err(KeymapError::UnknownAction {
+                scope:  scope_name.to_string(),
+                action: action_key.clone(),
+            });
+        };
+        let keys = parse_toml_value(scope_name, action_key, value)?;
+        check_in_array_duplicates(scope_name, action_key, &keys)?;
+        defaults.override_action(&action, keys);
+    }
+
+    check_cross_action_collision(scope_name, &defaults)?;
+    Ok(defaults)
+}
+
+/// Parse a TOML scope entry value into `Vec<KeyBind>`. Accepts a
+/// single string or an array of strings.
+fn parse_toml_value(scope: &str, action: &str, value: &Value) -> Result<Vec<KeyBind>, KeymapError> {
+    match value {
+        Value::String(s) => {
+            let bind = KeyBind::parse(s).map_err(|source| KeymapError::InvalidBinding {
+                scope: scope.to_string(),
+                action: action.to_string(),
+                source,
+            })?;
+            Ok(vec![bind])
+        },
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                let s = item.as_str().ok_or_else(|| KeymapError::InvalidBinding {
+                    scope:  scope.to_string(),
+                    action: action.to_string(),
+                    source: KeyParseError::Empty,
+                })?;
+                let bind = KeyBind::parse(s).map_err(|source| KeymapError::InvalidBinding {
+                    scope: scope.to_string(),
+                    action: action.to_string(),
+                    source,
+                })?;
+                out.push(bind);
+            }
+            Ok(out)
+        },
+        _ => Err(KeymapError::InvalidBinding {
+            scope:  scope.to_string(),
+            action: action.to_string(),
+            source: KeyParseError::Empty,
+        }),
+    }
+}
+
+/// Reject duplicate keys inside a single TOML array. Surfaces
+/// [`KeymapError::InArrayDuplicate`].
+fn check_in_array_duplicates(
+    scope: &str,
+    action: &str,
+    keys: &[KeyBind],
+) -> Result<(), KeymapError> {
+    for (i, key) in keys.iter().enumerate() {
+        if keys[..i].iter().any(|k| k == key) {
+            return Err(KeymapError::InArrayDuplicate {
+                scope:  scope.to_string(),
+                action: action.to_string(),
+                key:    key.display(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Reject two actions in the same scope sharing one key. Surfaces
+/// [`KeymapError::CrossActionCollision`].
+fn check_cross_action_collision<A: Action>(
+    scope: &str,
+    bindings: &Bindings<A>,
+) -> Result<(), KeymapError> {
+    let mut seen: HashMap<KeyBind, A> = HashMap::new();
+    for (key, action) in bindings_entries(bindings) {
+        if let Some(existing) = seen.get(key)
+            && *existing != *action
+        {
+            return Err(KeymapError::CrossActionCollision {
+                scope:   scope.to_string(),
+                key:     key.display(),
+                actions: (
+                    existing.toml_key().to_string(),
+                    action.toml_key().to_string(),
+                ),
+            });
+        }
+        seen.insert(*key, *action);
+    }
+    Ok(())
+}
+
+/// Borrow the entries of a [`Bindings`] in insertion order.
+fn bindings_entries<A>(bindings: &Bindings<A>) -> impl Iterator<Item = (&KeyBind, &A)> {
+    bindings.entries().iter().map(|(k, a)| (k, a))
+}
+
+/// Drop the [`Configuring`]/[`Registering`] state and return a
+/// finalized [`Keymap<Ctx>`]. Validates the parsed TOML against
+/// registered scope names and emits a [`Keymap`] populated with the
+/// scopes, singletons, and lifecycle hooks the builder has collected.
+fn finalize<Ctx: AppContext + 'static, State>(
+    builder: KeymapBuilder<Ctx, State>,
+) -> Result<Keymap<Ctx>, KeymapError> {
+    if let Some(err) = builder.deferred_error {
+        return Err(err);
+    }
+    if let Some(type_name) = builder.duplicate_scope {
+        return Err(KeymapError::DuplicateScope { type_name });
+    }
+    if builder.navigation_scope.is_none() && !builder.scopes.is_empty() {
+        return Err(KeymapError::NavigationMissing);
+    }
+    if builder.globals_scope.is_none() && !builder.scopes.is_empty() {
+        return Err(KeymapError::GlobalsMissing);
+    }
+    validate_toml_scopes(builder.toml_table.as_ref(), &builder.registered_scopes)?;
+
+    let mut keymap = Keymap::<Ctx>::new(builder.config_path);
+    for (id, scope) in builder.scopes {
         keymap.insert_scope(id, scope);
     }
-    keymap
+    if let Some(nav) = builder.navigation_scope {
+        keymap.set_navigation(nav);
+    }
+    if let Some(g) = builder.globals_scope {
+        keymap.set_globals(g);
+    }
+    let framework_globals = apply_toml_overlay::<GlobalAction>(
+        "global",
+        GlobalAction::defaults(),
+        builder.toml_table.as_ref(),
+    )?;
+    keymap.set_framework_globals(framework_globals.into_scope_map());
+    if let Some(s) = builder.settings {
+        keymap.set_settings(s);
+    }
+    if let Some(hook) = builder.on_quit {
+        keymap.set_on_quit(hook);
+    }
+    if let Some(hook) = builder.on_restart {
+        keymap.set_on_restart(hook);
+    }
+    if let Some(hook) = builder.dismiss_fallback {
+        keymap.set_dismiss_fallback(hook);
+    }
+    Ok(keymap)
+}
+
+/// Reject TOML scope keys that do not match any registered
+/// `SCOPE_NAME`. The shared `[global]` table is also accepted (the
+/// framework's own globals read it alongside the binary's globals).
+fn validate_toml_scopes(
+    table: Option<&Table>,
+    registered: &HashSet<&'static str>,
+) -> Result<(), KeymapError> {
+    let Some(table) = table else {
+        return Ok(());
+    };
+    for key in table.keys() {
+        if registered.contains(key.as_str()) {
+            continue;
+        }
+        if key == "global" {
+            continue;
+        }
+        return Err(KeymapError::UnknownScope { scope: key.clone() });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -165,12 +628,20 @@ mod tests {
     use crossterm::event::KeyCode;
 
     use super::Keymap;
+    use super::VimMode;
     use crate::AppContext;
     use crate::FocusedPane;
     use crate::Framework;
+    use crate::FrameworkPaneId;
+    use crate::GlobalAction;
+    use crate::KeyBind;
     use crate::Pane;
+    use crate::SettingsRegistry;
     use crate::keymap::Bindings;
+    use crate::keymap::Globals;
     use crate::keymap::KeyOutcome;
+    use crate::keymap::KeymapError;
+    use crate::keymap::Navigation;
     use crate::keymap::Shortcuts;
 
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -186,8 +657,28 @@ mod tests {
         }
     }
 
+    crate::action_enum! {
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        pub enum NavAction {
+            Up    => ("up",    "up",    "Move up");
+            Down  => ("down",  "down",  "Move down");
+            Left  => ("left",  "left",  "Move left");
+            Right => ("right", "right", "Move right");
+        }
+    }
+
+    crate::action_enum! {
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        pub enum AppGlobalAction {
+            Find => ("find", "find", "Open find");
+        }
+    }
+
     struct TestApp {
         framework: Framework<Self>,
+        quits:     u32,
+        restarts:  u32,
+        dismisses: u32,
     }
 
     impl AppContext for TestApp {
@@ -195,6 +686,15 @@ mod tests {
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+    }
+
+    fn fresh_app() -> TestApp {
+        TestApp {
+            framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            quits:     0,
+            restarts:  0,
+            dismisses: 0,
+        }
     }
 
     struct FooPane;
@@ -217,10 +717,52 @@ mod tests {
         }
     }
 
-    fn fresh_app() -> TestApp {
-        TestApp {
-            framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
+    struct AppNav;
+
+    impl Navigation<TestApp> for AppNav {
+        type Actions = NavAction;
+
+        const DOWN: Self::Actions = NavAction::Down;
+        const LEFT: Self::Actions = NavAction::Left;
+        const RIGHT: Self::Actions = NavAction::Right;
+        const UP: Self::Actions = NavAction::Up;
+
+        fn defaults() -> Bindings<Self::Actions> {
+            crate::bindings! {
+                KeyCode::Up    => NavAction::Up,
+                KeyCode::Down  => NavAction::Down,
+                KeyCode::Left  => NavAction::Left,
+                KeyCode::Right => NavAction::Right,
+            }
         }
+
+        fn dispatcher() -> fn(Self::Actions, FocusedPane<TestPaneId>, &mut TestApp) {
+            |_action, _focused, _ctx| { /* no-op */ }
+        }
+    }
+
+    struct AppGlobals;
+
+    impl Globals<TestApp> for AppGlobals {
+        type Actions = AppGlobalAction;
+
+        fn render_order() -> &'static [Self::Actions] { &[AppGlobalAction::Find] }
+
+        fn defaults() -> Bindings<Self::Actions> {
+            crate::bindings! { 'f' => AppGlobalAction::Find }
+        }
+
+        fn dispatcher() -> fn(Self::Actions, &mut TestApp) {
+            |_action, _ctx| { /* no-op */ }
+        }
+    }
+
+    fn fresh_builder_singletons() -> super::KeymapBuilder<TestApp, super::Configuring> {
+        Keymap::<TestApp>::builder()
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
     }
 
     #[test]
@@ -238,23 +780,21 @@ mod tests {
 
     #[test]
     fn register_inserts_scope_under_app_pane_id() {
-        let keymap = Keymap::<TestApp>::builder()
+        let keymap = fresh_builder_singletons()
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed");
         let mut app = fresh_app();
-        let outcome =
-            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app);
+        let outcome = keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app);
         assert_eq!(outcome, KeyOutcome::Consumed);
-        let other =
-            keymap.dispatch_app_pane(TestPaneId::Bar, &KeyCode::Enter.into(), &mut app);
+        let other = keymap.dispatch_app_pane(TestPaneId::Bar, &KeyCode::Enter.into(), &mut app);
         assert_eq!(other, KeyOutcome::Unhandled);
     }
 
     #[test]
     fn config_path_round_trips() {
         let path = std::path::PathBuf::from("/tmp/keymap.toml");
-        let keymap = Keymap::<TestApp>::builder()
+        let keymap = fresh_builder_singletons()
             .config_path(path.clone())
             .register::<FooPane>(FooPane)
             .build()
@@ -264,19 +804,166 @@ mod tests {
 
     #[test]
     fn registered_scope_dispatches_keys_through_keymap() {
-        let keymap = Keymap::<TestApp>::builder()
+        let keymap = fresh_builder_singletons()
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed");
         let mut app = fresh_app();
-        let outcome =
-            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app);
+        let outcome = keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app);
         assert_eq!(outcome, KeyOutcome::Consumed);
     }
 
     #[test]
+    fn navigation_missing_when_panes_registered_without_nav() {
+        let err = Keymap::<TestApp>::builder()
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect_err("navigation missing must surface");
+        assert!(matches!(err, KeymapError::NavigationMissing));
+    }
+
+    #[test]
+    fn globals_missing_when_panes_registered_without_globals() {
+        let err = Keymap::<TestApp>::builder()
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect_err("globals missing must surface");
+        assert!(matches!(err, KeymapError::GlobalsMissing));
+    }
+
+    #[test]
+    fn duplicate_scope_surfaces_from_build() {
+        struct OtherFoo;
+        impl Pane<TestApp> for OtherFoo {
+            const APP_PANE_ID: TestPaneId = TestPaneId::Foo;
+        }
+        impl Shortcuts<TestApp> for OtherFoo {
+            type Actions = FooAction;
+            const SCOPE_NAME: &'static str = "other_foo";
+            fn defaults() -> Bindings<Self::Actions> { FooPane::defaults() }
+            fn dispatcher() -> fn(Self::Actions, &mut TestApp) { FooPane::dispatcher() }
+        }
+
+        let err = fresh_builder_singletons()
+            .register::<FooPane>(FooPane)
+            .register::<OtherFoo>(OtherFoo)
+            .build()
+            .expect_err("duplicate must surface");
+        let KeymapError::DuplicateScope { type_name } = err else {
+            panic!("expected DuplicateScope, got {err:?}");
+        };
+        assert!(
+            type_name.contains("OtherFoo"),
+            "type_name should name the offender, got: {type_name}",
+        );
+    }
+
+    #[test]
+    fn on_quit_hook_fires_on_global_action_quit() {
+        fn bump_quits(ctx: &mut TestApp) { ctx.quits += 1; }
+        let keymap = fresh_builder_singletons()
+            .on_quit(bump_quits)
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect("build must succeed");
+        let mut app = fresh_app();
+        keymap.dispatch_framework_global(GlobalAction::Quit, &mut app);
+        assert!(app.framework().quit_requested());
+        assert_eq!(app.quits, 1);
+    }
+
+    #[test]
+    fn on_restart_hook_fires_on_global_action_restart() {
+        fn bump_restarts(ctx: &mut TestApp) { ctx.restarts += 1; }
+        let keymap = fresh_builder_singletons()
+            .on_restart(bump_restarts)
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect("build must succeed");
+        let mut app = fresh_app();
+        keymap.dispatch_framework_global(GlobalAction::Restart, &mut app);
+        assert!(app.framework().restart_requested());
+        assert_eq!(app.restarts, 1);
+    }
+
+    #[test]
+    fn dismiss_fallback_fires_on_global_action_dismiss() {
+        fn handle_dismiss(ctx: &mut TestApp) -> bool {
+            ctx.dismisses += 1;
+            true
+        }
+        let keymap = fresh_builder_singletons()
+            .dismiss_fallback(handle_dismiss)
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect("build must succeed");
+        let mut app = fresh_app();
+        keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut app);
+        assert_eq!(app.dismisses, 1);
+    }
+
+    #[test]
+    fn vim_mode_appends_hjkl_to_navigation() {
+        let keymap = Keymap::<TestApp>::builder()
+            .vim_mode(VimMode::Enabled)
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect("build must succeed");
+        let nav = keymap
+            .navigation::<AppNav>()
+            .expect("nav must be registered");
+        assert_eq!(nav.action_for(&KeyBind::from('h')), Some(NavAction::Left));
+        assert_eq!(nav.action_for(&KeyBind::from('j')), Some(NavAction::Down));
+        assert_eq!(nav.action_for(&KeyBind::from('k')), Some(NavAction::Up));
+        assert_eq!(nav.action_for(&KeyBind::from('l')), Some(NavAction::Right));
+    }
+
+    #[test]
+    fn vim_mode_preserves_arrow_primaries_for_navigation() {
+        let keymap = Keymap::<TestApp>::builder()
+            .vim_mode(VimMode::Enabled)
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect("build must succeed");
+        let nav = keymap
+            .navigation::<AppNav>()
+            .expect("nav must be registered");
+        assert_eq!(
+            nav.key_for(NavAction::Up),
+            Some(&KeyBind::from(KeyCode::Up))
+        );
+    }
+
+    #[test]
+    fn build_into_populates_framework_pane_modes() {
+        let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Foo));
+        let _keymap = fresh_builder_singletons()
+            .register::<FooPane>(FooPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+        assert!(app.framework().focused_pane_mode(&app).is_some());
+    }
+
+    #[test]
     fn register_chains_in_registering_state() {
-        // Two distinct panes; second register stays in Registering.
         struct OtherPane;
         impl Pane<TestApp> for OtherPane {
             const APP_PANE_ID: TestPaneId = TestPaneId::Bar;
@@ -288,7 +975,7 @@ mod tests {
             fn dispatcher() -> fn(Self::Actions, &mut TestApp) { FooPane::dispatcher() }
         }
 
-        let keymap = Keymap::<TestApp>::builder()
+        let keymap = fresh_builder_singletons()
             .register::<FooPane>(FooPane)
             .register::<OtherPane>(OtherPane)
             .build()
@@ -300,6 +987,345 @@ mod tests {
         );
         assert_eq!(
             keymap.dispatch_app_pane(TestPaneId::Bar, &KeyCode::Enter.into(), &mut app),
+            KeyOutcome::Consumed,
+        );
+    }
+
+    #[test]
+    fn toml_overlay_replaces_pane_action_keys() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("tui_pane_test_{}.toml", std::process::id()));
+        std::fs::write(&path, "[foo]\nactivate = \"x\"\n").expect("write toml");
+        let keymap = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect("build must succeed");
+        let mut app = fresh_app();
+        assert_eq!(
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyBind::from('x'), &mut app),
+            KeyOutcome::Consumed,
+        );
+        assert_eq!(
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
+            KeyOutcome::Unhandled,
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn toml_overlay_array_form_binds_multiple_keys() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("tui_pane_test_array_{}.toml", std::process::id()));
+        std::fs::write(&path, "[foo]\nactivate = [\"x\", \"y\"]\n").expect("write toml");
+        let keymap = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect("build must succeed");
+        let mut app = fresh_app();
+        assert_eq!(
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyBind::from('x'), &mut app),
+            KeyOutcome::Consumed,
+        );
+        assert_eq!(
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyBind::from('y'), &mut app),
+            KeyOutcome::Consumed,
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn toml_overlay_array_in_array_duplicate_rejected_at_build() {
+        // Cross-action collision in the [foo] table — the same key
+        // `x` is bound twice in the array for the same action.
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("tui_pane_test_dup_{}.toml", std::process::id()));
+        std::fs::write(&path, "[foo]\nactivate = [\"x\", \"x\"]\n").expect("write toml");
+        let result = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
+            .register::<FooPane>(FooPane)
+            .build();
+        assert!(matches!(result, Err(KeymapError::InArrayDuplicate { .. })));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn toml_unknown_scope_surfaces_at_build() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("tui_pane_test_uscope_{}.toml", std::process::id()));
+        std::fs::write(&path, "[mystery]\nactivate = \"x\"\n").expect("write toml");
+        let result = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
+            .register::<FooPane>(FooPane)
+            .build();
+        assert!(matches!(result, Err(KeymapError::UnknownScope { .. })));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn vim_mode_treats_shift_letter_as_distinct_from_bare_letter() {
+        struct ShiftKNav;
+        impl Navigation<TestApp> for ShiftKNav {
+            type Actions = NavAction;
+
+            const DOWN: Self::Actions = NavAction::Down;
+            const LEFT: Self::Actions = NavAction::Left;
+            const RIGHT: Self::Actions = NavAction::Right;
+            const UP: Self::Actions = NavAction::Up;
+
+            fn defaults() -> Bindings<Self::Actions> {
+                crate::bindings! {
+                    KeyCode::Up    => NavAction::Up,
+                    KeyCode::Down  => NavAction::Down,
+                    KeyCode::Left  => NavAction::Left,
+                    KeyCode::Right => NavAction::Right,
+                    KeyBind::shift('K') => NavAction::Right,
+                }
+            }
+
+            fn dispatcher() -> fn(Self::Actions, FocusedPane<TestPaneId>, &mut TestApp) {
+                |_action, _focused, _ctx| { /* no-op */ }
+            }
+        }
+
+        let keymap = Keymap::<TestApp>::builder()
+            .vim_mode(VimMode::Enabled)
+            .register_navigation::<ShiftKNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect("build must succeed");
+
+        let nav = keymap
+            .navigation::<ShiftKNav>()
+            .expect("nav must be registered");
+        assert_eq!(nav.action_for(&KeyBind::from('k')), Some(NavAction::Up));
+        assert_eq!(
+            nav.action_for(&KeyBind::shift('K')),
+            Some(NavAction::Right),
+            "Shift+K still binds the original action — vim's bare k is distinct on (code, mods)",
+        );
+    }
+
+    #[test]
+    fn cross_action_collision_in_toml_surfaces_at_build() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("tui_pane_test_xcoll_{}.toml", std::process::id()));
+        std::fs::write(&path, "[navigation]\nup = \"x\"\ndown = \"x\"\n").expect("write toml");
+        let result = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_navigation::<AppNav>();
+        let _ = std::fs::remove_file(&path);
+        match result {
+            Err(KeymapError::CrossActionCollision { .. }) => {},
+            Err(other) => panic!("expected CrossActionCollision, got {other:?}"),
+            Ok(_) => panic!("expected CrossActionCollision, got Ok"),
+        }
+    }
+
+    #[test]
+    fn with_settings_round_trips_on_keymap() {
+        fn get_flag(_: &TestApp) -> bool { false }
+        fn set_flag(_: &mut TestApp, _: bool) {}
+        fn get_count(_: &TestApp) -> i64 { 0 }
+        fn set_count(_: &mut TestApp, _: i64) {}
+
+        let registry = SettingsRegistry::<TestApp>::new()
+            .add_bool("vim", get_flag, set_flag)
+            .add_int("count", get_count, set_count)
+            .with_bounds(0, 10);
+
+        let keymap = fresh_builder_singletons()
+            .with_settings(registry)
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect("build must succeed");
+
+        let stored = keymap.settings().expect("settings must round-trip");
+        let names: Vec<&str> = stored.entries().iter().map(|e| e.name).collect();
+        assert_eq!(names, vec!["vim", "count"]);
+    }
+
+    #[test]
+    fn global_toml_overlay_overrides_framework_globals() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("tui_pane_test_global_{}.toml", std::process::id()));
+        std::fs::write(&path, "[global]\nquit = \"z\"\n").expect("write toml");
+        let keymap = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .build()
+            .expect("build must succeed");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            keymap.framework_globals().action_for(&KeyBind::from('z')),
+            Some(GlobalAction::Quit),
+        );
+        assert_eq!(
+            keymap.framework_globals().action_for(&KeyBind::from('q')),
+            None,
+            "default 'q' must be replaced by the user override",
+        );
+    }
+
+    #[test]
+    fn next_pane_and_prev_pane_walk_registered_panes_with_wrap() {
+        struct OtherPane;
+        impl Pane<TestApp> for OtherPane {
+            const APP_PANE_ID: TestPaneId = TestPaneId::Bar;
+        }
+        impl Shortcuts<TestApp> for OtherPane {
+            type Actions = FooAction;
+            const SCOPE_NAME: &'static str = "other";
+            fn defaults() -> Bindings<Self::Actions> { FooPane::defaults() }
+            fn dispatcher() -> fn(Self::Actions, &mut TestApp) { FooPane::dispatcher() }
+        }
+
+        let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Foo));
+        let keymap = fresh_builder_singletons()
+            .register::<FooPane>(FooPane)
+            .register::<OtherPane>(OtherPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let mut app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Bar),
+        );
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Foo),
+            "next-pane wraps from the last pane to the first",
+        );
+
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Bar),
+            "prev-pane wraps from the first pane to the last",
+        );
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Foo),
+        );
+    }
+
+    #[test]
+    fn open_keymap_and_open_settings_open_framework_overlays() {
+        let keymap = Keymap::<TestApp>::builder()
+            .build()
+            .expect("empty build must succeed");
+        let mut app = fresh_app();
+        let initial_focus = *app.framework().focused();
+
+        keymap.dispatch_framework_global(GlobalAction::OpenKeymap, &mut app);
+        assert_eq!(app.framework().overlay(), Some(FrameworkPaneId::Keymap));
+        assert_eq!(*app.framework().focused(), initial_focus);
+
+        keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut app);
+        assert_eq!(app.framework().overlay(), Some(FrameworkPaneId::Settings));
+        assert_eq!(*app.framework().focused(), initial_focus);
+
+        keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut app);
+        assert_eq!(app.framework().overlay(), None);
+        assert_eq!(*app.framework().focused(), initial_focus);
+    }
+
+    #[test]
+    fn invalid_binding_in_toml_surfaces_at_build() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("tui_pane_test_bad_{}.toml", std::process::id()));
+        std::fs::write(&path, "[foo]\nactivate = \"Bogus+nonsense\"\n").expect("write toml");
+        let result = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
+            .register::<FooPane>(FooPane)
+            .build();
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("invalid binding must surface");
+        assert!(
+            matches!(err, KeymapError::InvalidBinding { .. }),
+            "expected InvalidBinding, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn unknown_action_in_toml_surfaces_at_build() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("tui_pane_test_uact_{}.toml", std::process::id()));
+        std::fs::write(&path, "[foo]\nfrobnicate = \"x\"\n").expect("write toml");
+        let result = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
+            .register::<FooPane>(FooPane)
+            .build();
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("unknown action must surface");
+        assert!(
+            matches!(err, KeymapError::UnknownAction { .. }),
+            "expected UnknownAction, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn load_toml_missing_file_treated_as_no_overlay() {
+        let path = std::env::temp_dir().join("tui_pane_does_not_exist.toml");
+        let _ = std::fs::remove_file(&path);
+        let keymap = Keymap::<TestApp>::builder()
+            .load_toml(path)
+            .expect("missing file must yield Ok")
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect("build must succeed");
+        let mut app = fresh_app();
+        assert_eq!(
+            keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
             KeyOutcome::Consumed,
         );
     }

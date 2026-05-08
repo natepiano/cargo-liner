@@ -93,6 +93,27 @@ pub enum KeymapError {
         /// The unrecognized scope name.
         scope: String,
     },
+
+    /// `KeymapBuilder::build` / `build_into` was called without
+    /// [`KeymapBuilder::register_navigation`](super::KeymapBuilder::register_navigation).
+    #[error("no Navigation impl registered on the keymap builder")]
+    NavigationMissing,
+
+    /// `KeymapBuilder::build` / `build_into` was called without
+    /// [`KeymapBuilder::register_globals`](super::KeymapBuilder::register_globals).
+    #[error("no Globals impl registered on the keymap builder")]
+    GlobalsMissing,
+
+    /// Two distinct types registered on the builder share the same
+    /// [`AppPaneId`](crate::AppContext::AppPaneId). The second
+    /// [`KeymapBuilder::register`](super::KeymapBuilder::register) call
+    /// is the one that surfaces the error; `type_name` is the
+    /// `core::any::type_name::<P>()` of the offender for diagnostics.
+    #[error("duplicate scope registered for AppPaneId (offender: {type_name})")]
+    DuplicateScope {
+        /// `core::any::type_name::<P>()` of the second registrant.
+        type_name: &'static str,
+    },
 }
 
 #[cfg(test)]

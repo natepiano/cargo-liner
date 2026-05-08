@@ -11,6 +11,7 @@ mod framework;
 mod keymap;
 mod pane;
 mod pane_id;
+mod settings;
 
 // Crate-root re-exports. The `action_enum!` and `bindings!` macros
 // reference these types via `$crate::*` paths, which requires them at
@@ -43,3 +44,6 @@ pub use pane::Mode;
 pub use pane::Pane;
 pub use pane_id::FocusedPane;
 pub use pane_id::FrameworkPaneId;
+pub use settings::SettingEntry;
+pub use settings::SettingKind;
+pub use settings::SettingsRegistry;
