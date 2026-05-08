@@ -617,7 +617,8 @@ use std::path::{Path, PathBuf};
 
 /// Settings phase: state when `KeymapBuilder` accepts settings methods
 /// (`config_path`, `load_toml`, `vim_mode`, `with_settings`,
-/// `on_quit`, `on_restart`, `dismiss_fallback`). The first
+/// `on_quit`, `on_restart`, `dismiss_fallback`, `with_toasts`,
+/// `with_toasts_pre_cycle`, `with_toasts_on_enter`). The first
 /// `register::<P>` call transitions to `Registering`.
 pub struct Configuring;
 
@@ -643,6 +644,10 @@ pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
     //   on_quit:     Option<fn(&mut Ctx)>
     //   on_restart:  Option<fn(&mut Ctx)>
     //   dismiss_fallback: Option<fn(&mut Ctx) -> bool>
+    //   toasts_is_active: Option<fn(&Ctx) -> bool>
+    //   toasts_dismissor: Option<fn(&mut Ctx) -> bool>
+    //   toasts_pre_cycle: Option<fn(&mut Ctx, FocusCycleDirection) -> bool>
+    //   toasts_on_enter:  Option<fn(&mut Ctx, FocusCycleDirection)>
     //   nav, globals: typed singleton slots populated by
     //                 register_navigation::<N>() / register_globals::<G>()
     _state: PhantomData<State>,
@@ -679,6 +684,25 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     //   pub fn on_quit(self, f: fn(&mut Ctx)) -> Self
     //   pub fn on_restart(self, f: fn(&mut Ctx)) -> Self
     //   pub fn dismiss_fallback(self, f: fn(&mut Ctx) -> bool) -> Self
+    //
+    // Phase 11 additions (Configuring-state only — Toasts shim hooks):
+    //
+    //   pub const fn with_toasts(
+    //       self,
+    //       is_active: fn(&Ctx) -> bool,
+    //       dismissor: fn(&mut Ctx) -> bool,
+    //   ) -> Self
+    //   pub const fn with_toasts_pre_cycle(
+    //       self,
+    //       pre_cycle: fn(&mut Ctx, FocusCycleDirection) -> bool,
+    //   ) -> Self
+    //   pub const fn with_toasts_on_enter(
+    //       self,
+    //       on_enter: fn(&mut Ctx, FocusCycleDirection),
+    //   ) -> Self
+    //
+    // build_into() writes the four hooks through pub(crate) setters on
+    // Toasts<Ctx>; build() (no Framework arg) silently drops them.
 }
 
 impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
@@ -719,101 +743,164 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
 
 ```rust
 /// Aggregator owned by the binary's `App`. Holds the three framework
-/// panes, the per-AppPaneId input-mode query registry, and the
-/// currently focused pane. Focus is owned here (not on the
-/// `AppContext` trait) so framework code reads `self.focused` instead
-/// of calling back through `Ctx`.
+/// panes, the per-AppPaneId input-mode query registry, the registered
+/// pane order, lifecycle flags (quit/restart), and the currently
+/// focused pane. Focus is owned here (not on the `AppContext` trait)
+/// so framework code reads `self.focused` instead of calling back
+/// through `Ctx`.
 ///
-/// All three pane fields are `pub` so the binary can pass references
+/// The three pane fields are `pub` so the binary can pass references
 /// directly to its bar-render dispatch (`bar::render(&app.framework.toasts, …)`)
 /// without going through accessor methods. Mutation goes through each
 /// pane's typed methods, not field assignment.
 pub struct Framework<Ctx: AppContext> {
-    pub keymap_pane:   KeymapPane<Ctx>,
-    pub settings_pane: SettingsPane<Ctx>,
-    pub toasts:        Toasts<Ctx>,
-    /// Currently focused pane. The binary's `Focus` subsystem (richer
-    /// policy: overlay-return memory, visited set, `pane_state`) is a
+    /// Currently focused pane. The binary's `Focus` subsystem is a
     /// layer above this field — it writes here as part of every
-    /// transition.
-    focused: FocusedPane<Ctx::AppPaneId>,
+    /// transition. Private; read via `focused()`, written via
+    /// `set_focused`.
+    focused:           FocusedPane<Ctx::AppPaneId>,
+    /// `GlobalAction::Quit` lifecycle flag. Polled by the binary's
+    /// main loop. Written by `request_quit()` (`pub(super)`).
+    quit_requested:    bool,
+    /// `GlobalAction::Restart` lifecycle flag. Polled by the binary's
+    /// main loop. Written by `request_restart()` (`pub(super)`).
+    restart_requested: bool,
     /// Per-AppPaneId input-mode queries, populated by
     /// `KeymapBuilder::build_into(&mut framework)` through
     /// `register_app_pane`. Framework panes (Keymap, Settings, Toasts)
     /// are special-cased in `focused_pane_mode` and do not appear
-    /// here. Private; written only through `pub(super) fn
-    /// register_app_pane`.
-    mode_queries: HashMap<Ctx::AppPaneId, fn(&Ctx) -> Mode<Ctx>>,
+    /// here. Private; written only through `pub(super) fn register_app_pane`.
+    mode_queries:      HashMap<Ctx::AppPaneId, fn(&Ctx) -> Mode<Ctx>>,
+    /// Registered AppPaneIds in registration order. Drives
+    /// `NextPane`/`PrevPane` walks and the bar renderer's pane-cycle
+    /// row (Phase 12). Private; written by `register_app_pane`, read
+    /// publicly via `pane_order()`.
+    pane_order:        Vec<Ctx::AppPaneId>,
+    /// The framework overlay currently open over the focused pane,
+    /// if any. Orthogonal to `focused`: the underlying focus stays put
+    /// while the overlay is `Some(_)`. Written only by
+    /// `open_overlay`/`close_overlay` (`pub(super)`); read publicly via
+    /// `overlay()`.
+    overlay:           Option<FrameworkPaneId>,
+    pub keymap_pane:   KeymapPane<Ctx>,
+    pub settings_pane: SettingsPane<Ctx>,
+    pub toasts:        Toasts<Ctx>,
 }
 
 impl<Ctx: AppContext> Framework<Ctx> {
-    /// Construct an empty framework with an explicit initial focus.
-    /// The binary creates one at startup and stores it on `App`.
-    /// `KeymapBuilder::build_into(&mut framework)` later populates
-    /// `mode_queries` through `register_app_pane`.
+    /// Construct a fresh framework with an explicit initial focus and
+    /// both lifecycle flags cleared. `KeymapBuilder::build_into(&mut
+    /// framework)` later populates `mode_queries` and `pane_order`.
     pub fn new(initial_focus: FocusedPane<Ctx::AppPaneId>) -> Self {
         Self {
-            keymap_pane:   KeymapPane::new(),
-            settings_pane: SettingsPane::new(),
-            toasts:        Toasts::new(),
-            focused:       initial_focus,
-            mode_queries:  HashMap::new(),
+            focused:           initial_focus,
+            quit_requested:    false,
+            restart_requested: false,
+            mode_queries:      HashMap::new(),
+            pane_order:        Vec::new(),
+            overlay:           None,
+            keymap_pane:       KeymapPane::new(),
+            settings_pane:     SettingsPane::new(),
+            toasts:            Toasts::new(),
         }
     }
 
-    /// Returns the currently focused pane.
-    pub fn focused(&self) -> FocusedPane<Ctx::AppPaneId> { self.focused }
+    /// Currently focused pane.
+    pub const fn focused(&self) -> &FocusedPane<Ctx::AppPaneId> { &self.focused }
 
-    /// Sets the focused pane. The binary's `Focus` subsystem calls
-    /// this from its existing transitions; framework code dispatching
-    /// `GlobalAction::{NextPane, PrevPane, OpenKeymap, OpenSettings,
-    /// Dismiss}` routes through the binary's `Focus` adapter, which
-    /// in turn calls here.
-    pub fn set_focused(&mut self, focus: FocusedPane<Ctx::AppPaneId>) {
+    /// Update the focused pane. The binary's `Focus` subsystem calls
+    /// this from its existing transitions.
+    pub const fn set_focused(&mut self, focus: FocusedPane<Ctx::AppPaneId>) {
         self.focused = focus;
     }
 
-    /// Editor-target path for the focused overlay pane (Settings or
-    /// Keymap). Replaces today's `overlay_editor_target_path` helper.
-    pub fn editor_target_path(&self) -> Option<&Path> {
-        match self.focused {
-            FocusedPane::Framework(FrameworkPaneId::Keymap)   => self.keymap_pane.editor_target(),
-            FocusedPane::Framework(FrameworkPaneId::Settings) => self.settings_pane.editor_target(),
-            _ => None,
-        }
-    }
+    /// Polled by the binary's main loop after `GlobalAction::Quit`.
+    pub const fn quit_requested(&self) -> bool { self.quit_requested }
 
-    /// Register one app pane's mode query. Called once per
-    /// `P: Pane<Ctx>` from inside
-    /// `KeymapBuilder::build_into(&mut framework)`. `pub(super)` so
-    /// only the keymap builder (a sibling under `tui_pane`) can write
-    /// the registry; the field stays private.
-    pub(super) fn register_app_pane(
-        &mut self,
-        id: Ctx::AppPaneId,
-        query: fn(&Ctx) -> Mode<Ctx>,
-    ) {
-        self.mode_queries.insert(id, query);
-    }
+    /// Polled by the binary's main loop after `GlobalAction::Restart`.
+    pub const fn restart_requested(&self) -> bool { self.restart_requested }
 
-    /// Resolve the focused pane's `Mode<Ctx>`. Used by the structural
-    /// Esc pre-handler, the bar-region suppression logic, and the key
-    /// dispatcher (which reads `Mode::TextInput(handler)` to route
-    /// keystrokes directly to the pane's text-input handler).
-    pub fn focused_pane_mode(&self, ctx: &Ctx) -> Mode<Ctx> {
-        match self.focused {
-            FocusedPane::Framework(FrameworkPaneId::Settings) => self.settings_pane.mode(ctx),
-            FocusedPane::Framework(FrameworkPaneId::Keymap)   => self.keymap_pane.mode(ctx),
-            FocusedPane::Framework(FrameworkPaneId::Toasts)   => Mode::Static,
-            FocusedPane::App(app)                              => self.mode_queries
-                .get(&app)
-                .map_or(Mode::Navigable, |q| q(ctx)),
-        }
-    }
+    /// Registered app-pane ids in registration order. Read by the
+    /// `NextPane`/`PrevPane` dispatchers and the bar renderer's
+    /// pane-cycle row.
+    pub fn pane_order(&self) -> &[Ctx::AppPaneId] { &self.pane_order }
+
+    /// The currently open framework overlay, if any. Orthogonal to
+    /// `focused` — the underlying app pane stays focused while an
+    /// overlay is open.
+    pub const fn overlay(&self) -> Option<FrameworkPaneId> { self.overlay }
+
+    /// File path of the editor currently active on a framework
+    /// overlay. Returns the keymap or settings pane's
+    /// `editor_target` when the matching overlay is open, `None`
+    /// otherwise.
+    pub fn editor_target_path(&self) -> Option<&Path> { /* … */ }
+
+    /// Resolve the focused pane's `Mode<Ctx>`. **Overlay layer wins**
+    /// when `overlay` is `Some`; otherwise dispatches by `focused`:
+    ///
+    /// - `FocusedPane::App(id)` → registered mode query.
+    /// - `FocusedPane::Framework(Toasts)` → `Mode::Static`.
+    /// - `FocusedPane::Framework(Keymap | Settings)` → `None`
+    ///   (unreachable post-overlay-switch).
+    ///
+    /// Returns `Option<Mode<Ctx>>` (Phase 10 contract).
+    pub fn focused_pane_mode(&self, ctx: &Ctx) -> Option<Mode<Ctx>> { /* … */ }
 }
 ```
 
-**Tradeoff.** Public fields for the three framework panes — the binary uses them directly in `bar::render` dispatch and input routing. The `focused` field is private (read via `focused()`, written via `set_focused`) so the binary's `Focus` subsystem stays the only writer. The `mode_queries` map is private; the only writer is `pub(super) fn register_app_pane`, called by `KeymapBuilder::build_into(&mut framework)` once per registered `Pane<Ctx>` impl. The only reader is `focused_pane_mode`. `Framework::new` takes an explicit `initial_focus` rather than implementing `Default`; the binary picks the starting pane.
+**Tradeoff.** Public fields for the three framework panes — the binary uses them directly in `bar::render` dispatch and input routing. `focused`, `quit_requested`, `restart_requested`, `mode_queries`, `pane_order`, and `overlay` are private; their writers are all `pub(super)` (only `framework/dispatch.rs` and `KeymapBuilder` write into them) and their readers are the public methods above. `Framework::new` takes an explicit `initial_focus` rather than implementing `Default`; the binary picks the starting pane.
+
+**Frozen-signature surface.** The Phase 6 fields (`focused`, `quit_requested`, `restart_requested`) and the four `const fn` getters/setters (`focused`, `set_focused`, `quit_requested`, `restart_requested`) keep their signatures verbatim across phases. `Framework::new`'s signature is also frozen, but its body grows new field initializers (Phase 10 added `mode_queries` / `pane_order` / `overlay`; Phase 11 added the three pane defaults). The `const fn` qualifier on `new` was lost at Phase 10 once `HashMap::new()` entered the body.
+
+**Dismiss chain is a free fn, not a method.** `Framework<Ctx>` has no `dismiss(&mut self)` method. The chain (focused-toasts hook → close overlay → fallback) lives in `framework::dispatch::dismiss_chain<Ctx>(ctx: &mut Ctx, fallback: Option<fn(&mut Ctx) -> bool>) -> bool`, called from the `dispatch_global::Dismiss` arm. A method on `Framework` could not work: the toasts dismissor hook needs `&mut Ctx`, and `Framework` is reachable through `Ctx`, so taking `&mut self` and `&mut Ctx` simultaneously aliases. The free fn takes `&mut Ctx` directly and uses a Copy-then-call pattern to read the fn pointer through `&Ctx`, drop the borrow, then invoke with `&mut Ctx`. `Framework::close_overlay()` (`pub(super)`) is the overlay-clear primitive the chain reuses.
+
+### `Toasts<Ctx>` — delegating focus-state shim
+
+`Toasts<Ctx>` carries no toast data. The binary's content store (cargo-port: `ToastManager` at `src/tui/toasts/manager.rs:236`) stays the single source of truth. Four optional `fn`-pointer hooks the binary registers through `KeymapBuilder::with_toasts` / `with_toasts_pre_cycle` / `with_toasts_on_enter` glue the framework's focus / dismiss / Tab-cycle machinery to the binary's store:
+
+```rust
+pub struct Toasts<Ctx: AppContext> {
+    is_active: Option<fn(&Ctx) -> bool>,
+    dismissor: Option<fn(&mut Ctx) -> bool>,
+    pre_cycle: Option<fn(&mut Ctx, FocusCycleDirection) -> bool>,
+    on_enter: Option<fn(&mut Ctx, FocusCycleDirection)>,
+    _ctx:      PhantomData<fn(&mut Ctx)>,
+}
+
+impl<Ctx: AppContext> Toasts<Ctx> {
+    pub const fn new() -> Self;
+    /// Whether the binary's store has at least one active toast. Drives
+    /// the Tab-cycle gate in `focus_step`.
+    pub fn has_active(&self, ctx: &Ctx) -> bool;
+    /// Returns the raw fn pointer rather than calling it — the dispatch
+    /// path holds `&Ctx` to read, drops the borrow, then invokes with
+    /// `&mut Ctx` (Copy-then-call pattern).
+    pub const fn dismissor_fn(&self) -> Option<fn(&mut Ctx) -> bool>;
+    pub const fn pre_cycle_fn(&self) -> Option<fn(&mut Ctx, FocusCycleDirection) -> bool>;
+    pub const fn on_enter_fn(&self) -> Option<fn(&mut Ctx, FocusCycleDirection)>;
+    /// pub(crate) setters — only `KeymapBuilder::build_into` writes them.
+    pub(crate) const fn set_is_active(&mut self, f: fn(&Ctx) -> bool);
+    pub(crate) const fn set_dismissor(&mut self, f: fn(&mut Ctx) -> bool);
+    pub(crate) const fn set_pre_cycle(&mut self, f: fn(&mut Ctx, FocusCycleDirection) -> bool);
+    pub(crate) const fn set_on_enter(&mut self, f: fn(&mut Ctx, FocusCycleDirection));
+}
+```
+
+Hook semantics:
+- **`is_active`** drives the Tab-cycle gate. When the cycle is built per-call in `focus_step`, `Framework(Toasts)` is appended iff `is_active(ctx)` returns `true`. If unset, the framework treats the stack as permanently empty.
+- **`dismissor`** fires from `dismiss_chain` when focus is on Toasts. Returns `true` when a toast was dismissed (consumes the action); `false` to fall through to overlay-close / `dismiss_fallback`. May mutate framework state through `Ctx`.
+- **`pre_cycle`** fires when the user presses Tab/Shift-Tab while already focused on Toasts. Returns `true` to consume the keystroke (focus stays on Toasts — typically because the binary scrolled an internal viewport); `false` to let the framework advance.
+- **`on_enter`** fires when the cycle is about to land on Toasts from another pane. Used by binaries that need to reset internal state on entry (cargo-port resets the toast viewport). No return — it's a side-effect-only hook.
+
+`Toasts<Ctx>` ships **no `ToastsAction` enum, no `defaults()`, no `mode()`, no `bar_slots()`**. `handle_key` is a stub returning `KeyOutcome::Unhandled`. Esc/`x`-on-Toasts goes through `GlobalAction::Dismiss` (cargo-port binds `x`).
+
+```rust
+/// Direction the user is requesting a focus advance through the Tab
+/// cycle. Passed to `Toasts::pre_cycle_fn` and `on_enter_fn`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum FocusCycleDirection { Next, Prev }
+```
 
 ---
 
@@ -1072,7 +1159,7 @@ pub use crate::pane::Pane;
 
 // --- Framework panes + aggregator -----------------------------------
 pub use crate::framework::Framework;
-pub use crate::panes::{KeymapPane, SettingsPane, Toasts, ToastsAction};
+pub use crate::panes::{FocusCycleDirection, KeymapPane, SettingsPane, Toasts};
 pub use crate::settings::SettingsRegistry;
 
 // --- Pane identity ---------------------------------------------------
@@ -1099,7 +1186,7 @@ pub use crate::pane_id::{FrameworkPaneId, FocusedPane};
 - **Keymap:** `Keymap`, `KeymapBuilder`, `BuilderError`, `KeymapError`, `VimMode`
 - **Traits:** `Shortcuts`, `Navigation`, `Globals`
 - **Bar:** `BarRegion`, `BarSlot`, `ShortcutState`, `Visibility`, `Mode<Ctx>`
-- **Framework panes & aggregator:** `Framework`, `KeymapPane`, `SettingsPane`, `Toasts`, `ToastsAction`, `SettingsRegistry`
+- **Framework panes & aggregator:** `Framework`, `KeymapPane`, `SettingsPane`, `Toasts`, `FocusCycleDirection`, `SettingsRegistry`
 - **Pane identity & context:** `AppContext`, `FrameworkPaneId`, `FocusedPane`
 
 **Tradeoff.** Every `pub use` is from one of five top-level modules (`bar`, `framework`, `keymap`, `panes`, `settings`). The crate root is the only public path; internal module paths are not part of the API. This keeps the binary's `use tui_pane::{KeyBind, Keymap, Shortcuts, …};` flat and stable across internal reorganisations.

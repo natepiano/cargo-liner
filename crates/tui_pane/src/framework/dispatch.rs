@@ -23,9 +23,9 @@ use crate::Keymap;
 ///   update focus.
 /// - [`GlobalAction::OpenKeymap`] / [`GlobalAction::OpenSettings`] open the matching framework
 ///   overlay over the focused pane (orthogonal modal layer; focus does not move).
-/// - [`GlobalAction::Dismiss`] closes any open overlay first; if no overlay was open, falls through
-///   to the binary's optional `dismiss_fallback` hook. Phase 11 inserts the toasts arm in front of
-///   the overlay-clear step.
+/// - [`GlobalAction::Dismiss`] runs the framework's [`dismiss`](crate::Framework::dismiss) chain
+///   (focused-toast pop → close overlay); if `dismiss` returns `false`, falls through to the
+///   binary's optional `dismiss_fallback` hook.
 ///
 /// Re-exported at `crate::framework::dispatch_global` so the keymap's
 /// public dispatch entry point can route to it.
@@ -56,7 +56,7 @@ pub(crate) fn dispatch_global<Ctx: AppContext>(
             ctx.framework_mut().open_overlay(FrameworkPaneId::Settings);
         },
         GlobalAction::Dismiss => {
-            if ctx.framework_mut().close_overlay() {
+            if ctx.framework_mut().dismiss() {
                 return;
             }
             if let Some(hook) = keymap.dismiss_fallback_hook() {

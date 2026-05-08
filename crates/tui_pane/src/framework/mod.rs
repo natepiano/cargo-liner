@@ -4,12 +4,16 @@
 mod dispatch;
 
 use std::collections::HashMap;
+use std::path::Path;
 
 pub(crate) use self::dispatch::dispatch_global;
 use crate::AppContext;
 use crate::FocusedPane;
 use crate::FrameworkPaneId;
+use crate::KeymapPane;
 use crate::Mode;
+use crate::SettingsPane;
+use crate::Toasts;
 
 /// `fn` pointer the framework stores per registered pane to query
 /// the pane's current input mode.
@@ -31,6 +35,15 @@ pub struct Framework<Ctx: AppContext> {
     mode_queries:      HashMap<Ctx::AppPaneId, ModeQuery<Ctx>>,
     pane_order:        Vec<Ctx::AppPaneId>,
     overlay:           Option<FrameworkPaneId>,
+    /// Keymap viewer/editor overlay, held inline. Reachable when
+    /// [`Self::overlay`] is `Some(FrameworkPaneId::Keymap)`.
+    pub keymap_pane:   KeymapPane<Ctx>,
+    /// Settings overlay, held inline. Reachable when
+    /// [`Self::overlay`] is `Some(FrameworkPaneId::Settings)`.
+    pub settings_pane: SettingsPane<Ctx>,
+    /// Transient notification stack. Tab-focusable when
+    /// [`Toasts::has_active`](crate::Toasts::has_active) returns `true`.
+    pub toasts:        Toasts<Ctx>,
 }
 
 impl<Ctx: AppContext> Framework<Ctx> {
@@ -45,6 +58,9 @@ impl<Ctx: AppContext> Framework<Ctx> {
             mode_queries:      HashMap::new(),
             pane_order:        Vec::new(),
             overlay:           None,
+            keymap_pane:       KeymapPane::new(),
+            settings_pane:     SettingsPane::new(),
+            toasts:            Toasts::new(),
         }
     }
 
@@ -93,23 +109,42 @@ impl<Ctx: AppContext> Framework<Ctx> {
         }
     }
 
-    /// Resolved mode for the focused app pane. Returns `None` for
-    /// framework-focused panes (callers special-case those) or for
-    /// app panes whose id was not registered through
-    /// [`KeymapBuilder::build_into`](crate::KeymapBuilder::build_into).
+    /// Resolved mode for the focused pane.
+    ///
+    /// Overlay layer wins — when [`Self::overlay`] is `Some`, returns
+    /// the overlay pane's mode regardless of [`Self::focused`].
+    /// Otherwise dispatches by focus:
+    ///
+    /// - [`FocusedPane::App`] → looks up the registered mode query.
+    /// - [`FocusedPane::Framework(Toasts)`](crate::FocusedPane) → [`Mode::Static`].
+    /// - [`FocusedPane::Framework(Keymap | Settings)`](crate::FocusedPane) is unreachable
+    ///   post-overlay-switch (the dispatcher writes only the overlay layer, never these focus
+    ///   states); the arm is left in place to keep [`FrameworkPaneId`] unified.
     #[must_use]
     pub fn focused_pane_mode(&self, ctx: &Ctx) -> Option<Mode<Ctx>> {
+        if let Some(overlay) = self.overlay {
+            return Some(match overlay {
+                FrameworkPaneId::Keymap => self.keymap_pane.mode(ctx),
+                FrameworkPaneId::Settings => self.settings_pane.mode(ctx),
+                FrameworkPaneId::Toasts => self.toasts.mode(ctx),
+            });
+        }
         match self.focused {
             FocusedPane::App(id) => self.mode_queries.get(&id).map(|q| q(ctx)),
-            FocusedPane::Framework(_) => None,
+            FocusedPane::Framework(FrameworkPaneId::Toasts) => Some(self.toasts.mode(ctx)),
+            // unreachable post-overlay-switch
+            FocusedPane::Framework(FrameworkPaneId::Keymap | FrameworkPaneId::Settings) => None,
         }
     }
 
     /// Registered app-pane ids in registration order. The
     /// [`GlobalAction::NextPane`](crate::GlobalAction::NextPane) /
     /// [`GlobalAction::PrevPane`](crate::GlobalAction::PrevPane)
-    /// dispatchers walk this slice.
-    pub(super) fn pane_order(&self) -> &[Ctx::AppPaneId] { &self.pane_order }
+    /// dispatchers walk this slice; Phase 12's bar renderer and
+    /// Phase 18's regression tests also need it through the public
+    /// surface, hence the `pub` visibility.
+    #[must_use]
+    pub fn pane_order(&self) -> &[Ctx::AppPaneId] { &self.pane_order }
 
     /// The framework overlay currently open over the focused pane, if
     /// any. Overlays are an orthogonal modal layer:
@@ -129,15 +164,50 @@ impl<Ctx: AppContext> Framework<Ctx> {
 
     /// Close any open framework overlay. Returns `true` if an overlay
     /// was open and is now cleared, `false` otherwise. Phase 11 wraps
-    /// this in a full `dismiss()` chain (toasts → overlay → fallback);
-    /// the Phase 10 dispatcher uses it directly for the
-    /// [`GlobalAction::Dismiss`](crate::GlobalAction::Dismiss) arm.
+    /// this in a full [`Self::dismiss`] chain (toasts → overlay →
+    /// fallback); the dispatcher routes through `dismiss` rather than
+    /// calling this directly.
     pub(super) const fn close_overlay(&mut self) -> bool {
         if self.overlay.is_some() {
             self.overlay = None;
             true
         } else {
             false
+        }
+    }
+
+    /// Run the framework dismiss chain. Returns `true` if anything was
+    /// dismissed at the framework level. The
+    /// [`GlobalAction::Dismiss`](crate::GlobalAction::Dismiss)
+    /// dispatcher consults this; on `false`, it falls through to the
+    /// binary's registered `dismiss_fallback` hook (if any).
+    ///
+    /// Order:
+    /// 1. If [`Self::focused`] is the toast stack, pop the top toast.
+    /// 2. Else if an overlay is open, close it.
+    /// 3. Else return `false`.
+    pub fn dismiss(&mut self) -> bool {
+        if matches!(
+            self.focused,
+            FocusedPane::Framework(FrameworkPaneId::Toasts)
+        ) && self.toasts.try_pop_top()
+        {
+            return true;
+        }
+        self.close_overlay()
+    }
+
+    /// File path of the editor currently active on a framework
+    /// overlay, if any. Returns the keymap or settings pane's
+    /// [`editor_target`](crate::KeymapPane::editor_target) when the
+    /// matching overlay is open, `None` otherwise. Drives the binary's
+    /// status line during edits.
+    #[must_use]
+    pub fn editor_target_path(&self) -> Option<&Path> {
+        match self.overlay {
+            Some(FrameworkPaneId::Keymap) => self.keymap_pane.editor_target(),
+            Some(FrameworkPaneId::Settings) => self.settings_pane.editor_target(),
+            Some(FrameworkPaneId::Toasts) | None => None,
         }
     }
 }

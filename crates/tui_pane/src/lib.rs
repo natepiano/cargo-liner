@@ -11,6 +11,7 @@ mod framework;
 mod keymap;
 mod pane;
 mod pane_id;
+mod panes;
 mod settings;
 
 // Crate-root re-exports. The `action_enum!` and `bindings!` macros
@@ -44,6 +45,12 @@ pub use pane::Mode;
 pub use pane::Pane;
 pub use pane_id::FocusedPane;
 pub use pane_id::FrameworkPaneId;
+pub use panes::KeymapPane;
+pub use panes::KeymapPaneAction;
+pub use panes::SettingsPane;
+pub use panes::SettingsPaneAction;
+pub use panes::Toasts;
+pub use panes::ToastsAction;
 pub use settings::SettingEntry;
 pub use settings::SettingKind;
 pub use settings::SettingsRegistry;

@@ -76,12 +76,12 @@ macro_rules! action_enum {
     (
         $(#[$meta:meta])*
         $vis:vis enum $Name:ident {
-            $( $Variant:ident => ( $toml_key:literal , $bar:literal , $desc:literal ) ; )+
+            $( $(#[$vmeta:meta])* $Variant:ident => ( $toml_key:literal , $bar:literal , $desc:literal ) ; )+
         }
     ) => {
         $(#[$meta])*
         $vis enum $Name {
-            $( $Variant, )+
+            $( $(#[$vmeta])* $Variant, )+
         }
 
         impl $crate::Action for $Name {

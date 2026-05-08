@@ -300,12 +300,12 @@ macro_rules! action_enum {
     (
         $(#[$meta:meta])*
         $vis:vis enum $Name:ident {
-            $( $Variant:ident => ( $toml_key:literal , $bar:literal , $desc:literal ) ; )+
+            $( $(#[$vmeta:meta])* $Variant:ident => ( $toml_key:literal , $bar:literal , $desc:literal ) ; )+
         }
     ) => {
         $(#[$meta])*
         $vis enum $Name {
-            $( $Variant, )+
+            $( $(#[$vmeta])* $Variant, )+
         }
 
         impl $crate::Action for $Name {
@@ -361,6 +361,12 @@ Design notes:
    `description()`.
 5. `$crate::Action` paths so the macro works when invoked from any
    downstream crate.
+6. Per-variant attributes (`$( $(#[$vmeta:meta])* $Variant ... )+`) are
+   forwarded into the generated enum, so callers can attach `#[doc]`,
+   `#[allow(...)]`, etc. to individual variants. Required for use under
+   `#![deny(missing_docs)]` (the workspace lint denies missing docs on
+   any `pub` variant — without per-variant doc attributes, the macro's
+   output fails the lint at every public invocation).
 
 ### 2.3 Items the macro generates — checklist
 
