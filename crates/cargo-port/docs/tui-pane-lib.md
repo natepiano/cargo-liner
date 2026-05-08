@@ -1,21 +1,5 @@
 # `tui_pane` library + universal keymap
 
-## Design specifications
-
-This doc is the high-level plan + roadmap. Formal specs live in sibling files:
-
-| Spec | Covers |
-|---|---|
-| `phase-01-cargo-mechanics-DONE.md` | Root + library `Cargo.toml`, workspace lints (incl. `missing_docs = "deny"` from day one), resolver, `cargo install --path .` behavior, stale-path sweep, per-phase rustdoc precondition |
-| `phase-01-ci-tooling-DONE.md` | CI invocation inventory, per-invocation scope decisions, auto-memory implications, recommended commit ordering |
-| `test-infra.md` | Private `test_support/` module, `cfg(test)` `TestCtx` fixture, unit-test placement, integration-test layout |
-| `core-api.md` | Full public API: `KeyBind`, `Bindings<A>`, `ScopeMap<A>`, traits, `Keymap<Ctx>`, `KeymapBuilder<Ctx>`, `Framework<Ctx>`, `SettingsRegistry<Ctx>`, errors, re-exports |
-| `macros.md` | `bindings!` and `action_enum!` formal grammar + expansion + hygiene |
-| `paneid-ctx.md` | `tui_pane::PaneId` (framework panes) / `AppPaneId` (binary) / `FocusedPane` (wrapping), `AppContext` trait, focus tracking, `App` field changes, migration order, `Mode` query plumbing |
-| `toml-keys.md` | TOML grammar, error taxonomy, vim-after-TOML worked examples, full `KeyBind::display` / `display_short` mapping tables |
-
-The plan body below summarizes; the specs are authoritative for their topics.
-
 ## Principle
 
 **Every key the user can press is bound through the keymap.** No `KeyCode::Enter` / `Up` / `Esc` / `Tab` / `Left` / `Right` matches in any input handler. No literal `"Enter"` / `"Esc"` / `"Tab"` / `"↑/↓"` / `"+/-"` strings in any bar code. Every shortcut row in the bar comes from a binding lookup. Rebinding any key updates the bar and the dispatcher in lockstep.
@@ -127,7 +111,7 @@ Focus reads happen on `Framework<Ctx>` (`framework.focused()`); focus writes go 
 
 The trait does **not** require `Ctx` to expose pane state — every pane's own state is reached via the per-pane dispatcher's free fn navigating through `Ctx` (`&mut ctx.panes.package`, etc.).
 
-For the rest of this doc, signatures use `Ctx` (or `Ctx: AppContext`) when referring to the app context. See `paneid-ctx.md` §2 for the full trait.
+For the rest of this doc, signatures use `Ctx` (or `Ctx: AppContext`) when referring to the app context.
 
 ### Pane id design
 
@@ -142,7 +126,6 @@ Linking the runtime tag to the compile-time pane type: every `Pane<App>` impl de
 
 Cargo-port's existing `tui::panes::PaneId` enum becomes a type alias `pub type PaneId = tui_pane::FocusedPane<AppPaneId>;` so existing call sites that name `PaneId` keep compiling; only the framework variants move out of the enum body.
 
-See `paneid-ctx.md` §1 for full type definitions and call-site rewrites.
 
 ### `Pane` and `Shortcuts` — per-pane traits
 
@@ -319,7 +302,7 @@ pub trait Navigation<Ctx: AppContext> {
 }
 ```
 
-Pane scopes carry per-instance state and dispatch logic; their bar contribution depends on that state. `Navigation` has neither (no per-instance state) but it does need dispatch, since the focused pane needs to scroll on `Up`. The framework reads the four required consts to render the nav row and to apply vim-mode bindings, and calls `dispatcher()(action, focused, ctx)` to route.
+Pane scopes carry per-instance state and dispatch logic; their bar contribution depends on that state. `Navigation` has neither (no per-instance state) but it does need dispatch, since the focused pane needs to scroll on `Up`. The framework reads the six required consts (`UP`/`DOWN`/`LEFT`/`RIGHT`/`HOME`/`END`) to render the nav row and to apply vim-mode bindings, and calls `dispatcher()(action, focused, ctx)` to route. Phase 12 also adds a default-impl helper `list_navigation(action) -> Option<ListNavigation>` that the dispatcher uses to translate resolved navigation actions into framework-owned `ListNavigation` for focused-Toasts viewport scrolling.
 
 ### `Globals` — declarative, app extension scope
 
@@ -339,7 +322,7 @@ The app's *additional* globals scope (Find, OpenEditor, Rescan, etc.). The frame
 
 ## `Keymap<Ctx>` runtime container
 
-> Formal API in `core-api.md` §6 (`Keymap<Ctx>`) and §7 (`KeymapBuilder<Ctx>`, including the type-state choice, `KeymapError` variants, required vs optional methods). Per Phase 9 review: `KeymapError` is the one error type spanning loader and builder validation; `BuilderError` was dropped from the design.
+Per Phase 9 review: `KeymapError` is the one error type spanning loader and builder validation; `BuilderError` was dropped from the design. Phase 9 ships `Keymap<Ctx>`; Phase 10 ships `KeymapBuilder<Ctx, State>` (typestate `Configuring → Registering`).
 
 Struct name: `Keymap<Ctx>`. Built once at startup, read every frame. Framework-owned, internally TypeId-keyed.
 
@@ -463,7 +446,6 @@ International-character support: crossterm's `KeyCode::Char(char)` already cover
 
 ## `Bindings<A>` builder
 
-> Formal API in `core-api.md` §2; macro grammar + expansion in `macros.md` §1.
 
 ```rust
 pub struct Bindings<A> { … }
@@ -504,7 +486,6 @@ Today's `parse_keybind` at `keymap.rs:140-142` maps both TOML strings `"="` and 
 
 ## `ScopeMap<A>` — multi-bind support
 
-> Formal API in `core-api.md` §3.
 
 `by_key` stays 1-to-1 within a scope (dispatch). `by_action` becomes `HashMap<A, Vec<KeyBind>>`:
 
@@ -604,7 +585,6 @@ Rule: free fn whenever the framework holds `&mut Ctx` while invoking your callba
 
 ## Settings registry — framework UI, app data
 
-> Formal API in `core-api.md` §9 (closure signatures, persistence semantics).
 
 Each setting carries: TOML key, display label, value-getter closure, value-setter closure. Three value flavors covered: `bool`, `enum` (closed string set), `int` (with optional min/max).
 
@@ -614,7 +594,6 @@ The app provides only data + closures. It writes no `Shortcuts` impl, no mode st
 
 ## `GlobalAction` — framework base, app extension
 
-> Formal enum + dispatch hooks in `core-api.md` §10. TOML grammar for the merged `[global]` table in `toml-keys.md` §1–2.
 
 Framework owns pane-management, lifecycle, and the framework overlays:
 
@@ -714,7 +693,6 @@ Today `keymap_ui.rs:236-250` calls `is_navigation_reserved` during binding captu
 
 ## TOML loading — framework
 
-> Full grammar, error taxonomy, vim-after-TOML worked examples, and `KeyBind::display` / `display_short` mapping tables in `toml-keys.md`.
 
 Framework handles all TOML loading. Each registered scope's `SCOPE_NAME` constant drives table lookup; framework parses every recognized table, replaces that scope's bindings, leaves missing tables at their declared defaults+vim. App provides no TOML hooks.
 
@@ -726,7 +704,6 @@ Framework handles all TOML loading. Each registered scope's `SCOPE_NAME` constan
 
 The `ScopeMap::insert` `debug_assert` catches the same conditions for `defaults()` builders; the TOML loader returns them as real errors or warnings.
 
-See `toml-keys.md` for the full grammar, error taxonomy, and worked vim-after-TOML examples.
 
 `keymap_path()` is framework-provided via the `dirs` crate. App supplies its name at builder time:
 
@@ -1013,7 +990,7 @@ The framework owns toast data (Phase 12+ typed `Toast` manager), so the dismiss 
 
 ## Bar render — concrete dispatch
 
-`render.rs:531-558` today calls `app.input_context()`-driven `for_status_bar`. Post-deletion, the framework call dispatches off `app.focus.current()` (split between `PaneId::App(_)` and `PaneId::Framework(_)` per the wrapper enum). See `paneid-ctx.md` §1 for the canonical dispatch site — the framework's three panes are routed through a single `bar::render_framework(id, ...)` arm rather than enumerated inline.
+`render.rs:531-558` today calls `app.input_context()`-driven `for_status_bar`. Post-deletion, the framework call dispatches off `app.focus.current()` (split between `PaneId::App(_)` and `PaneId::Framework(_)` per the wrapper enum). The framework's three panes are routed through a single `bar::render_framework(id, ...)` arm rather than enumerated inline.
 
 The `Settings` / `Keymap` / `Toasts` panes use their internal mode flags (Browse/Editing, Browse/Awaiting/Conflict, etc.) to vary `bar_slots` and `shortcut` output. The current `InputContext::SettingsEditing` / `KeymapAwaiting` / `KeymapConflict` arms collapse into pane-internal mode dispatch.
 
@@ -1055,7 +1032,7 @@ One stale-plan cleanup item folds into the same pass: Phase 19's TOML/vim test c
 
 ### Phase 1 — Workspace conversion ✅
 
-Convert `cargo-port-api-fix` into a Cargo workspace. See `phase-01-cargo-mechanics-DONE.md` for full TOML and `phase-01-ci-tooling-DONE.md` for the CI updates.
+Convert `cargo-port-api-fix` into a Cargo workspace.
 
 Concrete steps:
 
@@ -1063,7 +1040,7 @@ Concrete steps:
 2. Promote the existing `[lints.clippy]` and `[lints.rust]` blocks verbatim to `[workspace.lints.clippy]` / `[workspace.lints.rust]` (including `missing_docs = "deny"` from day one). Root `[lints]` becomes `workspace = true`.
 3. Create `tui_pane/` as a sibling directory (not `crates/tui_pane/`) with `Cargo.toml` (`crossterm`, `ratatui`, `dirs` deps; `[lints] workspace = true`) and `src/lib.rs` carrying crate-level rustdoc.
 4. Add `tui_pane = { path = "tui_pane", version = "0.0.4-dev" }` to the binary's `[dependencies]`.
-5. Apply the CI flag updates flagged in `phase-01-ci-tooling-DONE.md` §2 (e.g. `cargo +nightly fmt --all`, `cargo mend --workspace --all-targets`, `cargo check --workspace` in the post-tool-use hook). Per the spec these can ship in a separate prior commit since they're no-ops on the current single-crate layout.
+5. Apply the CI flag updates (`cargo +nightly fmt --all`, `cargo mend --workspace --all-targets`, `cargo check --workspace` in the post-tool-use hook). These can ship in a separate prior commit since they're no-ops on the current single-crate layout.
 6. Update auto-memory `feedback_cargo_nextest.md` to clarify default `cargo nextest run` only tests the root package; iteration loops should pass `-p` or `--workspace`. `feedback_cargo_install.md` is unchanged (the binary stays at root).
 
 After Phase 1: `cargo build` from the root builds both crates; `cargo install --path .` still installs the binary; `Cargo.lock` and `target/` stay at the workspace root.
@@ -1072,7 +1049,7 @@ After Phase 1: `cargo build` from the root builds both crates; `cargo install --
 
 ### Phases 2–10 — `tui_pane` foundations
 
-Phases 2–10 land the entire `tui_pane` public surface in dependency order, one mergeable commit per phase. The canonical type spec is `core-api.md` (sections referenced from each sub-phase below); §11 is the canonical module hierarchy and the public re-export set in `lib.rs`. Type detail per file is in `core-api.md` §§1–10.
+Phases 2–10 land the entire `tui_pane` public surface in dependency order, one mergeable commit per phase. Each phase below carries the type signatures, error variants, and contracts that subsequent phases depend on.
 
 **Strictly additive across Phases 2–10.** Nothing moves out of the binary in this group. The binary continues to use its in-tree `keymap_state::Keymap`, `shortcuts::*`, etc., untouched. The migration starts in Phase 14.
 
@@ -1082,7 +1059,7 @@ Phases 2–10 land the entire `tui_pane` public surface in dependency order, one
 
 ### Phase 2 — Keys ✅
 
-Add `tui_pane/src/keymap/key_bind.rs` (`KeyBind`, `KeyInput`, `KeyParseError`) per `core-api.md` §1. Leaf types — nothing else in `tui_pane` depends on them yet.
+Add `tui_pane/src/keymap/key_bind.rs` (`KeyBind`, `KeyInput`, `KeyParseError`). Leaf types — nothing else in `tui_pane` depends on them yet.
 
 Construction surface for `KeyBind`: `From<KeyCode>`, `From<char>` (modifier-free); `KeyBind::shift(impl Into<Self>)`, `KeyBind::ctrl(impl Into<Self>)` (modifier-bearing, OR-composable). **No** `From<KeyEvent>` — the kind discriminant must not be silently dropped.
 
@@ -1102,8 +1079,8 @@ Unit tests:
 - 10 unit tests pass; clippy clean under workspace pedantic+nursery+all lint stack.
 
 **What deviated from the plan:**
-- `KeyBind::shift` / `ctrl` were respec'd to take `impl Into<Self>` (i.e. `impl Into<KeyBind>`) rather than `impl Into<KeyCode>`. Reason: crossterm's `KeyCode` does not implement `From<char>`, so the planned `impl Into<KeyCode>` bound rejects `KeyBind::shift('g')`. Taking `Into<KeyBind>` reuses the three `From` impls and makes `shift`/`ctrl` composable (`KeyBind::ctrl(KeyBind::shift('g'))` → CTRL|SHIFT). `core-api.md` §1 still lists the old signature.
-- `KeyParseError` ships with 3 variants (`Empty`, `UnknownKey`, `UnknownModifier`) — `InvalidChar` from the spec was dropped because no parser path emits it. `core-api.md` §1 still lists 4 variants.
+- `KeyBind::shift` / `ctrl` were respec'd to take `impl Into<Self>` (i.e. `impl Into<KeyBind>`) rather than `impl Into<KeyCode>`. Reason: crossterm's `KeyCode` does not implement `From<char>`, so the planned `impl Into<KeyCode>` bound rejects `KeyBind::shift('g')`. Taking `Into<KeyBind>` reuses the three `From` impls and makes `shift`/`ctrl` composable (`KeyBind::ctrl(KeyBind::shift('g'))` → CTRL|SHIFT).
+- `KeyParseError` ships with 3 variants (`Empty`, `UnknownKey`, `UnknownModifier`) — `InvalidChar` was dropped because no parser path emits it.
 - Parser supports `"Control"` as a synonym for `"Ctrl"` (both produce `KeyModifiers::CONTROL`); `"Space"` parses to `KeyCode::Char(' ')`. Neither was called out in the plan.
 
 **Surprises:**
@@ -1111,7 +1088,6 @@ Unit tests:
 - Modifier display order (`Ctrl` → `Alt` → `Shift`) and the case-preservation policy in `parse` (`"Ctrl+K"` → `Char('K')`, not `Char('k')`) are now baked into Phase 2 tests. Phase 9 (TOML loader) inherits both as facts; if the loader needs case-insensitive letter lookup, that is a *keymap-layer* normalization, not a `KeyBind::parse` concern.
 
 **Implications for remaining phases:**
-- `core-api.md` §1 is out of sync with shipped code (signatures + error variants). Update before any later phase reads it as canonical.
 - Phase 9 (`Keymap<Ctx>` + TOML loader) must decide letter-case normalization policy explicitly — `parse` preserves case as-is.
 - Future framework error types (`KeymapError` Phase 4 skeleton, fill in Phase 9) should use `#[derive(thiserror::Error)]` with `#[from] KeyParseError` for source chaining, per the pattern established here.
 
@@ -1123,8 +1099,8 @@ Unit tests:
 - Phase 13: paired-row separator policy made explicit — `Paired::debug_assert!` covers only the parser-producible `KeyCode` set; exotic variants may panic, and widening the bindable set requires widening Phase 2's `display_short_no_separators` test in lockstep.
 - Phase 14: `anyhow = "1"` lands in the binary's `Cargo.toml` here (first call site that needs context wrapping is `Keymap::<App>::builder(...).load_toml(?)?.build()?`).
 - §1 (`Pane id design`): `PaneId` → `FrameworkPaneId` everywhere, including the inside-the-crate short form, so the type name is one-to-one across library and binary call sites.
-- `core-api.md` §1 + `tui-pane-lib.md` §11 lib.rs sketch synced to shipped Phase 2 code: `shift`/`ctrl` take `impl Into<Self>`, `From<KeyEvent>` documented, 3-variant `KeyParseError` (`InvalidChar` dropped), parser policy (`"Control"` synonym, `"Space"` token, case-preserving) called out.
-- `toml-keys.md` synced to the Zed/VSCode/Helix-aligned letter-case decision: loader lowercases single-letter ASCII keys (`"Q"` → `Char('q')`, never `Shift+q`); modifier tokens are case-insensitive on input but writeback canonical capitalized; named-key tokens (`Enter`, `Tab`, `F1`, …) are case-sensitive with no aliases; non-ASCII letters not lowercased; modifier repeats silently OR'd (not rejected — bitwise OR is idempotent).
+- Phase 2 shipped: `shift`/`ctrl` take `impl Into<Self>`, `From<KeyEvent>` documented, 3-variant `KeyParseError` (`InvalidChar` dropped), parser policy (`"Control"` synonym, `"Space"` token, case-preserving) locked.
+- TOML loader follows the Zed/VSCode/Helix-aligned letter-case decision: loader lowercases single-letter ASCII keys (`"Q"` → `Char('q')`, never `Shift+q`); modifier tokens are case-insensitive on input but writeback canonical capitalized; named-key tokens (`Enter`, `Tab`, `F1`, …) are case-sensitive with no aliases; non-ASCII letters not lowercased; modifier repeats silently OR'd (not rejected — bitwise OR is idempotent).
 - Phase 6 + Phase 11 now spell out the **Phase 6 → Phase 11 contract**: Phase 6 freezes a 1-field / 3-method `Framework<Ctx>` skeleton (`focused` field, `new`/`focused()`/`set_focused()`); Phase 11 is purely additive on top. Mirrored at both phase blocks so neither side can drift independently.
 - Decided: `KeyEvent` press/release/repeat handling uses a typed wrapper enum (`KeyInput { Press, Release, Repeat }`) at the framework boundary, not a runtime check at each dispatch site and not a fallible `Option`-returning conversion. Modeled after Zed/GPUI's typed-event split. Repeat is preserved (not collapsed into Press) so future handlers can opt into auto-repeat behavior. Phases 13–15 dispatch sites pattern-match `KeyInput::Press(bind)` (or call `.press()`); the event-loop entry produces `KeyInput` once.
 
@@ -1150,8 +1126,7 @@ Add `tui_pane/src/keymap/action_enum.rs` with `Action` + `action_enum!` (per §4
 - The `from_toml_key` returning `Option<Self>` (not `Result`) is intentional and the trait method has no scope context to attach. The TOML loader (Phase 4 skeleton, Phase 9 fill) lifts `None` into `KeymapError::UnknownAction { scope, action }`. Recorded explicitly here so Phase 4/8 don't accidentally widen the trait.
 
 **Implications for remaining phases:**
-- `macros.md` §3 still references `crate::keymap::traits::Action` — needs to be `crate::keymap::action_enum::Action`. Synced as part of this review.
-- `core-api.md` §10 `KeymapError` snippet has `impl Display { /* … */ }` placeholder — Phase 4 lands the real impl via `#[derive(thiserror::Error)]` per the Phase 2 retrospective decision.
+- Phase 4 lands the real `impl Display` for `KeymapError` via `#[derive(thiserror::Error)]` per the Phase 2 retrospective decision.
 - Phase 4 (`bindings!` macro) follows the same `#[macro_export] macro_rules!` declaration template used here; the doctest pattern can mirror Phase 3's approach (`crate::action_enum! { … }` inside an internal `mod tests`).
 - Phase 14 (binary swap to `tui_pane::action_enum!`): seven existing `action_enum!` invocations in `src/keymap.rs` swap to the `tui_pane::` prefix; the macro's grammar is identical, so each invocation needs only the prefix change.
 
@@ -1173,13 +1148,12 @@ Architectural review of remaining phases (4-17) returned 18 findings — 13 mino
 - **Cross-crate macro integration test (item 5):** `tui_pane/tests/macro_use.rs` lands as a Phase 3 follow-up — exercises `tui_pane::action_enum!` from outside the crate. Phase 4 extends it for `tui_pane::bindings!`.
 
 Minor findings applied directly (no user gating):
-- Stale `keymap::traits::Action` references in `macros.md` synced to `keymap::action_enum::Action`.
 - Phase 4 root re-exports (`Bindings`, `KeyBind`) called out for the `bindings!` macro's `$crate::` paths.
-- `KeymapError` variant set spelled out in Phase 4 + `core-api.md` §10 (with `#[derive(thiserror::Error)]`).
+- `KeymapError` variant set spelled out in Phase 4 (with `#[derive(thiserror::Error)]`).
 - `Shortcuts::vim_extras() -> &'static [(Self::Actions, KeyBind)]` called out in Phase 7 with default `&[]`.
 - Vim-mode skip-already-bound test moved Phase 9 → Phase 10 (vim application is the builder's job per "Vim mode — framework capability" §).
 - `AppContext::AppPaneId: Copy + Eq + Hash + 'static` super-trait set added to Phase 6 (required by Phase 11's `HashMap<AppPaneId, fn(&Ctx) -> Mode<Ctx>>`).
-- `core-api.md` §4 `Action` super-trait set synced to shipped code (`Copy + Eq + Hash + Debug + Display + 'static` — adds `Debug` + `Display`).
+- `Action` super-trait set is `Copy + Eq + Hash + Debug + Display + 'static` (adds `Debug` + `Display` over the original spec).
 - Phase 9 explicit "loader lifts `None` from `from_toml_key` into `KeymapError::UnknownAction`" wording added.
 - `clippy::too_long_first_doc_paragraph` (nursery) guidance added to the per-phase rustdoc precondition.
 - `pub use keymap::GlobalAction;` at crate root noted in Phase 14.
@@ -1235,7 +1209,7 @@ Unit tests (this phase, scoped to what exists by end of Phase 4):
 
 **Implications for remaining phases:**
 - **Every Phase 5+ module declaration must be `mod foo;`** (not `pub mod foo;`) at every level. Affects Phase 5 (`bar/region.rs`, `bar/slot.rs`), Phase 6 (`framework/`), Phase 7 (scope traits), Phase 9 (`keymap/container.rs` or wherever `Keymap<Ctx>` lands), Phase 10 (`keymap/builder.rs`), Phase 11 (`panes/*`), Phase 13 (`bar/render.rs`).
-- **Every `tui_pane::keymap::*` path in design docs is now stale.** `phase-02-core-api.md`, `phase-02-macros.md`, `phase-02-test-infra.md`, `phase-02-toml-keys.md`, and the rest of `tui-pane-lib.md` need a sweep: `crate::keymap::Foo` → `crate::Foo` (and `tui_pane::keymap::Foo` → `tui_pane::Foo` in public-API examples).
+- **Every `tui_pane::keymap::*` path in design docs is now stale.** `tui-pane-lib.md` needs a sweep: `crate::keymap::Foo` → `crate::Foo` (and `tui_pane::keymap::Foo` → `tui_pane::Foo` in public-API examples).
 - **Phase 14 binary swap uses flat paths.** `use tui_pane::KeyBind;` not `use tui_pane::keymap::KeyBind;`. Every file in `src/tui/` that touches keymap types will see this.
 - **`pub(super)` is the visibility default for framework-internal construction.** Phase 9's `Keymap<Ctx>` constructor, Phase 10's `KeymapBuilder::build()` — apply the same rule: `pub(super)` for sites only the framework's own `keymap/` siblings call.
 - **Pre-emptive `#[must_use]` on every Phase 5+ public getter** saves a clippy round-trip per phase.
@@ -1254,7 +1228,7 @@ Unit tests (this phase, scoped to what exists by end of Phase 4):
 - **Phase 14 (App swap)** gains: flat-namespace import note (`use tui_pane::KeyBind;` not `use tui_pane::keymap::KeyBind;`) and binary-side `mod` rule reminder.
 - **New "Phase 5+ standing rules" subsection** added after the Phase 4 retrospective: locks the seven standing rules (private `mod`, flat re-exports, `pub(super)` for framework-internal, `#[must_use]` on getters, flat `$crate::*` macro paths, new `#[macro_export]` extends `tests/macro_use.rs`, `cargo mend --fail-on-warn` as phase-completion gate).
 - **Definition of done** rewritten to enumerate every public type at crate-root flat paths and to call out `__bindings_arms!` as `#[doc(hidden)]` but technically reachable.
-- **Spec docs swept** (`core-api.md`, `macros.md`): stale `crate::keymap::<submod>::Foo` sub-paths replaced with the facade-path form `crate::keymap::{Foo, ...}`; explanatory comments added about why the public API is flat.
+- **Spec sweep:** stale `crate::keymap::<submod>::Foo` sub-paths replaced with the facade-path form `crate::keymap::{Foo, ...}`; explanatory comments added about why the public API is flat.
 - **Reviewed and not changed:** `tui_pane/README.md` deferred to Phase 18 (subagent finding #20 — no earlier baseline justified). `bind_many` requiring `A: Clone` (subagent finding #10 — auto-satisfied because `Action: Copy`, no plan change needed).
 
 These apply to every remaining phase without further mention; phase blocks below assume them. Restate only where a phase has a specific exception.
@@ -1321,14 +1295,14 @@ Leaf types only — the renderer that consumes them lands in Phase 13.
 
 #### Phase 5 Review
 
-- **Phase 7 (Scope traits)** plan body now enumerates the full `Shortcuts<Ctx>` method set (cross-references `core-api.md` §4) and explicitly states the `label` / `state` default bodies leveraging `Action::bar_label` and `ShortcutState::Enabled`.
+- **Phase 7 (Scope traits)** plan body now enumerates the full `Shortcuts<Ctx>` method set and explicitly states the `label` / `state` default bodies leveraging `Action::bar_label` and `ShortcutState::Enabled`.
 - **Phase 7** also explicitly states `Globals<Ctx>` has no `bar_label` method, and adds a `Shortcut` (singular wrapping struct) doc-grep step to confirm zero residue.
 - **Phase 9 (Keymap container)** plan gains a one-line clarification that `bar_label` is code-side only — the TOML loader never reads or writes it.
 - **Phase 13 (Bar renderer)** plan now states the per-region `Mode` suppression rules in line with shipped `bar/mod.rs` docstrings (`Static` suppresses `Nav`, `TextInput(_)` suppresses `Nav` + `PaneAction` + `Global`).
 - **Phase 14 (App swap)** gains an explicit migration-cost callout that every existing `action_enum!` invocation in `src/tui/` needs a third positional `bar_label` literal.
 - **Phase 19 (Regression tests)** reworded to assert each global slot's bar text comes from `action.bar_label()`, not a `Globals` trait method.
-- **Doc-spec sync (`core-api.md`):** `ScopeMap::new`/`insert` migrated from `pub(crate)` → `pub(super)` to match shipped code (Phase 4 retrospective decision; finalized here per post-phase doc-sync rule).
-- **Reviewed and not changed:** `Globals::render_order` (subagent finding #6 — already declared at `core-api.md:423`, plan unchanged); binary-side `pub mod` audit in Phase 13 (subagent finding #11 — grep of `src/tui/**/*.rs` found zero `pub mod`, no audit needed); `__bindings_arms!` cross-crate test (subagent finding #10 — `#[doc(hidden)]` is supported-surface-out, not worth dedicated test); `set_focused` consistency (subagent finding #4 — already consistent); Phase 10 builder-level cross-crate test (subagent finding #15 — Phase 10 already lists end-to-end builder tests).
+- **Visibility sync:** `ScopeMap::new`/`insert` migrated from `pub(crate)` → `pub(super)` to match shipped code (Phase 4 retrospective decision; finalized here per post-phase doc-sync rule).
+- **Reviewed and not changed:** `Globals::render_order` (subagent finding #6 — plan unchanged); binary-side `pub mod` audit in Phase 13 (subagent finding #11 — grep of `src/tui/**/*.rs` found zero `pub mod`, no audit needed); `__bindings_arms!` cross-crate test (subagent finding #10 — `#[doc(hidden)]` is supported-surface-out, not worth dedicated test); `set_focused` consistency (subagent finding #4 — already consistent); Phase 10 builder-level cross-crate test (subagent finding #15 — Phase 10 already lists end-to-end builder tests).
 
 ### Phase 6 — Pane identity, ctx, Framework skeleton ✅
 
@@ -1411,13 +1385,13 @@ No pane fields, no `mode_queries`, no `editor_target_path`, no `focused_pane_mod
 Files (one per trait — each is independent, the heaviest is `Shortcuts<Ctx>` with 6 methods + 1 const + 1 assoc type):
 
 - `tui_pane/src/pane.rs` — `Pane<Ctx>` with `const APP_PANE_ID: Ctx::AppPaneId` and `fn mode() -> fn(&Ctx) -> Mode<Ctx>` (default `|_| Mode::Navigable`). The supertrait for every per-pane trait. The framework registry stores the returned `mode` pointer keyed by `AppPaneId`; pane-internal callers write `Self::mode()(ctx)`.
-- `tui_pane/src/keymap/shortcuts.rs` — `Shortcuts<Ctx>: Pane<Ctx>` with `type Actions: Action;` and method set per `core-api.md` §4: `defaults`, `visibility`, `state`, `bar_slots`, `vim_extras`, `dispatcher`, plus `SCOPE_NAME` const. Default `visibility` returns `Visibility::Visible`; default `state` returns `ShortcutState::Enabled`; default `bar_slots` emits `(PaneAction, Single(action))` per `Self::Actions::ALL` in declaration order. Per-pane impls override only when one of these axes is state-dependent. The bar **label** is always `Action::bar_label()` from `action_enum!` — there is no per-frame label override on the trait. `vim_extras() -> &'static [(Self::Actions, KeyBind)]` defaults to `&[]` (cargo-port's `ProjectListAction` overrides for `'l'`/`'h'` in Phase 14).
+- `tui_pane/src/keymap/shortcuts.rs` — `Shortcuts<Ctx>: Pane<Ctx>` with `type Actions: Action;` and method set: `defaults`, `visibility`, `state`, `bar_slots`, `vim_extras`, `dispatcher`, plus `SCOPE_NAME` const. Default `visibility` returns `Visibility::Visible`; default `state` returns `ShortcutState::Enabled`; default `bar_slots` emits `(PaneAction, Single(action))` per `Self::Actions::ALL` in declaration order. Per-pane impls override only when one of these axes is state-dependent. The bar **label** is always `Action::bar_label()` from `action_enum!` — there is no per-frame label override on the trait. `vim_extras() -> &'static [(Self::Actions, KeyBind)]` defaults to `&[]` (cargo-port's `ProjectListAction` overrides for `'l'`/`'h'` in Phase 14).
 - `tui_pane/src/keymap/navigation.rs` — `Navigation<Ctx>` with `type Actions: Action;`.
 - `tui_pane/src/keymap/globals.rs` — `Globals<Ctx>` with `type Actions: Action;` (app-extension globals, separate from the framework's own `GlobalAction` from Phase 3). The trait has **no** `bar_label(action) -> &'static str` method — Phase 5's `Action::bar_label` (live on every action enum, including the macro-generated and the hand-rolled `GlobalAction`) is the single source. Bar code calls `action.bar_label()` regardless of scope.
 
 `keymap/action_enum.rs` holds the `Action` trait and the `action_enum!` macro.
 
-**`Shortcut` wrapping struct is dead.** Phase 5 split it into orthogonal `Visibility` and `ShortcutState` axes. Phase 7 prep verifies `core-api.md` and `paneid-ctx.md` reference no `Shortcut\b` (singular wrapping struct) — `Shortcuts`, `ShortcutState`, `Visibility` are the only valid forms.
+**`Shortcut` wrapping struct is dead.** Phase 5 split it into orthogonal `Visibility` and `ShortcutState` axes. Phase 7 prep verified no `Shortcut\b` (singular wrapping struct) references remain — `Shortcuts`, `ShortcutState`, `Visibility` are the only valid forms.
 
 **Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use pane::{Pane, Mode};` and `pub use keymap::{Shortcuts, Navigation, Globals};`. `keymap/mod.rs` adds `pub use shortcuts::Shortcuts; pub use navigation::Navigation; pub use globals::Globals;`. Inner files declare `mod shortcuts; mod navigation; mod globals;` (private — standing rule 1).
 
@@ -1506,7 +1480,7 @@ pub enum Mode<Ctx: AppContext> {
 
 **Phase 7 → Phase 8 contract.** The Phase 7 trait surface is **deliberately broken** in this phase. There are no binary call sites yet (the binary swap is Phase 14), so the only consumers are the tui_pane crate's own `cfg(test)` modules and `tests/macro_use.rs` — both rewritten in this phase. Tests written against the Phase 7 surface (e.g. `FooPane::input_mode()`, `pane.label(...)`) are explicitly replaced, not preserved.
 
-**Root re-exports (per Phase 5+ standing rule 2):** crate root gains `pub use pane::{Pane, Mode};` and `pub use bar::Visibility;`; loses `pub use bar::InputMode;`. The `core-api.md` §11 re-exports list is the source of truth for the post-Phase-8 surface.
+**Root re-exports (per Phase 5+ standing rule 2):** crate root gains `pub use pane::{Pane, Mode};` and `pub use bar::Visibility;`; loses `pub use bar::InputMode;`. The Definition of Done at the end of this doc lists the full post-refactor public surface.
 
 **Standing-rule check.** New `Visibility` enum gets `#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]` (matches `ShortcutState`). New `Mode<Ctx>` enum gets `#[derive(Clone, Copy, Debug)]` only — `Eq`/`Hash`/`PartialEq` cannot be derived because of the fn pointer. `Pane<Ctx>::APP_PANE_ID` is a const, no `#[must_use]` needed. `Pane<Ctx>::mode()` returns a fn pointer, no `#[must_use]` (fn pointers without side effects don't trigger the lint, but flag at code review time).
 
@@ -1546,11 +1520,11 @@ pub enum Mode<Ctx: AppContext> {
 - **Phase 9** (Keymap container): added an explicit "registry constraint" paragraph stating `Framework<Ctx>::register_app_pane` takes `P: Pane<Ctx>` (not `Shortcuts<Ctx>`) so non-shortcut consumers can register (finding 2).
 - **Phase 9** (Keymap container): added a verify-step on the `KeyParseError → KeymapError` `#[from]` chain — confirm the variant exists in the shipped Phase 4 enum or add it as a Phase 9 deliverable (finding 5).
 - **Phase 11** (Framework panes): rewrote the Toasts paragraph to point at the unified `defaults() / handle_key() / mode() / bar_slots()` inherent surface instead of the inconsistent `dispatch(action, ctx)` mention (finding 7).
-- **Phase 11** (Framework panes): noted that `editor_target_path`, `focused_pane_mode`, and `dismiss` are Phase-11 additions not yet documented in `core-api.md` §10, and named the §10 doc-sync sweep as part of this phase (finding 8).
+- **Phase 11** (Framework panes): noted that `editor_target_path`, `focused_pane_mode`, and `dismiss` are Phase-11 additions on `Framework<Ctx>` (finding 8).
 - **Phase 14** (App action enums + impls): added a "no per-impl `#[must_use]`" callout on the `mode()` override snippet — the trait declaration carries it, override bodies inherit (finding 10).
 - **Phase 19** (Regression tests): clarified that snapshot tests parameterize on `FocusedPane` and drive through `focused_pane_mode` + `Keymap::render_app_pane_bar_slots`, not a typed `P::mode()` call (finding 12).
 - **Phase 8 retrospective** (correction): retracted the "Phase 9 should publish `register_app_pane` as `pub(crate)`" implication — framework panes don't go through registration (they lack `AppPaneId`), so `pub(super)` is correct (finding 3, approved).
-- **`core-api.md` §6** (doc-of-record sweep): renamed `P::Action` / `N::Action` / `G::Action` → `P::Actions` / `N::Actions` / `G::Actions` in `scope_for` / `navigation` / `globals` lookups (finding 6, approved & applied).
+- **Trait-associated-type rename:** `P::Action` / `N::Action` / `G::Action` → `P::Actions` / `N::Actions` / `G::Actions` in `scope_for` / `navigation` / `globals` lookups (finding 6, approved & applied).
 - **Phase 9** (Keymap container, ErasedScope redesign): replaced the unworkable `action_for(&KeyBind) -> Option<&dyn Action>` / `display_keys_for(&dyn Action) -> &[KeyBind]` surface with three operation-level methods — `dispatch_key(&KeyBind, &mut Ctx) -> KeyOutcome`, `render_bar_slots(&Ctx) -> Vec<RenderedSlot>`, `key_for_toml_key(&str) -> Option<KeyBind>`. Typed access is captured inside the impl block (`ConcreteScope<Ctx, P>`) at registration time; the trait surface stays type-parameter-free. Phase 9 also gains a `RenderedSlot` struct (region/label/key/state/visibility) and re-uses `KeyOutcome` from Phase 11 (finding 4, approved & applied).
 
 ### Phase 9 — Keymap container ✅
@@ -1685,7 +1659,7 @@ Vim-mode handling moved to Phase 10 (see "Vim mode — framework capability" §)
 - Phase 11 input dispatcher reaches `dispatch_key` through `Keymap::scope_for_app_pane(id)?.dispatch_key(...)`. The `KeyOutcome::Unhandled` variant is the chain-continue signal. Framework panes use the same enum on inherent methods.
 - Phase 13 bar renderer iterates `Keymap::scope_for_app_pane(id)?.render_bar_slots(ctx)` and consumes `RenderedSlot` directly — the typed `Action` enum never crosses the trait, so the renderer is generic over no `<A>` parameter.
 - Phase 10 should NOT introduce a `register_navigation` / `register_globals` that returns trait objects — those scopes are singletons (one impl per app), so direct typed storage by `TypeId<N>` / `TypeId<G>` matches the existing core-api §6 design and avoids paying the erasure tax twice.
-- ~~core-api.md §6 / §7 need to sync to reflect the shipped surface: `pub trait ErasedScope` (sealed), `pub fn scope_for/scope_for_app_pane`, `Ctx: AppContext + 'static`. Plus the §7 `KeymapBuilder` body still lists positional args (`on_quit`, `on_restart`, `dismiss_fallback`, `vim`) that the Phase 9 skeleton does not have yet — those land in Phase 10. Apply the doc-sync pass during the Phase 10 review, not eagerly.~~ **Shipped with the Phase 9 reset.** core-api.md §6 / §7 now describe the post-reset surface (typestate builder, `pub(crate) RuntimeScope`, three concrete public methods on `Keymap`).
+- **Phase 9 reset shipped the post-reset surface:** typestate builder (`Configuring → Registering`), `pub(crate) RuntimeScope`, three concrete public methods on `Keymap` (`dispatch_app_pane`, `render_app_pane_bar_slots`, `key_for_toml_key`). `Ctx: AppContext + 'static` bound. `BuilderError` dropped.
 
 ### Phase 9 reset (post-review simplification)
 
@@ -1735,7 +1709,7 @@ Architect review of remaining phases against the post-reset surface produced 8 f
 **What deviated from the plan:**
 - The plan called for a `compile_fail` test as "optional"; user wanted it added, so it shipped on `KeymapBuilder`'s rustdoc.
 - The plan didn't list `register_app_pane::<P>` as something to drop, but the no-op stub had no Phase-9-era backing storage so it went away. Phase 11 reintroduces it when `mode_queries` lands on `Framework<Ctx>`.
-- `core-api.md` §6/§7 sync was the "first task of Phase 10" per the original plan; the reset folded it forward into the reset commit, so Phase 10 starts without a doc-sync prerequisite.
+- The post-reset `Keymap` / `KeymapBuilder` surface was settled by the Phase 9 reset commit, so Phase 10 starts without a doc-sync prerequisite.
 - A test was added at the `Keymap` boundary (`render_app_pane_bar_slots_resolves_through_keymap`) the original plan didn't call out — it was a gap once `scope_for_app_pane` went away.
 
 **Surprises:**
@@ -1827,11 +1801,10 @@ pane-local check needed.
 
 **Findings rejected:** none. All seven significant findings produced plan changes; the 11 minor findings either applied directly (where actionable) or confirmed existing plan text (no change needed).
 
-**Doc-sync:** core-api.md §6/§7 are now synced to the post-reset surface (typestate builder, `pub(crate) RuntimeScope`, three concrete public methods on `Keymap`, no `BuilderError`, single `KeymapError`, `Ctx: AppContext + 'static`). No further §6/§7 work required at the start of Phase 10.
 
 ### Phase 10 — Keymap builder + settings registry ✅
 
-**Phase 9 reset already shipped:** the builder skeleton has the typestate (`Configuring` → `Registering`), `register::<P>` does eager collapse, the public surface is three concrete methods on `Keymap` (`dispatch_app_pane` / `render_app_pane_bar_slots` / `key_for_toml_key`), and the trait is `pub(crate) RuntimeScope<Ctx>`. core-api.md §6/§7 are synced. Phase 10 adds the settings phase methods and the framework integration that hook onto that scaffolding.
+**Phase 9 reset already shipped:** the builder skeleton has the typestate (`Configuring` → `Registering`), `register::<P>` does eager collapse, the public surface is three concrete methods on `Keymap` (`dispatch_app_pane` / `render_app_pane_bar_slots` / `key_for_toml_key`), and the trait is `pub(crate) RuntimeScope<Ctx>`. Phase 10 adds the settings phase methods and the framework integration that hook onto that scaffolding.
 
 Two tightly-coupled additions in one commit because `KeymapBuilder::with_settings` is the only consumer of `SettingsRegistry`:
 
@@ -2099,7 +2072,7 @@ pub struct Framework<Ctx: AppContext> {
 }
 ```
 
-Methods after Phase 11 (the five Phase 6 const-fn methods plus the four Phase-10 / Phase-10-closure methods — `register_app_pane`, `pane_order`, `overlay`, `open_overlay`, `close_overlay` — stay verbatim). `editor_target_path`, `focused_pane_mode`, and `dismiss` are Phase-11 additions; `core-api.md` §8 covers them. Phase 11 also rewrites `focused_pane_mode` to consult `overlay` first (Phase 10 returned `None` for any framework focus state):
+Methods after Phase 11 (the five Phase 6 const-fn methods plus the four Phase-10 / Phase-10-closure methods — `register_app_pane`, `pane_order`, `overlay`, `open_overlay`, `close_overlay` — stay verbatim). `editor_target_path`, `focused_pane_mode`, and `dismiss` are Phase-11 additions. Phase 11 also rewrites `focused_pane_mode` to consult `overlay` first (Phase 10 returned `None` for any framework focus state):
 
 ```rust
 impl<Ctx: AppContext> Framework<Ctx> {
@@ -2180,7 +2153,7 @@ The registry is populated by `KeymapBuilder::build_into(&mut framework)`: for ea
 - Phase 13 (bar renderer): the adapter needs concrete-type arms per overlay pane (`KeymapPaneAction`, `SettingsPaneAction`); cannot be one generic helper. The Toasts arm renders nav + toast-pane actions + global once Phase 12 lands the typed manager.
 - Phase 15 (reroute overlay input handlers): the `EditState` allow-dead_code blocks come off as soon as `handle_key` constructs `Awaiting` / `Editing` / `Conflict`. Phase 15 also swaps `keymap_capture_keys` / `settings_edit_keys` from stubs to real handlers — call sites stay the same.
 - Phase 13+ tests: framework-pane snapshot tests will exercise `EditState::Awaiting` / `Editing` / `Conflict` — those phases need to construct the pane in those states (no public setter today; consider `pub(crate)` constructors, or expose a Phase-15 method that drives the transition).
-- The `action_enum!` macro grammar widening is a permanent API surface change — document in `core-api.md`'s macro section as part of the post-phase doc-sync sweep.
+- The `action_enum!` macro grammar widening is a permanent API surface change — Phase 14's binary-side `action_enum!` invocations now use the per-variant `#[doc]` / `#[allow(...)]` attribute form.
 
 ### Phase 11 Review
 
@@ -2191,8 +2164,8 @@ The registry is populated by `KeymapBuilder::build_into(&mut framework)`: for ea
 - **Phase 15 — `EditState` production transitions named explicitly.** Phase 15's body now spells out the `Browse → Editing` / `Browse → Awaiting → Conflict` / cleanup-of-`#[allow(dead_code)]` work, and that the `keymap_capture_keys` / `settings_edit_keys` `const fn` stubs swap to real handlers in this phase.
 - **Phase 17 — Esc preflight ordering vs. Phase 11 dispatch chain clarified.** With toasts focused and `example_output` non-empty, Esc fires the structural preflight (clears output) rather than `framework.dismiss()` (would have popped the toast). Matches today's binary; explicit note added.
 - **Phase 6 → Phase 11 mirror block softened.** "Frozen verbatim" was always aspirational on `Framework::new`'s body — Phase 10 added `HashMap::new()`, dropping the `const fn` qualifier; Phase 11 adds the three pane defaults. Wording at lines 1249, 1982, and 2095 now reads "frozen signatures + four `const fn` getters/setters; `new` body grows."
-- **`action_enum!` macro grammar widening recorded in `DONE - macros.md`.** Per-variant `#[doc]` / `#[allow(...)]` attributes are now part of the documented grammar (required under the workspace's `missing_docs = "deny"` for any public action enum).
-- **`core-api.md` §8 synced to shipped Framework.** Reflects the Phase-10-shipped fields (`mode_queries`, `pane_order`, `overlay`) and Phase-11 additions (three pane fields, `dismiss`, `editor_target_path`, overlay-first `focused_pane_mode`).
+- **`action_enum!` macro grammar widening:** per-variant `#[doc]` / `#[allow(...)]` attributes are now part of the documented grammar (required under the workspace's `missing_docs = "deny"` for any public action enum).
+- **`Framework<Ctx>` post-Phase-11 surface:** Phase-10-shipped fields (`mode_queries`, `pane_order`, `overlay`) plus Phase-11 additions (three pane fields, `dismiss`, `editor_target_path`, overlay-first `focused_pane_mode`).
 - **Toasts placeholder narrowed; framework-owned redesign moves to Phase 12.** `Toasts<Ctx>` ships as a `Vec<String>` message stack with `ToastsAction::Dismiss`, `Mode::Static`, and `Framework::dismiss(&mut self)` as the dismiss method — the minimum viable framework pane. Investigation (cargo-port `ToastManager` at `src/tui/toasts/manager.rs:236`) confirms a real toast subsystem belongs in `tui_pane`: the framework should own toast data, lifecycle, viewport, hitboxes, and dismiss semantics. Phase 12 replaces the placeholder with the typed manager, splits `FrameworkPaneId` into focus/overlay enums, and rewires the focus cycle and dismiss chain accordingly.
 
 ### Phase 12 — Framework Toasts skeleton
@@ -2298,7 +2271,6 @@ impl<Ctx: AppContext> Framework<Ctx> {
         if matches!(self.focused, FocusedPane::Framework(FrameworkFocusId::Toasts))
            && self.toasts.dismiss_focused()
         {
-            self.reconcile_focus_after_toast_change();
             return true;
         }
         self.close_overlay()
@@ -2306,14 +2278,18 @@ impl<Ctx: AppContext> Framework<Ctx> {
 }
 
 /// Free dispatcher called from `dispatch_global::Dismiss`. Kept as a
-/// free fn so the binary's optional `dismiss_fallback` hook receives
-/// `&mut Ctx` after the framework borrow is dropped (no aliasing
-/// between `&mut Framework` and `&mut Ctx`).
+/// free fn so the binary's optional `dismiss_fallback` hook (and the
+/// focus reconciler) receive `&mut Ctx` after the framework borrow is
+/// dropped (no aliasing between `&mut Framework` and `&mut Ctx`).
 pub(crate) fn dismiss_chain<Ctx: AppContext>(
     ctx: &mut Ctx,
     fallback: Option<fn(&mut Ctx) -> bool>,
 ) -> bool {
     if ctx.framework_mut().dismiss_framework() {
+        // Framework borrow has dropped; route focus repair through
+        // ctx.set_focus so any binary-side AppContext::set_focus
+        // override (Focus subsystem, telemetry) sees the transition.
+        reconcile_focus_after_toast_change(ctx);
         return true;
     }
     if let Some(hook) = fallback { hook(ctx) } else { false }
@@ -2371,23 +2347,26 @@ Key invariants:
 - `reset_to_first` / `reset_to_last` on entry replace cargo-port's `viewport.home()` / `viewport.set_pos(last_index)` calls in `focus_next_pane`/`focus_previous_pane`.
 - Tab-as-cycle-step consume runs as a pre-globals hook (`try_consume_cycle_step`) that consults the live keymap entry for `GlobalAction::NextPane`/`PrevPane` — not literal `Tab` — so a rebound `NextPane` keeps the consume-while-scrollable behavior. The hook returns `true` when there is internal scroll room (consumes the keystroke, blocks the cycle advance); otherwise dispatch falls through to globals and the cycle advances.
 
-**5. Focus reconciliation after dismiss / prune.** When `Toasts::dismiss(_)` or any Phase-21 prune-on-tick path empties the active set while Toasts is focused, `Framework` moves focus to the first registered app pane (or no-op if `pane_order()` is empty). The reconciler runs at the end of any framework-side toast mutation that can drop the active count to zero:
+**5. Focus reconciliation after dismiss / prune.** When `Toasts::dismiss(_)` or any Phase-22 prune-on-tick path empties the active set while Toasts is focused, focus moves to the first registered app pane (or no-op if `pane_order()` is empty). Reconciliation **must** route through `ctx.set_focus(...)` — not `framework.set_focused(...)` — so binaries that override `AppContext::set_focus` (logging, telemetry, the `Focus` subsystem's overlay-return memory) still observe the transition. That rules out a `&mut self` method on `Framework<Ctx>` (which has no path to `&mut Ctx`); the reconciler is a free fn over `&mut Ctx`:
 
 ```rust
-impl<Ctx: AppContext> Framework<Ctx> {
-    fn reconcile_focus_after_toast_change(&mut self) {
-        if matches!(self.focused, FocusedPane::Framework(FrameworkFocusId::Toasts))
-           && !self.toasts.has_active()
-        {
-            if let Some(first) = self.pane_order.first().copied() {
-                self.set_focused(FocusedPane::App(first));
-            }
-        }
+// tui_pane/src/framework/dispatch.rs
+pub(super) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx) {
+    let framework = ctx.framework();
+    if !matches!(framework.focused(), FocusedPane::Framework(FrameworkFocusId::Toasts)) {
+        return;
+    }
+    if framework.toasts.has_active() {
+        return;
+    }
+    let target = framework.pane_order().first().copied().map(FocusedPane::App);
+    if let Some(target) = target {
+        ctx.set_focus(target);
     }
 }
 ```
 
-`dismiss_framework` (and any later prune path) calls this at the end of its body. The reconciliation goes through `set_focused` — the same `const fn` setter Phase 6 froze, so callers observe focus change through the same `AppContext::set_focus` hook.
+`dismiss_chain<Ctx>` calls this after `framework.dismiss_framework()` returns true (and the framework borrow drops). Phase 22's prune-on-tick path calls it after `framework.prune(now)` returns. Both call sites already hold `&mut Ctx` because they live in the dispatch chain or the tick loop. `Framework<Ctx>` itself exposes no focus-write API beyond the Phase 6 `pub(super) fn set_focused` setter; toast-driven focus repair is a dispatcher concern, not a framework-internal mutation.
 
 **Bar render — focused Toasts.** With the typed manager in place, the bar renderer's `FocusedPane::Framework(FrameworkFocusId::Toasts)` arm renders the navigation row and the global region. The `PaneAction` region is empty in Phase 12 (the empty `ToastsAction` enum produces no `bar_slots` entries); Phase 20 fills it with `Activate`. Phase 13's bar `mod.rs` still walks `framework.toasts.bar_slots(ctx)` for the `PaneAction` region — the walk just returns nothing until Phase 20. The exact bar contents:
 - `Mode::Navigable` (focused Toasts behave like a list): `Nav` region renders the app's `Navigation::UP` / `Navigation::DOWN` keys (the framework reads them through the keymap by looking up the bindings registered for those trait constants), `PaneAction` is empty (Phase 12 `ToastsAction` is empty; Phase 20 adds `Activate`), `Global` renders `GlobalAction::Dismiss` (and the rest of the global strip).
@@ -2406,8 +2385,9 @@ impl<Ctx: AppContext> Framework<Ctx> {
 - `tui_pane/src/pane_id.rs` — split into `FrameworkOverlayId` + `FrameworkFocusId`; rewrite `FocusedPane`.
 - `tui_pane/src/panes/toasts.rs` — replace placeholder with typed manager.
 - `tui_pane/src/framework/list_navigation.rs` — new file; defines `pub enum ListNavigation { Up, Down, Home, End }`. Framework-owned, reusable by future framework list panes.
-- `tui_pane/src/framework/mod.rs` — `overlay` field type change, `focused_pane_mode` arm rewrite, `dismiss` → `dismiss_framework`, add `reconcile_focus_after_toast_change`.
-- `tui_pane/src/framework/dispatch.rs` — `dispatch_global::Dismiss` calls `dismiss_chain`; rewrite `focus_step` per the pseudocode.
+- `tui_pane/src/keymap/navigation.rs` — extend the `Navigation<Ctx>` trait with `const HOME: Self::Actions;`, `const END: Self::Actions;`, and `fn list_navigation(action: Self::Actions) -> Option<ListNavigation>` (default impl matches the action against `UP`/`DOWN`/`HOME`/`END`). Cargo-port's Phase 14 `Navigation` impl supplies the two new constants.
+- `tui_pane/src/framework/mod.rs` — `overlay` field type change, `focused_pane_mode` arm rewrite, `dismiss` → `dismiss_framework`.
+- `tui_pane/src/framework/dispatch.rs` — `dispatch_global::Dismiss` calls `dismiss_chain`; rewrite `focus_step` per the pseudocode; add `reconcile_focus_after_toast_change<Ctx>(ctx: &mut Ctx)` free fn that routes through `ctx.set_focus(...)` so binary-side `AppContext::set_focus` overrides observe the transition.
 - `tui_pane/src/lib.rs` — re-export `FrameworkOverlayId`, `FrameworkFocusId`, `Toast`, `ToastId`, `ToastStyle`, `ListNavigation`; drop `FrameworkPaneId`.
 - `tui_pane/src/framework/mod.rs` test module — rewrite cases that named `FrameworkPaneId`.
 
@@ -2808,7 +2788,7 @@ The settings pane (Phase 11 `SettingsPane`) renders sections grouped by `Setting
 
 **3. Builder method: `with_framework_toast_settings(binding)`.**
 
-> **Storage model.** `Framework<Ctx>` is the sole mutable owner of `ToastSettings`. The `toast_settings: ToastSettings` field is introduced on `Framework<Ctx>` in **Phase 11** (defaulted via `ToastSettings::default()` at `Framework::new` so builds that never register a binding still work). **Phase 21** adds the `ToastSettingsBinding` wiring that populates the field from the binary's persisted settings and registers per-field entries in the `SettingsRegistry`. `ToastSettingsBinding` is used at exactly two sites: (a) `KeymapBuilder::build_into` calls `(binding.load)(ctx)` once at startup; if it returns `Some(settings)`, the framework stores them in `framework.toast_settings`; (b) the `SettingsPane` editor mutates `framework.toast_settings_mut()` directly, and dispatch calls `(binding.save)(ctx, framework.toast_settings())` after the framework borrow ends so the binary can persist. There is no app-side mutable copy. The renderer and the manager (Phase 22) always read `framework.toast_settings()` — never the binding directly.
+> **Storage model.** `Framework<Ctx>` is the sole mutable owner of `ToastSettings`. **Phase 21** adds the `toast_settings: ToastSettings` field on `Framework<Ctx>`, defaults it via `ToastSettings::default()` inside `Framework::new` (a Phase 21 update to that constructor — Phase 11 shipped without the field), exposes `toast_settings()` / `toast_settings_mut()` accessors, and wires `ToastSettingsBinding` so the binary can load/save against the framework's copy. `ToastSettingsBinding` is used at exactly two sites: (a) `KeymapBuilder::build_into` calls `(binding.load)(ctx)` once at startup; if it returns `Some(settings)`, the framework stores them in `framework.toast_settings`; (b) the `SettingsPane` editor mutates `framework.toast_settings_mut()` directly, and dispatch calls `(binding.save)(ctx, framework.toast_settings())` after the framework borrow ends so the binary can persist. There is no app-side mutable copy. The renderer and the manager (Phase 22) always read `framework.toast_settings()` — never the binding directly.
 
 The binary registers a binding that gives the framework live access to the persisted settings:
 
@@ -2938,7 +2918,7 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 
 **4. Boundary conversions.** cargo-port's existing `From` impls (`TrackedItemKey::from(path.to_string())`, `TrackedItemKey::from(owner_repo)`) move with the type into `tui_pane`; the cargo-port-specific `From<AbsolutePath>` and `From<OwnerRepo>` impls stay in cargo-port (newtype + `From` on cargo-port's side; library's `TrackedItemKey` has `From<String>`/`From<&str>` only).
 
-**5. Focus reconciliation hooks into `prune`.** Phase 12's `reconcile_focus_after_toast_change` runs at the end of `Toasts::prune` when the active set drops to zero — focus moves to the first registered app pane. The reconciler call is added to every framework-side mutation (`dismiss`, `dismiss_focused`, `prune`, `finish_task` if linger expires immediately).
+**5. Focus reconciliation hooks into `prune`.** Phase 12's `reconcile_focus_after_toast_change<Ctx>(ctx: &mut Ctx)` free fn runs from the framework's tick driver after `framework.prune(now)` returns — call site holds `&mut Ctx`, so the reconciler can route through `ctx.set_focus(...)` like the dispatch-time path. Toast mutations that can drop the active count to zero (`dismiss`, `dismiss_focused`, `prune`, `finish_task` when linger is zero) only mutate the toast vec; they never touch focus directly. Focus repair is always a separate post-mutation step at a `&mut Ctx`-holding call site.
 
 **6. Mode integration.** `Toasts::mode(&Ctx) -> Mode<Ctx>` is **not** `Mode::Static` — focused toasts behave like a list. Phase 12 already returns `Mode::Navigable`; Phase 22 keeps that.
 
@@ -2991,15 +2971,12 @@ Verify CI invocations operate on the intended scope before Phase 1 lands. Tools 
 
 ## Doctest + test infrastructure
 
-> Full design in `test-infra.md`.
-
-Summary:
-
 - No doctests. Code blocks in `///` comments are ` ```ignore ` or prose.
-- Private `test_support/` module (`pub(crate)`, `#[cfg(test)]`) for shared unit-test fixtures: `TestCtx`, `MockPane`, `MockTextInputPane`, `MockStaticPane`, `MockPairedNavPane`, no-op dispatchers, sample TOML strings, key-event constructors.
-- Unit tests next to their module (`#[cfg(test)] mod tests`).
-- Cross-module integration tests in `tui_pane/tests/` (5 files: `builder_full.rs`, `dispatch_routing.rs`, `bar_rendering.rs`, `vim_mode.rs`, `toml_errors.rs`) using only the public surface; each declares its own `IntegCtx` inline.
-- No third `*-test-support` crate. Binary's `src/tui/tui_test_support.rs` stays separate; module rules enforce the boundary.
+- **Shipped pattern (Phases 1–11):** unit tests live next to their module (`#[cfg(test)] mod tests`); each test module declares its own inline `TestApp` struct with an `AppContext` impl rather than going through a shared `test_support/` module. The duplication is small (~10 sites) and keeps each module's tests self-contained. New phases continue this pattern unless test fixtures grow large enough to consolidate.
+- **Cross-crate macro test:** `tui_pane/tests/macro_use.rs` — exercises `tui_pane::action_enum!` and `tui_pane::bindings!` from outside the crate. Phases 5/6/7 extended this; Phase 12+ continues to extend it whenever a new `#[macro_export]` macro lands (standing rule 6).
+- **Cross-module integration tests** under `tui_pane/tests/` planned for Phase 19 — one file per cross-cutting scenario (`builder_full.rs`, `dispatch_routing.rs`, `bar_rendering.rs`, `vim_mode.rs`, `toml_errors.rs`). Each declares its own `IntegCtx` inline; integration tests verify the public API without privileged access to crate internals (`#[cfg(test)]` modules of an upstream crate are unreachable from `dev-dependencies` — the boundary is enforced by the language, not convention).
+- **Binary-side test support** (`src/tui/tui_test_support.rs`, `pub(super) fn make_app`) stays separate from the framework's tests. Phase 16 hoisted `make_app` from `tests/mod.rs` into that module. Dependency direction is binary → library only, so `tui_pane`'s tests cannot reach binary fixtures, and binary tests cannot reach `tui_pane`'s `cfg(test)` modules.
+- **No third `*-test-support` crate.** The two fixture sets are disjoint by language rule.
 
 ## Risks and unknowns
 
