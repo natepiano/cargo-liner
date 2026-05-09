@@ -10,6 +10,7 @@ mod cpu;
 mod duration_fmt;
 mod finder;
 mod focus;
+mod framework_keymap;
 mod inflight;
 mod input;
 mod interaction;

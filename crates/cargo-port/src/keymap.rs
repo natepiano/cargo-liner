@@ -275,19 +275,56 @@ action_enum! {
     }
 }
 
-action_enum! {
+tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum PackageAction {
-        Activate => "activate", "Open URL or Cargo.toml";
-        Clean    => "clean",    "Clean project";
+        Activate => ("activate", "activate", "Open URL or Cargo.toml");
+        Clean    => ("clean",    "clean",    "Clean project");
     }
 }
 
-action_enum! {
+/// Inherent-method facade over the `tui_pane::Action` trait impl so
+/// the legacy `src/keymap.rs` / `src/tui/keymap_ui.rs` call sites that
+/// take `PackageAction::ALL`, `::toml_key`, `::description`,
+/// `::from_toml_key` as fn-pointers continue to compile during the
+/// 14.x parallel-path window. Phase 18 retires the legacy paths and
+/// deletes this facade alongside the local `action_enum!` macro.
+impl PackageAction {
+    pub const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
+
+    pub fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
+
+    pub fn description(self) -> &'static str { <Self as tui_pane::Action>::description(self) }
+
+    pub fn from_toml_key(key: &str) -> Option<Self> {
+        <Self as tui_pane::Action>::from_toml_key(key)
+    }
+}
+
+tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum GitAction {
-        Activate => "activate", "Open git URL";
-        Clean    => "clean",    "Clean project";
+        Activate => ("activate", "activate", "Open git URL");
+        Clean    => ("clean",    "clean",    "Clean project");
+    }
+}
+
+/// Inherent-method facade over the `tui_pane::Action` trait impl so
+/// the legacy `src/keymap.rs` / `src/tui/keymap_ui.rs` /
+/// `src/tui/panes/actions.rs` call sites that take `GitAction::ALL`,
+/// `::toml_key`, `::description`, `::from_toml_key` as fn-pointers
+/// continue to compile during the 14.x parallel-path window. Phase 18
+/// retires the legacy paths and deletes this facade alongside the
+/// local `action_enum!` macro.
+impl GitAction {
+    pub const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
+
+    pub fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
+
+    pub fn description(self) -> &'static str { <Self as tui_pane::Action>::description(self) }
+
+    pub fn from_toml_key(key: &str) -> Option<Self> {
+        <Self as tui_pane::Action>::from_toml_key(key)
     }
 }
 

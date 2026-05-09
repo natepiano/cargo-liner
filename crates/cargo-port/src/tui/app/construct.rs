@@ -196,6 +196,9 @@ impl AppBuilder<Started> {
         if let Some(warning) = started.lint_warning {
             overlays.set_status_flash(warning, Instant::now());
         }
+        let framework = tui_pane::Framework::new(tui_pane::FocusedPane::App(
+            crate::tui::framework_keymap::AppPaneId::ProjectList,
+        ));
         let mut app = App {
             net: crate::tui::net_state::Net::new(inputs.http_client),
             panes,
@@ -215,7 +218,13 @@ impl AppBuilder<Started> {
             mouse_pos: None,
             toasts: ToastManager::default(),
             layout_cache: crate::tui::panes::LayoutCache::default(),
+            framework,
+            framework_keymap: tui_pane::Keymap::<App>::builder()
+                .build()
+                .unwrap_or_else(|_| std::process::abort()),
         };
+        app.framework_keymap = crate::tui::framework_keymap::bridge::build_for_app(&mut app)
+            .unwrap_or_else(|_| std::process::abort());
         app.finish_new();
         app
     }

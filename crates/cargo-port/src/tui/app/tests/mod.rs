@@ -68,6 +68,7 @@ use crate::tui::toasts::ToastManager;
 
 mod background;
 mod discovery_shimmer;
+mod framework_keymap;
 mod panes;
 mod rows;
 mod state;

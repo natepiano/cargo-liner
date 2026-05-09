@@ -27,11 +27,7 @@ const SEPARATOR: &str = "  ";
 /// Render `slot` into the running `spans` vector. Pushes the
 /// separator first when `spans` already contains slots for this
 /// region.
-pub(super) fn push_slot(
-    spans: &mut Vec<Span<'static>>,
-    slot: &RenderedSlot,
-    palette: &BarPalette,
-) {
+pub(super) fn push_slot(spans: &mut Vec<Span<'static>>, slot: &RenderedSlot, palette: &BarPalette) {
     if !spans.is_empty() {
         spans.push(Span::styled(SEPARATOR, palette.separator_style));
     }

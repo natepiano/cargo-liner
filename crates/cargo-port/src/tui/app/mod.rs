@@ -227,6 +227,17 @@ pub(super) struct App {
     /// App-shell because it's coordination state, not pane state —
     /// it describes what rect each pane occupies.
     pub(super) layout_cache:      LayoutCache,
+    /// Framework aggregator from `tui_pane`. Owns the focused-pane id,
+    /// quit/restart flags, the per-pane mode-query registry, and the
+    /// framework-side `Toasts`/`KeymapPane`/`SettingsPane` overlays.
+    /// Phase 14.2 stores it alongside the legacy keymap path; later
+    /// phases route dispatch through it.
+    pub(super) framework:         tui_pane::Framework<Self>,
+    /// Framework keymap built at startup from
+    /// [`tui_pane::Keymap::builder`]. Held in parallel with the legacy
+    /// `keymap` field through Phases 14–17; the legacy path remains
+    /// authoritative for dispatch until Phase 18 swaps it out.
+    pub(super) framework_keymap:  tui_pane::Keymap<Self>,
 }
 
 impl App {
