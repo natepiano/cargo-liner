@@ -10,8 +10,9 @@ use std::path::PathBuf;
 use crossterm::event::KeyCode;
 use ratatui::text::Span;
 
+use super::BarPalette;
 use super::StatusBar;
-use super::render;
+use super::render as render_inner;
 use crate::AppContext;
 use crate::Bindings;
 use crate::FocusedPane;
@@ -236,6 +237,26 @@ fn build_keymap_with_foo_and_textinput(framework: &mut Framework<TestApp>) -> Ke
         .register::<TextInputPane>(TextInputPane)
         .build_into(framework)
         .expect("build_into")
+}
+
+/// Test-only wrapper that drives [`render`](super::render) with the
+/// theme-neutral [`BarPalette::default`]. Phase 13 / Phase 14 in-crate
+/// tests assert on `Span::content` and don't inspect styling — the
+/// default palette keeps every span unstyled.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "matches `render_inner`'s signature 1:1; rewriting call sites \
+              would mean `&FocusedPane::App(...)` becomes `FocusedPane::App(...)` \
+              everywhere in the file"
+)]
+fn render(
+    focused: &FocusedPane<TestPaneId>,
+    ctx: &TestApp,
+    keymap: &Keymap<TestApp>,
+    framework: &Framework<TestApp>,
+) -> StatusBar {
+    let palette = BarPalette::default();
+    render_inner(focused, ctx, keymap, framework, &palette)
 }
 
 /// Render every `Span`'s content into one string, with no styling.

@@ -25,6 +25,7 @@
 use crossterm::event::KeyCode;
 use ratatui::text::Span;
 use tui_pane::AppContext;
+use tui_pane::BarPalette;
 use tui_pane::Bindings;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
@@ -172,11 +173,13 @@ fn flatten(spans: &[Span<'static>]) -> String {
 #[test]
 fn render_status_bar_navigable_pane_shows_every_region() {
     let (app, keymap) = fresh(FocusedPane::App(AppPaneId::Project));
+    let palette = BarPalette::default();
     let bar = render_status_bar(
         &FocusedPane::App(AppPaneId::Project),
         &app,
         &keymap,
         app.framework(),
+        &palette,
     );
     let nav = flatten(&bar.nav);
     let pane_action = flatten(&bar.pane_action);
@@ -209,11 +212,13 @@ fn render_status_bar_navigable_pane_shows_every_region() {
 fn render_status_bar_focused_toasts_renders_dismiss_in_global() {
     let (mut app, keymap) = fresh(FocusedPane::Framework(FrameworkFocusId::Toasts));
     let _ = app.framework_mut().toasts.push("Build done", "ok");
+    let palette = BarPalette::default();
     let bar = render_status_bar(
         &FocusedPane::Framework(FrameworkFocusId::Toasts),
         &app,
         &keymap,
         app.framework(),
+        &palette,
     );
     let pane_action = flatten(&bar.pane_action);
     let global = flatten(&bar.global);

@@ -18,6 +18,7 @@ mod settings;
 // reference these types via `$crate::*` paths, which requires them at
 // the crate root. `tests/macro_use.rs` locks the path stability.
 pub use app_context::AppContext;
+pub use bar::BarPalette;
 pub use bar::BarRegion;
 pub use bar::BarSlot;
 pub use bar::ShortcutState;

@@ -20,6 +20,7 @@
 
 mod global_region;
 mod nav_region;
+mod palette;
 mod pane_action_region;
 mod region;
 mod slot;
@@ -27,6 +28,7 @@ mod status_bar;
 mod support;
 mod visibility;
 
+pub use palette::BarPalette;
 pub use region::BarRegion;
 pub use slot::BarSlot;
 pub use slot::ShortcutState;
@@ -64,6 +66,7 @@ pub fn render<Ctx: AppContext + 'static>(
     ctx: &Ctx,
     keymap: &Keymap<Ctx>,
     framework: &Framework<Ctx>,
+    palette: &BarPalette,
 ) -> StatusBar {
     let pane_slots = pane_slots_for(focused, ctx, keymap, framework);
     let mode = framework.focused_pane_mode(ctx);
@@ -72,13 +75,14 @@ pub fn render<Ctx: AppContext + 'static>(
     for region in BarRegion::ALL {
         match region {
             BarRegion::Nav => {
-                bar.nav = nav_region::render::<Ctx>(mode.as_ref(), keymap, &pane_slots);
+                bar.nav = nav_region::render::<Ctx>(mode.as_ref(), keymap, &pane_slots, palette);
             },
             BarRegion::PaneAction => {
-                bar.pane_action = pane_action_region::render::<Ctx>(mode.as_ref(), &pane_slots);
+                bar.pane_action =
+                    pane_action_region::render::<Ctx>(mode.as_ref(), &pane_slots, palette);
             },
             BarRegion::Global => {
-                bar.global = global_region::render::<Ctx>(mode.as_ref(), keymap);
+                bar.global = global_region::render::<Ctx>(mode.as_ref(), keymap, palette);
             },
         }
     }

@@ -8,6 +8,7 @@
 
 use ratatui::text::Span;
 
+use super::BarPalette;
 use super::support;
 use crate::AppContext;
 use crate::BarRegion;
@@ -17,6 +18,7 @@ use crate::keymap::RenderedSlot;
 pub(super) fn render<Ctx: AppContext>(
     mode: Option<&Mode<Ctx>>,
     pane_slots: &[RenderedSlot],
+    palette: &BarPalette,
 ) -> Vec<Span<'static>> {
     let render_pane_actions = match mode {
         Some(Mode::Navigable | Mode::Static) => true,
@@ -30,7 +32,7 @@ pub(super) fn render<Ctx: AppContext>(
         .iter()
         .filter(|s| s.region == BarRegion::PaneAction)
     {
-        support::push_slot(&mut spans, slot);
+        support::push_slot(&mut spans, slot, palette);
     }
     spans
 }

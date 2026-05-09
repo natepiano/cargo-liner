@@ -15,6 +15,7 @@
 
 use ratatui::text::Span;
 
+use super::BarPalette;
 use super::support;
 use crate::AppContext;
 use crate::BarRegion;
@@ -27,6 +28,7 @@ pub(super) fn render<Ctx: AppContext + 'static>(
     mode: Option<&Mode<Ctx>>,
     keymap: &Keymap<Ctx>,
     pane_slots: &[RenderedSlot],
+    palette: &BarPalette,
 ) -> Vec<Span<'static>> {
     if !matches!(mode, Some(Mode::Navigable)) {
         return Vec::new();
@@ -41,7 +43,7 @@ pub(super) fn render<Ctx: AppContext + 'static>(
         framework.key_for(GlobalAction::NextPane),
         framework.key_for(GlobalAction::PrevPane),
     ) {
-        support::push_paired(&mut spans, next, prev, "pane");
+        support::push_paired(&mut spans, next, prev, "pane", palette);
     }
 
     // Navigation scope's bar slots (Up/Down/Left/Right/Home/End). The
@@ -49,13 +51,13 @@ pub(super) fn render<Ctx: AppContext + 'static>(
     // every entry the binary's Navigation impl produced, in the order
     // returned by the keymap.
     for slot in keymap.render_navigation_slots() {
-        support::push_slot(&mut spans, &slot);
+        support::push_slot(&mut spans, &slot, palette);
     }
 
     // Pane-emitted nav slots (rare — most panes leave nav to the
     // navigation scope, but `bar_slots` is allowed to add extras).
     for slot in pane_slots.iter().filter(|s| s.region == BarRegion::Nav) {
-        support::push_slot(&mut spans, slot);
+        support::push_slot(&mut spans, slot, palette);
     }
 
     spans

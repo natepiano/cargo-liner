@@ -14,6 +14,7 @@
 
 use ratatui::text::Span;
 
+use super::BarPalette;
 use super::support;
 use crate::Action;
 use crate::AppContext;
@@ -24,6 +25,7 @@ use crate::Mode;
 pub(super) fn render<Ctx: AppContext + 'static>(
     mode: Option<&Mode<Ctx>>,
     keymap: &Keymap<Ctx>,
+    palette: &BarPalette,
 ) -> Vec<Span<'static>> {
     let render_globals = match mode {
         Some(Mode::Navigable | Mode::Static) => true,
@@ -43,10 +45,10 @@ pub(super) fn render<Ctx: AppContext + 'static>(
         ) {
             continue;
         }
-        support::push_slot(&mut spans, &slot);
+        support::push_slot(&mut spans, &slot, palette);
     }
     for slot in keymap.render_app_globals_slots() {
-        support::push_slot(&mut spans, &slot);
+        support::push_slot(&mut spans, &slot, palette);
     }
     spans
 }
