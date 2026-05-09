@@ -692,15 +692,16 @@ edition = "2024"
         "the re-export reached only from #[cfg(test)] must NOT be removed; inner_facade/mod.rs after:\n{facade_after}",
     );
 
-    // And the project must still compile under `cargo test --no-run` —
+    // And the project must still compile under `cargo nextest run --no-run` —
     // i.e. mend left the tree in a state where every target builds.
     let test_build = std::process::Command::new("cargo")
-        .arg("test")
+        .arg("nextest")
+        .arg("run")
         .arg("--no-run")
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
         .output()
-        .expect("run cargo test --no-run");
+        .expect("run cargo nextest run --no-run");
     assert!(
         test_build.status.success(),
         "test target must still compile after --fix-compiler:\n{}\n{}",
