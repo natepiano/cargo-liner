@@ -8,6 +8,7 @@ use std::str::FromStr;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
 use toml::Table;
+use toml::Value;
 
 use crate::config::NavigationKeys;
 use crate::project::AbsolutePath;
@@ -266,12 +267,35 @@ action_enum! {
     }
 }
 
-action_enum! {
+tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum ProjectListAction {
-        ExpandAll   => "expand_all",   "Expand all";
-        CollapseAll => "collapse_all", "Collapse all";
-        Clean       => "clean",        "Clean project";
+        ExpandAll   => ("expand_all",   "+",     "Expand all");
+        CollapseAll => ("collapse_all", "-",     "Collapse all");
+        ExpandRow   => ("expand_row",   "→",     "Expand row");
+        CollapseRow => ("collapse_row", "←",     "Collapse row");
+        Clean       => ("clean",        "clean", "Clean project");
+    }
+}
+
+/// Inherent-method facade over the `tui_pane::Action` trait impl so
+/// the legacy `src/keymap.rs` / `src/tui/keymap_ui.rs` /
+/// `src/tui/input.rs` call sites that take `ProjectListAction::ALL`,
+/// `::toml_key`, `::description`, `::from_toml_key` as fn-pointers
+/// continue to compile during the 14.x parallel-path window. Phase 18
+/// retires the legacy paths and deletes this facade alongside the
+/// local `action_enum!` macro.
+impl ProjectListAction {
+    pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
+
+    pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
+
+    pub(crate) fn description(self) -> &'static str {
+        <Self as tui_pane::Action>::description(self)
+    }
+
+    pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
+        <Self as tui_pane::Action>::from_toml_key(key)
     }
 }
 
@@ -332,30 +356,79 @@ impl GitAction {
     }
 }
 
-action_enum! {
+tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum TargetsAction {
-        Activate     => "activate",      "Run in debug mode";
-        ReleaseBuild => "release_build", "Run in release mode";
-        Clean        => "clean",         "Clean project";
+        Activate     => ("activate",      "run",     "Run in debug mode");
+        ReleaseBuild => ("release_build", "release", "Run in release mode");
+        Clean        => ("clean",         "clean",   "Clean project");
     }
 }
 
-action_enum! {
+/// Inherent-method facade over the `tui_pane::Action` trait impl so
+/// the legacy `src/keymap.rs` / `src/tui/keymap_ui.rs` /
+/// `src/tui/panes/actions.rs` call sites continue to compile during
+/// the 14.x parallel-path window. Phase 18 retires the legacy paths
+/// and deletes this facade alongside the local `action_enum!` macro.
+impl TargetsAction {
+    pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
+
+    pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
+
+    pub(crate) fn description(self) -> &'static str {
+        <Self as tui_pane::Action>::description(self)
+    }
+
+    pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
+        <Self as tui_pane::Action>::from_toml_key(key)
+    }
+}
+
+tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum CiRunsAction {
-        Activate   => "activate",    "Open run";
-        FetchMore  => "fetch_more",  "Fetch more CI runs";
-        ToggleView => "toggle_view", "Toggle branch/all filter";
-        ClearCache => "clear_cache", "Clear CI cache";
+        Activate   => ("activate",    "open",        "Open run");
+        FetchMore  => ("fetch_more",  "fetch more",  "Fetch more CI runs");
+        ToggleView => ("toggle_view", "branch/all",  "Toggle branch/all filter");
+        ClearCache => ("clear_cache", "clear cache", "Clear CI cache");
     }
 }
 
-action_enum! {
+/// Inherent-method facade — see `TargetsAction` doc comment above.
+impl CiRunsAction {
+    pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
+
+    pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
+
+    pub(crate) fn description(self) -> &'static str {
+        <Self as tui_pane::Action>::description(self)
+    }
+
+    pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
+        <Self as tui_pane::Action>::from_toml_key(key)
+    }
+}
+
+tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum LintsAction {
-        Activate     => "activate",      "Open lint output";
-        ClearHistory => "clear_history", "Clear lint history";
+        Activate     => ("activate",      "open",        "Open lint output");
+        ClearHistory => ("clear_history", "clear cache", "Clear lint history");
+    }
+}
+
+/// Inherent-method facade — see `TargetsAction` doc comment above.
+impl LintsAction {
+    pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
+
+    pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
+
+    pub(crate) fn description(self) -> &'static str {
+        <Self as tui_pane::Action>::description(self)
+    }
+
+    pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
+        <Self as tui_pane::Action>::from_toml_key(key)
     }
 }
 
@@ -457,6 +530,23 @@ impl ResolvedKeymap {
         km.project_list.insert(
             KeyBind::plain(KeyCode::Char('-')),
             ProjectListAction::CollapseAll,
+        );
+        // Phase 14.4c added ExpandRow / CollapseRow variants to the
+        // shared enum so the framework keymap can register them as
+        // pane-scope actions. The legacy dispatch path hard-codes
+        // KeyCode::Right / KeyCode::Left at `handle_normal_key` and
+        // does not consult the keymap for them, so these defaults are
+        // only consumed by the framework path during 14.x. Bound to
+        // Shift+Right / Shift+Left so they pass the
+        // `is_navigation_reserved` check on TOML round-trip (the
+        // loader rejects bare arrows but allows modified arrows).
+        km.project_list.insert(
+            KeyBind::new(KeyCode::Right, KeyModifiers::SHIFT),
+            ProjectListAction::ExpandRow,
+        );
+        km.project_list.insert(
+            KeyBind::new(KeyCode::Left, KeyModifiers::SHIFT),
+            ProjectListAction::CollapseRow,
         );
         km.project_list
             .insert(KeyBind::plain(KeyCode::Char('c')), ProjectListAction::Clean);
@@ -982,7 +1072,7 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
                 ctx.errors.push(KeymapError {
                     scope:  scope_name.to_string(),
                     action: key.clone(),
-                    key:    String::new(),
+                    key:    st.get(key).map_or_else(String::new, keymap_value_string),
                     reason: KeymapErrorReason::UnknownAction,
                 });
             }
@@ -1047,6 +1137,12 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
             }
         }
     }
+}
+
+fn keymap_value_string(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), ToOwned::to_owned)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -1466,6 +1562,11 @@ claen = "c"
             "expected unknown action for typo 'claen'"
         );
         assert_eq!(unknown[0].action, "claen");
+        assert_eq!(unknown[0].key, "c");
+        assert_eq!(
+            unknown[0].to_string(),
+            "project_list.claen: \"c\" — unknown action (ignored)",
+        );
     }
 
     #[test]

@@ -21,7 +21,9 @@ settings      = "s"
 [project_list]
 clean        = "c"
 collapse_all = "-"
+collapse_row = "Shift+Left"
 expand_all   = "+"
+expand_row   = "Shift+Right"
 
 [package]
 activate = "Enter"

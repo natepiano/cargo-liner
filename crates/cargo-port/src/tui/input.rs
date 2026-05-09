@@ -630,6 +630,11 @@ fn handle_normal_key(app: &mut App, event: &KeyEvent) {
     match action {
         ProjectListAction::ExpandAll => app.project_list.expand_all(include_non_rust),
         ProjectListAction::CollapseAll => app.project_list.collapse_all(include_non_rust),
+        // ExpandRow / CollapseRow exist on the framework path; the
+        // legacy path dispatches Right / Left at the top of
+        // `handle_normal_key` and never reaches this match for those
+        // keys. Phase 16 routes the framework path through here.
+        ProjectListAction::ExpandRow | ProjectListAction::CollapseRow => {},
         ProjectListAction::Clean => {
             // Gate through App::clean_selection — the single source of
             // truth for clean eligibility (design plan → gating fix).

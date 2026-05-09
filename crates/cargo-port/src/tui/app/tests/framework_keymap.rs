@@ -13,16 +13,24 @@ use tui_pane::BarPalette;
 use tui_pane::FocusedPane;
 use tui_pane::ShortcutState;
 use tui_pane::Shortcuts;
+use tui_pane::Visibility;
 use tui_pane::render_status_bar;
 
 use super::App;
 use super::make_app;
+use crate::ci::CiRun;
+use crate::ci::CiStatus;
+use crate::ci::FetchStatus;
+use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
 use crate::keymap::PackageAction;
 use crate::tui::framework_keymap::AppPaneId;
+use crate::tui::framework_keymap::CiRunsPane;
 use crate::tui::framework_keymap::GitPane;
 use crate::tui::framework_keymap::PackagePane;
 use crate::tui::panes;
+use crate::tui::panes::CiData;
+use crate::tui::panes::CiEmptyState;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PackageData;
@@ -221,5 +229,244 @@ fn git_activate_state_enabled_on_remote_with_url() {
         pane.state(GitAction::Activate, &app),
         ShortcutState::Enabled,
         "Activate is Enabled on a Remote row whose full_url is Some",
+    );
+}
+
+// ── Phase 14.4 — bar snapshots for the remaining app panes ────────
+
+#[test]
+fn focused_targets_bar_renders_pane_action_labels() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    focus_app_pane_in_framework(&mut app, AppPaneId::Targets);
+
+    let palette = BarPalette::default();
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::Targets),
+        &app,
+        &app.framework_keymap,
+        app.framework(),
+        &palette,
+    );
+    let pane_action = flatten(&bar.pane_action);
+
+    assert!(
+        pane_action.contains("run"),
+        "Targets bar must show the Activate label \"run\" (got {pane_action:?})",
+    );
+    assert!(
+        pane_action.contains("release"),
+        "Targets bar must show the ReleaseBuild label \"release\" (got {pane_action:?})",
+    );
+    assert!(
+        pane_action.contains("clean"),
+        "Targets bar must show the Clean label (got {pane_action:?})",
+    );
+}
+
+#[test]
+fn focused_lints_bar_renders_pane_action_labels() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    focus_app_pane_in_framework(&mut app, AppPaneId::Lints);
+
+    let palette = BarPalette::default();
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::Lints),
+        &app,
+        &app.framework_keymap,
+        app.framework(),
+        &palette,
+    );
+    let pane_action = flatten(&bar.pane_action);
+
+    assert!(
+        pane_action.contains("open"),
+        "Lints bar must show the Activate label \"open\" (got {pane_action:?})",
+    );
+    assert!(
+        pane_action.contains("clear cache"),
+        "Lints bar must show the ClearHistory label \"clear cache\" (got {pane_action:?})",
+    );
+}
+
+#[test]
+fn focused_lang_bar_renders_pane_action_labels() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    focus_app_pane_in_framework(&mut app, AppPaneId::Lang);
+
+    let palette = BarPalette::default();
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::Lang),
+        &app,
+        &app.framework_keymap,
+        app.framework(),
+        &palette,
+    );
+    let pane_action = flatten(&bar.pane_action);
+
+    assert!(
+        pane_action.contains("clean"),
+        "Lang bar must show the Clean label (got {pane_action:?})",
+    );
+}
+
+#[test]
+fn focused_cpu_bar_renders_pane_action_labels() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    focus_app_pane_in_framework(&mut app, AppPaneId::Cpu);
+
+    let palette = BarPalette::default();
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::Cpu),
+        &app,
+        &app.framework_keymap,
+        app.framework(),
+        &palette,
+    );
+    let pane_action = flatten(&bar.pane_action);
+
+    assert!(
+        pane_action.contains("clean"),
+        "Cpu bar must show the Clean label (got {pane_action:?})",
+    );
+}
+
+fn ci_data_with_runs(count: usize) -> CiData {
+    let runs = (0..count)
+        .map(|i| CiRun {
+            run_id:          1 + i as u64,
+            created_at:      "2026-04-01T21:00:00-04:00".to_string(),
+            branch:          "main".to_string(),
+            url:             format!("https://example.com/run/{}", 1 + i),
+            ci_status:       CiStatus::Passed,
+            jobs:            Vec::new(),
+            wall_clock_secs: Some(17),
+            commit_title:    Some("commit".to_string()),
+            updated_at:      None,
+            fetched:         FetchStatus::Fetched,
+        })
+        .collect();
+    CiData {
+        runs,
+        mode_label: None,
+        current_branch: None,
+        empty_state: CiEmptyState::NoRuns,
+    }
+}
+
+#[test]
+fn focused_ci_runs_bar_renders_pane_action_labels() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.ci.set_content(ci_data_with_runs(2));
+    app.ci.viewport.set_pos(0);
+    focus_app_pane_in_framework(&mut app, AppPaneId::CiRuns);
+
+    let palette = BarPalette::default();
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::CiRuns),
+        &app,
+        &app.framework_keymap,
+        app.framework(),
+        &palette,
+    );
+    let pane_action = flatten(&bar.pane_action);
+
+    assert!(
+        pane_action.contains("open"),
+        "CiRuns bar must show the Activate label \"open\" on a real run row (got {pane_action:?})",
+    );
+    assert!(
+        pane_action.contains("fetch more"),
+        "CiRuns bar must show the FetchMore label (got {pane_action:?})",
+    );
+    assert!(
+        pane_action.contains("branch/all"),
+        "CiRuns bar must show the ToggleView label (got {pane_action:?})",
+    );
+    assert!(
+        pane_action.contains("clear cache"),
+        "CiRuns bar must show the ClearCache label (got {pane_action:?})",
+    );
+}
+
+#[test]
+fn ci_runs_activate_visibility_hidden_at_eol() {
+    // Mandatory Phase 14 test (per the plan): CiRuns
+    // `pane.visibility(Activate, ctx)` returns `Visibility::Hidden`
+    // when the cursor is at or beyond the end of the visible runs.
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.ci.set_content(ci_data_with_runs(2));
+    // Cursor at index == runs.len() — past the last run.
+    app.ci.viewport.set_pos(2);
+
+    let pane = CiRunsPane;
+    assert_eq!(
+        pane.visibility(CiRunsAction::Activate, &app),
+        Visibility::Hidden,
+        "Activate must be Hidden when cursor is past the visible runs",
+    );
+    assert_eq!(
+        pane.visibility(CiRunsAction::FetchMore, &app),
+        Visibility::Visible,
+        "FetchMore stays Visible regardless of cursor position",
+    );
+}
+
+#[test]
+fn ci_runs_activate_visibility_visible_on_run_row() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.ci.set_content(ci_data_with_runs(2));
+    app.ci.viewport.set_pos(0);
+
+    let pane = CiRunsPane;
+    assert_eq!(
+        pane.visibility(CiRunsAction::Activate, &app),
+        Visibility::Visible,
+        "Activate is Visible when cursor sits on a real run row",
+    );
+}
+
+#[test]
+fn focused_project_list_bar_renders_pane_action_and_nav_slots() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    focus_app_pane_in_framework(&mut app, AppPaneId::ProjectList);
+
+    let palette = BarPalette::default();
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::ProjectList),
+        &app,
+        &app.framework_keymap,
+        app.framework(),
+        &palette,
+    );
+    let pane_action = flatten(&bar.pane_action);
+    let nav = flatten(&bar.nav);
+
+    // ProjectList overrides `bar_slots` to push the expand pair and
+    // the all pair into the Nav region; only `Clean` lands in
+    // `pane_action`. The framework's `render_bar_slots` reduces each
+    // pane-emitted `Paired` slot to its primary action (lookup by
+    // primary's key + bar_label), so we verify the primary actions'
+    // labels appear in the nav region rather than the paired
+    // separators ("expand" / "all"); rendering paired pane slots
+    // visibly is Phase 19's `+/-` and `←/→ expand` snapshot work.
+    assert!(
+        pane_action.contains("clean"),
+        "ProjectList pane_action must include Clean (got {pane_action:?})",
+    );
+    assert!(
+        nav.contains('←'),
+        "ProjectList nav region must include CollapseRow's bar_label \"←\" (got {nav:?})",
+    );
+    assert!(
+        nav.contains('+'),
+        "ProjectList nav region must include ExpandAll's bar_label \"+\" (got {nav:?})",
     );
 }
