@@ -134,6 +134,32 @@ impl<Ctx: AppContext> Default for KeymapPane<Ctx> {
     fn default() -> Self { Self::new() }
 }
 
+#[cfg(test)]
+impl<Ctx: AppContext> KeymapPane<Ctx> {
+    /// Test-only constructor placing the pane in
+    /// [`EditState::Awaiting`] with an optional editor target. Phase
+    /// 15 wires the `Browse → Awaiting` production transition; Phase
+    /// 13 snapshot tests build this state directly so they can lock
+    /// the bar output before the transition lands.
+    pub(crate) fn for_test_awaiting(editor_target: Option<PathBuf>) -> Self {
+        Self {
+            edit_state: EditState::Awaiting,
+            editor_target,
+            _ctx: PhantomData,
+        }
+    }
+
+    /// Test-only constructor placing the pane in
+    /// [`EditState::Conflict`]. See [`Self::for_test_awaiting`].
+    pub(crate) fn for_test_conflict(editor_target: Option<PathBuf>) -> Self {
+        Self {
+            edit_state: EditState::Conflict,
+            editor_target,
+            _ctx: PhantomData,
+        }
+    }
+}
+
 /// Stub key-capture handler. Phase 14 replaces this with logic that
 /// records the captured `KeyBind` into the editor state and transitions
 /// out of [`EditState::Awaiting`].

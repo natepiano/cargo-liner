@@ -47,6 +47,12 @@ use crate::AppContext;
 use crate::SettingsRegistry;
 use crate::framework;
 
+/// `<N>`/`<G>`-monomorphized renderer the bar reads to materialize
+/// bar slots without naming the action enum. Mirror of
+/// [`builder::ScopeRenderFn`](self::builder::ScopeRenderFn) — the
+/// keymap and the builder both store one of these per scope.
+type ScopeRenderFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<RenderedSlot>;
+
 /// The keymap container: anchor for every binding the framework
 /// resolves at runtime.
 ///
@@ -68,15 +74,25 @@ use crate::framework;
 /// by [`FocusedPane::Framework`](crate::FocusedPane::Framework) arms in
 /// callers (see Phase 11).
 pub struct Keymap<Ctx: AppContext + 'static> {
-    scopes:            HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
-    navigation:        Option<Box<dyn Any>>,
-    globals:           Option<Box<dyn Any>>,
-    framework_globals: ScopeMap<GlobalAction>,
-    settings:          Option<SettingsRegistry<Ctx>>,
-    on_quit:           Option<fn(&mut Ctx)>,
-    on_restart:        Option<fn(&mut Ctx)>,
-    dismiss_fallback:  Option<fn(&mut Ctx) -> bool>,
-    config_path:       Option<PathBuf>,
+    scopes:                HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
+    navigation:            Option<Box<dyn Any>>,
+    /// Monomorphized renderer for the navigation scope. Each
+    /// [`KeymapBuilder::register_navigation::<N>`](crate::KeymapBuilder::register_navigation)
+    /// call sets this to the `N`-specialized free fn in
+    /// [`runtime_scope::render_navigation_slots`]. The bar renderer
+    /// reads it via [`Self::render_navigation_slots`] without naming
+    /// `N`.
+    navigation_render_fn:  Option<ScopeRenderFn<Ctx>>,
+    globals:               Option<Box<dyn Any>>,
+    /// Monomorphized renderer for the app-globals scope. See
+    /// [`Self::navigation_render_fn`].
+    app_globals_render_fn: Option<ScopeRenderFn<Ctx>>,
+    framework_globals:     ScopeMap<GlobalAction>,
+    settings:              Option<SettingsRegistry<Ctx>>,
+    on_quit:               Option<fn(&mut Ctx)>,
+    on_restart:            Option<fn(&mut Ctx)>,
+    dismiss_fallback:      Option<fn(&mut Ctx) -> bool>,
+    config_path:           Option<PathBuf>,
 }
 
 impl<Ctx: AppContext + 'static> Keymap<Ctx> {
@@ -92,7 +108,9 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
         Self {
             scopes: HashMap::new(),
             navigation: None,
+            navigation_render_fn: None,
             globals: None,
+            app_globals_render_fn: None,
             framework_globals: GlobalAction::defaults().into_scope_map(),
             settings: None,
             on_quit: None,
@@ -109,9 +127,21 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// stores it, alongside [`Self::set_navigation`].
+    pub(super) const fn set_navigation_render_fn(&mut self, render: ScopeRenderFn<Ctx>) {
+        self.navigation_render_fn = Some(render);
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
     /// constructs one.
     pub(super) fn set_globals(&mut self, scope_map: Box<dyn Any>) {
         self.globals = Some(scope_map);
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// stores it, alongside [`Self::set_globals`].
+    pub(super) const fn set_app_globals_render_fn(&mut self, render: ScopeRenderFn<Ctx>) {
+        self.app_globals_render_fn = Some(render);
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
@@ -196,6 +226,51 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// `[global]` overrides at builder time.
     #[must_use]
     pub const fn framework_globals(&self) -> &ScopeMap<GlobalAction> { &self.framework_globals }
+
+    /// Bar slots for the navigation scope, fully resolved (label,
+    /// key, region tagged [`BarRegion::Nav`](crate::BarRegion::Nav)).
+    /// Returns an empty `Vec` when no navigation impl was registered.
+    ///
+    /// The bar renderer reads this and partitions by region without
+    /// naming the binary's `<N>` — the `N`-monomorphized renderer was
+    /// stored at [`KeymapBuilder::register_navigation`](crate::KeymapBuilder::register_navigation)
+    /// time.
+    #[must_use]
+    pub fn render_navigation_slots(&self) -> Vec<RenderedSlot> {
+        self.navigation_render_fn
+            .map_or_else(Vec::new, |render| render(self))
+    }
+
+    /// Bar slots for the app-globals scope, fully resolved (label,
+    /// key, region tagged [`BarRegion::Global`](crate::BarRegion::Global)).
+    /// Returns an empty `Vec` when no globals impl was registered.
+    ///
+    /// Mirrors [`Self::render_navigation_slots`].
+    #[must_use]
+    pub fn render_app_globals_slots(&self) -> Vec<RenderedSlot> {
+        self.app_globals_render_fn
+            .map_or_else(Vec::new, |render| render(self))
+    }
+
+    /// Bar slots for the framework-globals scope ([`GlobalAction`]
+    /// variants in [`GlobalAction::ALL`] order, region tagged
+    /// [`BarRegion::Global`](crate::BarRegion::Global)). Always
+    /// available — the framework-globals scope ships fully populated.
+    ///
+    /// `BarRegion::Global` covers the full strip the bar emits at the
+    /// far right; the `bar` renderer is free to split out
+    /// [`GlobalAction::NextPane`] / [`GlobalAction::PrevPane`] into
+    /// its own pane-cycle slot inside the nav region — that slot is
+    /// rendered by direct lookup against
+    /// [`Self::framework_globals`], not by filtering this `Vec`.
+    #[must_use]
+    pub fn render_framework_globals_slots(&self) -> Vec<RenderedSlot> {
+        self::runtime_scope::slots_from_scope(
+            crate::BarRegion::Global,
+            GlobalAction::ALL,
+            &self.framework_globals,
+        )
+    }
 
     /// Typed singleton getter for the registered [`Navigation`] impl.
     ///

@@ -46,6 +46,11 @@ use crate::framework::ModeQuery;
 /// this so [`Keymap`] can hold heterogeneous singletons in one field.
 type ErasedSingleton = Box<dyn Any>;
 
+/// `<N>`/`<G>`-monomorphized renderer that materializes a scope's
+/// bar slots without naming the action enum. Captured at `register_*`
+/// time and copied onto [`Keymap`] for the bar to read.
+type ScopeRenderFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<super::RenderedSlot>;
+
 /// Marker: builder is in the settings phase. Consumes settings
 /// chained methods (`config_path`, etc.). Transitions to
 /// [`Registering`] on the first [`KeymapBuilder::register`] call.
@@ -93,8 +98,17 @@ pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
     dismiss_fallback:      Option<fn(&mut Ctx) -> bool>,
     navigation_scope:      Option<ErasedSingleton>,
     navigation_scope_name: Option<&'static str>,
+    /// `N`-monomorphized renderer captured at
+    /// [`Self::register_navigation`] time; copied onto the keymap in
+    /// [`finalize`]. The bar uses
+    /// [`Keymap::render_navigation_slots`] without naming `N`.
+    navigation_render_fn:  Option<ScopeRenderFn<Ctx>>,
     globals_scope:         Option<ErasedSingleton>,
     globals_scope_name:    Option<&'static str>,
+    /// `G`-monomorphized renderer captured at
+    /// [`Self::register_globals`] time. See
+    /// [`Self::navigation_render_fn`].
+    globals_render_fn:     Option<ScopeRenderFn<Ctx>>,
     deferred_error:        Option<KeymapError>,
     _state:                PhantomData<State>,
 }
@@ -116,8 +130,10 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             dismiss_fallback:      None,
             navigation_scope:      None,
             navigation_scope_name: None,
+            navigation_render_fn:  None,
             globals_scope:         None,
             globals_scope_name:    None,
+            globals_render_fn:     None,
             deferred_error:        None,
             _state:                PhantomData,
         }
@@ -222,6 +238,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
         let scope_map: ScopeMap<N::Actions> = bindings.into_scope_map();
         self.navigation_scope = Some(Box::new(scope_map));
         self.navigation_scope_name = Some(scope_name);
+        self.navigation_render_fn = Some(super::runtime_scope::render_navigation_slots::<Ctx, N>);
         self.registered_scopes.insert(scope_name);
         Ok(self)
     }
@@ -242,6 +259,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
         let scope_map: ScopeMap<G::Actions> = bindings.into_scope_map();
         self.globals_scope = Some(Box::new(scope_map));
         self.globals_scope_name = Some(scope_name);
+        self.globals_render_fn = Some(super::runtime_scope::render_app_globals_slots::<Ctx, G>);
         self.registered_scopes.insert(scope_name);
         Ok(self)
     }
@@ -367,8 +385,10 @@ fn transition<Ctx: AppContext + 'static>(
         dismiss_fallback:      src.dismiss_fallback,
         navigation_scope:      src.navigation_scope,
         navigation_scope_name: src.navigation_scope_name,
+        navigation_render_fn:  src.navigation_render_fn,
         globals_scope:         src.globals_scope,
         globals_scope_name:    src.globals_scope_name,
+        globals_render_fn:     src.globals_render_fn,
         deferred_error:        src.deferred_error,
         _state:                PhantomData,
     }
@@ -571,8 +591,14 @@ fn finalize<Ctx: AppContext + 'static, State>(
     if let Some(nav) = builder.navigation_scope {
         keymap.set_navigation(nav);
     }
+    if let Some(render) = builder.navigation_render_fn {
+        keymap.set_navigation_render_fn(render);
+    }
     if let Some(g) = builder.globals_scope {
         keymap.set_globals(g);
+    }
+    if let Some(render) = builder.globals_render_fn {
+        keymap.set_app_globals_render_fn(render);
     }
     let framework_globals = apply_toml_overlay::<GlobalAction>(
         "global",

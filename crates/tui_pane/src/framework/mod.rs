@@ -169,6 +169,16 @@ impl<Ctx: AppContext> Framework<Ctx> {
         self.overlay = Some(overlay);
     }
 
+    /// Test-only helper: directly open a framework overlay without
+    /// going through the [`GlobalAction`](crate::GlobalAction)
+    /// dispatcher. Used by Phase 13 bar snapshot tests so they can
+    /// place the framework in a specific overlay state without
+    /// synthesizing a key event.
+    #[cfg(test)]
+    pub(crate) const fn set_overlay_for_test(&mut self, overlay: FrameworkOverlayId) {
+        self.overlay = Some(overlay);
+    }
+
     /// Close any open framework overlay. Returns `true` if an overlay
     /// was open and is now cleared, `false` otherwise. `pub(super)`
     /// because the dispatcher routes through [`Self::dismiss_framework`]

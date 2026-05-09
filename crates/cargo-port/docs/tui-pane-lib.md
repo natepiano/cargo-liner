@@ -2430,7 +2430,7 @@ pub(super) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx)
 - **Phase 22** — §1 now flags `body: String → body: ToastBody` as an intentional internal representation change (not purely additive), shows the `ToastBody { Line, Lines }` enum with `From<String>` / `From<&str>` impls, and lists which push entry points keep `impl Into<String>` boundary conversion. Adds the `Toast::body()` accessor decision: returns `&ToastBody` (public-API change in this phase). §2 now prefaces the new method list with the Phase 12 / Phase 20 surface so a reader does not assume those methods are missing; `push_timed` / `push_task` arguments clarified to take raw `Duration` (not `ToastDuration` — that newtype validates TOML, not in-code Durations). §5 adds that the dispatch-time call site to `reconcile_focus_after_toast_change` was wired in Phase 12; Phase 22 only adds the tick-driver call site. §6 collapsed to a single-sentence cross-reference. Cross-crate test note clarifies `NoToastAction`-typed test pushes use `action: None` only (the type is uninhabited).
 - **Phase 12 retrospective wording** — softened from "field-set growth, no renames" to "no struct-level renames; Phase 22 also replaces the private `body: String` storage with `ToastBody`," matching the friend's review.
 
-### Phase 13 — Framework bar renderer
+### Phase 13 — Framework bar renderer ✅
 
 Add `tui_pane/src/bar/` per the BarRegion model:
 
@@ -2474,6 +2474,43 @@ Snapshot tests in this phase cover the framework panes only (Settings Browse / S
 
 **Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use bar::StatusBar;` (and any other public bar types not already exported in Phase 5). All `bar/` submodules declared `mod` (private) in `bar/mod.rs` per standing rule 1.
 
+#### Retrospective
+
+**What worked:**
+- Region modules (`nav_region.rs`, `pane_action_region.rs`, `global_region.rs`) plus `support.rs` row builders kept each region's suppression rule local. `bar::render` reduces to a `BarRegion::ALL` walk that delegates to module-level free fns.
+- `cfg(test) pub(crate)` `for_test_*` constructors on `KeymapPane` / `SettingsPane` plus `Framework::set_overlay_for_test` let the in-crate snapshot tests place panes in `Awaiting` / `Conflict` / `Editing` directly. 14 unit tests in `bar/tests.rs` lock the rules; 3 integration tests in `tui_pane/tests/framework_bar.rs` lock the public path.
+- 600/600 workspace tests pass; clippy + fmt clean.
+
+**What deviated from the plan:**
+- **Type-erased renderer fn pointers added to `Keymap<Ctx>`.** The plan said the bar renderer "is generic over no `<A>` parameter" but didn't spell out the mechanism. Phase 13 adds two `fn(&Keymap<Ctx>) -> Vec<RenderedSlot>` slots to `Keymap` (`navigation_render_fn`, `app_globals_render_fn`) plus a `ScopeRenderFn<Ctx>` type alias mirrored on the builder. `KeymapBuilder::register_navigation::<N>` / `register_globals::<G>` capture the `<N>`/`<G>`-monomorphized `runtime_scope::render_navigation_slots` / `render_app_globals_slots` free fn at register time and copy it onto the keymap in `finalize`. This is the answer to "how does the bar reach the binary's nav/globals scopes without naming the action enum."
+- **New public `Keymap` accessors:** `render_navigation_slots`, `render_app_globals_slots`, `render_framework_globals_slots`. The first two delegate to the stored fn pointer (empty `Vec` if not registered); the third works directly off `framework_globals` because `GlobalAction` is concrete. The bar consumes all three.
+- **`bar::render` re-exported as `tui_pane::render_status_bar`.** Crate-root rename (`pub use bar::render as render_status_bar;`) so the binary's call site reads as a verb, not as an unqualified `render` clash.
+- **Pane-cycle pair filtered out of the global region.** `nav_region` emits `NextPane`/`PrevPane` as a paired `"Tab/Shift+Tab pane"` row; `global_region` walks `GlobalAction::ALL` and drops those two so they don't render twice. The drop is by `bar_label` reverse-lookup against `GlobalAction::ALL` — accepted O(n²) in the global slot count to avoid putting a region tag on every variant.
+- **Toasts arm renders empty pane-action slots.** Phase 12 ships `ToastsAction` empty (uninhabited) so the resolver short-circuits to `Vec::new()` rather than walking `Toasts::bar_slots`. Phase 20 widens the enum and the arm starts producing entries.
+
+**Surprises:**
+- **`ToastsAction` being uninhabited triggers dead-code inference.** A `filter_map(|(region, slot)| { let action = slot.primary(); ... })` body on `Vec<(BarRegion, BarSlot<ToastsAction>)>` warns "unused variables" because `slot.primary(): ToastsAction` is `!`-like and the compiler eliminates the closure body. Working around it with `Vec::new()` for the Toasts arm is cleaner than `_action` / `_region`.
+- **The plan said `cfg(test)` constructors would suffice.** They do for unit tests, but `cfg(test)` is invisible to integration tests in `tui_pane/tests/`. The split (overlay-edit-state coverage in `bar/tests.rs`, public-path coverage in `tests/framework_bar.rs`) is mandatory; collapsing them would force a `pub` test surface or a `test-helpers` feature.
+- **`Mode<Ctx>` is `!Eq` because `TextInput(fn(KeyBind, &mut Ctx))` carries a fn pointer.** Tests had to use `matches!(bar, ...)` instead of `bar == ...` for assertions. The plan didn't predict this would matter; in practice, every region module already pattern-matches on `Mode<Ctx>` so it never came up.
+
+**Implications for remaining phases:**
+- **Phase 14 binary integration: wire the call site, supply the palette.** The binary's main render path replaces its current `shortcuts::for_status_bar(...)` + `shortcut_spans` glue with `tui_pane::render_status_bar(focused, app, &keymap, app.framework(), &palette)`. The `StatusBar` it returns has three `Vec<Span<'static>>` regions, **already styled** against the supplied `BarPalette` (Phase 14 adds the type). The binary still owns left/center/right layout and the uptime / scanning chrome around the bar; per-slot key/label colors come from the palette. Phase 14's `register_navigation::<AppNavigation>` and `register_globals::<AppGlobalAction>` calls automatically populate the renderer fn pointers; the binary doesn't need to thread `<N>`/`<G>` to the bar.
+- **Phase 14 binary cleanup is larger than the plan named.** With `tui_pane::render_status_bar` available, the binary's `src/tui/shortcuts.rs::for_status_bar` (the giant match on `InputContext`) and `src/tui/render.rs::render_status_bar`'s shortcut-spans plumbing can both retire — but Phase 14 keeps the parallel-path invariant, so the deletion happens in Phase 18, not 14. Phase 14 just adds the new call site beside the old one.
+- **Phase 19 `Phase 19 — Regression tests` is the right scope.** Rebinding tests already in the plan (`*Action::Activate` rebound updates pane bar; `NavigationAction::Up`/`Down` rebound updates the nav row; `GlobalAction::NextPane` rebound updates pane-cycle) all work against the public `render_status_bar` surface — the type-erased renderer fn pointers mean rebinding TOML changes the rendered keys without any dispatch-side test scaffolding.
+- **Bar styling: framework styles, binary supplies palette (post-Phase-13 amendment).** Phase 13 ships unstyled `Span::raw(...)`. The post-review decision: the framework owns the styling pass, the binary owns the palette. Phase 14 adds a public `BarPalette` type to `tui_pane::bar` (`enabled_key_style`, `enabled_label_style`, `disabled_key_style`, `disabled_label_style`, `separator_style`) and widens `render_status_bar` to take `&BarPalette` as its fifth argument. `support::push_slot` / `push_paired` consume the palette to style each `Span`; `slot.state` (currently discarded) drives the enabled-vs-disabled style selection. The framework ships **no `Default` palette that bakes in cargo-port colors** — any `BarPalette::default()` (if added) is plain `Style::default()` for every field, neutral and theme-agnostic. Cargo-port supplies a `cargo_port_bar_palette()` constructor inside the binary that wires `ACCENT_COLOR` / `SECONDARY_TEXT_COLOR` / `Modifier::BOLD` to match the pre-refactor look.
+- **The framework's overlay-vs-app-globals contrast is now visible.** Phase 13's `pane_action_region` renders Settings Browse's Edit/Save/Cancel slots on `Mode::Navigable`, and `global_region` renders the framework + app globals on the same focus. The existing binary's `for_status_bar` blanket-suppresses globals on overlays. Phase 14's parallel test path will surface a behavior diff for any binary code that was relying on the blanket suppression — flag it during Phase 14 review rather than treating it as a Phase 13 retrospective bug.
+
+#### Phase 13 Review
+
+- **Phase 14 (App action enums + `Shortcuts<App>` impls)** — added explicit "wire the call site, supply the palette" framing on the binary integration bullet; added two new deliverables: introduce `BarPalette` in `tui_pane/src/bar/palette.rs` (re-exported at crate root), widen `render_status_bar` to take `&BarPalette` as its fifth argument, and ship a `cargo_port_bar_palette()` constructor on the binary side wiring `ACCENT_COLOR` / `SECONDARY_TEXT_COLOR` / `Modifier::BOLD` to match the pre-refactor bar exactly. `BarPalette::default()` is theme-neutral (no cargo-port colors in the framework). Added an explicit "Builder call order" block showing `register_navigation::<AppNavigation>()` / `register_globals::<AppGlobalAction>()` precede the first `register::<Pane>(...)`.
+- **Phase 18 (Bar swap and cleanup)** — extended deletion list to include `src/tui/render.rs::shortcut_spans` and `shortcut_display_width` (the binary's pre-refactor styling/flattening glue, obsoleted by `BarPalette`); kept `cargo_port_bar_palette()` (theme code stays binary-side).
+- **Phase 19 (Regression tests)** — reworded the snapshot parity claim from "byte-identical bar output" to "byte-identical bar text and span styles under the cargo-port-supplied default palette and default bindings"; rewrote the `key_for(NavigationAction::Home) == KeyCode::Home` test bullet to use `keymap.navigation::<AppNavigation>().expect(...).key_for(NavigationAction::Home).copied() == Some(KeyCode::Home.into())` (the typed singleton getter, since the public bar surface is type-erased).
+- **Phase 20 (Toast activation payload)** — added an explicit step to remove the Phase-13 `Vec::new()` short-circuit in `tui_pane/src/bar/mod.rs::pane_slots_for`'s Toasts arm and replace it with the standard resolver pattern once `ToastsAction::Activate` lands (the dead-code closure inference issue evaporates with a populated enum).
+- **Phase 22 (`ToastManager` migration)** — added a constraint that the storage move preserve `bar_slots` / `mode` / `defaults` public signatures verbatim, since the bar resolver in `tui_pane/src/bar/mod.rs` depends on them.
+- **README inventory ("What survives" block)** — added the public bar surface (`StatusBar`, `BarPalette`, `render_status_bar` signature, the three `Keymap::render_*_slots` accessors) and named the framework as the styling-pass owner.
+- **Reviewed and not changed:** Phase 18 deletion list (subagent finding 4 — already correct, only the `shortcut_spans` / `shortcut_display_width` addition was new); Phase 21 `Framework::new` constructor stability (subagent finding 10 — confirmed unchanged by Phase 13); Phase 22 push-API additions (subagent finding 11 — `Toasts::push` signature stable, no caller in `bar/tests.rs` relies on a `String` body type); Phase 19's `set_focus` funnel test (subagent finding 16 — orthogonal to Phase 13).
+- **Known follow-up:** `bar/global_region.rs::framework_action_for_label` does an O(n²) reverse lookup against `GlobalAction::ALL` (n = 7) per render to drop `NextPane`/`PrevPane` from the global region. Bounded cost. A future optimization can add a region-discriminator to `RenderedSlot` (or split the framework-globals renderer into nav-cycle vs global halves) if profiling justifies it.
+
 ### Phase 14 — App action enums + `Shortcuts<App>` impls
 
 **Parallel-path invariant for Phases 14–17.** The new dispatch path lands alongside the old one. The old path stays the source of truth for behavior; the new path is exercised by tests added in each phase. **Phase 18 is the only phase that deletes** old code.
@@ -2496,6 +2533,38 @@ In the cargo-port binary crate:
   - Optionally overrides `bar_slots(ctx)` for paired layouts and data-dependent omission (ProjectList: emits `(Nav, Paired(CollapseRow, ExpandRow, "expand"))` and `(Nav, Paired(ExpandAll, CollapseAll, "all"))`; CiRuns: omits toggle row when no ci data).
   - Overrides `vim_extras` to declare pane-action vim binds (`ProjectListAction::ExpandRow → 'l'`, `CollapseRow → 'h'`).
 - Implement `Navigation<App> for AppNavigation` and `Globals<App> for AppGlobalAction`.
+- **Add `BarPalette` to `tui_pane::bar` and widen `render_status_bar`.** New public type:
+  ```rust
+  // tui_pane/src/bar/palette.rs
+  pub struct BarPalette {
+      pub enabled_key_style:    Style,
+      pub enabled_label_style:  Style,
+      pub disabled_key_style:   Style,
+      pub disabled_label_style: Style,
+      pub separator_style:      Style,
+  }
+  impl Default for BarPalette { /* every field = Style::default() — neutral, no colors */ }
+  ```
+  Re-export at the crate root: `pub use bar::BarPalette;`. `render_status_bar` becomes `render_status_bar(focused, ctx, keymap, framework, &BarPalette) -> StatusBar`. `support::push_slot` / `push_paired` consume the palette and select between `enabled_*` / `disabled_*` based on `RenderedSlot::state`. `support::SEPARATOR` (`"  "`) styles with `palette.separator_style`. The framework ships **no cargo-port colors** in `Default` — that constructor is theme-neutral; binaries supply their own palette to get any color at all.
+- **Cargo-port supplies its palette.** Add `cargo_port_bar_palette() -> BarPalette` (or equivalent constructor on the binary side; placement `src/tui/render.rs` or a new `src/tui/bar_palette.rs`) that wires the existing `ACCENT_COLOR` (yellow + bold) for keys, plain for labels, `SECONDARY_TEXT_COLOR` for disabled keys/labels — exactly matching the pre-refactor look produced by `shortcut_spans`. The binary's render path constructs this once per draw (or holds a `LazyLock` / `OnceCell`) and passes `&palette` into `render_status_bar`.
+- **Builder call order.** The keymap builder is a typestate: `register_navigation::<AppNavigation>()` and `register_globals::<AppGlobalAction>()` are reachable only in `Configuring` state (before any `register::<Pane>(...)` call). They each capture the `<N>`/`<G>`-monomorphized renderer fn pointer for the bar (Phase 13's `Keymap::render_navigation_slots` / `render_app_globals_slots`). Concrete order at the binary's startup:
+  ```rust
+  let keymap = tui_pane::Keymap::<App>::builder()
+      .config_path(path)?                // settings phase
+      .load_toml(path)?
+      .vim_mode(VimMode::Enabled)
+      .with_settings(app.settings.clone())
+      .on_quit(app::on_quit)
+      .on_restart(app::on_restart)
+      .dismiss_fallback(app::dismiss_fallback)
+      .register_navigation::<AppNavigation>()?
+      .register_globals::<AppGlobalAction>()?
+      .register::<PackagePane>(PackagePane)
+      .register::<GitPane>(GitPane)
+      // ... every other Shortcuts<App> impl
+      .build_into(&mut app.framework)?;
+  ```
+  The `register_navigation::<N>` and `register_globals::<G>` calls are required for any non-empty pane set (`finalize` returns `KeymapError::NavigationMissing` / `GlobalsMissing` otherwise). They must precede the first `register::<Pane>(...)`.
 - **`impl AppContext for App`** — required for `Framework<App>` to instantiate. Per Phase 6's narrowed surface, only `framework()` and `framework_mut()` need bodies; `set_focus` ships with a default that delegates to `self.framework_mut().set_focused(focus)`. cargo-port takes the default unless a focus-change side-effect (logging, telemetry) becomes useful — decide at impl time.
 - Build the app's `Keymap` at startup. Old `App::enter_action` and old `for_status_bar` still exist; the new keymap is populated but not consumed yet.
 
@@ -2607,6 +2676,7 @@ Delete:
 - The dead `enter_action` arm in `project_list_groups`.
 - The CiRuns `Some("fetch")` label at EOL (the bar bug).
 - The bogus `const` on `Shortcut::from_keymap` / `disabled_from_keymap`. **Note:** the deletion list applies only to the pre-refactor binary types. New `tui_pane` `const fn`s (`BarSlot::primary`, framework `const fn` getters) are kept — do not run a careless `s/const fn/fn/` sweep.
+- `src/tui/render.rs::shortcut_spans` and `shortcut_display_width` (the `&[Shortcut]` → `Vec<Span>` flattener and its width helper). `tui_pane::StatusBar` ships pre-styled `Vec<Span<'static>>` per region (Phase 14's `BarPalette` answer), so these helpers have no consumer left after the call-site swap. The outer `render_status_bar(frame, app, area)` wrapper survives — it owns the bar's left/center/right ratatui layout, the uptime indicator, and the scanning-progress span; only the shortcut-flattening + per-slot styling glue inside it goes away. The binary's `cargo_port_bar_palette()` constructor stays (it's small, theme-owning code) — Phase 18 deletes only the obsolete plumbing.
 
 After Phase 18, `shortcuts.rs` contains only legacy types pending removal (or is deleted entirely if all callers have flipped to `Shortcuts::visibility` / `Shortcuts::state`). The `InputContext` enum is deleted; tests under `src/tui/app/tests/` referencing it migrate to `app.focus.current()`-based lookups in this phase.
 
@@ -2620,7 +2690,7 @@ Bar-on-rebind:
 
 - Rebinding each `*Action::Activate` (`Package`, `Git`, `Targets`, `CiRuns`, `Lints`) updates that pane's bar.
 - Rebinding `NavigationAction::Up` / `Down` / `Left` / `Right` updates the `↑/↓` nav row in every base-pane bar that uses it.
-- `key_for(NavigationAction::Home) == KeyCode::Home` and `key_for(NavigationAction::End) == KeyCode::End` round-trip after a default build (locks the Phase 12 `Navigation` trait extension).
+- `keymap.navigation::<AppNavigation>().expect(...).key_for(NavigationAction::Home).copied() == Some(KeyCode::Home.into())` and the same round-trip for `End` after a default build (locks the Phase 12 `Navigation` trait extension; uses the typed singleton getter on `Keymap`, since the public bar surface in Phase 13 is type-erased and exposes only `render_navigation_slots()`).
 - Rebinding `GlobalAction::NextPane` updates the pane-cycle row.
 - Rebinding `ProjectListAction::ExpandAll` / `CollapseAll` updates the `+/-` row.
 - Rebinding `ProjectListAction::ExpandRow` / `CollapseRow` updates the `←/→ expand` row.
@@ -2659,7 +2729,7 @@ TOML loader:
 - TOML scope replaces vim+defaults: `[navigation] up = ["PageUp"]` with vim-on → `key_for(Up) == PageUp`, `'k'` not bound.
 - `KeymapError::KeyParse` propagation: round-trip a malformed binding string through the loader (e.g. an unscoped `?`-propagation path that hands a bad string to `KeyBind::parse`); assert the variant matches `KeymapError::KeyParse(_)` and `err.source().is_some()` so the underlying `KeyParseError` is preserved.
 
-A snapshot test per focused-pane context locks in byte-identical bar output to the pre-refactor bar under default bindings. The fixture drives the renderer through `framework.focused_pane_mode(ctx)` and the `AppPaneId`-keyed `Keymap::render_app_pane_bar_slots` (Phase 9 + Phase 13) — never via a typed `P::mode()` call — so each snapshot parameterizes on `FocusedPane`, not on the concrete pane type.
+A snapshot test per focused-pane context locks in byte-identical bar text **and span styles** under the cargo-port-supplied default palette and default bindings. The fixture drives the renderer through `framework.focused_pane_mode(ctx)` and the `AppPaneId`-keyed `Keymap::render_app_pane_bar_slots` (Phase 9 + Phase 13) — never via a typed `P::mode()` call — so each snapshot parameterizes on `FocusedPane`, not on the concrete pane type. The palette comparison is against `cargo_port_bar_palette()` (Phase 14); a different palette would diverge on style attributes by design.
 
 ### Phase 20 — Toast activation payload
 
@@ -2710,7 +2780,11 @@ impl<Ctx: AppContext> Toasts<Ctx> {
 }
 ```
 
-**3. `ToastsAction::Activate` and `ToastCommand<A>`.** Phase 20 adds `Activate` to the previously empty `ToastsAction` enum. Navigation does not flow through `ToastsAction` — it routes through `on_navigation(ListNavigation)` from Phase 12. **Delete the Phase-12 hand-rolled `Action` / `Display` impls on `ToastsAction`** — now that the enum has a variant, declare it through the standard `action_enum!` macro so the impls are generated and consistent with every other action enum. `Toasts::handle_key` returns a command rather than mutating cross-borrow state directly:
+**3. `ToastsAction::Activate` and `ToastCommand<A>`.** Phase 20 adds `Activate` to the previously empty `ToastsAction` enum. Navigation does not flow through `ToastsAction` — it routes through `on_navigation(ListNavigation)` from Phase 12. **Delete the Phase-12 hand-rolled `Action` / `Display` impls on `ToastsAction`** — now that the enum has a variant, declare it through the standard `action_enum!` macro so the impls are generated and consistent with every other action enum.
+
+**Bar-renderer Toasts arm: remove the Phase-13 `Vec::new()` short-circuit.** Phase 13 ships `tui_pane/src/bar/mod.rs::pane_slots_for`'s `FocusedPane::Framework(FrameworkFocusId::Toasts)` arm as `let _ = framework.toasts.bar_slots(ctx); Vec::new()` because `ToastsAction::ALL = &[]` triggers dead-code closure inference (any `slot.primary()` body is unreachable on an uninhabited enum). Phase 20 must replace that arm with the same resolver pattern the Settings / Keymap overlay arms use — walk `framework.toasts.bar_slots(ctx)` → look up `scope.key_for(action)` against `Toasts::<Ctx>::defaults().into_scope_map()` → emit `RenderedSlot { region, label: action.bar_label(), key, state, visibility }`. With `Activate` added, the closure body becomes reachable and the borrow-check / dead-code inference issue evaporates.
+
+`Toasts::handle_key` returns a command rather than mutating cross-borrow state directly:
 
 ```rust
 crate::action_enum! {
@@ -2977,7 +3051,7 @@ debug) can ship alongside if needed; if no caller wants it, drop it.
 
 The lifetime / phase / status enums collapse cargo-port's flag set (`timeout_at` + `task_id` + `dismissed` + `finished_task` + `finished_at` + `linger_duration` + `exit_started_at` + `persistence`) into states that cannot represent invalid combinations.
 
-**2. Move generic API onto `Toasts<Ctx>`.** Phase 12 already ships the generic skeleton: `new`, `push`, `push_styled`, `dismiss`, `dismiss_focused`, `focused_id`, `has_active`, `active`, `reset_to_first`, `reset_to_last`, `on_navigation`, `try_consume_cycle_step`, `handle_key`, `mode`, `defaults`, `bar_slots`. Phase 20 adds `push_with_action` + `handle_key_command`. Phase 22 adds:
+**2. Move generic API onto `Toasts<Ctx>`.** Phase 12 already ships the generic skeleton: `new`, `push`, `push_styled`, `dismiss`, `dismiss_focused`, `focused_id`, `has_active`, `active`, `reset_to_first`, `reset_to_last`, `on_navigation`, `try_consume_cycle_step`, `handle_key`, `mode`, `defaults`, `bar_slots`. Phase 20 adds `push_with_action` + `handle_key_command`. The Phase 13 bar renderer reads `bar_slots`, `mode`, and `defaults` directly via `tui_pane/src/bar/mod.rs::pane_slots_for`; **Phase 22's storage move must preserve these public signatures verbatim** (`bar_slots(&self, ctx: &Ctx) -> Vec<(BarRegion, BarSlot<ToastsAction>)>`, `mode(&self, ctx: &Ctx) -> Mode<Ctx>`, `defaults() -> Bindings<ToastsAction>`) — the bar resolver depends on them and is not migrated by Phase 22. Phase 22 adds:
 
 ```rust
 impl<Ctx: AppContext> Toasts<Ctx> {
@@ -3049,6 +3123,7 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 - Per-pane host structs — untouched (gain a `Shortcuts` impl, lose nothing).
 - `GlobalAction::Dismiss` — keeps `'x'` as the single dismiss action. Routed through `dismiss_chain` (Phase 12 free fn) which calls `framework.dismiss_framework()` first (focused-toast dismiss owned by `tui_pane`, then `close_overlay`), then the binary's optional `dismiss_fallback` hook. There is no separate `ToastsAction::Dismiss`; binaries that want Esc to dismiss focused toasts rebind `GlobalAction::Dismiss`.
 - Vim-mode opt-in semantics — `h`/`j`/`k`/`l` still gated by `VimMode::Enabled`.
+- **Public bar surface (Phase 13 + Phase 14):** `tui_pane::StatusBar`, `tui_pane::BarPalette` (Phase 14), `tui_pane::render_status_bar(focused, ctx, keymap, framework, &BarPalette) -> StatusBar`, plus the accessors `Keymap::render_navigation_slots`, `Keymap::render_app_globals_slots`, and `Keymap::render_framework_globals_slots`. The framework owns the bar's region partitioning, suppression rules, per-slot resolution, **and the styling pass**; the binary keeps the bar's outer left/center/right layout (uptime / scanning chrome) and supplies the palette that drives per-slot colors.
 
 ---
 

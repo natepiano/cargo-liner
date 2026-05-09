@@ -15,8 +15,11 @@
 //! one map.
 
 use super::Action;
+use super::Globals;
 use super::KeyBind;
 use super::KeyOutcome;
+use super::Keymap;
+use super::Navigation;
 use super::ScopeMap;
 use super::Shortcuts;
 use crate::AppContext;
@@ -110,6 +113,61 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
         let action = P::Actions::from_toml_key(key)?;
         self.bindings.key_for(action).copied()
     }
+}
+
+/// Materialize bar slots for a generic action enum + scope map. Used
+/// by the type-erased nav / globals render fns the bar reads.
+///
+/// `region` controls the [`BarRegion`] tag every produced slot
+/// carries. Actions with no bound key are dropped.
+pub(super) fn slots_from_scope<A: Action>(
+    region: BarRegion,
+    actions: &'static [A],
+    scope: &ScopeMap<A>,
+) -> Vec<RenderedSlot> {
+    actions
+        .iter()
+        .copied()
+        .filter_map(|action| {
+            let key = scope.key_for(action).copied()?;
+            Some(RenderedSlot {
+                region,
+                label: action.bar_label(),
+                key,
+                state: ShortcutState::Enabled,
+                visibility: Visibility::Visible,
+            })
+        })
+        .collect()
+}
+
+/// `N`-monomorphized renderer the keymap stores at
+/// [`KeymapBuilder::register_navigation`](crate::KeymapBuilder::register_navigation)
+/// time. The bar reads it via
+/// [`Keymap::render_navigation_slots`](Keymap::render_navigation_slots).
+///
+/// Emits one [`BarRegion::Nav`] slot per [`Action::ALL`] entry in the
+/// app's navigation enum that has a bound key. The bar's
+/// `nav_region.rs` reduces these to the rendered nav row.
+pub(crate) fn render_navigation_slots<Ctx: AppContext + 'static, N: Navigation<Ctx>>(
+    keymap: &Keymap<Ctx>,
+) -> Vec<RenderedSlot> {
+    let Some(scope) = keymap.navigation::<N>() else {
+        return Vec::new();
+    };
+    slots_from_scope(BarRegion::Nav, N::Actions::ALL, scope)
+}
+
+/// `G`-monomorphized renderer the keymap stores at
+/// [`KeymapBuilder::register_globals`](crate::KeymapBuilder::register_globals)
+/// time. See [`render_navigation_slots`].
+pub(crate) fn render_app_globals_slots<Ctx: AppContext + 'static, G: Globals<Ctx>>(
+    keymap: &Keymap<Ctx>,
+) -> Vec<RenderedSlot> {
+    let Some(scope) = keymap.globals::<G>() else {
+        return Vec::new();
+    };
+    slots_from_scope(BarRegion::Global, G::render_order(), scope)
 }
 
 #[cfg(test)]

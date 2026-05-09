@@ -127,6 +127,22 @@ impl<Ctx: AppContext> Default for SettingsPane<Ctx> {
     fn default() -> Self { Self::new() }
 }
 
+#[cfg(test)]
+impl<Ctx: AppContext> SettingsPane<Ctx> {
+    /// Test-only constructor placing the pane in
+    /// [`EditState::Editing`] with an optional editor target. Phase
+    /// 15 wires the `Browse → Editing` production transition; Phase
+    /// 13 snapshot tests build this state directly so they can lock
+    /// the bar output before the transition lands.
+    pub(crate) fn for_test_editing(editor_target: Option<PathBuf>) -> Self {
+        Self {
+            edit_state: EditState::Editing,
+            editor_target,
+            _ctx: PhantomData,
+        }
+    }
+}
+
 /// Stub edit-routing handler. Phase 14 replaces this with logic that
 /// applies the typed character to the focused setting's editing buffer.
 const fn settings_edit_keys<Ctx: AppContext>(_bind: KeyBind, _ctx: &mut Ctx) {}
