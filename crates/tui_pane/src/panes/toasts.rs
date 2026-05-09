@@ -14,6 +14,8 @@
 //! items, and rendering land in Phase 22 when cargo-port's
 //! `ToastManager` migrates onto this type.
 
+use core::fmt::Display;
+use core::fmt::Formatter;
 use core::marker::PhantomData;
 
 use crate::Action;
@@ -51,8 +53,8 @@ impl Action for ToastsAction {
     fn from_toml_key(_key: &str) -> Option<Self> { None }
 }
 
-impl core::fmt::Display for ToastsAction {
-    fn fmt(&self, _f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Display for ToastsAction {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> core::fmt::Result {
         // ToastsAction has no variants; this method cannot be called.
         Ok(())
     }

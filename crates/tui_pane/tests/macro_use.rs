@@ -39,6 +39,33 @@ tui_pane::action_enum! {
     }
 }
 
+tui_pane::action_enum! {
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    pub enum CrossCrateShortAction {
+        Activate => ("activate", "Activate");
+        Clean    => ("clean",    "Clean project");
+    }
+}
+
+#[test]
+fn action_enum_two_positional_form_works_from_outside_crate() {
+    assert_eq!(CrossCrateShortAction::Activate.toml_key(), "activate");
+    assert_eq!(CrossCrateShortAction::Activate.bar_label(), "activate");
+    assert_eq!(CrossCrateShortAction::Activate.description(), "Activate");
+    assert_eq!(CrossCrateShortAction::Clean.bar_label(), "clean");
+    assert_eq!(
+        CrossCrateShortAction::ALL,
+        &[
+            CrossCrateShortAction::Activate,
+            CrossCrateShortAction::Clean
+        ],
+    );
+    assert_eq!(
+        CrossCrateShortAction::from_toml_key("clean"),
+        Some(CrossCrateShortAction::Clean),
+    );
+}
+
 #[test]
 fn action_enum_macro_works_from_outside_crate() {
     assert_eq!(

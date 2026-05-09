@@ -31,6 +31,7 @@ use super::global_action::GlobalAction;
 use super::key_bind::KeyBind;
 use super::key_bind::KeyParseError;
 use super::load::KeymapError;
+use super::runtime_scope;
 use super::runtime_scope::PaneScope;
 use super::runtime_scope::RuntimeScope;
 use super::scope_map::ScopeMap;
@@ -238,7 +239,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
         let scope_map: ScopeMap<N::Actions> = bindings.into_scope_map();
         self.navigation_scope = Some(Box::new(scope_map));
         self.navigation_scope_name = Some(scope_name);
-        self.navigation_render_fn = Some(super::runtime_scope::render_navigation_slots::<Ctx, N>);
+        self.navigation_render_fn = Some(runtime_scope::render_navigation_slots::<Ctx, N>);
         self.registered_scopes.insert(scope_name);
         Ok(self)
     }
@@ -259,7 +260,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
         let scope_map: ScopeMap<G::Actions> = bindings.into_scope_map();
         self.globals_scope = Some(Box::new(scope_map));
         self.globals_scope_name = Some(scope_name);
-        self.globals_render_fn = Some(super::runtime_scope::render_app_globals_slots::<Ctx, G>);
+        self.globals_render_fn = Some(runtime_scope::render_app_globals_slots::<Ctx, G>);
         self.registered_scopes.insert(scope_name);
         Ok(self)
     }

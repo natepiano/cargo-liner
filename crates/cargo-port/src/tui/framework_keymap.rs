@@ -40,14 +40,13 @@ use tui_pane::Pane;
 use tui_pane::ShortcutState;
 use tui_pane::Shortcuts;
 
+use super::app::App;
+use super::panes;
+use super::panes::DetailField;
+use super::panes::GitRow;
+use super::panes::PaneId;
 use crate::keymap::GitAction;
 use crate::keymap::PackageAction;
-use crate::tui::app::App;
-use crate::tui::panes::DetailField;
-use crate::tui::panes::GitRow;
-use crate::tui::panes::PaneId;
-use crate::tui::panes::git_row_at;
-use crate::tui::panes::package_fields_from_data;
 
 /// Stable identifier for every app-side pane the framework keys its
 /// per-pane registries on. Defined in full at 14.2 so later chunks
@@ -212,7 +211,7 @@ fn activate_state(ctx: &App) -> ShortcutState {
     let Some(pkg) = ctx.panes.package.content() else {
         return ShortcutState::Disabled;
     };
-    let fields = package_fields_from_data(pkg);
+    let fields = panes::package_fields_from_data(pkg);
     let pos = ctx.panes.package.viewport.pos();
     if matches!(fields.get(pos), Some(DetailField::CratesIo)) {
         ShortcutState::Enabled
@@ -266,7 +265,7 @@ fn git_activate_state(ctx: &App) -> ShortcutState {
         return ShortcutState::Disabled;
     };
     let pos = ctx.panes.git.viewport.pos();
-    if let Some(GitRow::Remote(remote)) = git_row_at(git, pos)
+    if let Some(GitRow::Remote(remote)) = panes::git_row_at(git, pos)
         && remote.full_url.is_some()
     {
         ShortcutState::Enabled
@@ -287,6 +286,13 @@ pub(crate) fn build_framework_keymap(
         .register::<PackagePane>(PackagePane)
         .register::<GitPane>(GitPane)
         .build_into(framework)
+}
+
+/// Build the framework keymap against `app.framework`. Visible to the
+/// `tui` module so the App constructor can wire it during startup
+/// without exposing the rest of this module crate-wide.
+pub(super) fn build_for_app(app: &mut App) -> Result<Keymap<App>, KeymapError> {
+    build_framework_keymap(&mut app.framework)
 }
 
 #[cfg(test)]
@@ -328,22 +334,5 @@ mod tests {
             <PackageAction as Action>::toml_key(PackageAction::Activate),
             PackageAction::Activate.toml_key(),
         );
-    }
-}
-
-/// Bridge module: helpers that need crate-internal access on App. Held
-/// here so the parent module of [`crate::tui::app`] does not need to
-/// know about the framework keymap.
-pub(crate) mod bridge {
-    use super::App;
-    use super::Keymap;
-    use super::KeymapError;
-    use super::build_framework_keymap;
-
-    /// Build the framework keymap against `app.framework`. Public to
-    /// the binary so the construct.rs builder can wire it during
-    /// startup without exposing any other internals.
-    pub(crate) fn build_for_app(app: &mut App) -> Result<Keymap<App>, KeymapError> {
-        build_framework_keymap(&mut app.framework)
     }
 }

@@ -44,6 +44,7 @@ pub use vim::VimMode;
 
 use self::runtime_scope::RuntimeScope;
 use crate::AppContext;
+use crate::BarRegion;
 use crate::SettingsRegistry;
 use crate::framework;
 
@@ -266,7 +267,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     #[must_use]
     pub fn render_framework_globals_slots(&self) -> Vec<RenderedSlot> {
         self::runtime_scope::slots_from_scope(
-            crate::BarRegion::Global,
+            BarRegion::Global,
             GlobalAction::ALL,
             &self.framework_globals,
         )

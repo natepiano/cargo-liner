@@ -278,8 +278,8 @@ action_enum! {
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum PackageAction {
-        Activate => ("activate", "activate", "Open URL or Cargo.toml");
-        Clean    => ("clean",    "clean",    "Clean project");
+        Activate => ("activate", "Open URL or Cargo.toml");
+        Clean    => ("clean",    "Clean project");
     }
 }
 
@@ -290,13 +290,15 @@ tui_pane::action_enum! {
 /// 14.x parallel-path window. Phase 18 retires the legacy paths and
 /// deletes this facade alongside the local `action_enum!` macro.
 impl PackageAction {
-    pub const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
+    pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
 
-    pub fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
+    pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
 
-    pub fn description(self) -> &'static str { <Self as tui_pane::Action>::description(self) }
+    pub(crate) fn description(self) -> &'static str {
+        <Self as tui_pane::Action>::description(self)
+    }
 
-    pub fn from_toml_key(key: &str) -> Option<Self> {
+    pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
         <Self as tui_pane::Action>::from_toml_key(key)
     }
 }
@@ -304,8 +306,8 @@ impl PackageAction {
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum GitAction {
-        Activate => ("activate", "activate", "Open git URL");
-        Clean    => ("clean",    "clean",    "Clean project");
+        Activate => ("activate", "Open git URL");
+        Clean    => ("clean",    "Clean project");
     }
 }
 
@@ -317,13 +319,15 @@ tui_pane::action_enum! {
 /// retires the legacy paths and deletes this facade alongside the
 /// local `action_enum!` macro.
 impl GitAction {
-    pub const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
+    pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
 
-    pub fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
+    pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
 
-    pub fn description(self) -> &'static str { <Self as tui_pane::Action>::description(self) }
+    pub(crate) fn description(self) -> &'static str {
+        <Self as tui_pane::Action>::description(self)
+    }
 
-    pub fn from_toml_key(key: &str) -> Option<Self> {
+    pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
         <Self as tui_pane::Action>::from_toml_key(key)
     }
 }

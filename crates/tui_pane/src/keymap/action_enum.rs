@@ -42,9 +42,19 @@ pub trait Action: Copy + Eq + Hash + Debug + Display + 'static {
 /// Declares an action enum and implements [`Action`] +
 /// [`Display`](core::fmt::Display) for it.
 ///
-/// Grammar:
+/// Grammar (two forms):
 ///
 /// ```text
+/// // 2-positional — bar_label defaults to toml_key
+/// action_enum! {
+///     #[derive(...)]
+///     pub enum Name {
+///         Variant => ("toml_key", "description");
+///         ...
+///     }
+/// }
+///
+/// // 3-positional — explicit bar_label
 /// action_enum! {
 ///     #[derive(...)]
 ///     pub enum Name {
@@ -54,8 +64,10 @@ pub trait Action: Copy + Eq + Hash + Debug + Display + 'static {
 /// }
 /// ```
 ///
-/// At least one variant is required — empty bodies are rejected at
-/// expansion time. The caller supplies
+/// Use the 2-positional form by default; reach for 3-positional only
+/// when the bar label genuinely differs from the toml key. At least one
+/// variant is required — empty bodies are rejected at expansion time.
+/// The caller supplies
 /// `#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]`; those are
 /// super-trait requirements of [`Action`] that the macro does not
 /// inject silently.
@@ -66,8 +78,8 @@ pub trait Action: Copy + Eq + Hash + Debug + Display + 'static {
 /// tui_pane::action_enum! {
 ///     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 ///     pub enum NavAction {
-///         Up   => ("up",   "up",   "Move up");
-///         Down => ("down", "down", "Move down");
+///         Up   => ("up",   "Move up");
+///         Down => ("down", "Move down");
 ///     }
 /// }
 /// ```
@@ -119,6 +131,19 @@ macro_rules! action_enum {
             }
         }
     };
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $Name:ident {
+            $( $(#[$vmeta:meta])* $Variant:ident => ( $toml_key:literal , $desc:literal ) ; )+
+        }
+    ) => {
+        $crate::action_enum! {
+            $(#[$meta])*
+            $vis enum $Name {
+                $( $(#[$vmeta])* $Variant => ( $toml_key , $toml_key , $desc ) ; )+
+            }
+        }
+    };
 }
 
 #[cfg(test)]
@@ -137,6 +162,30 @@ mod tests {
             A => ("a", "alpha", "alpha-desc");
             B => ("b", "beta",  "beta-desc");
         }
+    }
+
+    crate::action_enum! {
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        pub enum FooShort {
+            Activate => ("activate", "Activate");
+            Clean    => ("clean",    "Clean project");
+        }
+    }
+
+    #[test]
+    fn two_positional_form_defaults_bar_label_to_toml_key() {
+        assert_eq!(FooShort::Activate.toml_key(), "activate");
+        assert_eq!(FooShort::Activate.bar_label(), "activate");
+        assert_eq!(FooShort::Activate.description(), "Activate");
+        assert_eq!(FooShort::Clean.toml_key(), "clean");
+        assert_eq!(FooShort::Clean.bar_label(), "clean");
+        assert_eq!(FooShort::Clean.description(), "Clean project");
+        assert_eq!(FooShort::ALL, &[FooShort::Activate, FooShort::Clean]);
+        assert_eq!(
+            FooShort::from_toml_key("activate"),
+            Some(FooShort::Activate),
+        );
+        assert_eq!(FooShort::from_toml_key("zzz"), None);
     }
 
     #[test]

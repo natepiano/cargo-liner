@@ -20,6 +20,8 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
+use tui_pane::FocusedPane;
+
 use super::App;
 use super::types::ScanState;
 use crate::config;
@@ -36,6 +38,8 @@ use crate::scan::BackgroundMsg;
 use crate::tui::background::Background;
 use crate::tui::background::BackgroundChannels;
 use crate::tui::config_state::Config;
+use crate::tui::framework_keymap;
+use crate::tui::framework_keymap::AppPaneId;
 use crate::tui::inflight::Inflight;
 use crate::tui::keymap_state::Keymap;
 use crate::tui::panes::PaneId;
@@ -196,9 +200,7 @@ impl AppBuilder<Started> {
         if let Some(warning) = started.lint_warning {
             overlays.set_status_flash(warning, Instant::now());
         }
-        let framework = tui_pane::Framework::new(tui_pane::FocusedPane::App(
-            crate::tui::framework_keymap::AppPaneId::ProjectList,
-        ));
+        let framework = tui_pane::Framework::new(FocusedPane::App(AppPaneId::ProjectList));
         let mut app = App {
             net: crate::tui::net_state::Net::new(inputs.http_client),
             panes,
@@ -223,8 +225,8 @@ impl AppBuilder<Started> {
                 .build()
                 .unwrap_or_else(|_| std::process::abort()),
         };
-        app.framework_keymap = crate::tui::framework_keymap::bridge::build_for_app(&mut app)
-            .unwrap_or_else(|_| std::process::abort());
+        app.framework_keymap =
+            framework_keymap::build_for_app(&mut app).unwrap_or_else(|_| std::process::abort());
         app.finish_new();
         app
     }

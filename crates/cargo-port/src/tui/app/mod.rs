@@ -123,6 +123,7 @@ use async_tasks::Startup;
 pub(super) use dismiss::DismissTarget;
 pub(super) use target_index::CleanSelection;
 pub(super) use target_index::TargetDirIndex;
+use tui_pane::Framework;
 pub(super) use types::CiRunDisplayMode;
 pub(super) use types::ConfirmAction;
 pub(super) use types::DirtyState;
@@ -232,7 +233,7 @@ pub(super) struct App {
     /// framework-side `Toasts`/`KeymapPane`/`SettingsPane` overlays.
     /// Phase 14.2 stores it alongside the legacy keymap path; later
     /// phases route dispatch through it.
-    pub(super) framework:         tui_pane::Framework<Self>,
+    pub(super) framework:         Framework<Self>,
     /// Framework keymap built at startup from
     /// [`tui_pane::Keymap::builder`]. Held in parallel with the legacy
     /// `keymap` field through Phases 14–17; the legacy path remains

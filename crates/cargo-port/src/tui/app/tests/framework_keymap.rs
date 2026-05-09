@@ -22,11 +22,11 @@ use crate::keymap::PackageAction;
 use crate::tui::framework_keymap::AppPaneId;
 use crate::tui::framework_keymap::GitPane;
 use crate::tui::framework_keymap::PackagePane;
+use crate::tui::panes;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::RemoteRow;
-use crate::tui::panes::package_fields_from_data;
 
 fn focus_app_pane_in_framework(app: &mut App, id: AppPaneId) {
     app.framework_mut().set_focused(FocusedPane::App(id));
@@ -125,7 +125,7 @@ fn package_activate_state_enabled_on_crates_io_with_version() {
 
     let mut data = package_data_no_version();
     data.crates_version = Some("0.1.0".to_string());
-    let fields = package_fields_from_data(&data);
+    let fields = panes::package_fields_from_data(&data);
     let crates_io_pos = fields
         .iter()
         .position(|f| matches!(f, DetailField::CratesIo))
