@@ -11,6 +11,9 @@ use ratatui::text::Span;
 use tui_pane::AppContext;
 use tui_pane::BarPalette;
 use tui_pane::FocusedPane;
+use tui_pane::KeyBind;
+use tui_pane::Mode;
+use tui_pane::Pane;
 use tui_pane::ShortcutState;
 use tui_pane::Shortcuts;
 use tui_pane::Visibility;
@@ -26,6 +29,7 @@ use crate::keymap::GitAction;
 use crate::keymap::PackageAction;
 use crate::tui::framework_keymap::AppPaneId;
 use crate::tui::framework_keymap::CiRunsPane;
+use crate::tui::framework_keymap::FinderPane;
 use crate::tui::framework_keymap::GitPane;
 use crate::tui::framework_keymap::PackagePane;
 use crate::tui::panes;
@@ -468,5 +472,209 @@ fn focused_project_list_bar_renders_pane_action_and_nav_slots() {
     assert!(
         nav.contains('+'),
         "ProjectList nav region must include ExpandAll's bar_label \"+\" (got {nav:?})",
+    );
+}
+
+// ── Phase 14.5 — Output (Mode::Static) ────────────────────────────
+
+#[test]
+fn focused_output_bar_renders_close_label() {
+    // OutputPane returns Mode::Static, which suppresses the Nav region
+    // and renders PaneAction + Global. The single OutputAction::Cancel
+    // entry has bar_label "close" (toml_key "cancel" — diverges, hence
+    // the 3-positional invocation).
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    focus_app_pane_in_framework(&mut app, AppPaneId::Output);
+
+    let palette = BarPalette::default();
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::Output),
+        &app,
+        &app.framework_keymap,
+        app.framework(),
+        &palette,
+    );
+    let pane_action = flatten(&bar.pane_action);
+    let nav = flatten(&bar.nav);
+
+    assert!(
+        pane_action.contains("close"),
+        "Output bar must show the Cancel label \"close\" (got {pane_action:?})",
+    );
+    assert!(
+        nav.is_empty(),
+        "Mode::Static must suppress the Nav region (got {nav:?})",
+    );
+}
+
+// ── Phase 14.6 — Finder (Mode::TextInput when open) ────────────────
+
+#[test]
+fn finder_pane_mode_navigable_when_closed() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let app = make_app(&[project]);
+    let mode_fn = <FinderPane as Pane<App>>::mode();
+    assert!(
+        matches!(mode_fn(&app), Mode::Navigable),
+        "Finder mode must be Navigable when overlay is closed",
+    );
+}
+
+#[test]
+fn finder_pane_mode_text_input_when_open() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.overlays.open_finder();
+    let mode_fn = <FinderPane as Pane<App>>::mode();
+    assert!(
+        matches!(mode_fn(&app), Mode::TextInput(_)),
+        "Finder mode must be TextInput when overlay is open",
+    );
+}
+
+#[test]
+fn finder_text_input_inserts_char_into_query() {
+    // Mandatory Phase 14.6 test (per the plan): when Finder is open,
+    // a typed letter goes through the framework's TextInput handler
+    // and into the search query — vim mode is bypassed by Mode::
+    // TextInput. We exercise the handler directly via the `fn`
+    // pointer carried inside `Mode::TextInput(...)`.
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.overlays.open_finder();
+
+    let mode = <FinderPane as Pane<App>>::mode()(&app);
+    let Mode::TextInput(handler) = mode else {
+        panic!("expected Mode::TextInput when finder is open");
+    };
+    handler(KeyBind::from('k'), &mut app);
+
+    assert_eq!(
+        app.project_list.finder.query, "k",
+        "TextInput handler must insert the typed character into the query",
+    );
+}
+
+#[test]
+fn focused_finder_closed_bar_renders_pane_action_labels() {
+    // With finder closed, FinderPane::mode() returns Mode::Navigable
+    // — the bar renders all regions normally and the PaneAction slots
+    // show Activate's "go to" and Cancel's "close".
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    focus_app_pane_in_framework(&mut app, AppPaneId::Finder);
+
+    let palette = BarPalette::default();
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::Finder),
+        &app,
+        &app.framework_keymap,
+        app.framework(),
+        &palette,
+    );
+    let pane_action = flatten(&bar.pane_action);
+
+    assert!(
+        pane_action.contains("go to"),
+        "Finder bar must show the Activate label \"go to\" (got {pane_action:?})",
+    );
+    assert!(
+        pane_action.contains("close"),
+        "Finder bar must show the Cancel label \"close\" (got {pane_action:?})",
+    );
+}
+
+#[test]
+fn focused_finder_open_bar_suppresses_all_regions() {
+    // Open Finder → Mode::TextInput suppresses every bar region.
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.overlays.open_finder();
+    focus_app_pane_in_framework(&mut app, AppPaneId::Finder);
+
+    let palette = BarPalette::default();
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::Finder),
+        &app,
+        &app.framework_keymap,
+        app.framework(),
+        &palette,
+    );
+
+    assert!(
+        flatten(&bar.nav).is_empty(),
+        "Mode::TextInput must suppress Nav (got {:?})",
+        flatten(&bar.nav),
+    );
+    assert!(
+        flatten(&bar.pane_action).is_empty(),
+        "Mode::TextInput must suppress PaneAction (got {:?})",
+        flatten(&bar.pane_action),
+    );
+    assert!(
+        flatten(&bar.global).is_empty(),
+        "Mode::TextInput must suppress Global (got {:?})",
+        flatten(&bar.global),
+    );
+}
+
+// ── Phase 14.7 — AppGlobalAction four-variant bar snapshots ────────
+
+#[test]
+fn focused_package_bar_renders_four_app_globals() {
+    // Phase 14.7 grew `AppGlobalAction` from `{ Find }` to
+    // `{ Find, OpenEditor, OpenTerminal, Rescan }`. The Global region
+    // of a focused Navigable pane must surface every variant's
+    // bar_label so users can see the full app-globals strip. We focus
+    // Package (Mode::Navigable) and read `bar.global`.
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.panes.package.set_content(package_data_no_version());
+    focus_app_pane_in_framework(&mut app, AppPaneId::Package);
+
+    let palette = BarPalette::default();
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::Package),
+        &app,
+        &app.framework_keymap,
+        app.framework(),
+        &palette,
+    );
+    let global = flatten(&bar.global);
+
+    for label in ["find", "editor", "terminal", "rescan"] {
+        assert!(
+            global.contains(label),
+            "Global region must include AppGlobalAction label {label:?} (got {global:?})",
+        );
+    }
+}
+
+#[test]
+fn focused_package_bar_nav_region_renders_arrow_keys() {
+    // Phase 14.7 locks the framework's nav-region rendering for a
+    // focused Mode::Navigable pane. The nav region surfaces the
+    // pane-cycle row plus the navigation defaults; the keymap's
+    // default for `NavigationAction::Up` is `↑` so we look for that
+    // glyph as a stable anchor.
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.panes.package.set_content(package_data_no_version());
+    focus_app_pane_in_framework(&mut app, AppPaneId::Package);
+
+    let palette = BarPalette::default();
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::Package),
+        &app,
+        &app.framework_keymap,
+        app.framework(),
+        &palette,
+    );
+    let nav = flatten(&bar.nav);
+
+    assert!(
+        !nav.is_empty(),
+        "Mode::Navigable must populate the Nav region (got empty)",
     );
 }

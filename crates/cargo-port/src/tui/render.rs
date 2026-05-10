@@ -528,11 +528,47 @@ fn shortcut_display_width(shortcuts: &[Shortcut]) -> usize {
     content + (shortcuts.len() - 1) * 2
 }
 
+/// Palette wiring `ACCENT_COLOR` / `SECONDARY_TEXT_COLOR` / `Modifier::BOLD`
+/// to the framework bar so the new `tui_pane::render_status_bar` output
+/// matches the pre-refactor look produced by [`shortcut_spans`]. The
+/// framework ships a theme-neutral [`tui_pane::BarPalette::default`];
+/// cargo-port supplies its own colors here.
+pub(super) fn cargo_port_bar_palette() -> tui_pane::BarPalette {
+    let enabled_key_style = Style::default()
+        .fg(ACCENT_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let disabled_key_style = Style::default()
+        .fg(SECONDARY_TEXT_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let disabled_label_style = Style::default().fg(SECONDARY_TEXT_COLOR);
+    tui_pane::BarPalette {
+        enabled_key_style,
+        enabled_label_style: Style::default(),
+        disabled_key_style,
+        disabled_label_style,
+        separator_style: Style::default(),
+    }
+}
+
 pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let bar_style = Style::default().bg(STATUS_BAR_COLOR).fg(Color::White);
 
     // Fill the entire bar with the background color
     frame.render_widget(Paragraph::new("").style(bar_style), area);
+
+    // Phase 14.8: route the draw path through the framework bar
+    // renderer. The result is unused — Phase 18 swaps the legacy
+    // `for_status_bar` flatten/style pipeline below for the framework
+    // [`StatusBar`] regions. Wiring the call now exercises the
+    // framework keymap's per-frame bar pipeline so downstream phases
+    // catch any regressions immediately.
+    let _framework_bar = tui_pane::render_status_bar(
+        app.framework.focused(),
+        app,
+        &app.framework_keymap,
+        &app.framework,
+        &cargo_port_bar_palette(),
+    );
 
     let context = app.input_context();
     let enter_action = app.enter_action();

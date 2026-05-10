@@ -162,7 +162,7 @@ pub fn run() -> ExitCode {
         },
     };
 
-    let mut app = App::new(
+    let mut app = match App::new(
         &projects,
         bg_tx,
         bg_rx,
@@ -170,7 +170,14 @@ pub fn run() -> ExitCode {
         http_client,
         scan_started_at,
         metadata_store,
-    );
+    ) {
+        Ok(app) => app,
+        Err(e) => {
+            tracing::error!("Error: failed to initialize app: {e:#}");
+            let _ = restore_terminal(&mut terminal);
+            return ExitCode::FAILURE;
+        },
+    };
     tracing::info!(perf_log = %perf_log_path.display(), "tui_ready");
     let input_rx = spawn_input_thread();
 

@@ -140,6 +140,12 @@ const fn clear_all_hover(app: &mut App) {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use std::path::Path;
     use std::sync::Arc;
@@ -357,7 +363,8 @@ mod tests {
             test_http_client(),
             Instant::now(),
             metadata_store,
-        );
+        )
+        .expect("App::new must succeed in tests");
         app.sync_selected_project();
         app
     }

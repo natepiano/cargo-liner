@@ -16,6 +16,7 @@ resolver = "3"
 
 [dependencies]
 ansi-to-tui        = "8.0.1"
+anyhow             = "1"
 cargo_metadata     = "0.23.1"
 chrono             = "0.4.44"
 clap               = { version = "4", features = ["derive"] }

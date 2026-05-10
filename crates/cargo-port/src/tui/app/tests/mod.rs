@@ -132,7 +132,8 @@ fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
         test_http_client(),
         Instant::now(),
         metadata_store,
-    );
+    )
+    .expect("App::new must succeed in tests");
     app.scan.set_retry_spawn_mode(RetrySpawnMode::Disabled);
     app.sync_selected_project();
     app

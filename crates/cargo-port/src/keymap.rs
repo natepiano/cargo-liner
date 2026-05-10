@@ -432,6 +432,27 @@ impl LintsAction {
     }
 }
 
+// `OutputAction` and `FinderAction` have no legacy `ResolvedKeymap`
+// consumers (no `output:` / `finder:` scope fields on `ResolvedKeymap`),
+// so they ship without the inherent-method facade other action enums
+// carry. Phase 17's reverse-lookup call `OutputAction::Cancel.toml_key()`
+// resolves through the `tui_pane::Action` trait when imported at the
+// call site.
+tui_pane::action_enum! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum OutputAction {
+        Cancel => ("cancel", "close", "Close output pane");
+    }
+}
+
+tui_pane::action_enum! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum FinderAction {
+        Activate => ("activate", "go to", "Go to selected project");
+        Cancel   => ("cancel",   "close", "Close finder");
+    }
+}
+
 // ── Scope map ────────────────────────────────────────────────────────
 
 /// Bidirectional map for a single scope: key→action for dispatch,

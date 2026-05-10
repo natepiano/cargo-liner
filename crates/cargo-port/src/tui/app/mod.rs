@@ -256,7 +256,7 @@ impl App {
         http_client: HttpClient,
         scan_started_at: Instant,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
-    ) -> Self {
+    ) -> Result<Self, anyhow::Error> {
         construct::AppBuilder::new(
             projects,
             bg_tx,

@@ -275,6 +275,7 @@ name = "cargo-port"
 version = "0.0.4-dev"
 dependencies = [
  "ansi-to-tui",
+ "anyhow",
  "cargo_metadata",
  "chrono",
  "clap",

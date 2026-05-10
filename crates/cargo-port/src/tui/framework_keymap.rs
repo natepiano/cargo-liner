@@ -38,6 +38,7 @@ use tui_pane::Globals;
 use tui_pane::KeyBind;
 use tui_pane::Keymap;
 use tui_pane::KeymapError;
+use tui_pane::Mode;
 use tui_pane::Navigation;
 use tui_pane::Pane;
 use tui_pane::ShortcutState;
@@ -50,8 +51,10 @@ use super::panes::DetailField;
 use super::panes::GitRow;
 use super::panes::PaneId;
 use crate::keymap::CiRunsAction;
+use crate::keymap::FinderAction;
 use crate::keymap::GitAction;
 use crate::keymap::LintsAction;
+use crate::keymap::OutputAction;
 use crate::keymap::PackageAction;
 use crate::keymap::ProjectListAction;
 use crate::keymap::TargetsAction;
@@ -109,7 +112,10 @@ tui_pane::action_enum! {
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub(crate) enum AppGlobalAction {
-        Find => ("find", "find", "Open finder");
+        Find         => ("find",          "find",     "Open finder");
+        OpenEditor   => ("open_editor",   "editor",   "Open in editor");
+        OpenTerminal => ("open_terminal", "terminal", "Open terminal");
+        Rescan       => ("rescan",        "rescan",   "Rescan projects");
     }
 }
 
@@ -161,7 +167,10 @@ impl Globals<App> for AppGlobalAction {
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
-            '/' => Self::Find,
+            '/'                  => Self::Find,
+            'e'                  => Self::OpenEditor,
+            't'                  => Self::OpenTerminal,
+            KeyBind::ctrl('r')   => Self::Rescan,
         }
     }
 
@@ -542,10 +551,93 @@ static PROJECT_LIST_VIM_EXTRAS: [(ProjectListAction, KeyBind); 2] = [
     ),
 ];
 
+/// `Pane<App>` + `Shortcuts<App>` host for the Output pane.
+///
+/// First non-`Navigable` pane: `Mode::Static` suppresses the `Nav`
+/// region so the bar shows only `PaneAction` (the `Esc close` slot)
+/// plus the global strip.
+pub(crate) struct OutputPane;
+
+impl Pane<App> for OutputPane {
+    const APP_PANE_ID: AppPaneId = AppPaneId::Output;
+
+    fn mode() -> fn(&App) -> Mode<App> { |_ctx| Mode::Static }
+}
+
+impl Shortcuts<App> for OutputPane {
+    type Actions = OutputAction;
+
+    const SCOPE_NAME: &'static str = "output";
+
+    fn defaults() -> Bindings<Self::Actions> {
+        tui_pane::bindings! {
+            crossterm::event::KeyCode::Esc => OutputAction::Cancel,
+        }
+    }
+
+    fn dispatcher() -> fn(Self::Actions, &mut App) {
+        |_action, _ctx| {
+            // No-op through Phase 17. Legacy path:
+            // `src/tui/input.rs::handle_normal_key` clears
+            // `example_output` on `KeyCode::Esc`.
+        }
+    }
+}
+
+/// `Pane<App>` + `Shortcuts<App>` host for the Finder overlay.
+///
+/// Mode flips with `app.overlays.is_finder_open()`:
+/// - open  → `Mode::TextInput(finder_keys)` — character keys go to the embedded handler, which
+///   forwards to the legacy `src/tui/finder.rs::handle_finder_key` body.
+/// - closed → `Mode::Navigable` (default Browse-style behaviour, though while closed the Finder
+///   pane never actually has focus).
+pub(crate) struct FinderPane;
+
+impl Pane<App> for FinderPane {
+    const APP_PANE_ID: AppPaneId = AppPaneId::Finder;
+
+    fn mode() -> fn(&App) -> Mode<App> {
+        |ctx| {
+            if ctx.overlays.is_finder_open() {
+                Mode::TextInput(finder_keys)
+            } else {
+                Mode::Navigable
+            }
+        }
+    }
+}
+
+impl Shortcuts<App> for FinderPane {
+    type Actions = FinderAction;
+
+    const SCOPE_NAME: &'static str = "finder";
+
+    fn defaults() -> Bindings<Self::Actions> {
+        tui_pane::bindings! {
+            crossterm::event::KeyCode::Enter => FinderAction::Activate,
+            crossterm::event::KeyCode::Esc   => FinderAction::Cancel,
+        }
+    }
+
+    fn dispatcher() -> fn(Self::Actions, &mut App) {
+        |_action, _ctx| {
+            // No-op through Phase 17. Legacy path:
+            // `src/tui/finder.rs::handle_finder_key`.
+        }
+    }
+}
+
+/// `Mode::TextInput` handler for the Finder. Routes a single keypress
+/// through the legacy `handle_finder_key` body so character keys
+/// continue to insert into the search query, Esc/Enter/Backspace/arrow
+/// keys keep their existing semantics, and the framework-side
+/// dispatcher stays no-op through Phase 17.
+fn finder_keys(bind: KeyBind, app: &mut App) { super::finder::handle_finder_key(app, bind.code); }
+
 /// Assemble the framework keymap. Called once during App construction.
 /// Errors propagate so the caller can surface them through the
 /// existing keymap-diagnostics toast plumbing.
-pub(crate) fn build_framework_keymap(
+pub(super) fn build_framework_keymap(
     framework: &mut Framework<App>,
 ) -> Result<Keymap<App>, KeymapError> {
     Keymap::<App>::builder()
@@ -559,14 +651,9 @@ pub(crate) fn build_framework_keymap(
         .register::<TargetsPane>(TargetsPane)
         .register::<LintsPane>(LintsPane)
         .register::<CiRunsPane>(CiRunsPane)
+        .register::<OutputPane>(OutputPane)
+        .register::<FinderPane>(FinderPane)
         .build_into(framework)
-}
-
-/// Build the framework keymap against `app.framework`. Visible to the
-/// `tui` module so the App constructor can wire it during startup
-/// without exposing the rest of this module crate-wide.
-pub(super) fn build_for_app(app: &mut App) -> Result<Keymap<App>, KeymapError> {
-    build_framework_keymap(&mut app.framework)
 }
 
 #[cfg(test)]

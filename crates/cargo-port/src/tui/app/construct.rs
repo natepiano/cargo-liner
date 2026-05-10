@@ -20,6 +20,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
+use anyhow::Context;
 use tui_pane::FocusedPane;
 
 use super::App;
@@ -167,7 +168,7 @@ impl AppBuilder<Channeled> {
 }
 
 impl AppBuilder<Started> {
-    pub(super) fn build(self) -> App {
+    pub(super) fn build(self) -> Result<App, anyhow::Error> {
         let started = self.state;
         let channeled = started.channeled;
         let inputs = channeled.inputs;
@@ -200,7 +201,9 @@ impl AppBuilder<Started> {
         if let Some(warning) = started.lint_warning {
             overlays.set_status_flash(warning, Instant::now());
         }
-        let framework = tui_pane::Framework::new(FocusedPane::App(AppPaneId::ProjectList));
+        let mut framework = tui_pane::Framework::new(FocusedPane::App(AppPaneId::ProjectList));
+        let framework_keymap = framework_keymap::build_framework_keymap(&mut framework)
+            .with_context(|| "building framework keymap")?;
         let mut app = App {
             net: crate::tui::net_state::Net::new(inputs.http_client),
             panes,
@@ -221,14 +224,10 @@ impl AppBuilder<Started> {
             toasts: ToastManager::default(),
             layout_cache: crate::tui::panes::LayoutCache::default(),
             framework,
-            framework_keymap: tui_pane::Keymap::<App>::builder()
-                .build()
-                .unwrap_or_else(|_| std::process::abort()),
+            framework_keymap,
         };
-        app.framework_keymap =
-            framework_keymap::build_for_app(&mut app).unwrap_or_else(|_| std::process::abort());
         app.finish_new();
-        app
+        Ok(app)
     }
 }
 
