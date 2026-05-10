@@ -83,7 +83,7 @@ fn parse_replacement_from_suggestion(suggestion: Option<&str>) -> Option<String>
 }
 
 /// Return the byte length of a `pub`, `pub(crate)`, `pub(super)`, `pub(self)`,
-/// or `pub(in <path>)` annotation at the start of `text`. Returns None when
+/// or `pub(in <path>)` annotation at the start of `text`. Returns `None` when
 /// `text` does not begin with `pub`.
 fn vis_annotation_byte_len(text: &str) -> Option<usize> {
     let rest = text.strip_prefix(PUB_VISIBILITY_TOKEN)?;

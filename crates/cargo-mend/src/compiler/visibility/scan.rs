@@ -48,8 +48,8 @@ pub(super) enum CrateKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ModuleLocation {
     CrateRoot,
-    ShallowPrivateModule,
-    NestedModule,
+    ShallowPrivate,
+    Nested,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,7 +119,7 @@ struct VisibilityFindingContext {
 pub(super) enum AllowanceReason {
     Allowlist,
     ParentIsPublic,
-    ShallowPrivateModulePolicy,
+    ShallowPrivatePolicy,
     ReachablePublicApi,
     ParentFacadeUsedOutsideParent,
     InternalParentFacadeBoundary,

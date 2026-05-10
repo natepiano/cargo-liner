@@ -83,11 +83,9 @@ pub(super) fn classify_suspicious_pub(
         Some((message, status))
     });
 
-    if matches!(input.module_location, ModuleLocation::ShallowPrivateModule)
-        && stale_result.is_none()
-    {
+    if matches!(input.module_location, ModuleLocation::ShallowPrivate) && stale_result.is_none() {
         return Ok(SuspiciousPubAssessment::Allowed(
-            AllowanceReason::ShallowPrivateModulePolicy,
+            AllowanceReason::ShallowPrivatePolicy,
         ));
     }
 
@@ -111,11 +109,11 @@ pub(super) fn classify_suspicious_pub(
 }
 
 // Items at depth 1 (`crate::foo`) and depth 2 (`crate::foo::bar`) both map to
-// `ShallowPrivateModule`. Depth 2 covers the common `src/<top>/<child>.rs`
+// `ShallowPrivate`. Depth 2 covers the common `src/<top>/<child>.rs`
 // library layout: when the top-level module is private, nothing outside its
 // subtree can reach the child regardless of `pub(crate)` vs `pub(super)`, so
 // the policy treats them the same as depth-1 items. Depth 3+ falls through to
-// `NestedModule`, where `pub(crate)` can meaningfully widen reach beyond what
+// `Nested`, where `pub(crate)` can meaningfully widen reach beyond what
 // `pub(super)` would allow.
 pub(super) fn resolve_module_location(tcx: TyCtxt<'_>, parent_def: LocalDefId) -> ModuleLocation {
     if parent_def == CRATE_DEF_ID {
@@ -124,15 +122,15 @@ pub(super) fn resolve_module_location(tcx: TyCtxt<'_>, parent_def: LocalDefId) -
 
     let grandparent = tcx.parent_module_from_def_id(parent_def).to_local_def_id();
     if grandparent == CRATE_DEF_ID {
-        return ModuleLocation::ShallowPrivateModule;
+        return ModuleLocation::ShallowPrivate;
     }
 
     let great_grandparent = tcx.parent_module_from_def_id(grandparent).to_local_def_id();
     if great_grandparent == CRATE_DEF_ID {
-        return ModuleLocation::ShallowPrivateModule;
+        return ModuleLocation::ShallowPrivate;
     }
 
-    ModuleLocation::NestedModule
+    ModuleLocation::Nested
 }
 
 pub(super) const fn allow_pub_crate_by_policy(
@@ -143,7 +141,7 @@ pub(super) const fn allow_pub_crate_by_policy(
     match (crate_kind, module_location) {
         (CrateKind::Library, ModuleLocation::CrateRoot) => true,
         (CrateKind::IntegrationTest, _) => false,
-        (_, ModuleLocation::ShallowPrivateModule) => {
+        (_, ModuleLocation::ShallowPrivate) => {
             matches!(parent_visibility, ParentVisibility::Private)
         },
         _ => false,
@@ -178,7 +176,7 @@ pub(super) fn crate_kind_for_root(root_module: &Path, package_root: &Path) -> Cr
 pub(super) const fn forbidden_pub_crate_help(module_location: ModuleLocation) -> &'static str {
     if matches!(
         module_location,
-        ModuleLocation::CrateRoot | ModuleLocation::ShallowPrivateModule
+        ModuleLocation::CrateRoot | ModuleLocation::ShallowPrivate
     ) {
         "consider using just `pub` or removing `pub(crate)` entirely"
     } else {
@@ -350,7 +348,7 @@ mod tests {
     fn allow_pub_crate_allows_shallow_private_library_modules() {
         assert!(allow_pub_crate_by_policy(
             CrateKind::Library,
-            ModuleLocation::ShallowPrivateModule,
+            ModuleLocation::ShallowPrivate,
             ParentVisibility::Private
         ));
     }
@@ -359,7 +357,7 @@ mod tests {
     fn allow_pub_crate_rejects_nested_modules() {
         assert!(!allow_pub_crate_by_policy(
             CrateKind::Library,
-            ModuleLocation::NestedModule,
+            ModuleLocation::Nested,
             ParentVisibility::Private
         ));
     }
@@ -377,7 +375,7 @@ mod tests {
     fn allow_pub_crate_allows_shallow_private_binary_modules() {
         assert!(allow_pub_crate_by_policy(
             CrateKind::Binary,
-            ModuleLocation::ShallowPrivateModule,
+            ModuleLocation::ShallowPrivate,
             ParentVisibility::Private
         ));
     }
@@ -386,7 +384,7 @@ mod tests {
     fn allow_pub_crate_rejects_binary_nested_modules() {
         assert!(!allow_pub_crate_by_policy(
             CrateKind::Binary,
-            ModuleLocation::NestedModule,
+            ModuleLocation::Nested,
             ParentVisibility::Private
         ));
     }
@@ -395,8 +393,8 @@ mod tests {
     fn allow_pub_crate_rejects_integration_test_items_in_any_location() {
         for module_location in [
             ModuleLocation::CrateRoot,
-            ModuleLocation::ShallowPrivateModule,
-            ModuleLocation::NestedModule,
+            ModuleLocation::ShallowPrivate,
+            ModuleLocation::Nested,
         ] {
             for parent_visibility in [ParentVisibility::Private, ParentVisibility::Public] {
                 assert!(
@@ -470,7 +468,7 @@ mod tests {
     #[test]
     fn forbidden_pub_crate_help_handles_shallow_private_modules() {
         assert_eq!(
-            forbidden_pub_crate_help(ModuleLocation::ShallowPrivateModule),
+            forbidden_pub_crate_help(ModuleLocation::ShallowPrivate),
             "consider using just `pub` or removing `pub(crate)` entirely"
         );
     }
@@ -478,7 +476,7 @@ mod tests {
     #[test]
     fn forbidden_pub_crate_help_handles_nested_private_modules() {
         assert_eq!(
-            forbidden_pub_crate_help(ModuleLocation::NestedModule),
+            forbidden_pub_crate_help(ModuleLocation::Nested),
             "consider using `pub(super)` or removing `pub(crate)` entirely"
         );
     }

@@ -485,7 +485,7 @@ edition = "2024"
     );
 }
 
-// Depth boundary for the `ShallowPrivateModule` policy: depth 1 and depth 2
+// Depth boundary for the shallow-private policy: depth 1 and depth 2
 // are shallow (pub(crate) allowed), depth 3+ is nested (pub(crate) forbidden).
 // See `resolve_module_location` in src/compiler/visibility/policy.rs.
 

@@ -57,7 +57,7 @@ pub(super) enum DiagnosticBlockKind {
         warning_count: usize,
         fixable_count: usize,
     },
-    ForwardedDiagnostic,
+    Forwarded,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -409,7 +409,7 @@ fn parse_compiler_warning_summary(line: &str) -> Option<(usize, usize)> {
 
 pub(super) fn classify_diagnostic_block(block: &[String]) -> DiagnosticBlockKind {
     let first_non_empty = block.iter().find(|line| !line.trim().is_empty());
-    first_non_empty.map_or(DiagnosticBlockKind::ForwardedDiagnostic, |line| {
+    first_non_empty.map_or(DiagnosticBlockKind::Forwarded, |line| {
         let sanitized = sanitize_for_match(line);
         let trimmed = sanitized.trim_start();
 
@@ -425,7 +425,7 @@ pub(super) fn classify_diagnostic_block(block: &[String]) -> DiagnosticBlockKind
             if contains_unused_import_warning {
                 DiagnosticBlockKind::SuppressedUnusedImport
             } else {
-                DiagnosticBlockKind::ForwardedDiagnostic
+                DiagnosticBlockKind::Forwarded
             }
         }
     })
@@ -476,7 +476,7 @@ fn flush_diagnostic_block(
             }
             // Suppressed — will be rendered in the unified summary
         },
-        DiagnosticBlockKind::ForwardedDiagnostic => {
+        DiagnosticBlockKind::Forwarded => {
             // Always forward except in JSON mode. Quiet mode used to drop
             // these too, which hid post-fix validation errors — leaving
             // users with the opaque "compiler failed" message and no way
