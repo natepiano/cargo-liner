@@ -535,20 +535,8 @@ impl Shortcuts<App> for ProjectListPane {
 /// `KeyBind` (code + mods), so a TOML rebind to `'l'` for a different
 /// action wins over this default.
 static PROJECT_LIST_VIM_EXTRAS: [(ProjectListAction, KeyBind); 2] = [
-    (
-        ProjectListAction::ExpandRow,
-        KeyBind {
-            code: crossterm::event::KeyCode::Char('l'),
-            mods: crossterm::event::KeyModifiers::NONE,
-        },
-    ),
-    (
-        ProjectListAction::CollapseRow,
-        KeyBind {
-            code: crossterm::event::KeyCode::Char('h'),
-            mods: crossterm::event::KeyModifiers::NONE,
-        },
-    ),
+    (ProjectListAction::ExpandRow, KeyBind::from_char('l')),
+    (ProjectListAction::CollapseRow, KeyBind::from_char('h')),
 ];
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Output pane.

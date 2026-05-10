@@ -98,6 +98,18 @@ impl KeyInput {
 }
 
 impl KeyBind {
+    /// `const`-friendly constructor for `Char(c)` with no modifiers.
+    /// `From<char>` is not `const`, so `static` arrays of
+    /// `(Action, KeyBind)` pairs (e.g. vim-extras tables) reach for
+    /// this instead of the trait impl.
+    #[must_use]
+    pub const fn from_char(c: char) -> Self {
+        Self {
+            code: KeyCode::Char(c),
+            mods: KeyModifiers::NONE,
+        }
+    }
+
     /// Build a Shift-modified bind. `KeyBind::shift('g')` is `Char('g') + SHIFT`.
     /// Accepts anything convertible to `KeyBind` ([`KeyCode`] or `char`);
     /// composes with [`Self::ctrl`] (`KeyBind::ctrl(KeyBind::shift('g'))` →

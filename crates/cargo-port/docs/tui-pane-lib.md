@@ -2879,7 +2879,23 @@ Findings 5 (form-rule already correctly applied to 14.5/14.6) and 10 (Phase 19.0
   - **Find 11 (minor, applied) → Phase 21** new TOML-load surface paragraph noting `[toasts]` reuses whatever loader pattern Phase 17.5 picks.
   - **Find 14 (minor, applied) → Phase 19** new test-mod allow pattern anchor at the top of the section, naming the canonical `#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, reason = "tests should panic on unexpected values")]` block.
   - **Findings 12, 13, 15** confirmed no-action (no later mention of "framework keymap is built once not twice" needs editing; `cargo_port_bar_palette()` survival in Phase 18 is already correct; no `app.framework_keymap` read site is invalidated by 14.8).
-- **14.9 — closeout.** Any mandatory tests not yet landed by their owning chunk. The single file-head `#![allow(dead_code, reason = "...")]` on `src/tui/framework_keymap.rs` (added in 14.2) stays through Phase 17 and is removed by Phase 18's wiring swap, when every variant becomes constructed; do **not** add per-variant `#[allow(dead_code)]` at registration time in 14.3–14.6 — the file-wide allow already covers them. **Optional polish:** add a `pub const fn KeyBind::from_char(c: char) -> Self` to `tui_pane::keymap::key_bind` so static `vim_extras` arrays can drop the `KeyBind { code: KeyCode::Char('l'), mods: KeyModifiers::NONE }` literal in `framework_keymap.rs::PROJECT_LIST_VIM_EXTRAS`. ProjectList is the only consumer today; Finder/Output add no vim extras, so this is purely a readability win, not a correctness fix. `cargo build && cargo +nightly fmt --all && cargo clippy --workspace --all-targets --all-features -- -D warnings` clean across the workspace.
+- **14.9 — closeout (✅ landed).** Any mandatory tests not yet landed by their owning chunk. The single file-head `#![allow(dead_code, reason = "...")]` on `src/tui/framework_keymap.rs` (added in 14.2) stays through Phase 17 and is removed by Phase 18's wiring swap, when every variant becomes constructed; do **not** add per-variant `#[allow(dead_code)]` at registration time in 14.3–14.6 — the file-wide allow already covers them. **Optional polish:** add a `pub const fn KeyBind::from_char(c: char) -> Self` to `tui_pane::keymap::key_bind` so static `vim_extras` arrays can drop the `KeyBind { code: KeyCode::Char('l'), mods: KeyModifiers::NONE }` literal in `framework_keymap.rs::PROJECT_LIST_VIM_EXTRAS`. ProjectList is the only consumer today; Finder/Output add no vim extras, so this is purely a readability win, not a correctness fix. `cargo build && cargo +nightly fmt --all && cargo clippy --workspace --all-targets --all-features -- -D warnings` clean across the workspace.
+
+### 14.9 Retrospective
+
+**What worked:**
+- Mandatory test verification was a no-op walk: every item on the test list was already marked ✅ landed in its owning chunk (14.2 / 14.4b / 14.6), and the per-pane snapshot deferral list was already cleared in the 14.5+14.6 review block. No tests to write.
+- The optional `KeyBind::from_char` polish landed cleanly: one `pub const fn` on the existing `impl KeyBind` block in `tui_pane/src/keymap/key_bind.rs`, and the two `PROJECT_LIST_VIM_EXTRAS` rows in `src/tui/framework_keymap.rs` collapsed from a six-line struct-literal each to a single-line `KeyBind::from_char('l')` / `KeyBind::from_char('h')` call.
+- Workspace check clean on first try: 823 tests pass, clippy `-D warnings` clean, `cargo install --path .` replaced the binary.
+
+**What deviated from the plan:**
+- File-head `#![allow(dead_code, ...)]` on `src/tui/framework_keymap.rs` was already in place from 14.2; 14.9 did not need to touch it. Removal still happens at Phase 18 as planned.
+
+**Surprises:**
+- The `crossterm::event::KeyCode` / `KeyModifiers` qualifications elsewhere in `framework_keymap.rs` (the seven `From<KeyCode>` impls at lines 146–151, 199, 254, 383, 411, etc.) keep `crossterm` reachable, so removing the two struct-literal `KeyBind { code: …, mods: KeyModifiers::NONE }` rows did not eliminate any imports.
+
+**Implications for remaining phases:**
+- None. 14.9 was scoped to closeout polish and produced no new constraints. Phase 17 / 17.5 / 18 / 19 plans stand unchanged.
 
 The Mandatory Phase 14 tests list (CiRuns visibility, Package state, Finder mode, Finder typing, focused-Package snapshot) is **distributed** across the chunks above — each test ships in the chunk that lands its subject. Per-pane snapshots ship with the pane's own chunk; no separate "snapshots follow-up" commit is needed, which moots the Deferred-tests block.
 
