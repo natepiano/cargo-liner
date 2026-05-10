@@ -2919,7 +2919,7 @@ Deferred to a follow-up commit inside Phase 14 (after the registration chain is 
 
 **`build_into` preflight for tests that go through `framework.focused_pane_mode(ctx)`.** Phase 10 made `focused_pane_mode` read from `mode_queries`, which is populated only by `KeymapBuilder::build_into(&mut framework)`. Tests in Phases 13, 14, and 19 that assert on `focused_pane_mode` (bar snapshots, finder mode override, etc.) **must** build the keymap with `build_into`, never `build()` — the latter leaves `mode_queries` empty and silently returns `None` for every `FocusedPane::App(_)` arm. Tests that exercise `Pane::mode()` directly (the trait associated function, no `Framework`) can use `build()` because they don't touch the registry.
 
-### Phase 15 — Reroute overlay input handlers
+### Phase 15 — Reroute overlay input handlers (✅ partially landed; full cutover deferred to Phase 18)
 
 Convert overlay handlers to scope dispatch:
 
@@ -2944,6 +2944,37 @@ Convert overlay handlers to scope dispatch:
 
 **Framework-internal action enums are not subject to the 14.3.5 form choice.** `ToastsAction`, `SettingsAction`, `KeymapPaneAction`, and the hand-rolled `tui_pane::GlobalAction` were all defined before the macro grew the 2-positional shorthand. Leave them as they are unless a chunk adds a new variant (in which case follow the same "2-positional unless bar_label differs" rule for the new variant only). Phase 15 adds no variants — it only wires handlers — so no form change applies.
 
+### Retrospective
+
+**What worked:**
+- Framework `SettingsPane::handle_key` and `KeymapPane::handle_key` now resolve `bind` against `Self::defaults().into_scope_map().action_for(...)` and flip `EditState`: `Browse → Editing` / `Browse → Awaiting` on `StartEdit`, back to `Browse` on `Save`/`Cancel`. The `#[allow(dead_code)]` on `EditState::Editing` (settings) and `EditState::Awaiting` (keymap) lifted because both are now constructed in `handle_key`.
+- New transition tests added in both panes (settings: `enter_in_browse_transitions_to_editing`, `esc_in_editing_returns_to_browse`, `save_in_editing_returns_to_browse`; keymap: `enter_in_browse_transitions_to_awaiting`, `esc_in_awaiting_returns_to_browse`, `save_in_conflict_returns_to_browse`). 625 nextest tests + doctests pass; clippy `-D warnings` clean across the workspace; `cargo install --path .` replaced the binary cleanly.
+- `keymap_capture_keys` and `settings_edit_keys` stubs stay `const fn` (clippy `missing_const_for_fn` gates the form per `feedback_const_opportunistic.md`); the docstrings now explain the architectural why — the framework cannot mutate a binary-side edit buffer through generic `&mut Ctx`, so the binary observes `pane.mode()` and runs its own buffer code today.
+
+**What deviated from the plan:** Phase 15 ships partial. Three pieces in the original plan are deferred to Phase 18 because each is structurally blocked on Phase 18's atomic dispatcher cutover:
+- **`finder_keys` swap to `keymap.dispatch_app_pane(FinderPane::APP_PANE_ID, &bind, ctx)`.** With the framework `FinderPane::dispatcher()` still a no-op (the standing Phase 14 contract through Phase 17), `dispatch_app_pane` returns `KeyOutcome::Consumed` for any registered Finder action key (Enter/Esc) but performs no state mutation. The "Consumed → halt; Unhandled → fall through to char/backspace/delete" pattern would silently break Finder Confirm/Cancel. The swap lands together with `FinderPane::dispatcher` getting a real body inside Phase 18's "Wire dispatchers" inventory. Today's `finder_keys` body (`super::finder::handle_finder_key(app, bind.code)`) keeps Finder working until then.
+- **Toasts focus gate dispatch chain in `src/tui/input.rs`.** The plan's six-step chain (pre-globals `try_consume_cycle_step` → framework globals incl. `Dismiss` → app globals → `ToastsAction` slot → resolved navigation via `Navigation::list_navigation` → unhandled) requires `app.framework_keymap` to be the live source of truth for global/nav resolution — which Phase 17's "Load TOML into the framework keymap" + Phase 18's dispatcher cutover establishes. Until then the legacy `PaneBehavior::Toasts → handle_toast_key` arm at `src/tui/input.rs:148` keeps focused-toasts navigation/Enter alive, and `app.dismiss(target)` keeps Esc-dismiss alive through `handle_global_key`'s `GlobalAction::Dismiss` arm.
+- **Per-setting buffer mutation in `settings_edit_keys` / per-binding capture in `keymap_capture_keys`.** The framework's stubs cannot reach the binary's `App::settings_state` / `App::keymap_state` through a generic `fn(KeyBind, &mut Ctx)`. Two architectural paths land in Phase 18 alongside the dispatcher cutover: either an injection point on `SettingsPane`/`KeymapPane` (e.g. `with_text_input_handler(handler_fn)`) or a binary-defined wrapper pane that overrides `mode()` to return `Mode::TextInput(my_handler)`. Either is a public-API decision that belongs in the same atomic cutover changeset that retires `handle_settings_edit_key` / `handle_keymap_key`.
+
+**Surprises:**
+- The framework's `SettingsPane`/`KeymapPane` are held inline on `Framework<Ctx>` (`framework.settings_pane`, `framework.keymap_pane`) and reached via `Framework::overlay()` — they are **not** registered in the `Keymap` builder. Their `defaults()` bindings live as in-memory `Bindings` returned per-call from the pane; runtime TOML rebinds against these overlays will need a separate registration story (parallel to `register::<Pane>` for app panes). Today the binary's `handle_settings_key` / `handle_keymap_key` legacy paths still own dispatch routing entirely.
+- The plan's mandatory test list — "Rebinding `FinderAction::Cancel` to `'q'` closes finder" and "Binding any action to `Up` in Awaiting capture mode produces a reserved-for-navigation rejection" — both presuppose the deferred work above (TOML loading on the framework keymap + dispatcher wiring + Toasts focus gate). Both move to Phase 18's acceptance suite where they can pass.
+
+**Implications for remaining phases:**
+- Phase 16's "Reroute base-pane navigation" stays unchanged in scope.
+- Phase 17's "Load TOML into the framework keymap" bullet (line 3011) is unchanged but its acceptance test is now a hard prerequisite for the Phase 15 deferred items (the `OutputAction::Cancel` rebind test depends on `app.framework_keymap` being TOML-loaded; the `FinderAction::Cancel`/`Awaiting`-mode tests do too).
+- Phase 18's "Wire dispatchers" inventory acquires three Phase-15-deferred items: (a) `finder_keys` swap to `dispatch_app_pane`; (b) Toasts focus gate chain in `src/tui/input.rs` replacing the `PaneBehavior::Toasts` arm + `handle_toast_key`; (c) the binary-side mechanism that lets the user's edit buffer / capture cell be mutated from `Mode::TextInput` (handler injection or wrapper pane). Each lands together with its corresponding dispatcher body and legacy-handler deletion in the Phase 18 atomic cutover.
+- The current `SettingsPane::handle_key` / `KeymapPane::handle_key` re-resolve `bind` against `Self::defaults().into_scope_map()` on every keystroke. This is correct but transient: once overlay scope registration lands (whichever phase owns it), `handle_key` reads from the registered scope on `Keymap` rather than rebuilding `defaults()` per call. Future readers should not preserve the per-keystroke rebuild — no test or invariant depends on it; it is a stub gating a Phase-18 swap.
+
+### Phase 15 Review
+
+- **Phase 16 third test** re-scoped to "Phase 15 overlay handlers" funnel observation; the full no-parallel-write funnel test moves to Phase 19 post-Phase-18.
+- **Phase 17 structural Esc preflight** gained a "prerequisite verification" note pointing at `Keymap::key_for_toml_key`; Phase 17.5 acquires a corresponding bullet that adds the method if absent.
+- **Phase 17 acceptance tests** rewritten as two pipeline tests (non-Output focus + Output focus, both routed through `src/tui/input.rs`'s normal key path against the structural preflight) plus a scaffolding warning that bans direct `dispatch_app_pane` use until Phase 18.
+- **Phase 18 "Wire dispatchers" inventory** gained three new bullets (Phase-15-deferred (a) `finder_keys` swap with explicit fallback for `Char` / `Backspace` / `Up` / `Down` / `Home` / `End`; (b) Toasts focus gate chain replacing the `PaneBehavior::Toasts → handle_toast_key` arm; (c) handler-injection wiring per Phase 17.6); `Delete:` list gained two new targets (the three overlay short-circuits at `input.rs:126-137` and the `PaneBehavior::Toasts` arm at `:148`); the stale "do not delete `handle_finder_key`" note rewritten as "delete or extract helpers, depending on whether `FinderPane::dispatcher` + the new fallback reuse helpers."
+- **Phase 17.6** added — handler injection on `SettingsPane` / `KeymapPane` with `with_text_input_handler` builder + `set_text_input_handler` setter; bundled into the same `tui_pane` PR as 17.5 + 19.0; explicit scope limit (handles only the `Mode::TextInput` payload, not action rebinding).
+- **Phase 17.5** expanded — added overlay scope registration (`register_settings_overlay` / `register_keymap_overlay`), public infallible accessors (`Keymap::settings_overlay` / `Keymap::keymap_overlay`), consumer-update bullets (bar render + Phase 18 dispatch read through the accessors), borrow-trap caution (resolution lives in the dispatch loop, not on the panes through `Ctx`), and four new acceptance tests covering existing TOML, rebinds, unknown tables, and unknown actions.
+
 ### Phase 16 — Reroute base-pane navigation
 
 `KeyCode::Up`/`Down`/`Left`/`Right`/`PageUp`/`PageDown`/`Home`/`End` in `handle_normal_key` (`input.rs:580-622`), `handle_detail_key`, `handle_lints_key`, `handle_ci_runs_key` consult `NavigationAction` after the pane scope. ProjectList's `Left`/`Right` route via `ProjectListAction::CollapseRow` / `ExpandRow` (pane-scope precedence). **Seam from 14.4c:** `src/tui/input.rs::handle_normal_key` already carries an `ProjectListAction::ExpandRow | ProjectListAction::CollapseRow => {}` no-op match arm (added so the migrated `ProjectListAction` compiled). Phase 16 deletes the top-of-`handle_normal_key` `KeyCode::Right` / `KeyCode::Left` arms (the ones that hardcode `app.expand()` / `app.project_list.collapse(...)`) and moves their bodies into that match arm — the arm exists, just needs its body filled. Delete `NAVIGATION_RESERVED` (`keymap.rs:794-799`) and `is_navigation_reserved` — replaced by scope lookup against `NavigationAction`.
@@ -2964,11 +2995,13 @@ fn set_focus(&mut self, focus: FocusedPane<AppPaneId>) {
 **Phase 16 tests:**
 - Rebinding `NavigationAction::Down` to `'j'` (vim-off) moves cursor.
 - Rebinding `ProjectListAction::ExpandRow` to `Tab` (with `GlobalAction::NextPane` rebound away) expands current row.
-- A test impl wrapping `set_focus` (e.g. counting calls) observes every focus change driven by the new dispatch path — no parallel write to `app.focus` bypasses the override.
+- A test impl wrapping `set_focus` (counting calls) observes every focus change driven by the framework-routed paths that already exist (Phase 15 overlay handlers); the full funnel-test (no parallel write to `app.focus` anywhere in the binary) lands in Phase 19 after Phase 18 retires the legacy dispatch reads.
 
 ### Phase 17 — Reroute Output, structural Esc
 
 Phase 12 added the framework-owned typed `Toasts<Ctx>` but did not delete the binary's `handle_toast_key` (`input.rs:657-684`); cargo-port's `app.toasts: ToastManager` still drives that handler until Phase 22 migrates the manager into `tui_pane`. Focused-toasts dismiss already flows through `GlobalAction::Dismiss → dismiss_chain → dismiss_framework → toasts.dismiss_focused()` (Phase 12), but the binary's parallel dismiss path through `app.toasts` stays in place until the manager migration deletes both. Phase 17 picks up the remaining structural-Esc work. The Esc-on-output structural pre-handler at `input.rs:112-119` runs before overlays/globals/pane handlers — so pressing Esc clears `example_output` from any pane. Preserve the cross-pane semantics but route the key check through the framework:
+
+**Prerequisite verification (do before drafting Phase 17 binary work).** Confirm `Keymap<Ctx>` exposes a public `pub fn key_for_toml_key(&self, app_pane_id: Ctx::AppPaneId, action_toml_key: &str) -> Option<KeyBind>` — the inverse of `dispatch_app_pane`'s key→action resolution. If it does not, Phase 17.5's `tui_pane` PR (already bundled with the `[global]` coordination + 19.0 paired-slot work) adds it. The method walks the `(AppPaneId → ScopeMap<A>)` registry, finds the scope, and reverse-walks `ScopeMap` for the `(action_toml_key → KeyBind)` entry. Phase 17's structural-Esc preflight snippet below depends on this method existing as a public surface on `Keymap<Ctx>`.
 
 ```rust
 let bind = KeyBind::from(event);
@@ -3013,7 +3046,10 @@ After Phase 17: every key dispatches through the keymap. No `KeyCode::*` direct 
 - Call `.load_toml(keymap_path)` on the builder before `register_navigation::<AppNavigation>()` / `register_globals::<AppGlobalAction>()` / pane registrations. `keymap_path` is `keymap::keymap_path()` (the same path the legacy `ResolvedKeymap::load` consumed).
 - Wrap the `load_toml` call with `.with_context(|| format!("loading keymap from {keymap_path:?}"))` so an `App::new` error surfaces the file path. This is the second `with_context` wrapper in the binary; the first wraps `build_into` (landed in 14.8).
 - **Prerequisite:** the shared-`[global]`-table coordination fix in `tui_pane` (see Phase 17.5 below) must have shipped first. Without it, `apply_toml_overlay` raises `KeymapError::UnknownAction` whenever the TOML's `[global]` table contains keys belonging to the peer enum (the framework's `quit` / `restart` / `next_pane` / etc. seen by `AppGlobalAction`'s overlay, or the app's `find` / `open_editor` / `rescan` seen by `tui_pane::GlobalAction`'s overlay). Phase 17.5 lands before Phase 17 — or co-lands inside it — so the `load_toml` call does not error on the existing user TOML.
-- **Acceptance test:** a Phase 17 test asserts that a user TOML rebind affects the framework keymap path. Concretely: write a temp TOML containing `[output]\ncancel = "q"\n`, point `keymap::keymap_path()` (or the test fixture equivalent) at it, build `App` via `App::new`, focus the Output pane, dispatch `'q'`, assert `app.inflight.example_output()` is cleared. Today's analogous test against the legacy `ResolvedKeymap` is the regression fence; the Phase 17 test is the framework-path equivalent.
+- **Acceptance tests (both exercise the normal `src/tui/input.rs` key path through the structural preflight, not `OutputPane::dispatcher` directly).** Write a temp TOML containing `[output]\ncancel = "q"\n`, point `keymap::keymap_path()` (or the test fixture equivalent) at it, build `App` via `App::new`. Today's analogous test against the legacy `ResolvedKeymap` is the regression fence; both Phase 17 tests below are the framework-path equivalent.
+  - **Non-Output focus.** Focus a non-Output pane (e.g. Targets), push something onto `app.inflight.example_output()`, send `'q'` through the normal `src/tui/input.rs` key path, assert `app.inflight.example_output()` is empty and focus is unchanged. The structural preflight reads `app.framework_keymap.key_for_toml_key(OutputPane::APP_PANE_ID, OutputAction::Cancel.toml_key())`, matches the inbound `KeyBind`, and clears `example_output`.
+  - **Output focus.** Same setup, but focus the Output pane and send `'q'` through the same normal key path. Assert `app.inflight.example_output()` is empty **and** focus moves to Targets. The structural preflight runs from any pane, including Output, and the snippet above explicitly handles the Output-focused case by clearing `example_output` and routing `app.focus.set(PaneId::Targets)`.
+- **Test scaffolding warning.** Phase 17 acceptance tests must not use `app.framework_keymap.dispatch_app_pane(OutputPane::APP_PANE_ID, ...)` directly — `OutputPane::dispatcher()` is intentionally no-op until Phase 18, and bypassing the structural preflight tests a different (and Phase-17-empty) code path. The dispatcher-path acceptance test (synthesize `'q'` against `dispatch_app_pane` directly, observe `OutputPane::dispatcher`'s side effect) lands in Phase 18 once `OutputPane::dispatcher` has a real body.
 
 **Phase 17 tests:**
 - Rebinding `OutputAction::Cancel` to `'q'` clears example_output from any pane.
@@ -3036,7 +3072,105 @@ The framework-keymap TOML loader (`apply_toml_overlay` in `tui_pane/src/keymap/b
 - App-owned key rebind applies: `find = "?"` in TOML, after the same build, the app-globals scope resolves `'?'` to the app's `Find`-equivalent.
 - Truly unknown `[global]` key still errors: `[global]\nbogus_action = "z"\n` with both enums registered raises `KeymapError::UnknownAction { scope: "global", action: "bogus_action" }`.
 
-**Sequencing.** Phase 17.5 lands **before** Phase 17's `Load TOML into the framework keymap` bullet (or co-lands with it inside Phase 17 if the implementer is touching both `tui_pane` and the binary in one PR). Phase 19.0's `tui_pane` paired-slot fix is also a `tui_pane` PR; co-landing 17.5 + 19.0 in one bump is reasonable. No legacy deletion list affected — both changes are purely additive on the `tui_pane` side.
+**Reverse-lookup public method (added if missing).** Confirm `Keymap<Ctx>` exposes `pub fn key_for_toml_key(&self, app_pane_id: Ctx::AppPaneId, action_toml_key: &str) -> Option<KeyBind>`. If absent, add it as part of this `tui_pane` PR. The implementation walks the `(AppPaneId → ScopeMap<A>)` registry, finds the scope by `AppPaneId`, and reverse-walks the `ScopeMap` to find the `KeyBind` whose action's `toml_key()` matches. Phase 17's structural-Esc preflight reads through this method. Test scaffolding: `tui_pane/src/keymap/mod.rs::tests::key_for_toml_key_round_trips_against_pane_scope`.
+
+**Overlay scope registration (TOML rebinds against framework `[settings]` / `[keymap]` tables).** `tui_pane/src/panes/settings_pane.rs::SettingsPane` and `keymap_pane.rs::KeymapPane` are framework-owned overlay panes held inline on `Framework<Ctx>`, not app-pane registrations. `KeymapBuilder::load_toml(...) + register::<P>(...)` will never consume the `[settings]` / `[keymap]` TOML tables unless `tui_pane` exposes an explicit overlay-scope registration path. Without this, Phase 18 deletes `ResolvedKeymap.settings` / `ResolvedKeymap.keymap` and any user `[settings]` / `[keymap]` rebind silently breaks at the cutover commit — the `## Risks and unknowns` "no breaking change" claim is invalidated. Add to the same `tui_pane` bump (17.5 + 17.6 + 19.0):
+
+- **Two new builder methods**, run during the configuring/singleton phase **before** the first `register::<P>(...)` app-pane registration (next to `register_navigation` and `register_globals`):
+
+  ```rust
+  impl<Ctx: AppContext> KeymapBuilder<Ctx, /* configuring state */> {
+      pub fn register_settings_overlay(self) -> Result<Self, KeymapError>;
+      pub fn register_keymap_overlay(self) -> Result<Self, KeymapError>;
+  }
+  ```
+
+  Each method calls the corresponding pane's `defaults()` once at registration time, stores the resulting `ScopeMap<SettingsPaneAction>` / `ScopeMap<KeymapPaneAction>` inside the builder's per-scope registry under the legacy table names exactly — `"settings"` and `"keymap"` — and marks those scope names as registered for `validate_toml_scopes`. This keeps "truly unknown tables" rejection alive while accepting existing user TOML. After registration, the builder's `apply_toml_overlay::<SettingsPaneAction>("settings", ...)` runs against the user TOML so rebinds reach the resolved scope.
+
+- **Public accessors on `Keymap<Ctx>`, infallible:**
+
+  ```rust
+  impl<Ctx: AppContext> Keymap<Ctx> {
+      pub fn settings_overlay(&self) -> &ScopeMap<SettingsPaneAction>;
+      pub fn keymap_overlay(&self) -> &ScopeMap<KeymapPaneAction>;
+  }
+  ```
+
+  The final `Keymap<Ctx>` always has default overlay scopes even when no `[settings]` / `[keymap]` TOML table exists (or when the registration methods were not called — defaults populate from `SettingsPane::defaults()` / `KeymapPane::defaults()` at builder finalize time). The registration methods are the layer that overlay user TOML on top and mark the table names as known. Accessors return `&ScopeMap<...>` directly, no `Option`, no `expect`.
+
+- **Consumers update.** Two existing call sites flip from rebuilding `defaults().into_scope_map()` per use to reading the resolved scope through these accessors:
+  - **Bar rendering** for the Settings / Keymap overlays uses `keymap.settings_overlay()` / `keymap.keymap_overlay()` instead of `SettingsPane::defaults().into_scope_map()` / `KeymapPane::defaults().into_scope_map()`.
+  - **Phase 18 overlay dispatch** resolves Settings / Keymap overlay actions through the resolved scopes from the keymap, not through `Self::defaults()` inside the pane on every keypress.
+
+  Phase 15's per-keystroke rebuild inside `SettingsPane::handle_key` / `KeymapPane::handle_key` migrates to: the dispatch loop (which already holds `&Keymap<Ctx>`) resolves the action against `keymap.settings_overlay().action_for(&bind)` / `keymap.keymap_overlay().action_for(&bind)` first, then calls the pane's action-handling code with the resolved action.
+
+- **Ownership caution.** Do **not** thread the keymap into `SettingsPane` / `KeymapPane` through `Ctx` — that re-introduces the borrow trap of split `&mut Framework` + `&mut Ctx`. The dispatch loop already has `&Keymap<Ctx>` in scope; it resolves the action from the overlay scope and then calls the pane's action-handling code. Keeps ownership clear: framework owns the panes, dispatch owns the keymap read.
+
+- **Phase 17.5 acceptance tests** (in addition to the `[global]`-coordination tests above):
+  - Existing `[settings]` TOML loads without errors when `register_settings_overlay()` is called during the builder chain.
+  - Rebind: `[settings] start_edit = "F2"`, after `load_toml + register_settings_overlay + build`, `keymap.settings_overlay().action_for(&KeyBind::from(KeyCode::F(2)))` resolves to `Some(SettingsPaneAction::StartEdit)`.
+  - Same coverage for `[keymap]`: existing table loads without errors when `register_keymap_overlay()` is called; a rebind resolves through `keymap.keymap_overlay().action_for(...)`.
+  - Truly unknown table still errors: `[bogus_overlay] foo = "x"` with both overlay registrations active raises `KeymapError::UnknownScope { scope: "bogus_overlay" }` (or whichever variant `validate_toml_scopes` already raises).
+  - Truly unknown action under a known overlay table still errors: `[settings] bogus_action = "x"` raises `KeymapError::UnknownAction { scope: "settings", action: "bogus_action" }`.
+
+**Risks-and-unknowns update.** With overlay scope registration landed in Phase 17.5, the `## Risks and unknowns` "Existing user TOML configs … No breaking change" claim stays valid through the Phase 18 cutover. Without it, Phase 18 silently drops user rebinds for `[settings]` and `[keymap]` — the risk section would need to be revised.
+
+**Sequencing.** Phase 17.5 lands **before** Phase 17's `Load TOML into the framework keymap` bullet (or co-lands with it inside Phase 17 if the implementer is touching both `tui_pane` and the binary in one PR). Phase 19.0's `tui_pane` paired-slot fix is also a `tui_pane` PR. **Decision recorded:** bundle 17.5 + 17.6 + 19.0 into one `tui_pane` bump that lands before Phase 17 binary work begins — collapses what would otherwise be three separate `tui_pane` bumps across the cutover into one. All three changes are purely additive on the `tui_pane` side; no legacy deletion list affected.
+
+### Phase 17.6 — Binary-side `Mode::TextInput` handler injection on `SettingsPane` / `KeymapPane`
+
+**Decision recorded:** option (a) — handler injection. Public builder methods on the framework's overlay panes let the binary supply its own `fn(KeyBind, &mut Ctx)` payload for `Mode::TextInput`, replacing today's hardcoded framework stubs. Wrapper-pane approach rejected: `SettingsPane` / `KeymapPane` are framework-owned fields on `Framework<Ctx>`, not normal app-pane registrations, so wrapper panes would add substantial boilerplate and complicate the construction story.
+
+**Why this is a Phase 18 blocker.** `tui_pane/src/panes/settings_pane.rs::SettingsPane::mode()` returns `Mode::TextInput(settings_edit_keys::<Ctx>)` — a hardcoded fn pointer to the framework's no-op stub. The binary cannot make that handler mutate `App::settings_state` (or `App::keymap_state` for `KeymapPane`) without new public API. Phase 18's atomic-cutover constraint means the changeset cannot draft until the `Mode::TextInput` payload route is decided. Phase 17.6 settles the API decision in its own pre-Phase-18 chunk, the same way Phase 17.5 isolates the `[global]` shared-table fix.
+
+**`tui_pane`-side API surface.**
+
+```rust
+pub struct SettingsPane<Ctx: AppContext> {
+    edit_state:          EditState,
+    editor_target:       Option<PathBuf>,
+    text_input_handler:  fn(KeyBind, &mut Ctx),
+    _ctx:                PhantomData<fn(&mut Ctx)>,
+}
+
+impl<Ctx: AppContext> SettingsPane<Ctx> {
+    pub const fn new() -> Self { /* defaults handler to settings_edit_keys */ }
+
+    /// Builder — replace the `Mode::TextInput` payload. Returns `Self`
+    /// so this chains in `Framework` construction.
+    #[must_use]
+    pub const fn with_text_input_handler(mut self, handler: fn(KeyBind, &mut Ctx)) -> Self {
+        self.text_input_handler = handler;
+        self
+    }
+
+    /// Setter — for binaries that wire after `Framework::new` without
+    /// replacing the whole pane.
+    pub const fn set_text_input_handler(&mut self, handler: fn(KeyBind, &mut Ctx)) {
+        self.text_input_handler = handler;
+    }
+
+    pub fn mode(&self, _ctx: &Ctx) -> Mode<Ctx> {
+        match self.edit_state {
+            EditState::Editing => Mode::TextInput(self.text_input_handler),
+            EditState::Browse  => Mode::Navigable,
+        }
+    }
+}
+```
+
+`KeymapPane<Ctx>` mirrors this API, defaulting its handler to `keymap_capture_keys` and returning `Mode::TextInput(self.text_input_handler)` from the `EditState::Awaiting` arm. The framework stubs (`settings_edit_keys`, `keymap_capture_keys`) stay in place as the safe defaults — no behavior change for callers who never inject.
+
+**Scope limit.** Phase 17.6 solves **only** the text-input mutation payload route. It does **not** by itself solve Settings/Keymap *action* rebinding (`StartEdit` / `Save` / `Cancel`) because `SettingsPane::handle_key` and `KeymapPane::handle_key` still resolve `bind` against `Self::defaults().into_scope_map()` per keystroke (Phase 15). Phase 17.6 is orthogonal to overlay scope registration (Finding 7 / Phase 17.5 expansion); both are needed for the full Phase 18 cutover.
+
+**`tui_pane`-side delivery.** Lands inside the same `tui_pane` bump as Phase 17.5 + Phase 19.0 (the bundle decision recorded under Phase 17.5). API surface: two new builder methods + one setter on each of `SettingsPane` / `KeymapPane`, all public. Default (when `with_text_input_handler` / `set_text_input_handler` is not called) keeps today's no-op stub for back-compat.
+
+**Phase 17.6 acceptance tests** (`tui_pane/src/panes/settings_pane.rs::tests`, `tui_pane/src/panes/keymap_pane.rs::tests`):
+- `with_text_input_handler` swaps the `Mode::TextInput` payload: place pane in `Editing` (or `Awaiting`), verify the fn pointer in the returned `Mode::TextInput(handler)` matches the injected one (compare against the same fn-pointer cast).
+- Default handler still routes to the existing no-op stub when injection is not called: regression fence so existing call sites keep compiling against `SettingsPane::new()`.
+- `set_text_input_handler` mutates after construction: same payload-comparison pattern, but built through the post-`new()` setter path.
+
+**Sequencing.** Phase 17.6 lands inside the bundled `tui_pane` PR (17.5 + 17.6 + 19.0) before Phase 18 binary work begins. Phase 18 then consumes it: cargo-port's `App::new` (or the equivalent `Framework::new` site) wires `framework.settings_pane = SettingsPane::new().with_text_input_handler(my_settings_edit_keys)` and the parallel for `keymap_pane`. The bodies of today's `settings::handle_settings_edit_key` and `keymap_ui::handle_keymap_capture` relocate into binary-side fns suitable as `fn(KeyBind, &mut App)` payloads.
 
 ### Phase 18 — Bar swap and cleanup
 
@@ -3053,6 +3187,9 @@ Add the `What dissolves` / `What survives` summary (currently in this doc) as us
 - **`AppGlobalAction::dispatcher`** — bodies for the four variants `Find`, `OpenEditor`, `OpenTerminal`, `Rescan`. Each routes to the existing operation body invoked by today's `handle_global_key` arms for these variants.
 - **`AppNavigation::dispatcher`** — routes `(NavigationAction, FocusedPane)` tuples to the legacy arrow-key bodies that Phase 16 relocated (the ones moved into the `ProjectListAction::ExpandRow | CollapseRow` match arm and into each per-pane handler's navigation arms).
 - **Every app pane dispatcher** — `PackagePane`, `GitPane`, `TargetsPane`, `LintsPane`, `CiRunsPane`, `LangPane`, `CpuPane`, `ProjectListPane`, `OutputPane`, `FinderPane`. Each routes its action variants to the bodies executed today by the corresponding legacy handler arms (`handle_normal_key` / `handle_detail_key` / `handle_lints_key` / `handle_ci_runs_key` / `handle_finder_key` / `handle_output_key`, etc., on `Activate` / `Clean` / variant-specific operations).
+- **Phase-15-deferred (a): `finder_keys` body swap to scope dispatch.** `src/tui/framework_keymap.rs::finder_keys` swaps from today's `super::finder::handle_finder_key(app, bind.code)` delegate to `match keymap.dispatch_app_pane(FinderPane::APP_PANE_ID, &bind, ctx) { KeyOutcome::Consumed => {}, KeyOutcome::Unhandled => /* fallback */ }`. **Fallback must preserve all existing finder text-input + result-navigation behavior** that is not represented by a `FinderAction` variant: `Char(c)` appends to the query buffer, `Backspace` deletes from it, **`Up` / `Down` / `Home` / `End` navigate the finder result list** (these are not `FinderAction` variants today and must keep working). Arrow-key handling on `Unhandled` matches today's `handle_finder_key` arms one-to-one. **Do not add `Delete`** unless that is an intentional new behavior — `handle_finder_key` does not handle `Delete` today. Lands together with `FinderPane::dispatcher()` getting a real body in this same changeset.
+- **Phase-15-deferred (b): Toasts focus gate chain** added to `src/tui/input.rs::handle_key_event`. Implements the six-step chain from Phase 15 (pre-globals → framework globals → app globals → ToastsAction slot → resolved navigation → unhandled) when current focus is `FocusedPane::Framework(FrameworkFocusId::Toasts)`. Replaces the `PaneBehavior::Toasts → handle_toast_key` arm at `src/tui/input.rs:148`.
+- **Phase-15-deferred (c): binary-side `Mode::TextInput` mutation mechanism via handler injection.** Per Phase 17.6 (handler injection on `SettingsPane`/`KeymapPane`): cargo-port's `App::new` (or `Framework::new` site) wires `framework.settings_pane = SettingsPane::new().with_text_input_handler(my_settings_edit_keys)` and the parallel for `keymap_pane`. The bodies of today's `settings::handle_settings_edit_key` and `keymap_ui::handle_keymap_capture` relocate into binary-side fns suitable as `fn(KeyBind, &mut App)` payloads. Lands together with the deletion of those legacy bodies' callers (see `Delete:` below).
 
 **Atomic cutover constraint.** The dispatcher bodies and the deletion of the legacy dispatch reads (`handle_*_key` fn bodies + their call sites + the `app.keymap.current().<scope>` accessors) must land together in the same Phase 18 cutover changeset. Splitting the change leaves the binary in one of two failure modes: both paths fire on the same key (double-dispatch), or neither path fires (dead key). The "Wire dispatchers" inventory above and the `Delete:` list below describe halves of the same atomic swap — they cannot be sequenced apart.
 
@@ -3063,6 +3200,8 @@ Delete:
 - `App::enter_action`, `shortcuts::enter()` const fn.
 - The old combined `GlobalAction` enum in `src/tui/keymap.rs` (split into `tui_pane::GlobalAction` + `AppGlobalAction` in Phase 14). **Audit pass:** every binary call site that names `crate::keymap::GlobalAction::*` flips to either the framework dispatch chain (the bulk of `handle_global_key`'s 11-arm match) or — for the pane-context-specific overrides — a reverse-lookup against `app.framework_keymap` plus the matching `tui_pane::GlobalAction` / `AppGlobalAction` variant. Specific call sites the audit covers (non-exhaustive seed list): `src/tui/input.rs::handle_overlay_editor_key` (uses `GlobalAction::OpenEditor` outside `handle_global_key`).
 - `src/tui/input.rs::handle_global_key` fn body, its 11-arm match on `GlobalAction::*`, and the call site that invokes it from `handle_normal_key` / the dispatch entry. Replaced by the framework dispatch chain — framework-owned globals fire through `tui_pane::GlobalAction::dispatcher`, app-owned globals fire through `AppGlobalAction::dispatcher` (per the **Wire dispatchers** sub-section above).
+- The three overlay short-circuits at `src/tui/input.rs:126-137` (`if app.overlays.is_keymap_open() { keymap_ui::handle_keymap_key(...); return; }`, `if app.overlays.is_finder_open() { finder::handle_finder_key(app, code); return; }`, `if app.overlays.is_settings_open() { settings::handle_settings_key(app, code); return; }`). All three are replaced by the framework overlay dispatch chain: `Framework::overlay()` returns the active overlay id, and the dispatch loop routes keys through `framework.settings_pane.handle_key` / `framework.keymap_pane.handle_key` (Phase 15 wired the `EditState` machines), and through `Mode::TextInput(finder_keys)` from `FinderPane::mode()`. The underlying helper bodies in `src/tui/finder.rs`, `src/tui/keymap_ui.rs`, and `src/tui/settings.rs` are partially reused by the binary-injected `Mode::TextInput` handlers (per Phase 17.6) and by the framework-routed dispatcher bodies; legacy `handle_settings_adjust_key` / `handle_settings_edit_key` are gone (Phase 15 retrospective), and the `handle_settings_key` / `handle_keymap_key` entry points themselves either delete entirely or shrink to extracted helper functions consumed by the framework path.
+- The `PaneBehavior::Toasts => handle_toast_key(app, &normalized);` arm at `src/tui/input.rs:148` (the call site, not the function body — the body deletes in Phase 22 alongside `app.toasts`). Replaced by the Phase-15-deferred (b) Toasts focus gate chain in `handle_key_event`.
 - Every read through `app.keymap.current().global` — including the `action_for`, `key_for`, `display_key_for`, and `display_keys_for` call sites scattered across `src/tui/input.rs`, `src/tui/shortcuts.rs`, and any keymap-overlay UI. With `ResolvedKeymap.global` deleted (next bullet), these accessors have no backing storage. Each call site flips to a framework-keymap reverse-lookup (`app.framework_keymap.framework_globals()` for `tui_pane::GlobalAction`, the `AppGlobalAction` scope getter for the app-owned variants) or is removed entirely if the dispatcher swap obviates it.
 - `ResolvedKeymap.global: ScopeMap<GlobalAction>` field on `src/keymap.rs::ResolvedKeymap` — the parallel-path invariant ends here. The framework keymap's globals registries (`framework_globals` for `tui_pane::GlobalAction`, `app_globals` for `AppGlobalAction`) are the sole source of truth post-cutover.
 - The local `macro_rules! action_enum` block at `src/keymap.rs:216-250`. By Phase 18, `GlobalAction` is the only remaining caller (every other binary action enum migrated to `tui_pane::action_enum!` during Phases 14.2–14.6). Deleting `GlobalAction` removes the macro's last consumer; the macro itself deletes in the same pass.
@@ -3085,7 +3224,10 @@ Re-bless `tests/assets/default-keymap.toml` against the framework's defaults: `e
 
 After Phase 18, `shortcuts.rs` contains only legacy types pending removal (or is deleted entirely if all callers have flipped to `Shortcuts::visibility` / `Shortcuts::state`). The `InputContext` enum is deleted; tests under `src/tui/app/tests/` referencing it migrate to `app.focus.current()`-based lookups in this phase.
 
-**Do not delete during the dispatch cleanup pass:** `src/tui/finder.rs::handle_finder_key` survives Phase 18 because it is the implementation body of the framework's `Mode::TextInput` handler — `framework_keymap.rs::finder_keys` calls into it directly (introduced in Phase 14.6). The legacy short-circuit *path* from `src/tui/input.rs` to `handle_finder_key` (the `if app.overlays.is_finder_open()` branch in `handle_normal_key`) does delete; the function body itself stays alive as the framework's text-input handler. Phase 18's dispatch-deletion sweep should treat `handle_finder_key` like a public API of `finder.rs`, not a legacy shim.
+**`handle_finder_key` after the Phase-15-deferred (a) `finder_keys` body swap.** Through Phase 14.6 / Phase 15, `framework_keymap.rs::finder_keys` delegated wholesale to `src/tui/finder.rs::handle_finder_key`. Phase 18's deferred-(a) work changes that: `finder_keys` becomes a `dispatch_app_pane(FinderPane::APP_PANE_ID, ...)` call with a fallback for the non-`FinderAction` arms (Char append, Backspace delete, Up / Down / Home / End result-list nav). Two outcomes are valid:
+- If `FinderPane::dispatcher` and the `finder_keys` fallback together still reuse `handle_finder_key`'s extracted helpers (e.g. `finder::query_append_char`, `finder::result_nav`, `finder::activate`, `finder::cancel`), then `handle_finder_key` itself can delete and its arm bodies move to those helpers, called from the dispatcher / fallback.
+- If `FinderPane::dispatcher` and the `finder_keys` fallback inline the bodies directly (no helpers extracted), then `handle_finder_key` deletes outright as dead code.
+Either way, the legacy short-circuit at `src/tui/input.rs:130-132` (the `if app.overlays.is_finder_open()` branch) is gone (listed in the `Delete:` block above), and `handle_finder_key` no longer survives as a single-call wholesaler. Phase 18's implementer should extract whatever finder helpers the new path needs and delete dead code in the same pass.
 
 Hoist `make_app` from `tests/mod.rs` to `src/tui/tui_test_support.rs` (`pub(super) fn make_app`); declare `#[cfg(test)] mod tui_test_support;` in `src/tui/mod.rs`.
 
@@ -3135,6 +3277,8 @@ Vim/text-input regression:
 - vim-mode on, finder open: `'k'` appends to query; cursor does not move.
 - vim-mode off, finder open: `'k'` appends to query.
 - finder open with `FinderAction::PrevMatch` rebound to `'k'`: `'k'` moves cursor up (FinderAction beats text input fall-through within finder).
+- **Rebinding `FinderAction::Cancel` to `'q'` closes finder; `'k'` typed in finder inserts `'k'` even with vim mode on.** (Originally a Phase 15 mandatory test, deferred from Phase 15 because `FinderPane::dispatcher` was a no-op until Phase 18; now lands here against the Phase 18 dispatcher cutover.)
+- **Binding any action to `Up` while `KeymapPane::EditState` is `Awaiting` produces a "reserved for navigation" rejection** (replaces today's `is_navigation_reserved` semantics via scope lookup against `NavigationAction`). Originally a Phase 15 mandatory test, deferred for the same reason.
 - Settings in Editing mode: Esc cancels edit; `example_output` not cleared (text-input gating works).
 - **Framework-side `Mode::TextInput` bar suppression.** `tui_pane/tests/bar_rendering.rs` (or extension to `framework_bar.rs`) drives `render_status_bar` against a `MockApp` whose focused pane returns `Mode::TextInput(no_op_handler)`, asserts every region (`bar.nav`, `bar.pane_action`, `bar.global`) renders empty. Pins the framework's contract independent of which app pane is focused — the cargo-port-side test (`focused_finder_open_bar_suppresses_all_regions` in `src/tui/app/tests/framework_keymap.rs`, landed in 14.6) covers Finder specifically; the `tui_pane`-side test pins the rule for any future `TextInput` pane. Confirmed against `tui_pane/src/bar/{nav_region.rs:33, pane_action_region.rs:24-25, global_region.rs:31-32}`.
 - **Policy: no globals fire while focused pane is `Mode::TextInput`.** This is parity with today's legacy short-circuit in `src/tui/input.rs::handle_normal_key`, which gates on `app.overlays.is_finder_open() || app.overlays.is_settings_editing()` *before* `handle_global_key`. The framework's "`Mode::TextInput` suppresses every region" rule at `tui_pane/src/bar/{nav_region.rs:33, pane_action_region.rs:24-25, global_region.rs:31-32}` is bit-for-bit equivalent. **No allow-list this phase.** Any opt-in allow-list (e.g. surfacing `Quit` / `Restart` / `Rescan` while a text-input pane is active) is post-Phase-19 design work — it is new API surface (probably a per-action `survive_text_input` bit on `Globals::Actions` or an equivalent framework escape hatch), not migration parity. Phase 19 ships with the suppression rule, no exceptions. **Acceptance test:** rebind `AppGlobalAction::Rescan` to `Ctrl+r` (its default) and synthesize that key event with focus on the open Finder; assert the rescan dispatcher does **not** fire (observed via the dispatcher's side-effect counter from the `Dispatch parity` block above). Locks the parity guarantee.
@@ -3276,7 +3420,7 @@ cargo-port's existing `ToastManager::push_*` call sites (Phase 22 migration entr
 
 Phase 21 introduces `ToastSettings` as first-class framework settings, contributed into the same `SettingsRegistry` that the binary's app settings flow through. cargo-port's existing `status_flash_secs` / `task_linger_secs` move from `TuiConfig` into the framework's `ToastSettings`; the binary keeps only the persistence binding (write to disk). Settings land before the manager migration (Phase 22) so the migrated render/lifecycle code reads `framework.toast_settings()` directly — no temporary constants, no plumbing churn.
 
-**TOML-load surface.** Phase 21's `[toasts]` TOML scope is its own table, so the shared-`[global]`-table coordination problem surfaced by 14.8 does not apply directly. Phase 21 inherits whatever loader pattern Phase 14.9 / 18 picks for the `[global]` shared-table fix (option (a) per-key skip-when-peer-registered, or option (b) scope-name split) — Phase 21's `[toasts]` loader uses the same builder API surface so the binary's TOML pipeline stays uniform.
+**TOML-load surface.** Phase 21's `[toasts]` TOML scope is its own table, so the shared-`[global]`-table coordination problem surfaced by 14.8 does not apply directly. Phase 21's `[toasts]` loader inherits the per-key skip-when-peer-registered pattern committed in Phase 17.5 (option (a)) so the binary's TOML pipeline stays uniform.
 
 **1. `ToastSettings` with validated newtypes.** No raw `f64` durations cross the framework boundary:
 
@@ -3504,7 +3648,7 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 
 **6. Mode integration.** Phase 12 already returns `Mode::Navigable` for focused Toasts; Phase 22 has no work here.
 
-**7. Delete the binary's `handle_toast_key`.** `src/tui/input.rs:657-684` deletes alongside the `app.toasts` field. The binary's `handle_toast_key` no longer has an owning ToastManager to drive; focused-toasts dismiss already routes through `GlobalAction::Dismiss → dismiss_chain → dismiss_framework → toasts.dismiss_focused()` (Phase 12), and viewport scrolling already routes through the keymap (Phase 12 `on_navigation` + `try_consume_cycle_step`).
+**7. Delete the binary's `handle_toast_key` function body.** `src/tui/input.rs:657-684` deletes alongside the `app.toasts` field. The function body is the deletion target here; the legacy *call site* (`PaneBehavior::Toasts → handle_toast_key` arm at `src/tui/input.rs:148`) was already replaced by Phase 18's Toasts focus gate dispatch chain — the body has been dead code from end of Phase 18 to start of Phase 22. The binary's `handle_toast_key` no longer has an owning `ToastManager` to drive; focused-toasts dismiss already routes through `GlobalAction::Dismiss → dismiss_chain → dismiss_framework → toasts.dismiss_focused()` (Phase 12), and viewport scrolling already routes through the keymap (Phase 12 `on_navigation` + `try_consume_cycle_step`).
 
 **Phase 22 tests** (in `tui_pane/tests/`):
 - Lifecycle: `timed_toast_expires_at_timeout_at`, `task_toast_lingers_after_finish_then_prunes`, `persistent_toast_survives_prune`.

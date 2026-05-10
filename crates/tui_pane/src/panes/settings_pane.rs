@@ -36,10 +36,6 @@ crate::action_enum! {
 
 /// Editor sub-state for the settings overlay.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[allow(
-    dead_code,
-    reason = "Editing is constructed in Phase 14 when handle_key wires the editor state machine"
-)]
 enum EditState {
     /// Default browse mode — the user is paging through settings.
     Browse,
@@ -85,9 +81,23 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     /// Consume one keypress. Always returns
     /// [`KeyOutcome::Consumed`] — the overlay short-circuits all input
     /// when open, matching the existing cargo-port `settings_open`
-    /// behavior. Phase 14 wires the captured key into the
-    /// [`EditState`] transition.
-    pub const fn handle_key(&mut self, _ctx: &mut Ctx, _bind: &KeyBind) -> KeyOutcome {
+    /// behavior. Resolves `bind` against [`Self::defaults`] and flips
+    /// [`EditState`] accordingly: `StartEdit` enters [`EditState::Editing`]
+    /// from `Browse`; `Save` and `Cancel` return to `Browse`. Per-setting
+    /// buffer mutation lives on the binary side (Phase 18 cutover).
+    pub fn handle_key(&mut self, _ctx: &mut Ctx, bind: &KeyBind) -> KeyOutcome {
+        if let Some(action) = Self::defaults().into_scope_map().action_for(bind) {
+            match action {
+                SettingsPaneAction::StartEdit => {
+                    if matches!(self.edit_state, EditState::Browse) {
+                        self.edit_state = EditState::Editing;
+                    }
+                },
+                SettingsPaneAction::Save | SettingsPaneAction::Cancel => {
+                    self.edit_state = EditState::Browse;
+                },
+            }
+        }
         KeyOutcome::Consumed
     }
 
@@ -143,8 +153,14 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     }
 }
 
-/// Stub edit-routing handler. Phase 14 replaces this with logic that
-/// applies the typed character to the focused setting's editing buffer.
+/// Generic edit-routing handler. The framework owns the
+/// `Mode::TextInput` payload type but cannot mutate the binary's
+/// per-setting edit buffer — that state lives on `Ctx` (e.g.
+/// `App::settings_state`). The binary observes
+/// [`SettingsPane::edit_state`](EditState) through
+/// [`SettingsPane::mode`] and runs its own buffer mutation. Phase 18
+/// swaps this stub for a binary-injected handler when the legacy
+/// `handle_settings_edit_key` deletes.
 const fn settings_edit_keys<Ctx: AppContext>(_bind: KeyBind, _ctx: &mut Ctx) {}
 
 #[cfg(test)]
@@ -214,5 +230,29 @@ mod tests {
         let app = fresh_app();
         let slots = pane.bar_slots(&app);
         assert_eq!(slots.len(), 3);
+    }
+
+    #[test]
+    fn enter_in_browse_transitions_to_editing() {
+        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
+        let mut app = fresh_app();
+        let _ = pane.handle_key(&mut app, &crossterm::event::KeyCode::Enter.into());
+        assert!(matches!(pane.mode(&app), Mode::TextInput(_)));
+    }
+
+    #[test]
+    fn esc_in_editing_returns_to_browse() {
+        let mut pane: SettingsPane<TestApp> = SettingsPane::for_test_editing(None);
+        let mut app = fresh_app();
+        let _ = pane.handle_key(&mut app, &crossterm::event::KeyCode::Esc.into());
+        assert!(matches!(pane.mode(&app), Mode::Navigable));
+    }
+
+    #[test]
+    fn save_in_editing_returns_to_browse() {
+        let mut pane: SettingsPane<TestApp> = SettingsPane::for_test_editing(None);
+        let mut app = fresh_app();
+        let _ = pane.handle_key(&mut app, &KeyBind::from('s'));
+        assert!(matches!(pane.mode(&app), Mode::Navigable));
     }
 }

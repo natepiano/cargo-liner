@@ -38,7 +38,8 @@ crate::action_enum! {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[allow(
     dead_code,
-    reason = "Awaiting/Conflict are constructed in Phase 14 when handle_key wires the editor state machine"
+    reason = "Conflict is constructed by the binary's handle_keymap_key on collision; \
+              Phase 18 cutover moves that logic onto KeymapPane proper"
 )]
 enum EditState {
     /// Default browse mode — scrollable list of bindings.
@@ -88,9 +89,25 @@ impl<Ctx: AppContext> KeymapPane<Ctx> {
     /// Consume one keypress. Always returns
     /// [`KeyOutcome::Consumed`] — the overlay short-circuits all input
     /// when open, matching the existing cargo-port `keymap_open`
-    /// behavior. Phase 14 wires the captured key into the
-    /// [`EditState`] transition.
-    pub const fn handle_key(&mut self, _ctx: &mut Ctx, _bind: &KeyBind) -> KeyOutcome {
+    /// behavior. Resolves `bind` against [`Self::defaults`] and flips
+    /// [`EditState`] accordingly: `StartEdit` enters
+    /// [`EditState::Awaiting`] from `Browse`; `Save` and `Cancel`
+    /// return to `Browse` from any state. Capture-conflict resolution
+    /// (`Awaiting → Conflict`) is driven by the binary's collision
+    /// check; Phase 18 cutover folds that step onto this pane.
+    pub fn handle_key(&mut self, _ctx: &mut Ctx, bind: &KeyBind) -> KeyOutcome {
+        if let Some(action) = Self::defaults().into_scope_map().action_for(bind) {
+            match action {
+                KeymapPaneAction::StartEdit => {
+                    if matches!(self.edit_state, EditState::Browse) {
+                        self.edit_state = EditState::Awaiting;
+                    }
+                },
+                KeymapPaneAction::Save | KeymapPaneAction::Cancel => {
+                    self.edit_state = EditState::Browse;
+                },
+            }
+        }
         KeyOutcome::Consumed
     }
 
@@ -160,9 +177,14 @@ impl<Ctx: AppContext> KeymapPane<Ctx> {
     }
 }
 
-/// Stub key-capture handler. Phase 14 replaces this with logic that
-/// records the captured `KeyBind` into the editor state and transitions
-/// out of [`EditState::Awaiting`].
+/// Generic key-capture handler. The framework owns the
+/// `Mode::TextInput` payload type but cannot mutate the binary's
+/// per-binding capture cell — that state lives on `Ctx` (e.g.
+/// `App::keymap_state`). The binary observes
+/// [`KeymapPane::edit_state`](EditState) through [`KeymapPane::mode`]
+/// and runs its own capture mutation. Phase 18 swaps this stub for a
+/// binary-injected handler when the legacy `handle_keymap_key`
+/// deletes.
 const fn keymap_capture_keys<Ctx: AppContext>(_bind: KeyBind, _ctx: &mut Ctx) {}
 
 #[cfg(test)]
@@ -241,5 +263,29 @@ mod tests {
         let app = fresh_app();
         let slots = pane.bar_slots(&app);
         assert_eq!(slots.len(), 3);
+    }
+
+    #[test]
+    fn enter_in_browse_transitions_to_awaiting() {
+        let mut pane: KeymapPane<TestApp> = KeymapPane::new();
+        let mut app = fresh_app();
+        let _ = pane.handle_key(&mut app, &crossterm::event::KeyCode::Enter.into());
+        assert!(matches!(pane.mode(&app), Mode::TextInput(_)));
+    }
+
+    #[test]
+    fn esc_in_awaiting_returns_to_browse() {
+        let mut pane: KeymapPane<TestApp> = KeymapPane::for_test_awaiting(None);
+        let mut app = fresh_app();
+        let _ = pane.handle_key(&mut app, &crossterm::event::KeyCode::Esc.into());
+        assert!(matches!(pane.mode(&app), Mode::Navigable));
+    }
+
+    #[test]
+    fn save_in_conflict_returns_to_browse() {
+        let mut pane: KeymapPane<TestApp> = KeymapPane::for_test_conflict(None);
+        let mut app = fresh_app();
+        let _ = pane.handle_key(&mut app, &KeyBind::from('s'));
+        assert!(matches!(pane.mode(&app), Mode::Navigable));
     }
 }
