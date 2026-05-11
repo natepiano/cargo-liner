@@ -3301,6 +3301,26 @@ Phase 20 starts the closeout by migrating the keymap viewer/editor off `Resolved
 - External file reload for the same class of framework-owned scope so UI-save and watcher reload both prove framework-owned scopes survive.
 - Default-keymap asset generation includes framework-owned scopes and does not drop `[finder]`, `[output]`, `[navigation]`, `[settings]`, or `[keymap]`.
 
+### Retrospective
+
+**Shipped:**
+- Keymap UI rows now read from `app.framework_keymap` for framework globals, app globals, navigation, all app pane scopes, Finder, Output, Settings, and Keymap overlays. The legacy `ResolvedKeymap` model no longer drives the viewer/editor.
+- Keymap UI saves write the full framework-owned TOML surface and rebuild `app.framework_keymap` after saving. Startup/default backfill and external reload also preserve framework-owned scopes instead of regenerating from `ResolvedKeymap::default_toml_from(...)`.
+- `ResolvedKeymap.global`, the legacy `crate::keymap::GlobalAction`, and the local `macro_rules! action_enum` block are gone. The remaining legacy `ResolvedKeymap` only carries pane scopes that still have compatibility readers.
+- `tui_pane::Keymap` gained `keys_for_toml_key` so save generation can preserve TOML arrays such as `cancel = ["Esc", "q"]` rather than flattening to the primary key.
+- `tests/assets/default-keymap.toml` is now generated from the framework defaults and includes `[global]`, `[navigation]`, all app pane scopes, `[finder]`, `[output]`, `[settings]`, and `[keymap]`.
+
+**Surprises:**
+- The golden-template test must override the keymap path to a temp file. Otherwise it can accidentally read the developer's real `~/.config/cargo-port/keymap.toml` and compare user rebinds against the default asset.
+- Preserving framework-owned scopes was not enough; the save path also had to preserve multi-key bindings. The existing structural Output cancel test caught this when `["Esc", "q"]` collapsed to `"Esc"` during save/rebuild.
+
+**Verification:**
+- `cargo check --workspace --all-targets -q`
+- `cargo mend --workspace --all-targets`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo nextest run` — 625 passed
+- `cargo install --path .`
+
 **Remaining-phase closeout gate.** Starting with Phase 20.1 and continuing through Phase 26, every phase closes only after:
 1. Run the `/clippy` skill. That includes the Rust style-guide load, `cargo mend --workspace --all-targets`, style review, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo +nightly fmt --all` per the skill.
 2. Run all tests with `cargo nextest run`.

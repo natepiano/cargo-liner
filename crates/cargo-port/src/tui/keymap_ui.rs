@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -8,7 +10,13 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::Action;
+use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::KeyBind as FrameworkKeyBind;
+use tui_pane::KeymapPaneAction;
+use tui_pane::Pane;
+use tui_pane::ScopeMap as FrameworkScopeMap;
+use tui_pane::SettingsPaneAction;
 
 use super::app::App;
 use super::constants::ACTIVE_BORDER_COLOR;
@@ -17,172 +25,307 @@ use super::constants::LABEL_COLOR;
 use super::constants::SECTION_HEADER_INDENT;
 use super::constants::SECTION_ITEM_INDENT;
 use super::constants::TITLE_COLOR;
+use super::framework_keymap::AppGlobalAction;
+use super::framework_keymap::AppNavigation;
+use super::framework_keymap::AppPaneId;
+use super::framework_keymap::CiRunsPane;
+use super::framework_keymap::CpuAction;
+use super::framework_keymap::CpuPane;
+use super::framework_keymap::FinderPane;
+use super::framework_keymap::GitPane;
+use super::framework_keymap::LangAction;
+use super::framework_keymap::LangPane;
+use super::framework_keymap::LintsPane;
+use super::framework_keymap::NavigationAction;
+use super::framework_keymap::OutputPane;
+use super::framework_keymap::PackagePane;
+use super::framework_keymap::ProjectListPane;
+use super::framework_keymap::TargetsPane;
 use super::pane::PaneSelectionState;
 use super::panes::PaneId;
 use super::popup::PopupFrame;
+use crate::keymap;
 use crate::keymap::CiRunsAction;
+use crate::keymap::FinderAction;
 use crate::keymap::GitAction;
-use crate::keymap::GlobalAction;
-use crate::keymap::KeyBind;
 use crate::keymap::LintsAction;
+use crate::keymap::OutputAction;
 use crate::keymap::PackageAction;
 use crate::keymap::ProjectListAction;
-use crate::keymap::ResolvedKeymap;
-use crate::keymap::ScopeMap;
 use crate::keymap::TargetsAction;
 
 // ── Row model ────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy)]
+struct PendingRebind {
+    scope:  &'static str,
+    action: &'static str,
+    bind:   FrameworkKeyBind,
+}
+
+#[derive(Clone)]
 struct KeymapRow {
+    section:     &'static str,
     scope:       &'static str,
     action:      &'static str,
     description: &'static str,
     key_display: String,
+    bind:        Option<FrameworkKeyBind>,
     is_header:   bool,
 }
 
-const fn header(scope: &'static str) -> KeymapRow {
+const fn header(section: &'static str) -> KeymapRow {
     KeymapRow {
-        scope,
+        section,
+        scope: "",
         action: "",
         description: "",
         key_display: String::new(),
+        bind: None,
         is_header: true,
     }
 }
 
-fn action_row<A: Copy + Eq + std::hash::Hash>(
+fn bind_display(bind: Option<FrameworkKeyBind>) -> String {
+    bind.map_or_else(String::new, |key| key.display())
+}
+
+fn action_toml_key<A: Action>(action: A) -> &'static str { action.toml_key() }
+
+fn action_row<A: Action>(
+    section: &'static str,
     scope: &'static str,
     action: A,
-    toml_key: fn(A) -> &'static str,
-    description: fn(A) -> &'static str,
-    scope_map: &ScopeMap<A>,
+    toml_key: &'static str,
+    bind: Option<FrameworkKeyBind>,
 ) -> KeymapRow {
     KeymapRow {
+        section,
         scope,
-        action: toml_key(action),
-        description: description(action),
-        key_display: scope_map.display_key_for(action),
+        action: toml_key,
+        description: action.description(),
+        key_display: bind_display(bind),
+        bind,
         is_header: false,
     }
 }
 
-fn push_scope<A: Copy + Eq + std::hash::Hash>(
+fn push_scope<A: Action>(
     rows: &mut Vec<KeymapRow>,
-    scope_name: &'static str,
-    scope_key: &'static str,
+    section: &'static str,
+    scope: &'static str,
     actions: &[A],
+    scope_map: &FrameworkScopeMap<A>,
     toml_key: fn(A) -> &'static str,
-    description: fn(A) -> &'static str,
-    scope_map: &ScopeMap<A>,
 ) {
-    rows.push(header(scope_name));
+    rows.push(header(section));
     let mut section: Vec<KeymapRow> = actions
         .iter()
-        .map(|&a| action_row(scope_key, a, toml_key, description, scope_map))
+        .map(|&action| {
+            let bind = scope_map.key_for(action).copied();
+            action_row(section, scope, action, toml_key(action), bind)
+        })
         .collect();
     section.sort_by_key(|r| r.description);
     rows.extend(section);
 }
 
-const GLOBAL_NAV: &[GlobalAction] = &[GlobalAction::NextPane, GlobalAction::PrevPane];
-const GLOBAL_SHORTCUTS: &[GlobalAction] = &[
-    GlobalAction::Quit,
-    GlobalAction::Restart,
-    GlobalAction::Find,
-    GlobalAction::OpenEditor,
-    GlobalAction::OpenTerminal,
-    GlobalAction::Settings,
-    GlobalAction::OpenKeymap,
-    GlobalAction::Dismiss,
+fn push_app_pane_scope<A: Action>(
+    rows: &mut Vec<KeymapRow>,
+    section: &'static str,
+    scope: &'static str,
+    app_pane_id: AppPaneId,
+    actions: &[A],
+    app: &App,
+) {
+    rows.push(header(section));
+    let mut section_rows: Vec<KeymapRow> = actions
+        .iter()
+        .map(|&action| {
+            let toml_key = action.toml_key();
+            let bind = app.framework_keymap.key_for_toml_key(app_pane_id, toml_key);
+            action_row(section, scope, action, toml_key, bind)
+        })
+        .collect();
+    section_rows.sort_by_key(|r| r.description);
+    rows.extend(section_rows);
+}
+
+fn framework_global_toml_key(action: FrameworkGlobalAction) -> &'static str {
+    match action {
+        FrameworkGlobalAction::OpenSettings => "settings",
+        _ => action.toml_key(),
+    }
+}
+
+const GLOBAL_NAV: &[FrameworkGlobalAction] = &[
+    FrameworkGlobalAction::NextPane,
+    FrameworkGlobalAction::PrevPane,
+];
+const GLOBAL_SHORTCUTS: &[FrameworkGlobalAction] = &[
+    FrameworkGlobalAction::Quit,
+    FrameworkGlobalAction::Restart,
+    FrameworkGlobalAction::OpenKeymap,
+    FrameworkGlobalAction::OpenSettings,
+    FrameworkGlobalAction::Dismiss,
 ];
 
-fn build_rows(km: &ResolvedKeymap) -> Vec<KeymapRow> {
+fn build_rows(app: &App) -> Vec<KeymapRow> {
     let mut rows = Vec::new();
-    push_scope(
-        &mut rows,
-        "Global Navigation",
-        "global",
-        GLOBAL_NAV,
-        GlobalAction::toml_key,
-        GlobalAction::description,
-        &km.global,
-    );
-    push_scope(
-        &mut rows,
-        "Global Shortcuts",
-        "global",
-        GLOBAL_SHORTCUTS,
-        GlobalAction::toml_key,
-        GlobalAction::description,
-        &km.global,
-    );
-    push_scope(
-        &mut rows,
-        "Project List",
-        "project_list",
-        ProjectListAction::ALL,
-        ProjectListAction::toml_key,
-        ProjectListAction::description,
-        &km.project_list,
-    );
-    push_scope(
-        &mut rows,
-        "Package",
-        "package",
-        PackageAction::ALL,
-        PackageAction::toml_key,
-        PackageAction::description,
-        &km.package,
-    );
-    push_scope(
-        &mut rows,
-        "Git",
-        "git",
-        GitAction::ALL,
-        GitAction::toml_key,
-        GitAction::description,
-        &km.git,
-    );
-    push_scope(
-        &mut rows,
-        "Targets",
-        "targets",
-        TargetsAction::ALL,
-        TargetsAction::toml_key,
-        TargetsAction::description,
-        &km.targets,
-    );
-    push_scope(
-        &mut rows,
-        "CI Runs",
-        "ci_runs",
-        CiRunsAction::ALL,
-        CiRunsAction::toml_key,
-        CiRunsAction::description,
-        &km.ci_runs,
-    );
-    push_scope(
-        &mut rows,
-        "Lints",
-        "lints",
-        LintsAction::ALL,
-        LintsAction::toml_key,
-        LintsAction::description,
-        &km.lints,
-    );
+    push_global_rows(&mut rows, app);
+    push_navigation_rows(&mut rows, app);
+    push_app_pane_rows(&mut rows, app);
+    push_overlay_rows(&mut rows, app);
     rows
 }
 
+fn push_global_rows(rows: &mut Vec<KeymapRow>, app: &App) {
+    push_scope(
+        rows,
+        "Global Navigation",
+        "global",
+        GLOBAL_NAV,
+        app.framework_keymap.framework_globals(),
+        framework_global_toml_key,
+    );
+    push_scope(
+        rows,
+        "Global Shortcuts",
+        "global",
+        GLOBAL_SHORTCUTS,
+        app.framework_keymap.framework_globals(),
+        framework_global_toml_key,
+    );
+    if let Some(scope) = app.framework_keymap.globals::<AppGlobalAction>() {
+        push_scope(
+            rows,
+            "App Global Shortcuts",
+            "global",
+            AppGlobalAction::ALL,
+            scope,
+            action_toml_key,
+        );
+    }
+}
+
+fn push_navigation_rows(rows: &mut Vec<KeymapRow>, app: &App) {
+    if let Some(scope) = app.framework_keymap.navigation::<AppNavigation>() {
+        push_scope(
+            rows,
+            "Navigation",
+            "navigation",
+            NavigationAction::ALL,
+            scope,
+            action_toml_key,
+        );
+    }
+}
+
+fn push_app_pane_rows(rows: &mut Vec<KeymapRow>, app: &App) {
+    push_app_pane_scope(
+        rows,
+        "Project List",
+        "project_list",
+        ProjectListPane::APP_PANE_ID,
+        ProjectListAction::ALL,
+        app,
+    );
+    push_app_pane_scope(
+        rows,
+        "Package",
+        "package",
+        PackagePane::APP_PANE_ID,
+        PackageAction::ALL,
+        app,
+    );
+    push_app_pane_scope(
+        rows,
+        "Lang",
+        "lang",
+        LangPane::APP_PANE_ID,
+        LangAction::ALL,
+        app,
+    );
+    push_app_pane_scope(
+        rows,
+        "CPU",
+        "cpu",
+        CpuPane::APP_PANE_ID,
+        CpuAction::ALL,
+        app,
+    );
+    push_app_pane_scope(
+        rows,
+        "Git",
+        "git",
+        GitPane::APP_PANE_ID,
+        GitAction::ALL,
+        app,
+    );
+    push_app_pane_scope(
+        rows,
+        "Targets",
+        "targets",
+        TargetsPane::APP_PANE_ID,
+        TargetsAction::ALL,
+        app,
+    );
+    push_app_pane_scope(
+        rows,
+        "CI Runs",
+        "ci_runs",
+        CiRunsPane::APP_PANE_ID,
+        CiRunsAction::ALL,
+        app,
+    );
+    push_app_pane_scope(
+        rows,
+        "Lints",
+        "lints",
+        LintsPane::APP_PANE_ID,
+        LintsAction::ALL,
+        app,
+    );
+    push_app_pane_scope(
+        rows,
+        "Output",
+        "output",
+        OutputPane::APP_PANE_ID,
+        OutputAction::ALL,
+        app,
+    );
+    push_app_pane_scope(
+        rows,
+        "Finder",
+        "finder",
+        FinderPane::APP_PANE_ID,
+        FinderAction::ALL,
+        app,
+    );
+}
+
+fn push_overlay_rows(rows: &mut Vec<KeymapRow>, app: &App) {
+    push_scope(
+        rows,
+        "Settings",
+        "settings",
+        SettingsPaneAction::ALL,
+        app.framework_keymap.settings_overlay(),
+        action_toml_key,
+    );
+    push_scope(
+        rows,
+        "Keymap",
+        "keymap",
+        KeymapPaneAction::ALL,
+        app.framework_keymap.keymap_overlay(),
+        action_toml_key,
+    );
+}
+
 /// Total number of selectable (non-header) rows.
-pub(super) const fn selectable_row_count() -> usize {
-    GlobalAction::ALL.len()
-        + ProjectListAction::ALL.len()
-        + PackageAction::ALL.len()
-        + GitAction::ALL.len()
-        + TargetsAction::ALL.len()
-        + CiRunsAction::ALL.len()
-        + LintsAction::ALL.len()
+pub(super) fn selectable_row_count(app: &App) -> usize {
+    build_rows(app).iter().filter(|row| !row.is_header).count()
 }
 
 // ── Key handling ─────────────────────────────────────────────────────
@@ -209,7 +352,7 @@ pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyE
             .overlays
             .keymap_pane
             .viewport
-            .set_pos(selectable_row_count().saturating_sub(1)),
+            .set_pos(selectable_row_count(app).saturating_sub(1)),
         KeyCode::Enter => app.overlays.keymap_begin_awaiting(),
         _ => {},
     }
@@ -231,15 +374,21 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
         return;
     }
 
-    let bind = KeyBind::new(event.code, event.modifiers);
-    let rows = build_rows(app.keymap.current());
+    let bind = FrameworkKeyBind {
+        code: event.code,
+        mods: event.modifiers,
+    };
+    let rows = build_rows(app);
     let selectable: Vec<&KeymapRow> = rows.iter().filter(|r| !r.is_header).collect();
-    let Some(row) = selectable.get(app.overlays.keymap_pane.viewport.pos()) else {
+    let Some(row) = selectable
+        .get(app.overlays.keymap_pane.viewport.pos())
+        .map(|row| (*row).clone())
+    else {
         return;
     };
 
     // Check navigation reservation.
-    if bind.modifiers == KeyModifiers::NONE
+    if bind.mods == KeyModifiers::NONE
         && matches!(
             bind.code,
             KeyCode::Up
@@ -257,7 +406,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
 
     // Check vim reservation.
     if app.config.navigation_keys().uses_vim()
-        && bind.modifiers == KeyModifiers::NONE
+        && bind.mods == KeyModifiers::NONE
         && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l'))
     {
         app.overlays.set_inline_error(format!(
@@ -267,29 +416,25 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
         return;
     }
 
-    // Check global conflict (if pane scope).
+    // Check global conflict (if editing a non-global scope).
     if row.scope != "global"
-        && let Some(global_action) = app.keymap.current().global.action_for(&bind)
+        && let Some(msg) = check_global_conflict(&rows, &row, bind)
     {
-        app.overlays.set_inline_error(format!(
-            "\"{}\" used by Global → {}",
-            bind.display(),
-            global_action.toml_key()
-        ));
+        app.overlays.set_inline_error(msg);
         return;
     }
 
-    // Check pane conflicts (if global scope) — a global key that
-    // shadows a pane binding would silently steal the key.
+    // Check non-global conflicts (if editing a global scope) — a
+    // global key that shadows another scope would silently steal it.
     if row.scope == "global"
-        && let Some(msg) = check_pane_conflict(app.keymap.current(), &bind)
+        && let Some(msg) = check_non_global_conflict(&rows, &row, bind)
     {
         app.overlays.set_inline_error(msg);
         return;
     }
 
     // Check intra-scope conflict.
-    let conflict = check_scope_conflict(app.keymap.current(), row.scope, row.action, &bind);
+    let conflict = check_scope_conflict(&rows, &row, bind);
     if let Some(msg) = conflict {
         app.overlays.set_inline_error(msg);
         return;
@@ -300,192 +445,343 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     app.overlays.keymap_end_awaiting();
 }
 
-fn check_scope_conflict(
-    km: &ResolvedKeymap,
-    scope: &str,
-    current_action: &str,
-    bind: &KeyBind,
+fn check_global_conflict(
+    rows: &[KeymapRow],
+    current: &KeymapRow,
+    bind: FrameworkKeyBind,
 ) -> Option<String> {
-    fn check<A: Copy + Eq + std::hash::Hash>(
-        scope_map: &ScopeMap<A>,
-        current_action: &str,
-        bind: &KeyBind,
-        toml_key: fn(A) -> &'static str,
-        scope_label: &str,
-    ) -> Option<String> {
-        if let Some(existing) = scope_map.action_for(bind) {
-            let existing_key = toml_key(existing);
-            if existing_key != current_action {
-                return Some(format!(
-                    "\"{}\" used by {scope_label} → {existing_key}",
-                    bind.display()
-                ));
-            }
-        }
-        None
-    }
-
-    match scope {
-        "global" => check(
-            &km.global,
-            current_action,
-            bind,
-            GlobalAction::toml_key,
-            "Global",
-        ),
-        "project_list" => check(
-            &km.project_list,
-            current_action,
-            bind,
-            ProjectListAction::toml_key,
-            "Project List",
-        ),
-        "package" => check(
-            &km.package,
-            current_action,
-            bind,
-            PackageAction::toml_key,
-            "Package",
-        ),
-        "git" => check(&km.git, current_action, bind, GitAction::toml_key, "Git"),
-        "targets" => check(
-            &km.targets,
-            current_action,
-            bind,
-            TargetsAction::toml_key,
-            "Targets",
-        ),
-        "ci_runs" => check(
-            &km.ci_runs,
-            current_action,
-            bind,
-            CiRunsAction::toml_key,
-            "CI Runs",
-        ),
-        "lints" => check(
-            &km.lints,
-            current_action,
-            bind,
-            LintsAction::toml_key,
-            "Lints",
-        ),
-        _ => None,
-    }
+    find_conflict(rows, current, bind, |row| row.scope == "global")
 }
 
-/// Check whether `bind` would shadow a key in any pane scope.
-fn check_pane_conflict(km: &ResolvedKeymap, bind: &KeyBind) -> Option<String> {
-    fn hit<A: Copy + Eq + std::hash::Hash>(
-        scope_map: &ScopeMap<A>,
-        bind: &KeyBind,
-        toml_key: fn(A) -> &'static str,
-        scope_label: &str,
-    ) -> Option<String> {
-        scope_map.action_for(bind).map(|a| {
+fn check_non_global_conflict(
+    rows: &[KeymapRow],
+    current: &KeymapRow,
+    bind: FrameworkKeyBind,
+) -> Option<String> {
+    find_conflict(rows, current, bind, |row| row.scope != "global")
+}
+
+fn check_scope_conflict(
+    rows: &[KeymapRow],
+    current: &KeymapRow,
+    bind: FrameworkKeyBind,
+) -> Option<String> {
+    find_conflict(rows, current, bind, |row| row.scope == current.scope)
+}
+
+fn find_conflict(
+    rows: &[KeymapRow],
+    current: &KeymapRow,
+    bind: FrameworkKeyBind,
+    predicate: impl Fn(&KeymapRow) -> bool,
+) -> Option<String> {
+    rows.iter()
+        .filter(|row| !row.is_header)
+        .filter(|row| predicate(row))
+        .filter(|row| row.bind == Some(bind))
+        .find(|row| row.scope != current.scope || row.action != current.action)
+        .map(|row| {
             format!(
                 "\"{}\" used by {} → {}",
                 bind.display(),
-                scope_label,
-                toml_key(a),
+                row.section,
+                row.action,
             )
         })
-    }
-
-    None.or_else(|| {
-        hit(
-            &km.project_list,
-            bind,
-            ProjectListAction::toml_key,
-            "Project List",
-        )
-    })
-    .or_else(|| hit(&km.package, bind, PackageAction::toml_key, "Package"))
-    .or_else(|| hit(&km.git, bind, GitAction::toml_key, "Git"))
-    .or_else(|| hit(&km.targets, bind, TargetsAction::toml_key, "Targets"))
-    .or_else(|| hit(&km.ci_runs, bind, CiRunsAction::toml_key, "CI Runs"))
-    .or_else(|| hit(&km.lints, bind, LintsAction::toml_key, "Lints"))
 }
 
-fn apply_rebind(app: &mut App, scope: &str, action: &str, bind: KeyBind) {
-    fn rebind<A: Copy + Eq + std::hash::Hash>(
-        scope_map: &mut ScopeMap<A>,
-        action_key: &str,
-        bind: KeyBind,
-        from_toml_key: fn(&str) -> Option<A>,
-    ) {
-        let Some(action) = from_toml_key(action_key) else {
-            return;
-        };
-        // Remove old binding for this action.
-        if let Some(old_bind) = scope_map.by_action.get(&action).cloned() {
-            scope_map.by_key.remove(&old_bind);
-        }
-        scope_map.insert(bind, action);
-    }
-
-    match scope {
-        "global" => rebind(
-            &mut app.keymap.current_mut().global,
+fn apply_rebind(app: &mut App, scope: &'static str, action: &'static str, bind: FrameworkKeyBind) {
+    save_keymap_to_disk(
+        app,
+        Some(PendingRebind {
+            scope,
             action,
             bind,
-            GlobalAction::from_toml_key,
-        ),
-        "project_list" => rebind(
-            &mut app.keymap.current_mut().project_list,
-            action,
-            bind,
-            ProjectListAction::from_toml_key,
-        ),
-        "package" => rebind(
-            &mut app.keymap.current_mut().package,
-            action,
-            bind,
-            PackageAction::from_toml_key,
-        ),
-        "git" => rebind(
-            &mut app.keymap.current_mut().git,
-            action,
-            bind,
-            GitAction::from_toml_key,
-        ),
-        "targets" => rebind(
-            &mut app.keymap.current_mut().targets,
-            action,
-            bind,
-            TargetsAction::from_toml_key,
-        ),
-        "ci_runs" => rebind(
-            &mut app.keymap.current_mut().ci_runs,
-            action,
-            bind,
-            CiRunsAction::from_toml_key,
-        ),
-        "lints" => rebind(
-            &mut app.keymap.current_mut().lints,
-            action,
-            bind,
-            LintsAction::from_toml_key,
-        ),
-        _ => {},
-    }
-
-    // Save to disk and update stamp to prevent redundant reload.
-    save_keymap_to_disk(app);
+        }),
+    );
 }
 
-fn save_keymap_to_disk(app: &mut App) {
+pub(super) fn save_current_keymap_to_disk(app: &mut App) { save_keymap_to_disk(app, None); }
+
+fn save_keymap_to_disk(app: &mut App, pending: Option<PendingRebind>) {
     let Some(path) = app.keymap.path() else {
         return;
     };
-    // Write full TOML with current bindings.
+    let content = current_keymap_toml_with_pending(app, pending.as_ref());
     // TODO(toml_edit): use toml_edit for targeted updates preserving comments.
-    let content = ResolvedKeymap::default_toml_from(app.keymap.current());
     let _ = std::fs::write(path, &content);
-    // Update stamp so hot-reload skips this write.
+    let legacy = keymap::load_keymap_from_str(&content, app.config.current().tui.navigation_keys);
+    app.keymap.replace_current(legacy.keymap);
     app.keymap.sync_stamp();
     if let Err(err) = app.rebuild_framework_keymap_from_disk() {
         app.show_timed_toast("Keymap reload failed", err);
     }
+}
+
+#[cfg(test)]
+pub(super) fn current_keymap_toml(app: &App) -> String {
+    current_keymap_toml_with_pending(app, None)
+}
+
+fn current_keymap_toml_with_pending(app: &App, pending: Option<&PendingRebind>) -> String {
+    let mut out = String::from(
+        "# cargo-port keymap configuration\n\
+         # Edit bindings below. Format: action = \"Key\" or \"Modifier+Key\"\n\
+         # Modifiers: Ctrl, Alt, Shift.  Examples: \"Ctrl+r\", \"Shift+Tab\", \"q\"\n\
+         # Note: when vim navigation is enabled, h/j/k/l are reserved\n\
+         #       for navigation and cannot be used as action keys.\n\n",
+    );
+
+    write_section(&mut out, "global", global_entries(app), pending);
+    write_navigation_section(&mut out, app, pending);
+    write_app_pane_sections(&mut out, app, pending);
+    write_overlay_sections(&mut out, app, pending);
+    if out.ends_with("\n\n") {
+        out.pop();
+    }
+
+    out
+}
+
+fn write_navigation_section(out: &mut String, app: &App, pending: Option<&PendingRebind>) {
+    if let Some(scope) = app.framework_keymap.navigation::<AppNavigation>() {
+        write_section(
+            out,
+            "navigation",
+            entries_from_scope(NavigationAction::ALL, scope, action_toml_key),
+            pending,
+        );
+    }
+}
+
+fn write_app_pane_sections(out: &mut String, app: &App, pending: Option<&PendingRebind>) {
+    write_section(
+        out,
+        "project_list",
+        entries_from_app_pane(
+            app,
+            ProjectListPane::APP_PANE_ID,
+            ProjectListAction::ALL,
+            action_toml_key,
+        ),
+        pending,
+    );
+    write_section(
+        out,
+        "package",
+        entries_from_app_pane(
+            app,
+            PackagePane::APP_PANE_ID,
+            PackageAction::ALL,
+            action_toml_key,
+        ),
+        pending,
+    );
+    write_section(
+        out,
+        "lang",
+        entries_from_app_pane(app, LangPane::APP_PANE_ID, LangAction::ALL, action_toml_key),
+        pending,
+    );
+    write_section(
+        out,
+        "cpu",
+        entries_from_app_pane(app, CpuPane::APP_PANE_ID, CpuAction::ALL, action_toml_key),
+        pending,
+    );
+    write_section(
+        out,
+        "git",
+        entries_from_app_pane(app, GitPane::APP_PANE_ID, GitAction::ALL, action_toml_key),
+        pending,
+    );
+    write_section(
+        out,
+        "targets",
+        entries_from_app_pane(
+            app,
+            TargetsPane::APP_PANE_ID,
+            TargetsAction::ALL,
+            action_toml_key,
+        ),
+        pending,
+    );
+    write_section(
+        out,
+        "lints",
+        entries_from_app_pane(
+            app,
+            LintsPane::APP_PANE_ID,
+            LintsAction::ALL,
+            action_toml_key,
+        ),
+        pending,
+    );
+    write_section(
+        out,
+        "ci_runs",
+        entries_from_app_pane(
+            app,
+            CiRunsPane::APP_PANE_ID,
+            CiRunsAction::ALL,
+            action_toml_key,
+        ),
+        pending,
+    );
+    write_section(
+        out,
+        "output",
+        entries_from_app_pane(
+            app,
+            OutputPane::APP_PANE_ID,
+            OutputAction::ALL,
+            action_toml_key,
+        ),
+        pending,
+    );
+    write_section(
+        out,
+        "finder",
+        entries_from_app_pane(
+            app,
+            FinderPane::APP_PANE_ID,
+            FinderAction::ALL,
+            action_toml_key,
+        ),
+        pending,
+    );
+}
+
+fn write_overlay_sections(out: &mut String, app: &App, pending: Option<&PendingRebind>) {
+    write_section(
+        out,
+        "settings",
+        entries_from_scope(
+            SettingsPaneAction::ALL,
+            app.framework_keymap.settings_overlay(),
+            action_toml_key,
+        ),
+        pending,
+    );
+    write_section(
+        out,
+        "keymap",
+        entries_from_scope(
+            KeymapPaneAction::ALL,
+            app.framework_keymap.keymap_overlay(),
+            action_toml_key,
+        ),
+        pending,
+    );
+}
+
+#[derive(Clone)]
+struct TomlEntry {
+    action: &'static str,
+    binds:  Vec<FrameworkKeyBind>,
+}
+
+fn global_entries(app: &App) -> Vec<TomlEntry> {
+    let mut entries = entries_from_scope(
+        FrameworkGlobalAction::ALL,
+        app.framework_keymap.framework_globals(),
+        framework_global_toml_key,
+    );
+    if let Some(scope) = app.framework_keymap.globals::<AppGlobalAction>() {
+        entries.extend(entries_from_scope(
+            AppGlobalAction::ALL,
+            scope,
+            action_toml_key,
+        ));
+    }
+    entries
+}
+
+fn entries_from_scope<A: Action>(
+    actions: &[A],
+    scope_map: &FrameworkScopeMap<A>,
+    toml_key: fn(A) -> &'static str,
+) -> Vec<TomlEntry> {
+    actions
+        .iter()
+        .map(|&action| TomlEntry {
+            action: toml_key(action),
+            binds:  scope_map.display_keys_for(action).to_vec(),
+        })
+        .collect()
+}
+
+fn entries_from_app_pane<A: Action>(
+    app: &App,
+    app_pane_id: AppPaneId,
+    actions: &[A],
+    toml_key: fn(A) -> &'static str,
+) -> Vec<TomlEntry> {
+    actions
+        .iter()
+        .map(|&action| {
+            let action_key = toml_key(action);
+            TomlEntry {
+                action: action_key,
+                binds:  app
+                    .framework_keymap
+                    .keys_for_toml_key(app_pane_id, action_key),
+            }
+        })
+        .collect()
+}
+
+fn write_section(
+    out: &mut String,
+    scope: &'static str,
+    mut entries: Vec<TomlEntry>,
+    pending: Option<&PendingRebind>,
+) {
+    let _ = writeln!(out, "[{scope}]");
+    entries.sort_by_key(|entry| entry.action);
+    let max_len = entries
+        .iter()
+        .map(|entry| entry.action.len())
+        .max()
+        .unwrap_or(0);
+    for entry in entries {
+        let value = pending
+            .filter(|pending| pending.scope == scope && pending.action == entry.action)
+            .map_or_else(
+                || keybind_toml_value(&entry.binds),
+                |pending| keybind_toml_value(&[pending.bind]),
+            );
+        let _ = writeln!(out, "{:<max_len$} = {}", entry.action, value);
+    }
+    out.push('\n');
+}
+
+fn keybind_toml_value(binds: &[FrameworkKeyBind]) -> String {
+    match binds {
+        [] => "\"\"".to_string(),
+        [bind] => format!("\"{}\"", bind.display()),
+        _ => {
+            let values = binds
+                .iter()
+                .map(|bind| format!("\"{}\"", bind.display()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{values}]")
+        },
+    }
+}
+
+pub(super) fn vim_mode_conflicts(app: &App) -> Vec<String> {
+    build_rows(app)
+        .into_iter()
+        .filter(|row| !row.is_header)
+        .filter_map(|row| {
+            let bind = row.bind?;
+            (bind.mods == KeyModifiers::NONE
+                && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l')))
+            .then(|| format!("{}.{}", row.scope, row.action))
+        })
+        .collect()
 }
 
 // ── Rendering ────────────────────────────────────────────────────────
@@ -575,7 +871,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
 
 pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let rows = build_rows(app.keymap.current());
+    let rows = build_rows(app);
 
     // Dynamic width: base fits all normal keys, expands for conflict messages.
     let content_width = app.overlays.inline_error().map_or(BASE_POPUP_WIDTH, |msg| {

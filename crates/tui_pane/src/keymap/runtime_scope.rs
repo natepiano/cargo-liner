@@ -46,6 +46,12 @@ pub(crate) trait RuntimeScope<Ctx: AppContext>: 'static {
     /// action enum, or if the named action has no binding.
     fn key_for_toml_key(&self, key: &str) -> Option<KeyBind>;
 
+    /// Reverse lookup: TOML key string → every bound [`KeyBind`].
+    /// Returns an empty vector if `key` does not name an action in
+    /// this scope's action enum, or if the named action has no
+    /// binding.
+    fn keys_for_toml_key(&self, key: &str) -> Vec<KeyBind>;
+
     /// Predicate form of [`Self::key_for_toml_key`] that checks every
     /// key bound to the action, not just its primary display key.
     fn is_key_bound_to_toml_key(&self, key: &str, bind: &KeyBind) -> bool;
@@ -143,6 +149,13 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
     fn key_for_toml_key(&self, key: &str) -> Option<KeyBind> {
         let action = P::Actions::from_toml_key(key)?;
         self.bindings.key_for(action).copied()
+    }
+
+    fn keys_for_toml_key(&self, key: &str) -> Vec<KeyBind> {
+        let Some(action) = P::Actions::from_toml_key(key) else {
+            return Vec::new();
+        };
+        self.bindings.display_keys_for(action).to_vec()
     }
 
     fn is_key_bound_to_toml_key(&self, key: &str, bind: &KeyBind) -> bool {

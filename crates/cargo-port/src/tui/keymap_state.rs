@@ -27,9 +27,8 @@ impl Keymap {
         }
     }
 
+    #[cfg(test)]
     pub(super) const fn current(&self) -> &ResolvedKeymap { &self.file.current }
-
-    pub(super) const fn current_mut(&mut self) -> &mut ResolvedKeymap { &mut self.file.current }
 
     pub(super) fn path(&self) -> Option<&Path> { self.file.path() }
 

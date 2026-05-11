@@ -215,62 +215,6 @@ fn parse_key_code(s: &str) -> Result<KeyCode, String> {
     Err(format!("unknown key: \"{s}\""))
 }
 
-// ── Action enums ─────────────────────────────────────────────────────
-
-macro_rules! action_enum {
-    (
-        $(#[$meta:meta])*
-        $vis:vis enum $Name:ident {
-            $( $Variant:ident => $toml_key:literal, $desc:literal; )*
-        }
-    ) => {
-        $(#[$meta])*
-        $vis enum $Name {
-            $( $Variant, )*
-        }
-
-        impl $Name {
-            pub const ALL: &[Self] = &[ $( Self::$Variant, )* ];
-
-            pub const fn toml_key(self) -> &'static str {
-                match self {
-                    $( Self::$Variant => $toml_key, )*
-                }
-            }
-
-            pub const fn description(self) -> &'static str {
-                match self {
-                    $( Self::$Variant => $desc, )*
-                }
-            }
-
-            pub fn from_toml_key(key: &str) -> Option<Self> {
-                match key {
-                    $( $toml_key => Some(Self::$Variant), )*
-                    _ => None,
-                }
-            }
-        }
-    };
-}
-
-action_enum! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub enum GlobalAction {
-        Quit       => "quit",        "Quit application";
-        Restart    => "restart",     "Restart application";
-        Find       => "find",        "Open finder";
-        OpenEditor => "open_editor", "Open in editor";
-        OpenTerminal => "open_terminal", "Open terminal";
-        Settings   => "settings",    "Open settings";
-        NextPane   => "next_pane",   "Focus next pane";
-        PrevPane   => "prev_pane",   "Focus previous pane";
-        OpenKeymap => "open_keymap", "Open keymap";
-        Rescan     => "rescan",      "Rescan projects";
-        Dismiss    => "dismiss",     "Dismiss focused item";
-    }
-}
-
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum ProjectListAction {
@@ -285,18 +229,12 @@ tui_pane::action_enum! {
 /// Inherent-method facade over the `tui_pane::Action` trait impl so
 /// the legacy `src/keymap.rs` / `src/tui/keymap_ui.rs` /
 /// `src/tui/input.rs` call sites that take `ProjectListAction::ALL`,
-/// `::toml_key`, `::description`, `::from_toml_key` as fn-pointers
-/// continue to compile during the 14.x parallel-path window. Phase 18
-/// retires the legacy paths and deletes this facade alongside the
-/// local `action_enum!` macro.
+/// `::toml_key`, `::from_toml_key` as fn-pointers continue to compile
+/// during the parallel-path window.
 impl ProjectListAction {
     pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
 
     pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
-
-    pub(crate) fn description(self) -> &'static str {
-        <Self as tui_pane::Action>::description(self)
-    }
 
     pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
         <Self as tui_pane::Action>::from_toml_key(key)
@@ -313,18 +251,12 @@ tui_pane::action_enum! {
 
 /// Inherent-method facade over the `tui_pane::Action` trait impl so
 /// the legacy `src/keymap.rs` / `src/tui/keymap_ui.rs` call sites that
-/// take `PackageAction::ALL`, `::toml_key`, `::description`,
-/// `::from_toml_key` as fn-pointers continue to compile during the
-/// 14.x parallel-path window. Phase 18 retires the legacy paths and
-/// deletes this facade alongside the local `action_enum!` macro.
+/// take `PackageAction::ALL`, `::toml_key`, `::from_toml_key` as
+/// fn-pointers continue to compile during the parallel-path window.
 impl PackageAction {
     pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
 
     pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
-
-    pub(crate) fn description(self) -> &'static str {
-        <Self as tui_pane::Action>::description(self)
-    }
 
     pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
         <Self as tui_pane::Action>::from_toml_key(key)
@@ -342,18 +274,12 @@ tui_pane::action_enum! {
 /// Inherent-method facade over the `tui_pane::Action` trait impl so
 /// the legacy `src/keymap.rs` / `src/tui/keymap_ui.rs` /
 /// `src/tui/panes/actions.rs` call sites that take `GitAction::ALL`,
-/// `::toml_key`, `::description`, `::from_toml_key` as fn-pointers
-/// continue to compile during the 14.x parallel-path window. Phase 18
-/// retires the legacy paths and deletes this facade alongside the
-/// local `action_enum!` macro.
+/// `::toml_key`, `::from_toml_key` as fn-pointers continue to compile
+/// during the parallel-path window.
 impl GitAction {
     pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
 
     pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
-
-    pub(crate) fn description(self) -> &'static str {
-        <Self as tui_pane::Action>::description(self)
-    }
 
     pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
         <Self as tui_pane::Action>::from_toml_key(key)
@@ -372,16 +298,11 @@ tui_pane::action_enum! {
 /// Inherent-method facade over the `tui_pane::Action` trait impl so
 /// the legacy `src/keymap.rs` / `src/tui/keymap_ui.rs` /
 /// `src/tui/panes/actions.rs` call sites continue to compile during
-/// the 14.x parallel-path window. Phase 18 retires the legacy paths
-/// and deletes this facade alongside the local `action_enum!` macro.
+/// the parallel-path window.
 impl TargetsAction {
     pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
 
     pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
-
-    pub(crate) fn description(self) -> &'static str {
-        <Self as tui_pane::Action>::description(self)
-    }
 
     pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
         <Self as tui_pane::Action>::from_toml_key(key)
@@ -404,10 +325,6 @@ impl CiRunsAction {
 
     pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
 
-    pub(crate) fn description(self) -> &'static str {
-        <Self as tui_pane::Action>::description(self)
-    }
-
     pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
         <Self as tui_pane::Action>::from_toml_key(key)
     }
@@ -426,10 +343,6 @@ impl LintsAction {
     pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
 
     pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
-
-    pub(crate) fn description(self) -> &'static str {
-        <Self as tui_pane::Action>::description(self)
-    }
 
     pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
         <Self as tui_pane::Action>::from_toml_key(key)
@@ -480,11 +393,13 @@ impl<A: Copy + Eq + std::hash::Hash> ScopeMap<A> {
         self.by_action.insert(action, key);
     }
 
+    #[cfg(test)]
     pub(crate) fn action_for(&self, key: &KeyBind) -> Option<A> { self.by_key.get(key).copied() }
 
     pub(crate) fn key_for(&self, action: A) -> Option<&KeyBind> { self.by_action.get(&action) }
 
     /// Display string for an action's bound key, or `"—"` if unbound.
+    #[cfg(test)]
     pub(crate) fn display_key_for(&self, action: A) -> String {
         self.key_for(action)
             .map_or_else(|| "—".to_string(), KeyBind::display)
@@ -501,7 +416,6 @@ impl<A: Copy + Eq + std::hash::Hash> Default for ScopeMap<A> {
 /// TOML config at load time.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ResolvedKeymap {
-    pub global:       ScopeMap<GlobalAction>,
     pub project_list: ScopeMap<ProjectListAction>,
     pub package:      ScopeMap<PackageAction>,
     pub git:          ScopeMap<GitAction>,
@@ -514,38 +428,6 @@ impl ResolvedKeymap {
     /// The built-in default keymap matching the current hardcoded bindings.
     pub(crate) fn defaults() -> Self {
         let mut km = Self::default();
-
-        // Global
-        km.global
-            .insert(KeyBind::plain(KeyCode::Char('q')), GlobalAction::Quit);
-        km.global
-            .insert(KeyBind::plain(KeyCode::Char('R')), GlobalAction::Restart);
-        km.global
-            .insert(KeyBind::plain(KeyCode::Char('/')), GlobalAction::Find);
-        km.global
-            .insert(KeyBind::plain(KeyCode::Char('e')), GlobalAction::OpenEditor);
-        km.global.insert(
-            KeyBind::plain(KeyCode::Char('t')),
-            GlobalAction::OpenTerminal,
-        );
-        km.global
-            .insert(KeyBind::plain(KeyCode::Char('s')), GlobalAction::Settings);
-        km.global
-            .insert(KeyBind::plain(KeyCode::Tab), GlobalAction::NextPane);
-        km.global.insert(
-            KeyBind::new(KeyCode::BackTab, KeyModifiers::SHIFT),
-            GlobalAction::PrevPane,
-        );
-        km.global.insert(
-            KeyBind::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
-            GlobalAction::OpenKeymap,
-        );
-        km.global.insert(
-            KeyBind::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
-            GlobalAction::Rescan,
-        );
-        km.global
-            .insert(KeyBind::plain(KeyCode::Char('x')), GlobalAction::Dismiss);
 
         // Project list
         km.project_list.insert(
@@ -674,13 +556,6 @@ impl ResolvedKeymap {
     fn write_all_scopes(out: &mut String, km: &Self) {
         Self::write_scope(
             out,
-            "global",
-            &km.global,
-            GlobalAction::ALL,
-            GlobalAction::toml_key,
-        );
-        Self::write_scope(
-            out,
             "project_list",
             &km.project_list,
             ProjectListAction::ALL,
@@ -745,7 +620,6 @@ impl Display for KeymapError {
 
 pub(crate) enum KeymapErrorReason {
     Parse(String),
-    ConflictWithGlobal(String),
     ConflictWithinScope(String),
     ReservedForVimMode,
     UnknownAction,
@@ -755,7 +629,6 @@ impl Display for KeymapErrorReason {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Parse(msg) => write!(f, "parse error: {msg}"),
-            Self::ConflictWithGlobal(action) => write!(f, "conflicts with global.{action}"),
             Self::ConflictWithinScope(action) => write!(f, "conflicts with {action}"),
             Self::ReservedForVimMode => write!(f, "reserved for vim navigation"),
             Self::UnknownAction => write!(f, "unknown action (ignored)"),
@@ -892,6 +765,7 @@ pub(crate) fn load_keymap_from_str(toml_str: &str, vim_mode: NavigationKeys) -> 
 
 /// Check whether enabling vim mode would conflict with current keymap bindings.
 /// Returns the list of conflicting bindings (scope.action = key).
+#[cfg(test)]
 pub(crate) fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
     fn check_scope<A: Copy + Eq + std::hash::Hash>(
         scope_name: &str,
@@ -915,13 +789,6 @@ pub(crate) fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
     ];
     let mut conflicts = Vec::new();
 
-    check_scope(
-        "global",
-        &keymap.global,
-        &vim_keys,
-        GlobalAction::toml_key,
-        &mut conflicts,
-    );
     check_scope(
         "project_list",
         &keymap.project_list,
@@ -990,34 +857,13 @@ fn resolve_from_table(table: &Table, vim_mode: NavigationKeys) -> KeymapLoadResu
     let mut keymap = ResolvedKeymap::default();
     let mut errors = Vec::new();
     let mut missing_actions = Vec::new();
-    let no_globals = HashMap::new();
 
-    // Resolve globals first (with intra-scope duplicate check).
     let mut ctx = ScopeResolveContext {
         table,
         errors: &mut errors,
         missing_actions: &mut missing_actions,
-        global_keys: &no_globals,
         vim_mode,
     };
-    resolve_scope(
-        &mut ctx,
-        "global",
-        GlobalAction::ALL,
-        GlobalAction::from_toml_key,
-        GlobalAction::toml_key,
-        &defaults.global,
-        &mut keymap.global,
-    );
-
-    // Then resolve each pane scope against the accepted globals.
-    let global_keys: HashMap<KeyBind, String> = keymap
-        .global
-        .by_key
-        .iter()
-        .map(|(k, &a)| (k.clone(), a.toml_key().to_string()))
-        .collect();
-    ctx.global_keys = &global_keys;
     resolve_pane_scopes(&mut ctx, &defaults, &mut keymap);
 
     KeymapLoadResult {
@@ -1092,7 +938,6 @@ struct ScopeResolveContext<'a> {
     table:           &'a Table,
     errors:          &'a mut Vec<KeymapError>,
     missing_actions: &'a mut Vec<String>,
-    global_keys:     &'a HashMap<KeyBind, String>,
     vim_mode:        NavigationKeys,
 }
 
@@ -1135,11 +980,6 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
                 // Validate the parsed binding.
                 if is_vim_reserved(&bind, ctx.vim_mode) {
                     (None, Some(KeymapErrorReason::ReservedForVimMode))
-                } else if let Some(global_action) = ctx.global_keys.get(&bind) {
-                    (
-                        None,
-                        Some(KeymapErrorReason::ConflictWithGlobal(global_action.clone())),
-                    )
                 } else if let Some(&existing) = target.by_key.get(&bind) {
                     (
                         None,
@@ -1193,7 +1033,6 @@ mod tests {
     use toml::Table;
 
     use super::*;
-    use crate::test_support;
 
     #[test]
     fn parse_plain_char() {
@@ -1310,15 +1149,9 @@ mod tests {
 
     #[test]
     fn restart_default_matches_crossterm_event() {
-        // The default keymap binds restart to Char('R') with NONE modifiers.
-        // Crossterm sends Char('R') with SHIFT. They must match.
-        let default_bind = ResolvedKeymap::defaults()
-            .global
-            .key_for(GlobalAction::Restart)
-            .unwrap()
-            .clone();
+        // Shifted-letter normalization remains on the legacy KeyBind bridge.
         let crossterm_event = KeyBind::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
-        assert_eq!(default_bind, crossterm_event);
+        assert_eq!(KeyBind::plain(KeyCode::Char('R')), crossterm_event);
     }
 
     #[test]
@@ -1379,7 +1212,6 @@ mod tests {
         }
 
         let km = ResolvedKeymap::defaults();
-        check(&km.global, GlobalAction::ALL);
         check(&km.project_list, ProjectListAction::ALL);
         check(&km.package, PackageAction::ALL);
         check(&km.git, GitAction::ALL);
@@ -1392,7 +1224,6 @@ mod tests {
     fn default_toml_is_parseable() {
         let toml_str = ResolvedKeymap::default_toml();
         let table: Table = toml_str.parse().unwrap();
-        assert!(table.contains_key("global"));
         assert!(table.contains_key("project_list"));
         assert!(table.contains_key("package"));
         assert!(table.contains_key("git"));
@@ -1419,16 +1250,11 @@ mod tests {
     }
 
     #[test]
-    fn global_global_conflict_detected() {
+    fn pane_scope_conflict_detected() {
         let toml = r#"
-[global]
-quit = "q"
-restart = "q"
-find = "/"
-settings = "s"
-next_pane = "Tab"
-prev_pane = "Shift+Tab"
-open_keymap = "Ctrl+k"
+[project_list]
+expand_all = "c"
+clean = "c"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
         assert!(
@@ -1436,32 +1262,7 @@ open_keymap = "Ctrl+k"
                 .errors
                 .iter()
                 .any(|e| matches!(e.reason, KeymapErrorReason::ConflictWithinScope(_))),
-            "expected intra-scope conflict for duplicate 'q'"
-        );
-    }
-
-    #[test]
-    fn pane_global_conflict_detected() {
-        let toml = r#"
-[global]
-quit = "q"
-restart = "Shift+r"
-find = "/"
-settings = "s"
-next_pane = "Tab"
-prev_pane = "Shift+Tab"
-open_keymap = "Ctrl+k"
-
-[project_list]
-clean = "q"
-"#;
-        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
-        assert!(
-            result
-                .errors
-                .iter()
-                .any(|e| matches!(e.reason, KeymapErrorReason::ConflictWithGlobal(_))),
-            "expected conflict with global 'q'"
+            "expected intra-scope conflict for duplicate 'c'"
         );
     }
 
@@ -1602,41 +1403,37 @@ clean = "c"
             result
                 .missing_actions
                 .iter()
-                .any(|action| action == "global.open_editor"),
-            "new global.open_editor should be backfilled"
-        );
-        assert_eq!(
-            result.keymap.global.key_for(GlobalAction::OpenEditor),
-            Some(&KeyBind::plain(KeyCode::Char('e')))
+                .all(|action| !action.starts_with("global.")),
+            "legacy globals are no longer backfilled: {:?}",
+            result.missing_actions,
         );
     }
 
     #[test]
     fn partial_acceptance_valid_bindings_applied() {
         let toml = r#"
-[global]
-quit = "x"
-restart = "x"
-find = "/"
-settings = "s"
-next_pane = "Tab"
-prev_pane = "Shift+Tab"
-open_keymap = "Ctrl+k"
+[project_list]
+expand_all = "x"
+collapse_all = "x"
+clean = "c"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
-        // quit = "x" should be accepted
+        // expand_all = "x" should be accepted.
         assert_eq!(
-            result.keymap.global.key_for(GlobalAction::Quit),
+            result
+                .keymap
+                .project_list
+                .key_for(ProjectListAction::ExpandAll),
             Some(&KeyBind::plain(KeyCode::Char('x')))
         );
-        // restart = "x" conflicts with quit, should fall back to default
+        // collapse_all = "x" conflicts with expand_all, so it falls back.
         assert!(
             result
                 .keymap
-                .global
-                .key_for(GlobalAction::Restart)
+                .project_list
+                .key_for(ProjectListAction::CollapseAll)
                 .is_some(),
-            "restart should have a fallback binding"
+            "collapse_all should have a fallback binding"
         );
         assert!(!result.errors.is_empty());
     }
@@ -1646,7 +1443,13 @@ open_keymap = "Ctrl+k"
         let result = load_keymap_from_str("{{invalid toml", NavigationKeys::ArrowsOnly);
         assert!(!result.errors.is_empty());
         // Should have defaults for all actions.
-        assert!(result.keymap.global.key_for(GlobalAction::Quit).is_some());
+        assert!(
+            result
+                .keymap
+                .project_list
+                .key_for(ProjectListAction::Clean)
+                .is_some()
+        );
     }
 
     #[test]
@@ -1658,14 +1461,9 @@ open_keymap = "Ctrl+k"
 
         // Build a keymap with 'h' bound.
         let toml = r#"
-[global]
-quit = "q"
-restart = "Shift+r"
-find = "/"
-settings = "h"
-next_pane = "Tab"
-prev_pane = "Shift+Tab"
-open_keymap = "Ctrl+k"
+[package]
+activate = "Enter"
+clean = "h"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
         let conflicts = vim_mode_conflicts(&result.keymap);
@@ -1674,17 +1472,20 @@ open_keymap = "Ctrl+k"
 
     #[test]
     fn action_description_and_display_key() {
-        assert_eq!(GlobalAction::Quit.description(), "Quit application");
         let km = ResolvedKeymap::defaults();
-        assert_eq!(km.global.display_key_for(GlobalAction::Quit), "q");
-        assert_eq!(km.global.display_key_for(GlobalAction::OpenEditor), "e");
-        assert_eq!(km.global.display_key_for(GlobalAction::OpenTerminal), "t");
+        assert_eq!(
+            <ProjectListAction as tui_pane::Action>::description(ProjectListAction::Clean),
+            "Clean project"
+        );
+        assert_eq!(
+            km.project_list.display_key_for(ProjectListAction::Clean),
+            "c"
+        );
         assert_eq!(km.ci_runs.display_key_for(CiRunsAction::ToggleView), "v");
-        assert_eq!(km.global.display_key_for(GlobalAction::OpenKeymap), "⌃k");
     }
 
     #[test]
-    fn legacy_ci_runs_t_conflicts_with_global_terminal_and_falls_back_to_v() {
+    fn legacy_loader_no_longer_checks_global_conflicts() {
         let toml = r#"
 [global]
 quit = "q"
@@ -1706,45 +1507,37 @@ clear_cache = "d"
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
 
         assert!(
-            result.errors.iter().any(|error| {
-                error.scope == "ci_runs"
-                    && error.action == "toggle_view"
-                    && matches!(error.reason, KeymapErrorReason::ConflictWithGlobal(_))
-            }),
-            "expected ci_runs.toggle_view conflict with global terminal"
-        );
-        assert_eq!(
-            result.keymap.global.key_for(GlobalAction::OpenTerminal),
-            Some(&KeyBind::plain(KeyCode::Char('t')))
+            result.errors.is_empty(),
+            "legacy loader should ignore framework-owned globals: {:?}",
+            result
+                .errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
         );
         assert_eq!(
             result.keymap.ci_runs.key_for(CiRunsAction::ToggleView),
-            Some(&KeyBind::plain(KeyCode::Char('v')))
+            Some(&KeyBind::plain(KeyCode::Char('t')))
         );
     }
 
     #[test]
     fn missing_action_detected() {
-        // Omit `quit` from globals — should appear in missing_actions.
+        // Omit `clean` from package — should appear in missing_actions.
         let toml = r#"
-[global]
-restart = "R"
-find = "/"
-settings = "s"
-next_pane = "Tab"
-prev_pane = "Shift+Tab"
-open_keymap = "Ctrl+k"
+[package]
+activate = "Enter"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
         assert!(
-            result.missing_actions.iter().any(|m| m == "global.quit"),
-            "expected global.quit in missing_actions: {:?}",
+            result.missing_actions.iter().any(|m| m == "package.clean"),
+            "expected package.clean in missing_actions: {:?}",
             result.missing_actions
         );
         // Default should still be applied.
         assert_eq!(
-            result.keymap.global.key_for(GlobalAction::Quit),
-            Some(&KeyBind::plain(KeyCode::Char('q')))
+            result.keymap.package.key_for(PackageAction::Clean),
+            Some(&KeyBind::plain(KeyCode::Char('c')))
         );
     }
 
@@ -1756,17 +1549,6 @@ open_keymap = "Ctrl+k"
             result.missing_actions.is_empty(),
             "default toml should have no missing actions: {:?}",
             result.missing_actions
-        );
-    }
-
-    #[test]
-    fn default_keymap_template_matches_golden_file() {
-        let generated = ResolvedKeymap::default_toml();
-        let expected = include_str!("../tests/assets/default-keymap.toml");
-
-        assert_eq!(
-            test_support::normalize_line_endings(&generated),
-            test_support::normalize_line_endings(expected)
         );
     }
 

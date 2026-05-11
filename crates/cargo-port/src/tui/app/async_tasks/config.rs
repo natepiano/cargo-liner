@@ -13,6 +13,7 @@ use crate::tui::app::App;
 use crate::tui::config_reload;
 use crate::tui::config_reload::ReloadContext;
 use crate::tui::config_reload::TreeReaction;
+use crate::tui::keymap_ui;
 use crate::tui::toasts::ToastStyle::Error;
 
 impl App {
@@ -25,6 +26,7 @@ impl App {
     }
     pub fn load_initial_keymap(&mut self) {
         let vim_mode = self.config.current().tui.navigation_keys;
+        let keymap_missing = self.keymap.path().is_some_and(|path| !path.exists());
         let result = keymap::load_keymap(vim_mode);
         self.keymap.replace_current(result.keymap);
         self.keymap.sync_stamp();
@@ -32,6 +34,7 @@ impl App {
             self.show_keymap_diagnostics(&result.errors);
         }
         if !result.missing_actions.is_empty() {
+            keymap_ui::save_current_keymap_to_disk(self);
             self.show_timed_toast(
                 "Keymap updated",
                 format!(
@@ -39,6 +42,8 @@ impl App {
                     result.missing_actions.join(", ")
                 ),
             );
+        } else if keymap_missing {
+            keymap_ui::save_current_keymap_to_disk(self);
         }
     }
     pub fn maybe_reload_keymap_from_disk(&mut self) {
@@ -74,9 +79,7 @@ impl App {
         }
 
         if !result.missing_actions.is_empty() {
-            let content = crate::keymap::ResolvedKeymap::default_toml_from(self.keymap.current());
-            let _ = std::fs::write(&path, content);
-            self.keymap.sync_stamp();
+            keymap_ui::save_current_keymap_to_disk(self);
             self.show_timed_toast(
                 "Keymap updated",
                 format!(

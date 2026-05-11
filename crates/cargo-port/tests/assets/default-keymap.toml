@@ -1,7 +1,6 @@
 # cargo-port keymap configuration
 # Edit bindings below. Format: action = "Key" or "Modifier+Key"
 # Modifiers: Ctrl, Alt, Shift.  Examples: "Ctrl+r", "Shift+Tab", "q"
-# Note: = and + are treated as the same physical key.
 # Note: when vim navigation is enabled, h/j/k/l are reserved
 #       for navigation and cannot be used as action keys.
 
@@ -18,16 +17,30 @@ rescan        = "Ctrl+r"
 restart       = "R"
 settings      = "s"
 
+[navigation]
+down  = "Down"
+end   = "End"
+home  = "Home"
+left  = "Left"
+right = "Right"
+up    = "Up"
+
 [project_list]
 clean        = "c"
 collapse_all = "-"
-collapse_row = "Shift+Left"
-expand_all   = "+"
-expand_row   = "Shift+Right"
+collapse_row = "Left"
+expand_all   = "="
+expand_row   = "Right"
 
 [package]
 activate = "Enter"
 clean    = "c"
+
+[lang]
+clean = "c"
+
+[cpu]
+clean = "c"
 
 [git]
 activate = "Enter"
@@ -38,12 +51,29 @@ activate      = "Enter"
 clean         = "c"
 release_build = "r"
 
+[lints]
+activate      = "Enter"
+clear_history = "d"
+
 [ci_runs]
 activate    = "Enter"
 clear_cache = "d"
 fetch_more  = "f"
 toggle_view = "v"
 
-[lints]
-activate      = "Enter"
-clear_history = "d"
+[output]
+cancel = "Esc"
+
+[finder]
+activate = "Enter"
+cancel   = "Esc"
+
+[settings]
+cancel     = "Esc"
+save       = "s"
+start_edit = "Enter"
+
+[keymap]
+cancel     = "Esc"
+save       = "s"
+start_edit = "Enter"

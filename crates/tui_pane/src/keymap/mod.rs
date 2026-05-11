@@ -241,6 +241,17 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
         self.scopes.get(&id)?.key_for_toml_key(action)
     }
 
+    /// Reverse lookup: TOML action key string → every currently bound
+    /// [`KeyBind`] in the scope registered for `id`. Returns an empty
+    /// vector if no scope is registered for `id`, the action name is
+    /// not recognized, or the named action has no binding.
+    #[must_use]
+    pub fn keys_for_toml_key(&self, id: Ctx::AppPaneId, action: &str) -> Vec<KeyBind> {
+        self.scopes
+            .get(&id)
+            .map_or_else(Vec::new, |scope| scope.keys_for_toml_key(action))
+    }
+
     /// Reverse lookup predicate: returns `true` when `bind` is one of
     /// the keys currently bound to the TOML action key string in the
     /// scope registered for `id`.

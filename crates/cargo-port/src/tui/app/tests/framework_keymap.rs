@@ -15,6 +15,7 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use ratatui::text::Span;
+use tui_pane::Action;
 use tui_pane::AppContext;
 use tui_pane::BarPalette;
 use tui_pane::FocusedPane;
@@ -35,15 +36,18 @@ use crate::ci::FetchStatus;
 use crate::keymap;
 use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
+use crate::keymap::OutputAction;
 use crate::keymap::PackageAction;
 use crate::project::RootItem;
 use crate::project::Submodule;
+use crate::test_support;
 use crate::tui::framework_keymap::AppPaneId;
 use crate::tui::framework_keymap::CiRunsPane;
 use crate::tui::framework_keymap::FinderPane;
 use crate::tui::framework_keymap::GitPane;
 use crate::tui::framework_keymap::PackagePane;
 use crate::tui::input;
+use crate::tui::keymap_ui;
 use crate::tui::panes;
 use crate::tui::panes::CiData;
 use crate::tui::panes::CiEmptyState;
@@ -800,6 +804,79 @@ fn output_cancel_rebind_accepts_primary_and_secondary_keys() {
     assert!(
         app.inflight.example_output().is_empty(),
         "secondary OutputAction::Cancel binding must clear output",
+    );
+}
+
+// ── Phase 20 — keymap UI backed by framework keymap ─────────────────
+
+#[test]
+fn framework_keymap_template_matches_golden_file() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let toml_path = temp_dir.path().join("keymap.toml");
+    let _keymap_path = keymap::override_keymap_path_for_test(toml_path);
+    let project = super::make_project(Some("demo"), "~/demo");
+    let app = make_app(&[project]);
+    let generated = keymap_ui::current_keymap_toml(&app);
+    let expected = include_str!("../../../../tests/assets/default-keymap.toml");
+
+    assert_eq!(
+        test_support::normalize_line_endings(&generated),
+        test_support::normalize_line_endings(expected),
+    );
+}
+
+#[test]
+fn keymap_ui_save_preserves_framework_owned_scopes() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let toml_path = temp_dir.path().join("keymap.toml");
+    fs::write(
+        &toml_path,
+        "[output]\ncancel = \"q\"\n\
+         [finder]\nactivate = \"Tab\"\n\
+         [settings]\nstart_edit = \"F2\"\n\
+         [keymap]\nstart_edit = \"F3\"\n",
+    )
+    .expect("write keymap toml");
+    let _keymap_path = keymap::override_keymap_path_for_test(toml_path.clone());
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+
+    keymap_ui::save_current_keymap_to_disk(&mut app);
+    let saved = fs::read_to_string(&toml_path).expect("read keymap toml");
+
+    assert!(saved.contains("[finder]"));
+    assert!(saved.contains("activate = \"Tab\""));
+    assert!(saved.contains("[output]"));
+    assert!(saved.contains("cancel = \"q\""));
+    assert!(saved.contains("[settings]"));
+    assert!(saved.contains("start_edit = \"F2\""));
+    assert!(saved.contains("[keymap]"));
+    assert!(saved.contains("start_edit = \"F3\""));
+}
+
+#[test]
+fn external_keymap_reload_updates_framework_owned_scope() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let toml_path = temp_dir.path().join("keymap.toml");
+    fs::write(&toml_path, "[output]\ncancel = \"Esc\"\n").expect("write keymap toml");
+    let _keymap_path = keymap::override_keymap_path_for_test(toml_path.clone());
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+
+    fs::write(
+        &toml_path,
+        "[output]\ncancel = \"q\"\n[finder]\nactivate = \"Tab\"\n",
+    )
+    .expect("rewrite keymap toml");
+    app.maybe_reload_keymap_from_disk();
+
+    assert_eq!(
+        app.framework_keymap
+            .key_for_toml_key(AppPaneId::Output, OutputAction::Cancel.toml_key()),
+        Some(KeyBind {
+            code: KeyCode::Char('q'),
+            mods: KeyModifiers::NONE,
+        }),
     );
 }
 

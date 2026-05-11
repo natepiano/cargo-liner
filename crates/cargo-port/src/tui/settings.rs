@@ -21,6 +21,7 @@ use super::constants::SECTION_ITEM_INDENT;
 use super::constants::SETTINGS_POPUP_WIDTH;
 use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
+use super::keymap_ui;
 use super::pane::PaneSelectionState;
 use super::panes::PaneId;
 use super::popup::PopupFrame;
@@ -28,7 +29,6 @@ use super::render;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::config::LintCommandConfig;
-use crate::keymap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::EnumCount, strum::EnumIter)]
 pub(super) enum SettingOption {
@@ -510,7 +510,7 @@ fn parse_lint_cache_size(value: &str) -> Result<String, String> {
 fn toggle_vim_mode(app: &mut App) {
     if !app.config.navigation_keys().uses_vim() {
         // Enabling vim mode — check for hjkl conflicts.
-        let conflicts = keymap::vim_mode_conflicts(app.keymap.current());
+        let conflicts = keymap_ui::vim_mode_conflicts(app);
         if !conflicts.is_empty() {
             let msg = format!(
                 "Cannot enable vim mode — these bindings use h/j/k/l:\n{}",
