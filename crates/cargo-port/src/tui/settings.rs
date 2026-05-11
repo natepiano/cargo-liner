@@ -793,7 +793,7 @@ pub(super) fn build_settings_lines(
         let focus = if app.framework.overlay() == Some(FrameworkOverlayId::Settings) {
             PaneFocusState::Active
         } else {
-            app.focus.pane_state(PaneId::Settings)
+            app.pane_focus_state(PaneId::Settings)
         };
         let selection = app
             .overlays

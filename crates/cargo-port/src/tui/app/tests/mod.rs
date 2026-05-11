@@ -58,12 +58,12 @@ use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
 use crate::test_support;
 use crate::tui::columns::ProjectListWidths;
+use crate::tui::pane::PaneFocusState;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PaneId;
 pub(super) use crate::tui::project_list::ExpandKey;
 use crate::tui::project_list::ProjectList;
 pub(super) use crate::tui::project_list::VisibleRow;
-use crate::tui::shortcuts::InputContext;
 use crate::tui::toasts::ToastManager;
 
 mod background;

@@ -26,7 +26,7 @@ pub fn render_output_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     let block = pane::default_pane_chrome()
         .with_inactive_border(Style::default().fg(LABEL_COLOR))
-        .block(title, app.focus.is(PaneId::Output));
+        .block(title, app.focus_is(PaneId::Output));
 
     let lines: Vec<Line> = app
         .inflight

@@ -3457,12 +3457,23 @@ Phase 21 removes the production overlay short-circuits that Phase 19 left in pla
 - `cargo nextest run --workspace` - 858 passed, 0 skipped.
 - `cargo install --path .`
 
+### Phase 21 Review
+
+- Phase 22: clarified that focus cleanup migrates production focus reads as well as direct writers before deleting `app.focus`.
+- Phase 22: recorded Finder's app-owned return target replacement on `Overlays` before deleting legacy overlay-return state.
+- Phase 23: collapsed duplicate modal/text-input tests already shipped in Phase 21 into baseline coverage, keeping only cleanup-path deltas.
+- Phase 23: recorded the Settings/Keymap browse-mode `OpenEditor` exception while keeping `Mode::TextInput` as the hard suppression boundary.
+- Phase 24: clarified that focused Toasts dispatch checks `ToastsAction` before globals, with globals reached only when the toast action is unhandled.
+- Phase 25: clarified the existing SettingsPane ownership plan: generic settings rows, rendering, editing, validation display, and commit routing move into `tui_pane`.
+
 ### Phase 22 — Focus and input compatibility cleanup
 
 Phase 22 deletes the remaining focus/input compatibility layer after the keymap model and overlay path have moved to the framework.
 
 **Scope:**
 - Migrate every remaining production `app.focus.set(...)` / `self.focus.set(...)` writer through `app.set_focus(FocusedPane::App(...))` or `app.set_focus(FocusedPane::Framework(...))`.
+- Migrate focus reads before deleting the field. Every production caller of `app.focus.current()`, `app.focus.is(...)`, `app.focus.behavior()`, and related query helpers moves to `app.framework.focused()` / framework focus queries, or is documented as a temporary survivor with a deletion owner. `handle_key_event` must dispatch from `app.framework.focused()` directly; do not rebuild framework focus from `app.focus.current()` after this phase.
+- Replace Finder's legacy overlay-return state before deleting `app.focus`. Finder remains app-owned: store `finder_return: Option<FocusedPane<AppPaneId>>` on `Overlays` beside `FinderMode`, set it from `app.framework.focused()` in `open_finder`, focus Finder with `app.set_focus(FocusedPane::App(AppPaneId::Finder))`, and close Finder by taking the stored return target and calling `app.set_focus(return_target)` with `ProjectList` as the fallback. Delete the `app.focus.open_overlay(PaneId::Finder)` / `app.focus.close_overlay()` dependency.
 - Mouse/click focus routing is part of this migration. Top-level mouse routing moves to the framework boundary: app render/hit-test code supplies pane-local regions and domain targets; the framework maps the click to `FocusedPane` and mutates focus only through `app.set_focus(FocusedPane::App(...))`. Pane-local row/domain hit handling stays app-owned. Direct `app.focus.set(...)` writes from `handle_mouse_click` / interaction handling delete in this phase.
 - After cleanup, `rg '(app|self)\.focus\.set\(' src` returns zero production hits; any test-only helper survivor must be named explicitly.
 - Delete the broader `app.focus` field if no reads remain. If a read must survive temporarily, document it as a render/query survivor with a concrete deletion owner before this phase closes.
@@ -3472,6 +3483,32 @@ Phase 22 deletes the remaining focus/input compatibility layer after the keymap 
 - A test impl that overrides `set_focus` to count calls observes every framework-originated focus change: NextPane, PrevPane, focused Toasts, mouse/click app-pane focus, and return-from-overlay. `OpenKeymap` / `OpenSettings` are overlay-state changes, not focus writes; assert `framework.overlay()` changes and the focus-write counter does not increment.
 - `rg 'InputContext' src` returns zero production hits.
 - Phase closeout runs the remaining-phase closeout gate.
+
+### Retrospective
+
+**What worked:**
+- `app.focus` and the legacy focus modules deleted cleanly once reads moved to `app.framework.focused()` / `App` focus helpers.
+- `InputContext` and `src/tui/shortcuts.rs` had no production survivors after the Phase 21 overlay cleanup.
+
+**What deviated from the plan:**
+- `AppContext::set_focus` stayed as an override because it now records `visited_panes` in addition to forwarding to `framework.set_focused(...)`; the trait default is not equivalent.
+- Finder return state moved to `Overlays::finder_return: Option<FocusedPane<AppPaneId>>`, with `ProjectList` as the fallback when no return target is recorded.
+
+**Surprises:**
+- Removing the action-enum facades was smaller than the plan's early notes implied: `OutputAction` / `FinderAction` never had facade impls, and the remaining legacy keymap call sites could use the `tui_pane::Action` trait generically.
+- The only full-suite failure seen during closeout was the existing timing-sensitive `handle_project_discovered_does_not_allocate_per_comparison` threshold; the later rerun was blocked by `sccache: Operation not permitted` after a sandboxed Rust command attempt.
+
+**Implications for remaining phases:**
+- Phase 23's focus-funnel regression should assert the surviving `AppContext::set_focus` override as the production funnel, not expect the override to disappear.
+- Phase 23 can treat `app.focus`, `InputContext`, and action-enum facade compatibility as gone; remaining tests should target the framework focus/keymap path directly.
+
+### Phase 22 Review
+
+- Phase 23: narrowed cleanup-path regression coverage to the remaining focus/finder/mouse deltas instead of duplicating Phase 20.1 tab-order and Phase 21 overlay-input tests.
+- Phase 23: added cargo-port's removed-action TOML migration before framework `load_toml`, with acceptance coverage for legacy `[project_list] open_editor` / `rescan` keys and deletion of `src/keymap.rs::is_legacy_removed_action`.
+- Phase 23: added closeout cleanup for stale `src/tui/shortcuts.rs` / `shortcut_spans` references now that the module is gone.
+- Phase 24: made focused-Toasts dispatch ordering explicit: once `ToastsAction::Activate` exists, focused Toasts get first claim before framework/app globals.
+- Phase 25: named deletion of the remaining Settings/Keymap binary mirror state and `clear_legacy_framework_overlay_state`.
 
 ### Phase 23 — Regression tests
 
@@ -3487,7 +3524,7 @@ Bar-on-rebind:
 
 **Production-loader-only rebind tests.** Phase 18 deleted the temporary `build_framework_keymap_with_toml(...)` helper and wired `.load_toml(keymap_path)` into the production builder. Phase 23 rebind tests use the production loader path only; settings/keymap overlay rebind tests also require Phase 18's builder chain to call `register_settings_overlay()` / `register_keymap_overlay()` so the resolved overlay scopes carry user TOML.
 
-**Modal/overlay dispatch scope after cleanup.** Phase 21 already shipped production `handle_key_event` coverage for Finder Cancel rebind, Finder vim `k`, Finder Tab/Activate precedence, Keymap reserved-navigation rejection, and Settings Esc edit cancellation. Phase 23 adds only cleanup-path deltas that depend on Phase 22's focus/input compatibility deletion; direct framework-scope tests remain useful for narrow loader/bar assertions.
+**Modal/overlay dispatch scope after cleanup.** Phase 21 already shipped production `handle_key_event` coverage for Finder Cancel rebind, Finder vim `k`, Finder Tab/Activate precedence, Keymap reserved-navigation rejection, and Settings Esc edit cancellation. Phase 20.1 already shipped tab-order coverage. Phase 23 adds only cleanup-path deltas that depend on Phase 22's focus/input compatibility deletion and the broad snapshot/rebind suite; direct framework-scope tests remain useful for narrow loader/bar assertions.
 
 - Rebinding each `*Action::Activate` (`Package`, `Git`, `Targets`, `CiRuns`, `Lints`) updates that pane's bar.
 - Rebinding `NavigationAction::Up` / `Down` / `Left` / `Right` updates the `↑/↓` nav row in every base-pane bar that uses it.
@@ -3510,7 +3547,7 @@ Globals + precedence:
 - Rebinding `ProjectListAction::ExpandRow` makes the pane-scope binding fire instead of `NavigationAction::Right`.
 - Rebinding `FinderAction::Activate` to `Tab` while Finder is open fires Activate, NOT `GlobalAction::NextPane`.
 - **Tab-cycle coverage note.** Phase 20.1 already covers tab-stop ordering, stale-focus fallback, Toasts scroll-before-advance, and cargo-port production `Tab` / `Shift+Tab` traversal. Phase 23 keeps only broad cleanup-path assertions here, such as user rebinds flowing through the post-cleanup production loader and dispatcher.
-- **`AppContext::set_focus` is the single funnel for focus writes.** Phase 22 already removed production direct focus writers. Phase 23 keeps the end-to-end regression test that overrides `set_focus` to count calls and observes every framework-originated focus change (NextPane, PrevPane, focused Toasts, mouse/click app-pane focus, and return-from-overlay). `OpenKeymap` and `OpenSettings` are overlay-state changes, not focus writes; cover them with separate assertions that `framework.overlay()` becomes `Some(FrameworkOverlayId::Keymap)` / `Some(FrameworkOverlayId::Settings)` and that the focus-write counter does not increment.
+- **`AppContext::set_focus` is the single funnel for focus writes.** Phase 22 already removed production direct focus writers. Phase 23 keeps the end-to-end regression test that overrides `set_focus` to count calls and covers the remaining cleanup-path deltas: `PrevPane`, mouse/click app-pane focus, Finder return-to-origin, and focused-Toasts exit back into the app cycle. `OpenKeymap` and `OpenSettings` are overlay-state changes, not focus writes; cover them with separate assertions that `framework.overlay()` becomes `Some(FrameworkOverlayId::Keymap)` / `Some(FrameworkOverlayId::Settings)` and that the focus-write counter does not increment. Do not duplicate Phase 20.1's tab-order assertions or Phase 21's overlay input tests here.
 
 Dispatch parity (per pane, the highest-risk path):
 
@@ -3523,19 +3560,22 @@ Vim/text-input regression:
 - Reuse the Phase 21 production tests for Finder text-input precedence, Finder Cancel rebind, Finder Tab/Activate precedence, Keymap reserved-navigation rejection, and Settings Esc edit cancellation as the baseline. Add Phase 23 assertions only where Phase 22's deletion of legacy focus/input compatibility changes the path under test.
 - **Framework-side `Mode::TextInput` bar suppression.** Already covered by `tui_pane/src/bar/tests.rs::textinput_mode_suppresses_every_region`; do not add a duplicate Phase 23 test unless the intent is explicitly public-API integration coverage. The cargo-port-side test (`focused_finder_open_bar_suppresses_all_regions` in `src/tui/app/tests/framework_keymap.rs`, landed in 14.6) covers Finder specifically; the `tui_pane` unit test pins the generic rule for any future `TextInput` pane.
 - **Policy: no globals fire while focused pane is `Mode::TextInput`.** This is parity with today's legacy short-circuit in `src/tui/input.rs::handle_normal_key`, which gates on `app.overlays.is_finder_open() || app.overlays.is_settings_editing()` *before* `handle_global_key`. The framework's "`Mode::TextInput` suppresses every region" rule at `tui_pane/src/bar/{nav_region.rs:33, pane_action_region.rs:24-25, global_region.rs:31-32}` is bit-for-bit equivalent. **No allow-list this phase.** Any opt-in allow-list (e.g. surfacing `Quit` / `Restart` / `Rescan` while a text-input pane is active) is post-Phase-19 design work — it is new API surface (probably a per-action `survive_text_input` bit on `Globals::Actions` or an equivalent framework escape hatch), not migration parity. Phase 23 ships with the suppression rule, no exceptions. **Acceptance test:** rebind `AppGlobalAction::Rescan` to `Ctrl+r` (its default) and synthesize that key event with focus on the open Finder; assert the rescan dispatcher does **not** fire (observed via the dispatcher's side-effect counter from the `Dispatch parity` block above). Locks the parity guarantee.
+- **Settings/Keymap browse-mode `OpenEditor` exception.** The policy is not "globals never run while an overlay is open." `Mode::TextInput` remains a hard suppression boundary, but Settings / Keymap browse mode has one deliberate preflight for `AppGlobalAction::OpenEditor` so `e` can open the active config/keymap file from the overlay. This is not a general text-input allow-list and does not extend to Settings Editing or Keymap Awaiting. Acceptance coverage: browse-mode `OpenEditor` dispatches, and Settings Editing / Keymap Awaiting do not dispatch `OpenEditor` even when rebound.
 
 TOML loader:
 
+- **Cargo-port removed-action TOML migration.** Before any cargo-port call to `tui_pane::KeymapBuilder::load_toml(path)`, run a binary-owned TOML normalization pass over the file contents. This pass rewrites legacy keys that used to live under `[project_list]` into their current global homes: `[project_list] open_editor = X` moves to `[global] open_editor = X`, and `[project_list] rescan = X` moves to `[global] rescan = X`. If the `[global]` key already exists, keep the explicit `[global]` value and drop the stale `[project_list]` key. Write the normalized TOML back only when a stale key was removed or moved. Then feed the normalized file to the framework loader. This implements the earlier TOML-loader rule that `tui_pane` carries no removed-action migration; cargo-port owns its own historical key names.
 - `[finder] activate = "Enter"` and `cancel = "Enter"` → `Err(KeymapError::CrossActionCollision)`.
 - TOML scope replaces vim+defaults: `[navigation] up = ["PageUp"]` with vim-on → `key_for(Up) == PageUp`, `'k'` not bound.
 - Cargo-port config drives framework `VimMode`: `NavigationKeys::ArrowsAndVim` binds navigation `h/j/k/l` and ProjectList vim extras; `NavigationKeys::ArrowsOnly` does not bind those extras. Run this through the production builder path, not a hand-built `KeymapBuilder`, so it catches missed startup/reload wiring.
 - Malformed binding propagation: round-trip a malformed binding string through the production TOML overlay loader and assert `Err(KeymapError::InvalidBinding { source, .. })`, with `err.source().is_some()` so the underlying `KeyParseError` is preserved. `KeymapError::KeyParse(_)` remains the unscoped direct-conversion path, not the scoped `load_toml` variant.
+- Acceptance coverage for the removed-action migration: a keymap file with `[project_list] open_editor = "E"` / `rescan = "Ctrl+r"` and no corresponding `[global]` entries lets `App::new` build, resolves those bindings through `AppGlobalAction::OpenEditor` / `Rescan`, and rewrites the file with the stale project-list keys removed. A file with both old and new keys keeps the `[global]` value. A truly unknown `[project_list]` key such as `claen = "c"` still errors. After this lands, delete `src/keymap.rs::is_legacy_removed_action`; the local legacy loader no longer ignores removed keys because the migration has already moved or removed them before validation.
 
 A snapshot test per focused-pane context locks in the **new** static-label framework bar — the bar text and span styles produced by `render_status_bar(focused, &app, &framework_keymap, &framework, &cargo_port_bar_palette())` under default bindings. The snapshots are not asserted byte-identical to the pre-refactor dynamic-label bar; Phase 14's `bar_label` collapse (one static literal per variant) deliberately drops row-dependent labels (e.g. `PackageAction::Activate`'s `"URL"`/`"Cargo.toml"` switch) in favor of one short generic label per action. The fixture drives the renderer through `framework.focused_pane_mode(ctx)` and the `AppPaneId`-keyed `Keymap::render_app_pane_bar_slots` (Phase 9 + Phase 13) — never via a typed `P::mode()` call — so each snapshot parameterizes on `FocusedPane`, not on the concrete pane type. The palette is `cargo_port_bar_palette()` (Phase 14); a different palette would diverge on style attributes by design.
 
 **`KeyBind` construction in Phase 19 / Phase 23 tests.** `tui_pane::KeyBind` exposes `From<char>` and `From<KeyCode>` only — no `plain` constructor (the legacy `crate::keymap::KeyBind::plain` does not transfer). Use `KeyBind::from('k')` for character keys and `KeyBind::from(KeyCode::Tab)` for named keys. For modifier-bearing binds, the struct-literal form (`KeyBind { code: …, mods: KeyModifiers::SHIFT }`) is also valid and is what `framework_keymap.rs::PROJECT_LIST_VIM_EXTRAS` uses today (since `From<char>` is not `const`). Phase 14.9's optional `pub const fn KeyBind::from_char(c: char) -> Self` polish would simplify the static-array case; until then, the struct-literal pattern is canonical for `static` initializers.
 
-**Phase 23 closeout:** Run the remaining-phase closeout gate after the regression tests and snapshots land.
+**Phase 23 closeout:** Run the remaining-phase closeout gate after the regression tests and snapshots land. Also grep for stale references to deleted `src/tui/shortcuts.rs` / `shortcut_spans` and update comments or docs that still describe those helpers as live code.
 
 ### Phase 24 — Toast activation payload
 
@@ -3621,6 +3661,8 @@ impl<Ctx: AppContext> Toasts<Ctx> {
 
 The dispatch chain calls `handle_key_command` while holding `&mut framework`, drops the borrow, then applies the command. Wire this wherever Phase 21 leaves the focused framework-pane dispatch path. If Phase 21 keeps that orchestration in `src/tui/input.rs`, wire Toasts there; if Phase 21 moves focused framework-pane dispatch into `tui_pane`, wire it there. Do not create a second focused-pane dispatch path just for Toasts.
 
+**Focused-Toasts dispatch order.** Phase 24 changes the focused-Toasts branch left by Phase 21 so `ToastsAction` gets first claim before framework/app globals when `FocusedPane::Framework(FrameworkFocusId::Toasts)` is active. In `src/tui/input.rs::handle_key_event`, move or special-case the focused-Toasts dispatch before `dispatch_framework_global` / `dispatch_app_global`; the current Phase-22 order checks globals first and is intentionally temporary until `ToastsAction::Activate` exists. The branch resolves the key against the Toasts pane scope, calls `handle_key_command`, applies `ToastCommand::Activate` after the framework borrow is dropped, and returns `Consumed` when an action fires. If the focused toast has no action and `handle_key_command` returns `Unhandled`, dispatch then falls through to the normal globals path; this is the only intended global fallthrough from the focused-Toasts branch.
+
 ```rust
 let (outcome, cmd) = ctx.framework_mut().toasts.handle_key_command(&bind);
 match cmd {
@@ -3670,6 +3712,10 @@ cargo-port's existing `ToastManager::push_*` call sites (Phase 26 migration entr
 Phase 25 owns the generic framework-settings substrate and its first concrete consumer, `ToastSettings`. It introduces framework-owned settings sections inside `SettingsRegistry`, makes the SettingsPane render/edit/save those framework sections, and then moves cargo-port's toast timing settings onto `Framework<Ctx>`. cargo-port's existing `status_flash_secs` / `task_linger_secs` move from `TuiConfig` into the framework's `ToastSettings`; the binary keeps only the persistence binding (write to disk). Settings land before the manager migration (Phase 26) so the migrated render/lifecycle code reads `framework.toast_settings()` directly — no temporary constants, no plumbing churn.
 
 **Deliverables.** Phase 25 ships all of these together: framework `SettingsSection`; registry support for framework-owned sections; `ToastSettings` storage on `Framework`; `ToastSettingsBinding`; SettingsPane render/edit/save support for framework sections; cargo-port `[toasts]` TOML load/save; and the migration of `status_flash_secs` / `task_linger_secs` out of `TuiConfig`. Do not push any of this downstream to the toast-manager migration — Phase 26 assumes `framework.toast_settings()` is already live and editable.
+
+**SettingsPane ownership.** Phase 21 moved Settings open/input/render gating to framework overlay state, but cargo-port still owns the concrete settings row builder, popup renderer, viewport mirror, and inline error display. Phase 25 completes the intended ownership split for Settings: generic SettingsPane row construction, viewport/edit state, section rendering, inline validation display, and edit/commit routing move into `tui_pane`. cargo-port supplies app settings through `SettingsRegistry` entries and persistence closures, plus outer popup frame/theme data if needed. Do not add a cargo-port-only bridge for toast settings; `ToastSettings` renders and edits through the framework SettingsPane path that future framework settings can reuse.
+
+**Legacy Settings/Keymap mirror deletion.** Phase 25 also removes the remaining binary mirror state that Phase 21/22 left behind for Settings and Keymap: `Overlays::settings`, `Overlays::keymap`, the cargo-port viewport mirrors used only for those overlays, and `src/tui/input.rs::clear_legacy_framework_overlay_state`. After Phase 25, Settings/Keymap browse/edit/awaiting state lives only in the framework panes; cargo-port persists settings/keymap data and supplies app-specific registry entries.
 
 **TOML-load surface.** Phase 25's `[toasts]` TOML scope is its own settings table, so the shared-`[global]` action-table coordination solved in Phase 17 does not apply. The `[toasts]` loader validates toast-setting keys directly and keeps unknown-key errors local to that table; no peer-enum skip behavior is required.
 
@@ -3934,7 +3980,7 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 - `NAVIGATION_RESERVED` / `is_navigation_reserved`.
 - `is_vim_reserved`'s hardcoded `VIM_RESERVED` table (replaced by reading `NavigationAction`'s bindings).
 - The `+`/`=` parser collapse.
-- `is_legacy_removed_action`.
+- `is_legacy_removed_action` after Phase 23 moves cargo-port's legacy `[project_list] open_editor` / `rescan` keys to `[global]` before validation.
 - `InputContext` enum.
 
 ## What survives

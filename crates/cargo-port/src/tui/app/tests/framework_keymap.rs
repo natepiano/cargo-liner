@@ -807,7 +807,7 @@ fn project_list_action_expand_row_rebound_to_tab_expands() {
 fn output_cancel_rebind_clears_example_output_from_non_output_focus() {
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app_with_keymap_toml(&[project], "[output]\ncancel = \"q\"\n");
-    let focus_before = app.focus.current();
+    let focus_before = app.focused_pane_id();
     app.inflight.example_output_mut().push("line".to_string());
 
     let event = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
@@ -815,7 +815,7 @@ fn output_cancel_rebind_clears_example_output_from_non_output_focus() {
 
     assert!(app.inflight.example_output().is_empty());
     assert_eq!(
-        app.focus.current(),
+        app.focused_pane_id(),
         focus_before,
         "non-Output focus must stay put when structural output cancel fires",
     );
@@ -825,14 +825,14 @@ fn output_cancel_rebind_clears_example_output_from_non_output_focus() {
 fn output_cancel_rebind_clears_example_output_and_moves_output_focus_to_targets() {
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app_with_keymap_toml(&[project], "[output]\ncancel = \"q\"\n");
-    app.focus.set(PaneId::Output);
+    app.set_focus_to_pane(PaneId::Output);
     app.inflight.example_output_mut().push("line".to_string());
 
     let event = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
     input::handle_event(&mut app, &event);
 
     assert!(app.inflight.example_output().is_empty());
-    assert_eq!(app.focus.current(), panes::PaneId::Targets);
+    assert_eq!(app.focused_pane_id(), panes::PaneId::Targets);
 }
 
 #[test]
@@ -939,7 +939,7 @@ fn tab_from_package_lands_on_git_when_lang_is_unavailable() {
 
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
 
-    assert_eq!(app.focus.current(), PaneId::Git);
+    assert_eq!(app.focused_pane_id(), PaneId::Git);
     assert_eq!(app.framework().focused(), &FocusedPane::App(AppPaneId::Git),);
 }
 
@@ -950,7 +950,7 @@ fn repeated_tab_never_lands_on_unavailable_lang() {
 
     for step in 0..TAB_WALK_STEPS {
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        assert_ne!(app.focus.current(), PaneId::Lang, "step {step}");
+        assert_ne!(app.focused_pane_id(), PaneId::Lang, "step {step}");
     }
 }
 
@@ -961,7 +961,7 @@ fn shift_tab_skips_unavailable_panes_in_reverse() {
 
     press(&mut app, KeyCode::Tab, KeyModifiers::SHIFT);
 
-    assert_eq!(app.focus.current(), PaneId::Git);
+    assert_eq!(app.focused_pane_id(), PaneId::Git);
     assert_eq!(app.framework().focused(), &FocusedPane::App(AppPaneId::Git),);
 }
 
@@ -981,7 +981,7 @@ fn output_active_excludes_diagnostics_and_reaches_output() {
 
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
 
-    assert_eq!(app.focus.current(), PaneId::Output);
+    assert_eq!(app.focused_pane_id(), PaneId::Output);
     assert_eq!(
         app.framework().focused(),
         &FocusedPane::App(AppPaneId::Output),
@@ -1000,7 +1000,7 @@ fn rebound_next_pane_uses_framework_filtered_tab_cycle() {
 
     press(&mut app, KeyCode::F(8), KeyModifiers::NONE);
 
-    assert_eq!(app.focus.current(), PaneId::Git);
+    assert_eq!(app.focused_pane_id(), PaneId::Git);
     assert_eq!(app.framework().focused(), &FocusedPane::App(AppPaneId::Git),);
 }
 
@@ -1065,13 +1065,13 @@ fn finder_activate_rebind_wins_over_global_tab_while_finder_is_open() {
     input::open_finder(&mut app);
     app.project_list.finder.results = vec![0];
     app.project_list.finder.total = 1;
-    let base_before = app.focus.base();
+    let base_before = app.base_focus();
 
     press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
 
     assert!(!app.overlays.is_finder_open());
     assert_eq!(
-        app.focus.current(),
+        app.focused_pane_id(),
         base_before,
         "finder Activate must consume Tab before global pane cycling",
     );
@@ -1094,11 +1094,10 @@ fn keymap_capture_rejects_navigation_key_through_production_input() {
     );
 }
 
-/// Phase 16: the `App::set_focus` override mirrors framework focus
-/// writes back into the legacy `app.focus` field for `FocusedPane::App`
-/// targets, and skips the legacy mirror for framework-only focuses.
+/// Phase 22: the `App::set_focus` override updates framework focus
+/// and records app-pane visits for render selection styling.
 #[test]
-fn set_focus_override_mirrors_app_focus_to_legacy_field() {
+fn set_focus_override_updates_framework_focus_and_visits() {
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
 
@@ -1107,29 +1106,25 @@ fn set_focus_override_mirrors_app_focus_to_legacy_field() {
         app.framework().focused(),
         FocusedPane::App(AppPaneId::Targets)
     ));
-    assert_eq!(app.focus.current(), panes::PaneId::Targets);
+    assert_eq!(app.focused_pane_id(), panes::PaneId::Targets);
 
     app.set_focus(FocusedPane::App(AppPaneId::Git));
     assert!(matches!(
         app.framework().focused(),
         FocusedPane::App(AppPaneId::Git)
     ));
-    assert_eq!(app.focus.current(), panes::PaneId::Git);
+    assert_eq!(app.focused_pane_id(), panes::PaneId::Git);
+    assert_eq!(
+        app.pane_focus_state(panes::PaneId::Targets),
+        crate::tui::pane::PaneFocusState::Remembered
+    );
 
-    // Framework-only focus must update the framework but leave the
-    // legacy field alone (legacy field is `PaneId`-typed and
-    // `PaneId::Toasts` is owned by the framework path).
-    let legacy_before = app.focus.current();
     app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
     assert!(matches!(
         app.framework().focused(),
         FocusedPane::Framework(FrameworkFocusId::Toasts),
     ));
-    assert_eq!(
-        app.focus.current(),
-        legacy_before,
-        "framework focus must not touch the legacy app.focus field",
-    );
+    assert_eq!(app.focused_pane_id(), panes::PaneId::Toasts);
 }
 
 #[test]

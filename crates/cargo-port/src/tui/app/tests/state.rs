@@ -1274,16 +1274,6 @@ fn background_message_for_unselected_path_does_not_invalidate_detail() {
 }
 
 #[test]
-fn lints_and_ci_panes_have_distinct_input_contexts() {
-    let mut app = make_app(&[make_project(Some("demo"), "~/demo")]);
-    app.focus.set(PaneId::CiRuns);
-    assert_eq!(app.input_context(), InputContext::CiRuns);
-
-    app.focus.set(PaneId::Lints);
-    assert_eq!(app.input_context(), InputContext::Lints);
-}
-
-#[test]
 fn lint_rollups_distinguish_root_from_primary_worktree() {
     let root = make_package_worktrees_item(
         make_package_raw(None, "~/ws", None),

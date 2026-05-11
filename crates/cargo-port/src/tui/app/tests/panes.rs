@@ -1,3 +1,5 @@
+use tui_pane::GlobalAction;
+
 use super::*;
 use crate::project::FileStamp;
 use crate::project::ManifestFingerprint;
@@ -208,11 +210,11 @@ fn tabbable_panes_follow_canonical_order() {
 
     for &pane in &expected_with_toasts[1..] {
         app.focus_next_pane();
-        assert_eq!(app.focus.current(), pane);
+        assert_eq!(app.focused_pane_id(), pane);
     }
     app.focus_previous_pane();
     assert_eq!(
-        app.focus.current(),
+        app.focused_pane_id(),
         expected_with_toasts[expected_with_toasts.len() - 2]
     );
 }
@@ -222,7 +224,7 @@ fn cpu_pane_selection_persists_across_project_changes() {
     let project_a = make_project(Some("a"), "~/a");
     let project_b = make_project(Some("b"), "~/b");
     let mut app = make_app(&[project_a, project_b]);
-    app.focus.set(PaneId::Cpu);
+    app.set_focus_to_pane(PaneId::Cpu);
     app.panes.cpu.viewport.set_pos(1);
     app.project_list.set_cursor(1);
 
@@ -235,15 +237,15 @@ fn cpu_pane_selection_persists_across_project_changes() {
 fn new_toasts_do_not_steal_focus() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
-    app.focus.set(PaneId::Git);
+    app.set_focus_to_pane(PaneId::Git);
 
     app.show_timed_toast("Settings", "Updated");
-    assert_eq!(app.focus.current(), PaneId::Git);
+    assert_eq!(app.focused_pane_id(), PaneId::Git);
 
     let _task = app
         .toasts
         .start_task("Startup lints", "Running startup lint jobs...");
-    assert_eq!(app.focus.current(), PaneId::Git);
+    assert_eq!(app.focused_pane_id(), PaneId::Git);
 }
 
 #[test]
@@ -354,7 +356,7 @@ fn first_non_empty_tree_build_focuses_project_list() {
     let mut app = make_app(std::slice::from_ref(&project));
     apply_items(&mut app, &[project]);
 
-    assert_eq!(app.focus.current(), PaneId::ProjectList);
+    assert_eq!(app.focused_pane_id(), PaneId::ProjectList);
     assert_eq!(app.project_list.cursor(), 0);
 }
 
@@ -406,17 +408,18 @@ fn initial_metadata_roots_skips_non_rust_leaves() {
 fn overlays_restore_prior_focus() {
     let app_project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[app_project]);
-    app.focus.set(PaneId::Git);
+    app.set_focus_to_pane(PaneId::Git);
 
-    app.focus.open_overlay(PaneId::Settings);
-    app.overlays.open_settings();
-    assert_eq!(app.focus.current(), PaneId::Settings);
-    assert_eq!(app.focus.overlay_return(), Some(PaneId::Git));
+    app.dispatch_framework_global_action(GlobalAction::OpenSettings);
+    assert_eq!(app.focused_pane_id(), PaneId::Git);
+    assert_eq!(
+        app.framework.overlay(),
+        Some(tui_pane::FrameworkOverlayId::Settings)
+    );
 
-    app.overlays.close_settings();
-    app.focus.close_overlay();
-    assert_eq!(app.focus.current(), PaneId::Git);
-    assert!(app.focus.overlay_return().is_none());
+    app.dispatch_framework_global_action(GlobalAction::Dismiss);
+    assert_eq!(app.focused_pane_id(), PaneId::Git);
+    assert_eq!(app.framework.overlay(), None);
 }
 
 #[test]
@@ -424,14 +427,30 @@ fn detail_panes_do_not_remember_selection_until_focused() {
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
 
-    assert!(app.focus.remembers_visited(PaneId::ProjectList));
-    assert!(!app.focus.remembers_visited(PaneId::Package));
-    assert!(!app.focus.remembers_visited(PaneId::Git));
-    assert!(!app.focus.remembers_visited(PaneId::Targets));
-    assert!(!app.focus.remembers_visited(PaneId::CiRuns));
+    assert_eq!(
+        app.pane_focus_state(PaneId::ProjectList),
+        PaneFocusState::Active
+    );
+    assert_eq!(
+        app.pane_focus_state(PaneId::Package),
+        PaneFocusState::Inactive
+    );
+    assert_eq!(app.pane_focus_state(PaneId::Git), PaneFocusState::Inactive);
+    assert_eq!(
+        app.pane_focus_state(PaneId::Targets),
+        PaneFocusState::Inactive
+    );
+    assert_eq!(
+        app.pane_focus_state(PaneId::CiRuns),
+        PaneFocusState::Inactive
+    );
 
-    app.focus.set(PaneId::Package);
-    assert!(app.focus.remembers_visited(PaneId::Package));
+    app.set_focus_to_pane(PaneId::Package);
+    app.set_focus_to_pane(PaneId::ProjectList);
+    assert_eq!(
+        app.pane_focus_state(PaneId::Package),
+        PaneFocusState::Remembered
+    );
 }
 
 #[test]
@@ -440,10 +459,10 @@ fn project_change_resets_project_dependent_panes() {
     let project_b = make_project(Some("b"), "~/b");
     let mut app = make_app(&[project_a, project_b]);
 
-    app.focus.set(PaneId::Package);
-    app.focus.set(PaneId::Git);
-    app.focus.set(PaneId::Targets);
-    app.focus.set(PaneId::CiRuns);
+    app.set_focus_to_pane(PaneId::Package);
+    app.set_focus_to_pane(PaneId::Git);
+    app.set_focus_to_pane(PaneId::Targets);
+    app.set_focus_to_pane(PaneId::CiRuns);
     app.panes.package.viewport.set_pos(3);
     app.panes.git.viewport.set_pos(4);
     app.panes.targets.viewport.set_pos(5);
@@ -455,10 +474,19 @@ fn project_change_resets_project_dependent_panes() {
     assert_eq!(app.panes.git.viewport.pos(), 0);
     assert_eq!(app.panes.targets.viewport.pos(), 0);
     assert_eq!(app.ci.viewport.pos(), 0);
-    assert!(!app.focus.remembers_visited(PaneId::Package));
-    assert!(!app.focus.remembers_visited(PaneId::Git));
-    assert!(!app.focus.remembers_visited(PaneId::Targets));
-    assert!(!app.focus.remembers_visited(PaneId::CiRuns));
+    assert_eq!(
+        app.pane_focus_state(PaneId::Package),
+        PaneFocusState::Inactive
+    );
+    assert_eq!(app.pane_focus_state(PaneId::Git), PaneFocusState::Inactive);
+    assert_eq!(
+        app.pane_focus_state(PaneId::Targets),
+        PaneFocusState::Inactive
+    );
+    assert_eq!(
+        app.pane_focus_state(PaneId::CiRuns),
+        PaneFocusState::Inactive
+    );
     assert_eq!(
         app.project_list
             .paths

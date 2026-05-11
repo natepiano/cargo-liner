@@ -23,6 +23,9 @@ use std::time::Instant;
 pub(crate) use render_state::FinderPane;
 pub(crate) use render_state::KeymapPane;
 pub(crate) use render_state::SettingsPane;
+use tui_pane::FocusedPane;
+
+use super::framework_keymap::AppPaneId;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum FinderMode {
@@ -50,6 +53,7 @@ pub(crate) enum KeymapMode {
 #[derive(Default)]
 pub(crate) struct Overlays {
     finder:            FinderMode,
+    finder_return:     Option<FocusedPane<AppPaneId>>,
     settings:          SettingsMode,
     keymap:            KeymapMode,
     inline_error:      Option<String>,
@@ -70,18 +74,23 @@ impl Overlays {
 
     pub(crate) const fn close_finder(&mut self) { self.finder = FinderMode::Hidden; }
 
-    // ── settings ────────────────────────────────────────────────────
-
-    pub(crate) const fn is_settings_open(&self) -> bool {
-        !matches!(self.settings, SettingsMode::Hidden)
+    pub(crate) const fn set_finder_return(&mut self, focus: FocusedPane<AppPaneId>) {
+        self.finder_return = Some(focus);
     }
+
+    pub(crate) const fn finder_return(&self) -> Option<FocusedPane<AppPaneId>> {
+        self.finder_return
+    }
+
+    pub(crate) const fn take_finder_return(&mut self) -> Option<FocusedPane<AppPaneId>> {
+        self.finder_return.take()
+    }
+
+    // ── settings ────────────────────────────────────────────────────
 
     pub(crate) const fn is_settings_editing(&self) -> bool {
         matches!(self.settings, SettingsMode::Editing)
     }
-
-    #[cfg(test)]
-    pub(crate) const fn open_settings(&mut self) { self.settings = SettingsMode::Browsing; }
 
     pub(crate) fn close_settings(&mut self) {
         self.settings = SettingsMode::Hidden;
@@ -99,8 +108,6 @@ impl Overlays {
     }
 
     // ── keymap ──────────────────────────────────────────────────────
-
-    pub(crate) const fn is_keymap_open(&self) -> bool { !matches!(self.keymap, KeymapMode::Hidden) }
 
     pub(crate) const fn keymap_is_awaiting(&self) -> bool {
         matches!(self.keymap, KeymapMode::AwaitingKey)

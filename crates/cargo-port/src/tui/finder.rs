@@ -20,6 +20,8 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::AppContext;
+use tui_pane::FocusedPane;
 
 use super::app::App;
 use super::constants::ACCENT_COLOR;
@@ -29,6 +31,7 @@ use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::LABEL_COLOR;
 use super::constants::MAX_FINDER_RESULTS;
 use super::constants::TITLE_COLOR;
+use super::framework_keymap::AppPaneId;
 use super::panes;
 use super::panes::PaneId;
 use super::panes::RunTargetKind;
@@ -594,11 +597,15 @@ pub(super) fn handle_finder_text_key(app: &mut App, key: KeyCode) {
 }
 
 fn close_finder(app: &mut App) {
+    let return_target = app
+        .overlays
+        .take_finder_return()
+        .unwrap_or(FocusedPane::App(AppPaneId::ProjectList));
     app.overlays.close_finder();
     app.project_list.finder.query.clear();
     app.project_list.finder.results.clear();
     app.overlays.finder_pane.viewport.home();
-    app.focus.close_overlay();
+    app.set_focus(return_target);
 }
 
 fn refresh_finder_results(app: &mut App) {
@@ -623,12 +630,15 @@ fn confirm_finder(app: &mut App) {
     };
     let item = app.project_list.finder.index[idx].clone();
 
-    // Close finder
+    let return_target = app
+        .overlays
+        .take_finder_return()
+        .unwrap_or(FocusedPane::App(AppPaneId::ProjectList));
     app.overlays.close_finder();
     app.project_list.finder.query.clear();
     app.project_list.finder.results.clear();
     app.overlays.finder_pane.viewport.home();
-    app.focus.close_overlay();
+    app.set_focus(return_target);
 
     // Navigate to the project
     let include_non_rust = app.config.include_non_rust().includes_non_rust();
@@ -653,7 +663,7 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
         return;
     };
     if targets_data.has_targets() {
-        app.focus.set(PaneId::Targets);
+        app.set_focus(FocusedPane::App(AppPaneId::Targets));
 
         // Build target list and find the matching entry index
         {
@@ -889,7 +899,7 @@ fn render_finder_results(
                 app.overlays
                     .finder_pane
                     .viewport
-                    .selection_state(row_index, app.focus.pane_state(PaneId::Finder))
+                    .selection_state(row_index, app.pane_focus_state(PaneId::Finder))
                     .overlay_style(),
             )
         })

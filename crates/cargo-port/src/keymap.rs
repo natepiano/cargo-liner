@@ -13,6 +13,7 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
 use toml::Table;
 use toml::Value;
+use tui_pane::Action;
 
 use crate::config::NavigationKeys;
 use crate::project::AbsolutePath;
@@ -226,40 +227,11 @@ tui_pane::action_enum! {
     }
 }
 
-/// Inherent-method facade over the `tui_pane::Action` trait impl so
-/// the legacy `src/keymap.rs` / `src/tui/keymap_ui.rs` /
-/// `src/tui/input.rs` call sites that take `ProjectListAction::ALL`,
-/// `::toml_key`, `::from_toml_key` as fn-pointers continue to compile
-/// during the parallel-path window.
-impl ProjectListAction {
-    pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
-
-    pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
-
-    pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
-        <Self as tui_pane::Action>::from_toml_key(key)
-    }
-}
-
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum PackageAction {
         Activate => ("activate", "Open URL or Cargo.toml");
         Clean    => ("clean",    "Clean project");
-    }
-}
-
-/// Inherent-method facade over the `tui_pane::Action` trait impl so
-/// the legacy `src/keymap.rs` / `src/tui/keymap_ui.rs` call sites that
-/// take `PackageAction::ALL`, `::toml_key`, `::from_toml_key` as
-/// fn-pointers continue to compile during the parallel-path window.
-impl PackageAction {
-    pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
-
-    pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
-
-    pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
-        <Self as tui_pane::Action>::from_toml_key(key)
     }
 }
 
@@ -271,41 +243,12 @@ tui_pane::action_enum! {
     }
 }
 
-/// Inherent-method facade over the `tui_pane::Action` trait impl so
-/// the legacy `src/keymap.rs` / `src/tui/keymap_ui.rs` /
-/// `src/tui/panes/actions.rs` call sites that take `GitAction::ALL`,
-/// `::toml_key`, `::from_toml_key` as fn-pointers continue to compile
-/// during the parallel-path window.
-impl GitAction {
-    pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
-
-    pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
-
-    pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
-        <Self as tui_pane::Action>::from_toml_key(key)
-    }
-}
-
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum TargetsAction {
         Activate     => ("activate",      "run",     "Run in debug mode");
         ReleaseBuild => ("release_build", "release", "Run in release mode");
         Clean        => ("clean",         "clean",   "Clean project");
-    }
-}
-
-/// Inherent-method facade over the `tui_pane::Action` trait impl so
-/// the legacy `src/keymap.rs` / `src/tui/keymap_ui.rs` /
-/// `src/tui/panes/actions.rs` call sites continue to compile during
-/// the parallel-path window.
-impl TargetsAction {
-    pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
-
-    pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
-
-    pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
-        <Self as tui_pane::Action>::from_toml_key(key)
     }
 }
 
@@ -319,17 +262,6 @@ tui_pane::action_enum! {
     }
 }
 
-/// Inherent-method facade — see `TargetsAction` doc comment above.
-impl CiRunsAction {
-    pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
-
-    pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
-
-    pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
-        <Self as tui_pane::Action>::from_toml_key(key)
-    }
-}
-
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum LintsAction {
@@ -338,23 +270,6 @@ tui_pane::action_enum! {
     }
 }
 
-/// Inherent-method facade — see `TargetsAction` doc comment above.
-impl LintsAction {
-    pub(crate) const ALL: &'static [Self] = <Self as tui_pane::Action>::ALL;
-
-    pub(crate) fn toml_key(self) -> &'static str { <Self as tui_pane::Action>::toml_key(self) }
-
-    pub(crate) fn from_toml_key(key: &str) -> Option<Self> {
-        <Self as tui_pane::Action>::from_toml_key(key)
-    }
-}
-
-// `OutputAction` and `FinderAction` have no legacy `ResolvedKeymap`
-// consumers (no `output:` / `finder:` scope fields on `ResolvedKeymap`),
-// so they ship without the inherent-method facade other action enums
-// carry. Phase 17's reverse-lookup call `OutputAction::Cancel.toml_key()`
-// resolves through the `tui_pane::Action` trait when imported at the
-// call site.
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum OutputAction {
@@ -369,6 +284,10 @@ tui_pane::action_enum! {
         Cancel   => ("cancel",   "close", "Close finder");
     }
 }
+
+fn action_toml_key<A: Action>(action: A) -> &'static str { action.toml_key() }
+
+fn action_from_toml_key<A: Action>(key: &str) -> Option<A> { A::from_toml_key(key) }
 
 // ── Scope map ────────────────────────────────────────────────────────
 
@@ -558,37 +477,43 @@ impl ResolvedKeymap {
             out,
             "project_list",
             &km.project_list,
-            ProjectListAction::ALL,
-            ProjectListAction::toml_key,
+            <ProjectListAction as Action>::ALL,
+            action_toml_key::<ProjectListAction>,
         );
         Self::write_scope(
             out,
             "package",
             &km.package,
-            PackageAction::ALL,
-            PackageAction::toml_key,
+            <PackageAction as Action>::ALL,
+            action_toml_key::<PackageAction>,
         );
-        Self::write_scope(out, "git", &km.git, GitAction::ALL, GitAction::toml_key);
+        Self::write_scope(
+            out,
+            "git",
+            &km.git,
+            <GitAction as Action>::ALL,
+            action_toml_key::<GitAction>,
+        );
         Self::write_scope(
             out,
             "targets",
             &km.targets,
-            TargetsAction::ALL,
-            TargetsAction::toml_key,
+            <TargetsAction as Action>::ALL,
+            action_toml_key::<TargetsAction>,
         );
         Self::write_scope(
             out,
             "ci_runs",
             &km.ci_runs,
-            CiRunsAction::ALL,
-            CiRunsAction::toml_key,
+            <CiRunsAction as Action>::ALL,
+            action_toml_key::<CiRunsAction>,
         );
         Self::write_scope(
             out,
             "lints",
             &km.lints,
-            LintsAction::ALL,
-            LintsAction::toml_key,
+            <LintsAction as Action>::ALL,
+            action_toml_key::<LintsAction>,
         );
     }
 }
@@ -793,42 +718,42 @@ pub(crate) fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
         "project_list",
         &keymap.project_list,
         &vim_keys,
-        ProjectListAction::toml_key,
+        action_toml_key::<ProjectListAction>,
         &mut conflicts,
     );
     check_scope(
         "package",
         &keymap.package,
         &vim_keys,
-        PackageAction::toml_key,
+        action_toml_key::<PackageAction>,
         &mut conflicts,
     );
     check_scope(
         "git",
         &keymap.git,
         &vim_keys,
-        GitAction::toml_key,
+        action_toml_key::<GitAction>,
         &mut conflicts,
     );
     check_scope(
         "targets",
         &keymap.targets,
         &vim_keys,
-        TargetsAction::toml_key,
+        action_toml_key::<TargetsAction>,
         &mut conflicts,
     );
     check_scope(
         "ci_runs",
         &keymap.ci_runs,
         &vim_keys,
-        CiRunsAction::toml_key,
+        action_toml_key::<CiRunsAction>,
         &mut conflicts,
     );
     check_scope(
         "lints",
         &keymap.lints,
         &vim_keys,
-        LintsAction::toml_key,
+        action_toml_key::<LintsAction>,
         &mut conflicts,
     );
 
@@ -881,54 +806,54 @@ fn resolve_pane_scopes(
     resolve_scope(
         ctx,
         "project_list",
-        ProjectListAction::ALL,
-        ProjectListAction::from_toml_key,
-        ProjectListAction::toml_key,
+        <ProjectListAction as Action>::ALL,
+        action_from_toml_key::<ProjectListAction>,
+        action_toml_key::<ProjectListAction>,
         &defaults.project_list,
         &mut keymap.project_list,
     );
     resolve_scope(
         ctx,
         "package",
-        PackageAction::ALL,
-        PackageAction::from_toml_key,
-        PackageAction::toml_key,
+        <PackageAction as Action>::ALL,
+        action_from_toml_key::<PackageAction>,
+        action_toml_key::<PackageAction>,
         &defaults.package,
         &mut keymap.package,
     );
     resolve_scope(
         ctx,
         "git",
-        GitAction::ALL,
-        GitAction::from_toml_key,
-        GitAction::toml_key,
+        <GitAction as Action>::ALL,
+        action_from_toml_key::<GitAction>,
+        action_toml_key::<GitAction>,
         &defaults.git,
         &mut keymap.git,
     );
     resolve_scope(
         ctx,
         "targets",
-        TargetsAction::ALL,
-        TargetsAction::from_toml_key,
-        TargetsAction::toml_key,
+        <TargetsAction as Action>::ALL,
+        action_from_toml_key::<TargetsAction>,
+        action_toml_key::<TargetsAction>,
         &defaults.targets,
         &mut keymap.targets,
     );
     resolve_scope(
         ctx,
         "ci_runs",
-        CiRunsAction::ALL,
-        CiRunsAction::from_toml_key,
-        CiRunsAction::toml_key,
+        <CiRunsAction as Action>::ALL,
+        action_from_toml_key::<CiRunsAction>,
+        action_toml_key::<CiRunsAction>,
         &defaults.ci_runs,
         &mut keymap.ci_runs,
     );
     resolve_scope(
         ctx,
         "lints",
-        LintsAction::ALL,
-        LintsAction::from_toml_key,
-        LintsAction::toml_key,
+        <LintsAction as Action>::ALL,
+        action_from_toml_key::<LintsAction>,
+        action_toml_key::<LintsAction>,
         &defaults.lints,
         &mut keymap.lints,
     );
@@ -1212,12 +1137,12 @@ mod tests {
         }
 
         let km = ResolvedKeymap::defaults();
-        check(&km.project_list, ProjectListAction::ALL);
-        check(&km.package, PackageAction::ALL);
-        check(&km.git, GitAction::ALL);
-        check(&km.targets, TargetsAction::ALL);
-        check(&km.ci_runs, CiRunsAction::ALL);
-        check(&km.lints, LintsAction::ALL);
+        check(&km.project_list, <ProjectListAction as Action>::ALL);
+        check(&km.package, <PackageAction as Action>::ALL);
+        check(&km.git, <GitAction as Action>::ALL);
+        check(&km.targets, <TargetsAction as Action>::ALL);
+        check(&km.ci_runs, <CiRunsAction as Action>::ALL);
+        check(&km.lints, <LintsAction as Action>::ALL);
     }
 
     #[test]

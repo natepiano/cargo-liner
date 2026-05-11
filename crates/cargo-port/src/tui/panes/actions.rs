@@ -224,7 +224,7 @@ fn request_clean(app: &mut App) {
 /// Return a mutable reference to the pane that owns the cursor for the
 /// currently active detail column.
 fn active_detail_pane(app: &mut App) -> &mut Viewport {
-    match app.focus.base() {
+    match app.base_focus() {
         PaneId::Targets => &mut app.panes.targets.viewport,
         PaneId::Lang => &mut app.panes.lang.viewport,
         PaneId::Cpu => &mut app.panes.cpu.viewport,
@@ -243,9 +243,9 @@ fn active_detail_pane(app: &mut App) -> &mut Viewport {
 
 /// Handle the Enter key in the detail panel.
 fn handle_detail_enter(app: &mut App) {
-    if app.focus.is(PaneId::Targets) {
+    if app.focus_is(PaneId::Targets) {
         handle_target_action(app, BuildMode::Debug);
-    } else if app.focus.base() == PaneId::Package {
+    } else if app.base_focus() == PaneId::Package {
         if let Some(pkg) = app.panes.package.content() {
             let fields = super::package_fields_from_data(pkg);
             if matches!(
@@ -435,7 +435,7 @@ fn clear_lint_history(app: &mut App) {
         lr.clear_runs();
     }
     app.lint.viewport.home();
-    app.focus.set(PaneId::ProjectList);
+    app.set_focus_to_pane(PaneId::ProjectList);
     app.refresh_lint_cache_usage_from_disk();
     app.scan.bump_generation();
 }

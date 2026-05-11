@@ -149,7 +149,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         frame,
         outer_layout[0],
         &app.toasts.active_now(),
-        app.focus.is(PaneId::Toasts),
+        app.focus_is(PaneId::Toasts),
         app.toasts.focused_toast_id(),
     );
     app.toasts.set_hits(toast_result.hitboxes);
@@ -343,8 +343,8 @@ fn dispatch_via_trait(
     frame: &mut Frame,
     dispatcher: fn(&mut Panes, &mut Frame, Rect, &DispatchArgs<'_>),
 ) {
-    let focus_state = app.focus.pane_state(id);
-    let is_focused = app.focus.is(id);
+    let focus_state = app.pane_focus_state(id);
+    let is_focused = app.focus_is(id);
     let animation_elapsed = app.animation_started.elapsed();
     // Compute `selected_project_path` before the split-borrow — it
     // crosses Selection + Scan via `path_for_row`, so the
@@ -365,8 +365,8 @@ fn dispatch_via_trait(
 }
 
 fn render_lints_pane(app: &mut App, frame: &mut Frame, area: Rect) {
-    let focus_state = app.focus.pane_state(PaneId::Lints);
-    let is_focused = app.focus.is(PaneId::Lints);
+    let focus_state = app.pane_focus_state(PaneId::Lints);
+    let is_focused = app.focus_is(PaneId::Lints);
     let animation_elapsed = app.animation_started.elapsed();
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
@@ -384,8 +384,8 @@ fn render_lints_pane(app: &mut App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_ci_pane(app: &mut App, frame: &mut Frame, area: Rect) {
-    let focus_state = app.focus.pane_state(PaneId::CiRuns);
-    let is_focused = app.focus.is(PaneId::CiRuns);
+    let focus_state = app.pane_focus_state(PaneId::CiRuns);
+    let is_focused = app.focus_is(PaneId::CiRuns);
     let animation_elapsed = app.animation_started.elapsed();
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()

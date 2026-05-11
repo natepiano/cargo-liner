@@ -33,7 +33,7 @@ impl App {
             self.project_list.set_cursor(0);
         }
         if should_focus_project_list {
-            self.focus.set(PaneId::ProjectList);
+            self.set_focus_to_pane(PaneId::ProjectList);
         }
         self.sync_selected_project();
     }
@@ -63,7 +63,8 @@ impl App {
             "scan_start"
         );
         self.scan.set_priority_fetch_path(None);
-        self.focus.set(PaneId::ProjectList);
+        self.set_focus_to_pane(PaneId::ProjectList);
+        let _ = self.overlays.take_finder_return();
         self.overlays.close_settings();
         self.overlays.close_finder();
         self.reset_project_panes();

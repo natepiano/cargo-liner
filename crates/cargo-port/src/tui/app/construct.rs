@@ -47,7 +47,6 @@ use crate::tui::framework_keymap::AppPaneId;
 use crate::tui::inflight::Inflight;
 use crate::tui::keymap_state::Keymap;
 use crate::tui::keymap_ui;
-use crate::tui::panes::PaneId;
 use crate::tui::panes::Panes;
 use crate::tui::project_list::ProjectList;
 use crate::tui::scan_state::Scan;
@@ -239,7 +238,7 @@ impl AppBuilder<Started> {
             keymap,
             scan,
             startup: crate::tui::app::async_tasks::Startup::new(),
-            focus: crate::tui::focus::Focus::new(PaneId::ProjectList),
+            visited_panes: std::iter::once(AppPaneId::ProjectList).collect(),
             overlays,
             confirm: None,
             animation_started: Instant::now(),

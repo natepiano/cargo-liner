@@ -19,10 +19,6 @@ pub enum PaneId {
     Keymap,
 }
 
-impl PaneId {
-    pub const fn is_overlay(self) -> bool { matches!(self, Self::Settings | Self::Finder) }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneBehavior {
     ProjectList,

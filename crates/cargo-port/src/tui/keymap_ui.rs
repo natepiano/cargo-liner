@@ -229,7 +229,7 @@ fn push_app_pane_rows(rows: &mut Vec<KeymapRow>, app: &App) {
         "Project List",
         "project_list",
         ProjectListPane::APP_PANE_ID,
-        ProjectListAction::ALL,
+        <ProjectListAction as Action>::ALL,
         app,
     );
     push_app_pane_scope(
@@ -237,7 +237,7 @@ fn push_app_pane_rows(rows: &mut Vec<KeymapRow>, app: &App) {
         "Package",
         "package",
         PackagePane::APP_PANE_ID,
-        PackageAction::ALL,
+        <PackageAction as Action>::ALL,
         app,
     );
     push_app_pane_scope(
@@ -261,7 +261,7 @@ fn push_app_pane_rows(rows: &mut Vec<KeymapRow>, app: &App) {
         "Git",
         "git",
         GitPane::APP_PANE_ID,
-        GitAction::ALL,
+        <GitAction as Action>::ALL,
         app,
     );
     push_app_pane_scope(
@@ -269,7 +269,7 @@ fn push_app_pane_rows(rows: &mut Vec<KeymapRow>, app: &App) {
         "Targets",
         "targets",
         TargetsPane::APP_PANE_ID,
-        TargetsAction::ALL,
+        <TargetsAction as Action>::ALL,
         app,
     );
     push_app_pane_scope(
@@ -277,7 +277,7 @@ fn push_app_pane_rows(rows: &mut Vec<KeymapRow>, app: &App) {
         "CI Runs",
         "ci_runs",
         CiRunsPane::APP_PANE_ID,
-        CiRunsAction::ALL,
+        <CiRunsAction as Action>::ALL,
         app,
     );
     push_app_pane_scope(
@@ -285,7 +285,7 @@ fn push_app_pane_rows(rows: &mut Vec<KeymapRow>, app: &App) {
         "Lints",
         "lints",
         LintsPane::APP_PANE_ID,
-        LintsAction::ALL,
+        <LintsAction as Action>::ALL,
         app,
     );
     push_app_pane_scope(
@@ -567,7 +567,7 @@ fn write_app_pane_sections(out: &mut String, app: &App, pending: Option<&Pending
         entries_from_app_pane(
             app,
             ProjectListPane::APP_PANE_ID,
-            ProjectListAction::ALL,
+            <ProjectListAction as Action>::ALL,
             action_toml_key,
         ),
         pending,
@@ -578,7 +578,7 @@ fn write_app_pane_sections(out: &mut String, app: &App, pending: Option<&Pending
         entries_from_app_pane(
             app,
             PackagePane::APP_PANE_ID,
-            PackageAction::ALL,
+            <PackageAction as Action>::ALL,
             action_toml_key,
         ),
         pending,
@@ -598,7 +598,12 @@ fn write_app_pane_sections(out: &mut String, app: &App, pending: Option<&Pending
     write_section(
         out,
         "git",
-        entries_from_app_pane(app, GitPane::APP_PANE_ID, GitAction::ALL, action_toml_key),
+        entries_from_app_pane(
+            app,
+            GitPane::APP_PANE_ID,
+            <GitAction as Action>::ALL,
+            action_toml_key,
+        ),
         pending,
     );
     write_section(
@@ -607,7 +612,7 @@ fn write_app_pane_sections(out: &mut String, app: &App, pending: Option<&Pending
         entries_from_app_pane(
             app,
             TargetsPane::APP_PANE_ID,
-            TargetsAction::ALL,
+            <TargetsAction as Action>::ALL,
             action_toml_key,
         ),
         pending,
@@ -618,7 +623,7 @@ fn write_app_pane_sections(out: &mut String, app: &App, pending: Option<&Pending
         entries_from_app_pane(
             app,
             LintsPane::APP_PANE_ID,
-            LintsAction::ALL,
+            <LintsAction as Action>::ALL,
             action_toml_key,
         ),
         pending,
@@ -629,7 +634,7 @@ fn write_app_pane_sections(out: &mut String, app: &App, pending: Option<&Pending
         entries_from_app_pane(
             app,
             CiRunsPane::APP_PANE_ID,
-            CiRunsAction::ALL,
+            <CiRunsAction as Action>::ALL,
             action_toml_key,
         ),
         pending,
@@ -815,7 +820,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
         let focus = if app.framework.overlay() == Some(FrameworkOverlayId::Keymap) {
             PaneFocusState::Active
         } else {
-            app.focus.pane_state(PaneId::Keymap)
+            app.pane_focus_state(PaneId::Keymap)
         };
         let selection = app
             .overlays

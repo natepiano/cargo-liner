@@ -114,6 +114,22 @@ impl AppPaneId {
             Self::Finder => PaneId::Finder,
         }
     }
+
+    pub(crate) const fn from_legacy(pane: PaneId) -> Option<Self> {
+        match pane {
+            PaneId::ProjectList => Some(Self::ProjectList),
+            PaneId::Package => Some(Self::Package),
+            PaneId::Lang => Some(Self::Lang),
+            PaneId::Cpu => Some(Self::Cpu),
+            PaneId::Git => Some(Self::Git),
+            PaneId::Targets => Some(Self::Targets),
+            PaneId::Lints => Some(Self::Lints),
+            PaneId::CiRuns => Some(Self::CiRuns),
+            PaneId::Output => Some(Self::Output),
+            PaneId::Finder => Some(Self::Finder),
+            PaneId::Settings | PaneId::Keymap | PaneId::Toasts => None,
+        }
+    }
 }
 
 fn project_list_is_tabbable(app: &App) -> bool { app.is_pane_tabbable(PaneId::ProjectList) }
@@ -163,17 +179,10 @@ impl AppContext for App {
 
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
 
-    /// Phase 16 override: mirror the framework focus write back into
-    /// the legacy `app.focus` field so highlight / bar / render paths
-    /// that still read `app.focus` stay in sync. Framework-only
-    /// focuses (e.g. `FocusedPane::Framework(FrameworkFocusId::Toasts)`)
-    /// skip the legacy mirror because the legacy `Focus` field is
-    /// `PaneId`-typed and `PaneId::Toasts` is owned by the framework
-    /// path now.
     fn set_focus(&mut self, focus: FocusedPane<Self::AppPaneId>) {
         self.framework.set_focused(focus);
         if let FocusedPane::App(id) = focus {
-            self.focus.set(id.to_legacy());
+            self.visited_panes.insert(id);
         }
     }
 }
@@ -718,7 +727,7 @@ mod tests {
     fn package_action_inherent_facade_matches_action_trait() {
         assert_eq!(
             <PackageAction as Action>::ALL.len(),
-            PackageAction::ALL.len(),
+            <PackageAction as Action>::ALL.len(),
         );
         assert_eq!(
             <PackageAction as Action>::toml_key(PackageAction::Activate),

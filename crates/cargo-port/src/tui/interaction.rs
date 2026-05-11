@@ -26,7 +26,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
     };
     match hit {
         HoverTarget::PaneRow { pane, row } => {
-            app.focus.set(pane);
+            app.set_focus_to_pane(pane);
             if pane == PaneId::ProjectList {
                 app.project_list.set_cursor(row);
             } else {
@@ -42,7 +42,7 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
             let active = app.toasts.active_now();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
                 app.toasts.viewport.set_pos(index);
-                app.focus.set(PaneId::Toasts);
+                app.set_focus_to_pane(PaneId::Toasts);
             }
             true
         },
@@ -166,6 +166,8 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
+    use tui_pane::AppContext;
+    use tui_pane::FocusedPane;
     use tui_pane::GlobalAction as FrameworkGlobalAction;
 
     use super::HoveredPaneRow;
@@ -211,6 +213,7 @@ mod tests {
     use crate::tui::app::DismissTarget;
     use crate::tui::app::ExpandKey;
     use crate::tui::finder;
+    use crate::tui::framework_keymap::AppPaneId;
     use crate::tui::input;
     use crate::tui::pane::HoverTarget;
     use crate::tui::pane::PaneFocusState;
@@ -396,8 +399,8 @@ mod tests {
         });
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
-        let focus_state = app.focus.pane_state(PaneId::Lints);
-        let is_focused = app.focus.is(PaneId::Lints);
+        let focus_state = app.pane_focus_state(PaneId::Lints);
+        let is_focused = app.focus_is(PaneId::Lints);
         let animation_elapsed = app.animation_started.elapsed();
         let selected_path = app
             .selected_project_path_for_render()
@@ -424,8 +427,8 @@ mod tests {
         app.ci.override_runs_for_test(runs.to_vec());
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
-        let focus_state = app.focus.pane_state(PaneId::CiRuns);
-        let is_focused = app.focus.is(PaneId::CiRuns);
+        let focus_state = app.pane_focus_state(PaneId::CiRuns);
+        let is_focused = app.focus_is(PaneId::CiRuns);
         let animation_elapsed = app.animation_started.elapsed();
         let selected_path = app
             .selected_project_path_for_render()
@@ -651,7 +654,7 @@ mod tests {
         let (x, y) = row_body_point(&app, 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.focus.current(), PaneId::ProjectList);
+        assert_eq!(app.focused_pane_id(), PaneId::ProjectList);
         assert_eq!(app.project_list.cursor(), 1);
         assert_eq!(
             app.project_list
@@ -706,7 +709,9 @@ mod tests {
         finder.col_widths = col_widths;
         finder.results = vec![0, 1];
         finder.total = 2;
-        app.focus.open_overlay(PaneId::Finder);
+        app.overlays
+            .set_finder_return(FocusedPane::App(AppPaneId::ProjectList));
+        app.set_focus(FocusedPane::App(AppPaneId::Finder));
         app.overlays.open_finder();
         render_ui(&mut app);
 
@@ -1044,7 +1049,7 @@ mod tests {
         click(&mut app, x, y);
 
         assert_eq!(
-            app.focus.current(),
+            app.focused_pane_id(),
             PaneId::Toasts,
             "toast body click should focus the toast surface over underlying content"
         );
@@ -1066,7 +1071,9 @@ mod tests {
         finder.query = "a".to_string();
         finder.results = vec![0, 1];
         finder.total = 2;
-        app.focus.open_overlay(PaneId::Finder);
+        app.overlays
+            .set_finder_return(FocusedPane::App(AppPaneId::ProjectList));
+        app.set_focus(FocusedPane::App(AppPaneId::Finder));
         app.overlays.open_finder();
         render_ui(&mut app);
 
@@ -1103,7 +1110,7 @@ mod tests {
         let (x, y) = pane_row_point(&app.panes.package.viewport, 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.focus.current(), PaneId::Package);
+        assert_eq!(app.focused_pane_id(), PaneId::Package);
         assert_eq!(app.panes.package.viewport.pos(), 1);
     }
 
@@ -1173,7 +1180,7 @@ mod tests {
         let (x, y) = pane_row_point(&app.panes.targets.viewport, 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.focus.current(), PaneId::Targets);
+        assert_eq!(app.focused_pane_id(), PaneId::Targets);
         assert_eq!(app.panes.targets.viewport.pos(), 1);
     }
 
@@ -1192,7 +1199,7 @@ mod tests {
         let (x, y) = pane_row_point(&app.panes.git.viewport, 1);
         click(&mut app, x, y);
 
-        assert_eq!(app.focus.current(), PaneId::Git);
+        assert_eq!(app.focused_pane_id(), PaneId::Git);
         assert_eq!(app.panes.git.viewport.pos(), 1);
     }
 

@@ -75,11 +75,12 @@ use super::columns;
 use super::columns::LintCell;
 use super::columns::StyledSegment;
 use super::config_state::Config;
-use super::focus::Focus;
 use super::framework_keymap;
+use super::framework_keymap::AppPaneId;
 use super::inflight::Inflight;
 use super::keymap_state::Keymap;
 use super::overlays::Overlays;
+use super::pane::PaneFocusState;
 use super::panes::LayoutCache;
 use super::panes::PaneId;
 use super::panes::Panes;
@@ -126,7 +127,10 @@ use async_tasks::Startup;
 pub(super) use dismiss::DismissTarget;
 pub(super) use target_index::CleanSelection;
 pub(super) use target_index::TargetDirIndex;
+use tui_pane::AppContext;
+use tui_pane::FocusedPane;
 use tui_pane::Framework;
+use tui_pane::FrameworkFocusId;
 use tui_pane::GlobalAction;
 use tui_pane::Keymap as FrameworkKeymap;
 pub(super) use types::CiRunDisplayMode;
@@ -150,12 +154,10 @@ use super::interaction;
 use super::lint_state::Lint;
 pub(super) use super::net_state::AvailabilityStatus;
 use super::net_state::Net;
-use super::panes;
 use super::panes::BottomRow;
 pub(super) use super::project_list::ExpandKey;
 pub(super) use super::project_list::VisibleRow;
 use super::settings::SettingOption;
-use super::shortcuts::InputContext;
 use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
 use crate::project;
@@ -217,7 +219,7 @@ pub(super) struct App {
     /// `complete_at` slots that drive the umbrella "Startup" toast
     /// and its detail toasts.
     pub(super) startup:           Startup,
-    pub(super) focus:             Focus,
+    pub(super) visited_panes:     HashSet<AppPaneId>,
     /// Overlays subsystem. Owns the overlay-mode enums
     /// (`FinderMode`, `SettingsMode`, `KeymapMode`),
     /// the transient `inline_error` UI feedback, and the
@@ -333,8 +335,8 @@ impl App {
         self.toasts.prune(now);
         let toast_len = self.toasts.active_now().len();
         self.toasts.viewport.set_len(toast_len);
-        if self.focus.base() == PaneId::Toasts && self.toasts.active_now().is_empty() {
-            self.focus.set(PaneId::ProjectList);
+        if self.base_focus() == PaneId::Toasts && self.toasts.active_now().is_empty() {
+            self.set_focus_to_pane(PaneId::ProjectList);
         }
     }
 
@@ -654,7 +656,7 @@ impl App {
         let was_empty = self.inflight.example_output_is_empty();
         self.inflight.set_example_output(output);
         if was_empty && !self.inflight.example_output_is_empty() {
-            self.focus.set(PaneId::Output);
+            self.set_focus_to_pane(PaneId::Output);
         }
     }
 
@@ -762,34 +764,49 @@ impl App {
         }
     }
 
-    /// Derive the current input context from app state. Reads
-    /// Overlays + Focus + Panes (via `panes::behavior`).
-    pub(super) const fn input_context(&self) -> InputContext {
-        use super::panes::PaneBehavior;
-        use super::shortcuts::InputContext;
-        let overlays = &self.overlays;
-        if overlays.keymap_is_awaiting() && overlays.inline_error().is_some() {
-            InputContext::KeymapConflict
-        } else if overlays.keymap_is_awaiting() {
-            InputContext::KeymapAwaiting
-        } else if overlays.is_keymap_open() {
-            InputContext::Keymap
-        } else if overlays.is_finder_open() {
-            InputContext::Finder
-        } else if overlays.is_settings_editing() {
-            InputContext::SettingsEditing
-        } else if overlays.is_settings_open() {
-            InputContext::Settings
-        } else {
-            match panes::behavior(self.focus.current()) {
-                PaneBehavior::ProjectList | PaneBehavior::Overlay => InputContext::ProjectList,
-                PaneBehavior::DetailFields => InputContext::DetailFields,
-                PaneBehavior::DetailTargets | PaneBehavior::Cpu => InputContext::DetailTargets,
-                PaneBehavior::Lints => InputContext::Lints,
-                PaneBehavior::CiRuns => InputContext::CiRuns,
-                PaneBehavior::Output => InputContext::Output,
-                PaneBehavior::Toasts => InputContext::Toasts,
+    pub(super) const fn focused_pane_id(&self) -> PaneId {
+        Self::pane_id_for_focus(*self.framework.focused())
+    }
+
+    pub(super) fn focus_is(&self, pane: PaneId) -> bool { self.focused_pane_id() == pane }
+
+    pub(super) fn base_focus(&self) -> PaneId {
+        if self.overlays.is_finder_open() && self.focus_is(PaneId::Finder) {
+            return self
+                .overlays
+                .finder_return()
+                .map_or(PaneId::ProjectList, Self::pane_id_for_focus);
+        }
+        self.focused_pane_id()
+    }
+
+    pub(super) fn pane_focus_state(&self, pane: PaneId) -> PaneFocusState {
+        if self.focus_is(pane) {
+            return PaneFocusState::Active;
+        }
+        AppPaneId::from_legacy(pane).map_or(PaneFocusState::Inactive, |id| {
+            if self.visited_panes.contains(&id) {
+                PaneFocusState::Remembered
+            } else {
+                PaneFocusState::Inactive
             }
+        })
+    }
+
+    pub(super) fn set_focus_to_pane(&mut self, pane: PaneId) {
+        match AppPaneId::from_legacy(pane) {
+            Some(id) => self.set_focus(FocusedPane::App(id)),
+            None if pane == PaneId::Toasts => {
+                self.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
+            },
+            None => {},
+        }
+    }
+
+    const fn pane_id_for_focus(focus: FocusedPane<AppPaneId>) -> PaneId {
+        match focus {
+            FocusedPane::App(id) => id.to_legacy(),
+            FocusedPane::Framework(FrameworkFocusId::Toasts) => PaneId::Toasts,
         }
     }
 
@@ -861,17 +878,17 @@ impl App {
         if panes.is_empty() {
             return;
         }
-        let current = self.focus.base();
+        let current = self.base_focus();
         if current == PaneId::Toasts
             && self.toasts.viewport.pos() + 1 < self.toasts.active_now().len()
         {
             self.toasts.viewport.down();
-            self.focus.set(PaneId::Toasts);
+            self.set_focus_to_pane(PaneId::Toasts);
             return;
         }
         let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
         let next = panes[(index + 1) % panes.len()];
-        self.focus.set(next);
+        self.set_focus_to_pane(next);
         if next == PaneId::Toasts {
             self.toasts.viewport.home();
         }
@@ -884,15 +901,15 @@ impl App {
         if panes.is_empty() {
             return;
         }
-        let current = self.focus.base();
+        let current = self.base_focus();
         if current == PaneId::Toasts && self.toasts.viewport.pos() > 0 {
             self.toasts.viewport.up();
-            self.focus.set(PaneId::Toasts);
+            self.set_focus_to_pane(PaneId::Toasts);
             return;
         }
         let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
         let prev = panes[(index + panes.len() - 1) % panes.len()];
-        self.focus.set(prev);
+        self.set_focus_to_pane(prev);
         if prev == PaneId::Toasts {
             let last_index = self.toasts.active_now().len().saturating_sub(1);
             self.toasts.viewport.set_pos(last_index);
@@ -906,10 +923,10 @@ impl App {
         self.ci.viewport.home();
         self.lint.viewport.home();
         self.toasts.viewport.home();
-        self.focus.unvisit(PaneId::Package);
-        self.focus.unvisit(PaneId::Git);
-        self.focus.unvisit(PaneId::Targets);
-        self.focus.unvisit(PaneId::CiRuns);
+        self.visited_panes.remove(&AppPaneId::Package);
+        self.visited_panes.remove(&AppPaneId::Git);
+        self.visited_panes.remove(&AppPaneId::Targets);
+        self.visited_panes.remove(&AppPaneId::CiRuns);
     }
 
     pub fn sync_selected_project(&mut self) {
@@ -939,12 +956,15 @@ impl App {
         self.reset_project_panes();
 
         let panes = self.tabbable_panes();
-        if !panes.contains(&self.focus.base()) {
-            self.focus.set(PaneId::ProjectList);
+        if !panes.contains(&self.base_focus()) {
+            self.set_focus_to_pane(PaneId::ProjectList);
         }
 
-        if self.focus.overlay_return().is_some() && !self.focus.overlay_return_is_in(&panes) {
-            self.focus.retarget_overlay_return(PaneId::ProjectList);
+        if let Some(return_target) = self.overlays.finder_return()
+            && !panes.contains(&Self::pane_id_for_focus(return_target))
+        {
+            self.overlays
+                .set_finder_return(FocusedPane::App(AppPaneId::ProjectList));
         }
 
         if let Some(abs_path) = current

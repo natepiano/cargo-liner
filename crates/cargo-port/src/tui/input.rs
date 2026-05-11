@@ -16,7 +16,6 @@ use ratatui::layout::Position;
 use tui_pane::Action;
 use tui_pane::AppContext;
 use tui_pane::FocusedPane;
-use tui_pane::FrameworkFocusId;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::Globals;
@@ -93,7 +92,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
             kind = %event_label(event),
-            focus = pane_label(app.focus.current()),
+            focus = pane_label(app.focused_pane_id()),
             scan_complete = app.scan.is_complete(),
             selected = %app.project_list.selected_project_path()
                 .map_or_else(|| "-".to_string(), |path| path.display().to_string()),
@@ -135,7 +134,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
             &framework_bind,
         )
     {
-        let was_on_output = app.focus.is(PaneId::Output);
+        let was_on_output = app.focus_is(PaneId::Output);
         app.inflight.example_output_mut().clear();
         if was_on_output {
             app.set_focus(FocusedPane::App(AppPaneId::Targets));
@@ -157,7 +156,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     if dispatch_app_global(app, &framework_bind) {
         return;
     }
-    let focused = focused_from_legacy(app.focus.current());
+    let focused = *app.framework.focused();
     if dispatch_focused_framework_pane(app, focused, &framework_bind) {
         return;
     }
@@ -169,24 +168,6 @@ fn framework_bind_from_event(event: &KeyEvent) -> FrameworkKeyBind {
     FrameworkKeyBind {
         code: bind.code,
         mods: bind.modifiers,
-    }
-}
-
-const fn focused_from_legacy(pane_id: PaneId) -> FocusedPane<AppPaneId> {
-    match pane_id {
-        PaneId::ProjectList | PaneId::Settings | PaneId::Keymap => {
-            FocusedPane::App(AppPaneId::ProjectList)
-        },
-        PaneId::Package => FocusedPane::App(AppPaneId::Package),
-        PaneId::Lang => FocusedPane::App(AppPaneId::Lang),
-        PaneId::Cpu => FocusedPane::App(AppPaneId::Cpu),
-        PaneId::Git => FocusedPane::App(AppPaneId::Git),
-        PaneId::Targets => FocusedPane::App(AppPaneId::Targets),
-        PaneId::Lints => FocusedPane::App(AppPaneId::Lints),
-        PaneId::CiRuns => FocusedPane::App(AppPaneId::CiRuns),
-        PaneId::Output => FocusedPane::App(AppPaneId::Output),
-        PaneId::Finder => FocusedPane::App(AppPaneId::Finder),
-        PaneId::Toasts => FocusedPane::Framework(FrameworkFocusId::Toasts),
     }
 }
 
@@ -327,9 +308,7 @@ fn focused_text_input_mode(app: &App) -> bool {
     matches!(
         app.framework.focused_pane_mode(app),
         Some(Mode::TextInput(_))
-    ) || app.overlays.is_finder_open()
-        || app.overlays.is_settings_editing()
-        || app.overlays.keymap_is_awaiting()
+    )
 }
 
 /// Normalize navigation keys only. Vim hjkl conversion applies only when
@@ -341,7 +320,7 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
     }
 
     let code = if raw.modifiers == KeyModifiers::NONE && app.config.navigation_keys().uses_vim() {
-        match panes::behavior(app.focus.current()) {
+        match panes::behavior(app.focused_pane_id()) {
             PaneBehavior::DetailFields
             | PaneBehavior::DetailTargets
             | PaneBehavior::Cpu
@@ -365,7 +344,7 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
 
     // In list panes, bare left/right map to up/down.
     let code = if raw.modifiers == KeyModifiers::NONE {
-        match panes::behavior(app.focus.current()) {
+        match panes::behavior(app.focused_pane_id()) {
             PaneBehavior::DetailFields
             | PaneBehavior::DetailTargets
             | PaneBehavior::Cpu
@@ -510,7 +489,7 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    if app.input_context().is_overlay() {
+    if app.framework.overlay().is_some() || app.overlays.is_finder_open() {
         return;
     }
 
@@ -524,13 +503,15 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         .collect::<Vec<_>>();
 
     if project_list.contains(pos) {
-        app.focus.set(PaneId::ProjectList);
+        app.set_focus(FocusedPane::App(AppPaneId::ProjectList));
         return;
     }
 
     for (pane_id, pane_rect) in pane_regions {
         if pane_id != PaneId::ProjectList && pane_rect.contains(pos) {
-            app.focus.set(pane_id);
+            if let Some(id) = AppPaneId::from_legacy(pane_id) {
+                app.set_focus(FocusedPane::App(id));
+            }
             return;
         }
     }
@@ -669,7 +650,8 @@ pub(super) fn open_finder(app: &mut App) {
     let finder = &mut app.project_list.finder;
     finder.index = index;
     finder.col_widths = col_widths;
-    app.focus.open_overlay(PaneId::Finder);
+    app.overlays.set_finder_return(*app.framework.focused());
+    app.set_focus(FocusedPane::App(AppPaneId::Finder));
     app.overlays.open_finder();
     let finder = &mut app.project_list.finder;
     finder.query.clear();
