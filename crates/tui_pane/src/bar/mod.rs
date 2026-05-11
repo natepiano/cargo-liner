@@ -130,7 +130,7 @@ fn render_overlay_slots<A: Action>(
     slots
         .into_iter()
         .filter_map(|(region, slot)| match slot {
-            crate::BarSlot::Single(action) => {
+            BarSlot::Single(action) => {
                 let key = scope.key_for(action).copied()?;
                 Some(RenderedSlot {
                     region,
@@ -141,7 +141,7 @@ fn render_overlay_slots<A: Action>(
                     secondary_key: None,
                 })
             },
-            crate::BarSlot::Paired(primary, secondary, label) => {
+            BarSlot::Paired(primary, secondary, label) => {
                 let key = scope.key_for(primary).copied()?;
                 let secondary_key = scope.key_for(secondary).copied()?;
                 Some(RenderedSlot {

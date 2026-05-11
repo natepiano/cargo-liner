@@ -27,6 +27,7 @@ use crate::AppContext;
 use crate::BarRegion;
 use crate::ShortcutState;
 use crate::Visibility;
+use crate::BarSlot;
 
 /// Crate-private vtable for per-pane keymap operations.
 pub(crate) trait RuntimeScope<Ctx: AppContext>: 'static {
@@ -101,7 +102,7 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
             .bar_slots(ctx)
             .into_iter()
             .filter_map(|(region, slot)| match slot {
-                crate::BarSlot::Single(action) => {
+                BarSlot::Single(action) => {
                     let visibility = self.pane.visibility(action, ctx);
                     if matches!(visibility, Visibility::Hidden) {
                         return None;
@@ -116,7 +117,7 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
                         secondary_key: None,
                     })
                 },
-                crate::BarSlot::Paired(primary, secondary, label) => {
+                BarSlot::Paired(primary, secondary, label) => {
                     let primary_visibility = self.pane.visibility(primary, ctx);
                     let secondary_visibility = self.pane.visibility(secondary, ctx);
                     if matches!(primary_visibility, Visibility::Hidden)

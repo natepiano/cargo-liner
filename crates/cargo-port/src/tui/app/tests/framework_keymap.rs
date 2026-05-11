@@ -53,6 +53,8 @@ use crate::tui::panes::DetailField;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::RemoteRow;
+use crate::tui::panes::PaneId;
+use crate::project::RootItem;
 
 fn focus_app_pane_in_framework(app: &mut App, id: AppPaneId) {
     app.framework_mut().set_focused(FocusedPane::App(id));
@@ -66,7 +68,7 @@ fn flatten(spans: &[Span<'static>]) -> String {
     out
 }
 
-fn make_app_with_keymap_toml(projects: &[crate::project::RootItem], toml: &str) -> App {
+fn make_app_with_keymap_toml(projects: &[RootItem], toml: &str) -> App {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let toml_path = temp_dir.path().join("keymap.toml");
     fs::write(&toml_path, toml).expect("write keymap toml");
@@ -781,7 +783,7 @@ fn output_cancel_rebind_clears_example_output_from_non_output_focus() {
 fn output_cancel_rebind_clears_example_output_and_moves_output_focus_to_targets() {
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app_with_keymap_toml(&[project], "[output]\ncancel = \"q\"\n");
-    app.focus.set(panes::PaneId::Output);
+    app.focus.set(PaneId::Output);
     app.inflight.example_output_mut().push("line".to_string());
 
     let event = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
