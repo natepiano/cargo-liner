@@ -104,12 +104,13 @@ struct InlinePathOccurrence {
 }
 
 struct ScopeInfo {
-    span_start:       usize,
-    span_end:         usize,
-    insertion_offset: usize,
-    indent:           String,
-    module_path:      Vec<String>,
-    existing_imports: BTreeSet<String>,
+    span_start:              usize,
+    span_end:                usize,
+    insertion_offset:        usize,
+    indent:                  String,
+    module_path:             Vec<String>,
+    existing_imports:        BTreeSet<String>,
+    existing_reexport_names: BTreeSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -219,6 +220,7 @@ fn process_occurrence(
     let scope = &ctx.scopes[scope_id];
 
     if !scope.existing_imports.contains(&import_path)
+        && !scope.existing_reexport_names.contains(&occ.import_name)
         && inserted_use_paths.insert((scope_id, import_path.clone()))
     {
         let use_path = canonicalize_inserted_use_path(scope, &import_path);
@@ -389,6 +391,7 @@ fn collect_scopes(
     scope_collection_context: &mut ScopeCollectionContext<'_>,
 ) {
     let mut existing_imports = BTreeSet::new();
+    let mut existing_reexport_names = BTreeSet::new();
     let mut last_use_start = None;
     let mut last_use_end = None;
     let mut first_item_start = None;
@@ -403,6 +406,11 @@ fn collect_scopes(
 
         if let Item::Use(item_use) = item {
             if let Some(import_path) = flatten_use_path(&item_use.tree) {
+                if !matches!(item_use.vis, syn::Visibility::Inherited)
+                    && let Some(import_name) = import_path.rsplit("::").next()
+                {
+                    existing_reexport_names.insert(import_name.to_string());
+                }
                 existing_imports.insert(import_path);
             }
             last_use_start = Some(item_start);
@@ -431,6 +439,7 @@ fn collect_scopes(
         indent,
         module_path: module_path.to_vec(),
         existing_imports,
+        existing_reexport_names,
     });
 
     for item in items {

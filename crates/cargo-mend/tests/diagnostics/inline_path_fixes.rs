@@ -585,6 +585,67 @@ fn example(_x: MyType, _y: crate::parent::types::MyType) {}
 }
 
 #[test]
+fn existing_pub_use_binding_no_duplicate() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "inline_existing_pub_use_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        r#"mod slot {
+    pub enum BarSlot {
+        Single(u8),
+    }
+}
+
+pub use slot::BarSlot;
+
+fn is_single(slot: crate::BarSlot) -> bool {
+    match slot {
+        crate::BarSlot::Single(_) => true,
+    }
+}
+
+fn main() {
+    let _ = is_single(BarSlot::Single(1));
+}
+"#,
+    )
+    .expect("write main");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed main");
+    assert!(
+        !main_rs.contains("use crate::BarSlot;"),
+        "pub use already binds BarSlot; fix must not add a duplicate import, got:\n{main_rs}"
+    );
+    assert!(
+        main_rs.contains("BarSlot::Single(_)"),
+        "expected inline variant path to be rewritten through existing binding, got:\n{main_rs}"
+    );
+}
+
+#[test]
 fn dry_run_no_edits() {
     let temp = tempdir().expect("create temp fixture dir");
 
