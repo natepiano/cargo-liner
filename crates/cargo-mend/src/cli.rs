@@ -289,16 +289,16 @@ struct RawFixCli {
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 struct RawAutoFixCli {
     /// Auto-fix mend import and visibility findings
-    #[arg(long)]
-    fix: bool,
+    #[arg(long = "fix")]
+    mend: bool,
 
     /// Auto-fix stale `pub use` re-exports
-    #[arg(long)]
-    fix_pub_use: bool,
+    #[arg(long = "fix-pub-use")]
+    pub_use: bool,
 
     /// Run `cargo fix` for compiler-fixable warnings
-    #[arg(long)]
-    fix_compiler: bool,
+    #[arg(long = "fix-compiler")]
+    compiler: bool,
 }
 
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
@@ -381,13 +381,13 @@ impl From<RawCargoCheckCli> for CargoCheckCli {
 impl From<RawFixCli> for FixCli {
     fn from(raw: RawFixCli) -> Self {
         let mut requested_fixes = BTreeSet::new();
-        if raw.auto_fix.fix {
+        if raw.auto_fix.mend {
             requested_fixes.insert(FixRequest::Mend);
         }
-        if raw.auto_fix.fix_pub_use {
+        if raw.auto_fix.pub_use {
             requested_fixes.insert(FixRequest::PubUse);
         }
-        if raw.auto_fix.fix_compiler {
+        if raw.auto_fix.compiler {
             requested_fixes.insert(FixRequest::Compiler);
         }
 
