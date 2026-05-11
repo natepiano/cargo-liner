@@ -28,6 +28,10 @@ const SEPARATOR: &str = "  ";
 /// separator first when `spans` already contains slots for this
 /// region.
 pub(super) fn push_slot(spans: &mut Vec<Span<'static>>, slot: &RenderedSlot, palette: &BarPalette) {
+    if let Some(secondary_key) = slot.secondary_key {
+        push_paired(spans, slot.key, secondary_key, slot.label, palette);
+        return;
+    }
     if !spans.is_empty() {
         spans.push(Span::styled(SEPARATOR, palette.separator_style));
     }
@@ -93,6 +97,7 @@ mod tests {
             key,
             state: ShortcutState::Enabled,
             visibility: Visibility::Visible,
+            secondary_key: None,
         }
     }
 
@@ -135,5 +140,19 @@ mod tests {
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content.as_ref(), " ↑/↓");
         assert_eq!(spans[1].content.as_ref(), " nav");
+    }
+
+    #[test]
+    fn push_slot_routes_secondary_key_through_paired_renderer() {
+        let palette = BarPalette::default();
+        let mut spans = Vec::new();
+        let mut slot = rendered("expand", KeyBind::from(KeyCode::Left));
+        slot.secondary_key = Some(KeyBind::from(KeyCode::Right));
+
+        push_slot(&mut spans, &slot, &palette);
+
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content.as_ref(), " ←/→");
+        assert_eq!(spans[1].content.as_ref(), " expand");
     }
 }

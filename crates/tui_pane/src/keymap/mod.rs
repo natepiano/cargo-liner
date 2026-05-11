@@ -45,6 +45,10 @@ pub use vim::VimMode;
 use self::runtime_scope::RuntimeScope;
 use crate::AppContext;
 use crate::BarRegion;
+use crate::KeymapPane;
+use crate::KeymapPaneAction;
+use crate::SettingsPane;
+use crate::SettingsPaneAction;
 use crate::SettingsRegistry;
 use crate::framework;
 
@@ -89,6 +93,8 @@ pub struct Keymap<Ctx: AppContext + 'static> {
     /// [`Self::navigation_render_fn`].
     app_globals_render_fn: Option<ScopeRenderFn<Ctx>>,
     framework_globals:     ScopeMap<GlobalAction>,
+    settings_overlay:      ScopeMap<SettingsPaneAction>,
+    overlay_keymap_scope:  ScopeMap<KeymapPaneAction>,
     settings:              Option<SettingsRegistry<Ctx>>,
     on_quit:               Option<fn(&mut Ctx)>,
     on_restart:            Option<fn(&mut Ctx)>,
@@ -113,6 +119,8 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
             globals: None,
             app_globals_render_fn: None,
             framework_globals: GlobalAction::defaults().into_scope_map(),
+            settings_overlay: SettingsPane::<Ctx>::defaults().into_scope_map(),
+            overlay_keymap_scope: KeymapPane::<Ctx>::defaults().into_scope_map(),
             settings: None,
             on_quit: None,
             on_restart: None,
@@ -149,6 +157,18 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// constructs one.
     pub(super) fn set_framework_globals(&mut self, map: ScopeMap<GlobalAction>) {
         self.framework_globals = map;
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// overlays user TOML onto the framework-owned settings scope.
+    pub(super) fn set_settings_overlay(&mut self, map: ScopeMap<SettingsPaneAction>) {
+        self.settings_overlay = map;
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// overlays user TOML onto the framework-owned keymap scope.
+    pub(super) fn set_keymap_overlay(&mut self, map: ScopeMap<KeymapPaneAction>) {
+        self.overlay_keymap_scope = map;
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
@@ -227,6 +247,22 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// `[global]` overrides at builder time.
     #[must_use]
     pub const fn framework_globals(&self) -> &ScopeMap<GlobalAction> { &self.framework_globals }
+
+    /// Resolved bindings for the framework-owned settings overlay.
+    ///
+    /// Defaults are always present; calling
+    /// [`KeymapBuilder::register_settings_overlay`] additionally
+    /// applies user TOML from `[settings]`.
+    #[must_use]
+    pub const fn settings_overlay(&self) -> &ScopeMap<SettingsPaneAction> { &self.settings_overlay }
+
+    /// Resolved bindings for the framework-owned keymap overlay.
+    ///
+    /// Defaults are always present; calling
+    /// [`KeymapBuilder::register_keymap_overlay`] additionally
+    /// applies user TOML from `[keymap]`.
+    #[must_use]
+    pub const fn keymap_overlay(&self) -> &ScopeMap<KeymapPaneAction> { &self.overlay_keymap_scope }
 
     /// Bar slots for the navigation scope, fully resolved (label,
     /// key, region tagged [`BarRegion::Nav`](crate::BarRegion::Nav)).

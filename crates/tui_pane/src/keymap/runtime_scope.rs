@@ -55,17 +55,21 @@ pub(crate) trait RuntimeScope<Ctx: AppContext>: 'static {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RenderedSlot {
     /// Which bar region this slot belongs to.
-    pub region:     BarRegion,
+    pub region:        BarRegion,
     /// The action's bar label (e.g. `"activate"`).
-    pub label:      &'static str,
+    pub label:         &'static str,
     /// The currently bound key.
-    pub key:        KeyBind,
+    pub key:           KeyBind,
     /// Active vs greyed-out.
-    pub state:      ShortcutState,
+    pub state:         ShortcutState,
     /// Always [`Visibility::Visible`] in the returned `Vec` (hidden
     /// slots are dropped); kept on the struct for renderer
     /// uniformity.
-    pub visibility: Visibility,
+    pub visibility:    Visibility,
+    /// Secondary key for paired bar rows. `None` means this is a
+    /// normal single-key slot; `Some` means render `{key}/{secondary}`
+    /// with the slot's shared `label`.
+    pub secondary_key: Option<KeyBind>,
 }
 
 /// The single implementor of [`RuntimeScope<Ctx>`]. Captures the
@@ -91,20 +95,41 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
         self.pane
             .bar_slots(ctx)
             .into_iter()
-            .filter_map(|(region, slot)| {
-                let action = slot.primary();
-                let visibility = self.pane.visibility(action, ctx);
-                if matches!(visibility, Visibility::Hidden) {
-                    return None;
-                }
-                let key = self.bindings.key_for(action).copied()?;
-                Some(RenderedSlot {
-                    region,
-                    label: action.bar_label(),
-                    key,
-                    state: self.pane.state(action, ctx),
-                    visibility,
-                })
+            .filter_map(|(region, slot)| match slot {
+                crate::BarSlot::Single(action) => {
+                    let visibility = self.pane.visibility(action, ctx);
+                    if matches!(visibility, Visibility::Hidden) {
+                        return None;
+                    }
+                    let key = self.bindings.key_for(action).copied()?;
+                    Some(RenderedSlot {
+                        region,
+                        label: action.bar_label(),
+                        key,
+                        state: self.pane.state(action, ctx),
+                        visibility,
+                        secondary_key: None,
+                    })
+                },
+                crate::BarSlot::Paired(primary, secondary, label) => {
+                    let primary_visibility = self.pane.visibility(primary, ctx);
+                    let secondary_visibility = self.pane.visibility(secondary, ctx);
+                    if matches!(primary_visibility, Visibility::Hidden)
+                        || matches!(secondary_visibility, Visibility::Hidden)
+                    {
+                        return None;
+                    }
+                    let key = self.bindings.key_for(primary).copied()?;
+                    let secondary_key = self.bindings.key_for(secondary).copied()?;
+                    Some(RenderedSlot {
+                        region,
+                        label,
+                        key,
+                        state: self.pane.state(primary, ctx),
+                        visibility: primary_visibility,
+                        secondary_key: Some(secondary_key),
+                    })
+                },
             })
             .collect()
     }
@@ -136,6 +161,7 @@ pub(super) fn slots_from_scope<A: Action>(
                 key,
                 state: ShortcutState::Enabled,
                 visibility: Visibility::Visible,
+                secondary_key: None,
             })
         })
         .collect()
@@ -290,21 +316,23 @@ mod tests {
         assert_eq!(
             slots[0],
             RenderedSlot {
-                region:     BarRegion::PaneAction,
-                label:      "go",
-                key:        KeyBind::from(KeyCode::Enter),
-                state:      ShortcutState::Enabled,
-                visibility: Visibility::Visible,
+                region:        BarRegion::PaneAction,
+                label:         "go",
+                key:           KeyBind::from(KeyCode::Enter),
+                state:         ShortcutState::Enabled,
+                visibility:    Visibility::Visible,
+                secondary_key: None,
             },
         );
         assert_eq!(
             slots[1],
             RenderedSlot {
-                region:     BarRegion::PaneAction,
-                label:      "clean",
-                key:        KeyBind::from('c'),
-                state:      ShortcutState::Enabled,
-                visibility: Visibility::Visible,
+                region:        BarRegion::PaneAction,
+                label:         "clean",
+                key:           KeyBind::from('c'),
+                state:         ShortcutState::Enabled,
+                visibility:    Visibility::Visible,
+                secondary_key: None,
             },
         );
     }
@@ -339,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn render_bar_slots_uses_paired_primary_for_lookup() {
+    fn render_bar_slots_preserves_paired_secondary_key_and_label() {
         struct PairedPane;
         impl Pane<TestApp> for PairedPane {
             const APP_PANE_ID: TestPaneId = TestPaneId::Foo;
@@ -364,8 +392,9 @@ mod tests {
         let app = fresh_app();
         let slots = scope.render_bar_slots(&app);
         assert_eq!(slots.len(), 1);
-        assert_eq!(slots[0].label, "go");
+        assert_eq!(slots[0].label, "/");
         assert_eq!(slots[0].key, KeyBind::from(KeyCode::Enter));
+        assert_eq!(slots[0].secondary_key, Some(KeyBind::from('c')));
     }
 
     #[test]

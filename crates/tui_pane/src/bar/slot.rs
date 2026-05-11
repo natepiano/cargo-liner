@@ -1,8 +1,8 @@
 //! Bar-slot payloads: per-action units a pane emits to render in the bar.
 //!
 //! [`BarSlot<A>`] carries either one action ([`Self::Single`]) or two
-//! actions joined by a static separator ([`Self::Paired`], used for
-//! pairs like `j/k` or `←/→`). [`ShortcutState`] is the orthogonal
+//! actions rendered with one shared label ([`Self::Paired`], used for
+//! pairs like `j/k nav` or `←/→ expand`). [`ShortcutState`] is the orthogonal
 //! enabled/disabled axis returned by the pane's `Shortcuts::state`
 //! method.
 
@@ -24,8 +24,9 @@ pub enum ShortcutState {
 pub enum BarSlot<A> {
     /// One action, one label.
     Single(A),
-    /// Two actions joined by a static separator (e.g. `"/"` between
-    /// `Up`/`Down` to render `j/k`). The separator is the third field.
+    /// Two actions rendered as a paired key row with one shared label
+    /// (e.g. `Up` / `Down` render as `j/k nav` when the third field is
+    /// `"nav"`).
     Paired(A, A, &'static str),
 }
 

@@ -5,7 +5,8 @@
 //!
 //! - [`Configuring`]: settings phase. Settings methods (`config_path`, `load_toml`, `vim_mode`,
 //!   `with_settings`, `on_quit`, `on_restart`, `dismiss_fallback`, `register_navigation`,
-//!   `register_globals`) are reachable here only.
+//!   `register_globals`, `register_settings_overlay`, `register_keymap_overlay`) are reachable here
+//!   only.
 //! - [`Registering`]: panes phase. Entered on the first [`KeymapBuilder::register`] call. Settings
 //!   methods drop off the type — the compiler enforces "settings before panes" at compile time.
 //!   `build_into(&mut Framework<Ctx>)` is the production finalizer.
@@ -38,7 +39,11 @@ use super::scope_map::ScopeMap;
 use super::vim::VimMode;
 use crate::AppContext;
 use crate::Framework;
+use crate::KeymapPane;
+use crate::KeymapPaneAction;
 use crate::Pane;
+use crate::SettingsPane;
+use crate::SettingsPaneAction;
 use crate::SettingsRegistry;
 use crate::framework::ModeQuery;
 
@@ -106,10 +111,13 @@ pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
     navigation_render_fn:  Option<ScopeRenderFn<Ctx>>,
     globals_scope:         Option<ErasedSingleton>,
     globals_scope_name:    Option<&'static str>,
+    globals_action_keys:   Option<HashSet<&'static str>>,
     /// `G`-monomorphized renderer captured at
     /// [`Self::register_globals`] time. See
     /// [`Self::navigation_render_fn`].
     globals_render_fn:     Option<ScopeRenderFn<Ctx>>,
+    settings_overlay:      Option<ScopeMap<SettingsPaneAction>>,
+    keymap_overlay:        Option<ScopeMap<KeymapPaneAction>>,
     deferred_error:        Option<KeymapError>,
     _state:                PhantomData<State>,
 }
@@ -134,7 +142,10 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             navigation_render_fn:  None,
             globals_scope:         None,
             globals_scope_name:    None,
+            globals_action_keys:   None,
             globals_render_fn:     None,
+            settings_overlay:      None,
+            keymap_overlay:        None,
             deferred_error:        None,
             _state:                PhantomData,
         }
@@ -255,13 +266,60 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     pub fn register_globals<G: Globals<Ctx>>(mut self) -> Result<Self, KeymapError> {
         let defaults = G::defaults();
         let scope_name = <G as Globals<Ctx>>::SCOPE_NAME;
-        let bindings =
-            apply_toml_overlay::<G::Actions>(scope_name, defaults, self.toml_table.as_ref())?;
+        let framework_keys = action_key_set::<GlobalAction>();
+        let peer_keys = (scope_name == "global").then_some(&framework_keys);
+        let bindings = apply_toml_overlay_with_peer::<G::Actions>(
+            scope_name,
+            defaults,
+            self.toml_table.as_ref(),
+            peer_keys,
+        )?;
         let scope_map: ScopeMap<G::Actions> = bindings.into_scope_map();
         self.globals_scope = Some(Box::new(scope_map));
         self.globals_scope_name = Some(scope_name);
+        if scope_name == "global" {
+            self.globals_action_keys = Some(action_key_set::<G::Actions>());
+        }
         self.globals_render_fn = Some(runtime_scope::render_app_globals_slots::<Ctx, G>);
         self.registered_scopes.insert(scope_name);
+        Ok(self)
+    }
+
+    /// Register the framework-owned settings overlay scope. This
+    /// makes `[settings]` a known TOML table and applies its overrides
+    /// to the settings overlay bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeymapError`] on TOML parse / validation failures
+    /// inside the `[settings]` table.
+    pub fn register_settings_overlay(mut self) -> Result<Self, KeymapError> {
+        let bindings = apply_toml_overlay::<SettingsPaneAction>(
+            "settings",
+            SettingsPane::<Ctx>::defaults(),
+            self.toml_table.as_ref(),
+        )?;
+        self.settings_overlay = Some(bindings.into_scope_map());
+        self.registered_scopes.insert("settings");
+        Ok(self)
+    }
+
+    /// Register the framework-owned keymap overlay scope. This makes
+    /// `[keymap]` a known TOML table and applies its overrides to the
+    /// keymap overlay bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeymapError`] on TOML parse / validation failures
+    /// inside the `[keymap]` table.
+    pub fn register_keymap_overlay(mut self) -> Result<Self, KeymapError> {
+        let bindings = apply_toml_overlay::<KeymapPaneAction>(
+            "keymap",
+            KeymapPane::<Ctx>::defaults(),
+            self.toml_table.as_ref(),
+        )?;
+        self.keymap_overlay = Some(bindings.into_scope_map());
+        self.registered_scopes.insert("keymap");
         Ok(self)
     }
 
@@ -389,7 +447,10 @@ fn transition<Ctx: AppContext + 'static>(
         navigation_render_fn:  src.navigation_render_fn,
         globals_scope:         src.globals_scope,
         globals_scope_name:    src.globals_scope_name,
+        globals_action_keys:   src.globals_action_keys,
         globals_render_fn:     src.globals_render_fn,
+        settings_overlay:      src.settings_overlay,
+        keymap_overlay:        src.keymap_overlay,
         deferred_error:        src.deferred_error,
         _state:                PhantomData,
     }
@@ -446,8 +507,23 @@ fn apply_vim_navigation_extras<Ctx: AppContext + 'static, N: Navigation<Ctx>>(
 /// fully replace the action's defaults).
 fn apply_toml_overlay<A>(
     scope_name: &str,
+    defaults: Bindings<A>,
+    table: Option<&Table>,
+) -> Result<Bindings<A>, KeymapError>
+where
+    A: Action,
+{
+    apply_toml_overlay_with_peer(scope_name, defaults, table, None)
+}
+
+/// Same as [`apply_toml_overlay`], but unknown actions present in
+/// `peer_action_keys` are treated as belonging to another enum that
+/// shares the same TOML table. Used for the split `[global]` table.
+fn apply_toml_overlay_with_peer<A>(
+    scope_name: &str,
     mut defaults: Bindings<A>,
     table: Option<&Table>,
+    peer_action_keys: Option<&HashSet<&'static str>>,
 ) -> Result<Bindings<A>, KeymapError>
 where
     A: Action,
@@ -464,6 +540,9 @@ where
 
     for (action_key, value) in scope_table {
         let Some(action) = A::from_toml_key(action_key) else {
+            if peer_action_keys.is_some_and(|keys| keys.contains(action_key.as_str())) {
+                continue;
+            }
             return Err(KeymapError::UnknownAction {
                 scope:  scope_name.to_string(),
                 action: action_key.clone(),
@@ -476,6 +555,10 @@ where
 
     check_cross_action_collision(scope_name, &defaults)?;
     Ok(defaults)
+}
+
+fn action_key_set<A: Action>() -> HashSet<&'static str> {
+    A::ALL.iter().map(|action| action.toml_key()).collect()
 }
 
 /// Parse a TOML scope entry value into `Vec<KeyBind>`. Accepts a
@@ -601,12 +684,19 @@ fn finalize<Ctx: AppContext + 'static, State>(
     if let Some(render) = builder.globals_render_fn {
         keymap.set_app_globals_render_fn(render);
     }
-    let framework_globals = apply_toml_overlay::<GlobalAction>(
+    let framework_globals = apply_toml_overlay_with_peer::<GlobalAction>(
         "global",
         GlobalAction::defaults(),
         builder.toml_table.as_ref(),
+        builder.globals_action_keys.as_ref(),
     )?;
     keymap.set_framework_globals(framework_globals.into_scope_map());
+    if let Some(settings_overlay) = builder.settings_overlay {
+        keymap.set_settings_overlay(settings_overlay);
+    }
+    if let Some(keymap_overlay) = builder.keymap_overlay {
+        keymap.set_keymap_overlay(keymap_overlay);
+    }
     if let Some(s) = builder.settings {
         keymap.set_settings(s);
     }
@@ -662,7 +752,9 @@ mod tests {
     use crate::FrameworkOverlayId;
     use crate::GlobalAction;
     use crate::KeyBind;
+    use crate::KeymapPaneAction;
     use crate::Pane;
+    use crate::SettingsPaneAction;
     use crate::SettingsRegistry;
     use crate::keymap::Bindings;
     use crate::keymap::Globals;
@@ -1228,6 +1320,171 @@ mod tests {
             None,
             "default 'q' must be replaced by the user override",
         );
+    }
+
+    #[test]
+    fn shared_global_table_applies_framework_and_app_keys() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "tui_pane_test_shared_global_{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "[global]\nquit = \"z\"\nfind = \"?\"\n").expect("write toml");
+        let keymap = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("app globals must skip framework-owned keys")
+            .build()
+            .expect("framework globals must skip app-owned keys");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            keymap.framework_globals().action_for(&KeyBind::from('z')),
+            Some(GlobalAction::Quit),
+        );
+        let app_globals = keymap
+            .globals::<AppGlobals>()
+            .expect("app globals must be registered");
+        assert_eq!(
+            app_globals.action_for(&KeyBind::from('?')),
+            Some(AppGlobalAction::Find),
+        );
+    }
+
+    #[test]
+    fn shared_global_table_still_rejects_truly_unknown_actions() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "tui_pane_test_shared_global_unknown_{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "[global]\nbogus_action = \"z\"\n").expect("write toml");
+        let result = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_globals::<AppGlobals>();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            matches!(result, Err(KeymapError::UnknownAction { .. })),
+            "truly unknown shared-global action must still error",
+        );
+    }
+
+    #[test]
+    fn app_global_key_errors_without_registered_app_globals_peer() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "tui_pane_test_global_no_peer_{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "[global]\nfind = \"?\"\n").expect("write toml");
+        let result = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .build();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            matches!(result, Err(KeymapError::UnknownAction { .. })),
+            "framework globals stay strict when no app-globals peer is registered",
+        );
+    }
+
+    #[test]
+    fn settings_overlay_toml_rebinds_registered_scope() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "tui_pane_test_settings_overlay_{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "[settings]\nstart_edit = \"F2\"\n").expect("write toml");
+        let keymap = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_settings_overlay()
+            .expect("settings overlay must register")
+            .build()
+            .expect("build must succeed");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            keymap
+                .settings_overlay()
+                .action_for(&KeyBind::from(KeyCode::F(2))),
+            Some(SettingsPaneAction::StartEdit),
+        );
+        assert_eq!(
+            keymap
+                .settings_overlay()
+                .action_for(&KeyBind::from(KeyCode::Enter)),
+            None,
+            "TOML replaces the action's default binding",
+        );
+    }
+
+    #[test]
+    fn keymap_overlay_toml_rebinds_registered_scope() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "tui_pane_test_keymap_overlay_{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "[keymap]\ncancel = \"F3\"\n").expect("write toml");
+        let keymap = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_keymap_overlay()
+            .expect("keymap overlay must register")
+            .build()
+            .expect("build must succeed");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            keymap
+                .keymap_overlay()
+                .action_for(&KeyBind::from(KeyCode::F(3))),
+            Some(KeymapPaneAction::Cancel),
+        );
+    }
+
+    #[test]
+    fn known_overlay_unknown_action_errors() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "tui_pane_test_settings_unknown_action_{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "[settings]\nbogus_action = \"x\"\n").expect("write toml");
+        let result = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_settings_overlay();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(matches!(result, Err(KeymapError::UnknownAction { .. })));
+    }
+
+    #[test]
+    fn unknown_overlay_table_still_errors_when_known_overlays_registered() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "tui_pane_test_unknown_overlay_scope_{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "[bogus_overlay]\nfoo = \"x\"\n").expect("write toml");
+        let result = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load_toml must succeed")
+            .register_settings_overlay()
+            .expect("settings overlay must register")
+            .register_keymap_overlay()
+            .expect("keymap overlay must register")
+            .build();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(matches!(result, Err(KeymapError::UnknownScope { .. })));
     }
 
     #[test]

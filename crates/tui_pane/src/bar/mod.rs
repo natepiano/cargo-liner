@@ -42,6 +42,7 @@ use crate::Framework;
 use crate::FrameworkFocusId;
 use crate::FrameworkOverlayId;
 use crate::Keymap;
+use crate::ScopeMap;
 use crate::ShortcutState as ShortcutStateAlias;
 use crate::Visibility as VisibilityAlias;
 use crate::keymap::RenderedSlot;
@@ -101,42 +102,12 @@ fn pane_slots_for<Ctx: AppContext + 'static>(
     if let Some(overlay) = framework.overlay() {
         return match overlay {
             FrameworkOverlayId::Keymap => {
-                let scope = crate::KeymapPane::<Ctx>::defaults().into_scope_map();
-                framework
-                    .keymap_pane
-                    .bar_slots(ctx)
-                    .into_iter()
-                    .filter_map(|(region, slot)| {
-                        let action = slot.primary();
-                        let key = scope.key_for(action).copied()?;
-                        Some(RenderedSlot {
-                            region,
-                            label: action.bar_label(),
-                            key,
-                            state: ShortcutStateAlias::Enabled,
-                            visibility: VisibilityAlias::Visible,
-                        })
-                    })
-                    .collect()
+                let scope = keymap.keymap_overlay();
+                render_overlay_slots(framework.keymap_pane.bar_slots(ctx), scope)
             },
             FrameworkOverlayId::Settings => {
-                let scope = crate::SettingsPane::<Ctx>::defaults().into_scope_map();
-                framework
-                    .settings_pane
-                    .bar_slots(ctx)
-                    .into_iter()
-                    .filter_map(|(region, slot)| {
-                        let action = slot.primary();
-                        let key = scope.key_for(action).copied()?;
-                        Some(RenderedSlot {
-                            region,
-                            label: action.bar_label(),
-                            key,
-                            state: ShortcutStateAlias::Enabled,
-                            visibility: VisibilityAlias::Visible,
-                        })
-                    })
-                    .collect()
+                let scope = keymap.settings_overlay();
+                render_overlay_slots(framework.settings_pane.bar_slots(ctx), scope)
             },
         };
     }
@@ -150,6 +121,40 @@ fn pane_slots_for<Ctx: AppContext + 'static>(
             Vec::new()
         },
     }
+}
+
+fn render_overlay_slots<A: Action>(
+    slots: Vec<(BarRegion, crate::BarSlot<A>)>,
+    scope: &ScopeMap<A>,
+) -> Vec<RenderedSlot> {
+    slots
+        .into_iter()
+        .filter_map(|(region, slot)| match slot {
+            crate::BarSlot::Single(action) => {
+                let key = scope.key_for(action).copied()?;
+                Some(RenderedSlot {
+                    region,
+                    label: action.bar_label(),
+                    key,
+                    state: ShortcutStateAlias::Enabled,
+                    visibility: VisibilityAlias::Visible,
+                    secondary_key: None,
+                })
+            },
+            crate::BarSlot::Paired(primary, secondary, label) => {
+                let key = scope.key_for(primary).copied()?;
+                let secondary_key = scope.key_for(secondary).copied()?;
+                Some(RenderedSlot {
+                    region,
+                    label,
+                    key,
+                    state: ShortcutStateAlias::Enabled,
+                    visibility: VisibilityAlias::Visible,
+                    secondary_key: Some(secondary_key),
+                })
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]

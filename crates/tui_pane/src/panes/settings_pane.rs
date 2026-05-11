@@ -50,9 +50,10 @@ enum EditState {
 /// [`Framework::overlay`](crate::Framework::overlay) before routing
 /// keys here.
 pub struct SettingsPane<Ctx: AppContext> {
-    edit_state:    EditState,
-    editor_target: Option<PathBuf>,
-    _ctx:          PhantomData<fn(&mut Ctx)>,
+    edit_state:         EditState,
+    editor_target:      Option<PathBuf>,
+    text_input_handler: fn(KeyBind, &mut Ctx),
+    _ctx:               PhantomData<fn(&mut Ctx)>,
 }
 
 impl<Ctx: AppContext> SettingsPane<Ctx> {
@@ -60,15 +61,30 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            edit_state:    EditState::Browse,
-            editor_target: None,
-            _ctx:          PhantomData,
+            edit_state:         EditState::Browse,
+            editor_target:      None,
+            text_input_handler: settings_edit_keys::<Ctx>,
+            _ctx:               PhantomData,
         }
     }
 
-    /// Default key bindings for the overlay's local actions. Phase 14
-    /// folds these through the keymap builder so TOML overrides apply
-    /// to the overlay, not just app panes.
+    /// Replace the [`Mode::TextInput`] payload used while the overlay
+    /// is editing. Binaries use this to route text edits into their
+    /// own settings buffer.
+    #[must_use]
+    pub const fn with_text_input_handler(mut self, handler: fn(KeyBind, &mut Ctx)) -> Self {
+        self.text_input_handler = handler;
+        self
+    }
+
+    /// Replace the [`Mode::TextInput`] payload after construction.
+    pub const fn set_text_input_handler(&mut self, handler: fn(KeyBind, &mut Ctx)) {
+        self.text_input_handler = handler;
+    }
+
+    /// Default key bindings for the overlay's local actions. The
+    /// keymap builder can fold these through overlay registration so
+    /// TOML overrides apply to the overlay, not just app panes.
     #[must_use]
     pub fn defaults() -> Bindings<SettingsPaneAction> {
         crate::bindings! {
@@ -84,7 +100,7 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     /// behavior. Resolves `bind` against [`Self::defaults`] and flips
     /// [`EditState`] accordingly: `StartEdit` enters [`EditState::Editing`]
     /// from `Browse`; `Save` and `Cancel` return to `Browse`. Per-setting
-    /// buffer mutation lives on the binary side (Phase 18 cutover).
+    /// buffer mutation lives on the binary side (Phase 19 cutover).
     pub fn handle_key(&mut self, _ctx: &mut Ctx, bind: &KeyBind) -> KeyOutcome {
         if let Some(action) = Self::defaults().into_scope_map().action_for(bind) {
             match action {
@@ -104,12 +120,12 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     /// Current input mode for the overlay.
     ///
     /// - [`EditState::Browse`] → [`Mode::Navigable`].
-    /// - [`EditState::Editing`] → [`Mode::TextInput`] with a stub handler (Phase 14 swaps in the
-    ///   real edit-routing function).
+    /// - [`EditState::Editing`] → [`Mode::TextInput`] with the configured handler. The default stub
+    ///   stays inert until the binary wires its handler during Phase 19.
     #[must_use]
     pub fn mode(&self, _ctx: &Ctx) -> Mode<Ctx> {
         match self.edit_state {
-            EditState::Editing => Mode::TextInput(settings_edit_keys::<Ctx>),
+            EditState::Editing => Mode::TextInput(self.text_input_handler),
             EditState::Browse => Mode::Navigable,
         }
     }
@@ -148,6 +164,7 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
         Self {
             edit_state: EditState::Editing,
             editor_target,
+            text_input_handler: settings_edit_keys::<Ctx>,
             _ctx: PhantomData,
         }
     }
@@ -156,11 +173,10 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
 /// Generic edit-routing handler. The framework owns the
 /// `Mode::TextInput` payload type but cannot mutate the binary's
 /// per-setting edit buffer — that state lives on `Ctx` (e.g.
-/// `App::settings_state`). The binary observes
-/// [`SettingsPane::edit_state`](EditState) through
-/// [`SettingsPane::mode`] and runs its own buffer mutation. Phase 18
-/// swaps this stub for a binary-injected handler when the legacy
-/// `handle_settings_edit_key` deletes.
+/// `App::settings_state`). Binaries that need mutation call
+/// [`SettingsPane::with_text_input_handler`] or
+/// [`SettingsPane::set_text_input_handler`] to inject their own
+/// handler.
 const fn settings_edit_keys<Ctx: AppContext>(_bind: KeyBind, _ctx: &mut Ctx) {}
 
 #[cfg(test)]
@@ -188,6 +204,7 @@ mod tests {
 
     struct TestApp {
         framework: Framework<Self>,
+        edits:     u32,
     }
 
     impl AppContext for TestApp {
@@ -200,8 +217,11 @@ mod tests {
     fn fresh_app() -> TestApp {
         TestApp {
             framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            edits:     0,
         }
     }
+
+    fn record_edit(_bind: KeyBind, app: &mut TestApp) { app.edits += 1; }
 
     #[test]
     fn new_starts_in_browse_mode() {
@@ -256,5 +276,32 @@ mod tests {
         let mut app = fresh_app();
         let _ = pane.handle_key(&mut app, &KeyBind::from('s'));
         assert!(matches!(pane.mode(&app), Mode::Navigable));
+    }
+
+    #[test]
+    fn with_text_input_handler_swaps_editing_payload() {
+        let pane = SettingsPane::for_test_editing(None).with_text_input_handler(record_edit);
+        let mut app = fresh_app();
+        let Mode::TextInput(handler) = pane.mode(&app) else {
+            panic!("editing mode must return text-input handler");
+        };
+
+        handler(KeyBind::from('x'), &mut app);
+
+        assert_eq!(app.edits, 1);
+    }
+
+    #[test]
+    fn set_text_input_handler_swaps_editing_payload_after_construction() {
+        let mut pane = SettingsPane::for_test_editing(None);
+        pane.set_text_input_handler(record_edit);
+        let mut app = fresh_app();
+        let Mode::TextInput(handler) = pane.mode(&app) else {
+            panic!("editing mode must return text-input handler");
+        };
+
+        handler(KeyBind::from('x'), &mut app);
+
+        assert_eq!(app.edits, 1);
     }
 }
