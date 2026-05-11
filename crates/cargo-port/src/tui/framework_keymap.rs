@@ -1,11 +1,9 @@
 //! Framework-side keymap scaffolding.
 //!
-//! Phase 14.2 introduces the `tui_pane`-driven keymap path beside the
-//! legacy `src/keymap.rs` path. The two coexist through Phases 14–17;
-//! Phase 18 retires the legacy path and folds dispatch onto the
-//! framework. Until then every entry here is purely additive — the
-//! binary's existing keymap remains authoritative, and the framework
-//! keymap is built but not consulted for dispatch.
+//! Phase 14.2 introduced the `tui_pane`-driven keymap path beside the
+//! legacy `src/keymap.rs` path. The two coexist through Phase 18: the
+//! framework keymap now owns targeted structural lookups, while broad
+//! key dispatch remains on the legacy path until Phase 19.
 //!
 //! Surface:
 //!
@@ -24,22 +22,21 @@
 #![allow(
     dead_code,
     reason = "Phase 14.2 introduces these types; later chunks (14.3–14.6) plug each pane in. \
-              Variants/methods stay unconstructed in the binary path until Phase 18 swaps over."
+              Variants/methods stay unconstructed in the binary path until Phase 19 swaps over."
 )]
-
-#[cfg(test)]
-use std::path::PathBuf;
 
 use tui_pane::Action;
 use tui_pane::AppContext;
 use tui_pane::BarRegion;
 use tui_pane::BarSlot;
 use tui_pane::Bindings;
+use tui_pane::Configuring;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
 use tui_pane::Keymap;
+use tui_pane::KeymapBuilder;
 use tui_pane::KeymapError;
 use tui_pane::Mode;
 use tui_pane::Navigation;
@@ -640,42 +637,20 @@ impl Shortcuts<App> for FinderPane {
 /// dispatcher stays no-op through Phase 17.
 fn finder_keys(bind: KeyBind, app: &mut App) { finder::handle_finder_key(app, bind.code); }
 
-/// Assemble the framework keymap. Called once during App construction.
-/// Errors propagate so the caller can surface them through the
-/// existing keymap-diagnostics toast plumbing.
+/// Assemble the framework keymap from a configured builder. Called
+/// once during App construction after the builder has loaded the
+/// production keymap TOML, if any. Errors propagate so the caller can
+/// surface them through the existing keymap-diagnostics toast
+/// plumbing.
 pub(super) fn build_framework_keymap(
+    builder: KeymapBuilder<App, Configuring>,
     framework: &mut Framework<App>,
 ) -> Result<Keymap<App>, KeymapError> {
-    Keymap::<App>::builder()
+    builder
         .register_navigation::<AppNavigation>()?
         .register_globals::<AppGlobalAction>()?
-        .register::<ProjectListPane>(ProjectListPane)
-        .register::<PackagePane>(PackagePane)
-        .register::<LangPane>(LangPane)
-        .register::<CpuPane>(CpuPane)
-        .register::<GitPane>(GitPane)
-        .register::<TargetsPane>(TargetsPane)
-        .register::<LintsPane>(LintsPane)
-        .register::<CiRunsPane>(CiRunsPane)
-        .register::<OutputPane>(OutputPane)
-        .register::<FinderPane>(FinderPane)
-        .build_into(framework)
-}
-
-/// Test-only sibling of [`build_framework_keymap`] that loads an
-/// override TOML before the navigation / globals / pane chain. Phase
-/// 16 uses it to construct a [`Keymap<App>`] with rebinds for
-/// dispatch-path tests; Phase 17 reroutes the production
-/// [`build_framework_keymap`] through `load_toml` directly.
-#[cfg(test)]
-pub(super) fn build_framework_keymap_with_toml(
-    framework: &mut Framework<App>,
-    toml_path: PathBuf,
-) -> Result<Keymap<App>, KeymapError> {
-    Keymap::<App>::builder()
-        .load_toml(toml_path)?
-        .register_navigation::<AppNavigation>()?
-        .register_globals::<AppGlobalAction>()?
+        .register_settings_overlay()?
+        .register_keymap_overlay()?
         .register::<ProjectListPane>(ProjectListPane)
         .register::<PackagePane>(PackagePane)
         .register::<LangPane>(LangPane)

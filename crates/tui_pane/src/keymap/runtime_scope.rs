@@ -6,7 +6,8 @@
 //! callers reach pane operations through the convenience methods on
 //! [`Keymap`](super::Keymap) ([`dispatch_app_pane`](super::Keymap::dispatch_app_pane),
 //! [`render_app_pane_bar_slots`](super::Keymap::render_app_pane_bar_slots),
-//! [`key_for_toml_key`](super::Keymap::key_for_toml_key)).
+//! [`key_for_toml_key`](super::Keymap::key_for_toml_key) /
+//! [`is_key_bound_to_toml_key`](super::Keymap::is_key_bound_to_toml_key)).
 //!
 //! Each trait method is a complete pane operation: typed access to
 //! `P::Actions` happens **inside** [`PaneScope<Ctx, P>`]'s impl, where
@@ -43,6 +44,10 @@ pub(crate) trait RuntimeScope<Ctx: AppContext>: 'static {
     /// Returns `None` if `key` does not name an action in this scope's
     /// action enum, or if the named action has no binding.
     fn key_for_toml_key(&self, key: &str) -> Option<KeyBind>;
+
+    /// Predicate form of [`Self::key_for_toml_key`] that checks every
+    /// key bound to the action, not just its primary display key.
+    fn is_key_bound_to_toml_key(&self, key: &str, bind: &KeyBind) -> bool;
 }
 
 /// One bar slot, fully resolved for the renderer.
@@ -137,6 +142,13 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
     fn key_for_toml_key(&self, key: &str) -> Option<KeyBind> {
         let action = P::Actions::from_toml_key(key)?;
         self.bindings.key_for(action).copied()
+    }
+
+    fn is_key_bound_to_toml_key(&self, key: &str, bind: &KeyBind) -> bool {
+        let Some(action) = P::Actions::from_toml_key(key) else {
+            return false;
+        };
+        self.bindings.action_for(bind) == Some(action)
     }
 }
 

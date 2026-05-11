@@ -32,6 +32,7 @@ use super::make_app;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::ci::FetchStatus;
+use crate::keymap;
 use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
 use crate::keymap::GlobalAction;
@@ -39,7 +40,6 @@ use crate::keymap::KeyBind as LegacyKeyBind;
 use crate::keymap::PackageAction;
 use crate::keymap::ProjectListAction;
 use crate::project::Submodule;
-use crate::tui::framework_keymap;
 use crate::tui::framework_keymap::AppPaneId;
 use crate::tui::framework_keymap::CiRunsPane;
 use crate::tui::framework_keymap::FinderPane;
@@ -64,6 +64,14 @@ fn flatten(spans: &[Span<'static>]) -> String {
         out.push_str(&span.content);
     }
     out
+}
+
+fn make_app_with_keymap_toml(projects: &[crate::project::RootItem], toml: &str) -> App {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let toml_path = temp_dir.path().join("keymap.toml");
+    fs::write(&toml_path, toml).expect("write keymap toml");
+    let _keymap_path = keymap::override_keymap_path_for_test(toml_path);
+    make_app(projects)
 }
 
 fn package_data_no_version() -> PackageData {
@@ -678,15 +686,8 @@ fn navigation_action_rebound_to_j_moves_cursor_down() {
         super::make_project(Some("alpha"), "~/alpha"),
         super::make_project(Some("beta"), "~/beta"),
     ];
-    let mut app = make_app(&projects);
+    let mut app = make_app_with_keymap_toml(&projects, "[navigation]\ndown = \"j\"\n");
     let baseline = app.project_list.cursor();
-
-    let temp_dir = tempfile::tempdir().expect("tempdir");
-    let toml_path = temp_dir.path().join("keymap.toml");
-    fs::write(&toml_path, "[navigation]\ndown = \"j\"\n").expect("write toml");
-    app.framework_keymap =
-        framework_keymap::build_framework_keymap_with_toml(&mut app.framework, toml_path)
-            .expect("rebuild framework keymap with toml override");
 
     let event = Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
     input::handle_event(&mut app, &event);
@@ -753,6 +754,83 @@ fn project_list_action_expand_row_rebound_to_tab_expands() {
         app.project_list.row_count() > baseline_rows,
         "expanding the parent must reveal additional rows (was {baseline_rows}, now {})",
         app.project_list.row_count(),
+    );
+}
+
+// ── Phase 18 — Output structural cancel uses framework keymap ───────
+
+#[test]
+fn output_cancel_rebind_clears_example_output_from_non_output_focus() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app_with_keymap_toml(&[project], "[output]\ncancel = \"q\"\n");
+    let focus_before = app.focus.current();
+    app.inflight.example_output_mut().push("line".to_string());
+
+    let event = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    input::handle_event(&mut app, &event);
+
+    assert!(app.inflight.example_output().is_empty());
+    assert_eq!(
+        app.focus.current(),
+        focus_before,
+        "non-Output focus must stay put when structural output cancel fires",
+    );
+}
+
+#[test]
+fn output_cancel_rebind_clears_example_output_and_moves_output_focus_to_targets() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app_with_keymap_toml(&[project], "[output]\ncancel = \"q\"\n");
+    app.focus.set(panes::PaneId::Output);
+    app.inflight.example_output_mut().push("line".to_string());
+
+    let event = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    input::handle_event(&mut app, &event);
+
+    assert!(app.inflight.example_output().is_empty());
+    assert_eq!(app.focus.current(), panes::PaneId::Targets);
+}
+
+#[test]
+fn output_cancel_rebind_accepts_primary_and_secondary_keys() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app_with_keymap_toml(&[project], "[output]\ncancel = [\"Esc\", \"q\"]\n");
+
+    app.inflight.example_output_mut().push("first".to_string());
+    let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    input::handle_event(&mut app, &esc);
+    assert!(
+        app.inflight.example_output().is_empty(),
+        "primary OutputAction::Cancel binding must clear output",
+    );
+
+    app.inflight.example_output_mut().push("second".to_string());
+    let q = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    input::handle_event(&mut app, &q);
+    assert!(
+        app.inflight.example_output().is_empty(),
+        "secondary OutputAction::Cancel binding must clear output",
+    );
+}
+
+#[test]
+fn settings_text_input_esc_wins_over_output_cancel_preflight() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.overlays.open_settings();
+    app.overlays.begin_settings_editing();
+    app.inflight.example_output_mut().push("line".to_string());
+
+    let event = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    input::handle_event(&mut app, &event);
+
+    assert!(
+        !app.inflight.example_output().is_empty(),
+        "settings edit cancel must not clear example output",
+    );
+    assert!(
+        !app.overlays.is_settings_editing(),
+        "Esc must still leave settings edit mode",
     );
 }
 

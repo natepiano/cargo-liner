@@ -1,8 +1,12 @@
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fmt::Write as _;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use crossterm::event::KeyCode;
@@ -761,11 +765,44 @@ impl Display for KeymapErrorReason {
 
 /// Path to the keymap config file.
 pub(crate) fn keymap_path() -> Option<AbsolutePath> {
+    #[cfg(test)]
+    if let Some(path) = KEYMAP_PATH_OVERRIDE.with(|slot| slot.borrow().clone()) {
+        return Some(path.into());
+    }
+
     dirs::config_dir().map(|d| {
         d.join(crate::constants::APP_NAME)
             .join(crate::constants::KEYMAP_FILE)
             .into()
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    static KEYMAP_PATH_OVERRIDE: RefCell<Option<PathBuf>> = const {
+        RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) struct KeymapPathOverrideGuard {
+    previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl Drop for KeymapPathOverrideGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        KEYMAP_PATH_OVERRIDE.with(|slot| {
+            *slot.borrow_mut() = previous;
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn override_keymap_path_for_test(path: PathBuf) -> KeymapPathOverrideGuard {
+    let previous = KEYMAP_PATH_OVERRIDE.with(|slot| slot.replace(Some(path)));
+    KeymapPathOverrideGuard { previous }
 }
 
 /// Load and validate keymap from disk. Creates the default file if missing.

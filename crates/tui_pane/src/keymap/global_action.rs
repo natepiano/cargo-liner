@@ -122,7 +122,7 @@ impl Action for GlobalAction {
             "next_pane" => Some(Self::NextPane),
             "prev_pane" => Some(Self::PrevPane),
             "open_keymap" => Some(Self::OpenKeymap),
-            "open_settings" => Some(Self::OpenSettings),
+            "open_settings" | "settings" => Some(Self::OpenSettings),
             "dismiss" => Some(Self::Dismiss),
             _ => None,
         }
@@ -205,6 +205,14 @@ mod tests {
     fn from_toml_key_unknown_returns_none() {
         assert!(GlobalAction::from_toml_key("nope").is_none());
         assert!(GlobalAction::from_toml_key("").is_none());
+    }
+
+    #[test]
+    fn legacy_settings_toml_key_alias_maps_to_open_settings() {
+        assert_eq!(
+            GlobalAction::from_toml_key("settings"),
+            Some(GlobalAction::OpenSettings),
+        );
     }
 
     #[test]

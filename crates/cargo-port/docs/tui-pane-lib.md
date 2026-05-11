@@ -2,7 +2,7 @@
 
 ## Principle
 
-**Every key the user can press is bound through the keymap.** No `KeyCode::Enter` / `Up` / `Esc` / `Tab` / `Left` / `Right` matches in any input handler. No literal `"Enter"` / `"Esc"` / `"Tab"` / `"↑/↓"` / `"+/-"` strings in any bar code. Every shortcut row in the bar comes from a binding lookup. Rebinding any key updates the bar and the dispatcher in lockstep.
+**Every command shortcut the user can rebind is bound through the keymap.** No `KeyCode::Enter` / `Up` / `Esc` / `Tab` / `Left` / `Right` matches remain for command dispatch. Structural preflights, modal confirmation, and text-input editing fallback may still inspect literal `KeyCode` / `Char(c)` values because those paths are not configurable shortcut commands. No literal `"Enter"` / `"Esc"` / `"Tab"` / `"↑/↓"` / `"+/-"` strings in any bar code. Every shortcut row in the bar comes from a binding lookup. Rebinding any command key updates the bar and the dispatcher in lockstep.
 
 This is a single coherent refactor — partial keymap-driving (e.g. action-bound contexts only, or focused panes only) is rejected as inconsistent.
 
@@ -1690,7 +1690,7 @@ After Phase 9 review's amendments landed, the user pushed back on accumulated co
 Architect review of remaining phases against the post-reset surface produced 8 findings. 7 applied to the plan text. 1 (Phase 19 cleanup list) was a confirmation pass — no edit needed.
 
 - **Phase 10 doc-sync prerequisite already shipped** (Find 1, applied): obsolete bullet in Phase 9 Review block now strikethrough'd, marked "shipped with the Phase 9 reset."
-- **Phase 18 Esc-on-output uses reverse-lookup, not a typed probe** (Find 2, applied): rewrote the snippet to call `keymap.key_for_toml_key(OutputPane::APP_PANE_ID, OutputAction::Cancel.toml_key())` and compare against `bind`. No new public method, no `<P>`-typed probe re-introduced — Phase 18 reuses the existing public reverse-lookup.
+- **Phase 18 Esc-on-output uses reverse-lookup, not a typed probe** (Find 2, applied): rewrote the snippet to call the public `(AppPaneId, toml_key, KeyBind)` reverse-lookup predicate (`is_key_bound_to_toml_key`) for `OutputAction::Cancel`. No `<P>`-typed probe was re-introduced.
 - **`with_navigation` / `with_globals` → `register_navigation` / `register_globals`** (Find 3, applied): startup example at line 381 updated, module-tree comment at line 57 updated.
 - **Phase 19 cleanup list** (Find 4, no edit): confirmed the list names no reset-removed types. `PaneScope::new` aside is the only spot mentioning a renamed type, and that's already accurate.
 - **Phase 14 overlay walks the binary's known pane set** (Find 5, applied): documented that the binary supplies `(P::APP_PANE_ID, P::Actions::ALL)` pairs to the overlay; no `Keymap::registered_app_panes()` getter required.
@@ -2754,7 +2754,7 @@ Significant findings (walked through `/adhoc_review`, applied with explicit user
 
 Findings 5, 6, 8, 9, 12, 14 came back as "no action — already correct or unaffected" and got no plan edits.
 
-- **14.5 — Output (`Mode::Static` override) (✅ landed).** `OutputAction` enum definition (2-positional per 14.3.5; use 3-positional only if the bar label differs from the toml key) + inherent facade per 14.3 + `OutputPane` impls in `src/tui/framework_keymap.rs`. `Pane::mode()` returns `Mode::Static`. Per-pane snapshot. **Pre-flight (per-variant bar_label check):** `OutputAction::Cancel` is the canonical risk — today's Output bar may show `"esc"` or `"close"` rather than `"cancel"`. Read the legacy bar-rendering path (`src/tui/render.rs` and `src/tui/output.rs`) and confirm what the bar actually displays for each variant; ship 3-positional for any variant whose displayed label diverges from its toml key. **Form is invocation-wide (per 14.4 retrospective):** `tui_pane::action_enum!` does not mix 2-positional and 3-positional rows in one block — once any variant needs 3-positional, every variant in the same block has to spell its bar label out explicitly (e.g. `Clean => ("clean", "clean", "Clean project")`). The reverse-lookup `key_for_toml_key(OutputPane::APP_PANE_ID, OutputAction::Cancel.toml_key())` in Phase 18's structural-Esc preflight is keyed on `toml_key`, not `bar_label`, so the toml key stays `"cancel"` regardless of what the displayed label resolves to.
+- **14.5 — Output (`Mode::Static` override) (✅ landed).** `OutputAction` enum definition (2-positional per 14.3.5; use 3-positional only if the bar label differs from the toml key) + inherent facade per 14.3 + `OutputPane` impls in `src/tui/framework_keymap.rs`. `Pane::mode()` returns `Mode::Static`. Per-pane snapshot. **Pre-flight (per-variant bar_label check):** `OutputAction::Cancel` is the canonical risk — today's Output bar may show `"esc"` or `"close"` rather than `"cancel"`. Read the legacy bar-rendering path (`src/tui/render.rs` and `src/tui/output.rs`) and confirm what the bar actually displays for each variant; ship 3-positional for any variant whose displayed label diverges from its toml key. **Form is invocation-wide (per 14.4 retrospective):** `tui_pane::action_enum!` does not mix 2-positional and 3-positional rows in one block — once any variant needs 3-positional, every variant in the same block has to spell its bar label out explicitly (e.g. `Clean => ("clean", "clean", "Clean project")`). The reverse-lookup predicate `is_key_bound_to_toml_key(OutputPane::APP_PANE_ID, OutputAction::Cancel.toml_key(), bind)` in Phase 18's structural-Esc preflight is keyed on `toml_key`, not `bar_label`, so the toml key stays `"cancel"` regardless of what the displayed label resolves to.
 - **14.6 — Finder (`Mode::TextInput` override) + `finder_keys` migration (✅ landed).** `FinderAction` enum definition (2-positional per 14.3.5; 3-positional only where bar_label differs from toml_key — and per 14.4 retrospective, the form is invocation-wide: any one variant needing 3-positional forces every variant in the block to spell its bar_label out) + inherent facade per 14.3 + `FinderPane` impls in `src/tui/framework_keymap.rs`; `Pane::mode()` returns `Mode::TextInput(finder_keys)` while open, `Mode::Navigable` otherwise; migrate today's `handle_finder_key` from `src/tui/finder.rs` to the `finder_keys(KeyBind, &mut App)` free fn referenced from `Pane::mode()`. **Pre-flight:** confirm exactly which `App` field carries the open/closed flag the legacy `handle_finder_key` gates on (most likely `app.overlays.finder.is_open()`, but verify against the live `App::overlays` struct — Phase 14.2's retrospective flagged that `app.framework` was added to `App` without explicit plan call-out because `impl AppContext for App` requires it; same risk here for `app.overlays.finder` vs `app.finder`). Pin the field path in the implementation comment. Per-pane snapshot. Mandatory non-snapshot tests ship here: `Pane::mode()` arms (open vs closed); `'k'` typed in the search box inserts `'k'` even with vim mode on (handler is sole authority).
 
 ### 14.5 + 14.6 Retrospective
@@ -2836,7 +2836,7 @@ Findings 5 (form-rule already correctly applied to 14.5/14.6) and 10 (the paired
 
 - **14.8 — `cargo_port_bar_palette()` + `anyhow` introduction + collapse 14.2's two-step initializer.** (✅ landed) Add `anyhow = "1"` to the binary's root `Cargo.toml` `[dependencies]` *at the same edit* that introduces the first `with_context` call. The first such call is the framework-keymap build wrapper, which also drives the initializer cleanup:
   1. Make `App::new` (and the `construct::AppBuilder` chain) return `Result<App, anyhow::Error>`. Delete the two `process::abort` shims in `src/tui/app/construct.rs:222-227`.
-  2. Replace 14.2's placeholder-then-overwrite pattern with a single `?`-returning chain: `tui_pane::Keymap::<App>::builder().load_toml(keymap_path).with_context(|| format!("loading keymap from {keymap_path:?}"))?.register_navigation::<AppNavigation>()?.register_globals::<AppGlobalAction>()?.register::<PackagePane>(PackagePane).register::<…>(…)…build_into(&mut app.framework).with_context(|| "building framework keymap")?`. The framework keymap is built once, not twice.
+  2. Replace 14.2's placeholder-then-overwrite pattern with a single `?`-returning chain: `tui_pane::Keymap::<App>::builder().load_toml(keymap_path).with_context(|| format!("loading keymap from {}", display_path))?.register_navigation::<AppNavigation>()?.register_globals::<AppGlobalAction>()?.register::<PackagePane>(PackagePane).register::<…>(…)…build_into(&mut app.framework).with_context(|| "building framework keymap")?`. The framework keymap is built once, not twice.
   3. Delete the temporary `build_for_app` shim in `src/tui/framework_keymap.rs` (added in 14.2 as a temporary forwarding fn). `construct.rs` calls `build_framework_keymap(&mut app.framework)?` directly, or `build_framework_keymap` becomes the single entry point and `construct.rs` calls it through the public name.
   4. Add `cargo_port_bar_palette()` and route the binary's draw call through `render_status_bar` with `&cargo_port_bar_palette()`. Old `for_status_bar` call site lives until Phase 19.
 
@@ -2866,7 +2866,7 @@ Findings 5 (form-rule already correctly applied to 14.5/14.6) and 10 (the paired
 
   Plan amendments folded in from a Plan-subagent review of phases 14.9 onward. 15 findings; 6 minor applied directly, 4 significant approved & applied, 2 significant approved as no-op (the Phase 18 redirect on Finding 1 + option (a) on Finding 2 collapsed the cross-phase prerequisite chain), 3 confirmed no-action.
 
-  - **Find 1 (redirected) → Phase 18** new **Load TOML into the framework keymap** bullet, owner because Phase 18's structural-Esc preflight is the first user-facing read of `app.framework_keymap.key_for_toml_key(...)`. Bullet enumerates: call `.load_toml(keymap_path)` before `register_navigation` / `register_globals` / pane registrations; wrap with `with_context(|| format!("loading keymap from {keymap_path:?}"))`; depend on Phase 17; add a test asserting a user TOML rebind reaches the framework path. **Invariant** stated explicitly: before any framework-keymap path becomes authoritative or user-visible, the framework keymap must load the same `keymap::keymap_path()` TOML the legacy `ResolvedKeymap` consumed.
+  - **Find 1 (redirected) → Phase 18** new **Load TOML into the framework keymap** bullet, owner because Phase 18's structural-Esc preflight is the first user-facing read of `app.framework_keymap` for resolved action lookup. Bullet enumerates: call `.load_toml(keymap_path)` before `register_navigation` / `register_globals` / pane registrations; wrap with `with_context(|| format!("loading keymap from {}", display_path))`; depend on Phase 17; add a test asserting a user TOML rebind reaches the framework path. **Invariant** stated explicitly: before any framework-keymap path becomes authoritative or user-visible, the framework keymap must load the same `keymap::keymap_path()` TOML the legacy `ResolvedKeymap` consumed.
   - **Find 2 → Phase 17** new sub-section between Phase 18 and Phase 19 — `tui_pane` shared-`[global]`-table coordination. **Decision: option (a)** (per-key skip-when-peer-registered). Behavior contract, implementation sketch, and four tests (existing combined `[global]` TOML loads cleanly, framework-owned rebind applies, app-owned rebind applies, truly unknown key still errors).
   - **Find 3 → no-op** (option (a) preserves the `## Risks and unknowns` "no breaking change" claim; no edit needed there).
   - **Find 4 → Phase 20** new lead bullet at the head of the bar-on-rebind block: hard acceptance prerequisite that Phase 18 + Phase 17 must have shipped before any "Rebinding X to Y" test runs.
@@ -2899,7 +2899,7 @@ Findings 5 (form-rule already correctly applied to 14.5/14.6) and 10 (the paired
 
 The Mandatory Phase 14 tests list (CiRuns visibility, Package state, Finder mode, Finder typing, focused-Package snapshot) is **distributed** across the chunks above — each test ships in the chunk that lands its subject. Per-pane snapshots ship with the pane's own chunk; no separate "snapshots follow-up" commit is needed, which moots the Deferred-tests block.
 
-**`anyhow` lands in the binary only when the startup builder wiring actually uses it.** The first call site that benefits from context wrapping is `Keymap::<App>::builder(...).load_toml(path).build_into(&mut framework)?` → wrap with `.with_context(|| format!("loading keymap from {path:?}"))`. Add `anyhow = "1"` to the root `Cargo.toml` `[dependencies]` **at the same edit** that introduces the first `with_context` call — not earlier as a speculative dep bump. The library (`tui_pane`) does not depend on `anyhow` — only typed `KeymapError` / `KeyParseError` / etc. cross the framework boundary, and the binary adds context at the boundary.
+**`anyhow` lands in the binary only when the startup builder wiring actually uses it.** The first call site that benefits from context wrapping is `Keymap::<App>::builder(...).load_toml(path).build_into(&mut framework)?` → wrap with `.with_context(|| format!("loading keymap from {}", path.display()))`. Add `anyhow = "1"` to the root `Cargo.toml` `[dependencies]` **at the same edit** that introduces the first `with_context` call — not earlier as a speculative dep bump. The library (`tui_pane`) does not depend on `anyhow` — only typed `KeymapError` / `KeyParseError` / etc. cross the framework boundary, and the binary adds context at the boundary.
 
 **Phase 14 test priority — compileability first.**
 
@@ -2969,7 +2969,7 @@ Convert overlay handlers to scope dispatch:
 ### Phase 15 Review
 
 - **Phase 16 third test** re-scoped to "Phase 15 overlay handlers" funnel observation; the full no-parallel-write funnel test moves to Phase 20 post-Phase-19.
-- **Phase 18 structural Esc preflight** gained a "prerequisite verification" note pointing at `Keymap::key_for_toml_key`; Phase 17 acquires a corresponding bullet that adds the method if absent.
+- **Phase 18 structural Esc preflight** gained a "prerequisite verification" note pointing at `Keymap::key_for_toml_key` for primary reverse lookup; Phase 18 later added the all-bind-aware predicate required by the final structural check.
 - **Phase 18 acceptance tests** rewritten as two pipeline tests (non-Output focus + Output focus, both routed through `src/tui/input.rs`'s normal key path against the structural preflight) plus a scaffolding warning that bans direct `dispatch_app_pane` use until Phase 19.
 - **Phase 19 "Wire dispatchers" inventory** gained three new bullets (Phase-15-deferred (a) `finder_keys` swap with explicit fallback for `Char` / `Backspace` / `Up` / `Down` / `Home` / `End`; (b) Toasts focus gate chain replacing the `PaneBehavior::Toasts → handle_toast_key` arm; (c) handler-injection wiring per Phase 17); `Delete:` list gained two new targets (the three overlay short-circuits at `input.rs:126-137` and the `PaneBehavior::Toasts` arm at `:148`); the stale "do not delete `handle_finder_key`" note rewritten as "delete or extract helpers, depending on whether `FinderPane::dispatcher` + the new fallback reuse helpers."
 - **Phase 17** added — bundled `tui_pane` cutover prerequisites: shared `[global]` coordination, overlay scope registration, `key_for_toml_key`, handler injection on `SettingsPane` / `KeymapPane`, and paired-slot rendering.
@@ -3005,7 +3005,7 @@ fn set_focus(&mut self, focus: FocusedPane<AppPaneId>) {
 - The `App::set_focus` override compiles and dispatches both the framework write (`self.framework.set_focused(focus)`) and the legacy mirror (`self.focus.set(id.to_legacy())` for `FocusedPane::App`); framework-only focuses skip the mirror as planned.
 
 **What deviated from the plan:**
-- The Phase 16 framework-keymap rebinding test (`NavigationAction::Down` → `'j'`) needed `tui_pane`-side load_toml infrastructure to inject. Phase 18 owns `App::new`-side `load_toml` wiring; Phase 16 added a `#[cfg(test)] pub(super) fn build_framework_keymap_with_toml(...)` sibling helper inside `src/tui/framework_keymap.rs` so the test could rebuild the keymap with a temp TOML and overwrite `app.framework_keymap`. Phase 18 should retire this helper once the production builder consumes `keymap_path()` directly.
+- The Phase 16 framework-keymap rebinding test (`NavigationAction::Down` → `'j'`) needed `tui_pane`-side load_toml infrastructure to inject. Phase 18 owned the production `App::new`-side `load_toml` wiring; Phase 16 temporarily added a `#[cfg(test)] pub(super) fn build_framework_keymap_with_toml(...)` sibling helper inside `src/tui/framework_keymap.rs` so the test could rebuild the keymap with a temp TOML and overwrite `app.framework_keymap`. Phase 18 retired this helper once the production builder consumed `keymap_path()` directly.
 - The legacy `ProjectListAction::ExpandRow` defaults stayed at `Shift+Right` / `Shift+Left` (the comment was rewritten to say "avoid colliding with the navigation defaults" instead of "pass `is_navigation_reserved`"). Switching them to bare arrows would fight the new framework `NavigationAction::Right` / `Left` defaults — keeping Shift modifiers preserves both routes.
 - `handle_detail_key` rewrote the pane-scope match into an `is_some_and(|action| { match … ; true })` form so the consumed flag drives the post-match navigation fallthrough cleanly. This is a structural rewrite of the match, not just a body insertion — the original Up/Down/Home/End block at the top of the function has been deleted along with the inner `match app.focus.base()` early-returns.
 
@@ -3014,10 +3014,10 @@ fn set_focus(&mut self, focus: FocusedPane<AppPaneId>) {
 - `cargo mend` hoisted `use std::path::PathBuf` to the top-level after the inline `use` was added inside `build_framework_keymap_with_toml`. The helper is `#[cfg(test)]`, so the top-level import errored on non-test builds; the fix is `#[cfg(test)] use std::path::PathBuf;`.
 
 **Implications for remaining phases:**
-- **Phase 18 retires the test-only helper.** `build_framework_keymap_with_toml` exists only because Phase 16's rebinding test needs `load_toml` before Phase 18 wires it into `App::new`. Phase 18's "Load TOML into the framework keymap" bullet should also delete the test helper (or re-target it to use the production load_toml call site).
+- **Phase 18 retired the test-only helper.** `build_framework_keymap_with_toml` existed only because Phase 16's rebinding test needed `load_toml` before Phase 18 wired it into `App::new`. The test now uses the production loader path.
 - **Phase 20's funnel test depends on the `App::set_focus` override existing.** The override is now the single mutation funnel for framework-routed focus writes; Phase 20's "no parallel write to `app.focus` anywhere in the binary" assertion requires that every other `app.focus.set(...)` call has either (a) been deleted in Phase 19 or (b) been re-routed through `app.set_focus(FocusedPane::App(...))`. Phase 20 should grep for residual `app.focus.set(` call sites at start.
 - **Phase 19 dispatcher cutover semantics for `Mode::TextInput`.** With handler injection deferred to Phase 17, Phase 16's Phase 15 overlay handlers (`SettingsPane::handle_key` / `KeymapPane::handle_key`) still flip `EditState` only; the binary's text-input mutations (`settings::handle_settings_edit_key`, `keymap_ui::handle_keymap_capture`) remain authoritative until Phase 17 lands handler injection and Phase 19 wires the binary's bodies into the injected handlers.
-- **Phase 18's legacy `Esc`-on-output preflight stays in `src/tui/input.rs` line 112-119.** Phase 16 left that pre-handler intact — Phase 18's structural-Esc preflight replaces it with the `key_for_toml_key` reverse-lookup form. The Phase-15-deferred `finder_keys` swap and Toasts focus gate chain are still Phase 19 deliverables; nothing in Phase 16 unblocks them earlier.
+- **Phase 18 replaced the legacy `Esc`-on-output preflight.** Phase 16 left that pre-handler intact; Phase 18 rewrote it to use the framework keymap's all-bind-aware Output-cancel predicate. The Phase-15-deferred `finder_keys` swap and Toasts focus gate chain are still Phase 19 deliverables; nothing in Phase 16 unblocks them earlier.
 
 ### Phase 17 — `tui_pane` cutover prerequisites ✅
 
@@ -3100,7 +3100,7 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
 - **Phase 21 Toasts bar renderer** now includes `secondary_key: None` in the `RenderedSlot` construction plan.
 - **Phase 22 `[toasts]` TOML surface** now states that shared-`[global]` peer skipping does not apply to the toast settings table; unknown-key handling stays local to `[toasts]`.
 
-### Phase 18 — Reroute Output, structural Esc
+### Phase 18 — Reroute Output, structural Esc (✅ landed)
 
 Phase 18 is the first binary phase that consumes the framework keymap for user-facing behavior. It wires production TOML loading into `app.framework_keymap`, replaces the hardcoded Output-cancel structural preflight with a framework reverse lookup, and retires the Phase 16 test-only TOML helper. Broad dispatcher cutover and legacy handler deletion remain Phase 19.
 
@@ -3112,7 +3112,7 @@ Phase 12 added the framework-owned typed `Toasts<Ctx>` but did not delete the bi
 
 **Load TOML into the framework keymap.** Update `src/tui/app/construct.rs::AppBuilder<Started>::build` so the framework-keymap builder consumes the same `keymap::keymap_path()` TOML as the legacy `ResolvedKeymap` path before any framework-keymap behavior is user-visible. The chain order is:
 
-1. `load_toml(keymap_path).with_context(|| format!("loading keymap from {keymap_path:?}"))?`
+1. `load_toml(keymap_path).with_context(|| format!("loading keymap from {}", keymap_path.display()))?`
 2. `register_navigation::<AppNavigation>()`
 3. `register_globals::<AppGlobalAction>()`
 4. `register_settings_overlay()` and `register_keymap_overlay()`
@@ -3153,9 +3153,34 @@ The `framework_bind` conversion is a temporary Phase 18 bridge across the legacy
 - With temp TOML `[output]\ncancel = "q"\n`, build `App` through the normal `App::new` path, focus a non-Output pane, push `example_output`, send `'q'` through `src/tui/input.rs`, and assert output is cleared while focus is unchanged.
 - Same TOML, but focus Output before sending `'q'`; assert output is cleared and focus moves to Targets.
 - With Settings in Editing mode and `example_output` non-empty, pressing Esc cancels the edit instead of clearing `example_output`.
-- Re-target the Phase 16 navigation rebind test to the production loader, then delete `#[cfg(test)] pub(super) fn build_framework_keymap_with_toml(...)` from `src/tui/framework_keymap.rs`.
+- Retargeted the Phase 16 navigation rebind test to the production loader, then deleted `#[cfg(test)] pub(super) fn build_framework_keymap_with_toml(...)` from `src/tui/framework_keymap.rs`.
 
 **Test scaffolding warning.** Phase 18 tests must not call `app.framework_keymap.dispatch_app_pane(OutputPane::APP_PANE_ID, ...)` directly. `OutputPane::dispatcher()` remains no-op until Phase 19, so direct dispatch bypasses the structural preflight and tests the wrong path. The Output-focused dispatcher-path test lands in Phase 19 after `OutputPane::dispatcher()` is wired.
+
+### Retrospective
+
+**What worked:**
+- `Keymap::is_key_bound_to_toml_key(id, toml_key, bind)` landed as the all-bind-aware reverse lookup Phase 18 needed. `key_for_toml_key` stays the primary-key API for display-oriented callers.
+- Production App construction now builds the framework keymap from the same `keymap::keymap_path()` TOML as the legacy `ResolvedKeymap` path, with `.load_toml(...)` running before navigation, globals, overlay scopes, and app-pane registrations.
+- The Phase 16 test-only `build_framework_keymap_with_toml(...)` helper was deleted. Rebind tests now use a test-only `keymap::override_keymap_path_for_test(...)` guard and then build `App` through the normal `App::new` path.
+- The structural Output-cancel preflight now resolves `OutputAction::Cancel.toml_key()` through `app.framework_keymap` and honors multi-bind TOML such as `cancel = ["Esc", "q"]`.
+- Existing cargo-port TOML uses `[global] settings = "s"`, while the framework canonical action is `open_settings`. `tui_pane::GlobalAction::from_toml_key` now accepts `settings` as a legacy alias for `OpenSettings`, and the shared `[global]` peer-key skip set includes the alias so app-globals loading does not reject existing configs.
+
+**What deviated from the plan:**
+- `src/tui/framework_keymap.rs::build_framework_keymap` now accepts a configured `KeymapBuilder<App, Configuring>` instead of constructing the builder internally. That lets `construct.rs` wrap `load_toml(path)` with the required path-bearing `anyhow::Context` before the shared registration chain runs.
+- The text-input guard checks both `app.framework.focused_pane_mode(app)` and the legacy overlay flags (`finder`, `settings editing`, `keymap awaiting`). Phase 18 still runs before overlay dispatch is fully mirrored into framework overlay focus, so this bridge preserves today's Esc/text-entry behavior until Phase 19 consolidates the entry flow.
+
+**Implications for remaining phases:**
+- Phase 19 can assume `app.framework_keymap` is production-loaded and overlay scopes are registered; it should delete the temporary legacy-to-framework `KeyBind` bridge when dispatch standardizes on `tui_pane::KeyBind`.
+- Phase 20 rebind snapshots should use the production loader path only. No test should recreate the deleted `build_framework_keymap_with_toml(...)` bypass.
+
+### Phase 18 Review
+
+- **Phase 19 `VimMode` wiring:** the framework keymap must map cargo-port's `NavigationKeys` config into `tui_pane::VimMode` before cutover, including any framework-keymap rebuild / reload path. Phase 20 gets production-path tests for `ArrowsAndVim` vs `ArrowsOnly`.
+- **Framework globals:** Phase 19 routes framework-global hits through the shipped `app.framework_keymap.dispatch_framework_global(action, app)` API. It does not add a second `tui_pane::GlobalAction::dispatcher` concept.
+- **Command-key invariant wording:** command shortcuts dispatch through the keymap, but structural preflights, modal confirmation, and text-input editing fallback may still inspect literal keys. Those are explicit survivors, not cleanup failures.
+- **Output cancel ordering:** Phase 19 preserves Phase 18's structural Output-cancel preflight as an `is_key_bound_to_toml_key(...)` lookup. It does not fold cross-pane `example_output` clearing into `OutputPane::dispatcher()`.
+- **Minor cleanups:** Phase 20 rebind tests now speak in production-loader terms, Phase 19 names the text-input bridge removal criteria, and malformed TOML binding tests assert `KeymapError::InvalidBinding { source, .. }` for the production loader path.
 
 ### Phase 19 — Bar swap and cleanup
 
@@ -3167,8 +3192,10 @@ Add the `What dissolves` / `What survives` summary (currently in this doc) as us
 
 **Re-route any existing pre-quit / pre-restart cleanup paths into the keymap-builder hooks.** Phase 10 shipped `KeymapBuilder::on_quit(fn(&mut Ctx))` / `on_restart(fn(&mut Ctx))` / `dismiss_fallback(fn(&mut Ctx) -> bool)` — Phase 19 walks the binary for any code that runs on quit/restart (state persistence, watcher shutdown, terminal-cleanup hooks beyond what ratatui handles) and moves those bodies into closures registered on the builder during keymap construction. The post-Phase-19 binary touches the lifecycle flags only by reading them from the main loop; mutation flows exclusively through the framework's `GlobalAction` dispatcher.
 
-**Wire dispatchers.** Every `dispatcher()` fn that 14.2–14.7 left as `|_, _| {}` flips to a real body in this phase. Phase 19 is not only cleanup — it is where the framework path becomes live. Each dispatcher routes its action(s) to the existing or extracted operation body that today's `handle_*_key` arms invoke; the helper names below are illustrative anchors, not commitments to specific symbol names (the implementer extracts or reuses what's already there). Required inventory:
-- **`tui_pane::GlobalAction::dispatcher` (framework-side)** — bodies for `Quit`, `Restart`, `OpenSettings`, `OpenKeymap`, `Dismiss`, `NextPane`, `PrevPane`. Each routes to the existing operation body (e.g. today's `handle_global_key` arms for these variants, or the framework's lifecycle-flag setter / overlay opener / pane-cycle helper depending on the variant).
+**Wire framework `VimMode` from cargo-port config before cutover.** Phase 18 production-loads the framework keymap but leaves the builder's `VimMode` at its default unless Phase 19 maps `config.tui.navigation_keys` into `tui_pane::VimMode`. Before framework dispatch becomes authoritative, the production builder chain must call `.vim_mode(...)` from cargo-port's `NavigationKeys` value (`ArrowsAndVim` → `VimMode::Enabled`, `ArrowsOnly` → `VimMode::Disabled`). Apply the same mapping anywhere Phase 19 rebuilds or reloads `app.framework_keymap`; startup-only wiring is not enough if config/keymap reload can replace the resolved scope after cutover.
+
+**Wire dispatchers.** Every app-side `dispatcher()` fn that 14.2–14.7 left as `|_, _| {}` flips to a real body in this phase. Phase 19 is not only cleanup — it is where the framework path becomes live. Each dispatcher routes its action(s) to the existing or extracted operation body that today's `handle_*_key` arms invoke; the helper names below are illustrative anchors, not commitments to specific symbol names (the implementer extracts or reuses what's already there). Required inventory:
+- **Framework-owned globals route through the existing `tui_pane` API.** Do not add a new `tui_pane::GlobalAction::dispatcher` concept. The shipped library already exposes `Keymap::dispatch_framework_global(action, ctx)`, backed by `framework::dispatch_global(...)`; Phase 19's input chain resolves framework-global hits and calls `app.framework_keymap.dispatch_framework_global(action, app)`. That existing API owns `Quit`, `Restart`, `OpenSettings`, `OpenKeymap`, `Dismiss`, `NextPane`, and `PrevPane`.
 - **`AppGlobalAction::dispatcher`** — bodies for the four variants `Find`, `OpenEditor`, `OpenTerminal`, `Rescan`. Each routes to the existing operation body invoked by today's `handle_global_key` arms for these variants.
 - **`AppNavigation::dispatcher`** — routes `(NavigationAction, FocusedPane)` tuples to the legacy arrow-key bodies that Phase 16 relocated (the ones moved into the `ProjectListAction::ExpandRow | CollapseRow` match arm and into each per-pane handler's navigation arms).
 - **Every app pane dispatcher** — `PackagePane`, `GitPane`, `TargetsPane`, `LintsPane`, `CiRunsPane`, `LangPane`, `CpuPane`, `ProjectListPane`, `OutputPane`, `FinderPane`. Each routes its action variants to the bodies executed today by the corresponding legacy handler arms (`handle_normal_key` / `handle_detail_key` / `handle_lints_key` / `handle_ci_runs_key` / `handle_finder_key` / `handle_output_key`, etc., on `Activate` / `Clean` / variant-specific operations).
@@ -3180,10 +3207,10 @@ Add the `What dissolves` / `What survives` summary (currently in this doc) as us
 
 **Atomic cutover constraint.** The dispatcher bodies and the deletion of the legacy dispatch reads (`handle_*_key` fn bodies + their call sites + the `app.keymap.current().<scope>` accessors) must land together in the same Phase 19 cutover changeset. Splitting the change leaves the binary in one of two failure modes: both paths fire on the same key (double-dispatch), or neither path fires (dead key). The "Wire dispatchers" inventory above and the `Delete:` list below describe halves of the same atomic swap — they cannot be sequenced apart.
 
-**Phase 19 `handle_key_event` entry-flow inventory.** This is the canonical target flow for `src/tui/input.rs::handle_key_event` after the atomic cutover. The `Delete:` block below names the removed legacy bodies / call sites; this inventory names the surviving entry order those deletions produce:
+**Phase 19 `handle_key_event` entry-flow inventory.** This is the canonical target flow for `src/tui/input.rs::handle_key_event` after the atomic cutover. The `Delete:` block below names the removed legacy bodies / call sites; this inventory names the surviving entry order those deletions produce. "All command dispatch routes through the keymap" does not forbid the structural preflights, modal confirmation, or text-input fallback listed here from inspecting concrete keys — those are explicit survivors, not cleanup failures.
 
 1. Input normalization / `KeyBind` construction under the Phase 19 `KeyBind` policy above.
-2. Structural preflights: Esc kills a running example; `OutputAction::Cancel` reverse-lookup clears `example_output` and returns focus to Targets when appropriate.
+2. Structural preflights: Esc kills a running example; `OutputAction::Cancel` reverse-lookup clears `example_output` and returns focus to Targets when appropriate. The Output-cancel branch remains a structural lookup through `app.framework_keymap.is_key_bound_to_toml_key(...)`; do not replace it with `OutputPane::dispatcher()` during cutover.
 3. `handle_confirm_key(app, code)` survives unchanged at this position. Modal confirmation is binary-specific behavior, not framework keymap dispatch.
 4. Overlay / text-input interception: framework Keymap / Settings overlays handle and return; Finder's app-side text-input path routes through `finder_keys` and preserves the text-entry fallback.
 5. Framework globals, then app globals. `GlobalAction::Dismiss` runs `dismiss_chain`; unhandled keys do not run `dismiss_chain`.
@@ -3191,6 +3218,8 @@ Add the `What dissolves` / `What survives` summary (currently in this doc) as us
 7. If focused on an app pane, dispatch the focused pane scope first.
 8. Navigation fallback second, via `AppNavigation::dispatcher`.
 9. Unhandled drops.
+
+**Remove the Phase 18 text-input bridge only after framework overlay focus owns mode.** Phase 18's Output-cancel guard still checks legacy overlay flags (`finder`, Settings editing, Keymap awaiting) alongside `app.framework.focused_pane_mode(app)` because those modes are not fully represented by framework overlay focus yet. Phase 19 deletes those guard arms only after Settings editing, Keymap awaiting, and Finder input route through framework overlay focus / `Mode::TextInput`. Add regression coverage that Esc in Settings editing and Keymap awaiting, plus Finder text input, do not clear `example_output`.
 
 **Visibility note.** 14.8 narrowed `framework_keymap::build_framework_keymap` from `pub(crate)` to `pub(super)` (only `construct.rs` calls it). If Phase 19's "Wire dispatchers" extractions move any caller outside `tui::app` — e.g. into `src/tui/input.rs` or a new top-level module — re-widen the visibility to `pub(crate)` or `pub(super)` against the right module. Mechanical edit; no semantic change.
 
@@ -3243,9 +3272,9 @@ Hoist `make_app` from `tests/mod.rs` to `src/tui/tui_test_support.rs` (`pub(supe
 
 Bar-on-rebind:
 
-**Hard acceptance prerequisite for every "Rebinding X to Y" test below.** Framework-keymap TOML loading must already be active in the binary — see Phase 18's `Load TOML into the framework keymap` bullet — and Phase 17's shared-`[global]`-table coordination must have shipped first to unblock that load. Without those prerequisites already landed, every rebind test below tests built-in defaults rather than user rebinding, and is therefore invalid as a cutover-regression test. Phase 20 does not begin until both prerequisites are in.
+**Acceptance baseline for every "Rebinding X to Y" test below.** Phase 18 already wired framework-keymap TOML loading through `App::new`, and Phase 17 shipped shared-`[global]`-table coordination. Every rebind test below uses that production loader path; otherwise the test exercises built-in defaults rather than user rebinding and is invalid as a cutover-regression test.
 
-**Production-loader-only rebind tests.** Phase 18 deletes the temporary `build_framework_keymap_with_toml(...)` helper and wires `.load_toml(keymap_path)` into the production builder. Phase 20 rebind tests use the production loader path only; settings/keymap overlay rebind tests also require Phase 18's builder chain to call `register_settings_overlay()` / `register_keymap_overlay()` so the resolved overlay scopes carry user TOML.
+**Production-loader-only rebind tests.** Phase 18 deleted the temporary `build_framework_keymap_with_toml(...)` helper and wired `.load_toml(keymap_path)` into the production builder. Phase 20 rebind tests use the production loader path only; settings/keymap overlay rebind tests also require Phase 18's builder chain to call `register_settings_overlay()` / `register_keymap_overlay()` so the resolved overlay scopes carry user TOML.
 
 - Rebinding each `*Action::Activate` (`Package`, `Git`, `Targets`, `CiRuns`, `Lints`) updates that pane's bar.
 - Rebinding `NavigationAction::Up` / `Down` / `Left` / `Right` updates the `↑/↓` nav row in every base-pane bar that uses it.
@@ -3291,7 +3320,8 @@ TOML loader:
 
 - `[finder] activate = "Enter"` and `cancel = "Enter"` → `Err(KeymapError::CrossActionCollision)`.
 - TOML scope replaces vim+defaults: `[navigation] up = ["PageUp"]` with vim-on → `key_for(Up) == PageUp`, `'k'` not bound.
-- `KeymapError::KeyParse` propagation: round-trip a malformed binding string through the loader (e.g. an unscoped `?`-propagation path that hands a bad string to `KeyBind::parse`); assert the variant matches `KeymapError::KeyParse(_)` and `err.source().is_some()` so the underlying `KeyParseError` is preserved.
+- Cargo-port config drives framework `VimMode`: `NavigationKeys::ArrowsAndVim` binds navigation `h/j/k/l` and ProjectList vim extras; `NavigationKeys::ArrowsOnly` does not bind those extras. Run this through the production builder path, not a hand-built `KeymapBuilder`, so it catches missed startup/reload wiring.
+- Malformed binding propagation: round-trip a malformed binding string through the production TOML overlay loader and assert `Err(KeymapError::InvalidBinding { source, .. })`, with `err.source().is_some()` so the underlying `KeyParseError` is preserved. `KeymapError::KeyParse(_)` remains the unscoped direct-conversion path, not the scoped `load_toml` variant.
 
 A snapshot test per focused-pane context locks in the **new** static-label framework bar — the bar text and span styles produced by `render_status_bar(focused, &app, &framework_keymap, &framework, &cargo_port_bar_palette())` under default bindings. The snapshots are not asserted byte-identical to the pre-refactor dynamic-label bar; Phase 14's `bar_label` collapse (one static literal per variant) deliberately drops row-dependent labels (e.g. `PackageAction::Activate`'s `"URL"`/`"Cargo.toml"` switch) in favor of one short generic label per action. The fixture drives the renderer through `framework.focused_pane_mode(ctx)` and the `AppPaneId`-keyed `Keymap::render_app_pane_bar_slots` (Phase 9 + Phase 13) — never via a typed `P::mode()` call — so each snapshot parameterizes on `FocusedPane`, not on the concrete pane type. The palette is `cargo_port_bar_palette()` (Phase 14); a different palette would diverge on style attributes by design.
 
@@ -3677,7 +3707,7 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 
 ## What dissolves
 
-- Every `KeyCode::*` direct match in input handlers.
+- Every `KeyCode::*` direct match used for configurable command dispatch. Structural preflights, modal confirmation, and text-input editing fallback are explicit survivors.
 - `App::enter_action`; `shortcuts::enter()` const fn.
 - The seven hardcoded `Shortcut::fixed(...)` constants.
 - The four per-context group helpers in `shortcuts.rs`.
@@ -3732,7 +3762,7 @@ Verify CI invocations operate on the intended scope before Phase 1 lands. Tools 
 - `NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction` exist in cargo-port. `ProjectListAction` has `ExpandRow` / `CollapseRow`.
 - Every cargo-port app pane has `impl Shortcuts<App>`. `AppNavigation: Navigation<App>`. `AppGlobalAction: Globals<App>`.
 - `App.framework: Framework<App>` field exists.
-- Every input handler dispatches through the keymap; no `KeyCode::*` direct match for command keys remains.
+- Every configurable command shortcut dispatches through the keymap; no `KeyCode::*` direct match for command keys remains. Structural preflights, modal confirmation, and text-input editing fallback may still inspect concrete keys.
 - `NAVIGATION_RESERVED`, `is_navigation_reserved`, hardcoded `VIM_RESERVED`, the seven `Shortcut::fixed` constants, the four group helpers, `App::enter_action`, `shortcuts::enter()`, `InputContext` enum — all deleted.
 - Framework owns the bar; cargo-port has zero bar-layout code.
 - `make_app` hoisted to `src/tui/tui_test_support.rs`.

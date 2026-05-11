@@ -12,7 +12,10 @@ use crossterm::event::KeyModifiers;
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEventKind;
 use ratatui::layout::Position;
+use tui_pane::Action;
 use tui_pane::KeyBind as FrameworkKeyBind;
+use tui_pane::Mode;
+use tui_pane::Pane;
 
 use super::app::App;
 use super::app::CleanSelection;
@@ -21,6 +24,7 @@ use super::app::PendingClean;
 use super::finder;
 use super::framework_keymap::AppNavigation;
 use super::framework_keymap::NavigationAction;
+use super::framework_keymap::OutputPane;
 use super::interaction;
 use super::keymap_ui;
 use super::panes;
@@ -31,6 +35,7 @@ use super::shortcuts::InputContext;
 use super::terminal;
 use crate::keymap::GlobalAction;
 use crate::keymap::KeyBind;
+use crate::keymap::OutputAction;
 use crate::keymap::ProjectListAction;
 use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
@@ -112,7 +117,16 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         app.scan.mark_terminal_dirty();
         return;
     }
-    if code == KeyCode::Esc && !app.inflight.example_output().is_empty() {
+    let bind = bind_from(&normalized);
+    let framework_bind = framework_bind_from_legacy(&bind);
+    if !app.inflight.example_output().is_empty()
+        && !focused_text_input_mode(app)
+        && app.framework_keymap.is_key_bound_to_toml_key(
+            OutputPane::APP_PANE_ID,
+            OutputAction::Cancel.toml_key(),
+            &framework_bind,
+        )
+    {
         let was_on_output = app.focus.is(PaneId::Output);
         app.inflight.example_output_mut().clear();
         if was_on_output {
@@ -153,6 +167,22 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
             handle_normal_key(app, &normalized);
         },
     }
+}
+
+const fn framework_bind_from_legacy(bind: &KeyBind) -> FrameworkKeyBind {
+    FrameworkKeyBind {
+        code: bind.code,
+        mods: bind.modifiers,
+    }
+}
+
+fn focused_text_input_mode(app: &App) -> bool {
+    matches!(
+        app.framework.focused_pane_mode(app),
+        Some(Mode::TextInput(_))
+    ) || app.overlays.is_finder_open()
+        || app.overlays.is_settings_editing()
+        || app.overlays.keymap_is_awaiting()
 }
 
 /// Build a `KeyBind` from a `KeyEvent`, applying `=`/`+` and `BackTab`

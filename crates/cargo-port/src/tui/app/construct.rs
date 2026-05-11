@@ -23,6 +23,7 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::Error;
 use tui_pane::FocusedPane;
+use tui_pane::Keymap as FrameworkKeymap;
 
 use super::App;
 use super::types::ScanState;
@@ -193,7 +194,7 @@ impl AppBuilder<Started> {
         let keymap_path_buf = keymap::keymap_path()
             .as_ref()
             .map(|p| p.as_path().to_path_buf());
-        let keymap = Keymap::new(keymap_path_buf, keymap::ResolvedKeymap::defaults());
+        let keymap = Keymap::new(keymap_path_buf.clone(), keymap::ResolvedKeymap::defaults());
         let scan = Scan::new(
             ScanState::new(inputs.scan_started_at),
             inputs.metadata_store,
@@ -203,8 +204,17 @@ impl AppBuilder<Started> {
             overlays.set_status_flash(warning, Instant::now());
         }
         let mut framework = tui_pane::Framework::new(FocusedPane::App(AppPaneId::ProjectList));
-        let framework_keymap = framework_keymap::build_framework_keymap(&mut framework)
-            .with_context(|| "building framework keymap")?;
+        let framework_builder = if let Some(path) = keymap_path_buf {
+            let display_path = path.display().to_string();
+            FrameworkKeymap::<App>::builder()
+                .load_toml(path)
+                .with_context(|| format!("loading keymap from {display_path}"))?
+        } else {
+            FrameworkKeymap::<App>::builder()
+        };
+        let framework_keymap =
+            framework_keymap::build_framework_keymap(framework_builder, &mut framework)
+                .with_context(|| "building framework keymap")?;
         let mut app = App {
             net: crate::tui::net_state::Net::new(inputs.http_client),
             panes,

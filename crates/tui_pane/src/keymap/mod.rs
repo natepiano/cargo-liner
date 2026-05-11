@@ -71,7 +71,7 @@ type ScopeRenderFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<RenderedSlot>;
 /// One [`Ctx::AppPaneId`](AppContext::AppPaneId)-keyed scope per
 /// registered pane. Public callers reach pane operations through
 /// [`Self::dispatch_app_pane`], [`Self::render_app_pane_bar_slots`],
-/// and [`Self::key_for_toml_key`] — the underlying
+/// [`Self::key_for_toml_key`], and [`Self::is_key_bound_to_toml_key`] — the underlying
 /// [`RuntimeScope`](self::runtime_scope::RuntimeScope) trait is
 /// crate-private.
 ///
@@ -241,6 +241,26 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
         self.scopes.get(&id)?.key_for_toml_key(action)
     }
 
+    /// Reverse lookup predicate: returns `true` when `bind` is one of
+    /// the keys currently bound to the TOML action key string in the
+    /// scope registered for `id`.
+    ///
+    /// Unlike [`Self::key_for_toml_key`], this checks every binding
+    /// for the action, not just the primary key rendered in compact
+    /// UI. Structural input checks should use this predicate so TOML
+    /// arrays like `cancel = ["Esc", "q"]` work for every key.
+    #[must_use]
+    pub fn is_key_bound_to_toml_key(
+        &self,
+        id: Ctx::AppPaneId,
+        action: &str,
+        bind: &KeyBind,
+    ) -> bool {
+        self.scopes
+            .get(&id)
+            .is_some_and(|scope| scope.is_key_bound_to_toml_key(action, bind))
+    }
+
     /// The framework-globals scope ([`GlobalAction`] →
     /// [`KeyBind`]). Built from
     /// [`GlobalAction::defaults`](GlobalAction::defaults) plus any
@@ -378,6 +398,12 @@ impl<Ctx: AppContext + 'static> core::fmt::Debug for Keymap<Ctx> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::env;
+    use std::fs;
+    use std::process;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
     use crossterm::event::KeyCode;
 
     use super::Bindings;
@@ -611,6 +637,53 @@ mod tests {
             keymap
                 .key_for_toml_key(TestPaneId::Bar, "activate")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn is_key_bound_to_toml_key_checks_all_bindings() {
+        let path = env::temp_dir().join(format!(
+            "tui-pane-keymap-{}-{}.toml",
+            process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos(),
+        ));
+        fs::write(&path, "[foo]\nactivate = [\"Enter\", \"q\"]\n").expect("write keymap toml");
+
+        let keymap = Keymap::<TestApp>::builder()
+            .load_toml(path.clone())
+            .expect("load toml")
+            .register_navigation::<AppNav>()
+            .expect("nav register must succeed")
+            .register_globals::<AppGlobals>()
+            .expect("globals register must succeed")
+            .register::<FooPane>(FooPane)
+            .build()
+            .expect("build keymap with one scope");
+        fs::remove_file(path).expect("remove keymap toml");
+
+        assert_eq!(
+            keymap.key_for_toml_key(TestPaneId::Foo, "activate"),
+            Some(KeyCode::Enter.into()),
+        );
+        assert!(keymap.is_key_bound_to_toml_key(
+            TestPaneId::Foo,
+            "activate",
+            &KeyCode::Enter.into(),
+        ));
+        assert!(keymap.is_key_bound_to_toml_key(TestPaneId::Foo, "activate", &KeyBind::from('q'),));
+        assert!(
+            !keymap.is_key_bound_to_toml_key(TestPaneId::Foo, "activate", &KeyBind::from('c'),)
+        );
+        assert!(!keymap.is_key_bound_to_toml_key(
+            TestPaneId::Foo,
+            "frobnicate",
+            &KeyBind::from('q'),
+        ));
+        assert!(
+            !keymap.is_key_bound_to_toml_key(TestPaneId::Bar, "activate", &KeyBind::from('q'),)
         );
     }
 }

@@ -266,7 +266,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     pub fn register_globals<G: Globals<Ctx>>(mut self) -> Result<Self, KeymapError> {
         let defaults = G::defaults();
         let scope_name = <G as Globals<Ctx>>::SCOPE_NAME;
-        let framework_keys = action_key_set::<GlobalAction>();
+        let framework_keys = framework_global_action_key_set();
         let peer_keys = (scope_name == "global").then_some(&framework_keys);
         let bindings = apply_toml_overlay_with_peer::<G::Actions>(
             scope_name,
@@ -561,6 +561,12 @@ fn action_key_set<A: Action>() -> HashSet<&'static str> {
     A::ALL.iter().map(|action| action.toml_key()).collect()
 }
 
+fn framework_global_action_key_set() -> HashSet<&'static str> {
+    let mut keys = action_key_set::<GlobalAction>();
+    keys.insert("settings");
+    keys
+}
+
 /// Parse a TOML scope entry value into `Vec<KeyBind>`. Accepts a
 /// single string or an array of strings.
 fn parse_toml_value(scope: &str, action: &str, value: &Value) -> Result<Vec<KeyBind>, KeymapError> {
@@ -742,6 +748,9 @@ fn validate_toml_scopes(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::fs;
+    use std::process;
+
     use crossterm::event::KeyCode;
 
     use super::Keymap;
@@ -1327,9 +1336,13 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
             "tui_pane_test_shared_global_{}.toml",
-            std::process::id()
+            process::id()
         ));
-        std::fs::write(&path, "[global]\nquit = \"z\"\nfind = \"?\"\n").expect("write toml");
+        fs::write(
+            &path,
+            "[global]\nquit = \"z\"\nsettings = \"F2\"\nfind = \"?\"\n",
+        )
+        .expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
             .load_toml(path.clone())
             .expect("load_toml must succeed")
@@ -1342,6 +1355,12 @@ mod tests {
         assert_eq!(
             keymap.framework_globals().action_for(&KeyBind::from('z')),
             Some(GlobalAction::Quit),
+        );
+        assert_eq!(
+            keymap
+                .framework_globals()
+                .action_for(&KeyBind::from(KeyCode::F(2))),
+            Some(GlobalAction::OpenSettings),
         );
         let app_globals = keymap
             .globals::<AppGlobals>()
