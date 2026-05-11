@@ -1000,7 +1000,7 @@ The `Settings` / `Keymap` / `Toasts` panes use their internal mode flags (Browse
 
 ## Phases
 
-Each phase is a single mergeable commit. Each commit must build green and pass `cargo nextest run`. No sub-phases (`Na/Nb/Nc`) — every increment gets its own integer.
+Each phase is a single mergeable commit. Each commit must build green and pass `cargo nextest run --workspace`. No sub-phases (`Na/Nb/Nc`) — every increment gets its own integer.
 
 ### Current state after Phase 10
 
@@ -2347,7 +2347,7 @@ Key invariants:
 - `reset_to_first` / `reset_to_last` on entry replace cargo-port's `viewport.home()` / `viewport.set_pos(last_index)` calls in `focus_next_pane`/`focus_previous_pane`.
 - Tab-as-cycle-step consume runs as a pre-globals hook (`try_consume_cycle_step`) that consults the live keymap entry for `GlobalAction::NextPane`/`PrevPane` — not literal `Tab` — so a rebound `NextPane` keeps the consume-while-scrollable behavior. The hook returns `true` when there is internal scroll room (consumes the keystroke, blocks the cycle advance); otherwise dispatch falls through to globals and the cycle advances.
 
-**5. Focus reconciliation after dismiss / prune.** When `Toasts::dismiss(_)` or any Phase-22 prune-on-tick path empties the active set while Toasts is focused, focus moves to the first registered app pane (or no-op if `pane_order()` is empty). Reconciliation **must** route through `ctx.set_focus(...)` — not `framework.set_focused(...)` — so binaries that override `AppContext::set_focus` (logging, telemetry, the `Focus` subsystem's overlay-return memory) still observe the transition. That rules out a `&mut self` method on `Framework<Ctx>` (which has no path to `&mut Ctx`); the reconciler is a free fn over `&mut Ctx`:
+**5. Focus reconciliation after dismiss / prune.** When `Toasts::dismiss(_)` or any Phase-22 prune-on-tick path empties the active set while Toasts is focused, focus moves to the first live app tab stop (or no-op if the live cycle is empty). Reconciliation **must** route through `ctx.set_focus(...)` — not `framework.set_focused(...)` — so binaries that override `AppContext::set_focus` (logging, telemetry, the `Focus` subsystem's overlay-return memory) still observe the transition. That rules out a `&mut self` method on `Framework<Ctx>` (which has no path to `&mut Ctx`); the reconciler is a free fn over `&mut Ctx`:
 
 ```rust
 // tui_pane/src/framework/dispatch.rs
@@ -2375,7 +2375,7 @@ pub(super) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx)
 - `pane_order_empty_and_toasts_active_cycles_to_toasts` — Tab from no-focus state lands on Toasts when no app panes registered.
 - `toasts_inactive_while_focused_next_moves_to_app_pane` — when Toasts becomes inactive while focused, the next Tab leaves Toasts cleanly.
 - `prev_from_first_app_lands_on_toasts_when_active` — Shift-Tab from the first app pane lands on Toasts.
-- `dismiss_focused_toast_removes_it_and_reconciles_focus` — when Toasts becomes empty after a dismiss, focus moves to the first app pane.
+- `dismiss_focused_toast_removes_it_and_reconciles_focus` — when Toasts becomes empty after a dismiss, focus moves to the first live app tab stop.
 - `entering_toasts_with_next_calls_reset_to_first` / `entering_toasts_with_prev_calls_reset_to_last` — viewport reset on entry.
 - `dismiss_chain_closes_overlay_when_no_focused_toast` — overlay-only dismiss path.
 - `dismiss_chain_falls_through_to_fallback_when_neither_fires` — registered fallback hook is called.
@@ -3323,7 +3323,7 @@ Phase 20 starts the closeout by migrating the keymap viewer/editor off `Resolved
 
 **Remaining-phase closeout gate.** Starting with Phase 20.1 and continuing through Phase 26, every phase closes only after:
 1. Run the `/clippy` skill. That includes the Rust style-guide load, `cargo mend --workspace --all-targets`, style review, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo +nightly fmt --all` per the skill.
-2. Run all tests with `cargo nextest run`.
+2. Run all tests with `cargo nextest run --workspace`.
 3. Install the local binary with `cargo install --path .` so the user can run a smoke test against the just-built code.
 4. Record the command results in the phase retrospective. If any command cannot run, the phase does not close as verified; record the blocker instead.
 
@@ -3374,12 +3374,42 @@ Phase 20.1 fixes the Phase 19 focus-cycle regression before overlay ownership an
 - Rebinding `GlobalAction::NextPane` to a non-Tab key still uses the same framework-managed, app-filtered tab cycle.
 - Phase closeout runs the remaining-phase closeout gate.
 
+### Retrospective
+
+**What worked:**
+- `TabStop<Ctx>` stayed a small registration-time value: `KeymapBuilder::insert_pane` records it beside each pane id and mode query, and `Framework<Ctx>` computes the live cycle only when traversal fires.
+- Reusing cargo-port's existing `App::is_pane_tabbable` predicates kept output/diagnostics behavior app-owned while letting `tui_pane` own `GlobalAction::NextPane` / `PrevPane` mechanics.
+- Toasts already had `try_consume_cycle_step`, `reset_to_first`, and `reset_to_last`; Phase 20.1 only had to call them from the framework global dispatcher.
+
+**What deviated from the plan:**
+- The cargo-port "repeated Tab" and reverse-Tab assertions were narrowed to "Lang unavailable" instead of "Lang/Cpu unavailable" because the test fixture has valid CPU data. CPU remains a reachable pane, so the regression is that unavailable Lang is skipped.
+- The public `TabStop<Ctx>` fields stayed private; the phase only needs public constructors plus the `Pane::tab_stop()` hook.
+
+**Surprises:**
+- `#[derive(Clone, Copy)]` on `TabStop<Ctx>` introduced an unwanted generic bound, so `TabStop` uses manual `Copy` / `Clone` impls.
+- `cargo nextest run` covered the root package only in this package-plus-workspace layout; `cargo nextest run --workspace` is needed to include `tui_pane`.
+
+**Implications for remaining phases:**
+- Phase 21 can assume `Tab` / `Shift+Tab` already route through framework globals and the app-filtered tab cycle; overlay work should not add another Tab interception path.
+- Phase 22's focus cleanup can treat `Framework::live_focus_cycle` and `App::set_focus` as the production focus-write path for traversal.
+
+**Verification:**
+- `cargo check --workspace --all-targets -q`
+- `cargo mend --workspace --all-targets` — no findings
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo +nightly fmt --all`
+- `cargo nextest run` — 630 passed
+- `cargo nextest run --workspace` — 855 passed
+- `cargo install --path .`
+
 ### Phase 21 — Overlay input/render ownership
 
-Phase 21 removes the production overlay short-circuits that Phase 19 left in place. Open Finder / Settings / Keymap overlays route through framework-owned overlay scopes and their text-input handlers, and rendering reads framework overlay state directly.
+Phase 21 removes the production overlay short-circuits that Phase 19 left in place. Settings and Keymap route through framework-owned overlay scopes and their text-input handlers; Finder remains an app-owned modal pane (`FinderPane`, `TabStop::never()`) whose keys route through the framework keymap and its `Mode::TextInput` handler. Rendering reads framework overlay state for Settings / Keymap and the app-owned Finder overlay state for Finder.
 
 **Scope:**
 - Remove the `src/tui/input.rs` short-circuits that call `keymap_ui::handle_keymap_key`, `finder::handle_finder_key`, and `settings::handle_settings_key` before the framework dispatch chain.
+- Do not add Finder to `FrameworkOverlayId` in this phase. Finder is not a framework overlay; Phase 21 changes routing, not ownership.
+- Preserve the `Mode::TextInput` dispatch gate: once the focused text-input path handles or rejects a key, do not fall through to globals or navigation. Settings / Keymap enforce this through framework overlay dispatch; Finder enforces it through its app-owned `FinderPane` text handler.
 - Move any surviving legacy handler bodies behind framework handler injection / pane methods, or delete them once no caller remains.
 - Remove the temporary mirror that kept framework `OpenSettings` / `OpenKeymap` in sync with cargo-port's legacy `Overlays` just to display the old popups.
 - Delete legacy overlay-return state that is no longer needed, or migrate the return target into the framework focus model.
@@ -3398,12 +3428,13 @@ Phase 22 deletes the remaining focus/input compatibility layer after the keymap 
 
 **Scope:**
 - Migrate every remaining production `app.focus.set(...)` / `self.focus.set(...)` writer through `app.set_focus(FocusedPane::App(...))` or `app.set_focus(FocusedPane::Framework(...))`.
+- Mouse/click focus writes are part of this migration. Hit testing identifies the clicked app pane; framework focus state is mutated only through `app.set_focus(FocusedPane::App(...))`. Direct `app.focus.set(...)` writes from `handle_mouse_click` / interaction handling delete in this phase.
 - After cleanup, `rg '(app|self)\.focus\.set\(' src` returns zero production hits; any test-only helper survivor must be named explicitly.
 - Delete the broader `app.focus` field if no reads remain. If a read must survive temporarily, document it as a render/query survivor with a concrete deletion owner before this phase closes.
 - Delete `InputContext` and action-enum facade leftovers once all render/input callers read the framework focus/keymap state directly.
 
 **Acceptance tests:**
-- A test impl that overrides `set_focus` to count calls observes every framework-originated focus change: NextPane, PrevPane, OpenKeymap, OpenSettings, focused Toasts, and return-from-overlay.
+- A test impl that overrides `set_focus` to count calls observes every framework-originated focus change: NextPane, PrevPane, focused Toasts, mouse/click app-pane focus, and return-from-overlay. `OpenKeymap` / `OpenSettings` are overlay-state changes, not focus writes; assert `framework.overlay()` changes and the focus-write counter does not increment.
 - `rg 'InputContext' src` returns zero production hits.
 - Phase closeout runs the remaining-phase closeout gate.
 
@@ -3443,7 +3474,8 @@ Globals + precedence:
 - Rebinding `GlobalAction::NextPane` to `j` (vim-off) cycles panes from any base pane.
 - Rebinding `ProjectListAction::ExpandRow` makes the pane-scope binding fire instead of `NavigationAction::Right`.
 - Rebinding `FinderAction::Activate` to `Tab` while Finder is open fires Activate, NOT `GlobalAction::NextPane`.
-- **`AppContext::set_focus` is the single funnel.** Phase 22 already removed production direct focus writers. Phase 23 keeps the end-to-end regression test that overrides `set_focus` to count calls and observes every framework-originated focus change (NextPane/PrevPane, OpenKeymap, OpenSettings, focused Toasts, and return-from-overlay).
+- **Tab-cycle coverage note.** Phase 20.1 already covers tab-stop ordering, stale-focus fallback, Toasts scroll-before-advance, and cargo-port production `Tab` / `Shift+Tab` traversal. Phase 23 keeps only broad cleanup-path assertions here, such as user rebinds flowing through the post-cleanup production loader and dispatcher.
+- **`AppContext::set_focus` is the single funnel for focus writes.** Phase 22 already removed production direct focus writers. Phase 23 keeps the end-to-end regression test that overrides `set_focus` to count calls and observes every framework-originated focus change (NextPane, PrevPane, focused Toasts, and return-from-overlay). `OpenKeymap` and `OpenSettings` are overlay-state changes, not focus writes; cover them with separate assertions that `framework.overlay()` becomes `Some(FrameworkOverlayId::Keymap)` / `Some(FrameworkOverlayId::Settings)` and that the focus-write counter does not increment.
 
 Dispatch parity (per pane, the highest-risk path):
 
@@ -3556,7 +3588,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
 }
 ```
 
-The dispatch chain calls `handle_key_command` while holding `&mut framework`, drops the borrow, then applies the command:
+The dispatch chain calls `handle_key_command` while holding `&mut framework`, drops the borrow, then applies the command. Wire this wherever Phase 21 leaves the focused framework-pane dispatch path. If Phase 21 keeps that orchestration in `src/tui/input.rs`, wire Toasts there; if Phase 21 moves focused framework-pane dispatch into `tui_pane`, wire it there. Do not create a second focused-pane dispatch path just for Toasts.
 
 ```rust
 let (outcome, cmd) = ctx.framework_mut().toasts.handle_key_command(&bind);
@@ -3597,7 +3629,7 @@ cargo-port's existing `ToastManager::push_*` call sites (Phase 26 migration entr
 **Code touched in Phase 24:**
 - `tui_pane/src/app_context.rs` — add `ToastAction` associated type, `NoToastAction` enum, default `handle_toast_action`.
 - `tui_pane/src/panes/toasts.rs` — add `action` field on `Toast`, `push_with_action`, `ToastsAction::Activate`, `handle_key_command`, `ToastCommand`.
-- `tui_pane/src/framework/dispatch.rs` — update the focused-pane match to apply `ToastCommand` after the framework borrow ends.
+- Focused framework-pane dispatch path from Phase 21 — apply `ToastCommand` after the framework borrow ends. This may be `tui_pane/src/framework/dispatch.rs` only if Phase 21 moved focused-pane dispatch there; otherwise use the Phase 21 call site.
 - `tui_pane/src/lib.rs` — re-export `NoToastAction`, `ToastCommand`.
 - `src/app/mod.rs` (cargo-port) — define `CargoPortToastAction`, set `type ToastAction = CargoPortToastAction;`, implement `handle_toast_action`.
 - Phase closeout runs the remaining-phase closeout gate.
@@ -3845,7 +3877,7 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 - Lifecycle: `timed_toast_expires_at_timeout_at`, `task_toast_lingers_after_finish_then_prunes`, `persistent_toast_survives_prune`.
 - Tracked items: `set_tracked_items_then_mark_completed_renders_strikethrough`, `prune_tracked_items_removes_finished_after_linger`.
 - Hitboxes: `render_emits_card_and_close_hitbox_per_visible_toast`.
-- Focus reconciliation: `prune_emptying_active_set_while_focused_moves_focus_to_first_app_pane`.
+- Focus reconciliation: `prune_emptying_active_set_while_focused_moves_focus_to_first_live_app_tab_stop`.
 - Cross-crate: cargo-port's `App::push_timed_toast` test moves to a `tui_pane/tests/` integration test that uses a `MockApp` with `type ToastAction = NoToastAction;` (test pushes `action: None` only — `NoToastAction` is uninhabited, so any `Some(action)` constructor is statically impossible).
 - Settings round-trip: `render_uses_framework_toast_settings_width` — render output reflects a non-default `ToastWidth` set on `Framework::toast_settings`.
 

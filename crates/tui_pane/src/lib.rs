@@ -28,6 +28,8 @@ pub use bar::render as render_status_bar;
 pub use framework::CycleDirection;
 pub use framework::Framework;
 pub use framework::ListNavigation;
+pub use framework::TabOrder;
+pub use framework::TabStop;
 pub use keymap::Action;
 pub use keymap::Bindings;
 pub use keymap::Configuring;

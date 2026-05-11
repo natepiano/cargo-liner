@@ -3,6 +3,7 @@
 
 mod dispatch;
 mod list_navigation;
+mod tab_stop;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -10,6 +11,9 @@ use std::path::Path;
 pub(crate) use self::dispatch::dispatch_global;
 pub use self::list_navigation::CycleDirection;
 pub use self::list_navigation::ListNavigation;
+use self::tab_stop::RegisteredTabStop;
+pub use self::tab_stop::TabOrder;
+pub use self::tab_stop::TabStop;
 use crate::AppContext;
 use crate::FocusedPane;
 use crate::FrameworkFocusId;
@@ -46,6 +50,7 @@ pub struct Framework<Ctx: AppContext> {
     restart_requested: bool,
     mode_queries:      HashMap<Ctx::AppPaneId, ModeQuery<Ctx>>,
     pane_order:        Vec<Ctx::AppPaneId>,
+    tab_stops:         Vec<RegisteredTabStop<Ctx>>,
     overlay:           Option<FrameworkOverlayId>,
     /// Keymap viewer/editor overlay, held inline. Reachable when
     /// [`Self::overlay`] is `Some(FrameworkOverlayId::Keymap)`.
@@ -69,6 +74,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
             restart_requested: false,
             mode_queries:      HashMap::new(),
             pane_order:        Vec::new(),
+            tab_stops:         Vec::new(),
             overlay:           None,
             keymap_pane:       KeymapPane::new(),
             settings_pane:     SettingsPane::new(),
@@ -115,9 +121,17 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// [`KeymapBuilder::build_into`](crate::KeymapBuilder::build_into).
     /// `pub(super)` so only the keymap builder (sibling crate module)
     /// can call it.
-    pub(super) fn register_app_pane(&mut self, id: Ctx::AppPaneId, mode_query: ModeQuery<Ctx>) {
+    pub(super) fn register_app_pane(
+        &mut self,
+        id: Ctx::AppPaneId,
+        mode_query: ModeQuery<Ctx>,
+        tab_stop: TabStop<Ctx>,
+    ) {
         if self.mode_queries.insert(id, mode_query).is_none() {
+            let registration_index = self.pane_order.len();
             self.pane_order.push(id);
+            self.tab_stops
+                .push(RegisteredTabStop::new(id, registration_index, tab_stop));
         }
     }
 
@@ -144,14 +158,41 @@ impl<Ctx: AppContext> Framework<Ctx> {
         }
     }
 
-    /// Registered app-pane ids in registration order. The
-    /// [`GlobalAction::NextPane`](crate::GlobalAction::NextPane) /
-    /// [`GlobalAction::PrevPane`](crate::GlobalAction::PrevPane)
-    /// dispatchers walk this slice; the bar renderer (Phase 13) and
-    /// the regression tests (Phase 19) also need it through the
-    /// public surface, hence the `pub` visibility.
+    /// Registered app-pane ids in registration order. This remains
+    /// registration metadata for diagnostics and tests; focus cycling
+    /// uses tab-stop metadata recorded beside this slice.
     #[must_use]
     pub fn pane_order(&self) -> &[Ctx::AppPaneId] { &self.pane_order }
+
+    /// Current focus cycle, filtered by each pane's live tab-stop
+    /// predicate.
+    fn live_focus_cycle(&self, ctx: &Ctx) -> Vec<FocusedPane<Ctx::AppPaneId>> {
+        let mut explicit = Vec::new();
+        let mut registration = Vec::new();
+        for entry in &self.tab_stops {
+            let tab_stop = entry.tab_stop();
+            if matches!(tab_stop.order(), TabOrder::Never) || !tab_stop.is_tabbable(ctx) {
+                continue;
+            }
+            match tab_stop.order() {
+                TabOrder::Explicit(order) => {
+                    explicit.push((order, entry.registration_index(), entry.id()));
+                },
+                TabOrder::Registration => registration.push(entry.id()),
+                TabOrder::Never => {},
+            }
+        }
+        explicit.sort_by_key(|entry| (entry.0, entry.1));
+        let mut cycle: Vec<FocusedPane<Ctx::AppPaneId>> = explicit
+            .into_iter()
+            .map(|entry| FocusedPane::App(entry.2))
+            .chain(registration.into_iter().map(FocusedPane::App))
+            .collect();
+        if self.toasts.has_active() {
+            cycle.push(FocusedPane::Framework(FrameworkFocusId::Toasts));
+        }
+        cycle
+    }
 
     /// The framework overlay currently open over the focused pane, if
     /// any. Overlays are an orthogonal modal layer:

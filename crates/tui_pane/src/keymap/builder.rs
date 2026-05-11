@@ -45,6 +45,7 @@ use crate::Pane;
 use crate::SettingsPane;
 use crate::SettingsPaneAction;
 use crate::SettingsRegistry;
+use crate::TabStop;
 use crate::framework::ModeQuery;
 
 /// `Box<dyn Any>`-erased typed singleton. The builder stores the
@@ -56,6 +57,12 @@ type ErasedSingleton = Box<dyn Any>;
 /// bar slots without naming the action enum. Captured at `register_*`
 /// time and copied onto [`Keymap`] for the bar to read.
 type ScopeRenderFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<super::RenderedSlot>;
+
+struct PaneRegistration<Ctx: AppContext> {
+    id:         Ctx::AppPaneId,
+    mode_query: ModeQuery<Ctx>,
+    tab_stop:   TabStop<Ctx>,
+}
 
 /// Marker: builder is in the settings phase. Consumes settings
 /// chained methods (`config_path`, etc.). Transitions to
@@ -92,7 +99,7 @@ pub struct Registering;
 /// ```
 pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
     scopes:                HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
-    pane_modes:            Vec<(Ctx::AppPaneId, ModeQuery<Ctx>)>,
+    pane_registrations:    Vec<PaneRegistration<Ctx>>,
     registered_scopes:     HashSet<&'static str>,
     duplicate_scope:       Option<&'static str>,
     config_path:           Option<PathBuf>,
@@ -127,7 +134,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     pub(super) fn new() -> Self {
         Self {
             scopes:                HashMap::new(),
-            pane_modes:            Vec::new(),
+            pane_registrations:    Vec::new(),
             registered_scopes:     HashSet::new(),
             duplicate_scope:       None,
             config_path:           None,
@@ -368,7 +375,8 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
     /// Finalize the builder. Returns the built [`Keymap<Ctx>`].
     ///
     /// Production code should call [`Self::build_into`] instead so
-    /// the framework's per-pane mode-query registry is populated.
+    /// the framework's per-pane mode-query and tab-stop registries are
+    /// populated.
     ///
     /// # Errors
     ///
@@ -377,16 +385,21 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
 
     /// Production finalizer. Builds the [`Keymap<Ctx>`] *and* writes
     /// the registered `(AppPaneId, mode_fn)` pairs into the
-    /// framework's per-pane registry so
+    /// framework's per-pane registries so
     /// [`Framework::focused_pane_mode`](crate::Framework::focused_pane_mode)
-    /// can answer for every registered pane.
+    /// can answer for every registered pane and focus cycling can
+    /// read each pane's tab-stop metadata.
     ///
     /// # Errors
     ///
     /// Same as [`Self::build`].
     pub fn build_into(self, framework: &mut Framework<Ctx>) -> Result<Keymap<Ctx>, KeymapError> {
-        for &(id, mode_fn) in &self.pane_modes {
-            framework.register_app_pane(id, mode_fn);
+        for registration in &self.pane_registrations {
+            framework.register_app_pane(
+                registration.id,
+                registration.mode_query,
+                registration.tab_stop,
+            );
         }
         finalize(self)
     }
@@ -417,8 +430,11 @@ impl<Ctx: AppContext + 'static, State> KeymapBuilder<Ctx, State> {
             bindings: bindings.into_scope_map(),
         });
         self.scopes.insert(P::APP_PANE_ID, scope);
-        self.pane_modes
-            .push((P::APP_PANE_ID, <P as Pane<Ctx>>::mode()));
+        self.pane_registrations.push(PaneRegistration {
+            id:         P::APP_PANE_ID,
+            mode_query: <P as Pane<Ctx>>::mode(),
+            tab_stop:   <P as Pane<Ctx>>::tab_stop(),
+        });
         self.registered_scopes
             .insert(<P as Shortcuts<Ctx>>::SCOPE_NAME);
     }
@@ -432,7 +448,7 @@ fn transition<Ctx: AppContext + 'static>(
 ) -> KeymapBuilder<Ctx, Registering> {
     KeymapBuilder {
         scopes:                src.scopes,
-        pane_modes:            src.pane_modes,
+        pane_registrations:    src.pane_registrations,
         registered_scopes:     src.registered_scopes,
         duplicate_scope:       src.duplicate_scope,
         config_path:           src.config_path,
@@ -758,6 +774,7 @@ mod tests {
     use crate::AppContext;
     use crate::FocusedPane;
     use crate::Framework;
+    use crate::FrameworkFocusId;
     use crate::FrameworkOverlayId;
     use crate::GlobalAction;
     use crate::KeyBind;
@@ -765,6 +782,7 @@ mod tests {
     use crate::Pane;
     use crate::SettingsPaneAction;
     use crate::SettingsRegistry;
+    use crate::TabStop;
     use crate::keymap::Bindings;
     use crate::keymap::Globals;
     use crate::keymap::KeyOutcome;
@@ -776,7 +794,15 @@ mod tests {
     enum TestPaneId {
         Foo,
         Bar,
+        Baz,
+        Excluded,
+        Hidden,
     }
+
+    const ORDERED_BAR_TAB_ORDER: i16 = 10;
+    const HIDDEN_TAB_ORDER: i16 = 15;
+    const ORDERED_FOO_TAB_ORDER: i16 = 20;
+    const ORDERED_BAZ_TAB_ORDER: i16 = 30;
 
     crate::action_enum! {
         #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -842,9 +868,117 @@ mod tests {
             crate::bindings! { KeyCode::Enter => FooAction::Activate }
         }
 
-        fn dispatcher() -> fn(Self::Actions, &mut TestApp) {
-            |_action, _ctx| { /* no-op */ }
-        }
+        fn dispatcher() -> fn(Self::Actions, &mut TestApp) { dispatch_noop }
+    }
+
+    fn dispatch_noop(_: FooAction, _: &mut TestApp) {}
+
+    fn never_tabbable(_: &TestApp) -> bool { false }
+
+    struct BarPane;
+
+    impl Pane<TestApp> for BarPane {
+        const APP_PANE_ID: TestPaneId = TestPaneId::Bar;
+    }
+
+    impl Shortcuts<TestApp> for BarPane {
+        type Actions = FooAction;
+
+        const SCOPE_NAME: &'static str = "bar";
+
+        fn defaults() -> Bindings<Self::Actions> { FooPane::defaults() }
+
+        fn dispatcher() -> fn(Self::Actions, &mut TestApp) { dispatch_noop }
+    }
+
+    struct OrderedFooPane;
+
+    impl Pane<TestApp> for OrderedFooPane {
+        const APP_PANE_ID: TestPaneId = TestPaneId::Foo;
+
+        fn tab_stop() -> TabStop<TestApp> { TabStop::always(ORDERED_FOO_TAB_ORDER) }
+    }
+
+    impl Shortcuts<TestApp> for OrderedFooPane {
+        type Actions = FooAction;
+
+        const SCOPE_NAME: &'static str = "ordered_foo";
+
+        fn defaults() -> Bindings<Self::Actions> { FooPane::defaults() }
+
+        fn dispatcher() -> fn(Self::Actions, &mut TestApp) { dispatch_noop }
+    }
+
+    struct OrderedBarPane;
+
+    impl Pane<TestApp> for OrderedBarPane {
+        const APP_PANE_ID: TestPaneId = TestPaneId::Bar;
+
+        fn tab_stop() -> TabStop<TestApp> { TabStop::always(ORDERED_BAR_TAB_ORDER) }
+    }
+
+    impl Shortcuts<TestApp> for OrderedBarPane {
+        type Actions = FooAction;
+
+        const SCOPE_NAME: &'static str = "ordered_bar";
+
+        fn defaults() -> Bindings<Self::Actions> { FooPane::defaults() }
+
+        fn dispatcher() -> fn(Self::Actions, &mut TestApp) { dispatch_noop }
+    }
+
+    struct OrderedBazPane;
+
+    impl Pane<TestApp> for OrderedBazPane {
+        const APP_PANE_ID: TestPaneId = TestPaneId::Baz;
+
+        fn tab_stop() -> TabStop<TestApp> { TabStop::always(ORDERED_BAZ_TAB_ORDER) }
+    }
+
+    impl Shortcuts<TestApp> for OrderedBazPane {
+        type Actions = FooAction;
+
+        const SCOPE_NAME: &'static str = "ordered_baz";
+
+        fn defaults() -> Bindings<Self::Actions> { FooPane::defaults() }
+
+        fn dispatcher() -> fn(Self::Actions, &mut TestApp) { dispatch_noop }
+    }
+
+    struct ExcludedPane;
+
+    impl Pane<TestApp> for ExcludedPane {
+        const APP_PANE_ID: TestPaneId = TestPaneId::Excluded;
+
+        fn tab_stop() -> TabStop<TestApp> { TabStop::never() }
+    }
+
+    impl Shortcuts<TestApp> for ExcludedPane {
+        type Actions = FooAction;
+
+        const SCOPE_NAME: &'static str = "excluded";
+
+        fn defaults() -> Bindings<Self::Actions> { FooPane::defaults() }
+
+        fn dispatcher() -> fn(Self::Actions, &mut TestApp) { dispatch_noop }
+    }
+
+    struct HiddenPane;
+
+    impl Pane<TestApp> for HiddenPane {
+        const APP_PANE_ID: TestPaneId = TestPaneId::Hidden;
+
+        fn tab_stop() -> TabStop<TestApp> { TabStop::ordered(HIDDEN_TAB_ORDER, never_tabbable) }
+    }
+
+    impl Shortcuts<TestApp> for HiddenPane {
+        type Actions = FooAction;
+
+        const SCOPE_NAME: &'static str = "hidden";
+
+        fn defaults() -> Bindings<Self::Actions> { FooPane::defaults() }
+
+        fn dispatcher() -> fn(Self::Actions, &mut TestApp) { dispatch_noop }
     }
 
     struct AppNav;
@@ -1081,7 +1215,7 @@ mod tests {
     }
 
     #[test]
-    fn build_into_populates_framework_pane_modes() {
+    fn build_into_populates_framework_pane_metadata() {
         let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Foo));
         let _keymap = fresh_builder_singletons()
             .register::<FooPane>(FooPane)
@@ -1508,21 +1642,10 @@ mod tests {
 
     #[test]
     fn next_pane_and_prev_pane_walk_registered_panes_with_wrap() {
-        struct OtherPane;
-        impl Pane<TestApp> for OtherPane {
-            const APP_PANE_ID: TestPaneId = TestPaneId::Bar;
-        }
-        impl Shortcuts<TestApp> for OtherPane {
-            type Actions = FooAction;
-            const SCOPE_NAME: &'static str = "other";
-            fn defaults() -> Bindings<Self::Actions> { FooPane::defaults() }
-            fn dispatcher() -> fn(Self::Actions, &mut TestApp) { FooPane::dispatcher() }
-        }
-
         let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Foo));
         let keymap = fresh_builder_singletons()
             .register::<FooPane>(FooPane)
-            .register::<OtherPane>(OtherPane)
+            .register::<BarPane>(BarPane)
             .build_into(&mut framework)
             .expect("build_into must succeed");
         let mut app = TestApp {
@@ -1555,6 +1678,214 @@ mod tests {
             app.framework().focused(),
             &FocusedPane::App(TestPaneId::Foo),
         );
+    }
+
+    #[test]
+    fn explicit_tab_stops_drive_next_prev_order() {
+        let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Bar));
+        let keymap = fresh_builder_singletons()
+            .register::<OrderedFooPane>(OrderedFooPane)
+            .register::<OrderedBazPane>(OrderedBazPane)
+            .register::<OrderedBarPane>(OrderedBarPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let mut app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Foo),
+            "explicit order must beat registration order",
+        );
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Baz),
+        );
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Foo),
+        );
+    }
+
+    #[test]
+    fn never_and_false_predicate_panes_are_skipped() {
+        let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Foo));
+        let keymap = fresh_builder_singletons()
+            .register::<FooPane>(FooPane)
+            .register::<ExcludedPane>(ExcludedPane)
+            .register::<HiddenPane>(HiddenPane)
+            .register::<BarPane>(BarPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let mut app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Bar),
+        );
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Foo),
+        );
+    }
+
+    #[test]
+    fn stale_focus_next_uses_first_live_tab_stop() {
+        let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Hidden));
+        let keymap = fresh_builder_singletons()
+            .register::<FooPane>(FooPane)
+            .register::<BarPane>(BarPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let mut app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Foo),
+        );
+    }
+
+    #[test]
+    fn stale_focus_prev_uses_last_live_tab_stop() {
+        let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Hidden));
+        let keymap = fresh_builder_singletons()
+            .register::<FooPane>(FooPane)
+            .register::<BarPane>(BarPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let mut app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Bar),
+        );
+    }
+
+    #[test]
+    fn dismissed_toast_reconciles_to_first_live_app_tab_stop() {
+        let mut framework =
+            Framework::<TestApp>::new(FocusedPane::Framework(FrameworkFocusId::Toasts));
+        framework.toasts.push("one", "body");
+        let keymap = fresh_builder_singletons()
+            .register::<OrderedFooPane>(OrderedFooPane)
+            .register::<OrderedBarPane>(OrderedBarPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let mut app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+
+        keymap.dispatch_framework_global(GlobalAction::Dismiss, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Bar),
+            "empty toast focus must reconcile to the first live app tab stop",
+        );
+    }
+
+    #[test]
+    fn active_toasts_append_after_app_tab_stops_and_reset_on_entry() {
+        let mut framework = Framework::<TestApp>::new(FocusedPane::App(TestPaneId::Foo));
+        let first = framework.toasts.push("one", "body");
+        let second = framework.toasts.push("two", "body");
+        let keymap = fresh_builder_singletons()
+            .register::<OrderedBarPane>(OrderedBarPane)
+            .register::<OrderedFooPane>(OrderedFooPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let mut app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::Framework(FrameworkFocusId::Toasts),
+        );
+        assert_eq!(app.framework().toasts.focused_id(), Some(first));
+
+        app.set_focus(FocusedPane::App(TestPaneId::Bar));
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::Framework(FrameworkFocusId::Toasts),
+        );
+        assert_eq!(app.framework().toasts.focused_id(), Some(second));
+    }
+
+    #[test]
+    fn focused_toasts_scroll_before_advancing_cycle() {
+        let mut framework =
+            Framework::<TestApp>::new(FocusedPane::Framework(FrameworkFocusId::Toasts));
+        let first = framework.toasts.push("one", "body");
+        let second = framework.toasts.push("two", "body");
+        let keymap = fresh_builder_singletons()
+            .register::<FooPane>(FooPane)
+            .register::<BarPane>(BarPane)
+            .build_into(&mut framework)
+            .expect("build_into must succeed");
+        let mut app = TestApp {
+            framework,
+            quits: 0,
+            restarts: 0,
+            dismisses: 0,
+        };
+
+        assert_eq!(app.framework().toasts.focused_id(), Some(first));
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::Framework(FrameworkFocusId::Toasts),
+        );
+        assert_eq!(app.framework().toasts.focused_id(), Some(second));
+
+        keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::App(TestPaneId::Foo),
+            "NextPane advances out of Toasts after the last toast",
+        );
+
+        app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
+        app.framework_mut().toasts.reset_to_last();
+        keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
+        assert_eq!(
+            app.framework().focused(),
+            &FocusedPane::Framework(FrameworkFocusId::Toasts),
+        );
+        assert_eq!(app.framework().toasts.focused_id(), Some(first));
     }
 
     #[test]

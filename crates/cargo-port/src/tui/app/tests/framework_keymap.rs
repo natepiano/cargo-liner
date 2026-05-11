@@ -38,6 +38,8 @@ use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
 use crate::keymap::OutputAction;
 use crate::keymap::PackageAction;
+use crate::lint::LintRun;
+use crate::lint::LintRunStatus;
 use crate::project::RootItem;
 use crate::project::Submodule;
 use crate::test_support;
@@ -53,12 +55,17 @@ use crate::tui::panes::CiData;
 use crate::tui::panes::CiEmptyState;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::GitData;
+use crate::tui::panes::LintsData;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::RemoteRow;
+use crate::tui::panes::TargetsData;
+
+const TAB_WALK_STEPS: usize = 6;
+const SINGLE_RUN_COUNT: usize = 1;
 
 fn focus_app_pane_in_framework(app: &mut App, id: AppPaneId) {
-    app.framework_mut().set_focused(FocusedPane::App(id));
+    app.set_focus(FocusedPane::App(id));
 }
 
 fn flatten(spans: &[Span<'static>]) -> String {
@@ -75,6 +82,21 @@ fn make_app_with_keymap_toml(projects: &[RootItem], toml: &str) -> App {
     fs::write(&toml_path, toml).expect("write keymap toml");
     let _keymap_path = keymap::override_keymap_path_for_test(toml_path);
     make_app(projects)
+}
+
+fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    let event = Event::Key(KeyEvent::new(code, modifiers));
+    input::handle_event(app, &event);
+}
+
+fn make_app_with_git_tabbable() -> App {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.panes.git.set_content(GitData {
+        branch: Some("main".to_string()),
+        ..GitData::default()
+    });
+    app
 }
 
 fn package_data_no_version() -> PackageData {
@@ -383,6 +405,24 @@ fn ci_data_with_runs(count: usize) -> CiData {
         mode_label: None,
         current_branch: None,
         empty_state: CiEmptyState::NoRuns,
+    }
+}
+
+fn lints_data_with_runs(count: usize) -> LintsData {
+    let runs = (0..count)
+        .map(|i| LintRun {
+            run_id:      format!("lint-{i}"),
+            started_at:  "2026-04-01T21:00:00-04:00".to_string(),
+            finished_at: None,
+            duration_ms: None,
+            status:      LintRunStatus::Passed,
+            commands:    Vec::new(),
+        })
+        .collect();
+    LintsData {
+        runs,
+        sizes: Vec::new(),
+        is_rust: true,
     }
 }
 
@@ -878,6 +918,80 @@ fn external_keymap_reload_updates_framework_owned_scope() {
             mods: KeyModifiers::NONE,
         }),
     );
+}
+
+// ── Phase 20.1 — framework-owned live tab cycle ───────────────────
+
+#[test]
+fn tab_from_package_lands_on_git_when_lang_is_unavailable() {
+    let mut app = make_app_with_git_tabbable();
+    app.set_focus(FocusedPane::App(AppPaneId::Package));
+
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+
+    assert_eq!(app.focus.current(), PaneId::Git);
+    assert_eq!(app.framework().focused(), &FocusedPane::App(AppPaneId::Git),);
+}
+
+#[test]
+fn repeated_tab_never_lands_on_unavailable_lang() {
+    let mut app = make_app_with_git_tabbable();
+    app.set_focus(FocusedPane::App(AppPaneId::Package));
+
+    for step in 0..TAB_WALK_STEPS {
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_ne!(app.focus.current(), PaneId::Lang, "step {step}");
+    }
+}
+
+#[test]
+fn shift_tab_skips_unavailable_panes_in_reverse() {
+    let mut app = make_app_with_git_tabbable();
+    app.set_focus(FocusedPane::App(AppPaneId::Cpu));
+
+    press(&mut app, KeyCode::Tab, KeyModifiers::SHIFT);
+
+    assert_eq!(app.focus.current(), PaneId::Git);
+    assert_eq!(app.framework().focused(), &FocusedPane::App(AppPaneId::Git),);
+}
+
+#[test]
+fn output_active_excludes_diagnostics_and_reaches_output() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.panes.targets.set_content(TargetsData {
+        primary_binary: Some("demo".to_string()),
+        examples:       Vec::new(),
+        benches:        Vec::new(),
+    });
+    app.lint.set_content(lints_data_with_runs(SINGLE_RUN_COUNT));
+    app.ci.set_content(ci_data_with_runs(SINGLE_RUN_COUNT));
+    app.inflight.example_output_mut().push("line".to_string());
+    app.set_focus(FocusedPane::App(AppPaneId::Targets));
+
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+
+    assert_eq!(app.focus.current(), PaneId::Output);
+    assert_eq!(
+        app.framework().focused(),
+        &FocusedPane::App(AppPaneId::Output),
+    );
+}
+
+#[test]
+fn rebound_next_pane_uses_framework_filtered_tab_cycle() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app_with_keymap_toml(&[project], "[global]\nnext_pane = \"F8\"\n");
+    app.panes.git.set_content(GitData {
+        branch: Some("main".to_string()),
+        ..GitData::default()
+    });
+    app.set_focus(FocusedPane::App(AppPaneId::Package));
+
+    press(&mut app, KeyCode::F(8), KeyModifiers::NONE);
+
+    assert_eq!(app.focus.current(), PaneId::Git);
+    assert_eq!(app.framework().focused(), &FocusedPane::App(AppPaneId::Git),);
 }
 
 #[test]

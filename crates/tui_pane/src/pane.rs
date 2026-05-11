@@ -8,6 +8,7 @@
 //! `Pane<Ctx>` alone.
 
 use crate::AppContext;
+use crate::TabStop;
 use crate::keymap::KeyBind;
 
 /// Per-pane identity + input mode. Implemented by every app pane type.
@@ -41,6 +42,13 @@ pub trait Pane<Ctx: AppContext>: 'static {
     /// with `Ctx` state override.
     #[must_use]
     fn mode() -> fn(&Ctx) -> Mode<Ctx> { |_ctx| Mode::Navigable }
+
+    /// Pane's tab-cycle metadata. Defaults to registration order and
+    /// always reachable. Apps override when pane order must be stable
+    /// independent of registration, or when runtime state can hide a
+    /// pane from `NextPane` / `PrevPane` traversal.
+    #[must_use]
+    fn tab_stop() -> TabStop<Ctx> { TabStop::registration_order() }
 }
 
 /// How a pane consumes keyboard input.

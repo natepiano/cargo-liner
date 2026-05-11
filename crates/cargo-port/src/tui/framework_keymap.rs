@@ -40,6 +40,7 @@ use tui_pane::Navigation;
 use tui_pane::Pane;
 use tui_pane::ShortcutState;
 use tui_pane::Shortcuts;
+use tui_pane::TabStop;
 use tui_pane::VimMode;
 use tui_pane::Visibility;
 
@@ -84,6 +85,16 @@ pub(super) const fn vim_mode_from_config(navigation_keys: NavigationKeys) -> Vim
     }
 }
 
+const PROJECT_LIST_TAB_ORDER: i16 = 0;
+const PACKAGE_TAB_ORDER: i16 = 1;
+const GIT_TAB_ORDER: i16 = 2;
+const LANG_TAB_ORDER: i16 = 3;
+const CPU_TAB_ORDER: i16 = 4;
+const TARGETS_TAB_ORDER: i16 = 5;
+const LINTS_TAB_ORDER: i16 = 6;
+const CI_RUNS_TAB_ORDER: i16 = 7;
+const OUTPUT_TAB_ORDER: i16 = 8;
+
 impl AppPaneId {
     /// Translation to the legacy [`PaneId`] enum so the parallel-path
     /// cutover bridges the new id back to the old. App-only variants
@@ -104,6 +115,24 @@ impl AppPaneId {
         }
     }
 }
+
+fn project_list_is_tabbable(app: &App) -> bool { app.is_pane_tabbable(PaneId::ProjectList) }
+
+fn package_is_tabbable(app: &App) -> bool { app.is_pane_tabbable(PaneId::Package) }
+
+fn git_is_tabbable(app: &App) -> bool { app.is_pane_tabbable(PaneId::Git) }
+
+fn lang_is_tabbable(app: &App) -> bool { app.is_pane_tabbable(PaneId::Lang) }
+
+fn cpu_is_tabbable(app: &App) -> bool { app.is_pane_tabbable(PaneId::Cpu) }
+
+fn targets_is_tabbable(app: &App) -> bool { app.is_pane_tabbable(PaneId::Targets) }
+
+fn lints_is_tabbable(app: &App) -> bool { app.is_pane_tabbable(PaneId::Lints) }
+
+fn ci_runs_is_tabbable(app: &App) -> bool { app.is_pane_tabbable(PaneId::CiRuns) }
+
+fn output_is_tabbable(app: &App) -> bool { app.is_pane_tabbable(PaneId::Output) }
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -210,6 +239,8 @@ pub(crate) struct PackagePane;
 
 impl Pane<App> for PackagePane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Package;
+
+    fn tab_stop() -> TabStop<App> { TabStop::ordered(PACKAGE_TAB_ORDER, package_is_tabbable) }
 }
 
 impl Shortcuts<App> for PackagePane {
@@ -260,6 +291,8 @@ pub(crate) struct GitPane;
 
 impl Pane<App> for GitPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Git;
+
+    fn tab_stop() -> TabStop<App> { TabStop::ordered(GIT_TAB_ORDER, git_is_tabbable) }
 }
 
 impl Shortcuts<App> for GitPane {
@@ -332,6 +365,8 @@ pub(crate) struct LangPane;
 
 impl Pane<App> for LangPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Lang;
+
+    fn tab_stop() -> TabStop<App> { TabStop::ordered(LANG_TAB_ORDER, lang_is_tabbable) }
 }
 
 impl Shortcuts<App> for LangPane {
@@ -353,6 +388,8 @@ pub(crate) struct CpuPane;
 
 impl Pane<App> for CpuPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Cpu;
+
+    fn tab_stop() -> TabStop<App> { TabStop::ordered(CPU_TAB_ORDER, cpu_is_tabbable) }
 }
 
 impl Shortcuts<App> for CpuPane {
@@ -374,6 +411,8 @@ pub(crate) struct TargetsPane;
 
 impl Pane<App> for TargetsPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Targets;
+
+    fn tab_stop() -> TabStop<App> { TabStop::ordered(TARGETS_TAB_ORDER, targets_is_tabbable) }
 }
 
 impl Shortcuts<App> for TargetsPane {
@@ -397,6 +436,8 @@ pub(crate) struct LintsPane;
 
 impl Pane<App> for LintsPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Lints;
+
+    fn tab_stop() -> TabStop<App> { TabStop::ordered(LINTS_TAB_ORDER, lints_is_tabbable) }
 }
 
 impl Shortcuts<App> for LintsPane {
@@ -419,6 +460,8 @@ pub(crate) struct CiRunsPane;
 
 impl Pane<App> for CiRunsPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::CiRuns;
+
+    fn tab_stop() -> TabStop<App> { TabStop::ordered(CI_RUNS_TAB_ORDER, ci_runs_is_tabbable) }
 }
 
 impl Shortcuts<App> for CiRunsPane {
@@ -465,6 +508,10 @@ pub(crate) struct ProjectListPane;
 
 impl Pane<App> for ProjectListPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::ProjectList;
+
+    fn tab_stop() -> TabStop<App> {
+        TabStop::ordered(PROJECT_LIST_TAB_ORDER, project_list_is_tabbable)
+    }
 }
 
 impl Shortcuts<App> for ProjectListPane {
@@ -533,6 +580,8 @@ impl Pane<App> for OutputPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Output;
 
     fn mode() -> fn(&App) -> Mode<App> { |_ctx| Mode::Static }
+
+    fn tab_stop() -> TabStop<App> { TabStop::ordered(OUTPUT_TAB_ORDER, output_is_tabbable) }
 }
 
 impl Shortcuts<App> for OutputPane {
@@ -570,6 +619,8 @@ impl Pane<App> for FinderPane {
             }
         }
     }
+
+    fn tab_stop() -> TabStop<App> { TabStop::never() }
 }
 
 impl Shortcuts<App> for FinderPane {

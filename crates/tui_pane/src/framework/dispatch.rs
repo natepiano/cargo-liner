@@ -17,6 +17,7 @@
 //! every framework focus change.
 
 use crate::AppContext;
+use crate::CycleDirection;
 use crate::FocusedPane;
 use crate::FrameworkFocusId;
 use crate::FrameworkOverlayId;
@@ -58,8 +59,8 @@ pub(crate) fn dispatch_global<Ctx: AppContext>(
                 hook(ctx);
             }
         },
-        GlobalAction::NextPane => focus_step(ctx, 1),
-        GlobalAction::PrevPane => focus_step(ctx, -1),
+        GlobalAction::NextPane => focus_step(ctx, CycleDirection::Next),
+        GlobalAction::PrevPane => focus_step(ctx, CycleDirection::Prev),
         GlobalAction::OpenKeymap => {
             ctx.framework_mut().open_overlay(FrameworkOverlayId::Keymap);
         },
@@ -99,9 +100,9 @@ pub(crate) fn dismiss_chain<Ctx: AppContext>(
 ///
 /// No-op when current focus is not on Toasts, or when toasts are still
 /// active. When focus is on Toasts and the active set is empty, move
-/// focus to the first registered app pane (no-op if `pane_order()` is
-/// empty). Routes through [`AppContext::set_focus`] so binary-side
-/// overrides observe the transition.
+/// focus to the first live app tab stop. Routes through
+/// [`AppContext::set_focus`] so binary-side overrides observe the
+/// transition.
 pub(crate) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx) {
     {
         let framework = ctx.framework();
@@ -115,45 +116,40 @@ pub(crate) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx)
             return;
         }
     }
-    let target = ctx
-        .framework()
-        .pane_order()
-        .first()
-        .copied()
-        .map(FocusedPane::App);
+    let target = focus_cycle(ctx).first().copied();
     if let Some(target) = target {
         ctx.set_focus(target);
     }
 }
 
-/// Move focus to the next/previous step in the cycle. `direction` is
-/// `+1` for next, `-1` for prev. The cycle is the registered app panes
-/// (in registration order) plus, when [`Toasts::has_active`] returns
+/// Move focus to the next/previous step in the cycle. The cycle is the
+/// live app tab stops plus, when [`Toasts::has_active`] returns
 /// `true`, [`Framework(FrameworkFocusId::Toasts)`] appended at the end.
 ///
 /// On entry into Toasts focus, the manager's viewport is reset to the
 /// first or last toast based on direction (mirrors cargo-port's
 /// existing `focus_next_pane` / `focus_previous_pane` viewport reset).
-fn focus_step<Ctx: AppContext>(ctx: &mut Ctx, direction: i32) {
+fn focus_step<Ctx: AppContext>(ctx: &mut Ctx, direction: CycleDirection) {
+    let current = *ctx.framework().focused();
+    if matches!(current, FocusedPane::Framework(FrameworkFocusId::Toasts))
+        && ctx.framework_mut().toasts.try_consume_cycle_step(direction)
+    {
+        return;
+    }
+
     let cycle = focus_cycle(ctx);
     if cycle.is_empty() {
         return;
     }
 
-    let current = *ctx.framework().focused();
-    let len = i32::try_from(cycle.len()).unwrap_or(i32::MAX);
     let next = cycle.iter().position(|p| *p == current).map_or_else(
-        || {
-            if direction >= 0 {
-                cycle[0]
-            } else {
-                cycle[cycle.len() - 1]
-            }
+        || match direction {
+            CycleDirection::Next => cycle[0],
+            CycleDirection::Prev => cycle[cycle.len() - 1],
         },
-        |idx| {
-            let cur = i32::try_from(idx).unwrap_or(0);
-            let next_i = ((cur + direction).rem_euclid(len)) as usize;
-            cycle[next_i]
+        |idx| match direction {
+            CycleDirection::Next => cycle[(idx + 1) % cycle.len()],
+            CycleDirection::Prev => cycle[(idx + cycle.len() - 1) % cycle.len()],
         },
     );
 
@@ -161,27 +157,16 @@ fn focus_step<Ctx: AppContext>(ctx: &mut Ctx, direction: i32) {
         && !matches!(current, FocusedPane::Framework(FrameworkFocusId::Toasts));
     ctx.set_focus(next);
     if entering_toasts {
-        if direction >= 0 {
-            ctx.framework_mut().toasts.reset_to_first();
-        } else {
-            ctx.framework_mut().toasts.reset_to_last();
+        match direction {
+            CycleDirection::Next => ctx.framework_mut().toasts.reset_to_first(),
+            CycleDirection::Prev => ctx.framework_mut().toasts.reset_to_last(),
         }
     }
 }
 
-/// Build the focus cycle for the current framework state. Registered
-/// app panes (in registration order) come first; Toasts is appended
-/// when [`Toasts::has_active`] returns `true`.
+/// Build the focus cycle for the current framework state. Live app tab
+/// stops come first; Toasts is appended when
+/// [`Toasts::has_active`](crate::Toasts::has_active) returns `true`.
 fn focus_cycle<Ctx: AppContext>(ctx: &Ctx) -> Vec<FocusedPane<Ctx::AppPaneId>> {
-    let mut cycle: Vec<FocusedPane<Ctx::AppPaneId>> = ctx
-        .framework()
-        .pane_order()
-        .iter()
-        .copied()
-        .map(FocusedPane::App)
-        .collect();
-    if ctx.framework().toasts.has_active() {
-        cycle.push(FocusedPane::Framework(FrameworkFocusId::Toasts));
-    }
-    cycle
+    ctx.framework().live_focus_cycle(ctx)
 }
