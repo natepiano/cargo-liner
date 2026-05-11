@@ -13,6 +13,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::BarPalette;
+use tui_pane::FrameworkOverlayId;
 use tui_pane::render_status_bar as render_framework_status_bar;
 use unicode_width::UnicodeWidthStr;
 
@@ -153,10 +154,10 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     );
     app.toasts.set_hits(toast_result.hitboxes);
 
-    if app.overlays.is_settings_open() {
+    if app.framework.overlay() == Some(FrameworkOverlayId::Settings) {
         settings::render_settings_popup(frame, app);
     }
-    if app.overlays.is_keymap_open() {
+    if app.framework.overlay() == Some(FrameworkOverlayId::Keymap) {
         keymap_ui::render_keymap_popup(frame, app);
     }
     if app.overlays.is_finder_open() {

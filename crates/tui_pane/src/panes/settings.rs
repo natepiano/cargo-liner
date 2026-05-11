@@ -104,18 +104,25 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     pub fn handle_key(&mut self, _ctx: &mut Ctx, bind: &KeyBind) -> KeyOutcome {
         if let Some(action) = Self::defaults().into_scope_map().action_for(bind) {
             match action {
-                SettingsPaneAction::StartEdit => {
-                    if matches!(self.edit_state, EditState::Browse) {
-                        self.edit_state = EditState::Editing;
-                    }
-                },
-                SettingsPaneAction::Save | SettingsPaneAction::Cancel => {
-                    self.edit_state = EditState::Browse;
-                },
+                SettingsPaneAction::StartEdit => self.enter_editing(),
+                SettingsPaneAction::Save | SettingsPaneAction::Cancel => self.enter_browse(),
             }
         }
         KeyOutcome::Consumed
     }
+
+    /// Mark the overlay as actively editing text. Binaries call this
+    /// after their settings row dispatcher decides the selected row
+    /// owns a text buffer.
+    pub const fn enter_editing(&mut self) {
+        if matches!(self.edit_state, EditState::Browse) {
+            self.edit_state = EditState::Editing;
+        }
+    }
+
+    /// Return the overlay to browse mode after saving, cancelling, or
+    /// closing an edit.
+    pub const fn enter_browse(&mut self) { self.edit_state = EditState::Browse; }
 
     /// Current input mode for the overlay.
     ///

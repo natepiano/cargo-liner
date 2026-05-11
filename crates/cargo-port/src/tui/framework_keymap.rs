@@ -602,7 +602,7 @@ impl Shortcuts<App> for OutputPane {
 ///
 /// Mode flips with `app.overlays.is_finder_open()`:
 /// - open  → `Mode::TextInput(finder_keys)` — character keys go to the embedded handler, which
-///   forwards to the legacy `src/tui/finder.rs::handle_finder_key` body.
+///   dispatches Finder actions through the framework keymap before falling back to text entry.
 /// - closed → `Mode::Navigable` (default Browse-style behaviour, though while closed the Finder
 ///   pane never actually has focus).
 pub(crate) struct FinderPane;
@@ -639,10 +639,8 @@ impl Shortcuts<App> for FinderPane {
 }
 
 /// `Mode::TextInput` handler for the Finder. Routes a single keypress
-/// through the legacy `handle_finder_key` body so character keys
-/// continue to insert into the search query, Esc/Enter/Backspace/arrow
-/// keys keep their existing semantics, and the framework-side
-/// dispatcher stays no-op through Phase 17.
+/// through the Finder pane scope first, then falls back to text entry
+/// and result-list navigation for keys that are not Finder actions.
 fn finder_keys(bind: KeyBind, app: &mut App) {
     let keymap = Rc::clone(&app.framework_keymap);
     match keymap.dispatch_app_pane(FinderPane::APP_PANE_ID, &bind, app) {

@@ -7,7 +7,9 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use strum::EnumCount;
 use strum::IntoEnumIterator;
+use tui_pane::FrameworkOverlayId;
 use tui_pane::KeyBind;
+use tui_pane::SettingsPaneAction;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
@@ -22,6 +24,7 @@ use super::constants::SETTINGS_POPUP_WIDTH;
 use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
 use super::keymap_ui;
+use super::pane::PaneFocusState;
 use super::pane::PaneSelectionState;
 use super::panes::PaneId;
 use super::popup::PopupFrame;
@@ -787,11 +790,16 @@ pub(super) fn build_settings_lines(
         } else {
             "  "
         };
+        let focus = if app.framework.overlay() == Some(FrameworkOverlayId::Settings) {
+            PaneFocusState::Active
+        } else {
+            app.focus.pane_state(PaneId::Settings)
+        };
         let selection = app
             .overlays
             .settings_pane
             .viewport
-            .selection_state(selection_index, app.focus.pane_state(PaneId::Settings));
+            .selection_state(selection_index, focus);
         let setting = *setting;
         let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
         let ctx = SettingsLineContext {
@@ -829,25 +837,20 @@ fn selected_inline_error(app: &App, selection: PaneSelectionState) -> Option<Str
         .flatten()
 }
 
-pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
-    if app.overlays.is_settings_editing() {
-        handle_settings_edit_key(app, key);
-        return;
-    }
-
+pub(super) fn dispatch_settings_action(action: SettingsPaneAction, app: &mut App) {
     let setting = SettingOption::from_index(app.overlays.settings_pane.viewport.pos());
-
-    match key {
-        KeyCode::Esc | KeyCode::Char('s') => {
-            if app.config.current().tui.include_dirs.is_empty() {
-                app.overlays
-                    .set_inline_error("Configure at least one include directory before continuing");
-                return;
-            }
-            app.overlays.close_settings();
-            app.close_framework_overlay_if_open();
-            app.focus.close_overlay();
+    match action {
+        SettingsPaneAction::StartEdit => {
+            app.overlays.clear_inline_error();
+            handle_settings_activate_key(app, setting);
         },
+        SettingsPaneAction::Save | SettingsPaneAction::Cancel => close_settings_overlay(app),
+    }
+}
+
+pub(super) fn handle_settings_navigation_key(app: &mut App, key: KeyCode) {
+    let setting = SettingOption::from_index(app.overlays.settings_pane.viewport.pos());
+    match key {
         KeyCode::Up => {
             app.overlays.clear_inline_error();
             app.overlays.settings_pane.viewport.up();
@@ -866,6 +869,17 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
         },
         _ => {},
     }
+}
+
+fn close_settings_overlay(app: &mut App) {
+    if app.config.current().tui.include_dirs.is_empty() {
+        app.overlays
+            .set_inline_error("Configure at least one include directory before continuing");
+        return;
+    }
+    app.overlays.close_settings();
+    app.framework.settings_pane.enter_browse();
+    app.close_framework_overlay_if_open();
 }
 
 fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<SettingOption>) {
@@ -923,12 +937,14 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
 
 fn finish_settings_edit_with_error(app: &mut App, error: impl Into<String>) {
     app.overlays.end_settings_editing();
+    app.framework.settings_pane.enter_browse();
     app.config.edit_buffer.set(String::new(), 0);
     app.overlays.set_inline_error(error.into());
 }
 
 fn begin_settings_edit(app: &mut App, value: String) {
     app.overlays.begin_settings_editing();
+    app.framework.settings_pane.enter_editing();
     let cursor = value.len();
     app.config.edit_buffer.set(value, cursor);
 }
@@ -1022,6 +1038,7 @@ fn apply_settings_edit(app: &mut App) {
         return;
     }
     app.overlays.end_settings_editing();
+    app.framework.settings_pane.enter_browse();
     app.config.edit_buffer.set(String::new(), 0);
 }
 
@@ -1169,6 +1186,7 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
         },
         KeyCode::Esc => {
             app.overlays.end_settings_editing();
+            app.framework.settings_pane.enter_browse();
             app.config.edit_buffer.set(String::new(), 0);
         },
         KeyCode::Left => {
@@ -1214,6 +1232,9 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
 
 pub(super) fn settings_edit_keys(bind: KeyBind, app: &mut App) {
     handle_settings_edit_key(app, bind.code);
+    if !app.overlays.is_settings_editing() {
+        app.framework.settings_pane.enter_browse();
+    }
 }
 
 fn toggle_lints(app: &mut App) {

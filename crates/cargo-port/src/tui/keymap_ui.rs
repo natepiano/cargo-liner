@@ -11,6 +11,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::Action;
+use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::KeyBind as FrameworkKeyBind;
 use tui_pane::KeymapPaneAction;
@@ -41,6 +42,7 @@ use super::framework_keymap::OutputPane;
 use super::framework_keymap::PackagePane;
 use super::framework_keymap::ProjectListPane;
 use super::framework_keymap::TargetsPane;
+use super::pane::PaneFocusState;
 use super::pane::PaneSelectionState;
 use super::panes::PaneId;
 use super::popup::PopupFrame;
@@ -330,21 +332,22 @@ pub(super) fn selectable_row_count(app: &App) -> usize {
 
 // ── Key handling ─────────────────────────────────────────────────────
 
-pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyEvent) {
-    if app.overlays.keymap_is_awaiting() {
-        // Awaiting mode uses the raw event so vim-normalized keys
-        // don't interfere with the user's intended binding.
-        handle_awaiting_key(app, raw);
-        return;
-    }
-
-    // Navigation uses the normalized event (vim hjkl → arrows).
-    match normalized.code {
-        KeyCode::Esc => {
-            app.overlays.close_keymap();
-            app.close_framework_overlay_if_open();
-            app.focus.close_overlay();
+pub(super) fn dispatch_keymap_action(action: KeymapPaneAction, app: &mut App) {
+    match action {
+        KeymapPaneAction::StartEdit => {
+            app.overlays.keymap_begin_awaiting();
+            app.framework.keymap_pane.enter_awaiting();
         },
+        KeymapPaneAction::Save | KeymapPaneAction::Cancel => {
+            app.overlays.close_keymap();
+            app.framework.keymap_pane.enter_browse();
+            app.close_framework_overlay_if_open();
+        },
+    }
+}
+
+pub(super) fn handle_keymap_navigation_key(app: &mut App, normalized: &KeyEvent) {
+    match normalized.code {
         KeyCode::Up => app.overlays.keymap_pane.viewport.up(),
         KeyCode::Down => app.overlays.keymap_pane.viewport.down(),
         KeyCode::Home => app.overlays.keymap_pane.viewport.home(),
@@ -360,6 +363,9 @@ pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyE
 
 pub(super) fn keymap_capture_keys(bind: FrameworkKeyBind, app: &mut App) {
     handle_awaiting_key(app, &KeyEvent::new(bind.code, bind.mods));
+    if !app.overlays.keymap_is_awaiting() {
+        app.framework.keymap_pane.enter_browse();
+    }
 }
 
 fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
@@ -806,11 +812,16 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
             continue;
         }
 
+        let focus = if app.framework.overlay() == Some(FrameworkOverlayId::Keymap) {
+            PaneFocusState::Active
+        } else {
+            app.focus.pane_state(PaneId::Keymap)
+        };
         let selection = app
             .overlays
             .keymap_pane
             .viewport
-            .selection_state(selectable_index, app.focus.pane_state(PaneId::Keymap));
+            .selection_state(selectable_index, focus);
         let key_text = if selection != PaneSelectionState::Unselected && is_awaiting {
             app.overlays
                 .inline_error()

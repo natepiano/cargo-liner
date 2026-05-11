@@ -723,8 +723,6 @@ impl App {
             return;
         }
         self.dispatch_framework_global_action(GlobalAction::OpenSettings);
-        self.focus.open_overlay(PaneId::Settings);
-        self.overlays.open_settings();
         if let Some(idx) = crate::tui::settings::SettingOption::iter()
             .position(|s| s == SettingOption::IncludeDirs)
         {

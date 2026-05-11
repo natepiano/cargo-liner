@@ -9,6 +9,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
@@ -20,6 +21,7 @@ use tui_pane::AppContext;
 use tui_pane::BarPalette;
 use tui_pane::FocusedPane;
 use tui_pane::FrameworkFocusId;
+use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::KeyBind;
 use tui_pane::Mode;
 use tui_pane::Pane;
@@ -33,6 +35,8 @@ use super::make_app;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::ci::FetchStatus;
+use crate::config::CargoPortConfig;
+use crate::config::NavigationKeys;
 use crate::keymap;
 use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
@@ -60,6 +64,7 @@ use crate::tui::panes::PackageData;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::RemoteRow;
 use crate::tui::panes::TargetsData;
+use crate::tui::settings::SettingOption;
 
 const TAB_WALK_STEPS: usize = 6;
 const SINGLE_RUN_COUNT: usize = 1;
@@ -87,6 +92,11 @@ fn make_app_with_keymap_toml(projects: &[RootItem], toml: &str) -> App {
 fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     let event = Event::Key(KeyEvent::new(code, modifiers));
     input::handle_event(app, &event);
+}
+
+fn open_framework_overlay(app: &mut App, action: FrameworkGlobalAction) {
+    let keymap = Rc::clone(&app.framework_keymap);
+    keymap.dispatch_framework_global(action, app);
 }
 
 fn make_app_with_git_tabbable() -> App {
@@ -998,12 +1008,15 @@ fn rebound_next_pane_uses_framework_filtered_tab_cycle() {
 fn settings_text_input_esc_wins_over_output_cancel_preflight() {
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
-    app.overlays.open_settings();
-    app.overlays.begin_settings_editing();
+    open_framework_overlay(&mut app, FrameworkGlobalAction::OpenSettings);
+    app.overlays
+        .settings_pane
+        .viewport
+        .set_pos(SettingOption::CiRunCount as usize);
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     app.inflight.example_output_mut().push("line".to_string());
 
-    let event = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    input::handle_event(&mut app, &event);
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
 
     assert!(
         !app.inflight.example_output().is_empty(),
@@ -1012,6 +1025,72 @@ fn settings_text_input_esc_wins_over_output_cancel_preflight() {
     assert!(
         !app.overlays.is_settings_editing(),
         "Esc must still leave settings edit mode",
+    );
+}
+
+// ── Phase 21 — overlay input/render ownership ─────────────────────
+
+#[test]
+fn finder_cancel_rebind_closes_finder_through_production_input() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app_with_keymap_toml(&[project], "[finder]\ncancel = \"q\"\n");
+    input::open_finder(&mut app);
+
+    press(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
+
+    assert!(!app.overlays.is_finder_open());
+    assert!(app.project_list.finder.query.is_empty());
+}
+
+#[test]
+fn finder_text_input_keeps_vim_k_as_query_text() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut cfg = CargoPortConfig::default();
+    cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+    let mut app = super::make_app_with_config(&[project], &cfg);
+    input::open_finder(&mut app);
+
+    press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
+
+    assert_eq!(app.project_list.finder.query, "k");
+}
+
+#[test]
+fn finder_activate_rebind_wins_over_global_tab_while_finder_is_open() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app_with_keymap_toml(
+        &[project],
+        "[global]\nnext_pane = \"Tab\"\n[finder]\nactivate = \"Tab\"\n",
+    );
+    input::open_finder(&mut app);
+    app.project_list.finder.results = vec![0];
+    app.project_list.finder.total = 1;
+    let base_before = app.focus.base();
+
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+
+    assert!(!app.overlays.is_finder_open());
+    assert_eq!(
+        app.focus.current(),
+        base_before,
+        "finder Activate must consume Tab before global pane cycling",
+    );
+}
+
+#[test]
+fn keymap_capture_rejects_navigation_key_through_production_input() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    open_framework_overlay(&mut app, FrameworkGlobalAction::OpenKeymap);
+
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+
+    assert!(app.overlays.keymap_is_awaiting());
+    assert!(
+        app.overlays
+            .inline_error()
+            .is_some_and(|error| error.contains("reserved for navigation")),
     );
 }
 

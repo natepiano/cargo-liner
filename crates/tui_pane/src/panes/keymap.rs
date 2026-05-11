@@ -36,11 +36,6 @@ crate::action_enum! {
 
 /// Editor sub-state for the keymap overlay.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[allow(
-    dead_code,
-    reason = "Conflict is constructed by the binary's handle_keymap_key on collision; \
-              Phase 19 cutover moves that logic onto KeymapPane proper"
-)]
 enum EditState {
     /// Default browse mode — scrollable list of bindings.
     Browse,
@@ -48,6 +43,7 @@ enum EditState {
     Awaiting,
     /// The captured key collides with an existing binding; the user is
     /// resolving the conflict.
+    #[cfg(test)]
     Conflict,
 }
 
@@ -114,18 +110,23 @@ impl<Ctx: AppContext> KeymapPane<Ctx> {
     pub fn handle_key(&mut self, _ctx: &mut Ctx, bind: &KeyBind) -> KeyOutcome {
         if let Some(action) = Self::defaults().into_scope_map().action_for(bind) {
             match action {
-                KeymapPaneAction::StartEdit => {
-                    if matches!(self.edit_state, EditState::Browse) {
-                        self.edit_state = EditState::Awaiting;
-                    }
-                },
-                KeymapPaneAction::Save | KeymapPaneAction::Cancel => {
-                    self.edit_state = EditState::Browse;
-                },
+                KeymapPaneAction::StartEdit => self.enter_awaiting(),
+                KeymapPaneAction::Save | KeymapPaneAction::Cancel => self.enter_browse(),
             }
         }
         KeyOutcome::Consumed
     }
+
+    /// Mark the overlay as waiting for a replacement binding.
+    pub const fn enter_awaiting(&mut self) {
+        if matches!(self.edit_state, EditState::Browse) {
+            self.edit_state = EditState::Awaiting;
+        }
+    }
+
+    /// Return the overlay to browse mode after saving, cancelling, or
+    /// accepting a captured binding.
+    pub const fn enter_browse(&mut self) { self.edit_state = EditState::Browse; }
 
     /// Current input mode for the overlay.
     ///
@@ -137,6 +138,7 @@ impl<Ctx: AppContext> KeymapPane<Ctx> {
     pub fn mode(&self, _ctx: &Ctx) -> Mode<Ctx> {
         match self.edit_state {
             EditState::Awaiting => Mode::TextInput(self.text_input_handler),
+            #[cfg(test)]
             EditState::Conflict => Mode::Static,
             EditState::Browse => Mode::Navigable,
         }

@@ -80,6 +80,7 @@ impl Overlays {
         matches!(self.settings, SettingsMode::Editing)
     }
 
+    #[cfg(test)]
     pub(crate) const fn open_settings(&mut self) { self.settings = SettingsMode::Browsing; }
 
     pub(crate) fn close_settings(&mut self) {
@@ -104,8 +105,6 @@ impl Overlays {
     pub(crate) const fn keymap_is_awaiting(&self) -> bool {
         matches!(self.keymap, KeymapMode::AwaitingKey)
     }
-
-    pub(crate) const fn open_keymap(&mut self) { self.keymap = KeymapMode::Browsing; }
 
     pub(crate) fn close_keymap(&mut self) {
         self.keymap = KeymapMode::Hidden;

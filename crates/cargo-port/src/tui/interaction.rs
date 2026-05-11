@@ -148,6 +148,7 @@ const fn clear_all_hover(app: &mut App) {
 )]
 mod tests {
     use std::path::Path;
+    use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::mpsc;
@@ -165,6 +166,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
+    use tui_pane::GlobalAction as FrameworkGlobalAction;
 
     use super::HoveredPaneRow;
     use crate::ci::CiJob;
@@ -211,6 +213,7 @@ mod tests {
     use crate::tui::finder;
     use crate::tui::input;
     use crate::tui::pane::HoverTarget;
+    use crate::tui::pane::PaneFocusState;
     use crate::tui::pane::PaneRenderCtx;
     use crate::tui::pane::PaneSelectionState;
     use crate::tui::pane::Viewport;
@@ -225,6 +228,11 @@ mod tests {
     fn test_http_client() -> HttpClient {
         let rt = crate::test_support::test_runtime();
         HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
+    }
+
+    fn open_settings_overlay(app: &mut App) {
+        let keymap = Rc::clone(&app.framework_keymap);
+        keymap.dispatch_framework_global(FrameworkGlobalAction::OpenSettings, app);
     }
 
     fn make_package(name: &str, path: &Path) -> RootItem {
@@ -747,8 +755,7 @@ mod tests {
     #[test]
     fn settings_row_click_uses_setting_index_not_visual_line() {
         let mut app = make_app(&[]);
-        app.focus.open_overlay(PaneId::Settings);
-        app.overlays.open_settings();
+        open_settings_overlay(&mut app);
         render_ui(&mut app);
 
         let (x, y) = pane_row_point(&app.overlays.settings_pane.viewport, 5);
@@ -764,8 +771,7 @@ mod tests {
     #[test]
     fn keyboard_navigation_clears_stale_settings_hover() {
         let mut app = make_app(&[]);
-        app.focus.open_overlay(PaneId::Settings);
-        app.overlays.open_settings();
+        open_settings_overlay(&mut app);
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
@@ -777,7 +783,7 @@ mod tests {
             app.overlays
                 .settings_pane
                 .viewport
-                .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
+                .selection_state(hovered_row, PaneFocusState::Active),
             PaneSelectionState::Hovered,
         );
 
@@ -789,14 +795,14 @@ mod tests {
             app.overlays
                 .settings_pane
                 .viewport
-                .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
+                .selection_state(hovered_row, PaneFocusState::Active),
             PaneSelectionState::Unselected,
         );
         assert_eq!(
             app.overlays
                 .settings_pane
                 .viewport
-                .selection_state(1, app.focus.pane_state(PaneId::Settings)),
+                .selection_state(1, PaneFocusState::Active),
             PaneSelectionState::Active,
         );
     }
@@ -804,8 +810,7 @@ mod tests {
     #[test]
     fn mouse_move_restores_hover_after_keyboard_navigation() {
         let mut app = make_app(&[]);
-        app.focus.open_overlay(PaneId::Settings);
-        app.overlays.open_settings();
+        open_settings_overlay(&mut app);
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
@@ -819,7 +824,7 @@ mod tests {
             app.overlays
                 .settings_pane
                 .viewport
-                .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
+                .selection_state(hovered_row, PaneFocusState::Active),
             PaneSelectionState::Unselected,
         );
 
@@ -830,7 +835,7 @@ mod tests {
             app.overlays
                 .settings_pane
                 .viewport
-                .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
+                .selection_state(hovered_row, PaneFocusState::Active),
             PaneSelectionState::Hovered,
         );
     }
@@ -838,8 +843,7 @@ mod tests {
     #[test]
     fn focus_gained_restores_selection_from_last_mouse_position() {
         let mut app = make_app(&[]);
-        app.focus.open_overlay(PaneId::Settings);
-        app.overlays.open_settings();
+        open_settings_overlay(&mut app);
         render_ui(&mut app);
 
         let hovered_row = SettingOption::CiRunCount as usize;
@@ -853,7 +857,7 @@ mod tests {
             app.overlays
                 .settings_pane
                 .viewport
-                .selection_state(hovered_row, app.focus.pane_state(PaneId::Settings)),
+                .selection_state(hovered_row, PaneFocusState::Active),
             PaneSelectionState::Active,
         );
     }
@@ -1075,8 +1079,7 @@ mod tests {
     #[test]
     fn settings_row_click_selects_setting() {
         let mut app = make_app(&[]);
-        app.focus.open_overlay(PaneId::Settings);
-        app.overlays.open_settings();
+        open_settings_overlay(&mut app);
         render_ui(&mut app);
 
         let (x, y) = pane_row_point(&app.overlays.settings_pane.viewport, 2);

@@ -17,6 +17,7 @@ use tui_pane::Action;
 use tui_pane::AppContext;
 use tui_pane::FocusedPane;
 use tui_pane::FrameworkFocusId;
+use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::Globals;
 use tui_pane::KeyBind as FrameworkKeyBind;
@@ -33,6 +34,7 @@ use super::finder;
 use super::framework_keymap::AppGlobalAction;
 use super::framework_keymap::AppNavigation;
 use super::framework_keymap::AppPaneId;
+use super::framework_keymap::FinderPane;
 use super::framework_keymap::OutputPane;
 use super::interaction;
 use super::keymap_ui;
@@ -40,7 +42,6 @@ use super::panes;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::settings;
-use super::shortcuts::InputContext;
 use super::terminal;
 use crate::keymap::KeyBind;
 use crate::keymap::OutputAction;
@@ -144,19 +145,10 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     if handle_confirm_key(app, code) {
         return;
     }
-    if handle_overlay_editor_key(app, &framework_bind) {
+    if dispatch_framework_overlay(app, &framework_bind, &normalized) {
         return;
     }
-    if app.overlays.is_keymap_open() {
-        keymap_ui::handle_keymap_key(app, raw, &normalized);
-        return;
-    }
-    if app.overlays.is_finder_open() {
-        finder::handle_finder_key(app, code);
-        return;
-    }
-    if app.overlays.is_settings_open() {
-        settings::handle_settings_key(app, code);
+    if dispatch_finder_overlay(app, &framework_bind) {
         return;
     }
     if dispatch_framework_global(app, &framework_bind) {
@@ -203,26 +195,27 @@ fn dispatch_framework_global(app: &mut App, bind: &FrameworkKeyBind) -> bool {
     let Some(action) = keymap.framework_globals().action_for(bind) else {
         return false;
     };
+    let overlay_before = app.framework.overlay();
     keymap.dispatch_framework_global(action, app);
-    mirror_framework_global_to_legacy_overlay(app, action);
+    if matches!(action, FrameworkGlobalAction::Dismiss)
+        && app.framework.overlay().is_none()
+        && let Some(overlay) = overlay_before
+    {
+        clear_legacy_framework_overlay_state(app, overlay);
+    }
     true
 }
 
-fn mirror_framework_global_to_legacy_overlay(app: &mut App, action: FrameworkGlobalAction) {
-    match action {
-        FrameworkGlobalAction::OpenKeymap => {
-            app.focus.open_overlay(PaneId::Keymap);
-            app.overlays.open_keymap();
+fn clear_legacy_framework_overlay_state(app: &mut App, overlay: FrameworkOverlayId) {
+    match overlay {
+        FrameworkOverlayId::Settings => {
+            app.overlays.close_settings();
+            app.framework.settings_pane.enter_browse();
         },
-        FrameworkGlobalAction::OpenSettings => {
-            app.focus.open_overlay(PaneId::Settings);
-            app.overlays.open_settings();
+        FrameworkOverlayId::Keymap => {
+            app.overlays.close_keymap();
+            app.framework.keymap_pane.enter_browse();
         },
-        FrameworkGlobalAction::Quit
-        | FrameworkGlobalAction::Restart
-        | FrameworkGlobalAction::NextPane
-        | FrameworkGlobalAction::PrevPane
-        | FrameworkGlobalAction::Dismiss => {},
     }
 }
 
@@ -262,6 +255,58 @@ fn dispatch_focused_toasts(app: &mut App, bind: &FrameworkKeyBind) -> bool {
     false
 }
 
+fn dispatch_framework_overlay(
+    app: &mut App,
+    bind: &FrameworkKeyBind,
+    normalized: &KeyEvent,
+) -> bool {
+    let Some(overlay) = app.framework.overlay() else {
+        return false;
+    };
+
+    if let Some(Mode::TextInput(handler)) = app.framework.focused_pane_mode(app) {
+        handler(*bind, app);
+        return true;
+    }
+
+    if handle_framework_overlay_editor_key(app, bind, overlay) {
+        return true;
+    }
+
+    match overlay {
+        FrameworkOverlayId::Settings => dispatch_settings_overlay(app, bind),
+        FrameworkOverlayId::Keymap => dispatch_keymap_overlay(app, bind, normalized),
+    }
+    true
+}
+
+fn dispatch_settings_overlay(app: &mut App, bind: &FrameworkKeyBind) {
+    if let Some(action) = app.framework_keymap.settings_overlay().action_for(bind) {
+        settings::dispatch_settings_action(action, app);
+        return;
+    }
+    settings::handle_settings_navigation_key(app, bind.code);
+}
+
+fn dispatch_keymap_overlay(app: &mut App, bind: &FrameworkKeyBind, normalized: &KeyEvent) {
+    if let Some(action) = app.framework_keymap.keymap_overlay().action_for(bind) {
+        keymap_ui::dispatch_keymap_action(action, app);
+        return;
+    }
+    keymap_ui::handle_keymap_navigation_key(app, normalized);
+}
+
+fn dispatch_finder_overlay(app: &mut App, bind: &FrameworkKeyBind) -> bool {
+    if !app.overlays.is_finder_open() {
+        return false;
+    }
+    match (FinderPane::mode())(app) {
+        Mode::TextInput(handler) => handler(*bind, app),
+        Mode::Static | Mode::Navigable => finder::handle_finder_text_key(app, bind.code),
+    }
+    true
+}
+
 fn dispatch_navigation(
     app: &mut App,
     focused: FocusedPane<AppPaneId>,
@@ -291,7 +336,7 @@ fn focused_text_input_mode(app: &App) -> bool {
 /// no modifiers are held (so `Ctrl+k` is never eaten by vim mode).
 /// Arrow remapping in list panes also only applies to bare arrows.
 fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
-    if app.overlays.is_finder_open() || app.overlays.is_settings_editing() {
+    if focused_text_input_mode(app) {
         return *raw;
     }
 
@@ -540,20 +585,19 @@ pub(super) fn open_in_editor(app: &mut App) {
     let _ = open_paths_in_editor(app.config.editor(), [&abs_path]);
 }
 
-fn overlay_editor_target_path(
-    context: InputContext,
+fn open_path_in_editor(editor: &str, path: &Path) -> Result<()> {
+    open_paths_in_editor(editor, [path])
+}
+
+fn framework_overlay_editor_target_path(
+    overlay: FrameworkOverlayId,
     config_path: Option<&Path>,
     keymap_path: Option<&Path>,
 ) -> Option<AbsolutePath> {
-    match context {
-        InputContext::Settings => config_path.map(AbsolutePath::from),
-        InputContext::Keymap => keymap_path.map(AbsolutePath::from),
-        _ => None,
+    match overlay {
+        FrameworkOverlayId::Settings => config_path.map(AbsolutePath::from),
+        FrameworkOverlayId::Keymap => keymap_path.map(AbsolutePath::from),
     }
-}
-
-fn open_path_in_editor(editor: &str, path: &Path) -> Result<()> {
-    open_paths_in_editor(editor, [path])
 }
 
 pub(super) fn open_paths_in_editor<P>(
@@ -591,7 +635,11 @@ fn open_paths_via_editor_command(editor: &str, paths: &[&Path]) -> Result<()> {
         .map(|_| ())
 }
 
-fn handle_overlay_editor_key(app: &mut App, bind: &FrameworkKeyBind) -> bool {
+fn handle_framework_overlay_editor_key(
+    app: &mut App,
+    bind: &FrameworkKeyBind,
+    overlay: FrameworkOverlayId,
+) -> bool {
     let keymap = Rc::clone(&app.framework_keymap);
     let Some(scope) = keymap.globals::<AppGlobalAction>() else {
         return false;
@@ -600,18 +648,17 @@ fn handle_overlay_editor_key(app: &mut App, bind: &FrameworkKeyBind) -> bool {
         return false;
     };
 
-    let context = app.input_context();
-    let Some(path) = overlay_editor_target_path(context, app.config.path(), app.keymap.path())
+    let title = match overlay {
+        FrameworkOverlayId::Settings => "Settings editor failed",
+        FrameworkOverlayId::Keymap => "Keymap editor failed",
+    };
+    let Some(path) =
+        framework_overlay_editor_target_path(overlay, app.config.path(), app.keymap.path())
     else {
         return false;
     };
 
     if let Err(err) = open_path_in_editor(app.config.editor(), &path) {
-        let title = match context {
-            InputContext::Settings => "Settings editor failed",
-            InputContext::Keymap => "Keymap editor failed",
-            _ => "Editor failed",
-        };
         app.show_timed_toast(title, err.to_string());
     }
     true
@@ -644,8 +691,8 @@ fn terminal_shell_command(command: &str, selected_path: &Path) -> String {
 }
 
 fn open_settings_to_terminal_command(app: &mut App) {
-    app.focus.open_overlay(PaneId::Settings);
-    app.overlays.open_settings();
+    let keymap = Rc::clone(&app.framework_keymap);
+    keymap.dispatch_framework_global(FrameworkGlobalAction::OpenSettings, app);
     settings::focus_terminal_command(app);
 }
 
@@ -780,45 +827,30 @@ mod tests {
     }
 
     #[test]
-    fn overlay_editor_target_path_uses_settings_config_path() {
+    fn framework_overlay_editor_target_path_uses_settings_config_path() {
         let config_path = Path::new("/tmp/config.toml");
 
         assert_eq!(
-            overlay_editor_target_path(InputContext::Settings, Some(config_path), None),
+            framework_overlay_editor_target_path(
+                FrameworkOverlayId::Settings,
+                Some(config_path),
+                None
+            ),
             Some(AbsolutePath::from(config_path))
         );
     }
 
     #[test]
-    fn overlay_editor_target_path_uses_keymap_path() {
+    fn framework_overlay_editor_target_path_uses_keymap_path() {
         let keymap_path = Path::new("/tmp/keymap.toml");
 
         assert_eq!(
-            overlay_editor_target_path(InputContext::Keymap, None, Some(keymap_path)),
+            framework_overlay_editor_target_path(
+                FrameworkOverlayId::Keymap,
+                None,
+                Some(keymap_path)
+            ),
             Some(AbsolutePath::from(keymap_path))
-        );
-    }
-
-    #[test]
-    fn overlay_editor_target_path_ignores_non_browsing_contexts() {
-        let config_path = Path::new("/tmp/config.toml");
-        let keymap_path = Path::new("/tmp/keymap.toml");
-
-        assert_eq!(
-            overlay_editor_target_path(
-                InputContext::SettingsEditing,
-                Some(config_path),
-                Some(keymap_path)
-            ),
-            None
-        );
-        assert_eq!(
-            overlay_editor_target_path(
-                InputContext::KeymapAwaiting,
-                Some(config_path),
-                Some(keymap_path)
-            ),
-            None
         );
     }
 }

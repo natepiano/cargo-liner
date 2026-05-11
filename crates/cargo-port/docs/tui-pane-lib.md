@@ -3428,6 +3428,35 @@ Phase 21 removes the production overlay short-circuits that Phase 19 left in pla
 - Settings in Editing mode: Esc cancels edit; `example_output` is not cleared.
 - Phase closeout runs the remaining-phase closeout gate.
 
+### Retrospective
+
+**What worked:**
+- Settings and Keymap production input now routes through the framework overlay scopes and `Mode::TextInput` handlers. Their popup rendering reads `FrameworkOverlayId::Settings` / `FrameworkOverlayId::Keymap` instead of cargo-port's legacy overlay mirror.
+- Finder stayed app-owned, but its production keys now enter through the framework keymap and `FinderPane::mode()` text-input handler. That kept Finder out of `FrameworkOverlayId` while removing the old overlay short-circuit.
+- The production tests cover the modal precedence points that mattered for the cutover: Finder Cancel rebind, Finder vim `k` text entry, Finder Tab/Activate beating global NextPane, Keymap reserved-navigation rejection, and Settings Esc not clearing `example_output`.
+
+**What deviated from the plan:**
+- The framework panes for Settings / Keymap needed small public state-transition helpers (`enter_editing`, `enter_browse`, `enter_awaiting`) so cargo-port can keep its existing editor buffers while the framework owns overlay routing.
+- `EditState::Conflict` in the framework Keymap pane is test-only for now. The closeout style review rejected keeping a production `#[allow(dead_code)]`, so the variant and match arm moved behind `#[cfg(test)]`.
+
+**Surprises:**
+- Removing the framework-to-legacy overlay mirror exposed test setup that still opened Settings through `Overlays::open_settings()`. Those tests now open the framework overlay path directly.
+- Finder's production route could delete `handle_finder_key` outright once the fallback text/list behavior lived in the `finder_keys` text-input handler.
+
+**Implications for remaining phases:**
+- Phase 22 can treat Settings / Keymap overlay input and render gating as framework-owned. Remaining cleanup should focus on direct focus writers, `InputContext`, and action-enum facade leftovers.
+- Finder remains app-owned unless a later phase explicitly changes that ownership; Phase 22 should not move Finder into `FrameworkOverlayId` as part of focus cleanup.
+
+**Verification:**
+- Rust style guide loaded: 45 files, 1608 lines.
+- `cargo mend --workspace --all-targets` - no findings.
+- Style review of additions completed; the one violation was fixed by making `EditState::Conflict` test-only instead of allowing dead code.
+- Banned-word scan over additions passed.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo +nightly fmt --all`
+- `cargo nextest run --workspace` - 858 passed, 0 skipped.
+- `cargo install --path .`
+
 ### Phase 22 — Focus and input compatibility cleanup
 
 Phase 22 deletes the remaining focus/input compatibility layer after the keymap model and overlay path have moved to the framework.
@@ -3458,7 +3487,7 @@ Bar-on-rebind:
 
 **Production-loader-only rebind tests.** Phase 18 deleted the temporary `build_framework_keymap_with_toml(...)` helper and wired `.load_toml(keymap_path)` into the production builder. Phase 23 rebind tests use the production loader path only; settings/keymap overlay rebind tests also require Phase 18's builder chain to call `register_settings_overlay()` / `register_keymap_overlay()` so the resolved overlay scopes carry user TOML.
 
-**Modal/overlay dispatch scope after cleanup.** Finder / Settings / Keymap tests use production `handle_key_event`, not direct helper calls, now that Phase 21 removes the legacy overlay short-circuits. Direct framework-scope tests are still useful for narrow loader/bar assertions, but production modal/overlay rebind behavior is mandatory Phase 23 coverage.
+**Modal/overlay dispatch scope after cleanup.** Phase 21 already shipped production `handle_key_event` coverage for Finder Cancel rebind, Finder vim `k`, Finder Tab/Activate precedence, Keymap reserved-navigation rejection, and Settings Esc edit cancellation. Phase 23 adds only cleanup-path deltas that depend on Phase 22's focus/input compatibility deletion; direct framework-scope tests remain useful for narrow loader/bar assertions.
 
 - Rebinding each `*Action::Activate` (`Package`, `Git`, `Targets`, `CiRuns`, `Lints`) updates that pane's bar.
 - Rebinding `NavigationAction::Up` / `Down` / `Left` / `Right` updates the `↑/↓` nav row in every base-pane bar that uses it.
@@ -3491,11 +3520,7 @@ Dispatch parity (per pane, the highest-risk path):
 
 Vim/text-input regression:
 
-- vim-mode on, finder open: `'k'` appends to query; cursor does not move.
-- vim-mode off, finder open: `'k'` appends to query.
-- Rebinding `FinderAction::Cancel` to `'q'` closes Finder through production `handle_key_event`; `'k'` typed in Finder inserts `'k'` even with vim mode on.
-- Binding any action to `Up` while `KeymapPane::EditState` is `Awaiting` produces a "reserved for navigation" rejection through production `handle_key_event` (replaces today's `is_navigation_reserved` semantics via scope lookup against `NavigationAction`).
-- Settings in Editing mode: Esc cancels edit; `example_output` not cleared (text-input gating works).
+- Reuse the Phase 21 production tests for Finder text-input precedence, Finder Cancel rebind, Finder Tab/Activate precedence, Keymap reserved-navigation rejection, and Settings Esc edit cancellation as the baseline. Add Phase 23 assertions only where Phase 22's deletion of legacy focus/input compatibility changes the path under test.
 - **Framework-side `Mode::TextInput` bar suppression.** Already covered by `tui_pane/src/bar/tests.rs::textinput_mode_suppresses_every_region`; do not add a duplicate Phase 23 test unless the intent is explicitly public-API integration coverage. The cargo-port-side test (`focused_finder_open_bar_suppresses_all_regions` in `src/tui/app/tests/framework_keymap.rs`, landed in 14.6) covers Finder specifically; the `tui_pane` unit test pins the generic rule for any future `TextInput` pane.
 - **Policy: no globals fire while focused pane is `Mode::TextInput`.** This is parity with today's legacy short-circuit in `src/tui/input.rs::handle_normal_key`, which gates on `app.overlays.is_finder_open() || app.overlays.is_settings_editing()` *before* `handle_global_key`. The framework's "`Mode::TextInput` suppresses every region" rule at `tui_pane/src/bar/{nav_region.rs:33, pane_action_region.rs:24-25, global_region.rs:31-32}` is bit-for-bit equivalent. **No allow-list this phase.** Any opt-in allow-list (e.g. surfacing `Quit` / `Restart` / `Rescan` while a text-input pane is active) is post-Phase-19 design work — it is new API surface (probably a per-action `survive_text_input` bit on `Globals::Actions` or an equivalent framework escape hatch), not migration parity. Phase 23 ships with the suppression rule, no exceptions. **Acceptance test:** rebind `AppGlobalAction::Rescan` to `Ctrl+r` (its default) and synthesize that key event with focus on the open Finder; assert the rescan dispatcher does **not** fire (observed via the dispatcher's side-effect counter from the `Dispatch parity` block above). Locks the parity guarantee.
 
