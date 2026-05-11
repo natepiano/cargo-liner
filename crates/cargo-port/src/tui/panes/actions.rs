@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
+use tui_pane::KeyBind as FrameworkKeyBind;
 
 use super::BuildMode;
 use super::CiFetchKind;
@@ -25,6 +25,8 @@ use crate::project::ProjectCiInfo;
 use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::CleanSelection;
+use crate::tui::framework_keymap::AppNavigation;
+use crate::tui::framework_keymap::NavigationAction;
 use crate::tui::input;
 use crate::tui::pane::Viewport;
 use crate::tui::toasts::TrackedItem;
@@ -55,48 +57,71 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
 }
 
 pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
-    // Navigation keys stay hardcoded.
-    {
-        let pane = active_detail_pane(app);
-        match event.code {
-            KeyCode::Up => return pane.up(),
-            KeyCode::Down => return pane.down(),
-            KeyCode::Home => return pane.home(),
-            KeyCode::End => return pane.end(),
-            _ => {},
-        }
-    }
-
-    // Action keys through per-pane keymap.
+    // Pane scope first — TOML rebinds win over navigation defaults.
     let bind = KeyBind::new(event.code, event.modifiers);
-    match app.focus.base() {
-        PaneId::Cpu => {},
-        PaneId::Targets => {
-            if let Some(action) = app.keymap.current().targets.action_for(&bind) {
+    let consumed = match app.focus.base() {
+        PaneId::Cpu => false,
+        PaneId::Targets => app
+            .keymap
+            .current()
+            .targets
+            .action_for(&bind)
+            .is_some_and(|action| {
                 match action {
                     TargetsAction::Activate => handle_detail_enter(app),
                     TargetsAction::ReleaseBuild => handle_target_action(app, BuildMode::Release),
                     TargetsAction::Clean => request_clean(app),
                 }
-            }
-        },
-        PaneId::Git => {
-            if let Some(action) = app.keymap.current().git.action_for(&bind) {
+                true
+            }),
+        PaneId::Git => app
+            .keymap
+            .current()
+            .git
+            .action_for(&bind)
+            .is_some_and(|action| {
                 match action {
                     GitAction::Activate => handle_detail_enter(app),
                     GitAction::Clean => request_clean(app),
                 }
-            }
-        },
-        _ => {
-            // Package pane (default detail pane).
-            if let Some(action) = app.keymap.current().package.action_for(&bind) {
+                true
+            }),
+        _ => app
+            .keymap
+            .current()
+            .package
+            .action_for(&bind)
+            .is_some_and(|action| {
                 match action {
                     PackageAction::Activate => handle_detail_enter(app),
                     PackageAction::Clean => request_clean(app),
                 }
-            }
-        },
+                true
+            }),
+    };
+    if consumed {
+        return;
+    }
+
+    // Navigation scope — Phase 16. Up/Down/Home/End route through the
+    // framework keymap's navigation singleton. Left/Right are
+    // pre-mapped to Up/Down by `normalize_nav` for detail panes, so
+    // they are not handled here.
+    let framework_bind = FrameworkKeyBind {
+        code: bind.code,
+        mods: bind.modifiers,
+    };
+    if let Some(nav_scope) = app.framework_keymap.navigation::<AppNavigation>()
+        && let Some(nav_action) = nav_scope.action_for(&framework_bind)
+    {
+        let pane = active_detail_pane(app);
+        match nav_action {
+            NavigationAction::Up => pane.up(),
+            NavigationAction::Down => pane.down(),
+            NavigationAction::Home => pane.home(),
+            NavigationAction::End => pane.end(),
+            NavigationAction::Left | NavigationAction::Right => {},
+        }
     }
 }
 
@@ -176,37 +201,45 @@ fn open_url(url: &str) {
 }
 
 pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
-    // Navigation keys stay hardcoded.
-    match event.code {
-        KeyCode::Up => return app.ci.viewport.up(),
-        KeyCode::Down => return app.ci.viewport.down(),
-        KeyCode::Home => return app.ci.viewport.home(),
-        KeyCode::End => return app.ci.viewport.end(),
-        _ => {},
+    // Pane scope first — TOML rebinds win over navigation defaults.
+    let bind = KeyBind::new(event.code, event.modifiers);
+    if let Some(action) = app.keymap.current().ci_runs.action_for(&bind) {
+        match action {
+            CiRunsAction::Activate => handle_ci_enter(app),
+            CiRunsAction::FetchMore => handle_ci_fetch_more(app),
+            CiRunsAction::ToggleView => {
+                if let Some(path) = app
+                    .project_list
+                    .selected_project_path()
+                    .map(Path::to_path_buf)
+                {
+                    app.toggle_ci_display_mode_for(&path);
+                }
+            },
+            CiRunsAction::ClearCache => {
+                if let Some(path) = app.project_list.selected_ci_path() {
+                    clear_ci_cache(app, &path);
+                }
+            },
+        }
+        return;
     }
 
-    // Action keys through keymap.
-    let bind = KeyBind::new(event.code, event.modifiers);
-    let Some(action) = app.keymap.current().ci_runs.action_for(&bind) else {
-        return;
+    // Navigation scope — Phase 16.
+    let framework_bind = FrameworkKeyBind {
+        code: bind.code,
+        mods: bind.modifiers,
     };
-    match action {
-        CiRunsAction::Activate => handle_ci_enter(app),
-        CiRunsAction::FetchMore => handle_ci_fetch_more(app),
-        CiRunsAction::ToggleView => {
-            if let Some(path) = app
-                .project_list
-                .selected_project_path()
-                .map(Path::to_path_buf)
-            {
-                app.toggle_ci_display_mode_for(&path);
-            }
-        },
-        CiRunsAction::ClearCache => {
-            if let Some(path) = app.project_list.selected_ci_path() {
-                clear_ci_cache(app, &path);
-            }
-        },
+    if let Some(nav_scope) = app.framework_keymap.navigation::<AppNavigation>()
+        && let Some(nav_action) = nav_scope.action_for(&framework_bind)
+    {
+        match nav_action {
+            NavigationAction::Up => app.ci.viewport.up(),
+            NavigationAction::Down => app.ci.viewport.down(),
+            NavigationAction::Home => app.ci.viewport.home(),
+            NavigationAction::End => app.ci.viewport.end(),
+            NavigationAction::Left | NavigationAction::Right => {},
+        }
     }
 }
 
@@ -279,23 +312,31 @@ fn handle_ci_fetch_more(app: &mut App) {
 }
 
 pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
-    // Navigation keys stay hardcoded.
-    match event.code {
-        KeyCode::Up => return app.lint.viewport.up(),
-        KeyCode::Down => return app.lint.viewport.down(),
-        KeyCode::Home => return app.lint.viewport.home(),
-        KeyCode::End => return app.lint.viewport.end(),
-        _ => {},
+    // Pane scope first — TOML rebinds win over navigation defaults.
+    let bind = KeyBind::new(event.code, event.modifiers);
+    if let Some(action) = app.keymap.current().lints.action_for(&bind) {
+        match action {
+            LintsAction::Activate => open_lint_run_output(app),
+            LintsAction::ClearHistory => clear_lint_history(app),
+        }
+        return;
     }
 
-    // Action keys through keymap.
-    let bind = KeyBind::new(event.code, event.modifiers);
-    let Some(action) = app.keymap.current().lints.action_for(&bind) else {
-        return;
+    // Navigation scope — Phase 16.
+    let framework_bind = FrameworkKeyBind {
+        code: bind.code,
+        mods: bind.modifiers,
     };
-    match action {
-        LintsAction::Activate => open_lint_run_output(app),
-        LintsAction::ClearHistory => clear_lint_history(app),
+    if let Some(nav_scope) = app.framework_keymap.navigation::<AppNavigation>()
+        && let Some(nav_action) = nav_scope.action_for(&framework_bind)
+    {
+        match nav_action {
+            NavigationAction::Up => app.lint.viewport.up(),
+            NavigationAction::Down => app.lint.viewport.down(),
+            NavigationAction::Home => app.lint.viewport.home(),
+            NavigationAction::End => app.lint.viewport.end(),
+            NavigationAction::Left | NavigationAction::Right => {},
+        }
     }
 }
 

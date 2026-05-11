@@ -27,6 +27,9 @@
               Variants/methods stay unconstructed in the binary path until Phase 18 swaps over."
 )]
 
+#[cfg(test)]
+use std::path::PathBuf;
+
 use tui_pane::Action;
 use tui_pane::AppContext;
 use tui_pane::BarRegion;
@@ -46,6 +49,7 @@ use tui_pane::Shortcuts;
 use tui_pane::Visibility;
 
 use super::app::App;
+use super::finder;
 use super::panes;
 use super::panes::DetailField;
 use super::panes::GitRow;
@@ -125,6 +129,20 @@ impl AppContext for App {
     fn framework(&self) -> &Framework<Self> { &self.framework }
 
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+
+    /// Phase 16 override: mirror the framework focus write back into
+    /// the legacy `app.focus` field so highlight / bar / render paths
+    /// that still read `app.focus` stay in sync. Framework-only
+    /// focuses (e.g. `FocusedPane::Framework(FrameworkFocusId::Toasts)`)
+    /// skip the legacy mirror because the legacy `Focus` field is
+    /// `PaneId`-typed and `PaneId::Toasts` is owned by the framework
+    /// path now.
+    fn set_focus(&mut self, focus: FocusedPane<Self::AppPaneId>) {
+        self.framework.set_focused(focus);
+        if let FocusedPane::App(id) = focus {
+            self.focus.set(id.to_legacy());
+        }
+    }
 }
 
 /// `Navigation<App>` host. Zero-sized because the framework only needs
@@ -620,7 +638,7 @@ impl Shortcuts<App> for FinderPane {
 /// continue to insert into the search query, Esc/Enter/Backspace/arrow
 /// keys keep their existing semantics, and the framework-side
 /// dispatcher stays no-op through Phase 17.
-fn finder_keys(bind: KeyBind, app: &mut App) { super::finder::handle_finder_key(app, bind.code); }
+fn finder_keys(bind: KeyBind, app: &mut App) { finder::handle_finder_key(app, bind.code); }
 
 /// Assemble the framework keymap. Called once during App construction.
 /// Errors propagate so the caller can surface them through the
@@ -629,6 +647,33 @@ pub(super) fn build_framework_keymap(
     framework: &mut Framework<App>,
 ) -> Result<Keymap<App>, KeymapError> {
     Keymap::<App>::builder()
+        .register_navigation::<AppNavigation>()?
+        .register_globals::<AppGlobalAction>()?
+        .register::<ProjectListPane>(ProjectListPane)
+        .register::<PackagePane>(PackagePane)
+        .register::<LangPane>(LangPane)
+        .register::<CpuPane>(CpuPane)
+        .register::<GitPane>(GitPane)
+        .register::<TargetsPane>(TargetsPane)
+        .register::<LintsPane>(LintsPane)
+        .register::<CiRunsPane>(CiRunsPane)
+        .register::<OutputPane>(OutputPane)
+        .register::<FinderPane>(FinderPane)
+        .build_into(framework)
+}
+
+/// Test-only sibling of [`build_framework_keymap`] that loads an
+/// override TOML before the navigation / globals / pane chain. Phase
+/// 16 uses it to construct a [`Keymap<App>`] with rebinds for
+/// dispatch-path tests; Phase 17 reroutes the production
+/// [`build_framework_keymap`] through `load_toml` directly.
+#[cfg(test)]
+pub(super) fn build_framework_keymap_with_toml(
+    framework: &mut Framework<App>,
+    toml_path: PathBuf,
+) -> Result<Keymap<App>, KeymapError> {
+    Keymap::<App>::builder()
+        .load_toml(toml_path)?
         .register_navigation::<AppNavigation>()?
         .register_globals::<AppGlobalAction>()?
         .register::<ProjectListPane>(ProjectListPane)

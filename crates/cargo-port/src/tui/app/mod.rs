@@ -119,6 +119,7 @@ mod tests;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 
+use anyhow::Error;
 use async_tasks::Startup;
 pub(super) use dismiss::DismissTarget;
 pub(super) use target_index::CleanSelection;
@@ -256,7 +257,7 @@ impl App {
         http_client: HttpClient,
         scan_started_at: Instant,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
-    ) -> Result<Self, anyhow::Error> {
+    ) -> Result<Self, Error> {
         construct::AppBuilder::new(
             projects,
             bg_tx,

@@ -7,10 +7,18 @@
 //!   sits on a row whose dispatch has no effect (Package's non-`CratesIo` rows; Git's flat fields
 //!   and any remote without a URL).
 
+use std::fs;
+use std::path::Path;
+
+use crossterm::event::Event;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 use ratatui::text::Span;
 use tui_pane::AppContext;
 use tui_pane::BarPalette;
 use tui_pane::FocusedPane;
+use tui_pane::FrameworkFocusId;
 use tui_pane::KeyBind;
 use tui_pane::Mode;
 use tui_pane::Pane;
@@ -26,12 +34,18 @@ use crate::ci::CiStatus;
 use crate::ci::FetchStatus;
 use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
+use crate::keymap::GlobalAction;
+use crate::keymap::KeyBind as LegacyKeyBind;
 use crate::keymap::PackageAction;
+use crate::keymap::ProjectListAction;
+use crate::project::Submodule;
+use crate::tui::framework_keymap;
 use crate::tui::framework_keymap::AppPaneId;
 use crate::tui::framework_keymap::CiRunsPane;
 use crate::tui::framework_keymap::FinderPane;
 use crate::tui::framework_keymap::GitPane;
 use crate::tui::framework_keymap::PackagePane;
+use crate::tui::input;
 use crate::tui::panes;
 use crate::tui::panes::CiData;
 use crate::tui::panes::CiEmptyState;
@@ -649,6 +663,135 @@ fn focused_package_bar_renders_four_app_globals() {
             "Global region must include AppGlobalAction label {label:?} (got {global:?})",
         );
     }
+}
+
+// ── Phase 16 — base-pane navigation rerouted through framework keymap ───
+
+/// Phase 16: rebinding `NavigationAction::Down` to `'j'` (vim-off)
+/// moves the project-list cursor when `'j'` is dispatched through the
+/// real `src/tui/input.rs` key path. Validates that
+/// `handle_normal_key` consults the framework keymap's navigation
+/// scope after the legacy pane-scope match.
+#[test]
+fn navigation_action_rebound_to_j_moves_cursor_down() {
+    let projects = vec![
+        super::make_project(Some("alpha"), "~/alpha"),
+        super::make_project(Some("beta"), "~/beta"),
+    ];
+    let mut app = make_app(&projects);
+    let baseline = app.project_list.cursor();
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let toml_path = temp_dir.path().join("keymap.toml");
+    fs::write(&toml_path, "[navigation]\ndown = \"j\"\n").expect("write toml");
+    app.framework_keymap =
+        framework_keymap::build_framework_keymap_with_toml(&mut app.framework, toml_path)
+            .expect("rebuild framework keymap with toml override");
+
+    let event = Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    input::handle_event(&mut app, &event);
+
+    assert_eq!(
+        app.project_list.cursor(),
+        baseline + 1,
+        "cursor must advance after `'j'` resolves to NavigationAction::Down",
+    );
+}
+
+/// Phase 16: rebinding `ProjectListAction::ExpandRow` to `Tab`
+/// (with `GlobalAction::NextPane` rebound away) expands the current
+/// row. Validates that the legacy pane-scope match in
+/// `handle_normal_key` now drives `ExpandRow` through its match arm
+/// (the hardcoded `KeyCode::Right` arm at the top of the function
+/// has been deleted).
+#[test]
+fn project_list_action_expand_row_rebound_to_tab_expands() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root_dir = tmp.path().join("repo");
+    let sub_dir = root_dir.join("submod");
+    fs::create_dir_all(&sub_dir).expect("create_dir_all");
+    let root_path = root_dir.to_string_lossy().to_string();
+    let sub_path = sub_dir.to_string_lossy().to_string();
+
+    let project = super::make_project(Some("repo"), &root_path);
+    let mut app = make_app(&[project]);
+
+    let root_info = app
+        .project_list
+        .at_path_mut(Path::new(&root_path))
+        .expect("root info");
+    root_info.submodules.push(Submodule {
+        name:          "submod".to_string(),
+        path:          crate::project::AbsolutePath::from(sub_path),
+        relative_path: "submod".to_string(),
+        url:           None,
+        branch:        None,
+        commit:        None,
+        info:          crate::project::ProjectInfo::default(),
+    });
+    app.ensure_visible_rows_cached();
+    app.project_list.set_cursor(0);
+    let baseline_rows = app.project_list.row_count();
+
+    // Rebind: pane scope ExpandRow -> Tab; remove NextPane = Tab from
+    // global so it can't shadow Tab.
+    {
+        let km = app.keymap.current_mut();
+        km.global.by_key.remove(&LegacyKeyBind::plain(KeyCode::Tab));
+        km.global.by_action.remove(&GlobalAction::NextPane);
+        km.project_list.insert(
+            LegacyKeyBind::plain(KeyCode::Tab),
+            ProjectListAction::ExpandRow,
+        );
+    }
+
+    let event = Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    input::handle_event(&mut app, &event);
+    app.ensure_visible_rows_cached();
+
+    assert!(
+        app.project_list.row_count() > baseline_rows,
+        "expanding the parent must reveal additional rows (was {baseline_rows}, now {})",
+        app.project_list.row_count(),
+    );
+}
+
+/// Phase 16: the `App::set_focus` override mirrors framework focus
+/// writes back into the legacy `app.focus` field for `FocusedPane::App`
+/// targets, and skips the legacy mirror for framework-only focuses.
+#[test]
+fn set_focus_override_mirrors_app_focus_to_legacy_field() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+
+    app.set_focus(FocusedPane::App(AppPaneId::Targets));
+    assert!(matches!(
+        app.framework().focused(),
+        FocusedPane::App(AppPaneId::Targets)
+    ));
+    assert_eq!(app.focus.current(), panes::PaneId::Targets);
+
+    app.set_focus(FocusedPane::App(AppPaneId::Git));
+    assert!(matches!(
+        app.framework().focused(),
+        FocusedPane::App(AppPaneId::Git)
+    ));
+    assert_eq!(app.focus.current(), panes::PaneId::Git);
+
+    // Framework-only focus must update the framework but leave the
+    // legacy field alone (legacy field is `PaneId`-typed and
+    // `PaneId::Toasts` is owned by the framework path).
+    let legacy_before = app.focus.current();
+    app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
+    assert!(matches!(
+        app.framework().focused(),
+        FocusedPane::Framework(FrameworkFocusId::Toasts),
+    ));
+    assert_eq!(
+        app.focus.current(),
+        legacy_before,
+        "framework focus must not touch the legacy app.focus field",
+    );
 }
 
 #[test]

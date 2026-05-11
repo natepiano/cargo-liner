@@ -171,6 +171,8 @@ const fn settings_edit_keys<Ctx: AppContext>(_bind: KeyBind, _ctx: &mut Ctx) {}
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use crossterm::event::KeyCode;
+
     use super::SettingsPane;
     use crate::AppContext;
     use crate::FocusedPane;
@@ -236,7 +238,7 @@ mod tests {
     fn enter_in_browse_transitions_to_editing() {
         let mut pane: SettingsPane<TestApp> = SettingsPane::new();
         let mut app = fresh_app();
-        let _ = pane.handle_key(&mut app, &crossterm::event::KeyCode::Enter.into());
+        let _ = pane.handle_key(&mut app, &KeyCode::Enter.into());
         assert!(matches!(pane.mode(&app), Mode::TextInput(_)));
     }
 
@@ -244,7 +246,7 @@ mod tests {
     fn esc_in_editing_returns_to_browse() {
         let mut pane: SettingsPane<TestApp> = SettingsPane::for_test_editing(None);
         let mut app = fresh_app();
-        let _ = pane.handle_key(&mut app, &crossterm::event::KeyCode::Esc.into());
+        let _ = pane.handle_key(&mut app, &KeyCode::Esc.into());
         assert!(matches!(pane.mode(&app), Mode::Navigable));
     }
 

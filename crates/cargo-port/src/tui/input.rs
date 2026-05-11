@@ -12,12 +12,15 @@ use crossterm::event::KeyModifiers;
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEventKind;
 use ratatui::layout::Position;
+use tui_pane::KeyBind as FrameworkKeyBind;
 
 use super::app::App;
 use super::app::CleanSelection;
 use super::app::ConfirmAction;
 use super::app::PendingClean;
 use super::finder;
+use super::framework_keymap::AppNavigation;
+use super::framework_keymap::NavigationAction;
 use super::interaction;
 use super::keymap_ui;
 use super::panes;
@@ -599,63 +602,76 @@ fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
 }
 
 fn handle_normal_key(app: &mut App, event: &KeyEvent) {
-    // Navigation keys stay hardcoded.
-    match event.code {
-        KeyCode::Up => return app.project_list.move_up(),
-        KeyCode::Down => return app.project_list.move_down(),
-        KeyCode::Home => return app.project_list.move_to_top(),
-        KeyCode::End => return app.project_list.move_to_bottom(),
-        KeyCode::Right => {
-            if !app.expand() {
-                app.project_list.move_down();
-            }
-            return;
-        },
-        KeyCode::Left => {
-            let include_non_rust = app.config.include_non_rust().includes_non_rust();
-            if !app.project_list.collapse(include_non_rust) {
-                app.project_list.move_up();
-            }
-            return;
-        },
-        _ => {},
+    let bind = bind_from(event);
+    let include_non_rust = app.config.include_non_rust().includes_non_rust();
+
+    // Pane scope first — TOML rebinds (e.g. ExpandRow on Tab) win
+    // over the navigation defaults.
+    if let Some(action) = app.keymap.current().project_list.action_for(&bind) {
+        match action {
+            ProjectListAction::ExpandAll => app.project_list.expand_all(include_non_rust),
+            ProjectListAction::CollapseAll => app.project_list.collapse_all(include_non_rust),
+            ProjectListAction::ExpandRow => {
+                if !app.expand() {
+                    app.project_list.move_down();
+                }
+            },
+            ProjectListAction::CollapseRow => {
+                if !app.project_list.collapse(include_non_rust) {
+                    app.project_list.move_up();
+                }
+            },
+            ProjectListAction::Clean => {
+                // Gate through App::clean_selection — the single source of
+                // truth for clean eligibility (design plan → gating fix).
+                // Previously this asked for `selected_item().is_rust()`
+                // which returns None for WorktreeEntry rows, dropping the
+                // per-worktree Clean shortcut.
+                if let Some(selection) = app.project_list.clean_selection() {
+                    match selection {
+                        CleanSelection::Project { root } => {
+                            // Step 6e: request_clean_confirm re-fingerprints
+                            // the workspace. On drift it dispatches a
+                            // metadata refresh and opens the confirm in
+                            // Verifying state; on match it opens Ready.
+                            app.request_clean_confirm(root);
+                        },
+                        CleanSelection::WorktreeGroup { primary, linked } => {
+                            app.request_clean_group_confirm(primary, linked);
+                        },
+                    }
+                }
+            },
+        }
+        return;
     }
 
-    // Action keys through keymap.
-    let bind = bind_from(event);
-    let Some(action) = app.keymap.current().project_list.action_for(&bind) else {
-        return;
+    // Navigation scope — Phase 16. Up/Down/Home/End/Left/Right route
+    // through the framework keymap's navigation singleton, so users
+    // can rebind them via TOML.
+    let framework_bind = FrameworkKeyBind {
+        code: bind.code,
+        mods: bind.modifiers,
     };
-    let include_non_rust = app.config.include_non_rust().includes_non_rust();
-    match action {
-        ProjectListAction::ExpandAll => app.project_list.expand_all(include_non_rust),
-        ProjectListAction::CollapseAll => app.project_list.collapse_all(include_non_rust),
-        // ExpandRow / CollapseRow exist on the framework path; the
-        // legacy path dispatches Right / Left at the top of
-        // `handle_normal_key` and never reaches this match for those
-        // keys. Phase 16 routes the framework path through here.
-        ProjectListAction::ExpandRow | ProjectListAction::CollapseRow => {},
-        ProjectListAction::Clean => {
-            // Gate through App::clean_selection — the single source of
-            // truth for clean eligibility (design plan → gating fix).
-            // Previously this asked for `selected_item().is_rust()`
-            // which returns None for WorktreeEntry rows, dropping the
-            // per-worktree Clean shortcut.
-            if let Some(selection) = app.project_list.clean_selection() {
-                match selection {
-                    CleanSelection::Project { root } => {
-                        // Step 6e: request_clean_confirm re-fingerprints
-                        // the workspace. On drift it dispatches a
-                        // metadata refresh and opens the confirm in
-                        // Verifying state; on match it opens Ready.
-                        app.request_clean_confirm(root);
-                    },
-                    CleanSelection::WorktreeGroup { primary, linked } => {
-                        app.request_clean_group_confirm(primary, linked);
-                    },
+    if let Some(nav_scope) = app.framework_keymap.navigation::<AppNavigation>()
+        && let Some(nav_action) = nav_scope.action_for(&framework_bind)
+    {
+        match nav_action {
+            NavigationAction::Up => app.project_list.move_up(),
+            NavigationAction::Down => app.project_list.move_down(),
+            NavigationAction::Home => app.project_list.move_to_top(),
+            NavigationAction::End => app.project_list.move_to_bottom(),
+            NavigationAction::Right => {
+                if !app.expand() {
+                    app.project_list.move_down();
                 }
-            }
-        },
+            },
+            NavigationAction::Left => {
+                if !app.project_list.collapse(include_non_rust) {
+                    app.project_list.move_up();
+                }
+            },
+        }
     }
 }
 

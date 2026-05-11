@@ -12,6 +12,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::BarPalette;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
@@ -533,7 +534,7 @@ fn shortcut_display_width(shortcuts: &[Shortcut]) -> usize {
 /// matches the pre-refactor look produced by [`shortcut_spans`]. The
 /// framework ships a theme-neutral [`tui_pane::BarPalette::default`];
 /// cargo-port supplies its own colors here.
-pub(super) fn cargo_port_bar_palette() -> tui_pane::BarPalette {
+pub(super) fn cargo_port_bar_palette() -> BarPalette {
     let enabled_key_style = Style::default()
         .fg(ACCENT_COLOR)
         .add_modifier(Modifier::BOLD);
@@ -541,7 +542,7 @@ pub(super) fn cargo_port_bar_palette() -> tui_pane::BarPalette {
         .fg(SECONDARY_TEXT_COLOR)
         .add_modifier(Modifier::BOLD);
     let disabled_label_style = Style::default().fg(SECONDARY_TEXT_COLOR);
-    tui_pane::BarPalette {
+    BarPalette {
         enabled_key_style,
         enabled_label_style: Style::default(),
         disabled_key_style,

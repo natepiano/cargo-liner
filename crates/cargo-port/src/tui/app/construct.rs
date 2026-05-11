@@ -21,6 +21,7 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use anyhow::Context;
+use anyhow::Error;
 use tui_pane::FocusedPane;
 
 use super::App;
@@ -168,7 +169,7 @@ impl AppBuilder<Channeled> {
 }
 
 impl AppBuilder<Started> {
-    pub(super) fn build(self) -> Result<App, anyhow::Error> {
+    pub(super) fn build(self) -> Result<App, Error> {
         let started = self.state;
         let channeled = started.channeled;
         let inputs = channeled.inputs;

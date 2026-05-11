@@ -554,13 +554,12 @@ impl ResolvedKeymap {
         );
         // Phase 14.4c added ExpandRow / CollapseRow variants to the
         // shared enum so the framework keymap can register them as
-        // pane-scope actions. The legacy dispatch path hard-codes
-        // KeyCode::Right / KeyCode::Left at `handle_normal_key` and
-        // does not consult the keymap for them, so these defaults are
-        // only consumed by the framework path during 14.x. Bound to
-        // Shift+Right / Shift+Left so they pass the
-        // `is_navigation_reserved` check on TOML round-trip (the
-        // loader rejects bare arrows but allows modified arrows).
+        // pane-scope actions. Phase 16 routes these through the
+        // pane-scope match in `handle_normal_key`; bare Right / Left
+        // are already mapped to NavigationAction::Right / ::Left in
+        // the framework keymap, so the pane-scope defaults bind
+        // ExpandRow / CollapseRow to Shift+Right / Shift+Left to
+        // avoid colliding with the navigation defaults.
         km.project_list.insert(
             KeyBind::new(KeyCode::Right, KeyModifiers::SHIFT),
             ProjectListAction::ExpandRow,
@@ -745,7 +744,6 @@ pub(crate) enum KeymapErrorReason {
     ConflictWithGlobal(String),
     ConflictWithinScope(String),
     ReservedForVimMode,
-    ReservedForNavigation,
     UnknownAction,
 }
 
@@ -756,7 +754,6 @@ impl Display for KeymapErrorReason {
             Self::ConflictWithGlobal(action) => write!(f, "conflicts with global.{action}"),
             Self::ConflictWithinScope(action) => write!(f, "conflicts with {action}"),
             Self::ReservedForVimMode => write!(f, "reserved for vim navigation"),
-            Self::ReservedForNavigation => write!(f, "reserved for navigation"),
             Self::UnknownAction => write!(f, "unknown action (ignored)"),
         }
     }
@@ -943,21 +940,8 @@ const VIM_RESERVED: [KeyCode; 4] = [
     KeyCode::Char('l'),
 ];
 
-const NAVIGATION_RESERVED: [KeyCode; 6] = [
-    KeyCode::Up,
-    KeyCode::Down,
-    KeyCode::Left,
-    KeyCode::Right,
-    KeyCode::Home,
-    KeyCode::End,
-];
-
 fn is_vim_reserved(bind: &KeyBind, vim_mode: NavigationKeys) -> bool {
     vim_mode.uses_vim() && bind.modifiers == KeyModifiers::NONE && VIM_RESERVED.contains(&bind.code)
-}
-
-fn is_navigation_reserved(bind: &KeyBind) -> bool {
-    bind.modifiers == KeyModifiers::NONE && NAVIGATION_RESERVED.contains(&bind.code)
 }
 
 fn is_legacy_removed_action(scope_name: &str, action: &str) -> bool {
@@ -1112,9 +1096,7 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
         let (bind, error) = match bind_result {
             Some(Ok(bind)) => {
                 // Validate the parsed binding.
-                if is_navigation_reserved(&bind) {
-                    (None, Some(KeymapErrorReason::ReservedForNavigation))
-                } else if is_vim_reserved(&bind, ctx.vim_mode) {
+                if is_vim_reserved(&bind, ctx.vim_mode) {
                     (None, Some(KeymapErrorReason::ReservedForVimMode))
                 } else if let Some(global_action) = ctx.global_keys.get(&bind) {
                     (
@@ -1496,50 +1478,6 @@ clean = "h"
                 .iter()
                 .any(|e| matches!(e.reason, KeymapErrorReason::ReservedForVimMode)),
             "expected vim reservation error for 'h'"
-        );
-    }
-
-    #[test]
-    fn navigation_key_reserved() {
-        let toml = r#"
-[global]
-quit = "Up"
-restart = "Shift+r"
-find = "/"
-settings = "s"
-next_pane = "Tab"
-prev_pane = "Shift+Tab"
-open_keymap = "Ctrl+k"
-"#;
-        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
-        assert!(
-            result
-                .errors
-                .iter()
-                .any(|e| matches!(e.reason, KeymapErrorReason::ReservedForNavigation)),
-            "expected navigation reservation error for 'Up'"
-        );
-    }
-
-    #[test]
-    fn navigation_key_with_modifier_allowed() {
-        let toml = r#"
-[global]
-quit = "Ctrl+Up"
-restart = "Shift+r"
-find = "/"
-settings = "s"
-next_pane = "Tab"
-prev_pane = "Shift+Tab"
-open_keymap = "Ctrl+k"
-"#;
-        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
-        assert!(
-            !result
-                .errors
-                .iter()
-                .any(|e| matches!(e.reason, KeymapErrorReason::ReservedForNavigation)),
-            "Ctrl+Up should be allowed"
         );
     }
 
