@@ -64,6 +64,10 @@ impl App {
         self.keymap.replace_current(result.keymap);
 
         if result.errors.is_empty() {
+            if let Err(err) = self.rebuild_framework_keymap_from_disk() {
+                self.show_timed_toast("Keymap reload failed", err);
+                return;
+            }
             self.dismiss_keymap_diagnostics();
         } else {
             self.show_keymap_diagnostics(&result.errors);

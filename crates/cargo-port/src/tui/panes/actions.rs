@@ -1,6 +1,10 @@
 use std::path::Path;
 
+#[cfg(test)]
 use crossterm::event::KeyEvent;
+use tui_pane::FocusedPane;
+use tui_pane::FrameworkFocusId;
+#[cfg(test)]
 use tui_pane::KeyBind as FrameworkKeyBind;
 
 use super::BuildMode;
@@ -13,6 +17,7 @@ use super::PendingExampleRun;
 use super::build_target_list_from_data;
 use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
+#[cfg(test)]
 use crate::keymap::KeyBind;
 use crate::keymap::LintsAction;
 use crate::keymap::PackageAction;
@@ -25,7 +30,11 @@ use crate::project::ProjectCiInfo;
 use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::CleanSelection;
+#[cfg(test)]
 use crate::tui::framework_keymap::AppNavigation;
+use crate::tui::framework_keymap::AppPaneId;
+use crate::tui::framework_keymap::CpuAction;
+use crate::tui::framework_keymap::LangAction;
 use crate::tui::framework_keymap::NavigationAction;
 use crate::tui::input;
 use crate::tui::pane::Viewport;
@@ -56,72 +65,142 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
     }
 }
 
-pub fn handle_detail_key(app: &mut App, event: &KeyEvent) {
-    // Pane scope first — TOML rebinds win over navigation defaults.
-    let bind = KeyBind::new(event.code, event.modifiers);
-    let consumed = match app.focus.base() {
-        PaneId::Cpu => false,
-        PaneId::Targets => app
-            .keymap
-            .current()
-            .targets
-            .action_for(&bind)
-            .is_some_and(|action| {
-                match action {
-                    TargetsAction::Activate => handle_detail_enter(app),
-                    TargetsAction::ReleaseBuild => handle_target_action(app, BuildMode::Release),
-                    TargetsAction::Clean => request_clean(app),
-                }
-                true
-            }),
-        PaneId::Git => app
-            .keymap
-            .current()
-            .git
-            .action_for(&bind)
-            .is_some_and(|action| {
-                match action {
-                    GitAction::Activate => handle_detail_enter(app),
-                    GitAction::Clean => request_clean(app),
-                }
-                true
-            }),
-        _ => app
-            .keymap
-            .current()
-            .package
-            .action_for(&bind)
-            .is_some_and(|action| {
-                match action {
-                    PackageAction::Activate => handle_detail_enter(app),
-                    PackageAction::Clean => request_clean(app),
-                }
-                true
-            }),
-    };
-    if consumed {
-        return;
+pub(super) fn dispatch_package_action(action: PackageAction, app: &mut App) {
+    match action {
+        PackageAction::Activate => handle_detail_enter(app),
+        PackageAction::Clean => request_clean(app),
     }
+}
 
-    // Navigation scope — Phase 16. Up/Down/Home/End route through the
-    // framework keymap's navigation singleton. Left/Right are
-    // pre-mapped to Up/Down by `normalize_nav` for detail panes, so
-    // they are not handled here.
-    let framework_bind = FrameworkKeyBind {
-        code: bind.code,
-        mods: bind.modifiers,
-    };
-    if let Some(nav_scope) = app.framework_keymap.navigation::<AppNavigation>()
-        && let Some(nav_action) = nav_scope.action_for(&framework_bind)
-    {
-        let pane = active_detail_pane(app);
-        match nav_action {
-            NavigationAction::Up => pane.up(),
-            NavigationAction::Down => pane.down(),
-            NavigationAction::Home => pane.home(),
-            NavigationAction::End => pane.end(),
-            NavigationAction::Left | NavigationAction::Right => {},
-        }
+pub(super) fn dispatch_git_action(action: GitAction, app: &mut App) {
+    match action {
+        GitAction::Activate => handle_detail_enter(app),
+        GitAction::Clean => request_clean(app),
+    }
+}
+
+pub(super) fn dispatch_targets_action(action: TargetsAction, app: &mut App) {
+    match action {
+        TargetsAction::Activate => handle_detail_enter(app),
+        TargetsAction::ReleaseBuild => handle_target_action(app, BuildMode::Release),
+        TargetsAction::Clean => request_clean(app),
+    }
+}
+
+pub(super) fn dispatch_lang_action(action: LangAction, app: &mut App) {
+    match action {
+        LangAction::Clean => request_clean(app),
+    }
+}
+
+pub(super) const fn dispatch_cpu_action(_action: CpuAction, _app: &mut App) {}
+
+pub(super) fn dispatch_lints_action(action: LintsAction, app: &mut App) {
+    match action {
+        LintsAction::Activate => open_lint_run_output(app),
+        LintsAction::ClearHistory => clear_lint_history(app),
+    }
+}
+
+pub(super) fn dispatch_ci_runs_action(action: CiRunsAction, app: &mut App) {
+    match action {
+        CiRunsAction::Activate => handle_ci_enter(app),
+        CiRunsAction::FetchMore => handle_ci_fetch_more(app),
+        CiRunsAction::ToggleView => {
+            if let Some(path) = app
+                .project_list
+                .selected_project_path()
+                .map(Path::to_path_buf)
+            {
+                app.toggle_ci_display_mode_for(&path);
+            }
+        },
+        CiRunsAction::ClearCache => {
+            if let Some(path) = app.project_list.selected_ci_path() {
+                clear_ci_cache(app, &path);
+            }
+        },
+    }
+}
+
+pub(super) fn dispatch_navigation_action(
+    action: NavigationAction,
+    focused: FocusedPane<AppPaneId>,
+    app: &mut App,
+) {
+    match focused {
+        FocusedPane::App(AppPaneId::ProjectList) => navigate_project_list(app, action),
+        FocusedPane::App(
+            AppPaneId::Package
+            | AppPaneId::Lang
+            | AppPaneId::Cpu
+            | AppPaneId::Git
+            | AppPaneId::Targets,
+        ) => navigate_detail(app, action),
+        FocusedPane::App(AppPaneId::Lints) => navigate_lints(app, action),
+        FocusedPane::App(AppPaneId::CiRuns) => navigate_ci_runs(app, action),
+        FocusedPane::App(AppPaneId::Output | AppPaneId::Finder) => {},
+        FocusedPane::Framework(FrameworkFocusId::Toasts) => navigate_toasts(app, action),
+    }
+}
+
+fn navigate_project_list(app: &mut App, action: NavigationAction) {
+    let include_non_rust = app.config.include_non_rust().includes_non_rust();
+    match action {
+        NavigationAction::Up => app.project_list.move_up(),
+        NavigationAction::Down => app.project_list.move_down(),
+        NavigationAction::Home => app.project_list.move_to_top(),
+        NavigationAction::End => app.project_list.move_to_bottom(),
+        NavigationAction::Right => {
+            if !app.expand() {
+                app.project_list.move_down();
+            }
+        },
+        NavigationAction::Left => {
+            if !app.project_list.collapse(include_non_rust) {
+                app.project_list.move_up();
+            }
+        },
+    }
+}
+
+fn navigate_detail(app: &mut App, action: NavigationAction) {
+    let pane = active_detail_pane(app);
+    match action {
+        NavigationAction::Up | NavigationAction::Left => pane.up(),
+        NavigationAction::Down | NavigationAction::Right => pane.down(),
+        NavigationAction::Home => pane.home(),
+        NavigationAction::End => pane.end(),
+    }
+}
+
+const fn navigate_lints(app: &mut App, action: NavigationAction) {
+    match action {
+        NavigationAction::Up | NavigationAction::Left => app.lint.viewport.up(),
+        NavigationAction::Down | NavigationAction::Right => app.lint.viewport.down(),
+        NavigationAction::Home => app.lint.viewport.home(),
+        NavigationAction::End => app.lint.viewport.end(),
+    }
+}
+
+const fn navigate_ci_runs(app: &mut App, action: NavigationAction) {
+    match action {
+        NavigationAction::Up | NavigationAction::Left => app.ci.viewport.up(),
+        NavigationAction::Down | NavigationAction::Right => app.ci.viewport.down(),
+        NavigationAction::Home => app.ci.viewport.home(),
+        NavigationAction::End => app.ci.viewport.end(),
+    }
+}
+
+fn navigate_toasts(app: &mut App, action: NavigationAction) {
+    match action {
+        NavigationAction::Up | NavigationAction::Left => app.toasts.viewport.up(),
+        NavigationAction::Down | NavigationAction::Right => app.toasts.viewport.down(),
+        NavigationAction::Home => app.toasts.viewport.home(),
+        NavigationAction::End => {
+            let last_index = app.toasts.active_now().len().saturating_sub(1);
+            app.toasts.viewport.set_pos(last_index);
+        },
     }
 }
 
@@ -200,6 +279,7 @@ fn open_url(url: &str) {
     .spawn();
 }
 
+#[cfg(test)]
 pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     // Pane scope first — TOML rebinds win over navigation defaults.
     let bind = KeyBind::new(event.code, event.modifiers);
@@ -309,35 +389,6 @@ fn handle_ci_fetch_more(app: &mut App) {
     };
     app.set_task_tracked_items(task_id, &[item]);
     app.ci.set_fetch_toast(Some(task_id));
-}
-
-pub fn handle_lints_key(app: &mut App, event: &KeyEvent) {
-    // Pane scope first — TOML rebinds win over navigation defaults.
-    let bind = KeyBind::new(event.code, event.modifiers);
-    if let Some(action) = app.keymap.current().lints.action_for(&bind) {
-        match action {
-            LintsAction::Activate => open_lint_run_output(app),
-            LintsAction::ClearHistory => clear_lint_history(app),
-        }
-        return;
-    }
-
-    // Navigation scope — Phase 16.
-    let framework_bind = FrameworkKeyBind {
-        code: bind.code,
-        mods: bind.modifiers,
-    };
-    if let Some(nav_scope) = app.framework_keymap.navigation::<AppNavigation>()
-        && let Some(nav_action) = nav_scope.action_for(&framework_bind)
-    {
-        match nav_action {
-            NavigationAction::Up => app.lint.viewport.up(),
-            NavigationAction::Down => app.lint.viewport.down(),
-            NavigationAction::Home => app.lint.viewport.home(),
-            NavigationAction::End => app.lint.viewport.end(),
-            NavigationAction::Left | NavigationAction::Right => {},
-        }
-    }
 }
 
 /// Clear CI cache for a project and remove its runs from the app.

@@ -183,7 +183,7 @@ pub fn run() -> ExitCode {
 
     let result = event_loop(&mut terminal, &mut app, &input_rx);
 
-    let should_restart = app.overlays.should_restart();
+    let should_restart = app.framework.restart_requested();
     let _ = restore_terminal(&mut terminal);
 
     if should_restart {
@@ -246,7 +246,7 @@ fn event_loop(
         let frame_started = Instant::now();
 
         let (input_count, input_elapsed) = process_input_frame(app, input_rx);
-        if app.overlays.should_quit() {
+        if app.framework.quit_requested() || app.framework.restart_requested() {
             return Ok(());
         }
 
@@ -265,7 +265,7 @@ fn event_loop(
             rearmed_after_first_draw = true;
         }
 
-        if app.overlays.should_quit() {
+        if app.framework.quit_requested() || app.framework.restart_requested() {
             flush_pending_selection(app);
             break;
         }
@@ -299,7 +299,7 @@ fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> (usize, Dur
         input_count += 1;
         tracing::info!(event = %input::event_label(&event), "input_event_received");
         input::handle_event(app, &event);
-        if app.overlays.should_quit() {
+        if app.framework.quit_requested() || app.framework.restart_requested() {
             break;
         }
     }

@@ -14,16 +14,12 @@
 //!   variant ([`AppGlobalAction::Find`]); Phase 14.7 grows it to cover the rest of the binary's
 //!   non-framework globals.
 //! - [`AppNavigation`] / [`PackagePane`]: the `Navigation` and `Pane` + `Shortcuts` impls the
-//!   builder typestate requires. Dispatcher fns are no-ops for now — the legacy path still owns key
-//!   dispatch.
+//!   builder typestate requires. Dispatcher fns route through the framework keymap after the Phase
+//!   19 cutover.
 //! - [`build_framework_keymap`]: assembles a [`tui_pane::Keymap<App>`] using the canonical builder
 //!   chain. Called once at startup.
 
-#![allow(
-    dead_code,
-    reason = "Phase 14.2 introduces these types; later chunks (14.3–14.6) plug each pane in. \
-              Variants/methods stay unconstructed in the binary path until Phase 19 swaps over."
-)]
+use std::rc::Rc;
 
 use tui_pane::Action;
 use tui_pane::AppContext;
@@ -35,6 +31,7 @@ use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
+use tui_pane::KeyOutcome;
 use tui_pane::Keymap;
 use tui_pane::KeymapBuilder;
 use tui_pane::KeymapError;
@@ -43,14 +40,17 @@ use tui_pane::Navigation;
 use tui_pane::Pane;
 use tui_pane::ShortcutState;
 use tui_pane::Shortcuts;
+use tui_pane::VimMode;
 use tui_pane::Visibility;
 
 use super::app::App;
 use super::finder;
+use super::input;
 use super::panes;
 use super::panes::DetailField;
 use super::panes::GitRow;
 use super::panes::PaneId;
+use crate::config::NavigationKeys;
 use crate::keymap::CiRunsAction;
 use crate::keymap::FinderAction;
 use crate::keymap::GitAction;
@@ -75,6 +75,13 @@ pub(crate) enum AppPaneId {
     CiRuns,
     Output,
     Finder,
+}
+
+pub(super) const fn vim_mode_from_config(navigation_keys: NavigationKeys) -> VimMode {
+    match navigation_keys {
+        NavigationKeys::ArrowsOnly => VimMode::Disabled,
+        NavigationKeys::ArrowsAndVim => VimMode::Enabled,
+    }
 }
 
 impl AppPaneId {
@@ -168,10 +175,7 @@ impl Navigation<App> for AppNavigation {
     }
 
     fn dispatcher() -> fn(Self::Actions, FocusedPane<AppPaneId>, &mut App) {
-        |_action, _focused, _ctx| {
-            // No-op through Phase 17. The legacy navigation path
-            // (handle_detail_key etc.) remains authoritative.
-        }
+        panes::dispatch_navigation_action
     }
 }
 
@@ -189,11 +193,15 @@ impl Globals<App> for AppGlobalAction {
         }
     }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| {
-            // No-op through Phase 17. The legacy global dispatcher in
-            // src/tui/input.rs remains authoritative.
-        }
+    fn dispatcher() -> fn(Self::Actions, &mut App) { dispatch_app_global }
+}
+
+fn dispatch_app_global(action: AppGlobalAction, app: &mut App) {
+    match action {
+        AppGlobalAction::Find => input::open_finder(app),
+        AppGlobalAction::OpenEditor => input::open_in_editor(app),
+        AppGlobalAction::OpenTerminal => input::open_terminal(app),
+        AppGlobalAction::Rescan => app.rescan(),
     }
 }
 
@@ -223,12 +231,7 @@ impl Shortcuts<App> for PackagePane {
         }
     }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| {
-            // No-op through Phase 17. The legacy detail-key path in
-            // src/tui/panes/actions.rs remains authoritative.
-        }
-    }
+    fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_package_action }
 }
 
 /// `Activate` on the Package pane is enabled only when the cursor is
@@ -278,12 +281,7 @@ impl Shortcuts<App> for GitPane {
         }
     }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| {
-            // No-op through Phase 17. The legacy detail-key path in
-            // src/tui/panes/actions.rs remains authoritative.
-        }
-    }
+    fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_git_action }
 }
 
 /// `Activate` on the Git pane is enabled only when the cursor is on a
@@ -347,12 +345,7 @@ impl Shortcuts<App> for LangPane {
         }
     }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| {
-            // No-op through Phase 17. Legacy path routes Lang through
-            // PackageAction's handler.
-        }
-    }
+    fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_lang_action }
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Cpu pane.
@@ -373,12 +366,7 @@ impl Shortcuts<App> for CpuPane {
         }
     }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| {
-            // No-op through Phase 17. Legacy `handle_detail_key`
-            // matches `PaneId::Cpu => {}` (no dispatch).
-        }
-    }
+    fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_cpu_action }
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Targets pane.
@@ -401,12 +389,7 @@ impl Shortcuts<App> for TargetsPane {
         }
     }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| {
-            // No-op through Phase 17. Legacy path:
-            // `src/tui/panes/actions.rs::handle_detail_key`.
-        }
-    }
+    fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_targets_action }
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Lints pane.
@@ -428,12 +411,7 @@ impl Shortcuts<App> for LintsPane {
         }
     }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| {
-            // No-op through Phase 17. Legacy path:
-            // `src/tui/panes/actions.rs::handle_lints_key`.
-        }
-    }
+    fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_lints_action }
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the `CiRuns` pane.
@@ -464,12 +442,7 @@ impl Shortcuts<App> for CiRunsPane {
         }
     }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| {
-            // No-op through Phase 17. Legacy path:
-            // `src/tui/panes/actions.rs::handle_ci_runs_key`.
-        }
-    }
+    fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_ci_runs_action }
 }
 
 /// `Activate` on the `CiRuns` pane is hidden when the cursor sits at
@@ -536,12 +509,7 @@ impl Shortcuts<App> for ProjectListPane {
 
     fn vim_extras() -> &'static [(Self::Actions, KeyBind)] { &PROJECT_LIST_VIM_EXTRAS }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| {
-            // No-op through Phase 17. Legacy path:
-            // `src/tui/input.rs::handle_normal_key`.
-        }
-    }
+    fn dispatcher() -> fn(Self::Actions, &mut App) { input::dispatch_project_list_action }
 }
 
 /// `'l'` / `'h'` extend the `ProjectList` scope with vim-style row
@@ -578,13 +546,7 @@ impl Shortcuts<App> for OutputPane {
         }
     }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| {
-            // No-op through Phase 17. Legacy path:
-            // `src/tui/input.rs::handle_normal_key` clears
-            // `example_output` on `KeyCode::Esc`.
-        }
-    }
+    fn dispatcher() -> fn(Self::Actions, &mut App) { input::dispatch_output_action }
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Finder overlay.
@@ -622,12 +584,7 @@ impl Shortcuts<App> for FinderPane {
         }
     }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) {
-        |_action, _ctx| {
-            // No-op through Phase 17. Legacy path:
-            // `src/tui/finder.rs::handle_finder_key`.
-        }
-    }
+    fn dispatcher() -> fn(Self::Actions, &mut App) { finder::dispatch_finder_action }
 }
 
 /// `Mode::TextInput` handler for the Finder. Routes a single keypress
@@ -635,7 +592,13 @@ impl Shortcuts<App> for FinderPane {
 /// continue to insert into the search query, Esc/Enter/Backspace/arrow
 /// keys keep their existing semantics, and the framework-side
 /// dispatcher stays no-op through Phase 17.
-fn finder_keys(bind: KeyBind, app: &mut App) { finder::handle_finder_key(app, bind.code); }
+fn finder_keys(bind: KeyBind, app: &mut App) {
+    let keymap = Rc::clone(&app.framework_keymap);
+    match keymap.dispatch_app_pane(FinderPane::APP_PANE_ID, &bind, app) {
+        KeyOutcome::Consumed => {},
+        KeyOutcome::Unhandled => finder::handle_finder_text_key(app, bind.code),
+    }
+}
 
 /// Assemble the framework keymap from a configured builder. Called
 /// once during App construction after the builder has loaded the
@@ -647,6 +610,7 @@ pub(super) fn build_framework_keymap(
     framework: &mut Framework<App>,
 ) -> Result<Keymap<App>, KeymapError> {
     builder
+        .dismiss_fallback(dismiss_fallback)
         .register_navigation::<AppNavigation>()?
         .register_globals::<AppGlobalAction>()?
         .register_settings_overlay()?
@@ -662,6 +626,14 @@ pub(super) fn build_framework_keymap(
         .register::<OutputPane>(OutputPane)
         .register::<FinderPane>(FinderPane)
         .build_into(framework)
+}
+
+fn dismiss_fallback(app: &mut App) -> bool {
+    let Some(target) = app.focused_dismiss_target() else {
+        return false;
+    };
+    app.dismiss(target);
+    true
 }
 
 #[cfg(test)]

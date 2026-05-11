@@ -34,6 +34,7 @@ use super::panes::PaneId;
 use super::panes::RunTargetKind;
 use super::popup::PopupFrame;
 use super::project_list::ProjectList;
+use crate::keymap::FinderAction;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ExampleGroup;
@@ -596,6 +597,51 @@ pub(super) fn handle_finder_key(app: &mut App, key: KeyCode) {
         },
         _ => {},
     }
+}
+
+pub(super) fn dispatch_finder_action(action: FinderAction, app: &mut App) {
+    match action {
+        FinderAction::Activate => confirm_finder(app),
+        FinderAction::Cancel => close_finder(app),
+    }
+}
+
+pub(super) fn handle_finder_text_key(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Up => {
+            app.overlays.finder_pane.viewport.up();
+        },
+        KeyCode::Down => {
+            app.overlays.finder_pane.viewport.down();
+        },
+        KeyCode::Home => {
+            app.overlays.finder_pane.viewport.home();
+        },
+        KeyCode::End => {
+            app.overlays.finder_pane.viewport.end();
+        },
+        KeyCode::Backspace => {
+            if app.project_list.finder.query.is_empty() {
+                close_finder(app);
+            } else {
+                app.project_list.finder.query.pop();
+                refresh_finder_results(app);
+            }
+        },
+        KeyCode::Char(c) => {
+            app.project_list.finder.query.push(c);
+            refresh_finder_results(app);
+        },
+        _ => {},
+    }
+}
+
+fn close_finder(app: &mut App) {
+    app.overlays.close_finder();
+    app.project_list.finder.query.clear();
+    app.project_list.finder.results.clear();
+    app.overlays.finder_pane.viewport.home();
+    app.focus.close_overlay();
 }
 
 fn refresh_finder_results(app: &mut App) {

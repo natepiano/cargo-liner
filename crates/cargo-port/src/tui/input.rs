@@ -1,6 +1,7 @@
 use std::io::Result;
 use std::path::Path;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -13,8 +14,15 @@ use crossterm::event::MouseButton;
 use crossterm::event::MouseEventKind;
 use ratatui::layout::Position;
 use tui_pane::Action;
+use tui_pane::AppContext;
+use tui_pane::FocusedPane;
+use tui_pane::FrameworkFocusId;
+use tui_pane::GlobalAction as FrameworkGlobalAction;
+use tui_pane::Globals;
 use tui_pane::KeyBind as FrameworkKeyBind;
+use tui_pane::KeyOutcome;
 use tui_pane::Mode;
+use tui_pane::Navigation;
 use tui_pane::Pane;
 
 use super::app::App;
@@ -22,8 +30,9 @@ use super::app::CleanSelection;
 use super::app::ConfirmAction;
 use super::app::PendingClean;
 use super::finder;
+use super::framework_keymap::AppGlobalAction;
 use super::framework_keymap::AppNavigation;
-use super::framework_keymap::NavigationAction;
+use super::framework_keymap::AppPaneId;
 use super::framework_keymap::OutputPane;
 use super::interaction;
 use super::keymap_ui;
@@ -33,7 +42,6 @@ use super::panes::PaneId;
 use super::settings;
 use super::shortcuts::InputContext;
 use super::terminal;
-use crate::keymap::GlobalAction;
 use crate::keymap::KeyBind;
 use crate::keymap::OutputAction;
 use crate::keymap::ProjectListAction;
@@ -97,7 +105,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     app.mouse_pos = None;
 
     let normalized = normalize_nav(app, raw);
-    let code = normalized.code;
+    let code = raw.code;
 
     // Structural keys checked by code only (modifiers irrelevant).
     if code == KeyCode::Esc && app.inflight.example_running().is_some() {
@@ -117,8 +125,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         app.scan.mark_terminal_dirty();
         return;
     }
-    let bind = bind_from(&normalized);
-    let framework_bind = framework_bind_from_legacy(&bind);
+    let framework_bind = framework_bind_from_event(raw);
     if !app.inflight.example_output().is_empty()
         && !focused_text_input_mode(app)
         && app.framework_keymap.is_key_bound_to_toml_key(
@@ -130,14 +137,14 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         let was_on_output = app.focus.is(PaneId::Output);
         app.inflight.example_output_mut().clear();
         if was_on_output {
-            app.focus.set(PaneId::Targets);
+            app.set_focus(FocusedPane::App(AppPaneId::Targets));
         }
         return;
     }
     if handle_confirm_key(app, code) {
         return;
     }
-    if handle_overlay_editor_key(app, &normalized) {
+    if handle_overlay_editor_key(app, &framework_bind) {
         return;
     }
     if app.overlays.is_keymap_open() {
@@ -152,28 +159,123 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         settings::handle_settings_key(app, code);
         return;
     }
-    if handle_global_key(app, &normalized) {
+    if dispatch_framework_global(app, &framework_bind) {
         return;
     }
-
-    match panes::behavior(app.focus.current()) {
-        PaneBehavior::DetailFields | PaneBehavior::DetailTargets | PaneBehavior::Cpu => {
-            panes::handle_detail_key(app, &normalized);
-        },
-        PaneBehavior::Lints => panes::handle_lints_key(app, &normalized),
-        PaneBehavior::CiRuns => panes::handle_ci_runs_key(app, &normalized),
-        PaneBehavior::Toasts => handle_toast_key(app, &normalized),
-        PaneBehavior::ProjectList | PaneBehavior::Output | PaneBehavior::Overlay => {
-            handle_normal_key(app, &normalized);
-        },
+    if dispatch_app_global(app, &framework_bind) {
+        return;
     }
+    let focused = focused_from_legacy(app.focus.current());
+    if dispatch_focused_framework_pane(app, focused, &framework_bind) {
+        return;
+    }
+    let _ = dispatch_navigation(app, focused, &framework_bind);
 }
 
-const fn framework_bind_from_legacy(bind: &KeyBind) -> FrameworkKeyBind {
+fn framework_bind_from_event(event: &KeyEvent) -> FrameworkKeyBind {
+    let bind = KeyBind::new(event.code, event.modifiers);
     FrameworkKeyBind {
         code: bind.code,
         mods: bind.modifiers,
     }
+}
+
+const fn focused_from_legacy(pane_id: PaneId) -> FocusedPane<AppPaneId> {
+    match pane_id {
+        PaneId::ProjectList | PaneId::Settings | PaneId::Keymap => {
+            FocusedPane::App(AppPaneId::ProjectList)
+        },
+        PaneId::Package => FocusedPane::App(AppPaneId::Package),
+        PaneId::Lang => FocusedPane::App(AppPaneId::Lang),
+        PaneId::Cpu => FocusedPane::App(AppPaneId::Cpu),
+        PaneId::Git => FocusedPane::App(AppPaneId::Git),
+        PaneId::Targets => FocusedPane::App(AppPaneId::Targets),
+        PaneId::Lints => FocusedPane::App(AppPaneId::Lints),
+        PaneId::CiRuns => FocusedPane::App(AppPaneId::CiRuns),
+        PaneId::Output => FocusedPane::App(AppPaneId::Output),
+        PaneId::Finder => FocusedPane::App(AppPaneId::Finder),
+        PaneId::Toasts => FocusedPane::Framework(FrameworkFocusId::Toasts),
+    }
+}
+
+fn dispatch_framework_global(app: &mut App, bind: &FrameworkKeyBind) -> bool {
+    let keymap = Rc::clone(&app.framework_keymap);
+    let Some(action) = keymap.framework_globals().action_for(bind) else {
+        return false;
+    };
+    keymap.dispatch_framework_global(action, app);
+    mirror_framework_global_to_legacy_overlay(app, action);
+    true
+}
+
+fn mirror_framework_global_to_legacy_overlay(app: &mut App, action: FrameworkGlobalAction) {
+    match action {
+        FrameworkGlobalAction::OpenKeymap => {
+            app.focus.open_overlay(PaneId::Keymap);
+            app.overlays.open_keymap();
+        },
+        FrameworkGlobalAction::OpenSettings => {
+            app.focus.open_overlay(PaneId::Settings);
+            app.overlays.open_settings();
+        },
+        FrameworkGlobalAction::Quit
+        | FrameworkGlobalAction::Restart
+        | FrameworkGlobalAction::NextPane
+        | FrameworkGlobalAction::PrevPane
+        | FrameworkGlobalAction::Dismiss => {},
+    }
+}
+
+fn dispatch_app_global(app: &mut App, bind: &FrameworkKeyBind) -> bool {
+    let keymap = Rc::clone(&app.framework_keymap);
+    let Some(scope) = keymap.globals::<AppGlobalAction>() else {
+        return false;
+    };
+    let Some(action) = scope.action_for(bind) else {
+        return false;
+    };
+    (AppGlobalAction::dispatcher())(action, app);
+    true
+}
+
+fn dispatch_focused_framework_pane(
+    app: &mut App,
+    focused: FocusedPane<AppPaneId>,
+    bind: &FrameworkKeyBind,
+) -> bool {
+    let FocusedPane::App(id) = focused else {
+        return dispatch_focused_toasts(app, bind);
+    };
+    let keymap = Rc::clone(&app.framework_keymap);
+    matches!(
+        keymap.dispatch_app_pane(id, bind, app),
+        KeyOutcome::Consumed
+    )
+}
+
+fn dispatch_focused_toasts(app: &mut App, bind: &FrameworkKeyBind) -> bool {
+    if app.framework_keymap.framework_globals().action_for(bind)
+        == Some(FrameworkGlobalAction::Dismiss)
+    {
+        return dispatch_framework_global(app, bind);
+    }
+    false
+}
+
+fn dispatch_navigation(
+    app: &mut App,
+    focused: FocusedPane<AppPaneId>,
+    bind: &FrameworkKeyBind,
+) -> bool {
+    let keymap = Rc::clone(&app.framework_keymap);
+    let Some(nav_scope) = keymap.navigation::<AppNavigation>() else {
+        return false;
+    };
+    let Some(action) = nav_scope.action_for(bind) else {
+        return false;
+    };
+    (AppNavigation::dispatcher())(action, focused, app);
+    true
 }
 
 fn focused_text_input_mode(app: &App) -> bool {
@@ -184,10 +286,6 @@ fn focused_text_input_mode(app: &App) -> bool {
         || app.overlays.is_settings_editing()
         || app.overlays.keymap_is_awaiting()
 }
-
-/// Build a `KeyBind` from a `KeyEvent`, applying `=`/`+` and `BackTab`
-/// normalization.
-fn bind_from(event: &KeyEvent) -> KeyBind { KeyBind::new(event.code, event.modifiers) }
 
 /// Normalize navigation keys only. Vim hjkl conversion applies only when
 /// no modifiers are held (so `Ctrl+k` is never eaten by vim mode).
@@ -406,7 +504,7 @@ fn selected_project_display_name(app: &App) -> String {
         )
 }
 
-fn open_in_editor(app: &mut App) {
+pub(super) fn open_in_editor(app: &mut App) {
     if app.project_list.selected_project_is_deleted() {
         let name = selected_project_display_name(app);
         app.show_timed_warning_toast(
@@ -493,9 +591,12 @@ fn open_paths_via_editor_command(editor: &str, paths: &[&Path]) -> Result<()> {
         .map(|_| ())
 }
 
-fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
-    let bind = bind_from(event);
-    let Some(GlobalAction::OpenEditor) = app.keymap.current().global.action_for(&bind) else {
+fn handle_overlay_editor_key(app: &mut App, bind: &FrameworkKeyBind) -> bool {
+    let keymap = Rc::clone(&app.framework_keymap);
+    let Some(scope) = keymap.globals::<AppGlobalAction>() else {
+        return false;
+    };
+    let Some(AppGlobalAction::OpenEditor) = scope.action_for(bind) else {
         return false;
     };
 
@@ -516,7 +617,7 @@ fn handle_overlay_editor_key(app: &mut App, event: &KeyEvent) -> bool {
     true
 }
 
-fn open_finder(app: &mut App) {
+pub(super) fn open_finder(app: &mut App) {
     let (index, col_widths) = finder::build_finder_index(&app.project_list);
     let finder = &mut app.project_list.finder;
     finder.index = index;
@@ -566,7 +667,7 @@ fn spawn_terminal_command(command: &str, cwd: &Path) -> Result<()> {
         .map(|_| ())
 }
 
-fn open_terminal(app: &mut App) {
+pub(super) fn open_terminal(app: &mut App) {
     if app.project_list.selected_project_is_deleted() {
         let name = selected_project_display_name(app);
         app.show_timed_warning_toast(
@@ -596,141 +697,55 @@ fn open_terminal(app: &mut App) {
     }
 }
 
-fn handle_global_key(app: &mut App, event: &KeyEvent) -> bool {
-    let bind = bind_from(event);
-    let Some(action) = app.keymap.current().global.action_for(&bind) else {
-        return false;
-    };
-    match action {
-        GlobalAction::Quit => app.overlays.request_quit(),
-        GlobalAction::Restart => app.overlays.request_restart(),
-        GlobalAction::Find => open_finder(app),
-        GlobalAction::OpenEditor => open_in_editor(app),
-        GlobalAction::OpenTerminal => open_terminal(app),
-        GlobalAction::Settings => {
-            app.focus.open_overlay(PaneId::Settings);
-            app.overlays.open_settings();
-        },
-        GlobalAction::NextPane => app.focus_next_pane(),
-        GlobalAction::PrevPane => app.focus_previous_pane(),
-        GlobalAction::OpenKeymap => {
-            app.focus.open_overlay(PaneId::Keymap);
-            app.overlays.open_keymap();
-            app.overlays
-                .keymap_pane
-                .viewport
-                .set_len(keymap_ui::selectable_row_count());
-        },
-        GlobalAction::Rescan => app.rescan(),
-        GlobalAction::Dismiss => {
-            if let Some(target) = app.focused_dismiss_target() {
-                app.dismiss(target);
-            }
-        },
-    }
-    true
-}
-
-fn handle_normal_key(app: &mut App, event: &KeyEvent) {
-    let bind = bind_from(event);
+pub(super) fn dispatch_project_list_action(action: ProjectListAction, app: &mut App) {
     let include_non_rust = app.config.include_non_rust().includes_non_rust();
-
-    // Pane scope first — TOML rebinds (e.g. ExpandRow on Tab) win
-    // over the navigation defaults.
-    if let Some(action) = app.keymap.current().project_list.action_for(&bind) {
-        match action {
-            ProjectListAction::ExpandAll => app.project_list.expand_all(include_non_rust),
-            ProjectListAction::CollapseAll => app.project_list.collapse_all(include_non_rust),
-            ProjectListAction::ExpandRow => {
-                if !app.expand() {
-                    app.project_list.move_down();
-                }
-            },
-            ProjectListAction::CollapseRow => {
-                if !app.project_list.collapse(include_non_rust) {
-                    app.project_list.move_up();
-                }
-            },
-            ProjectListAction::Clean => {
-                // Gate through App::clean_selection — the single source of
-                // truth for clean eligibility (design plan → gating fix).
-                // Previously this asked for `selected_item().is_rust()`
-                // which returns None for WorktreeEntry rows, dropping the
-                // per-worktree Clean shortcut.
-                if let Some(selection) = app.project_list.clean_selection() {
-                    match selection {
-                        CleanSelection::Project { root } => {
-                            // Step 6e: request_clean_confirm re-fingerprints
-                            // the workspace. On drift it dispatches a
-                            // metadata refresh and opens the confirm in
-                            // Verifying state; on match it opens Ready.
-                            app.request_clean_confirm(root);
-                        },
-                        CleanSelection::WorktreeGroup { primary, linked } => {
-                            app.request_clean_group_confirm(primary, linked);
-                        },
-                    }
-                }
-            },
-        }
-        return;
-    }
-
-    // Navigation scope — Phase 16. Up/Down/Home/End/Left/Right route
-    // through the framework keymap's navigation singleton, so users
-    // can rebind them via TOML.
-    let framework_bind = FrameworkKeyBind {
-        code: bind.code,
-        mods: bind.modifiers,
-    };
-    if let Some(nav_scope) = app.framework_keymap.navigation::<AppNavigation>()
-        && let Some(nav_action) = nav_scope.action_for(&framework_bind)
-    {
-        match nav_action {
-            NavigationAction::Up => app.project_list.move_up(),
-            NavigationAction::Down => app.project_list.move_down(),
-            NavigationAction::Home => app.project_list.move_to_top(),
-            NavigationAction::End => app.project_list.move_to_bottom(),
-            NavigationAction::Right => {
-                if !app.expand() {
-                    app.project_list.move_down();
-                }
-            },
-            NavigationAction::Left => {
-                if !app.project_list.collapse(include_non_rust) {
-                    app.project_list.move_up();
-                }
-            },
-        }
+    match action {
+        ProjectListAction::ExpandAll => app.project_list.expand_all(include_non_rust),
+        ProjectListAction::CollapseAll => app.project_list.collapse_all(include_non_rust),
+        ProjectListAction::ExpandRow => {
+            if !app.expand() {
+                app.project_list.move_down();
+            }
+        },
+        ProjectListAction::CollapseRow => {
+            if !app.project_list.collapse(include_non_rust) {
+                app.project_list.move_up();
+            }
+        },
+        ProjectListAction::Clean => request_project_list_clean(app),
     }
 }
 
-fn handle_toast_key(app: &mut App, event: &KeyEvent) {
-    match event.code {
-        KeyCode::Up => app.toasts.viewport.up(),
-        KeyCode::Down => app.toasts.viewport.down(),
-        KeyCode::Home => app.toasts.viewport.home(),
-        KeyCode::End => {
-            let last_index = app.toasts.active_now().len().saturating_sub(1);
-            app.toasts.viewport.set_pos(last_index);
-        },
-        KeyCode::Enter => {
-            // Open action_path if the focused toast has one.
-            if let Some(toast) = app
-                .toasts
-                .active_now()
-                .into_iter()
-                .nth(app.toasts.viewport.pos())
-                && let Some(path) = toast.action_path()
-            {
-                let editor = app.config.editor().to_string();
-                let path = path.to_path_buf();
-                std::thread::spawn(move || {
-                    let _ = open_path_in_editor(&editor, &path);
-                });
+pub(super) fn dispatch_output_action(action: OutputAction, app: &mut App) {
+    match action {
+        OutputAction::Cancel => {
+            if !app.inflight.example_output().is_empty() {
+                app.inflight.example_output_mut().clear();
+                app.set_focus(FocusedPane::App(AppPaneId::Targets));
             }
         },
-        _ => {},
+    }
+}
+
+fn request_project_list_clean(app: &mut App) {
+    // Gate through `App::clean_selection` — the single source of
+    // truth for clean eligibility (design plan → gating fix).
+    // Previously this asked for `selected_item().is_rust()` which
+    // returns None for WorktreeEntry rows, dropping the per-worktree
+    // Clean shortcut.
+    if let Some(selection) = app.project_list.clean_selection() {
+        match selection {
+            CleanSelection::Project { root } => {
+                // Step 6e: request_clean_confirm re-fingerprints
+                // the workspace. On drift it dispatches a metadata
+                // refresh and opens the confirm in Verifying state;
+                // on match it opens Ready.
+                app.request_clean_confirm(root);
+            },
+            CleanSelection::WorktreeGroup { primary, linked } => {
+                app.request_clean_group_confirm(primary, linked);
+            },
+        }
     }
 }
 

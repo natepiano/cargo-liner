@@ -1,5 +1,5 @@
-//! `Overlays` subsystem — owns `UiModes` (finder / settings / keymap /
-//! exit modes), the transient `inline_error` UI feedback, the
+//! `Overlays` subsystem — owns `UiModes` (finder / settings / keymap),
+//! the transient `inline_error` UI feedback, the
 //! transient `status_flash` slot, and the three overlay pane render
 //! states.
 //!
@@ -8,8 +8,8 @@
 //! inside `tui/app/`.
 //!
 //! Module split:
-//! - `mod.rs` (this file) — mode state (Finder / Settings / Keymap / Exit), inline-error /
-//!   status-flash, plus the `Overlays` struct that owns all of the above.
+//! - `mod.rs` (this file) — mode state (Finder / Settings / Keymap), inline-error / status-flash,
+//!   plus the `Overlays` struct that owns all of the above.
 //! - `render_state.rs` — the three pane-render-state types (`KeymapPane`, `SettingsPane`,
 //!   `FinderPane`) plus the accessor `impl Overlays` block. They live with `Overlays` because
 //!   `Overlays` already owns the open/closed mode state for each.
@@ -47,20 +47,11 @@ pub(crate) enum KeymapMode {
     AwaitingKey,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum ExitMode {
-    #[default]
-    Continue,
-    Quit,
-    Restart,
-}
-
 #[derive(Default)]
 pub(crate) struct Overlays {
     finder:            FinderMode,
     settings:          SettingsMode,
     keymap:            KeymapMode,
-    exit:              ExitMode,
     inline_error:      Option<String>,
     status_flash:      Option<(String, Instant)>,
     pub keymap_pane:   KeymapPane,
@@ -130,18 +121,6 @@ impl Overlays {
         self.keymap = KeymapMode::Browsing;
         self.inline_error = None;
     }
-
-    // ── exit ────────────────────────────────────────────────────────
-
-    pub(crate) const fn should_quit(&self) -> bool {
-        matches!(self.exit, ExitMode::Quit | ExitMode::Restart)
-    }
-
-    pub(crate) const fn should_restart(&self) -> bool { matches!(self.exit, ExitMode::Restart) }
-
-    pub(crate) const fn request_quit(&mut self) { self.exit = ExitMode::Quit; }
-
-    pub(crate) const fn request_restart(&mut self) { self.exit = ExitMode::Restart; }
 
     // ── inline error ────────────────────────────────────────────────
 

@@ -115,10 +115,6 @@ impl Config {
 
     pub(super) fn terminal_command(&self) -> &str { &self.current().tui.terminal_command }
 
-    pub(super) fn terminal_command_configured(&self) -> bool {
-        !self.terminal_command().trim().is_empty()
-    }
-
     pub(super) fn discovery_shimmer_enabled(&self) -> bool {
         self.current().tui.discovery_shimmer_secs > 0.0
     }

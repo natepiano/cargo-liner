@@ -25,9 +25,9 @@ use super::ScopeMap;
 use super::Shortcuts;
 use crate::AppContext;
 use crate::BarRegion;
+use crate::BarSlot;
 use crate::ShortcutState;
 use crate::Visibility;
-use crate::BarSlot;
 
 /// Crate-private vtable for per-pane keymap operations.
 pub(crate) trait RuntimeScope<Ctx: AppContext>: 'static {

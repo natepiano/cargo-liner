@@ -8,6 +8,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::KeyBind as FrameworkKeyBind;
 
 use super::app::App;
 use super::constants::ACTIVE_BORDER_COLOR;
@@ -198,6 +199,7 @@ pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyE
     match normalized.code {
         KeyCode::Esc => {
             app.overlays.close_keymap();
+            app.close_framework_overlay_if_open();
             app.focus.close_overlay();
         },
         KeyCode::Up => app.overlays.keymap_pane.viewport.up(),
@@ -211,6 +213,10 @@ pub(super) fn handle_keymap_key(app: &mut App, raw: &KeyEvent, normalized: &KeyE
         KeyCode::Enter => app.overlays.keymap_begin_awaiting(),
         _ => {},
     }
+}
+
+pub(super) fn keymap_capture_keys(bind: FrameworkKeyBind, app: &mut App) {
+    handle_awaiting_key(app, &KeyEvent::new(bind.code, bind.mods));
 }
 
 fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
@@ -477,6 +483,9 @@ fn save_keymap_to_disk(app: &mut App) {
     let _ = std::fs::write(path, &content);
     // Update stamp so hot-reload skips this write.
     app.keymap.sync_stamp();
+    if let Err(err) = app.rebuild_framework_keymap_from_disk() {
+        app.show_timed_toast("Keymap reload failed", err);
+    }
 }
 
 // ── Rendering ────────────────────────────────────────────────────────

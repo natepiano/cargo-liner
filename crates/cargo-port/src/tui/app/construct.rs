@@ -13,6 +13,7 @@
 //! end-to-end and is the only `pub(super)` entry point — siblings in `tui/*`
 //! reach construction through that one method.
 
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -45,10 +46,12 @@ use crate::tui::framework_keymap;
 use crate::tui::framework_keymap::AppPaneId;
 use crate::tui::inflight::Inflight;
 use crate::tui::keymap_state::Keymap;
+use crate::tui::keymap_ui;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::Panes;
 use crate::tui::project_list::ProjectList;
 use crate::tui::scan_state::Scan;
+use crate::tui::settings;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -204,13 +207,22 @@ impl AppBuilder<Started> {
             overlays.set_status_flash(warning, Instant::now());
         }
         let mut framework = tui_pane::Framework::new(FocusedPane::App(AppPaneId::ProjectList));
+        framework
+            .settings_pane
+            .set_text_input_handler(settings::settings_edit_keys);
+        framework
+            .keymap_pane
+            .set_text_input_handler(keymap_ui::keymap_capture_keys);
+        let framework_builder = FrameworkKeymap::<App>::builder().vim_mode(
+            framework_keymap::vim_mode_from_config(config.current().tui.navigation_keys),
+        );
         let framework_builder = if let Some(path) = keymap_path_buf {
             let display_path = path.display().to_string();
-            FrameworkKeymap::<App>::builder()
+            framework_builder
                 .load_toml(path)
                 .with_context(|| format!("loading keymap from {display_path}"))?
         } else {
-            FrameworkKeymap::<App>::builder()
+            framework_builder
         };
         let framework_keymap =
             framework_keymap::build_framework_keymap(framework_builder, &mut framework)
@@ -235,7 +247,7 @@ impl AppBuilder<Started> {
             toasts: ToastManager::default(),
             layout_cache: crate::tui::panes::LayoutCache::default(),
             framework,
-            framework_keymap,
+            framework_keymap: Rc::new(framework_keymap),
         };
         app.finish_new();
         Ok(app)

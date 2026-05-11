@@ -20,9 +20,8 @@ mod widths;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
 pub(super) use actions::handle_ci_runs_key;
-pub(super) use actions::handle_detail_key;
-pub(super) use actions::handle_lints_key;
 #[cfg(test)]
 pub(super) use ci::CI_COMPACT_DURATION_WIDTH;
 #[cfg(test)]
@@ -105,10 +104,57 @@ pub(super) use system::DispatchArgs;
 pub(super) use system::Panes;
 pub(super) use targets::render_empty_targets_panel;
 pub(super) use targets::render_targets_panel;
+use tui_pane::FocusedPane;
 pub(super) use widths::compute_project_list_widths;
 #[cfg(test)]
 pub(super) use widths::name_width_with_gutter;
 
+use super::app::App;
 pub(super) use super::ci_state::CiDisplay;
+use super::framework_keymap::AppPaneId;
+use super::framework_keymap::CpuAction;
+use super::framework_keymap::LangAction;
+use super::framework_keymap::NavigationAction;
 pub(super) use super::lint_state::Lint;
 pub(super) use super::lint_state::LintDisplay;
+use crate::keymap::CiRunsAction;
+use crate::keymap::GitAction;
+use crate::keymap::LintsAction;
+use crate::keymap::PackageAction;
+use crate::keymap::TargetsAction;
+
+pub(super) fn dispatch_package_action(action: PackageAction, app: &mut App) {
+    actions::dispatch_package_action(action, app);
+}
+
+pub(super) fn dispatch_git_action(action: GitAction, app: &mut App) {
+    actions::dispatch_git_action(action, app);
+}
+
+pub(super) fn dispatch_targets_action(action: TargetsAction, app: &mut App) {
+    actions::dispatch_targets_action(action, app);
+}
+
+pub(super) fn dispatch_lang_action(action: LangAction, app: &mut App) {
+    actions::dispatch_lang_action(action, app);
+}
+
+pub(super) const fn dispatch_cpu_action(action: CpuAction, app: &mut App) {
+    actions::dispatch_cpu_action(action, app);
+}
+
+pub(super) fn dispatch_lints_action(action: LintsAction, app: &mut App) {
+    actions::dispatch_lints_action(action, app);
+}
+
+pub(super) fn dispatch_ci_runs_action(action: CiRunsAction, app: &mut App) {
+    actions::dispatch_ci_runs_action(action, app);
+}
+
+pub(super) fn dispatch_navigation_action(
+    action: NavigationAction,
+    focused: FocusedPane<AppPaneId>,
+    app: &mut App,
+) {
+    actions::dispatch_navigation_action(action, focused, app);
+}

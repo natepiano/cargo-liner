@@ -13,6 +13,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::BarPalette;
+use tui_pane::render_status_bar as render_framework_status_bar;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
@@ -42,9 +43,6 @@ use super::panes::Panes;
 use super::panes::RenderStyles;
 use super::popup::PopupFrame;
 use super::settings;
-use super::shortcuts;
-use super::shortcuts::Shortcut;
-use super::shortcuts::ShortcutState;
 use super::toasts;
 use crate::ci::CiStatus;
 use crate::project;
@@ -488,47 +486,6 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &st
     format!("{prefix}{ellipsis}")
 }
 
-fn shortcut_spans(shortcuts: &[Shortcut]) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    for shortcut in shortcuts {
-        if !spans.is_empty() {
-            spans.push(Span::raw("  "));
-        }
-        let (key_style, description_style) = match shortcut.state {
-            ShortcutState::Enabled => (
-                Style::default()
-                    .fg(ACCENT_COLOR)
-                    .add_modifier(Modifier::BOLD),
-                Style::default(),
-            ),
-            ShortcutState::Disabled => (
-                Style::default()
-                    .fg(SECONDARY_TEXT_COLOR)
-                    .add_modifier(Modifier::BOLD),
-                Style::default().fg(SECONDARY_TEXT_COLOR),
-            ),
-        };
-        spans.push(Span::styled(format!(" {}", shortcut.key), key_style));
-        spans.push(Span::styled(
-            format!(" {}", shortcut.description),
-            description_style,
-        ));
-    }
-    spans
-}
-
-fn shortcut_display_width(shortcuts: &[Shortcut]) -> usize {
-    if shortcuts.is_empty() {
-        return 0;
-    }
-    let content: usize = shortcuts
-        .iter()
-        .map(|s| 1 + s.key.len() + 1 + s.description.len())
-        .sum();
-    // separators between items (2 chars each, count - 1 gaps)
-    content + (shortcuts.len() - 1) * 2
-}
-
 /// Palette wiring `ACCENT_COLOR` / `SECONDARY_TEXT_COLOR` / `Modifier::BOLD`
 /// to the framework bar so the new `tui_pane::render_status_bar` output
 /// matches the pre-refactor look produced by [`shortcut_spans`]. The
@@ -557,41 +514,12 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Fill the entire bar with the background color
     frame.render_widget(Paragraph::new("").style(bar_style), area);
 
-    // Phase 14.8: route the draw path through the framework bar
-    // renderer. The result is unused — Phase 18 swaps the legacy
-    // `for_status_bar` flatten/style pipeline below for the framework
-    // [`StatusBar`] regions. Wiring the call now exercises the
-    // framework keymap's per-frame bar pipeline so downstream phases
-    // catch any regressions immediately.
-    let _framework_bar = tui_pane::render_status_bar(
+    let framework_bar = render_framework_status_bar(
         app.framework.focused(),
         app,
         &app.framework_keymap,
         &app.framework,
         &cargo_port_bar_palette(),
-    );
-
-    let context = app.input_context();
-    let enter_action = app.enter_action();
-    // Clean shortcut uses `clean_selection` (design plan → gating
-    // fix): the flag is whether *some* clean is possible from the
-    // current row, not whether the Root item is Rust — that old
-    // heuristic disabled Clean on WorktreeEntry rows.
-    let clean_enabled = app.project_list.clean_selection().is_some();
-    let clear_lint_action = app
-        .project_list
-        .selected_project_path()
-        .and_then(|path| app.lint_at_path(path))
-        .filter(|lr| !lr.runs().is_empty())
-        .map(|_| "clear cache");
-    let groups = shortcuts::for_status_bar(
-        context,
-        enter_action,
-        clean_enabled,
-        clear_lint_action,
-        app.keymap.current(),
-        app.config.terminal_command_configured(),
-        app.project_list.selected_project_is_deleted(),
     );
 
     let mut left_spans = Vec::new();
@@ -611,15 +539,15 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         format!("{} ", super::duration_fmt::format_progressive(uptime_secs)),
         uptime_value_style,
     ));
-    left_spans.extend(shortcut_spans(&groups.navigation));
+    left_spans.extend(framework_bar.nav);
 
-    let center_spans = shortcut_spans(&groups.actions);
-    let right_spans = shortcut_spans(&groups.global);
+    let center_spans = framework_bar.pane_action;
+    let right_spans = framework_bar.global;
 
     let total_width = area.width as usize;
     let left_width = left_spans.iter().map(Span::width).sum::<usize>();
-    let center_width = shortcut_display_width(&groups.actions);
-    let right_width = shortcut_display_width(&groups.global);
+    let center_width = center_spans.iter().map(Span::width).sum::<usize>();
+    let right_width = right_spans.iter().map(Span::width).sum::<usize>();
 
     // Left section
     if !left_spans.is_empty() {

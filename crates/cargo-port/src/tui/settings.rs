@@ -7,6 +7,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use strum::EnumCount;
 use strum::IntoEnumIterator;
+use tui_pane::KeyBind;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
@@ -844,6 +845,7 @@ pub(super) fn handle_settings_key(app: &mut App, key: KeyCode) {
                 return;
             }
             app.overlays.close_settings();
+            app.close_framework_overlay_if_open();
             app.focus.close_overlay();
         },
         KeyCode::Up => {
@@ -1208,6 +1210,10 @@ pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
         },
         _ => {},
     }
+}
+
+pub(super) fn settings_edit_keys(bind: KeyBind, app: &mut App) {
+    handle_settings_edit_key(app, bind.code);
 }
 
 fn toggle_lints(app: &mut App) {

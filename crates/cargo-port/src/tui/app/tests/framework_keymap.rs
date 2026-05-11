@@ -35,10 +35,8 @@ use crate::ci::FetchStatus;
 use crate::keymap;
 use crate::keymap::CiRunsAction;
 use crate::keymap::GitAction;
-use crate::keymap::GlobalAction;
-use crate::keymap::KeyBind as LegacyKeyBind;
 use crate::keymap::PackageAction;
-use crate::keymap::ProjectListAction;
+use crate::project::RootItem;
 use crate::project::Submodule;
 use crate::tui::framework_keymap::AppPaneId;
 use crate::tui::framework_keymap::CiRunsPane;
@@ -52,9 +50,8 @@ use crate::tui::panes::CiEmptyState;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::GitData;
 use crate::tui::panes::PackageData;
-use crate::tui::panes::RemoteRow;
 use crate::tui::panes::PaneId;
-use crate::project::RootItem;
+use crate::tui::panes::RemoteRow;
 
 fn focus_app_pane_in_framework(app: &mut App, id: AppPaneId) {
     app.framework_mut().set_focused(FocusedPane::App(id));
@@ -717,7 +714,10 @@ fn project_list_action_expand_row_rebound_to_tab_expands() {
     let sub_path = sub_dir.to_string_lossy().to_string();
 
     let project = super::make_project(Some("repo"), &root_path);
-    let mut app = make_app(&[project]);
+    let mut app = make_app_with_keymap_toml(
+        &[project],
+        "[global]\nnext_pane = \"F12\"\n[project_list]\nexpand_row = \"Tab\"\n",
+    );
 
     let root_info = app
         .project_list
@@ -735,18 +735,6 @@ fn project_list_action_expand_row_rebound_to_tab_expands() {
     app.ensure_visible_rows_cached();
     app.project_list.set_cursor(0);
     let baseline_rows = app.project_list.row_count();
-
-    // Rebind: pane scope ExpandRow -> Tab; remove NextPane = Tab from
-    // global so it can't shadow Tab.
-    {
-        let km = app.keymap.current_mut();
-        km.global.by_key.remove(&LegacyKeyBind::plain(KeyCode::Tab));
-        km.global.by_action.remove(&GlobalAction::NextPane);
-        km.project_list.insert(
-            LegacyKeyBind::plain(KeyCode::Tab),
-            ProjectListAction::ExpandRow,
-        );
-    }
 
     let event = Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     input::handle_event(&mut app, &event);

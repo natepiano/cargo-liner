@@ -61,6 +61,7 @@ mod types;
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -75,6 +76,7 @@ use super::columns::LintCell;
 use super::columns::StyledSegment;
 use super::config_state::Config;
 use super::focus::Focus;
+use super::framework_keymap;
 use super::inflight::Inflight;
 use super::keymap_state::Keymap;
 use super::overlays::Overlays;
@@ -125,6 +127,8 @@ pub(super) use dismiss::DismissTarget;
 pub(super) use target_index::CleanSelection;
 pub(super) use target_index::TargetDirIndex;
 use tui_pane::Framework;
+use tui_pane::GlobalAction;
+use tui_pane::Keymap as FrameworkKeymap;
 pub(super) use types::CiRunDisplayMode;
 pub(super) use types::ConfirmAction;
 pub(super) use types::DirtyState;
@@ -214,8 +218,8 @@ pub(super) struct App {
     /// and its detail toasts.
     pub(super) startup:           Startup,
     pub(super) focus:             Focus,
-    /// Overlays subsystem. Owns the four overlay-mode enums
-    /// (`FinderMode`, `SettingsMode`, `KeymapMode`, `ExitMode`),
+    /// Overlays subsystem. Owns the overlay-mode enums
+    /// (`FinderMode`, `SettingsMode`, `KeymapMode`),
     /// the transient `inline_error` UI feedback, and the
     /// `status_flash` slot.
     pub(super) overlays:          Overlays,
@@ -239,7 +243,7 @@ pub(super) struct App {
     /// [`tui_pane::Keymap::builder`]. Held in parallel with the legacy
     /// `keymap` field through Phases 14–17; the legacy path remains
     /// authoritative for dispatch until Phase 18 swaps it out.
-    pub(super) framework_keymap:  tui_pane::Keymap<Self>,
+    pub(super) framework_keymap:  Rc<FrameworkKeymap<Self>>,
 }
 
 impl App {
@@ -718,6 +722,7 @@ impl App {
         if !self.config.current().tui.include_dirs.is_empty() {
             return;
         }
+        self.dispatch_framework_global_action(GlobalAction::OpenSettings);
         self.focus.open_overlay(PaneId::Settings);
         self.overlays.open_settings();
         if let Some(idx) = crate::tui::settings::SettingOption::iter()
@@ -727,6 +732,36 @@ impl App {
         }
         self.overlays
             .set_inline_error("Configure at least one include directory before continuing");
+    }
+
+    fn dispatch_framework_global_action(&mut self, action: GlobalAction) {
+        let keymap = Rc::clone(&self.framework_keymap);
+        keymap.dispatch_framework_global(action, self);
+    }
+
+    pub(super) fn rebuild_framework_keymap_from_disk(&mut self) -> Result<(), String> {
+        let framework_builder = FrameworkKeymap::<Self>::builder().vim_mode(
+            framework_keymap::vim_mode_from_config(self.config.current().tui.navigation_keys),
+        );
+        let framework_builder = if let Some(path) = self.keymap.path().map(Path::to_path_buf) {
+            let display_path = path.display().to_string();
+            framework_builder
+                .load_toml(path)
+                .map_err(|err| format!("loading keymap from {display_path}: {err}"))?
+        } else {
+            framework_builder
+        };
+        let framework_keymap =
+            framework_keymap::build_framework_keymap(framework_builder, &mut self.framework)
+                .map_err(|err| format!("building framework keymap: {err}"))?;
+        self.framework_keymap = Rc::new(framework_keymap);
+        Ok(())
+    }
+
+    pub(super) fn close_framework_overlay_if_open(&mut self) {
+        if self.framework.overlay().is_some() {
+            self.dispatch_framework_global_action(GlobalAction::Dismiss);
+        }
     }
 
     /// Derive the current input context from app state. Reads
@@ -821,6 +856,7 @@ impl App {
         .collect()
     }
 
+    #[cfg(test)]
     pub(super) fn focus_next_pane(&mut self) {
         self.prune_toasts();
         let panes = self.tabbable_panes();
@@ -843,6 +879,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn focus_previous_pane(&mut self) {
         self.prune_toasts();
         let panes = self.tabbable_panes();
