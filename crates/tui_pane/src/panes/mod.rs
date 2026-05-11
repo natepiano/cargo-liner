@@ -13,14 +13,14 @@
 //! renderer (Phase 13) and input dispatcher (Phase 15) special-case
 //! framework panes.
 
-mod keymap_pane;
-mod settings_pane;
+mod keymap;
+mod settings;
 mod toasts;
 
-pub use keymap_pane::KeymapPane;
-pub use keymap_pane::KeymapPaneAction;
-pub use settings_pane::SettingsPane;
-pub use settings_pane::SettingsPaneAction;
+pub use keymap::KeymapPane;
+pub use keymap::KeymapPaneAction;
+pub use settings::SettingsPane;
+pub use settings::SettingsPaneAction;
 pub use toasts::Toast;
 pub use toasts::ToastId;
 pub use toasts::ToastStyle;
