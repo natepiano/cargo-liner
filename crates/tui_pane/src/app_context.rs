@@ -36,21 +36,11 @@ pub trait AppContext: Sized {
     /// [`Self::handle_toast_action`] body.
     type ToastAction: Clone + 'static;
 
-    /// App-specific settings data loaded by the framework settings
-    /// store before the app is constructed.
-    type AppSettings: Default + Clone + 'static;
-
     /// Borrow the framework state owned by this app.
     fn framework(&self) -> &Framework<Self>;
 
     /// Mutably borrow the framework state owned by this app.
     fn framework_mut(&mut self) -> &mut Framework<Self>;
-
-    /// Borrow app-specific settings.
-    fn app_settings(&self) -> &Self::AppSettings;
-
-    /// Mutably borrow app-specific settings.
-    fn app_settings_mut(&mut self) -> &mut Self::AppSettings;
 
     /// Update the focused pane.
     ///

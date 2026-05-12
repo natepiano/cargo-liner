@@ -58,7 +58,7 @@ cargo-port-api-fix/
         │   ├── pane_action_region.rs # center: per-action rows from focused
         │   │                       #   pane's bar_slots + label/state
         │   └── global_region.rs    # right: GlobalAction + AppGlobals
-        ├── settings.rs             # SettingsRegistry<Ctx>;
+        ├── settings.rs             # SettingsRegistry;
         │                           #   add_bool / add_enum / add_int
         ├── framework.rs            # Framework<Ctx> aggregator;
         │                           #   mode_queries registry;
@@ -66,9 +66,9 @@ cargo-port-api-fix/
         │                           #   focused_pane_mode
         └── panes/                  # framework-internal panes
             ├── mod.rs
-            ├── keymap.rs           # KeymapPane<Ctx>;
+            ├── keymap.rs           # KeymapPane;
             │                       #   EditState::{Browse, Awaiting, Conflict}
-            ├── settings.rs         # SettingsPane<Ctx>;
+            ├── settings.rs         # SettingsPane;
             │                       #   EditState::{Browse, Editing}
             └── toasts.rs           # Toasts<Ctx>; framework-owned typed pane
                                     #   (Phase 11 placeholder, Phase 12+ typed manager)
@@ -80,7 +80,7 @@ App-specific code stays in the binary crate. Framework code lives only in `tui_p
 - `keymap/` — bindings storage + traits + builder. The builder is the keymap's builder; it calls into `framework.rs` and `settings.rs` to file pane queries and settings during registration, but the resulting `Keymap<Ctx>` is the build product.
 - `bar/` — reads `Keymap<Ctx>` and pane `Shortcuts<Ctx>` impls; emits `StatusBar`.
 - `panes/` — framework panes implementing `Shortcuts<Ctx>`.
-- `settings.rs` — `SettingsRegistry<Ctx>`.
+- `settings.rs` — `SettingsRegistry`.
 - `framework.rs` — aggregates framework panes and the `mode` query registry.
 - `lib.rs` — public re-exports.
 
@@ -1022,7 +1022,7 @@ The remaining architecture needs a tightening pass before implementation. These 
 
 2. **Framework-pane handlers must avoid the `&mut Framework` + `&mut Ctx` split-borrow trap.** The Phase 11 surface says `KeymapPane::handle_key(&mut self, ctx: &mut Ctx, ...)`, `SettingsPane::handle_key(&mut self, ctx: &mut Ctx, ...)`, and `Toasts::handle_key(&mut self, ctx: &mut Ctx, ...)`. If the pane is stored inside `ctx.framework_mut()`, calling that method while also passing `&mut ctx` will not compile without take/replace or interior mutability. Prefer command-returning pane methods that only mutate pane-local state while borrowed, then apply the returned command to `Ctx` after the pane borrow ends. Free dispatcher functions can orchestrate the borrow scopes.
 
-3. **Framework-pane access to keymap/settings data is under-specified.** `SettingsRegistry<Ctx>` currently lives on `Keymap<Ctx>`, while Phase 11 puts `SettingsPane<Ctx>` on `Framework<Ctx>`. `KeymapPane` also needs keymap metadata and mutation/persistence support. Decide ownership before implementing panes: either keep registries/metadata on `Keymap` and pass `&Keymap` into framework-pane operations, or transfer the settings registry into `Framework` during `build_into`. The current plan gives framework panes neither a clean read path nor a clean mutation path.
+3. **Framework-pane access to keymap/settings data is under-specified.** The settings registry currently lives on `Keymap<Ctx>`, while Phase 11 puts `SettingsPane` on `Framework<Ctx>`. `KeymapPane` also needs keymap metadata and mutation/persistence support. Decide ownership before implementing panes: either keep registries/metadata on `Keymap` and pass `&Keymap` into framework-pane operations, or transfer the settings registry into `Framework` during `build_into`. The current plan gives framework panes neither a clean read path nor a clean mutation path.
 
 4. **`RenderedSlot` is too flat for the planned bar.** It carries one `key` and one `label`, so `RuntimeScope::render_bar_slots` cannot represent `BarSlot::Paired(left, right, shared_label)` and drops alternate bindings for `Single(action)`. That conflicts with ProjectList rows (`←/→ expand`, `+/- all`, `→/l`) and with the original multi-bind bar requirement. Before Phase 13, replace `RenderedSlot` with a resolved slot enum such as `Single { keys: Vec<KeyBind>, label, state }` / `Paired { left_key, right_key, label, state }`, or otherwise carry enough fields for region renderers to format paired and multi-key rows correctly.
 
@@ -1814,7 +1814,7 @@ pane-local check needed.
 
 Two tightly-coupled additions in one commit because `KeymapBuilder::with_settings` is the only consumer of `SettingsRegistry`:
 
-- `tui_pane/src/settings.rs` — `SettingsRegistry<Ctx>` + `add_bool` / `add_enum` / `add_int` / `with_bounds` (§9).
+- `tui_pane/src/settings.rs` — `SettingsRegistry` + `add_bool` / `add_enum` / `add_int` / `with_bounds` (§9).
 - `tui_pane/src/keymap/builder.rs` — `KeymapBuilder<Ctx, Configuring>` body fills in. One error type — `KeymapError` — covers loader and builder validation; three new variants land here: `NavigationMissing`, `GlobalsMissing`, `DuplicateScope { type_name: &'static str }`. `BuilderError` was rejected during Phase 9 review (one type beats two when the binary's startup path renders both the same).
 
 **Typed singleton storage for `Navigation` / `Globals`.** `Keymap<Ctx>` gains three fields populated by `KeymapBuilder::register_navigation::<N>()` and `register_globals::<G>()` (both on the `Configuring` state):
@@ -1977,11 +1977,11 @@ The framework's `Tab`/`Shift+Tab` cycle does not include Toasts at this phase �
 
 Add to `tui_pane/src/panes/`:
 
-- `keymap.rs` — `KeymapPane<Ctx>` with internal `EditState::{Browse, Awaiting, Conflict}`. Method `editor_target(&self) -> Option<&Path>`. `mode(&self, ctx) -> Mode<Ctx>` returns `TextInput(keymap_capture_keys)` when `EditState == Awaiting`, `Static` when `Conflict`, `Navigable` when `Browse`.
-- `settings.rs` — `SettingsPane<Ctx>` with internal `EditState::{Browse, Editing}`; uses `SettingsRegistry<Ctx>`. Method `editor_target(&self) -> Option<&Path>`. `mode(&self, ctx) -> Mode<Ctx>` returns `TextInput(settings_edit_keys)` when `EditState == Editing`, `Navigable` otherwise.
+- `keymap.rs` — `KeymapPane` with internal `EditState::{Browse, Awaiting, Conflict}`. Method `editor_target(&self) -> Option<&Path>`. `mode(&self, ctx) -> Mode<Ctx>` returns `TextInput(keymap_capture_keys)` when `EditState == Awaiting`, `Static` when `Conflict`, `Navigable` when `Browse`.
+- `settings.rs` — `SettingsPane` with internal `EditState::{Browse, Editing}`; uses `SettingsRegistry`. Method `editor_target(&self) -> Option<&Path>`. `mode(&self, ctx) -> Mode<Ctx>` returns `TextInput(settings_edit_keys)` when `EditState == Editing`, `Navigable` otherwise.
 - `toasts.rs` — `Toasts<Ctx>` is a placeholder pane carrying a `Vec<String>` message stack. Public surface: `new()`, `push(impl Into<String>)`, `try_pop_top() -> bool`, `has_active() -> bool`, `defaults() -> Bindings<ToastsAction>` (binds `Esc → Dismiss`), `handle_key(&mut self, &mut Ctx, &KeyBind) -> KeyOutcome` (returns `Consumed` on `Dismiss`, `Unhandled` otherwise — the only framework pane whose `handle_key` may return `Unhandled`), `mode(&self, &Ctx) -> Mode<Ctx>` (always `Mode::Static`), `bar_slots(&self, &Ctx) -> Vec<(BarRegion, BarSlot<ToastsAction>)>`. The message stack is the placeholder content store; Phase 12 replaces it with a typed `Toast` manager.
 
-**Inherent action surface — same four methods on all three framework panes.** `KeymapPane<Ctx>`, `SettingsPane<Ctx>`, and `Toasts<Ctx>` each ship:
+**Inherent action surface — same four methods on all three framework panes.** `KeymapPane`, `SettingsPane`, and `Toasts<Ctx>` each ship:
 - `pub fn defaults() -> Bindings<Self::Action>` — same role as `Shortcuts::defaults`, no trait.
 - `pub fn handle_key(&mut self, ctx: &mut Ctx, bind: &KeyBind) -> KeyOutcome`. The two overlay panes intercept ALL keys when focused and return `KeyOutcome::Consumed` regardless (matches existing cargo-port `keymap_open` / `settings_open` short-circuit behavior). `Toasts::handle_key` returns `Consumed` on `Dismiss`, `Unhandled` otherwise — the only framework pane whose `handle_key` may return `Unhandled`.
 - `pub fn mode(&self, ctx: &Ctx) -> Mode<Ctx>` — `&self` form (the framework owns the struct directly, no split-borrow constraint).
@@ -2072,8 +2072,8 @@ pub struct Framework<Ctx: AppContext> {
     overlay:           Option<FrameworkPaneId>,
 
     // ── Phase 11 additions ──
-    pub keymap_pane:   KeymapPane<Ctx>,
-    pub settings_pane: SettingsPane<Ctx>,
+    pub keymap_pane:   KeymapPane,
+    pub settings_pane: SettingsPane,
     pub toasts:        Toasts<Ctx>,
 }
 ```
@@ -3053,17 +3053,17 @@ Each registration calls the pane defaults once, stores the resolved `ScopeMap` u
 
 **Reverse-lookup public method.** Confirm or add `pub fn key_for_toml_key(&self, app_pane_id: Ctx::AppPaneId, action_toml_key: &str) -> Option<KeyBind>` on `Keymap<Ctx>`. It walks the app-pane registry by `AppPaneId` and reverse-walks the resolved `ScopeMap` for the action whose `toml_key()` matches. Phase 18's structural Output-cancel preflight depends on this method. This stays within the post-Phase-9-reset rule because it is keyed by `(AppPaneId, &str)`, not by a public typed `<P>` probe.
 
-**Binary-side `Mode::TextInput` handler injection.** Add public builder + setter methods on `SettingsPane<Ctx>` and `KeymapPane<Ctx>` so cargo-port can supply the text-input mutation body while the framework owns the overlay pane:
+**Binary-side `Mode::TextInput` handler injection.** Add public builder + setter methods on `SettingsPane` and `KeymapPane` so cargo-port can supply the text-input mutation body while the framework owns the overlay pane:
 
 ```rust
-impl<Ctx: AppContext> SettingsPane<Ctx> {
+impl<Ctx: AppContext> SettingsPane {
     #[must_use]
     pub const fn with_text_input_handler(self, handler: fn(KeyBind, &mut Ctx)) -> Self;
     pub const fn set_text_input_handler(&mut self, handler: fn(KeyBind, &mut Ctx));
 }
 ```
 
-`KeymapPane<Ctx>` mirrors the API. Each pane stores the handler fn pointer and returns `Mode::TextInput(self.text_input_handler)` from the active editing/capture mode. Defaults remain today's no-op stubs (`settings_edit_keys` / `keymap_capture_keys`) for back-compat. This phase only supplies the handler-injection route; Phase 19 wires cargo-port's `settings::handle_settings_edit_key` and `keymap_ui::handle_keymap_capture` bodies into those handlers.
+`KeymapPane` mirrors the API. Each pane stores the handler fn pointer and returns `Mode::TextInput(self.text_input_handler)` from the active editing/capture mode. Defaults remain today's no-op stubs (`settings_edit_keys` / `keymap_capture_keys`) for back-compat. This phase only supplies the handler-injection route; Phase 19 wires cargo-port's `settings::handle_settings_edit_key` and `keymap_ui::handle_keymap_capture` bodies into those handlers.
 
 **Paired-slot rendering.** Preserve secondary actions from `BarSlot::Paired(a, b, label)` all the way to rendered bar output. Today `PaneScope::render_bar_slots` collapses every paired slot to the primary action via `.primary()`, so Phase 23 cannot assert `+/-`, `left/right expand`, or vim-mode paired labels. Land one concrete representation in this phase: either extend `RenderedSlot` with an optional secondary key, add a parallel pre-flattened span render method, or introduce a `RenderedSlot::Paired { primary, secondary, label }` variant. Whichever representation is chosen, `bar/nav_region.rs` and `bar/pane_action_region.rs` must route paired slots through `bar/support.rs::push_paired` instead of `push_slot`.
 
@@ -3775,7 +3775,7 @@ Phase 25 corrects the Settings ownership boundary. Generic settings persistence 
 
 **Settings ownership.** Phase 21 moved Settings open/input/render gating to framework overlay state, but cargo-port still owns the concrete settings row builder, popup renderer, viewport mirror, and inline error display. Phase 25 completes the intended ownership split for Settings: generic row construction, viewport/edit state, section rendering, inline validation display, text buffering, edit/commit routing, and file persistence move into `tui_pane`. cargo-port registers app setting entries and runtime side-effect callbacks only.
 
-**Generic framework settings store.** Add a framework-owned settings store, independent of keymap TOML:
+**Generic framework settings store.** Add a framework-owned settings store, independent of keymap TOML. Phase 27 tightened this boundary after implementation: the store is table-native and not generic over `Ctx`; `AppContext` carries no app-settings associated type. cargo-port derives `CargoPortConfig` from `store.table()` at startup, after successful settings edits, and after config reload.
 
 ```rust
 pub struct SettingsFileSpec {
@@ -3784,14 +3784,13 @@ pub struct SettingsFileSpec {
     pub path:       Option<PathBuf>,
 }
 
-pub struct SettingsStore<Ctx: AppContext> {
+pub struct SettingsStore {
     // owns path resolution, raw TOML document, dirty tracking,
     // validation errors, and registered setting metadata
 }
 
-pub struct LoadedSettings<Ctx: AppContext> {
-    pub store:          SettingsStore<Ctx>,
-    pub app_settings:   Ctx::AppSettings,
+pub struct LoadedSettings {
+    pub store:          SettingsStore,
     pub toast_settings: ToastSettings,
 }
 ```
@@ -3801,33 +3800,34 @@ pub struct LoadedSettings<Ctx: AppContext> {
 Startup uses an explicit handoff API:
 
 ```rust
-impl<Ctx: AppContext> SettingsStore<Ctx> {
+impl SettingsStore {
     pub fn load_for_startup(
         spec: SettingsFileSpec,
-        registry: SettingsRegistry<Ctx>,
-    ) -> Result<LoadedSettings<Ctx>, SettingsError>;
+        registry: SettingsRegistry,
+    ) -> Result<LoadedSettings, SettingsError>;
 }
 ```
 
-`LoadedSettings` is consumed by the binary's construction pipeline. cargo-port's `AppBuilder` uses `loaded.app_settings` in the places that currently read `inputs.cfg` before `App` exists, installs `loaded.store` and `loaded.toast_settings` into `Framework`, then builds the framework keymap. This makes the construction sequence explicit: settings load first, app-specific startup reads second, framework/keymap setup third, `App` construction last.
+`LoadedSettings` is consumed by the binary's construction pipeline. cargo-port derives `CargoPortConfig::from_table(loaded.store.table())`, then passes `{ config, store, toast_settings }` through its startup handoff. This makes the construction sequence explicit: settings load first, app-specific config derivation second, framework/keymap setup third, `App` construction last.
 
-**Startup app-settings target.** App settings must load before `App` exists. Phase 25 adds an associated app-settings data type to `AppContext`:
+**Startup app-settings target.** App settings must load before `App` exists, but the framework does not own the app's typed config struct. Phase 27 removed the `AppSettings` associated type entirely:
 
 ```rust
 pub trait AppContext {
-    type AppSettings: Default + Clone + 'static;
-    fn app_settings(&self) -> &Self::AppSettings;
-    fn app_settings_mut(&mut self) -> &mut Self::AppSettings;
+    type AppPaneId: Copy + Eq + Hash + 'static;
+    type ToastAction: Clone + 'static;
+    fn framework(&self) -> &Framework<Self>;
+    fn framework_mut(&mut self) -> &mut Framework<Self>;
 }
 ```
 
-cargo-port maps this to its app-specific settings struct (the current `CargoPortConfig` data, renamed or narrowed as needed). `SettingsStore` loads TOML into `Framework` settings plus `Ctx::AppSettings` before `App` construction. App construction then reads `Ctx::AppSettings` for startup decisions that already need config values: lint enablement, scan roots, CPU settings, vim mode, editor command, and related setup. Runtime SettingsPane edits update `Ctx::AppSettings` first, then run an optional app callback on `&mut Ctx` so cargo-port can apply side effects such as lint-runtime respawn or keymap rebuild.
+cargo-port keeps `CargoPortConfig` as its app schema / normalization type. `SettingsStore` owns the TOML table and framework settings; cargo-port derives its typed config from that table and owns runtime side effects such as lint-runtime respawn or keymap rebuild after validation succeeds.
 
-**App setting registration.** `SettingsRegistry<Ctx>` becomes a schema and runtime adapter, not just a row list. App entries include section/key names, value kind, validation, display metadata, `get(&Ctx::AppSettings)`, `set(&mut Ctx::AppSettings, value)`, and an optional `apply(&mut Ctx, SettingChange)` callback for runtime side effects. App values such as cargo-port's `editor` remain app-specific fields, but the framework settings store loads and saves them by calling the registered accessors on the app-settings data target.
+**App setting registration.** `SettingsRegistry` is a table-native schema and row adapter, not an app-config adapter. App entries include section/key names, value kind, validation, display metadata, and codecs over `toml::Table`. App values such as cargo-port's `editor` remain app-specific fields, but the framework settings store loads and saves the TOML cells; cargo-port re-derives and applies `CargoPortConfig` after successful app-owned edits.
 
 Framework-owned settings use the same store but do not route through cargo-port callbacks. `ToastSettings` registers a framework section named `"toasts"`; SettingsPane edits mutate `framework.toast_settings_mut()` directly and mark the settings store dirty.
 
-**Registry ownership migration.** `SettingsRegistry` currently lives on `Keymap<Ctx>` through `KeymapBuilder::with_settings`. Phase 25 moves registry storage to `Framework<Ctx>` / `SettingsStore<Ctx>` and deletes the keymap-owned path. Remove `KeymapBuilder::with_settings`, the builder's `settings` field, `Keymap.settings`, and `Keymap::settings()`. Build/load `SettingsStore` before the framework keymap builder chain. Keep `register_settings_overlay()` on the keymap builder because `[settings]` shortcut bindings still belong to the keymap file; only settings values and SettingsPane rows leave keymap ownership. After Phase 25, SettingsPane never needs keymap ownership to render or edit settings.
+**Registry ownership migration.** `SettingsRegistry` currently lives on `Keymap<Ctx>` through `KeymapBuilder::with_settings`. Phase 25 moves registry storage to `Framework<Ctx>` / `SettingsStore` and deletes the keymap-owned path. Remove `KeymapBuilder::with_settings`, the builder's `settings` field, `Keymap.settings`, and `Keymap::settings()`. Build/load `SettingsStore` before the framework keymap builder chain. Keep `register_settings_overlay()` on the keymap builder because `[settings]` shortcut bindings still belong to the keymap file; only settings values and SettingsPane rows leave keymap ownership. After Phase 25, SettingsPane never needs keymap ownership to render or edit settings.
 
 **cargo-port config subsystem migration.** `src/config.rs` stops owning generic config path/load/save behavior. It keeps app-specific schema, defaults, validation/normalization, and migration helpers. `SettingsStore` takes over path resolution, default-file creation, TOML read/write, dirty tracking, write errors, and template generation from registered settings. Runtime reload in `src/tui/app/async_tasks/config.rs` becomes a framework settings-store reload followed by app callbacks for changed app settings; keymap reload remains on the keymap path.
 
@@ -3850,7 +3850,7 @@ pub enum SettingsCommand<Ctx: AppContext> {
     Cancel,
 }
 
-impl<Ctx: AppContext> SettingsPane<Ctx> {
+impl<Ctx: AppContext> SettingsPane {
     pub fn handle_text_input(&mut self, bind: KeyBind) -> SettingsCommand<Ctx>;
 }
 ```
@@ -3906,8 +3906,8 @@ pub enum SettingValue {
     Enum(&'static str),
 }
 
-impl<Ctx> SettingsRegistry<Ctx> {
-    pub(crate) fn add_with_section(&mut self, section: SettingsSection, entry: SettingEntry<Ctx>);
+impl SettingsRegistry {
+    pub(crate) fn add_with_section(&mut self, section: SettingsSection, entry: SettingEntry);
     // existing add_bool / add_enum / add_int become App-section helpers;
     // add_string / add_float ship here because cargo-port app settings need them.
 }
@@ -3918,10 +3918,10 @@ impl<Ctx> SettingsRegistry<Ctx> {
 ```rust
 pub enum AdjustDirection { Back, Forward }
 
-pub struct SettingCodecs<Store> {
-    pub format: fn(&Store) -> String,
-    pub parse:  fn(&str, &mut Store) -> Result<(), SettingsError>,
-    pub adjust: Option<fn(AdjustDirection, &mut Store) -> Result<(), SettingsError>>,
+pub struct SettingCodecs {
+    pub format: fn(&toml::Table) -> String,
+    pub parse:  fn(&str, &mut toml::Table) -> Result<(), SettingsError>,
+    pub adjust: Option<fn(AdjustDirection, &mut toml::Table) -> Result<(), SettingsError>>,
 }
 ```
 
@@ -3935,16 +3935,16 @@ The settings pane renders sections grouped by `SettingsSection`. App sections re
 
 ```rust
 pub struct Framework<Ctx: AppContext> {
-    pub settings_pane: SettingsPane<Ctx>,
-    pub keymap_pane:  KeymapPane<Ctx>,
+    pub settings_pane: SettingsPane,
+    pub keymap_pane:  KeymapPane,
     pub toasts:       Toasts<Ctx>,
-    settings_store:   SettingsStore<Ctx>,
+    settings_store:   SettingsStore,
     toast_settings:   ToastSettings,
     // ...
 }
 ```
 
-Phase 25 adds `toast_settings()` / `toast_settings_mut()` accessors and a framework settings initialization path. The initialization path loads the settings TOML through `SettingsStore`, applies framework-owned sections directly to `Framework`, and applies app sections into `Ctx::AppSettings` before `Ctx` is constructed. Runtime edits use staged setting commands so the framework borrow ends before any `apply(&mut Ctx, SettingChange)` callback runs. The public ownership rule is fixed: `tui_pane` owns load/save, cargo-port owns only app-specific fields and side effects.
+Phase 25 adds `toast_settings()` / `toast_settings_mut()` accessors and a framework settings initialization path. Phase 27 amends the initialization path: `SettingsStore` loads the table and framework-owned sections, while the binary derives `CargoPortConfig` from the table before `App` construction. Runtime edits use staged table mutation and validation before save/apply. The public ownership rule is fixed: `tui_pane` owns load/save mechanics, cargo-port owns only app-specific schema and side effects.
 
 There is no `ToastSettingsBinding`:
 
@@ -3976,7 +3976,7 @@ cargo-port no longer parses or persists `[toasts]` through `src/config.rs`. `tui
 - `legacy_tui_toast_keys_seed_toasts_section` — user config with old `[tui].status_flash_secs` / `task_linger_secs` and no `[toasts]` seeds framework `ToastSettings`; save writes `[toasts]` and drops the old keys.
 - `toast_settings_invalid_width_returns_error` — `width = 0` returns `ToastSettingsError::WidthZero`.
 - `app_setting_editor_round_trip` — register a fake app-owned string setting, load it from TOML, edit through SettingsPane, assert the app setter ran and the saved TOML changed.
-- `app_settings_load_before_app_construction` — `SettingsStore` loads a fake `Ctx::AppSettings` value before a test `Ctx` exists, and runtime edit applies through a callback after `Ctx` exists.
+- `config_from_table_before_app_construction` — `SettingsStore` loads the TOML table before `App` exists, and cargo-port derives `CargoPortConfig` from that table before startup side effects run.
 - `legacy_toast_manager_reads_framework_settings` — before Phase 26 deletes `app.toasts`, cargo-port timed/task toast helpers read durations from `framework.toast_settings()` after the `TuiConfig` fields are gone.
 - `settings_pane_renders_toast_section_after_app_section` — bar/render snapshot.
 - cargo-port: `tui_config_no_longer_carries_toast_fields` — compile-fail / type-level check that the moved fields are gone.
@@ -3984,12 +3984,12 @@ cargo-port no longer parses or persists `[toasts]` through `src/config.rs`. `tui
 **Code touched in Phase 25:**
 - New: `tui_pane/src/settings/store.rs` — `SettingsFileSpec`, `SettingsStore`, settings TOML load/save, path resolution, dirty/error state.
 - New: `tui_pane/src/toasts/settings.rs` — `ToastSettings`, validated newtypes, `ToastSettingsError`.
-- `tui_pane/src/framework/mod.rs` — `settings_store: SettingsStore<Ctx>` and `toast_settings: ToastSettings` fields on `Framework<Ctx>`; `toast_settings()` / `toast_settings_mut()` accessors; settings initialization and save hooks.
+- `tui_pane/src/framework/mod.rs` — `settings_store: SettingsStore` and `toast_settings: ToastSettings` fields on `Framework<Ctx>`; `toast_settings()` / `toast_settings_mut()` accessors; settings initialization and save hooks.
 - `tui_pane/src/settings.rs` — `SettingsSection`, `SettingValue`, app setting codecs, string/float entry support, ordering.
 - `tui_pane/src/panes/settings.rs` — render section headers; route browse/edit/save through `SettingsStore`.
 - `tui_pane/src/keymap/mod.rs` / `tui_pane/src/keymap/builder.rs` — remove `Keymap` ownership of `SettingsRegistry`: delete `KeymapBuilder::with_settings`, the builder `settings` field, `Keymap.settings`, and `Keymap::settings()`. Keep only keymap overlay registration for `[settings]` shortcuts.
 - `tui_pane/src/lib.rs` — re-export `SettingsFileSpec`, `SettingsStore`, `SettingValue`, `ToastSettings`, the newtypes, `ToastPlacement`, `ToastAnimationSettings`, `ToastSettingsError`.
-- Cargo-port: register app-specific settings with `SettingsRegistry`; migrate `src/config.rs` path/load/save/template behavior to `SettingsStore` while keeping app schema/normalizers; migrate `config::active_config` / `set_active_config` and `src/tui/config_state.rs::Config` to the new store/app-settings model; update `src/tui/config_reload.rs`, `src/tui/config_state.rs`, and `src/tui/app/async_tasks/config.rs` to reload through the framework settings store; delete `status_flash_secs` / `task_linger_secs` from `TuiConfig`; migrate old values into framework `[toasts]`; reroute legacy `app.toasts` duration reads to `framework.toast_settings()`; delete toast rows from `toast_settings_rows`; delete SettingsPane edit-buffer mirrors; keep `discovery_shimmer_secs` as an app-owned setting. No `App::toast_settings` field — the framework is the sole mutable owner of framework settings.
+- Cargo-port: register app-specific settings with `SettingsRegistry`; migrate generic path/load/save/template behavior to `SettingsStore` while keeping app schema/normalizers in `src/config.rs`; derive `CargoPortConfig` from `SettingsStore::table()` at startup/edit/reload; update `src/tui/config_reload.rs`, `src/tui/config_state.rs`, and `src/tui/app/async_tasks/config.rs` to reload through the framework settings store; delete `status_flash_secs` / `task_linger_secs` from `TuiConfig`; migrate old values into framework `[toasts]`; reroute legacy `app.toasts` duration reads to `framework.toast_settings()`; delete toast rows from `toast_settings_rows`; delete SettingsPane edit-buffer mirrors; keep `discovery_shimmer_secs` as an app-owned setting. No `App::toast_settings` field — the framework is the sole mutable owner of framework settings.
 - Phase closeout greps: `rg 'settings_edit_keys|SettingsEditBuffer|edit_buffer|overlays\\.settings|overlays\\.keymap' src/tui` must return no production-owned SettingsPane state after the migration, except deliberate compatibility comments/tests called out in the retrospective.
 - Phase closeout runs the remaining-phase closeout gate.
 
@@ -3999,7 +3999,7 @@ cargo-port no longer parses or persists `[toasts]` through `src/config.rs`. `tui
 - `tui_pane::SettingsStore`, `SettingsFileSpec`, `SettingsRegistry`, `SettingsSection`, `SettingCodecs`, and `ToastSettings` landed as framework API, with `Framework<Ctx>` now owning `settings_store` and `toast_settings`.
 - Settings/Keymap mirror state moved out of cargo-port overlays: `Overlays::settings`, `Overlays::keymap`, `SettingsEditBuffer`, `settings_edit_keys`, and the remaining `overlays.settings` / `overlays.keymap` production references are gone.
 - The legacy cargo-port toast manager now reads timing through `framework.toast_settings()` while Phase 26 still owns the `app.toasts` storage migration.
-- The Phase 25 closeout pass finished the missing settings ownership pieces: cargo-port registers its app settings with `SettingsRegistry<App>`, `SettingsPane::render_rows` owns the generic row renderer / edit-buffer display / hit-target mapping, startup config load and default-file seeding run through `SettingsStore`, and runtime save/reload no longer call the old `config::save` / `config::try_load` path.
+- The Phase 25 closeout pass finished the missing settings ownership pieces: cargo-port registers its app settings with `SettingsRegistry`, `SettingsPane::render_rows` owns the generic row renderer / edit-buffer display / hit-target mapping, startup config load and default-file seeding run through `SettingsStore`, and runtime save/reload no longer call the old `config::save` / `config::try_load` path.
 
 **What deviated from the plan:**
 - cargo-port still owns app-specific setting labels, display values, validation helpers, and runtime side-effect orchestration in `src/tui/settings.rs`; those are intentionally app-specific. The generic row rendering, text editing, persistence, and framework-owned `[toasts]` section are framework-owned.
@@ -4224,27 +4224,67 @@ Acceptance check: `rg 'app\\.toasts|ToastManager|crate::tui::toasts|super::toast
 - `tui_pane::Viewport` and cargo-port's app-pane `Viewport` are distinct types, so focused-toast hit testing stays a direct framework-toast path instead of sharing the binary's app-pane viewport helper.
 
 **Implications for remaining phases:**
-- There are no remaining numbered implementation phases after Phase 26; final closeout must reconcile the generic sections below with the shipped framework-owned toast, settings, bar, keymap, and focus paths.
-- Final closeout owns API-doc polish for the new public toast types and removal or documentation of the module-level `expect` attributes in `tui_pane/src/toasts/{manager,render,format}.rs`.
-- Final closeout must grep for stale live-code references to `app.toasts`, `ToastManager`, `handle_toast_key`, and cargo-port-only toast constants; historical phase notes can keep those terms.
+- Phase 27 is a required settings-boundary correction, not final closeout. It removes the last app-config generic from the framework settings store.
+- The remaining migration cleanup is required and stays numbered: Phase 28 finishes framework pane/API cleanup, Phase 29 finishes toast API cleanup, and Phase 30 is final closeout.
+- Final closeout must grep for stale live-code references to `app.toasts`, `ToastManager`, `handle_toast_key`, cargo-port-only toast constants, and legacy keymap/settings UI ownership; historical phase notes can keep those terms.
 
 ### Phase 26 Review
 
-- Added Phase 27 as the numbered final closeout owner for API-doc polish, stale-reference greps, remaining-section reconciliation, final validation, and install.
+- Replaced the earlier final-closeout assumption with required remaining phases. Phase 27 owns the settings-boundary correction; final closeout moves to Phase 30.
 - Updated the Phase 26 `ToastSettings` prune/tick contract: `Toasts::prune(now)` stays public and uses default-only animation timing; user-configurable toast timings are consumed at push/finish, not prune.
 - Reconciled the `Definition of done` public export list with shipped `tui_pane` exports, including the Phase 26 toast surface and the Phase 26 closeout status-line surface.
 - Removed the binary-side toast shim in code and plan text. cargo-port keeps only `src/tui/toast_adapters.rs` for app-domain `TrackedItemKey` conversions; all toast APIs are imported directly from `tui_pane`.
 - Moved final status-line ownership into `tui_pane::render_status_line(...)`: the framework now owns fill, uptime / scanning text, left/center/right placement, global-strip composition, per-slot resolution, and styling. cargo-port supplies only app facts, global-slot policy, and palette data.
 - Rewrote stale test-infrastructure and risk prose from future-plan language into shipped-code inventory.
 
-### Phase 27 — Final closeout
+### Phase 27 — Resolve settings boundary (✅ landed)
 
-Phase 27 is the final cleanup checkpoint after the framework migration. It does not add new architecture. It reconciles the post-plan sections below with the shipped code, removes temporary lint allowances where practical, updates public API docs, and verifies the definition of done against the tree.
+Phase 27 removes `CargoPortConfig` from the framework settings type graph. `SettingsStore`, `SettingsRegistry`, `SettingCodecs`, `LoadedSettings`, and `ReloadedSettings` are table-native and no longer generic over `Ctx`; `AppContext` has no `AppSettings` associated type.
+
+Boundary details:
+- Before this phase, `SettingsStore<Ctx>`, `SettingsRegistry<Ctx>`, `LoadedSettings<Ctx>`, and `ReloadedSettings<Ctx>` flowed `Ctx::AppSettings` through the framework. cargo-port set that associated type to `CargoPortConfig`, which made the framework depend on an app-specific config struct.
+- Settings entries now read and mutate `toml::Table`, not `CargoPortConfig`. `SettingKind`, `SettingEntry`, `SettingCodecs`, and every `SettingsRegistry::add_*` method are table-native.
+- `SettingsStore::save(&mut self)` writes the in-memory table directly. It does not take app settings or rebuild a table from typed app config.
+- The framework owns file path resolution, TOML load/save, dirty state, validation display, and framework setting groups. cargo-port owns only app-specific schema, normalization, and runtime side effects.
+
+Deliverables:
+- `SettingsStore` owns the TOML table and saves it directly. Runtime edits use staged table mutation, validation, rollback on error, and then `SettingsStore::save()`.
+- cargo-port derives `CargoPortConfig` from `SettingsStore::table()` at startup, after successful app-owned settings edits, and after config reload. The framework never stores or mutates `CargoPortConfig`.
+- Framework-owned settings are derived from the same table and cached inside `Framework`.
+- `settings_table_from_config` is limited to startup/default-file seeding and test setup. Runtime save paths must not rebuild a fresh table from typed app config.
+- Validation: format, check, clippy, workspace nextest, and install.
+
+### Phase 28 — Framework pane/API cleanup
+
+Finish the remaining framework pane/API boundary work after the settings store is table-native.
+
+Deliverables:
+- Move key-capture text-input state and mutation out of cargo-port and into `tui_pane::KeymapPane`.
+- Replace stringly `SettingsRow.payload` with a typed payload/newtype that identifies the registered setting row without encoding app-specific structure in the renderer.
+- Remove unnecessary `<Ctx>` from `SettingsPane`, settings view, render, and helper types that no longer need app context after the table-native settings boundary.
+- Keep app-specific schema, labels, validation, and side effects in cargo-port registry callbacks; keep generic row building, edit state, validation display, and persistence mechanics in `tui_pane`.
+- Define one reusable construction sequence for settings load, settings store installation, keymap TOML load, framework pane setup, and app construction handoff. A second client should not need to copy cargo-port builder internals to use settings + keymap loading.
+- Delete binary-side handler-injection, capture, or construction shims made obsolete by the framework-owned paths.
+- Acceptance tests cover key rebind capture, cancel/escape, invalid duplicate handling, save/reload, text-input suppression, row identity stability, edit/rollback behavior, restart persistence, and a small second-client-style settings + keymap load fixture.
+
+### Phase 29 — Toast API boundary cleanup
+
+Finish the toast API boundary now that toast storage/rendering lives in `tui_pane`.
+
+Deliverables:
+- Stabilize the public toast surface, including `ToastSettings`, task lifecycle, hitbox/focus, render helpers, and tracked-item types.
+- Replace cargo-port-specific `From<AbsolutePath> for TrackedItemKey` style adapters with explicit app-side conversion helpers. The framework toast crate must not know cargo-port path/domain types.
+- Audit surviving `<Ctx>` on toast-facing types. Keep it only where the type genuinely carries `Ctx::ToastAction`; remove it from view/helper types that do not need app context.
+- Acceptance tests cover task finish/linger timing, tracked-item overflow, focused toast action dispatch, and app-domain conversion helpers.
+
+### Phase 30 — Final closeout
+
+Phase 30 is the final cleanup checkpoint after Phases 28-29. It does not add new architecture.
 
 Deliverables:
 - Reconcile `What dissolves`, `What survives`, `Risks and unknowns`, `Definition of done`, and `Non-goals` against shipped code.
-- Polish rustdocs for the public toast API and remove or justify temporary module-level lint `expect` attributes.
-- Run stale-reference greps for deleted live-code paths: `app.toasts`, `ToastManager`, `handle_toast_key`, old cargo-port toast constants, and legacy bar/keymap/focus names.
+- Run stale-reference greps for deleted live-code paths: `app.toasts`, `ToastManager`, `handle_toast_key`, old cargo-port toast constants, legacy bar/keymap/focus names, legacy settings/keymap overlay ownership, and cargo-port-only framework shims.
+- Remove or justify any remaining temporary lint `expect` attributes in the framework crate.
 - Run the final validation stack and install the binary.
 
 ---
@@ -4261,35 +4301,38 @@ Deliverables:
 - The `+`/`=` parser collapse.
 - `is_legacy_removed_action` — removed in Phase 23 after cargo-port began moving legacy `[project_list] open_editor` / `rescan` keys to `[global]` before validation.
 - `InputContext` enum.
+- cargo-port-owned toast storage and rendering (`app.toasts`, `ToastManager`, `src/tui/toasts/*`) — moved into `tui_pane::Toasts<Ctx>` / `tui_pane::render_toasts`; cargo-port keeps only `src/tui/toast_adapters.rs` for app-domain conversions.
+- cargo-port-owned status-line construction — `tui_pane::render_status_line` owns full-line fill, uptime / scanning text, global strip composition, placement, and styling. cargo-port supplies app facts, global-slot policy, and palette data.
 
 ## What survives
 
-- `Pane` trait — untouched. Bar refactor doesn't extend it.
-- Per-pane host structs — untouched (gain a `Shortcuts` impl, lose nothing).
+- `Pane` trait — remains the app-pane contract. It gained `tab_stop()` during Phase 20.1 so the framework owns focus traversal; the bar refactor itself did not add pane-rendering requirements.
+- Per-pane host structs — keep their rendering/content ownership and gain framework trait impls (`Shortcuts`, tab metadata, dispatch hooks) without moving app-specific pane body rendering into `tui_pane`.
 - `GlobalAction::Dismiss` — keeps `'x'` as the single dismiss action. Routed through `dismiss_chain` (Phase 12 free fn) which calls `framework.dismiss_framework()` first (focused-toast dismiss owned by `tui_pane`, then `close_overlay`), then the binary's optional `dismiss_fallback` hook. There is no separate `ToastsAction::Dismiss`; binaries that want Esc to dismiss focused toasts rebind `GlobalAction::Dismiss`.
 - Vim-mode opt-in semantics — `h`/`j`/`k`/`l` still gated by `VimMode::Enabled`.
 - **Public bar surface:** `tui_pane::StatusBar`, `tui_pane::StatusLine`, `tui_pane::StatusLineGlobal`, `tui_pane::BarPalette`, `tui_pane::render_status_bar(focused, ctx, keymap, framework, &BarPalette) -> StatusBar`, `tui_pane::render_status_line(...)`, plus the accessors `Keymap::render_navigation_slots`, `Keymap::render_app_globals_slots`, and `Keymap::render_framework_globals_slots`. The framework owns region partitioning, suppression rules, per-slot resolution, global-strip composition, full-line fill, uptime / scanning text, left/center/right placement, and the styling pass. The binary supplies app facts and theme data only.
+- `src/keymap.rs` remains as cargo-port's compatibility/template/migration layer for the keymap file path and the legacy TOML schema. Runtime configurable dispatch goes through `tui_pane::Keymap`; the legacy compatibility layer is not a shortcut-dispatch owner.
 
 ---
 
 ## CI tooling sanity check
 
-Verify CI invocations operate on the intended scope before Phase 1 lands. Tools that walk `Cargo.toml` will see a `[workspace]` section they didn't see before — `cargo-mend`, `cargo-nextest` filters, format scripts, the nightly clean-build job. Each invocation needs a one-time check (does it operate on the binary only, the whole workspace, or both, and is that what we want?).
+Verified during the migration. Closeout validation runs workspace-scoped Cargo commands (`cargo check --workspace --all-targets`, `cargo mend --workspace --all-targets`, `cargo clippy --workspace --all-targets`, `cargo nextest run --workspace`) plus `cargo install --path .` for the binary install path.
 
 ## Doctest + test infrastructure
 
 - No doctests. Code blocks in `///` comments are ` ```ignore ` or prose.
 - **Shipped pattern (Phases 1–11):** unit tests live next to their module (`#[cfg(test)] mod tests`); each test module declares its own inline `TestApp` struct with an `AppContext` impl rather than going through a shared `test_support/` module. The duplication is small (~10 sites) and keeps each module's tests self-contained. New phases continue this pattern unless test fixtures grow large enough to consolidate.
-- **Cross-crate macro test:** `tui_pane/tests/macro_use.rs` — exercises `tui_pane::action_enum!` and `tui_pane::bindings!` from outside the crate. Phases 5/6/7 extended this; Phase 12+ continues to extend it whenever a new `#[macro_export]` macro lands (standing rule 6).
-- **Cross-module integration tests** under `tui_pane/tests/` now cover the shipped public framework surface in `framework_bar.rs`, `framework_toasts.rs`, and `macro_use.rs`. Integration tests declare their own context types inline and verify the public API without privileged access to crate internals (`#[cfg(test)]` modules of an upstream crate are unreachable from `dev-dependencies` — the boundary is enforced by the language, not convention).
-- **Toast tests after Phase 26:** lifecycle / tracked-item / focused-command behavior is unit-tested in `tui_pane/src/toasts/manager.rs`; framework-owned toast rendering is covered by `tui_pane/tests/framework_toasts.rs`; cargo-port production action dispatch is covered in `src/tui/app/tests/framework_keymap.rs`.
-- **Binary-side test support** (`src/tui/tui_test_support.rs`, `pub(super) fn make_app`) stays separate from the framework's tests. Phase 16 hoisted `make_app` from `tests/mod.rs` into that module. Dependency direction is binary → library only, so `tui_pane`'s tests cannot reach binary fixtures, and binary tests cannot reach `tui_pane`'s `cfg(test)` modules.
+- **Cross-crate macro test:** the framework crate's `tests/macro_use.rs` exercises `tui_pane::action_enum!` and `tui_pane::bindings!` from outside the crate. Phases 5/6/7 extended this; Phase 12+ continues to extend it whenever a new `#[macro_export]` macro lands (standing rule 6).
+- **Cross-module integration tests** under the framework crate's `tests/` directory cover the shipped public framework surface in `framework_bar.rs`, `framework_toasts.rs`, and `macro_use.rs`. Integration tests declare their own context types inline and verify the public API without privileged access to crate internals (`#[cfg(test)]` modules of an upstream crate are unreachable from `dev-dependencies` — the boundary is enforced by the language, not convention).
+- **Toast tests after Phase 26:** lifecycle / tracked-item / focused-command behavior is unit-tested in the framework crate's toast manager; framework-owned toast rendering is covered by `tests/framework_toasts.rs`; cargo-port production action dispatch is covered in `src/tui/app/tests/framework_keymap.rs`.
+- **Binary-side test support** (`src/tui/test_support.rs`, `pub(super) fn make_app`) stays separate from the framework's tests. Phase 16 hoisted `make_app` from `tests/mod.rs` into that module. Dependency direction is binary → library only, so the framework crate's tests cannot reach binary fixtures, and binary tests cannot reach the framework crate's `cfg(test)` modules.
 - **No third `*-test-support` crate.** The two fixture sets are disjoint by language rule.
 
 ## Risks and unknowns
 
 - **Workspace conversion.** Verified during Phase 1; no further action. Both crates build green, `cargo install --path .` still installs the binary, `Cargo.lock` and `target/` are unchanged in location.
-- **`tui_pane` public API stabilization.** cargo-port has now consumed the framework through the keymap, bar, overlay, settings, focus, and toast paths. Remaining stabilization risk is public-surface polish before publishing or external reuse: rustdoc coverage for the new toast API, removal or documentation of temporary lint `expect` attributes, and final confirmation that compatibility shims are intentional.
+- **Framework public API completion.** cargo-port has now consumed the framework through the keymap, bar, overlay, settings, focus, and toast paths, but the migration is not complete until Phases 28-29 finish the remaining required boundary work: keymap capture ownership, settings row/view cleanup, reusable construction lifecycle, and toast API/adapters.
 - **Scope precedence.** `NavigationAction::Right` and `ProjectListAction::ExpandRow` both default to `Right`. The "pane scope wins" rule is documented above and enforced by the input router. Lock with a unit test.
 - **`is_vim_reserved` load order.** It must read `Navigation::defaults()` (constant builder), not the in-progress keymap, to avoid a load-order cycle when called inside `resolve_scope`. Defaults are constant and always available.
 - **Framework grants `&mut Vec<Span>` to bar code.** Framework convention: each helper pushes only into vecs it owns content for. Reviewed at PR time.
@@ -4300,7 +4343,7 @@ Verify CI invocations operate on the intended scope before Phase 1 lands. Tools 
 ## Definition of done
 
 - Workspace exists with `tui_pane` member crate; binary crate consumes it.
-- `tui_pane` exposes every supported public type at the crate root — `tui_pane::Foo` flat, never `tui_pane::keymap::Foo`: `AppContext`, `NoToastAction`, `BarPalette`, `BarRegion`, `BarSlot<A>`, `ShortcutState`, `StatusBar`, `StatusLine`, `StatusLineGlobal`, `StatusLineGlobalAction`, `Visibility`, `render_status_bar`, `render_status_line`, `status_line_global_spans`, `CycleDirection`, `Framework<Ctx>`, `ListNavigation`, `TabOrder`, `TabStop`, `Action`, `Bindings<A>`, `bindings!`, `Configuring`, `GlobalAction`, `Globals<Ctx>`, `KeyBind`, `KeyInput`, `KeyOutcome`, `KeyParseError`, `Keymap<Ctx>`, `KeymapBuilder<Ctx>`, `KeymapError`, `Navigation<Ctx>`, `Registering`, `RenderedSlot`, `ScopeMap<A>`, `Shortcuts<Ctx>`, `VimMode`, `Mode<Ctx>`, `Pane<Ctx>`, `FocusedPane`, `FrameworkFocusId`, `FrameworkOverlayId`, `KeymapPane<Ctx>`, `KeymapPaneAction`, `SettingsCommand`, `SettingsPane<Ctx>`, `SettingsPaneAction`, `SettingsRender`, `SettingsRenderOptions`, `ToastsAction`, `AdjustDirection`, `LoadedSettings`, `MaxVisibleToasts`, `ReloadedSettings`, `SettingAdjuster`, `SettingCodecs`, `SettingEntry`, `SettingKind`, `SettingValue`, `SettingsError`, `SettingsFileSpec`, `SettingsRegistry<Ctx>`, `SettingsRow`, `SettingsRowKind`, `SettingsSection`, `SettingsStore`, `ToastAnimationSettings`, `ToastDuration`, `ToastGap`, `ToastPlacement`, `ToastSettings`, `ToastWidth`, `Toast`, `ToastBody`, `ToastCommand`, `ToastHitbox`, `ToastId`, `ToastLifetime`, `ToastPhase`, `ToastRenderResult`, `ToastStyle`, `ToastTaskId`, `ToastTaskStatus`, `ToastView`, `Toasts<Ctx>`, `TrackedItem`, `TrackedItemKey`, `TrackedItemView`, `format_toast_items`, `render_toasts`, `toast_body_width`, `Viewport`, and `action_enum!`. The `__bindings_arms!` helper macro is `#[doc(hidden)]` but technically reachable as `tui_pane::__bindings_arms!` (a side-effect of `#[macro_export]`); it is not part of the supported surface.
+- `tui_pane` exposes every supported public type at the crate root — `tui_pane::Foo` flat, never `tui_pane::keymap::Foo`: `AppContext`, `NoToastAction`, `BarPalette`, `BarRegion`, `BarSlot<A>`, `ShortcutState`, `StatusBar`, `StatusLine`, `StatusLineGlobal`, `StatusLineGlobalAction`, `Visibility`, `render_status_bar`, `render_status_line`, `status_line_global_spans`, `CycleDirection`, `Framework<Ctx>`, `ListNavigation`, `TabOrder`, `TabStop`, `Action`, `Bindings<A>`, `bindings!`, `Configuring`, `GlobalAction`, `Globals<Ctx>`, `KeyBind`, `KeyInput`, `KeyOutcome`, `KeyParseError`, `Keymap<Ctx>`, `KeymapBuilder<Ctx>`, `KeymapError`, `Navigation<Ctx>`, `Registering`, `RenderedSlot`, `ScopeMap<A>`, `Shortcuts<Ctx>`, `VimMode`, `Mode<Ctx>`, `Pane<Ctx>`, `FocusedPane`, `FrameworkFocusId`, `FrameworkOverlayId`, `KeymapPane`, `KeymapPaneAction`, `SettingsCommand`, `SettingsPane`, `SettingsPaneAction`, `SettingsRender`, `SettingsRenderOptions`, `ToastsAction`, `AdjustDirection`, `LoadedSettings`, `MaxVisibleToasts`, `ReloadedSettings`, `SettingAdjuster`, `SettingCodecs`, `SettingEntry`, `SettingKind`, `SettingValue`, `SettingsError`, `SettingsFileSpec`, `SettingsRegistry`, `SettingsRow`, `SettingsRowKind`, `SettingsSection`, `SettingsStore`, `ToastAnimationSettings`, `ToastDuration`, `ToastGap`, `ToastPlacement`, `ToastSettings`, `ToastWidth`, `Toast`, `ToastBody`, `ToastCommand`, `ToastHitbox`, `ToastId`, `ToastLifetime`, `ToastPhase`, `ToastRenderResult`, `ToastStyle`, `ToastTaskId`, `ToastTaskStatus`, `ToastView`, `Toasts<Ctx>`, `TrackedItem`, `TrackedItemKey`, `TrackedItemView`, `format_toast_items`, `render_toasts`, `toast_body_width`, `Viewport`, and `action_enum!`. The `__bindings_arms!` helper macro is `#[doc(hidden)]` but technically reachable as `tui_pane::__bindings_arms!` (a side-effect of `#[macro_export]`); it is not part of the supported surface.
 - `ScopeMap::by_action: HashMap<A, Vec<KeyBind>>`; `display_keys_for(action) -> &[KeyBind]` exists; primary-key invariant locked.
 - TOML parser accepts `key = "Enter"` and `key = ["Enter", "Return"]`; rejects in-array duplicates and cross-action collisions within a scope.
 - `NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction` exist in cargo-port. `ProjectListAction` has `ExpandRow` / `CollapseRow`.
@@ -4309,16 +4352,16 @@ Verify CI invocations operate on the intended scope before Phase 1 lands. Tools 
 - Every configurable command shortcut dispatches through the keymap; no `KeyCode::*` direct match for command keys remains. Structural preflights, modal confirmation, and text-input editing fallback may still inspect concrete keys.
 - `NAVIGATION_RESERVED`, `is_navigation_reserved`, hardcoded `VIM_RESERVED`, the seven `Shortcut::fixed` constants, the four group helpers, `App::enter_action`, `shortcuts::enter()`, `InputContext` enum — all deleted.
 - Framework owns the bar: region partitioning, global-strip composition, full-line fill, uptime / scanning text, left/center/right placement, per-slot resolution, and styling. cargo-port supplies app facts, global-slot policy, and palette data, but does not construct shortcut spans or lay out the status line.
-- `make_app` hoisted to `src/tui/tui_test_support.rs`.
+- `make_app` hoisted to `src/tui/test_support.rs`.
 - Bar output for every focused-pane context is snapshot-locked under default bindings against the new static-label framework bar (`render_status_bar` + `cargo_port_bar_palette()`). The snapshots are not byte-identical to the pre-refactor bar — Phase 14's `bar_label` collapse drops today's row-dependent labels in favor of one static literal per variant.
-- All Phase 23 regression tests pass.
+- All final validation passes: format, check, mend, clippy, workspace nextest, and install.
 
 ---
 
 ## Non-goals
 
-- Not changing the `Pane` trait signature or any pane body's render code.
+- Not changing pane body render code. The `Pane` trait already gained `tab_stop()` in Phase 20.1 for framework-owned traversal; Phase 27 does not add another pane API change.
 - Not unifying `PaneId::is_overlay()` semantics across the codebase — `InputContext` is being deleted, so the asymmetry resolves itself.
 - Not making typed-character text input (Finder query, Settings numeric edit) keymap-driven — that's not what the keymap is for.
-- Not extracting `FinderPane` into `tui_pane` in this refactor — left as a follow-up if it turns out to be reusable.
-- Not migrating existing user TOML config files — old configs parse cleanly via the additive-table rule.
+- Not extracting `FinderPane` into the framework crate in this migration. Finder remains app-owned.
+- Not rewriting user TOML beyond the compatibility migrations already needed for the framework keymap path. Old configs parse cleanly via additive tables plus the Phase 23 legacy-key migration.

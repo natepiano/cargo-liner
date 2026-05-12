@@ -287,11 +287,13 @@ pub(super) fn collect_reload_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::NonRustInclusion;
+    use crate::config::ScrollDirection;
 
     #[test]
     fn changed_keys_include_value_only_settings_without_actions() {
         let mut new = CargoPortConfig::default();
-        new.mouse.invert_scroll.toggle();
+        new.mouse.invert_scroll = ScrollDirection::Normal;
         new.tui.editor = "helix".to_string();
         new.tui.discovery_shimmer_secs = 4.0;
 
@@ -311,7 +313,7 @@ mod tests {
         let mut new = CargoPortConfig::default();
         new.tui.ci_run_count = 9;
         new.tui.include_dirs = vec!["rust".to_string()];
-        new.tui.include_non_rust.toggle();
+        new.tui.include_non_rust = NonRustInclusion::Include;
 
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
@@ -326,9 +328,9 @@ mod tests {
     #[test]
     fn completed_scan_rebuilds_tree_when_hiding_cached_non_rust_projects() {
         let mut old = CargoPortConfig::default();
-        old.tui.include_non_rust.toggle();
+        old.tui.include_non_rust = NonRustInclusion::Include;
         let mut new = old.clone();
-        new.tui.include_non_rust.toggle();
+        new.tui.include_non_rust = NonRustInclusion::Exclude;
 
         assert_eq!(
             collect_reload_actions(
@@ -350,7 +352,7 @@ mod tests {
     #[test]
     fn completed_scan_rescans_when_enabling_non_rust_without_cached_projects() {
         let mut new = CargoPortConfig::default();
-        new.tui.include_non_rust.toggle();
+        new.tui.include_non_rust = NonRustInclusion::Include;
 
         assert_eq!(
             collect_reload_actions(

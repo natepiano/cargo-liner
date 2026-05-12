@@ -121,6 +121,10 @@ fn external_config_reload_applies_valid_changes() {
     assert_eq!(app.config.invert_scroll(), ScrollDirection::Normal);
     assert_eq!(app.config.current().tui.editor, "helix");
     assert_eq!(app.config.current().tui.ci_run_count, 9);
+    assert_eq!(
+        app.framework.settings_store().table()["tui"]["editor"].as_str(),
+        Some("helix")
+    );
 }
 
 #[test]
@@ -146,6 +150,38 @@ fn external_config_reload_keeps_last_good_config_on_parse_error() {
 
     assert_eq!(app.config.editor(), "zed");
     assert_eq!(app.config.current().tui.editor, "zed");
+    assert!(matches!(
+        app.overlays.status_flash(),
+        Some((msg, _)) if msg.contains("Config reload failed")
+    ));
+}
+
+#[test]
+fn external_config_reload_keeps_last_good_config_on_validation_error() {
+    let mut app = make_app(&[]);
+    let dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let path = dir.path().join("config.toml");
+
+    let mut cfg = CargoPortConfig::default();
+    cfg.tui.editor = "zed".to_string();
+    std::fs::write(
+        &path,
+        toml::to_string_pretty(&cfg).unwrap_or_else(|_| std::process::abort()),
+    )
+    .unwrap_or_else(|_| std::process::abort());
+
+    app.config.force_reload_from(path.clone());
+    app.maybe_reload_config_from_disk();
+    let last_good_table = app.framework.settings_store().table().clone();
+
+    std::fs::write(&path, "[tui]\neditor = \"vim\"\nmain_branch = \"\"\n")
+        .unwrap_or_else(|_| std::process::abort());
+    app.config.force_reload_from(path);
+    app.maybe_reload_config_from_disk();
+
+    assert_eq!(app.config.editor(), "zed");
+    assert_eq!(app.config.current().tui.editor, "zed");
+    assert_eq!(app.framework.settings_store().table(), &last_good_table);
     assert!(matches!(
         app.overlays.status_flash(),
         Some((msg, _)) if msg.contains("Config reload failed")

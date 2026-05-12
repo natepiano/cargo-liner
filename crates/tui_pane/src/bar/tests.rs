@@ -63,19 +63,15 @@ crate::action_enum! {
 }
 
 struct TestApp {
-    framework:    Framework<Self>,
-    app_settings: (),
+    framework: Framework<Self>,
 }
 
 impl AppContext for TestApp {
     type AppPaneId = TestPaneId;
-    type AppSettings = ();
     type ToastAction = crate::NoToastAction;
 
     fn framework(&self) -> &Framework<Self> { &self.framework }
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
-    fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
-    fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
 }
 
 struct FooPane;
@@ -198,8 +194,7 @@ impl Globals<TestApp> for AppGlobals {
 
 fn fresh_app(initial: FocusedPane<TestPaneId>) -> TestApp {
     TestApp {
-        framework:    Framework::new(initial),
-        app_settings: (),
+        framework: Framework::new(initial),
     }
 }
 

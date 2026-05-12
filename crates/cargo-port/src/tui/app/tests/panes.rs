@@ -1,3 +1,7 @@
+use crossterm::event::Event;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 use tui_pane::GlobalAction;
 
 use super::*;
@@ -11,6 +15,11 @@ use crate::project::WorktreeHealth::Normal;
 use crate::tui::app::startup;
 use crate::tui::columns;
 use crate::tui::columns::ProjectRow;
+use crate::tui::input;
+
+fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    input::handle_event(app, &Event::Key(KeyEvent::new(code, modifiers)));
+}
 
 #[test]
 fn collapse_all_anchors_member_selection_to_root() {
@@ -209,10 +218,10 @@ fn tabbable_panes_follow_canonical_order() {
     );
 
     for &pane in &expected_with_toasts[1..] {
-        app.focus_next_pane();
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.focused_pane_id(), pane);
     }
-    app.focus_previous_pane();
+    press(&mut app, KeyCode::Tab, KeyModifiers::SHIFT);
     assert_eq!(
         app.focused_pane_id(),
         expected_with_toasts[expected_with_toasts.len() - 2]

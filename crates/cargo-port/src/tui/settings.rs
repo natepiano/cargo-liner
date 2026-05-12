@@ -3,6 +3,8 @@ use ratatui::Frame;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
+use toml::Table;
+use toml::Value;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::SettingCodecs;
 use tui_pane::SettingsCommand;
@@ -16,6 +18,12 @@ use tui_pane::SettingsSection;
 use tui_pane::SettingsStore;
 use tui_pane::ToastDuration;
 use tui_pane::ToastSettings;
+use tui_pane::read_array;
+use tui_pane::read_bool;
+use tui_pane::read_float;
+use tui_pane::read_int;
+use tui_pane::read_string;
+use tui_pane::write_value;
 
 use super::app::App;
 use super::constants::ACTIVE_BORDER_COLOR;
@@ -70,9 +78,9 @@ fn parse_dir_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-type AppSettingsRow = (Option<SettingOption>, &'static str, String);
+type SettingsUiRow = (Option<SettingOption>, &'static str, String);
 
-fn setting_at_selection(rows: &[AppSettingsRow], selection_index: usize) -> Option<SettingOption> {
+fn setting_at_selection(rows: &[SettingsUiRow], selection_index: usize) -> Option<SettingOption> {
     rows.iter()
         .filter_map(|(setting, _, _)| *setting)
         .nth(selection_index)
@@ -118,19 +126,69 @@ fn normalize_sorted_list(value: &str) -> Vec<String> {
     entries
 }
 
+fn restore_settings_table(app: &mut App, snapshot: Table) {
+    app.framework.settings_store_mut().replace_table(snapshot);
+}
+
+fn save_app_table_update(
+    app: &mut App,
+    mutate: impl FnOnce(&mut Table) -> Result<(), SettingsError>,
+) -> Result<CargoPortConfig, String> {
+    let snapshot = app.framework.settings_store().table().clone();
+    if let Err(err) = mutate(app.framework.settings_store_mut().table_mut()) {
+        restore_settings_table(app, snapshot);
+        return Err(err.to_string());
+    }
+    let next = match CargoPortConfig::from_table(app.framework.settings_store().table()) {
+        Ok(config) => config,
+        Err(err) => {
+            restore_settings_table(app, snapshot);
+            return Err(err);
+        },
+    };
+    if let Err(err) = app.framework.settings_store_mut().save() {
+        restore_settings_table(app, snapshot);
+        return Err(err.to_string());
+    }
+    app.apply_config(&next);
+    app.config.sync_stamp();
+    Ok(next)
+}
+
+fn save_app_setting(
+    app: &mut App,
+    mutate: impl FnOnce(&mut Table) -> Result<(), SettingsError>,
+) -> bool {
+    match save_app_table_update(app, mutate) {
+        Ok(_) => true,
+        Err(err) => {
+            app.overlays.set_inline_error(err);
+            false
+        },
+    }
+}
+
+fn save_app_setting_with_toast(
+    app: &mut App,
+    mutate: impl FnOnce(&mut Table) -> Result<(), SettingsError>,
+) -> bool {
+    let saved = save_app_setting(app, mutate);
+    if saved {
+        app.show_timed_toast("Settings", "Saved");
+    }
+    saved
+}
+
 fn save_number_setting(
     app: &mut App,
     value: &str,
-    apply: impl FnOnce(&mut CargoPortConfig, f64),
+    apply: impl FnOnce(&mut Table, f64) -> Result<(), SettingsError>,
 ) -> bool {
     let Ok(number) = value.parse::<f64>() else {
         finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
         return false;
     };
-    let mut config = app.config.current().clone();
-    apply(&mut config, number.max(0.0));
-    let _ = save_updated_config(app, &config);
-    true
+    save_app_setting(app, |table| apply(table, number))
 }
 
 fn save_toast_number_setting(
@@ -149,18 +207,28 @@ fn save_toast_number_setting(
     };
     let mut settings = app.framework.toast_settings().clone();
     apply(&mut settings, duration);
-    save_toast_settings(app, settings)
+    save_toast_settings(app, &settings)
 }
 
-fn save_toast_settings(app: &mut App, settings: ToastSettings) -> bool {
-    let config = app.config.current().clone();
-    match app.framework.settings_store_mut().save(&config, &settings) {
+fn save_toast_settings(app: &mut App, settings: &ToastSettings) -> bool {
+    let snapshot = app.framework.settings_store().table().clone();
+    settings.write_to_table(app.framework.settings_store_mut().table_mut());
+    let next = match ToastSettings::from_table(app.framework.settings_store().table()) {
+        Ok(settings) => settings,
+        Err(err) => {
+            restore_settings_table(app, snapshot);
+            app.overlays.set_inline_error(err.to_string());
+            return false;
+        },
+    };
+    match app.framework.settings_store_mut().save() {
         Ok(()) => {
-            app.framework.set_toast_settings(settings);
+            app.framework.set_toast_settings(next);
             app.show_timed_toast("Settings", "Saved");
             true
         },
         Err(err) => {
+            restore_settings_table(app, snapshot);
             app.overlays.set_inline_error(err.to_string());
             false
         },
@@ -170,26 +238,22 @@ fn save_toast_settings(app: &mut App, settings: ToastSettings) -> bool {
 fn save_sorted_list_setting(
     app: &mut App,
     value: &str,
-    apply: impl FnOnce(&mut CargoPortConfig, Vec<String>),
+    apply: impl FnOnce(&mut Table, Vec<String>) -> Result<(), SettingsError>,
 ) {
-    let mut config = app.config.current().clone();
-    apply(&mut config, normalize_sorted_list(value));
-    let _ = save_updated_config(app, &config);
+    let values = normalize_sorted_list(value);
+    let _ = save_app_setting(app, |table| apply(table, values));
 }
 
 fn save_u32_setting(
     app: &mut App,
     value: &str,
-    apply: impl FnOnce(&mut CargoPortConfig, u32),
+    apply: impl FnOnce(&mut Table, u32) -> Result<(), SettingsError>,
 ) -> bool {
     let Ok(number) = value.parse::<u32>() else {
         finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
         return false;
     };
-    let mut config = app.config.current().clone();
-    apply(&mut config, number.max(1));
-    let _ = save_updated_config(app, &config);
-    true
+    save_app_setting(app, |table| apply(table, number.max(1)))
 }
 
 fn bounded_u8_from_u32(value: u32) -> u8 {
@@ -199,11 +263,18 @@ fn bounded_u8_from_u32(value: u32) -> u8 {
 fn save_string_setting(
     app: &mut App,
     value: &str,
-    apply: impl FnOnce(&mut CargoPortConfig, String),
+    apply: impl FnOnce(&mut Table, String) -> Result<(), SettingsError>,
 ) {
-    let mut config = app.config.current().clone();
-    apply(&mut config, value.trim().to_string());
-    let _ = save_updated_config(app, &config);
+    let value = value.trim().to_string();
+    let _ = save_app_setting(app, |table| apply(table, value));
+}
+
+fn format_lint_commands_from_commands(commands: &[LintCommandConfig]) -> String {
+    commands
+        .iter()
+        .map(|command| command.command.trim().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn format_lint_commands(config: &CargoPortConfig) -> String {
@@ -212,11 +283,7 @@ fn format_lint_commands(config: &CargoPortConfig) -> String {
     } else {
         config.lint.commands.clone()
     };
-    commands
-        .iter()
-        .map(|command| command.command.trim().to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+    format_lint_commands_from_commands(&commands)
 }
 
 fn format_lint_cache_size(config: &CargoPortConfig) -> String { config.lint.cache_size.clone() }
@@ -272,14 +339,14 @@ fn format_cpu_yellow_max(config: &CargoPortConfig) -> String {
     config.cpu.yellow_max_percent.to_string()
 }
 
-pub(super) fn cargo_port_settings_registry() -> SettingsRegistry<App> {
-    let registry = SettingsRegistry::<App>::new();
+pub(super) fn cargo_port_settings_registry() -> SettingsRegistry {
+    let registry = SettingsRegistry::new();
     let registry = register_general_settings(registry);
     let registry = register_cpu_settings(registry);
     register_lint_settings(registry)
 }
 
-fn register_general_settings(registry: SettingsRegistry<App>) -> SettingsRegistry<App> {
+fn register_general_settings(registry: SettingsRegistry) -> SettingsRegistry {
     registry
         .add_bool_in(
             SettingsSection::App("mouse"),
@@ -327,7 +394,7 @@ fn register_general_settings(registry: SettingsRegistry<App>) -> SettingsRegistr
             SettingsSection::App("tui"),
             "other_primary_branches",
             SettingCodecs {
-                format: format_other_primary_branches,
+                format: format_other_primary_branches_table,
                 parse:  set_other_primary_branches,
                 adjust: None,
             },
@@ -358,7 +425,7 @@ fn register_general_settings(registry: SettingsRegistry<App>) -> SettingsRegistr
         )
 }
 
-fn register_cpu_settings(registry: SettingsRegistry<App>) -> SettingsRegistry<App> {
+fn register_cpu_settings(registry: SettingsRegistry) -> SettingsRegistry {
     registry
         .add_int_in(
             SettingsSection::App("cpu"),
@@ -380,7 +447,7 @@ fn register_cpu_settings(registry: SettingsRegistry<App>) -> SettingsRegistry<Ap
         )
 }
 
-fn register_lint_settings(registry: SettingsRegistry<App>) -> SettingsRegistry<App> {
+fn register_lint_settings(registry: SettingsRegistry) -> SettingsRegistry {
     registry
         .add_bool_in(
             SettingsSection::App("lint"),
@@ -398,7 +465,7 @@ fn register_lint_settings(registry: SettingsRegistry<App>) -> SettingsRegistry<A
             SettingsSection::App("lint"),
             "include",
             SettingCodecs {
-                format: format_lint_projects,
+                format: format_lint_projects_table,
                 parse:  set_lint_projects,
                 adjust: None,
             },
@@ -407,7 +474,7 @@ fn register_lint_settings(registry: SettingsRegistry<App>) -> SettingsRegistry<A
             SettingsSection::App("lint"),
             "commands",
             SettingCodecs {
-                format: format_lint_commands,
+                format: format_lint_commands_table,
                 parse:  set_lint_commands,
                 adjust: None,
             },
@@ -415,12 +482,18 @@ fn register_lint_settings(registry: SettingsRegistry<App>) -> SettingsRegistry<A
         .add_string_in(
             SettingsSection::App("lint"),
             "cache_size",
-            format_lint_cache_size,
+            format_lint_cache_size_table,
             set_lint_cache_size,
         )
 }
 
-pub(super) fn load_cargo_port_config_for_startup() -> Result<CargoPortConfig, String> {
+pub(super) struct StartupSettings {
+    pub(super) config:         CargoPortConfig,
+    pub(super) store:          SettingsStore,
+    pub(super) toast_settings: ToastSettings,
+}
+
+pub(super) fn load_cargo_port_settings_for_startup() -> Result<StartupSettings, String> {
     let config_path = config::config_path();
     let should_seed_file = config_path
         .as_ref()
@@ -430,18 +503,72 @@ pub(super) fn load_cargo_port_config_for_startup() -> Result<CargoPortConfig, St
         |path| SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(path.as_path()),
     );
     let mut loaded_settings =
-        SettingsStore::<App>::load_for_startup(settings_spec, cargo_port_settings_registry())
+        SettingsStore::load_for_startup(settings_spec, cargo_port_settings_registry())
             .map_err(|err| err.to_string())?;
     if should_seed_file {
+        *loaded_settings.store.table_mut() =
+            settings_table_from_config(&default_config()).map_err(|err| err.to_string())?;
+        loaded_settings
+            .toast_settings
+            .write_to_table(loaded_settings.store.table_mut());
         loaded_settings
             .store
-            .save(
-                &loaded_settings.app_settings,
-                &loaded_settings.toast_settings,
-            )
+            .save()
             .map_err(|err| err.to_string())?;
     }
-    Ok(loaded_settings.app_settings)
+    let config = CargoPortConfig::from_table(loaded_settings.store.table())?;
+    Ok(StartupSettings {
+        config,
+        store: loaded_settings.store,
+        toast_settings: loaded_settings.toast_settings,
+    })
+}
+
+pub(super) fn settings_table_from_config(config: &CargoPortConfig) -> Result<Table, SettingsError> {
+    let mut table = Table::new();
+    set_invert_scroll(&mut table, config.mouse.invert_scroll.is_inverted())?;
+    set_include_non_rust(&mut table, config.tui.include_non_rust.includes_non_rust())?;
+    set_navigation_keys(&mut table, config.tui.navigation_keys.uses_vim())?;
+    set_ci_run_count(&mut table, i64::from(config.tui.ci_run_count))?;
+    set_editor(&mut table, &config.tui.editor)?;
+    set_terminal_command(&mut table, &config.tui.terminal_command)?;
+    set_main_branch(&mut table, &config.tui.main_branch)?;
+    write_string_array(
+        &mut table,
+        "tui",
+        "other_primary_branches",
+        config.tui.other_primary_branches.clone(),
+    )?;
+    write_string_array(
+        &mut table,
+        "tui",
+        "include_dirs",
+        config.tui.include_dirs.clone(),
+    )?;
+    write_string_array(
+        &mut table,
+        "tui",
+        "inline_dirs",
+        config.tui.inline_dirs.clone(),
+    )?;
+    set_discovery_shimmer_secs(&mut table, config.tui.discovery_shimmer_secs)?;
+    set_cpu_poll_ms(
+        &mut table,
+        i64::try_from(config.cpu.poll_ms).unwrap_or(i64::MAX),
+    )?;
+    set_cpu_green_max(&mut table, i64::from(config.cpu.green_max_percent))?;
+    set_cpu_yellow_max(&mut table, i64::from(config.cpu.yellow_max_percent))?;
+    set_lints_enabled(&mut table, config.lint.enabled)?;
+    set_lint_on_discovery(&mut table, config.lint.on_discovery.is_immediate())?;
+    write_string_array(&mut table, "lint", "include", config.lint.include.clone())?;
+    write_value(
+        &mut table,
+        "lint",
+        "commands",
+        lint_commands_value(config.lint.commands.clone()),
+    )?;
+    set_lint_cache_size(&mut table, &config.lint.cache_size)?;
+    Ok(table)
 }
 
 fn settings_invalid(section: &str, key: &str, message: impl Into<String>) -> SettingsError {
@@ -452,110 +579,146 @@ fn settings_invalid(section: &str, key: &str, message: impl Into<String>) -> Set
     }
 }
 
-fn validate_registered_config(config: &CargoPortConfig) -> Result<(), SettingsError> {
-    config::normalize_config(config.clone())
-        .map(|_| ())
-        .map_err(|err| settings_invalid("app", "config", err))
+fn default_config() -> CargoPortConfig { CargoPortConfig::default() }
+
+fn string_array_value(values: Vec<String>) -> Value {
+    Value::Array(values.into_iter().map(Value::String).collect())
 }
 
-const fn get_invert_scroll(config: &CargoPortConfig) -> bool {
-    config.mouse.invert_scroll.is_inverted()
+fn read_string_array(table: &Table, section: &str, key: &str, default: Vec<String>) -> Vec<String> {
+    read_array(table, section, key).map_or(default, |values| {
+        values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    })
 }
 
-fn set_invert_scroll(config: &mut CargoPortConfig, value: bool) -> Result<(), SettingsError> {
-    config.mouse.invert_scroll = value.into();
-    validate_registered_config(config)
+fn write_string_array(
+    table: &mut Table,
+    section: &str,
+    key: &str,
+    values: Vec<String>,
+) -> Result<(), SettingsError> {
+    write_value(table, section, key, string_array_value(values))
 }
 
-const fn get_include_non_rust(config: &CargoPortConfig) -> bool {
-    config.tui.include_non_rust.includes_non_rust()
+fn get_invert_scroll(table: &Table) -> bool {
+    read_bool(table, "mouse", "invert_scroll")
+        .unwrap_or_else(|| default_config().mouse.invert_scroll.is_inverted())
 }
 
-fn set_include_non_rust(config: &mut CargoPortConfig, value: bool) -> Result<(), SettingsError> {
-    config.tui.include_non_rust = value.into();
-    validate_registered_config(config)
+fn set_invert_scroll(table: &mut Table, value: bool) -> Result<(), SettingsError> {
+    write_value(table, "mouse", "invert_scroll", value.into())
 }
 
-const fn get_navigation_keys(config: &CargoPortConfig) -> bool {
-    config.tui.navigation_keys.uses_vim()
+fn get_include_non_rust(table: &Table) -> bool {
+    read_bool(table, "tui", "include_non_rust")
+        .unwrap_or_else(|| default_config().tui.include_non_rust.includes_non_rust())
 }
 
-fn set_navigation_keys(config: &mut CargoPortConfig, value: bool) -> Result<(), SettingsError> {
-    config.tui.navigation_keys = value.into();
-    validate_registered_config(config)
+fn set_include_non_rust(table: &mut Table, value: bool) -> Result<(), SettingsError> {
+    write_value(table, "tui", "include_non_rust", value.into())
 }
 
-fn get_ci_run_count(config: &CargoPortConfig) -> i64 { i64::from(config.tui.ci_run_count) }
+fn get_navigation_keys(table: &Table) -> bool {
+    read_bool(table, "tui", "navigation_keys")
+        .unwrap_or_else(|| default_config().tui.navigation_keys.uses_vim())
+}
 
-fn set_ci_run_count(config: &mut CargoPortConfig, value: i64) -> Result<(), SettingsError> {
+fn set_navigation_keys(table: &mut Table, value: bool) -> Result<(), SettingsError> {
+    write_value(table, "tui", "navigation_keys", value.into())
+}
+
+fn get_ci_run_count(table: &Table) -> i64 {
+    read_int(table, "tui", "ci_run_count")
+        .unwrap_or_else(|| i64::from(default_config().tui.ci_run_count))
+}
+
+fn set_ci_run_count(table: &mut Table, value: i64) -> Result<(), SettingsError> {
     let count = u32::try_from(value)
         .map_err(|_| settings_invalid("tui", "ci_run_count", "expected positive integer"))?;
-    config.tui.ci_run_count = count.max(1);
-    Ok(())
+    write_value(table, "tui", "ci_run_count", i64::from(count.max(1)).into())
 }
 
-fn get_editor(config: &CargoPortConfig) -> String { config.tui.editor.clone() }
+fn get_editor(table: &Table) -> String {
+    read_string(table, "tui", "editor").map_or_else(|| default_config().tui.editor, str::to_string)
+}
 
-fn set_editor(config: &mut CargoPortConfig, value: &str) -> Result<(), SettingsError> {
+fn set_editor(table: &mut Table, value: &str) -> Result<(), SettingsError> {
     let value = value.trim();
     if value.is_empty() {
         return Err(settings_invalid("tui", "editor", "must not be empty"));
     }
-    config.tui.editor = value.to_string();
-    Ok(())
+    write_value(table, "tui", "editor", value.into())
 }
 
-fn get_terminal_command(config: &CargoPortConfig) -> String { config.tui.terminal_command.clone() }
-
-fn set_terminal_command(config: &mut CargoPortConfig, value: &str) -> Result<(), SettingsError> {
-    config.tui.terminal_command = value.trim().to_string();
-    validate_registered_config(config)
+fn get_terminal_command(table: &Table) -> String {
+    read_string(table, "tui", "terminal_command")
+        .map_or_else(|| default_config().tui.terminal_command, str::to_string)
 }
 
-fn get_main_branch(config: &CargoPortConfig) -> String { config.tui.main_branch.clone() }
+fn set_terminal_command(table: &mut Table, value: &str) -> Result<(), SettingsError> {
+    write_value(table, "tui", "terminal_command", value.trim().into())
+}
 
-fn set_main_branch(config: &mut CargoPortConfig, value: &str) -> Result<(), SettingsError> {
-    config.tui.main_branch = config::normalize_branch_name(value, "tui.main_branch")
+fn get_main_branch(table: &Table) -> String {
+    read_string(table, "tui", "main_branch")
+        .map_or_else(|| default_config().tui.main_branch, str::to_string)
+}
+
+fn set_main_branch(table: &mut Table, value: &str) -> Result<(), SettingsError> {
+    let branch = config::normalize_branch_name(value, "tui.main_branch")
         .map_err(|err| settings_invalid("tui", "main_branch", err))?;
-    Ok(())
+    write_value(table, "tui", "main_branch", branch.into())
 }
 
-fn set_other_primary_branches(
-    value: &str,
-    config: &mut CargoPortConfig,
-) -> Result<(), SettingsError> {
-    config.tui.other_primary_branches =
+fn set_other_primary_branches(value: &str, table: &mut Table) -> Result<(), SettingsError> {
+    let branches =
         config::normalize_branch_list(&parse_dir_list(value), "tui.other_primary_branches")
             .map_err(|err| settings_invalid("tui", "other_primary_branches", err))?;
-    Ok(())
+    write_string_array(table, "tui", "other_primary_branches", branches)
 }
 
-fn format_include_dirs(config: &CargoPortConfig) -> String {
-    format_sorted_list(&config.tui.include_dirs)
+fn format_other_primary_branches_table(table: &Table) -> String {
+    let values = read_string_array(
+        table,
+        "tui",
+        "other_primary_branches",
+        default_config().tui.other_primary_branches,
+    );
+    if values.is_empty() {
+        "—".to_string()
+    } else {
+        values.join(", ")
+    }
 }
 
-fn set_include_dirs(value: &str, config: &mut CargoPortConfig) -> Result<(), SettingsError> {
-    config.tui.include_dirs = normalize_sorted_list(value);
-    validate_registered_config(config)
+fn format_include_dirs(table: &Table) -> String {
+    let default = default_config().tui.include_dirs;
+    format_sorted_list(&read_string_array(table, "tui", "include_dirs", default))
 }
 
-fn format_inline_dirs(config: &CargoPortConfig) -> String {
-    format_sorted_list(&config.tui.inline_dirs)
+fn set_include_dirs(value: &str, table: &mut Table) -> Result<(), SettingsError> {
+    write_string_array(table, "tui", "include_dirs", normalize_sorted_list(value))
 }
 
-fn set_inline_dirs(value: &str, config: &mut CargoPortConfig) -> Result<(), SettingsError> {
-    config.tui.inline_dirs = normalize_sorted_list(value);
-    validate_registered_config(config)
+fn format_inline_dirs(table: &Table) -> String {
+    let default = default_config().tui.inline_dirs;
+    format_sorted_list(&read_string_array(table, "tui", "inline_dirs", default))
 }
 
-const fn get_discovery_shimmer_secs(config: &CargoPortConfig) -> f64 {
-    config.tui.discovery_shimmer_secs
+fn set_inline_dirs(value: &str, table: &mut Table) -> Result<(), SettingsError> {
+    write_string_array(table, "tui", "inline_dirs", normalize_sorted_list(value))
 }
 
-fn set_discovery_shimmer_secs(
-    config: &mut CargoPortConfig,
-    value: f64,
-) -> Result<(), SettingsError> {
+fn get_discovery_shimmer_secs(table: &Table) -> f64 {
+    read_float(table, "tui", "discovery_shimmer_secs")
+        .unwrap_or_else(|| default_config().tui.discovery_shimmer_secs)
+}
+
+fn set_discovery_shimmer_secs(table: &mut Table, value: f64) -> Result<(), SettingsError> {
     if !value.is_finite() || value < 0.0 {
         return Err(settings_invalid(
             "tui",
@@ -563,71 +726,146 @@ fn set_discovery_shimmer_secs(
             "expected non-negative finite seconds",
         ));
     }
-    config.tui.discovery_shimmer_secs = value;
-    Ok(())
+    write_value(table, "tui", "discovery_shimmer_secs", value.into())
 }
 
-fn get_cpu_poll_ms(config: &CargoPortConfig) -> i64 {
-    i64::try_from(config.cpu.poll_ms).unwrap_or(i64::MAX)
+fn get_cpu_poll_ms(table: &Table) -> i64 {
+    read_int(table, "cpu", "poll_ms")
+        .unwrap_or_else(|| i64::try_from(default_config().cpu.poll_ms).unwrap_or(i64::MAX))
 }
 
-fn set_cpu_poll_ms(config: &mut CargoPortConfig, value: i64) -> Result<(), SettingsError> {
+fn set_cpu_poll_ms(table: &mut Table, value: i64) -> Result<(), SettingsError> {
     let poll_ms = u64::try_from(value)
         .map_err(|_| settings_invalid("cpu", "poll_ms", "expected positive integer"))?;
-    config.cpu.poll_ms = poll_ms.max(250);
-    Ok(())
+    write_value(
+        table,
+        "cpu",
+        "poll_ms",
+        i64::try_from(poll_ms.max(250)).unwrap_or(i64::MAX).into(),
+    )
 }
 
-fn get_cpu_green_max(config: &CargoPortConfig) -> i64 { i64::from(config.cpu.green_max_percent) }
+fn get_cpu_green_max(table: &Table) -> i64 {
+    read_int(table, "cpu", "green_max_percent")
+        .unwrap_or_else(|| i64::from(default_config().cpu.green_max_percent))
+}
 
-fn set_cpu_green_max(config: &mut CargoPortConfig, value: i64) -> Result<(), SettingsError> {
+fn set_cpu_green_max(table: &mut Table, value: i64) -> Result<(), SettingsError> {
     let percent = u8::try_from(value.clamp(0, 100)).unwrap_or(100);
-    config.cpu.green_max_percent = percent;
-    validate_registered_config(config)
+    write_value(table, "cpu", "green_max_percent", i64::from(percent).into())
 }
 
-fn get_cpu_yellow_max(config: &CargoPortConfig) -> i64 { i64::from(config.cpu.yellow_max_percent) }
+fn get_cpu_yellow_max(table: &Table) -> i64 {
+    read_int(table, "cpu", "yellow_max_percent")
+        .unwrap_or_else(|| i64::from(default_config().cpu.yellow_max_percent))
+}
 
-fn set_cpu_yellow_max(config: &mut CargoPortConfig, value: i64) -> Result<(), SettingsError> {
+fn set_cpu_yellow_max(table: &mut Table, value: i64) -> Result<(), SettingsError> {
     let percent = u8::try_from(value.clamp(0, 100)).unwrap_or(100);
-    config.cpu.yellow_max_percent = percent;
-    validate_registered_config(config)
+    write_value(
+        table,
+        "cpu",
+        "yellow_max_percent",
+        i64::from(percent).into(),
+    )
 }
 
-const fn get_lints_enabled(config: &CargoPortConfig) -> bool { config.lint.enabled }
-
-fn set_lints_enabled(config: &mut CargoPortConfig, value: bool) -> Result<(), SettingsError> {
-    config.lint.enabled = value;
-    validate_registered_config(config)
+fn get_lints_enabled(table: &Table) -> bool {
+    read_bool(table, "lint", "enabled").unwrap_or_else(|| default_config().lint.enabled)
 }
 
-const fn get_lint_on_discovery(config: &CargoPortConfig) -> bool {
-    config.lint.on_discovery.is_immediate()
+fn set_lints_enabled(table: &mut Table, value: bool) -> Result<(), SettingsError> {
+    write_value(table, "lint", "enabled", value.into())
 }
 
-fn set_lint_on_discovery(config: &mut CargoPortConfig, value: bool) -> Result<(), SettingsError> {
-    config.lint.on_discovery = value.into();
-    validate_registered_config(config)
+fn get_lint_on_discovery(table: &Table) -> bool {
+    read_bool(table, "lint", "on_discovery")
+        .unwrap_or_else(|| default_config().lint.on_discovery.is_immediate())
 }
 
-fn set_lint_projects(value: &str, config: &mut CargoPortConfig) -> Result<(), SettingsError> {
-    config.lint.include = normalize_sorted_list(value);
-    validate_registered_config(config)
+fn set_lint_on_discovery(table: &mut Table, value: bool) -> Result<(), SettingsError> {
+    write_value(table, "lint", "on_discovery", value.into())
 }
 
-fn set_lint_commands(value: &str, config: &mut CargoPortConfig) -> Result<(), SettingsError> {
-    config.lint.commands = parse_lint_commands(value);
-    validate_registered_config(config)
+fn format_lint_projects_table(table: &Table) -> String {
+    let values = read_string_array(table, "lint", "include", default_config().lint.include);
+    if values.is_empty() {
+        "—".to_string()
+    } else {
+        format_sorted_list(&values)
+    }
 }
 
-fn set_lint_cache_size(config: &mut CargoPortConfig, value: &str) -> Result<(), SettingsError> {
-    config.lint.cache_size = parse_lint_cache_size(value).map_err(|_| {
+fn set_lint_projects(value: &str, table: &mut Table) -> Result<(), SettingsError> {
+    write_string_array(table, "lint", "include", normalize_sorted_list(value))
+}
+
+fn read_lint_commands(table: &Table) -> Vec<LintCommandConfig> {
+    read_array(table, "lint", "commands")
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_table)
+        .map(|command| LintCommandConfig {
+            name:    command
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            command: command
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        })
+        .collect()
+}
+
+fn lint_commands_value(commands: Vec<LintCommandConfig>) -> Value {
+    Value::Array(
+        commands
+            .into_iter()
+            .map(|command| {
+                let mut table = Table::new();
+                table.insert("name".to_string(), command.name.into());
+                table.insert("command".to_string(), command.command.into());
+                Value::Table(table)
+            })
+            .collect(),
+    )
+}
+
+fn format_lint_commands_table(table: &Table) -> String {
+    let commands = read_lint_commands(table);
+    let commands = if commands.is_empty() {
+        default_config().lint.resolved_commands()
+    } else {
+        commands
+    };
+    format_lint_commands_from_commands(&commands)
+}
+
+fn set_lint_commands(value: &str, table: &mut Table) -> Result<(), SettingsError> {
+    write_value(
+        table,
+        "lint",
+        "commands",
+        lint_commands_value(parse_lint_commands(value)),
+    )
+}
+
+fn format_lint_cache_size_table(table: &Table) -> String {
+    read_string(table, "lint", "cache_size")
+        .map_or_else(|| default_config().lint.cache_size, str::to_string)
+}
+
+fn set_lint_cache_size(table: &mut Table, value: &str) -> Result<(), SettingsError> {
+    let cache_size = parse_lint_cache_size(value).map_err(|_| {
         settings_invalid("lint", "cache_size", format!("Invalid cache size: {value}"))
     })?;
-    Ok(())
+    write_value(table, "lint", "cache_size", cache_size.into())
 }
 
-fn settings_rows(app: &App, config: &CargoPortConfig) -> Vec<AppSettingsRow> {
+fn settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     let mut rows = general_settings_rows(app, config);
     rows.extend(toast_settings_rows(app, config));
     rows.extend(cpu_settings_rows(config));
@@ -635,7 +873,7 @@ fn settings_rows(app: &App, config: &CargoPortConfig) -> Vec<AppSettingsRow> {
     rows
 }
 
-fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<AppSettingsRow> {
+fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     vec![
         (None, "General", String::new()),
         (
@@ -706,7 +944,7 @@ fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<AppSettings
     ]
 }
 
-fn toast_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<AppSettingsRow> {
+fn toast_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     vec![
         (None, "Toasts", String::new()),
         (
@@ -727,7 +965,7 @@ fn toast_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<AppSettingsRo
     ]
 }
 
-fn cpu_settings_rows(config: &CargoPortConfig) -> Vec<AppSettingsRow> {
+fn cpu_settings_rows(config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     vec![
         (None, "CPU", String::new()),
         (
@@ -748,7 +986,7 @@ fn cpu_settings_rows(config: &CargoPortConfig) -> Vec<AppSettingsRow> {
     ]
 }
 
-fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<AppSettingsRow> {
+fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     vec![
         (None, "Lints", String::new()),
         (
@@ -818,22 +1056,8 @@ fn toggle_vim_mode(app: &mut App) {
             return;
         }
     }
-    let mut config = app.config.current().clone();
-    config.tui.navigation_keys.toggle();
-    let _ = save_updated_config(app, &config);
-}
-
-fn save_updated_config(app: &mut App, config: &CargoPortConfig) -> bool {
-    match app.save_and_apply_config(config) {
-        Ok(()) => {
-            app.show_timed_toast("Settings", "Saved");
-            true
-        },
-        Err(err) => {
-            app.overlays.set_inline_error(err);
-            false
-        },
-    }
+    let next = !app.config.navigation_keys().uses_vim();
+    let _ = save_app_setting_with_toast(app, |table| set_navigation_keys(table, next));
 }
 
 pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
@@ -891,7 +1115,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     frame.render_widget(paragraph, inner);
 }
 
-fn framework_settings_rows(app: &App, rows: &[AppSettingsRow]) -> Vec<FrameworkSettingsRow> {
+fn framework_settings_rows(app: &App, rows: &[SettingsUiRow]) -> Vec<FrameworkSettingsRow> {
     let selected = selected_setting(app);
     let mut selection_index = 0;
     let mut framework_rows = Vec::with_capacity(rows.len());
@@ -987,34 +1211,32 @@ fn close_settings_overlay(app: &mut App) {
 fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<SettingOption>) {
     match setting {
         Some(SettingOption::InvertScroll) => {
-            let mut config = app.config.current().clone();
-            config.mouse.invert_scroll.toggle();
-            let _ = save_updated_config(app, &config);
+            let next = !app.config.invert_scroll().is_inverted();
+            let _ = save_app_setting_with_toast(app, |table| set_invert_scroll(table, next));
         },
         Some(SettingOption::NavigationKeys) => {
             toggle_vim_mode(app);
         },
         Some(SettingOption::CiRunCount) => {
-            let mut config = app.config.current().clone();
-            if key == KeyCode::Right {
-                config.tui.ci_run_count = config.tui.ci_run_count.saturating_add(1);
+            let current = app.config.current().tui.ci_run_count;
+            let next = if key == KeyCode::Right {
+                current.saturating_add(1)
             } else {
-                config.tui.ci_run_count = config.tui.ci_run_count.saturating_sub(1).max(1);
-            }
-            let _ = save_updated_config(app, &config);
+                current.saturating_sub(1).max(1)
+            };
+            let _ =
+                save_app_setting_with_toast(app, |table| set_ci_run_count(table, i64::from(next)));
         },
         Some(SettingOption::IncludeNonRust) => {
-            let mut config = app.config.current().clone();
-            config.tui.include_non_rust.toggle();
-            let _ = save_updated_config(app, &config);
+            let next = !app.config.include_non_rust().includes_non_rust();
+            let _ = save_app_setting_with_toast(app, |table| set_include_non_rust(table, next));
         },
         Some(SettingOption::LintsEnabled) => {
             toggle_lints(app);
         },
         Some(SettingOption::LintOnDiscovery) => {
-            let mut config = app.config.current().clone();
-            config.lint.on_discovery.toggle();
-            let _ = save_updated_config(app, &config);
+            let next = !app.config.current().lint.on_discovery.is_immediate();
+            let _ = save_app_setting_with_toast(app, |table| set_lint_on_discovery(table, next));
         },
         Some(
             SettingOption::Editor
@@ -1049,9 +1271,8 @@ fn begin_settings_edit(app: &mut App, value: String) {
 fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
     match setting {
         Some(SettingOption::InvertScroll) => {
-            let mut config = app.config.current().clone();
-            config.mouse.invert_scroll.toggle();
-            let _ = save_updated_config(app, &config);
+            let next = !app.config.invert_scroll().is_inverted();
+            let _ = save_app_setting_with_toast(app, |table| set_invert_scroll(table, next));
         },
         Some(SettingOption::NavigationKeys) => {
             toggle_vim_mode(app);
@@ -1093,17 +1314,15 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
             begin_settings_edit(app, format_cpu_yellow_max(app.config.current()));
         },
         Some(SettingOption::IncludeNonRust) => {
-            let mut config = app.config.current().clone();
-            config.tui.include_non_rust.toggle();
-            let _ = save_updated_config(app, &config);
+            let next = !app.config.include_non_rust().includes_non_rust();
+            let _ = save_app_setting_with_toast(app, |table| set_include_non_rust(table, next));
         },
         Some(SettingOption::LintsEnabled) => {
             toggle_lints(app);
         },
         Some(SettingOption::LintOnDiscovery) => {
-            let mut config = app.config.current().clone();
-            config.lint.on_discovery.toggle();
-            let _ = save_updated_config(app, &config);
+            let next = !app.config.current().lint.on_discovery.is_immediate();
+            let _ = save_app_setting_with_toast(app, |table| set_lint_on_discovery(table, next));
         },
         Some(SettingOption::Editor) => {
             begin_settings_edit(app, app.config.editor().to_string());
@@ -1145,7 +1364,7 @@ fn apply_settings_edit_for(
     if apply_general_settings_edit(app, setting, value)? {
         return Ok(());
     }
-    if apply_lint_settings_edit(app, setting, value)? {
+    if apply_lint_settings_edit(app, setting, value) {
         return Ok(());
     }
     Ok(())
@@ -1158,22 +1377,24 @@ fn apply_general_settings_edit(
 ) -> Result<bool, String> {
     match setting {
         SettingOption::CiRunCount => {
-            if !save_u32_setting(app, value, |config, count| config.tui.ci_run_count = count) {
+            if !save_u32_setting(app, value, |table, count| {
+                set_ci_run_count(table, i64::from(count))
+            }) {
                 return Ok(true);
             }
         },
-        SettingOption::InlineDirs => save_sorted_list_setting(app, value, |config, dirs| {
-            config.tui.inline_dirs = dirs;
+        SettingOption::InlineDirs => save_sorted_list_setting(app, value, |table, dirs| {
+            write_string_array(table, "tui", "inline_dirs", dirs)
         }),
-        SettingOption::IncludeDirs => save_sorted_list_setting(app, value, |config, dirs| {
-            config.tui.include_dirs = dirs;
+        SettingOption::IncludeDirs => save_sorted_list_setting(app, value, |table, dirs| {
+            write_string_array(table, "tui", "include_dirs", dirs)
         }),
         SettingOption::Editor if !value.trim().is_empty() => {
-            save_string_setting(app, value, |config, editor| config.tui.editor = editor);
+            save_string_setting(app, value, |table, editor| set_editor(table, &editor));
         },
         SettingOption::TerminalCommand => {
-            save_string_setting(app, value, |config, command| {
-                config.tui.terminal_command = command;
+            save_string_setting(app, value, |table, command| {
+                set_terminal_command(table, &command)
             });
         },
         SettingOption::Editor
@@ -1200,40 +1421,42 @@ fn apply_general_settings_edit(
             }
         },
         SettingOption::MainBranch => {
-            let mut config = app.config.current().clone();
-            config.tui.main_branch = config::normalize_branch_name(value, "Main branch")?;
-            let _ = save_updated_config(app, &config);
+            let branch = config::normalize_branch_name(value, "Main branch")?;
+            let _ = save_app_setting_with_toast(app, |table| {
+                write_value(table, "tui", "main_branch", branch.into())
+            });
         },
         SettingOption::OtherPrimaryBranches => {
-            let mut config = app.config.current().clone();
-            config.tui.other_primary_branches =
+            let branches =
                 config::normalize_branch_list(&parse_dir_list(value), "Other primary branches")?;
-            let _ = save_updated_config(app, &config);
+            let _ = save_app_setting_with_toast(app, |table| {
+                write_string_array(table, "tui", "other_primary_branches", branches)
+            });
         },
         SettingOption::DiscoveryShimmerSecs => {
-            if !save_number_setting(app, value, |config, secs| {
-                config.tui.discovery_shimmer_secs = secs;
+            if !save_number_setting(app, value, |table, secs| {
+                set_discovery_shimmer_secs(table, secs)
             }) {
                 return Ok(true);
             }
         },
         SettingOption::CpuPollMs => {
-            if !save_u32_setting(app, value, |config, poll_ms| {
-                config.cpu.poll_ms = u64::from(poll_ms);
+            if !save_u32_setting(app, value, |table, poll_ms| {
+                set_cpu_poll_ms(table, i64::from(poll_ms))
             }) {
                 return Ok(true);
             }
         },
         SettingOption::CpuGreenMaxPercent => {
-            if !save_u32_setting(app, value, |config, percent| {
-                config.cpu.green_max_percent = bounded_u8_from_u32(percent.min(100));
+            if !save_u32_setting(app, value, |table, percent| {
+                set_cpu_green_max(table, i64::from(bounded_u8_from_u32(percent.min(100))))
             }) {
                 return Ok(true);
             }
         },
         SettingOption::CpuYellowMaxPercent => {
-            if !save_u32_setting(app, value, |config, percent| {
-                config.cpu.yellow_max_percent = bounded_u8_from_u32(percent.min(100));
+            if !save_u32_setting(app, value, |table, percent| {
+                set_cpu_yellow_max(table, i64::from(bounded_u8_from_u32(percent.min(100))))
             }) {
                 return Ok(true);
             }
@@ -1242,36 +1465,29 @@ fn apply_general_settings_edit(
     Ok(true)
 }
 
-fn apply_lint_settings_edit(
-    app: &mut App,
-    setting: SettingOption,
-    value: &str,
-) -> Result<bool, String> {
+fn apply_lint_settings_edit(app: &mut App, setting: SettingOption, value: &str) -> bool {
     match setting {
         SettingOption::LintProjects => {
-            save_sorted_list_setting(app, value, |config, dirs| config.lint.include = dirs);
+            save_sorted_list_setting(app, value, |table, dirs| {
+                write_string_array(table, "lint", "include", dirs)
+            });
             if app.overlays.inline_error().is_none() {
                 app.show_timed_toast("Settings", "Lint projects updated");
             }
         },
         SettingOption::LintCommands => {
-            let mut config = app.config.current().clone();
-            config.lint.commands = parse_lint_commands(value);
-            if save_updated_config(app, &config) {
+            if save_app_setting(app, |table| set_lint_commands(value, table)) {
                 app.show_timed_toast("Settings", "Lint commands updated");
             }
         },
         SettingOption::LintCacheSize => {
-            let mut config = app.config.current().clone();
-            config.lint.cache_size =
-                parse_lint_cache_size(value).map_err(|_| format!("Invalid cache size: {value}"))?;
-            if save_updated_config(app, &config) {
+            if save_app_setting(app, |table| set_lint_cache_size(table, value)) {
                 app.show_timed_toast("Settings", "Lint cache size updated");
             }
         },
-        _ => return Ok(false),
+        _ => return false,
     }
-    Ok(true)
+    true
 }
 
 pub(super) fn handle_settings_text_command(app: &mut App, command: SettingsCommand) {
@@ -1283,21 +1499,13 @@ pub(super) fn handle_settings_text_command(app: &mut App, command: SettingsComma
 }
 
 fn toggle_lints(app: &mut App) {
-    let mut config = app.config.current().clone();
-    config.lint.enabled = !config.lint.enabled;
-    if !save_updated_config(app, &config) {
+    let enabled = !app.config.current().lint.enabled;
+    if !save_app_setting(app, |table| set_lints_enabled(table, enabled)) {
         return;
     }
     app.show_timed_toast(
         "Settings",
-        format!(
-            "Lints {}",
-            if config.lint.enabled {
-                "enabled"
-            } else {
-                "disabled"
-            }
-        ),
+        format!("Lints {}", if enabled { "enabled" } else { "disabled" }),
     );
 }
 
@@ -1392,12 +1600,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_store_saves_app_settings_and_framework_toasts() {
+    fn settings_store_saves_table_settings_and_framework_toasts() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         let settings_spec = SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(&path);
         let mut loaded =
-            SettingsStore::<App>::load_for_startup(settings_spec, cargo_port_settings_registry())
+            SettingsStore::load_for_startup(settings_spec, cargo_port_settings_registry())
                 .expect("load settings");
         let mut config = CargoPortConfig::default();
         config.tui.ci_run_count = 9;
@@ -1407,10 +1615,9 @@ mod tests {
             ..ToastSettings::default()
         };
 
-        loaded
-            .store
-            .save(&config, &toast_settings)
-            .expect("save settings");
+        *loaded.store.table_mut() = settings_table_from_config(&config).expect("settings table");
+        toast_settings.write_to_table(loaded.store.table_mut());
+        loaded.store.save().expect("save settings");
 
         let saved = std::fs::read_to_string(path).expect("read saved config");
         assert!(saved.contains("ci_run_count = 9"));

@@ -783,15 +783,10 @@ pub(crate) fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
 
 // ── Internal resolution ──────────────────────────────────────────────
 
-const VIM_RESERVED: [KeyCode; 4] = [
-    KeyCode::Char('h'),
-    KeyCode::Char('j'),
-    KeyCode::Char('k'),
-    KeyCode::Char('l'),
-];
-
 fn is_vim_reserved(bind: &KeyBind, vim_mode: NavigationKeys) -> bool {
-    vim_mode.uses_vim() && bind.modifiers == KeyModifiers::NONE && VIM_RESERVED.contains(&bind.code)
+    vim_mode.uses_vim()
+        && bind.modifiers == KeyModifiers::NONE
+        && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l'))
 }
 
 fn migrate_removed_action_keys(table: &mut Table) -> bool {

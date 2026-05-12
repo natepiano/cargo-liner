@@ -41,6 +41,7 @@ use super::panes::PendingCiFetch;
 use super::panes::PendingExampleRun;
 use super::panes::RunTargetKind;
 use super::render;
+use super::settings;
 use crate::ci;
 use crate::config;
 use crate::http::HttpClient;
@@ -111,13 +112,14 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 }
 
 pub fn run() -> ExitCode {
-    let cfg = match super::settings::load_cargo_port_config_for_startup() {
-        Ok(cfg) => cfg,
+    let startup_settings = match settings::load_cargo_port_settings_for_startup() {
+        Ok(settings) => settings,
         Err(err) => {
             tracing::error!("Error: {err}");
             return ExitCode::FAILURE;
         },
     };
+    let cfg = startup_settings.config.clone();
     config::set_active_config(&cfg);
     let perf_log_path = perf_log::init();
 
@@ -166,7 +168,7 @@ pub fn run() -> ExitCode {
         &projects,
         bg_tx,
         bg_rx,
-        &cfg,
+        startup_settings,
         http_client,
         scan_started_at,
         metadata_store,

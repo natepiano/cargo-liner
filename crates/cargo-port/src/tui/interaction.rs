@@ -1,6 +1,7 @@
 use ratatui::layout::Position;
 
 use super::app::App;
+use super::app::DismissTarget;
 use super::app::HoveredPaneRow;
 use super::pane::HITTABLE_Z_ORDER;
 use super::pane::Hittable;
@@ -80,9 +81,7 @@ pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
 fn hit_test_toasts(app: &App, pos: Position) -> Option<HoverTarget> {
     for hit in app.framework.toasts.hits().iter().rev() {
         if hit.close_rect.contains(pos) {
-            return Some(HoverTarget::Dismiss(crate::tui::app::DismissTarget::Toast(
-                hit.id,
-            )));
+            return Some(HoverTarget::Dismiss(DismissTarget::Toast(hit.id)));
         }
         if hit.card_rect.contains(pos) {
             return Some(HoverTarget::ToastCard(hit.id));
@@ -194,6 +193,7 @@ mod tests {
     use tui_pane::AppContext;
     use tui_pane::FocusedPane;
     use tui_pane::GlobalAction as FrameworkGlobalAction;
+    use tui_pane::ToastId;
     use tui_pane::ToastStyle;
 
     use super::HoveredPaneRow;
@@ -584,7 +584,7 @@ mod tests {
         )
     }
 
-    fn toast_close_point(app: &App, toast_id: tui_pane::ToastId) -> (u16, u16) {
+    fn toast_close_point(app: &App, toast_id: ToastId) -> (u16, u16) {
         let Some(rect) = app
             .framework
             .toasts
@@ -601,7 +601,7 @@ mod tests {
         )
     }
 
-    fn toast_body_point(app: &App, toast_id: tui_pane::ToastId) -> (u16, u16) {
+    fn toast_body_point(app: &App, toast_id: ToastId) -> (u16, u16) {
         let Some(rect) = app
             .framework
             .toasts

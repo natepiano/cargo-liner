@@ -814,31 +814,26 @@ mod tests {
     }
 
     struct TestApp {
-        framework:    Framework<Self>,
-        app_settings: (),
-        quits:        u32,
-        restarts:     u32,
-        dismisses:    u32,
+        framework: Framework<Self>,
+        quits:     u32,
+        restarts:  u32,
+        dismisses: u32,
     }
 
     impl AppContext for TestApp {
         type AppPaneId = TestPaneId;
-        type AppSettings = ();
         type ToastAction = crate::NoToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
-        fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
-        fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
     }
 
     fn fresh_app() -> TestApp {
         TestApp {
-            framework:    Framework::new(FocusedPane::App(TestPaneId::Foo)),
-            app_settings: (),
-            quits:        0,
-            restarts:     0,
-            dismisses:    0,
+            framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            quits:     0,
+            restarts:  0,
+            dismisses: 0,
         }
     }
 
@@ -1212,7 +1207,6 @@ mod tests {
             .expect("build_into must succeed");
         let app = TestApp {
             framework,
-            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1617,7 +1611,6 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
-            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1659,7 +1652,6 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
-            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1695,7 +1687,6 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
-            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1723,7 +1714,6 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
-            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1746,7 +1736,6 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
-            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1771,7 +1760,6 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
-            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1797,7 +1785,6 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
-            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1832,7 +1819,6 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
-            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,

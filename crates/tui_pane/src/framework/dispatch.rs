@@ -127,8 +127,7 @@ pub(crate) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx)
 /// `true`, [`Framework(FrameworkFocusId::Toasts)`] appended at the end.
 ///
 /// On entry into Toasts focus, the manager's viewport is reset to the
-/// first or last toast based on direction (mirrors cargo-port's
-/// existing `focus_next_pane` / `focus_previous_pane` viewport reset).
+/// first or last toast based on direction.
 fn focus_step<Ctx: AppContext>(ctx: &mut Ctx, direction: CycleDirection) {
     let current = *ctx.framework().focused();
     if matches!(current, FocusedPane::Framework(FrameworkFocusId::Toasts))

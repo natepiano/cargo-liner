@@ -128,27 +128,27 @@ impl App {
         };
         let path = path.to_path_buf();
         let path_buf = path.display().to_string();
+        let previous_table = self.framework.settings_store().table().clone();
         let reload_result = self.framework.settings_store_mut().load_from_path(path);
         match reload_result {
             Ok(settings) => {
-                self.framework.set_toast_settings(settings.toast_settings);
-                self.apply_config(&settings.app_settings);
-                self.config.sync_stamp();
-                self.show_timed_toast("Settings", "Reloaded from disk");
+                match CargoPortConfig::from_table(self.framework.settings_store().table()) {
+                    Ok(config) => {
+                        self.framework.set_toast_settings(settings.toast_settings);
+                        self.apply_config(&config);
+                        self.config.sync_stamp();
+                        self.show_timed_toast("Settings", "Reloaded from disk");
+                    },
+                    Err(err) => {
+                        self.framework
+                            .settings_store_mut()
+                            .replace_table(previous_table);
+                        self.record_config_reload_failure(&format!("{path_buf}: {err}"));
+                    },
+                }
             },
             Err(err) => self.record_config_reload_failure(&format!("{path_buf}: {err}")),
         }
-    }
-    pub fn save_and_apply_config(&mut self, cfg: &CargoPortConfig) -> Result<(), String> {
-        let cfg = config::normalize_config(cfg.clone())?;
-        let toast_settings = self.framework.toast_settings().clone();
-        self.framework
-            .settings_store_mut()
-            .save(&cfg, &toast_settings)
-            .map_err(|err| err.to_string())?;
-        self.apply_config(&cfg);
-        self.config.sync_stamp();
-        Ok(())
     }
     pub fn apply_config(&mut self, cfg: &CargoPortConfig) {
         if self.config.current() == cfg {

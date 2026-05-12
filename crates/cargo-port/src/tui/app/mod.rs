@@ -67,6 +67,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::layout::Position;
+use tui_pane::ToastId;
 use tui_pane::ToastStyle::Warning;
 use tui_pane::TrackedItem;
 
@@ -87,7 +88,6 @@ use super::panes::Panes;
 use super::project_list::ProjectList;
 use super::scan_state::Scan;
 use crate::ci::OwnerRepo;
-use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
 use crate::keymap;
 use crate::lint::LintRuns;
@@ -265,7 +265,7 @@ impl App {
         projects: &[RootItem],
         bg_tx: Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
-        cfg: &CargoPortConfig,
+        startup_settings: settings::StartupSettings,
         http_client: HttpClient,
         scan_started_at: Instant,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
@@ -274,7 +274,7 @@ impl App {
             projects,
             bg_tx,
             bg_rx,
-            cfg,
+            startup_settings,
             http_client,
             scan_started_at,
             metadata_store,
@@ -414,7 +414,7 @@ impl App {
         self.sync_running_clean_toast();
     }
 
-    pub(super) fn dismiss_toast(&mut self, id: tui_pane::ToastId) {
+    pub(super) fn dismiss_toast(&mut self, id: ToastId) {
         self.framework.toasts.dismiss(id);
         self.prune_toasts();
     }
@@ -878,51 +878,6 @@ impl App {
                 .then_some(PaneId::Toasts),
         )
         .collect()
-    }
-
-    #[cfg(test)]
-    pub(super) fn focus_next_pane(&mut self) {
-        self.prune_toasts();
-        let panes = self.tabbable_panes();
-        if panes.is_empty() {
-            return;
-        }
-        let current = self.base_focus();
-        if current == PaneId::Toasts
-            && self.framework.toasts.viewport.pos() + 1 < self.framework.toasts.active_now().len()
-        {
-            self.framework.toasts.viewport.down();
-            self.set_focus_to_pane(PaneId::Toasts);
-            return;
-        }
-        let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
-        let next = panes[(index + 1) % panes.len()];
-        self.set_focus_to_pane(next);
-        if next == PaneId::Toasts {
-            self.framework.toasts.viewport.home();
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn focus_previous_pane(&mut self) {
-        self.prune_toasts();
-        let panes = self.tabbable_panes();
-        if panes.is_empty() {
-            return;
-        }
-        let current = self.base_focus();
-        if current == PaneId::Toasts && self.framework.toasts.viewport.pos() > 0 {
-            self.framework.toasts.viewport.up();
-            self.set_focus_to_pane(PaneId::Toasts);
-            return;
-        }
-        let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
-        let prev = panes[(index + panes.len() - 1) % panes.len()];
-        self.set_focus_to_pane(prev);
-        if prev == PaneId::Toasts {
-            let last_index = self.framework.toasts.active_now().len().saturating_sub(1);
-            self.framework.toasts.viewport.set_pos(last_index);
-        }
     }
 
     pub(super) fn reset_project_panes(&mut self) {

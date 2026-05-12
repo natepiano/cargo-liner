@@ -1,17 +1,15 @@
 #![expect(
-    missing_docs,
-    reason = "Phase 26 migrates cargo-port's toast API into tui_pane; detailed docs land after the API settles"
-)]
-#![expect(
     clippy::cast_possible_truncation,
     clippy::missing_const_for_fn,
     clippy::must_use_candidate,
     clippy::too_many_arguments,
-    reason = "Phase 26 preserves the migrated toast-manager surface before public API polish"
+    reason = "Toast management preserves the migrated runtime API and parity-shaped accessors"
 )]
 
 use std::collections::HashSet;
-use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
 use std::marker::PhantomData;
 use std::time::Duration;
 use std::time::Instant;
@@ -33,44 +31,60 @@ use crate::Viewport;
 use crate::keymap::Action;
 use crate::panes::ToastsAction;
 
+/// Result of handling a focused toast key.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToastCommand<A> {
+    /// No toast action fired.
     None,
+    /// The focused toast requested its action payload.
     Activate(A),
 }
 
+/// Interior body width available inside toast cards for the current settings.
 pub fn toast_body_width(settings: &ToastSettings) -> usize {
     usize::from(settings.width.get().saturating_sub(2))
 }
 
+/// Stable identifier for a toast entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct ToastId(pub u64);
 
 impl ToastId {
+    /// Return the raw numeric identifier.
     pub const fn get(self) -> u64 { self.0 }
 }
 
+/// Stable identifier for a task-backed toast entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct ToastTaskId(pub u64);
 
 impl ToastTaskId {
+    /// Return the raw numeric identifier.
     pub const fn get(self) -> u64 { self.0 }
 }
 
+/// Visual style applied to a toast card.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToastStyle {
+    /// Default informational toast style.
     Normal,
+    /// Warning toast style.
     Warning,
+    /// Error toast style.
     Error,
 }
 
+/// Structured toast body text.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToastBody {
+    /// Single text body.
     Text(String),
+    /// Pre-split multi-line body.
     Lines(Vec<String>),
 }
 
 impl ToastBody {
+    /// Return the body as display text.
     pub fn as_text(&self) -> String {
         match self {
             Self::Text(text) => text.clone(),
@@ -102,12 +116,15 @@ impl From<&str> for ToastBody {
     fn from(value: &str) -> Self { Self::from(value.to_owned()) }
 }
 
+/// Stable key for a tracked task item.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct TrackedItemKey(String);
 
 impl TrackedItemKey {
+    /// Create a tracked-item key.
     pub fn new(value: impl Into<String>) -> Self { Self(value.into()) }
 
+    /// Return the key as a string slice.
     pub fn as_str(&self) -> &str { &self.0 }
 }
 
@@ -119,19 +136,25 @@ impl From<&str> for TrackedItemKey {
     fn from(value: &str) -> Self { Self(value.to_owned()) }
 }
 
-impl fmt::Display for TrackedItemKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
+impl Display for TrackedItemKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult { f.write_str(&self.0) }
 }
 
+/// One item tracked by a task toast.
 #[derive(Clone, Debug)]
 pub struct TrackedItem {
+    /// Display label for the tracked item.
     pub label:        String,
+    /// Stable key used to update the tracked item.
     pub key:          TrackedItemKey,
+    /// Time the item started or restarted.
     pub started_at:   Option<Instant>,
+    /// Time the item completed.
     pub completed_at: Option<Instant>,
 }
 
 impl TrackedItem {
+    /// Create a tracked item with `started_at` set to now.
     pub fn new(label: impl Into<String>, key: impl Into<TrackedItemKey>) -> Self {
         Self {
             label:        label.into(),
@@ -141,42 +164,65 @@ impl TrackedItem {
         }
     }
 
+    /// Return the display label.
     pub fn label(&self) -> &str { &self.label }
 
+    /// Return the stable key.
     pub fn key(&self) -> &TrackedItemKey { &self.key }
 
+    /// Return the completion timestamp, if present.
     pub fn completed_at(&self) -> Option<Instant> { self.completed_at }
 
+    /// Mark the item completed at `now`.
     pub fn mark_completed(&mut self, now: Instant) { self.completed_at = Some(now); }
 }
 
+/// Lifetime policy for a toast entry.
 #[derive(Clone, Copy, Debug)]
 pub enum ToastLifetime {
+    /// Toast exits after the given instant.
     Timed {
+        /// Instant when the toast should start exiting.
         timeout_at: Instant,
     },
+    /// Toast follows a task lifecycle.
     Task {
+        /// Associated task identifier.
         task_id: ToastTaskId,
+        /// Current task status.
         status:  ToastTaskStatus,
     },
+    /// Toast remains until explicitly dismissed.
     Persistent,
 }
 
+/// Runtime state for a task-backed toast.
 #[derive(Clone, Copy, Debug)]
 pub enum ToastTaskStatus {
+    /// Task is still running.
     Running,
+    /// Task has finished and remains visible for a linger duration.
     Finished {
+        /// Instant when the task finished.
         finished_at: Instant,
+        /// How long the finished toast remains live.
         linger:      Duration,
     },
 }
 
+/// Render phase for a toast entry.
 #[derive(Clone, Copy, Debug)]
 pub enum ToastPhase {
+    /// Toast is fully visible.
     Visible,
-    Exiting { started_at: Instant },
+    /// Toast is in its exit animation.
+    Exiting {
+        /// Instant when the exit animation started.
+        started_at: Instant,
+    },
 }
 
+/// Stored toast entry.
 #[derive(Clone, Debug)]
 pub struct Toast<Ctx: AppContext> {
     id:                 ToastId,
@@ -193,16 +239,22 @@ pub struct Toast<Ctx: AppContext> {
 }
 
 impl<Ctx: AppContext> Toast<Ctx> {
+    /// Return this toast's identifier.
     pub fn id(&self) -> ToastId { self.id }
 
+    /// Return this toast's title.
     pub fn title(&self) -> &str { &self.title }
 
+    /// Return this toast's structured body.
     pub fn body(&self) -> &ToastBody { &self.body }
 
+    /// Return this toast's body as display text.
     pub fn body_text(&self) -> String { self.body.as_text() }
 
+    /// Return this toast's style.
     pub fn style(&self) -> ToastStyle { self.style }
 
+    /// Return this toast's action payload, if any.
     pub fn action(&self) -> Option<&Ctx::ToastAction> { self.action.as_ref() }
 }
 
@@ -224,19 +276,15 @@ mod tests {
     }
 
     struct TestApp {
-        framework:    Framework<Self>,
-        app_settings: (),
+        framework: Framework<Self>,
     }
 
     impl AppContext for TestApp {
         type AppPaneId = TestPaneId;
-        type AppSettings = ();
         type ToastAction = NoToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
-        fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
-        fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
     }
 
     fn toasts() -> Toasts<TestApp> { Toasts::new() }
@@ -299,19 +347,15 @@ mod tests {
         }
 
         struct ActionApp {
-            framework:    Framework<Self>,
-            app_settings: (),
+            framework: Framework<Self>,
         }
 
         impl AppContext for ActionApp {
             type AppPaneId = TestPaneId;
-            type AppSettings = ();
             type ToastAction = ToastAction;
 
             fn framework(&self) -> &Framework<Self> { &self.framework }
             fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
-            fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
-            fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
         }
 
         let mut toasts = Toasts::<ActionApp>::new();
@@ -340,8 +384,7 @@ mod tests {
     #[test]
     fn toasts_can_live_on_framework() {
         let mut app = TestApp {
-            framework:    Framework::new(FocusedPane::App(TestPaneId::Main)),
-            app_settings: (),
+            framework: Framework::new(FocusedPane::App(TestPaneId::Main)),
         };
         let _ = app.framework.toasts.push("hello", "body");
 
@@ -349,17 +392,23 @@ mod tests {
     }
 }
 
+/// Render-ready view of one tracked task item.
 #[derive(Clone, Debug)]
 pub struct TrackedItemView {
+    /// Display label.
     pub label:           String,
+    /// Completion linger progress from 0.0 to 1.0, if completed.
     pub linger_progress: Option<f64>,
+    /// Elapsed time since the item started, if known.
     pub elapsed:         Option<Duration>,
 }
 
 impl TrackedItemView {
+    /// Return the display label.
     pub fn label(&self) -> &str { &self.label }
 }
 
+/// Render-ready view of a toast.
 #[derive(Clone, Debug)]
 pub struct ToastView {
     id:              ToastId,
@@ -375,37 +424,53 @@ pub struct ToastView {
 }
 
 impl ToastView {
+    /// Return this toast's identifier.
     pub fn id(&self) -> ToastId { self.id }
 
+    /// Return this toast's title.
     pub fn title(&self) -> &str { &self.title }
 
+    /// Return this toast's body text.
     pub fn body(&self) -> &str { &self.body }
 
+    /// Return this toast's style.
     pub fn style(&self) -> ToastStyle { self.style }
 
+    /// Return whether Enter can activate an action for this toast.
     pub fn has_action(&self) -> bool { self.has_action }
 
+    /// Return task linger progress from 0.0 to 1.0, if finished.
     pub fn linger_progress(&self) -> Option<f32> { self.linger_progress }
 
+    /// Return remaining seconds for a timed toast, if applicable.
     pub fn remaining_secs(&self) -> Option<u64> { self.remaining_secs }
 
+    /// Return the tracked items rendered in this toast.
     pub fn tracked_items(&self) -> &[TrackedItemView] { &self.tracked_items }
 
+    /// Return the minimum card height needed to display this toast.
     pub fn min_height(&self) -> u16 { self.min_height }
 
+    /// Return the desired card height when space is available.
     pub fn desired_height(&self) -> u16 { self.desired_height }
 }
 
+/// Click target geometry for one rendered toast.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ToastHitbox {
+    /// Toast hit by this geometry.
     pub id:         ToastId,
+    /// Full toast-card rectangle.
     pub card_rect:  Rect,
+    /// Close-button rectangle.
     pub close_rect: Rect,
 }
 
+/// Framework-owned toast manager.
 pub struct Toasts<Ctx: AppContext> {
     next_id:      u64,
     entries:      Vec<Toast<Ctx>>,
+    /// Viewport used when focus is on the Toasts framework pane.
     pub viewport: Viewport,
     hits:         Vec<ToastHitbox>,
     _ctx:         PhantomData<fn(&Ctx)>,
@@ -416,6 +481,7 @@ impl<Ctx: AppContext> Default for Toasts<Ctx> {
 }
 
 impl<Ctx: AppContext> Toasts<Ctx> {
+    /// Create an empty toast manager.
     pub fn new() -> Self {
         Self {
             next_id:  1,
@@ -426,10 +492,12 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         }
     }
 
+    /// Push a persistent informational toast.
     pub fn push(&mut self, title: impl Into<String>, body: impl Into<String>) -> ToastId {
         self.push_persistent_styled(title, body, ToastStyle::Normal, None, 1)
     }
 
+    /// Push a persistent toast with an explicit style.
     pub fn push_styled(
         &mut self,
         title: impl Into<String>,
@@ -439,6 +507,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         self.push_persistent_styled(title, body, style, None, 1)
     }
 
+    /// Push a persistent toast with an action payload.
     pub fn push_with_action(
         &mut self,
         title: impl Into<String>,
@@ -448,6 +517,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         self.push_persistent_styled(title, body, ToastStyle::Normal, Some(action), 1)
     }
 
+    /// Push a timed informational toast.
     pub fn push_timed(
         &mut self,
         title: impl Into<String>,
@@ -458,6 +528,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         self.push_timed_styled(title, body, timeout, min_interior_lines, ToastStyle::Normal)
     }
 
+    /// Push a timed toast with an explicit style.
     pub fn push_timed_styled(
         &mut self,
         title: impl Into<String>,
@@ -481,6 +552,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         )
     }
 
+    /// Push a task-backed toast and return its task identifier.
     pub fn push_task(
         &mut self,
         title: impl Into<String>,
@@ -505,10 +577,12 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         id
     }
 
+    /// Start a task-backed toast using the default body height.
     pub fn start_task(&mut self, title: impl Into<String>, body: impl Into<String>) -> ToastTaskId {
         self.push_task(title, body, 1)
     }
 
+    /// Push a persistent toast with explicit style, action, and body height.
     pub fn push_persistent(
         &mut self,
         title: impl Into<String>,
@@ -529,6 +603,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         )
     }
 
+    /// Push a persistent toast with explicit style, action, and body height.
     pub fn push_persistent_styled(
         &mut self,
         title: impl Into<String>,
@@ -540,6 +615,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         self.push_persistent(title, body, style, action, min_interior_lines)
     }
 
+    /// Start dismissing the toast with `id`.
     pub fn dismiss(&mut self, id: ToastId) -> bool {
         let now = Instant::now();
         let Some(toast) = self.entries.iter_mut().find(|toast| toast.id == id) else {
@@ -549,29 +625,36 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         true
     }
 
+    /// Start dismissing the currently focused toast.
     pub fn dismiss_focused(&mut self) -> bool {
         self.focused_toast_id().is_some_and(|id| self.dismiss(id))
     }
 
+    /// Return the focused toast identifier.
     pub fn focused_id(&self) -> Option<ToastId> { self.focused_toast_id() }
 
+    /// Return the focused toast identifier.
     pub fn focused_toast_id(&self) -> Option<ToastId> {
         self.active_now()
             .get(self.viewport.pos())
             .map(ToastView::id)
     }
 
+    /// Return whether any live, non-exiting toast is active.
     pub fn has_active(&self) -> bool {
         let now = Instant::now();
         self.entries.iter().any(|toast| toast.is_live(now))
     }
 
+    /// Return all stored toast entries.
     pub fn active(&self) -> &[Toast<Ctx>] { &self.entries }
 
+    /// Return renderable toast views using default timing settings.
     pub fn active_now(&self) -> Vec<ToastView> {
         self.active_views(Instant::now(), &ToastSettings::default())
     }
 
+    /// Return renderable toast views at `now`.
     pub fn active_views(&self, now: Instant, settings: &ToastSettings) -> Vec<ToastView> {
         self.entries
             .iter()
@@ -580,6 +663,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             .collect()
     }
 
+    /// Mark a task toast as finished.
     pub fn finish_task(&mut self, task_id: ToastTaskId, linger: Duration) -> bool {
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
@@ -595,6 +679,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         true
     }
 
+    /// Mark a finished task toast as running again.
     pub fn reactivate_task(&mut self, task_id: ToastTaskId) -> bool {
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
@@ -607,6 +692,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         true
     }
 
+    /// Replace the body text for a task toast.
     pub fn update_task_body(&mut self, task_id: ToastTaskId, body: impl Into<String>) -> bool {
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
@@ -615,6 +701,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         true
     }
 
+    /// Replace the tracked-item list for a task toast.
     pub fn set_tracked_items(
         &mut self,
         task_id: ToastTaskId,
@@ -629,6 +716,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         true
     }
 
+    /// Return whether the toast is currently live.
     pub fn is_alive(&self, id: ToastId) -> bool {
         let now = Instant::now();
         self.entries
@@ -637,6 +725,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             .is_some_and(|toast| toast.is_live(now))
     }
 
+    /// Return whether the task toast is in the finished state.
     pub fn is_task_finished(&self, task_id: ToastTaskId) -> bool {
         self.toast_for_task(task_id).is_some_and(|toast| {
             matches!(
@@ -649,12 +738,14 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         })
     }
 
+    /// Return the number of tracked items on a task toast.
     pub fn tracked_item_count(&self, task_id: ToastTaskId) -> usize {
         self.toast_for_task(task_id)
             .map(|toast| toast.tracked_items.len())
             .unwrap_or_default()
     }
 
+    /// Mark tracked items missing from `active_keys` as completed.
     pub fn complete_missing_items(
         &mut self,
         task_id: ToastTaskId,
@@ -674,6 +765,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         changed
     }
 
+    /// Add tracked items whose keys are not already present.
     pub fn add_new_tracked_items(
         &mut self,
         task_id: ToastTaskId,
@@ -699,6 +791,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         changed
     }
 
+    /// Restart one tracked item by key.
     pub fn restart_tracked_item(
         &mut self,
         task_id: ToastTaskId,
@@ -716,6 +809,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         true
     }
 
+    /// Mark one tracked item completed by string key.
     pub fn mark_item_completed(&mut self, task_id: ToastTaskId, key: &str) -> bool {
         let now = Instant::now();
         let Some(toast) = self.toast_for_task_mut(task_id) else {
@@ -732,10 +826,12 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         true
     }
 
+    /// Mark one tracked item completed by string key.
     pub fn mark_tracked_item_completed(&mut self, task_id: ToastTaskId, key: &str) -> bool {
         self.mark_item_completed(task_id, key)
     }
 
+    /// Drop completed tracked items whose linger duration has elapsed.
     pub fn prune_tracked_items(&mut self, now: Instant, linger: Duration) {
         for toast in &mut self.entries {
             if !matches!(toast.lifetime, ToastLifetime::Task { .. }) {
@@ -748,6 +844,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         }
     }
 
+    /// Advance toast lifetimes and remove entries whose exit animation is done.
     pub fn prune(&mut self, now: Instant) {
         let settings = ToastSettings::default();
         for toast in &mut self.entries {
@@ -760,12 +857,14 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         self.sync_viewport_len();
     }
 
+    /// Move the toast viewport to the first toast when one exists.
     pub fn reset_to_first(&mut self) {
         if self.has_active() {
             self.viewport.set_pos(0);
         }
     }
 
+    /// Move the toast viewport to the last toast when one exists.
     pub fn reset_to_last(&mut self) {
         let len = self.active_now().len();
         if len > 0 {
@@ -773,6 +872,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         }
     }
 
+    /// Apply list navigation while focus is on the Toasts pane.
     pub fn on_navigation(&mut self, nav: ListNavigation) -> KeyOutcome {
         let len = self.active_now().len();
         if len == 0 {
@@ -788,6 +888,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         KeyOutcome::Consumed
     }
 
+    /// Consume a focus-cycle step as toast scrolling when possible.
     pub fn try_consume_cycle_step(&mut self, direction: CycleDirection) -> bool {
         let len = self.active_now().len();
         self.viewport.set_len(len);
@@ -804,6 +905,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         }
     }
 
+    /// Handle a key and return both key outcome and toast action command.
     pub fn handle_key_command(
         &mut self,
         bind: &KeyBind,
@@ -827,16 +929,20 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         (KeyOutcome::Consumed, ToastCommand::Activate(action))
     }
 
+    /// Handle a key and return only the key outcome.
     pub fn handle_key(&mut self, bind: &KeyBind) -> KeyOutcome { self.handle_key_command(bind).0 }
 
+    /// Return the Toasts pane mode.
     pub const fn mode(&self, _ctx: &Ctx) -> Mode<Ctx> { Mode::Navigable }
 
+    /// Return default Toasts-pane bindings.
     pub fn defaults() -> Bindings<ToastsAction> {
         crate::bindings! {
             KeyCode::Enter => ToastsAction::Activate,
         }
     }
 
+    /// Return status-bar slots for the Toasts pane.
     pub fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<ToastsAction>)> {
         ToastsAction::ALL
             .iter()
@@ -845,8 +951,10 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             .collect()
     }
 
+    /// Return hitboxes from the last toast render pass.
     pub fn hits(&self) -> &[ToastHitbox] { &self.hits }
 
+    /// Replace hitboxes from the latest toast render pass.
     pub fn set_hits(&mut self, hits: Vec<ToastHitbox>) { self.hits = hits; }
 
     fn push_entry(

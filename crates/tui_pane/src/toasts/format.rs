@@ -1,8 +1,3 @@
-#![expect(
-    clippy::must_use_candidate,
-    reason = "Phase 26 moves the existing formatting helper before public API polish"
-)]
-
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
@@ -19,6 +14,7 @@ const MAX_VISIBLE_ITEMS: usize = usize::MAX;
 /// - 2+ items: one per line, each truncated with `…` if too wide
 /// - If extras remain beyond the visible items, the last visible line uses [`truncate_with_suffix`]
 ///   to guarantee `(+ N others)` fits
+#[must_use]
 pub fn format_toast_items(items: &[&str], max_width: usize) -> String {
     match items.len() {
         0 => String::new(),

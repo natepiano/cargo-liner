@@ -1,9 +1,9 @@
 //! Framework settings registry, file store, and framework-owned setting groups.
 //!
-//! `SettingsStore<Ctx>` owns generic settings persistence for apps that
+//! `SettingsStore` owns generic settings persistence for apps that
 //! embed `tui_pane`: path resolution, TOML load/save, dirty state, and
 //! registered settings metadata. Apps register their own settings through
-//! `SettingsRegistry<Ctx>`; framework-owned settings, such as
+//! `SettingsRegistry`; framework-owned settings, such as
 //! `ToastSettings`, live directly on `Framework<Ctx>`.
 
 use core::num::NonZeroU16;
@@ -17,8 +17,6 @@ use std::time::Duration;
 use thiserror::Error;
 use toml::Table;
 use toml::Value;
-
-use crate::AppContext;
 
 /// Error returned by settings load, validation, and save operations.
 #[derive(Debug, Error)]
@@ -94,14 +92,6 @@ pub enum SettingsSection {
     App(&'static str),
     /// Framework-owned section, such as `"toasts"`.
     Framework(&'static str),
-}
-
-impl SettingsSection {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::App(name) | Self::Framework(name) => name,
-        }
-    }
 }
 
 /// Direction for setting adjustment controls.
@@ -214,82 +204,82 @@ pub enum SettingsRowKind {
 }
 
 /// Formatting and parsing callbacks for app-specific settings.
-pub struct SettingCodecs<Store> {
+pub struct SettingCodecs {
     /// Format the setting for display/editing.
-    pub format: fn(&Store) -> String,
+    pub format: fn(&Table) -> String,
     /// Parse an edited string into the backing store.
-    pub parse:  fn(&str, &mut Store) -> Result<(), SettingsError>,
+    pub parse:  fn(&str, &mut Table) -> Result<(), SettingsError>,
     /// Optional direction-aware adjustment.
-    pub adjust: Option<SettingAdjuster<Store>>,
+    pub adjust: Option<SettingAdjuster>,
 }
 
 /// Direction-aware adjustment callback for a setting.
-pub type SettingAdjuster<Store> = fn(AdjustDirection, &mut Store) -> Result<(), SettingsError>;
+pub type SettingAdjuster = fn(AdjustDirection, &mut Table) -> Result<(), SettingsError>;
 
 /// One declared setting kept on a [`SettingsRegistry`].
-pub enum SettingKind<Ctx: AppContext> {
+pub enum SettingKind {
     /// A `bool`-typed setting.
     Bool {
         /// Read the current value.
-        get: fn(&Ctx::AppSettings) -> bool,
+        get: fn(&Table) -> bool,
         /// Write a new value.
-        set: fn(&mut Ctx::AppSettings, bool) -> Result<(), SettingsError>,
+        set: fn(&mut Table, bool) -> Result<(), SettingsError>,
     },
     /// A closed-set enum-typed setting.
     Enum {
         /// Read the current label.
-        get:      fn(&Ctx::AppSettings) -> String,
+        get:      fn(&Table) -> String,
         /// Write a new label.
-        set:      fn(&mut Ctx::AppSettings, &str) -> Result<(), SettingsError>,
+        set:      fn(&mut Table, &str) -> Result<(), SettingsError>,
         /// The closed set of valid labels.
         variants: &'static [&'static str],
     },
     /// An integer-typed setting.
     Int {
         /// Read the current value.
-        get:    fn(&Ctx::AppSettings) -> i64,
+        get:    fn(&Table) -> i64,
         /// Write a new value.
-        set:    fn(&mut Ctx::AppSettings, i64) -> Result<(), SettingsError>,
+        set:    fn(&mut Table, i64) -> Result<(), SettingsError>,
         /// Inclusive `(min, max)` bounds, or `None` for unbounded.
         bounds: Option<(i64, i64)>,
     },
     /// A floating-point setting.
     Float {
         /// Read the current value.
-        get: fn(&Ctx::AppSettings) -> f64,
+        get: fn(&Table) -> f64,
         /// Write a new value.
-        set: fn(&mut Ctx::AppSettings, f64) -> Result<(), SettingsError>,
+        set: fn(&mut Table, f64) -> Result<(), SettingsError>,
     },
     /// A string setting.
     String {
         /// Read the current value.
-        get: fn(&Ctx::AppSettings) -> String,
+        get: fn(&Table) -> String,
         /// Write a new value.
-        set: fn(&mut Ctx::AppSettings, &str) -> Result<(), SettingsError>,
+        set: fn(&mut Table, &str) -> Result<(), SettingsError>,
     },
     /// Custom app-defined parse/format/adjust behavior.
     Custom {
         /// App-provided codecs.
-        codecs: SettingCodecs<Ctx::AppSettings>,
+        codecs: SettingCodecs,
     },
 }
 
 /// One entry in a [`SettingsRegistry`].
-pub struct SettingEntry<Ctx: AppContext> {
+pub struct SettingEntry {
     /// Settings section.
     pub section: SettingsSection,
     /// Stable TOML key name.
     pub name:    &'static str,
     /// Type and accessors for this setting.
-    pub kind:    SettingKind<Ctx>,
+    pub kind:    SettingKind,
 }
 
 /// Declarative settings registry, one per app.
-pub struct SettingsRegistry<Ctx: AppContext> {
-    entries: Vec<SettingEntry<Ctx>>,
+pub struct SettingsRegistry {
+    entries: Vec<SettingEntry>,
 }
 
-impl<Ctx: AppContext> SettingsRegistry<Ctx> {
+impl SettingsRegistry {
     /// Empty registry.
     #[must_use]
     pub const fn new() -> Self {
@@ -303,8 +293,8 @@ impl<Ctx: AppContext> SettingsRegistry<Ctx> {
     pub fn add_bool(
         self,
         name: &'static str,
-        get: fn(&Ctx::AppSettings) -> bool,
-        set: fn(&mut Ctx::AppSettings, bool) -> Result<(), SettingsError>,
+        get: fn(&Table) -> bool,
+        set: fn(&mut Table, bool) -> Result<(), SettingsError>,
     ) -> Self {
         self.add_bool_in(SettingsSection::App("app"), name, get, set)
     }
@@ -315,8 +305,8 @@ impl<Ctx: AppContext> SettingsRegistry<Ctx> {
         mut self,
         section: SettingsSection,
         name: &'static str,
-        get: fn(&Ctx::AppSettings) -> bool,
-        set: fn(&mut Ctx::AppSettings, bool) -> Result<(), SettingsError>,
+        get: fn(&Table) -> bool,
+        set: fn(&mut Table, bool) -> Result<(), SettingsError>,
     ) -> Self {
         self.entries.push(SettingEntry {
             section,
@@ -331,8 +321,8 @@ impl<Ctx: AppContext> SettingsRegistry<Ctx> {
     pub fn add_enum(
         self,
         name: &'static str,
-        get: fn(&Ctx::AppSettings) -> String,
-        set: fn(&mut Ctx::AppSettings, &str) -> Result<(), SettingsError>,
+        get: fn(&Table) -> String,
+        set: fn(&mut Table, &str) -> Result<(), SettingsError>,
         variants: &'static [&'static str],
     ) -> Self {
         self.add_enum_in(SettingsSection::App("app"), name, get, set, variants)
@@ -344,8 +334,8 @@ impl<Ctx: AppContext> SettingsRegistry<Ctx> {
         mut self,
         section: SettingsSection,
         name: &'static str,
-        get: fn(&Ctx::AppSettings) -> String,
-        set: fn(&mut Ctx::AppSettings, &str) -> Result<(), SettingsError>,
+        get: fn(&Table) -> String,
+        set: fn(&mut Table, &str) -> Result<(), SettingsError>,
         variants: &'static [&'static str],
     ) -> Self {
         self.entries.push(SettingEntry {
@@ -361,8 +351,8 @@ impl<Ctx: AppContext> SettingsRegistry<Ctx> {
     pub fn add_int(
         self,
         name: &'static str,
-        get: fn(&Ctx::AppSettings) -> i64,
-        set: fn(&mut Ctx::AppSettings, i64) -> Result<(), SettingsError>,
+        get: fn(&Table) -> i64,
+        set: fn(&mut Table, i64) -> Result<(), SettingsError>,
     ) -> Self {
         self.add_int_in(SettingsSection::App("app"), name, get, set)
     }
@@ -373,8 +363,8 @@ impl<Ctx: AppContext> SettingsRegistry<Ctx> {
         mut self,
         section: SettingsSection,
         name: &'static str,
-        get: fn(&Ctx::AppSettings) -> i64,
-        set: fn(&mut Ctx::AppSettings, i64) -> Result<(), SettingsError>,
+        get: fn(&Table) -> i64,
+        set: fn(&mut Table, i64) -> Result<(), SettingsError>,
     ) -> Self {
         self.entries.push(SettingEntry {
             section,
@@ -394,8 +384,8 @@ impl<Ctx: AppContext> SettingsRegistry<Ctx> {
         mut self,
         section: SettingsSection,
         name: &'static str,
-        get: fn(&Ctx::AppSettings) -> f64,
-        set: fn(&mut Ctx::AppSettings, f64) -> Result<(), SettingsError>,
+        get: fn(&Table) -> f64,
+        set: fn(&mut Table, f64) -> Result<(), SettingsError>,
     ) -> Self {
         self.entries.push(SettingEntry {
             section,
@@ -411,8 +401,8 @@ impl<Ctx: AppContext> SettingsRegistry<Ctx> {
         mut self,
         section: SettingsSection,
         name: &'static str,
-        get: fn(&Ctx::AppSettings) -> String,
-        set: fn(&mut Ctx::AppSettings, &str) -> Result<(), SettingsError>,
+        get: fn(&Table) -> String,
+        set: fn(&mut Table, &str) -> Result<(), SettingsError>,
     ) -> Self {
         self.entries.push(SettingEntry {
             section,
@@ -428,7 +418,7 @@ impl<Ctx: AppContext> SettingsRegistry<Ctx> {
         mut self,
         section: SettingsSection,
         name: &'static str,
-        codecs: SettingCodecs<Ctx::AppSettings>,
+        codecs: SettingCodecs,
     ) -> Self {
         self.entries.push(SettingEntry {
             section,
@@ -453,41 +443,37 @@ impl<Ctx: AppContext> SettingsRegistry<Ctx> {
 
     /// Borrow all entries in declaration order.
     #[must_use]
-    pub fn entries(&self) -> &[SettingEntry<Ctx>] { &self.entries }
+    pub fn entries(&self) -> &[SettingEntry] { &self.entries }
 }
 
-impl<Ctx: AppContext> Default for SettingsRegistry<Ctx> {
+impl Default for SettingsRegistry {
     fn default() -> Self { Self::new() }
 }
 
 /// Framework settings store loaded before app construction.
-pub struct SettingsStore<Ctx: AppContext> {
+pub struct SettingsStore {
     spec:     SettingsFileSpec,
     path:     Option<PathBuf>,
-    registry: SettingsRegistry<Ctx>,
+    registry: SettingsRegistry,
     table:    Table,
     dirty:    bool,
 }
 
 /// Settings produced by [`SettingsStore::load_for_startup`].
-pub struct LoadedSettings<Ctx: AppContext> {
+pub struct LoadedSettings {
     /// Store installed into [`Framework`](crate::Framework).
-    pub store:          SettingsStore<Ctx>,
-    /// App-specific settings loaded before the app exists.
-    pub app_settings:   Ctx::AppSettings,
+    pub store:          SettingsStore,
     /// Framework-owned toast settings.
     pub toast_settings: ToastSettings,
 }
 
 /// Settings reloaded from an existing [`SettingsStore`].
-pub struct ReloadedSettings<Ctx: AppContext> {
-    /// App-specific settings loaded from disk.
-    pub app_settings:   Ctx::AppSettings,
+pub struct ReloadedSettings {
     /// Framework-owned toast settings loaded from disk.
     pub toast_settings: ToastSettings,
 }
 
-impl<Ctx: AppContext> SettingsStore<Ctx> {
+impl SettingsStore {
     /// Load settings and return the startup handoff.
     ///
     /// # Errors
@@ -496,12 +482,10 @@ impl<Ctx: AppContext> SettingsStore<Ctx> {
     /// or parsed, or when a registered setting fails validation.
     pub fn load_for_startup(
         spec: SettingsFileSpec,
-        registry: SettingsRegistry<Ctx>,
-    ) -> Result<LoadedSettings<Ctx>, SettingsError> {
+        registry: SettingsRegistry,
+    ) -> Result<LoadedSettings, SettingsError> {
         let path = spec.resolved_path();
         let table = read_settings_table(path.as_deref())?;
-        let mut app_settings = Ctx::AppSettings::default();
-        apply_app_settings(&registry, &table, &mut app_settings)?;
         let toast_settings = ToastSettings::from_table(&table)?;
         let store = Self {
             spec,
@@ -512,7 +496,6 @@ impl<Ctx: AppContext> SettingsStore<Ctx> {
         };
         Ok(LoadedSettings {
             store,
-            app_settings,
             toast_settings,
         })
     }
@@ -540,7 +523,23 @@ impl<Ctx: AppContext> SettingsStore<Ctx> {
 
     /// Borrow registered app settings.
     #[must_use]
-    pub const fn registry(&self) -> &SettingsRegistry<Ctx> { &self.registry }
+    pub const fn registry(&self) -> &SettingsRegistry { &self.registry }
+
+    /// Borrow the in-memory settings TOML table.
+    #[must_use]
+    pub const fn table(&self) -> &Table { &self.table }
+
+    /// Mutably borrow the in-memory settings TOML table and mark it dirty.
+    pub const fn table_mut(&mut self) -> &mut Table {
+        self.dirty = true;
+        &mut self.table
+    }
+
+    /// Replace the in-memory settings TOML table.
+    pub fn replace_table(&mut self, table: Table) {
+        self.table = table;
+        self.dirty = true;
+    }
 
     /// Reload app and framework settings from the store's configured path.
     ///
@@ -548,17 +547,12 @@ impl<Ctx: AppContext> SettingsStore<Ctx> {
     ///
     /// Returns [`SettingsError`] when the file cannot be read or
     /// parsed, or when a registered setting fails validation.
-    pub fn load_current(&mut self) -> Result<ReloadedSettings<Ctx>, SettingsError> {
+    pub fn load_current(&mut self) -> Result<ReloadedSettings, SettingsError> {
         let table = read_settings_table(self.path.as_deref())?;
-        let mut app_settings = Ctx::AppSettings::default();
-        apply_app_settings(&self.registry, &table, &mut app_settings)?;
         let toast_settings = ToastSettings::from_table(&table)?;
         self.table = table;
         self.dirty = false;
-        Ok(ReloadedSettings {
-            app_settings,
-            toast_settings,
-        })
+        Ok(ReloadedSettings { toast_settings })
     }
 
     /// Reload app and framework settings from a specific file path and
@@ -571,20 +565,15 @@ impl<Ctx: AppContext> SettingsStore<Ctx> {
     pub fn load_from_path(
         &mut self,
         path: impl Into<PathBuf>,
-    ) -> Result<ReloadedSettings<Ctx>, SettingsError> {
+    ) -> Result<ReloadedSettings, SettingsError> {
         let path = path.into();
         let table = read_settings_table(Some(path.as_path()))?;
-        let mut app_settings = Ctx::AppSettings::default();
-        apply_app_settings(&self.registry, &table, &mut app_settings)?;
         let toast_settings = ToastSettings::from_table(&table)?;
         self.spec.path = Some(path.clone());
         self.path = Some(path);
         self.table = table;
         self.dirty = false;
-        Ok(ReloadedSettings {
-            app_settings,
-            toast_settings,
-        })
+        Ok(ReloadedSettings { toast_settings })
     }
 
     /// Whether settings have unsaved in-memory changes.
@@ -594,37 +583,28 @@ impl<Ctx: AppContext> SettingsStore<Ctx> {
     /// Mark the store dirty after a framework-owned setting changes.
     pub const fn mark_dirty(&mut self) { self.dirty = true; }
 
-    /// Save app and framework settings to disk.
+    /// Save the in-memory settings TOML table to disk.
     ///
     /// # Errors
     ///
     /// Returns [`SettingsError`] if serialization or writing fails.
-    pub fn save(
-        &mut self,
-        app_settings: &Ctx::AppSettings,
-        toast_settings: &ToastSettings,
-    ) -> Result<(), SettingsError> {
-        let mut table = read_settings_table(self.path.as_deref())?;
-        write_app_settings(&self.registry, app_settings, &mut table);
-        toast_settings.write_to_table(&mut table);
-        remove_legacy_toast_keys(&mut table);
+    pub fn save(&mut self) -> Result<(), SettingsError> {
+        remove_legacy_toast_keys(&mut self.table);
         let Some(path) = &self.path else {
-            self.table = table;
             self.dirty = false;
             return Ok(());
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let text = toml::to_string_pretty(&table)?;
+        let text = toml::to_string_pretty(&self.table)?;
         fs::write(path, text)?;
-        self.table = table;
         self.dirty = false;
         Ok(())
     }
 }
 
-impl<Ctx: AppContext> Default for SettingsStore<Ctx> {
+impl Default for SettingsStore {
     fn default() -> Self { Self::empty() }
 }
 
@@ -641,134 +621,82 @@ fn read_settings_table(path: Option<&Path>) -> Result<Table, SettingsError> {
     Ok(table)
 }
 
-fn apply_app_settings<Ctx: AppContext>(
-    registry: &SettingsRegistry<Ctx>,
-    table: &Table,
-    app_settings: &mut Ctx::AppSettings,
-) -> Result<(), SettingsError> {
-    for entry in registry.entries() {
-        let section = entry.section.name();
-        let Some(value) = table
-            .get(section)
-            .and_then(Value::as_table)
-            .and_then(|section_table| section_table.get(entry.name))
-        else {
-            continue;
-        };
-        apply_entry(entry, value, app_settings)?;
-    }
-    Ok(())
+/// Read an integer value from `section.key`.
+#[must_use]
+pub fn read_int(table: &Table, section: &str, key: &str) -> Option<i64> {
+    table
+        .get(section)
+        .and_then(Value::as_table)
+        .and_then(|section| section.get(key))
+        .and_then(Value::as_integer)
 }
 
-fn apply_entry<Ctx: AppContext>(
-    entry: &SettingEntry<Ctx>,
-    value: &Value,
-    app_settings: &mut Ctx::AppSettings,
-) -> Result<(), SettingsError> {
-    let section = entry.section.name();
-    match &entry.kind {
-        SettingKind::Bool { set, .. } => {
-            let parsed = value
-                .as_bool()
-                .ok_or_else(|| invalid(section, entry.name, "expected bool"))?;
-            set(app_settings, parsed)
-        },
-        SettingKind::Enum { set, variants, .. } => {
-            let parsed = value
-                .as_str()
-                .ok_or_else(|| invalid(section, entry.name, "expected string"))?;
-            if !variants.contains(&parsed) {
-                return Err(invalid(section, entry.name, "unknown enum variant"));
-            }
-            set(app_settings, parsed)
-        },
-        SettingKind::Int { set, bounds, .. } => {
-            let mut parsed = value
-                .as_integer()
-                .ok_or_else(|| invalid(section, entry.name, "expected integer"))?;
-            if let Some((min, max)) = bounds {
-                parsed = parsed.clamp(*min, *max);
-            }
-            set(app_settings, parsed)
-        },
-        SettingKind::Float { set, .. } => {
-            let parsed = value
-                .as_float()
-                .ok_or_else(|| invalid(section, entry.name, "expected number"))?;
-            set(app_settings, parsed)
-        },
-        SettingKind::String { set, .. } => {
-            let parsed = value
-                .as_str()
-                .ok_or_else(|| invalid(section, entry.name, "expected string"))?;
-            set(app_settings, parsed)
-        },
-        SettingKind::Custom { codecs } => {
-            let parsed = value_to_edit_string(value);
-            (codecs.parse)(&parsed, app_settings)
-        },
-    }
+/// Read a floating-point value from `section.key`.
+#[must_use]
+pub fn read_float(table: &Table, section: &str, key: &str) -> Option<f64> {
+    table
+        .get(section)
+        .and_then(Value::as_table)
+        .and_then(|section| section.get(key))
+        .and_then(|value| {
+            value.as_float().or_else(|| {
+                value
+                    .as_integer()
+                    .and_then(|integer| integer.to_string().parse().ok())
+            })
+        })
 }
 
-fn write_app_settings<Ctx: AppContext>(
-    registry: &SettingsRegistry<Ctx>,
-    app_settings: &Ctx::AppSettings,
+/// Read a boolean value from `section.key`.
+#[must_use]
+pub fn read_bool(table: &Table, section: &str, key: &str) -> Option<bool> {
+    table
+        .get(section)
+        .and_then(Value::as_table)
+        .and_then(|section| section.get(key))
+        .and_then(Value::as_bool)
+}
+
+/// Read a string value from `section.key`.
+#[must_use]
+pub fn read_string<'a>(table: &'a Table, section: &str, key: &str) -> Option<&'a str> {
+    table
+        .get(section)
+        .and_then(Value::as_table)
+        .and_then(|section| section.get(key))
+        .and_then(Value::as_str)
+}
+
+/// Read an array value from `section.key`.
+#[must_use]
+pub fn read_array<'a>(table: &'a Table, section: &str, key: &str) -> Option<&'a [Value]> {
+    table
+        .get(section)
+        .and_then(Value::as_table)
+        .and_then(|section| section.get(key))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+}
+
+/// Write a TOML value to `section.key`, creating `section` when needed.
+///
+/// # Errors
+///
+/// Returns [`SettingsError`] if `section` exists but is not a TOML table.
+pub fn write_value(
     table: &mut Table,
-) {
-    for entry in registry.entries() {
-        let section = table
-            .entry(entry.section.name())
-            .or_insert_with(|| Value::Table(Table::new()));
-        let Value::Table(section_table) = section else {
-            continue;
-        };
-        section_table.insert(entry.name.to_string(), entry_to_value(entry, app_settings));
-    }
-}
-
-fn entry_to_value<Ctx: AppContext>(
-    entry: &SettingEntry<Ctx>,
-    app_settings: &Ctx::AppSettings,
-) -> Value {
-    match &entry.kind {
-        SettingKind::Bool { get, .. } => Value::Boolean(get(app_settings)),
-        SettingKind::Enum { get, .. } => Value::String(get(app_settings)),
-        SettingKind::Int { get, .. } => Value::Integer(get(app_settings)),
-        SettingKind::Float { get, .. } => Value::Float(get(app_settings)),
-        SettingKind::String { get, .. } => Value::String(get(app_settings)),
-        SettingKind::Custom { codecs } => Value::String((codecs.format)(app_settings)),
-    }
-}
-
-fn value_to_edit_string(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Integer(value) => value.to_string(),
-        Value::Float(value) => value.to_string(),
-        Value::Boolean(value) => value.to_string(),
-        Value::Array(values) => values
-            .iter()
-            .filter_map(array_value_to_edit_string)
-            .collect::<Vec<_>>()
-            .join(", "),
-        Value::Table(_) | Value::Datetime(_) => value.to_string(),
-    }
-}
-
-fn array_value_to_edit_string(value: &Value) -> Option<String> {
-    match value {
-        Value::String(value) => Some(value.clone()),
-        Value::Integer(value) => Some(value.to_string()),
-        Value::Float(value) => Some(value.to_string()),
-        Value::Boolean(value) => Some(value.to_string()),
-        Value::Table(table) => table
-            .get("command")
-            .and_then(Value::as_str)
-            .filter(|command| !command.trim().is_empty())
-            .or_else(|| table.get("name").and_then(Value::as_str))
-            .map(str::to_string),
-        Value::Array(_) | Value::Datetime(_) => None,
-    }
+    section: &str,
+    key: &str,
+    value: Value,
+) -> Result<(), SettingsError> {
+    let section_value = table
+        .entry(section.to_string())
+        .or_insert_with(|| Value::Table(Table::new()));
+    let Value::Table(section_table) = section_value else {
+        return Err(invalid(section, key, "section is not a table"));
+    };
+    section_table.insert(key.to_string(), value);
+    Ok(())
 }
 
 fn invalid(section: &str, key: &str, message: &str) -> SettingsError {
@@ -869,7 +797,8 @@ impl ToastSettings {
         Ok(())
     }
 
-    fn write_to_table(&self, table: &mut Table) {
+    /// Write toast settings into the shared settings TOML table.
+    pub fn write_to_table(&self, table: &mut Table) {
         let mut toasts = Table::new();
         toasts.insert("enabled".to_string(), Value::Boolean(self.enabled));
         toasts.insert(
@@ -1084,6 +1013,7 @@ mod tests {
     use std::time::Duration;
 
     use toml::Table;
+    use toml::Value;
 
     use super::SettingCodecs;
     use super::SettingsFileSpec;
@@ -1091,42 +1021,14 @@ mod tests {
     use super::SettingsSection;
     use super::SettingsStore;
     use super::ToastSettings;
-    use crate::AppContext;
-    use crate::Framework;
 
-    #[derive(Clone, Default)]
-    struct AppSettings {
-        enabled: bool,
-        count:   i64,
-        name:    String,
-        items:   Vec<String>,
-        command: String,
+    fn set_enabled(table: &mut Table, value: bool) -> Result<(), super::SettingsError> {
+        super::write_value(table, "tui", "enabled", Value::Boolean(value))
     }
 
-    struct TestApp {
-        framework:    Framework<Self>,
-        app_settings: AppSettings,
-    }
+    fn enabled(table: &Table) -> bool { super::read_bool(table, "tui", "enabled").unwrap_or(false) }
 
-    impl AppContext for TestApp {
-        type AppPaneId = ();
-        type AppSettings = AppSettings;
-        type ToastAction = crate::NoToastAction;
-
-        fn framework(&self) -> &Framework<Self> { &self.framework }
-        fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
-        fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
-        fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
-    }
-
-    fn set_enabled(settings: &mut AppSettings, value: bool) -> Result<(), super::SettingsError> {
-        settings.enabled = value;
-        validate_test_settings(settings)
-    }
-
-    fn enabled(settings: &AppSettings) -> bool { settings.enabled }
-
-    fn set_count(settings: &mut AppSettings, value: i64) -> Result<(), super::SettingsError> {
+    fn set_count(table: &mut Table, value: i64) -> Result<(), super::SettingsError> {
         if value < 0 {
             return Err(super::invalid(
                 "tui",
@@ -1134,34 +1036,49 @@ mod tests {
                 "expected non-negative count",
             ));
         }
-        settings.count = value;
-        Ok(())
+        super::write_value(table, "tui", "count", Value::Integer(value))
     }
 
-    fn count(settings: &AppSettings) -> i64 { settings.count }
+    fn count(table: &Table) -> i64 { super::read_int(table, "tui", "count").unwrap_or_default() }
 
-    fn set_name(settings: &mut AppSettings, value: &str) -> Result<(), super::SettingsError> {
+    fn set_name(table: &mut Table, value: &str) -> Result<(), super::SettingsError> {
         if value.is_empty() {
             return Err(super::invalid("tui", "name", "expected non-empty name"));
         }
-        settings.name = value.to_string();
-        Ok(())
+        super::write_value(table, "tui", "name", Value::String(value.to_string()))
     }
 
-    fn name(settings: &AppSettings) -> String { settings.name.clone() }
-
-    fn items(settings: &AppSettings) -> String { settings.items.join(", ") }
-
-    fn set_items(value: &str, settings: &mut AppSettings) -> Result<(), super::SettingsError> {
-        settings.items = parse_list(value);
-        validate_test_settings(settings)
+    fn name(table: &Table) -> String {
+        super::read_string(table, "tui", "name")
+            .unwrap_or_default()
+            .to_string()
     }
 
-    fn command(settings: &AppSettings) -> String { settings.command.clone() }
+    fn items(table: &Table) -> String {
+        super::read_array(table, "tui", "items")
+            .unwrap_or_default()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 
-    fn set_command(value: &str, settings: &mut AppSettings) -> Result<(), super::SettingsError> {
-        settings.command = value.to_string();
-        validate_test_settings(settings)
+    fn set_items(value: &str, table: &mut Table) -> Result<(), super::SettingsError> {
+        let values = parse_list(value)
+            .into_iter()
+            .map(Value::String)
+            .collect::<Vec<_>>();
+        super::write_value(table, "tui", "items", Value::Array(values))
+    }
+
+    fn command(table: &Table) -> String {
+        super::read_string(table, "tui", "command")
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn set_command(value: &str, table: &mut Table) -> Result<(), super::SettingsError> {
+        super::write_value(table, "tui", "command", Value::String(value.to_string()))
     }
 
     fn parse_list(value: &str) -> Vec<String> {
@@ -1173,27 +1090,15 @@ mod tests {
             .collect()
     }
 
-    fn validate_test_settings(settings: &AppSettings) -> Result<(), super::SettingsError> {
-        if settings.count < 0 {
-            Err(super::invalid(
-                "tui",
-                "count",
-                "expected non-negative count",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
     #[test]
     fn empty_registry_has_no_entries() {
-        let reg: SettingsRegistry<TestApp> = SettingsRegistry::new();
+        let reg = SettingsRegistry::new();
         assert!(reg.entries().is_empty());
     }
 
     #[test]
     fn add_settings_record_entries() {
-        let reg = SettingsRegistry::<TestApp>::new()
+        let reg = SettingsRegistry::new()
             .add_bool_in(SettingsSection::App("tui"), "enabled", enabled, set_enabled)
             .add_int_in(SettingsSection::App("tui"), "count", count, set_count)
             .with_bounds(0, 10)
@@ -1205,7 +1110,7 @@ mod tests {
     }
 
     #[test]
-    fn load_for_startup_reads_app_settings_and_toasts() {
+    fn load_for_startup_reads_table_and_toasts() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
             "tui_pane_settings_{}_{}.toml",
@@ -1217,20 +1122,20 @@ mod tests {
             "[tui]\nenabled = true\ncount = 7\nname = \"hana\"\n\n[toasts]\ndefault_timeout = 9.0\ntask_linger = 2.0\n",
         )
         .expect("write settings");
-        let registry = SettingsRegistry::<TestApp>::new()
+        let registry = SettingsRegistry::new()
             .add_bool_in(SettingsSection::App("tui"), "enabled", enabled, set_enabled)
             .add_int_in(SettingsSection::App("tui"), "count", count, set_count)
             .add_string_in(SettingsSection::App("tui"), "name", name, set_name);
 
-        let loaded = SettingsStore::<TestApp>::load_for_startup(
+        let loaded = SettingsStore::load_for_startup(
             SettingsFileSpec::new("test", "settings.toml").with_path(&path),
             registry,
         )
         .expect("load settings");
 
-        assert!(loaded.app_settings.enabled);
-        assert_eq!(loaded.app_settings.count, 7);
-        assert_eq!(loaded.app_settings.name, "hana");
+        assert!(enabled(loaded.store.table()));
+        assert_eq!(count(loaded.store.table()), 7);
+        assert_eq!(name(loaded.store.table()), "hana");
         assert_eq!(
             loaded.toast_settings.default_timeout.get(),
             Duration::from_secs(9)
@@ -1261,13 +1166,13 @@ mod tests {
             "[tui]\nname = \"reload\"\n\n[toasts]\ndefault_timeout = 6.0\n",
         )
         .expect("write reload");
-        let registry = SettingsRegistry::<TestApp>::new().add_string_in(
+        let registry = SettingsRegistry::new().add_string_in(
             SettingsSection::App("tui"),
             "name",
             name,
             set_name,
         );
-        let mut loaded = SettingsStore::<TestApp>::load_for_startup(
+        let mut loaded = SettingsStore::load_for_startup(
             SettingsFileSpec::new("test", "settings.toml").with_path(&initial_path),
             registry,
         )
@@ -1278,7 +1183,7 @@ mod tests {
             .load_from_path(&reload_path)
             .expect("reload settings");
 
-        assert_eq!(reloaded.app_settings.name, "reload");
+        assert_eq!(name(loaded.store.table()), "reload");
         assert_eq!(
             reloaded.toast_settings.default_timeout.get(),
             Duration::from_secs(6)
@@ -1289,19 +1194,9 @@ mod tests {
     }
 
     #[test]
-    fn load_for_startup_reads_custom_array_values() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "tui_pane_settings_{}_{}.toml",
-            std::process::id(),
-            "custom_arrays"
-        ));
-        std::fs::write(
-            &path,
-            "[tui]\nitems = [\"alpha\", \"beta\"]\ncommands = [{ name = \"mend\", command = \"cargo mend\" }, { name = \"clippy\" }]\n",
-        )
-        .expect("write settings");
-        let registry = SettingsRegistry::<TestApp>::new()
+    fn custom_codecs_mutate_table_values() {
+        let mut table = Table::new();
+        let registry = SettingsRegistry::new()
             .add_custom_in(
                 SettingsSection::App("tui"),
                 "items",
@@ -1321,15 +1216,26 @@ mod tests {
                 },
             );
 
-        let loaded = SettingsStore::<TestApp>::load_for_startup(
-            SettingsFileSpec::new("test", "settings.toml").with_path(&path),
-            registry,
-        )
-        .expect("load settings");
+        let items_entry = &registry.entries()[0];
+        let command_entry = &registry.entries()[1];
+        let super::SettingKind::Custom {
+            codecs: items_codecs,
+        } = &items_entry.kind
+        else {
+            panic!("expected custom items entry");
+        };
+        let super::SettingKind::Custom {
+            codecs: command_codecs,
+        } = &command_entry.kind
+        else {
+            panic!("expected custom command entry");
+        };
 
-        assert_eq!(loaded.app_settings.items, ["alpha", "beta"]);
-        assert_eq!(loaded.app_settings.command, "cargo mend, clippy");
-        let _ = std::fs::remove_file(path);
+        (items_codecs.parse)("alpha, beta", &mut table).expect("set items");
+        (command_codecs.parse)("cargo mend", &mut table).expect("set command");
+
+        assert_eq!((items_codecs.format)(&table), "alpha, beta");
+        assert_eq!((command_codecs.format)(&table), "cargo mend");
     }
 
     #[test]
@@ -1351,31 +1257,24 @@ mod tests {
             std::process::id(),
             "save"
         ));
-        let registry = SettingsRegistry::<TestApp>::new().add_bool_in(
+        let registry = SettingsRegistry::new().add_bool_in(
             SettingsSection::App("tui"),
             "enabled",
             enabled,
             set_enabled,
         );
-        let mut loaded = SettingsStore::<TestApp>::load_for_startup(
+        let mut loaded = SettingsStore::load_for_startup(
             SettingsFileSpec::new("test", "settings.toml").with_path(&path),
             registry,
         )
         .expect("load settings");
-        let app_settings = AppSettings {
-            enabled: true,
-            count:   0,
-            name:    String::new(),
-            items:   Vec::new(),
-            command: String::new(),
-        };
 
-        loaded
-            .store
-            .save(&app_settings, &ToastSettings::default())
-            .expect("save settings");
+        set_enabled(loaded.store.table_mut(), true).expect("set enabled");
+        ToastSettings::default().write_to_table(loaded.store.table_mut());
+        loaded.store.save().expect("save settings");
         let saved = std::fs::read_to_string(&path).expect("read saved settings");
 
+        assert!(saved.contains("enabled = true"));
         assert!(saved.contains("[toasts]"));
         assert!(!saved.contains("status_flash_secs"));
         assert!(!saved.contains("task_linger_secs"));

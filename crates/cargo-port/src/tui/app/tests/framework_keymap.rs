@@ -48,6 +48,7 @@ use crate::lint::LintRunStatus;
 use crate::project::RootItem;
 use crate::project::Submodule;
 use crate::test_support;
+use crate::tui::app::CargoPortToastAction;
 use crate::tui::framework_keymap::AppGlobalAction;
 use crate::tui::framework_keymap::AppPaneId;
 use crate::tui::framework_keymap::CiRunsPane;
@@ -1263,7 +1264,7 @@ fn enter_on_focused_toast_with_action_dispatches() {
     let _ = app.framework.toasts.push_with_action(
         "Keymap errors",
         "bad binding",
-        crate::tui::app::CargoPortToastAction::OpenPath(action_path),
+        CargoPortToastAction::OpenPath(action_path),
     );
     app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
 

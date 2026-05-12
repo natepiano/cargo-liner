@@ -52,7 +52,6 @@ use super::panes;
 use super::panes::DetailField;
 use super::panes::GitRow;
 use super::panes::PaneId;
-use crate::config::CargoPortConfig;
 use crate::config::NavigationKeys;
 use crate::keymap::CiRunsAction;
 use crate::keymap::FinderAction;
@@ -176,16 +175,11 @@ tui_pane::action_enum! {
 
 impl AppContext for App {
     type AppPaneId = AppPaneId;
-    type AppSettings = CargoPortConfig;
     type ToastAction = CargoPortToastAction;
 
     fn framework(&self) -> &Framework<Self> { &self.framework }
 
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
-
-    fn app_settings(&self) -> &Self::AppSettings { self.config.current() }
-
-    fn app_settings_mut(&mut self) -> &mut Self::AppSettings { self.config.current_mut() }
 
     fn handle_toast_action(&mut self, action: Self::ToastAction) {
         match action {

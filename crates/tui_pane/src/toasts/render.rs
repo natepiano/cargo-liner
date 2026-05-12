@@ -1,12 +1,8 @@
 #![expect(
-    missing_docs,
-    reason = "Phase 26 moves the existing toast renderer into tui_pane before polishing public docs"
-)]
-#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::too_many_arguments,
-    reason = "Phase 26 keeps the migrated toast rendering math localized for parity"
+    reason = "Toast rendering keeps ratatui geometry math explicit for parity"
 )]
 
 use std::time::Duration;
@@ -24,13 +20,13 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 
+use super::manager::ToastHitbox;
+use super::manager::ToastId;
+use super::manager::ToastStyle;
+use super::manager::ToastView;
+use super::manager::TrackedItemView;
 use crate::ToastSettings;
 use crate::settings::ToastPlacement;
-use crate::toasts::manager::ToastHitbox;
-use crate::toasts::manager::ToastId;
-use crate::toasts::manager::ToastStyle;
-use crate::toasts::manager::ToastView;
-use crate::toasts::manager::TrackedItemView;
 
 const ACCENT_COLOR: Color = Color::Cyan;
 const ACTIVE_BORDER_COLOR: Color = Color::Yellow;
@@ -40,10 +36,13 @@ const TITLE_COLOR: Color = Color::Yellow;
 const WARNING_COLOR: Color = Color::Yellow;
 const SPINNER_FRAMES: &[&str] = &["|", "/", "-", "\\"];
 
+/// Result of rendering toast cards.
 pub struct ToastRenderResult {
+    /// Hitboxes for the toast card and close-button regions rendered in this pass.
     pub hitboxes: Vec<ToastHitbox>,
 }
 
+/// Render toast cards and return their hit-test regions.
 pub fn render_toasts(
     frame: &mut Frame,
     area: Rect,

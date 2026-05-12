@@ -32,13 +32,6 @@ impl From<NonRustInclusion> for bool {
 
 impl NonRustInclusion {
     pub(crate) const fn includes_non_rust(self) -> bool { matches!(self, Self::Include) }
-
-    pub(crate) const fn toggle(&mut self) {
-        *self = match *self {
-            Self::Include => Self::Exclude,
-            Self::Exclude => Self::Include,
-        };
-    }
 }
 
 /// Scroll direction for mouse wheel events.
@@ -60,13 +53,6 @@ impl From<ScrollDirection> for bool {
 
 impl ScrollDirection {
     pub(crate) const fn is_inverted(self) -> bool { matches!(self, Self::Inverted) }
-
-    pub(crate) const fn toggle(&mut self) {
-        *self = match *self {
-            Self::Normal => Self::Inverted,
-            Self::Inverted => Self::Normal,
-        };
-    }
 }
 
 /// Whether newly discovered projects trigger an immediate lint run or wait
@@ -91,13 +77,6 @@ impl From<DiscoveryLint> for bool {
 
 impl DiscoveryLint {
     pub(crate) const fn is_immediate(self) -> bool { matches!(self, Self::Immediate) }
-
-    pub(crate) const fn toggle(&mut self) {
-        *self = match *self {
-            Self::Immediate => Self::Deferred,
-            Self::Deferred => Self::Immediate,
-        };
-    }
 }
 
 /// Whether `hjkl` should mirror arrow-key navigation in non-text panes.
@@ -125,13 +104,6 @@ impl From<NavigationKeys> for bool {
 
 impl NavigationKeys {
     pub(crate) const fn uses_vim(self) -> bool { matches!(self, Self::ArrowsAndVim) }
-
-    pub(crate) const fn toggle(&mut self) {
-        *self = match *self {
-            Self::ArrowsOnly => Self::ArrowsAndVim,
-            Self::ArrowsAndVim => Self::ArrowsOnly,
-        };
-    }
 }
 
 /// Cache storage settings shared by CI and lint-history data.
@@ -454,6 +426,21 @@ pub(crate) fn normalize_config(mut config: CargoPortConfig) -> Result<CargoPortC
     config.tui.discovery_shimmer_secs =
         normalize_non_negative_secs(config.tui.discovery_shimmer_secs);
     Ok(config)
+}
+
+impl CargoPortConfig {
+    pub(crate) fn from_table(table: &toml::Table) -> Result<Self, String> {
+        use confique::Config as _;
+        use confique::Layer as _;
+
+        let value = toml::Value::Table(table.clone());
+        let layer: <Self as confique::Config>::Layer = value
+            .try_into()
+            .map_err(|err| format!("config from table: {err}"))?;
+        Self::from_layer(layer.with_fallback(<Self as confique::Config>::Layer::default_values()))
+            .map_err(|err| format!("config from table: {err}"))
+            .and_then(normalize_config)
+    }
 }
 
 pub(crate) fn normalize_branch_name(value: &str, field: &str) -> Result<String, String> {
@@ -806,6 +793,24 @@ mod tests {
             .load()
             .expect("partial config should load");
         assert_default_config_subset(&cfg, 10);
+    }
+
+    #[test]
+    fn table_config_fills_defaults() {
+        let table = toml::from_str::<toml::Table>("[tui]\nci_run_count = 10\n").expect("table");
+
+        let cfg = CargoPortConfig::from_table(&table).expect("config from table");
+
+        assert_default_config_subset(&cfg, 10);
+    }
+
+    #[test]
+    fn table_config_rejects_invalid_normalized_values() {
+        let table = toml::from_str::<toml::Table>("[tui]\nmain_branch = \"\"\n").expect("table");
+
+        let err = CargoPortConfig::from_table(&table).expect_err("invalid branch");
+
+        assert!(err.contains("tui.main_branch must not be empty"));
     }
 
     /// An empty config file gets all defaults.

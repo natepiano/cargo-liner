@@ -6,16 +6,22 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::Instant;
 
+use tui_pane::SettingsFileSpec;
+use tui_pane::SettingsStore;
+
 use super::app::App;
 use super::app::RetrySpawnMode;
 use crate::config;
 use crate::config::CargoPortConfig;
+use crate::constants::APP_NAME;
+use crate::constants::CONFIG_FILE;
 use crate::http::HttpClient;
 use crate::project::RootItem;
 use crate::project::WorkspaceMetadataStore;
+use crate::test_support;
 
 pub(super) fn test_http_client() -> HttpClient {
-    let runtime = crate::test_support::test_runtime();
+    let runtime = test_support::test_runtime();
     HttpClient::new(runtime.handle().clone()).unwrap_or_else(|| std::process::abort())
 }
 
@@ -29,14 +35,34 @@ pub(super) fn make_app_with_config(projects: &[RootItem], config: &CargoPortConf
         config.tui.include_dirs = vec!["/tmp/test".to_string()];
     }
     let config_path = test_config_path();
-    let _config_guard = config::override_config_path_for_test(config_path);
+    let _config_guard = config::override_config_path_for_test(config_path.clone());
     let (bg_tx, bg_rx) = mpsc::channel();
     let metadata_store = Arc::new(Mutex::new(WorkspaceMetadataStore::new()));
+    let settings_spec = SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(&config_path);
+    let mut loaded_settings = SettingsStore::load_for_startup(
+        settings_spec,
+        super::settings::cargo_port_settings_registry(),
+    )
+    .unwrap_or_else(|_| std::process::abort());
+    *loaded_settings.store.table_mut() = super::settings::settings_table_from_config(&config)
+        .unwrap_or_else(|_| std::process::abort());
+    loaded_settings
+        .toast_settings
+        .write_to_table(loaded_settings.store.table_mut());
+    loaded_settings
+        .store
+        .save()
+        .unwrap_or_else(|_| std::process::abort());
+    let startup_settings = super::settings::StartupSettings {
+        config,
+        store: loaded_settings.store,
+        toast_settings: loaded_settings.toast_settings,
+    };
     let mut app = App::new(
         projects,
         bg_tx,
         bg_rx,
-        &config,
+        startup_settings,
         test_http_client(),
         Instant::now(),
         metadata_store,

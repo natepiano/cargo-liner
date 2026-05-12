@@ -25,15 +25,13 @@ use anyhow::Context;
 use anyhow::Error;
 use tui_pane::FocusedPane;
 use tui_pane::Keymap as FrameworkKeymap;
-use tui_pane::SettingsFileSpec;
 use tui_pane::SettingsStore;
+use tui_pane::ToastSettings;
 
 use super::App;
 use super::types::ScanState;
 use crate::config;
 use crate::config::CargoPortConfig;
-use crate::constants::APP_NAME;
-use crate::constants::CONFIG_FILE;
 use crate::http::HttpClient;
 use crate::keymap;
 use crate::lint;
@@ -54,7 +52,7 @@ use crate::tui::keymap_ui;
 use crate::tui::panes::Panes;
 use crate::tui::project_list::ProjectList;
 use crate::tui::scan_state::Scan;
-use crate::tui::settings;
+use crate::tui::settings::StartupSettings;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -72,6 +70,8 @@ pub(super) struct Inputs {
     scan_started_at: Instant,
     metadata_store:  Arc<Mutex<WorkspaceMetadataStore>>,
     raw_projects:    Vec<RootItem>,
+    settings_store:  SettingsStore,
+    toast_settings:  ToastSettings,
 }
 
 /// `Inputs` plus the three internal mpsc channel pairs (example, CI
@@ -107,7 +107,7 @@ impl AppBuilder<Inputs> {
         projects: &[RootItem],
         bg_tx: Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
-        cfg: &CargoPortConfig,
+        startup_settings: StartupSettings,
         http_client: HttpClient,
         scan_started_at: Instant,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
@@ -116,11 +116,13 @@ impl AppBuilder<Inputs> {
             state: Inputs {
                 bg_tx,
                 bg_rx,
-                cfg: cfg.clone(),
+                cfg: startup_settings.config,
                 http_client,
                 scan_started_at,
                 metadata_store,
                 raw_projects: projects.to_vec(),
+                settings_store: startup_settings.store,
+                toast_settings: startup_settings.toast_settings,
             },
         }
     }
@@ -195,15 +197,6 @@ impl AppBuilder<Started> {
             .config_path
             .as_ref()
             .map(|p| p.as_path().to_path_buf());
-        let settings_spec = config_path_buf.as_ref().map_or_else(
-            || SettingsFileSpec::new(APP_NAME, CONFIG_FILE),
-            |path| SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(path),
-        );
-        let loaded_settings = SettingsStore::<App>::load_for_startup(
-            settings_spec,
-            settings::cargo_port_settings_registry(),
-        )
-        .with_context(|| "loading framework settings")?;
         let config = Config::new(config_path_buf, inputs.cfg);
         let keymap_path_buf = keymap::keymap_path()
             .as_ref()
@@ -218,8 +211,8 @@ impl AppBuilder<Started> {
             overlays.set_status_flash(warning, Instant::now());
         }
         let mut framework = tui_pane::Framework::new(FocusedPane::App(AppPaneId::ProjectList));
-        framework.install_settings_store(loaded_settings.store);
-        framework.set_toast_settings(loaded_settings.toast_settings);
+        framework.install_settings_store(inputs.settings_store);
+        framework.set_toast_settings(inputs.toast_settings);
         framework
             .keymap_pane
             .set_text_input_handler(keymap_ui::keymap_capture_keys);
