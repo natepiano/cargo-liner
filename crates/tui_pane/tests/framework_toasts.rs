@@ -63,15 +63,19 @@ pub enum TestPaneId {
 
 pub struct TestApp {
     framework:           Framework<Self>,
+    app_settings:        (),
     pub set_focus_calls: Cell<u32>,
 }
 
 impl AppContext for TestApp {
     type AppPaneId = TestPaneId;
+    type AppSettings = ();
     type ToastAction = tui_pane::NoToastAction;
 
     fn framework(&self) -> &Framework<Self> { &self.framework }
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+    fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
+    fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
     fn set_focus(&mut self, focus: FocusedPane<Self::AppPaneId>) {
         self.set_focus_calls.set(self.set_focus_calls.get() + 1);
         self.framework.set_focused(focus);
@@ -149,6 +153,7 @@ fn build_with_panes() -> (TestApp, Keymap<TestApp>) {
         .expect("build_into");
     let app = TestApp {
         framework,
+        app_settings: (),
         set_focus_calls: Cell::new(0),
     };
     (app, keymap)
@@ -159,6 +164,7 @@ fn build_no_panes() -> (TestApp, Keymap<TestApp>) {
     let keymap = Keymap::<TestApp>::builder().build().expect("empty build");
     let app = TestApp {
         framework,
+        app_settings: (),
         set_focus_calls: Cell::new(0),
     };
     (app, keymap)
@@ -311,6 +317,7 @@ fn dismiss_chain_falls_through_to_fallback_when_neither_fires() {
         .expect("build_into");
     let mut app = TestApp {
         framework,
+        app_settings: (),
         set_focus_calls: Cell::new(0),
     };
 

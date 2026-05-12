@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::thread;
-use std::time::Duration;
 use std::time::Instant;
 
 use crate::ci;
@@ -230,7 +229,7 @@ impl App {
             self.startup.repo.complete_at = None;
             self.startup.complete_at = None;
             if let Some(toast) = self.startup.toast {
-                let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
+                let linger = self.framework.toast_settings().task_linger.get();
                 self.toasts.add_new_tracked_items(
                     toast,
                     &[TrackedItem {

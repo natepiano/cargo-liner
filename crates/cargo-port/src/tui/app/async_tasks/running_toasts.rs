@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::time::Duration;
 
 use crate::project;
 use crate::tui::app::App;
@@ -51,8 +50,7 @@ impl App {
                 let empty: HashSet<String> = HashSet::new();
                 self.toasts.complete_missing_items(task_id, &empty);
                 if !self.toasts.is_task_finished(task_id) {
-                    let linger =
-                        Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
+                    let linger = self.framework.toast_settings().task_linger.get();
                     self.toasts.finish_task(task_id, linger);
                 }
             }
@@ -68,7 +66,7 @@ impl App {
             && self.toasts.reactivate_task(task_id)
         {
             self.toasts.complete_missing_items(task_id, &running_keys);
-            let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
+            let linger = self.framework.toast_settings().task_linger.get();
             self.toasts
                 .add_new_tracked_items(task_id, running_items, linger);
             for item in running_items {

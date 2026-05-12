@@ -5,11 +5,11 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use strum::EnumCount;
-use strum::IntoEnumIterator;
 use tui_pane::FrameworkOverlayId;
-use tui_pane::KeyBind;
+use tui_pane::SettingsCommand;
 use tui_pane::SettingsPaneAction;
+use tui_pane::ToastDuration;
+use tui_pane::ToastSettings;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
@@ -33,7 +33,7 @@ use crate::config;
 use crate::config::CargoPortConfig;
 use crate::config::LintCommandConfig;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::EnumCount, strum::EnumIter)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingOption {
     InvertScroll,
     IncludeNonRust,
@@ -58,10 +58,6 @@ pub(super) enum SettingOption {
     LintCacheSize,
 }
 
-impl SettingOption {
-    pub(super) fn from_index(i: usize) -> Option<Self> { Self::iter().nth(i) }
-}
-
 fn parse_dir_list(value: &str) -> Vec<String> {
     value
         .split(',')
@@ -71,6 +67,38 @@ fn parse_dir_list(value: &str) -> Vec<String> {
 }
 
 type SettingsRow = (Option<SettingOption>, &'static str, String);
+
+fn selectable_setting_count(rows: &[SettingsRow]) -> usize {
+    rows.iter()
+        .filter(|(setting, _, _)| setting.is_some())
+        .count()
+}
+
+fn setting_at_selection(rows: &[SettingsRow], selection_index: usize) -> Option<SettingOption> {
+    rows.iter()
+        .filter_map(|(setting, _, _)| *setting)
+        .nth(selection_index)
+}
+
+fn selected_setting(app: &App) -> Option<SettingOption> {
+    let rows = settings_rows(app, app.config.current());
+    setting_at_selection(&rows, app.framework.settings_pane.viewport().pos())
+}
+
+pub(super) fn selection_index_for_setting(app: &App, target: SettingOption) -> Option<usize> {
+    settings_rows(app, app.config.current())
+        .iter()
+        .filter_map(|(setting, _, _)| *setting)
+        .position(|setting| setting == target)
+}
+
+#[cfg(test)]
+pub(super) fn selection_index_for_setting_for_test(
+    app: &App,
+    target: SettingOption,
+) -> Option<usize> {
+    selection_index_for_setting(app, target)
+}
 
 fn format_lint_projects(config: &CargoPortConfig) -> String {
     if config.lint.include.is_empty() {
@@ -105,6 +133,40 @@ fn save_number_setting(
     apply(&mut config, number.max(0.0));
     let _ = save_updated_config(app, &config);
     true
+}
+
+fn save_toast_number_setting(
+    app: &mut App,
+    value: &str,
+    key: &'static str,
+    apply: impl FnOnce(&mut ToastSettings, ToastDuration),
+) -> bool {
+    let Ok(number) = value.parse::<f64>() else {
+        finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+        return false;
+    };
+    let Ok(duration) = ToastDuration::try_from_secs(key, number) else {
+        finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+        return false;
+    };
+    let mut settings = app.framework.toast_settings().clone();
+    apply(&mut settings, duration);
+    save_toast_settings(app, settings)
+}
+
+fn save_toast_settings(app: &mut App, settings: ToastSettings) -> bool {
+    let config = app.config.current().clone();
+    match app.framework.settings_store_mut().save(&config, &settings) {
+        Ok(()) => {
+            app.framework.set_toast_settings(settings);
+            app.show_timed_toast("Settings", "Saved");
+            true
+        },
+        Err(err) => {
+            app.overlays.set_inline_error(err.to_string());
+            false
+        },
+    }
 }
 
 fn save_sorted_list_setting(
@@ -186,12 +248,16 @@ fn format_secs(secs: f64) -> String {
     }
 }
 
-fn format_flash_secs(config: &CargoPortConfig) -> String {
-    format_secs(config.tui.status_flash_secs)
+fn format_toast_duration_secs(duration: ToastDuration) -> String {
+    format_secs(duration.as_secs_f64())
 }
 
-fn format_linger_secs(config: &CargoPortConfig) -> String {
-    format_secs(config.tui.task_linger_secs)
+fn format_flash_secs(app: &App) -> String {
+    format_toast_duration_secs(app.framework.toast_settings().default_timeout)
+}
+
+fn format_linger_secs(app: &App) -> String {
+    format_toast_duration_secs(app.framework.toast_settings().task_linger)
 }
 
 fn format_discovery_shimmer_secs(config: &CargoPortConfig) -> String {
@@ -210,7 +276,7 @@ fn format_cpu_yellow_max(config: &CargoPortConfig) -> String {
 
 fn settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow> {
     let mut rows = general_settings_rows(app, config);
-    rows.extend(toast_settings_rows(config));
+    rows.extend(toast_settings_rows(app, config));
     rows.extend(cpu_settings_rows(config));
     rows.extend(lint_settings_rows(app, config));
     rows
@@ -287,18 +353,18 @@ fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow
     ]
 }
 
-fn toast_settings_rows(config: &CargoPortConfig) -> Vec<SettingsRow> {
+fn toast_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow> {
     vec![
         (None, "Toasts", String::new()),
         (
             Some(SettingOption::StatusFlashSecs),
             "Status flash secs",
-            format_flash_secs(config),
+            format_flash_secs(app),
         ),
         (
             Some(SettingOption::TaskLingerSecs),
             "Task linger secs",
-            format_linger_secs(config),
+            format_linger_secs(app),
         ),
         (
             Some(SettingOption::DiscoveryShimmerSecs),
@@ -453,10 +519,12 @@ struct WrappedValueRow<'a> {
     content_width: usize,
 }
 
+#[cfg(test)]
 fn prev_char_boundary(s: &str, cursor: usize) -> usize {
     s[..cursor].char_indices().last().map_or(0, |(idx, _)| idx)
 }
 
+#[cfg(test)]
 fn next_char_boundary(s: &str, cursor: usize) -> usize {
     s[cursor..]
         .chars()
@@ -464,7 +532,7 @@ fn next_char_boundary(s: &str, cursor: usize) -> usize {
         .map_or(s.len(), |ch| cursor + ch.len_utf8())
 }
 
-fn render_edit_buffer(buf: &str, cursor: usize) -> String {
+fn render_editor_text(buf: &str, cursor: usize) -> String {
     let mut rendered = String::with_capacity(buf.len() + 1);
     rendered.push_str(&buf[..cursor]);
     rendered.push('_');
@@ -472,11 +540,13 @@ fn render_edit_buffer(buf: &str, cursor: usize) -> String {
     rendered
 }
 
+#[cfg(test)]
 fn insert_char_at_cursor(buf: &mut String, cursor: &mut usize, ch: char) {
     buf.insert(*cursor, ch);
     *cursor += ch.len_utf8();
 }
 
+#[cfg(test)]
 fn backspace_at_cursor(buf: &mut String, cursor: &mut usize) {
     if *cursor == 0 {
         return;
@@ -486,6 +556,7 @@ fn backspace_at_cursor(buf: &mut String, cursor: &mut usize) {
     *cursor = prev;
 }
 
+#[cfg(test)]
 fn delete_at_cursor(buf: &mut String, cursor: usize) {
     if cursor >= buf.len() {
         return;
@@ -564,10 +635,10 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
         .saturating_add(2)
         .saturating_add(1);
 
-    app.overlays
+    app.framework
         .settings_pane
-        .viewport
-        .set_len(SettingOption::COUNT);
+        .viewport_mut()
+        .set_len(selectable_setting_count(&rows));
 
     let inner = PopupFrame {
         title:        Some(" Settings ".to_string()),
@@ -577,12 +648,15 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     }
     .render(frame);
 
-    app.overlays.settings_pane.viewport.set_content_area(inner);
+    app.framework
+        .settings_pane
+        .viewport_mut()
+        .set_content_area(inner);
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
 
-    app.overlays.settings_pane.set_line_targets(line_targets);
+    app.framework.settings_pane.set_line_targets(line_targets);
 }
 
 const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
@@ -651,6 +725,25 @@ fn push_wrapped_setting_value(
     push_wrapped_value_row(lines, line_targets, Some(ctx.selection_index), &row);
 }
 
+const fn settings_is_editing(app: &App) -> bool { app.framework.settings_pane.is_editing() }
+
+fn framework_selection_state(
+    app: &App,
+    selection_index: usize,
+    focus: PaneFocusState,
+) -> PaneSelectionState {
+    let viewport = app.framework.settings_pane.viewport();
+    if selection_index == viewport.pos() && matches!(focus, PaneFocusState::Active) {
+        PaneSelectionState::Active
+    } else if viewport.hovered() == Some(selection_index) {
+        PaneSelectionState::Hovered
+    } else if selection_index == viewport.pos() && matches!(focus, PaneFocusState::Remembered) {
+        PaneSelectionState::Remembered
+    } else {
+        PaneSelectionState::Unselected
+    }
+}
+
 fn nav_keys_toggle_suffix(
     app: &App,
     setting: Option<SettingOption>,
@@ -658,7 +751,7 @@ fn nav_keys_toggle_suffix(
 ) -> Option<&'static str> {
     if setting == Some(SettingOption::NavigationKeys)
         && selection != PaneSelectionState::Unselected
-        && !app.overlays.is_settings_editing()
+        && !settings_is_editing(app)
     {
         Some("  maps h/j/k/l to arrow navigation")
     } else {
@@ -715,17 +808,16 @@ fn push_setting_row(
             &error,
             ctx.selection.patch(Style::default().fg(INLINE_ERROR_COLOR)),
         );
-    } else if app.overlays.is_settings_editing() && ctx.selection != PaneSelectionState::Unselected
-    {
-        let edit_buffer = render_edit_buffer(
-            app.config.edit_buffer.buf(),
-            app.config.edit_buffer.cursor(),
+    } else if settings_is_editing(app) && ctx.selection != PaneSelectionState::Unselected {
+        let edited_text = render_editor_text(
+            app.framework.settings_pane.edited_text(),
+            app.framework.settings_pane.edit_cursor(),
         );
         push_wrapped_setting_value(
             lines,
             line_targets,
             ctx,
-            &edit_buffer,
+            &edited_text,
             ctx.selection.patch(Style::default()),
         );
     } else if is_toggle_setting(setting) {
@@ -738,7 +830,7 @@ fn push_setting_row(
         );
     } else if setting == Some(SettingOption::CiRunCount)
         && ctx.selection != PaneSelectionState::Unselected
-        && !app.overlays.is_settings_editing()
+        && !settings_is_editing(app)
     {
         push_ci_run_count_row(lines, line_targets, ctx, value);
     } else if setting == Some(SettingOption::TerminalCommand)
@@ -785,7 +877,7 @@ pub(super) fn build_settings_lines(
             continue;
         }
 
-        let cursor = if app.overlays.settings_pane.viewport.pos() == selection_index {
+        let cursor = if app.framework.settings_pane.viewport().pos() == selection_index {
             "▶ "
         } else {
             "  "
@@ -795,11 +887,7 @@ pub(super) fn build_settings_lines(
         } else {
             app.pane_focus_state(PaneId::Settings)
         };
-        let selection = app
-            .overlays
-            .settings_pane
-            .viewport
-            .selection_state(selection_index, focus);
+        let selection = framework_selection_state(app, selection_index, focus);
         let setting = *setting;
         let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
         let ctx = SettingsLineContext {
@@ -832,13 +920,13 @@ fn push_settings_header(
 }
 
 fn selected_inline_error(app: &App, selection: PaneSelectionState) -> Option<String> {
-    (selection != PaneSelectionState::Unselected && !app.overlays.is_settings_editing())
+    (selection != PaneSelectionState::Unselected && !settings_is_editing(app))
         .then(|| app.overlays.inline_error().cloned())
         .flatten()
 }
 
 pub(super) fn dispatch_settings_action(action: SettingsPaneAction, app: &mut App) {
-    let setting = SettingOption::from_index(app.overlays.settings_pane.viewport.pos());
+    let setting = selected_setting(app);
     match action {
         SettingsPaneAction::StartEdit => {
             app.overlays.clear_inline_error();
@@ -849,15 +937,15 @@ pub(super) fn dispatch_settings_action(action: SettingsPaneAction, app: &mut App
 }
 
 pub(super) fn handle_settings_navigation_key(app: &mut App, key: KeyCode) {
-    let setting = SettingOption::from_index(app.overlays.settings_pane.viewport.pos());
+    let setting = selected_setting(app);
     match key {
         KeyCode::Up => {
             app.overlays.clear_inline_error();
-            app.overlays.settings_pane.viewport.up();
+            app.framework.settings_pane.viewport_mut().up();
         },
         KeyCode::Down => {
             app.overlays.clear_inline_error();
-            app.overlays.settings_pane.viewport.down();
+            app.framework.settings_pane.viewport_mut().down();
         },
         KeyCode::Left | KeyCode::Right => {
             app.overlays.clear_inline_error();
@@ -936,17 +1024,12 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
 }
 
 fn finish_settings_edit_with_error(app: &mut App, error: impl Into<String>) {
-    app.overlays.end_settings_editing();
     app.framework.settings_pane.enter_browse();
-    app.config.edit_buffer.set(String::new(), 0);
     app.overlays.set_inline_error(error.into());
 }
 
 fn begin_settings_edit(app: &mut App, value: String) {
-    app.overlays.begin_settings_editing();
-    app.framework.settings_pane.enter_editing();
-    let cursor = value.len();
-    app.config.edit_buffer.set(value, cursor);
+    app.framework.settings_pane.begin_editing(value);
 }
 
 fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
@@ -978,10 +1061,10 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
             begin_settings_edit(app, app.config.current().lint.cache_size.clone());
         },
         Some(SettingOption::StatusFlashSecs) => {
-            begin_settings_edit(app, format_flash_secs(app.config.current()));
+            begin_settings_edit(app, format_flash_secs(app));
         },
         Some(SettingOption::TaskLingerSecs) => {
-            begin_settings_edit(app, format_linger_secs(app.config.current()));
+            begin_settings_edit(app, format_linger_secs(app));
         },
         Some(SettingOption::DiscoveryShimmerSecs) => {
             begin_settings_edit(app, format_discovery_shimmer_secs(app.config.current()));
@@ -1028,8 +1111,8 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
 }
 
 fn apply_settings_edit(app: &mut App) {
-    let setting = SettingOption::from_index(app.overlays.settings_pane.viewport.pos());
-    let value = app.config.edit_buffer.buf().to_string();
+    let setting = selected_setting(app);
+    let value = app.framework.settings_pane.edited_text().to_string();
     let result = setting.map_or(Ok(()), |setting| {
         apply_settings_edit_for(app, setting, &value)
     });
@@ -1037,9 +1120,7 @@ fn apply_settings_edit(app: &mut App) {
         finish_settings_edit_with_error(app, err);
         return;
     }
-    app.overlays.end_settings_editing();
     app.framework.settings_pane.enter_browse();
-    app.config.edit_buffer.set(String::new(), 0);
 }
 
 fn apply_settings_edit_for(
@@ -1090,6 +1171,20 @@ fn apply_general_settings_edit(
         | SettingOption::LintProjects
         | SettingOption::LintCommands
         | SettingOption::LintCacheSize => return Ok(false),
+        SettingOption::StatusFlashSecs => {
+            if !save_toast_number_setting(app, value, "default_timeout", |settings, duration| {
+                settings.default_timeout = duration;
+            }) {
+                return Ok(true);
+            }
+        },
+        SettingOption::TaskLingerSecs => {
+            if !save_toast_number_setting(app, value, "task_linger", |settings, duration| {
+                settings.task_linger = duration;
+            }) {
+                return Ok(true);
+            }
+        },
         SettingOption::MainBranch => {
             let mut config = app.config.current().clone();
             config.tui.main_branch = config::normalize_branch_name(value, "Main branch")?;
@@ -1100,20 +1195,6 @@ fn apply_general_settings_edit(
             config.tui.other_primary_branches =
                 config::normalize_branch_list(&parse_dir_list(value), "Other primary branches")?;
             let _ = save_updated_config(app, &config);
-        },
-        SettingOption::StatusFlashSecs => {
-            if !save_number_setting(app, value, |config, secs| {
-                config.tui.status_flash_secs = secs;
-            }) {
-                return Ok(true);
-            }
-        },
-        SettingOption::TaskLingerSecs => {
-            if !save_number_setting(app, value, |config, secs| {
-                config.tui.task_linger_secs = secs;
-            }) {
-                return Ok(true);
-            }
         },
         SettingOption::DiscoveryShimmerSecs => {
             if !save_number_setting(app, value, |config, secs| {
@@ -1179,61 +1260,11 @@ fn apply_lint_settings_edit(
     Ok(true)
 }
 
-pub(super) fn handle_settings_edit_key(app: &mut App, key: KeyCode) {
-    match key {
-        KeyCode::Enter => {
-            apply_settings_edit(app);
-        },
-        KeyCode::Esc => {
-            app.overlays.end_settings_editing();
-            app.framework.settings_pane.enter_browse();
-            app.config.edit_buffer.set(String::new(), 0);
-        },
-        KeyCode::Left => {
-            let cursor = prev_char_boundary(
-                app.config.edit_buffer.buf(),
-                app.config.edit_buffer.cursor(),
-            );
-            let value = app.config.edit_buffer.buf().to_string();
-            app.config.edit_buffer.set(value, cursor);
-        },
-        KeyCode::Right => {
-            let cursor = next_char_boundary(
-                app.config.edit_buffer.buf(),
-                app.config.edit_buffer.cursor(),
-            );
-            let value = app.config.edit_buffer.buf().to_string();
-            app.config.edit_buffer.set(value, cursor);
-        },
-        KeyCode::Home => {
-            let value = app.config.edit_buffer.buf().to_string();
-            app.config.edit_buffer.set(value, 0);
-        },
-        KeyCode::End => {
-            let value = app.config.edit_buffer.buf().to_string();
-            app.config.edit_buffer.set(value.clone(), value.len());
-        },
-        KeyCode::Backspace => {
-            let (buf, cursor) = app.config.edit_buffer.parts_mut();
-            backspace_at_cursor(buf, cursor);
-        },
-        KeyCode::Delete => {
-            let cursor = app.config.edit_buffer.cursor();
-            let (buf, _) = app.config.edit_buffer.parts_mut();
-            delete_at_cursor(buf, cursor);
-        },
-        KeyCode::Char(c) => {
-            let (buf, cursor) = app.config.edit_buffer.parts_mut();
-            insert_char_at_cursor(buf, cursor, c);
-        },
-        _ => {},
-    }
-}
-
-pub(super) fn settings_edit_keys(bind: KeyBind, app: &mut App) {
-    handle_settings_edit_key(app, bind.code);
-    if !app.overlays.is_settings_editing() {
-        app.framework.settings_pane.enter_browse();
+pub(super) fn handle_settings_text_command(app: &mut App, command: SettingsCommand) {
+    match command {
+        SettingsCommand::None => {},
+        SettingsCommand::Save => apply_settings_edit(app),
+        SettingsCommand::Cancel => app.framework.settings_pane.enter_browse(),
     }
 }
 
@@ -1257,10 +1288,8 @@ fn toggle_lints(app: &mut App) {
 }
 
 pub(super) fn focus_terminal_command(app: &mut App) {
-    if let Some(index) =
-        SettingOption::iter().position(|setting| setting == SettingOption::TerminalCommand)
-    {
-        app.overlays.settings_pane.viewport.set_pos(index);
+    if let Some(index) = selection_index_for_setting(app, SettingOption::TerminalCommand) {
+        app.framework.settings_pane.viewport_mut().set_pos(index);
     }
 }
 
@@ -1275,60 +1304,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lint_settings_have_stable_indices() {
+    fn setting_selection_ignores_section_headers() {
+        let rows = vec![
+            (None, "General", String::new()),
+            (
+                Some(SettingOption::InvertScroll),
+                "Invert scroll",
+                "ON".to_string(),
+            ),
+            (None, "Toasts", String::new()),
+            (
+                Some(SettingOption::StatusFlashSecs),
+                "Status flash secs",
+                "5".to_string(),
+            ),
+        ];
+
+        assert_eq!(selectable_setting_count(&rows), 2);
         assert_eq!(
-            SettingOption::from_index(2),
-            Some(SettingOption::NavigationKeys)
+            setting_at_selection(&rows, 0),
+            Some(SettingOption::InvertScroll)
         );
         assert_eq!(
-            SettingOption::from_index(5),
-            Some(SettingOption::TerminalCommand)
+            setting_at_selection(&rows, 1),
+            Some(SettingOption::StatusFlashSecs)
         );
-        assert_eq!(
-            SettingOption::from_index(13),
-            Some(SettingOption::CpuPollMs)
-        );
-        assert_eq!(
-            SettingOption::from_index(14),
-            Some(SettingOption::CpuGreenMaxPercent)
-        );
-        assert_eq!(
-            SettingOption::from_index(15),
-            Some(SettingOption::CpuYellowMaxPercent)
-        );
-        assert_eq!(
-            SettingOption::from_index(16),
-            Some(SettingOption::LintsEnabled)
-        );
-        assert_eq!(
-            SettingOption::from_index(17),
-            Some(SettingOption::LintOnDiscovery)
-        );
-        assert_eq!(
-            SettingOption::from_index(18),
-            Some(SettingOption::LintProjects)
-        );
-        assert_eq!(
-            SettingOption::from_index(19),
-            Some(SettingOption::LintCommands)
-        );
-        assert_eq!(
-            SettingOption::from_index(20),
-            Some(SettingOption::LintCacheSize)
-        );
-        assert_eq!(
-            SettingOption::from_index(12),
-            Some(SettingOption::DiscoveryShimmerSecs)
-        );
-        assert_eq!(
-            SettingOption::from_index(6),
-            Some(SettingOption::MainBranch)
-        );
-        assert_eq!(
-            SettingOption::from_index(7),
-            Some(SettingOption::OtherPrimaryBranches)
-        );
-        assert_eq!(SettingOption::COUNT, 21);
+        assert_eq!(setting_at_selection(&rows, 2), None);
     }
 
     #[test]
@@ -1356,7 +1357,7 @@ mod tests {
     #[test]
     fn parse_lint_commands_accepts_builtin_commands() {
         let commands = parse_lint_commands(
-            "cargo mend --manifest-path \"$MANIFEST_PATH\", cargo clippy --workspace",
+            "cargo mend --manifest-path \"$MANIFEST_PATH\" --all-targets, cargo clippy --workspace",
         );
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].name, "mend");
@@ -1425,10 +1426,10 @@ mod tests {
     }
 
     #[test]
-    fn edit_buffer_renders_cursor_in_place() {
-        assert_eq!(render_edit_buffer("hana", 0), "_hana");
-        assert_eq!(render_edit_buffer("hana", 2), "ha_na");
-        assert_eq!(render_edit_buffer("hana", 4), "hana_");
+    fn editor_text_renders_cursor_in_place() {
+        assert_eq!(render_editor_text("hana", 0), "_hana");
+        assert_eq!(render_editor_text("hana", 2), "ha_na");
+        assert_eq!(render_editor_text("hana", 4), "hana_");
     }
 
     #[test]

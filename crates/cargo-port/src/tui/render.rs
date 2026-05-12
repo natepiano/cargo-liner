@@ -14,6 +14,9 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::BarPalette;
 use tui_pane::FrameworkOverlayId;
+use tui_pane::GlobalAction as FrameworkGlobalAction;
+use tui_pane::KeyBind;
+use tui_pane::ShortcutState;
 use tui_pane::render_status_bar as render_framework_status_bar;
 use unicode_width::UnicodeWidthStr;
 
@@ -32,6 +35,7 @@ use super::constants::STATUS_BAR_COLOR;
 use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
 use super::finder;
+use super::framework_keymap::AppGlobalAction;
 use super::interaction;
 use super::keymap_ui;
 use super::pane;
@@ -509,6 +513,145 @@ pub(super) fn cargo_port_bar_palette() -> BarPalette {
     }
 }
 
+fn push_status_slot(
+    spans: &mut Vec<Span<'static>>,
+    key: Option<KeyBind>,
+    label: &'static str,
+    state: ShortcutState,
+    palette: &BarPalette,
+) {
+    let Some(key) = key else {
+        return;
+    };
+    if !spans.is_empty() {
+        spans.push(Span::styled("  ", palette.separator_style));
+    }
+    let (key_style, label_style) = match state {
+        ShortcutState::Enabled => (palette.enabled_key_style, palette.enabled_label_style),
+        ShortcutState::Disabled => (palette.disabled_key_style, palette.disabled_label_style),
+    };
+    spans.push(Span::styled(format!(" {}", key.display_short()), key_style));
+    spans.push(Span::styled(format!(" {label}"), label_style));
+}
+
+fn app_global_key(app: &App, action: AppGlobalAction) -> Option<KeyBind> {
+    app.framework_keymap
+        .globals::<AppGlobalAction>()?
+        .key_for(action)
+        .copied()
+}
+
+fn framework_global_key(app: &App, action: FrameworkGlobalAction) -> Option<KeyBind> {
+    app.framework_keymap
+        .framework_globals()
+        .key_for(action)
+        .copied()
+}
+
+fn cargo_port_global_spans(app: &App, palette: &BarPalette) -> Vec<Span<'static>> {
+    let selected_project_is_deleted = app.project_list.selected_project_is_deleted();
+    let terminal_command_configured = !app.config.terminal_command().trim().is_empty();
+    let editor_state = if selected_project_is_deleted {
+        ShortcutState::Disabled
+    } else {
+        ShortcutState::Enabled
+    };
+    let terminal_state = if terminal_command_configured && !selected_project_is_deleted {
+        ShortcutState::Enabled
+    } else {
+        ShortcutState::Disabled
+    };
+    let mut spans = Vec::new();
+    push_status_slot(
+        &mut spans,
+        app_global_key(app, AppGlobalAction::Find),
+        "find",
+        ShortcutState::Enabled,
+        palette,
+    );
+    push_status_slot(
+        &mut spans,
+        app_global_key(app, AppGlobalAction::OpenEditor),
+        "editor",
+        editor_state,
+        palette,
+    );
+    push_status_slot(
+        &mut spans,
+        app_global_key(app, AppGlobalAction::OpenTerminal),
+        "terminal",
+        terminal_state,
+        palette,
+    );
+    push_status_slot(
+        &mut spans,
+        framework_global_key(app, FrameworkGlobalAction::OpenSettings),
+        "settings",
+        ShortcutState::Enabled,
+        palette,
+    );
+    push_status_slot(
+        &mut spans,
+        framework_global_key(app, FrameworkGlobalAction::OpenKeymap),
+        "keymap",
+        ShortcutState::Enabled,
+        palette,
+    );
+    push_status_slot(
+        &mut spans,
+        app_global_key(app, AppGlobalAction::Rescan),
+        "rescan",
+        ShortcutState::Enabled,
+        palette,
+    );
+    push_status_slot(
+        &mut spans,
+        framework_global_key(app, FrameworkGlobalAction::Quit),
+        "quit",
+        ShortcutState::Enabled,
+        palette,
+    );
+    push_status_slot(
+        &mut spans,
+        framework_global_key(app, FrameworkGlobalAction::Restart),
+        "restart",
+        ShortcutState::Enabled,
+        palette,
+    );
+    spans
+}
+
+fn cargo_port_right_spans(
+    app: &App,
+    framework_global_spans: &[Span<'static>],
+    palette: &BarPalette,
+) -> Vec<Span<'static>> {
+    if framework_global_spans.is_empty() {
+        Vec::new()
+    } else {
+        cargo_port_global_spans(app, palette)
+    }
+}
+
+#[cfg(test)]
+pub(super) fn cargo_port_global_text_for_test(app: &App) -> String {
+    cargo_port_global_spans(app, &BarPalette::default())
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+#[cfg(test)]
+pub(super) fn cargo_port_right_text_for_test(
+    app: &App,
+    framework_global_spans: &[Span<'static>],
+) -> String {
+    cargo_port_right_spans(app, framework_global_spans, &BarPalette::default())
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
 pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let bar_style = Style::default().bg(STATUS_BAR_COLOR).fg(Color::White);
 
@@ -543,7 +686,7 @@ pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     left_spans.extend(framework_bar.nav);
 
     let center_spans = framework_bar.pane_action;
-    let right_spans = framework_bar.global;
+    let right_spans = cargo_port_right_spans(app, &framework_bar.global, &cargo_port_bar_palette());
 
     let total_width = area.width as usize;
     let left_width = left_spans.iter().map(Span::width).sum::<usize>();

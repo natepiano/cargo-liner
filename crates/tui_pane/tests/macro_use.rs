@@ -135,21 +135,26 @@ enum CrossCratePaneId {
 }
 
 struct CrossCrateApp {
-    framework: Framework<Self>,
+    framework:    Framework<Self>,
+    app_settings: (),
 }
 
 impl AppContext for CrossCrateApp {
     type AppPaneId = CrossCratePaneId;
+    type AppSettings = ();
     type ToastAction = tui_pane::NoToastAction;
 
     fn framework(&self) -> &Framework<Self> { &self.framework }
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+    fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
+    fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
 }
 
 #[test]
 fn framework_skeleton_reachable_from_outside_crate() {
     let mut app = CrossCrateApp {
-        framework: Framework::new(FocusedPane::App(CrossCratePaneId::Alpha)),
+        framework:    Framework::new(FocusedPane::App(CrossCratePaneId::Alpha)),
+        app_settings: (),
     };
 
     assert_eq!(
@@ -294,7 +299,8 @@ impl Globals<CrossCrateApp> for CrossCrateGlobals {
 #[test]
 fn shortcuts_trait_works_from_outside_crate() {
     let app = CrossCrateApp {
-        framework: Framework::new(FocusedPane::App(CrossCratePaneId::Alpha)),
+        framework:    Framework::new(FocusedPane::App(CrossCratePaneId::Alpha)),
+        app_settings: (),
     };
     let pane = CrossCratePane;
 

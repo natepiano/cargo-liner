@@ -1,6 +1,6 @@
-//! `Pane` and `Hittable` impls for the three overlay panes.
+//! `Pane` and `Hittable` impls for overlay panes.
 //!
-//! Render is a no-op for all three — the popup body is drawn by
+//! Render is a no-op for these panes — the popup body is drawn by
 //! `keymap_ui::render_keymap_popup`, `settings::render_settings_popup`,
 //! and `finder::render_finder_popup` directly from the top-level
 //! `render::ui` path. These impls exist so each pane has a typed home
@@ -10,10 +10,11 @@
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use tui_pane::KeymapPane;
+use tui_pane::SettingsPane;
 
 use super::FinderPane;
-use super::KeymapPane;
-use super::SettingsPane;
+use crate::tui::app::App;
 use crate::tui::pane::Hittable;
 use crate::tui::pane::HoverTarget;
 use crate::tui::pane::Pane;
@@ -21,13 +22,13 @@ use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::panes::PaneId;
 
-impl Pane for KeymapPane {
+impl Pane for KeymapPane<App> {
     fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
 }
 
-impl Hittable for KeymapPane {
+impl Hittable for KeymapPane<App> {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        let row = self.viewport.pos_to_local_row(pos)?;
+        let row = self.viewport().pos_to_local_row(pos)?;
         Some(HoverTarget::PaneRow {
             pane: PaneId::Keymap,
             row,
@@ -35,13 +36,13 @@ impl Hittable for KeymapPane {
     }
 }
 
-impl Pane for SettingsPane {
+impl Pane for SettingsPane<App> {
     fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
 }
 
-impl Hittable for SettingsPane {
+impl Hittable for SettingsPane<App> {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        let inner = self.viewport.content_area();
+        let inner = self.viewport().content_area();
         if inner.width == 0 || inner.height == 0 {
             return None;
         }
@@ -49,7 +50,7 @@ impl Hittable for SettingsPane {
             return None;
         }
         let line_index = usize::from(pos.y.saturating_sub(inner.y));
-        let row = self.line_targets.get(line_index).copied().flatten()?;
+        let row = self.line_target(line_index)?;
         Some(HoverTarget::PaneRow {
             pane: PaneId::Settings,
             row,

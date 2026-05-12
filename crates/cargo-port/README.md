@@ -120,14 +120,14 @@ include = ["cargo-port"]
 
 [[lint.commands]]
 name = "mend"
-command = "cargo mend"
+command = "cargo mend --manifest-path \"$MANIFEST_PATH\" --all-targets"
 
 [[lint.commands]]
 name = "clippy"
 command = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 ```
 
-`command` is executed as a shell command in the project root, not as an implied Cargo subcommand. That means values like `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features --manifest-path "$MANIFEST_PATH" -- -D warnings`, or `something --else` are all valid.
+`command` is executed as a shell command in the project root, not as an implied Cargo subcommand. That means values like `cargo fmt --check`, `cargo mend --manifest-path "$MANIFEST_PATH" --all-targets`, `cargo clippy --workspace --all-targets --all-features --manifest-path "$MANIFEST_PATH" -- -D warnings`, or `something --else` are all valid.
 
 In the Settings popup, `Commands` accepts a comma-separated list of full shell commands.
 

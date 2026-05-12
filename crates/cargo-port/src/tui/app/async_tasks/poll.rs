@@ -89,9 +89,7 @@ impl App {
                             started_at: None,
                             completed_at: None,
                         };
-                        let linger = std::time::Duration::from_secs_f64(
-                            self.config.current().tui.task_linger_secs,
-                        );
+                        let linger = self.framework.toast_settings().task_linger.get();
                         self.toasts
                             .add_new_tracked_items(task_id, &[result_item], linger);
                         self.finish_task_toast(task_id);

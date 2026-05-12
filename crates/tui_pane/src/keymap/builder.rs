@@ -4,9 +4,8 @@
 //! Two states:
 //!
 //! - [`Configuring`]: settings phase. Settings methods (`config_path`, `load_toml`, `vim_mode`,
-//!   `with_settings`, `on_quit`, `on_restart`, `dismiss_fallback`, `register_navigation`,
-//!   `register_globals`, `register_settings_overlay`, `register_keymap_overlay`) are reachable here
-//!   only.
+//!   `on_quit`, `on_restart`, `dismiss_fallback`, `register_navigation`, `register_globals`,
+//!   `register_settings_overlay`, `register_keymap_overlay`) are reachable here only.
 //! - [`Registering`]: panes phase. Entered on the first [`KeymapBuilder::register`] call. Settings
 //!   methods drop off the type — the compiler enforces "settings before panes" at compile time.
 //!   `build_into(&mut Framework<Ctx>)` is the production finalizer.
@@ -44,7 +43,6 @@ use crate::KeymapPaneAction;
 use crate::Pane;
 use crate::SettingsPane;
 use crate::SettingsPaneAction;
-use crate::SettingsRegistry;
 use crate::TabStop;
 use crate::framework::ModeQuery;
 
@@ -105,7 +103,6 @@ pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
     config_path:           Option<PathBuf>,
     toml_table:            Option<Table>,
     vim_mode:              VimMode,
-    settings:              Option<SettingsRegistry<Ctx>>,
     on_quit:               Option<fn(&mut Ctx)>,
     on_restart:            Option<fn(&mut Ctx)>,
     dismiss_fallback:      Option<fn(&mut Ctx) -> bool>,
@@ -140,7 +137,6 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             config_path:           None,
             toml_table:            None,
             vim_mode:              VimMode::Disabled,
-            settings:              None,
             on_quit:               None,
             on_restart:            None,
             dismiss_fallback:      None,
@@ -201,14 +197,6 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     #[must_use]
     pub const fn vim_mode(mut self, mode: VimMode) -> Self {
         self.vim_mode = mode;
-        self
-    }
-
-    /// Attach a [`SettingsRegistry`] for the binary's settings.
-    /// Surfaced to the settings overlay in Phase 11+.
-    #[must_use]
-    pub fn with_settings(mut self, settings: SettingsRegistry<Ctx>) -> Self {
-        self.settings = Some(settings);
         self
     }
 
@@ -454,7 +442,6 @@ fn transition<Ctx: AppContext + 'static>(
         config_path:           src.config_path,
         toml_table:            src.toml_table,
         vim_mode:              src.vim_mode,
-        settings:              src.settings,
         on_quit:               src.on_quit,
         on_restart:            src.on_restart,
         dismiss_fallback:      src.dismiss_fallback,
@@ -719,9 +706,6 @@ fn finalize<Ctx: AppContext + 'static, State>(
     if let Some(keymap_overlay) = builder.keymap_overlay {
         keymap.set_keymap_overlay(keymap_overlay);
     }
-    if let Some(s) = builder.settings {
-        keymap.set_settings(s);
-    }
     if let Some(hook) = builder.on_quit {
         keymap.set_on_quit(hook);
     }
@@ -781,7 +765,6 @@ mod tests {
     use crate::KeymapPaneAction;
     use crate::Pane;
     use crate::SettingsPaneAction;
-    use crate::SettingsRegistry;
     use crate::TabStop;
     use crate::keymap::Bindings;
     use crate::keymap::Globals;
@@ -831,26 +814,31 @@ mod tests {
     }
 
     struct TestApp {
-        framework: Framework<Self>,
-        quits:     u32,
-        restarts:  u32,
-        dismisses: u32,
+        framework:    Framework<Self>,
+        app_settings: (),
+        quits:        u32,
+        restarts:     u32,
+        dismisses:    u32,
     }
 
     impl AppContext for TestApp {
         type AppPaneId = TestPaneId;
+        type AppSettings = ();
         type ToastAction = crate::NoToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+        fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
+        fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
     }
 
     fn fresh_app() -> TestApp {
         TestApp {
-            framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
-            quits:     0,
-            restarts:  0,
-            dismisses: 0,
+            framework:    Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            app_settings: (),
+            quits:        0,
+            restarts:     0,
+            dismisses:    0,
         }
     }
 
@@ -1224,6 +1212,7 @@ mod tests {
             .expect("build_into must succeed");
         let app = TestApp {
             framework,
+            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1418,29 +1407,6 @@ mod tests {
             Err(other) => panic!("expected CrossActionCollision, got {other:?}"),
             Ok(_) => panic!("expected CrossActionCollision, got Ok"),
         }
-    }
-
-    #[test]
-    fn with_settings_round_trips_on_keymap() {
-        fn get_flag(_: &TestApp) -> bool { false }
-        fn set_flag(_: &mut TestApp, _: bool) {}
-        fn get_count(_: &TestApp) -> i64 { 0 }
-        fn set_count(_: &mut TestApp, _: i64) {}
-
-        let registry = SettingsRegistry::<TestApp>::new()
-            .add_bool("vim", get_flag, set_flag)
-            .add_int("count", get_count, set_count)
-            .with_bounds(0, 10);
-
-        let keymap = fresh_builder_singletons()
-            .with_settings(registry)
-            .register::<FooPane>(FooPane)
-            .build()
-            .expect("build must succeed");
-
-        let stored = keymap.settings().expect("settings must round-trip");
-        let names: Vec<&str> = stored.entries().iter().map(|e| e.name).collect();
-        assert_eq!(names, vec!["vim", "count"]);
     }
 
     #[test]
@@ -1651,6 +1617,7 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
+            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1692,6 +1659,7 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
+            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1727,6 +1695,7 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
+            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1754,6 +1723,7 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
+            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1776,6 +1746,7 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
+            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1800,6 +1771,7 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
+            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1825,6 +1797,7 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
+            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,
@@ -1859,6 +1832,7 @@ mod tests {
             .expect("build_into must succeed");
         let mut app = TestApp {
             framework,
+            app_settings: (),
             quits: 0,
             restarts: 0,
             dismisses: 0,

@@ -21,6 +21,8 @@ use crate::FrameworkOverlayId;
 use crate::KeymapPane;
 use crate::Mode;
 use crate::SettingsPane;
+use crate::SettingsStore;
+use crate::ToastSettings;
 use crate::Toasts;
 
 /// `fn` pointer the framework stores per registered pane to query
@@ -58,6 +60,8 @@ pub struct Framework<Ctx: AppContext> {
     /// Settings overlay, held inline. Reachable when
     /// [`Self::overlay`] is `Some(FrameworkOverlayId::Settings)`.
     pub settings_pane: SettingsPane<Ctx>,
+    settings_store:    SettingsStore<Ctx>,
+    toast_settings:    ToastSettings,
     /// Transient notification stack. Tab-focusable when
     /// [`Toasts::has_active`](crate::Toasts::has_active) returns `true`.
     pub toasts:        Toasts<Ctx>,
@@ -78,9 +82,37 @@ impl<Ctx: AppContext> Framework<Ctx> {
             overlay:           None,
             keymap_pane:       KeymapPane::new(),
             settings_pane:     SettingsPane::new(),
+            settings_store:    SettingsStore::empty(),
+            toast_settings:    ToastSettings::default(),
             toasts:            Toasts::new(),
         }
     }
+
+    /// Install the framework-owned settings store.
+    pub fn install_settings_store(&mut self, store: SettingsStore<Ctx>) {
+        self.settings_store = store;
+    }
+
+    /// Borrow the framework-owned settings store.
+    #[must_use]
+    pub const fn settings_store(&self) -> &SettingsStore<Ctx> { &self.settings_store }
+
+    /// Mutably borrow the framework-owned settings store.
+    pub const fn settings_store_mut(&mut self) -> &mut SettingsStore<Ctx> {
+        &mut self.settings_store
+    }
+
+    /// Replace framework-owned toast settings.
+    pub const fn set_toast_settings(&mut self, settings: ToastSettings) {
+        self.toast_settings = settings;
+    }
+
+    /// Borrow framework-owned toast settings.
+    #[must_use]
+    pub const fn toast_settings(&self) -> &ToastSettings { &self.toast_settings }
+
+    /// Mutably borrow framework-owned toast settings.
+    pub const fn toast_settings_mut(&mut self) -> &mut ToastSettings { &mut self.toast_settings }
 
     /// The currently focused pane.
     #[must_use]
@@ -292,20 +324,25 @@ mod tests {
     }
 
     struct TestApp {
-        framework: Framework<Self>,
+        framework:    Framework<Self>,
+        app_settings: (),
     }
 
     impl AppContext for TestApp {
         type AppPaneId = TestPaneId;
+        type AppSettings = ();
         type ToastAction = crate::NoToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+        fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
+        fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
     }
 
     fn fresh_app(initial: FocusedPane<TestPaneId>) -> TestApp {
         TestApp {
-            framework: Framework::new(initial),
+            framework:    Framework::new(initial),
+            app_settings: (),
         }
     }
 

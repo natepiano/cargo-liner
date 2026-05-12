@@ -49,7 +49,6 @@ use crate::KeymapPane;
 use crate::KeymapPaneAction;
 use crate::SettingsPane;
 use crate::SettingsPaneAction;
-use crate::SettingsRegistry;
 use crate::framework;
 
 /// `<N>`/`<G>`-monomorphized renderer the bar reads to materialize
@@ -95,7 +94,6 @@ pub struct Keymap<Ctx: AppContext + 'static> {
     framework_globals:     ScopeMap<GlobalAction>,
     settings_overlay:      ScopeMap<SettingsPaneAction>,
     overlay_keymap_scope:  ScopeMap<KeymapPaneAction>,
-    settings:              Option<SettingsRegistry<Ctx>>,
     on_quit:               Option<fn(&mut Ctx)>,
     on_restart:            Option<fn(&mut Ctx)>,
     dismiss_fallback:      Option<fn(&mut Ctx) -> bool>,
@@ -121,7 +119,6 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
             framework_globals: GlobalAction::defaults().into_scope_map(),
             settings_overlay: SettingsPane::<Ctx>::defaults().into_scope_map(),
             overlay_keymap_scope: KeymapPane::<Ctx>::defaults().into_scope_map(),
-            settings: None,
             on_quit: None,
             on_restart: None,
             dismiss_fallback: None,
@@ -169,12 +166,6 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// overlays user TOML onto the framework-owned keymap scope.
     pub(super) fn set_keymap_overlay(&mut self, map: ScopeMap<KeymapPaneAction>) {
         self.overlay_keymap_scope = map;
-    }
-
-    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
-    /// constructs one.
-    pub(super) fn set_settings(&mut self, settings: SettingsRegistry<Ctx>) {
-        self.settings = Some(settings);
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
@@ -365,11 +356,6 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
             .and_then(|stored| stored.downcast_ref::<ScopeMap<G::Actions>>())
     }
 
-    /// Borrow the binary's settings registry, if one was supplied via
-    /// [`KeymapBuilder::with_settings`].
-    #[must_use]
-    pub const fn settings(&self) -> Option<&SettingsRegistry<Ctx>> { self.settings.as_ref() }
-
     /// `pub(crate)` so [`crate::framework::dispatch_global`] can read
     /// the hook without widening the public surface.
     pub(crate) const fn on_quit_hook(&self) -> Option<fn(&mut Ctx)> { self.on_quit }
@@ -464,15 +450,19 @@ mod tests {
     }
 
     struct TestApp {
-        framework: Framework<Self>,
+        framework:    Framework<Self>,
+        app_settings: (),
     }
 
     impl AppContext for TestApp {
         type AppPaneId = TestPaneId;
+        type AppSettings = ();
         type ToastAction = crate::NoToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+        fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
+        fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
     }
 
     struct FooPane;
@@ -544,7 +534,8 @@ mod tests {
 
     fn fresh_app() -> TestApp {
         TestApp {
-            framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            framework:    Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            app_settings: (),
         }
     }
 

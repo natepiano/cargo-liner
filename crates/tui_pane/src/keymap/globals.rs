@@ -67,15 +67,19 @@ mod tests {
     }
 
     struct TestApp {
-        framework: Framework<Self>,
+        framework:    Framework<Self>,
+        app_settings: (),
     }
 
     impl AppContext for TestApp {
         type AppPaneId = TestPaneId;
+        type AppSettings = ();
         type ToastAction = crate::NoToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+        fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
+        fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
     }
 
     struct AppGlobals;
@@ -125,7 +129,8 @@ mod tests {
     #[test]
     fn dispatcher_is_callable() {
         let mut app = TestApp {
-            framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            framework:    Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            app_settings: (),
         };
         let dispatch: fn(AppGlobalAction, &mut TestApp) = AppGlobals::dispatcher();
         dispatch(AppGlobalAction::Find, &mut app);

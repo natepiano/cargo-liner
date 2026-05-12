@@ -3607,7 +3607,7 @@ A snapshot test per focused-pane context locks in the **new** static-label frame
 ### Phase 23 Review
 
 - Phase 24: recorded the storage boundary — framework toast activation API lands now, but cargo-port production Enter-on-toast acceptance moves to Phase 26 after `app.toasts` migrates into `framework.toasts`.
-- Phase 25: kept `[toasts]` TOML parsing in cargo-port's config path; toast-setting validation does not route through `KeymapError` or the keymap overlay loader.
+- Phase 25: superseded the earlier cargo-port `[toasts]` parsing note with a framework-owned `SettingsStore`; toast-setting validation still does not route through `KeymapError` or the keymap overlay loader.
 - Phases 24-26: added the temp keymap-path override requirement for cargo-port tests that construct `App` and assert exact default keys, Enter behavior, or bar text.
 - Phase 25: added a test-migration note for Settings/Keymap mirror deletion so Phase-23-era overlay assertions move to framework pane state.
 - What dissolves: marked `is_legacy_removed_action` as already removed by Phase 23.
@@ -3738,7 +3738,7 @@ cargo-port's existing `ToastManager::push_*` call sites (Phase 26 migration entr
 **Code touched in Phase 24:**
 - `tui_pane/src/app_context.rs` — add `ToastAction` associated type, `NoToastAction` enum, default `handle_toast_action`.
 - `tui_pane/src/panes/toasts.rs` — add `action` field on `Toast`, `push_with_action`, `ToastsAction::Activate`, `handle_key_command`, `ToastCommand`.
-- Focused framework-pane dispatch path from Phase 21 — apply `ToastCommand` after the framework borrow ends. This may be `tui_pane/src/framework/dispatch.rs` only if Phase 21 moved focused-pane dispatch there; otherwise use the Phase 21 call site.
+- Focused framework-pane dispatch path from Phase 21 — apply `ToastCommand` after the framework borrow ends at the actual Phase 21 focused-pane dispatch call site.
 - `tui_pane/src/lib.rs` — re-export `NoToastAction`, `ToastCommand`.
 - `src/tui/app/mod.rs` / `src/tui/framework_keymap.rs` (cargo-port) — define `CargoPortToastAction`, set `type ToastAction = CargoPortToastAction`, implement `handle_toast_action`.
 - Phase closeout runs the remaining-phase closeout gate.
@@ -3757,19 +3757,109 @@ cargo-port's existing `ToastManager::push_*` call sites (Phase 26 migration entr
 - Phase 26 can migrate `app.toasts` into `framework.toasts` without changing the Phase 24 activation API: payloads are already typed as `Ctx::ToastAction`, and production dispatch already applies `ToastCommand` after the framework borrow ends.
 - Phase 26 owns the first production Enter-on-toast-with-action test because cargo-port visible toasts still live in `app.toasts` after Phase 24.
 
-### Phase 25 — Framework settings registry + toast settings
+### Phase 24 Review
 
-Phase 25 owns the generic framework-settings substrate and its first concrete consumer, `ToastSettings`. It introduces framework-owned settings sections inside `SettingsRegistry`, makes the SettingsPane render/edit/save those framework sections, and then moves cargo-port's toast timing settings onto `Framework<Ctx>`. cargo-port's existing `status_flash_secs` / `task_linger_secs` move from `TuiConfig` into the framework's `ToastSettings`; the binary keeps only the persistence binding (write to disk). Settings land before the manager migration (Phase 26) so the migrated render/lifecycle code reads `framework.toast_settings()` directly — no temporary constants, no plumbing churn.
+- Phase 25 was corrected from a toast-specific cargo-port persistence bridge to a framework-owned settings store. `tui_pane` owns settings path resolution, TOML load/save, SettingsPane edit state, validation display, and framework setting groups; cargo-port registers app-specific settings and side-effect callbacks.
+- The old Phase 25 `ToastSettingsBinding::load` / `save` direction was rejected and removed from the plan. `ToastSettings` now loads through `SettingsStore` as the first framework-owned settings group.
+- Phase 25 now includes the required temporary read-path migration for the legacy cargo-port toast manager: existing `status_flash_secs` / `task_linger_secs` reads reroute to `framework.toast_settings()` before those `TuiConfig` fields delete.
+- Phase 26 now explicitly preserves persistent actionable diagnostic toasts with `push_persistent_styled(..., action: Option<Ctx::ToastAction>)`.
+- Phase 26 now has a production call-site migration inventory for render, hit testing, prune/tick, viewport navigation, push/task APIs, and `DismissTarget::Toast`.
 
-**Deliverables.** Phase 25 ships all of these together: framework `SettingsSection`; registry support for framework-owned sections; `ToastSettings` storage on `Framework`; `ToastSettingsBinding`; SettingsPane render/edit/save support for framework sections; cargo-port `[toasts]` TOML load/save; and the migration of `status_flash_secs` / `task_linger_secs` out of `TuiConfig`. Do not push any of this downstream to the toast-manager migration — Phase 26 assumes `framework.toast_settings()` is already live and editable.
+### Phase 25 — Framework settings store + SettingsPane migration (✅ landed)
 
-**SettingsPane ownership.** Phase 21 moved Settings open/input/render gating to framework overlay state, but cargo-port still owns the concrete settings row builder, popup renderer, viewport mirror, and inline error display. Phase 25 completes the intended ownership split for Settings: generic SettingsPane row construction, viewport/edit state, section rendering, inline validation display, and edit/commit routing move into `tui_pane`. cargo-port supplies app settings through `SettingsRegistry` entries and persistence closures, plus outer popup frame/theme data if needed. Do not add a cargo-port-only bridge for toast settings; `ToastSettings` renders and edits through the framework SettingsPane path that future framework settings can reuse.
+Phase 25 corrects the Settings ownership boundary. Generic settings persistence is a `tui_pane` capability: file-path resolution, TOML load, TOML save, validation display, edit buffering, section rendering, and commit routing live in the framework. cargo-port supplies app-specific setting definitions and apply callbacks, but it does not own the generic SettingsPane or framework-owned setting groups.
 
-**Legacy Settings/Keymap mirror deletion.** Phase 25 also removes the remaining binary mirror state that Phase 21/22 left behind for Settings and Keymap: `Overlays::settings`, `Overlays::keymap`, the cargo-port viewport mirrors used only for those overlays, and `src/tui/input.rs::clear_legacy_framework_overlay_state`. After Phase 25, Settings/Keymap browse/edit/awaiting state lives only in the framework panes; cargo-port persists settings/keymap data and supplies app-specific registry entries.
+`ToastSettings` is the first framework-owned setting group. cargo-port's existing `status_flash_secs` / `task_linger_secs` move from `TuiConfig` into the framework's `[toasts]` settings. App-specific values such as `editor`, branch names, lint flags, and CPU thresholds are registered by cargo-port as app settings; the framework persists them through the same settings store without hardcoding cargo-port concepts.
+
+**Deliverables.** Phase 25 ships all of these together: `SettingsFileSpec`; `SettingsStore`; `SettingsSection`; registry support for app and framework sections; `ToastSettings` storage on `Framework`; SettingsPane render/edit/save support backed by the framework settings store; cargo-port registration of its app settings; migration of `status_flash_secs` / `task_linger_secs` into `[toasts]`; and deletion of the remaining binary Settings/Keymap mirror state. Do not push settings-store work downstream to the toast-manager migration — Phase 26 assumes `framework.toast_settings()` is already live, loaded, editable, and persisted by `tui_pane`.
+
+**Settings ownership.** Phase 21 moved Settings open/input/render gating to framework overlay state, but cargo-port still owns the concrete settings row builder, popup renderer, viewport mirror, and inline error display. Phase 25 completes the intended ownership split for Settings: generic row construction, viewport/edit state, section rendering, inline validation display, text buffering, edit/commit routing, and file persistence move into `tui_pane`. cargo-port registers app setting entries and runtime side-effect callbacks only.
+
+**Generic framework settings store.** Add a framework-owned settings store, independent of keymap TOML:
+
+```rust
+pub struct SettingsFileSpec {
+    pub app_id:     &'static str,
+    pub file_name:  &'static str,
+    pub path:       Option<PathBuf>,
+}
+
+pub struct SettingsStore<Ctx: AppContext> {
+    // owns path resolution, raw TOML document, dirty tracking,
+    // validation errors, and registered setting metadata
+}
+
+pub struct LoadedSettings<Ctx: AppContext> {
+    pub store:          SettingsStore<Ctx>,
+    pub app_settings:   Ctx::AppSettings,
+    pub toast_settings: ToastSettings,
+}
+```
+
+`SettingsFileSpec` lets each binary identify its settings file without teaching `tui_pane` cargo-port names. `path: Some(...)` is an explicit override for tests or custom launchers; otherwise `tui_pane` resolves the config directory from `app_id` / `file_name`. The framework owns create-default, load, save, and write-error reporting.
+
+Startup uses an explicit handoff API:
+
+```rust
+impl<Ctx: AppContext> SettingsStore<Ctx> {
+    pub fn load_for_startup(
+        spec: SettingsFileSpec,
+        registry: SettingsRegistry<Ctx>,
+    ) -> Result<LoadedSettings<Ctx>, SettingsError>;
+}
+```
+
+`LoadedSettings` is consumed by the binary's construction pipeline. cargo-port's `AppBuilder` uses `loaded.app_settings` in the places that currently read `inputs.cfg` before `App` exists, installs `loaded.store` and `loaded.toast_settings` into `Framework`, then builds the framework keymap. This makes the construction sequence explicit: settings load first, app-specific startup reads second, framework/keymap setup third, `App` construction last.
+
+**Startup app-settings target.** App settings must load before `App` exists. Phase 25 adds an associated app-settings data type to `AppContext`:
+
+```rust
+pub trait AppContext {
+    type AppSettings: Default + Clone + 'static;
+    fn app_settings(&self) -> &Self::AppSettings;
+    fn app_settings_mut(&mut self) -> &mut Self::AppSettings;
+}
+```
+
+cargo-port maps this to its app-specific settings struct (the current `CargoPortConfig` data, renamed or narrowed as needed). `SettingsStore` loads TOML into `Framework` settings plus `Ctx::AppSettings` before `App` construction. App construction then reads `Ctx::AppSettings` for startup decisions that already need config values: lint enablement, scan roots, CPU settings, vim mode, editor command, and related setup. Runtime SettingsPane edits update `Ctx::AppSettings` first, then run an optional app callback on `&mut Ctx` so cargo-port can apply side effects such as lint-runtime respawn or keymap rebuild.
+
+**App setting registration.** `SettingsRegistry<Ctx>` becomes a schema and runtime adapter, not just a row list. App entries include section/key names, value kind, validation, display metadata, `get(&Ctx::AppSettings)`, `set(&mut Ctx::AppSettings, value)`, and an optional `apply(&mut Ctx, SettingChange)` callback for runtime side effects. App values such as cargo-port's `editor` remain app-specific fields, but the framework settings store loads and saves them by calling the registered accessors on the app-settings data target.
+
+Framework-owned settings use the same store but do not route through cargo-port callbacks. `ToastSettings` registers a framework section named `"toasts"`; SettingsPane edits mutate `framework.toast_settings_mut()` directly and mark the settings store dirty.
+
+**Registry ownership migration.** `SettingsRegistry` currently lives on `Keymap<Ctx>` through `KeymapBuilder::with_settings`. Phase 25 moves registry storage to `Framework<Ctx>` / `SettingsStore<Ctx>` and deletes the keymap-owned path. Remove `KeymapBuilder::with_settings`, the builder's `settings` field, `Keymap.settings`, and `Keymap::settings()`. Build/load `SettingsStore` before the framework keymap builder chain. Keep `register_settings_overlay()` on the keymap builder because `[settings]` shortcut bindings still belong to the keymap file; only settings values and SettingsPane rows leave keymap ownership. After Phase 25, SettingsPane never needs keymap ownership to render or edit settings.
+
+**cargo-port config subsystem migration.** `src/config.rs` stops owning generic config path/load/save behavior. It keeps app-specific schema, defaults, validation/normalization, and migration helpers. `SettingsStore` takes over path resolution, default-file creation, TOML read/write, dirty tracking, write errors, and template generation from registered settings. Runtime reload in `src/tui/app/async_tasks/config.rs` becomes a framework settings-store reload followed by app callbacks for changed app settings; keymap reload remains on the keymap path.
+
+**No cargo-port persistence bridge.** Do not add `ToastSettingsBinding::load`, `ToastSettingsBinding::save`, or any cargo-port-only parse/save bridge. The framework settings store owns load/save mechanics. cargo-port can keep compatibility helpers during the migration only to map old `TuiConfig` fields into the new framework settings file, and those helpers delete in this phase.
+
+**Legacy toast-manager read path.** Phase 25 deletes `TuiConfig::status_flash_secs` and `TuiConfig::task_linger_secs`, but Phase 26 owns the `app.toasts` storage migration. Therefore Phase 25 must reroute every existing duration read used by the legacy cargo-port toast manager to `framework.toast_settings()` before deleting the config fields. Concrete reads to migrate: `App::prune_toasts`, `show_timed_toast`, `show_timed_warning_toast`, `finish_task_toast`, `set_task_tracked_items`, and the async-task helpers that currently read `self.config.current().tui.task_linger_secs`. This is a temporary read-path compatibility step only; it is not an app-owned settings copy and it deletes when Phase 26 removes `app.toasts`.
+
+**Legacy Settings/Keymap mirror deletion.** Phase 25 also removes the remaining binary mirror state that Phase 21/22 left behind for Settings and Keymap: `Overlays::settings`, `Overlays::keymap`, the cargo-port viewport mirrors used only for those overlays, and `src/tui/input.rs::clear_legacy_framework_overlay_state`. After Phase 25, Settings/Keymap browse/edit/awaiting state lives only in the framework panes; cargo-port persists no generic SettingsPane state.
+
+**SettingsPane edit-buffer deletion.** Phase 25 removes the app-owned Settings editor path, not just the overlay flags. Delete or migrate these concrete targets: `src/tui/config_state.rs::SettingsEditBuffer`, `src/tui/settings.rs::settings_edit_keys`, `handle_settings_edit_key`, app-side settings row render/edit helpers, the `framework.settings_pane.set_text_input_handler(settings::settings_edit_keys)` wiring in `src/tui/app/construct.rs`, and any settings inline-error mirror on `Overlays`. SettingsPane owns browse/edit/commit buffering and validation display after this phase.
+
+**SettingsPane text-input routing.** SettingsPane no longer uses `Mode::TextInput(fn(KeyBind, &mut Ctx))` handler injection after Phase 25. It owns its edit buffer and exposes a command-returning API:
+
+```rust
+pub enum SettingsCommand<Ctx: AppContext> {
+    None,
+    ApplyAppSetting(SettingChange<Ctx>),
+    ApplyFrameworkSetting(FrameworkSettingChange),
+    Save,
+    Cancel,
+}
+
+impl<Ctx: AppContext> SettingsPane<Ctx> {
+    pub fn handle_text_input(&mut self, bind: KeyBind) -> SettingsCommand<Ctx>;
+}
+```
+
+The input path borrows `framework.settings_pane`, gets a `SettingsCommand`, drops the framework borrow, then applies store mutations or app callbacks. Finder can keep the existing text-input handler path because Finder is app-owned; SettingsPane must not keep cargo-port handler injection.
 
 **Test migration.** Phase 25 updates Phase-23-era cargo-port tests that still assert `app.overlays.is_settings_editing()` or `app.overlays.keymap_is_awaiting()` (notably in `src/tui/app/tests/framework_keymap.rs`) to assert against framework SettingsPane / KeymapPane state instead. The binary mirror deletion must not leave those tests failing by incidental field removal.
 
-**TOML-load surface.** Phase 25's `[toasts]` TOML section is cargo-port config/settings data, not a keymap overlay scope. cargo-port parses and persists it through the existing config path, converts it to `ToastSettings`, and exposes it to `tui_pane` only through `ToastSettingsBinding::load` / `save`. The shared-`[global]` action-table coordination solved in Phase 17 does not apply.
+**TOML-load surface.** Phase 25's settings TOML is not a keymap overlay scope. It is loaded by `SettingsStore`, not by `KeymapBuilder::load_toml` and not by cargo-port's legacy `config.rs` parser. The shared-`[global]` action-table coordination solved in Phase 17 does not apply.
 
 **1. `ToastSettings` with validated newtypes.** No raw `f64` durations cross the framework boundary:
 
@@ -3798,55 +3888,72 @@ pub struct ToastAnimationSettings {
 }
 ```
 
-Construction goes through `try_from_secs(f64) -> Result<Self, ToastSettingsError>` on each newtype. cargo-port's config loader converts `[toasts]` values at the config boundary and returns the existing config-load error path with `ToastSettingsError` as the source/context. Do not route toast-setting validation through `KeymapError`; `[toasts]` is not part of the keymap overlay loader.
+Construction goes through `try_from_secs(f64) -> Result<Self, ToastSettingsError>` on each newtype. `SettingsStore` converts `[toasts]` values at the settings-file boundary and reports `ToastSettingsError` with file/key context. Do not route toast-setting validation through `KeymapError`; `[toasts]` is not part of the keymap overlay loader.
 
-**2. `SettingsRegistry` gains framework sections.** The registry already supports app settings; Phase 25 adds a tagged section so framework capabilities can register their own entries without colliding with app settings:
+**2. `SettingsRegistry` gains sections and value codecs.** The registry already supports app settings; Phase 25 adds a tagged section and enough value metadata for the framework store to load/save registered settings:
 
 ```rust
 pub enum SettingsSection {
-    App,
-    Framework(&'static str),  // "toasts", future "keymap_overlay", etc.
+    App(&'static str),        // "tui", "lint", "cpu", etc.
+    Framework(&'static str),  // "toasts", future framework groups
+}
+
+pub enum SettingValue {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+    Enum(&'static str),
 }
 
 impl<Ctx> SettingsRegistry<Ctx> {
     pub(crate) fn add_with_section(&mut self, section: SettingsSection, entry: SettingEntry<Ctx>);
-    // existing add_bool / add_enum / add_int call add_with_section(SettingsSection::App, …)
-
-    /// Add a Bool framework-toast setting. The setter writes through the
-    /// binding the binary registered with `with_framework_toast_settings`.
-    pub(crate) fn add_toast_bool (&mut self, …) -> &mut Self;
-    pub(crate) fn add_toast_int  (&mut self, …) -> &mut Self;
-    pub(crate) fn add_toast_enum (&mut self, …) -> &mut Self;
+    // existing add_bool / add_enum / add_int become App-section helpers;
+    // add_string / add_float ship here because cargo-port app settings need them.
 }
 ```
 
-The settings pane (Phase 11 `SettingsPane`) renders sections grouped by `SettingsSection`. Framework sections appear after the app section, headed by the section name.
-
-**3. Builder method: `with_framework_toast_settings(binding)`.**
-
-> **Storage model.** `Framework<Ctx>` is the sole mutable owner of `ToastSettings`. **Phase 25** adds the `toast_settings: ToastSettings` field on `Framework<Ctx>`, defaults it via `ToastSettings::default()` inside `Framework::new` (a Phase 25 update to that constructor — Phase 11 shipped without the field), exposes `toast_settings()` / `toast_settings_mut()` accessors, and wires `ToastSettingsBinding` so the binary can load/save against the framework's copy. `ToastSettingsBinding` is used at exactly two sites: (a) `KeymapBuilder::build_into` calls `(binding.load)(ctx)` once at startup; if it returns `Some(settings)`, the framework stores them in `framework.toast_settings`; (b) the `SettingsPane` editor mutates `framework.toast_settings_mut()` directly, and dispatch calls `(binding.save)(ctx, framework.toast_settings())` after the framework borrow ends so the binary can persist. There is no app-side mutable copy. The renderer and the manager (Phase 26) always read `framework.toast_settings()` — never the binding directly.
-
-The binary registers a binding that gives the framework live access to the persisted settings:
+`SettingValue` covers the common widgets; it is not the whole app-settings API. Every entry also carries codecs so cargo-port's real settings can stay in the framework SettingsPane without custom app-side editor code:
 
 ```rust
-pub struct ToastSettingsBinding<Ctx> {
-    /// Called by build_into at startup to load persisted settings.
-    /// Return None for "use defaults".
-    pub load: fn(&Ctx) -> Option<ToastSettings>,
-    /// Called after each settings-pane edit completes. The framework
-    /// passes the new value; the binary persists.
-    pub save: Option<fn(&mut Ctx, &ToastSettings)>,
-}
+pub enum AdjustDirection { Back, Forward }
 
-impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
-    pub fn with_framework_toast_settings(
-        mut self,
-        binding: ToastSettingsBinding<Ctx>,
-    ) -> Self;
+pub struct SettingCodecs<Store> {
+    pub format: fn(&Store) -> String,
+    pub parse:  fn(&str, &mut Store) -> Result<(), SettingsError>,
+    pub adjust: Option<fn(AdjustDirection, &mut Store) -> Result<(), SettingsError>>,
 }
 ```
 
-`build_into` calls `(binding.load)(ctx)` and pre-populates the registry with one entry per `ToastSettings` field. The settings-pane editor mutates `framework.toast_settings_mut()` directly; on commit dispatch calls `(binding.save)(ctx, framework.toast_settings())` after the framework borrow is dropped.
+Use `parse` / `format` for strings, lists, branch names, lint commands, cache-size values, and any setting with app-specific validation. Use `adjust` for booleans, enums, steppers, and direction-aware controls. The app can provide custom codecs, but the SettingsPane still owns text input, validation display, and commit routing.
+
+The settings pane renders sections grouped by `SettingsSection`. App sections render first in registry order; framework sections render after app sections, headed by the section name.
+
+**3. Framework store wiring.**
+
+`Framework<Ctx>` becomes the mutable owner of framework settings:
+
+```rust
+pub struct Framework<Ctx: AppContext> {
+    pub settings_pane: SettingsPane<Ctx>,
+    pub keymap_pane:  KeymapPane<Ctx>,
+    pub toasts:       Toasts<Ctx>,
+    settings_store:   SettingsStore<Ctx>,
+    toast_settings:   ToastSettings,
+    // ...
+}
+```
+
+Phase 25 adds `toast_settings()` / `toast_settings_mut()` accessors and a framework settings initialization path. The initialization path loads the settings TOML through `SettingsStore`, applies framework-owned sections directly to `Framework`, and applies app sections into `Ctx::AppSettings` before `Ctx` is constructed. Runtime edits use staged setting commands so the framework borrow ends before any `apply(&mut Ctx, SettingChange)` callback runs. The public ownership rule is fixed: `tui_pane` owns load/save, cargo-port owns only app-specific fields and side effects.
+
+There is no `ToastSettingsBinding`:
+
+```rust
+// Do not add this:
+// pub struct ToastSettingsBinding<Ctx> { load: ..., save: ... }
+```
+
+SettingsPane commits call the framework settings store's save path after mutation. If the edited entry is app-owned, the store calls the app entry's setter/apply callback, then persists. If the edited entry is framework-owned, the store mutates the framework-owned setting, then persists.
 
 **4. cargo-port migration.** cargo-port's `TuiConfig::status_flash_secs` and `TuiConfig::task_linger_secs` move into `ToastSettings::default_timeout` / `task_linger`. The TOML schema gains a `[toasts]` section:
 
@@ -3861,28 +3968,55 @@ max_visible     = 5
 placement       = "bottom_right"
 ```
 
-cargo-port reads the section through its existing config loader and passes the parsed `Option<ToastSettings>` through `ToastSettingsBinding::load`; the framework merges with defaults. The binary's settings.rs `toast_settings_rows` (`src/tui/settings.rs:286-304`) deletes — `SettingsPane` renders the entries through the registry.
+cargo-port no longer parses or persists `[toasts]` through `src/config.rs`. `tui_pane` loads the section through `SettingsStore`, merges missing values with `ToastSettings::default()`, and saves it on SettingsPane edits. Migration precedence: explicit `[toasts]` values win; if `[toasts]` is absent, seed `default_timeout` / `task_linger` from old `[tui].status_flash_secs` / `[tui].task_linger_secs`; on save, write `[toasts]` and remove the old `[tui]` keys. The binary's settings.rs `toast_settings_rows` (`src/tui/settings.rs:286-304`) deletes for toast timing rows. `discovery_shimmer_secs` is not a toast setting; keep it registered as an app-owned cargo-port setting unless a later phase moves discovery animation into the framework.
 
 **Phase 25 tests:**
-- `toast_settings_default_round_trip` — load a TOML with only `[toasts]` defaults, assert framework reads the right values.
+- `settings_store_resolves_default_path_from_app_id` — framework path resolution uses `SettingsFileSpec` when no explicit path is supplied.
+- `toast_settings_default_round_trip` — load a TOML with only `[toasts]` defaults through `SettingsStore`, assert framework reads the right values, save, reload.
+- `legacy_tui_toast_keys_seed_toasts_section` — user config with old `[tui].status_flash_secs` / `task_linger_secs` and no `[toasts]` seeds framework `ToastSettings`; save writes `[toasts]` and drops the old keys.
 - `toast_settings_invalid_width_returns_error` — `width = 0` returns `ToastSettingsError::WidthZero`.
+- `app_setting_editor_round_trip` — register a fake app-owned string setting, load it from TOML, edit through SettingsPane, assert the app setter ran and the saved TOML changed.
+- `app_settings_load_before_app_construction` — `SettingsStore` loads a fake `Ctx::AppSettings` value before a test `Ctx` exists, and runtime edit applies through a callback after `Ctx` exists.
+- `legacy_toast_manager_reads_framework_settings` — before Phase 26 deletes `app.toasts`, cargo-port timed/task toast helpers read durations from `framework.toast_settings()` after the `TuiConfig` fields are gone.
 - `settings_pane_renders_toast_section_after_app_section` — bar/render snapshot.
-- `editing_default_timeout_calls_save_hook_with_new_value` — fake binding records the `save(ctx, &settings)` call argument.
 - cargo-port: `tui_config_no_longer_carries_toast_fields` — compile-fail / type-level check that the moved fields are gone.
 
 **Code touched in Phase 25:**
-- New: `tui_pane/src/toasts/settings.rs` — `ToastSettings`, validated newtypes, `ToastSettingsError`, `ToastSettingsBinding`.
-- `tui_pane/src/framework/mod.rs` — `toast_settings: ToastSettings` field on `Framework<Ctx>`; `toast_settings()` / `toast_settings_mut()` accessors; default initialization in `Framework::new`.
-- `tui_pane/src/keymap/settings_registry.rs` — `SettingsSection`, `add_toast_*` helpers, ordering.
-- `tui_pane/src/keymap/builder.rs` — `with_framework_toast_settings` on `Configuring` state.
-- `tui_pane/src/panes/settings.rs` — render section headers; route mutation through framework binding when section is `Framework("toasts")`.
-- `tui_pane/src/lib.rs` — re-export `ToastSettings`, the newtypes, `ToastPlacement`, `ToastAnimationSettings`, `ToastSettingsBinding`, `ToastSettingsError`.
-- Cargo-port: delete `status_flash_secs` / `task_linger_secs` from `TuiConfig`; add `with_framework_toast_settings` call in the keymap-builder chain wired to the TOML loader (`load`) and the persist hook (`save`); delete `toast_settings_rows`. No `App::toast_settings` field — the framework is the sole mutable owner.
+- New: `tui_pane/src/settings/store.rs` — `SettingsFileSpec`, `SettingsStore`, settings TOML load/save, path resolution, dirty/error state.
+- New: `tui_pane/src/toasts/settings.rs` — `ToastSettings`, validated newtypes, `ToastSettingsError`.
+- `tui_pane/src/framework/mod.rs` — `settings_store: SettingsStore<Ctx>` and `toast_settings: ToastSettings` fields on `Framework<Ctx>`; `toast_settings()` / `toast_settings_mut()` accessors; settings initialization and save hooks.
+- `tui_pane/src/settings.rs` — `SettingsSection`, `SettingValue`, app setting codecs, string/float entry support, ordering.
+- `tui_pane/src/panes/settings.rs` — render section headers; route browse/edit/save through `SettingsStore`.
+- `tui_pane/src/keymap/mod.rs` / `tui_pane/src/keymap/builder.rs` — remove `Keymap` ownership of `SettingsRegistry`: delete `KeymapBuilder::with_settings`, the builder `settings` field, `Keymap.settings`, and `Keymap::settings()`. Keep only keymap overlay registration for `[settings]` shortcuts.
+- `tui_pane/src/lib.rs` — re-export `SettingsFileSpec`, `SettingsStore`, `SettingValue`, `ToastSettings`, the newtypes, `ToastPlacement`, `ToastAnimationSettings`, `ToastSettingsError`.
+- Cargo-port: register app-specific settings with `SettingsRegistry`; migrate `src/config.rs` path/load/save/template behavior to `SettingsStore` while keeping app schema/normalizers; migrate `config::active_config` / `set_active_config` and `src/tui/config_state.rs::Config` to the new store/app-settings model; update `src/tui/config_reload.rs`, `src/tui/config_state.rs`, and `src/tui/app/async_tasks/config.rs` to reload through the framework settings store; delete `status_flash_secs` / `task_linger_secs` from `TuiConfig`; migrate old values into framework `[toasts]`; reroute legacy `app.toasts` duration reads to `framework.toast_settings()`; delete toast rows from `toast_settings_rows`; delete SettingsPane edit-buffer mirrors; keep `discovery_shimmer_secs` as an app-owned setting. No `App::toast_settings` field — the framework is the sole mutable owner of framework settings.
+- Phase closeout greps: `rg 'settings_edit_keys|SettingsEditBuffer|edit_buffer|overlays\\.settings|overlays\\.keymap' src/tui` must return no production-owned SettingsPane state after the migration, except deliberate compatibility comments/tests called out in the retrospective.
 - Phase closeout runs the remaining-phase closeout gate.
+
+### Retrospective
+
+**What worked:**
+- `tui_pane::SettingsStore`, `SettingsFileSpec`, `SettingsRegistry`, `SettingsSection`, `SettingCodecs`, and `ToastSettings` landed as framework API, with `Framework<Ctx>` now owning `settings_store` and `toast_settings`.
+- Settings/Keymap mirror state moved out of cargo-port overlays: `Overlays::settings`, `Overlays::keymap`, `SettingsEditBuffer`, `settings_edit_keys`, and the remaining `overlays.settings` / `overlays.keymap` production references are gone.
+- The legacy cargo-port toast manager now reads timing through `framework.toast_settings()` while Phase 26 still owns the `app.toasts` storage migration.
+
+**What deviated from the plan:**
+- cargo-port still renders and applies its app-specific Settings rows in `src/tui/settings.rs`; Phase 25 moved generic edit buffer / viewport state into `tui_pane::SettingsPane`, but did not complete the planned generic row renderer or app-setting registration for every cargo-port setting.
+- `src/config.rs` still owns cargo-port app-schema parsing, default-file creation, and `try_load` for startup. Phase 25 added `config::save_to_path` and changed `App::save_and_apply_config` to respect `App`'s configured path, but did not make `SettingsStore` the sole cargo-port config loader.
+- Test apps initially inherited the real user config path through both `Config` and `SettingsStore`; the implementation fixed the harness by installing tempfile-backed paths in `src/tui/app/tests/mod.rs`.
+
+**Surprises:**
+- The first validation pass wrote `/tmp/test` into `/Users/natemccoy/Library/Application Support/cargo-port/config.toml` because `App::save_and_apply_config` called global `config::save(...)` instead of saving through the app instance path. That defect is fixed by `config::save_to_path` plus tempfile-backed test app construction.
+- `Viewport::set_pos` had to keep the old app viewport behavior: callers may set a cursor before the pane reports its final length, and `set_len` clamps later.
+
+**Implications for remaining phases:**
+- Phase 26 can consume `framework.toast_settings()` for toast timings without reading removed `TuiConfig` fields.
+- The remaining settings ownership gap is not in Phase 26's current toast-manager migration text: generic app-setting registration, framework-backed SettingsPane row rendering, and framework-owned app-config load/save still need an explicit owner before the settings migration can be called architecturally complete.
+- Future tests that construct `App` must keep installing tempfile-backed `Config` and `SettingsStore` paths; otherwise test saves can mutate the real user config again.
 
 ### Phase 26 — Migrate cargo-port `ToastManager` into `tui_pane`
 
-Phase 26 moves the generic toast subsystem from cargo-port (`src/tui/toasts/`) into the framework. Cargo-port keeps only the binary-specific copy (toast titles/bodies, which app events create toasts), the `CargoPortToastAction` payload from Phase 24, and the persistence binding for any toast settings. The migration consumes `framework.toast_settings()` (added in Phase 25) for width/timing/placement — no temporary constants. The binary's old `handle_toast_key` body is already gone after Phase 19; Phase 26 verifies the symbol is still absent and focuses on deleting `app.toasts` / `ToastManager` storage and call sites.
+Phase 26 moves the generic toast subsystem from cargo-port (`src/tui/toasts/`) into the framework. Cargo-port keeps only the binary-specific copy (toast titles/bodies, which app events create toasts) and the `CargoPortToastAction` payload from Phase 24. The migration consumes `framework.toast_settings()` (added in Phase 25) for width/timing/placement — no temporary constants. The binary's old `handle_toast_key` body is already gone after Phase 19; Phase 26 verifies the symbol is still absent and focuses on deleting `app.toasts` / `ToastManager` storage and call sites.
 
 **1. Move generic types into `tui_pane/src/toasts/`.** New module structure:
 
@@ -3950,8 +4084,8 @@ existing call sites are not affected by the storage change:
   `Toasts::push_styled(...)`.
 - Phase 24: `Toasts::push_with_action(...)`.
 - Phase 26: `Toasts::push_timed(...)`, `Toasts::push_task(...)`,
-  `Toasts::push_persistent(...)` — all take `body: impl Into<String>` and
-  convert via `ToastBody::from(s.into())`.
+  `Toasts::push_persistent(...)`, `Toasts::push_persistent_styled(...)` — all
+  take `body: impl Into<String>` and convert via `ToastBody::from(s.into())`.
 
 A second push surface for explicit multi-line bodies (`push_lines` /
 `push_styled_lines`) ships in Phase 26 so call sites that already build a
@@ -3975,6 +4109,13 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     pub fn push_timed     (&mut self, title: impl Into<String>, body: impl Into<String>, timeout: Duration) -> ToastId;
     pub fn push_task      (&mut self, title: impl Into<String>, body: impl Into<String>, linger:  Duration) -> (ToastId, ToastTaskId);
     pub fn push_persistent(&mut self, title: impl Into<String>, body: impl Into<String>) -> ToastId;
+    pub fn push_persistent_styled(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        style: ToastStyle,
+        action: Option<Ctx::ToastAction>,
+    ) -> ToastId;
     pub fn finish_task    (&mut self, task_id: ToastTaskId);
     pub fn reactivate_task(&mut self, task_id: ToastTaskId);
     pub fn set_tracked_items(&mut self, id: ToastId, items: Vec<TrackedItem>);
@@ -3986,6 +4127,8 @@ impl<Ctx: AppContext> Toasts<Ctx> {
 
 The `push_*` entry points take raw `Duration`, not `ToastDuration` (the validated newtype from Phase 25). `ToastDuration` validates user-supplied TOML values; `push_timed` / `push_task` callers pass durations they computed in code, so the validating wrapper is unnecessary at this boundary.
 
+`push_persistent_styled` preserves cargo-port's existing diagnostic-toast case: a persistent warning/error toast can carry both a style and an optional `CargoPortToastAction::OpenPath`. Do not collapse persistent actionable toasts into `push_persistent` without an action; keymap/config diagnostics must still open their related file after the storage migration.
+
 Render reads width/gap/placement/animation from the `ToastSettings` argument the bar code passes in (sourced from `framework.toast_settings()`). `prune` reads `default_timeout` / `task_linger` from a settings reference threaded through the framework's tick loop.
 
 **3. Cargo-port-specific types stay in cargo-port:**
@@ -3996,6 +4139,15 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 
 **4. Boundary conversions.** cargo-port's existing `From` impls (`TrackedItemKey::from(path.to_string())`, `TrackedItemKey::from(owner_repo)`) move with the type into `tui_pane`; the cargo-port-specific `From<AbsolutePath>` and `From<OwnerRepo>` impls stay in cargo-port (newtype + `From` on cargo-port's side; library's `TrackedItemKey` has `From<String>`/`From<&str>` only).
 
+**4a. Production call-site migration inventory.** Phase 26 must name and migrate the binary call sites that currently reach `app.toasts` directly:
+- `src/tui/render.rs` — render from `app.framework.toasts`, pass `app.framework.toast_settings()`, and store returned hitboxes on the framework toast manager.
+- `src/tui/interaction.rs` — toast hit testing reads framework-owned hitboxes; toast body clicks focus `FrameworkFocusId::Toasts`; close clicks call `framework.toasts.dismiss(id)` followed by focus reconciliation after the framework borrow ends.
+- `App::prune_toasts` and async tick paths — call the framework toast prune path with `framework.toast_settings()`, then run `reconcile_focus_after_toast_change` if the active set changed.
+- All `app.toasts.push_*`, `start_task`, `finish_task`, `set_tracked_items`, and viewport navigation reads move to `app.framework.toasts`.
+- `DismissTarget::Toast(id)` routes to framework toast dismissal. Any cargo-port-only dismiss wrapper deletes with `app.toasts`.
+
+Acceptance check: `rg 'app\\.toasts|ToastManager|render_toasts|DismissTarget::Toast' src/tui` must return only deliberate compatibility aliases or no production matches after Phase 26.
+
 **5. Focus reconciliation hooks into `prune`.** Phase 12's `reconcile_focus_after_toast_change<Ctx>(ctx: &mut Ctx)` free fn runs from the framework's tick driver after `framework.prune(now)` returns — call site holds `&mut Ctx`, so the reconciler can route through `ctx.set_focus(...)` like the dispatch-time path. The dispatch-time call site (`dismiss_chain`) was wired in Phase 12 and stays untouched in Phase 26; only the new tick-driver call site is added here. Toast mutations that can drop the active count to zero (`dismiss`, `dismiss_focused`, `prune`, `finish_task` when linger is zero) only mutate the toast vec; they never touch focus directly. Focus repair is always a separate post-mutation step at a `&mut Ctx`-holding call site.
 
 **6. Mode integration.** Phase 12 already returns `Mode::Navigable` for focused Toasts; Phase 26 has no work here.
@@ -4004,6 +4156,7 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 
 **Phase 26 tests** (in `tui_pane/tests/`):
 - cargo-port production: `enter_on_focused_toast_with_action_dispatches` — after `app.toasts` has migrated into `framework.toasts`, fixture toast with `CargoPortToastAction::OpenPath(p)` set; Enter on the focused toast calls `handle_toast_action(OpenPath(p))`.
+- cargo-port production: `persistent_diagnostic_toast_keeps_action_path` — migrated keymap/config diagnostic toast uses `push_persistent_styled(..., Some(CargoPortToastAction::OpenPath(path)))`, and Enter opens that path.
 - Lifecycle: `timed_toast_expires_at_timeout_at`, `task_toast_lingers_after_finish_then_prunes`, `persistent_toast_survives_prune`.
 - Tracked items: `set_tracked_items_then_mark_completed_renders_strikethrough`, `prune_tracked_items_removes_finished_after_linger`.
 - Hitboxes: `render_emits_card_and_close_hitbox_per_visible_toast`.

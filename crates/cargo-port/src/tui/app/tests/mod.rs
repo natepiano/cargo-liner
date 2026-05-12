@@ -17,6 +17,9 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::widgets::List;
 use ratatui::widgets::Widget;
+use tui_pane::SettingsFileSpec;
+use tui_pane::SettingsRegistry;
+use tui_pane::SettingsStore;
 
 pub(super) use super::App;
 use super::DismissTarget;
@@ -27,6 +30,8 @@ use crate::ci::FetchStatus;
 use crate::config::CargoPortConfig;
 use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
+use crate::constants::APP_NAME;
+use crate::constants::CONFIG_FILE;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::lint::LintStatus;
@@ -117,6 +122,13 @@ fn make_app(projects: &[RootItem]) -> App {
     make_app_with_config(projects, &CargoPortConfig::default())
 }
 
+fn test_config_path() -> PathBuf {
+    let file = tempfile::NamedTempFile::new().unwrap_or_else(|_| std::process::abort());
+    file.into_temp_path()
+        .keep()
+        .unwrap_or_else(|_| std::process::abort())
+}
+
 fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
     let mut cfg = cfg.clone();
     if cfg.tui.include_dirs.is_empty() {
@@ -134,6 +146,14 @@ fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
         metadata_store,
     )
     .expect("App::new must succeed in tests");
+    app.config.force_reload_from(test_config_path());
+    let settings_spec = SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(test_config_path());
+    let loaded_settings =
+        SettingsStore::<App>::load_for_startup(settings_spec, SettingsRegistry::new())
+            .expect("test settings store must load");
+    app.framework.install_settings_store(loaded_settings.store);
+    app.framework
+        .set_toast_settings(loaded_settings.toast_settings);
     app.scan.set_retry_spawn_mode(RetrySpawnMode::Disabled);
     app.sync_selected_project();
     app

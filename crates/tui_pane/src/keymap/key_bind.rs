@@ -153,9 +153,9 @@ impl KeyBind {
             KeyCode::Down => "↓",
             KeyCode::Left => "←",
             KeyCode::Right => "→",
-            _ => return self.display(),
+            _ => return with_short_modifier_prefix(self.mods, &key_name(self.code)),
         };
-        with_modifier_prefix(self.mods, key)
+        with_short_modifier_prefix(self.mods, key)
     }
 
     /// Parse a TOML-style key string (e.g. `"Enter"`, `"Ctrl+K"`,
@@ -285,6 +285,24 @@ fn with_modifier_prefix(mods: KeyModifiers, key: &str) -> String {
     }
     if mods.contains(KeyModifiers::SHIFT) {
         s.push_str("Shift+");
+    }
+    s.push_str(key);
+    s
+}
+
+fn with_short_modifier_prefix(mods: KeyModifiers, key: &str) -> String {
+    if mods.is_empty() {
+        return key.to_string();
+    }
+    let mut s = String::new();
+    if mods.contains(KeyModifiers::CONTROL) {
+        s.push('⌃');
+    }
+    if mods.contains(KeyModifiers::ALT) {
+        s.push('⌥');
+    }
+    if mods.contains(KeyModifiers::SHIFT) {
+        s.push('⇧');
     }
     s.push_str(key);
     s
@@ -566,6 +584,7 @@ mod tests {
         assert_eq!(KeyBind::from(KeyCode::Down).display_short(), "↓");
         assert_eq!(KeyBind::from(KeyCode::Left).display_short(), "←");
         assert_eq!(KeyBind::from(KeyCode::Right).display_short(), "→");
-        assert_eq!(KeyBind::ctrl(KeyCode::Up).display_short(), "Ctrl+↑");
+        assert_eq!(KeyBind::ctrl(KeyCode::Up).display_short(), "⌃↑");
+        assert_eq!(KeyBind::ctrl('k').display_short(), "⌃k");
     }
 }

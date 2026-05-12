@@ -70,15 +70,19 @@ tui_pane::action_enum! {
 }
 
 struct App {
-    framework: Framework<Self>,
+    framework:    Framework<Self>,
+    app_settings: (),
 }
 
 impl AppContext for App {
     type AppPaneId = AppPaneId;
+    type AppSettings = ();
     type ToastAction = tui_pane::NoToastAction;
 
     fn framework(&self) -> &Framework<Self> { &self.framework }
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+    fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
+    fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
 }
 
 struct ProjectPane;
@@ -150,7 +154,8 @@ impl Globals<App> for AppGlobals {
 
 fn fresh(initial: FocusedPane<AppPaneId>) -> (App, Keymap<App>) {
     let mut app = App {
-        framework: Framework::new(initial),
+        framework:    Framework::new(initial),
+        app_settings: (),
     };
     let keymap = Keymap::<App>::builder()
         .register_navigation::<AppNav>()

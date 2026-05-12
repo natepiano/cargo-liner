@@ -66,6 +66,7 @@ use crate::tui::panes::PackageData;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::RemoteRow;
 use crate::tui::panes::TargetsData;
+use crate::tui::render;
 use crate::tui::settings::SettingOption;
 
 const TAB_WALK_STEPS: usize = 6;
@@ -540,22 +541,25 @@ fn focused_project_list_bar_renders_pane_action_and_nav_slots() {
     let pane_action = flatten(&bar.pane_action);
     let nav = flatten(&bar.nav);
 
-    // ProjectList overrides `bar_slots` to push the expand pair and
-    // the all pair into the Nav region; only `Clean` lands in
-    // `pane_action`. Phase 23 locks the paired rows after the
-    // framework started preserving secondary keys through bar
-    // rendering.
+    // ProjectList keeps row expand/collapse keys active, but does not
+    // spend bar space advertising them. Only the all pair lands in
+    // the Nav region; `Clean` lands in `pane_action`.
     assert!(
         pane_action.contains("clean"),
         "ProjectList pane_action must include Clean (got {pane_action:?})",
     );
     assert!(
-        nav.contains("←/") && nav.contains("→ expand"),
-        "ProjectList nav region must include the paired expand row with both arrow keys (got {nav:?})",
+        !nav.contains(" expand"),
+        "ProjectList nav region must not show row expand help (got {nav:?})",
     );
     assert!(
         nav.contains("+/- all"),
         "ProjectList nav region must include the paired all row (got {nav:?})",
+    );
+    assert_contains_in_order(&nav, &["nav", "all", "pane"]);
+    assert!(
+        !nav.contains(" home") && !nav.contains(" end"),
+        "ProjectList nav region must stay compact and omit Home/End rows (got {nav:?})",
     );
 }
 
@@ -701,6 +705,11 @@ fn focused_finder_open_bar_suppresses_all_regions() {
         "Mode::TextInput must suppress Global (got {:?})",
         flatten(&bar.global),
     );
+    let cargo_port_right = render::cargo_port_right_text_for_test(&app, &bar.global);
+    assert!(
+        cargo_port_right.is_empty(),
+        "cargo-port global override must preserve TextInput global suppression (got {cargo_port_right:?})",
+    );
 }
 
 // ── Phase 14.7 — AppGlobalAction four-variant bar snapshots ────────
@@ -736,28 +745,23 @@ fn focused_package_bar_renders_four_app_globals() {
 }
 
 #[test]
-fn focused_package_bar_global_region_renders_total_order() {
+fn focused_package_bar_global_region_matches_legacy_total_order() {
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
     app.panes.package.set_content(package_data_no_version());
     focus_app_pane_in_framework(&mut app, AppPaneId::Package);
 
-    let palette = BarPalette::default();
-    let bar = render_status_bar(
-        &FocusedPane::App(AppPaneId::Package),
-        &app,
-        &app.framework_keymap,
-        app.framework(),
-        &palette,
-    );
-    let global = flatten(&bar.global);
+    let global = render::cargo_port_global_text_for_test(&app);
 
     assert_contains_in_order(
         &global,
         &[
-            "quit", "restart", "keymap", "settings", "dismiss", "find", "editor", "terminal",
-            "rescan",
+            "find", "editor", "terminal", "settings", "keymap", "rescan", "quit", "restart",
         ],
+    );
+    assert!(
+        !global.contains("dismiss"),
+        "normal app-pane global strip must not show dismiss (got {global:?})",
     );
 }
 
@@ -1119,9 +1123,9 @@ fn settings_text_input_esc_wins_over_output_cancel_preflight() {
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
     open_framework_overlay(&mut app, FrameworkGlobalAction::OpenSettings);
-    app.overlays
+    app.framework
         .settings_pane
-        .viewport
+        .viewport_mut()
         .set_pos(SettingOption::CiRunCount as usize);
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     app.inflight.example_output_mut().push("line".to_string());
@@ -1133,7 +1137,7 @@ fn settings_text_input_esc_wins_over_output_cancel_preflight() {
         "settings edit cancel must not clear example output",
     );
     assert!(
-        !app.overlays.is_settings_editing(),
+        !app.framework.settings_pane.is_editing(),
         "Esc must still leave settings edit mode",
     );
 }
@@ -1196,7 +1200,7 @@ fn keymap_capture_rejects_navigation_key_through_production_input() {
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     press(&mut app, KeyCode::Up, KeyModifiers::NONE);
 
-    assert!(app.overlays.keymap_is_awaiting());
+    assert!(app.framework.keymap_pane.is_awaiting());
     assert!(
         app.overlays
             .inline_error()

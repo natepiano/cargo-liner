@@ -40,10 +40,9 @@
 //! bespoke state, write the lifecycle as a generic struct and have
 //! each subsystem compose it.
 //!
-//! - See [`super::watched_file::WatchedFile<T>`], composed by [`super::config_state::Config`] (with
-//!   the `SettingsEditBuffer` edit buffer) and [`super::keymap_state::Keymap`] (with the
-//!   diagnostics-toast id). The primitive captures the load-on-disk-change contract once; the two
-//!   subsystems add their bespoke state on top.
+//! - See [`super::watched_file::WatchedFile<T>`], composed by [`super::config_state::Config`] and
+//!   [`super::keymap_state::Keymap`] (with the diagnostics-toast id). The primitive captures the
+//!   load-on-disk-change contract once; the two subsystems add their bespoke state on top.
 
 mod async_tasks;
 mod ci;
@@ -68,7 +67,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::layout::Position;
-use strum::IntoEnumIterator;
 
 use super::background::Background;
 use super::columns;
@@ -158,6 +156,7 @@ use super::net_state::Net;
 use super::panes::BottomRow;
 pub(super) use super::project_list::ExpandKey;
 pub(super) use super::project_list::VisibleRow;
+use super::settings;
 use super::settings::SettingOption;
 use super::toasts::ToastManager;
 use super::toasts::ToastTaskId;
@@ -204,9 +203,7 @@ pub(super) struct App {
     /// detail row.
     pub(super) ci:                Ci,
     /// Config subsystem. Owns `current_config`, `config_path`,
-    /// `config_last_seen`, plus the in-app settings editor's
-    /// `SettingsEditBuffer`. Composes
-    /// `WatchedFile<CargoPortConfig>`.
+    /// and `config_last_seen`. Composes `WatchedFile<CargoPortConfig>`.
     pub(super) config:            Config,
     /// Keymap subsystem. Owns `current_keymap`, `keymap_path`,
     /// `keymap_last_seen`, `keymap_diagnostics_id`. Composes
@@ -232,7 +229,7 @@ pub(super) struct App {
     pub(super) startup:           Startup,
     pub(super) visited_panes:     HashSet<AppPaneId>,
     /// Overlays subsystem. Owns the overlay-mode enums
-    /// (`FinderMode`, `SettingsMode`, `KeymapMode`),
+    /// (`FinderMode`, `KeymapMode`),
     /// the transient `inline_error` UI feedback, and the
     /// `status_flash` slot.
     pub(super) overlays:          Overlays,
@@ -341,7 +338,7 @@ impl App {
 
     pub(super) fn prune_toasts(&mut self) {
         let now = Instant::now();
-        let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
+        let linger = self.framework.toast_settings().task_linger.get();
         self.toasts.prune_tracked_items(now, linger);
         self.toasts.prune(now);
         let toast_len = self.toasts.active_now().len();
@@ -352,7 +349,7 @@ impl App {
     }
 
     pub(super) fn show_timed_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {
-        let timeout = Duration::from_secs_f64(self.config.current().tui.status_flash_secs);
+        let timeout = self.framework.toast_settings().default_timeout.get();
         self.toasts.push_timed(title, body, timeout, 1);
         let toast_len = self.toasts.active_now().len();
         self.toasts.viewport.set_len(toast_len);
@@ -366,7 +363,7 @@ impl App {
         self.toasts.push_timed_styled(
             title,
             body,
-            Duration::from_secs_f64(self.config.current().tui.status_flash_secs),
+            self.framework.toast_settings().default_timeout.get(),
             1,
             Warning,
         );
@@ -376,7 +373,7 @@ impl App {
 
     pub(super) fn finish_task_toast(&mut self, task_id: ToastTaskId) {
         let linger = if self.toasts.tracked_item_count(task_id) > 0 {
-            Duration::from_secs_f64(self.config.current().tui.task_linger_secs)
+            self.framework.toast_settings().task_linger.get()
         } else {
             Duration::ZERO
         };
@@ -385,7 +382,7 @@ impl App {
     }
 
     pub(super) fn set_task_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) {
-        let linger = Duration::from_secs_f64(self.config.current().tui.task_linger_secs);
+        let linger = self.framework.toast_settings().task_linger.get();
         self.toasts.set_tracked_items(task_id, items, linger);
         let toast_len = self.toasts.active_now().len();
         self.toasts.viewport.set_len(toast_len);
@@ -736,10 +733,8 @@ impl App {
             return;
         }
         self.dispatch_framework_global_action(GlobalAction::OpenSettings);
-        if let Some(idx) = crate::tui::settings::SettingOption::iter()
-            .position(|s| s == SettingOption::IncludeDirs)
-        {
-            self.overlays.settings_pane.viewport.set_pos(idx);
+        if let Some(idx) = settings::selection_index_for_setting(self, SettingOption::IncludeDirs) {
+            self.framework.settings_pane.viewport_mut().set_pos(idx);
         }
         self.overlays
             .set_inline_error("Configure at least one include directory before continuing");

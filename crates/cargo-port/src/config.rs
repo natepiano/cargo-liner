@@ -227,7 +227,7 @@ pub(crate) fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
     match name.trim().to_ascii_lowercase().as_str() {
         "mend" => Some(LintCommandConfig {
             name:    "mend".to_string(),
-            command: "cargo mend --manifest-path \"$MANIFEST_PATH\"".to_string(),
+            command: "cargo mend --manifest-path \"$MANIFEST_PATH\" --all-targets".to_string(),
         }),
         "clippy" => Some(default_clippy_lint_command()),
         _ => None,
@@ -448,8 +448,6 @@ pub(crate) fn normalize_config(mut config: CargoPortConfig) -> Result<CargoPortC
         &config.tui.other_primary_branches,
         "tui.other_primary_branches",
     )?;
-    config.tui.status_flash_secs = normalize_non_negative_secs(config.tui.status_flash_secs);
-    config.tui.task_linger_secs = normalize_non_negative_secs(config.tui.task_linger_secs);
     config.tui.discovery_shimmer_secs =
         normalize_non_negative_secs(config.tui.discovery_shimmer_secs);
     Ok(config)
@@ -639,16 +637,6 @@ pub(crate) struct TuiConfig {
     #[config(default = "https://github.com/")]
     pub default_remote_host_url: String,
 
-    /// How long (in seconds) the status bar flash is shown (e.g. "no new
-    /// runs found").
-    #[config(default = 5.0)]
-    pub status_flash_secs: f64,
-
-    /// How long (in seconds) a completed task toast lingers before
-    /// starting its exit animation.
-    #[config(default = 1.0)]
-    pub task_linger_secs: f64,
-
     /// How long (in seconds) newly discovered project names shimmer in the
     /// project list. `0.0` disables the effect.
     #[config(default = 10.0)]
@@ -668,8 +656,6 @@ impl Default for TuiConfig {
             main_branch:             "main".to_string(),
             other_primary_branches:  Vec::new(),
             default_remote_host_url: "https://github.com/".to_string(),
-            status_flash_secs:       5.0,
-            task_linger_secs:        1.0,
             discovery_shimmer_secs:  10.0,
         }
     }
@@ -754,6 +740,10 @@ pub(crate) fn save(config: &CargoPortConfig) -> Result<(), String> {
         return Err("Could not determine config directory".to_string());
     };
 
+    save_to_path(&path, config)
+}
+
+pub(crate) fn save_to_path(path: &Path, config: &CargoPortConfig) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create config directory: {e}"))?;
@@ -762,10 +752,27 @@ pub(crate) fn save(config: &CargoPortConfig) -> Result<(), String> {
     let config = normalize_config(config.clone())?;
     let contents =
         toml::to_string_pretty(&config).map_err(|e| format!("Failed to serialize config: {e}"))?;
+    let contents = preserve_framework_settings_tables(path, &contents)?;
 
-    std::fs::write(&path, contents).map_err(|e| format!("Failed to write config: {e}"))?;
+    std::fs::write(path, contents).map_err(|e| format!("Failed to write config: {e}"))?;
 
     Ok(())
+}
+
+fn preserve_framework_settings_tables(path: &Path, contents: &str) -> Result<String, String> {
+    let Ok(existing) = std::fs::read_to_string(path) else {
+        return Ok(contents.to_string());
+    };
+    let Ok(existing) = toml::from_str::<toml::Table>(&existing) else {
+        return Ok(contents.to_string());
+    };
+    let Some(toasts) = existing.get("toasts").cloned() else {
+        return Ok(contents.to_string());
+    };
+    let mut next = toml::from_str::<toml::Table>(contents)
+        .map_err(|e| format!("Failed to preserve framework settings: {e}"))?;
+    next.insert("toasts".to_string(), toasts);
+    toml::to_string_pretty(&next).map_err(|e| format!("Failed to serialize config: {e}"))
 }
 
 #[cfg(test)]
@@ -790,7 +797,6 @@ mod tests {
         assert!(cfg.tui.terminal_command.is_empty());
         assert_eq!(cfg.tui.main_branch, "main");
         assert!(cfg.tui.other_primary_branches.is_empty());
-        assert!((cfg.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
         assert!((cfg.tui.discovery_shimmer_secs - 10.0).abs() < f64::EPSILON);
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
@@ -869,7 +875,6 @@ mod tests {
         cfg.tui.main_branch = "primary".to_string();
         cfg.tui.other_primary_branches = vec!["main".to_string(), "release".to_string()];
         cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
-        cfg.tui.status_flash_secs = 5.0;
         cfg.tui.discovery_shimmer_secs = 4.5;
         cfg.cpu.poll_ms = 1500;
         cfg.cpu.green_max_percent = 55;
@@ -896,7 +901,6 @@ mod tests {
             vec!["main".to_string(), "release".to_string()]
         );
         assert_eq!(reloaded.tui.navigation_keys, NavigationKeys::ArrowsAndVim);
-        assert!((reloaded.tui.status_flash_secs - 5.0).abs() < f64::EPSILON);
         assert!((reloaded.tui.discovery_shimmer_secs - 4.5).abs() < f64::EPSILON);
         assert_eq!(reloaded.mouse.invert_scroll, ScrollDirection::Normal);
         assert!(reloaded.tui.include_dirs.is_empty());
@@ -906,6 +910,45 @@ mod tests {
         assert!(reloaded.lint.exclude.is_empty());
         assert!(!reloaded.lint.enabled);
         assert_eq!(reloaded.lint.cache_size, "512 MiB");
+    }
+
+    #[test]
+    fn legacy_toast_tui_keys_do_not_break_config_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[tui]\nstatus_flash_secs = 5.0\ntask_linger_secs = 1.0\n",
+        )
+        .expect("write legacy config");
+
+        let cfg = CargoPortConfig::builder()
+            .file(&path)
+            .load()
+            .expect("legacy toast keys should be ignored by app config");
+
+        assert_eq!(cfg.tui.ci_run_count, 5);
+    }
+
+    #[test]
+    fn save_to_path_preserves_framework_toasts_table() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[tui]\nci_run_count = 7\n\n[toasts]\ndefault_timeout = 3.0\ntask_linger = 2.0\n",
+        )
+        .expect("write config");
+        let mut cfg = CargoPortConfig::default();
+        cfg.tui.ci_run_count = 9;
+
+        save_to_path(&path, &cfg).expect("save config");
+        let saved = std::fs::read_to_string(path).expect("read saved config");
+
+        assert!(saved.contains("ci_run_count = 9"));
+        assert!(saved.contains("[toasts]"));
+        assert!(saved.contains("default_timeout = 3.0"));
+        assert!(saved.contains("task_linger = 2.0"));
     }
 
     /// Bool-based enums deserialize correctly from TOML booleans.
@@ -997,6 +1040,28 @@ mod tests {
     }
 
     #[test]
+    fn normalize_config_resolves_mend_builtin_with_all_targets() {
+        let cfg = normalize_config(CargoPortConfig {
+            lint: LintConfig {
+                commands: vec![LintCommandConfig {
+                    name:    "mend".to_string(),
+                    command: String::new(),
+                }],
+                ..LintConfig::default()
+            },
+            ..CargoPortConfig::default()
+        })
+        .expect("normalize config");
+
+        assert_eq!(cfg.lint.commands.len(), 1);
+        assert_eq!(cfg.lint.commands[0].name, "mend");
+        assert_eq!(
+            cfg.lint.commands[0].command,
+            "cargo mend --manifest-path \"$MANIFEST_PATH\" --all-targets"
+        );
+    }
+
+    #[test]
     fn normalize_config_names_raw_commands() {
         let cfg = normalize_config(CargoPortConfig {
             lint: LintConfig {
@@ -1058,14 +1123,10 @@ mod tests {
     #[test]
     fn normalize_config_clamps_invalid_tui_seconds_to_zero() {
         let mut cfg = CargoPortConfig::default();
-        cfg.tui.status_flash_secs = -1.0;
-        cfg.tui.task_linger_secs = f64::NAN;
         cfg.tui.discovery_shimmer_secs = f64::INFINITY;
 
         let normalized = normalize_config(cfg).expect("normalize config");
 
-        assert!(normalized.tui.status_flash_secs.abs() < f64::EPSILON);
-        assert!(normalized.tui.task_linger_secs.abs() < f64::EPSILON);
         assert!(normalized.tui.discovery_shimmer_secs.abs() < f64::EPSILON);
     }
 

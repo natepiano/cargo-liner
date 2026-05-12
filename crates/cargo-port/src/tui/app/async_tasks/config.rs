@@ -136,7 +136,11 @@ impl App {
         }
     }
     pub fn save_and_apply_config(&mut self, cfg: &CargoPortConfig) -> Result<(), String> {
-        config::save(cfg)?;
+        if let Some(path) = self.config.path() {
+            config::save_to_path(path, cfg)?;
+        } else {
+            config::save(cfg)?;
+        }
         self.apply_config(cfg);
         self.config.sync_stamp();
         Ok(())

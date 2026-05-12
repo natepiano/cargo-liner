@@ -20,6 +20,7 @@ use crate::Bindings;
 use crate::KeyBind;
 use crate::KeyOutcome;
 use crate::Mode;
+use crate::Viewport;
 
 crate::action_enum! {
     /// Actions reachable on the keymap overlay's local bar.
@@ -56,6 +57,7 @@ enum EditState {
 pub struct KeymapPane<Ctx: AppContext> {
     edit_state:         EditState,
     editor_target:      Option<PathBuf>,
+    viewport:           Viewport,
     text_input_handler: fn(KeyBind, &mut Ctx),
     _ctx:               PhantomData<fn(&mut Ctx)>,
 }
@@ -67,6 +69,7 @@ impl<Ctx: AppContext> KeymapPane<Ctx> {
         Self {
             edit_state:         EditState::Browse,
             editor_target:      None,
+            viewport:           Viewport::new(),
             text_input_handler: keymap_capture_keys::<Ctx>,
             _ctx:               PhantomData,
         }
@@ -128,6 +131,17 @@ impl<Ctx: AppContext> KeymapPane<Ctx> {
     /// accepting a captured binding.
     pub const fn enter_browse(&mut self) { self.edit_state = EditState::Browse; }
 
+    /// Whether the pane is waiting for a replacement binding.
+    #[must_use]
+    pub const fn is_awaiting(&self) -> bool { matches!(self.edit_state, EditState::Awaiting) }
+
+    /// Borrow the framework-owned viewport state.
+    #[must_use]
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    /// Mutably borrow the framework-owned viewport state.
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
     /// Current input mode for the overlay.
     ///
     /// - [`EditState::Browse`] → [`Mode::Navigable`].
@@ -180,6 +194,7 @@ impl<Ctx: AppContext> KeymapPane<Ctx> {
         Self {
             edit_state: EditState::Awaiting,
             editor_target,
+            viewport: Viewport::new(),
             text_input_handler: keymap_capture_keys::<Ctx>,
             _ctx: PhantomData,
         }
@@ -191,6 +206,7 @@ impl<Ctx: AppContext> KeymapPane<Ctx> {
         Self {
             edit_state: EditState::Conflict,
             editor_target,
+            viewport: Viewport::new(),
             text_input_handler: keymap_capture_keys::<Ctx>,
             _ctx: PhantomData,
         }
@@ -229,22 +245,27 @@ mod tests {
     }
 
     struct TestApp {
-        framework: Framework<Self>,
-        captures:  u32,
+        framework:    Framework<Self>,
+        app_settings: (),
+        captures:     u32,
     }
 
     impl AppContext for TestApp {
         type AppPaneId = TestPaneId;
+        type AppSettings = ();
         type ToastAction = crate::NoToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+        fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
+        fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
     }
 
     fn fresh_app() -> TestApp {
         TestApp {
-            framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
-            captures:  0,
+            framework:    Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            app_settings: (),
+            captures:     0,
         }
     }
 

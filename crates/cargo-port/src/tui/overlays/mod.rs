@@ -1,6 +1,6 @@
-//! `Overlays` subsystem — owns `UiModes` (finder / settings / keymap),
+//! `Overlays` subsystem — owns `UiModes` (finder),
 //! the transient `inline_error` UI feedback, the
-//! transient `status_flash` slot, and the three overlay pane render
+//! transient `status_flash` slot, and overlay pane render
 //! states.
 //!
 //! Lives at `crate::tui::overlays` (outside `tui/app/`) so methods can
@@ -8,12 +8,10 @@
 //! inside `tui/app/`.
 //!
 //! Module split:
-//! - `mod.rs` (this file) — mode state (Finder / Settings / Keymap), inline-error / status-flash,
-//!   plus the `Overlays` struct that owns all of the above.
-//! - `render_state.rs` — the three pane-render-state types (`KeymapPane`, `SettingsPane`,
-//!   `FinderPane`) plus the accessor `impl Overlays` block. They live with `Overlays` because
-//!   `Overlays` already owns the open/closed mode state for each.
-//! - `pane_impls.rs` — `Pane` and `Hittable` impls for the three render-state types.
+//! - `mod.rs` (this file) — Finder mode state, inline-error / status-flash, plus the `Overlays`
+//!   struct that owns all of the above.
+//! - `render_state.rs` — the Finder pane render-state type.
+//! - `pane_impls.rs` — `Pane` and `Hittable` impls for Finder and the framework panes.
 
 mod pane_impls;
 mod render_state;
@@ -21,8 +19,6 @@ mod render_state;
 use std::time::Instant;
 
 pub(crate) use render_state::FinderPane;
-pub(crate) use render_state::KeymapPane;
-pub(crate) use render_state::SettingsPane;
 use tui_pane::FocusedPane;
 
 use super::framework_keymap::AppPaneId;
@@ -34,33 +30,13 @@ pub(crate) enum FinderMode {
     Visible,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum SettingsMode {
-    #[default]
-    Hidden,
-    Browsing,
-    Editing,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum KeymapMode {
-    #[default]
-    Hidden,
-    Browsing,
-    AwaitingKey,
-}
-
 #[derive(Default)]
 pub(crate) struct Overlays {
-    finder:            FinderMode,
-    finder_return:     Option<FocusedPane<AppPaneId>>,
-    settings:          SettingsMode,
-    keymap:            KeymapMode,
-    inline_error:      Option<String>,
-    status_flash:      Option<(String, Instant)>,
-    pub keymap_pane:   KeymapPane,
-    pub settings_pane: SettingsPane,
-    pub finder_pane:   FinderPane,
+    finder:          FinderMode,
+    finder_return:   Option<FocusedPane<AppPaneId>>,
+    inline_error:    Option<String>,
+    status_flash:    Option<(String, Instant)>,
+    pub finder_pane: FinderPane,
 }
 
 impl Overlays {
@@ -86,47 +62,7 @@ impl Overlays {
         self.finder_return.take()
     }
 
-    // ── settings ────────────────────────────────────────────────────
-
-    pub(crate) const fn is_settings_editing(&self) -> bool {
-        matches!(self.settings, SettingsMode::Editing)
-    }
-
-    pub(crate) fn close_settings(&mut self) {
-        self.settings = SettingsMode::Hidden;
-        self.inline_error = None;
-    }
-
-    pub(crate) fn begin_settings_editing(&mut self) {
-        self.settings = SettingsMode::Editing;
-        self.inline_error = None;
-    }
-
-    pub(crate) fn end_settings_editing(&mut self) {
-        self.settings = SettingsMode::Browsing;
-        self.inline_error = None;
-    }
-
-    // ── keymap ──────────────────────────────────────────────────────
-
-    pub(crate) const fn keymap_is_awaiting(&self) -> bool {
-        matches!(self.keymap, KeymapMode::AwaitingKey)
-    }
-
-    pub(crate) fn close_keymap(&mut self) {
-        self.keymap = KeymapMode::Hidden;
-        self.inline_error = None;
-    }
-
-    pub(crate) fn keymap_begin_awaiting(&mut self) {
-        self.keymap = KeymapMode::AwaitingKey;
-        self.inline_error = None;
-    }
-
-    pub(crate) fn keymap_end_awaiting(&mut self) {
-        self.keymap = KeymapMode::Browsing;
-        self.inline_error = None;
-    }
+    pub(crate) fn close_settings(&mut self) { self.inline_error = None; }
 
     // ── inline error ────────────────────────────────────────────────
 
@@ -149,8 +85,4 @@ impl Overlays {
     }
 
     // ── render-state accessors ──────────────────────────────────────
-    //
-    // Each accessor returns the small viewport-holding struct for one
-    // overlay pane. The three structs live in `render_state.rs`; their
-    // `Pane` / `Hittable` impls live in `pane_impls.rs`.
 }

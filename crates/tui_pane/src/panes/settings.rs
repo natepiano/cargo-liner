@@ -20,6 +20,7 @@ use crate::Bindings;
 use crate::KeyBind;
 use crate::KeyOutcome;
 use crate::Mode;
+use crate::Viewport;
 
 crate::action_enum! {
     /// Actions reachable on the settings overlay's local bar.
@@ -32,6 +33,17 @@ crate::action_enum! {
         /// Discard pending edits.
         Cancel    => ("cancel",     "cancel", "Cancel edit");
     }
+}
+
+/// Command produced by [`SettingsPane::handle_text_input`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsCommand {
+    /// No commit/cancel command was produced.
+    None,
+    /// Apply the current edit buffer.
+    Save,
+    /// Cancel the current edit.
+    Cancel,
 }
 
 /// Editor sub-state for the settings overlay.
@@ -50,10 +62,13 @@ enum EditState {
 /// [`Framework::overlay`](crate::Framework::overlay) before routing
 /// keys here.
 pub struct SettingsPane<Ctx: AppContext> {
-    edit_state:         EditState,
-    editor_target:      Option<PathBuf>,
-    text_input_handler: fn(KeyBind, &mut Ctx),
-    _ctx:               PhantomData<fn(&mut Ctx)>,
+    edit_state:    EditState,
+    editor_target: Option<PathBuf>,
+    viewport:      Viewport,
+    line_targets:  Vec<Option<usize>>,
+    edit_buffer:   String,
+    edit_cursor:   usize,
+    _ctx:          PhantomData<fn(&mut Ctx)>,
 }
 
 impl<Ctx: AppContext> SettingsPane<Ctx> {
@@ -61,25 +76,14 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            edit_state:         EditState::Browse,
-            editor_target:      None,
-            text_input_handler: settings_edit_keys::<Ctx>,
-            _ctx:               PhantomData,
+            edit_state:    EditState::Browse,
+            editor_target: None,
+            viewport:      Viewport::new(),
+            line_targets:  Vec::new(),
+            edit_buffer:   String::new(),
+            edit_cursor:   0,
+            _ctx:          PhantomData,
         }
-    }
-
-    /// Replace the [`Mode::TextInput`] payload used while the overlay
-    /// is editing. Binaries use this to route text edits into their
-    /// own settings buffer.
-    #[must_use]
-    pub const fn with_text_input_handler(mut self, handler: fn(KeyBind, &mut Ctx)) -> Self {
-        self.text_input_handler = handler;
-        self
-    }
-
-    /// Replace the [`Mode::TextInput`] payload after construction.
-    pub const fn set_text_input_handler(&mut self, handler: fn(KeyBind, &mut Ctx)) {
-        self.text_input_handler = handler;
     }
 
     /// Default key bindings for the overlay's local actions. The
@@ -100,7 +104,9 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     /// behavior. Resolves `bind` against [`Self::defaults`] and flips
     /// [`EditState`] accordingly: `StartEdit` enters [`EditState::Editing`]
     /// from `Browse`; `Save` and `Cancel` return to `Browse`. Per-setting
-    /// buffer mutation lives on the binary side (Phase 19 cutover).
+    /// buffer mutation lives on this pane; [`Self::handle_text_input`]
+    /// returns the command the binary applies after the framework
+    /// borrow ends.
     pub fn handle_key(&mut self, _ctx: &mut Ctx, bind: &KeyBind) -> KeyOutcome {
         if let Some(action) = Self::defaults().into_scope_map().action_for(bind) {
             match action {
@@ -120,19 +126,111 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
         }
     }
 
+    /// Enter edit mode with an initial value.
+    pub fn begin_editing(&mut self, value: String) {
+        self.edit_cursor = value.len();
+        self.edit_buffer = value;
+        self.enter_editing();
+    }
+
     /// Return the overlay to browse mode after saving, cancelling, or
     /// closing an edit.
-    pub const fn enter_browse(&mut self) { self.edit_state = EditState::Browse; }
+    pub fn enter_browse(&mut self) {
+        self.edit_state = EditState::Browse;
+        self.edit_buffer.clear();
+        self.edit_cursor = 0;
+    }
+
+    /// Whether the pane is actively editing text.
+    #[must_use]
+    pub const fn is_editing(&self) -> bool { matches!(self.edit_state, EditState::Editing) }
+
+    /// Borrow the edit buffer.
+    #[must_use]
+    pub fn edit_buffer(&self) -> &str { &self.edit_buffer }
+
+    /// Borrow the text currently being edited.
+    #[must_use]
+    pub fn edited_text(&self) -> &str { &self.edit_buffer }
+
+    /// Edit cursor byte offset.
+    #[must_use]
+    pub const fn edit_cursor(&self) -> usize { self.edit_cursor }
+
+    /// Replace the edit buffer and cursor.
+    pub fn set_edit_buffer(&mut self, value: String, cursor: usize) {
+        self.edit_cursor = cursor.min(value.len());
+        self.edit_buffer = value;
+    }
+
+    /// Joint mutable handles on the edit buffer and cursor.
+    pub const fn edit_parts_mut(&mut self) -> (&mut String, &mut usize) {
+        (&mut self.edit_buffer, &mut self.edit_cursor)
+    }
+
+    /// Borrow the framework-owned viewport state.
+    #[must_use]
+    pub const fn viewport(&self) -> &Viewport { &self.viewport }
+
+    /// Mutably borrow the framework-owned viewport state.
+    pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
+
+    /// Store rendered-line to setting-row targets for hit testing.
+    pub fn set_line_targets(&mut self, targets: Vec<Option<usize>>) { self.line_targets = targets; }
+
+    /// Return the setting row target for a rendered line index.
+    #[must_use]
+    pub fn line_target(&self, line: usize) -> Option<usize> {
+        self.line_targets.get(line).copied().flatten()
+    }
+
+    /// Consume one text-input key and return a command.
+    pub fn handle_text_input(&mut self, bind: KeyBind) -> SettingsCommand {
+        match bind.code {
+            KeyCode::Enter => SettingsCommand::Save,
+            KeyCode::Esc => SettingsCommand::Cancel,
+            KeyCode::Left => {
+                self.edit_cursor = prev_char_boundary(&self.edit_buffer, self.edit_cursor);
+                SettingsCommand::None
+            },
+            KeyCode::Right => {
+                self.edit_cursor = next_char_boundary(&self.edit_buffer, self.edit_cursor);
+                SettingsCommand::None
+            },
+            KeyCode::Home => {
+                self.edit_cursor = 0;
+                SettingsCommand::None
+            },
+            KeyCode::End => {
+                self.edit_cursor = self.edit_buffer.len();
+                SettingsCommand::None
+            },
+            KeyCode::Backspace => {
+                backspace_at_cursor(&mut self.edit_buffer, &mut self.edit_cursor);
+                SettingsCommand::None
+            },
+            KeyCode::Delete => {
+                delete_at_cursor(&mut self.edit_buffer, self.edit_cursor);
+                SettingsCommand::None
+            },
+            KeyCode::Char(c) => {
+                insert_char_at_cursor(&mut self.edit_buffer, &mut self.edit_cursor, c);
+                SettingsCommand::None
+            },
+            _ => SettingsCommand::None,
+        }
+    }
 
     /// Current input mode for the overlay.
     ///
     /// - [`EditState::Browse`] → [`Mode::Navigable`].
-    /// - [`EditState::Editing`] → [`Mode::TextInput`] with the configured handler. The default stub
-    ///   stays inert until the binary wires its handler during Phase 19.
+    /// - [`EditState::Editing`] → [`Mode::TextInput`] with an inert handler. The input path calls
+    ///   [`Self::handle_text_input`] directly and uses this mode only as a suppression signal for
+    ///   global dispatch.
     #[must_use]
     pub fn mode(&self, _ctx: &Ctx) -> Mode<Ctx> {
         match self.edit_state {
-            EditState::Editing => Mode::TextInput(self.text_input_handler),
+            EditState::Editing => Mode::TextInput(settings_edit_keys::<Ctx>),
             EditState::Browse => Mode::Navigable,
         }
     }
@@ -171,20 +269,54 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
         Self {
             edit_state: EditState::Editing,
             editor_target,
-            text_input_handler: settings_edit_keys::<Ctx>,
+            viewport: Viewport::new(),
+            line_targets: Vec::new(),
+            edit_buffer: String::new(),
+            edit_cursor: 0,
             _ctx: PhantomData,
         }
     }
 }
 
-/// Generic edit-routing handler. The framework owns the
-/// `Mode::TextInput` payload type but cannot mutate the binary's
-/// per-setting edit buffer — that state lives on `Ctx` (e.g.
-/// `App::settings_state`). Binaries that need mutation call
-/// [`SettingsPane::with_text_input_handler`] or
-/// [`SettingsPane::set_text_input_handler`] to inject their own
-/// handler.
+/// Inert handler used only to mark settings editing as text-input
+/// mode. The real mutation path is [`SettingsPane::handle_text_input`].
 const fn settings_edit_keys<Ctx: AppContext>(_bind: KeyBind, _ctx: &mut Ctx) {}
+
+fn prev_char_boundary(s: &str, cursor: usize) -> usize {
+    s[..cursor.min(s.len())]
+        .char_indices()
+        .next_back()
+        .map_or(0, |(idx, _)| idx)
+}
+
+fn next_char_boundary(s: &str, cursor: usize) -> usize {
+    s[cursor.min(s.len())..]
+        .char_indices()
+        .nth(1)
+        .map_or(s.len(), |(idx, _)| cursor + idx)
+}
+
+fn backspace_at_cursor(buf: &mut String, cursor: &mut usize) {
+    if *cursor == 0 {
+        return;
+    }
+    let start = prev_char_boundary(buf, *cursor);
+    buf.replace_range(start..*cursor, "");
+    *cursor = start;
+}
+
+fn delete_at_cursor(buf: &mut String, cursor: usize) {
+    if cursor >= buf.len() {
+        return;
+    }
+    let end = next_char_boundary(buf, cursor);
+    buf.replace_range(cursor..end, "");
+}
+
+fn insert_char_at_cursor(buf: &mut String, cursor: &mut usize, c: char) {
+    buf.insert(*cursor, c);
+    *cursor += c.len_utf8();
+}
 
 #[cfg(test)]
 #[allow(
@@ -210,26 +342,27 @@ mod tests {
     }
 
     struct TestApp {
-        framework: Framework<Self>,
-        edits:     u32,
+        framework:    Framework<Self>,
+        app_settings: (),
     }
 
     impl AppContext for TestApp {
         type AppPaneId = TestPaneId;
+        type AppSettings = ();
         type ToastAction = crate::NoToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+        fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
+        fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
     }
 
     fn fresh_app() -> TestApp {
         TestApp {
-            framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
-            edits:     0,
+            framework:    Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            app_settings: (),
         }
     }
-
-    fn record_edit(_bind: KeyBind, app: &mut TestApp) { app.edits += 1; }
 
     #[test]
     fn new_starts_in_browse_mode() {
@@ -287,29 +420,50 @@ mod tests {
     }
 
     #[test]
-    fn with_text_input_handler_swaps_editing_payload() {
-        let pane = SettingsPane::for_test_editing(None).with_text_input_handler(record_edit);
-        let mut app = fresh_app();
-        let Mode::TextInput(handler) = pane.mode(&app) else {
-            panic!("editing mode must return text-input handler");
-        };
+    fn begin_editing_sets_buffer_and_cursor() {
+        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
 
-        handler(KeyBind::from('x'), &mut app);
+        pane.begin_editing("hana".to_string());
 
-        assert_eq!(app.edits, 1);
+        assert_eq!(pane.edit_buffer(), "hana");
+        assert_eq!(pane.edit_cursor(), 4);
     }
 
     #[test]
-    fn set_text_input_handler_swaps_editing_payload_after_construction() {
-        let mut pane = SettingsPane::for_test_editing(None);
-        pane.set_text_input_handler(record_edit);
-        let mut app = fresh_app();
-        let Mode::TextInput(handler) = pane.mode(&app) else {
-            panic!("editing mode must return text-input handler");
-        };
+    fn handle_text_input_mutates_owned_buffer() {
+        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
+        pane.begin_editing("ha".to_string());
 
-        handler(KeyBind::from('x'), &mut app);
+        assert_eq!(
+            pane.handle_text_input(KeyBind::from('n')),
+            super::SettingsCommand::None
+        );
+        assert_eq!(
+            pane.handle_text_input(KeyBind::from('a')),
+            super::SettingsCommand::None
+        );
+        assert_eq!(pane.edit_buffer(), "hana");
+        assert_eq!(pane.edit_cursor(), 4);
 
-        assert_eq!(app.edits, 1);
+        let _ = pane.handle_text_input(KeyCode::Left.into());
+        let _ = pane.handle_text_input(KeyCode::Backspace.into());
+
+        assert_eq!(pane.edit_buffer(), "haa");
+        assert_eq!(pane.edit_cursor(), 2);
+    }
+
+    #[test]
+    fn handle_text_input_returns_save_and_cancel_commands() {
+        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
+        pane.begin_editing(String::new());
+
+        assert_eq!(
+            pane.handle_text_input(KeyCode::Enter.into()),
+            super::SettingsCommand::Save
+        );
+        assert_eq!(
+            pane.handle_text_input(KeyCode::Esc.into()),
+            super::SettingsCommand::Cancel
+        );
     }
 }

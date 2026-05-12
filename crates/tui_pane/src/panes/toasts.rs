@@ -379,32 +379,41 @@ mod tests {
     }
 
     struct TestApp {
-        framework: Framework<Self>,
+        framework:    Framework<Self>,
+        app_settings: (),
     }
 
     impl AppContext for TestApp {
         type AppPaneId = TestPaneId;
+        type AppSettings = ();
         type ToastAction = TestToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+        fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
+        fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
     }
 
     struct NoActionApp {
-        framework: Framework<Self>,
+        framework:    Framework<Self>,
+        app_settings: (),
     }
 
     impl AppContext for NoActionApp {
         type AppPaneId = TestPaneId;
+        type AppSettings = ();
         type ToastAction = NoToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+        fn app_settings(&self) -> &Self::AppSettings { &self.app_settings }
+        fn app_settings_mut(&mut self) -> &mut Self::AppSettings { &mut self.app_settings }
     }
 
     fn fresh_app() -> TestApp {
         TestApp {
-            framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            framework:    Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            app_settings: (),
         }
     }
 
@@ -592,7 +601,8 @@ mod tests {
     #[test]
     fn no_toast_action_app_compiles_with_default_handler() {
         let mut app = NoActionApp {
-            framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            framework:    Framework::new(FocusedPane::App(TestPaneId::Foo)),
+            app_settings: (),
         };
         let _ = app.framework_mut().toasts.push("A", "");
     }

@@ -335,11 +335,10 @@ pub(super) fn selectable_row_count(app: &App) -> usize {
 pub(super) fn dispatch_keymap_action(action: KeymapPaneAction, app: &mut App) {
     match action {
         KeymapPaneAction::StartEdit => {
-            app.overlays.keymap_begin_awaiting();
             app.framework.keymap_pane.enter_awaiting();
         },
         KeymapPaneAction::Save | KeymapPaneAction::Cancel => {
-            app.overlays.close_keymap();
+            app.overlays.clear_inline_error();
             app.framework.keymap_pane.enter_browse();
             app.close_framework_overlay_if_open();
         },
@@ -348,29 +347,28 @@ pub(super) fn dispatch_keymap_action(action: KeymapPaneAction, app: &mut App) {
 
 pub(super) fn handle_keymap_navigation_key(app: &mut App, normalized: &KeyEvent) {
     match normalized.code {
-        KeyCode::Up => app.overlays.keymap_pane.viewport.up(),
-        KeyCode::Down => app.overlays.keymap_pane.viewport.down(),
-        KeyCode::Home => app.overlays.keymap_pane.viewport.home(),
-        KeyCode::End => app
-            .overlays
-            .keymap_pane
-            .viewport
-            .set_pos(selectable_row_count(app).saturating_sub(1)),
-        KeyCode::Enter => app.overlays.keymap_begin_awaiting(),
+        KeyCode::Up => app.framework.keymap_pane.viewport_mut().up(),
+        KeyCode::Down => app.framework.keymap_pane.viewport_mut().down(),
+        KeyCode::Home => app.framework.keymap_pane.viewport_mut().home(),
+        KeyCode::End => {
+            let last = selectable_row_count(app).saturating_sub(1);
+            app.framework.keymap_pane.viewport_mut().set_pos(last);
+        },
+        KeyCode::Enter => app.framework.keymap_pane.enter_awaiting(),
         _ => {},
     }
 }
 
 pub(super) fn keymap_capture_keys(bind: FrameworkKeyBind, app: &mut App) {
     handle_awaiting_key(app, &KeyEvent::new(bind.code, bind.mods));
-    if !app.overlays.keymap_is_awaiting() {
+    if !app.framework.keymap_pane.is_awaiting() {
         app.framework.keymap_pane.enter_browse();
     }
 }
 
 fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     if event.code == KeyCode::Esc {
-        app.overlays.keymap_end_awaiting();
+        app.framework.keymap_pane.enter_browse();
         return;
     }
 
@@ -387,7 +385,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     let rows = build_rows(app);
     let selectable: Vec<&KeymapRow> = rows.iter().filter(|r| !r.is_header).collect();
     let Some(row) = selectable
-        .get(app.overlays.keymap_pane.viewport.pos())
+        .get(app.framework.keymap_pane.viewport().pos())
         .map(|row| (*row).clone())
     else {
         return;
@@ -448,7 +446,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
 
     // Valid — apply the rebind.
     apply_rebind(app, row.scope, row.action, bind);
-    app.overlays.keymap_end_awaiting();
+    app.framework.keymap_pane.enter_browse();
 }
 
 fn check_global_conflict(
@@ -799,6 +797,23 @@ pub(super) fn vim_mode_conflicts(app: &App) -> Vec<String> {
 
 const BASE_POPUP_WIDTH: u16 = 52;
 
+fn framework_selection_state(
+    app: &App,
+    selection_index: usize,
+    focus: PaneFocusState,
+) -> PaneSelectionState {
+    let viewport = app.framework.keymap_pane.viewport();
+    if selection_index == viewport.pos() && matches!(focus, PaneFocusState::Active) {
+        PaneSelectionState::Active
+    } else if viewport.hovered() == Some(selection_index) {
+        PaneSelectionState::Hovered
+    } else if selection_index == viewport.pos() && matches!(focus, PaneFocusState::Remembered) {
+        PaneSelectionState::Remembered
+    } else {
+        PaneSelectionState::Unselected
+    }
+}
+
 fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line<'a>> {
     let mut selectable_index = 0usize;
     let mut lines = vec![Line::from("")];
@@ -822,11 +837,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
         } else {
             app.pane_focus_state(PaneId::Keymap)
         };
-        let selection = app
-            .overlays
-            .keymap_pane
-            .viewport
-            .selection_state(selectable_index, focus);
+        let selection = framework_selection_state(app, selectable_index, focus);
         let key_text = if selection != PaneSelectionState::Unselected && is_awaiting {
             app.overlays
                 .inline_error()
@@ -885,7 +896,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
     lines
 }
 
-pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
+pub(super) fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let rows = build_rows(app);
 
@@ -910,8 +921,18 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     }
     .render(frame);
 
-    let selected_pos = app.overlays.keymap_pane.viewport.pos();
-    let is_awaiting = app.overlays.keymap_is_awaiting();
+    let selectable_len = selectable_row_count(app);
+    app.framework
+        .keymap_pane
+        .viewport_mut()
+        .set_len(selectable_len);
+    app.framework
+        .keymap_pane
+        .viewport_mut()
+        .set_content_area(inner);
+
+    let selected_pos = app.framework.keymap_pane.viewport().pos();
+    let is_awaiting = app.framework.keymap_pane.is_awaiting();
     let lines = build_lines(&rows, app, is_awaiting);
 
     // Scroll to keep selection visible.
@@ -921,6 +942,14 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &App) {
     } else {
         0
     };
+    app.framework
+        .keymap_pane
+        .viewport_mut()
+        .set_viewport_rows(visible_height);
+    app.framework
+        .keymap_pane
+        .viewport_mut()
+        .set_scroll_offset(scroll_offset);
 
     let para = Paragraph::new(lines).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
     frame.render_widget(para, inner);

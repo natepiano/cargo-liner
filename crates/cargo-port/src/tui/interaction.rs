@@ -64,8 +64,8 @@ pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
         let pane: &dyn Hittable = match id {
             HittableId::Toasts => &app.toasts,
             HittableId::Finder => &app.overlays.finder_pane,
-            HittableId::Settings => &app.overlays.settings_pane,
-            HittableId::Keymap => &app.overlays.keymap_pane,
+            HittableId::Settings => &app.framework.settings_pane,
+            HittableId::Keymap => &app.framework.keymap_pane,
             HittableId::ProjectList => &app.panes.project_list,
             HittableId::Package => &app.panes.package,
             HittableId::Lang => &app.panes.lang,
@@ -86,16 +86,22 @@ pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
 /// to whichever owner holds the target viewport. `ProjectList`'s
 /// cursor lives on `Selection.cursor`; callers route through
 /// `app.project_list.set_cursor(row)`, not this fn.
-pub(super) fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
-    if id == PaneId::ProjectList {
-        return;
+pub(super) const fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
+    match id {
+        PaneId::ProjectList => {},
+        PaneId::Keymap => app.framework.keymap_pane.viewport_mut().set_pos(row),
+        PaneId::Settings => app.framework.settings_pane.viewport_mut().set_pos(row),
+        _ => {
+            if let Some(viewport) = viewport_mut_for(app, id) {
+                viewport.set_pos(row);
+            }
+        },
     }
-    viewport_mut_for(app, id).set_pos(row);
 }
 
 /// Mutable viewport accessor by `PaneId`.
-pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> &mut Viewport {
-    match id {
+pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> Option<&mut Viewport> {
+    let viewport = match id {
         PaneId::Toasts => &mut app.toasts.viewport,
         PaneId::Cpu => &mut app.panes.cpu.viewport,
         PaneId::Lang => &mut app.panes.lang.viewport,
@@ -103,12 +109,24 @@ pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> &mut Viewport
         PaneId::CiRuns => &mut app.ci.viewport,
         PaneId::Package => &mut app.panes.package.viewport,
         PaneId::Git => &mut app.panes.git.viewport,
-        PaneId::Keymap => &mut app.overlays.keymap_pane.viewport,
-        PaneId::Settings => &mut app.overlays.settings_pane.viewport,
         PaneId::Finder => &mut app.overlays.finder_pane.viewport,
         PaneId::Output => &mut app.panes.output.viewport,
         PaneId::Targets => &mut app.panes.targets.viewport,
         PaneId::ProjectList => &mut app.panes.project_list.viewport,
+        PaneId::Keymap | PaneId::Settings => return None,
+    };
+    Some(viewport)
+}
+
+const fn set_hovered(app: &mut App, pane: PaneId, row: Option<usize>) {
+    match pane {
+        PaneId::Keymap => app.framework.keymap_pane.viewport_mut().set_hovered(row),
+        PaneId::Settings => app.framework.settings_pane.viewport_mut().set_hovered(row),
+        _ => {
+            if let Some(viewport) = viewport_mut_for(app, pane) {
+                viewport.set_hovered(row);
+            }
+        },
     }
 }
 
@@ -118,7 +136,7 @@ pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> &mut Viewport
 pub(super) const fn apply_hovered_pane_row(app: &mut App) {
     clear_all_hover(app);
     if let Some(hovered) = app.panes.hovered_row() {
-        viewport_mut_for(app, hovered.pane).set_hovered(Some(hovered.row));
+        set_hovered(app, hovered.pane, Some(hovered.row));
     }
 }
 
@@ -126,8 +144,8 @@ const fn clear_all_hover(app: &mut App) {
     app.toasts.viewport.set_hovered(None);
     app.ci.viewport.set_hovered(None);
     app.lint.viewport.set_hovered(None);
-    app.overlays.keymap_pane.viewport.set_hovered(None);
-    app.overlays.settings_pane.viewport.set_hovered(None);
+    app.framework.keymap_pane.viewport_mut().set_hovered(None);
+    app.framework.settings_pane.viewport_mut().set_hovered(None);
     app.overlays.finder_pane.viewport.set_hovered(None);
     let panes = &mut app.panes;
     panes.package.viewport.set_hovered(None);
@@ -225,6 +243,7 @@ mod tests {
     use crate::tui::panes::PaneId;
     use crate::tui::project_list::ProjectList;
     use crate::tui::render;
+    use crate::tui::settings;
     use crate::tui::settings::SettingOption;
     use crate::tui::toasts::ToastStyle;
 
@@ -515,6 +534,31 @@ mod tests {
         )
     }
 
+    fn framework_pane_row_point(pane: &tui_pane::Viewport, row_index: usize) -> (u16, u16) {
+        let area = pane.content_area();
+        (
+            area.x.saturating_add(1),
+            area.y
+                .saturating_add(u16::try_from(row_index).unwrap_or(u16::MAX)),
+        )
+    }
+
+    fn framework_selection_state(
+        pane: &tui_pane::Viewport,
+        row: usize,
+        focus: PaneFocusState,
+    ) -> PaneSelectionState {
+        if row == pane.pos() && matches!(focus, PaneFocusState::Active) {
+            PaneSelectionState::Active
+        } else if pane.hovered() == Some(row) {
+            PaneSelectionState::Hovered
+        } else if row == pane.pos() && matches!(focus, PaneFocusState::Remembered) {
+            PaneSelectionState::Remembered
+        } else {
+            PaneSelectionState::Unselected
+        }
+    }
+
     fn finder_result_point(app: &App, result_index: usize) -> (u16, u16) {
         let area = app.overlays.finder_pane.viewport.content_area();
         (
@@ -762,13 +806,16 @@ mod tests {
         let mut app = make_app(&[]);
         open_settings_overlay(&mut app);
         render_ui(&mut app);
+        let ci_run_count_row =
+            settings::selection_index_for_setting_for_test(&app, SettingOption::CiRunCount)
+                .expect("CI run count row");
 
-        let (x, y) = pane_row_point(&app.overlays.settings_pane.viewport, 5);
+        let (x, y) = framework_pane_row_point(app.framework.settings_pane.viewport(), 5);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.overlays.settings_pane.viewport.pos(),
-            SettingOption::CiRunCount as usize,
+            app.framework.settings_pane.viewport().pos(),
+            ci_run_count_row,
             "clicking a rendered settings option should select the logical setting, not the visual line index including spacer/header rows"
         );
     }
@@ -779,35 +826,40 @@ mod tests {
         open_settings_overlay(&mut app);
         render_ui(&mut app);
 
-        let hovered_row = SettingOption::CiRunCount as usize;
-        let (x, y) = pane_row_point(&app.overlays.settings_pane.viewport, 5);
+        let hovered_row =
+            settings::selection_index_for_setting_for_test(&app, SettingOption::CiRunCount)
+                .expect("CI run count row");
+        let (x, y) = framework_pane_row_point(app.framework.settings_pane.viewport(), 5);
         move_mouse(&mut app, x, y);
         render_ui(&mut app);
 
         assert_eq!(
-            app.overlays
-                .settings_pane
-                .viewport
-                .selection_state(hovered_row, PaneFocusState::Active),
+            framework_selection_state(
+                app.framework.settings_pane.viewport(),
+                hovered_row,
+                PaneFocusState::Active,
+            ),
             PaneSelectionState::Hovered,
         );
 
         press_key(&mut app, KeyCode::Down);
         render_ui(&mut app);
 
-        assert_eq!(app.overlays.settings_pane.viewport.pos(), 1);
+        assert_eq!(app.framework.settings_pane.viewport().pos(), 1);
         assert_eq!(
-            app.overlays
-                .settings_pane
-                .viewport
-                .selection_state(hovered_row, PaneFocusState::Active),
+            framework_selection_state(
+                app.framework.settings_pane.viewport(),
+                hovered_row,
+                PaneFocusState::Active,
+            ),
             PaneSelectionState::Unselected,
         );
         assert_eq!(
-            app.overlays
-                .settings_pane
-                .viewport
-                .selection_state(1, PaneFocusState::Active),
+            framework_selection_state(
+                app.framework.settings_pane.viewport(),
+                1,
+                PaneFocusState::Active,
+            ),
             PaneSelectionState::Active,
         );
     }
@@ -818,18 +870,21 @@ mod tests {
         open_settings_overlay(&mut app);
         render_ui(&mut app);
 
-        let hovered_row = SettingOption::CiRunCount as usize;
-        let (x, y) = pane_row_point(&app.overlays.settings_pane.viewport, 5);
+        let hovered_row =
+            settings::selection_index_for_setting_for_test(&app, SettingOption::CiRunCount)
+                .expect("CI run count row");
+        let (x, y) = framework_pane_row_point(app.framework.settings_pane.viewport(), 5);
         move_mouse(&mut app, x, y);
         render_ui(&mut app);
         press_key(&mut app, KeyCode::Down);
         render_ui(&mut app);
 
         assert_eq!(
-            app.overlays
-                .settings_pane
-                .viewport
-                .selection_state(hovered_row, PaneFocusState::Active),
+            framework_selection_state(
+                app.framework.settings_pane.viewport(),
+                hovered_row,
+                PaneFocusState::Active,
+            ),
             PaneSelectionState::Unselected,
         );
 
@@ -837,10 +892,11 @@ mod tests {
         render_ui(&mut app);
 
         assert_eq!(
-            app.overlays
-                .settings_pane
-                .viewport
-                .selection_state(hovered_row, PaneFocusState::Active),
+            framework_selection_state(
+                app.framework.settings_pane.viewport(),
+                hovered_row,
+                PaneFocusState::Active,
+            ),
             PaneSelectionState::Hovered,
         );
     }
@@ -851,18 +907,21 @@ mod tests {
         open_settings_overlay(&mut app);
         render_ui(&mut app);
 
-        let hovered_row = SettingOption::CiRunCount as usize;
-        let (x, y) = pane_row_point(&app.overlays.settings_pane.viewport, 5);
+        let hovered_row =
+            settings::selection_index_for_setting_for_test(&app, SettingOption::CiRunCount)
+                .expect("CI run count row");
+        let (x, y) = framework_pane_row_point(app.framework.settings_pane.viewport(), 5);
         input::set_last_mouse_pos_for_test(Some((x, y)));
         focus_gained(&mut app);
         render_ui(&mut app);
 
-        assert_eq!(app.overlays.settings_pane.viewport.pos(), hovered_row);
+        assert_eq!(app.framework.settings_pane.viewport().pos(), hovered_row);
         assert_eq!(
-            app.overlays
-                .settings_pane
-                .viewport
-                .selection_state(hovered_row, PaneFocusState::Active),
+            framework_selection_state(
+                app.framework.settings_pane.viewport(),
+                hovered_row,
+                PaneFocusState::Active,
+            ),
             PaneSelectionState::Active,
         );
     }
@@ -1089,12 +1148,13 @@ mod tests {
         open_settings_overlay(&mut app);
         render_ui(&mut app);
 
-        let (x, y) = pane_row_point(&app.overlays.settings_pane.viewport, 2);
+        let (x, y) = framework_pane_row_point(app.framework.settings_pane.viewport(), 2);
         click(&mut app, x, y);
 
         assert_eq!(
-            app.overlays.settings_pane.viewport.pos(),
-            SettingOption::InvertScroll as usize
+            app.framework.settings_pane.viewport().pos(),
+            settings::selection_index_for_setting_for_test(&app, SettingOption::InvertScroll)
+                .expect("invert scroll row")
         );
     }
 

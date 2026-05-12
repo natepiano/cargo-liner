@@ -22,6 +22,8 @@ use crate::BarRegion;
 use crate::GlobalAction;
 use crate::Keymap;
 use crate::Mode;
+use crate::ShortcutState;
+use crate::Visibility;
 use crate::keymap::RenderedSlot;
 
 pub(super) fn render<Ctx: AppContext + 'static>(
@@ -36,22 +38,14 @@ pub(super) fn render<Ctx: AppContext + 'static>(
 
     let mut spans: Vec<Span<'static>> = Vec::new();
 
-    // Pane-cycle row from the framework globals — emit only when both
-    // halves are bound.
-    let framework = keymap.framework_globals();
-    if let (Some(&next), Some(&prev)) = (
-        framework.key_for(GlobalAction::NextPane),
-        framework.key_for(GlobalAction::PrevPane),
+    // Navigation scope: the status bar advertises the compact row the
+    // legacy binary used ("↑/↓ nav"), not every scroll/navigation key.
+    let navigation_slots = keymap.render_navigation_slots();
+    if let (Some(up), Some(down)) = (
+        slot_by_label(&navigation_slots, "up"),
+        slot_by_label(&navigation_slots, "down"),
     ) {
-        support::push_paired(&mut spans, next, prev, "pane", palette);
-    }
-
-    // Navigation scope's bar slots (Up/Down/Left/Right/Home/End). The
-    // first two are the standard "↑/↓ nav" indicator; the bar emits
-    // every entry the binary's Navigation impl produced, in the order
-    // returned by the keymap.
-    for slot in keymap.render_navigation_slots() {
-        support::push_slot(&mut spans, &slot, palette);
+        support::push_paired(&mut spans, up.key, down.key, "nav", palette);
     }
 
     // Pane-emitted nav slots (rare — most panes leave nav to the
@@ -60,5 +54,24 @@ pub(super) fn render<Ctx: AppContext + 'static>(
         support::push_slot(&mut spans, slot, palette);
     }
 
+    // Pane-cycle row from the framework globals. The pre-refactor bar
+    // advertised the forward key only ("Tab pane") even though
+    // Shift+Tab also works.
+    if let Some(&next) = keymap.framework_globals().key_for(GlobalAction::NextPane) {
+        let slot = RenderedSlot {
+            region:        BarRegion::Nav,
+            label:         "pane",
+            key:           next,
+            state:         ShortcutState::Enabled,
+            visibility:    Visibility::Visible,
+            secondary_key: None,
+        };
+        support::push_slot(&mut spans, &slot, palette);
+    }
+
     spans
+}
+
+fn slot_by_label<'a>(slots: &'a [RenderedSlot], label: &str) -> Option<&'a RenderedSlot> {
+    slots.iter().find(|slot| slot.label == label)
 }

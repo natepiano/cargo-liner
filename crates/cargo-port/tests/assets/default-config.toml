@@ -94,18 +94,6 @@
 # Default value: "https://github.com/"
 #default_remote_host_url = "https://github.com/"
 
-# How long (in seconds) the status bar flash is shown (e.g. "no new
-# runs found").
-#
-# Default value: 5
-#status_flash_secs = 5
-
-# How long (in seconds) a completed task toast lingers before
-# starting its exit animation.
-#
-# Default value: 1
-#task_linger_secs = 1
-
 # How long (in seconds) newly discovered project names shimmer in the
 # project list. `0.0` disables the effect.
 #

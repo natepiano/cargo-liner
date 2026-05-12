@@ -19,6 +19,7 @@ mod toasts;
 
 pub use keymap::KeymapPane;
 pub use keymap::KeymapPaneAction;
+pub use settings::SettingsCommand;
 pub use settings::SettingsPane;
 pub use settings::SettingsPaneAction;
 pub use toasts::Toast;

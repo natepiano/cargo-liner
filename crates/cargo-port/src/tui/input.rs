@@ -202,7 +202,7 @@ fn clear_legacy_framework_overlay_state(app: &mut App, overlay: FrameworkOverlay
             app.framework.settings_pane.enter_browse();
         },
         FrameworkOverlayId::Keymap => {
-            app.overlays.close_keymap();
+            app.overlays.clear_inline_error();
             app.framework.keymap_pane.enter_browse();
         },
     }
@@ -244,6 +244,12 @@ fn dispatch_framework_overlay(
     let Some(overlay) = app.framework.overlay() else {
         return false;
     };
+
+    if overlay == FrameworkOverlayId::Settings && app.framework.settings_pane.is_editing() {
+        let command = app.framework.settings_pane.handle_text_input(*bind);
+        settings::handle_settings_text_command(app, command);
+        return true;
+    }
 
     if let Some(Mode::TextInput(handler)) = app.framework.focused_pane_mode(app) {
         handler(*bind, app);
@@ -439,11 +445,12 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
         if pane_id == PaneId::ProjectList || !pane_rect.contains(pos) {
             continue;
         }
-        let pane = interaction::viewport_mut_for(app, pane_id);
-        if up {
-            pane.up();
-        } else {
-            pane.down();
+        if let Some(pane) = interaction::viewport_mut_for(app, pane_id) {
+            if up {
+                pane.up();
+            } else {
+                pane.down();
+            }
         }
         return;
     }
