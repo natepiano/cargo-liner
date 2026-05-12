@@ -14,6 +14,7 @@ use tui_pane::Action;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::KeyBind as FrameworkKeyBind;
+use tui_pane::KeymapCaptureCommand;
 use tui_pane::KeymapPaneAction;
 use tui_pane::Pane;
 use tui_pane::ScopeMap as FrameworkScopeMap;
@@ -335,6 +336,7 @@ pub(super) fn selectable_row_count(app: &App) -> usize {
 pub(super) fn dispatch_keymap_action(action: KeymapPaneAction, app: &mut App) {
     match action {
         KeymapPaneAction::StartEdit => {
+            app.overlays.clear_inline_error();
             app.framework.keymap_pane.enter_awaiting();
         },
         KeymapPaneAction::Save | KeymapPaneAction::Cancel => {
@@ -354,34 +356,25 @@ pub(super) fn handle_keymap_navigation_key(app: &mut App, normalized: &KeyEvent)
             let last = selectable_row_count(app).saturating_sub(1);
             app.framework.keymap_pane.viewport_mut().set_pos(last);
         },
-        KeyCode::Enter => app.framework.keymap_pane.enter_awaiting(),
+        KeyCode::Enter => {
+            app.overlays.clear_inline_error();
+            app.framework.keymap_pane.enter_awaiting();
+        },
         _ => {},
     }
 }
 
-pub(super) fn keymap_capture_keys(bind: FrameworkKeyBind, app: &mut App) {
-    handle_awaiting_key(app, &KeyEvent::new(bind.code, bind.mods));
-    if !app.framework.keymap_pane.is_awaiting() {
-        app.framework.keymap_pane.enter_browse();
+pub(super) fn handle_keymap_capture_command(app: &mut App, command: KeymapCaptureCommand) {
+    match command {
+        KeymapCaptureCommand::None => {},
+        KeymapCaptureCommand::Cancel | KeymapCaptureCommand::ClearConflict => {
+            app.overlays.clear_inline_error();
+        },
+        KeymapCaptureCommand::Captured(bind) => handle_captured_bind(app, bind),
     }
 }
 
-fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
-    if event.code == KeyCode::Esc {
-        app.framework.keymap_pane.enter_browse();
-        return;
-    }
-
-    // Enter clears a conflict message so the user can try another key.
-    if event.code == KeyCode::Enter && app.overlays.inline_error().is_some() {
-        app.overlays.clear_inline_error();
-        return;
-    }
-
-    let bind = FrameworkKeyBind {
-        code: event.code,
-        mods: event.modifiers,
-    };
+fn handle_captured_bind(app: &mut App, bind: FrameworkKeyBind) {
     let rows = build_rows(app);
     let selectable: Vec<&KeymapRow> = rows.iter().filter(|r| !r.is_header).collect();
     let Some(row) = selectable
@@ -403,8 +396,10 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
                 | KeyCode::End
         )
     {
-        app.overlays
-            .set_inline_error(format!("\"{}\" reserved for navigation", bind.display()));
+        reject_capture(
+            app,
+            format!("\"{}\" reserved for navigation", bind.display()),
+        );
         return;
     }
 
@@ -413,10 +408,10 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
         && bind.mods == KeyModifiers::NONE
         && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l'))
     {
-        app.overlays.set_inline_error(format!(
-            "\"{}\" reserved for vim navigation",
-            bind.display()
-        ));
+        reject_capture(
+            app,
+            format!("\"{}\" reserved for vim navigation", bind.display()),
+        );
         return;
     }
 
@@ -424,7 +419,7 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     if row.scope != "global"
         && let Some(msg) = check_global_conflict(&rows, &row, bind)
     {
-        app.overlays.set_inline_error(msg);
+        reject_capture(app, msg);
         return;
     }
 
@@ -433,20 +428,26 @@ fn handle_awaiting_key(app: &mut App, event: &KeyEvent) {
     if row.scope == "global"
         && let Some(msg) = check_non_global_conflict(&rows, &row, bind)
     {
-        app.overlays.set_inline_error(msg);
+        reject_capture(app, msg);
         return;
     }
 
     // Check intra-scope conflict.
     let conflict = check_scope_conflict(&rows, &row, bind);
     if let Some(msg) = conflict {
-        app.overlays.set_inline_error(msg);
+        reject_capture(app, msg);
         return;
     }
 
     // Valid — apply the rebind.
     apply_rebind(app, row.scope, row.action, bind);
+    app.overlays.clear_inline_error();
     app.framework.keymap_pane.enter_browse();
+}
+
+fn reject_capture(app: &mut App, message: String) {
+    app.overlays.set_inline_error(message);
+    app.framework.keymap_pane.enter_conflict();
 }
 
 fn check_global_conflict(
@@ -814,7 +815,7 @@ fn framework_selection_state(
     }
 }
 
-fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line<'a>> {
+fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_capturing: bool) -> Vec<Line<'a>> {
     let mut selectable_index = 0usize;
     let mut lines = vec![Line::from("")];
 
@@ -838,7 +839,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
             app.pane_focus_state(PaneId::Keymap)
         };
         let selection = framework_selection_state(app, selectable_index, focus);
-        let key_text = if selection != PaneSelectionState::Unselected && is_awaiting {
+        let key_text = if selection != PaneSelectionState::Unselected && is_capturing {
             app.overlays
                 .inline_error()
                 .cloned()
@@ -851,7 +852,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
         let padded_desc = format!("{:<width$}", row.description, width = desc_width);
 
         let line = if selection != PaneSelectionState::Unselected
-            && is_awaiting
+            && is_capturing
             && app.overlays.inline_error().is_some()
         {
             Line::from(vec![
@@ -869,7 +870,7 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_awaiting: bool) -> Vec<Line
                 ),
                 Span::styled(
                     key_text,
-                    selection.patch(if is_awaiting {
+                    selection.patch(if is_capturing {
                         Style::default()
                             .fg(TITLE_COLOR)
                             .add_modifier(Modifier::BOLD)
@@ -932,8 +933,8 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
         .set_content_area(inner);
 
     let selected_pos = app.framework.keymap_pane.viewport().pos();
-    let is_awaiting = app.framework.keymap_pane.is_awaiting();
-    let lines = build_lines(&rows, app, is_awaiting);
+    let is_capturing = app.framework.keymap_pane.is_capturing();
+    let lines = build_lines(&rows, app, is_capturing);
 
     // Scroll to keep selection visible.
     let visible_height = usize::from(inner.height);

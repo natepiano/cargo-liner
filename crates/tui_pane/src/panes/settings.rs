@@ -1,4 +1,4 @@
-//! `SettingsPane<Ctx>`: framework-owned settings overlay.
+//! `SettingsPane`: framework-owned settings overlay.
 //!
 //! Lives behind [`Framework::settings_pane`](crate::Framework). Phase 11
 //! ships the struct, the [`EditState`] machine, and the inherent action
@@ -6,7 +6,6 @@
 //! `editor_target`). Phase 14 reroutes the binary's settings overlay
 //! input path through this pane.
 
-use core::marker::PhantomData;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -28,6 +27,7 @@ use crate::KeyOutcome;
 use crate::Mode;
 use crate::SettingsRow;
 use crate::SettingsRowKind;
+use crate::SettingsRowPayload;
 use crate::Viewport;
 
 crate::action_enum! {
@@ -110,17 +110,16 @@ enum EditState {
 /// `framework.settings_pane`. The dispatcher consults
 /// [`Framework::overlay`](crate::Framework::overlay) before routing
 /// keys here.
-pub struct SettingsPane<Ctx: AppContext> {
+pub struct SettingsPane {
     edit_state:    EditState,
     editor_target: Option<PathBuf>,
     viewport:      Viewport,
-    line_targets:  Vec<Option<usize>>,
+    line_targets:  Vec<Option<SettingsRowPayload>>,
     edit_buffer:   String,
     edit_cursor:   usize,
-    _ctx:          PhantomData<fn(&mut Ctx)>,
 }
 
-impl<Ctx: AppContext> SettingsPane<Ctx> {
+impl SettingsPane {
     /// Construct a fresh overlay in [`EditState::Browse`].
     #[must_use]
     pub const fn new() -> Self {
@@ -131,7 +130,6 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
             line_targets:  Vec::new(),
             edit_buffer:   String::new(),
             edit_cursor:   0,
-            _ctx:          PhantomData,
         }
     }
 
@@ -156,7 +154,7 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     /// buffer mutation lives on this pane; [`Self::handle_text_input`]
     /// returns the command the binary applies after the framework
     /// borrow ends.
-    pub fn handle_key(&mut self, _ctx: &mut Ctx, bind: &KeyBind) -> KeyOutcome {
+    pub fn handle_key(&mut self, bind: &KeyBind) -> KeyOutcome {
         if let Some(action) = Self::defaults().into_scope_map().action_for(bind) {
             match action {
                 SettingsPaneAction::StartEdit => self.enter_editing(),
@@ -225,12 +223,18 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
     /// Store rendered-line to setting-row targets for hit testing.
-    pub fn set_line_targets(&mut self, targets: Vec<Option<usize>>) { self.line_targets = targets; }
+    pub fn set_line_targets(&mut self, targets: Vec<Option<SettingsRowPayload>>) {
+        self.line_targets = targets;
+    }
 
     /// Return the setting row target for a rendered line index.
     #[must_use]
     pub fn line_target(&self, line: usize) -> Option<usize> {
-        self.line_targets.get(line).copied().flatten()
+        self.line_targets
+            .get(line)
+            .copied()
+            .flatten()
+            .map(SettingsRowPayload::get)
     }
 
     /// Render generic settings rows and update the pane's line-target
@@ -266,7 +270,9 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
                 options.section_item_indent, row.label,
             );
             let context = SettingsLineContext {
-                selection_index,
+                target: row
+                    .payload
+                    .unwrap_or_else(|| SettingsRowPayload::new(selection_index)),
                 label: &label,
                 selection,
                 options: &options,
@@ -296,7 +302,7 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     fn push_setting_row(
         &self,
         lines: &mut Vec<Line<'static>>,
-        line_targets: &mut Vec<Option<usize>>,
+        line_targets: &mut Vec<Option<SettingsRowPayload>>,
         context: &SettingsLineContext<'_>,
         row: &SettingsRow,
     ) {
@@ -396,7 +402,7 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     ///   [`Self::handle_text_input`] directly and uses this mode only as a suppression signal for
     ///   global dispatch.
     #[must_use]
-    pub fn mode(&self, _ctx: &Ctx) -> Mode<Ctx> {
+    pub fn mode<Ctx: AppContext>(&self, _ctx: &Ctx) -> Mode<Ctx> {
         match self.edit_state {
             EditState::Editing => Mode::TextInput(settings_edit_keys::<Ctx>),
             EditState::Browse => Mode::Navigable,
@@ -413,7 +419,7 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     /// (Phase 13) consults this when [`Framework::overlay`](crate::Framework::overlay)
     /// is `Some(FrameworkOverlayId::Settings)`.
     #[must_use]
-    pub fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<SettingsPaneAction>)> {
+    pub fn bar_slots(&self) -> Vec<(BarRegion, BarSlot<SettingsPaneAction>)> {
         SettingsPaneAction::ALL
             .iter()
             .copied()
@@ -422,12 +428,12 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
     }
 }
 
-impl<Ctx: AppContext> Default for SettingsPane<Ctx> {
+impl Default for SettingsPane {
     fn default() -> Self { Self::new() }
 }
 
 #[cfg(test)]
-impl<Ctx: AppContext> SettingsPane<Ctx> {
+impl SettingsPane {
     /// Test-only constructor placing the pane in
     /// [`EditState::Editing`] with an optional editor target. Phase
     /// 15 wires the `Browse → Editing` production transition; Phase
@@ -441,7 +447,6 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
             line_targets: Vec::new(),
             edit_buffer: String::new(),
             edit_cursor: 0,
-            _ctx: PhantomData,
         }
     }
 }
@@ -510,17 +515,14 @@ impl SettingsSelectionState {
 }
 
 struct SettingsLineContext<'a> {
-    selection_index: usize,
-    label:           &'a str,
-    selection:       SettingsSelectionState,
-    options:         &'a SettingsRenderOptions<'a>,
+    target:    SettingsRowPayload,
+    label:     &'a str,
+    selection: SettingsSelectionState,
+    options:   &'a SettingsRenderOptions<'a>,
 }
 
 impl SettingsLineContext<'_> {
-    fn selected_inline_error<'a, Ctx: AppContext>(
-        &'a self,
-        pane: &SettingsPane<Ctx>,
-    ) -> Option<&'a str> {
+    fn selected_inline_error<'a>(&'a self, pane: &SettingsPane) -> Option<&'a str> {
         if self.selection != SettingsSelectionState::Unselected && !pane.is_editing() {
             self.options.inline_error
         } else {
@@ -531,7 +533,7 @@ impl SettingsLineContext<'_> {
 
 fn push_settings_header(
     lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
+    line_targets: &mut Vec<Option<SettingsRowPayload>>,
     name: &str,
     options: &SettingsRenderOptions<'_>,
 ) {
@@ -547,7 +549,7 @@ fn push_settings_header(
 
 fn push_toggle_row(
     lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
+    line_targets: &mut Vec<Option<SettingsRowPayload>>,
     value: &str,
     context: &SettingsLineContext<'_>,
     suffix: Option<&str>,
@@ -581,12 +583,12 @@ fn push_toggle_row(
         ),
         Span::styled(suffix.unwrap_or_default().to_owned(), row_style),
     ]));
-    line_targets.push(Some(context.selection_index));
+    line_targets.push(Some(context.target));
 }
 
 fn push_stepper_row(
     lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
+    line_targets: &mut Vec<Option<SettingsRowPayload>>,
     context: &SettingsLineContext<'_>,
     value: &str,
 ) {
@@ -614,12 +616,12 @@ fn push_stepper_row(
                 .patch(context.options, context.options.muted_style),
         ),
     ]));
-    line_targets.push(Some(context.selection_index));
+    line_targets.push(Some(context.target));
 }
 
 fn push_wrapped_setting_value(
     lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
+    line_targets: &mut Vec<Option<SettingsRowPayload>>,
     context: &SettingsLineContext<'_>,
     value: &str,
     value_style: Style,
@@ -633,13 +635,13 @@ fn push_wrapped_setting_value(
         value_style,
         content_width: context.options.content_width,
     };
-    push_wrapped_value_row(lines, line_targets, Some(context.selection_index), &row);
+    push_wrapped_value_row(lines, line_targets, Some(context.target), &row);
 }
 
 fn push_wrapped_value_row(
     lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
-    target: Option<usize>,
+    line_targets: &mut Vec<Option<SettingsRowPayload>>,
+    target: Option<SettingsRowPayload>,
     row: &WrappedValueRow<'_>,
 ) {
     let prefix_width = row.prefix.width();
@@ -792,62 +794,57 @@ mod tests {
 
     #[test]
     fn new_starts_in_browse_mode() {
-        let pane: SettingsPane<TestApp> = SettingsPane::new();
+        let pane = SettingsPane::new();
         let app = fresh_app();
         assert!(matches!(pane.mode(&app), Mode::Navigable));
     }
 
     #[test]
     fn editor_target_is_none_at_construction() {
-        let pane: SettingsPane<TestApp> = SettingsPane::new();
+        let pane = SettingsPane::new();
         assert!(pane.editor_target().is_none());
     }
 
     #[test]
     fn handle_key_always_returns_consumed() {
-        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
-        let mut app = fresh_app();
-        assert_eq!(
-            pane.handle_key(&mut app, &KeyBind::from('z')),
-            KeyOutcome::Consumed,
-        );
+        let mut pane = SettingsPane::new();
+        assert_eq!(pane.handle_key(&KeyBind::from('z')), KeyOutcome::Consumed,);
     }
 
     #[test]
     fn bar_slots_emit_one_slot_per_variant() {
-        let pane: SettingsPane<TestApp> = SettingsPane::new();
-        let app = fresh_app();
-        let slots = pane.bar_slots(&app);
+        let pane = SettingsPane::new();
+        let slots = pane.bar_slots();
         assert_eq!(slots.len(), 3);
     }
 
     #[test]
     fn enter_in_browse_transitions_to_editing() {
-        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
-        let mut app = fresh_app();
-        let _ = pane.handle_key(&mut app, &KeyCode::Enter.into());
+        let mut pane = SettingsPane::new();
+        let app = fresh_app();
+        let _ = pane.handle_key(&KeyCode::Enter.into());
         assert!(matches!(pane.mode(&app), Mode::TextInput(_)));
     }
 
     #[test]
     fn esc_in_editing_returns_to_browse() {
-        let mut pane: SettingsPane<TestApp> = SettingsPane::for_test_editing(None);
-        let mut app = fresh_app();
-        let _ = pane.handle_key(&mut app, &KeyCode::Esc.into());
+        let mut pane = SettingsPane::for_test_editing(None);
+        let app = fresh_app();
+        let _ = pane.handle_key(&KeyCode::Esc.into());
         assert!(matches!(pane.mode(&app), Mode::Navigable));
     }
 
     #[test]
     fn save_in_editing_returns_to_browse() {
-        let mut pane: SettingsPane<TestApp> = SettingsPane::for_test_editing(None);
-        let mut app = fresh_app();
-        let _ = pane.handle_key(&mut app, &KeyBind::from('s'));
+        let mut pane = SettingsPane::for_test_editing(None);
+        let app = fresh_app();
+        let _ = pane.handle_key(&KeyBind::from('s'));
         assert!(matches!(pane.mode(&app), Mode::Navigable));
     }
 
     #[test]
     fn begin_editing_sets_buffer_and_cursor() {
-        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
+        let mut pane = SettingsPane::new();
 
         pane.begin_editing("hana".to_string());
 
@@ -857,7 +854,7 @@ mod tests {
 
     #[test]
     fn handle_text_input_mutates_owned_buffer() {
-        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
+        let mut pane = SettingsPane::new();
         pane.begin_editing("ha".to_string());
 
         assert_eq!(
@@ -880,7 +877,7 @@ mod tests {
 
     #[test]
     fn handle_text_input_returns_save_and_cancel_commands() {
-        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
+        let mut pane = SettingsPane::new();
         pane.begin_editing(String::new());
 
         assert_eq!(
@@ -895,7 +892,7 @@ mod tests {
 
     #[test]
     fn render_rows_wraps_continuations_at_value_column() {
-        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
+        let mut pane = SettingsPane::new();
         let rows = vec![SettingsRow::value(
             0,
             "Projects",
@@ -913,7 +910,7 @@ mod tests {
 
     #[test]
     fn render_rows_selected_toggle_inlines_suffix() {
-        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
+        let mut pane = SettingsPane::new();
         let rows = vec![
             SettingsRow::toggle(0, "Vim nav keys", true)
                 .with_suffix("  maps h/j/k/l to arrow navigation"),
@@ -931,7 +928,7 @@ mod tests {
 
     #[test]
     fn render_rows_editing_shows_cursor_in_buffer() {
-        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
+        let mut pane = SettingsPane::new();
         pane.begin_editing("hana".to_string());
         pane.set_edit_buffer("hana".to_string(), 2);
         let rows = vec![SettingsRow::value(0, "Editor", "zed")];

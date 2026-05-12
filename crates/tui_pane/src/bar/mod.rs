@@ -8,7 +8,7 @@
 //! The renderer's contract:
 //!
 //! 1. Resolve `pane_slots: Vec<RenderedSlot>` for the focused pane. Overlay-first dispatch (Keymap
-//!    / Settings overlays read `framework.{keymap,settings}_pane.bar_slots(ctx)`); else
+//!    / Settings overlays read `framework.{keymap,settings}_pane.bar_slots()`); else
 //!    [`FocusedPane::App(id)`](crate::FocusedPane::App) flows through
 //!    [`Keymap::render_app_pane_bar_slots`](crate::Keymap::render_app_pane_bar_slots); else
 //!    [`FocusedPane::Framework(FrameworkFocusId::Toasts)`](crate::FocusedPane::Framework) reads
@@ -110,11 +110,11 @@ fn pane_slots_for<Ctx: AppContext + 'static>(
         return match overlay {
             FrameworkOverlayId::Keymap => {
                 let scope = keymap.keymap_overlay();
-                render_overlay_slots(framework.keymap_pane.bar_slots(ctx), scope)
+                render_overlay_slots(framework.keymap_pane.bar_slots(), scope)
             },
             FrameworkOverlayId::Settings => {
                 let scope = keymap.settings_overlay();
-                render_overlay_slots(framework.settings_pane.bar_slots(ctx), scope)
+                render_overlay_slots(framework.settings_pane.bar_slots(), scope)
             },
         };
     }

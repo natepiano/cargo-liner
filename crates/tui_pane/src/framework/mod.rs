@@ -19,6 +19,7 @@ use crate::FocusedPane;
 use crate::FrameworkFocusId;
 use crate::FrameworkOverlayId;
 use crate::KeymapPane;
+use crate::LoadedSettings;
 use crate::Mode;
 use crate::SettingsPane;
 use crate::SettingsStore;
@@ -56,10 +57,10 @@ pub struct Framework<Ctx: AppContext> {
     overlay:           Option<FrameworkOverlayId>,
     /// Keymap viewer/editor overlay, held inline. Reachable when
     /// [`Self::overlay`] is `Some(FrameworkOverlayId::Keymap)`.
-    pub keymap_pane:   KeymapPane<Ctx>,
+    pub keymap_pane:   KeymapPane,
     /// Settings overlay, held inline. Reachable when
     /// [`Self::overlay`] is `Some(FrameworkOverlayId::Settings)`.
-    pub settings_pane: SettingsPane<Ctx>,
+    pub settings_pane: SettingsPane,
     settings_store:    SettingsStore,
     toast_settings:    ToastSettings,
     /// Transient notification stack. Tab-focusable when
@@ -86,6 +87,24 @@ impl<Ctx: AppContext> Framework<Ctx> {
             toast_settings:    ToastSettings::default(),
             toasts:            Toasts::new(),
         }
+    }
+
+    /// Construct a framework and install settings loaded through the
+    /// framework settings store.
+    #[must_use]
+    pub fn new_with_settings(
+        initial_focus: FocusedPane<Ctx::AppPaneId>,
+        loaded_settings: LoadedSettings,
+    ) -> Self {
+        let mut framework = Self::new(initial_focus);
+        framework.install_loaded_settings(loaded_settings);
+        framework
+    }
+
+    /// Install framework settings loaded from disk.
+    pub fn install_loaded_settings(&mut self, loaded_settings: LoadedSettings) {
+        self.settings_store = loaded_settings.store;
+        self.toast_settings = loaded_settings.toast_settings;
     }
 
     /// Install the framework-owned settings store.
@@ -312,6 +331,9 @@ mod tests {
     use crate::AppContext;
     use crate::FocusedPane;
     use crate::FrameworkFocusId;
+    use crate::LoadedSettings;
+    use crate::SettingsStore;
+    use crate::ToastSettings;
 
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     enum TestPaneId {
@@ -346,6 +368,24 @@ mod tests {
         );
         assert!(!app.framework().quit_requested());
         assert!(!app.framework().restart_requested());
+    }
+
+    #[test]
+    fn new_with_settings_installs_loaded_settings() {
+        let toast_settings = ToastSettings {
+            enabled: false,
+            ..ToastSettings::default()
+        };
+
+        let framework = Framework::<TestApp>::new_with_settings(
+            FocusedPane::App(TestPaneId::Foo),
+            LoadedSettings {
+                store: SettingsStore::empty(),
+                toast_settings,
+            },
+        );
+
+        assert!(!framework.toast_settings().enabled);
     }
 
     #[test]

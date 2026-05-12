@@ -392,7 +392,7 @@ fn keymap_awaiting_text_input_suppresses_every_region() {
     app.framework_mut().dispatch_global_for_test_open_keymap();
     // Replace the framework's keymap pane with one in Awaiting.
     app.framework_mut().keymap_pane =
-        KeymapPane::<TestApp>::for_test_awaiting(Some(PathBuf::from("/tmp/keys.toml")));
+        KeymapPane::for_test_awaiting(Some(PathBuf::from("/tmp/keys.toml")));
     let focused = *app.framework().focused();
     let bar = render(&focused, &app, &keymap, app.framework());
     assert!(
@@ -407,7 +407,7 @@ fn keymap_conflict_renders_pane_actions_and_globals() {
     let keymap = build_keymap_with_foo(&mut app.framework);
     app.framework_mut().dispatch_global_for_test_open_keymap();
     app.framework_mut().keymap_pane =
-        KeymapPane::<TestApp>::for_test_conflict(Some(PathBuf::from("/tmp/keys.toml")));
+        KeymapPane::for_test_conflict(Some(PathBuf::from("/tmp/keys.toml")));
     let focused = *app.framework().focused();
     let bar = render(&focused, &app, &keymap, app.framework());
     let (nav, pane_action, global) = flatten_bar(&bar);
@@ -446,7 +446,7 @@ fn settings_editing_text_input_suppresses_every_region() {
     let keymap = build_keymap_with_foo(&mut app.framework);
     app.framework_mut().dispatch_global_for_test_open_settings();
     app.framework_mut().settings_pane =
-        SettingsPane::<TestApp>::for_test_editing(Some(PathBuf::from("/tmp/settings.toml")));
+        SettingsPane::for_test_editing(Some(PathBuf::from("/tmp/settings.toml")));
     let focused = *app.framework().focused();
     let bar = render(&focused, &app, &keymap, app.framework());
     assert!(

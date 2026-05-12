@@ -14,7 +14,6 @@ use tui_pane::KeymapPane;
 use tui_pane::SettingsPane;
 
 use super::FinderPane;
-use crate::tui::app::App;
 use crate::tui::pane::Hittable;
 use crate::tui::pane::HoverTarget;
 use crate::tui::pane::Pane;
@@ -22,11 +21,11 @@ use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::panes::PaneId;
 
-impl Pane for KeymapPane<App> {
+impl Pane for KeymapPane {
     fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
 }
 
-impl Hittable for KeymapPane<App> {
+impl Hittable for KeymapPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
         let row = self.viewport().pos_to_local_row(pos)?;
         Some(HoverTarget::PaneRow {
@@ -36,11 +35,11 @@ impl Hittable for KeymapPane<App> {
     }
 }
 
-impl Pane for SettingsPane<App> {
+impl Pane for SettingsPane {
     fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
 }
 
-impl Hittable for SettingsPane<App> {
+impl Hittable for SettingsPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
         let inner = self.viewport().content_area();
         if inner.width == 0 || inner.height == 0 {

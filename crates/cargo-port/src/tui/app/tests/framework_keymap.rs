@@ -1201,7 +1201,7 @@ fn keymap_capture_rejects_navigation_key_through_production_input() {
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     press(&mut app, KeyCode::Up, KeyModifiers::NONE);
 
-    assert!(app.framework.keymap_pane.is_awaiting());
+    assert!(app.framework.keymap_pane.is_capturing());
     assert!(
         app.overlays
             .inline_error()

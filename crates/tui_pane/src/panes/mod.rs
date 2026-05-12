@@ -1,9 +1,8 @@
 //! Framework-owned panes: built-in overlays and the toast stack.
 //!
-//! Two overlay structs live here, both generic over `Ctx: AppContext`,
-//! plus the toast action vocabulary:
-//! - [`KeymapPane<Ctx>`]: keymap viewer/editor overlay.
-//! - [`SettingsPane<Ctx>`]: settings overlay.
+//! Two overlay structs live here, plus the toast action vocabulary:
+//! - [`KeymapPane`]: keymap viewer/editor overlay.
+//! - [`SettingsPane`]: settings overlay.
 //!
 //! These ship inherent methods rather than implementing
 //! [`Pane<Ctx>`](crate::Pane) / [`Shortcuts<Ctx>`](crate::Shortcuts):
@@ -17,6 +16,7 @@ mod keymap;
 mod settings;
 mod toasts;
 
+pub use keymap::KeymapCaptureCommand;
 pub use keymap::KeymapPane;
 pub use keymap::KeymapPaneAction;
 pub use settings::SettingsCommand;

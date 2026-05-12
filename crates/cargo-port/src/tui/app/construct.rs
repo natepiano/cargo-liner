@@ -25,6 +25,7 @@ use anyhow::Context;
 use anyhow::Error;
 use tui_pane::FocusedPane;
 use tui_pane::Keymap as FrameworkKeymap;
+use tui_pane::LoadedSettings;
 use tui_pane::SettingsStore;
 use tui_pane::ToastSettings;
 
@@ -48,7 +49,6 @@ use crate::tui::framework_keymap;
 use crate::tui::framework_keymap::AppPaneId;
 use crate::tui::inflight::Inflight;
 use crate::tui::keymap_state::Keymap;
-use crate::tui::keymap_ui;
 use crate::tui::panes::Panes;
 use crate::tui::project_list::ProjectList;
 use crate::tui::scan_state::Scan;
@@ -210,12 +210,13 @@ impl AppBuilder<Started> {
         if let Some(warning) = started.lint_warning {
             overlays.set_status_flash(warning, Instant::now());
         }
-        let mut framework = tui_pane::Framework::new(FocusedPane::App(AppPaneId::ProjectList));
-        framework.install_settings_store(inputs.settings_store);
-        framework.set_toast_settings(inputs.toast_settings);
-        framework
-            .keymap_pane
-            .set_text_input_handler(keymap_ui::keymap_capture_keys);
+        let mut framework = tui_pane::Framework::new_with_settings(
+            FocusedPane::App(AppPaneId::ProjectList),
+            LoadedSettings {
+                store:          inputs.settings_store,
+                toast_settings: inputs.toast_settings,
+            },
+        );
         let framework_builder = FrameworkKeymap::<App>::builder().vim_mode(
             framework_keymap::vim_mode_from_config(config.current().tui.navigation_keys),
         );

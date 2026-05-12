@@ -251,6 +251,12 @@ fn dispatch_framework_overlay(
         return true;
     }
 
+    if overlay == FrameworkOverlayId::Keymap && app.framework.keymap_pane.is_capturing() {
+        let command = app.framework.keymap_pane.handle_capture_key(*bind);
+        keymap_ui::handle_keymap_capture_command(app, command);
+        return true;
+    }
+
     if let Some(Mode::TextInput(handler)) = app.framework.focused_pane_mode(app) {
         handler(*bind, app);
         return true;
@@ -311,6 +317,11 @@ fn dispatch_navigation(
 }
 
 fn focused_text_input_mode(app: &App) -> bool {
+    if app.framework.overlay() == Some(FrameworkOverlayId::Keymap)
+        && app.framework.keymap_pane.is_capturing()
+    {
+        return true;
+    }
     matches!(
         app.framework.focused_pane_mode(app),
         Some(Mode::TextInput(_))

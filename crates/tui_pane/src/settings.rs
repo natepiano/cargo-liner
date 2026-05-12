@@ -130,7 +130,25 @@ pub struct SettingsRow {
     /// Optional app-provided suffix shown after compact controls.
     pub suffix:  Option<String>,
     /// Optional stable app payload for hit testing / dispatch.
-    pub payload: Option<usize>,
+    pub payload: Option<SettingsRowPayload>,
+}
+
+/// Stable row payload used by settings hit testing and dispatch.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct SettingsRowPayload(usize);
+
+impl SettingsRowPayload {
+    /// Build a settings row payload from an app-owned row id.
+    #[must_use]
+    pub const fn new(value: usize) -> Self { Self(value) }
+
+    /// Return the app-owned row id.
+    #[must_use]
+    pub const fn get(self) -> usize { self.0 }
+}
+
+impl From<usize> for SettingsRowPayload {
+    fn from(value: usize) -> Self { Self::new(value) }
 }
 
 impl SettingsRow {
@@ -148,37 +166,49 @@ impl SettingsRow {
 
     /// Build a selectable value row.
     #[must_use]
-    pub fn value(payload: usize, label: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn value(
+        payload: impl Into<SettingsRowPayload>,
+        label: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         Self {
             label:   label.into(),
             value:   value.into(),
             kind:    SettingsRowKind::Value,
             suffix:  None,
-            payload: Some(payload),
+            payload: Some(payload.into()),
         }
     }
 
     /// Build a selectable toggle row.
     #[must_use]
-    pub fn toggle(payload: usize, label: impl Into<String>, enabled: bool) -> Self {
+    pub fn toggle(
+        payload: impl Into<SettingsRowPayload>,
+        label: impl Into<String>,
+        enabled: bool,
+    ) -> Self {
         Self {
             label:   label.into(),
             value:   if enabled { "ON" } else { "OFF" }.to_string(),
             kind:    SettingsRowKind::Toggle,
             suffix:  None,
-            payload: Some(payload),
+            payload: Some(payload.into()),
         }
     }
 
     /// Build a selectable stepper row.
     #[must_use]
-    pub fn stepper(payload: usize, label: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn stepper(
+        payload: impl Into<SettingsRowPayload>,
+        label: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         Self {
             label:   label.into(),
             value:   value.into(),
             kind:    SettingsRowKind::Stepper,
             suffix:  None,
-            payload: Some(payload),
+            payload: Some(payload.into()),
         }
     }
 
@@ -1018,6 +1048,8 @@ mod tests {
     use super::SettingCodecs;
     use super::SettingsFileSpec;
     use super::SettingsRegistry;
+    use super::SettingsRow;
+    use super::SettingsRowPayload;
     use super::SettingsSection;
     use super::SettingsStore;
     use super::ToastSettings;
@@ -1088,6 +1120,13 @@ mod tests {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .collect()
+    }
+
+    #[test]
+    fn settings_row_payload_round_trips_typed_id() {
+        let row = SettingsRow::value(SettingsRowPayload::new(7), "Editor", "zed");
+
+        assert_eq!(row.payload.map(SettingsRowPayload::get), Some(7));
     }
 
     #[test]

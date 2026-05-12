@@ -291,7 +291,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     pub fn register_settings_overlay(mut self) -> Result<Self, KeymapError> {
         let bindings = apply_toml_overlay::<SettingsPaneAction>(
             "settings",
-            SettingsPane::<Ctx>::defaults(),
+            SettingsPane::defaults(),
             self.toml_table.as_ref(),
         )?;
         self.settings_overlay = Some(bindings.into_scope_map());
@@ -310,7 +310,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     pub fn register_keymap_overlay(mut self) -> Result<Self, KeymapError> {
         let bindings = apply_toml_overlay::<KeymapPaneAction>(
             "keymap",
-            KeymapPane::<Ctx>::defaults(),
+            KeymapPane::defaults(),
             self.toml_table.as_ref(),
         )?;
         self.keymap_overlay = Some(bindings.into_scope_map());
