@@ -1,9 +1,9 @@
 //! Framework-owned panes: built-in overlays and the toast stack.
 //!
-//! Three structs live here, all generic over `Ctx: AppContext`:
+//! Two overlay structs live here, both generic over `Ctx: AppContext`,
+//! plus the toast action vocabulary:
 //! - [`KeymapPane<Ctx>`]: keymap viewer/editor overlay.
 //! - [`SettingsPane<Ctx>`]: settings overlay.
-//! - [`Toasts<Ctx>`]: transient notification stack (focusable when active).
 //!
 //! These ship inherent methods rather than implementing
 //! [`Pane<Ctx>`](crate::Pane) / [`Shortcuts<Ctx>`](crate::Shortcuts):
@@ -24,9 +24,4 @@ pub use settings::SettingsPane;
 pub use settings::SettingsPaneAction;
 pub use settings::SettingsRender;
 pub use settings::SettingsRenderOptions;
-pub use toasts::Toast;
-pub use toasts::ToastCommand;
-pub use toasts::ToastId;
-pub use toasts::ToastStyle;
-pub use toasts::Toasts;
 pub use toasts::ToastsAction;

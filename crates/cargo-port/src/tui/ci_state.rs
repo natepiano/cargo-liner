@@ -22,6 +22,7 @@ use std::path::Path;
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use tui_pane::ToastTaskId;
 
 use super::app::CiRunDisplayMode;
 use super::pane::Hittable;
@@ -32,7 +33,6 @@ use super::pane::Viewport;
 use super::panes;
 use super::panes::CiData;
 use super::panes::PaneId;
-use super::toasts::ToastTaskId;
 #[cfg(test)]
 use crate::ci::CiRun;
 use crate::ci::CiStatus;

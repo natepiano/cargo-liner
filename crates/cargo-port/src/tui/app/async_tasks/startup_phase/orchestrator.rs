@@ -11,7 +11,7 @@
 //!
 //! Cross-subsystem `maybe_complete_startup_*` orchestration stays on
 //! `App` (see `tracker.rs`) — those methods touch `Startup`,
-//! `ToastManager`, and tracing, and have no single subsystem they
+//! framework toasts, and tracing, and have no single subsystem they
 //! belong to.
 
 #[cfg(test)]
@@ -19,12 +19,17 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 #[cfg(test)]
+use tui_pane::ToastSettings;
+use tui_pane::ToastTaskId;
+#[cfg(test)]
+use tui_pane::toast_body_width;
+
+#[cfg(test)]
 use super::toast_bodies;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::tui::app::CountedPhase;
 use crate::tui::app::KeyedPhase;
-use crate::tui::toasts::ToastTaskId;
 
 #[derive(Debug, Default)]
 pub struct Startup {
@@ -67,6 +72,10 @@ impl Startup {
         expected: &HashSet<AbsolutePath>,
         seen: &HashSet<AbsolutePath>,
     ) -> String {
-        toast_bodies::remaining_toast_body(expected, seen)
+        toast_bodies::remaining_toast_body(
+            expected,
+            seen,
+            toast_body_width(&ToastSettings::default()),
+        )
     }
 }

@@ -142,8 +142,8 @@ fn tabbable_panes_follow_canonical_order() {
     }));
     let mut app = make_app(std::slice::from_ref(&project));
     seed_single_example_metadata(&app, &project_path, "example");
-    app.toasts = ToastManager::default();
-    app.toasts.viewport.set_len(0);
+    app.framework.toasts = tui_pane::Toasts::default();
+    app.framework.toasts.viewport.set_len(0);
     app.scan.state.phase = ScanPhase::Complete;
     apply_git_info(
         &mut app,
@@ -243,6 +243,7 @@ fn new_toasts_do_not_steal_focus() {
     assert_eq!(app.focused_pane_id(), PaneId::Git);
 
     let _task = app
+        .framework
         .toasts
         .start_task("Startup lints", "Running startup lint jobs...");
     assert_eq!(app.focused_pane_id(), PaneId::Git);

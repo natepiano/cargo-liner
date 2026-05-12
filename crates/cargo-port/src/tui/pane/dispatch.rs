@@ -16,6 +16,7 @@ use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use strum::EnumIter;
+use tui_pane::ToastId;
 
 use super::PaneFocusState;
 use crate::tui::app::DismissTarget;
@@ -44,7 +45,7 @@ pub trait Pane {
 pub enum HoverTarget {
     PaneRow { pane: PaneId, row: usize },
     Dismiss(DismissTarget),
-    ToastCard(u64),
+    ToastCard(ToastId),
 }
 
 /// Sub-trait implemented only by panes that participate in click /

@@ -128,8 +128,9 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Instant;
 
+    use tui_pane::ToastTaskId;
+
     use super::*;
-    use crate::tui::toasts::ToastTaskId;
 
     fn fresh() -> Inflight { Inflight::new() }
 

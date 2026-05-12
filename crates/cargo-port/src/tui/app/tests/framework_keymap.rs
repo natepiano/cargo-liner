@@ -1254,6 +1254,32 @@ fn focused_toasts_without_action_falls_through_to_app_globals() {
 }
 
 #[test]
+fn enter_on_focused_toast_with_action_dispatches() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.config.current_mut().tui.editor = "/definitely/missing/cargo-port-editor".to_string();
+    let action_path =
+        crate::project::AbsolutePath::from(std::path::PathBuf::from("/tmp/cargo-port-keymap.toml"));
+    let _ = app.framework.toasts.push_with_action(
+        "Keymap errors",
+        "bad binding",
+        crate::tui::app::CargoPortToastAction::OpenPath(action_path),
+    );
+    app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
+
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+
+    assert!(
+        app.framework
+            .toasts
+            .active_now()
+            .iter()
+            .any(|toast| toast.title() == "Toast action failed"),
+        "Enter on a focused toast with an action should dispatch the cargo-port toast action"
+    );
+}
+
+#[test]
 fn focused_package_bar_nav_region_renders_arrow_keys() {
     // Phase 14.7 locks the framework's nav-region rendering for a
     // focused Mode::Navigable pane. The nav region surfaces the

@@ -59,7 +59,6 @@ pub(super) use crate::tui::project_list::ExpandKey;
 use crate::tui::project_list::ProjectList;
 pub(super) use crate::tui::project_list::VisibleRow;
 use crate::tui::test_support as tui_test_support;
-use crate::tui::toasts::ToastManager;
 
 mod background;
 mod discovery_shimmer;

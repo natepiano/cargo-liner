@@ -25,6 +25,7 @@ mod pane_action_region;
 mod region;
 mod slot;
 mod status_bar;
+mod status_line;
 mod support;
 mod visibility;
 
@@ -33,6 +34,11 @@ pub use region::BarRegion;
 pub use slot::BarSlot;
 pub use slot::ShortcutState;
 pub use status_bar::StatusBar;
+pub use status_line::StatusLine;
+pub use status_line::StatusLineGlobal;
+pub use status_line::StatusLineGlobalAction;
+pub use status_line::render as render_status_line;
+pub use status_line::status_line_global_spans;
 pub use visibility::Visibility;
 
 use crate::Action;

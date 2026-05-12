@@ -15,9 +15,11 @@ use ratatui::widgets::Paragraph;
 use tui_pane::BarPalette;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
-use tui_pane::KeyBind;
 use tui_pane::ShortcutState;
-use tui_pane::render_status_bar as render_framework_status_bar;
+use tui_pane::StatusLine;
+use tui_pane::StatusLineGlobal;
+use tui_pane::render_status_line as render_framework_status_line;
+use tui_pane::render_toasts;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
@@ -48,7 +50,6 @@ use super::panes::Panes;
 use super::panes::RenderStyles;
 use super::popup::PopupFrame;
 use super::settings;
-use super::toasts;
 use crate::ci::CiStatus;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -149,14 +150,20 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     app.layout_cache.tiled = tiled;
 
     render_status_bar(frame, app, outer_layout[1]);
-    let toast_result = toasts::render_toasts(
+    let toast_settings = app.framework.toast_settings();
+    let active_toasts = app
+        .framework
+        .toasts
+        .active_views(std::time::Instant::now(), toast_settings);
+    let toast_result = render_toasts(
         frame,
         outer_layout[0],
-        &app.toasts.active_now(),
+        &active_toasts,
+        toast_settings,
         app.focus_is(PaneId::Toasts),
-        app.toasts.focused_toast_id(),
+        app.framework.toasts.focused_toast_id(),
     );
-    app.toasts.set_hits(toast_result.hitboxes);
+    app.framework.toasts.set_hits(toast_result.hitboxes);
 
     if app.framework.overlay() == Some(FrameworkOverlayId::Settings) {
         settings::render_settings_popup(frame, app);
@@ -492,7 +499,7 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &st
 }
 
 /// Palette wiring `ACCENT_COLOR` / `SECONDARY_TEXT_COLOR` / `Modifier::BOLD`
-/// to the framework bar so the new `tui_pane::render_status_bar` output
+/// to the framework bar so the new `tui_pane::render_status_line` output
 /// matches cargo-port's pre-refactor key/label styling. The framework
 /// ships a theme-neutral [`tui_pane::BarPalette::default`]; cargo-port
 /// supplies its own colors here.
@@ -505,6 +512,12 @@ pub(super) fn cargo_port_bar_palette() -> BarPalette {
         .add_modifier(Modifier::BOLD);
     let disabled_label_style = Style::default().fg(SECONDARY_TEXT_COLOR);
     BarPalette {
+        status_line_style: Style::default().bg(STATUS_BAR_COLOR).fg(Color::White),
+        status_activity_style: enabled_key_style,
+        status_label_style: Style::default()
+            .fg(TITLE_COLOR)
+            .add_modifier(Modifier::BOLD),
+        status_value_style: Style::default().fg(Color::White),
         enabled_key_style,
         enabled_label_style: Style::default(),
         disabled_key_style,
@@ -513,42 +526,7 @@ pub(super) fn cargo_port_bar_palette() -> BarPalette {
     }
 }
 
-fn push_status_slot(
-    spans: &mut Vec<Span<'static>>,
-    key: Option<KeyBind>,
-    label: &'static str,
-    state: ShortcutState,
-    palette: &BarPalette,
-) {
-    let Some(key) = key else {
-        return;
-    };
-    if !spans.is_empty() {
-        spans.push(Span::styled("  ", palette.separator_style));
-    }
-    let (key_style, label_style) = match state {
-        ShortcutState::Enabled => (palette.enabled_key_style, palette.enabled_label_style),
-        ShortcutState::Disabled => (palette.disabled_key_style, palette.disabled_label_style),
-    };
-    spans.push(Span::styled(format!(" {}", key.display_short()), key_style));
-    spans.push(Span::styled(format!(" {label}"), label_style));
-}
-
-fn app_global_key(app: &App, action: AppGlobalAction) -> Option<KeyBind> {
-    app.framework_keymap
-        .globals::<AppGlobalAction>()?
-        .key_for(action)
-        .copied()
-}
-
-fn framework_global_key(app: &App, action: FrameworkGlobalAction) -> Option<KeyBind> {
-    app.framework_keymap
-        .framework_globals()
-        .key_for(action)
-        .copied()
-}
-
-fn cargo_port_global_spans(app: &App, palette: &BarPalette) -> Vec<Span<'static>> {
+fn cargo_port_status_line_globals(app: &App) -> [StatusLineGlobal<AppGlobalAction>; 8] {
     let selected_project_is_deleted = app.project_list.selected_project_is_deleted();
     let terminal_command_configured = !app.config.terminal_command().trim().is_empty();
     let editor_state = if selected_project_is_deleted {
@@ -561,84 +539,29 @@ fn cargo_port_global_spans(app: &App, palette: &BarPalette) -> Vec<Span<'static>
     } else {
         ShortcutState::Disabled
     };
-    let mut spans = Vec::new();
-    push_status_slot(
-        &mut spans,
-        app_global_key(app, AppGlobalAction::Find),
-        "find",
-        ShortcutState::Enabled,
-        palette,
-    );
-    push_status_slot(
-        &mut spans,
-        app_global_key(app, AppGlobalAction::OpenEditor),
-        "editor",
-        editor_state,
-        palette,
-    );
-    push_status_slot(
-        &mut spans,
-        app_global_key(app, AppGlobalAction::OpenTerminal),
-        "terminal",
-        terminal_state,
-        palette,
-    );
-    push_status_slot(
-        &mut spans,
-        framework_global_key(app, FrameworkGlobalAction::OpenSettings),
-        "settings",
-        ShortcutState::Enabled,
-        palette,
-    );
-    push_status_slot(
-        &mut spans,
-        framework_global_key(app, FrameworkGlobalAction::OpenKeymap),
-        "keymap",
-        ShortcutState::Enabled,
-        palette,
-    );
-    push_status_slot(
-        &mut spans,
-        app_global_key(app, AppGlobalAction::Rescan),
-        "rescan",
-        ShortcutState::Enabled,
-        palette,
-    );
-    push_status_slot(
-        &mut spans,
-        framework_global_key(app, FrameworkGlobalAction::Quit),
-        "quit",
-        ShortcutState::Enabled,
-        palette,
-    );
-    push_status_slot(
-        &mut spans,
-        framework_global_key(app, FrameworkGlobalAction::Restart),
-        "restart",
-        ShortcutState::Enabled,
-        palette,
-    );
-    spans
-}
-
-fn cargo_port_right_spans(
-    app: &App,
-    framework_global_spans: &[Span<'static>],
-    palette: &BarPalette,
-) -> Vec<Span<'static>> {
-    if framework_global_spans.is_empty() {
-        Vec::new()
-    } else {
-        cargo_port_global_spans(app, palette)
-    }
+    [
+        StatusLineGlobal::app(AppGlobalAction::Find),
+        StatusLineGlobal::app(AppGlobalAction::OpenEditor).with_state(editor_state),
+        StatusLineGlobal::app(AppGlobalAction::OpenTerminal).with_state(terminal_state),
+        StatusLineGlobal::framework(FrameworkGlobalAction::OpenSettings),
+        StatusLineGlobal::framework(FrameworkGlobalAction::OpenKeymap),
+        StatusLineGlobal::app(AppGlobalAction::Rescan),
+        StatusLineGlobal::framework(FrameworkGlobalAction::Quit),
+        StatusLineGlobal::framework(FrameworkGlobalAction::Restart),
+    ]
 }
 
 #[cfg(test)]
 pub(super) fn cargo_port_global_text_for_test(app: &App) -> String {
-    cargo_port_global_spans(app, &BarPalette::default())
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect()
+    let globals = cargo_port_status_line_globals(app);
+    tui_pane::status_line_global_spans::<App, AppGlobalAction>(
+        &app.framework_keymap,
+        &globals,
+        &BarPalette::default(),
+    )
+    .iter()
+    .map(|span| span.content.as_ref())
+    .collect()
 }
 
 #[cfg(test)]
@@ -646,100 +569,29 @@ pub(super) fn cargo_port_right_text_for_test(
     app: &App,
     framework_global_spans: &[Span<'static>],
 ) -> String {
-    cargo_port_right_spans(app, framework_global_spans, &BarPalette::default())
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect()
+    if framework_global_spans.is_empty() {
+        String::new()
+    } else {
+        cargo_port_global_text_for_test(app)
+    }
 }
 
 pub(super) fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let bar_style = Style::default().bg(STATUS_BAR_COLOR).fg(Color::White);
-
-    // Fill the entire bar with the background color
-    frame.render_widget(Paragraph::new("").style(bar_style), area);
-
-    let framework_bar = render_framework_status_bar(
-        app.framework.focused(),
+    let globals = cargo_port_status_line_globals(app);
+    let status = StatusLine::new(
+        app.animation_started.elapsed().as_secs(),
+        !app.scan.is_complete(),
+        &globals,
+    );
+    render_framework_status_line::<App, AppGlobalAction>(
+        frame,
+        area,
         app,
         &app.framework_keymap,
         &app.framework,
         &cargo_port_bar_palette(),
+        &status,
     );
-
-    let mut left_spans = Vec::new();
-    if !app.scan.is_complete() {
-        let key_style = Style::default()
-            .fg(ACCENT_COLOR)
-            .add_modifier(Modifier::BOLD);
-        left_spans.push(Span::styled(" ⟳ scanning… ", key_style));
-    }
-    let uptime_secs = app.animation_started.elapsed().as_secs();
-    let uptime_label_style = Style::default()
-        .fg(TITLE_COLOR)
-        .add_modifier(Modifier::BOLD);
-    let uptime_value_style = Style::default().fg(Color::White);
-    left_spans.push(Span::styled(" Uptime: ", uptime_label_style));
-    left_spans.push(Span::styled(
-        format!("{} ", super::duration_fmt::format_progressive(uptime_secs)),
-        uptime_value_style,
-    ));
-    left_spans.extend(framework_bar.nav);
-
-    let center_spans = framework_bar.pane_action;
-    let right_spans = cargo_port_right_spans(app, &framework_bar.global, &cargo_port_bar_palette());
-
-    let total_width = area.width as usize;
-    let left_width = left_spans.iter().map(Span::width).sum::<usize>();
-    let center_width = center_spans.iter().map(Span::width).sum::<usize>();
-    let right_width = right_spans.iter().map(Span::width).sum::<usize>();
-
-    // Left section
-    if !left_spans.is_empty() {
-        let left_area = Rect {
-            x:      area.x,
-            y:      area.y,
-            width:  area.width,
-            height: 1,
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(left_spans)).style(bar_style),
-            left_area,
-        );
-    }
-
-    // Center section
-    if !center_spans.is_empty() {
-        let center_start = total_width.saturating_sub(center_width) / 2;
-        // Only render if it doesn't overlap with the left section
-        if center_start >= left_width {
-            let center_area = Rect {
-                x:      area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
-                y:      area.y,
-                width:  u16::try_from((total_width - center_start).min(center_width + 1))
-                    .unwrap_or(u16::MAX),
-                height: 1,
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(center_spans)).style(bar_style),
-                center_area,
-            );
-        }
-    }
-
-    // Right section
-    if !right_spans.is_empty() {
-        let right_start = total_width.saturating_sub(right_width + 1);
-        let right_area = Rect {
-            x:      area.x + u16::try_from(right_start).unwrap_or(u16::MAX),
-            y:      area.y,
-            width:  u16::try_from(right_width + 1).unwrap_or(u16::MAX),
-            height: 1,
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(right_spans)).style(bar_style),
-            right_area,
-        );
-    }
 }
 
 #[cfg(test)]

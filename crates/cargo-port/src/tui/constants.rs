@@ -14,10 +14,6 @@ pub(super) const FINDER_POPUP_HEIGHT: u16 = 28;
 pub(super) const SETTINGS_POPUP_WIDTH: u16 = 90;
 pub(super) const CONFIRM_DIALOG_HEIGHT: u16 = 3;
 pub(super) const CI_TIMESTAMP_WIDTH: u16 = 16;
-pub(super) const TOAST_WIDTH: u16 = 50;
-pub(super) const TOAST_GAP: u16 = 0;
-/// Milliseconds between each line reveal/collapse during toast animation.
-pub(super) const TOAST_LINE_REVEAL_MS: u64 = 150;
 
 pub(super) const MAX_FINDER_RESULTS: usize = 50;
 
@@ -43,8 +39,6 @@ pub(super) const COLUMN_HEADER_COLOR: Color = Color::Rgb(150, 190, 180);
 pub(super) const DISCOVERY_SHIMMER_COLOR: Color = Color::Rgb(150, 210, 255);
 /// Error text, failure icons, broken worktree backgrounds, error toasts.
 pub(super) const ERROR_COLOR: Color = Color::Red;
-/// Warning toasts and warning-oriented inline alerts.
-pub(super) const WARNING_COLOR: Color = Color::Yellow;
 /// Inline errors shown on selected settings rows where `ERROR_COLOR`
 /// clashes with the selection highlight background.
 pub(super) const INLINE_ERROR_COLOR: Color = Color::Yellow;

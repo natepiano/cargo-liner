@@ -3,6 +3,8 @@ use std::path::Path;
 use std::thread;
 use std::time::Instant;
 
+use tui_pane::TrackedItem;
+
 use crate::ci;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
@@ -16,7 +18,6 @@ use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
 use crate::tui::app::App;
 use crate::tui::constants::STARTUP_PHASE_GITHUB;
-use crate::tui::toasts::TrackedItem;
 
 impl App {
     pub(super) fn spawn_repo_fetch_for_git_info(&mut self, path: &Path, repo_url: &str) {
@@ -115,7 +116,8 @@ impl App {
                 .unwrap_or_else(|| AbsolutePath::from(path));
             self.startup.git.seen.insert(git_dir.clone());
             if let Some(git_toast) = self.startup.git.toast {
-                self.toasts
+                self.framework
+                    .toasts
                     .mark_tracked_item_completed(git_toast, &git_dir.to_string());
             }
             self.maybe_log_startup_phase_completions();
@@ -230,7 +232,7 @@ impl App {
             self.startup.complete_at = None;
             if let Some(toast) = self.startup.toast {
                 let linger = self.framework.toast_settings().task_linger.get();
-                self.toasts.add_new_tracked_items(
+                self.framework.toasts.add_new_tracked_items(
                     toast,
                     &[TrackedItem {
                         label:        STARTUP_PHASE_GITHUB.to_string(),
@@ -240,8 +242,8 @@ impl App {
                     }],
                     linger,
                 );
-                let toast_len = self.toasts.active_now().len();
-                self.toasts.viewport.set_len(toast_len);
+                let toast_len = self.framework.toasts.active_now().len();
+                self.framework.toasts.viewport.set_len(toast_len);
             }
         }
         self.sync_running_repo_fetch_toast();

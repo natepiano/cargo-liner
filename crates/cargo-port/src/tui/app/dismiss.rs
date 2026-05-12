@@ -1,3 +1,5 @@
+use tui_pane::ToastId;
+
 use super::App;
 use crate::project::AbsolutePath;
 use crate::project::Visibility::Dismissed;
@@ -8,7 +10,7 @@ use crate::tui::panes::PaneId;
 /// Identifies what is being dismissed by a `GlobalAction::Dismiss`.
 #[derive(Clone, Debug)]
 pub enum DismissTarget {
-    Toast(u64),
+    Toast(ToastId),
     DeletedProject(AbsolutePath),
 }
 
@@ -18,7 +20,11 @@ impl App {
     /// Resolve the currently focused pane into a dismiss target, if one exists.
     pub fn focused_dismiss_target(&self) -> Option<DismissTarget> {
         match self.focused_pane_id() {
-            PaneId::Toasts => self.toasts.focused_toast_id().map(DismissTarget::Toast),
+            PaneId::Toasts => self
+                .framework
+                .toasts
+                .focused_toast_id()
+                .map(DismissTarget::Toast),
             PaneId::ProjectList => self
                 .project_list
                 .selected_row()

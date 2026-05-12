@@ -29,7 +29,8 @@ impl App {
         // All startup lint statuses collected — compute cache size once.
         self.refresh_lint_cache_usage_from_disk();
         if let Some(toast) = self.startup.toast {
-            self.toasts
+            self.framework
+                .toasts
                 .mark_tracked_item_completed(toast, STARTUP_PHASE_LINT);
         }
         // If core startup already finished, now finish the startup toast.

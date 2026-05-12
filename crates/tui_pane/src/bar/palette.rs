@@ -20,18 +20,26 @@ use ratatui::style::Style;
 /// `enabled_*` vs `disabled_*` per slot at emit time.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BarPalette {
+    /// Base style for the full status-line background fill.
+    pub status_line_style:     Style,
+    /// Style applied to status activity text such as `"scanning"`.
+    pub status_activity_style: Style,
+    /// Style applied to status labels such as `"Uptime:"`.
+    pub status_label_style:    Style,
+    /// Style applied to status values such as the uptime duration.
+    pub status_value_style:    Style,
     /// Style applied to the key span (e.g. `" Enter"`) when the slot's
     /// state is [`ShortcutState::Enabled`](super::ShortcutState).
-    pub enabled_key_style:    Style,
+    pub enabled_key_style:     Style,
     /// Style applied to the label span (e.g. `" activate"`) when the
     /// slot's state is [`ShortcutState::Enabled`](super::ShortcutState).
-    pub enabled_label_style:  Style,
+    pub enabled_label_style:   Style,
     /// Style applied to the key span when the slot's state is
     /// [`ShortcutState::Disabled`](super::ShortcutState).
-    pub disabled_key_style:   Style,
+    pub disabled_key_style:    Style,
     /// Style applied to the label span when the slot's state is
     /// [`ShortcutState::Disabled`](super::ShortcutState).
-    pub disabled_label_style: Style,
+    pub disabled_label_style:  Style,
     /// Style applied to the inter-slot separator (`"  "`).
-    pub separator_style:      Style,
+    pub separator_style:       Style,
 }

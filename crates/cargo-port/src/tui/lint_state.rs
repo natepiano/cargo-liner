@@ -229,8 +229,9 @@ impl Hittable for Lint {
 
 #[cfg(test)]
 mod tests {
+    use tui_pane::ToastTaskId;
+
     use super::*;
-    use crate::tui::toasts::ToastTaskId;
 
     #[test]
     fn new_starts_with_no_runtime_and_empty_inflight() {
@@ -244,10 +245,7 @@ mod tests {
     fn running_toast_round_trip() {
         let mut lint = Lint::new(None);
         lint.running_mut().toast = Some(ToastTaskId(7));
-        assert_eq!(
-            lint.running().toast,
-            Some(crate::tui::toasts::ToastTaskId(7))
-        );
+        assert_eq!(lint.running().toast, Some(tui_pane::ToastTaskId(7)));
         lint.running_mut().toast = None;
         assert!(lint.running().toast.is_none());
     }

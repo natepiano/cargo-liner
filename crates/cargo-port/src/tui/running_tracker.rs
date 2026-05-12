@@ -19,9 +19,9 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::time::Instant;
 
-use super::toasts::ToastTaskId;
-use super::toasts::TrackedItem;
-use super::toasts::TrackedItemKey;
+use tui_pane::ToastTaskId;
+use tui_pane::TrackedItem;
+use tui_pane::TrackedItemKey;
 
 pub struct RunningTracker<K: Eq + Hash> {
     pub running: HashMap<K, Instant>,

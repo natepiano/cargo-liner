@@ -20,6 +20,8 @@
 
 use std::collections::HashSet;
 
+use tui_pane::ToastId;
+
 use super::running_tracker::RunningTracker;
 use crate::ci::OwnerRepo;
 use crate::http::GitHubRateLimit;
@@ -48,7 +50,7 @@ impl AvailabilityStatus {
 pub struct ServiceAvailability {
     status:            AvailabilityStatus,
     retry_active:      bool,
-    unavailable_toast: Option<u64>,
+    unavailable_toast: Option<ToastId>,
 }
 
 impl ServiceAvailability {
@@ -70,7 +72,7 @@ impl ServiceAvailability {
     /// caller should dismiss that toast and fire the recovery message.
     /// Subsequent `Reachable` signals while already reachable return
     /// `None`, so the recovery toast only fires once per outage.
-    pub const fn mark_reachable(&mut self) -> Option<u64> {
+    pub const fn mark_reachable(&mut self) -> Option<ToastId> {
         let was_unavailable = !matches!(self.status, AvailabilityStatus::Reachable);
         self.status = AvailabilityStatus::Reachable;
         if was_unavailable {
@@ -109,16 +111,16 @@ impl ServiceAvailability {
     /// before assuming a toast is still visible — the user may have
     /// dismissed it out-of-band, in which case the id refers to a
     /// toast that no longer exists.
-    pub const fn toast_id(&self) -> Option<u64> { self.unavailable_toast }
+    pub const fn toast_id(&self) -> Option<ToastId> { self.unavailable_toast }
 
-    pub const fn set_toast(&mut self, id: u64) { self.unavailable_toast = Some(id); }
+    pub const fn set_toast(&mut self, id: ToastId) { self.unavailable_toast = Some(id); }
 
     /// Clear all unavailability state and consume the stored toast id
     /// if any. `Some(id)` signals the caller to dismiss the error
     /// toast and push a transient "available" info toast; `None`
     /// means the recovery was for a service we never toast-signalled
     /// as down, so the caller should stay silent.
-    pub const fn mark_recovered(&mut self) -> Option<u64> {
+    pub const fn mark_recovered(&mut self) -> Option<ToastId> {
         self.status = AvailabilityStatus::Reachable;
         self.retry_active = false;
         self.unavailable_toast.take()

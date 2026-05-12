@@ -58,7 +58,6 @@ use crate::tui::settings;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
-use crate::tui::toasts::ToastManager;
 use crate::watcher;
 use crate::watcher::WatcherMsg;
 
@@ -257,7 +256,6 @@ impl AppBuilder<Started> {
             confirm: None,
             animation_started: Instant::now(),
             mouse_pos: None,
-            toasts: ToastManager::default(),
             layout_cache: crate::tui::panes::LayoutCache::default(),
             framework,
             framework_keymap: Rc::new(framework_keymap),

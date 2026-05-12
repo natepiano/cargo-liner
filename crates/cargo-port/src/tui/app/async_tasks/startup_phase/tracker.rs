@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use tui_pane::TrackedItem;
+
 use crate::perf_log;
 use crate::project;
 use crate::tui::app::App;
@@ -12,7 +14,6 @@ use crate::tui::constants::STARTUP_PHASE_GIT;
 use crate::tui::constants::STARTUP_PHASE_GITHUB;
 use crate::tui::constants::STARTUP_PHASE_LINT;
 use crate::tui::constants::STARTUP_PHASE_METADATA;
-use crate::tui::toasts::TrackedItem;
 
 impl Startup {
     pub(super) fn log_phase_plan(&self) {
@@ -111,7 +112,7 @@ impl App {
                 completed_at: None,
             },
         ];
-        let task_id = self.toasts.start_task("Startup", "");
+        let task_id = self.framework.toasts.start_task("Startup", "");
         self.set_task_tracked_items(task_id, &startup_items);
         self.startup.toast = Some(task_id);
     }
@@ -122,8 +123,13 @@ impl App {
                 .disk
                 .tracked_items(|p| project::home_relative_path(p.as_path()));
             if !disk_items.is_empty() {
-                let body = self.startup.disk_toast_body();
-                let task_id = self.toasts.start_task("Calculating disk usage", &body);
+                let body = self
+                    .startup
+                    .disk_toast_body(self.framework.toast_settings());
+                let task_id = self
+                    .framework
+                    .toasts
+                    .start_task("Calculating disk usage", &body);
                 self.set_task_tracked_items(task_id, &disk_items);
                 self.startup.disk.toast = Some(task_id);
             }
@@ -135,8 +141,11 @@ impl App {
                 .git
                 .tracked_items(|p| project::home_relative_path(p.as_path()));
             if !git_items.is_empty() {
-                let body = self.startup.git_toast_body();
-                let task_id = self.toasts.start_task("Scanning local git repos", &body);
+                let body = self.startup.git_toast_body(self.framework.toast_settings());
+                let task_id = self
+                    .framework
+                    .toasts
+                    .start_task("Scanning local git repos", &body);
                 self.set_task_tracked_items(task_id, &git_items);
                 self.startup.git.toast = Some(task_id);
             }
@@ -147,8 +156,13 @@ impl App {
                 .metadata
                 .tracked_items(|p| project::home_relative_path(p.as_path()));
             if !metadata_items.is_empty() {
-                let body = self.startup.metadata_toast_body();
-                let task_id = self.toasts.start_task("Running cargo metadata", &body);
+                let body = self
+                    .startup
+                    .metadata_toast_body(self.framework.toast_settings());
+                let task_id = self
+                    .framework
+                    .toasts
+                    .start_task("Running cargo metadata", &body);
                 self.set_task_tracked_items(task_id, &metadata_items);
                 self.startup.metadata.toast = Some(task_id);
             }
@@ -177,7 +191,8 @@ impl App {
             self.finish_task_toast(disk_toast);
         }
         if let Some(toast) = self.startup.toast {
-            self.toasts
+            self.framework
+                .toasts
                 .mark_tracked_item_completed(toast, STARTUP_PHASE_DISK);
         }
         tracing::info!(
@@ -197,7 +212,8 @@ impl App {
             self.finish_task_toast(git_toast);
         }
         if let Some(toast) = self.startup.toast {
-            self.toasts
+            self.framework
+                .toasts
                 .mark_tracked_item_completed(toast, STARTUP_PHASE_GIT);
         }
         tracing::info!(
@@ -223,7 +239,8 @@ impl App {
             return;
         }
         if let Some(toast) = self.startup.toast {
-            self.toasts
+            self.framework
+                .toasts
                 .mark_tracked_item_completed(toast, STARTUP_PHASE_GITHUB);
         }
         tracing::info!(
@@ -247,7 +264,8 @@ impl App {
             self.finish_task_toast(metadata_toast);
         }
         if let Some(toast) = self.startup.toast {
-            self.toasts
+            self.framework
+                .toasts
                 .mark_tracked_item_completed(toast, STARTUP_PHASE_METADATA);
         }
         tracing::info!(

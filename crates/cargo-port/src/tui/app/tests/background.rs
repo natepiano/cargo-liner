@@ -259,7 +259,7 @@ fn successful_request_dismisses_stuck_unreachable_toast() {
         .availability
         .toast_id()
         .expect("first unreachable signal pushes a toast");
-    assert!(app.toasts.is_alive(toast_id));
+    assert!(app.framework.toasts.is_alive(toast_id));
     assert!(app.net.github.availability.is_unavailable());
 
     app.handle_bg_msg(BackgroundMsg::ServiceReachable {
@@ -270,7 +270,7 @@ fn successful_request_dismisses_stuck_unreachable_toast() {
         "reachable signal should flip status back to available"
     );
     assert!(
-        !app.toasts.is_alive(toast_id),
+        !app.framework.toasts.is_alive(toast_id),
         "reachable signal must dismiss the persistent unreachable toast"
     );
 }
@@ -300,7 +300,7 @@ fn unreachable_toast_reappears_after_user_dismissal() {
     std::thread::sleep(std::time::Duration::from_millis(1500));
     app.prune_toasts();
     assert!(
-        !app.toasts.is_alive(toast_id),
+        !app.framework.toasts.is_alive(toast_id),
         "dismissed toast should no longer be alive after exit animation"
     );
 
@@ -320,7 +320,7 @@ fn unreachable_toast_reappears_after_user_dismissal() {
         "a fresh toast should be pushed with a new id"
     );
     assert!(
-        app.toasts.is_alive(new_id),
+        app.framework.toasts.is_alive(new_id),
         "the new toast should be visible"
     );
 }

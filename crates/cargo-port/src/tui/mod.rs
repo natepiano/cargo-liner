@@ -29,7 +29,7 @@ mod settings;
 mod terminal;
 #[cfg(test)]
 mod test_support;
-mod toasts;
+mod toast_adapters;
 mod watched_file;
 
 pub use animation::Icon;

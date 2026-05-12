@@ -1,10 +1,12 @@
 use std::collections::HashSet;
 
+use tui_pane::ToastTaskId;
+use tui_pane::TrackedItem;
+use tui_pane::format_toast_items;
+use tui_pane::toast_body_width;
+
 use crate::project;
 use crate::tui::app::App;
-use crate::tui::toasts;
-use crate::tui::toasts::ToastTaskId;
-use crate::tui::toasts::TrackedItem;
 
 impl App {
     pub fn sync_running_clean_toast(&mut self) {
@@ -48,10 +50,12 @@ impl App {
         if running_items.is_empty() {
             if let Some(task_id) = toast_slot {
                 let empty: HashSet<String> = HashSet::new();
-                self.toasts.complete_missing_items(task_id, &empty);
-                if !self.toasts.is_task_finished(task_id) {
+                self.framework
+                    .toasts
+                    .complete_missing_items(task_id, &empty);
+                if !self.framework.toasts.is_task_finished(task_id) {
                     let linger = self.framework.toast_settings().task_linger.get();
-                    self.toasts.finish_task(task_id, linger);
+                    self.framework.toasts.finish_task(task_id, linger);
                 }
             }
             return toast_slot;
@@ -63,23 +67,28 @@ impl App {
             .collect();
 
         if let Some(task_id) = toast_slot
-            && self.toasts.reactivate_task(task_id)
+            && self.framework.toasts.reactivate_task(task_id)
         {
-            self.toasts.complete_missing_items(task_id, &running_keys);
+            self.framework
+                .toasts
+                .complete_missing_items(task_id, &running_keys);
             let linger = self.framework.toast_settings().task_linger.get();
-            self.toasts
+            self.framework
+                .toasts
                 .add_new_tracked_items(task_id, running_items, linger);
             for item in running_items {
                 if let Some(started) = item.started_at {
-                    self.toasts
+                    self.framework
+                        .toasts
                         .restart_tracked_item(task_id, &item.key, started);
                 }
             }
             Some(task_id)
         } else {
             let labels: Vec<&str> = running_items.iter().map(|i| i.label.as_str()).collect();
-            let body = toasts::format_toast_items(&labels, toasts::toast_body_width());
-            let task_id = self.toasts.start_task(title, body);
+            let width = toast_body_width(self.framework.toast_settings());
+            let body = format_toast_items(&labels, width);
+            let task_id = self.framework.toasts.start_task(title, body);
             self.set_task_tracked_items(task_id, running_items);
             Some(task_id)
         }

@@ -1551,7 +1551,8 @@ fn fake_metadata(workspace_root: &AbsolutePath) -> WorkspaceMetadata {
 }
 
 fn metadata_toast_items(app: &App) -> Vec<String> {
-    app.toasts
+    app.framework
+        .toasts
         .active_now()
         .iter()
         .find(|toast| toast.title() == "Running cargo metadata")
@@ -1714,6 +1715,7 @@ fn failed_metadata_arrival_surfaces_error_toast() {
     });
 
     let error_toast_present = app
+        .framework
         .toasts
         .active_now()
         .iter()
@@ -1754,7 +1756,7 @@ fn cargo_metadata_workspace_missing_does_not_raise_toast() {
         .expect("store")
         .next_generation(&workspace_root);
 
-    let toasts_before = app.toasts.active_now().len();
+    let toasts_before = app.framework.toasts.active_now().len();
     app.handle_bg_msg(BackgroundMsg::CargoMetadata {
         workspace_root: workspace_root.clone(),
         generation,
@@ -1763,7 +1765,7 @@ fn cargo_metadata_workspace_missing_does_not_raise_toast() {
     });
 
     assert_eq!(
-        app.toasts.active_now().len(),
+        app.framework.toasts.active_now().len(),
         toasts_before,
         "WorkspaceMissing must not add any toast"
     );

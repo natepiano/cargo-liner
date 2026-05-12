@@ -30,12 +30,15 @@ use tui_pane::Bindings;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::FrameworkFocusId;
+use tui_pane::GlobalAction;
 use tui_pane::Globals;
 use tui_pane::Keymap;
 use tui_pane::Navigation;
 use tui_pane::Pane;
 use tui_pane::Shortcuts;
+use tui_pane::StatusLineGlobal;
 use tui_pane::render_status_bar;
+use tui_pane::status_line_global_spans;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum AppPaneId {
@@ -215,6 +218,26 @@ fn render_status_bar_navigable_pane_shows_every_region() {
 }
 
 #[test]
+fn status_line_global_spans_follow_supplied_policy_order() {
+    let (_app, keymap) = fresh(FocusedPane::App(AppPaneId::Project));
+    let globals = [
+        StatusLineGlobal::app(AppGlobalAction::Find),
+        StatusLineGlobal::framework(GlobalAction::OpenSettings),
+        StatusLineGlobal::framework(GlobalAction::Quit),
+    ];
+
+    let spans =
+        status_line_global_spans::<App, AppGlobals>(&keymap, &globals, &BarPalette::default());
+    let global = flatten(&spans);
+
+    assert_contains_in_order(&global, &["find", "settings", "quit"]);
+    assert!(
+        !global.contains("dismiss"),
+        "status-line policy omitted Dismiss, so renderer must not add it (got {global:?})",
+    );
+}
+
+#[test]
 fn render_status_bar_focused_toasts_renders_dismiss_in_global() {
     let (mut app, keymap) = fresh(FocusedPane::Framework(FrameworkFocusId::Toasts));
     let _ = app.framework_mut().toasts.push("Build done", "ok");
@@ -237,6 +260,16 @@ fn render_status_bar_focused_toasts_renders_dismiss_in_global() {
         global.contains("dismiss"),
         "Toast focus must show GlobalAction::Dismiss (got {global:?})",
     );
+}
+
+fn assert_contains_in_order(text: &str, needles: &[&str]) {
+    let mut start = 0;
+    for needle in needles {
+        let Some(offset) = text[start..].find(needle) else {
+            panic!("expected {needle:?} after byte {start} in {text:?}");
+        };
+        start += offset + needle.len();
+    }
 }
 
 #[test]

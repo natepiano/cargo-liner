@@ -1,3 +1,8 @@
+#![expect(
+    clippy::must_use_candidate,
+    reason = "Phase 26 moves the existing formatting helper before public API polish"
+)]
+
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
@@ -112,7 +117,9 @@ fn truncate_to_width(text: &str, target_width: usize, add_ellipsis: bool) -> Str
 mod tests {
     use super::*;
 
-    fn width() -> usize { usize::from(crate::tui::constants::TOAST_WIDTH.saturating_sub(2)) }
+    fn width() -> usize {
+        crate::toasts::manager::toast_body_width(&crate::ToastSettings::default())
+    }
 
     #[test]
     fn single_short_item_unchanged() {
@@ -175,7 +182,7 @@ mod tests {
 
     #[test]
     fn long_paths_are_truncated_with_ellipsis() {
-        let long_path = "a".repeat(50);
+        let long_path = "a".repeat(width() + 2);
         let result = format_toast_items(&[&long_path, &long_path, &long_path, "d", "e"], width());
         let lines: Vec<&str> = result.lines().collect();
         assert_eq!(lines.len(), 5);

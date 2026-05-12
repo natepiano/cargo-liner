@@ -67,6 +67,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::layout::Position;
+use tui_pane::ToastStyle::Warning;
+use tui_pane::TrackedItem;
 
 use super::background::Background;
 use super::columns;
@@ -84,8 +86,6 @@ use super::panes::PaneId;
 use super::panes::Panes;
 use super::project_list::ProjectList;
 use super::scan_state::Scan;
-use super::toasts::ToastStyle::Warning;
-use super::toasts::TrackedItem;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
@@ -132,6 +132,7 @@ use tui_pane::Framework;
 use tui_pane::FrameworkFocusId;
 use tui_pane::GlobalAction;
 use tui_pane::Keymap as FrameworkKeymap;
+use tui_pane::ToastTaskId;
 pub(super) use types::CiRunDisplayMode;
 pub(super) use types::ConfirmAction;
 pub(super) use types::DirtyState;
@@ -158,8 +159,6 @@ pub(super) use super::project_list::ExpandKey;
 pub(super) use super::project_list::VisibleRow;
 use super::settings;
 use super::settings::SettingOption;
-use super::toasts::ToastManager;
-use super::toasts::ToastTaskId;
 use crate::project;
 use crate::project::RootItem;
 use crate::scan::MetadataDispatchContext;
@@ -236,7 +235,6 @@ pub(super) struct App {
     confirm:                      Option<ConfirmAction>,
     pub(super) animation_started: Instant,
     pub(super) mouse_pos:         Option<Position>,
-    pub(super) toasts:            ToastManager,
     /// Layout coordination cache. Computed once per draw and shared
     /// across the render path: tile layout, project-list body rect,
     /// and the row-hitbox map for click/hover dispatch. Lives on
@@ -339,20 +337,20 @@ impl App {
     pub(super) fn prune_toasts(&mut self) {
         let now = Instant::now();
         let linger = self.framework.toast_settings().task_linger.get();
-        self.toasts.prune_tracked_items(now, linger);
-        self.toasts.prune(now);
-        let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport.set_len(toast_len);
-        if self.base_focus() == PaneId::Toasts && self.toasts.active_now().is_empty() {
+        self.framework.toasts.prune_tracked_items(now, linger);
+        self.framework.toasts.prune(now);
+        let toast_len = self.framework.toasts.active_now().len();
+        self.framework.toasts.viewport.set_len(toast_len);
+        if self.base_focus() == PaneId::Toasts && self.framework.toasts.active_now().is_empty() {
             self.set_focus_to_pane(PaneId::ProjectList);
         }
     }
 
     pub(super) fn show_timed_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {
         let timeout = self.framework.toast_settings().default_timeout.get();
-        self.toasts.push_timed(title, body, timeout, 1);
-        let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport.set_len(toast_len);
+        self.framework.toasts.push_timed(title, body, timeout, 1);
+        let toast_len = self.framework.toasts.active_now().len();
+        self.framework.toasts.viewport.set_len(toast_len);
     }
 
     pub(super) fn show_timed_warning_toast(
@@ -360,32 +358,34 @@ impl App {
         title: impl Into<String>,
         body: impl Into<String>,
     ) {
-        self.toasts.push_timed_styled(
+        self.framework.toasts.push_timed_styled(
             title,
             body,
             self.framework.toast_settings().default_timeout.get(),
             1,
             Warning,
         );
-        let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport.set_len(toast_len);
+        let toast_len = self.framework.toasts.active_now().len();
+        self.framework.toasts.viewport.set_len(toast_len);
     }
 
     pub(super) fn finish_task_toast(&mut self, task_id: ToastTaskId) {
-        let linger = if self.toasts.tracked_item_count(task_id) > 0 {
+        let linger = if self.framework.toasts.tracked_item_count(task_id) > 0 {
             self.framework.toast_settings().task_linger.get()
         } else {
             Duration::ZERO
         };
-        self.toasts.finish_task(task_id, linger);
+        self.framework.toasts.finish_task(task_id, linger);
         self.prune_toasts();
     }
 
     pub(super) fn set_task_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) {
         let linger = self.framework.toast_settings().task_linger.get();
-        self.toasts.set_tracked_items(task_id, items, linger);
-        let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport.set_len(toast_len);
+        self.framework
+            .toasts
+            .set_tracked_items(task_id, items, linger);
+        let toast_len = self.framework.toasts.active_now().len();
+        self.framework.toasts.viewport.set_len(toast_len);
     }
 
     /// Begin a clean for `project_path`. Returns `true` if a cargo clean
@@ -414,8 +414,8 @@ impl App {
         self.sync_running_clean_toast();
     }
 
-    pub(super) fn dismiss_toast(&mut self, id: u64) {
-        self.toasts.dismiss(id);
+    pub(super) fn dismiss_toast(&mut self, id: tui_pane::ToastId) {
+        self.framework.toasts.dismiss(id);
         self.prune_toasts();
     }
 
@@ -858,7 +858,7 @@ impl App {
                     && self.ci.content().is_some_and(panes::CiData::has_runs)
             },
             PaneBehavior::Output => !self.inflight.example_output_is_empty(),
-            PaneBehavior::Toasts => !self.toasts.active_now().is_empty(),
+            PaneBehavior::Toasts => !self.framework.toasts.active_now().is_empty(),
             PaneBehavior::Overlay => false,
         }
     }
@@ -889,9 +889,9 @@ impl App {
         }
         let current = self.base_focus();
         if current == PaneId::Toasts
-            && self.toasts.viewport.pos() + 1 < self.toasts.active_now().len()
+            && self.framework.toasts.viewport.pos() + 1 < self.framework.toasts.active_now().len()
         {
-            self.toasts.viewport.down();
+            self.framework.toasts.viewport.down();
             self.set_focus_to_pane(PaneId::Toasts);
             return;
         }
@@ -899,7 +899,7 @@ impl App {
         let next = panes[(index + 1) % panes.len()];
         self.set_focus_to_pane(next);
         if next == PaneId::Toasts {
-            self.toasts.viewport.home();
+            self.framework.toasts.viewport.home();
         }
     }
 
@@ -911,8 +911,8 @@ impl App {
             return;
         }
         let current = self.base_focus();
-        if current == PaneId::Toasts && self.toasts.viewport.pos() > 0 {
-            self.toasts.viewport.up();
+        if current == PaneId::Toasts && self.framework.toasts.viewport.pos() > 0 {
+            self.framework.toasts.viewport.up();
             self.set_focus_to_pane(PaneId::Toasts);
             return;
         }
@@ -920,8 +920,8 @@ impl App {
         let prev = panes[(index + panes.len() - 1) % panes.len()];
         self.set_focus_to_pane(prev);
         if prev == PaneId::Toasts {
-            let last_index = self.toasts.active_now().len().saturating_sub(1);
-            self.toasts.viewport.set_pos(last_index);
+            let last_index = self.framework.toasts.active_now().len().saturating_sub(1);
+            self.framework.toasts.viewport.set_pos(last_index);
         }
     }
 
@@ -931,7 +931,7 @@ impl App {
         self.panes.targets.viewport.home();
         self.ci.viewport.home();
         self.lint.viewport.home();
-        self.toasts.viewport.home();
+        self.framework.toasts.viewport.home();
         self.visited_panes.remove(&AppPaneId::Package);
         self.visited_panes.remove(&AppPaneId::Git);
         self.visited_panes.remove(&AppPaneId::Targets);

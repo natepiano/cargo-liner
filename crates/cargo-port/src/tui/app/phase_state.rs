@@ -2,9 +2,9 @@ use std::collections::HashSet;
 use std::hash::Hash;
 use std::time::Instant;
 
-use crate::tui::toasts::ToastTaskId;
-use crate::tui::toasts::TrackedItem;
-use crate::tui::toasts::TrackedItemKey;
+use tui_pane::ToastTaskId;
+use tui_pane::TrackedItem;
+use tui_pane::TrackedItemKey;
 
 /// A phase that tracks a finite set of identities. `expected = None` is the
 /// "Unknown" state (nothing has been recorded yet); `Some(HashSet::new())` is

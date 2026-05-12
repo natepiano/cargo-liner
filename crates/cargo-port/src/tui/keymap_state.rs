@@ -9,6 +9,8 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use tui_pane::ToastId;
+
 use super::watched_file::WatchedFile;
 use crate::keymap::ResolvedKeymap;
 
@@ -16,7 +18,7 @@ use crate::keymap::ResolvedKeymap;
 /// diagnostics-toast slot.
 pub(super) struct Keymap {
     file:           WatchedFile<ResolvedKeymap>,
-    diagnostics_id: Option<u64>,
+    diagnostics_id: Option<ToastId>,
 }
 
 impl Keymap {
@@ -53,9 +55,13 @@ impl Keymap {
     /// `Result<T, String>` signature.
     pub(super) fn take_stamp_change(&mut self) -> Option<&Path> { self.file.take_stamp_change() }
 
-    pub(super) const fn set_diagnostics_id(&mut self, id: Option<u64>) { self.diagnostics_id = id; }
+    pub(super) const fn set_diagnostics_id(&mut self, id: Option<ToastId>) {
+        self.diagnostics_id = id;
+    }
 
-    pub(super) const fn take_diagnostics_id(&mut self) -> Option<u64> { self.diagnostics_id.take() }
+    pub(super) const fn take_diagnostics_id(&mut self) -> Option<ToastId> {
+        self.diagnostics_id.take()
+    }
 }
 
 #[cfg(test)]
@@ -77,9 +83,9 @@ mod tests {
     #[test]
     fn diagnostics_id_round_trip_set_take() {
         let mut keymap = Keymap::new(None, ResolvedKeymap::defaults());
-        keymap.set_diagnostics_id(Some(42));
+        keymap.set_diagnostics_id(Some(ToastId(42)));
         let taken = keymap.take_diagnostics_id();
-        assert_eq!(taken, Some(42));
+        assert_eq!(taken, Some(ToastId(42)));
         assert!(
             keymap.take_diagnostics_id().is_none(),
             "take must clear the slot"

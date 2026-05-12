@@ -6,6 +6,7 @@ use tui_pane::FocusedPane;
 use tui_pane::FrameworkFocusId;
 #[cfg(test)]
 use tui_pane::KeyBind as FrameworkKeyBind;
+use tui_pane::TrackedItem;
 
 use super::BuildMode;
 use super::CiFetchKind;
@@ -38,7 +39,6 @@ use crate::tui::framework_keymap::LangAction;
 use crate::tui::framework_keymap::NavigationAction;
 use crate::tui::input;
 use crate::tui::pane::Viewport;
-use crate::tui::toasts::TrackedItem;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
     let Some(targets_data) = app.panes.targets.content().cloned() else {
@@ -194,12 +194,12 @@ const fn navigate_ci_runs(app: &mut App, action: NavigationAction) {
 
 fn navigate_toasts(app: &mut App, action: NavigationAction) {
     match action {
-        NavigationAction::Up | NavigationAction::Left => app.toasts.viewport.up(),
-        NavigationAction::Down | NavigationAction::Right => app.toasts.viewport.down(),
-        NavigationAction::Home => app.toasts.viewport.home(),
+        NavigationAction::Up | NavigationAction::Left => app.framework.toasts.viewport.up(),
+        NavigationAction::Down | NavigationAction::Right => app.framework.toasts.viewport.down(),
+        NavigationAction::Home => app.framework.toasts.viewport.home(),
         NavigationAction::End => {
-            let last_index = app.toasts.active_now().len().saturating_sub(1);
-            app.toasts.viewport.set_pos(last_index);
+            let last_index = app.framework.toasts.active_now().len().saturating_sub(1);
+            app.framework.toasts.viewport.set_pos(last_index);
         },
     }
 }
@@ -380,7 +380,10 @@ fn handle_ci_fetch_more(app: &mut App) {
         oldest_created_at,
         kind,
     });
-    let task_id = app.toasts.start_task("Fetching CI", &project_name);
+    let task_id = app
+        .framework
+        .toasts
+        .start_task("Fetching CI", &project_name);
     let item = TrackedItem {
         label:        project_name,
         key:          ci_path.into(),

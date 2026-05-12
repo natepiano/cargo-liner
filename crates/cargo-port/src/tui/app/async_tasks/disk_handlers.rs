@@ -57,7 +57,8 @@ impl App {
         let abs = AbsolutePath::from(path);
         self.startup.disk.seen.insert(abs.clone());
         if let Some(disk_toast) = self.startup.disk.toast {
-            self.toasts
+            self.framework
+                .toasts
                 .mark_tracked_item_completed(disk_toast, &abs.to_string());
         }
         self.handle_disk_usage(path, bytes);
@@ -71,7 +72,8 @@ impl App {
         self.scan.bump_generation();
         self.startup.disk.seen.insert(root_path.clone());
         if let Some(disk_toast) = self.startup.disk.toast {
-            self.toasts
+            self.framework
+                .toasts
                 .mark_tracked_item_completed(disk_toast, &root_path.to_string());
         }
         self.handle_disk_usage_batch(entries);

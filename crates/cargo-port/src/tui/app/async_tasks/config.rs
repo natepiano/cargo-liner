@@ -1,5 +1,7 @@
 use std::time::Instant;
 
+use tui_pane::ToastStyle::Error;
+
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::http::ServiceKind;
@@ -10,11 +12,11 @@ use crate::keymap::KeymapErrorReason::Parse;
 use crate::lint;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
+use crate::tui::app::CargoPortToastAction;
 use crate::tui::config_reload;
 use crate::tui::config_reload::ReloadContext;
 use crate::tui::config_reload::TreeReaction;
 use crate::tui::keymap_ui;
-use crate::tui::toasts::ToastStyle::Error;
 
 impl App {
     pub(super) fn record_config_reload_failure(&mut self, err: &str) {
@@ -104,20 +106,20 @@ impl App {
             .path()
             .map(|p| AbsolutePath::from(p.to_path_buf()));
 
-        let id = self.toasts.push_persistent(
+        let id = self.framework.toasts.push_persistent(
             "Keymap errors (using defaults)",
             body,
             Error,
-            action_path,
+            action_path.map(CargoPortToastAction::from),
             1,
         );
         self.keymap.set_diagnostics_id(Some(id));
-        let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport.set_len(toast_len);
+        let toast_len = self.framework.toasts.active_now().len();
+        self.framework.toasts.viewport.set_len(toast_len);
     }
     pub(super) fn dismiss_keymap_diagnostics(&mut self) {
         if let Some(id) = self.keymap.take_diagnostics_id() {
-            self.toasts.dismiss(id);
+            self.framework.toasts.dismiss(id);
         }
     }
     pub fn maybe_reload_config_from_disk(&mut self) {

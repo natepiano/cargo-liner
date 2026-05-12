@@ -1,12 +1,14 @@
 use std::thread;
 use std::time::Duration;
 
+use tui_pane::ToastId;
+use tui_pane::ToastStyle::Warning;
+
 use crate::constants::SERVICE_RETRY_SECS;
 use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
 use crate::scan;
 use crate::tui::app::App;
-use crate::tui::toasts::ToastStyle::Warning;
 
 impl App {
     pub(super) fn apply_service_signal(&mut self, signal: ServiceSignal) {
@@ -31,7 +33,7 @@ impl App {
         let Some(toast_id) = self.net.availability_for(service).mark_reachable() else {
             return;
         };
-        self.toasts.dismiss(toast_id);
+        self.framework.toasts.dismiss(toast_id);
         let (title, body) = service_recovered_message(service);
         self.show_timed_toast(title, body);
     }
@@ -53,7 +55,7 @@ impl App {
         // `ServiceAvailability` still holds the id. Recheck aliveness
         // so the next unavailability signal re-pushes a fresh toast
         // instead of silently assuming one is visible.
-        let alive = prior_toast.is_some_and(|id| self.toasts.is_alive(id));
+        let alive = prior_toast.is_some_and(|id| self.framework.toasts.is_alive(id));
         if !alive {
             let toast_id = self.push_service_unavailable_toast(service, kind);
             self.net.availability_for(service).set_toast(toast_id);
@@ -63,11 +65,14 @@ impl App {
         &mut self,
         service: ServiceKind,
         kind: AvailabilityKind,
-    ) -> u64 {
+    ) -> ToastId {
         let (title, body) = service_unavailable_message(service, kind);
-        let id = self.toasts.push_persistent(title, body, Warning, None, 1);
-        let toast_len = self.toasts.active_now().len();
-        self.toasts.viewport.set_len(toast_len);
+        let id = self
+            .framework
+            .toasts
+            .push_persistent(title, body, Warning, None, 1);
+        let toast_len = self.framework.toasts.active_now().len();
+        self.framework.toasts.viewport.set_len(toast_len);
         id
     }
     pub(super) fn spawn_service_retry(&self, service: ServiceKind) {
@@ -92,7 +97,7 @@ impl App {
         let Some(toast_id) = self.net.availability_for(service).mark_recovered() else {
             return;
         };
-        self.toasts.dismiss(toast_id);
+        self.framework.toasts.dismiss(toast_id);
         let (title, body) = service_recovered_message(service);
         self.show_timed_toast(title, body);
     }

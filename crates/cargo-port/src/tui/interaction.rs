@@ -1,5 +1,4 @@
 use ratatui::layout::Position;
-use ratatui::layout::Rect;
 
 use super::app::App;
 use super::app::HoveredPaneRow;
@@ -9,16 +8,6 @@ use super::pane::HittableId;
 use super::pane::HoverTarget;
 use super::pane::Viewport;
 use super::panes::PaneId;
-
-/// Per-toast hit-test rects produced by `toasts::render_toasts`
-/// and stashed onto `ToastsPane` each frame. The `Hittable` impl
-/// on `ToastsPane` walks the list directly.
-#[derive(Clone, Copy, Debug)]
-pub struct ToastHitbox {
-    pub id:         u64,
-    pub card_rect:  Rect,
-    pub close_rect: Rect,
-}
 
 pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
     let Some(hit) = hit_test_at(app, pos) else {
@@ -39,9 +28,9 @@ pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
             true
         },
         HoverTarget::ToastCard(id) => {
-            let active = app.toasts.active_now();
+            let active = app.framework.toasts.active_now();
             if let Some(index) = active.iter().position(|toast| toast.id() == id) {
-                app.toasts.viewport.set_pos(index);
+                app.framework.toasts.viewport.set_pos(index);
                 app.set_focus_to_pane(PaneId::Toasts);
             }
             true
@@ -61,8 +50,14 @@ pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPan
 /// resolve to whichever owner holds the pane.
 pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
     for id in HITTABLE_Z_ORDER {
+        if id == HittableId::Toasts {
+            if let Some(target) = hit_test_toasts(app, pos) {
+                return Some(target);
+            }
+            continue;
+        }
         let pane: &dyn Hittable = match id {
-            HittableId::Toasts => &app.toasts,
+            HittableId::Toasts => continue,
             HittableId::Finder => &app.overlays.finder_pane,
             HittableId::Settings => &app.framework.settings_pane,
             HittableId::Keymap => &app.framework.keymap_pane,
@@ -82,6 +77,20 @@ pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
     None
 }
 
+fn hit_test_toasts(app: &App, pos: Position) -> Option<HoverTarget> {
+    for hit in app.framework.toasts.hits().iter().rev() {
+        if hit.close_rect.contains(pos) {
+            return Some(HoverTarget::Dismiss(crate::tui::app::DismissTarget::Toast(
+                hit.id,
+            )));
+        }
+        if hit.card_rect.contains(pos) {
+            return Some(HoverTarget::ToastCard(hit.id));
+        }
+    }
+    None
+}
+
 /// Set the cursor position for `id`'s viewport. Matches by `PaneId`
 /// to whichever owner holds the target viewport. `ProjectList`'s
 /// cursor lives on `Selection.cursor`; callers route through
@@ -89,6 +98,7 @@ pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
 pub(super) const fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
     match id {
         PaneId::ProjectList => {},
+        PaneId::Toasts => app.framework.toasts.viewport.set_pos(row),
         PaneId::Keymap => app.framework.keymap_pane.viewport_mut().set_pos(row),
         PaneId::Settings => app.framework.settings_pane.viewport_mut().set_pos(row),
         _ => {
@@ -102,7 +112,6 @@ pub(super) const fn set_pane_pos(app: &mut App, id: PaneId, row: usize) {
 /// Mutable viewport accessor by `PaneId`.
 pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> Option<&mut Viewport> {
     let viewport = match id {
-        PaneId::Toasts => &mut app.toasts.viewport,
         PaneId::Cpu => &mut app.panes.cpu.viewport,
         PaneId::Lang => &mut app.panes.lang.viewport,
         PaneId::Lints => &mut app.lint.viewport,
@@ -113,13 +122,14 @@ pub(super) const fn viewport_mut_for(app: &mut App, id: PaneId) -> Option<&mut V
         PaneId::Output => &mut app.panes.output.viewport,
         PaneId::Targets => &mut app.panes.targets.viewport,
         PaneId::ProjectList => &mut app.panes.project_list.viewport,
-        PaneId::Keymap | PaneId::Settings => return None,
+        PaneId::Keymap | PaneId::Settings | PaneId::Toasts => return None,
     };
     Some(viewport)
 }
 
 const fn set_hovered(app: &mut App, pane: PaneId, row: Option<usize>) {
     match pane {
+        PaneId::Toasts => app.framework.toasts.viewport.set_hovered(row),
         PaneId::Keymap => app.framework.keymap_pane.viewport_mut().set_hovered(row),
         PaneId::Settings => app.framework.settings_pane.viewport_mut().set_hovered(row),
         _ => {
@@ -141,7 +151,7 @@ pub(super) const fn apply_hovered_pane_row(app: &mut App) {
 }
 
 const fn clear_all_hover(app: &mut App) {
-    app.toasts.viewport.set_hovered(None);
+    app.framework.toasts.viewport.set_hovered(None);
     app.ci.viewport.set_hovered(None);
     app.lint.viewport.set_hovered(None);
     app.framework.keymap_pane.viewport_mut().set_hovered(None);
@@ -184,6 +194,7 @@ mod tests {
     use tui_pane::AppContext;
     use tui_pane::FocusedPane;
     use tui_pane::GlobalAction as FrameworkGlobalAction;
+    use tui_pane::ToastStyle;
 
     use super::HoveredPaneRow;
     use crate::ci::CiJob;
@@ -241,7 +252,6 @@ mod tests {
     use crate::tui::settings;
     use crate::tui::settings::SettingOption;
     use crate::tui::test_support as tui_test_support;
-    use crate::tui::toasts::ToastStyle;
 
     fn open_settings_overlay(app: &mut App) {
         let keymap = Rc::clone(&app.framework_keymap);
@@ -574,8 +584,9 @@ mod tests {
         )
     }
 
-    fn toast_close_point(app: &App, toast_id: u64) -> (u16, u16) {
+    fn toast_close_point(app: &App, toast_id: tui_pane::ToastId) -> (u16, u16) {
         let Some(rect) = app
+            .framework
             .toasts
             .hits()
             .iter()
@@ -590,8 +601,9 @@ mod tests {
         )
     }
 
-    fn toast_body_point(app: &App, toast_id: u64) -> (u16, u16) {
+    fn toast_body_point(app: &App, toast_id: tui_pane::ToastId) -> (u16, u16) {
         let Some(rect) = app
+            .framework
             .toasts
             .hits()
             .iter()
@@ -1055,21 +1067,23 @@ mod tests {
     fn toast_close_click_dismisses_toast() {
         let mut app = make_app(&[]);
         let toast_id =
-            app.toasts
+            app.framework
+                .toasts
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
-        let toast_len = app.toasts.active_now().len();
-        app.toasts.viewport.set_len(toast_len);
+        let toast_len = app.framework.toasts.active_now().len();
+        app.framework.toasts.viewport.set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_close_point(&app, toast_id);
         click(&mut app, x, y);
         let after_exit = Instant::now() + Duration::from_secs(1);
-        app.toasts.prune(after_exit);
+        app.framework.toasts.prune(after_exit);
 
         assert!(
-            app.toasts
-                .active(after_exit)
-                .into_iter()
+            app.framework
+                .toasts
+                .active_views(after_exit, &tui_pane::ToastSettings::default())
+                .iter()
                 .all(|toast| toast.id() != toast_id),
             "clicking the toast close affordance should start dismissal and let the toast exit"
         );
@@ -1083,10 +1097,11 @@ mod tests {
 
         let mut app = make_app(&[make_package("demo", &project_dir)]);
         let toast_id =
-            app.toasts
+            app.framework
+                .toasts
                 .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
-        let toast_len = app.toasts.active_now().len();
-        app.toasts.viewport.set_len(toast_len);
+        let toast_len = app.framework.toasts.active_now().len();
+        app.framework.toasts.viewport.set_len(toast_len);
         render_ui(&mut app);
 
         let (x, y) = toast_body_point(&app, toast_id);

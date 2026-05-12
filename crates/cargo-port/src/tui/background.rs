@@ -9,7 +9,7 @@
 //!
 //! Spawn / poll facade methods live on `App` (and inside
 //! [`Inflight`]) because they thread cross-subsystem dependencies
-//! (`Scan`, `Net`, `ToastManager`).
+//! (`Scan`, `Net`, framework toasts).
 //!
 //! [`Inflight`]: super::inflight::Inflight
 

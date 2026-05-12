@@ -85,7 +85,7 @@ impl App {
 
         if let Some(task_id) = self.startup.metadata.toast {
             let key = workspace_root.to_string();
-            self.toasts.mark_item_completed(task_id, &key);
+            self.framework.toasts.mark_item_completed(task_id, &key);
         }
         // Step 6e: if the user had a confirm popup waiting on this
         // workspace's re-fingerprint, clear the Verifying flag so

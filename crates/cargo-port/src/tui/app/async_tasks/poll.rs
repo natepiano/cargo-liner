@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
+use tui_pane::TrackedItem;
+
 use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
@@ -9,7 +11,6 @@ use crate::tui::app::types::PollBackgroundStats;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
-use crate::tui::toasts::TrackedItem;
 
 impl App {
     pub fn poll_background(&mut self) -> PollBackgroundStats {
@@ -77,7 +78,9 @@ impl App {
                     let new_runs = after.saturating_sub(before);
                     if let Some(task_id) = self.ci.take_fetch_toast() {
                         let empty: HashSet<String> = std::collections::HashSet::new();
-                        self.toasts.complete_missing_items(task_id, &empty);
+                        self.framework
+                            .toasts
+                            .complete_missing_items(task_id, &empty);
                         let label = if new_runs > 0 {
                             format!("{new_runs} new runs fetched")
                         } else {
@@ -90,8 +93,11 @@ impl App {
                             completed_at: None,
                         };
                         let linger = self.framework.toast_settings().task_linger.get();
-                        self.toasts
-                            .add_new_tracked_items(task_id, &[result_item], linger);
+                        self.framework.toasts.add_new_tracked_items(
+                            task_id,
+                            &[result_item],
+                            linger,
+                        );
                         self.finish_task_toast(task_id);
                     }
                 },

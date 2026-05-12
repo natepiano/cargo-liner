@@ -1,31 +1,35 @@
 use std::collections::HashSet;
 
+use tui_pane::ToastSettings;
+use tui_pane::format_toast_items;
+use tui_pane::toast_body_width;
+
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::tui::app::Startup;
-use crate::tui::toasts;
 
 impl Startup {
-    pub(super) fn disk_toast_body(&self) -> String {
+    pub(super) fn disk_toast_body(&self, settings: &ToastSettings) -> String {
         let empty = HashSet::new();
         let expected = self.disk.expected.as_ref().unwrap_or(&empty);
-        remaining_toast_body(expected, &self.disk.seen)
+        remaining_toast_body(expected, &self.disk.seen, toast_body_width(settings))
     }
-    pub(super) fn git_toast_body(&self) -> String {
+    pub(super) fn git_toast_body(&self, settings: &ToastSettings) -> String {
         let empty = HashSet::new();
         let expected = self.git.expected.as_ref().unwrap_or(&empty);
-        remaining_toast_body(expected, &self.git.seen)
+        remaining_toast_body(expected, &self.git.seen, toast_body_width(settings))
     }
-    pub(super) fn metadata_toast_body(&self) -> String {
+    pub(super) fn metadata_toast_body(&self, settings: &ToastSettings) -> String {
         let empty = HashSet::new();
         let expected = self.metadata.expected.as_ref().unwrap_or(&empty);
-        remaining_toast_body(expected, &self.metadata.seen)
+        remaining_toast_body(expected, &self.metadata.seen, toast_body_width(settings))
     }
 }
 
 pub(super) fn remaining_toast_body(
     expected: &HashSet<AbsolutePath>,
     seen: &HashSet<AbsolutePath>,
+    body_width: usize,
 ) -> String {
     let items: Vec<String> = expected
         .iter()
@@ -36,5 +40,5 @@ pub(super) fn remaining_toast_body(
     if refs.is_empty() {
         return "Complete".to_string();
     }
-    toasts::format_toast_items(&refs, toasts::toast_body_width())
+    format_toast_items(&refs, body_width)
 }
