@@ -3577,9 +3577,46 @@ A snapshot test per focused-pane context locks in the **new** static-label frame
 
 **Phase 23 closeout:** Run the remaining-phase closeout gate after the regression tests and snapshots land. Also grep for stale references to deleted `src/tui/shortcuts.rs` / `shortcut_spans` and update comments or docs that still describe those helpers as live code.
 
+### Retrospective
+
+**What worked:**
+- The removed-action TOML migration is binary-owned and runs before both startup `load_toml` and framework-keymap rebuilds: `src/tui/app/construct.rs` and `src/tui/app/mod.rs` call `keymap::migrate_removed_action_keys_on_disk(...)`.
+- Existing `src/tui/app/tests/framework_keymap.rs` coverage was the right home for Phase 23 closeout assertions: global-strip ordering, ProjectList paired rows, and production-loader migration all exercise the real `App::new` / input path.
+
+**What deviated from the plan:**
+- The phase extended the existing regression suite instead of introducing new snapshot files. The tests now lock the high-risk bar text/order behavior with focused assertions rather than full fixture snapshots.
+- ProjectList paired-row assertions do not assume plain `Left` / `Right`; local or migrated TOML can still bind `Shift+Left` / `Shift+Right`, so the test asserts the paired arrow-row structure and label.
+
+**Surprises:**
+- `make_app(...)` without a keymap-path override can read the developer's real keymap file. Exact default-binding tests need a temp keymap path, matching the earlier Phase 20 lesson.
+- The final closeout grep found only a live rustdoc reference to `shortcut_spans`; the remaining doc references are historical phase notes or the Phase 23 instruction itself.
+
+**Implications for remaining phases:**
+- Later toast/settings phases should not carry compatibility for `src/keymap.rs::is_legacy_removed_action`; it is gone, and removed cargo-port action names are normalized before validation.
+- Any remaining exact-default key assertions must override `keymap::keymap_path()` to a temp path before constructing `App`.
+
+**Verification:**
+- `cargo +nightly fmt --all`
+- `cargo nextest run -p cargo-port framework_keymap` — 47 passed
+- `cargo nextest run -p cargo-port legacy_project_list_removed` — 4 passed
+- `cargo nextest run` — 636 passed
+- `cargo nextest run --workspace` — 861 passed
+
+**Remaining-phase test isolation.** In Phases 24-26, any cargo-port test that constructs `App` and asserts exact default keys, Enter behavior, or bar text must override `keymap::keymap_path()` to a temp path before `App::new`. Otherwise the test can read the developer's real keymap file and assert against user rebinds.
+
+### Phase 23 Review
+
+- Phase 24: recorded the storage boundary — framework toast activation API lands now, but cargo-port production Enter-on-toast acceptance moves to Phase 26 after `app.toasts` migrates into `framework.toasts`.
+- Phase 25: kept `[toasts]` TOML parsing in cargo-port's config path; toast-setting validation does not route through `KeymapError` or the keymap overlay loader.
+- Phases 24-26: added the temp keymap-path override requirement for cargo-port tests that construct `App` and assert exact default keys, Enter behavior, or bar text.
+- Phase 25: added a test-migration note for Settings/Keymap mirror deletion so Phase-23-era overlay assertions move to framework pane state.
+- What dissolves: marked `is_legacy_removed_action` as already removed by Phase 23.
+
 ### Phase 24 — Toast activation payload
 
 Phase 24 adds the typed activation payload to the framework's `Toast` so binaries can attach a domain action to each toast that fires on Enter while focused. cargo-port replaces its current `action_path: Option<AbsolutePath>` with `Option<CargoPortToastAction::OpenPath(AbsolutePath)>`; the framework stays generic.
+
+**Storage boundary for this phase.** Phase 24 adds the framework toast-action API and cargo-port's `CargoPortToastAction` type, but it does not make framework toast storage the cargo-port production storage. cargo-port still renders and mutates `app.toasts` until Phase 26. Therefore Phase 24 cargo-port wiring is limited to the associated type / handler and any compile-level boundary tests; production Enter-on-toast behavior is accepted in Phase 26 after the manager migration makes `framework.toasts` the storage users see.
 
 **1. New `AppContext` associated type.** `AppContext` gains `type ToastAction: Clone + 'static;` plus a default handler:
 
@@ -3694,7 +3731,6 @@ impl AppContext for App {
 cargo-port's existing `ToastManager::push_*` call sites (Phase 26 migration entry) accept `Option<AbsolutePath>` and convert to `CargoPortToastAction::OpenPath(path)` at the boundary. Existing call sites pass `None` (or the Phase-24 migrated `framework.toasts.push_with_action`) until the manager migration finishes.
 
 **Phase 24 tests:**
-- `enter_on_focused_toast_with_action_dispatches` — fixture toast with `CargoPortToastAction::OpenPath(p)` set; Enter on the focused toast calls `handle_toast_action(OpenPath(p))`.
 - `enter_on_focused_toast_without_action_is_unhandled` — toast with `action: None` returns `KeyOutcome::Unhandled` for Enter; dispatch falls through to globals.
 - `no_toast_action_app_compiles_with_default_handler` — a test app using `type ToastAction = NoToastAction;` and the default `handle_toast_action` body compiles.
 - `handle_key_command_returns_activate_when_focused_with_action` — pure-borrow form returns the right command.
@@ -3717,7 +3753,9 @@ Phase 25 owns the generic framework-settings substrate and its first concrete co
 
 **Legacy Settings/Keymap mirror deletion.** Phase 25 also removes the remaining binary mirror state that Phase 21/22 left behind for Settings and Keymap: `Overlays::settings`, `Overlays::keymap`, the cargo-port viewport mirrors used only for those overlays, and `src/tui/input.rs::clear_legacy_framework_overlay_state`. After Phase 25, Settings/Keymap browse/edit/awaiting state lives only in the framework panes; cargo-port persists settings/keymap data and supplies app-specific registry entries.
 
-**TOML-load surface.** Phase 25's `[toasts]` TOML scope is its own settings table, so the shared-`[global]` action-table coordination solved in Phase 17 does not apply. The `[toasts]` loader validates toast-setting keys directly and keeps unknown-key errors local to that table; no peer-enum skip behavior is required.
+**Test migration.** Phase 25 updates Phase-23-era cargo-port tests that still assert `app.overlays.is_settings_editing()` or `app.overlays.keymap_is_awaiting()` (notably in `src/tui/app/tests/framework_keymap.rs`) to assert against framework SettingsPane / KeymapPane state instead. The binary mirror deletion must not leave those tests failing by incidental field removal.
+
+**TOML-load surface.** Phase 25's `[toasts]` TOML section is cargo-port config/settings data, not a keymap overlay scope. cargo-port parses and persists it through the existing config path, converts it to `ToastSettings`, and exposes it to `tui_pane` only through `ToastSettingsBinding::load` / `save`. The shared-`[global]` action-table coordination solved in Phase 17 does not apply.
 
 **1. `ToastSettings` with validated newtypes.** No raw `f64` durations cross the framework boundary:
 
@@ -3746,7 +3784,7 @@ pub struct ToastAnimationSettings {
 }
 ```
 
-Construction goes through `try_from_secs(f64) -> Result<Self, ToastSettingsError>` on each newtype. cargo-port's TOML loader converts at the boundary and returns `KeymapError::ToastSettings(ToastSettingsError)` on out-of-range values.
+Construction goes through `try_from_secs(f64) -> Result<Self, ToastSettingsError>` on each newtype. cargo-port's config loader converts `[toasts]` values at the config boundary and returns the existing config-load error path with `ToastSettingsError` as the source/context. Do not route toast-setting validation through `KeymapError`; `[toasts]` is not part of the keymap overlay loader.
 
 **2. `SettingsRegistry` gains framework sections.** The registry already supports app settings; Phase 25 adds a tagged section so framework capabilities can register their own entries without colliding with app settings:
 
@@ -3809,7 +3847,7 @@ max_visible     = 5
 placement       = "bottom_right"
 ```
 
-`tui_pane` reads the section through cargo-port's existing TOML loader (loader returns `Option<ToastSettings>` parsed at the boundary; framework merges with defaults). The binary's settings.rs `toast_settings_rows` (`src/tui/settings.rs:286-304`) deletes — `SettingsPane` renders the entries through the registry.
+cargo-port reads the section through its existing config loader and passes the parsed `Option<ToastSettings>` through `ToastSettingsBinding::load`; the framework merges with defaults. The binary's settings.rs `toast_settings_rows` (`src/tui/settings.rs:286-304`) deletes — `SettingsPane` renders the entries through the registry.
 
 **Phase 25 tests:**
 - `toast_settings_default_round_trip` — load a TOML with only `[toasts]` defaults, assert framework reads the right values.
@@ -3951,6 +3989,7 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 **7. Verify the binary's `handle_toast_key` function body is already gone.** Phase 19 deleted the legacy call path and function body. Phase 26 does not re-delete that symbol; it verifies `rg 'handle_toast_key' src/tui/input.rs` stays empty while the remaining toast ownership cleanup deletes `app.toasts`, the cargo-port `ToastManager`, and the old push/prune/render call sites.
 
 **Phase 26 tests** (in `tui_pane/tests/`):
+- cargo-port production: `enter_on_focused_toast_with_action_dispatches` — after `app.toasts` has migrated into `framework.toasts`, fixture toast with `CargoPortToastAction::OpenPath(p)` set; Enter on the focused toast calls `handle_toast_action(OpenPath(p))`.
 - Lifecycle: `timed_toast_expires_at_timeout_at`, `task_toast_lingers_after_finish_then_prunes`, `persistent_toast_survives_prune`.
 - Tracked items: `set_tracked_items_then_mark_completed_renders_strikethrough`, `prune_tracked_items_removes_finished_after_linger`.
 - Hitboxes: `render_emits_card_and_close_hitbox_per_visible_toast`.
@@ -3980,7 +4019,7 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 - `NAVIGATION_RESERVED` / `is_navigation_reserved`.
 - `is_vim_reserved`'s hardcoded `VIM_RESERVED` table (replaced by reading `NavigationAction`'s bindings).
 - The `+`/`=` parser collapse.
-- `is_legacy_removed_action` after Phase 23 moves cargo-port's legacy `[project_list] open_editor` / `rescan` keys to `[global]` before validation.
+- `is_legacy_removed_action` — removed in Phase 23 after cargo-port began moving legacy `[project_list] open_editor` / `rescan` keys to `[global]` before validation.
 - `InputContext` enum.
 
 ## What survives

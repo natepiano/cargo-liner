@@ -91,6 +91,7 @@ use super::toasts::TrackedItem;
 use crate::ci::OwnerRepo;
 use crate::config::CargoPortConfig;
 use crate::http::HttpClient;
+use crate::keymap;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
 use crate::project::AbsolutePath;
@@ -745,6 +746,9 @@ impl App {
         );
         let framework_builder = if let Some(path) = self.keymap.path().map(Path::to_path_buf) {
             let display_path = path.display().to_string();
+            keymap::migrate_removed_action_keys_on_disk(&path).map_err(|err| {
+                format!("migrating removed keymap actions in {display_path}: {err}")
+            })?;
             framework_builder
                 .load_toml(path)
                 .map_err(|err| format!("loading keymap from {display_path}: {err}"))?

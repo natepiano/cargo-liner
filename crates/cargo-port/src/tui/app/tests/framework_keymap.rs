@@ -16,6 +16,7 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use ratatui::text::Span;
+use toml::Table;
 use tui_pane::Action;
 use tui_pane::AppContext;
 use tui_pane::BarPalette;
@@ -47,6 +48,7 @@ use crate::lint::LintRunStatus;
 use crate::project::RootItem;
 use crate::project::Submodule;
 use crate::test_support;
+use crate::tui::framework_keymap::AppGlobalAction;
 use crate::tui::framework_keymap::AppPaneId;
 use crate::tui::framework_keymap::CiRunsPane;
 use crate::tui::framework_keymap::FinderPane;
@@ -79,6 +81,16 @@ fn flatten(spans: &[Span<'static>]) -> String {
         out.push_str(&span.content);
     }
     out
+}
+
+fn assert_contains_in_order(text: &str, labels: &[&str]) {
+    let mut start = 0;
+    for label in labels {
+        let Some(offset) = text[start..].find(label) else {
+            panic!("{label:?} missing or out of order in {text:?}");
+        };
+        start += offset + label.len();
+    }
 }
 
 fn make_app_with_keymap_toml(projects: &[RootItem], toml: &str) -> App {
@@ -530,23 +542,20 @@ fn focused_project_list_bar_renders_pane_action_and_nav_slots() {
 
     // ProjectList overrides `bar_slots` to push the expand pair and
     // the all pair into the Nav region; only `Clean` lands in
-    // `pane_action`. The framework's `render_bar_slots` reduces each
-    // pane-emitted `Paired` slot to its primary action (lookup by
-    // primary's key + bar_label), so we verify the primary actions'
-    // labels appear in the nav region rather than the paired
-    // separators ("expand" / "all"); rendering paired pane slots
-    // visibly is Phase 19's `+/-` and `←/→ expand` snapshot work.
+    // `pane_action`. Phase 23 locks the paired rows after the
+    // framework started preserving secondary keys through bar
+    // rendering.
     assert!(
         pane_action.contains("clean"),
         "ProjectList pane_action must include Clean (got {pane_action:?})",
     );
     assert!(
-        nav.contains('←'),
-        "ProjectList nav region must include CollapseRow's bar_label \"←\" (got {nav:?})",
+        nav.contains("←/") && nav.contains("→ expand"),
+        "ProjectList nav region must include the paired expand row with both arrow keys (got {nav:?})",
     );
     assert!(
-        nav.contains('+'),
-        "ProjectList nav region must include ExpandAll's bar_label \"+\" (got {nav:?})",
+        nav.contains("+/- all"),
+        "ProjectList nav region must include the paired all row (got {nav:?})",
     );
 }
 
@@ -724,6 +733,32 @@ fn focused_package_bar_renders_four_app_globals() {
             "Global region must include AppGlobalAction label {label:?} (got {global:?})",
         );
     }
+}
+
+#[test]
+fn focused_package_bar_global_region_renders_total_order() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    app.panes.package.set_content(package_data_no_version());
+    focus_app_pane_in_framework(&mut app, AppPaneId::Package);
+
+    let palette = BarPalette::default();
+    let bar = render_status_bar(
+        &FocusedPane::App(AppPaneId::Package),
+        &app,
+        &app.framework_keymap,
+        app.framework(),
+        &palette,
+    );
+    let global = flatten(&bar.global);
+
+    assert_contains_in_order(
+        &global,
+        &[
+            "quit", "restart", "keymap", "settings", "dismiss", "find", "editor", "terminal",
+            "rescan",
+        ],
+    );
 }
 
 // ── Phase 16 — base-pane navigation rerouted through framework keymap ───
@@ -927,6 +962,81 @@ fn external_keymap_reload_updates_framework_owned_scope() {
             code: KeyCode::Char('q'),
             mods: KeyModifiers::NONE,
         }),
+    );
+}
+
+#[test]
+fn legacy_project_list_removed_actions_migrate_before_framework_load() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let toml_path = temp_dir.path().join("keymap.toml");
+    fs::write(
+        &toml_path,
+        "[project_list]\nopen_editor = \"E\"\nrescan = \"Ctrl+r\"\n",
+    )
+    .expect("write keymap toml");
+    let _keymap_path = keymap::override_keymap_path_for_test(toml_path.clone());
+    let project = super::make_project(Some("demo"), "~/demo");
+    let app = make_app(&[project]);
+
+    let globals = app
+        .framework_keymap
+        .globals::<AppGlobalAction>()
+        .expect("app globals registered");
+    assert_eq!(
+        globals.action_for(&KeyBind::from('E')),
+        Some(AppGlobalAction::OpenEditor),
+    );
+    assert_eq!(
+        globals.action_for(&KeyBind::ctrl('r')),
+        Some(AppGlobalAction::Rescan),
+    );
+
+    let saved = fs::read_to_string(&toml_path).expect("read migrated keymap toml");
+    let table: Table = saved.parse().expect("parse migrated keymap toml");
+    let project_list = table
+        .get("project_list")
+        .and_then(toml::Value::as_table)
+        .expect("project_list table");
+    assert!(!project_list.contains_key("open_editor"));
+    assert!(!project_list.contains_key("rescan"));
+    let global = table
+        .get("global")
+        .and_then(toml::Value::as_table)
+        .expect("global table");
+    assert_eq!(
+        global.get("open_editor").and_then(toml::Value::as_str),
+        Some("E"),
+    );
+    assert_eq!(
+        global.get("rescan").and_then(toml::Value::as_str),
+        Some("Ctrl+r"),
+    );
+}
+
+#[test]
+fn legacy_project_list_removed_action_does_not_override_framework_global() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let toml_path = temp_dir.path().join("keymap.toml");
+    fs::write(
+        &toml_path,
+        "[global]\nopen_editor = \"E\"\n[project_list]\nopen_editor = \"Enter\"\n",
+    )
+    .expect("write keymap toml");
+    let _keymap_path = keymap::override_keymap_path_for_test(toml_path);
+    let project = super::make_project(Some("demo"), "~/demo");
+    let app = make_app(&[project]);
+
+    let globals = app
+        .framework_keymap
+        .globals::<AppGlobalAction>()
+        .expect("app globals registered");
+    assert_eq!(
+        globals.action_for(&KeyBind::from('E')),
+        Some(AppGlobalAction::OpenEditor),
+    );
+    assert_ne!(
+        globals.action_for(&KeyBind::from(KeyCode::Enter)),
+        Some(AppGlobalAction::OpenEditor),
     );
 }
 

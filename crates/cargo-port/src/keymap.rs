@@ -5,6 +5,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fmt::Write as _;
+use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -17,6 +18,9 @@ use tui_pane::Action;
 
 use crate::config::NavigationKeys;
 use crate::project::AbsolutePath;
+
+const REMOVED_PROJECT_LIST_GLOBAL_ACTIONS: [(&str, &str); 2] =
+    [("open_editor", "open_editor"), ("rescan", "rescan")];
 
 // ── Key representation ───────────────────────────────────────────────
 
@@ -603,6 +607,19 @@ pub(crate) fn override_keymap_path_for_test(path: PathBuf) -> KeymapPathOverride
     KeymapPathOverrideGuard { previous }
 }
 
+pub(crate) fn migrate_removed_action_keys_on_disk(path: &Path) -> std::io::Result<()> {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return Ok(());
+    };
+    let Ok(mut table) = contents.parse::<Table>() else {
+        return Ok(());
+    };
+    if migrate_removed_action_keys(&mut table) {
+        std::fs::write(path, table.to_string())?;
+    }
+    Ok(())
+}
+
 /// Load and validate keymap from disk. Creates the default file if missing.
 pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
     let Some(path) = keymap_path() else {
@@ -641,7 +658,7 @@ pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
         },
     };
 
-    let table: Table = match contents.parse() {
+    let mut table: Table = match contents.parse() {
         Ok(t) => t,
         Err(e) => {
             return KeymapLoadResult {
@@ -657,12 +674,15 @@ pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
         },
     };
 
+    let migrated = migrate_removed_action_keys(&mut table);
     let result = resolve_from_table(&table, vim_mode);
 
     // Backfill missing entries into the file.
     if !result.missing_actions.is_empty() {
         let content = ResolvedKeymap::default_toml_from(&result.keymap);
         let _ = std::fs::write(&path, content);
+    } else if migrated {
+        let _ = std::fs::write(&path, table.to_string());
     }
 
     result
@@ -670,7 +690,7 @@ pub(crate) fn load_keymap(vim_mode: NavigationKeys) -> KeymapLoadResult {
 
 /// Load keymap from a TOML string (for testing and hot-reload).
 pub(crate) fn load_keymap_from_str(toml_str: &str, vim_mode: NavigationKeys) -> KeymapLoadResult {
-    let table: Table = match toml_str.parse() {
+    let mut table: Table = match toml_str.parse() {
         Ok(t) => t,
         Err(e) => {
             return KeymapLoadResult {
@@ -685,6 +705,7 @@ pub(crate) fn load_keymap_from_str(toml_str: &str, vim_mode: NavigationKeys) -> 
             };
         },
     };
+    migrate_removed_action_keys(&mut table);
     resolve_from_table(&table, vim_mode)
 }
 
@@ -773,8 +794,41 @@ fn is_vim_reserved(bind: &KeyBind, vim_mode: NavigationKeys) -> bool {
     vim_mode.uses_vim() && bind.modifiers == KeyModifiers::NONE && VIM_RESERVED.contains(&bind.code)
 }
 
-fn is_legacy_removed_action(scope_name: &str, action: &str) -> bool {
-    scope_name == "project_list" && matches!(action, "open_editor" | "rescan")
+fn migrate_removed_action_keys(table: &mut Table) -> bool {
+    if matches!(table.get("global"), Some(value) if !value.is_table()) {
+        return false;
+    }
+
+    let Some(project_list) = table
+        .get_mut("project_list")
+        .and_then(toml::Value::as_table_mut)
+    else {
+        return false;
+    };
+
+    let mut removed = Vec::new();
+    for (old_key, global_key) in REMOVED_PROJECT_LIST_GLOBAL_ACTIONS {
+        if let Some(value) = project_list.remove(old_key) {
+            removed.push((global_key, value));
+        }
+    }
+    if removed.is_empty() {
+        return false;
+    }
+
+    if !table.contains_key("global") {
+        table.insert("global".to_string(), Value::Table(Table::new()));
+    }
+    let Some(global) = table.get_mut("global").and_then(toml::Value::as_table_mut) else {
+        return false;
+    };
+    for (global_key, value) in removed {
+        if !global.contains_key(global_key) {
+            global.insert(global_key.to_string(), value);
+        }
+    }
+
+    true
 }
 
 fn resolve_from_table(table: &Table, vim_mode: NavigationKeys) -> KeymapLoadResult {
@@ -880,7 +934,7 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
     // Report unknown keys in this scope.
     if let Some(st) = scope_table {
         for key in st.keys() {
-            if from_toml_key(key).is_none() && !is_legacy_removed_action(scope_name, key) {
+            if from_toml_key(key).is_none() {
                 ctx.errors.push(KeymapError {
                     scope:  scope_name.to_string(),
                     action: key.clone(),
@@ -1292,8 +1346,8 @@ claen = "c"
     }
 
     #[test]
-    fn legacy_project_list_open_editor_is_ignored() {
-        let toml = r#"
+    fn legacy_project_list_removed_actions_move_to_global_table_before_validation() {
+        let mut table: Table = r#"
 [global]
 quit = "q"
 restart = "R"
@@ -1302,36 +1356,64 @@ settings = "s"
 next_pane = "Tab"
 prev_pane = "Shift+Tab"
 open_keymap = "Ctrl+k"
-rescan = "r"
 dismiss = "x"
 
 [project_list]
 open_editor = "Enter"
+rescan = "Ctrl+r"
 expand_all = "="
 collapse_all = "-"
 clean = "c"
-"#;
-        let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
+"#
+        .parse()
+        .unwrap();
+
+        assert!(migrate_removed_action_keys(&mut table));
+
+        let project_list = table.get("project_list").and_then(Value::as_table).unwrap();
+        assert!(!project_list.contains_key("open_editor"));
+        assert!(!project_list.contains_key("rescan"));
+        let global = table.get("global").and_then(Value::as_table).unwrap();
+        assert_eq!(
+            global.get("open_editor").and_then(Value::as_str),
+            Some("Enter"),
+        );
+        assert_eq!(global.get("rescan").and_then(Value::as_str), Some("Ctrl+r"),);
+
+        let result = resolve_from_table(&table, NavigationKeys::ArrowsOnly);
         assert!(
             result
                 .errors
                 .iter()
                 .all(|e| !matches!(e.reason, KeymapErrorReason::UnknownAction)),
-            "legacy project_list.open_editor should not be reported as unknown: {:?}",
+            "migrated removed actions should not be reported as unknown: {:?}",
             result
                 .errors
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
         );
-        assert!(
-            result
-                .missing_actions
-                .iter()
-                .all(|action| !action.starts_with("global.")),
-            "legacy globals are no longer backfilled: {:?}",
-            result.missing_actions,
-        );
+    }
+
+    #[test]
+    fn legacy_project_list_removed_action_does_not_override_global_value() {
+        let mut table: Table = r#"
+[global]
+open_editor = "E"
+
+[project_list]
+open_editor = "Enter"
+clean = "c"
+"#
+        .parse()
+        .unwrap();
+
+        assert!(migrate_removed_action_keys(&mut table));
+
+        let project_list = table.get("project_list").and_then(Value::as_table).unwrap();
+        assert!(!project_list.contains_key("open_editor"));
+        let global = table.get("global").and_then(Value::as_table).unwrap();
+        assert_eq!(global.get("open_editor").and_then(Value::as_str), Some("E"),);
     }
 
     #[test]

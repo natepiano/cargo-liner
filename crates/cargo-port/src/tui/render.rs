@@ -489,9 +489,9 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &st
 
 /// Palette wiring `ACCENT_COLOR` / `SECONDARY_TEXT_COLOR` / `Modifier::BOLD`
 /// to the framework bar so the new `tui_pane::render_status_bar` output
-/// matches the pre-refactor look produced by [`shortcut_spans`]. The
-/// framework ships a theme-neutral [`tui_pane::BarPalette::default`];
-/// cargo-port supplies its own colors here.
+/// matches cargo-port's pre-refactor key/label styling. The framework
+/// ships a theme-neutral [`tui_pane::BarPalette::default`]; cargo-port
+/// supplies its own colors here.
 pub(super) fn cargo_port_bar_palette() -> BarPalette {
     let enabled_key_style = Style::default()
         .fg(ACCENT_COLOR)

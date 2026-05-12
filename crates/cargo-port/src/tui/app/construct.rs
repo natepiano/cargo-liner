@@ -217,6 +217,8 @@ impl AppBuilder<Started> {
         );
         let framework_builder = if let Some(path) = keymap_path_buf {
             let display_path = path.display().to_string();
+            keymap::migrate_removed_action_keys_on_disk(&path)
+                .with_context(|| format!("migrating removed keymap actions in {display_path}"))?;
             framework_builder
                 .load_toml(path)
                 .with_context(|| format!("loading keymap from {display_path}"))?
