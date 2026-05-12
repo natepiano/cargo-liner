@@ -44,6 +44,7 @@ use crate::FrameworkOverlayId;
 use crate::Keymap;
 use crate::ScopeMap;
 use crate::ShortcutState as ShortcutStateAlias;
+use crate::Toasts;
 use crate::Visibility as VisibilityAlias;
 use crate::keymap::RenderedSlot;
 
@@ -114,11 +115,8 @@ fn pane_slots_for<Ctx: AppContext + 'static>(
     match focused {
         FocusedPane::App(id) => keymap.render_app_pane_bar_slots(*id, ctx),
         FocusedPane::Framework(FrameworkFocusId::Toasts) => {
-            // Phase 12 ships `ToastsAction` empty, so resolving its
-            // bar slots is statically empty. Phase 20 widens the
-            // enum and this arm starts producing entries.
-            let _ = framework.toasts.bar_slots(ctx);
-            Vec::new()
+            let scope = Toasts::<Ctx>::defaults().into_scope_map();
+            render_overlay_slots(framework.toasts.bar_slots(ctx), &scope)
         },
     }
 }

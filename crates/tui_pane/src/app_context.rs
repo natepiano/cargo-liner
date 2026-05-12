@@ -28,6 +28,14 @@ pub trait AppContext: Sized {
     /// off this type.
     type AppPaneId: Copy + Eq + Hash + 'static;
 
+    /// Domain payload attached to a toast and dispatched on Enter
+    /// while focused.
+    ///
+    /// Apps that do not need toast activation set this to
+    /// [`NoToastAction`] and inherit the default
+    /// [`Self::handle_toast_action`] body.
+    type ToastAction: Clone + 'static;
+
     /// Borrow the framework state owned by this app.
     fn framework(&self) -> &Framework<Self>;
 
@@ -42,4 +50,13 @@ pub trait AppContext: Sized {
     fn set_focus(&mut self, focus: FocusedPane<Self::AppPaneId>) {
         self.framework_mut().set_focused(focus);
     }
+
+    /// Handle a toast activation payload.
+    ///
+    /// Default body is a no-op for apps that use [`NoToastAction`].
+    fn handle_toast_action(&mut self, _action: Self::ToastAction) {}
 }
+
+/// Uninhabited filler for apps that have no toast activation.
+#[derive(Clone, Debug)]
+pub enum NoToastAction {}

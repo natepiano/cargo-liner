@@ -22,6 +22,7 @@ pub use keymap::KeymapPaneAction;
 pub use settings::SettingsPane;
 pub use settings::SettingsPaneAction;
 pub use toasts::Toast;
+pub use toasts::ToastCommand;
 pub use toasts::ToastId;
 pub use toasts::ToastStyle;
 pub use toasts::Toasts;

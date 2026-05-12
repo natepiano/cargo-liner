@@ -45,6 +45,7 @@ use tui_pane::VimMode;
 use tui_pane::Visibility;
 
 use super::app::App;
+use super::app::CargoPortToastAction;
 use super::finder;
 use super::input;
 use super::panes;
@@ -174,10 +175,23 @@ tui_pane::action_enum! {
 
 impl AppContext for App {
     type AppPaneId = AppPaneId;
+    type ToastAction = CargoPortToastAction;
 
     fn framework(&self) -> &Framework<Self> { &self.framework }
 
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+
+    fn handle_toast_action(&mut self, action: Self::ToastAction) {
+        match action {
+            CargoPortToastAction::OpenPath(path) => {
+                if let Err(err) =
+                    input::open_paths_in_editor(self.config.editor(), [path.as_path()])
+                {
+                    self.show_timed_toast("Toast action failed", err.to_string());
+                }
+            },
+        }
+    }
 
     fn set_focus(&mut self, focus: FocusedPane<Self::AppPaneId>) {
         self.framework.set_focused(focus);

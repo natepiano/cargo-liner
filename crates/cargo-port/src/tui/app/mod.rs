@@ -164,6 +164,16 @@ use super::toasts::ToastTaskId;
 use crate::project;
 use crate::project::RootItem;
 use crate::scan::MetadataDispatchContext;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum CargoPortToastAction {
+    OpenPath(AbsolutePath),
+}
+
+impl From<AbsolutePath> for CargoPortToastAction {
+    fn from(path: AbsolutePath) -> Self { Self::OpenPath(path) }
+}
+
 pub(super) struct App {
     /// Net subsystem. Owns the shared `HttpClient`, the GitHub
     /// sub-state (availability, repo-fetch cache, in-flight set,

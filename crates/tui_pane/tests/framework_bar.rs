@@ -75,6 +75,7 @@ struct App {
 
 impl AppContext for App {
     type AppPaneId = AppPaneId;
+    type ToastAction = tui_pane::NoToastAction;
 
     fn framework(&self) -> &Framework<Self> { &self.framework }
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
@@ -224,8 +225,8 @@ fn render_status_bar_focused_toasts_renders_dismiss_in_global() {
     let global = flatten(&bar.global);
 
     assert!(
-        pane_action.is_empty(),
-        "Phase 12 ToastsAction is empty, so PaneAction must be empty (got {pane_action:?})",
+        pane_action.contains("Enter open"),
+        "Toast focus must show ToastsAction::Activate (got {pane_action:?})",
     );
     assert!(
         global.contains("dismiss"),

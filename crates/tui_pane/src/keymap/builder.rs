@@ -839,6 +839,7 @@ mod tests {
 
     impl AppContext for TestApp {
         type AppPaneId = TestPaneId;
+        type ToastAction = crate::NoToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }

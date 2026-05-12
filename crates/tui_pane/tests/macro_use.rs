@@ -140,6 +140,7 @@ struct CrossCrateApp {
 
 impl AppContext for CrossCrateApp {
     type AppPaneId = CrossCratePaneId;
+    type ToastAction = tui_pane::NoToastAction;
 
     fn framework(&self) -> &Framework<Self> { &self.framework }
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }

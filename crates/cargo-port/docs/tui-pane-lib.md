@@ -3612,7 +3612,7 @@ A snapshot test per focused-pane context locks in the **new** static-label frame
 - Phase 25: added a test-migration note for Settings/Keymap mirror deletion so Phase-23-era overlay assertions move to framework pane state.
 - What dissolves: marked `is_legacy_removed_action` as already removed by Phase 23.
 
-### Phase 24 — Toast activation payload
+### Phase 24 — Toast activation payload (✅ landed)
 
 Phase 24 adds the typed activation payload to the framework's `Toast` so binaries can attach a domain action to each toast that fires on Enter while focused. cargo-port replaces its current `action_path: Option<AbsolutePath>` with `Option<CargoPortToastAction::OpenPath(AbsolutePath)>`; the framework stays generic.
 
@@ -3740,8 +3740,22 @@ cargo-port's existing `ToastManager::push_*` call sites (Phase 26 migration entr
 - `tui_pane/src/panes/toasts.rs` — add `action` field on `Toast`, `push_with_action`, `ToastsAction::Activate`, `handle_key_command`, `ToastCommand`.
 - Focused framework-pane dispatch path from Phase 21 — apply `ToastCommand` after the framework borrow ends. This may be `tui_pane/src/framework/dispatch.rs` only if Phase 21 moved focused-pane dispatch there; otherwise use the Phase 21 call site.
 - `tui_pane/src/lib.rs` — re-export `NoToastAction`, `ToastCommand`.
-- `src/app/mod.rs` (cargo-port) — define `CargoPortToastAction`, set `type ToastAction = CargoPortToastAction;`, implement `handle_toast_action`.
+- `src/tui/app/mod.rs` / `src/tui/framework_keymap.rs` (cargo-port) — define `CargoPortToastAction`, set `type ToastAction = CargoPortToastAction`, implement `handle_toast_action`.
 - Phase closeout runs the remaining-phase closeout gate.
+
+### Retrospective
+
+**What worked:**
+- `AppContext::ToastAction`, `NoToastAction`, `ToastCommand`, and `Toasts::push_with_action` landed as a small additive framework API; non-activating test contexts use `NoToastAction`.
+- `ToastsAction::Activate` removed the Phase-13 `Vec::new()` special case in `tui_pane/src/bar/mod.rs`; focused Toasts now render `Enter open` in the pane-action region.
+
+**What deviated from the plan:**
+- cargo-port added `impl From<AbsolutePath> for CargoPortToastAction` so `OpenPath` is constructed in production code before Phase 26 starts using it from migrated toast storage.
+- The cargo-port focused-Toasts assertion covers the no-action fallthrough path by rebinding `[global] find = "Enter"` and proving Enter opens Finder when the focused framework toast has no payload.
+
+**Implications for remaining phases:**
+- Phase 26 can migrate `app.toasts` into `framework.toasts` without changing the Phase 24 activation API: payloads are already typed as `Ctx::ToastAction`, and production dispatch already applies `ToastCommand` after the framework borrow ends.
+- Phase 26 owns the first production Enter-on-toast-with-action test because cargo-port visible toasts still live in `app.toasts` after Phase 24.
 
 ### Phase 25 — Framework settings registry + toast settings
 
@@ -3954,7 +3968,7 @@ debug) can ship alongside if needed; if no caller wants it, drop it.
 
 The lifetime / phase / status enums collapse cargo-port's flag set (`timeout_at` + `task_id` + `dismissed` + `finished_task` + `finished_at` + `linger_duration` + `exit_started_at` + `persistence`) into states that cannot represent invalid combinations.
 
-**2. Move generic API onto `Toasts<Ctx>`.** Phase 12 already ships the generic skeleton: `new`, `push`, `push_styled`, `dismiss`, `dismiss_focused`, `focused_id`, `has_active`, `active`, `reset_to_first`, `reset_to_last`, `on_navigation`, `try_consume_cycle_step`, `handle_key`, `mode`, `defaults`, `bar_slots`. Phase 24 adds `push_with_action` + `handle_key_command`. The Phase 13 bar renderer reads `bar_slots`, `mode`, and `defaults` directly via `tui_pane/src/bar/mod.rs::pane_slots_for`; **Phase 26's storage move must preserve these public signatures verbatim** (`bar_slots(&self, ctx: &Ctx) -> Vec<(BarRegion, BarSlot<ToastsAction>)>`, `mode(&self, ctx: &Ctx) -> Mode<Ctx>`, `defaults() -> Bindings<ToastsAction>`) — the bar resolver depends on them and is not migrated by Phase 26. Phase 26 adds:
+**2. Move generic API onto `Toasts<Ctx>`.** Phase 12 already ships the generic skeleton: `new`, `push`, `push_styled`, `dismiss`, `dismiss_focused`, `focused_id`, `has_active`, `active`, `reset_to_first`, `reset_to_last`, `on_navigation`, `try_consume_cycle_step`, `handle_key`, `mode`, `defaults`, `bar_slots`. Phase 24 already shipped `push_with_action`, `handle_key_command`, `ToastCommand`, `ToastsAction::Activate`, focused-Toasts-before-globals dispatch, and the `Enter open` bar row. Phase 26 consumes those APIs; it does not rewire activation. The Phase 13 bar renderer reads `bar_slots`, `mode`, and `defaults` directly via `tui_pane/src/bar/mod.rs::pane_slots_for`; **Phase 26's storage move must preserve these public signatures verbatim** (`bar_slots(&self, ctx: &Ctx) -> Vec<(BarRegion, BarSlot<ToastsAction>)>`, `mode(&self, ctx: &Ctx) -> Mode<Ctx>`, `defaults() -> Bindings<ToastsAction>`) — the bar resolver depends on them and is not migrated by Phase 26. Phase 26 adds:
 
 ```rust
 impl<Ctx: AppContext> Toasts<Ctx> {

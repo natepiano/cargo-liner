@@ -16,6 +16,7 @@ use ratatui::layout::Position;
 use tui_pane::Action;
 use tui_pane::AppContext;
 use tui_pane::FocusedPane;
+use tui_pane::FrameworkFocusId;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::Globals;
@@ -24,6 +25,7 @@ use tui_pane::KeyOutcome;
 use tui_pane::Mode;
 use tui_pane::Navigation;
 use tui_pane::Pane;
+use tui_pane::ToastCommand;
 
 use super::app::App;
 use super::app::CleanSelection;
@@ -150,14 +152,20 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     if dispatch_finder_overlay(app, &framework_bind) {
         return;
     }
+    let focused = *app.framework.focused();
+    let focused_on_toasts = matches!(focused, FocusedPane::Framework(FrameworkFocusId::Toasts));
+    if focused_on_toasts && dispatch_focused_toasts(app, &framework_bind) {
+        return;
+    }
     if dispatch_framework_global(app, &framework_bind) {
         return;
     }
     if dispatch_app_global(app, &framework_bind) {
         return;
     }
-    let focused = *app.framework.focused();
-    if dispatch_focused_framework_pane(app, focused, &framework_bind) {
+    if let FocusedPane::App(id) = focused
+        && dispatch_focused_app_pane(app, id, &framework_bind)
+    {
         return;
     }
     let _ = dispatch_navigation(app, focused, &framework_bind);
@@ -212,14 +220,7 @@ fn dispatch_app_global(app: &mut App, bind: &FrameworkKeyBind) -> bool {
     true
 }
 
-fn dispatch_focused_framework_pane(
-    app: &mut App,
-    focused: FocusedPane<AppPaneId>,
-    bind: &FrameworkKeyBind,
-) -> bool {
-    let FocusedPane::App(id) = focused else {
-        return dispatch_focused_toasts(app, bind);
-    };
+fn dispatch_focused_app_pane(app: &mut App, id: AppPaneId, bind: &FrameworkKeyBind) -> bool {
     let keymap = Rc::clone(&app.framework_keymap);
     matches!(
         keymap.dispatch_app_pane(id, bind, app),
@@ -228,12 +229,11 @@ fn dispatch_focused_framework_pane(
 }
 
 fn dispatch_focused_toasts(app: &mut App, bind: &FrameworkKeyBind) -> bool {
-    if app.framework_keymap.framework_globals().action_for(bind)
-        == Some(FrameworkGlobalAction::Dismiss)
-    {
-        return dispatch_framework_global(app, bind);
+    let (outcome, command) = app.framework.toasts.handle_key_command(bind);
+    if let ToastCommand::Activate(action) = command {
+        app.handle_toast_action(action);
     }
-    false
+    matches!(outcome, KeyOutcome::Consumed)
 }
 
 fn dispatch_framework_overlay(

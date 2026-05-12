@@ -68,6 +68,7 @@ struct TestApp {
 
 impl AppContext for TestApp {
     type AppPaneId = TestPaneId;
+    type ToastAction = crate::NoToastAction;
 
     fn framework(&self) -> &Framework<Self> { &self.framework }
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
@@ -457,19 +458,17 @@ fn settings_editing_text_input_suppresses_every_region() {
 // ── Focused Toasts ───────────────────────────────────────────────────
 
 #[test]
-fn focused_toasts_renders_nav_and_globals_no_pane_actions() {
+fn focused_toasts_renders_nav_pane_actions_and_globals() {
     let mut app = fresh_app(FocusedPane::Framework(FrameworkFocusId::Toasts));
     let keymap = build_keymap_with_foo(&mut app.framework);
     let _ = app.framework_mut().toasts.push("Build done", "ok");
     let focused = FocusedPane::Framework(FrameworkFocusId::Toasts);
     let bar = render(&focused, &app, &keymap, app.framework());
     let (nav, pane_action, global) = flatten_bar(&bar);
-    // Toasts focus → Mode::Navigable → Nav + Global render; PaneAction
-    // is empty because ToastsAction has no variants in Phase 12.
     assert!(!nav.is_empty(), "Toasts must show nav (got nav={nav:?})");
     assert!(
-        pane_action.is_empty(),
-        "Toasts has no PaneAction in Phase 12 (got pane_action={pane_action:?})",
+        pane_action.contains("Enter open"),
+        "Toasts must show activate pane action (got pane_action={pane_action:?})",
     );
     assert!(
         !global.is_empty(),

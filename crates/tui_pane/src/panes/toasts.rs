@@ -7,16 +7,16 @@
 //! [`Toasts`] is **not** an overlay — toasts land silently and only
 //! become a focus target when at least one is active.
 //!
-//! Phase 12 owns the data model only: id allocation, a viewport cursor
+//! Phase 12 owns the base data model: id allocation, a viewport cursor
 //! for focused-toast navigation, three styles, the public push /
 //! dismiss / navigation surface, and the consume-while-scrollable
-//! cycle-step hook. Lifecycle (timed / task / persistent), tracked
-//! items, and rendering land in Phase 22 when cargo-port's
-//! `ToastManager` migrates onto this type.
+//! cycle-step hook. Phase 24 adds activation payloads. Lifecycle
+//! (timed / task / persistent), tracked items, and rendering land in
+//! Phase 26 when cargo-port's `ToastManager` migrates onto this type.
 
-use core::fmt::Display;
-use core::fmt::Formatter;
 use core::marker::PhantomData;
+
+use crossterm::event::KeyCode;
 
 use crate::Action;
 use crate::AppContext;
@@ -29,35 +29,24 @@ use crate::KeyOutcome;
 use crate::ListNavigation;
 use crate::Mode;
 
-/// Actions reachable on the toast stack's local bar.
-///
-/// Empty in Phase 12 — toast dismiss flows through
-/// [`GlobalAction::Dismiss`](crate::GlobalAction::Dismiss), and
-/// focus-internal navigation flows through the app's
-/// [`Navigation`](crate::Navigation) scope translated to
-/// [`ListNavigation`]. Phase 20 adds `Activate` for tracked-item
-/// activation.
-///
-/// Hand-rolled because [`crate::action_enum!`] requires ≥1 variant;
-/// every method on the empty enum is unreachable, expressed via the
-/// exhaustive `match self {}` form.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum ToastsAction {}
-
-impl Action for ToastsAction {
-    const ALL: &'static [Self] = &[];
-
-    fn toml_key(self) -> &'static str { match self {} }
-    fn bar_label(self) -> &'static str { match self {} }
-    fn description(self) -> &'static str { match self {} }
-    fn from_toml_key(_key: &str) -> Option<Self> { None }
+crate::action_enum! {
+    /// Actions reachable on the toast stack's local bar.
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    pub enum ToastsAction {
+        /// Activate the currently focused toast when it has a payload.
+        // 3-positional because bar label "open" differs from TOML key "activate".
+        Activate => ("activate", "open", "Activate focused toast");
+    }
 }
 
-impl Display for ToastsAction {
-    fn fmt(&self, _f: &mut Formatter<'_>) -> core::fmt::Result {
-        // ToastsAction has no variants; this method cannot be called.
-        Ok(())
-    }
+/// Command returned from focused-toast key handling.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ToastCommand<A> {
+    /// No app-level action should run.
+    None,
+    /// Run the app-supplied activation payload after the framework
+    /// borrow ends.
+    Activate(A),
 }
 
 /// Stable handle for a toast in the framework's manager.
@@ -70,7 +59,7 @@ pub struct ToastId(u64);
 
 /// Visual severity of a toast.
 ///
-/// Closed enum so the renderer (Phase 22) maps each variant to its
+/// Closed enum so the renderer (Phase 26) maps each variant to its
 /// color in one place.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ToastStyle {
@@ -84,16 +73,15 @@ pub enum ToastStyle {
 
 /// One typed notification record.
 ///
-/// Generic over `Ctx` from Phase 12 so future phases (Phase 20 adds
-/// `action`, Phase 22 adds the lifecycle / tracked-item fields) can
-/// extend the field set without renaming. The type signature does not
-/// change across phases.
+/// Generic over `Ctx` from Phase 12 so later phases can extend the
+/// field set without renaming. The type signature does not change
+/// across phases.
 pub struct Toast<Ctx: AppContext> {
-    id:    ToastId,
-    title: String,
-    body:  String,
-    style: ToastStyle,
-    _ctx:  PhantomData<fn(&Ctx)>,
+    id:     ToastId,
+    title:  String,
+    body:   String,
+    style:  ToastStyle,
+    action: Option<Ctx::ToastAction>,
 }
 
 impl<Ctx: AppContext> Toast<Ctx> {
@@ -112,6 +100,10 @@ impl<Ctx: AppContext> Toast<Ctx> {
     /// The toast's visual severity.
     #[must_use]
     pub const fn style(&self) -> ToastStyle { self.style }
+
+    /// The toast activation payload, if any.
+    #[must_use]
+    pub const fn action(&self) -> Option<&Ctx::ToastAction> { self.action.as_ref() }
 }
 
 /// Framework-owned typed notification manager.
@@ -156,6 +148,27 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         body: impl Into<String>,
         style: ToastStyle,
     ) -> ToastId {
+        self.push_entry(title, body, style, None)
+    }
+
+    /// Push a [`ToastStyle::Normal`] toast with an activation payload
+    /// and return its handle.
+    pub fn push_with_action(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        action: Ctx::ToastAction,
+    ) -> ToastId {
+        self.push_entry(title, body, ToastStyle::Normal, Some(action))
+    }
+
+    fn push_entry(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        style: ToastStyle,
+        action: Option<Ctx::ToastAction>,
+    ) -> ToastId {
         let id = ToastId(self.next_id);
         self.next_id = self.next_id.wrapping_add(1);
         self.entries.push(Toast {
@@ -163,7 +176,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             title: title.into(),
             body: body.into(),
             style,
-            _ctx: PhantomData,
+            action,
         });
         id
     }
@@ -266,28 +279,47 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         }
     }
 
-    /// No-op wrapper retained for tests that drive raw key dispatch.
-    /// The Phase 12 production path uses [`Self::on_navigation`] +
-    /// [`Self::try_consume_cycle_step`]; toast dismiss flows through
-    /// [`GlobalAction::Dismiss`](crate::GlobalAction::Dismiss) and
-    /// never reaches this method.
-    pub const fn handle_key(&mut self, _bind: &KeyBind) -> KeyOutcome { KeyOutcome::Unhandled }
+    /// Pure-borrow key handler for focused Toasts.
+    ///
+    /// Mutates pane-local state only and returns a command for the
+    /// caller to apply after the framework borrow ends.
+    pub fn handle_key_command(
+        &mut self,
+        bind: &KeyBind,
+    ) -> (KeyOutcome, ToastCommand<Ctx::ToastAction>) {
+        let scope = Self::defaults().into_scope_map();
+        if scope.action_for(bind) != Some(ToastsAction::Activate) {
+            return (KeyOutcome::Unhandled, ToastCommand::None);
+        }
+        let Some(toast) = self
+            .entries
+            .get(self.cursor.min(self.entries.len().saturating_sub(1)))
+        else {
+            return (KeyOutcome::Unhandled, ToastCommand::None);
+        };
+        let Some(action) = toast.action.clone() else {
+            return (KeyOutcome::Unhandled, ToastCommand::None);
+        };
+        (KeyOutcome::Consumed, ToastCommand::Activate(action))
+    }
+
+    /// Wrapper retained for tests that only need a [`KeyOutcome`].
+    pub fn handle_key(&mut self, bind: &KeyBind) -> KeyOutcome { self.handle_key_command(bind).0 }
 
     /// Focused Toasts is [`Mode::Navigable`] — the bar shows the nav
-    /// row, the (empty in Phase 12) `PaneAction` row, and the global
-    /// strip.
+    /// row, the `PaneAction` row, and the global strip.
     #[must_use]
     pub const fn mode(&self, _ctx: &Ctx) -> Mode<Ctx> { Mode::Navigable }
 
-    /// Default key bindings for the toast pane's local actions. Empty
-    /// in Phase 12 because [`ToastsAction`] is empty; kept as a method
-    /// so the bar adapter (Phase 13) can call it uniformly across
-    /// framework panes.
+    /// Default key bindings for the toast pane's local actions.
     #[must_use]
-    pub const fn defaults() -> Bindings<ToastsAction> { Bindings::new() }
+    pub fn defaults() -> Bindings<ToastsAction> {
+        crate::bindings! {
+            KeyCode::Enter => ToastsAction::Activate,
+        }
+    }
 
-    /// Bar slots for the toast pane's local actions. Empty in Phase 12;
-    /// Phase 20 adds `Activate`.
+    /// Bar slots for the toast pane's local actions.
     #[must_use]
     pub fn bar_slots(&self, _ctx: &Ctx) -> Vec<(BarRegion, BarSlot<ToastsAction>)> {
         ToastsAction::ALL
@@ -320,20 +352,30 @@ impl<Ctx: AppContext> Default for Toasts<Ctx> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use crossterm::event::KeyCode;
+
     use super::CycleDirection;
     use super::ListNavigation;
+    use super::ToastCommand;
     use super::ToastStyle;
     use super::Toasts;
+    use super::ToastsAction;
     use crate::AppContext;
     use crate::FocusedPane;
     use crate::Framework;
     use crate::KeyBind;
     use crate::KeyOutcome;
     use crate::Mode;
+    use crate::NoToastAction;
 
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     enum TestPaneId {
         Foo,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum TestToastAction {
+        Open,
     }
 
     struct TestApp {
@@ -342,6 +384,19 @@ mod tests {
 
     impl AppContext for TestApp {
         type AppPaneId = TestPaneId;
+        type ToastAction = TestToastAction;
+
+        fn framework(&self) -> &Framework<Self> { &self.framework }
+        fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+    }
+
+    struct NoActionApp {
+        framework: Framework<Self>,
+    }
+
+    impl AppContext for NoActionApp {
+        type AppPaneId = TestPaneId;
+        type ToastAction = NoToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
         fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
@@ -375,6 +430,13 @@ mod tests {
         let mut toasts: Toasts<TestApp> = Toasts::new();
         let _ = toasts.push_styled("err", "boom", ToastStyle::Error);
         assert_eq!(toasts.active()[0].style(), ToastStyle::Error);
+    }
+
+    #[test]
+    fn push_with_action_records_payload() {
+        let mut toasts: Toasts<TestApp> = Toasts::new();
+        let _ = toasts.push_with_action("open", "path", TestToastAction::Open);
+        assert_eq!(toasts.active()[0].action(), Some(&TestToastAction::Open));
     }
 
     #[test]
@@ -505,6 +567,37 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_focused_toast_without_action_is_unhandled() {
+        let mut toasts: Toasts<TestApp> = Toasts::new();
+        let _ = toasts.push("A", "");
+        assert_eq!(
+            toasts.handle_key_command(&KeyBind::from(KeyCode::Enter)),
+            (KeyOutcome::Unhandled, ToastCommand::None),
+        );
+    }
+
+    #[test]
+    fn handle_key_command_returns_activate_when_focused_with_action() {
+        let mut toasts: Toasts<TestApp> = Toasts::new();
+        let _ = toasts.push_with_action("A", "", TestToastAction::Open);
+        assert_eq!(
+            toasts.handle_key_command(&KeyBind::from(KeyCode::Enter)),
+            (
+                KeyOutcome::Consumed,
+                ToastCommand::Activate(TestToastAction::Open),
+            ),
+        );
+    }
+
+    #[test]
+    fn no_toast_action_app_compiles_with_default_handler() {
+        let mut app = NoActionApp {
+            framework: Framework::new(FocusedPane::App(TestPaneId::Foo)),
+        };
+        let _ = app.framework_mut().toasts.push("A", "");
+    }
+
+    #[test]
     fn mode_is_navigable() {
         let toasts: Toasts<TestApp> = Toasts::new();
         let app = fresh_app();
@@ -512,9 +605,15 @@ mod tests {
     }
 
     #[test]
-    fn bar_slots_is_empty_in_phase_12() {
+    fn bar_slots_contains_activate() {
         let toasts: Toasts<TestApp> = Toasts::new();
         let app = fresh_app();
-        assert!(toasts.bar_slots(&app).is_empty());
+        assert_eq!(
+            toasts.bar_slots(&app),
+            vec![(
+                crate::BarRegion::PaneAction,
+                crate::BarSlot::Single(ToastsAction::Activate)
+            )],
+        );
     }
 }

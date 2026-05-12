@@ -1238,6 +1238,18 @@ fn set_focus_override_updates_framework_focus_and_visits() {
 }
 
 #[test]
+fn focused_toasts_without_action_falls_through_to_app_globals() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app_with_keymap_toml(&[project], "[global]\nfind = \"Enter\"\n");
+    let _ = app.framework.toasts.push("Build done", "ok");
+    app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
+
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+
+    assert!(app.overlays.is_finder_open());
+}
+
+#[test]
 fn focused_package_bar_nav_region_renders_arrow_keys() {
     // Phase 14.7 locks the framework's nav-region rendering for a
     // focused Mode::Navigable pane. The nav region surfaces the

@@ -18,6 +18,7 @@ mod settings;
 // reference these types via `$crate::*` paths, which requires them at
 // the crate root. `tests/macro_use.rs` locks the path stability.
 pub use app_context::AppContext;
+pub use app_context::NoToastAction;
 pub use bar::BarPalette;
 pub use bar::BarRegion;
 pub use bar::BarSlot;
@@ -58,6 +59,7 @@ pub use panes::KeymapPaneAction;
 pub use panes::SettingsPane;
 pub use panes::SettingsPaneAction;
 pub use panes::Toast;
+pub use panes::ToastCommand;
 pub use panes::ToastId;
 pub use panes::ToastStyle;
 pub use panes::Toasts;
