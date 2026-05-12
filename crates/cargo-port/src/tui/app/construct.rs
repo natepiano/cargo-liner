@@ -26,7 +26,6 @@ use anyhow::Error;
 use tui_pane::FocusedPane;
 use tui_pane::Keymap as FrameworkKeymap;
 use tui_pane::SettingsFileSpec;
-use tui_pane::SettingsRegistry;
 use tui_pane::SettingsStore;
 
 use super::App;
@@ -55,6 +54,7 @@ use crate::tui::keymap_ui;
 use crate::tui::panes::Panes;
 use crate::tui::project_list::ProjectList;
 use crate::tui::scan_state::Scan;
+use crate::tui::settings;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -200,9 +200,11 @@ impl AppBuilder<Started> {
             || SettingsFileSpec::new(APP_NAME, CONFIG_FILE),
             |path| SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(path),
         );
-        let loaded_settings =
-            SettingsStore::<App>::load_for_startup(settings_spec, SettingsRegistry::new())
-                .with_context(|| "loading framework settings")?;
+        let loaded_settings = SettingsStore::<App>::load_for_startup(
+            settings_spec,
+            settings::cargo_port_settings_registry(),
+        )
+        .with_context(|| "loading framework settings")?;
         let config = Config::new(config_path_buf, inputs.cfg);
         let keymap_path_buf = keymap::keymap_path()
             .as_ref()

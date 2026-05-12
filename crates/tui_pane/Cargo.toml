@@ -20,6 +20,7 @@ ratatui   = "0.30.0"
 serde     = { version = "1", features = ["derive"] }
 thiserror = "2"
 toml      = "1.1.2"
+unicode-width = "0.2.2"
 
 [dev-dependencies]
 # none in Phase 1; later phases add only std + the crate's own types.

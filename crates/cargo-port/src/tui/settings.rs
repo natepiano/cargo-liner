@@ -1,17 +1,21 @@
 use crossterm::event::KeyCode;
 use ratatui::Frame;
-use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
-use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::FrameworkOverlayId;
+use tui_pane::SettingCodecs;
 use tui_pane::SettingsCommand;
+use tui_pane::SettingsError;
+use tui_pane::SettingsFileSpec;
 use tui_pane::SettingsPaneAction;
+use tui_pane::SettingsRegistry;
+use tui_pane::SettingsRenderOptions;
+use tui_pane::SettingsRow as FrameworkSettingsRow;
+use tui_pane::SettingsSection;
+use tui_pane::SettingsStore;
 use tui_pane::ToastDuration;
 use tui_pane::ToastSettings;
-use unicode_width::UnicodeWidthChar;
-use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
 use super::constants::ACTIVE_BORDER_COLOR;
@@ -25,13 +29,13 @@ use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
 use super::keymap_ui;
 use super::pane::PaneFocusState;
-use super::pane::PaneSelectionState;
-use super::panes::PaneId;
 use super::popup::PopupFrame;
 use super::render;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::config::LintCommandConfig;
+use crate::constants::APP_NAME;
+use crate::constants::CONFIG_FILE;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingOption {
@@ -66,15 +70,9 @@ fn parse_dir_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-type SettingsRow = (Option<SettingOption>, &'static str, String);
+type AppSettingsRow = (Option<SettingOption>, &'static str, String);
 
-fn selectable_setting_count(rows: &[SettingsRow]) -> usize {
-    rows.iter()
-        .filter(|(setting, _, _)| setting.is_some())
-        .count()
-}
-
-fn setting_at_selection(rows: &[SettingsRow], selection_index: usize) -> Option<SettingOption> {
+fn setting_at_selection(rows: &[AppSettingsRow], selection_index: usize) -> Option<SettingOption> {
     rows.iter()
         .filter_map(|(setting, _, _)| *setting)
         .nth(selection_index)
@@ -274,7 +272,362 @@ fn format_cpu_yellow_max(config: &CargoPortConfig) -> String {
     config.cpu.yellow_max_percent.to_string()
 }
 
-fn settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow> {
+pub(super) fn cargo_port_settings_registry() -> SettingsRegistry<App> {
+    let registry = SettingsRegistry::<App>::new();
+    let registry = register_general_settings(registry);
+    let registry = register_cpu_settings(registry);
+    register_lint_settings(registry)
+}
+
+fn register_general_settings(registry: SettingsRegistry<App>) -> SettingsRegistry<App> {
+    registry
+        .add_bool_in(
+            SettingsSection::App("mouse"),
+            "invert_scroll",
+            get_invert_scroll,
+            set_invert_scroll,
+        )
+        .add_bool_in(
+            SettingsSection::App("tui"),
+            "include_non_rust",
+            get_include_non_rust,
+            set_include_non_rust,
+        )
+        .add_bool_in(
+            SettingsSection::App("tui"),
+            "navigation_keys",
+            get_navigation_keys,
+            set_navigation_keys,
+        )
+        .add_int_in(
+            SettingsSection::App("tui"),
+            "ci_run_count",
+            get_ci_run_count,
+            set_ci_run_count,
+        )
+        .add_string_in(
+            SettingsSection::App("tui"),
+            "editor",
+            get_editor,
+            set_editor,
+        )
+        .add_string_in(
+            SettingsSection::App("tui"),
+            "terminal_command",
+            get_terminal_command,
+            set_terminal_command,
+        )
+        .add_string_in(
+            SettingsSection::App("tui"),
+            "main_branch",
+            get_main_branch,
+            set_main_branch,
+        )
+        .add_custom_in(
+            SettingsSection::App("tui"),
+            "other_primary_branches",
+            SettingCodecs {
+                format: format_other_primary_branches,
+                parse:  set_other_primary_branches,
+                adjust: None,
+            },
+        )
+        .add_custom_in(
+            SettingsSection::App("tui"),
+            "include_dirs",
+            SettingCodecs {
+                format: format_include_dirs,
+                parse:  set_include_dirs,
+                adjust: None,
+            },
+        )
+        .add_custom_in(
+            SettingsSection::App("tui"),
+            "inline_dirs",
+            SettingCodecs {
+                format: format_inline_dirs,
+                parse:  set_inline_dirs,
+                adjust: None,
+            },
+        )
+        .add_float_in(
+            SettingsSection::App("tui"),
+            "discovery_shimmer_secs",
+            get_discovery_shimmer_secs,
+            set_discovery_shimmer_secs,
+        )
+}
+
+fn register_cpu_settings(registry: SettingsRegistry<App>) -> SettingsRegistry<App> {
+    registry
+        .add_int_in(
+            SettingsSection::App("cpu"),
+            "poll_ms",
+            get_cpu_poll_ms,
+            set_cpu_poll_ms,
+        )
+        .add_int_in(
+            SettingsSection::App("cpu"),
+            "green_max_percent",
+            get_cpu_green_max,
+            set_cpu_green_max,
+        )
+        .add_int_in(
+            SettingsSection::App("cpu"),
+            "yellow_max_percent",
+            get_cpu_yellow_max,
+            set_cpu_yellow_max,
+        )
+}
+
+fn register_lint_settings(registry: SettingsRegistry<App>) -> SettingsRegistry<App> {
+    registry
+        .add_bool_in(
+            SettingsSection::App("lint"),
+            "enabled",
+            get_lints_enabled,
+            set_lints_enabled,
+        )
+        .add_bool_in(
+            SettingsSection::App("lint"),
+            "on_discovery",
+            get_lint_on_discovery,
+            set_lint_on_discovery,
+        )
+        .add_custom_in(
+            SettingsSection::App("lint"),
+            "include",
+            SettingCodecs {
+                format: format_lint_projects,
+                parse:  set_lint_projects,
+                adjust: None,
+            },
+        )
+        .add_custom_in(
+            SettingsSection::App("lint"),
+            "commands",
+            SettingCodecs {
+                format: format_lint_commands,
+                parse:  set_lint_commands,
+                adjust: None,
+            },
+        )
+        .add_string_in(
+            SettingsSection::App("lint"),
+            "cache_size",
+            format_lint_cache_size,
+            set_lint_cache_size,
+        )
+}
+
+pub(super) fn load_cargo_port_config_for_startup() -> Result<CargoPortConfig, String> {
+    let config_path = config::config_path();
+    let should_seed_file = config_path
+        .as_ref()
+        .is_some_and(|path| !path.as_path().exists());
+    let settings_spec = config_path.as_ref().map_or_else(
+        || SettingsFileSpec::new(APP_NAME, CONFIG_FILE),
+        |path| SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(path.as_path()),
+    );
+    let mut loaded_settings =
+        SettingsStore::<App>::load_for_startup(settings_spec, cargo_port_settings_registry())
+            .map_err(|err| err.to_string())?;
+    if should_seed_file {
+        loaded_settings
+            .store
+            .save(
+                &loaded_settings.app_settings,
+                &loaded_settings.toast_settings,
+            )
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(loaded_settings.app_settings)
+}
+
+fn settings_invalid(section: &str, key: &str, message: impl Into<String>) -> SettingsError {
+    SettingsError::Invalid {
+        section: section.to_string(),
+        key:     key.to_string(),
+        message: message.into(),
+    }
+}
+
+fn validate_registered_config(config: &CargoPortConfig) -> Result<(), SettingsError> {
+    config::normalize_config(config.clone())
+        .map(|_| ())
+        .map_err(|err| settings_invalid("app", "config", err))
+}
+
+const fn get_invert_scroll(config: &CargoPortConfig) -> bool {
+    config.mouse.invert_scroll.is_inverted()
+}
+
+fn set_invert_scroll(config: &mut CargoPortConfig, value: bool) -> Result<(), SettingsError> {
+    config.mouse.invert_scroll = value.into();
+    validate_registered_config(config)
+}
+
+const fn get_include_non_rust(config: &CargoPortConfig) -> bool {
+    config.tui.include_non_rust.includes_non_rust()
+}
+
+fn set_include_non_rust(config: &mut CargoPortConfig, value: bool) -> Result<(), SettingsError> {
+    config.tui.include_non_rust = value.into();
+    validate_registered_config(config)
+}
+
+const fn get_navigation_keys(config: &CargoPortConfig) -> bool {
+    config.tui.navigation_keys.uses_vim()
+}
+
+fn set_navigation_keys(config: &mut CargoPortConfig, value: bool) -> Result<(), SettingsError> {
+    config.tui.navigation_keys = value.into();
+    validate_registered_config(config)
+}
+
+fn get_ci_run_count(config: &CargoPortConfig) -> i64 { i64::from(config.tui.ci_run_count) }
+
+fn set_ci_run_count(config: &mut CargoPortConfig, value: i64) -> Result<(), SettingsError> {
+    let count = u32::try_from(value)
+        .map_err(|_| settings_invalid("tui", "ci_run_count", "expected positive integer"))?;
+    config.tui.ci_run_count = count.max(1);
+    Ok(())
+}
+
+fn get_editor(config: &CargoPortConfig) -> String { config.tui.editor.clone() }
+
+fn set_editor(config: &mut CargoPortConfig, value: &str) -> Result<(), SettingsError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(settings_invalid("tui", "editor", "must not be empty"));
+    }
+    config.tui.editor = value.to_string();
+    Ok(())
+}
+
+fn get_terminal_command(config: &CargoPortConfig) -> String { config.tui.terminal_command.clone() }
+
+fn set_terminal_command(config: &mut CargoPortConfig, value: &str) -> Result<(), SettingsError> {
+    config.tui.terminal_command = value.trim().to_string();
+    validate_registered_config(config)
+}
+
+fn get_main_branch(config: &CargoPortConfig) -> String { config.tui.main_branch.clone() }
+
+fn set_main_branch(config: &mut CargoPortConfig, value: &str) -> Result<(), SettingsError> {
+    config.tui.main_branch = config::normalize_branch_name(value, "tui.main_branch")
+        .map_err(|err| settings_invalid("tui", "main_branch", err))?;
+    Ok(())
+}
+
+fn set_other_primary_branches(
+    value: &str,
+    config: &mut CargoPortConfig,
+) -> Result<(), SettingsError> {
+    config.tui.other_primary_branches =
+        config::normalize_branch_list(&parse_dir_list(value), "tui.other_primary_branches")
+            .map_err(|err| settings_invalid("tui", "other_primary_branches", err))?;
+    Ok(())
+}
+
+fn format_include_dirs(config: &CargoPortConfig) -> String {
+    format_sorted_list(&config.tui.include_dirs)
+}
+
+fn set_include_dirs(value: &str, config: &mut CargoPortConfig) -> Result<(), SettingsError> {
+    config.tui.include_dirs = normalize_sorted_list(value);
+    validate_registered_config(config)
+}
+
+fn format_inline_dirs(config: &CargoPortConfig) -> String {
+    format_sorted_list(&config.tui.inline_dirs)
+}
+
+fn set_inline_dirs(value: &str, config: &mut CargoPortConfig) -> Result<(), SettingsError> {
+    config.tui.inline_dirs = normalize_sorted_list(value);
+    validate_registered_config(config)
+}
+
+const fn get_discovery_shimmer_secs(config: &CargoPortConfig) -> f64 {
+    config.tui.discovery_shimmer_secs
+}
+
+fn set_discovery_shimmer_secs(
+    config: &mut CargoPortConfig,
+    value: f64,
+) -> Result<(), SettingsError> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(settings_invalid(
+            "tui",
+            "discovery_shimmer_secs",
+            "expected non-negative finite seconds",
+        ));
+    }
+    config.tui.discovery_shimmer_secs = value;
+    Ok(())
+}
+
+fn get_cpu_poll_ms(config: &CargoPortConfig) -> i64 {
+    i64::try_from(config.cpu.poll_ms).unwrap_or(i64::MAX)
+}
+
+fn set_cpu_poll_ms(config: &mut CargoPortConfig, value: i64) -> Result<(), SettingsError> {
+    let poll_ms = u64::try_from(value)
+        .map_err(|_| settings_invalid("cpu", "poll_ms", "expected positive integer"))?;
+    config.cpu.poll_ms = poll_ms.max(250);
+    Ok(())
+}
+
+fn get_cpu_green_max(config: &CargoPortConfig) -> i64 { i64::from(config.cpu.green_max_percent) }
+
+fn set_cpu_green_max(config: &mut CargoPortConfig, value: i64) -> Result<(), SettingsError> {
+    let percent = u8::try_from(value.clamp(0, 100)).unwrap_or(100);
+    config.cpu.green_max_percent = percent;
+    validate_registered_config(config)
+}
+
+fn get_cpu_yellow_max(config: &CargoPortConfig) -> i64 { i64::from(config.cpu.yellow_max_percent) }
+
+fn set_cpu_yellow_max(config: &mut CargoPortConfig, value: i64) -> Result<(), SettingsError> {
+    let percent = u8::try_from(value.clamp(0, 100)).unwrap_or(100);
+    config.cpu.yellow_max_percent = percent;
+    validate_registered_config(config)
+}
+
+const fn get_lints_enabled(config: &CargoPortConfig) -> bool { config.lint.enabled }
+
+fn set_lints_enabled(config: &mut CargoPortConfig, value: bool) -> Result<(), SettingsError> {
+    config.lint.enabled = value;
+    validate_registered_config(config)
+}
+
+const fn get_lint_on_discovery(config: &CargoPortConfig) -> bool {
+    config.lint.on_discovery.is_immediate()
+}
+
+fn set_lint_on_discovery(config: &mut CargoPortConfig, value: bool) -> Result<(), SettingsError> {
+    config.lint.on_discovery = value.into();
+    validate_registered_config(config)
+}
+
+fn set_lint_projects(value: &str, config: &mut CargoPortConfig) -> Result<(), SettingsError> {
+    config.lint.include = normalize_sorted_list(value);
+    validate_registered_config(config)
+}
+
+fn set_lint_commands(value: &str, config: &mut CargoPortConfig) -> Result<(), SettingsError> {
+    config.lint.commands = parse_lint_commands(value);
+    validate_registered_config(config)
+}
+
+fn set_lint_cache_size(config: &mut CargoPortConfig, value: &str) -> Result<(), SettingsError> {
+    config.lint.cache_size = parse_lint_cache_size(value).map_err(|_| {
+        settings_invalid("lint", "cache_size", format!("Invalid cache size: {value}"))
+    })?;
+    Ok(())
+}
+
+fn settings_rows(app: &App, config: &CargoPortConfig) -> Vec<AppSettingsRow> {
     let mut rows = general_settings_rows(app, config);
     rows.extend(toast_settings_rows(app, config));
     rows.extend(cpu_settings_rows(config));
@@ -282,7 +635,7 @@ fn settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow> {
     rows
 }
 
-fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow> {
+fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<AppSettingsRow> {
     vec![
         (None, "General", String::new()),
         (
@@ -353,7 +706,7 @@ fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow
     ]
 }
 
-fn toast_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow> {
+fn toast_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<AppSettingsRow> {
     vec![
         (None, "Toasts", String::new()),
         (
@@ -374,7 +727,7 @@ fn toast_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow> 
     ]
 }
 
-fn cpu_settings_rows(config: &CargoPortConfig) -> Vec<SettingsRow> {
+fn cpu_settings_rows(config: &CargoPortConfig) -> Vec<AppSettingsRow> {
     vec![
         (None, "CPU", String::new()),
         (
@@ -395,7 +748,7 @@ fn cpu_settings_rows(config: &CargoPortConfig) -> Vec<SettingsRow> {
     ]
 }
 
-fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow> {
+fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<AppSettingsRow> {
     vec![
         (None, "Lints", String::new()),
         (
@@ -434,135 +787,6 @@ fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsRow> {
             format_lint_cache_size(config),
         ),
     ]
-}
-
-fn wrap_text_to_width(value: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![String::new()];
-    }
-    if value.trim().is_empty() {
-        return vec![String::new()];
-    }
-
-    let mut wrapped = Vec::new();
-    let mut current = String::new();
-
-    for word in value.split_whitespace() {
-        let separator = if current.is_empty() { "" } else { " " };
-        let candidate = format!("{current}{separator}{word}");
-        if candidate.width() <= width {
-            current = candidate;
-            continue;
-        }
-
-        if !current.is_empty() {
-            wrapped.push(std::mem::take(&mut current));
-        }
-
-        if word.width() <= width {
-            current = word.to_string();
-            continue;
-        }
-
-        let mut segment = String::new();
-        for ch in word.chars() {
-            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if !segment.is_empty() && segment.width() + char_width > width {
-                wrapped.push(std::mem::take(&mut segment));
-            }
-            segment.push(ch);
-        }
-        current = segment;
-    }
-
-    if !current.is_empty() {
-        wrapped.push(current);
-    }
-
-    if wrapped.is_empty() {
-        wrapped.push(String::new());
-    }
-
-    wrapped
-}
-
-fn push_wrapped_value_row(
-    lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
-    target: Option<usize>,
-    row: &WrappedValueRow<'_>,
-) {
-    let prefix_width = row.prefix.width();
-    let value_width = row.content_width.saturating_sub(prefix_width).max(1);
-    let wrapped = wrap_text_to_width(row.value, value_width);
-    let continuation_prefix = " ".repeat(prefix_width);
-
-    for (index, chunk) in wrapped.into_iter().enumerate() {
-        let visible_prefix = if index == 0 {
-            row.prefix.to_string()
-        } else {
-            continuation_prefix.clone()
-        };
-        lines.push(Line::from(vec![
-            Span::styled(visible_prefix, row.prefix_style),
-            Span::styled(chunk, row.value_style),
-        ]));
-        line_targets.push(target);
-    }
-}
-
-struct WrappedValueRow<'a> {
-    prefix:        &'a str,
-    value:         &'a str,
-    prefix_style:  Style,
-    value_style:   Style,
-    content_width: usize,
-}
-
-#[cfg(test)]
-fn prev_char_boundary(s: &str, cursor: usize) -> usize {
-    s[..cursor].char_indices().last().map_or(0, |(idx, _)| idx)
-}
-
-#[cfg(test)]
-fn next_char_boundary(s: &str, cursor: usize) -> usize {
-    s[cursor..]
-        .chars()
-        .next()
-        .map_or(s.len(), |ch| cursor + ch.len_utf8())
-}
-
-fn render_editor_text(buf: &str, cursor: usize) -> String {
-    let mut rendered = String::with_capacity(buf.len() + 1);
-    rendered.push_str(&buf[..cursor]);
-    rendered.push('_');
-    rendered.push_str(&buf[cursor..]);
-    rendered
-}
-
-#[cfg(test)]
-fn insert_char_at_cursor(buf: &mut String, cursor: &mut usize, ch: char) {
-    buf.insert(*cursor, ch);
-    *cursor += ch.len_utf8();
-}
-
-#[cfg(test)]
-fn backspace_at_cursor(buf: &mut String, cursor: &mut usize) {
-    if *cursor == 0 {
-        return;
-    }
-    let prev = prev_char_boundary(buf, *cursor);
-    buf.drain(prev..*cursor);
-    *cursor = prev;
-}
-
-#[cfg(test)]
-fn delete_at_cursor(buf: &mut String, cursor: usize) {
-    if cursor >= buf.len() {
-        return;
-    }
-    let next = next_char_boundary(buf, cursor);
-    buf.drain(cursor..next);
 }
 
 fn parse_lint_commands(value: &str) -> Vec<LintCommandConfig> {
@@ -614,21 +838,31 @@ fn save_updated_config(app: &mut App, config: &CargoPortConfig) -> bool {
 
 pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     let rows = settings_rows(app, app.config.current());
-    let label_style = Style::default().fg(LABEL_COLOR);
     let content_width = usize::from(SETTINGS_POPUP_WIDTH.saturating_sub(2));
 
     let mut lines: Vec<Line<'static>> = vec![Line::from("")];
-    let mut line_targets = vec![None];
-    build_settings_lines(
-        app,
-        &rows,
-        &mut lines,
-        &mut line_targets,
-        label_style,
-        content_width,
+    let framework_rows = framework_settings_rows(app, &rows);
+    let rendered = app.framework.settings_pane.render_rows(
+        &framework_rows,
+        SettingsRenderOptions {
+            active: app.framework.overlay() == Some(FrameworkOverlayId::Settings),
+            inline_error: app.overlays.inline_error().map(String::as_str),
+            content_width,
+            section_header_indent: SECTION_HEADER_INDENT,
+            section_item_indent: SECTION_ITEM_INDENT,
+            title_style: Style::default().fg(TITLE_COLOR),
+            label_style: Style::default().fg(LABEL_COLOR),
+            muted_style: Style::default().fg(LABEL_COLOR),
+            success_style: Style::default().fg(SUCCESS_COLOR),
+            error_style: Style::default().fg(ERROR_COLOR),
+            inline_error_style: Style::default().fg(INLINE_ERROR_COLOR),
+            active_style: super::pane::Viewport::selection_style(PaneFocusState::Active),
+            remembered_style: super::pane::Viewport::selection_style(PaneFocusState::Remembered),
+            hovered_style: Style::default().bg(super::constants::HOVER_FOCUS_COLOR),
+        },
     );
+    lines.extend(rendered.lines);
     lines.push(Line::from(""));
-    line_targets.push(None);
 
     let popup_height = u16::try_from(lines.len())
         .unwrap_or(u16::MAX)
@@ -638,7 +872,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     app.framework
         .settings_pane
         .viewport_mut()
-        .set_len(selectable_setting_count(&rows));
+        .set_len(rendered.selectable_count);
 
     let inner = PopupFrame {
         title:        Some(" Settings ".to_string()),
@@ -655,8 +889,39 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
+}
 
-    app.framework.settings_pane.set_line_targets(line_targets);
+fn framework_settings_rows(app: &App, rows: &[AppSettingsRow]) -> Vec<FrameworkSettingsRow> {
+    let selected = selected_setting(app);
+    let mut selection_index = 0;
+    let mut framework_rows = Vec::with_capacity(rows.len());
+    for (setting, label, value) in rows {
+        let Some(setting) = *setting else {
+            framework_rows.push(FrameworkSettingsRow::section(*label));
+            continue;
+        };
+        let mut row = if is_toggle_setting(Some(setting)) {
+            FrameworkSettingsRow::toggle(selection_index, *label, value == "ON")
+        } else if setting == SettingOption::CiRunCount {
+            FrameworkSettingsRow::stepper(selection_index, *label, value.clone())
+        } else {
+            FrameworkSettingsRow::value(selection_index, *label, value.clone())
+        };
+        if setting == SettingOption::NavigationKeys
+            && selected == Some(SettingOption::NavigationKeys)
+            && !settings_is_editing(app)
+        {
+            row = row.with_suffix("  maps h/j/k/l to arrow navigation");
+        }
+        if setting == SettingOption::LintCacheSize {
+            let used = render::format_bytes(app.lint.cache_usage.bytes);
+            let limit = &app.config.current().lint.cache_size;
+            row = row.with_suffix(format!("  {used} / {limit}"));
+        }
+        framework_rows.push(row);
+        selection_index += 1;
+    }
+    framework_rows
 }
 
 const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
@@ -672,258 +937,7 @@ const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
     )
 }
 
-fn push_toggle_row(
-    lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
-    value: &str,
-    ctx: &SettingsLineContext<'_>,
-    suffix: Option<&str>,
-) {
-    let is_on = value == "ON";
-    let toggle_style = if is_on {
-        Style::default()
-            .fg(SUCCESS_COLOR)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(ERROR_COLOR)
-            .add_modifier(Modifier::BOLD)
-    };
-    let row_style = ctx.selection.patch(ctx.label_style);
-    lines.push(Line::from(vec![
-        Span::styled(ctx.label.to_owned(), row_style),
-        Span::styled("< ", ctx.selection.patch(Style::default().fg(LABEL_COLOR))),
-        Span::styled(value.to_owned(), ctx.selection.patch(toggle_style)),
-        Span::styled(" >", ctx.selection.patch(Style::default().fg(LABEL_COLOR))),
-        Span::styled(suffix.unwrap_or_default().to_owned(), row_style),
-    ]));
-    line_targets.push(Some(ctx.selection_index));
-}
-
-struct SettingsLineContext<'a> {
-    selection_index: usize,
-    label:           &'a str,
-    selection:       PaneSelectionState,
-    label_style:     Style,
-    content_width:   usize,
-}
-
-fn push_wrapped_setting_value(
-    lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
-    ctx: &SettingsLineContext<'_>,
-    value: &str,
-    value_style: Style,
-) {
-    let row = WrappedValueRow {
-        prefix: ctx.label,
-        value,
-        prefix_style: ctx.selection.patch(ctx.label_style),
-        value_style,
-        content_width: ctx.content_width,
-    };
-    push_wrapped_value_row(lines, line_targets, Some(ctx.selection_index), &row);
-}
-
 const fn settings_is_editing(app: &App) -> bool { app.framework.settings_pane.is_editing() }
-
-fn framework_selection_state(
-    app: &App,
-    selection_index: usize,
-    focus: PaneFocusState,
-) -> PaneSelectionState {
-    let viewport = app.framework.settings_pane.viewport();
-    if selection_index == viewport.pos() && matches!(focus, PaneFocusState::Active) {
-        PaneSelectionState::Active
-    } else if viewport.hovered() == Some(selection_index) {
-        PaneSelectionState::Hovered
-    } else if selection_index == viewport.pos() && matches!(focus, PaneFocusState::Remembered) {
-        PaneSelectionState::Remembered
-    } else {
-        PaneSelectionState::Unselected
-    }
-}
-
-fn nav_keys_toggle_suffix(
-    app: &App,
-    setting: Option<SettingOption>,
-    selection: PaneSelectionState,
-) -> Option<&'static str> {
-    if setting == Some(SettingOption::NavigationKeys)
-        && selection != PaneSelectionState::Unselected
-        && !settings_is_editing(app)
-    {
-        Some("  maps h/j/k/l to arrow navigation")
-    } else {
-        None
-    }
-}
-
-fn push_ci_run_count_row(
-    lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
-    ctx: &SettingsLineContext<'_>,
-    value: &str,
-) {
-    lines.push(Line::from(vec![
-        Span::styled(ctx.label.to_owned(), ctx.selection.patch(ctx.label_style)),
-        Span::styled("< ", ctx.selection.patch(Style::default().fg(LABEL_COLOR))),
-        Span::styled(value.to_owned(), ctx.selection.patch(Style::default())),
-        Span::styled(" >", ctx.selection.patch(Style::default().fg(LABEL_COLOR))),
-    ]));
-    line_targets.push(Some(ctx.selection_index));
-}
-
-fn push_lint_cache_size_row(
-    app: &App,
-    lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
-    ctx: &SettingsLineContext<'_>,
-    value: &str,
-) {
-    let used = render::format_bytes(app.lint.cache_usage.bytes);
-    let limit = &app.config.current().lint.cache_size;
-    let usage_suffix = format!("  {used} / {limit}");
-    lines.push(Line::from(vec![
-        Span::styled(ctx.label.to_owned(), ctx.selection.patch(ctx.label_style)),
-        Span::styled(value.to_owned(), ctx.selection.patch(Style::default())),
-        Span::styled(usage_suffix, Style::default().fg(LABEL_COLOR)),
-    ]));
-    line_targets.push(Some(ctx.selection_index));
-}
-
-fn push_setting_row(
-    app: &App,
-    lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
-    ctx: &SettingsLineContext<'_>,
-    setting: Option<SettingOption>,
-    value: &str,
-) {
-    if let Some(error) = selected_inline_error(app, ctx.selection) {
-        push_wrapped_setting_value(
-            lines,
-            line_targets,
-            ctx,
-            &error,
-            ctx.selection.patch(Style::default().fg(INLINE_ERROR_COLOR)),
-        );
-    } else if settings_is_editing(app) && ctx.selection != PaneSelectionState::Unselected {
-        let edited_text = render_editor_text(
-            app.framework.settings_pane.edited_text(),
-            app.framework.settings_pane.edit_cursor(),
-        );
-        push_wrapped_setting_value(
-            lines,
-            line_targets,
-            ctx,
-            &edited_text,
-            ctx.selection.patch(Style::default()),
-        );
-    } else if is_toggle_setting(setting) {
-        push_toggle_row(
-            lines,
-            line_targets,
-            value,
-            ctx,
-            nav_keys_toggle_suffix(app, setting, ctx.selection),
-        );
-    } else if setting == Some(SettingOption::CiRunCount)
-        && ctx.selection != PaneSelectionState::Unselected
-        && !settings_is_editing(app)
-    {
-        push_ci_run_count_row(lines, line_targets, ctx, value);
-    } else if setting == Some(SettingOption::TerminalCommand)
-        && value.starts_with("Not configured.")
-    {
-        push_wrapped_setting_value(
-            lines,
-            line_targets,
-            ctx,
-            value,
-            ctx.selection.patch(Style::default().fg(INLINE_ERROR_COLOR)),
-        );
-    } else if setting == Some(SettingOption::LintCacheSize) {
-        push_lint_cache_size_row(app, lines, line_targets, ctx, value);
-    } else {
-        push_wrapped_setting_value(
-            lines,
-            line_targets,
-            ctx,
-            value,
-            ctx.selection.patch(Style::default()),
-        );
-    }
-}
-
-pub(super) fn build_settings_lines(
-    app: &App,
-    settings: &[SettingsRow],
-    lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
-    label_style: Style,
-    content_width: usize,
-) {
-    let max_label = settings
-        .iter()
-        .filter_map(|(setting, name, _)| setting.map(|_| name.len()))
-        .max()
-        .unwrap_or(0);
-
-    let mut selection_index = 0;
-    for (setting, name, value) in settings {
-        if setting.is_none() {
-            push_settings_header(lines, line_targets, name);
-            continue;
-        }
-
-        let cursor = if app.framework.settings_pane.viewport().pos() == selection_index {
-            "▶ "
-        } else {
-            "  "
-        };
-        let focus = if app.framework.overlay() == Some(FrameworkOverlayId::Settings) {
-            PaneFocusState::Active
-        } else {
-            app.pane_focus_state(PaneId::Settings)
-        };
-        let selection = framework_selection_state(app, selection_index, focus);
-        let setting = *setting;
-        let label = format!("{SECTION_ITEM_INDENT}{cursor}{name:<max_label$}  ");
-        let ctx = SettingsLineContext {
-            selection_index,
-            label: &label,
-            selection,
-            label_style,
-            content_width,
-        };
-        push_setting_row(app, lines, line_targets, &ctx, setting, value);
-        selection_index += 1;
-    }
-}
-
-fn push_settings_header(
-    lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<Option<usize>>,
-    name: &str,
-) {
-    lines.push(Line::from(vec![
-        Span::raw(SECTION_HEADER_INDENT),
-        Span::styled(
-            format!("{name}:"),
-            Style::default()
-                .fg(TITLE_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
-    line_targets.push(None);
-}
-
-fn selected_inline_error(app: &App, selection: PaneSelectionState) -> Option<String> {
-    (selection != PaneSelectionState::Unselected && !settings_is_editing(app))
-        .then(|| app.overlays.inline_error().cloned())
-        .flatten()
-}
 
 pub(super) fn dispatch_settings_action(action: SettingsPaneAction, app: &mut App) {
     let setting = selected_setting(app);
@@ -1299,8 +1313,6 @@ pub(super) fn focus_terminal_command(app: &mut App) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use ratatui::style::Style;
-
     use super::*;
 
     #[test]
@@ -1320,7 +1332,6 @@ mod tests {
             ),
         ];
 
-        assert_eq!(selectable_setting_count(&rows), 2);
         assert_eq!(
             setting_at_selection(&rows, 0),
             Some(SettingOption::InvertScroll)
@@ -1381,6 +1392,33 @@ mod tests {
     }
 
     #[test]
+    fn settings_store_saves_app_settings_and_framework_toasts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let settings_spec = SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(&path);
+        let mut loaded =
+            SettingsStore::<App>::load_for_startup(settings_spec, cargo_port_settings_registry())
+                .expect("load settings");
+        let mut config = CargoPortConfig::default();
+        config.tui.ci_run_count = 9;
+        let toast_settings = ToastSettings {
+            default_timeout: ToastDuration::try_from_secs("default_timeout", 3.0)
+                .expect("toast duration"),
+            ..ToastSettings::default()
+        };
+
+        loaded
+            .store
+            .save(&config, &toast_settings)
+            .expect("save settings");
+
+        let saved = std::fs::read_to_string(path).expect("read saved config");
+        assert!(saved.contains("ci_run_count = 9"));
+        assert!(saved.contains("[toasts]"));
+        assert!(saved.contains("default_timeout = 3.0"));
+    }
+
+    #[test]
     fn parse_dir_list_sorts_alphabetically() {
         assert_eq!(
             normalize_sorted_list("zeta, alpha, beta"),
@@ -1398,94 +1436,5 @@ mod tests {
                 "primary".to_string()
             ]
         );
-    }
-
-    #[test]
-    fn wrapped_rows_continue_at_value_column() {
-        let mut lines = Vec::new();
-        let mut line_targets = Vec::new();
-        push_wrapped_value_row(
-            &mut lines,
-            &mut line_targets,
-            Some(0),
-            &WrappedValueRow {
-                prefix:        "  Projects      ",
-                value:         "alpha beta gamma delta epsilon",
-                prefix_style:  Style::default(),
-                value_style:   Style::default(),
-                content_width: 24,
-            },
-        );
-
-        assert!(lines.len() > 1);
-        assert_eq!(line_targets.len(), lines.len());
-        assert_eq!(lines[0].spans[0].content.as_ref(), "  Projects      ");
-        for line in &lines[1..] {
-            assert_eq!(line.spans[0].content.as_ref(), "                ");
-        }
-    }
-
-    #[test]
-    fn editor_text_renders_cursor_in_place() {
-        assert_eq!(render_editor_text("hana", 0), "_hana");
-        assert_eq!(render_editor_text("hana", 2), "ha_na");
-        assert_eq!(render_editor_text("hana", 4), "hana_");
-    }
-
-    #[test]
-    fn cursor_edit_helpers_support_in_place_editing() {
-        let mut buf = "hana".to_string();
-        let mut cursor = 2;
-
-        insert_char_at_cursor(&mut buf, &mut cursor, 'X');
-        assert_eq!(buf, "haXna");
-        assert_eq!(cursor, 3);
-
-        backspace_at_cursor(&mut buf, &mut cursor);
-        assert_eq!(buf, "hana");
-        assert_eq!(cursor, 2);
-
-        delete_at_cursor(&mut buf, cursor);
-        assert_eq!(buf, "haa");
-        assert_eq!(cursor, 2);
-    }
-
-    #[test]
-    fn cursor_movement_respects_char_boundaries() {
-        let text = "a🦀b";
-        let crab = "🦀".len();
-
-        assert_eq!(next_char_boundary(text, 0), 1);
-        assert_eq!(next_char_boundary(text, 1), 1 + crab);
-        assert_eq!(prev_char_boundary(text, text.len()), 1 + crab);
-        assert_eq!(prev_char_boundary(text, 1 + crab), 1);
-    }
-
-    #[test]
-    fn navigation_keys_selected_toggle_row_inlines_hint() {
-        let mut lines = Vec::new();
-        let mut line_targets = Vec::new();
-        let ctx = SettingsLineContext {
-            selection_index: 0,
-            label:           "  ▶ Vim nav keys  ",
-            selection:       PaneSelectionState::Active,
-            label_style:     Style::default(),
-            content_width:   80,
-        };
-        push_toggle_row(
-            &mut lines,
-            &mut line_targets,
-            "ON",
-            &ctx,
-            Some("  maps h/j/k/l to arrow navigation"),
-        );
-
-        let rendered = lines[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-
-        assert!(rendered.contains("< ON >  maps h/j/k/l to arrow navigation"));
     }
 }

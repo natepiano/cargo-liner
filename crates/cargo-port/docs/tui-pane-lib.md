@@ -3999,24 +3999,49 @@ cargo-port no longer parses or persists `[toasts]` through `src/config.rs`. `tui
 - `tui_pane::SettingsStore`, `SettingsFileSpec`, `SettingsRegistry`, `SettingsSection`, `SettingCodecs`, and `ToastSettings` landed as framework API, with `Framework<Ctx>` now owning `settings_store` and `toast_settings`.
 - Settings/Keymap mirror state moved out of cargo-port overlays: `Overlays::settings`, `Overlays::keymap`, `SettingsEditBuffer`, `settings_edit_keys`, and the remaining `overlays.settings` / `overlays.keymap` production references are gone.
 - The legacy cargo-port toast manager now reads timing through `framework.toast_settings()` while Phase 26 still owns the `app.toasts` storage migration.
+- The Phase 25 closeout pass finished the missing settings ownership pieces: cargo-port registers its app settings with `SettingsRegistry<App>`, `SettingsPane::render_rows` owns the generic row renderer / edit-buffer display / hit-target mapping, startup config load and default-file seeding run through `SettingsStore`, and runtime save/reload no longer call the old `config::save` / `config::try_load` path.
 
 **What deviated from the plan:**
-- cargo-port still renders and applies its app-specific Settings rows in `src/tui/settings.rs`; Phase 25 moved generic edit buffer / viewport state into `tui_pane::SettingsPane`, but did not complete the planned generic row renderer or app-setting registration for every cargo-port setting.
-- `src/config.rs` still owns cargo-port app-schema parsing, default-file creation, and `try_load` for startup. Phase 25 added `config::save_to_path` and changed `App::save_and_apply_config` to respect `App`'s configured path, but did not make `SettingsStore` the sole cargo-port config loader.
+- cargo-port still owns app-specific setting labels, display values, validation helpers, and runtime side-effect orchestration in `src/tui/settings.rs`; those are intentionally app-specific. The generic row rendering, text editing, persistence, and framework-owned `[toasts]` section are framework-owned.
+- `src/config.rs` remains the app schema / normalization home for `CargoPortConfig`; it no longer owns generic load/save/default-file behavior.
 - Test apps initially inherited the real user config path through both `Config` and `SettingsStore`; the implementation fixed the harness by installing tempfile-backed paths in `src/tui/app/tests/mod.rs`.
 
 **Surprises:**
-- The first validation pass wrote `/tmp/test` into `/Users/natemccoy/Library/Application Support/cargo-port/config.toml` because `App::save_and_apply_config` called global `config::save(...)` instead of saving through the app instance path. That defect is fixed by `config::save_to_path` plus tempfile-backed test app construction.
+- The first validation pass wrote `/tmp/test` into `/Users/natemccoy/Library/Application Support/cargo-port/config.toml` because `App::save_and_apply_config` called global `config::save(...)` instead of saving through the app instance path. The closeout fix deleted that save path; `App::save_and_apply_config` now saves through `framework.settings_store_mut().save(...)`.
+- Runtime config reload needed `SettingsStore::load_from_path(...)`, not `load_current()`, because `Config::take_stamp_change()` reports the concrete changed path and tests can retarget the watcher after startup.
+- Registered custom settings must translate TOML arrays into the edit-string form before calling app codecs. `tui_pane::SettingsStore` now handles string arrays and command-table arrays so normal cargo-port config files do not parse as invalid settings.
 - `Viewport::set_pos` had to keep the old app viewport behavior: callers may set a cursor before the pane reports its final length, and `set_len` clamps later.
 
 **Implications for remaining phases:**
 - Phase 26 can consume `framework.toast_settings()` for toast timings without reading removed `TuiConfig` fields.
-- The remaining settings ownership gap is not in Phase 26's current toast-manager migration text: generic app-setting registration, framework-backed SettingsPane row rendering, and framework-owned app-config load/save still need an explicit owner before the settings migration can be called architecturally complete.
+- Settings ownership is now architecturally complete for Phase 25: remaining Phase 26 work can focus on migrating `app.toasts` / `ToastManager` into `framework.toasts`, not on settings-store cleanup.
 - Future tests that construct `App` must keep installing tempfile-backed `Config` and `SettingsStore` paths; otherwise test saves can mutate the real user config again.
+
+**Verification:**
+- `cargo +nightly fmt --all`
+- `cargo nextest run -p cargo-port config_reload` — 9 passed
+- `cargo nextest run -p cargo-port settings` — 18 passed
+- `cargo nextest run -p tui_pane settings` — 25 passed
+- `cargo check --workspace --all-targets -q`
+- `cargo clippy --workspace --all-targets`
+- `cargo nextest run --workspace` — 863 passed
+- `cargo install --path .`
+
+### Phase 25 Review
+
+- Phase 26: setup work that Phase 25/19 already satisfied (`framework.toast_settings()` live, `handle_toast_key` absent) is now framed as acceptance checks, not implementation scope.
+- Phase 26: task/tracked-item API parity now names the full cargo-port toast-manager surface that must move or be explicitly replaced before deleting `src/tui/toasts/manager.rs` / `format.rs`.
+- Phase 26: task-owned operations now stay keyed by `ToastTaskId`; `ToastId` is reserved for card identity, dismissal, hitboxes, focus, and rendering.
+- Phase 26: `ToastSettings` consumption now names the push/prune/render boundaries, `enabled`, `max_visible`, and the default-only animation caveat.
+- Phase 26: production tests that need cargo-port `App` / `CargoPortToastAction` now stay in the binary test suite; `tui_pane/tests/` uses mock apps only.
+- Phase 26: `DismissTarget::Toast` may remain as cargo-port hit-test state, but its handler must route to framework toast storage.
+- Risks: removed the stale Settings toggle-direction risk after Phase 25's framework SettingsPane action model superseded it.
 
 ### Phase 26 — Migrate cargo-port `ToastManager` into `tui_pane`
 
 Phase 26 moves the generic toast subsystem from cargo-port (`src/tui/toasts/`) into the framework. Cargo-port keeps only the binary-specific copy (toast titles/bodies, which app events create toasts) and the `CargoPortToastAction` payload from Phase 24. The migration consumes `framework.toast_settings()` (added in Phase 25) for width/timing/placement — no temporary constants. The binary's old `handle_toast_key` body is already gone after Phase 19; Phase 26 verifies the symbol is still absent and focuses on deleting `app.toasts` / `ToastManager` storage and call sites.
+
+Already-satisfied setup stays as acceptance checks, not new implementation work: `framework.toast_settings()` is live after Phase 25, and `handle_toast_key` is absent after Phase 19.
 
 **1. Move generic types into `tui_pane/src/toasts/`.** New module structure:
 
@@ -4129,7 +4154,16 @@ The `push_*` entry points take raw `Duration`, not `ToastDuration` (the validate
 
 `push_persistent_styled` preserves cargo-port's existing diagnostic-toast case: a persistent warning/error toast can carry both a style and an optional `CargoPortToastAction::OpenPath`. Do not collapse persistent actionable toasts into `push_persistent` without an action; keymap/config diagnostics must still open their related file after the storage migration.
 
-Render reads width/gap/placement/animation from the `ToastSettings` argument the bar code passes in (sourced from `framework.toast_settings()`). `prune` reads `default_timeout` / `task_linger` from a settings reference threaded through the framework's tick loop.
+**ToastSettings consumption contract.** Phase 26 makes settings ownership explicit at each boundary:
+- Push helpers receive concrete `Duration`s chosen by the caller from `framework.toast_settings()`; task finish / tracked-item linger likewise receive `task_linger` from the caller or an explicit settings-aware wrapper.
+- Prune/tick either takes `&ToastSettings` directly (`prune(now, settings)`) or is wrapped by `Framework::prune_toasts(now)` / `Framework::tick_toasts(now)` that reads `self.toast_settings()` and calls the internal manager. Do not leave a public `prune(now)` API while saying it reads settings.
+- Render takes `&ToastSettings`; if `enabled == false`, render emits no cards/hitboxes while storage and timers continue. `max_visible` limits the number of visible cards/hitboxes considered during rendering and focus navigation; older active toasts remain stored.
+- `width`, `gap`, and `placement` are consumed by render/hitbox layout. `default_timeout` and `task_linger` are consumed when creating/finishing toasts, not retroactively on existing timers.
+- `animation` remains fixed defaults in Phase 26 unless the phase also adds TOML load/save keys for `animation.entrance_duration` and `animation.exit_duration`. If not adding those keys, update the prose to say render reads animation from `ToastSettings` defaults only, not user-configurable TOML.
+
+**Task id policy.** `ToastTaskId` remains the handle for every operation tied to a running task toast. `ToastId` is the card identity for direct dismissal, hitboxes, focus, and view rendering. `push_task` may return both ids if render/hit-test code needs the card id, but cargo-port running-task state stores only `ToastTaskId`. Therefore `set_tracked_items`, `complete_missing_items`, `add_new_tracked_items`, `restart_tracked_item`, `mark_item_completed`, `tracked_item_count`, `finish_task`, `reactivate_task`, and `is_task_finished` all take `ToastTaskId`. Do not widen inflight/lint/CI/startup trackers to store both ids unless a concrete render/focus caller requires it.
+
+**Task/tracked-item API parity.** Before deleting `src/tui/toasts/manager.rs` and `format.rs`, Phase 26 carries forward every production manager/query/helper surface currently used by cargo-port: `push_timed_styled`, `start_task`, `finish_task`, `reactivate_task`, `is_alive`, `is_task_finished`, `tracked_item_count`, `set_tracked_items`, `complete_missing_items`, `add_new_tracked_items`, `restart_tracked_item`, `mark_item_completed`, `prune_tracked_items`, `format_toast_items`, `toast_body_width`, toast hitboxes, and viewport/focused-toast cursor reads. Each either becomes a `tui_pane::Toasts<Ctx>` method / helper or is replaced by an explicitly named new API in the same phase. The closeout grep is not enough; Phase 26 must prove the running-toast call sites in `src/tui/app/async_tasks/running_toasts.rs`, `poll.rs`, `service_handlers.rs`, `repo_handlers.rs`, and `startup_phase/toast_bodies.rs` compile against the framework API without behavior loss.
 
 **3. Cargo-port-specific types stay in cargo-port:**
 - `AbsolutePath` (only used inside `CargoPortToastAction::OpenPath` — not in framework types).
@@ -4144,9 +4178,9 @@ Render reads width/gap/placement/animation from the `ToastSettings` argument the
 - `src/tui/interaction.rs` — toast hit testing reads framework-owned hitboxes; toast body clicks focus `FrameworkFocusId::Toasts`; close clicks call `framework.toasts.dismiss(id)` followed by focus reconciliation after the framework borrow ends.
 - `App::prune_toasts` and async tick paths — call the framework toast prune path with `framework.toast_settings()`, then run `reconcile_focus_after_toast_change` if the active set changed.
 - All `app.toasts.push_*`, `start_task`, `finish_task`, `set_tracked_items`, and viewport navigation reads move to `app.framework.toasts`.
-- `DismissTarget::Toast(id)` routes to framework toast dismissal. Any cargo-port-only dismiss wrapper deletes with `app.toasts`.
+- `DismissTarget::Toast(id)` stays as cargo-port's hit-test / dismiss target unless the whole `DismissTarget` abstraction moves later. Its toast arm routes to `framework.toasts.dismiss(id)`; only wrappers that exist solely to reach `app.toasts` delete.
 
-Acceptance check: `rg 'app\\.toasts|ToastManager|render_toasts|DismissTarget::Toast' src/tui` must return only deliberate compatibility aliases or no production matches after Phase 26.
+Acceptance check: `rg 'app\\.toasts|ToastManager|render_toasts' src/tui` must return only deliberate compatibility aliases or no production matches after Phase 26. `DismissTarget::Toast` may remain only as a cargo-port hit-test target whose handler routes to framework toast storage.
 
 **5. Focus reconciliation hooks into `prune`.** Phase 12's `reconcile_focus_after_toast_change<Ctx>(ctx: &mut Ctx)` free fn runs from the framework's tick driver after `framework.prune(now)` returns — call site holds `&mut Ctx`, so the reconciler can route through `ctx.set_focus(...)` like the dispatch-time path. The dispatch-time call site (`dismiss_chain`) was wired in Phase 12 and stays untouched in Phase 26; only the new tick-driver call site is added here. Toast mutations that can drop the active count to zero (`dismiss`, `dismiss_focused`, `prune`, `finish_task` when linger is zero) only mutate the toast vec; they never touch focus directly. Focus repair is always a separate post-mutation step at a `&mut Ctx`-holding call site.
 
@@ -4154,15 +4188,15 @@ Acceptance check: `rg 'app\\.toasts|ToastManager|render_toasts|DismissTarget::To
 
 **7. Verify the binary's `handle_toast_key` function body is already gone.** Phase 19 deleted the legacy call path and function body. Phase 26 does not re-delete that symbol; it verifies `rg 'handle_toast_key' src/tui/input.rs` stays empty while the remaining toast ownership cleanup deletes `app.toasts`, the cargo-port `ToastManager`, and the old push/prune/render call sites.
 
-**Phase 26 tests** (in `tui_pane/tests/`):
-- cargo-port production: `enter_on_focused_toast_with_action_dispatches` — after `app.toasts` has migrated into `framework.toasts`, fixture toast with `CargoPortToastAction::OpenPath(p)` set; Enter on the focused toast calls `handle_toast_action(OpenPath(p))`.
+**Phase 26 tests:**
+- cargo-port production tests stay in the binary test suite and use the tempfile-backed `make_app` harness: `enter_on_focused_toast_with_action_dispatches` — after `app.toasts` has migrated into `framework.toasts`, fixture toast with `CargoPortToastAction::OpenPath(p)` set; Enter on the focused toast calls `handle_toast_action(OpenPath(p))`.
 - cargo-port production: `persistent_diagnostic_toast_keeps_action_path` — migrated keymap/config diagnostic toast uses `push_persistent_styled(..., Some(CargoPortToastAction::OpenPath(path)))`, and Enter opens that path.
-- Lifecycle: `timed_toast_expires_at_timeout_at`, `task_toast_lingers_after_finish_then_prunes`, `persistent_toast_survives_prune`.
-- Tracked items: `set_tracked_items_then_mark_completed_renders_strikethrough`, `prune_tracked_items_removes_finished_after_linger`.
-- Hitboxes: `render_emits_card_and_close_hitbox_per_visible_toast`.
-- Focus reconciliation: `prune_emptying_active_set_while_focused_moves_focus_to_first_live_app_tab_stop`.
-- Cross-crate: cargo-port's `App::push_timed_toast` test moves to a `tui_pane/tests/` integration test that uses a `MockApp` with `type ToastAction = NoToastAction;` (test pushes `action: None` only — `NoToastAction` is uninhabited, so any `Some(action)` constructor is statically impossible).
-- Settings round-trip: `render_uses_framework_toast_settings_width` — render output reflects a non-default `ToastWidth` set on `Framework::toast_settings`.
+- `tui_pane` lifecycle tests: `timed_toast_expires_at_timeout_at`, `task_toast_lingers_after_finish_then_prunes`, `persistent_toast_survives_prune`.
+- `tui_pane` tracked-item tests: `set_tracked_items_then_mark_completed_renders_strikethrough`, `prune_tracked_items_removes_finished_after_linger`.
+- `tui_pane` hitbox test: `render_emits_card_and_close_hitbox_per_visible_toast`.
+- `tui_pane` focus reconciliation test: `prune_emptying_active_set_while_focused_moves_focus_to_first_live_app_tab_stop`.
+- Cross-crate framework test: cargo-port's `App::push_timed_toast` behavior moves to a `tui_pane/tests/` integration test that uses a `MockApp` with `type ToastAction = NoToastAction;` (test pushes `action: None` only — `NoToastAction` is uninhabited, so any `Some(action)` constructor is statically impossible).
+- `tui_pane` settings/render test: `render_uses_framework_toast_settings_width` — render output reflects a non-default `ToastWidth` set on `Framework::toast_settings`.
 
 **Code touched in Phase 26:**
 - New: `tui_pane/src/toasts/{mod,manager,render,format,hitbox,tracked_item}.rs`.
@@ -4170,7 +4204,7 @@ Acceptance check: `rg 'app\\.toasts|ToastManager|render_toasts|DismissTarget::To
 - `tui_pane/src/lib.rs` — re-export `Toast`, `ToastLifetime`, `ToastPhase`, `TaskStatus`, `ToastTaskId`, `ToastStyle`, `TrackedItem`, `TrackedItemKey`, `TrackedItemView`, `ToastView`, `ToastHitbox`.
 - Cargo-port: delete `src/tui/toasts/{manager,render,format}.rs`. `src/tui/toasts/mod.rs` shrinks to `pub use tui_pane::Toasts;` and the cargo-port-specific `From` impls for `TrackedItemKey`.
 - Cargo-port `App` shrinks: `app.toasts: tui_pane::Toasts<App>` is `app.framework.toasts` directly; the field on `App` deletes. All `app.toasts.push_*` call sites become `app.framework.toasts.push_*`.
-- `App::dismiss(DismissTarget::Toast(id))` deletes; the framework's `Toasts::dismiss(id)` is the path.
+- `App::dismiss(DismissTarget::Toast(id))` stays only if `App::dismiss` still owns non-toast dismissal; its toast arm routes to `framework.toasts.dismiss(id)`. Toast-only helpers that only wrapped `app.toasts.dismiss(id)` delete.
 - `src/tui/input.rs` — verify `handle_toast_key` remains absent; no Phase 26 code deletion is expected for that symbol.
 - Phase closeout runs the remaining-phase closeout gate.
 
@@ -4217,7 +4251,6 @@ Verify CI invocations operate on the intended scope before Phase 1 lands. Tools 
 - **Workspace conversion.** Verified during Phase 1; no further action. Both crates build green, `cargo install --path .` still installs the binary, `Cargo.lock` and `target/` are unchanged in location.
 - **`tui_pane` API under real use.** Designing a framework before its first client lands is speculative — trait signatures and builder methods may need revision once cargo-port consumes them. Mitigation: cargo-port is the first client; phases 5-6 will surface mismatches, and the framework can be revised before any external user touches it.
 - **Scope precedence.** `NavigationAction::Right` and `ProjectListAction::ExpandRow` both default to `Right`. The "pane scope wins" rule is documented above and enforced by the input router. Lock with a unit test.
-- **Settings toggle direction for booleans.** Today's `handle_settings_adjust_key` (`settings.rs:869-919`) inspects `KeyCode::Right` vs `Left` only for `SettingOption::CiRunCount` (a stepper); booleans flip regardless of direction. Plan splits into `ToggleNext` / `ToggleBack`. For booleans, both delegate to flip-the-bool. For the stepper, `ToggleNext` increments and `ToggleBack` decrements.
 - **`is_vim_reserved` load order.** It must read `Navigation::defaults()` (constant builder), not the in-progress keymap, to avoid a load-order cycle when called inside `resolve_scope`. Defaults are constant and always available.
 - **Framework grants `&mut Vec<Span>` to bar code.** Framework convention: each helper pushes only into vecs it owns content for. Reviewed at PR time.
 - **Existing user TOML configs.** New scope names (`[finder]`, `[output]`, `[navigation]`, …) are additive; old configs without these tables still parse and use defaults. No breaking change.

@@ -11,6 +11,12 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use unicode_width::UnicodeWidthChar;
+use unicode_width::UnicodeWidthStr;
 
 use crate::Action;
 use crate::AppContext;
@@ -20,6 +26,8 @@ use crate::Bindings;
 use crate::KeyBind;
 use crate::KeyOutcome;
 use crate::Mode;
+use crate::SettingsRow;
+use crate::SettingsRowKind;
 use crate::Viewport;
 
 crate::action_enum! {
@@ -44,6 +52,47 @@ pub enum SettingsCommand {
     Save,
     /// Cancel the current edit.
     Cancel,
+}
+
+/// Styling and layout inputs for [`SettingsPane::render_rows`].
+#[derive(Clone, Copy, Debug)]
+pub struct SettingsRenderOptions<'a> {
+    /// Whether the settings pane has active focus.
+    pub active:                bool,
+    /// Inline error for the selected row.
+    pub inline_error:          Option<&'a str>,
+    /// Available content width inside the popup.
+    pub content_width:         usize,
+    /// Section header indentation.
+    pub section_header_indent: &'a str,
+    /// Selectable row indentation.
+    pub section_item_indent:   &'a str,
+    /// Section title style.
+    pub title_style:           Style,
+    /// Row label style.
+    pub label_style:           Style,
+    /// Low-emphasis style.
+    pub muted_style:           Style,
+    /// Enabled toggle style.
+    pub success_style:         Style,
+    /// Disabled toggle / warning style.
+    pub error_style:           Style,
+    /// Inline validation error style.
+    pub inline_error_style:    Style,
+    /// Active selected row overlay style.
+    pub active_style:          Style,
+    /// Remembered selected row overlay style.
+    pub remembered_style:      Style,
+    /// Hovered row overlay style.
+    pub hovered_style:         Style,
+}
+
+/// Render output from [`SettingsPane::render_rows`].
+pub struct SettingsRender {
+    /// Renderable text lines.
+    pub lines:            Vec<Line<'static>>,
+    /// Number of selectable rows.
+    pub selectable_count: usize,
 }
 
 /// Editor sub-state for the settings overlay.
@@ -184,6 +233,125 @@ impl<Ctx: AppContext> SettingsPane<Ctx> {
         self.line_targets.get(line).copied().flatten()
     }
 
+    /// Render generic settings rows and update the pane's line-target
+    /// map for mouse hit testing.
+    #[must_use]
+    pub fn render_rows(
+        &mut self,
+        rows: &[SettingsRow],
+        options: SettingsRenderOptions<'_>,
+    ) -> SettingsRender {
+        let max_label = rows
+            .iter()
+            .filter(|row| row.kind != SettingsRowKind::Section)
+            .map(|row| row.label.len())
+            .max()
+            .unwrap_or(0);
+        let mut lines = Vec::new();
+        let mut line_targets = Vec::new();
+        let mut selection_index = 0;
+        for row in rows {
+            if row.kind == SettingsRowKind::Section {
+                push_settings_header(&mut lines, &mut line_targets, &row.label, &options);
+                continue;
+            }
+            let cursor = if self.viewport.pos() == selection_index {
+                "▶ "
+            } else {
+                "  "
+            };
+            let selection = self.selection_state(selection_index, options.active);
+            let label = format!(
+                "{}{cursor}{:<max_label$}  ",
+                options.section_item_indent, row.label,
+            );
+            let context = SettingsLineContext {
+                selection_index,
+                label: &label,
+                selection,
+                options: &options,
+            };
+            self.push_setting_row(&mut lines, &mut line_targets, &context, row);
+            selection_index += 1;
+        }
+        self.line_targets = line_targets;
+        SettingsRender {
+            lines,
+            selectable_count: selection_index,
+        }
+    }
+
+    fn selection_state(&self, selection_index: usize, active: bool) -> SettingsSelectionState {
+        if selection_index == self.viewport.pos() && active {
+            SettingsSelectionState::Active
+        } else if self.viewport.hovered() == Some(selection_index) {
+            SettingsSelectionState::Hovered
+        } else if selection_index == self.viewport.pos() {
+            SettingsSelectionState::Remembered
+        } else {
+            SettingsSelectionState::Unselected
+        }
+    }
+
+    fn push_setting_row(
+        &self,
+        lines: &mut Vec<Line<'static>>,
+        line_targets: &mut Vec<Option<usize>>,
+        context: &SettingsLineContext<'_>,
+        row: &SettingsRow,
+    ) {
+        if let Some(error) = context.selected_inline_error(self) {
+            push_wrapped_setting_value(
+                lines,
+                line_targets,
+                context,
+                error,
+                context
+                    .selection
+                    .patch(context.options, context.options.inline_error_style),
+            );
+        } else if self.is_editing() && context.selection != SettingsSelectionState::Unselected {
+            let edited_text = render_editor_text(self.edited_text(), self.edit_cursor());
+            push_wrapped_setting_value(
+                lines,
+                line_targets,
+                context,
+                &edited_text,
+                context.selection.patch(context.options, Style::default()),
+            );
+        } else {
+            match row.kind {
+                SettingsRowKind::Section => {},
+                SettingsRowKind::Toggle => {
+                    push_toggle_row(
+                        lines,
+                        line_targets,
+                        &row.value,
+                        context,
+                        row.suffix.as_deref(),
+                    );
+                },
+                SettingsRowKind::Stepper => {
+                    push_stepper_row(lines, line_targets, context, &row.value);
+                },
+                SettingsRowKind::Value => {
+                    let value_style = if row.value.starts_with("Not configured.") {
+                        context
+                            .selection
+                            .patch(context.options, context.options.inline_error_style)
+                    } else {
+                        context.selection.patch(context.options, Style::default())
+                    };
+                    let value = row.suffix.as_ref().map_or_else(
+                        || row.value.clone(),
+                        |suffix| format!("{}{suffix}", row.value),
+                    );
+                    push_wrapped_setting_value(lines, line_targets, context, &value, value_style);
+                },
+            }
+        }
+    }
+
     /// Consume one text-input key and return a command.
     pub fn handle_text_input(&mut self, bind: KeyBind) -> SettingsCommand {
         match bind.code {
@@ -318,6 +486,246 @@ fn insert_char_at_cursor(buf: &mut String, cursor: &mut usize, c: char) {
     *cursor += c.len_utf8();
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SettingsSelectionState {
+    Active,
+    Hovered,
+    Remembered,
+    Unselected,
+}
+
+impl SettingsSelectionState {
+    fn overlay_style(self, options: &SettingsRenderOptions<'_>) -> Style {
+        match self {
+            Self::Active => options.active_style,
+            Self::Hovered => options.hovered_style,
+            Self::Remembered => options.remembered_style,
+            Self::Unselected => Style::default(),
+        }
+    }
+
+    fn patch(self, options: &SettingsRenderOptions<'_>, style: Style) -> Style {
+        style.patch(self.overlay_style(options))
+    }
+}
+
+struct SettingsLineContext<'a> {
+    selection_index: usize,
+    label:           &'a str,
+    selection:       SettingsSelectionState,
+    options:         &'a SettingsRenderOptions<'a>,
+}
+
+impl SettingsLineContext<'_> {
+    fn selected_inline_error<'a, Ctx: AppContext>(
+        &'a self,
+        pane: &SettingsPane<Ctx>,
+    ) -> Option<&'a str> {
+        if self.selection != SettingsSelectionState::Unselected && !pane.is_editing() {
+            self.options.inline_error
+        } else {
+            None
+        }
+    }
+}
+
+fn push_settings_header(
+    lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    name: &str,
+    options: &SettingsRenderOptions<'_>,
+) {
+    lines.push(Line::from(vec![
+        Span::raw(options.section_header_indent.to_string()),
+        Span::styled(
+            format!("{name}:"),
+            options.title_style.add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    line_targets.push(None);
+}
+
+fn push_toggle_row(
+    lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    value: &str,
+    context: &SettingsLineContext<'_>,
+    suffix: Option<&str>,
+) {
+    let is_on = value == "ON";
+    let toggle_style = if is_on {
+        context.options.success_style.add_modifier(Modifier::BOLD)
+    } else {
+        context.options.error_style.add_modifier(Modifier::BOLD)
+    };
+    let row_style = context
+        .selection
+        .patch(context.options, context.options.label_style);
+    lines.push(Line::from(vec![
+        Span::styled(context.label.to_owned(), row_style),
+        Span::styled(
+            "< ",
+            context
+                .selection
+                .patch(context.options, context.options.muted_style),
+        ),
+        Span::styled(
+            value.to_owned(),
+            context.selection.patch(context.options, toggle_style),
+        ),
+        Span::styled(
+            " >",
+            context
+                .selection
+                .patch(context.options, context.options.muted_style),
+        ),
+        Span::styled(suffix.unwrap_or_default().to_owned(), row_style),
+    ]));
+    line_targets.push(Some(context.selection_index));
+}
+
+fn push_stepper_row(
+    lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    context: &SettingsLineContext<'_>,
+    value: &str,
+) {
+    lines.push(Line::from(vec![
+        Span::styled(
+            context.label.to_owned(),
+            context
+                .selection
+                .patch(context.options, context.options.label_style),
+        ),
+        Span::styled(
+            "< ",
+            context
+                .selection
+                .patch(context.options, context.options.muted_style),
+        ),
+        Span::styled(
+            value.to_owned(),
+            context.selection.patch(context.options, Style::default()),
+        ),
+        Span::styled(
+            " >",
+            context
+                .selection
+                .patch(context.options, context.options.muted_style),
+        ),
+    ]));
+    line_targets.push(Some(context.selection_index));
+}
+
+fn push_wrapped_setting_value(
+    lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    context: &SettingsLineContext<'_>,
+    value: &str,
+    value_style: Style,
+) {
+    let row = WrappedValueRow {
+        prefix: context.label,
+        value,
+        prefix_style: context
+            .selection
+            .patch(context.options, context.options.label_style),
+        value_style,
+        content_width: context.options.content_width,
+    };
+    push_wrapped_value_row(lines, line_targets, Some(context.selection_index), &row);
+}
+
+fn push_wrapped_value_row(
+    lines: &mut Vec<Line<'static>>,
+    line_targets: &mut Vec<Option<usize>>,
+    target: Option<usize>,
+    row: &WrappedValueRow<'_>,
+) {
+    let prefix_width = row.prefix.width();
+    let value_width = row.content_width.saturating_sub(prefix_width).max(1);
+    let wrapped = wrap_text_to_width(row.value, value_width);
+    let continuation_prefix = " ".repeat(prefix_width);
+
+    for (index, chunk) in wrapped.into_iter().enumerate() {
+        let visible_prefix = if index == 0 {
+            row.prefix.to_string()
+        } else {
+            continuation_prefix.clone()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(visible_prefix, row.prefix_style),
+            Span::styled(chunk, row.value_style),
+        ]));
+        line_targets.push(target);
+    }
+}
+
+struct WrappedValueRow<'a> {
+    prefix:        &'a str,
+    value:         &'a str,
+    prefix_style:  Style,
+    value_style:   Style,
+    content_width: usize,
+}
+
+fn wrap_text_to_width(value: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    if value.trim().is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut wrapped = Vec::new();
+    let mut current = String::new();
+
+    for word in value.split_whitespace() {
+        let separator = if current.is_empty() { "" } else { " " };
+        let candidate = format!("{current}{separator}{word}");
+        if candidate.width() <= width {
+            current = candidate;
+            continue;
+        }
+
+        if !current.is_empty() {
+            wrapped.push(std::mem::take(&mut current));
+        }
+
+        if word.width() <= width {
+            current = word.to_string();
+            continue;
+        }
+
+        let mut segment = String::new();
+        for ch in word.chars() {
+            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if !segment.is_empty() && segment.width() + char_width > width {
+                wrapped.push(std::mem::take(&mut segment));
+            }
+            segment.push(ch);
+        }
+        current = segment;
+    }
+
+    if !current.is_empty() {
+        wrapped.push(current);
+    }
+
+    if wrapped.is_empty() {
+        wrapped.push(String::new());
+    }
+    wrapped
+}
+
+fn render_editor_text(buf: &str, cursor: usize) -> String {
+    let mut rendered = String::with_capacity(buf.len() + 1);
+    rendered.push_str(&buf[..cursor]);
+    rendered.push('_');
+    rendered.push_str(&buf[cursor..]);
+    rendered
+}
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -327,14 +735,18 @@ fn insert_char_at_cursor(buf: &mut String, cursor: &mut usize, c: char) {
 )]
 mod tests {
     use crossterm::event::KeyCode;
+    use ratatui::style::Color;
+    use ratatui::style::Style;
 
     use super::SettingsPane;
+    use super::SettingsRenderOptions;
     use crate::AppContext;
     use crate::FocusedPane;
     use crate::Framework;
     use crate::KeyBind;
     use crate::KeyOutcome;
     use crate::Mode;
+    use crate::SettingsRow;
 
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     enum TestPaneId {
@@ -361,6 +773,25 @@ mod tests {
         TestApp {
             framework:    Framework::new(FocusedPane::App(TestPaneId::Foo)),
             app_settings: (),
+        }
+    }
+
+    fn render_options() -> SettingsRenderOptions<'static> {
+        SettingsRenderOptions {
+            active:                true,
+            inline_error:          None,
+            content_width:         24,
+            section_header_indent: "",
+            section_item_indent:   "",
+            title_style:           Style::default().fg(Color::Blue),
+            label_style:           Style::default(),
+            muted_style:           Style::default(),
+            success_style:         Style::default().fg(Color::Green),
+            error_style:           Style::default().fg(Color::Red),
+            inline_error_style:    Style::default().fg(Color::Red),
+            active_style:          Style::default().bg(Color::DarkGray),
+            remembered_style:      Style::default().bg(Color::Gray),
+            hovered_style:         Style::default().bg(Color::Black),
         }
     }
 
@@ -465,5 +896,58 @@ mod tests {
             pane.handle_text_input(KeyCode::Esc.into()),
             super::SettingsCommand::Cancel
         );
+    }
+
+    #[test]
+    fn render_rows_wraps_continuations_at_value_column() {
+        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
+        let rows = vec![SettingsRow::value(
+            0,
+            "Projects",
+            "alpha beta gamma delta epsilon",
+        )];
+
+        let rendered = pane.render_rows(&rows, render_options());
+
+        assert!(rendered.lines.len() > 1);
+        assert_eq!(pane.line_target(0), Some(0));
+        assert_eq!(pane.line_target(1), Some(0));
+        assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "▶ Projects  ");
+        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "            ");
+    }
+
+    #[test]
+    fn render_rows_selected_toggle_inlines_suffix() {
+        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
+        let rows = vec![
+            SettingsRow::toggle(0, "Vim nav keys", true)
+                .with_suffix("  maps h/j/k/l to arrow navigation"),
+        ];
+
+        let rendered = pane.render_rows(&rows, render_options());
+        let line = rendered.lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(line.contains("< ON >  maps h/j/k/l to arrow navigation"));
+    }
+
+    #[test]
+    fn render_rows_editing_shows_cursor_in_buffer() {
+        let mut pane: SettingsPane<TestApp> = SettingsPane::new();
+        pane.begin_editing("hana".to_string());
+        pane.set_edit_buffer("hana".to_string(), 2);
+        let rows = vec![SettingsRow::value(0, "Editor", "zed")];
+
+        let rendered = pane.render_rows(&rows, render_options());
+        let line = rendered.lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(line.contains("ha_na"));
     }
 }

@@ -1,3 +1,5 @@
+use std::sync::mpsc;
+
 use super::*;
 use crate::project::AbsolutePath;
 use crate::watcher::WatcherMsg;

@@ -167,9 +167,6 @@ const fn clear_all_hover(app: &mut App) {
 mod tests {
     use std::path::Path;
     use std::rc::Rc;
-    use std::sync::Arc;
-    use std::sync::Mutex;
-    use std::sync::mpsc;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -193,8 +190,6 @@ mod tests {
     use crate::ci::CiRun;
     use crate::ci::CiStatus;
     use crate::ci::FetchStatus;
-    use crate::config::CargoPortConfig;
-    use crate::http::HttpClient;
     use crate::lint::LintCommand;
     use crate::lint::LintCommandStatus;
     use crate::lint::LintRun;
@@ -245,12 +240,8 @@ mod tests {
     use crate::tui::render;
     use crate::tui::settings;
     use crate::tui::settings::SettingOption;
+    use crate::tui::test_support as tui_test_support;
     use crate::tui::toasts::ToastStyle;
-
-    fn test_http_client() -> HttpClient {
-        let rt = crate::test_support::test_runtime();
-        HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
-    }
 
     fn open_settings_overlay(app: &mut App) {
         let keymap = Rc::clone(&app.framework_keymap);
@@ -380,24 +371,7 @@ mod tests {
         }
     }
 
-    fn make_app(projects: &[RootItem]) -> App {
-        let mut cfg = CargoPortConfig::default();
-        cfg.tui.include_dirs = vec!["/tmp/test".to_string()];
-        let (bg_tx, bg_rx) = mpsc::channel();
-        let metadata_store = Arc::new(Mutex::new(crate::project::WorkspaceMetadataStore::new()));
-        let mut app = App::new(
-            projects,
-            bg_tx,
-            bg_rx,
-            &cfg,
-            test_http_client(),
-            Instant::now(),
-            metadata_store,
-        )
-        .expect("App::new must succeed in tests");
-        app.sync_selected_project();
-        app
-    }
+    fn make_app(projects: &[RootItem]) -> App { tui_test_support::make_app(projects) }
 
     fn render_ui(app: &mut App) {
         app.ensure_visible_rows_cached();
@@ -541,6 +515,17 @@ mod tests {
             area.y
                 .saturating_add(u16::try_from(row_index).unwrap_or(u16::MAX)),
         )
+    }
+
+    fn settings_point_for_setting(app: &App, setting: SettingOption) -> (u16, u16) {
+        let row = settings::selection_index_for_setting_for_test(app, setting)
+            .expect("setting must be visible");
+        let pane = &app.framework.settings_pane;
+        let height = usize::from(pane.viewport().content_area().height);
+        let line = (0..height)
+            .find(|line| pane.line_target(*line) == Some(row))
+            .expect("setting must have a rendered hit target");
+        framework_pane_row_point(pane.viewport(), line)
     }
 
     fn framework_selection_state(
@@ -810,7 +795,7 @@ mod tests {
             settings::selection_index_for_setting_for_test(&app, SettingOption::CiRunCount)
                 .expect("CI run count row");
 
-        let (x, y) = framework_pane_row_point(app.framework.settings_pane.viewport(), 5);
+        let (x, y) = settings_point_for_setting(&app, SettingOption::CiRunCount);
         click(&mut app, x, y);
 
         assert_eq!(
@@ -829,7 +814,7 @@ mod tests {
         let hovered_row =
             settings::selection_index_for_setting_for_test(&app, SettingOption::CiRunCount)
                 .expect("CI run count row");
-        let (x, y) = framework_pane_row_point(app.framework.settings_pane.viewport(), 5);
+        let (x, y) = settings_point_for_setting(&app, SettingOption::CiRunCount);
         move_mouse(&mut app, x, y);
         render_ui(&mut app);
 
@@ -873,7 +858,7 @@ mod tests {
         let hovered_row =
             settings::selection_index_for_setting_for_test(&app, SettingOption::CiRunCount)
                 .expect("CI run count row");
-        let (x, y) = framework_pane_row_point(app.framework.settings_pane.viewport(), 5);
+        let (x, y) = settings_point_for_setting(&app, SettingOption::CiRunCount);
         move_mouse(&mut app, x, y);
         render_ui(&mut app);
         press_key(&mut app, KeyCode::Down);
@@ -910,7 +895,7 @@ mod tests {
         let hovered_row =
             settings::selection_index_for_setting_for_test(&app, SettingOption::CiRunCount)
                 .expect("CI run count row");
-        let (x, y) = framework_pane_row_point(app.framework.settings_pane.viewport(), 5);
+        let (x, y) = settings_point_for_setting(&app, SettingOption::CiRunCount);
         input::set_last_mouse_pos_for_test(Some((x, y)));
         focus_gained(&mut app);
         render_ui(&mut app);
@@ -1148,7 +1133,7 @@ mod tests {
         open_settings_overlay(&mut app);
         render_ui(&mut app);
 
-        let (x, y) = framework_pane_row_point(app.framework.settings_pane.viewport(), 2);
+        let (x, y) = settings_point_for_setting(&app, SettingOption::InvertScroll);
         click(&mut app, x, y);
 
         assert_eq!(

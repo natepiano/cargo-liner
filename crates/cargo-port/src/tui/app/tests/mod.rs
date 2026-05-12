@@ -2,10 +2,6 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::mpsc;
-use std::time::Instant;
 
 use chrono::DateTime;
 use chrono::FixedOffset;
@@ -17,9 +13,6 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::widgets::List;
 use ratatui::widgets::Widget;
-use tui_pane::SettingsFileSpec;
-use tui_pane::SettingsRegistry;
-use tui_pane::SettingsStore;
 
 pub(super) use super::App;
 use super::DismissTarget;
@@ -30,9 +23,6 @@ use crate::ci::FetchStatus;
 use crate::config::CargoPortConfig;
 use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
-use crate::constants::APP_NAME;
-use crate::constants::CONFIG_FILE;
-use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::lint::LintStatus;
 use crate::project;
@@ -61,7 +51,6 @@ use crate::project::WorktreeStatus;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
-use crate::test_support;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::panes::CiFetchKind;
@@ -69,6 +58,7 @@ use crate::tui::panes::PaneId;
 pub(super) use crate::tui::project_list::ExpandKey;
 use crate::tui::project_list::ProjectList;
 pub(super) use crate::tui::project_list::VisibleRow;
+use crate::tui::test_support as tui_test_support;
 use crate::tui::toasts::ToastManager;
 
 mod background;
@@ -78,11 +68,6 @@ mod panes;
 mod rows;
 mod state;
 mod worktrees;
-
-fn test_http_client() -> HttpClient {
-    let rt = test_support::test_runtime();
-    HttpClient::new(rt.handle().clone()).unwrap_or_else(|| std::process::abort())
-}
 
 fn test_path(path: &str) -> AbsolutePath {
     let pb = if path == "~" {
@@ -118,45 +103,10 @@ fn make_project(name: Option<&str>, path: &str) -> RootItem {
     }))
 }
 
-fn make_app(projects: &[RootItem]) -> App {
-    make_app_with_config(projects, &CargoPortConfig::default())
-}
-
-fn test_config_path() -> PathBuf {
-    let file = tempfile::NamedTempFile::new().unwrap_or_else(|_| std::process::abort());
-    file.into_temp_path()
-        .keep()
-        .unwrap_or_else(|_| std::process::abort())
-}
+fn make_app(projects: &[RootItem]) -> App { tui_test_support::make_app(projects) }
 
 fn make_app_with_config(projects: &[RootItem], cfg: &CargoPortConfig) -> App {
-    let mut cfg = cfg.clone();
-    if cfg.tui.include_dirs.is_empty() {
-        cfg.tui.include_dirs = vec!["/tmp/test".to_string()];
-    }
-    let (bg_tx, bg_rx) = mpsc::channel();
-    let metadata_store = Arc::new(Mutex::new(crate::project::WorkspaceMetadataStore::new()));
-    let mut app = App::new(
-        projects,
-        bg_tx,
-        bg_rx,
-        &cfg,
-        test_http_client(),
-        Instant::now(),
-        metadata_store,
-    )
-    .expect("App::new must succeed in tests");
-    app.config.force_reload_from(test_config_path());
-    let settings_spec = SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(test_config_path());
-    let loaded_settings =
-        SettingsStore::<App>::load_for_startup(settings_spec, SettingsRegistry::new())
-            .expect("test settings store must load");
-    app.framework.install_settings_store(loaded_settings.store);
-    app.framework
-        .set_toast_settings(loaded_settings.toast_settings);
-    app.scan.set_retry_spawn_mode(RetrySpawnMode::Disabled);
-    app.sync_selected_project();
-    app
+    tui_test_support::make_app_with_config(projects, cfg)
 }
 
 fn set_loaded_ci(app: &mut App, path: &Path, runs: Vec<CiRun>, exhausted: bool, github_total: u32) {

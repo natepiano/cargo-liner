@@ -124,24 +124,27 @@ impl App {
         let Some(path) = self.config.take_stamp_change() else {
             return;
         };
-        let path_buf = path.to_path_buf();
-        let reload_result = config::try_load_from_path(&path_buf);
+        let path = path.to_path_buf();
+        let path_buf = path.display().to_string();
+        let reload_result = self.framework.settings_store_mut().load_from_path(path);
         match reload_result {
-            Ok(cfg) => {
-                self.apply_config(&cfg);
+            Ok(settings) => {
+                self.framework.set_toast_settings(settings.toast_settings);
+                self.apply_config(&settings.app_settings);
                 self.config.sync_stamp();
                 self.show_timed_toast("Settings", "Reloaded from disk");
             },
-            Err(err) => self.record_config_reload_failure(&err),
+            Err(err) => self.record_config_reload_failure(&format!("{path_buf}: {err}")),
         }
     }
     pub fn save_and_apply_config(&mut self, cfg: &CargoPortConfig) -> Result<(), String> {
-        if let Some(path) = self.config.path() {
-            config::save_to_path(path, cfg)?;
-        } else {
-            config::save(cfg)?;
-        }
-        self.apply_config(cfg);
+        let cfg = config::normalize_config(cfg.clone())?;
+        let toast_settings = self.framework.toast_settings().clone();
+        self.framework
+            .settings_store_mut()
+            .save(&cfg, &toast_settings)
+            .map_err(|err| err.to_string())?;
+        self.apply_config(&cfg);
         self.config.sync_stamp();
         Ok(())
     }

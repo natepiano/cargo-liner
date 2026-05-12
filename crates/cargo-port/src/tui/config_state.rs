@@ -41,9 +41,8 @@ impl Config {
 
     /// Return `Some(path)` if the config file's stamp has changed
     /// since the last seen value, swallowing the stamp delta. Used
-    /// by `App::maybe_reload_config_from_disk`, which drives a
-    /// custom load path (`config::try_load_from_path` with
-    /// `Result<CargoPortConfig, String>`) and applies its own
+    /// by `App::maybe_reload_config_from_disk`, which reloads
+    /// through the framework settings store and applies its own
     /// rescan / toast logic on the outcome.
     pub(super) fn take_stamp_change(&mut self) -> Option<&Path> { self.file.take_stamp_change() }
 

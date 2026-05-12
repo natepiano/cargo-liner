@@ -27,6 +27,8 @@ mod running_tracker;
 mod scan_state;
 mod settings;
 mod terminal;
+#[cfg(test)]
+mod test_support;
 mod toasts;
 mod watched_file;
 

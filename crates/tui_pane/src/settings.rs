@@ -128,6 +128,91 @@ pub enum SettingValue {
     Enum(String),
 }
 
+/// One renderable row in a framework-owned settings pane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettingsRow {
+    /// Row label. Section rows use this as the section title.
+    pub label:   String,
+    /// Displayed value for selectable setting rows.
+    pub value:   String,
+    /// Row behavior.
+    pub kind:    SettingsRowKind,
+    /// Optional app-provided suffix shown after compact controls.
+    pub suffix:  Option<String>,
+    /// Optional stable app payload for hit testing / dispatch.
+    pub payload: Option<usize>,
+}
+
+impl SettingsRow {
+    /// Build a section header row.
+    #[must_use]
+    pub fn section(label: impl Into<String>) -> Self {
+        Self {
+            label:   label.into(),
+            value:   String::new(),
+            kind:    SettingsRowKind::Section,
+            suffix:  None,
+            payload: None,
+        }
+    }
+
+    /// Build a selectable value row.
+    #[must_use]
+    pub fn value(payload: usize, label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label:   label.into(),
+            value:   value.into(),
+            kind:    SettingsRowKind::Value,
+            suffix:  None,
+            payload: Some(payload),
+        }
+    }
+
+    /// Build a selectable toggle row.
+    #[must_use]
+    pub fn toggle(payload: usize, label: impl Into<String>, enabled: bool) -> Self {
+        Self {
+            label:   label.into(),
+            value:   if enabled { "ON" } else { "OFF" }.to_string(),
+            kind:    SettingsRowKind::Toggle,
+            suffix:  None,
+            payload: Some(payload),
+        }
+    }
+
+    /// Build a selectable stepper row.
+    #[must_use]
+    pub fn stepper(payload: usize, label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label:   label.into(),
+            value:   value.into(),
+            kind:    SettingsRowKind::Stepper,
+            suffix:  None,
+            payload: Some(payload),
+        }
+    }
+
+    /// Attach a suffix to a row.
+    #[must_use]
+    pub fn with_suffix(mut self, suffix: impl Into<String>) -> Self {
+        self.suffix = Some(suffix.into());
+        self
+    }
+}
+
+/// Render behavior for one [`SettingsRow`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsRowKind {
+    /// Non-selectable section header.
+    Section,
+    /// Normal editable value.
+    Value,
+    /// Boolean-style row rendered as `< ON >` / `< OFF >`.
+    Toggle,
+    /// Direction-adjustable row rendered as `< value >`.
+    Stepper,
+}
+
 /// Formatting and parsing callbacks for app-specific settings.
 pub struct SettingCodecs<Store> {
     /// Format the setting for display/editing.
@@ -394,6 +479,14 @@ pub struct LoadedSettings<Ctx: AppContext> {
     pub toast_settings: ToastSettings,
 }
 
+/// Settings reloaded from an existing [`SettingsStore`].
+pub struct ReloadedSettings<Ctx: AppContext> {
+    /// App-specific settings loaded from disk.
+    pub app_settings:   Ctx::AppSettings,
+    /// Framework-owned toast settings loaded from disk.
+    pub toast_settings: ToastSettings,
+}
+
 impl<Ctx: AppContext> SettingsStore<Ctx> {
     /// Load settings and return the startup handoff.
     ///
@@ -448,6 +541,51 @@ impl<Ctx: AppContext> SettingsStore<Ctx> {
     /// Borrow registered app settings.
     #[must_use]
     pub const fn registry(&self) -> &SettingsRegistry<Ctx> { &self.registry }
+
+    /// Reload app and framework settings from the store's configured path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettingsError`] when the file cannot be read or
+    /// parsed, or when a registered setting fails validation.
+    pub fn load_current(&mut self) -> Result<ReloadedSettings<Ctx>, SettingsError> {
+        let table = read_settings_table(self.path.as_deref())?;
+        let mut app_settings = Ctx::AppSettings::default();
+        apply_app_settings(&self.registry, &table, &mut app_settings)?;
+        let toast_settings = ToastSettings::from_table(&table)?;
+        self.table = table;
+        self.dirty = false;
+        Ok(ReloadedSettings {
+            app_settings,
+            toast_settings,
+        })
+    }
+
+    /// Reload app and framework settings from a specific file path and
+    /// make that path the store's current save/reload target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettingsError`] when the file cannot be read or
+    /// parsed, or when a registered setting fails validation.
+    pub fn load_from_path(
+        &mut self,
+        path: impl Into<PathBuf>,
+    ) -> Result<ReloadedSettings<Ctx>, SettingsError> {
+        let path = path.into();
+        let table = read_settings_table(Some(path.as_path()))?;
+        let mut app_settings = Ctx::AppSettings::default();
+        apply_app_settings(&self.registry, &table, &mut app_settings)?;
+        let toast_settings = ToastSettings::from_table(&table)?;
+        self.spec.path = Some(path.clone());
+        self.path = Some(path);
+        self.table = table;
+        self.dirty = false;
+        Ok(ReloadedSettings {
+            app_settings,
+            toast_settings,
+        })
+    }
 
     /// Whether settings have unsaved in-memory changes.
     #[must_use]
@@ -608,7 +746,28 @@ fn value_to_edit_string(value: &Value) -> String {
         Value::Integer(value) => value.to_string(),
         Value::Float(value) => value.to_string(),
         Value::Boolean(value) => value.to_string(),
-        Value::Array(_) | Value::Table(_) | Value::Datetime(_) => value.to_string(),
+        Value::Array(values) => values
+            .iter()
+            .filter_map(array_value_to_edit_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+        Value::Table(_) | Value::Datetime(_) => value.to_string(),
+    }
+}
+
+fn array_value_to_edit_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Integer(value) => Some(value.to_string()),
+        Value::Float(value) => Some(value.to_string()),
+        Value::Boolean(value) => Some(value.to_string()),
+        Value::Table(table) => table
+            .get("command")
+            .and_then(Value::as_str)
+            .filter(|command| !command.trim().is_empty())
+            .or_else(|| table.get("name").and_then(Value::as_str))
+            .map(str::to_string),
+        Value::Array(_) | Value::Datetime(_) => None,
     }
 }
 
@@ -926,6 +1085,7 @@ mod tests {
 
     use toml::Table;
 
+    use super::SettingCodecs;
     use super::SettingsFileSpec;
     use super::SettingsRegistry;
     use super::SettingsSection;
@@ -939,6 +1099,8 @@ mod tests {
         enabled: bool,
         count:   i64,
         name:    String,
+        items:   Vec<String>,
+        command: String,
     }
 
     struct TestApp {
@@ -987,6 +1149,29 @@ mod tests {
     }
 
     fn name(settings: &AppSettings) -> String { settings.name.clone() }
+
+    fn items(settings: &AppSettings) -> String { settings.items.join(", ") }
+
+    fn set_items(value: &str, settings: &mut AppSettings) -> Result<(), super::SettingsError> {
+        settings.items = parse_list(value);
+        validate_test_settings(settings)
+    }
+
+    fn command(settings: &AppSettings) -> String { settings.command.clone() }
+
+    fn set_command(value: &str, settings: &mut AppSettings) -> Result<(), super::SettingsError> {
+        settings.command = value.to_string();
+        validate_test_settings(settings)
+    }
+
+    fn parse_list(value: &str) -> Vec<String> {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
 
     fn validate_test_settings(settings: &AppSettings) -> Result<(), super::SettingsError> {
         if settings.count < 0 {
@@ -1058,6 +1243,96 @@ mod tests {
     }
 
     #[test]
+    fn load_from_path_retargets_store_path() {
+        let dir = std::env::temp_dir();
+        let initial_path = dir.join(format!(
+            "tui_pane_settings_{}_{}.toml",
+            std::process::id(),
+            "initial"
+        ));
+        let reload_path = dir.join(format!(
+            "tui_pane_settings_{}_{}.toml",
+            std::process::id(),
+            "reload"
+        ));
+        std::fs::write(&initial_path, "[tui]\nname = \"initial\"\n").expect("write initial");
+        std::fs::write(
+            &reload_path,
+            "[tui]\nname = \"reload\"\n\n[toasts]\ndefault_timeout = 6.0\n",
+        )
+        .expect("write reload");
+        let registry = SettingsRegistry::<TestApp>::new().add_string_in(
+            SettingsSection::App("tui"),
+            "name",
+            name,
+            set_name,
+        );
+        let mut loaded = SettingsStore::<TestApp>::load_for_startup(
+            SettingsFileSpec::new("test", "settings.toml").with_path(&initial_path),
+            registry,
+        )
+        .expect("load settings");
+
+        let reloaded = loaded
+            .store
+            .load_from_path(&reload_path)
+            .expect("reload settings");
+
+        assert_eq!(reloaded.app_settings.name, "reload");
+        assert_eq!(
+            reloaded.toast_settings.default_timeout.get(),
+            Duration::from_secs(6)
+        );
+        assert_eq!(loaded.store.path(), Some(reload_path.as_path()));
+        let _ = std::fs::remove_file(initial_path);
+        let _ = std::fs::remove_file(reload_path);
+    }
+
+    #[test]
+    fn load_for_startup_reads_custom_array_values() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "tui_pane_settings_{}_{}.toml",
+            std::process::id(),
+            "custom_arrays"
+        ));
+        std::fs::write(
+            &path,
+            "[tui]\nitems = [\"alpha\", \"beta\"]\ncommands = [{ name = \"mend\", command = \"cargo mend\" }, { name = \"clippy\" }]\n",
+        )
+        .expect("write settings");
+        let registry = SettingsRegistry::<TestApp>::new()
+            .add_custom_in(
+                SettingsSection::App("tui"),
+                "items",
+                SettingCodecs {
+                    format: items,
+                    parse:  set_items,
+                    adjust: None,
+                },
+            )
+            .add_custom_in(
+                SettingsSection::App("tui"),
+                "commands",
+                SettingCodecs {
+                    format: command,
+                    parse:  set_command,
+                    adjust: None,
+                },
+            );
+
+        let loaded = SettingsStore::<TestApp>::load_for_startup(
+            SettingsFileSpec::new("test", "settings.toml").with_path(&path),
+            registry,
+        )
+        .expect("load settings");
+
+        assert_eq!(loaded.app_settings.items, ["alpha", "beta"]);
+        assert_eq!(loaded.app_settings.command, "cargo mend, clippy");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn legacy_tui_toast_keys_seed_toast_settings() {
         let table: Table = "[tui]\nstatus_flash_secs = 4.0\ntask_linger_secs = 3.0\n"
             .parse()
@@ -1091,6 +1366,8 @@ mod tests {
             enabled: true,
             count:   0,
             name:    String::new(),
+            items:   Vec::new(),
+            command: String::new(),
         };
 
         loaded

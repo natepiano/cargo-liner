@@ -1,8 +1,11 @@
+#[cfg(test)]
+use std::cell::RefCell;
 use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 
-use confique::Config as _;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -678,7 +681,40 @@ impl Default for MouseConfig {
 }
 
 pub(crate) fn config_path() -> Option<AbsolutePath> {
+    #[cfg(test)]
+    if let Some(path) = CONFIG_PATH_OVERRIDE.with(|slot| slot.borrow().clone()) {
+        return Some(path.into());
+    }
+
     dirs::config_dir().map(|d| d.join(APP_NAME).join(CONFIG_FILE).into())
+}
+
+#[cfg(test)]
+thread_local! {
+    static CONFIG_PATH_OVERRIDE: RefCell<Option<PathBuf>> = const {
+        RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) struct ConfigPathOverrideGuard {
+    previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl Drop for ConfigPathOverrideGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        CONFIG_PATH_OVERRIDE.with(|slot| {
+            *slot.borrow_mut() = previous;
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn override_config_path_for_test(path: PathBuf) -> ConfigPathOverrideGuard {
+    let previous = CONFIG_PATH_OVERRIDE.with(|slot| slot.replace(Some(path)));
+    ConfigPathOverrideGuard { previous }
 }
 
 fn active_config_cell() -> &'static RwLock<CargoPortConfig> {
@@ -698,89 +734,14 @@ pub(crate) fn set_active_config(config: &CargoPortConfig) {
     }
 }
 
-fn load_from_path(path: &Path) -> Result<CargoPortConfig, String> {
-    if !path.exists() {
-        create_default_config(path)?;
-    }
-
-    CargoPortConfig::builder()
-        .file(path)
-        .load()
-        .map_err(|err| format!("Failed to load config '{}': {err}", path.display()))
-        .and_then(normalize_config)
-        .map_err(|err| format!("Failed to load config '{}': {err}", path.display()))
-}
-
-pub(crate) fn try_load_from_path(path: &Path) -> Result<CargoPortConfig, String> {
-    load_from_path(path)
-}
-
-pub(crate) fn try_load() -> Result<CargoPortConfig, String> {
-    let Some(path) = config_path() else {
-        return Ok(CargoPortConfig::default());
-    };
-    try_load_from_path(&path)
-}
-
-fn create_default_config(path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config directory: {e}"))?;
-    }
-
-    let template =
-        confique::toml::template::<CargoPortConfig>(confique::toml::FormatOptions::default());
-
-    std::fs::write(path, template).map_err(|e| format!("Failed to write config: {e}"))?;
-    Ok(())
-}
-
-pub(crate) fn save(config: &CargoPortConfig) -> Result<(), String> {
-    let Some(path) = config_path() else {
-        return Err("Could not determine config directory".to_string());
-    };
-
-    save_to_path(&path, config)
-}
-
-pub(crate) fn save_to_path(path: &Path, config: &CargoPortConfig) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create config directory: {e}"))?;
-    }
-
-    let config = normalize_config(config.clone())?;
-    let contents =
-        toml::to_string_pretty(&config).map_err(|e| format!("Failed to serialize config: {e}"))?;
-    let contents = preserve_framework_settings_tables(path, &contents)?;
-
-    std::fs::write(path, contents).map_err(|e| format!("Failed to write config: {e}"))?;
-
-    Ok(())
-}
-
-fn preserve_framework_settings_tables(path: &Path, contents: &str) -> Result<String, String> {
-    let Ok(existing) = std::fs::read_to_string(path) else {
-        return Ok(contents.to_string());
-    };
-    let Ok(existing) = toml::from_str::<toml::Table>(&existing) else {
-        return Ok(contents.to_string());
-    };
-    let Some(toasts) = existing.get("toasts").cloned() else {
-        return Ok(contents.to_string());
-    };
-    let mut next = toml::from_str::<toml::Table>(contents)
-        .map_err(|e| format!("Failed to preserve framework settings: {e}"))?;
-    next.insert("toasts".to_string(), toasts);
-    toml::to_string_pretty(&next).map_err(|e| format!("Failed to serialize config: {e}"))
-}
-
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use confique::Config as _;
+
     use super::*;
     use crate::test_support;
 
@@ -928,27 +889,6 @@ mod tests {
             .expect("legacy toast keys should be ignored by app config");
 
         assert_eq!(cfg.tui.ci_run_count, 5);
-    }
-
-    #[test]
-    fn save_to_path_preserves_framework_toasts_table() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            "[tui]\nci_run_count = 7\n\n[toasts]\ndefault_timeout = 3.0\ntask_linger = 2.0\n",
-        )
-        .expect("write config");
-        let mut cfg = CargoPortConfig::default();
-        cfg.tui.ci_run_count = 9;
-
-        save_to_path(&path, &cfg).expect("save config");
-        let saved = std::fs::read_to_string(path).expect("read saved config");
-
-        assert!(saved.contains("ci_run_count = 9"));
-        assert!(saved.contains("[toasts]"));
-        assert!(saved.contains("default_timeout = 3.0"));
-        assert!(saved.contains("task_linger = 2.0"));
     }
 
     /// Bool-based enums deserialize correctly from TOML booleans.

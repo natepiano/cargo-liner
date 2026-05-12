@@ -111,7 +111,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
 }
 
 pub fn run() -> ExitCode {
-    let cfg = match config::try_load() {
+    let cfg = match super::settings::load_cargo_port_config_for_startup() {
         Ok(cfg) => cfg,
         Err(err) => {
             tracing::error!("Error: {err}");
