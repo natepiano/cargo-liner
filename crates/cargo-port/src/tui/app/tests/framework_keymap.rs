@@ -15,6 +15,8 @@ use crossterm::event::Event;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use ratatui::text::Span;
 use toml::Table;
 use tui_pane::Action;
@@ -111,6 +113,26 @@ fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
 fn open_framework_overlay(app: &mut App, action: FrameworkGlobalAction) {
     let keymap = Rc::clone(&app.framework_keymap);
     keymap.dispatch_framework_global(action, app);
+}
+
+fn buffer_text_sized(app: &mut App, width: u16, height: u16) -> String {
+    app.ensure_visible_rows_cached();
+    app.ensure_detail_cached();
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+    terminal
+        .draw(|frame| render::ui(frame, app))
+        .unwrap_or_else(|_| std::process::abort());
+    let area = terminal.size().unwrap_or_else(|_| std::process::abort());
+    let buffer = terminal.backend().buffer();
+    let mut text = String::new();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            text.push_str(buffer[(x, y)].symbol());
+        }
+        text.push('\n');
+    }
+    text
 }
 
 fn make_app_with_git_tabbable() -> App {
@@ -1042,6 +1064,39 @@ fn legacy_project_list_removed_action_does_not_override_framework_global() {
     assert_ne!(
         globals.action_for(&KeyBind::from(KeyCode::Enter)),
         Some(AppGlobalAction::OpenEditor),
+    );
+}
+
+#[test]
+fn keymap_popup_keeps_legacy_global_layout_compact() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let toml_path = temp_dir.path().join("keymap.toml");
+    let _keymap_path = keymap::override_keymap_path_for_test(toml_path);
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    open_framework_overlay(&mut app, FrameworkGlobalAction::OpenKeymap);
+
+    let text = buffer_text_sized(&mut app, 120, 80);
+
+    assert_contains_in_order(
+        &text,
+        &[
+            "Global Navigation:",
+            "Focus next pane",
+            "Global Shortcuts:",
+            "Dismiss focused item",
+            "Open finder",
+            "Open keymap",
+            "Project List:",
+        ],
+    );
+    assert!(
+        !text.contains("App Global Shortcuts:"),
+        "app-owned globals must stay merged into the legacy Global Shortcuts section",
+    );
+    assert!(
+        !text.contains("Close finder"),
+        "the keymap popup should stay compact on tall terminals instead of exposing every section",
     );
 }
 

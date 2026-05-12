@@ -102,11 +102,21 @@ fn action_row<A: Action>(
     toml_key: &'static str,
     bind: Option<FrameworkKeyBind>,
 ) -> KeymapRow {
+    action_row_with_description(section, scope, action.description(), toml_key, bind)
+}
+
+fn action_row_with_description(
+    section: &'static str,
+    scope: &'static str,
+    description: &'static str,
+    toml_key: &'static str,
+    bind: Option<FrameworkKeyBind>,
+) -> KeymapRow {
     KeymapRow {
         section,
         scope,
         action: toml_key,
-        description: action.description(),
+        description,
         key_display: bind_display(bind),
         bind,
         is_header: false,
@@ -166,11 +176,11 @@ const GLOBAL_NAV: &[FrameworkGlobalAction] = &[
     FrameworkGlobalAction::PrevPane,
 ];
 const GLOBAL_SHORTCUTS: &[FrameworkGlobalAction] = &[
-    FrameworkGlobalAction::Quit,
-    FrameworkGlobalAction::Restart,
+    FrameworkGlobalAction::Dismiss,
     FrameworkGlobalAction::OpenKeymap,
     FrameworkGlobalAction::OpenSettings,
-    FrameworkGlobalAction::Dismiss,
+    FrameworkGlobalAction::Quit,
+    FrameworkGlobalAction::Restart,
 ];
 
 fn build_rows(app: &App) -> Vec<KeymapRow> {
@@ -183,31 +193,64 @@ fn build_rows(app: &App) -> Vec<KeymapRow> {
 }
 
 fn push_global_rows(rows: &mut Vec<KeymapRow>, app: &App) {
-    push_scope(
-        rows,
-        "Global Navigation",
-        "global",
-        GLOBAL_NAV,
-        app.framework_keymap.framework_globals(),
-        framework_global_toml_key,
-    );
-    push_scope(
-        rows,
-        "Global Shortcuts",
-        "global",
-        GLOBAL_SHORTCUTS,
-        app.framework_keymap.framework_globals(),
-        framework_global_toml_key,
-    );
+    let framework_globals = app.framework_keymap.framework_globals();
+    rows.push(header("Global Navigation"));
+    let mut nav_rows: Vec<KeymapRow> = GLOBAL_NAV
+        .iter()
+        .copied()
+        .map(|action| framework_global_row(action, framework_globals))
+        .collect();
+    nav_rows.sort_by_key(|row| row.description);
+    rows.extend(nav_rows);
+
+    rows.push(header("Global Shortcuts"));
+    let mut shortcut_rows: Vec<KeymapRow> = GLOBAL_SHORTCUTS
+        .iter()
+        .copied()
+        .map(|action| framework_global_row(action, framework_globals))
+        .collect();
     if let Some(scope) = app.framework_keymap.globals::<AppGlobalAction>() {
-        push_scope(
-            rows,
-            "App Global Shortcuts",
-            "global",
-            AppGlobalAction::ALL,
-            scope,
-            action_toml_key,
-        );
+        shortcut_rows.extend(AppGlobalAction::ALL.iter().copied().map(|action| {
+            action_row(
+                "Global Shortcuts",
+                "global",
+                action,
+                action.toml_key(),
+                scope.key_for(action).copied(),
+            )
+        }));
+    }
+    shortcut_rows.sort_by_key(|row| row.description);
+    rows.extend(shortcut_rows);
+}
+
+fn framework_global_row(
+    action: FrameworkGlobalAction,
+    scope: &FrameworkScopeMap<FrameworkGlobalAction>,
+) -> KeymapRow {
+    action_row_with_description(
+        match action {
+            FrameworkGlobalAction::NextPane | FrameworkGlobalAction::PrevPane => {
+                "Global Navigation"
+            },
+            _ => "Global Shortcuts",
+        },
+        "global",
+        framework_global_description(action),
+        framework_global_toml_key(action),
+        scope.key_for(action).copied(),
+    )
+}
+
+const fn framework_global_description(action: FrameworkGlobalAction) -> &'static str {
+    match action {
+        FrameworkGlobalAction::Quit => "Quit application",
+        FrameworkGlobalAction::Restart => "Restart application",
+        FrameworkGlobalAction::NextPane => "Focus next pane",
+        FrameworkGlobalAction::PrevPane => "Focus previous pane",
+        FrameworkGlobalAction::OpenKeymap => "Open keymap",
+        FrameworkGlobalAction::OpenSettings => "Open settings",
+        FrameworkGlobalAction::Dismiss => "Dismiss focused item",
     }
 }
 
@@ -797,6 +840,7 @@ pub(super) fn vim_mode_conflicts(app: &App) -> Vec<String> {
 // ── Rendering ────────────────────────────────────────────────────────
 
 const BASE_POPUP_WIDTH: u16 = 52;
+const KEYMAP_POPUP_MAX_HEIGHT: u16 = 36;
 
 fn framework_selection_state(
     app: &App,
@@ -815,21 +859,25 @@ fn framework_selection_state(
     }
 }
 
+fn keymap_header_line<'a>(row: &KeymapRow) -> Line<'a> {
+    Line::from(vec![
+        Span::raw(SECTION_HEADER_INDENT),
+        Span::styled(
+            format!("{}:", row.section),
+            Style::default()
+                .fg(TITLE_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
 fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_capturing: bool) -> Vec<Line<'a>> {
     let mut selectable_index = 0usize;
     let mut lines = vec![Line::from("")];
 
     for row in rows {
         if row.is_header {
-            lines.push(Line::from(vec![
-                Span::raw(SECTION_HEADER_INDENT),
-                Span::styled(
-                    format!("{}:", row.scope),
-                    Style::default()
-                        .fg(TITLE_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            lines.push(keymap_header_line(row));
             continue;
         }
 
@@ -897,6 +945,14 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_capturing: bool) -> Vec<Lin
     lines
 }
 
+fn keymap_popup_height(row_count: usize, area_height: u16) -> u16 {
+    let content_height = u16::try_from(row_count).unwrap_or(u16::MAX);
+    content_height
+        .saturating_add(2)
+        .min(area_height.saturating_sub(2))
+        .min(KEYMAP_POPUP_MAX_HEIGHT)
+}
+
 pub(super) fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let rows = build_rows(app);
@@ -910,9 +966,7 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
     // +2 for left/right border
     let width = (content_width + 2).min(area.width.saturating_sub(4));
 
-    // Dynamic height: rows + 2 for top/bottom border.
-    let content_height = u16::try_from(rows.len()).unwrap_or(u16::MAX);
-    let height = (content_height + 2).min(area.height.saturating_sub(2));
+    let height = keymap_popup_height(rows.len(), area.height);
 
     let inner = PopupFrame {
         title: Some(" Keymap ".to_string()),
@@ -954,4 +1008,33 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
 
     let para = Paragraph::new(lines).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
     frame.render_widget(para, inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn keymap_header_line_uses_section_name() {
+        let line = keymap_header_line(&header("Global Navigation"));
+
+        assert_eq!(
+            line_text(&line),
+            format!("{SECTION_HEADER_INDENT}Global Navigation:")
+        );
+    }
+
+    #[test]
+    fn keymap_popup_height_is_bounded_on_tall_terminals() {
+        assert_eq!(keymap_popup_height(10, 80), 12);
+        assert_eq!(keymap_popup_height(100, 80), KEYMAP_POPUP_MAX_HEIGHT);
+        assert_eq!(keymap_popup_height(100, 20), 18);
+    }
 }
