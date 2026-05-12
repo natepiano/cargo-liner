@@ -1,3 +1,4 @@
+use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -172,7 +173,7 @@ fn run_cargo_check(
 }
 
 fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = DefaultHasher::new();
     cargo_plan.manifest_path.hash(&mut hasher);
     for arg in &cargo_plan.cargo_args {
         arg.hash(&mut hasher);

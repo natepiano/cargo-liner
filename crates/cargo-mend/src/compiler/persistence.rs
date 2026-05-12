@@ -1,3 +1,4 @@
+use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsStr;
 use std::fs;
 use std::hash::Hash;
@@ -490,7 +491,7 @@ pub(super) fn cache_filename_for(
     crate_root_file: &Path,
     build_kind: CacheBuildKind,
 ) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = DefaultHasher::new();
     package_root.hash(&mut hasher);
     crate_root_file.hash(&mut hasher);
     // Without this byte, the bin (non-test) and bin-test compilations of a

@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -150,7 +151,7 @@ pub(super) fn expected_summary_text(report: &Report) -> String {
     "no issues found".to_string()
 }
 
-pub(super) fn run_mend_json(manifest_path: &std::path::Path) -> Report {
+pub(super) fn run_mend_json(manifest_path: &Path) -> Report {
     let output = mend_command()
         .arg("--manifest-path")
         .arg(manifest_path)
@@ -166,10 +167,16 @@ pub(super) fn run_mend_json(manifest_path: &std::path::Path) -> Report {
     parse_mend_json_output(&output.stdout)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildFinishedStatus {
+    Missing,
+    Seen,
+}
+
 pub fn parse_mend_json_output(stdout: &[u8]) -> Report {
     let output = std::str::from_utf8(stdout).expect("decode cargo-mend json output");
     let mut findings = Vec::new();
-    let mut build_finished = false;
+    let mut build_finished = BuildFinishedStatus::Missing;
 
     for (line_number, line) in output.lines().enumerate() {
         if line.trim().is_empty() {
@@ -189,7 +196,7 @@ pub fn parse_mend_json_output(stdout: &[u8]) -> Report {
                     message.get("success").and_then(Value::as_bool).is_some(),
                     "build-finished message missing success: {message}"
                 );
-                build_finished = true;
+                build_finished = BuildFinishedStatus::Seen;
             },
             Some(_) => {},
             None => panic!("cargo JSON message missing reason: {message}"),
@@ -197,7 +204,7 @@ pub fn parse_mend_json_output(stdout: &[u8]) -> Report {
     }
 
     assert!(
-        build_finished,
+        matches!(build_finished, BuildFinishedStatus::Seen),
         "cargo-mend JSON output did not include build-finished"
     );
 

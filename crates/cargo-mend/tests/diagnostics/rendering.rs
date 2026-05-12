@@ -1,3 +1,8 @@
+use std::path::Path;
+
+use serde_json::Value;
+use tempfile::TempDir;
+
 use crate::common::*;
 
 #[test]
@@ -22,7 +27,7 @@ fn every_diagnostic_has_a_unique_readme_anchor() {
     }
 }
 
-fn create_all_diagnostics_fixture() -> tempfile::TempDir {
+fn create_all_diagnostics_fixture() -> TempDir {
     let temp = tempdir().expect("create temp fixture dir");
     for dir in [
         "src/private_parent",
@@ -76,7 +81,7 @@ fn main() {}
     temp
 }
 
-fn write_diagnostic_fixture_modules(root: &std::path::Path) {
+fn write_diagnostic_fixture_modules(root: &Path) {
     fs::write(
         root.join("src/type_parent/mod.rs"),
         "mod types;\nmod consumer;\n",
@@ -180,7 +185,7 @@ pub struct Suspicious;
     write_field_vis_fixture(root);
 }
 
-fn write_field_vis_fixture(root: &std::path::Path) {
+fn write_field_vis_fixture(root: &Path) {
     fs::write(root.join("src/field_vis_parent.rs"), "mod hidden;\n")
         .expect("write field-vis parent");
     fs::write(
@@ -251,19 +256,14 @@ fn fixture_renders_every_current_diagnostic() {
 
     let report = parse_mend_json_output(&output.stdout);
     let stdout = String::from_utf8(output.stdout).expect("decode mend JSON output");
-    let last_message: serde_json::Value =
-        serde_json::from_str(stdout.lines().last().expect("last JSON line"))
-            .expect("parse build-finished JSON message");
+    let last_message: Value = serde_json::from_str(stdout.lines().last().expect("last JSON line"))
+        .expect("parse build-finished JSON message");
     assert_eq!(
-        last_message
-            .get("reason")
-            .and_then(serde_json::Value::as_str),
+        last_message.get("reason").and_then(Value::as_str),
         Some("build-finished")
     );
     assert_eq!(
-        last_message
-            .get("success")
-            .and_then(serde_json::Value::as_bool),
+        last_message.get("success").and_then(Value::as_bool),
         Some(false)
     );
     let codes: BTreeSet<_> = report.findings.iter().map(|finding| finding.code).collect();

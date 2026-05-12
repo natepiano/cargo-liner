@@ -22,6 +22,8 @@ use std::path::Path;
 use std::process::Output;
 
 use common::*;
+use serde_json::Value;
+use tempfile::TempDir;
 
 fn run_mend_json_in(dir: &Path, args: &[&str]) -> Report {
     let output = mend_command()
@@ -47,7 +49,7 @@ fn run_mend_in(dir: &Path, args: &[&str]) -> Output {
         .expect("run cargo-mend")
 }
 
-fn create_simple_lib_fixture(name: &str) -> tempfile::TempDir {
+fn create_simple_lib_fixture(name: &str) -> TempDir {
     let temp = tempdir().expect("create temp fixture dir");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -64,7 +66,7 @@ fn create_simple_lib_fixture(name: &str) -> tempfile::TempDir {
     temp
 }
 
-fn create_workspace_with_example_fixture() -> tempfile::TempDir {
+fn create_workspace_with_example_fixture() -> TempDir {
     let temp = tempdir().expect("create temp workspace dir");
     fs::create_dir_all(temp.path().join("member/src")).expect("create member src");
     fs::create_dir_all(temp.path().join("member/examples/demo"))
@@ -100,7 +102,7 @@ fn create_workspace_with_example_fixture() -> tempfile::TempDir {
     temp
 }
 
-fn create_simple_workspace_fixture() -> tempfile::TempDir {
+fn create_simple_workspace_fixture() -> TempDir {
     let temp = tempdir().expect("create temp workspace dir");
     fs::create_dir_all(temp.path().join("member/src")).expect("create member src");
 
@@ -124,7 +126,7 @@ fn create_simple_workspace_fixture() -> tempfile::TempDir {
     temp
 }
 
-fn create_lib_and_example_fixture(name: &str) -> tempfile::TempDir {
+fn create_lib_and_example_fixture(name: &str) -> TempDir {
     let temp = tempdir().expect("create temp fixture dir");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -152,7 +154,7 @@ fn create_lib_and_example_fixture(name: &str) -> tempfile::TempDir {
     temp
 }
 
-fn create_clean_lib_with_example_fixture(name: &str) -> tempfile::TempDir {
+fn create_clean_lib_with_example_fixture(name: &str) -> TempDir {
     let temp = tempdir().expect("create temp fixture dir");
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -272,51 +274,45 @@ fn json_success_emits_clean_stdout_and_no_stderr_noise() {
 
     let stdout = String::from_utf8(output.stdout).expect("decode stdout");
     let json_lines = stdout.lines().collect::<Vec<_>>();
-    let first_message: serde_json::Value =
+    let first_message: Value =
         serde_json::from_str(json_lines.first().expect("first JSON line")).expect("parse first");
-    let last_message: serde_json::Value =
+    let last_message: Value =
         serde_json::from_str(json_lines.last().expect("last JSON line")).expect("parse last");
     let report = parse_mend_json_output(stdout.as_bytes());
     let stderr = strip_ansi(&String::from_utf8(output.stderr).expect("decode stderr"));
 
     assert_eq!(
-        first_message
-            .get("reason")
-            .and_then(serde_json::Value::as_str),
+        first_message.get("reason").and_then(Value::as_str),
         Some("compiler-message")
     );
     assert!(
         first_message
             .get("package_id")
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .is_some_and(|package_id| !package_id.is_empty())
     );
     assert!(
         first_message
             .get("manifest_path")
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .is_some_and(|manifest_path| manifest_path.ends_with("Cargo.toml"))
     );
     assert_eq!(
         first_message.pointer("/message/$message_type"),
-        Some(&serde_json::Value::String("diagnostic".to_string()))
+        Some(&Value::String("diagnostic".to_string()))
     );
     assert_eq!(
         first_message
             .pointer("/message/spans/0/text/0/text")
-            .and_then(serde_json::Value::as_str),
+            .and_then(Value::as_str),
         Some("pub fn internal_fn() {}")
     );
     assert_eq!(
-        last_message
-            .get("reason")
-            .and_then(serde_json::Value::as_str),
+        last_message.get("reason").and_then(Value::as_str),
         Some("build-finished")
     );
     assert_eq!(
-        last_message
-            .get("success")
-            .and_then(serde_json::Value::as_bool),
+        last_message.get("success").and_then(Value::as_bool),
         Some(true)
     );
     assert_eq!(

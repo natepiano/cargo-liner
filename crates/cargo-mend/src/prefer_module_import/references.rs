@@ -34,6 +34,32 @@ pub(super) struct ReferenceCollector<'a> {
     pub(super) scopes:         Vec<BTreeSet<String>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviousToken {
+    Other,
+    JointColon,
+    ColonColon,
+}
+
+impl PreviousToken {
+    const fn allows_bare_reference(self) -> bool { !matches!(self, Self::ColonColon) }
+
+    const fn after_colon(self, spacing: Spacing) -> Self {
+        match self {
+            Self::JointColon => Self::ColonColon,
+            _ if matches!(spacing, Spacing::Joint) => Self::JointColon,
+            _ => Self::Other,
+        }
+    }
+
+    const fn after_group(self) -> Self {
+        match self {
+            Self::ColonColon => Self::Other,
+            other => other,
+        }
+    }
+}
+
 impl<'a> ReferenceCollector<'a> {
     pub(super) fn new(offsets: &'a [usize], imported_names: &'a BTreeSet<String>) -> Self {
         Self {
@@ -264,13 +290,12 @@ pub(super) fn collect_bare_refs_from_tokens(
     imported_names: &BTreeSet<String>,
     references: &mut Vec<BareReference>,
 ) {
-    let mut prev_colon_joint = false;
-    let mut prev_is_colon_colon = false;
+    let mut previous_token = PreviousToken::Other;
     for token_tree in tokens.clone() {
         match token_tree {
             TokenTree::Ident(ref ident) => {
                 let name = ident.to_string();
-                if !prev_is_colon_colon && imported_names.contains(&name) {
+                if previous_token.allows_bare_reference() && imported_names.contains(&name) {
                     let span = ident.span();
                     let start = shared::offset(offsets, span.start());
                     let end = shared::offset(offsets, span.end());
@@ -280,33 +305,21 @@ pub(super) fn collect_bare_refs_from_tokens(
                         byte_end: end,
                     });
                 }
-                prev_colon_joint = false;
-                prev_is_colon_colon = false;
+                previous_token = PreviousToken::Other;
             },
             TokenTree::Punct(ref punct) => {
                 if punct.as_char() == ':' {
-                    if prev_colon_joint {
-                        prev_is_colon_colon = true;
-                        prev_colon_joint = false;
-                    } else if punct.spacing() == Spacing::Joint {
-                        prev_colon_joint = true;
-                        prev_is_colon_colon = false;
-                    } else {
-                        prev_colon_joint = false;
-                        prev_is_colon_colon = false;
-                    }
+                    previous_token = previous_token.after_colon(punct.spacing());
                 } else {
-                    prev_colon_joint = false;
-                    prev_is_colon_colon = false;
+                    previous_token = PreviousToken::Other;
                 }
             },
             TokenTree::Group(ref group) => {
                 collect_bare_refs_from_tokens(&group.stream(), offsets, imported_names, references);
-                prev_is_colon_colon = false;
+                previous_token = previous_token.after_group();
             },
             TokenTree::Literal(_) => {
-                prev_colon_joint = false;
-                prev_is_colon_colon = false;
+                previous_token = PreviousToken::Other;
             },
         }
     }

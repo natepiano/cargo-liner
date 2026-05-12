@@ -1,3 +1,5 @@
+use tempfile::TempDir;
+
 use crate::common::*;
 
 #[test]
@@ -919,7 +921,7 @@ edition = "2024"
     assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
-fn create_preserve_exports_fixture() -> tempfile::TempDir {
+fn create_preserve_exports_fixture() -> TempDir {
     let temp = tempdir().expect("create temp fixture dir");
     fs::create_dir_all(temp.path().join("src/utils")).expect("create src/utils");
 

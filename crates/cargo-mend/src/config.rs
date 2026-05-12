@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -244,7 +245,7 @@ pub(crate) fn load_config(
 }
 
 fn fingerprint_for(root: &Path, config: &VisibilityConfig) -> Result<String> {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = DefaultHasher::new();
     root.to_string_lossy().hash(&mut hasher);
     serde_json::to_string(config)
         .context("failed to serialize mend config for fingerprinting")?

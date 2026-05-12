@@ -29,6 +29,7 @@ use syn::PatTupleStruct;
 use syn::TraitItemFn;
 use syn::TypePath;
 use syn::UseTree;
+use syn::Visibility;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use walkdir::WalkDir;
@@ -406,7 +407,7 @@ fn collect_scopes(
 
         if let Item::Use(item_use) = item {
             if let Some(import_path) = flatten_use_path(&item_use.tree) {
-                if !matches!(item_use.vis, syn::Visibility::Inherited)
+                if !matches!(item_use.vis, Visibility::Inherited)
                     && let Some(import_name) = import_path.rsplit("::").next()
                 {
                     existing_reexport_names.insert(import_name.to_string());

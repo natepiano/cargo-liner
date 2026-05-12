@@ -10,6 +10,7 @@ use syn::UseGroup;
 use syn::UsePath;
 use syn::UseTree;
 use syn::Visibility;
+use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 
 use super::validated_plan;
@@ -98,7 +99,7 @@ pub(super) fn resolve_parent_pub_use_export(
             return Ok(Some(ParentExportResolution {
                 exported_name:   item_name.to_string(),
                 parent_boundary: ParentBoundaryKey {
-                    parent_module: std::path::PathBuf::new(),
+                    parent_module: PathBuf::new(),
                     item_start,
                     item_end,
                 },
@@ -221,7 +222,7 @@ fn remove_exports_from_use_tree(
                 [] => None,
                 [only] => Some(only.clone()),
                 _ => {
-                    let mut punctuated = syn::punctuated::Punctuated::new();
+                    let mut punctuated = Punctuated::new();
                     for item in kept_items {
                         punctuated.push(item);
                     }

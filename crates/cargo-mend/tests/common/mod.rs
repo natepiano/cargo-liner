@@ -17,6 +17,8 @@ mod types;
 
 pub(super) use std::collections::BTreeSet;
 pub(super) use std::fs;
+use std::path::Path;
+use std::process::Command;
 
 use serde::Deserialize;
 pub(super) use tempfile::tempdir;
@@ -31,7 +33,7 @@ pub(super) fn assert_summary_matches_findings(report: &Report) {
     helpers::assert_summary_matches_findings(report);
 }
 
-pub(super) fn cargo_command() -> std::process::Command { helpers::cargo_command() }
+pub(super) fn cargo_command() -> Command { helpers::cargo_command() }
 
 pub(super) fn expected_summary_from_findings(
     expected_findings: &[ExpectedFinding],
@@ -43,7 +45,7 @@ pub(super) fn expected_summary_text(report: &Report) -> String {
     helpers::expected_summary_text(report)
 }
 
-pub(super) fn run_mend_json(manifest_path: &std::path::Path) -> Report {
+pub(super) fn run_mend_json(manifest_path: &Path) -> Report {
     helpers::run_mend_json(manifest_path)
 }
 
