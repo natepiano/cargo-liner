@@ -4215,12 +4215,12 @@ Acceptance check: `rg 'app\\.toasts|ToastManager|crate::tui::toasts|super::toast
 
 **Implications for remaining phases:**
 - Phase 27 is a required settings-boundary correction, not final closeout. It removes the last app-config generic from the framework settings store.
-- The remaining migration cleanup is required and stays numbered: Phase 28 finishes framework pane/API cleanup, Phase 29 finishes toast API cleanup, and Phase 30 is final closeout.
+- The remaining migration cleanup is required and stays numbered: Phase 28 finishes framework pane/API cleanup, Phase 29 finishes toast API cleanup, Phase 30 moves generic overflow affordance ownership into the framework, and Phase 31 is final closeout.
 - Final closeout must grep for stale live-code references to `app.toasts`, `ToastManager`, `handle_toast_key`, cargo-port-only toast constants, and legacy keymap/settings UI ownership; historical phase notes can keep those terms.
 
 ### Phase 26 Review
 
-- Replaced the earlier final-closeout assumption with required remaining phases. Phase 27 owns the settings-boundary correction; final closeout moves to Phase 30.
+- Replaced the earlier final-closeout assumption with required remaining phases. Phase 27 owns the settings-boundary correction; final closeout moves to Phase 31.
 - Updated the Phase 26 `ToastSettings` prune/tick contract: `Toasts::prune(now)` stays public and uses default-only animation timing; user-configurable toast timings are consumed at push/finish, not prune.
 - Reconciled the `Definition of done` public export list with shipped `tui_pane` exports, including the Phase 26 toast surface and the Phase 26 closeout status-line surface.
 - Removed the binary-side toast shim in code and plan text. cargo-port keeps only `src/tui/toast_adapters.rs` for app-domain `TrackedItemKey` conversions; all toast APIs are imported directly from `tui_pane`.
@@ -4282,7 +4282,7 @@ Deliverables:
 - `cargo nextest run --workspace` — 845 passed
 - `cargo install --path .`
 
-### Phase 29 — Toast API boundary cleanup
+### Phase 29 — Toast API boundary cleanup (✅ landed)
 
 Finish the toast API boundary now that toast storage/rendering lives in `tui_pane`.
 
@@ -4292,13 +4292,59 @@ Deliverables:
 - Audit surviving `<Ctx>` on toast-facing types. Keep it only where the type genuinely carries `Ctx::ToastAction`; remove it from view/helper types that do not need app context.
 - Acceptance tests cover task finish/linger timing, tracked-item overflow, focused toast action dispatch, and app-domain conversion helpers.
 
-### Phase 30 — Final closeout
+End-of-phase spinner cleanup:
+- Move the generic activity-spinner primitive out of cargo-port and into `tui_pane`. Cargo-port may decide that a lint run is `Running`, but the frame set, timing, and `frame_at(elapsed)` logic are framework UI chrome.
+- Replace cargo-port's `src/tui/animation.rs::LINT_SPINNER` call sites with the framework-owned spinner export. This includes the Lints table running row and the Package pane's lint-status row so both match the rest of the app's running indicators.
+- Framework toast rendering uses the same spinner primitive instead of a private toast-only `SPINNER_FRAMES` array.
+- Acceptance tests pin that the Lints pane, Package lint row, and toast tracked-item row all render frames from the same framework spinner cycle at the same elapsed timestamps.
 
-Phase 30 is the final cleanup checkpoint after Phases 28-29. It does not add new architecture.
+### Retrospective
+
+**What worked:**
+- `TrackedItemKey` is now the framework's tracked-item identity type throughout toast storage; cargo-port domain conversions live behind explicit `toast_adapters::{path_key, owner_repo_key}` helpers.
+- The activity spinner moved into `tui_pane`; Lints, Package lint rows, and toast tracked-item rows now share the same `ACTIVITY_SPINNER` cycle.
+- Toast view/render helper types stayed non-`Ctx`; `Ctx` remains only on storage/dispatch types that carry `Ctx::ToastAction`.
+
+**What deviated from the plan:**
+- `mark_item_completed` now takes `&TrackedItemKey`; the string-key public wrapper remains as `mark_tracked_item_completed` for compatibility at call sites that only have raw string keys.
+- Generic `From<String>` / `From<&str>` for `TrackedItemKey` remain because they are framework-owned primitive conversions, not cargo-port domain adapters.
+
+**Surprises:**
+- Reusing the braille activity spinner in toast rows required display-width accounting in `tracked_item_line`; byte length would over-pad and misalign Unicode frames.
+- `Toasts<Ctx>` no longer needs a private `PhantomData` field because it already stores `Vec<Toast<Ctx>>`.
+
+**Implications for remaining phases:**
+- Phase 30 owns only the remaining generic overflow-affordance move; spinner ownership is complete.
+- Final closeout should include stale-reference greps for `src/tui/animation.rs`, `LINT_SPINNER`, and toast-only `SPINNER_FRAMES` in addition to the existing toast/keymap/settings cleanup checks.
+
+### Phase 29 Review
+
+- Phase 30 now excludes Toasts from the generic viewport overflow-affordance migration. Toast tracked-item overflow remains the existing in-card `(+N more)` row.
+- Phase 30 now splits already-participating app-pane migration from overlay onboarding. Finder must expose the needed viewport state; Settings and Keymap either render through a constrained scroll body with viewport state or stay explicitly excluded until they do.
+- Phase 30 now names `tui_pane::Viewport` as the owner of overflow label calculation so cargo-port's app-pane viewport does not remain a second source of truth.
+- Phase 31 closeout now greps for stale Phase 29/30 paths: `src/tui/animation.rs`, `LINT_SPINNER`, toast-only `SPINNER_FRAMES`, `pane::render_overflow_affordance`, `src/tui/pane/state.rs::overflow_affordance`, and live-code overflow literals outside the framework-owned path.
+
+### Phase 30 — Framework viewport overflow affordance
+
+Move the generic `more ▼` / `▲ more ▼` / `▲ more` scroll affordance out of cargo-port pane chrome and into the framework viewport/chrome layer before final closeout.
+
+Deliverables:
+- Framework owns overflow-affordance calculation and rendering for scrollable pane bodies and framework-style overlay bodies. The binary may supply app rows/content, but it does not hand-render generic "more" indicators.
+- Move the overflow label calculation onto `tui_pane::Viewport`. cargo-port's app-pane viewport may temporarily forward to that framework rule during migration, but `src/tui/pane/state.rs::Viewport::overflow_affordance` must not remain a second source of truth.
+- Toasts are excluded from this migration. Toast tracked-item overflow stays represented by the existing in-card `(+N more)` row; toast stack visibility remains governed by `ToastSettings::max_visible` and focused-toast navigation, not the generic `more ▼` / `▲ more` pane affordance.
+- Finder's popup results path participates in the same overflow affordance path as other scrollable panes. Opening Finder with more results than visible rows shows `more ▼`; scrolling down updates to `▲ more ▼`; reaching the end shows `▲ more`.
+- First migrate the already-participating app-pane callers from `pane::render_overflow_affordance` to the framework-owned helper: Project List, Package, Git, Targets, Lang, Lints, and CI.
+- Then onboard overlay/body targets one by one after each exposes the required viewport state. Finder must set visible row count and scroll offset for its result body. Settings and Keymap must either render through a constrained scroll body with viewport state or be explicitly excluded until they do. Each target gets an acceptance test for top/middle/bottom overflow labels before it is marked migrated.
+- The framework-owned helper uses `Viewport::len`, `scroll_offset`, and visible row count as its source of truth; individual panes must set those values, not duplicate overflow math.
+- Acceptance tests render at least one normal pane and Finder in constrained heights and assert the correct affordance text appears and changes with scroll position.
+
+### Phase 31 — Final closeout
+
+Phase 31 is the final cleanup checkpoint after Phases 28-30. It does not add new architecture.
 
 Deliverables:
 - Reconcile `What dissolves`, `What survives`, `Risks and unknowns`, `Definition of done`, and `Non-goals` against shipped code.
-- Run stale-reference greps for deleted live-code paths: `app.toasts`, `ToastManager`, `handle_toast_key`, old cargo-port toast constants, legacy bar/keymap/focus names, legacy settings/keymap overlay ownership, and cargo-port-only framework shims.
+- Run stale-reference greps for deleted live-code paths: `app.toasts`, `ToastManager`, `handle_toast_key`, old cargo-port toast constants, `src/tui/animation.rs`, `LINT_SPINNER`, toast-only `SPINNER_FRAMES`, `pane::render_overflow_affordance`, `src/tui/pane/state.rs::overflow_affordance`, live-code `more ▼` / `▲ more` literals outside the framework-owned affordance path, legacy bar/keymap/focus names, legacy settings/keymap overlay ownership, and cargo-port-only framework shims.
 - Remove or justify any remaining temporary lint `expect` attributes in the framework crate.
 - Run the final validation stack and install the binary.
 
@@ -4347,7 +4393,7 @@ Verified during the migration. Closeout validation runs workspace-scoped Cargo c
 ## Risks and unknowns
 
 - **Workspace conversion.** Verified during Phase 1; no further action. Both crates build green, `cargo install --path .` still installs the binary, `Cargo.lock` and `target/` are unchanged in location.
-- **Framework public API completion.** cargo-port has now consumed the framework through the keymap, bar, overlay, settings, focus, and toast paths, but the migration is not complete until Phases 28-29 finish the remaining required boundary work: keymap capture ownership, settings row/view cleanup, reusable construction lifecycle, and toast API/adapters.
+- **Framework public API completion.** cargo-port has now consumed the framework through the keymap, bar, overlay, settings, focus, and toast paths, but the migration is not complete until Phases 28-30 finish the remaining required boundary work: keymap capture ownership, settings row/view cleanup, reusable construction lifecycle, toast API/adapters, and generic viewport overflow affordance ownership.
 - **Scope precedence.** `NavigationAction::Right` and `ProjectListAction::ExpandRow` both default to `Right`. The "pane scope wins" rule is documented above and enforced by the input router. Lock with a unit test.
 - **`is_vim_reserved` load order.** It must read `Navigation::defaults()` (constant builder), not the in-progress keymap, to avoid a load-order cycle when called inside `resolve_scope`. Defaults are constant and always available.
 - **Framework grants `&mut Vec<Span>` to bar code.** Framework convention: each helper pushes only into vecs it owns content for. Reviewed at PR time.

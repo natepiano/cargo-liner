@@ -14,6 +14,7 @@ use crate::tui::constants::STARTUP_PHASE_GIT;
 use crate::tui::constants::STARTUP_PHASE_GITHUB;
 use crate::tui::constants::STARTUP_PHASE_LINT;
 use crate::tui::constants::STARTUP_PHASE_METADATA;
+use crate::tui::toast_adapters;
 
 impl Startup {
     pub(super) fn log_phase_plan(&self) {
@@ -118,10 +119,10 @@ impl App {
     }
     pub(super) fn start_startup_detail_toasts(&mut self) {
         if self.startup.disk.expected.is_some() {
-            let disk_items = self
-                .startup
-                .disk
-                .tracked_items(|p| project::home_relative_path(p.as_path()));
+            let disk_items = self.startup.disk.tracked_items(
+                |p| project::home_relative_path(p.as_path()),
+                toast_adapters::path_key,
+            );
             if !disk_items.is_empty() {
                 let body = self
                     .startup
@@ -136,10 +137,10 @@ impl App {
         }
 
         if self.startup.git.expected.is_some() {
-            let git_items = self
-                .startup
-                .git
-                .tracked_items(|p| project::home_relative_path(p.as_path()));
+            let git_items = self.startup.git.tracked_items(
+                |p| project::home_relative_path(p.as_path()),
+                toast_adapters::path_key,
+            );
             if !git_items.is_empty() {
                 let body = self.startup.git_toast_body(self.framework.toast_settings());
                 let task_id = self
@@ -151,10 +152,10 @@ impl App {
             }
         }
         if self.startup.metadata.expected.is_some() {
-            let metadata_items = self
-                .startup
-                .metadata
-                .tracked_items(|p| project::home_relative_path(p.as_path()));
+            let metadata_items = self.startup.metadata.tracked_items(
+                |p| project::home_relative_path(p.as_path()),
+                toast_adapters::path_key,
+            );
             if !metadata_items.is_empty() {
                 let body = self
                     .startup

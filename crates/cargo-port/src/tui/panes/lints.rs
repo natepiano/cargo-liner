@@ -13,11 +13,11 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::ACTIVITY_SPINNER;
 
 use super::LintsData;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
-use crate::tui::LINT_SPINNER;
 use crate::tui::constants::ACCENT_COLOR;
 use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
@@ -95,7 +95,7 @@ fn build_lint_rows(
 
         let (result_cell, row_style) = match run.status {
             LintRunStatus::Running => {
-                let spinner = LINT_SPINNER.frame_at(animation_elapsed);
+                let spinner = running_lint_spinner(animation_elapsed);
                 (Cell::from(spinner), Style::default().fg(ACCENT_COLOR))
             },
             LintRunStatus::Passed => (Cell::from("passed"), Style::default().fg(SUCCESS_COLOR)),
@@ -129,6 +129,10 @@ fn build_lint_rows(
     }
 
     rows
+}
+
+fn running_lint_spinner(animation_elapsed: Duration) -> &'static str {
+    ACTIVITY_SPINNER.frame_at(animation_elapsed)
 }
 
 /// Body of `LintsPane::render`. Same as
@@ -210,4 +214,23 @@ pub fn render_lints_pane_body(
     pane::render_overflow_affordance(frame, area, &pane.viewport);
 
     let _ = ctx;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tui_pane::ACTIVITY_SPINNER;
+
+    use super::running_lint_spinner;
+
+    #[test]
+    fn lints_pane_running_row_uses_framework_activity_spinner() {
+        let elapsed = Duration::from_millis(100);
+
+        assert_eq!(
+            running_lint_spinner(elapsed),
+            ACTIVITY_SPINNER.frame_at(elapsed)
+        );
+    }
 }

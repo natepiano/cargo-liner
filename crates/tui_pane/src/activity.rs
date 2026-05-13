@@ -1,12 +1,14 @@
+//! Framework-owned activity indicators.
+
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Cycle {
+struct Cycle {
     period: Duration,
 }
 
 impl Cycle {
-    pub const fn new(period: Duration) -> Self {
+    const fn new(period: Duration) -> Self {
         assert!(
             period.as_secs() > 0 || period.subsec_nanos() > 0,
             "animation cycle period must be non-zero"
@@ -15,6 +17,7 @@ impl Cycle {
     }
 }
 
+/// A fixed set of frames sampled over a fixed period.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameCycle {
     frames: &'static [&'static str],
@@ -22,6 +25,12 @@ pub struct FrameCycle {
 }
 
 impl FrameCycle {
+    /// Construct a frame cycle from static frames and a non-zero period.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `frames` is empty or `period` is zero.
+    #[must_use]
     pub const fn new(frames: &'static [&'static str], period: Duration) -> Self {
         assert!(
             !frames.is_empty(),
@@ -33,6 +42,8 @@ impl FrameCycle {
         }
     }
 
+    /// Return the frame for `elapsed`, wrapping at the cycle period.
+    #[must_use]
     pub fn frame_at(self, elapsed: Duration) -> &'static str {
         let frame_count = u128::try_from(self.frames.len()).unwrap_or(u128::MAX);
         let period = self.cycle.period.as_nanos();
@@ -43,13 +54,18 @@ impl FrameCycle {
     }
 }
 
+/// A static or animated icon suitable for pane rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
+    /// A fixed icon.
     Static(&'static str),
+    /// An icon whose frame is selected from elapsed time.
     Animated(FrameCycle),
 }
 
 impl Icon {
+    /// Return the current icon frame.
+    #[must_use]
     pub fn frame_at(self, elapsed: Duration) -> &'static str {
         match self {
             Self::Static(icon) => icon,
@@ -58,11 +74,15 @@ impl Icon {
     }
 }
 
-pub const LINT_SPINNER_FRAMES: &[&str] = &[
+/// Default framework activity-spinner frames.
+pub const ACTIVITY_SPINNER_FRAMES: &[&str] = &[
     "⠉⠉", "⠈⠙", "⠀⠹", "⠀⢸", "⠀⣰", "⢀⣠", "⣀⣀", "⣄⡀", "⣆⠀", "⡇⠀", "⠏⠀", "⠋⠁",
 ];
-pub const LINT_SPINNER: FrameCycle =
-    FrameCycle::new(LINT_SPINNER_FRAMES, Duration::from_millis(1200));
+
+/// Default framework activity-spinner cycle.
+pub const ACTIVITY_SPINNER: FrameCycle =
+    FrameCycle::new(ACTIVITY_SPINNER_FRAMES, Duration::from_millis(1200));
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

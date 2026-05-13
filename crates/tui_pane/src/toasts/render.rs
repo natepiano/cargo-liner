@@ -19,12 +19,14 @@ use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
+use unicode_width::UnicodeWidthStr;
 
 use super::manager::ToastHitbox;
 use super::manager::ToastId;
 use super::manager::ToastStyle;
 use super::manager::ToastView;
 use super::manager::TrackedItemView;
+use crate::ACTIVITY_SPINNER;
 use crate::ToastSettings;
 use crate::settings::ToastPlacement;
 
@@ -34,7 +36,6 @@ const ERROR_COLOR: Color = Color::Red;
 const LABEL_COLOR: Color = Color::Rgb(150, 190, 180);
 const TITLE_COLOR: Color = Color::Yellow;
 const WARNING_COLOR: Color = Color::Yellow;
-const SPINNER_FRAMES: &[&str] = &["|", "/", "-", "\\"];
 
 /// Result of rendering toast cards.
 pub struct ToastRenderResult {
@@ -463,7 +464,7 @@ fn tracked_item_line(
 
     let is_running = item.linger_progress.is_none();
     let spinner_text = if is_running {
-        format!(" {} ", spinner_frame_at(elapsed))
+        format!(" {} ", ACTIVITY_SPINNER.frame_at(elapsed))
     } else {
         " ".repeat(SPINNER_SLOT)
     };
@@ -472,7 +473,7 @@ fn tracked_item_line(
     let suffix_width = duration_suffix.len();
     let label_budget = line_width.saturating_sub(suffix_width + SPINNER_SLOT + 1);
     let label = truncate_with_ellipsis(&item.label, label_budget);
-    let used = label.len() + SPINNER_SLOT + suffix_width;
+    let used = label.width() + spinner_text.width() + suffix_width;
     let padding = line_width.saturating_sub(used);
     let duration_style = item
         .linger_progress
@@ -541,7 +542,46 @@ fn format_elapsed(elapsed: Duration) -> String {
     }
 }
 
-fn spinner_frame_at(elapsed: Duration) -> &'static str {
-    let idx = (elapsed.as_millis() / 120) as usize % SPINNER_FRAMES.len();
-    SPINNER_FRAMES[idx]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn tracked_items_show_overflow_row_when_body_is_constrained() {
+        let tracked = ["one", "two", "three", "four"]
+            .into_iter()
+            .map(|label| TrackedItemView {
+                label:           label.to_string(),
+                linger_progress: None,
+                elapsed:         None,
+            })
+            .collect::<Vec<_>>();
+
+        let lines = body_lines_tracked(&tracked, Style::default(), 2, 20);
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(line_text(&lines[0]), "one");
+        assert_eq!(line_text(&lines[1]), "(+3 more)");
+    }
+
+    #[test]
+    fn tracked_item_running_line_uses_framework_activity_spinner() {
+        let elapsed = Duration::from_millis(100);
+        let item = TrackedItemView {
+            label:           "repo".to_string(),
+            linger_progress: None,
+            elapsed:         Some(elapsed),
+        };
+
+        let line = tracked_item_line(&item, Style::default(), 40);
+
+        assert!(line_text(&line).contains(ACTIVITY_SPINNER.frame_at(elapsed)));
+    }
 }

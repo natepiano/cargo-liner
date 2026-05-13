@@ -1,4 +1,3 @@
-mod animation;
 mod app;
 mod background;
 mod ci_state;
@@ -32,6 +31,4 @@ mod test_support;
 mod toast_adapters;
 mod watched_file;
 
-pub use animation::Icon;
-pub use animation::LINT_SPINNER;
 pub use terminal::run;

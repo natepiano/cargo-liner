@@ -53,10 +53,10 @@ impl<K: Eq + Hash> KeyedPhase<K> {
     /// them with strikethrough); pending keys get `started_at = now`
     /// so they render with a live spinner + ticking duration that
     /// freezes when the item completes.
-    pub(super) fn tracked_items<F>(&self, label_fn: F) -> Vec<TrackedItem>
+    pub(super) fn tracked_items<L, I>(&self, label_fn: L, key_fn: I) -> Vec<TrackedItem>
     where
-        for<'a> &'a K: Into<TrackedItemKey>,
-        F: Fn(&K) -> String,
+        L: Fn(&K) -> String,
+        I: Fn(&K) -> TrackedItemKey,
     {
         let now = Instant::now();
         let empty = HashSet::new();
@@ -67,7 +67,7 @@ impl<K: Eq + Hash> KeyedPhase<K> {
                 let is_seen = self.seen.contains(k);
                 TrackedItem {
                     label:        label_fn(k),
-                    key:          k.into(),
+                    key:          key_fn(k),
                     started_at:   if is_seen { None } else { Some(now) },
                     completed_at: if is_seen { Some(now) } else { None },
                 }

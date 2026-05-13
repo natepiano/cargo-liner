@@ -39,6 +39,7 @@ use crate::tui::framework_keymap::LangAction;
 use crate::tui::framework_keymap::NavigationAction;
 use crate::tui::input;
 use crate::tui::pane::Viewport;
+use crate::tui::toast_adapters;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
     let Some(targets_data) = app.panes.targets.content().cloned() else {
@@ -386,7 +387,7 @@ fn handle_ci_fetch_more(app: &mut App) {
         .start_task("Fetching CI", &project_name);
     let item = TrackedItem {
         label:        project_name,
-        key:          ci_path.into(),
+        key:          toast_adapters::path_key(&ci_path),
         started_at:   Some(std::time::Instant::now()),
         completed_at: None,
     };

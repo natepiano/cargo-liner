@@ -639,3 +639,32 @@ pub(super) fn hard_wrap(text: &str, max_width: usize) -> Vec<String> {
     result.push(remaining.to_string());
     result
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests should fail on invalid fixtures")]
+mod tests {
+    use std::time::Duration;
+
+    use chrono::DateTime;
+    use tui_pane::ACTIVITY_SPINNER;
+
+    use super::lint_display_to_string;
+    use crate::lint::LintStatus;
+    use crate::tui::panes::LintDisplay;
+
+    #[test]
+    fn package_lint_row_uses_framework_activity_spinner() {
+        let timestamp =
+            DateTime::parse_from_rfc3339("2026-03-30T14:22:18-05:00").expect("timestamp");
+        let elapsed = Duration::from_millis(100);
+        let display = LintDisplay::Runs {
+            count:  3,
+            status: LintStatus::Running(timestamp),
+        };
+
+        assert_eq!(
+            lint_display_to_string(&display, elapsed, true),
+            format!("{} 3", ACTIVITY_SPINNER.frame_at(elapsed))
+        );
+    }
+}

@@ -2,13 +2,13 @@ use chrono::DateTime;
 use chrono::FixedOffset;
 use serde::Deserialize;
 use serde::Serialize;
+use tui_pane::ACTIVITY_SPINNER;
+use tui_pane::Icon;
 
 use crate::constants::LINT_FAILED;
 use crate::constants::LINT_NO_LOG;
 use crate::constants::LINT_PASSED;
 use crate::constants::LINT_STALE;
-use crate::tui::Icon;
-use crate::tui::LINT_SPINNER;
 
 /// Lint status derived from the latest lint run record.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -25,7 +25,7 @@ impl LintStatus {
     /// Returns the `Icon` for this lint status.
     pub const fn icon(&self) -> Icon {
         match self {
-            Self::Running(_) => Icon::Animated(LINT_SPINNER),
+            Self::Running(_) => Icon::Animated(ACTIVITY_SPINNER),
             Self::Passed(_) => Icon::Static(LINT_PASSED),
             Self::Failed(_) => Icon::Static(LINT_FAILED),
             Self::Stale => Icon::Static(LINT_STALE),

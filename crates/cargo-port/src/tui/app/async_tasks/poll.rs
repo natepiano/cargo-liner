@@ -3,8 +3,8 @@ use std::path::Path;
 use std::time::Instant;
 
 use tui_pane::TrackedItem;
+use tui_pane::TrackedItemKey;
 
-use crate::project::AbsolutePath;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::types::PollBackgroundStats;
@@ -77,7 +77,7 @@ impl App {
                         .map_or(0, |info| info.runs.len());
                     let new_runs = after.saturating_sub(before);
                     if let Some(task_id) = self.ci.take_fetch_toast() {
-                        let empty: HashSet<String> = std::collections::HashSet::new();
+                        let empty: HashSet<TrackedItemKey> = HashSet::new();
                         self.framework
                             .toasts
                             .complete_missing_items(task_id, &empty);
@@ -88,7 +88,7 @@ impl App {
                         };
                         let result_item = TrackedItem {
                             label,
-                            key: AbsolutePath::from(format!("{path}:result")).into(),
+                            key: TrackedItemKey::new(format!("{path}:result")),
                             started_at: None,
                             completed_at: None,
                         };

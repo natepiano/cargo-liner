@@ -5,6 +5,7 @@
 //! `AppContext` trait. Later phases add the public API one trait
 //! family at a time.
 
+mod activity;
 mod app_context;
 mod bar;
 mod framework;
@@ -19,6 +20,10 @@ mod viewport;
 // Crate-root re-exports. The `action_enum!` and `bindings!` macros
 // reference these types via `$crate::*` paths, which requires them at
 // the crate root. `tests/macro_use.rs` locks the path stability.
+pub use activity::ACTIVITY_SPINNER;
+pub use activity::ACTIVITY_SPINNER_FRAMES;
+pub use activity::FrameCycle;
+pub use activity::Icon;
 pub use app_context::AppContext;
 pub use app_context::NoToastAction;
 pub use bar::BarPalette;

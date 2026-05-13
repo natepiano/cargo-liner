@@ -10,7 +10,6 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fmt::Result as FmtResult;
-use std::marker::PhantomData;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -333,7 +332,7 @@ mod tests {
         assert!(toasts.set_tracked_items(task, &[item], Duration::from_millis(10)));
         assert_eq!(toasts.tracked_item_count(task), 1);
 
-        assert!(toasts.mark_item_completed(task, "repo"));
+        assert!(toasts.mark_tracked_item_completed(task, "repo"));
         toasts.prune_tracked_items(Instant::now() + Duration::from_secs(1), Duration::ZERO);
 
         assert_eq!(toasts.tracked_item_count(task), 0);
@@ -473,7 +472,6 @@ pub struct Toasts<Ctx: AppContext> {
     /// Viewport used when focus is on the Toasts framework pane.
     pub viewport: Viewport,
     hits:         Vec<ToastHitbox>,
-    _ctx:         PhantomData<fn(&Ctx)>,
 }
 
 impl<Ctx: AppContext> Default for Toasts<Ctx> {
@@ -488,7 +486,6 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             entries:  Vec::new(),
             viewport: Viewport::default(),
             hits:     Vec::new(),
-            _ctx:     PhantomData,
         }
     }
 
@@ -749,7 +746,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     pub fn complete_missing_items(
         &mut self,
         task_id: ToastTaskId,
-        active_keys: &HashSet<String>,
+        active_keys: &HashSet<TrackedItemKey>,
     ) -> bool {
         let now = Instant::now();
         let Some(toast) = self.toast_for_task_mut(task_id) else {
@@ -757,7 +754,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         };
         let mut changed = false;
         for item in &mut toast.tracked_items {
-            if item.completed_at.is_none() && !active_keys.contains(item.key.as_str()) {
+            if item.completed_at.is_none() && !active_keys.contains(&item.key) {
                 item.completed_at = Some(now);
                 changed = true;
             }
@@ -775,14 +772,14 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
         };
-        let existing_keys: HashSet<String> = toast
+        let existing_keys: HashSet<TrackedItemKey> = toast
             .tracked_items
             .iter()
-            .map(|item| item.key.as_str().to_owned())
+            .map(|item| item.key.clone())
             .collect();
         let mut changed = false;
         for item in items {
-            if !existing_keys.contains(item.key.as_str()) {
+            if !existing_keys.contains(&item.key) {
                 toast.tracked_items.push(item.clone());
                 changed = true;
             }
@@ -809,17 +806,13 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         true
     }
 
-    /// Mark one tracked item completed by string key.
-    pub fn mark_item_completed(&mut self, task_id: ToastTaskId, key: &str) -> bool {
+    /// Mark one tracked item completed by key.
+    pub fn mark_item_completed(&mut self, task_id: ToastTaskId, key: &TrackedItemKey) -> bool {
         let now = Instant::now();
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
         };
-        let Some(item) = toast
-            .tracked_items
-            .iter_mut()
-            .find(|item| item.key.as_str() == key)
-        else {
+        let Some(item) = toast.tracked_items.iter_mut().find(|item| item.key == *key) else {
             return false;
         };
         item.completed_at = Some(now);
@@ -828,7 +821,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
 
     /// Mark one tracked item completed by string key.
     pub fn mark_tracked_item_completed(&mut self, task_id: ToastTaskId, key: &str) -> bool {
-        self.mark_item_completed(task_id, key)
+        self.mark_item_completed(task_id, &TrackedItemKey::new(key))
     }
 
     /// Drop completed tracked items whose linger duration has elapsed.

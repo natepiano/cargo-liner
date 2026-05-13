@@ -70,17 +70,21 @@ impl<K: Eq + Hash> RunningTracker<K> {
     /// Done as a non-`&mut` reader so the borrow on the
     /// subsystem-owned tracker is released before the caller hands
     /// the items to the toast-sync sink (which takes `&mut self`).
-    pub fn items_for_toast<F>(&self, label_fn: F) -> (Option<ToastTaskId>, Vec<TrackedItem>)
+    pub fn items_for_toast<L, I>(
+        &self,
+        label_fn: L,
+        key_fn: I,
+    ) -> (Option<ToastTaskId>, Vec<TrackedItem>)
     where
-        for<'a> &'a K: Into<TrackedItemKey>,
-        F: Fn(&K) -> String,
+        L: Fn(&K) -> String,
+        I: Fn(&K) -> TrackedItemKey,
     {
         let items = self
             .running
             .iter()
             .map(|(k, &started)| TrackedItem {
                 label:        label_fn(k),
-                key:          k.into(),
+                key:          key_fn(k),
                 started_at:   Some(started),
                 completed_at: None,
             })
@@ -138,5 +142,20 @@ mod tests {
         t.clear();
         assert!(t.is_empty());
         assert!(t.toast.is_none());
+    }
+
+    #[test]
+    fn items_for_toast_uses_explicit_key_function() {
+        let mut t: RunningTracker<String> = RunningTracker::new();
+        t.insert("repo".into(), Instant::now());
+
+        let (_toast, items) = t.items_for_toast(
+            |key| format!("label:{key}"),
+            |key| TrackedItemKey::new(format!("tracked:{key}")),
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label(), "label:repo");
+        assert_eq!(items[0].key().as_str(), "tracked:repo");
     }
 }

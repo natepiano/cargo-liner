@@ -2,26 +2,28 @@ use std::collections::HashSet;
 
 use tui_pane::ToastTaskId;
 use tui_pane::TrackedItem;
+use tui_pane::TrackedItemKey;
 use tui_pane::format_toast_items;
 use tui_pane::toast_body_width;
 
 use crate::project;
 use crate::tui::app::App;
+use crate::tui::toast_adapters;
 
 impl App {
     pub fn sync_running_clean_toast(&mut self) {
-        let (toast_slot, items) = self
-            .inflight
-            .clean()
-            .items_for_toast(|p| project::home_relative_path(p.as_path()));
+        let (toast_slot, items) = self.inflight.clean().items_for_toast(
+            |p| project::home_relative_path(p.as_path()),
+            toast_adapters::path_key,
+        );
         let next = self.sync_running_toast(toast_slot, "cargo clean", &items[..]);
         self.inflight.clean_mut().toast = next;
     }
     pub(super) fn sync_running_lint_toast(&mut self) {
-        let (toast_slot, items) = self
-            .lint
-            .running()
-            .items_for_toast(|p| project::home_relative_path(p.as_path()));
+        let (toast_slot, items) = self.lint.running().items_for_toast(
+            |p| project::home_relative_path(p.as_path()),
+            toast_adapters::path_key,
+        );
         let next = self.sync_running_toast(toast_slot, "Lints", &items);
         self.lint.running_mut().toast = next;
     }
@@ -32,7 +34,7 @@ impl App {
             .net
             .github
             .running()
-            .items_for_toast(ToString::to_string);
+            .items_for_toast(ToString::to_string, toast_adapters::owner_repo_key);
         let next = self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &items);
         self.net.github.running_mut().toast = next;
     }
@@ -49,7 +51,7 @@ impl App {
     ) -> Option<ToastTaskId> {
         if running_items.is_empty() {
             if let Some(task_id) = toast_slot {
-                let empty: HashSet<String> = HashSet::new();
+                let empty: HashSet<TrackedItemKey> = HashSet::new();
                 self.framework
                     .toasts
                     .complete_missing_items(task_id, &empty);
@@ -61,10 +63,8 @@ impl App {
             return toast_slot;
         }
 
-        let running_keys: HashSet<String> = running_items
-            .iter()
-            .map(|item| item.key.to_string())
-            .collect();
+        let running_keys: HashSet<TrackedItemKey> =
+            running_items.iter().map(|item| item.key.clone()).collect();
 
         if let Some(task_id) = toast_slot
             && self.framework.toasts.reactivate_task(task_id)
