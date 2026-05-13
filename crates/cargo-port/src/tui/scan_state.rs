@@ -24,8 +24,6 @@ use super::app::RetrySpawnMode;
 use super::app::ScanState;
 use super::app::TargetDirIndex;
 use crate::project::AbsolutePath;
-use crate::project::WorkspaceMetadata;
-use crate::project::WorkspaceMetadataHandle;
 use crate::project::WorkspaceMetadataStore;
 
 pub(super) struct Scan {
@@ -121,24 +119,6 @@ impl Scan {
     /// independent of the borrow on `Scan`.
     pub(super) fn metadata_store_handle(&self) -> Arc<Mutex<WorkspaceMetadataStore>> {
         Arc::clone(&self.metadata_store)
-    }
-
-    /// Resolve a [`WorkspaceMetadataHandle`] to a cloned
-    /// [`WorkspaceMetadata`], or `None` when the workspace has no
-    /// metadata yet. Locks the store, releases before return.
-    #[allow(
-        dead_code,
-        reason = "consumed in later steps; kept now so WorkspaceMetadataHandle has a resolve path \
-                  in place before handle-carrying RustInfo lands"
-    )]
-    pub(super) fn resolve_metadata(
-        &self,
-        handle: &WorkspaceMetadataHandle,
-    ) -> Option<WorkspaceMetadata> {
-        self.metadata_store
-            .lock()
-            .ok()
-            .and_then(|store| store.get(&handle.workspace_root).cloned())
     }
 
     /// Resolve the owning workspace's `target_directory` for any path

@@ -1323,16 +1323,14 @@ mod tests {
 
         let mut app = make_app(&[make_package("demo", &project_dir)]);
         let make_target = |name: &str| TargetRecord {
-            name:              name.to_string(),
-            kinds:             vec![TargetKind::Example],
-            src_path:          AbsolutePath::from(project_dir.join(format!("examples/{name}.rs"))),
-            edition:           "2021".to_string(),
-            required_features: Vec::new(),
+            name:     name.to_string(),
+            kinds:    vec![TargetKind::Example],
+            src_path: AbsolutePath::from(project_dir.join(format!("examples/{name}.rs"))),
+        };
+        let pkg_id = PackageId {
+            repr: "demo-id".into(),
         };
         let pkg = PackageRecord {
-            id:            PackageId {
-                repr: "demo-id".into(),
-            },
             name:          "demo".into(),
             version:       Version::new(0, 1, 0),
             edition:       "2021".into(),
@@ -1345,7 +1343,7 @@ mod tests {
             publish:       PublishPolicy::Any,
         };
         let mut packages = std::collections::HashMap::new();
-        packages.insert(pkg.id.clone(), pkg);
+        packages.insert(pkg_id, pkg);
         app.scan
             .metadata_store_handle()
             .lock()
@@ -1354,12 +1352,8 @@ mod tests {
                 workspace_root: AbsolutePath::from(project_dir.clone()),
                 target_directory: AbsolutePath::from(project_dir.join("target")),
                 packages,
-                workspace_members: Vec::new(),
-                fetched_at: std::time::SystemTime::UNIX_EPOCH,
                 fingerprint: ManifestFingerprint {
                     manifest:       FileStamp {
-                        mtime:        std::time::SystemTime::UNIX_EPOCH,
-                        len:          0,
                         content_hash: [0_u8; 32],
                     },
                     lockfile:       None,
@@ -1494,12 +1488,8 @@ mod tests {
                 workspace_root:           AbsolutePath::from(project_dir.clone()),
                 target_directory:         AbsolutePath::from(custom_target.clone()),
                 packages:                 std::collections::HashMap::new(),
-                workspace_members:        Vec::new(),
-                fetched_at:               std::time::SystemTime::UNIX_EPOCH,
                 fingerprint:              ManifestFingerprint {
                     manifest:       FileStamp {
-                        mtime:        std::time::SystemTime::UNIX_EPOCH,
-                        len:          0,
                         content_hash: [0_u8; 32],
                     },
                     lockfile:       None,
@@ -1534,10 +1524,10 @@ mod tests {
         use cargo_metadata::semver::Version;
         let root = AbsolutePath::from(project_dir);
         let manifest = AbsolutePath::from(project_dir.join("Cargo.toml"));
+        let pkg_id = PackageId {
+            repr: "demo-id".into(),
+        };
         let pkg = PackageRecord {
-            id:            PackageId {
-                repr: "demo-test-id".into(),
-            },
             name:          "demo".into(),
             version:       Version::new(0, 1, 0),
             edition:       "2021".into(),
@@ -1550,17 +1540,13 @@ mod tests {
             publish:       PublishPolicy::Any,
         };
         let mut packages = std::collections::HashMap::new();
-        packages.insert(pkg.id.clone(), pkg);
+        packages.insert(pkg_id, pkg);
         let workspace_metadata = WorkspaceMetadata {
             workspace_root: root,
             target_directory: AbsolutePath::from(project_dir.join("target")),
             packages,
-            workspace_members: Vec::new(),
-            fetched_at: std::time::SystemTime::UNIX_EPOCH,
             fingerprint: ManifestFingerprint {
                 manifest:       FileStamp {
-                    mtime:        std::time::SystemTime::UNIX_EPOCH,
-                    len:          0,
                     content_hash: [0_u8; 32],
                 },
                 lockfile:       None,
@@ -1700,12 +1686,8 @@ mod tests {
                 workspace_root:           root,
                 target_directory:         target,
                 packages:                 std::collections::HashMap::new(),
-                workspace_members:        Vec::new(),
-                fetched_at:               std::time::SystemTime::UNIX_EPOCH,
                 fingerprint:              ManifestFingerprint {
                     manifest:       FileStamp {
-                        mtime:        std::time::SystemTime::UNIX_EPOCH,
-                        len:          0,
                         content_hash: [0_u8; 32],
                     },
                     lockfile:       None,
@@ -1745,10 +1727,10 @@ mod tests {
             let pkg_name = dir
                 .file_name()
                 .map_or_else(|| "demo".to_string(), |n| n.to_string_lossy().into_owned());
+            let pkg_id = PackageId {
+                repr: format!("{pkg_name}-id"),
+            };
             let pkg = PackageRecord {
-                id:            PackageId {
-                    repr: format!("{pkg_name}-id"),
-                },
                 name:          pkg_name,
                 version:       Version::new(0, 1, 0),
                 edition:       "2021".into(),
@@ -1761,17 +1743,13 @@ mod tests {
                 publish:       PublishPolicy::Any,
             };
             let mut packages = std::collections::HashMap::new();
-            packages.insert(pkg.id.clone(), pkg);
+            packages.insert(pkg_id, pkg);
             let workspace_metadata = WorkspaceMetadata {
                 workspace_root: root.clone(),
                 target_directory: AbsolutePath::from(target_dir),
                 packages,
-                workspace_members: Vec::new(),
-                fetched_at: std::time::SystemTime::UNIX_EPOCH,
                 fingerprint: ManifestFingerprint {
                     manifest:       FileStamp {
-                        mtime:        std::time::SystemTime::UNIX_EPOCH,
-                        len:          0,
                         content_hash: [0_u8; 32],
                     },
                     lockfile:       None,

@@ -89,10 +89,10 @@ fn seed_single_example_metadata(app: &App, project_path: &AbsolutePath, example_
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
     use cargo_metadata::semver::Version;
+    let pkg_id = PackageId {
+        repr: "demo-id".into(),
+    };
     let pkg = PackageRecord {
-        id:            PackageId {
-            repr: "demo-id".into(),
-        },
         name:          "demo".into(),
         version:       Version::new(0, 1, 0),
         edition:       "2021".into(),
@@ -102,20 +102,18 @@ fn seed_single_example_metadata(app: &App, project_path: &AbsolutePath, example_
         repository:    None,
         manifest_path: AbsolutePath::from(project_path.as_path().join("Cargo.toml")),
         targets:       vec![crate::project::TargetRecord {
-            name:              example_name.to_string(),
-            kinds:             vec![TargetKind::Example],
-            src_path:          AbsolutePath::from(
+            name:     example_name.to_string(),
+            kinds:    vec![TargetKind::Example],
+            src_path: AbsolutePath::from(
                 project_path
                     .as_path()
                     .join(format!("examples/{example_name}.rs")),
             ),
-            edition:           "2021".to_string(),
-            required_features: Vec::new(),
         }],
         publish:       PublishPolicy::Any,
     };
     let mut packages = std::collections::HashMap::new();
-    packages.insert(pkg.id.clone(), pkg);
+    packages.insert(pkg_id, pkg);
     app.scan
         .metadata_store_handle()
         .lock()
@@ -124,12 +122,8 @@ fn seed_single_example_metadata(app: &App, project_path: &AbsolutePath, example_
             workspace_root: project_path.clone(),
             target_directory: AbsolutePath::from(project_path.as_path().join("target")),
             packages,
-            workspace_members: Vec::new(),
-            fetched_at: std::time::SystemTime::UNIX_EPOCH,
             fingerprint: ManifestFingerprint {
                 manifest:       FileStamp {
-                    mtime:        std::time::SystemTime::UNIX_EPOCH,
-                    len:          0,
                     content_hash: [0_u8; 32],
                 },
                 lockfile:       None,
@@ -293,16 +287,14 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
     let workspace_root = AbsolutePath::from("/never-real/demo");
     let manifest_path = AbsolutePath::from("/never-real/demo/Cargo.toml");
     let example = TargetRecord {
-        name:              "tracked_row_paths".to_string(),
-        kinds:             vec![TargetKind::Example],
-        src_path:          AbsolutePath::from("/never-real/demo/examples/tracked_row_paths.rs"),
-        edition:           "2021".to_string(),
-        required_features: Vec::new(),
+        name:     "tracked_row_paths".to_string(),
+        kinds:    vec![TargetKind::Example],
+        src_path: AbsolutePath::from("/never-real/demo/examples/tracked_row_paths.rs"),
+    };
+    let pkg_id = PackageId {
+        repr: "demo-id".into(),
     };
     let pkg = PackageRecord {
-        id: PackageId {
-            repr: "demo-id".into(),
-        },
         name: "demo".into(),
         version: Version::new(0, 1, 0),
         edition: "2021".into(),
@@ -315,17 +307,13 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
         publish: PublishPolicy::Any,
     };
     let mut packages = std::collections::HashMap::new();
-    packages.insert(pkg.id.clone(), pkg);
+    packages.insert(pkg_id, pkg);
     let workspace_metadata = WorkspaceMetadata {
         workspace_root: workspace_root.clone(),
         target_directory: AbsolutePath::from("/never-real/demo/target"),
         packages,
-        workspace_members: Vec::new(),
-        fetched_at: std::time::SystemTime::UNIX_EPOCH,
         fingerprint: ManifestFingerprint {
             manifest:       FileStamp {
-                mtime:        std::time::SystemTime::UNIX_EPOCH,
-                len:          0,
                 content_hash: [0_u8; 32],
             },
             lockfile:       None,

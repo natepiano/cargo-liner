@@ -304,7 +304,6 @@ fn ci_table_keeps_durations_when_fixed_columns_fit() {
 mod targets_from_metadata {
     use std::path::PathBuf;
 
-    use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
     use cargo_metadata::semver::Version;
 
@@ -319,16 +318,11 @@ mod targets_from_metadata {
             name: name.into(),
             kinds,
             src_path: AbsolutePath::from(PathBuf::from(src_path)),
-            edition: "2021".into(),
-            required_features: Vec::new(),
         }
     }
 
     fn record(name: &str, manifest: &str, targets: Vec<TargetRecord>) -> PackageRecord {
         PackageRecord {
-            id: PackageId {
-                repr: format!("{name}-id"),
-            },
             name: name.into(),
             version: Version::new(0, 1, 0),
             edition: "2021".into(),

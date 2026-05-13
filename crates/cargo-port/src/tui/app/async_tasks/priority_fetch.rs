@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use crate::project::AbsolutePath;
+use crate::project::RootItem;
 use crate::tui::app::App;
+use crate::tui::project_list::VisibleRow;
 use crate::tui::terminal;
 
 impl App {
@@ -12,14 +14,33 @@ impl App {
         if selected_path == path {
             return true;
         }
-        // Check if both paths resolve to the same lint-owning node (e.g.,
-        // a worktree group where one entry's status change affects the
-        // root rollup displayed in the detail pane).
+        if self.selected_worktree_group_contains(path) {
+            return true;
+        }
+        // Check if both paths resolve to the same lint-owning node.
+        // This covers shared owner rows such as workspace members
+        // without widening unrelated watcher invalidations.
         self.project_list
             .lint_at_path(selected_path)
             .zip(self.project_list.lint_at_path(path))
             .is_some_and(|(a, b)| std::ptr::eq(a, b))
     }
+
+    fn selected_worktree_group_contains(&self, path: &Path) -> bool {
+        let Some(VisibleRow::Root { node_index }) = self.project_list.selected_row() else {
+            return false;
+        };
+        let Some(entry) = self.project_list.get(node_index) else {
+            return false;
+        };
+        let RootItem::Worktrees(group) = &entry.item else {
+            return false;
+        };
+        group
+            .iter_paths()
+            .any(|group_path| group_path.as_path() == path)
+    }
+
     /// Spawn a priority fetch for the selected project if it hasn't been loaded yet.
     pub fn maybe_priority_fetch(&mut self) {
         let Some(abs_path) = self

@@ -1553,15 +1553,12 @@ fn format_cargo_metadata_error(err: &Error) -> String {
     text.lines().next().unwrap_or(&text).to_string()
 }
 
-fn synthetic_fingerprint() -> ManifestFingerprint {
+const fn synthetic_fingerprint() -> ManifestFingerprint {
     use std::collections::BTreeMap;
 
     use crate::project::FileStamp;
-    let now = std::time::SystemTime::now();
     ManifestFingerprint {
         manifest:       FileStamp {
-            mtime:        now,
-            len:          0,
             content_hash: [0_u8; 32],
         },
         lockfile:       None,
@@ -1577,13 +1574,11 @@ fn build_workspace_metadata(
 ) -> WorkspaceMetadata {
     let target_directory =
         AbsolutePath::from(PathBuf::from(metadata.target_directory.as_std_path()));
-    let workspace_members = metadata.workspace_members.clone();
     let packages = metadata
         .packages
         .iter()
         .map(|pkg| {
             let record = PackageRecord {
-                id:            pkg.id.clone(),
                 name:          pkg.name.to_string(),
                 version:       pkg.version.clone(),
                 edition:       pkg.edition.to_string(),
@@ -1596,13 +1591,11 @@ fn build_workspace_metadata(
                     .targets
                     .iter()
                     .map(|target| TargetRecord {
-                        name:              target.name.clone(),
-                        kinds:             target.kind.clone(),
-                        src_path:          AbsolutePath::from(PathBuf::from(
+                        name:     target.name.clone(),
+                        kinds:    target.kind.clone(),
+                        src_path: AbsolutePath::from(PathBuf::from(
                             target.src_path.as_std_path(),
                         )),
-                        edition:           target.edition.to_string(),
-                        required_features: target.required_features.clone(),
                     })
                     .collect(),
                 publish:       PublishPolicy::from_cargo_publish(pkg.publish.as_deref()),
@@ -1614,8 +1607,6 @@ fn build_workspace_metadata(
         workspace_root,
         target_directory,
         packages,
-        workspace_members,
-        fetched_at: std::time::SystemTime::now(),
         fingerprint,
         out_of_tree_target_bytes: None,
     }

@@ -1,10 +1,3 @@
-#![expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::too_many_arguments,
-    reason = "Toast rendering keeps ratatui geometry math explicit for parity"
-)]
-
 use std::time::Duration;
 
 use ratatui::Frame;
@@ -21,14 +14,14 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use unicode_width::UnicodeWidthStr;
 
-use super::manager::ToastHitbox;
-use super::manager::ToastId;
-use super::manager::ToastStyle;
-use super::manager::ToastView;
-use super::manager::TrackedItemView;
+use super::ToastHitbox;
+use super::ToastId;
+use super::ToastStyle;
+use super::ToastView;
+use super::TrackedItemView;
 use crate::ACTIVITY_SPINNER;
 use crate::ToastSettings;
-use crate::settings::ToastPlacement;
+use crate::settings_store::ToastPlacement;
 
 const ACCENT_COLOR: Color = Color::Cyan;
 const ACTIVE_BORDER_COLOR: Color = Color::Yellow;
@@ -69,30 +62,30 @@ pub fn render_toasts(
     let allocated = allocate_toast_heights(visible_toasts, available);
     let width = settings.width.get().min(area.width);
 
+    let layout = StackLayout {
+        width,
+        gap,
+        pane_focused,
+        focused_toast_id,
+    };
     let hitboxes = match settings.placement {
-        ToastPlacement::TopRight => render_top_down(
-            frame,
-            area,
-            visible_toasts,
-            &allocated,
-            width,
-            gap,
-            pane_focused,
-            focused_toast_id,
-        ),
-        ToastPlacement::BottomRight => render_bottom_up(
-            frame,
-            area,
-            visible_toasts,
-            &allocated,
-            width,
-            gap,
-            pane_focused,
-            focused_toast_id,
-        ),
+        ToastPlacement::TopRight => {
+            render_top_down(frame, area, visible_toasts, &allocated, layout)
+        },
+        ToastPlacement::BottomRight => {
+            render_bottom_up(frame, area, visible_toasts, &allocated, layout)
+        },
     };
 
     ToastRenderResult { hitboxes }
+}
+
+#[derive(Clone, Copy)]
+struct StackLayout {
+    width:            u16,
+    gap:              u16,
+    pane_focused:     bool,
+    focused_toast_id: Option<ToastId>,
 }
 
 fn render_top_down(
@@ -100,10 +93,7 @@ fn render_top_down(
     area: Rect,
     toasts: &[ToastView],
     allocated: &[u16],
-    width: u16,
-    gap: u16,
-    pane_focused: bool,
-    focused_toast_id: Option<ToastId>,
+    layout: StackLayout,
 ) -> Vec<ToastHitbox> {
     let mut hitboxes = Vec::with_capacity(toasts.len());
     let mut cursor_y = area.y;
@@ -117,20 +107,27 @@ fn render_top_down(
         {
             break;
         }
-        let x = area.x + area.width.saturating_sub(width);
+        let x = area.x + area.width.saturating_sub(layout.width);
         let card = Rect {
             x,
             y: cursor_y,
-            width,
+            width: layout.width,
             height: card_height,
         };
-        let close_rect = render_toast(frame, area, card, toast, pane_focused, focused_toast_id);
+        let close_rect = render_toast(
+            frame,
+            area,
+            card,
+            toast,
+            layout.pane_focused,
+            layout.focused_toast_id,
+        );
         hitboxes.push(ToastHitbox {
             id: toast.id(),
             card_rect: card,
             close_rect,
         });
-        cursor_y = cursor_y.saturating_add(card_height + gap);
+        cursor_y = cursor_y.saturating_add(card_height + layout.gap);
     }
     hitboxes
 }
@@ -140,10 +137,7 @@ fn render_bottom_up(
     area: Rect,
     toasts: &[ToastView],
     allocated: &[u16],
-    width: u16,
-    gap: u16,
-    pane_focused: bool,
-    focused_toast_id: Option<ToastId>,
+    layout: StackLayout,
 ) -> Vec<ToastHitbox> {
     let mut hitboxes = Vec::with_capacity(toasts.len());
     let mut cursor_y = area.y.saturating_add(area.height);
@@ -159,20 +153,27 @@ fn render_bottom_up(
         if cursor_y < area.y {
             break;
         }
-        let x = area.x + area.width.saturating_sub(width);
+        let x = area.x + area.width.saturating_sub(layout.width);
         let card = Rect {
             x,
             y: cursor_y,
-            width,
+            width: layout.width,
             height: card_height,
         };
-        let close_rect = render_toast(frame, area, card, toast, pane_focused, focused_toast_id);
+        let close_rect = render_toast(
+            frame,
+            area,
+            card,
+            toast,
+            layout.pane_focused,
+            layout.focused_toast_id,
+        );
         hitboxes.push(ToastHitbox {
             id: toast.id(),
             card_rect: card,
             close_rect,
         });
-        cursor_y = cursor_y.saturating_sub(gap);
+        cursor_y = cursor_y.saturating_sub(layout.gap);
     }
     hitboxes.reverse();
     hitboxes
@@ -496,6 +497,11 @@ fn tracked_item_line(
 fn fade_to_style(progress: f64) -> Style {
     let p = progress.clamp(0.0, 1.0);
     let curve = p * p * p;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "value is mathematically clamped to [128, 255] before the cast"
+    )]
     let value = 127.0f64.mul_add(-curve, 255.0) as u8;
     Style::default().fg(Color::Rgb(value, value, value))
 }

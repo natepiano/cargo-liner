@@ -4,12 +4,6 @@
 //! the structure and read-side access for the `cargo_metadata`
 //! integration.
 
-#![allow(
-    dead_code,
-    reason = "later steps consume these fields + methods (e.g. workspace_members, \
-              WorkspaceMetadataHandle); kept here so the store is complete now"
-)]
-
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::env;
@@ -18,7 +12,6 @@ use std::io;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::SystemTime;
 
 use cargo_metadata::PackageId;
 use cargo_metadata::TargetKind;
@@ -121,12 +114,6 @@ impl WorkspaceMetadataStore {
         true
     }
 
-    /// Drop the metadata for `workspace_root`, if any.
-    pub(crate) fn remove(&mut self, workspace_root: &AbsolutePath) {
-        self.by_root.remove(workspace_root);
-        self.dispatch_generations.remove(workspace_root);
-    }
-
     /// Bump the dispatch generation for `workspace_root` and return the new
     /// value. Callers should stamp the spawned work with this value and use
     /// [`Self::is_current_generation`] at merge time.
@@ -157,8 +144,6 @@ pub(crate) struct WorkspaceMetadata {
     pub workspace_root:           AbsolutePath,
     pub target_directory:         AbsolutePath,
     pub packages:                 HashMap<PackageId, PackageRecord>,
-    pub workspace_members:        Vec<PackageId>,
-    pub fetched_at:               SystemTime,
     pub fingerprint:              ManifestFingerprint,
     /// Byte size of `target_directory` when it lives *outside*
     /// `workspace_root` (a sharer — e.g. redirected by
@@ -176,7 +161,6 @@ pub(crate) struct WorkspaceMetadata {
 /// actually need.
 #[derive(Clone, Debug)]
 pub(crate) struct PackageRecord {
-    pub id:            PackageId,
     pub name:          String,
     pub version:       Version,
     pub edition:       String,
@@ -215,20 +199,9 @@ impl PublishPolicy {
 /// A single build target (bin, lib, example, test, bench, proc-macro, …).
 #[derive(Clone, Debug)]
 pub(crate) struct TargetRecord {
-    pub name:              String,
-    pub kinds:             Vec<TargetKind>,
-    pub src_path:          AbsolutePath,
-    pub edition:           String,
-    pub required_features: Vec<String>,
-}
-
-/// Cheap, cross-conversation-stable reference to a package inside a
-/// [`WorkspaceMetadata`]. `RustInfo` and similar project-state carry this
-/// handle so the metadata body is not duplicated across every member.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct WorkspaceMetadataHandle {
-    pub workspace_root: AbsolutePath,
-    pub package_id:     PackageId,
+    pub name:     String,
+    pub kinds:    Vec<TargetKind>,
+    pub src_path: AbsolutePath,
 }
 
 /// Inputs whose bytes determine a cargo-metadata invocation's result.
@@ -249,38 +222,25 @@ pub(crate) struct ManifestFingerprint {
     pub configs:        BTreeMap<PathBuf, Option<FileStamp>>,
 }
 
-/// Fingerprint for a single file. Equality uses `content_hash` only;
-/// `(mtime, len)` is a pre-check that skips the hash when the file clearly
-/// changed. Inode is deliberately omitted — editor atomic-save workflows
+/// Fingerprint for a single file. Equality is the SHA-256 of the file's
+/// bytes. Inode is deliberately omitted — editor atomic-save workflows
 /// rotate inodes on every save even when bytes are identical.
-#[derive(Clone, Debug, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FileStamp {
-    pub mtime:        SystemTime,
-    pub len:          u64,
     pub content_hash: [u8; 32],
-}
-
-impl PartialEq for FileStamp {
-    fn eq(&self, other: &Self) -> bool { self.content_hash == other.content_hash }
 }
 
 impl FileStamp {
     /// Read `path` and compute its stamp. SHA-256 of the bytes is the
-    /// authoritative identity; `(mtime, len)` rides along for callers that
-    /// want a cheap change heuristic but is not part of equality.
+    /// authoritative identity.
     pub(crate) fn from_path(path: &Path) -> io::Result<Self> {
-        let meta = fs::metadata(path)?;
         let bytes = fs::read(path)?;
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let digest = hasher.finalize();
         let mut content_hash = [0_u8; 32];
         content_hash.copy_from_slice(&digest);
-        Ok(Self {
-            mtime: meta.modified()?,
-            len: meta.len(),
-            content_hash,
-        })
+        Ok(Self { content_hash })
     }
 }
 
@@ -392,7 +352,6 @@ fn resolve_cargo_home() -> Option<PathBuf> {
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use std::fs;
-    use std::time::Duration;
 
     use tempfile::TempDir;
 
@@ -407,27 +366,18 @@ mod tests {
 
     #[test]
     fn equality_is_content_hash_only() {
-        // Same bytes → equal regardless of (mtime, len) drift.
-        let now = SystemTime::now();
-        let later = now + Duration::from_secs(10);
         let a = FileStamp {
-            mtime:        now,
-            len:          4,
             content_hash: [7; 32],
         };
         let b = FileStamp {
-            mtime:        later,
-            len:          999,
             content_hash: [7; 32],
         };
-        assert_eq!(a, b, "different (mtime, len), same hash → equal");
+        assert_eq!(a, b, "same hash → equal");
 
         let c = FileStamp {
-            mtime:        now,
-            len:          4,
             content_hash: [8; 32],
         };
-        assert_ne!(a, c, "same (mtime, len), different hash → unequal");
+        assert_ne!(a, c, "different hash → unequal");
     }
 
     #[test]
@@ -523,18 +473,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn remove_clears_generation_too() {
-        let mut store = WorkspaceMetadataStore::new();
-        let root = AbsolutePath::from(PathBuf::from("/ws"));
-        let _ = store.next_generation(&root);
-        store.remove(&root);
-        assert!(
-            !store.dispatch_generations.contains_key(&root),
-            "generation counter is dropped with the metadata"
-        );
-    }
-
     fn fake_metadata(
         workspace_root: AbsolutePath,
         target_directory: AbsolutePath,
@@ -543,12 +481,8 @@ mod tests {
             workspace_root,
             target_directory,
             packages: std::collections::HashMap::new(),
-            workspace_members: Vec::new(),
-            fetched_at: SystemTime::UNIX_EPOCH,
             fingerprint: ManifestFingerprint {
                 manifest:       FileStamp {
-                    mtime:        SystemTime::UNIX_EPOCH,
-                    len:          0,
                     content_hash: [0_u8; 32],
                 },
                 lockfile:       None,
@@ -598,11 +532,11 @@ mod tests {
         );
     }
 
-    fn fake_package_record(name: &str, manifest_path: AbsolutePath) -> PackageRecord {
-        PackageRecord {
-            id: PackageId {
-                repr: format!("{name}-test-id"),
-            },
+    fn fake_package_record(name: &str, manifest_path: AbsolutePath) -> (PackageId, PackageRecord) {
+        let id = PackageId {
+            repr: format!("{name}-test-id"),
+        };
+        let record = PackageRecord {
             name: name.into(),
             version: Version::new(0, 1, 0),
             edition: "2021".into(),
@@ -613,7 +547,8 @@ mod tests {
             manifest_path,
             targets: Vec::new(),
             publish: PublishPolicy::Any,
-        }
+        };
+        (id, record)
     }
 
     #[test]
@@ -629,8 +564,9 @@ mod tests {
         let root = AbsolutePath::from(PathBuf::from("/ws"));
         let target = AbsolutePath::from(PathBuf::from("/ws/target"));
         let mut snap = fake_metadata(root.clone(), target);
-        let pkg = fake_package_record("demo", AbsolutePath::from(PathBuf::from("/ws/Cargo.toml")));
-        snap.packages.insert(pkg.id.clone(), pkg);
+        let (pkg_id, pkg) =
+            fake_package_record("demo", AbsolutePath::from(PathBuf::from("/ws/Cargo.toml")));
+        snap.packages.insert(pkg_id, pkg);
         store.upsert(snap);
 
         let found = store.package_for_path(&root).expect("package found");
@@ -645,13 +581,11 @@ mod tests {
         let target = AbsolutePath::from(PathBuf::from("/ws/target"));
         let mut snap = fake_metadata(root, target);
         let member_root = AbsolutePath::from(PathBuf::from("/ws/crates/core"));
-        let pkg = fake_package_record(
+        let (pkg_id, pkg) = fake_package_record(
             "core",
             AbsolutePath::from(PathBuf::from("/ws/crates/core/Cargo.toml")),
         );
-        let pkg_id = pkg.id.clone();
-        snap.packages.insert(pkg_id.clone(), pkg);
-        snap.workspace_members.push(pkg_id);
+        snap.packages.insert(pkg_id, pkg);
         store.upsert(snap);
 
         let found = store

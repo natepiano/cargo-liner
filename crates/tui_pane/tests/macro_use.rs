@@ -6,11 +6,6 @@
 //! against accidental breakage when the trait or re-export layout
 //! shifts.
 
-#![allow(
-    missing_docs,
-    reason = "test-only enum; macro does not propagate variant docs"
-)]
-
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
 use tui_pane::Action;
@@ -31,18 +26,25 @@ use tui_pane::Shortcuts;
 use tui_pane::Visibility;
 
 tui_pane::action_enum! {
+    /// Cross-crate test actions.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum CrossCrateAction {
+        /// First fixture variant.
         Alpha => ("alpha", "alpha", "Alpha");
+        /// Second fixture variant.
         Beta  => ("beta",  "beta",  "Beta");
+        /// Third fixture variant.
         Gamma => ("gamma", "gamma", "Gamma");
     }
 }
 
 tui_pane::action_enum! {
+    /// Cross-crate test actions using the two-positional macro form.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum CrossCrateShortAction {
+        /// Activate the focused row.
         Activate => ("activate", "Activate");
+        /// Clean the project workspace.
         Clean    => ("clean",    "Clean project");
     }
 }
@@ -199,21 +201,31 @@ fn bar_primitives_reachable_from_outside_crate() {
 }
 
 tui_pane::action_enum! {
+    /// Cross-crate test navigation actions.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum CrossCrateNavAction {
+        /// Move up.
         Up    => ("up",    "up",    "Move up");
+        /// Move down.
         Down  => ("down",  "down",  "Move down");
+        /// Move left.
         Left  => ("left",  "left",  "Move left");
+        /// Move right.
         Right => ("right", "right", "Move right");
+        /// Jump to the start.
         Home  => ("home",  "home",  "Jump to start");
+        /// Jump to the end.
         End   => ("end",   "end",   "Jump to end");
     }
 }
 
 tui_pane::action_enum! {
+    /// Cross-crate test app-global actions.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum CrossCrateGlobalAction {
+        /// Open the finder overlay.
         Find   => ("find",   "find",   "Open finder");
+        /// Rescan the workspace.
         Rescan => ("rescan", "rescan", "Rescan");
     }
 }

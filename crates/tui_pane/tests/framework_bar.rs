@@ -7,18 +7,9 @@
 //! `for_test_*` constructors.
 
 #![allow(
-    missing_docs,
-    clippy::missing_docs_in_private_items,
-    clippy::implicit_return,
-    reason = "integration test file — docs / return-style lints don't apply"
-)]
-#![allow(
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::indexing_slicing,
-    clippy::single_call_fn,
-    clippy::missing_panics_doc,
     reason = "tests should panic on unexpected values"
 )]
 
@@ -46,28 +37,40 @@ enum AppPaneId {
 }
 
 tui_pane::action_enum! {
+    /// Test-only project pane actions.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum ProjectAction {
+        /// Activate the selected row.
         Activate => ("activate", "go",     "Activate row");
+        /// Refresh the pane.
         Refresh  => ("refresh",  "refresh","Refresh");
     }
 }
 
 tui_pane::action_enum! {
+    /// Test-only navigation actions.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum NavAction {
+        /// Move up.
         Up    => ("up",    "up",    "Up");
+        /// Move down.
         Down  => ("down",  "down",  "Down");
+        /// Move left.
         Left  => ("left",  "left",  "Left");
+        /// Move right.
         Right => ("right", "right", "Right");
+        /// Jump to the start.
         Home  => ("home",  "home",  "Home");
+        /// Jump to the end.
         End   => ("end",   "end",   "End");
     }
 }
 
 tui_pane::action_enum! {
+    /// Test-only app-global actions.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum AppGlobalAction {
+        /// Open the finder.
         Find => ("find", "find", "Find");
     }
 }

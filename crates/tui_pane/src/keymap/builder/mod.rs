@@ -19,17 +19,12 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use toml::Table;
-use toml::Value;
 
 use super::Bindings;
 use super::Globals;
 use super::Keymap;
 use super::Navigation;
 use super::Shortcuts;
-use super::action_enum::Action;
-use super::global_action::GlobalAction;
-use super::key_bind::KeyBind;
-use super::key_bind::KeyParseError;
 use super::load::KeymapError;
 use super::runtime_scope;
 use super::runtime_scope::PaneScope;
@@ -45,6 +40,18 @@ use crate::SettingsPane;
 use crate::SettingsPaneAction;
 use crate::TabStop;
 use crate::framework::ModeQuery;
+
+mod finalize;
+mod overlay;
+mod registration;
+
+use finalize::finalize;
+use overlay::action_key_set;
+use overlay::apply_toml_overlay;
+use overlay::apply_toml_overlay_with_peer;
+use overlay::framework_global_action_key_set;
+use registration::apply_vim_navigation_extras;
+use registration::build_pane_bindings;
 
 /// `Box<dyn Any>`-erased typed singleton. The builder stores the
 /// `ScopeMap<X::Actions>` from a `Navigation` / `Globals` impl behind
@@ -200,7 +207,8 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
         self
     }
 
-    /// Register a hook called after [`GlobalAction::Quit`] flips
+    /// Register a hook called after [`crate::GlobalAction::Quit`]
+    /// flips
     /// `framework.quit_requested`. The hook can rely on
     /// `ctx.framework().quit_requested() == true`.
     #[must_use]
@@ -209,7 +217,8 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
         self
     }
 
-    /// Register a hook called after [`GlobalAction::Restart`] flips
+    /// Register a hook called after [`crate::GlobalAction::Restart`]
+    /// flips
     /// `framework.restart_requested`.
     #[must_use]
     pub const fn on_restart(mut self, hook: fn(&mut Ctx)) -> Self {
@@ -457,287 +466,6 @@ fn transition<Ctx: AppContext + 'static>(
         deferred_error:        src.deferred_error,
         _state:                PhantomData,
     }
-}
-
-/// Apply TOML and vim overlay onto a pane's defaults.
-///
-/// Returns `Err(KeymapError)` for overlay failures; the per-state
-/// `register::<P>` wrappers swallow that into a deferred record (see
-/// `insert_pane`) so the chain stays `Self`-returning. Phase 10
-/// silently propagates overlay failures via `build()` once we widen
-/// the error pathway; today the helper is `Result`-typed in
-/// preparation.
-fn build_pane_bindings<Ctx: AppContext + 'static, P: Shortcuts<Ctx>>(
-    toml_table: Option<&Table>,
-    vim_mode: VimMode,
-) -> Result<Bindings<P::Actions>, KeymapError> {
-    let scope_name = <P as Shortcuts<Ctx>>::SCOPE_NAME;
-    let mut bindings = apply_toml_overlay::<P::Actions>(scope_name, P::defaults(), toml_table)?;
-    if matches!(vim_mode, VimMode::Enabled) {
-        for (action, key) in P::vim_extras() {
-            if !bindings.has_key(key) {
-                bindings.bind(*key, *action);
-            }
-        }
-    }
-    Ok(bindings)
-}
-
-/// Append vim navigation extras (`h` / `j` / `k` / `l`) to
-/// `Navigation::LEFT` / `DOWN` / `UP` / `RIGHT`. Skips any letter
-/// already bound to a different action on the full [`KeyBind`] (code
-/// + mods).
-fn apply_vim_navigation_extras<Ctx: AppContext + 'static, N: Navigation<Ctx>>(
-    bindings: &mut Bindings<N::Actions>,
-) {
-    let pairs: [(char, N::Actions); 4] = [
-        ('h', <N as Navigation<Ctx>>::LEFT),
-        ('j', <N as Navigation<Ctx>>::DOWN),
-        ('k', <N as Navigation<Ctx>>::UP),
-        ('l', <N as Navigation<Ctx>>::RIGHT),
-    ];
-    for (c, action) in pairs {
-        let key = KeyBind::from(c);
-        if !bindings.has_key(&key) {
-            bindings.bind(key, action);
-        }
-    }
-}
-
-/// Walk `[scope_name]` in the parsed TOML table (if present) and
-/// override matching actions in `defaults`. Returns the overlaid
-/// `Bindings` (replace-per-action semantics: TOML keys for an action
-/// fully replace the action's defaults).
-fn apply_toml_overlay<A>(
-    scope_name: &str,
-    defaults: Bindings<A>,
-    table: Option<&Table>,
-) -> Result<Bindings<A>, KeymapError>
-where
-    A: Action,
-{
-    apply_toml_overlay_with_peer(scope_name, defaults, table, None)
-}
-
-/// Same as [`apply_toml_overlay`], but unknown actions present in
-/// `peer_action_keys` are treated as belonging to another enum that
-/// shares the same TOML table. Used for the split `[global]` table.
-fn apply_toml_overlay_with_peer<A>(
-    scope_name: &str,
-    mut defaults: Bindings<A>,
-    table: Option<&Table>,
-    peer_action_keys: Option<&HashSet<&'static str>>,
-) -> Result<Bindings<A>, KeymapError>
-where
-    A: Action,
-{
-    let Some(table) = table else {
-        return Ok(defaults);
-    };
-    let Some(scope_value) = table.get(scope_name) else {
-        return Ok(defaults);
-    };
-    let Some(scope_table) = scope_value.as_table() else {
-        return Ok(defaults);
-    };
-
-    for (action_key, value) in scope_table {
-        let Some(action) = A::from_toml_key(action_key) else {
-            if peer_action_keys.is_some_and(|keys| keys.contains(action_key.as_str())) {
-                continue;
-            }
-            return Err(KeymapError::UnknownAction {
-                scope:  scope_name.to_string(),
-                action: action_key.clone(),
-            });
-        };
-        let keys = parse_toml_value(scope_name, action_key, value)?;
-        check_in_array_duplicates(scope_name, action_key, &keys)?;
-        defaults.override_action(&action, keys);
-    }
-
-    check_cross_action_collision(scope_name, &defaults)?;
-    Ok(defaults)
-}
-
-fn action_key_set<A: Action>() -> HashSet<&'static str> {
-    A::ALL.iter().map(|action| action.toml_key()).collect()
-}
-
-fn framework_global_action_key_set() -> HashSet<&'static str> {
-    let mut keys = action_key_set::<GlobalAction>();
-    keys.insert("settings");
-    keys
-}
-
-/// Parse a TOML scope entry value into `Vec<KeyBind>`. Accepts a
-/// single string or an array of strings.
-fn parse_toml_value(scope: &str, action: &str, value: &Value) -> Result<Vec<KeyBind>, KeymapError> {
-    match value {
-        Value::String(s) => {
-            let bind = KeyBind::parse(s).map_err(|source| KeymapError::InvalidBinding {
-                scope: scope.to_string(),
-                action: action.to_string(),
-                source,
-            })?;
-            Ok(vec![bind])
-        },
-        Value::Array(items) => {
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                let s = item.as_str().ok_or_else(|| KeymapError::InvalidBinding {
-                    scope:  scope.to_string(),
-                    action: action.to_string(),
-                    source: KeyParseError::Empty,
-                })?;
-                let bind = KeyBind::parse(s).map_err(|source| KeymapError::InvalidBinding {
-                    scope: scope.to_string(),
-                    action: action.to_string(),
-                    source,
-                })?;
-                out.push(bind);
-            }
-            Ok(out)
-        },
-        _ => Err(KeymapError::InvalidBinding {
-            scope:  scope.to_string(),
-            action: action.to_string(),
-            source: KeyParseError::Empty,
-        }),
-    }
-}
-
-/// Reject duplicate keys inside a single TOML array. Surfaces
-/// [`KeymapError::InArrayDuplicate`].
-fn check_in_array_duplicates(
-    scope: &str,
-    action: &str,
-    keys: &[KeyBind],
-) -> Result<(), KeymapError> {
-    for (i, key) in keys.iter().enumerate() {
-        if keys[..i].iter().any(|k| k == key) {
-            return Err(KeymapError::InArrayDuplicate {
-                scope:  scope.to_string(),
-                action: action.to_string(),
-                key:    key.display(),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Reject two actions in the same scope sharing one key. Surfaces
-/// [`KeymapError::CrossActionCollision`].
-fn check_cross_action_collision<A: Action>(
-    scope: &str,
-    bindings: &Bindings<A>,
-) -> Result<(), KeymapError> {
-    let mut seen: HashMap<KeyBind, A> = HashMap::new();
-    for (key, action) in bindings_entries(bindings) {
-        if let Some(existing) = seen.get(key)
-            && *existing != *action
-        {
-            return Err(KeymapError::CrossActionCollision {
-                scope:   scope.to_string(),
-                key:     key.display(),
-                actions: (
-                    existing.toml_key().to_string(),
-                    action.toml_key().to_string(),
-                ),
-            });
-        }
-        seen.insert(*key, *action);
-    }
-    Ok(())
-}
-
-/// Borrow the entries of a [`Bindings`] in insertion order.
-fn bindings_entries<A>(bindings: &Bindings<A>) -> impl Iterator<Item = (&KeyBind, &A)> {
-    bindings.entries().iter().map(|(k, a)| (k, a))
-}
-
-/// Drop the [`Configuring`]/[`Registering`] state and return a
-/// finalized [`Keymap<Ctx>`]. Validates the parsed TOML against
-/// registered scope names and emits a [`Keymap`] populated with the
-/// scopes, singletons, and lifecycle hooks the builder has collected.
-fn finalize<Ctx: AppContext + 'static, State>(
-    builder: KeymapBuilder<Ctx, State>,
-) -> Result<Keymap<Ctx>, KeymapError> {
-    if let Some(err) = builder.deferred_error {
-        return Err(err);
-    }
-    if let Some(type_name) = builder.duplicate_scope {
-        return Err(KeymapError::DuplicateScope { type_name });
-    }
-    if builder.navigation_scope.is_none() && !builder.scopes.is_empty() {
-        return Err(KeymapError::NavigationMissing);
-    }
-    if builder.globals_scope.is_none() && !builder.scopes.is_empty() {
-        return Err(KeymapError::GlobalsMissing);
-    }
-    validate_toml_scopes(builder.toml_table.as_ref(), &builder.registered_scopes)?;
-
-    let mut keymap = Keymap::<Ctx>::new(builder.config_path);
-    for (id, scope) in builder.scopes {
-        keymap.insert_scope(id, scope);
-    }
-    if let Some(nav) = builder.navigation_scope {
-        keymap.set_navigation(nav);
-    }
-    if let Some(render) = builder.navigation_render_fn {
-        keymap.set_navigation_render_fn(render);
-    }
-    if let Some(g) = builder.globals_scope {
-        keymap.set_globals(g);
-    }
-    if let Some(render) = builder.globals_render_fn {
-        keymap.set_app_globals_render_fn(render);
-    }
-    let framework_globals = apply_toml_overlay_with_peer::<GlobalAction>(
-        "global",
-        GlobalAction::defaults(),
-        builder.toml_table.as_ref(),
-        builder.globals_action_keys.as_ref(),
-    )?;
-    keymap.set_framework_globals(framework_globals.into_scope_map());
-    if let Some(settings_overlay) = builder.settings_overlay {
-        keymap.set_settings_overlay(settings_overlay);
-    }
-    if let Some(keymap_overlay) = builder.keymap_overlay {
-        keymap.set_keymap_overlay(keymap_overlay);
-    }
-    if let Some(hook) = builder.on_quit {
-        keymap.set_on_quit(hook);
-    }
-    if let Some(hook) = builder.on_restart {
-        keymap.set_on_restart(hook);
-    }
-    if let Some(hook) = builder.dismiss_fallback {
-        keymap.set_dismiss_fallback(hook);
-    }
-    Ok(keymap)
-}
-
-/// Reject TOML scope keys that do not match any registered
-/// `SCOPE_NAME`. The shared `[global]` table is also accepted (the
-/// framework's own globals read it alongside the binary's globals).
-fn validate_toml_scopes(
-    table: Option<&Table>,
-    registered: &HashSet<&'static str>,
-) -> Result<(), KeymapError> {
-    let Some(table) = table else {
-        return Ok(());
-    };
-    for key in table.keys() {
-        if registered.contains(key.as_str()) {
-            continue;
-        }
-        if key == "global" {
-            continue;
-        }
-        return Err(KeymapError::UnknownScope { scope: key.clone() });
-    }
-    Ok(())
 }
 
 #[cfg(test)]

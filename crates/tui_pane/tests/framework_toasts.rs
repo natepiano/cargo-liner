@@ -5,7 +5,6 @@
 //! → `dispatch_global` → `focus_step` / `dismiss_chain`) so the tests
 //! exercise the same paths the binary will hit.
 
-#![allow(missing_docs, reason = "test-only types and impls")]
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -30,39 +29,55 @@ use tui_pane::Pane;
 use tui_pane::Shortcuts;
 
 tui_pane::action_enum! {
+    /// Test-only foo pane actions.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum FooAction {
+        /// Activate the selected row.
         Activate => ("activate", "go", "Activate row");
     }
 }
 
 tui_pane::action_enum! {
+    /// Test-only navigation actions.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum NavAction {
+        /// Move up.
         Up    => ("up",    "up",    "Move up");
+        /// Move down.
         Down  => ("down",  "down",  "Move down");
+        /// Move left.
         Left  => ("left",  "left",  "Move left");
+        /// Move right.
         Right => ("right", "right", "Move right");
+        /// Jump to the start.
         Home  => ("home",  "home",  "Jump to start");
+        /// Jump to the end.
         End   => ("end",   "end",   "Jump to end");
     }
 }
 
 tui_pane::action_enum! {
+    /// Test-only app-global actions.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum AppGlobalAction {
+        /// Open the finder.
         Find => ("find", "find", "Open find");
     }
 }
 
+/// Test-only pane identifier.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TestPaneId {
+    /// First fixture pane.
     Foo,
+    /// Second fixture pane.
     Bar,
 }
 
+/// Test-only `AppContext` implementation that counts `set_focus` calls.
 pub struct TestApp {
     framework:           Framework<Self>,
+    /// Number of times the test set focus on this app.
     pub set_focus_calls: Cell<u32>,
 }
 
@@ -78,6 +93,7 @@ impl AppContext for TestApp {
     }
 }
 
+/// Test-only pane fixture bound to [`TestPaneId::Foo`].
 pub struct FooPane;
 impl Pane<TestApp> for FooPane {
     const APP_PANE_ID: TestPaneId = TestPaneId::Foo;
@@ -91,6 +107,7 @@ impl Shortcuts<TestApp> for FooPane {
     fn dispatcher() -> fn(Self::Actions, &mut TestApp) { |_a, _c| {} }
 }
 
+/// Test-only pane fixture bound to [`TestPaneId::Bar`].
 pub struct BarPane;
 impl Pane<TestApp> for BarPane {
     const APP_PANE_ID: TestPaneId = TestPaneId::Bar;
@@ -102,6 +119,7 @@ impl Shortcuts<TestApp> for BarPane {
     fn dispatcher() -> fn(Self::Actions, &mut TestApp) { FooPane::dispatcher() }
 }
 
+/// Test-only navigation fixture.
 pub struct AppNav;
 impl Navigation<TestApp> for AppNav {
     type Actions = NavAction;
@@ -126,6 +144,7 @@ impl Navigation<TestApp> for AppNav {
     fn dispatcher() -> fn(Self::Actions, FocusedPane<TestPaneId>, &mut TestApp) { |_a, _f, _c| {} }
 }
 
+/// Test-only globals fixture.
 pub struct AppGlobals;
 impl Globals<TestApp> for AppGlobals {
     type Actions = AppGlobalAction;

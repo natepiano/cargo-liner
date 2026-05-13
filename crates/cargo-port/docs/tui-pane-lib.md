@@ -38,10 +38,13 @@ cargo-port-api-fix/
         │   ├── shortcuts.rs        # Shortcuts<Ctx> trait (Phase 7)
         │   ├── navigation.rs       # Navigation<Ctx> trait (Phase 7)
         │   ├── globals.rs          # Globals<Ctx> trait (Phase 7)
-        │   ├── builder.rs          # KeymapBuilder<Ctx, State>; register,
-        │   │                       #   register_navigation, register_globals,
-        │   │                       #   with_settings, vim_mode,
-        │   │                       #   builder(quit, restart, dismiss)
+        │   ├── builder/            # KeymapBuilder<Ctx, State>
+        │   │   ├── mod.rs          # typestate API; register,
+        │   │   │                   #   register_navigation, register_globals,
+        │   │   │                   #   vim_mode, lifecycle hooks
+        │   │   ├── registration.rs # pane/navigation binding assembly
+        │   │   ├── overlay.rs      # TOML overlay and collision validation
+        │   │   └── finalize.rs     # build/build_into finalizer
         │   ├── vim.rs              # VimMode enum (Phase 3); vim-binding
         │   │                       #   application + vim_mode_conflicts +
         │   │                       #   is_vim_reserved fns added in Phase 10
@@ -58,8 +61,15 @@ cargo-port-api-fix/
         │   ├── pane_action_region.rs # center: per-action rows from focused
         │   │                       #   pane's bar_slots + label/state
         │   └── global_region.rs    # right: GlobalAction + AppGlobals
-        ├── settings.rs             # SettingsRegistry;
-        │                           #   add_bool / add_enum / add_int
+        ├── settings_store/         # SettingsStore; registry, rows, TOML
+        │   ├── mod.rs              # module facade + cross-cluster tests
+        │   ├── store.rs            # SettingsFileSpec, SettingsStore,
+        │   │                       #   load/save/path/dirty/error state
+        │   ├── registry.rs         # SettingsRegistry; add_bool /
+        │   │                       #   add_enum / add_int
+        │   ├── row.rs              # SettingsRow + SettingsRowPayload
+        │   ├── table.rs            # read_* / write_value TOML helpers
+        │   └── toast.rs            # ToastSettings + validated newtypes
         ├── framework.rs            # Framework<Ctx> aggregator;
         │                           #   mode_queries registry;
         │                           #   editor_target_path,
@@ -1214,7 +1224,7 @@ Unit tests (this phase, scoped to what exists by end of Phase 4):
 - **`src/tui/panes/support.rs` had three pre-existing mend warnings** (inline path-qualified types) that auto-resolved during the Phase 4 build cycle — picked up "for free." Not part of Phase 4 scope but landed in the same diff.
 
 **Implications for remaining phases:**
-- **Every Phase 5+ module declaration must be `mod foo;`** (not `pub mod foo;`) at every level. Affects Phase 5 (`bar/region.rs`, `bar/slot.rs`), Phase 6 (`framework/`), Phase 7 (scope traits), Phase 9 (`keymap/container.rs` or wherever `Keymap<Ctx>` lands), Phase 10 (`keymap/builder.rs`), Phase 11 (`panes/*`), Phase 13 (`bar/render.rs`).
+- **Every Phase 5+ module declaration must be `mod foo;`** (not `pub mod foo;`) at every level. Affects Phase 5 (`bar/region.rs`, `bar/slot.rs`), Phase 6 (`framework/`), Phase 7 (scope traits), Phase 9 (`keymap/container.rs` or wherever `Keymap<Ctx>` lands), Phase 10 (`keymap/builder/mod.rs`), Phase 11 (`panes/*`), Phase 13 (`bar/render.rs`).
 - **Every `tui_pane::keymap::*` path in design docs is now stale.** `tui-pane-lib.md` needs a sweep: `crate::keymap::Foo` → `crate::Foo` (and `tui_pane::keymap::Foo` → `tui_pane::Foo` in public-API examples).
 - **Phase 14 binary swap uses flat paths.** `use tui_pane::KeyBind;` not `use tui_pane::keymap::KeyBind;`. Every file in `src/tui/` that touches keymap types will see this.
 - **`pub(super)` is the visibility default for framework-internal construction.** Phase 9's `Keymap<Ctx>` constructor, Phase 10's `KeymapBuilder::build()` — apply the same rule: `pub(super)` for sites only the framework's own `keymap/` siblings call.
@@ -1228,7 +1238,7 @@ Unit tests (this phase, scoped to what exists by end of Phase 4):
 - **Phase 6 (Framework skeleton)** gains an explicit "Root re-exports" line: `pub use framework::Framework;`, `pub use pane_id::{FocusedPane, FrameworkPaneId};`, `pub use app_context::AppContext;` plus `#[must_use]` directive.
 - **Phase 7 (Scope traits)** gains: `pub use keymap::{Shortcuts, Navigation, Globals};` plus standing-rule 1 reminder.
 - **Phase 9 (Keymap container)** gains: `pub use keymap::Keymap;`, `pub(super)` for `Keymap::new`, `#[must_use]` on getters.
-- **Phase 10 (Keymap builder)** gains: `pub use settings::SettingsRegistry;`, `pub(super)` for builder internals. `KeymapBuilder` and `KeymapError` are already re-exported from Phase 9; no `BuilderError` to add (one-error-type decision).
+- **Phase 10 (Keymap builder)** gains: `pub use settings_store::SettingsRegistry;`, `pub(super)` for builder internals. `KeymapBuilder` and `KeymapError` are already re-exported from Phase 9; no `BuilderError` to add (one-error-type decision).
 - **Phase 11 (Framework panes)** gains: `pub use panes::{KeymapPane, SettingsPane, Toasts};`, panes/mod.rs declared `mod` (private) per standing rule 1.
 - **Phase 13 (Bar renderer)** gains: `pub use bar::StatusBar;` plus standing-rule 1 reminder.
 - **Phase 14 (App swap)** gains: flat-namespace import note (`use tui_pane::KeyBind;` not `use tui_pane::keymap::KeyBind;`) and binary-side `mod` rule reminder.
@@ -1814,8 +1824,8 @@ pane-local check needed.
 
 Two tightly-coupled additions in one commit because `KeymapBuilder::with_settings` is the only consumer of `SettingsRegistry`:
 
-- `tui_pane/src/settings.rs` — `SettingsRegistry` + `add_bool` / `add_enum` / `add_int` / `with_bounds` (§9).
-- `tui_pane/src/keymap/builder.rs` — `KeymapBuilder<Ctx, Configuring>` body fills in. One error type — `KeymapError` — covers loader and builder validation; three new variants land here: `NavigationMissing`, `GlobalsMissing`, `DuplicateScope { type_name: &'static str }`. `BuilderError` was rejected during Phase 9 review (one type beats two when the binary's startup path renders both the same).
+- `tui_pane/src/settings_store/registry.rs` — `SettingsRegistry` + `add_bool` / `add_enum` / `add_int` / `with_bounds` (§9).
+- `tui_pane/src/keymap/builder/mod.rs` — `KeymapBuilder<Ctx, Configuring>` body fills in. One error type — `KeymapError` — covers loader and builder validation; three new variants land here: `NavigationMissing`, `GlobalsMissing`, `DuplicateScope { type_name: &'static str }`. `BuilderError` was rejected during Phase 9 review (one type beats two when the binary's startup path renders both the same).
 
 **Typed singleton storage for `Navigation` / `Globals`.** `Keymap<Ctx>` gains three fields populated by `KeymapBuilder::register_navigation::<N>()` and `register_globals::<G>()` (both on the `Configuring` state):
 
@@ -1888,7 +1898,7 @@ Unit tests:
 
 After Phase 10 the entire `tui_pane` foundation is in place: keys, action machinery, bindings, scope map, bar primitives, pane id + ctx + framework skeleton, scope traits, keymap, builder, settings registry. Framework panes (`KeymapPane`, `SettingsPane`, `Toasts`) and the `Framework` aggregator's pane fields + helper methods land in Phase 11.
 
-**Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use settings::SettingsRegistry;` (`KeymapBuilder` and `KeymapError` are already re-exported from Phase 9; no `BuilderError` to add — see error-type decision above). `KeymapBuilder::build` and any internal helpers it calls into other keymap files are `pub(super)` (standing rule 3).
+**Root re-exports (per Phase 5+ standing rule 2):** `tui_pane/src/lib.rs` adds `pub use settings_store::SettingsRegistry;` (`KeymapBuilder` and `KeymapError` are already re-exported from Phase 9; no `BuilderError` to add — see error-type decision above). `KeymapBuilder::build` and any internal helpers it calls into other keymap files are `pub(super)` (standing rule 3).
 
 **Standing rule 9 applies to inherent methods only (per Phase 7 retro).** Trait-default method bodies cannot be `const fn` in stable Rust. For `KeymapBuilder<Ctx>`'s chain methods (`fn on_quit(mut self, …) -> Self`, `with_*`, etc.), apply `#[must_use]` — clippy's `must_use_candidate` catches the omission anyway, and the chain-style return-`Self` form is the canonical builder pattern. `Keymap<Ctx>`'s inherent getters get the full `#[must_use]` + `const fn where eligible` treatment.
 
@@ -1907,7 +1917,7 @@ After Phase 10 the entire `tui_pane` foundation is in place: keys, action machin
 - `Framework::new` is no longer `const fn`. The Phase 6 contract said the five frozen methods stay `const`, but `HashMap::new()` is not `const fn` in stable Rust; adding the `mode_queries` / `pane_order` fields broke const-eligibility for `new`. The other four frozen methods (`focused`, `set_focused`, `quit_requested`, `restart_requested`) stayed `const`.
 - `on_quit` / `on_restart` / `dismiss_fallback` hooks live on `Keymap<Ctx>`, not on `Framework<Ctx>`. The plan said the dispatcher "closes over" them, but a free `fn` cannot close over anything; routing through `&Keymap<Ctx>` is the actual mechanism.
 - `dispatch_global` signature is `(action, &Keymap<Ctx>, &mut Ctx)` not `(action, &mut Ctx)` — same reason as above. `Keymap::dispatch_framework_global(action, ctx)` is the public call-site entry point that wraps the free fn.
-- Cross-action collision validation uses a new `pub(super) Bindings::entries()` accessor + a small `bindings_entries` helper in `builder.rs`. The plan didn't call this out; it fell out of needing to walk a `Bindings` after overlay without re-collapsing into a `ScopeMap` first.
+- Cross-action collision validation uses a new `pub(super) Bindings::entries()` accessor + a small `bindings_entries` helper in `keymap/builder/overlay.rs`. The plan didn't call this out; it fell out of needing to walk a `Bindings` after overlay without re-collapsing into a `ScopeMap` first.
 
 **Surprises:**
 - `Box<dyn Any + Send + Sync>` (the plan's storage type for typed singletons) refused to compile against generic `<N::Actions>` because the `Action` trait does not bound `Send + Sync`. Dropped to `Box<dyn Any>` — this is single-threaded UI code; nothing on the call path actually requires the bounds.
@@ -1945,7 +1955,7 @@ Done at the request to clear the deck before Phase 11. Two flagged items, both s
 
 1. **Overlay field + accessors on `Framework<Ctx>`.** Added `overlay: Option<FrameworkPaneId>` with `pub const fn overlay()` getter, `pub(super) const fn open_overlay(FrameworkPaneId)` setter, and `pub(super) const fn close_overlay() -> bool` setter. Phase 11's full `Framework::dismiss()` chain reuses `close_overlay()` as its middle arm.
 2. **Dispatcher rewrite.** `framework/dispatch.rs` `OpenKeymap` / `OpenSettings` now call `framework_mut().open_overlay(...)` instead of `set_focus(FocusedPane::Framework(...))`. `Dismiss` calls `framework_mut().close_overlay()` first; if it returns `true`, the dispatcher returns; otherwise it falls through to `dismiss_fallback`. The orthogonal-overlay model now matches the binary's existing modal-layer behavior 1:1.
-3. **Test rewrite.** `tui_pane/src/keymap/builder.rs` test renamed `open_keymap_and_open_settings_focus_framework_overlays` → `open_keymap_and_open_settings_open_framework_overlays`; now asserts `framework.overlay() == Some(...)` and that `framework.focused()` does not move during open. Extended to also assert `Dismiss` clears the overlay.
+3. **Test rewrite.** `tui_pane/src/keymap/builder/mod.rs` test renamed `open_keymap_and_open_settings_focus_framework_overlays` → `open_keymap_and_open_settings_open_framework_overlays`; now asserts `framework.overlay() == Some(...)` and that `framework.focused()` does not move during open. Extended to also assert `Dismiss` clears the overlay.
 4. **Variant decision (resolved).** Kept `FrameworkPaneId` unified (`Keymap | Settings | Toasts`); the `FocusedPane::Framework(Keymap | Settings)` focus arms are unreachable post-overlay-switch but remain valid payloads. Phase 11 match sites mark those arms with `// unreachable post-overlay-switch` comments rather than panicking. Recorded under Phase 11 focus-model intro.
 
 `cargo build -p tui_pane` clean, `cargo nextest run -p tui_pane` 142/142 pass, `cargo clippy -p tui_pane --all-targets --all-features -- -D warnings` clean.
@@ -1961,7 +1971,7 @@ Phase 11 fills in the framework panes inside the **existing** `Framework<Ctx>` s
 - `Framework::dismiss()` (Phase 11) becomes the full chain: focused-toasts pop → `close_overlay()` → return `false`. Phase 11 reuses the existing `close_overlay()` method as the middle arm. No `previous_focus` field, no prior-focus tracking — focus never moves.
 - `focused_pane_mode`, the bar renderer (Phase 13), and the dispatch chain consult `overlay` first; fall through to `focused` when `None`.
 - `set_focused` stays a frozen Phase 6 `const fn` setter — no overlay-aware branching, no contract change.
-- `FocusedPane::Framework(Toasts)` stays valid as a Tab-focusable state (matches binary's `PaneId::Toasts` Tab behavior). `FocusedPane::Framework(Keymap | Settings)` is unreachable by construction (the dispatcher never writes those focus states post-Phase-10 closure). *(Shipped at Phase 10 closure: the test `open_keymap_and_open_settings_open_framework_overlays` at `tui_pane/src/keymap/builder.rs` asserts against `framework.overlay()` and confirms `framework.focused()` does not move.)*
+- `FocusedPane::Framework(Toasts)` stays valid as a Tab-focusable state (matches binary's `PaneId::Toasts` Tab behavior). `FocusedPane::Framework(Keymap | Settings)` is unreachable by construction (the dispatcher never writes those focus states post-Phase-10 closure). *(Shipped at Phase 10 closure: the test `open_keymap_and_open_settings_open_framework_overlays` at `tui_pane/src/keymap/builder/mod.rs` asserts against `framework.overlay()` and confirms `framework.focused()` does not move.)*
 
 **Toasts focus model — `Toasts<Ctx>` is a placeholder pane with a message stack.** Phase 11 ships `Toasts<Ctx>` as a minimal typed pane that owns a `Vec<String>` message stack with `push`/`try_pop_top`/`has_active`. A single `ToastsAction::Dismiss` action pops the top toast. `Mode::Static` (no scrolling, no text input). `bar_slots` returns `[(PaneAction, Single(Dismiss))]`. The pane is held inline on `Framework<Ctx>` as `pub toasts: Toasts<Ctx>`, the same field-wise treatment as `keymap_pane` / `settings_pane`.
 
@@ -2854,7 +2864,7 @@ Findings 5 (form-rule already correctly applied to 14.5/14.6) and 10 (the paired
   - Build/test/clippy/install all green: 625 tests pass, `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean, `cargo install --path .` replaced the binary on first try.
 
   **What deviated from the plan:**
-  - **`load_toml(keymap_path)` was not added to the framework-keymap build chain.** The plan's example chain has `.load_toml(keymap_path).with_context(...)?` as the first step. Adding it now breaks startup whenever a user keymap TOML exists with a populated `[global]` table: `tui_pane`'s `apply_toml_overlay::<AppGlobalAction>` runs over the same `[global]` table that `apply_toml_overlay::<tui_pane::GlobalAction>` already consumes (line 604 in `tui_pane/src/keymap/builder.rs`), and unknown action keys (the framework's `quit`/`restart`/etc. seen by the `AppGlobalAction` overlay, or the app's `find`/`open_editor`/etc. seen by the framework's `GlobalAction` overlay) raise `KeymapError::UnknownAction` (line 467). The framework currently lacks shared-`[global]`-table coordination between two registered globals enums; supplying that is a `tui_pane` change beyond Phase 14.8's scope. The framework keymap therefore stays on defaults until the coordination lands; Phase 18 wires framework TOML loading, while the legacy `crate::keymap::ResolvedKeymap` path keeps owning broad dispatch until Phase 19.
+  - **`load_toml(keymap_path)` was not added to the framework-keymap build chain.** The plan's example chain has `.load_toml(keymap_path).with_context(...)?` as the first step. Adding it now breaks startup whenever a user keymap TOML exists with a populated `[global]` table: `tui_pane`'s `apply_toml_overlay::<AppGlobalAction>` runs over the same `[global]` table that `apply_toml_overlay::<tui_pane::GlobalAction>` already consumes in `tui_pane/src/keymap/builder/overlay.rs`, and unknown action keys (the framework's `quit`/`restart`/etc. seen by the `AppGlobalAction` overlay, or the app's `find`/`open_editor`/etc. seen by the framework's `GlobalAction` overlay) raise `KeymapError::UnknownAction`. The framework currently lacks shared-`[global]`-table coordination between two registered globals enums; supplying that is a `tui_pane` change beyond Phase 14.8's scope. The framework keymap therefore stays on defaults until the coordination lands; Phase 18 wires framework TOML loading, while the legacy `crate::keymap::ResolvedKeymap` path keeps owning broad dispatch until Phase 19.
   - **`with_context` placement narrowed to one call.** Without `load_toml`, only the `build_into` step earns a `with_context(|| "building framework keymap")?`. The plan's example showed two `with_context` wrappers; the chain shipped one.
   - **Not a deviation but worth noting:** the test-mod `#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, reason = "tests should panic on unexpected values")]` block was added to `src/tui/interaction.rs::tests` to match the established pattern at `src/tui/app/mod.rs:103-112` and `src/tui/framework_keymap.rs:667-672`. The `App::new` Result return forces the test helper to fall through this allow.
 
@@ -3874,7 +3884,7 @@ pub struct ToastAnimationSettings {
 }
 ```
 
-Construction goes through `try_from_secs(f64) -> Result<Self, ToastSettingsError>` on each newtype. `SettingsStore` converts `[toasts]` values at the settings-file boundary and reports `ToastSettingsError` with file/key context. Do not route toast-setting validation through `KeymapError`; `[toasts]` is not part of the keymap overlay loader.
+Construction goes through `try_from_secs(f64) -> Result<Self, SettingsError>` on each newtype. `SettingsStore` converts `[toasts]` values at the settings-file boundary and reports `SettingsError::Invalid` with file/key context. Do not route toast-setting validation through `KeymapError`; `[toasts]` is not part of the keymap overlay loader.
 
 **2. `SettingsRegistry` gains sections and value codecs.** The registry already supports app settings; Phase 25 adds a tagged section and enough value metadata for the framework store to load/save registered settings:
 
@@ -3960,7 +3970,7 @@ cargo-port no longer parses or persists `[toasts]` through `src/config.rs`. `tui
 - `settings_store_resolves_default_path_from_app_id` — framework path resolution uses `SettingsFileSpec` when no explicit path is supplied.
 - `toast_settings_default_round_trip` — load a TOML with only `[toasts]` defaults through `SettingsStore`, assert framework reads the right values, save, reload.
 - `legacy_tui_toast_keys_seed_toasts_section` — user config with old `[tui].status_flash_secs` / `task_linger_secs` and no `[toasts]` seeds framework `ToastSettings`; save writes `[toasts]` and drops the old keys.
-- `toast_settings_invalid_width_returns_error` — `width = 0` returns `ToastSettingsError::WidthZero`.
+- `toast_settings_invalid_width_returns_error` — `width = 0` returns `SettingsError::Invalid` for `toasts.width`.
 - `app_setting_editor_round_trip` — register a fake app-owned string setting, load it from TOML, edit through SettingsPane, assert the app setter ran and the saved TOML changed.
 - `config_from_table_before_app_construction` — `SettingsStore` loads the TOML table before `App` exists, and cargo-port derives `CargoPortConfig` from that table before startup side effects run.
 - `legacy_toast_manager_reads_framework_settings` — before Phase 26 deletes `app.toasts`, cargo-port timed/task toast helpers read durations from `framework.toast_settings()` after the `TuiConfig` fields are gone.
@@ -3968,13 +3978,13 @@ cargo-port no longer parses or persists `[toasts]` through `src/config.rs`. `tui
 - cargo-port: `tui_config_no_longer_carries_toast_fields` — compile-fail / type-level check that the moved fields are gone.
 
 **Code touched in Phase 25:**
-- New: `tui_pane/src/settings/store.rs` — `SettingsFileSpec`, `SettingsStore`, settings TOML load/save, path resolution, dirty/error state.
-- New: `tui_pane/src/toasts/settings.rs` — `ToastSettings`, validated newtypes, `ToastSettingsError`.
+- New: `tui_pane/src/settings_store/store.rs` — `SettingsFileSpec`, `SettingsStore`, settings TOML load/save, path resolution, dirty/error state.
+- New: `tui_pane/src/settings_store/toast.rs` — `ToastSettings`, validated newtypes, compatibility handling for old toast keys.
 - `tui_pane/src/framework/mod.rs` — `settings_store: SettingsStore` and `toast_settings: ToastSettings` fields on `Framework<Ctx>`; `toast_settings()` / `toast_settings_mut()` accessors; settings initialization and save hooks.
-- `tui_pane/src/settings.rs` — `SettingsSection`, `SettingValue`, app setting codecs, string/float entry support, ordering.
+- `tui_pane/src/settings_store/registry.rs` / `row.rs` / `table.rs` — `SettingsSection`, `SettingValue`, app setting codecs, string/float entry support, row metadata, ordering, and TOML helpers.
 - `tui_pane/src/panes/settings.rs` — render section headers; route browse/edit/save through `SettingsStore`.
-- `tui_pane/src/keymap/mod.rs` / `tui_pane/src/keymap/builder.rs` — remove `Keymap` ownership of `SettingsRegistry`: delete `KeymapBuilder::with_settings`, the builder `settings` field, `Keymap.settings`, and `Keymap::settings()`. Keep only keymap overlay registration for `[settings]` shortcuts.
-- `tui_pane/src/lib.rs` — re-export `SettingsFileSpec`, `SettingsStore`, `SettingValue`, `ToastSettings`, the newtypes, `ToastPlacement`, `ToastAnimationSettings`, `ToastSettingsError`.
+- `tui_pane/src/keymap/mod.rs` / `tui_pane/src/keymap/builder/mod.rs` — remove `Keymap` ownership of `SettingsRegistry`: delete `KeymapBuilder::with_settings`, the builder `settings` field, `Keymap.settings`, and `Keymap::settings()`. Keep only keymap overlay registration for `[settings]` shortcuts.
+- `tui_pane/src/lib.rs` — re-export `SettingsFileSpec`, `SettingsStore`, `SettingValue`, `ToastSettings`, the newtypes, `ToastPlacement`, `ToastAnimationSettings`, and settings-store helpers.
 - Cargo-port: register app-specific settings with `SettingsRegistry`; migrate generic path/load/save/template behavior to `SettingsStore` while keeping app schema/normalizers in `src/config.rs`; derive `CargoPortConfig` from `SettingsStore::table()` at startup/edit/reload; update `src/tui/config_reload.rs`, `src/tui/config_state.rs`, and `src/tui/app/async_tasks/config.rs` to reload through the framework settings store; delete `status_flash_secs` / `task_linger_secs` from `TuiConfig`; migrate old values into framework `[toasts]`; reroute legacy `app.toasts` duration reads to `framework.toast_settings()`; delete toast rows from `toast_settings_rows`; delete SettingsPane edit-buffer mirrors; keep `discovery_shimmer_secs` as an app-owned setting. No `App::toast_settings` field — the framework is the sole mutable owner of framework settings.
 - Phase closeout greps: `rg 'settings_edit_keys|SettingsEditBuffer|edit_buffer|overlays\\.settings|overlays\\.keymap' src/tui` must return no production-owned SettingsPane state after the migration, except deliberate compatibility comments/tests called out in the retrospective.
 - Phase closeout runs the remaining-phase closeout gate.
@@ -4185,7 +4195,7 @@ Acceptance check: `rg 'app\\.toasts|ToastManager|crate::tui::toasts|super::toast
 - `tui_pane` settings/render test: `render_uses_framework_toast_settings_width` — render output reflects a non-default `ToastWidth` set on `Framework::toast_settings`.
 
 **Code touched in Phase 26:**
-- New: `tui_pane/src/toasts/{mod,manager,render,format,hitbox,tracked_item}.rs`.
+- New: `tui_pane/src/toasts/{mod,body,ids,item,toast,view,stack,render,format}.rs`.
 - `tui_pane/src/panes/toasts.rs` — `Toasts<Ctx>` becomes a thin re-export of `tui_pane::toasts::Toasts<Ctx>`, or merged into it.
 - `tui_pane/src/lib.rs` — re-export `Toast`, `ToastLifetime`, `ToastPhase`, `TaskStatus`, `ToastTaskId`, `ToastStyle`, `TrackedItem`, `TrackedItemKey`, `TrackedItemView`, `ToastView`, `ToastHitbox`.
 - Cargo-port: delete `src/tui/toasts/{manager,render,format}.rs` and the binary-side `src/tui/toasts/mod.rs` shim. The cargo-port-specific `From` impls for `TrackedItemKey` live in `src/tui/toast_adapters.rs`; every other toast type/helper is imported directly from `tui_pane`.
@@ -4201,7 +4211,7 @@ Acceptance check: `rg 'app\\.toasts|ToastManager|crate::tui::toasts|super::toast
 - `ToastTaskId` stayed the handle for task-owned operations, while `ToastId` became the card identity for hitboxes, focus, direct dismissal, and rendering.
 
 **What deviated from the plan:**
-- The framework module landed as `tui_pane/src/toasts/{mod,manager,render,format}.rs`; `hitbox.rs` and `tracked_item.rs` stayed folded into `manager.rs` instead of separate files.
+- The framework module landed as `tui_pane/src/toasts/{mod,body,ids,item,toast,view,stack,render,format}.rs`; `stack.rs` owns the `Toasts<Ctx>` manager surface, while body/id/item/toast/view types live in peer modules.
 - The temporary binary-side toast shim was removed in Phase 26 closeout. Cargo-port-specific `TrackedItemKey` conversions now live in `src/tui/toast_adapters.rs`; framework toast APIs are imported directly from `tui_pane`.
 - `ToastSettings.animation` now drives line reveal/collapse timing from the existing default values; Phase 26 did not add user-editable TOML keys for animation timing.
 

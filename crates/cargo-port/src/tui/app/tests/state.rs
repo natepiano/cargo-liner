@@ -2,11 +2,12 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use std::time::SystemTime;
 
 use super::*;
 use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
+use crate::lint::LintRun;
+use crate::lint::LintRunStatus;
 use crate::project::AbsolutePath;
 use crate::project::FileStamp;
 use crate::project::ManifestFingerprint;
@@ -1359,6 +1360,69 @@ fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
     ));
 }
 
+#[test]
+fn worktree_group_detail_lint_rollup_rebuilds_when_linked_worktree_finishes() {
+    let root = make_package_worktrees_item(
+        make_package_raw(None, "~/ws", None),
+        vec![make_package_raw(None, "~/ws_feat", Some("ws_feat"))],
+    );
+
+    let mut app = make_app(&[make_project(None, "~/ws")]);
+    app.config.current_mut().lint.enabled = true;
+    apply_items(&mut app, &[root]);
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+
+    let linked_path = test_path("~/ws_feat");
+    let linked_lints = app.project_list.lint_at_path_mut(&linked_path).unwrap();
+    linked_lints.set_runs(
+        vec![LintRun {
+            run_id:      "previous".to_string(),
+            started_at:  "2026-03-30T16:12:18-05:00".to_string(),
+            finished_at: Some("2026-03-30T16:13:18-05:00".to_string()),
+            duration_ms: Some(60_000),
+            status:      LintRunStatus::Passed,
+            commands:    Vec::new(),
+        }],
+        linked_path.as_path(),
+    );
+    linked_lints.set_status(LintStatus::Running(parse_ts("2026-03-30T16:22:18-05:00")));
+    app.scan.bump_generation();
+    app.ensure_detail_cached();
+    let running_display = app.panes.package.content().unwrap().lint_display.clone();
+    assert!(
+        matches!(
+            running_display,
+            panes::LintDisplay::Runs {
+                status: LintStatus::Running(_),
+                ..
+            }
+        ),
+        "{running_display:?}"
+    );
+
+    apply_bg_msg(
+        &mut app,
+        BackgroundMsg::LintStatus {
+            path:   linked_path,
+            status: LintStatus::Passed(parse_ts("2026-03-30T16:23:18-05:00")),
+        },
+    );
+    app.ensure_detail_cached();
+    let finished_display = app.panes.package.content().unwrap().lint_display.clone();
+
+    assert!(
+        !matches!(
+            finished_display,
+            panes::LintDisplay::Runs {
+                status: LintStatus::Running(_),
+                ..
+            }
+        ),
+        "{finished_display:?}"
+    );
+}
+
 // ── CI fetch pipeline tests ───────────────────────────────────────────
 
 #[test]
@@ -1528,8 +1592,6 @@ fn fake_fingerprint() -> ManifestFingerprint {
     // fails (returns None) and the drift check becomes a no-op.
     ManifestFingerprint {
         manifest:       FileStamp {
-            mtime:        SystemTime::UNIX_EPOCH,
-            len:          0,
             content_hash: [0_u8; 32],
         },
         lockfile:       None,
@@ -1543,8 +1605,6 @@ fn fake_metadata(workspace_root: &AbsolutePath) -> WorkspaceMetadata {
         workspace_root:           workspace_root.clone(),
         target_directory:         AbsolutePath::from(workspace_root.as_path().join("target")),
         packages:                 HashMap::new(),
-        workspace_members:        Vec::new(),
-        fetched_at:               SystemTime::UNIX_EPOCH,
         fingerprint:              fake_fingerprint(),
         out_of_tree_target_bytes: None,
     }
@@ -1804,8 +1864,6 @@ fn start_clean_prefers_resolved_target_dir_over_hardcoded_literal() {
             workspace_root:           project_path.clone(),
             target_directory:         custom_target,
             packages:                 HashMap::new(),
-            workspace_members:        Vec::new(),
-            fetched_at:               SystemTime::UNIX_EPOCH,
             fingerprint:              fake_fingerprint(),
             out_of_tree_target_bytes: None,
         });
@@ -1848,8 +1906,6 @@ fn start_clean_reports_already_clean_when_resolved_target_is_missing() {
             workspace_root:           project_path.clone(),
             target_directory:         custom_target,
             packages:                 HashMap::new(),
-            workspace_members:        Vec::new(),
-            fetched_at:               SystemTime::UNIX_EPOCH,
             fingerprint:              fake_fingerprint(),
             out_of_tree_target_bytes: None,
         });
@@ -2118,8 +2174,6 @@ fn out_of_tree_target_size_message_stamps_metadata() {
             workspace_root:           workspace_root.clone(),
             target_directory:         target_dir.clone(),
             packages:                 HashMap::new(),
-            workspace_members:        Vec::new(),
-            fetched_at:               SystemTime::UNIX_EPOCH,
             fingerprint:              fake_fingerprint(),
             out_of_tree_target_bytes: None,
         });
@@ -2166,10 +2220,10 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
     let manifest_path = AbsolutePath::from(project_path.as_path().join("Cargo.toml"));
     let example_src = AbsolutePath::from(project_path.as_path().join("examples").join("hello.rs"));
     let bin_src = AbsolutePath::from(project_path.as_path().join("src").join("main.rs"));
+    let record_id = PackageId {
+        repr: "demo-id".into(),
+    };
     let record = PackageRecord {
-        id: PackageId {
-            repr: "demo-id".into(),
-        },
         name: "demo".into(),
         version: Version::new(0, 1, 0),
         edition: "2024".into(),
@@ -2180,31 +2234,25 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
         manifest_path,
         targets: vec![
             crate::project::TargetRecord {
-                name:              "demo".into(),
-                kinds:             vec![TargetKind::Bin],
-                src_path:          bin_src,
-                edition:           "2024".into(),
-                required_features: Vec::new(),
+                name:     "demo".into(),
+                kinds:    vec![TargetKind::Bin],
+                src_path: bin_src,
             },
             crate::project::TargetRecord {
-                name:              "hello".into(),
-                kinds:             vec![TargetKind::Example],
-                src_path:          example_src,
-                edition:           "2024".into(),
-                required_features: Vec::new(),
+                name:     "hello".into(),
+                kinds:    vec![TargetKind::Example],
+                src_path: example_src,
             },
         ],
         publish: PublishPolicy::Never,
     };
     let mut packages = HashMap::new();
-    packages.insert(record.id.clone(), record);
+    packages.insert(record_id, record);
 
     let workspace_metadata = WorkspaceMetadata {
         workspace_root: project_path.clone(),
         target_directory: AbsolutePath::from(project_path.as_path().join("target")),
         packages,
-        workspace_members: Vec::new(),
-        fetched_at: SystemTime::UNIX_EPOCH,
         fingerprint: fake_fingerprint(),
         out_of_tree_target_bytes: None,
     };

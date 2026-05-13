@@ -113,9 +113,7 @@ fn truncate_to_width(text: &str, target_width: usize, add_ellipsis: bool) -> Str
 mod tests {
     use super::*;
 
-    fn width() -> usize {
-        crate::toasts::manager::toast_body_width(&crate::ToastSettings::default())
-    }
+    fn width() -> usize { crate::toast_body_width(&crate::ToastSettings::default()) }
 
     #[test]
     fn single_short_item_unchanged() {
