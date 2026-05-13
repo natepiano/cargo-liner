@@ -8,14 +8,14 @@ over-large files along their natural seams.
 
 ## Phase overview
 
-| Phase | What                                                       | Risk    | Rough size |
-|-------|------------------------------------------------------------|---------|------------|
-| 1     | Placement — group `tui/` and `project/` files into dirs    | Low     | ~80–120 import updates, one commit |
-| 2     | Split `src/scan.rs` (1988 prod lines)                      | Medium  | New `src/scan/` dir with 6–7 files |
-| 3     | Split `src/tui/project_list.rs` (2352 lines)               | Medium  | New `src/tui/project_list/` dir with 4 files |
-| 4     | Move `src/tui/interaction.rs` test module out              | Low     | One-file move; production stays one file |
-| 5     | Fix `lint/types.rs` → `tui_pane::Icon` domain-to-UI leak   | Low     | One new adapter file in `tui/integration/` |
-| —     | Optional: `tui/app/api.rs` stable surface                  | n/a     | Speculative; revisit later |
+| Phase | What                                                       | Risk    | Rough size | Status |
+|-------|------------------------------------------------------------|---------|------------|--------|
+| 1     | Placement — group `tui/` and `project/` files into dirs    | Low     | ~80–120 import updates, one commit | shipped (f9abe92) |
+| 2     | Split `src/scan.rs` (1988 prod lines)                      | Medium  | New `src/scan/` dir with 7 files | uncommitted (working tree) |
+| 3     | Split `src/tui/project_list.rs` (2352 lines)               | Medium  | New `src/tui/project_list/` dir with 4 files | pending |
+| 4     | Move `src/tui/interaction.rs` test module out              | Low     | One-file move; production stays one file | pending |
+| 5     | Fix `lint/types.rs` → `tui_pane::Icon` domain-to-UI leak   | Low     | One new adapter file in `tui/integration/` | pending |
+| —     | Optional: `tui/app/api.rs` stable surface                  | n/a     | Speculative; revisit later | deferred |
 
 Phases are ordered to minimise re-shuffling: placement (1) makes the
 directories that 2–5 fill. Within phases 2–4 the order is independent. Phase
@@ -478,3 +478,9 @@ surface."
 
 This is speculative — worth doing only if internal-type churn becomes
 painful in practice. Not scheduled.
+
+**Trigger to revisit:** when a single PR changes an `app/` internal
+type and ends up touching more than ~3 pane or overlay files to keep
+the build green. That is the moment the boundary would have paid for
+itself; the next person editing `app/` should add `api.rs` instead of
+fanning out edits across panes.
