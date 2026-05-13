@@ -14,12 +14,12 @@ version     = "0.0.4-dev"
 workspace = true
 
 [dependencies]
-crossterm = "0.29.0"
-dirs      = "6.0.0"
-ratatui   = "0.30.0"
-serde     = { version = "1", features = ["derive"] }
-thiserror = "2"
-toml      = "1.1.2"
+crossterm     = "0.29.0"
+dirs          = "6.0.0"
+ratatui       = "0.30.0"
+serde         = { version = "1", features = ["derive"] }
+thiserror     = "2"
+toml          = "1.1.2"
 unicode-width = "0.2.2"
 
 [dev-dependencies]
