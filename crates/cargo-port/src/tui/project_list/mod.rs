@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::Index;
@@ -32,8 +31,6 @@ use crate::project::DisplayPath;
 use crate::project::GitHubInfo;
 use crate::project::GitStatus;
 use crate::project::LanguageStats;
-use crate::project::MemberGroup;
-use crate::project::Package;
 use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::project::ProjectEntry;
@@ -43,14 +40,26 @@ use crate::project::RepoInfo;
 use crate::project::RootItem;
 use crate::project::RustInfo;
 use crate::project::RustProject;
-use crate::project::Submodule;
 use crate::project::VendoredPackage;
 use crate::project::Visibility;
-use crate::project::Workspace;
 use crate::project::WorkspaceMetadata;
 use crate::project::WorktreeGroup;
-use crate::project::WorktreeStatus;
-use crate::scan;
+
+mod grouping;
+mod selection;
+mod visible_rows;
+
+use grouping::find_matching_worktree_container;
+use grouping::linked_worktree_identity;
+use grouping::regroup_workspace;
+use grouping::shortest_unique_suffixes;
+use grouping::try_attach_worktree;
+use grouping::try_insert_member;
+pub(super) use selection::SelectionMutation;
+pub(super) use visible_rows::ExpandKey;
+pub(super) use visible_rows::LegacyRootExpansion;
+pub(super) use visible_rows::VisibleRow;
+use visible_rows::worst_git_status;
 
 /// Owning wrapper around the project hierarchy plus all project-list
 /// navigation state (cursor, expansion set, finder, sort/width caches).
@@ -752,112 +761,6 @@ impl ProjectList {
     }
 }
 
-fn shortest_unique_suffixes(paths: &[String]) -> Vec<String> {
-    let segments: Vec<Vec<&str>> = paths
-        .iter()
-        .map(|path| display_path_segments(path))
-        .collect();
-    let mut suffix_len = vec![1usize; paths.len()];
-
-    loop {
-        let mut collisions: HashMap<String, Vec<usize>> = HashMap::new();
-        for (index, path_segments) in segments.iter().enumerate() {
-            collisions
-                .entry(join_suffix(path_segments, suffix_len[index]))
-                .or_default()
-                .push(index);
-        }
-
-        let mut changed = false;
-        for indices in collisions.into_values().filter(|indices| indices.len() > 1) {
-            for index in indices {
-                if suffix_len[index] < segments[index].len() {
-                    suffix_len[index] += 1;
-                    changed = true;
-                }
-            }
-        }
-
-        if !changed {
-            break;
-        }
-    }
-
-    segments
-        .iter()
-        .enumerate()
-        .map(|(index, path_segments)| join_suffix(path_segments, suffix_len[index]))
-        .collect()
-}
-
-fn display_path_segments(path: &str) -> Vec<&str> {
-    path.split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect()
-}
-
-fn join_suffix(segments: &[&str], suffix_len: usize) -> String {
-    let len = suffix_len.min(segments.len());
-    segments[segments.len().saturating_sub(len)..].join("/")
-}
-
-fn try_attach_worktree(existing: &mut RootItem, item: &RootItem) -> bool {
-    let RootItem::Rust(linked) = item else {
-        return false;
-    };
-    if !linked.worktree_status().is_linked_worktree() {
-        return false;
-    }
-    let existing_identity = item_worktree_identity(existing).cloned();
-    if linked.worktree_status().primary_root() != existing_identity.as_ref() {
-        return false;
-    }
-
-    match existing {
-        RootItem::Rust(primary) => {
-            let primary = primary.clone();
-            *existing = RootItem::Worktrees(WorktreeGroup::new(primary, vec![linked.clone()]));
-            true
-        },
-        RootItem::Worktrees(group) => {
-            group.linked.push(linked.clone());
-            true
-        },
-        RootItem::NonRust(_) => false,
-    }
-}
-
-fn item_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
-    match item {
-        RootItem::Rust(p) => p.worktree_status().primary_root(),
-        RootItem::Worktrees(group) => group.primary.worktree_status().primary_root(),
-        RootItem::NonRust(_) => None,
-    }
-}
-
-fn linked_worktree_identity(item: &RootItem) -> Option<&AbsolutePath> {
-    match item {
-        RootItem::Rust(p) => match p.worktree_status() {
-            WorktreeStatus::Linked { primary } => Some(primary),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn find_matching_worktree_container(
-    roots: &IndexMap<AbsolutePath, ProjectEntry>,
-    linked_index: usize,
-    identity: &AbsolutePath,
-) -> Option<usize> {
-    roots.values().enumerate().find_map(|(index, entry)| {
-        if index == linked_index {
-            return None;
-        }
-        (item_worktree_identity(&entry.item) == Some(identity)).then_some(index)
-    })
-}
-
 // -- Index<usize> so call sites can do `projects[i]` like a slice.
 
 impl Index<usize> for ProjectList {
@@ -880,338 +783,6 @@ impl<'a> IntoIterator for &'a mut ProjectList {
     type Item = &'a mut ProjectEntry;
 
     fn into_iter(self) -> Self::IntoIter { self.roots.values_mut() }
-}
-
-// -- Helpers --------------------------------------------------------------
-
-fn regroup_workspace(ws: &mut Workspace, inline_dirs: &[String]) {
-    // Collect all members from all existing groups.
-    let members: Vec<Package> = ws
-        .groups_mut()
-        .drain(..)
-        .flat_map(MemberGroup::into_members)
-        .collect();
-
-    // Re-sort into groups based on subdirectory and inline_dirs.
-    let mut group_map: HashMap<String, Vec<Package>> = std::collections::HashMap::new();
-    for member in members {
-        let relative = member
-            .path()
-            .strip_prefix(ws.path())
-            .ok()
-            .map(scan::normalize_workspace_path)
-            .unwrap_or_default();
-        let subdir = relative.split('/').next().unwrap_or("").to_string();
-        let group_name = if inline_dirs.contains(&subdir) || !relative.contains('/') {
-            String::new()
-        } else {
-            subdir
-        };
-        group_map.entry(group_name).or_default().push(member);
-    }
-
-    let mut groups: Vec<MemberGroup> = group_map
-        .into_iter()
-        .map(|(name, members)| {
-            if name.is_empty() {
-                MemberGroup::Inline { members }
-            } else {
-                MemberGroup::Named { name, members }
-            }
-        })
-        .collect();
-    groups.sort_by(|a, b| {
-        let a_inline = a.group_name().is_empty();
-        let b_inline = b.group_name().is_empty();
-        match (a_inline, b_inline) {
-            (true, false) => Ordering::Greater,
-            (false, true) => Ordering::Less,
-            _ => a.group_name().cmp(b.group_name()),
-        }
-    });
-
-    *ws.groups_mut() = groups;
-}
-
-fn try_insert_member(ws: &mut Workspace, item_path: &Path, item: &RootItem) -> bool {
-    if !item_path.starts_with(ws.path()) || item_path == ws.path() {
-        return false;
-    }
-    let RootItem::Rust(RustProject::Package(pkg)) = item else {
-        return false;
-    };
-    // Add to the first inline group, or create one.
-    let inline = ws.groups_mut().iter_mut().find(|g| g.is_inline());
-    if let Some(group) = inline {
-        group.members_mut().push(pkg.clone());
-        group
-            .members_mut()
-            .sort_by(|a, b| a.package_name().as_str().cmp(b.package_name().as_str()));
-    } else {
-        ws.groups_mut().push(MemberGroup::Inline {
-            members: vec![pkg.clone()],
-        });
-    }
-    true
-}
-
-// ── Visible-rows flattening ──────────────────────────────────────────
-//
-// The project tree is nested; the renderer wants a flat list. The
-// types and walker below produce that flat list, expanding /
-// collapsing groups based on user state.
-
-/// User-driven expansion state key. Identifies which of the
-/// nested containers (root nodes, named groups, worktree
-/// entries, worktree groups) the user has toggled open.
-#[derive(Hash, Eq, PartialEq, Clone)]
-pub(super) enum ExpandKey {
-    Node(usize),
-    Group(usize, usize),
-    Worktree(usize, usize),
-    WorktreeGroup(usize, usize, usize),
-}
-
-/// What a visible row represents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum VisibleRow {
-    /// A top-level project/workspace root.
-    Root { node_index: usize },
-    /// A group header (e.g., "examples").
-    GroupHeader {
-        node_index:  usize,
-        group_index: usize,
-    },
-    /// An actual project member.
-    Member {
-        node_index:   usize,
-        group_index:  usize,
-        member_index: usize,
-    },
-    /// A vendored crate nested directly under the root project.
-    Vendored {
-        node_index:     usize,
-        vendored_index: usize,
-    },
-    /// A worktree entry shown directly under the parent node.
-    WorktreeEntry {
-        node_index:     usize,
-        worktree_index: usize,
-    },
-    /// A group header inside an expanded worktree entry.
-    WorktreeGroupHeader {
-        node_index:     usize,
-        worktree_index: usize,
-        group_index:    usize,
-    },
-    /// A member inside an expanded worktree entry.
-    WorktreeMember {
-        node_index:     usize,
-        worktree_index: usize,
-        group_index:    usize,
-        member_index:   usize,
-    },
-    /// A vendored crate nested under a worktree entry.
-    WorktreeVendored {
-        node_index:     usize,
-        worktree_index: usize,
-        vendored_index: usize,
-    },
-    /// A git submodule nested under the root project.
-    Submodule {
-        node_index:      usize,
-        submodule_index: usize,
-    },
-}
-
-impl ProjectList {
-    /// Flatten the nested project tree into the linear list of
-    /// rows the renderer walks. Expansion state controls which
-    /// nested containers are walked into; `include_non_rust`
-    /// gates whether non-Rust roots are emitted; `Dismissed`
-    /// roots are always filtered out.
-    pub(super) fn compute_visible_rows(
-        &self,
-        expanded: &HashSet<ExpandKey>,
-        include_non_rust: bool,
-    ) -> Vec<VisibleRow> {
-        let mut rows = Vec::new();
-        for (ni, entry) in self.iter().enumerate() {
-            let item = &entry.item;
-            if matches!(item.visibility(), Visibility::Dismissed) {
-                continue;
-            }
-            if !include_non_rust && !item.is_rust() {
-                continue;
-            }
-            rows.push(VisibleRow::Root { node_index: ni });
-            if !expanded.contains(&ExpandKey::Node(ni)) {
-                continue;
-            }
-            match item {
-                RootItem::Rust(RustProject::Workspace(ws)) => {
-                    emit_groups(&mut rows, ni, ws.groups(), expanded);
-                    emit_vendored_rows(&mut rows, ni, ws.vendored());
-                },
-                RootItem::Rust(RustProject::Package(pkg)) => {
-                    emit_vendored_rows(&mut rows, ni, pkg.vendored());
-                },
-                RootItem::NonRust(_) => {},
-                RootItem::Worktrees(wtg) => {
-                    if wtg.renders_as_group() {
-                        emit_worktree_group(&mut rows, ni, wtg, expanded);
-                    } else if let Some(entry) = wtg.single_live() {
-                        if let RustProject::Workspace(ws) = entry {
-                            emit_groups(&mut rows, ni, ws.groups(), expanded);
-                        }
-                        emit_vendored_rows(&mut rows, ni, entry.rust_info().vendored());
-                    }
-                },
-            }
-            emit_submodule_rows(&mut rows, ni, item.submodules());
-        }
-        rows
-    }
-}
-
-fn emit_groups(
-    rows: &mut Vec<VisibleRow>,
-    ni: usize,
-    groups: &[MemberGroup],
-    expanded: &HashSet<ExpandKey>,
-) {
-    for (gi, group) in groups.iter().enumerate() {
-        match group {
-            MemberGroup::Inline { members } => {
-                for (mi, _) in members.iter().enumerate() {
-                    rows.push(VisibleRow::Member {
-                        node_index:   ni,
-                        group_index:  gi,
-                        member_index: mi,
-                    });
-                }
-            },
-            MemberGroup::Named { members, .. } => {
-                rows.push(VisibleRow::GroupHeader {
-                    node_index:  ni,
-                    group_index: gi,
-                });
-                if expanded.contains(&ExpandKey::Group(ni, gi)) {
-                    for (mi, _) in members.iter().enumerate() {
-                        rows.push(VisibleRow::Member {
-                            node_index:   ni,
-                            group_index:  gi,
-                            member_index: mi,
-                        });
-                    }
-                }
-            },
-        }
-    }
-}
-
-fn emit_vendored_rows(rows: &mut Vec<VisibleRow>, ni: usize, vendored: &[VendoredPackage]) {
-    for (vi, _) in vendored.iter().enumerate() {
-        rows.push(VisibleRow::Vendored {
-            node_index:     ni,
-            vendored_index: vi,
-        });
-    }
-}
-
-fn emit_submodule_rows(rows: &mut Vec<VisibleRow>, ni: usize, submodules: &[Submodule]) {
-    for (si, _) in submodules.iter().enumerate() {
-        rows.push(VisibleRow::Submodule {
-            node_index:      ni,
-            submodule_index: si,
-        });
-    }
-}
-
-fn emit_worktree_group(
-    rows: &mut Vec<VisibleRow>,
-    ni: usize,
-    wtg: &WorktreeGroup,
-    expanded: &HashSet<ExpandKey>,
-) {
-    for (wi, entry) in wtg.iter_entries().enumerate() {
-        if matches!(entry.visibility(), Visibility::Dismissed) {
-            continue;
-        }
-        rows.push(VisibleRow::WorktreeEntry {
-            node_index:     ni,
-            worktree_index: wi,
-        });
-        if let RustProject::Workspace(ws) = entry
-            && ws.has_members()
-            && expanded.contains(&ExpandKey::Worktree(ni, wi))
-        {
-            emit_worktree_children(rows, ni, wi, ws.groups(), ws.vendored(), expanded);
-        }
-    }
-}
-
-fn emit_worktree_children(
-    rows: &mut Vec<VisibleRow>,
-    ni: usize,
-    wi: usize,
-    groups: &[MemberGroup],
-    vendored: &[VendoredPackage],
-    expanded: &HashSet<ExpandKey>,
-) {
-    for (gi, group) in groups.iter().enumerate() {
-        match group {
-            MemberGroup::Inline { members } => {
-                for (mi, _) in members.iter().enumerate() {
-                    rows.push(VisibleRow::WorktreeMember {
-                        node_index:     ni,
-                        worktree_index: wi,
-                        group_index:    gi,
-                        member_index:   mi,
-                    });
-                }
-            },
-            MemberGroup::Named { members, .. } => {
-                rows.push(VisibleRow::WorktreeGroupHeader {
-                    node_index:     ni,
-                    worktree_index: wi,
-                    group_index:    gi,
-                });
-                if expanded.contains(&ExpandKey::WorktreeGroup(ni, wi, gi)) {
-                    for (mi, _) in members.iter().enumerate() {
-                        rows.push(VisibleRow::WorktreeMember {
-                            node_index:     ni,
-                            worktree_index: wi,
-                            group_index:    gi,
-                            member_index:   mi,
-                        });
-                    }
-                }
-            },
-        }
-    }
-
-    for (vi, _) in vendored.iter().enumerate() {
-        rows.push(VisibleRow::WorktreeVendored {
-            node_index:     ni,
-            worktree_index: wi,
-            vendored_index: vi,
-        });
-    }
-}
-
-/// Return the most severe git path state from an iterator.
-/// Severity: `Modified` > `Untracked` > `Clean` > `Ignored`.
-fn worst_git_status(states: impl Iterator<Item = Option<GitStatus>>) -> Option<GitStatus> {
-    const fn severity(state: GitStatus) -> u8 {
-        match state {
-            GitStatus::Modified => 4,
-            GitStatus::Untracked => 3,
-            GitStatus::Clean => 2,
-            GitStatus::Ignored => 1,
-        }
-    }
-    states.flatten().max_by_key(|s| severity(*s))
 }
 
 // ── Selection-cluster surface ───────────────────────────────────────
@@ -1350,65 +921,6 @@ impl ProjectList {
             project_list: self,
             include_non_rust,
         }
-    }
-}
-
-/// RAII guard for visibility-changing [`ProjectList`] mutations.
-/// Obtained via [`ProjectList::mutate`]; `Drop` recomputes
-/// `cached_visible_rows`. Mutation guard (RAII) — self-only flavor.
-#[allow(
-    dead_code,
-    reason = "guard ships alongside ProjectList so the type is in place \
-              while call sites still use the direct accessors"
-)]
-pub(super) struct SelectionMutation<'a> {
-    project_list:     &'a mut ProjectList,
-    include_non_rust: bool,
-}
-
-#[allow(
-    dead_code,
-    reason = "guard methods ship alongside the type while call sites \
-              still use the direct accessors"
-)]
-impl SelectionMutation<'_> {
-    /// Toggle membership of `key` in the expansion set. Returns `true`
-    /// if the key was newly inserted.
-    pub(super) fn toggle_expand(&mut self, key: ExpandKey) -> bool {
-        if self.project_list.expanded.contains(&key) {
-            self.project_list.expanded.remove(&key);
-            false
-        } else {
-            self.project_list.expanded.insert(key);
-            true
-        }
-    }
-
-    /// Insert `key` into the expansion set. Returns `true` if the key
-    /// was newly inserted.
-    pub fn expand(&mut self, key: ExpandKey) -> bool { self.project_list.expanded.insert(key) }
-
-    /// Remove `key` from the expansion set. Returns `true` if the key
-    /// was present.
-    pub fn collapse(&mut self, key: &ExpandKey) -> bool { self.project_list.expanded.remove(key) }
-
-    /// Mutable access to the underlying expansion set, for bulk
-    /// operations (e.g. `clear`, multi-key inserts) that still want
-    /// the drop-recompute to fire afterward.
-    pub(super) const fn expanded_mut(&mut self) -> &mut HashSet<ExpandKey> {
-        &mut self.project_list.expanded
-    }
-
-    /// Mutable access to the finder state, for callers that update
-    /// the finder query / results inline. The drop-recompute fires
-    /// on guard release.
-    pub(super) const fn finder_mut(&mut self) -> &mut FinderState { &mut self.project_list.finder }
-}
-
-impl Drop for SelectionMutation<'_> {
-    fn drop(&mut self) {
-        self.project_list
-            .recompute_visibility(self.include_non_rust);
     }
 }
 
@@ -2308,48 +1820,5 @@ fn worktree_group_selection(group: &WorktreeGroup) -> CleanSelection {
     CleanSelection::WorktreeGroup {
         primary: group.primary.path().clone(),
         linked:  group.linked.iter().map(|p| p.path().clone()).collect(),
-    }
-}
-
-/// Snapshot of a top-level expansion captured before a tree rebuild
-/// reorders node indices. Used to re-apply the same logical expansions
-/// to the new layout.
-#[derive(Clone)]
-pub(super) struct LegacyRootExpansion {
-    root_path:      AbsolutePath,
-    old_node_index: usize,
-    had_children:   bool,
-    named_groups:   Vec<usize>,
-}
-
-impl VisibleRow {
-    /// Anchor row to fall back to when collapsing this row — the parent
-    /// row that should receive the cursor after the collapse.
-    pub(super) const fn collapse_anchor(self) -> Self {
-        match self {
-            Self::GroupHeader { node_index, .. }
-            | Self::Member { node_index, .. }
-            | Self::Vendored { node_index, .. }
-            | Self::Submodule { node_index, .. } => Self::Root { node_index },
-            Self::Root { .. } | Self::WorktreeEntry { .. } => self,
-            Self::WorktreeGroupHeader {
-                node_index,
-                worktree_index,
-                ..
-            }
-            | Self::WorktreeMember {
-                node_index,
-                worktree_index,
-                ..
-            }
-            | Self::WorktreeVendored {
-                node_index,
-                worktree_index,
-                ..
-            } => Self::WorktreeEntry {
-                node_index,
-                worktree_index,
-            },
-        }
     }
 }

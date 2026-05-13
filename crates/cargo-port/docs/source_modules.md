@@ -11,8 +11,8 @@ over-large files along their natural seams.
 | Phase | What                                                       | Risk    | Rough size | Status |
 |-------|------------------------------------------------------------|---------|------------|--------|
 | 1     | Placement — group `tui/` and `project/` files into dirs    | Low     | ~80–120 import updates, one commit | shipped (f9abe92) |
-| 2     | Split `src/scan.rs` (1988 prod lines)                      | Medium  | New `src/scan/` dir with 7 files | uncommitted (working tree) |
-| 3     | Split `src/tui/project_list.rs` (2352 lines)               | Medium  | New `src/tui/project_list/` dir with 4 files | pending |
+| 2     | Split `src/scan.rs` (1988 prod lines)                      | Medium  | New `src/scan/` dir with 7 files | shipped (21bbf6f) |
+| 3     | Split `src/tui/project_list.rs` (2352 lines)               | Medium  | New `src/tui/project_list/` dir with 4 files | uncommitted (working tree) |
 | 4     | Move `src/tui/interaction.rs` test module out              | Low     | One-file move; production stays one file | pending |
 | 5     | Fix `lint/types.rs` → `tui_pane::Icon` domain-to-UI leak   | Low     | One new adapter file in `tui/integration/` | pending |
 | —     | Optional: `tui/app/api.rs` stable surface                  | n/a     | Speculative; revisit later | deferred |
