@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.12.3] - 2026-05-12
 
 ### Fixed
 - `prefer_module_import --fix` no longer produces a wrong-parent `use super::module;` when rewriting a function import that lives inside an inline `mod` (e.g. `mod tests`). The detector now pushes inline module idents onto its tracked module path so shortened paths are computed against the actual scope, not the file scope.
