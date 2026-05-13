@@ -69,7 +69,7 @@ pub(crate) enum BackgroundMsg {
     /// Disk usage (bytes) computed for a single project path.
     DiskUsage { path: AbsolutePath, bytes: u64 },
     /// Batch of disk usage results for projects under a common root.
-    /// Step 5: each entry carries both the total and the in-target /
+    /// Each entry carries both the total and the in-target /
     /// non-target split used by the detail-pane breakdown.
     DiskUsageBatch {
         root_path: AbsolutePath,
@@ -1912,7 +1912,7 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
 /// basename heuristic (any ancestor path component named `target`).
 /// A workspace that redirects via `CARGO_TARGET_DIR` /
 /// `.cargo/config.toml` ends up with `in_project_target = 0` for its
-/// members, matching the sharer semantics the design plan lays out.
+/// members — the sharer semantics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DirSizes {
     pub total:                 u64,
@@ -2215,11 +2215,11 @@ mod tests {
 
     #[test]
     fn dir_sizes_for_tree_splits_target_and_non_target_bytes_in_one_pass() {
-        // Step 5: confirm the single-pass walker partitions bytes
-        // between `in_project_target` and `in_project_non_target`
-        // based on whether any ancestor path component is named
-        // `target`. A file at `<root>/target/debug/foo` is counted
-        // as in-target; one at `<root>/src/main.rs` is not.
+        // Confirm the single-pass walker partitions bytes between
+        // `in_project_target` and `in_project_non_target` based on
+        // whether any ancestor path component is named `target`. A file
+        // at `<root>/target/debug/foo` is counted as in-target; one at
+        // `<root>/src/main.rs` is not.
         let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
         let root: AbsolutePath = tmp.path().join("proj").into();
         let src = root.join("src");
@@ -2245,7 +2245,7 @@ mod tests {
         assert_eq!(
             entry.in_project_target + entry.in_project_non_target,
             entry.total,
-            "breakdown always sums to total (design plan formula)"
+            "breakdown always sums to total"
         );
     }
 

@@ -88,9 +88,9 @@ impl App {
             let key = toast_adapters::path_key(&workspace_root);
             self.framework.toasts.mark_item_completed(task_id, &key);
         }
-        // Step 6e: if the user had a confirm popup waiting on this
-        // workspace's re-fingerprint, clear the Verifying flag so
-        // the next render shows Ready and 'y' starts working again.
+        // If the user had a confirm popup waiting on this workspace's
+        // re-fingerprint, clear the Verifying flag so the next render
+        // shows Ready and 'y' starts working again.
         self.scan.clear_confirm_verifying_for(&workspace_root);
         self.startup.metadata.seen.insert(workspace_root);
         self.maybe_log_startup_phase_completions();
@@ -124,12 +124,10 @@ impl App {
         let needs_out_of_tree_walk = !target_directory
             .as_path()
             .starts_with(workspace_root.as_path());
-        // Step 3b: stamp Cargo fields (types / examples / benches /
-        // test_count / publishable) from each PackageRecord onto the
-        // matching Package / Workspace / VendoredPackage in the
-        // project list. Retires the hand-parsed defaults left in
-        // place by `from_cargo_toml`; the authoritative view is the
-        // workspace metadata.
+        // Stamp Cargo fields (types / examples / benches / test_count
+        // / publishable) from each PackageRecord onto the matching
+        // Package / Workspace / VendoredPackage in the project list.
+        // The workspace metadata is authoritative.
         self.project_list
             .apply_cargo_fields_from_workspace_metadata(&workspace_metadata);
         if let Ok(mut store) = self.scan.metadata_store().lock() {

@@ -187,7 +187,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
     ///
     /// - [`FocusedPane::App`] → looks up the registered mode query.
     /// - [`FocusedPane::Framework(FrameworkFocusId::Toasts)`](crate::FocusedPane) → the toast
-    ///   manager's [`Mode`] (`Navigable` in Phase 12+).
+    ///   manager's [`Mode`] (`Navigable`).
     #[must_use]
     pub fn focused_pane_mode(&self, ctx: &Ctx) -> Option<Mode<Ctx>> {
         if let Some(overlay) = self.overlay {
@@ -256,9 +256,9 @@ impl<Ctx: AppContext> Framework<Ctx> {
 
     /// Test-only helper: directly open a framework overlay without
     /// going through the [`GlobalAction`](crate::GlobalAction)
-    /// dispatcher. Used by Phase 13 bar snapshot tests so they can
-    /// place the framework in a specific overlay state without
-    /// synthesizing a key event.
+    /// dispatcher. Used by bar snapshot tests so they can place the
+    /// framework in a specific overlay state without synthesizing a
+    /// key event.
     #[cfg(test)]
     pub(crate) const fn set_overlay_for_test(&mut self, overlay: FrameworkOverlayId) {
         self.overlay = Some(overlay);

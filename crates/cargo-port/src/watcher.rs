@@ -3027,9 +3027,9 @@ edition = "2024"
             &mut pending_new,
         );
 
-        // Stage 4: pending_git is keyed on `common_git_dir` so primary
-        // + linked siblings collapse into a single pending refresh
-        // (the spawn then fans out to both via `affected`).
+        // pending_git is keyed on `common_git_dir` so primary + linked
+        // siblings collapse into a single pending refresh (the spawn
+        // then fans out to both via `affected`).
         assert!(
             pending_git.contains_key(common_git_dir.as_path()),
             "shared common_git_dir should be enqueued for git refresh"

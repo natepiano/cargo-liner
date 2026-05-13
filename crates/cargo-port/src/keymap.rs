@@ -361,14 +361,12 @@ impl ResolvedKeymap {
             KeyBind::plain(KeyCode::Char('-')),
             ProjectListAction::CollapseAll,
         );
-        // Phase 14.4c added ExpandRow / CollapseRow variants to the
-        // shared enum so the framework keymap can register them as
-        // pane-scope actions. Phase 16 routes these through the
-        // pane-scope match in `handle_normal_key`; bare Right / Left
-        // are already mapped to NavigationAction::Right / ::Left in
-        // the framework keymap, so the pane-scope defaults bind
-        // ExpandRow / CollapseRow to Shift+Right / Shift+Left to
-        // avoid colliding with the navigation defaults.
+        // ExpandRow / CollapseRow are pane-scope actions routed through
+        // the pane-scope match in `handle_normal_key`. Bare Right / Left
+        // are already mapped to NavigationAction::Right / ::Left in the
+        // framework keymap, so the pane-scope defaults bind ExpandRow /
+        // CollapseRow to Shift+Right / Shift+Left to avoid colliding
+        // with the navigation defaults.
         km.project_list.insert(
             KeyBind::new(KeyCode::Right, KeyModifiers::SHIFT),
             ProjectListAction::ExpandRow,

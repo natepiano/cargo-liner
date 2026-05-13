@@ -38,8 +38,8 @@ pub(super) fn render<Ctx: AppContext + 'static>(
 
     let mut spans: Vec<Span<'static>> = Vec::new();
 
-    // Navigation scope: the status bar advertises the compact row the
-    // legacy binary used ("↑/↓ nav"), not every scroll/navigation key.
+    // Navigation scope: the status bar advertises the compact row
+    // ("↑/↓ nav"), not every scroll/navigation key.
     let navigation_slots = keymap.render_navigation_slots();
     if let (Some(up), Some(down)) = (
         slot_by_label(&navigation_slots, "up"),
@@ -54,9 +54,8 @@ pub(super) fn render<Ctx: AppContext + 'static>(
         support::push_slot(&mut spans, slot, palette);
     }
 
-    // Pane-cycle row from the framework globals. The pre-refactor bar
-    // advertised the forward key only ("Tab pane") even though
-    // Shift+Tab also works.
+    // Pane-cycle row from the framework globals. Advertises the
+    // forward key only ("Tab pane") even though Shift+Tab also works.
     if let Some(&next) = keymap.framework_globals().key_for(GlobalAction::NextPane) {
         let slot = RenderedSlot {
             region:        BarRegion::Nav,

@@ -1,9 +1,8 @@
-//! Phase 13 framework-pane bar snapshot tests.
+//! Framework-pane bar snapshot tests.
 //!
 //! Covers the framework's overlay panes (Keymap / Settings) in every
-//! `EditState` reachable through the Phase 13 test scaffolding plus
-//! focused-Toasts. App-pane snapshots land in Phase 14 once the app's
-//! `Shortcuts<App>` impls exist.
+//! `EditState` reachable through the in-crate test scaffolding plus
+//! focused-Toasts.
 
 use std::path::PathBuf;
 
@@ -241,9 +240,9 @@ fn build_keymap_with_foo_and_textinput(framework: &mut Framework<TestApp>) -> Ke
 }
 
 /// Test-only wrapper that drives [`render`](super::render) with the
-/// theme-neutral [`BarPalette::default`]. Phase 13 / Phase 14 in-crate
-/// tests assert on `Span::content` and don't inspect styling — the
-/// default palette keeps every span unstyled.
+/// theme-neutral [`BarPalette::default`]. In-crate tests assert on
+/// `Span::content` and don't inspect styling — the default palette
+/// keeps every span unstyled.
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "matches `render_inner`'s signature 1:1; rewriting call sites \
@@ -500,7 +499,6 @@ fn nav_row_renders_resolved_keys_via_display_short() {
         nav.contains('↓'),
         "default nav must show ↓ glyph (got {nav:?})"
     );
-    // Phase 19 widens this to a full rebind regression suite.
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

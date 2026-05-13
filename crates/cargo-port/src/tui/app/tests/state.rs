@@ -125,12 +125,11 @@ fn ci_fetch_on_member_targets_workspace_owner_path() {
 
 #[test]
 fn linked_worktree_shares_github_metadata_with_primary_after_repo_meta_fetch() {
-    // Regression: previously `github_info` lived on each checkout's
-    // `ProjectInfo` independently. A linked worktree on a branch without
-    // an upstream never fired its own GitHub fetch, so the About field
-    // stayed empty even after the primary's fetch landed. Stage 1 moves
-    // `github_info` onto `GitRepo` (per ProjectEntry) so all checkouts of
-    // the same repo see the same description.
+    // Regression: a linked worktree on a branch without an upstream
+    // never fires its own GitHub fetch, so the About field would stay
+    // empty even after the primary's fetch landed. `github_info` lives
+    // on `GitRepo` (per ProjectEntry) so all checkouts of the same repo
+    // see the same description.
     let primary_ws = make_workspace_raw(Some("ws"), "~/ws", vec![], None);
     let linked_ws = make_workspace_raw(Some("ws_feat"), "~/ws_feat", vec![], Some("ws_feat"));
     let root = make_workspace_worktrees_item(primary_ws, vec![linked_ws]);
@@ -2040,9 +2039,9 @@ fn clean_selection_on_non_rust_root_is_none() {
 
 #[test]
 fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
-    // Step 7: a Root row whose RootItem is a WorktreeGroup produces
-    // a CleanSelection::WorktreeGroup naming the primary checkout
-    // plus every linked worktree. build_clean_plan then dedupes on
+    // A Root row whose RootItem is a WorktreeGroup produces a
+    // CleanSelection::WorktreeGroup naming the primary checkout plus
+    // every linked worktree. build_clean_plan then dedupes on
     // target_directory — shared-target worktrees collapse into a
     // single CleanTarget with multiple covering_projects.
     let primary_path = test_path("~/cargo-port");
@@ -2087,9 +2086,9 @@ fn clean_selection_on_worktree_group_root_fans_out_to_primary_and_linked() {
 
 #[test]
 fn request_clean_confirm_opens_ready_when_fingerprint_matches() {
-    // Step 6e: when the stored metadata's fingerprint still matches
-    // disk, the confirm popup opens immediately — no verifying
-    // state, no extra metadata dispatch. Covers the happy path.
+    // When the stored metadata's fingerprint still matches disk, the
+    // confirm popup opens immediately — no verifying state, no extra
+    // metadata dispatch. Covers the happy path.
     let project = make_project(Some("demo"), "~/never-real/demo");
     let mut app = make_app(std::slice::from_ref(&project));
     let workspace_root = AbsolutePath::from(project.path().as_path().to_path_buf());
@@ -2134,8 +2133,8 @@ fn request_clean_confirm_marks_verifying_when_no_metadata_covers_path() {
     );
 
     // Simulate the arrival: synthetic CargoMetadata Ok arrival must
-    // clear the Verifying flag (design plan → "Verifying target
-    // dir…" transitions to Ready on metadata arrival).
+    // clear the Verifying flag — "Verifying target dir…" transitions
+    // to Ready on metadata arrival.
     let generation = app
         .scan
         .metadata_store_handle()

@@ -206,13 +206,13 @@ fn navigate_toasts(app: &mut App, action: NavigationAction) {
 }
 
 fn request_clean(app: &mut App) {
-    // Gated through App::clean_selection (design plan → gating fix);
-    // see src/tui/input.rs for the symmetric site.
+    // Gated through App::clean_selection; see src/tui/input.rs for the
+    // symmetric site.
     if let Some(selection) = app.project_list.clean_selection() {
         match selection {
             CleanSelection::Project { root } => {
-                // Step 6e: fingerprint re-check + possible Verifying
-                // popup state, per src/tui/input.rs.
+                // Fingerprint re-check + possible Verifying popup state,
+                // per src/tui/input.rs.
                 app.request_clean_confirm(root);
             },
             CleanSelection::WorktreeGroup { primary, linked } => {
@@ -306,7 +306,7 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
         return;
     }
 
-    // Navigation scope — Phase 16.
+    // Navigation scope.
     let dispatch_bind = TuiKeyBind::from_key_event(*event);
     if let Some(nav_scope) = app.framework_keymap.navigation::<AppNavigation>()
         && let Some(nav_action) = nav_scope.action_for(&dispatch_bind)

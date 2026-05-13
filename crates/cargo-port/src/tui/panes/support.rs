@@ -439,12 +439,11 @@ pub enum DetailField {
     Path,
     Targets,
     Disk,
-    /// Step 5b: bytes consumed by the `target/` subtree rooted at the
-    /// project. Shown alongside Disk when the walker has reported a
-    /// breakdown.
+    /// Bytes consumed by the `target/` subtree rooted at the project.
+    /// Shown alongside Disk when the walker has reported a breakdown.
     DiskTarget,
-    /// Step 5b: bytes under the project root that are *not* inside a
-    /// `target/` subtree (source, docs, .git, etc.).
+    /// Bytes under the project root that are *not* inside a `target/`
+    /// subtree (source, docs, .git, etc.).
     DiskNonTarget,
     /// Sharer target: the workspace's `target_directory` lives outside
     /// `workspace_root` (e.g. redirected by `CARGO_TARGET_DIR` or a
@@ -645,11 +644,11 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
         ];
     }
     let mut fields = vec![DetailField::Path, DetailField::Disk];
-    // Step 5b: insert the target / non-target breakdown immediately
-    // below the aggregate Disk row when the walker has reported one,
-    // so the user sees which half of the bytes is build artifact vs
-    // source (the two always sum to Disk for owners; for sharers the
-    // target line reads 0 — target is redirected out of tree).
+    // Insert the target / non-target breakdown immediately below the
+    // aggregate Disk row when the walker has reported one, so the user
+    // sees which half of the bytes is build artifact vs source (the
+    // two always sum to Disk for owners; for sharers the target line
+    // reads 0 — target is redirected out of tree).
     if data.in_project_target.is_some() {
         fields.push(DetailField::DiskTarget);
     }
@@ -723,11 +722,7 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
 #[derive(Clone, Default)]
 /// Per-project pane data the Package pane renders. The "value"
 /// fields are pre-resolved display strings — callers can render
-/// without `&App` access.
-///
-/// The `lint_display` and `ci_display` fields are the App-derived
-/// strings that used to be computed at render time via
-/// `DetailField::package_value(data, app)`. Pre-resolving them
+/// without `&App` access. Pre-resolving `lint_display` and `ci_display`
 /// lets `PackagePane::render` operate on `&PackageData` alone.
 pub struct PackageData {
     pub package_title:            String,
@@ -747,11 +742,11 @@ pub struct PackageData {
     pub license:                  Option<String>,
     pub homepage:                 Option<String>,
     pub repository:               Option<String>,
-    /// Step 5b: bytes under the project root inside any `target/`
-    /// subtree. `None` until the walker has reported a breakdown.
+    /// Bytes under the project root inside any `target/` subtree.
+    /// `None` until the walker has reported a breakdown.
     pub in_project_target:        Option<u64>,
-    /// Step 5b: everything else under the project root (source,
-    /// docs, .git, vendored crates outside target, etc.).
+    /// Everything else under the project root (source, docs, .git,
+    /// vendored crates outside target, etc.).
     pub in_project_non_target:    Option<u64>,
     /// Typed display value for the Lint field; populated at
     /// assembly time so render can read it without `&App`. The
@@ -799,9 +794,7 @@ fn lookup_out_of_tree_target_bytes(app: &App, abs_path: &AbsolutePath) -> Option
     bytes
 }
 
-/// Render "—" when a `PackageRecord` field is absent from the manifest
-/// (design plan → step 4: "When any is missing from the manifest,
-/// render `—`.").
+/// Render "—" when a `PackageRecord` field is absent from the manifest.
 fn or_dash(value: Option<&str>) -> String {
     value
         .map(str::trim)
@@ -899,10 +892,10 @@ impl TargetsData {
 
     /// Build from a [`PackageRecord`]. Examples grouped by
     /// subdirectory derived from `TargetRecord.src_path` relative to
-    /// the package's manifest directory (design plan → Step 3, Targets
-    /// pane); benches listed flat. The primary-binary name is the bin
-    /// target whose name matches `title_name` (cargo's "default run"
-    /// target); falls back to `None` if no such bin exists.
+    /// the package's manifest directory; benches listed flat. The
+    /// primary-binary name is the bin target whose name matches
+    /// `title_name` (cargo's "default run" target); falls back to
+    /// `None` if no such bin exists.
     pub fn from_package_record(record: &PackageRecord, title_name: &str) -> Self {
         use std::collections::HashMap;
 
@@ -1741,14 +1734,12 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 }
 
 /// Assemble `DetailPaneData` from already-resolved inputs.
-/// Step 3a/3b: derive Targets-pane data from workspace metadata when it
-/// covers this project. Without metadata the pane stays empty
-/// (design plan → "Workspace members + Targets pane migrate to
-/// metadata atomically; targets show 'Loading…' without
-/// metadata"). The old hand-parsed fallback could disagree with
-/// cargo's real discovery rules (autoexamples, required-features,
-/// excluded targets), so we'd rather render nothing pre-metadata
-/// than render something misleading.
+/// Targets-pane data is derived from workspace metadata when it covers
+/// this project. Without metadata the pane stays empty (targets show
+/// "Loading…"). A hand-parsed fallback could disagree with cargo's
+/// real discovery rules (autoexamples, required-features, excluded
+/// targets), so we render nothing pre-metadata rather than render
+/// something misleading.
 fn assemble_detail_pane_data(
     package: PackageData,
     git_detail: GitDetailFields,

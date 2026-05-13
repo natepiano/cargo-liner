@@ -1312,11 +1312,9 @@ mod tests {
         use cargo_metadata::PackageId;
         use cargo_metadata::TargetKind;
         use cargo_metadata::semver::Version;
-        // Step 3b: Targets pane now sources its data from the
-        // `cargo metadata` result; the old hand-parsed Cargo
-        // fallback is retired. Populate two Example targets via
-        // a CargoMetadata arrival so the pane has at least two
-        // rows to click on.
+        // The Targets pane sources its data from the `cargo metadata`
+        // result. Populate two Example targets via a CargoMetadata
+        // arrival so the pane has at least two rows to click on.
         let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
         let project_dir = tmp.path().join("demo");
         std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
@@ -1608,9 +1606,9 @@ mod tests {
         // test for why the default 120×40 isn't enough here.
         let rendered = buffer_text_sized(&mut app, 120, 80);
 
-        // Absent manifest fields render as `—` (design plan step 4).
-        // Count dashes in the rendered screen — license / homepage /
-        // repository are all None here, so at least three should show.
+        // Absent manifest fields render as `—`. Count dashes in the
+        // rendered screen — license / homepage / repository are all
+        // None here, so at least three should show.
         let dash_count = rendered.matches('—').count();
         assert!(
             dash_count >= 3,
@@ -1621,11 +1619,11 @@ mod tests {
 
     #[test]
     fn package_pane_renders_target_and_non_target_disk_breakdown() {
-        // Step 5b: when the walker has reported the breakdown, the
-        // Package pane shows two rows beneath `Disk` — `target/`
-        // and `other` — so the user can see at a glance which half
-        // of their disk is build artifact vs source. Uses the bytes
-        // reported by handle_bg_msg::DiskUsageBatch.
+        // When the walker has reported the breakdown, the Package
+        // pane shows two rows beneath `Disk` — `target/` and `other` —
+        // so the user can see at a glance which half of their disk is
+        // build artifact vs source. Uses the bytes reported by
+        // handle_bg_msg::DiskUsageBatch.
         let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
         let project_dir = tmp.path().join("demo");
         std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());

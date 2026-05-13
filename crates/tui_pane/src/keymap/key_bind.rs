@@ -102,8 +102,7 @@ impl KeyBind {
     /// Crossterm can report `BackTab` separately from `Tab + Shift`, and shifted
     /// ASCII letters as both an uppercase character and a `SHIFT` modifier. The
     /// keymap stores those as `Tab + Shift` and uppercase `Char` without
-    /// `SHIFT`, respectively. The legacy `+` / `=` collapse is intentionally not
-    /// restored.
+    /// `SHIFT`, respectively. `+` and `=` are kept distinct (no collapse).
     #[must_use]
     pub fn from_key_event(event: KeyEvent) -> Self {
         let (code, mods) = match event.code {
@@ -185,9 +184,9 @@ impl KeyBind {
     }
 
     /// Parse a TOML-style key string (e.g. `"Enter"`, `"Ctrl+K"`,
-    /// `"Shift+Tab"`, `"+"`, `"="`). The pre-refactor `+`/`=` collapse
-    /// is dropped — `"+"` parses to `KeyCode::Char('+')` and `"="` to
-    /// `KeyCode::Char('=')`.
+    /// `"Shift+Tab"`, `"+"`, `"="`). `"+"` parses to
+    /// `KeyCode::Char('+')` and `"="` to `KeyCode::Char('=')` — the two
+    /// are kept distinct (no collapse).
     ///
     /// # Errors
     ///

@@ -367,10 +367,10 @@ fn normalize_nav(app: &App, raw: &KeyEvent) -> KeyEvent {
 }
 
 fn handle_confirm_key(app: &mut App, key: KeyCode) -> bool {
-    // Step 6e: while the confirm is waiting for a `cargo metadata`
-    // re-fetch, `y` is disabled — the plan isn't trustworthy yet.
-    // `n` cancels regardless, so we let the Ignore path fall through
-    // to take_confirm().
+    // While the confirm is waiting for a `cargo metadata` re-fetch,
+    // `y` is disabled — the plan isn't trustworthy yet. `n` cancels
+    // regardless, so we let the Ignore path fall through to
+    // take_confirm().
     if key == KeyCode::Char('y') && app.scan.confirm_verifying().is_some() {
         return true;
     }
@@ -796,17 +796,14 @@ pub(super) fn dispatch_output_action(action: OutputAction, app: &mut App) {
 
 fn request_project_list_clean(app: &mut App) {
     // Gate through `App::clean_selection` — the single source of
-    // truth for clean eligibility (design plan → gating fix).
-    // Previously this asked for `selected_item().is_rust()` which
-    // returns None for WorktreeEntry rows, dropping the per-worktree
-    // Clean shortcut.
+    // truth for clean eligibility.
     if let Some(selection) = app.project_list.clean_selection() {
         match selection {
             CleanSelection::Project { root } => {
-                // Step 6e: request_clean_confirm re-fingerprints
-                // the workspace. On drift it dispatches a metadata
-                // refresh and opens the confirm in Verifying state;
-                // on match it opens Ready.
+                // `request_clean_confirm` re-fingerprints the workspace.
+                // On drift it dispatches a metadata refresh and opens
+                // the confirm in Verifying state; on match it opens
+                // Ready.
                 app.request_clean_confirm(root);
             },
             CleanSelection::WorktreeGroup { primary, linked } => {

@@ -13,10 +13,9 @@ use crate::VimMode;
 ///
 /// Returns `Err(KeymapError)` for overlay failures; the per-state
 /// `register::<P>` wrappers swallow that into a deferred record (see
-/// `insert_pane`) so the chain stays `Self`-returning. Phase 10
-/// silently propagates overlay failures via `build()` once we widen
-/// the error pathway; today the helper is `Result`-typed in
-/// preparation.
+/// `insert_pane`) so the chain stays `Self`-returning. The helper is
+/// `Result`-typed so the loader can widen its error pathway later
+/// without changing this signature.
 pub(super) fn build_pane_bindings<Ctx: AppContext + 'static, P: Shortcuts<Ctx>>(
     toml_table: Option<&Table>,
     vim_mode: VimMode,

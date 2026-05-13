@@ -1,10 +1,9 @@
 //! `SettingsPane`: framework-owned settings overlay.
 //!
-//! Lives behind [`Framework::settings_pane`](crate::Framework). Phase 11
-//! ships the struct, the [`EditState`] machine, and the inherent action
-//! surface (`defaults`, `handle_key`, `mode`, `bar_slots`,
-//! `editor_target`). Phase 14 reroutes the binary's settings overlay
-//! input path through this pane.
+//! Lives behind [`Framework::settings_pane`](crate::Framework). Owns the
+//! [`EditState`] machine and the inherent action surface (`defaults`,
+//! `handle_key`, `mode`, `bar_slots`, `editor_target`). The binary's
+//! settings overlay input path routes through this pane.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -424,7 +423,7 @@ impl SettingsPane {
     pub fn editor_target(&self) -> Option<&Path> { self.editor_target.as_deref() }
 
     /// Bar slots for the overlay's local actions. The bar renderer
-    /// (Phase 13) consults this when [`Framework::overlay`](crate::Framework::overlay)
+    /// consults this when [`Framework::overlay`](crate::Framework::overlay)
     /// is `Some(FrameworkOverlayId::Settings)`.
     #[must_use]
     pub fn bar_slots(&self) -> Vec<(BarRegion, BarSlot<SettingsPaneAction>)> {
@@ -443,10 +442,9 @@ impl Default for SettingsPane {
 #[cfg(test)]
 impl SettingsPane {
     /// Test-only constructor placing the pane in
-    /// [`EditState::Editing`] with an optional editor target. Phase
-    /// 15 wires the `Browse → Editing` production transition; Phase
-    /// 13 snapshot tests build this state directly so they can lock
-    /// the bar output before the transition lands.
+    /// [`EditState::Editing`] with an optional editor target. Snapshot
+    /// tests build this state directly so they can lock the bar output
+    /// without driving the production `Browse → Editing` transition.
     pub(crate) fn for_test_editing(editor_target: Option<PathBuf>) -> Self {
         Self {
             edit_state: EditState::Editing,

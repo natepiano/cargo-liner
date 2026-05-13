@@ -36,9 +36,7 @@ impl ReloadDecision {
 
 /// What the config reload should do to the project tree. The three
 /// variants are ordered by escalation precedence: `FullRescan` wins
-/// over `RegroupMembers`, which wins over `None`. The consumer
-/// previously expressed this with an `if rescan { .. } else if
-/// rebuild_tree { .. }` chain over two booleans; the enum makes the
+/// over `RegroupMembers`, which wins over `None`. The enum makes the
 /// mutual exclusion exhaustive at the type level.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum TreeReaction {

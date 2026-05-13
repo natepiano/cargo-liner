@@ -621,7 +621,10 @@ impl ProjectList {
     /// carries over unchanged.
     ///
     /// Returns `true` if an entry was found and promoted.
-    #[expect(dead_code, reason = "Stage 0 scaffolding; used in later stages")]
+    #[expect(
+        dead_code,
+        reason = "kept for use by upcoming worktree promotion sites"
+    )]
     pub(super) fn promote_to_worktree_group(&mut self, path: &Path, group: WorktreeGroup) -> bool {
         let Some(entry) = self.roots.get_mut(path) else {
             return false;

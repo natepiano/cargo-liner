@@ -95,8 +95,8 @@ pub(crate) fn dismiss_chain<Ctx: AppContext>(
     fallback.is_some_and(|hook| hook(ctx))
 }
 
-/// Reconcile focus after a focused-toast dismiss or a Phase-22 prune
-/// empties the active set.
+/// Reconcile focus after a focused-toast dismiss or a prune empties
+/// the active set.
 ///
 /// No-op when current focus is not on Toasts, or when toasts are still
 /// active. When focus is on Toasts and the active set is empty, move

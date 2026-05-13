@@ -1,21 +1,17 @@
 //! Framework-side keymap scaffolding.
 //!
-//! Phase 14.2 introduced the `tui_pane`-driven keymap path beside the
-//! legacy `src/keymap.rs` path. The two coexist through Phase 18: the
-//! framework keymap now owns targeted structural lookups, while broad
-//! key dispatch remains on the legacy path until Phase 19.
+//! The `tui_pane`-driven keymap path coexists with the legacy
+//! `src/keymap.rs` path: the framework keymap owns targeted structural
+//! lookups while broad key dispatch remains on the legacy path.
 //!
 //! Surface:
 //!
-//! - [`AppPaneId`]: every app-side pane id the framework will key on. Defined in full now to avoid
-//!   a churn-rename on every later chunk.
+//! - [`AppPaneId`]: every app-side pane id the framework keys on.
 //! - [`NavigationAction`]: directional nav enum the [`Navigation`] singleton routes through.
-//! - [`AppGlobalAction`]: app-extension globals scope. Phase 14.2 ships a single placeholder
-//!   variant ([`AppGlobalAction::Find`]); Phase 14.7 grows it to cover the rest of the binary's
-//!   non-framework globals.
+//! - [`AppGlobalAction`]: app-extension globals scope. Currently ships a single placeholder variant
+//!   ([`AppGlobalAction::Find`]); grows to cover the rest of the binary's non-framework globals.
 //! - [`AppNavigation`] / [`PackagePane`]: the `Navigation` and `Pane` + `Shortcuts` impls the
-//!   builder typestate requires. Dispatcher fns route through the framework keymap after the Phase
-//!   19 cutover.
+//!   builder typestate requires.
 //! - [`build_framework_keymap`]: assembles a [`tui_pane::Keymap<App>`] using the canonical builder
 //!   chain. Called once at startup.
 
@@ -63,8 +59,7 @@ use crate::keymap::ProjectListAction;
 use crate::keymap::TargetsAction;
 
 /// Stable identifier for every app-side pane the framework keys its
-/// per-pane registries on. Defined in full at 14.2 so later chunks
-/// (14.3–14.6) plug each pane in without renaming variants.
+/// per-pane registries on.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum AppPaneId {
     ProjectList,
@@ -97,8 +92,8 @@ const CI_RUNS_TAB_ORDER: i16 = 7;
 const OUTPUT_TAB_ORDER: i16 = 8;
 
 impl AppPaneId {
-    /// Translation to the legacy [`PaneId`] enum so the parallel-path
-    /// cutover bridges the new id back to the old. App-only variants
+    /// Translation to the legacy [`PaneId`] enum so the framework's
+    /// `AppPaneId` bridges back to the legacy id. App-only variants
     /// only — framework panes (Toasts, Settings, Keymap) are not part
     /// of [`AppPaneId`].
     pub(crate) const fn to_legacy(self) -> PaneId {
@@ -365,9 +360,9 @@ fn git_activate_state(ctx: &App) -> ShortcutState {
 // Lang and Cpu have no row-conditional dispatch in the legacy path
 // (Lang fall-throughs to PackageAction; Cpu's `handle_detail_key` arm
 // is empty). Each gets its own minimal action enum so the framework
-// keymap can register a real scope; the dispatcher fns are no-ops
-// through Phase 17. No facade required — these enums are not consumed
-// by `src/keymap.rs`'s `ResolvedKeymap` or any legacy call site.
+// keymap can register a real scope; the dispatcher fns are no-ops.
+// No facade required — these enums are not consumed by
+// `src/keymap.rs`'s `ResolvedKeymap` or any legacy call site.
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -515,8 +510,7 @@ impl Shortcuts<App> for CiRunsPane {
 /// or beyond the end of the visible runs list. The legacy
 /// `handle_ci_enter` path indexes `ci.content().runs.get(pos)`; an
 /// out-of-range cursor is a no-op. Hiding the slot (rather than
-/// disabling it) matches the Phase 14 plan's distinction:
-/// `Visibility::Hidden` drops the slot from the bar entirely.
+/// disabling it) drops it from the bar entirely.
 fn ci_runs_activate_visibility(ctx: &App) -> Visibility {
     let run_count = ctx.ci.content().map_or(0, |data| data.runs.len());
     if ctx.ci.viewport.pos() >= run_count {

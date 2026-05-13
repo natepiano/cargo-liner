@@ -136,7 +136,7 @@ fn seed_single_example_metadata(app: &App, project_path: &AbsolutePath, example_
 
 #[test]
 fn tabbable_panes_follow_canonical_order() {
-    // Step 3b: Targets pane requires workspace metadata.
+    // Targets pane requires workspace metadata.
     let project_path = test_path("~/demo");
     let project = RootItem::Rust(RustProject::Package(Package {
         path: project_path.clone(),
@@ -254,13 +254,9 @@ fn new_toasts_do_not_steal_focus() {
 
 #[test]
 fn metadata_arrival_populates_selected_tree_project_targets() {
-    // Step 3b: Targets pane data now comes exclusively from the
-    // `cargo metadata` result — the hand-parsed Cargo fallback
-    // has been retired per the design plan's "Loading… without
-    // metadata" rule. This test used to exercise the old fallback
-    // (ExampleGroup on the Cargo struct); rewritten to confirm
-    // the metadata-driven path: a CargoMetadata arrival with an
-    // Example target lights up the pane.
+    // Targets pane data comes exclusively from the `cargo metadata`
+    // result. A CargoMetadata arrival with an Example target lights up
+    // the pane.
     use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
     use cargo_metadata::semver::Version;

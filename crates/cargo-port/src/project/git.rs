@@ -152,9 +152,8 @@ impl RepoInfo {
 
         // Branch / upstream / default-branch context is probed here
         // because `build_remote_info` uses it to resolve each remote's
-        // `tracked_ref` and compute `ahead_behind`. Stage 4 splits the
-        // probe so siblings reuse this work; the canonical source is
-        // the primary checkout's view.
+        // `tracked_ref` and compute `ahead_behind`. Siblings reuse this
+        // work; the canonical source is the primary checkout's view.
         let branch = get_current_branch(&repo_root);
         let current_upstream = get_upstream_branch(&repo_root);
         let default_branch = get_default_branch(&repo_root);

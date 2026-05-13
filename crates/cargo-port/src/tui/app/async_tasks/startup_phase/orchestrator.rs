@@ -4,10 +4,8 @@
 //! `CountedPhase` counters that drive the "Startup" toast and its
 //! detail toasts ("Calculating disk usage", "Scanning local git
 //! repos", "Running cargo metadata", "Retrieving GitHub repo
-//! details"). The fields here previously lived split across
-//! `ScanState.startup_phases` and `Lint` — neither was the natural
-//! owner. Phase-tracking data isn't scan data and isn't lint data; it
-//! coordinates startup, so it lives on its own subsystem.
+//! details"). Phase-tracking data isn't scan data and isn't lint data;
+//! it coordinates startup, so it lives on its own subsystem.
 //!
 //! Cross-subsystem `maybe_complete_startup_*` orchestration stays on
 //! `App` (see `tracker.rs`) — those methods touch `Startup`,

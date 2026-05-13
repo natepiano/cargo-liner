@@ -279,10 +279,10 @@ fn render_confirm_popup(
     body: &[String],
     verifying: bool,
 ) {
-    // Step 6e: while the fingerprint re-check is in flight we swap
-    // the prompt + keys for a "Verifying target dir…" placeholder
-    // and drop the (y/n) suffix — `y` is ignored by handle_confirm_key
-    // in that state, and showing it enabled would lie to the user.
+    // While the fingerprint re-check is in flight we swap the prompt
+    // + keys for a "Verifying target dir…" placeholder and drop the
+    // (y/n) suffix — `y` is ignored by handle_confirm_key in that
+    // state, and showing it enabled would mislead the user.
     let prompt = match action {
         ConfirmAction::Clean(_) => "Run cargo clean?",
         ConfirmAction::CleanGroup { .. } => "Run cargo clean on all checkouts?",
@@ -499,10 +499,10 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &st
 }
 
 /// Palette wiring `ACCENT_COLOR` / `SECONDARY_TEXT_COLOR` / `Modifier::BOLD`
-/// to the framework bar so the new `tui_pane::render_status_line` output
-/// matches cargo-port's pre-refactor key/label styling. The framework
-/// ships a theme-neutral [`tui_pane::BarPalette::default`]; cargo-port
-/// supplies its own colors here.
+/// to the framework bar so `tui_pane::render_status_line` output uses
+/// cargo-port's key/label styling. The framework ships a theme-neutral
+/// [`tui_pane::BarPalette::default`]; cargo-port supplies its own colors
+/// here.
 pub(super) fn cargo_port_bar_palette() -> BarPalette {
     let enabled_key_style = Style::default()
         .fg(ACCENT_COLOR)

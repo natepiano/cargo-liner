@@ -245,13 +245,13 @@ pub(super) struct App {
     /// Framework aggregator from `tui_pane`. Owns the focused-pane id,
     /// quit/restart flags, the per-pane mode-query registry, and the
     /// framework-side `Toasts`/`KeymapPane`/`SettingsPane` overlays.
-    /// Phase 14.2 stores it alongside the legacy keymap path; later
-    /// phases route dispatch through it.
+    /// Stored alongside the legacy keymap path; dispatch routes
+    /// through it for targeted structural lookups.
     pub(super) framework:         Framework<Self>,
     /// Framework keymap built at startup from
     /// [`tui_pane::Keymap::builder`]. Held in parallel with the legacy
-    /// `keymap` field through Phases 14–17; the legacy path remains
-    /// authoritative for dispatch until Phase 18 swaps it out.
+    /// `keymap` field; the legacy path remains authoritative for broad
+    /// key dispatch.
     pub(super) framework_keymap:  Rc<FrameworkKeymap<Self>>,
 }
 
@@ -601,9 +601,8 @@ impl App {
     pub(super) fn set_confirm(&mut self, action: ConfirmAction) { self.confirm = Some(action); }
 
     /// Whether the currently-open confirm is still waiting for a
-    /// `cargo metadata` refresh to land (design plan → "Per-worktree
-    /// clean, Step 6e"). Callers that gate `y` on a settled plan
-    /// consult this.
+    /// `cargo metadata` refresh to land. Callers that gate `y` on a
+    /// settled plan consult this.
     /// Open a Clean confirm popup for `project_path`, first checking
     /// whether the project's workspace manifest has drifted since the
     /// last `cargo metadata` run. On drift: dispatch a `cargo metadata` refresh,
@@ -1004,7 +1003,7 @@ impl Drop for TreeMutation<'_> {
     }
 }
 
-// ── Discovery shimmer helpers (moved from query/discovery_shimmer.rs) ──
+// ── Discovery shimmer helpers ──
 
 const fn discovery_shimmer_window_len(char_count: usize) -> usize {
     match char_count {

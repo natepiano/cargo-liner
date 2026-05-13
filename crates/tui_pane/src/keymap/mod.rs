@@ -62,8 +62,8 @@ type ScopeRenderFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<RenderedSlot>;
 ///
 /// Built with [`Self::builder`], which returns a
 /// [`KeymapBuilder<Ctx, Configuring>`]. Settings phase first
-/// (`config_path`, plus Phase 10's `load_toml` / `vim_mode`); on the
-/// first [`KeymapBuilder::register`] call the type transitions to
+/// (`config_path`, `load_toml`, `vim_mode`); on the first
+/// [`KeymapBuilder::register`] call the type transitions to
 /// [`KeymapBuilder<Ctx, Registering>`] and settings methods drop off
 /// the type.
 ///
@@ -76,7 +76,7 @@ type ScopeRenderFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<RenderedSlot>;
 ///
 /// Framework panes are not stored in this map — they are special-cased
 /// by [`FocusedPane::Framework`](crate::FocusedPane::Framework) arms in
-/// callers (see Phase 11).
+/// callers.
 pub struct Keymap<Ctx: AppContext + 'static> {
     scopes:                HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
     navigation:            Option<Box<dyn Any>>,
@@ -371,7 +371,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     }
 
     /// Dispatch one [`GlobalAction`] through the framework's built-in
-    /// behavior. Phase 11's input dispatcher calls this on every
+    /// behavior. The input dispatcher calls this on every
     /// framework-global hit.
     pub fn dispatch_framework_global(&self, action: GlobalAction, ctx: &mut Ctx) {
         framework::dispatch_global(action, self, ctx);

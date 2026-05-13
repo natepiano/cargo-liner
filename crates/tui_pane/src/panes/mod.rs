@@ -9,8 +9,7 @@
 //! those traits require a [`Self::APP_PANE_ID`](crate::Pane::APP_PANE_ID),
 //! and framework panes carry [`FrameworkOverlayId`](crate::FrameworkOverlayId)
 //! / [`FrameworkFocusId`](crate::FrameworkFocusId) instead. The bar
-//! renderer (Phase 13) and input dispatcher (Phase 15) special-case
-//! framework panes.
+//! renderer and input dispatcher special-case framework panes.
 
 mod keymap;
 mod settings;

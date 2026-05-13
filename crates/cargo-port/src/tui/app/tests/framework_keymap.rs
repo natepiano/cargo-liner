@@ -1,8 +1,8 @@
-//! Tests for the framework-keymap path landed in Phase 14.2 and Phase 14.3.
+//! Tests for the framework-keymap path.
 //!
 //! - Bar snapshots assert that `tui_pane::render_status_bar` produces the expected pane-action
 //!   labels when Package or Git is focused. They read `bar.pane_action` only — the global and nav
-//!   regions are covered separately by Phase 14.7's snapshots.
+//!   regions are covered separately by the `AppGlobalAction` snapshots below.
 //! - The `state` tests pin the `Shortcuts::state` rules that gray out `Activate` when the cursor
 //!   sits on a row whose dispatch has no effect (Package's non-`CratesIo` rows; Git's flat fields
 //!   and any remote without a URL).
@@ -329,7 +329,7 @@ fn git_activate_state_enabled_on_remote_with_url() {
     );
 }
 
-// ── Phase 14.4 — bar snapshots for the remaining app panes ────────
+// ── Bar snapshots for the remaining app panes ────────────────────
 
 #[test]
 fn focused_targets_bar_renders_pane_action_labels() {
@@ -510,9 +510,9 @@ fn focused_ci_runs_bar_renders_pane_action_labels() {
 
 #[test]
 fn ci_runs_activate_visibility_hidden_at_eol() {
-    // Mandatory Phase 14 test (per the plan): CiRuns
-    // `pane.visibility(Activate, ctx)` returns `Visibility::Hidden`
-    // when the cursor is at or beyond the end of the visible runs.
+    // CiRuns `pane.visibility(Activate, ctx)` returns
+    // `Visibility::Hidden` when the cursor is at or beyond the end of
+    // the visible runs.
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
     app.ci.set_content(ci_data_with_runs(2));
@@ -586,7 +586,7 @@ fn focused_project_list_bar_renders_pane_action_and_nav_slots() {
     );
 }
 
-// ── Phase 14.5 — Output (Mode::Static) ────────────────────────────
+// ── Output (Mode::Static) ─────────────────────────────────────────
 
 #[test]
 fn focused_output_bar_renders_close_label() {
@@ -619,7 +619,7 @@ fn focused_output_bar_renders_close_label() {
     );
 }
 
-// ── Phase 14.6 — Finder (Mode::TextInput when open) ────────────────
+// ── Finder (Mode::TextInput when open) ────────────────────────────
 
 #[test]
 fn finder_pane_mode_navigable_when_closed() {
@@ -646,10 +646,9 @@ fn finder_pane_mode_text_input_when_open() {
 
 #[test]
 fn finder_text_input_inserts_char_into_query() {
-    // Mandatory Phase 14.6 test (per the plan): when Finder is open,
-    // a typed letter goes through the framework's TextInput handler
-    // and into the search query — vim mode is bypassed by Mode::
-    // TextInput. We exercise the handler directly via the `fn`
+    // When Finder is open, a typed letter goes through the framework's
+    // TextInput handler and into the search query — vim mode is bypassed
+    // by Mode::TextInput. We exercise the handler directly via the `fn`
     // pointer carried inside `Mode::TextInput(...)`.
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
@@ -735,15 +734,15 @@ fn focused_finder_open_bar_suppresses_all_regions() {
     );
 }
 
-// ── Phase 14.7 — AppGlobalAction four-variant bar snapshots ────────
+// ── AppGlobalAction four-variant bar snapshots ────────────────────
 
 #[test]
 fn focused_package_bar_renders_four_app_globals() {
-    // Phase 14.7 grew `AppGlobalAction` from `{ Find }` to
-    // `{ Find, OpenEditor, OpenTerminal, Rescan }`. The Global region
-    // of a focused Navigable pane must surface every variant's
-    // bar_label so users can see the full app-globals strip. We focus
-    // Package (Mode::Navigable) and read `bar.global`.
+    // `AppGlobalAction` has four variants: `{ Find, OpenEditor,
+    // OpenTerminal, Rescan }`. The Global region of a focused Navigable
+    // pane must surface every variant's bar_label so users can see the
+    // full app-globals strip. We focus Package (Mode::Navigable) and
+    // read `bar.global`.
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
     app.panes.package.set_content(package_data_no_version());
@@ -788,13 +787,13 @@ fn focused_package_bar_global_region_matches_legacy_total_order() {
     );
 }
 
-// ── Phase 16 — base-pane navigation rerouted through framework keymap ───
+// ── Base-pane navigation routed through framework keymap ──────────
 
-/// Phase 16: rebinding `NavigationAction::Down` to `'j'` (vim-off)
-/// moves the project-list cursor when `'j'` is dispatched through the
-/// real `src/tui/input.rs` key path. Validates that
-/// `handle_normal_key` consults the framework keymap's navigation
-/// scope after the legacy pane-scope match.
+/// Rebinding `NavigationAction::Down` to `'j'` (vim-off) moves the
+/// project-list cursor when `'j'` is dispatched through the real
+/// `src/tui/input.rs` key path. Validates that `handle_normal_key`
+/// consults the framework keymap's navigation scope after the legacy
+/// pane-scope match.
 #[test]
 fn navigation_action_rebound_to_j_moves_cursor_down() {
     let projects = vec![
@@ -814,12 +813,10 @@ fn navigation_action_rebound_to_j_moves_cursor_down() {
     );
 }
 
-/// Phase 16: rebinding `ProjectListAction::ExpandRow` to `Tab`
-/// (with `GlobalAction::NextPane` rebound away) expands the current
-/// row. Validates that the legacy pane-scope match in
-/// `handle_normal_key` now drives `ExpandRow` through its match arm
-/// (the hardcoded `KeyCode::Right` arm at the top of the function
-/// has been deleted).
+/// Rebinding `ProjectListAction::ExpandRow` to `Tab` (with
+/// `GlobalAction::NextPane` rebound away) expands the current row.
+/// Validates that the legacy pane-scope match in `handle_normal_key`
+/// drives `ExpandRow` through its match arm.
 #[test]
 fn project_list_action_expand_row_rebound_to_tab_expands() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -863,7 +860,7 @@ fn project_list_action_expand_row_rebound_to_tab_expands() {
     );
 }
 
-// ── Phase 18 — Output structural cancel uses framework keymap ───────
+// ── Output structural cancel uses framework keymap ────────────────
 
 #[test]
 fn output_cancel_rebind_clears_example_output_from_non_output_focus() {
@@ -919,7 +916,7 @@ fn output_cancel_rebind_accepts_primary_and_secondary_keys() {
     );
 }
 
-// ── Phase 20 — keymap UI backed by framework keymap ─────────────────
+// ── Keymap UI backed by framework keymap ──────────────────────────
 
 #[test]
 fn framework_keymap_template_matches_golden_file() {
@@ -1118,7 +1115,7 @@ fn keymap_popup_renders_framework_overflow_affordance() {
     );
 }
 
-// ── Phase 20.1 — framework-owned live tab cycle ───────────────────
+// ── Framework-owned live tab cycle ────────────────────────────────
 
 #[test]
 fn tab_from_package_lands_on_git_when_lang_is_unavailable() {
@@ -1216,7 +1213,7 @@ fn settings_text_input_esc_wins_over_output_cancel_preflight() {
     );
 }
 
-// ── Phase 21 — overlay input/render ownership ─────────────────────
+// ── Overlay input/render ownership ────────────────────────────────
 
 #[test]
 fn finder_cancel_rebind_closes_finder_through_production_input() {
@@ -1282,8 +1279,8 @@ fn keymap_capture_rejects_navigation_key_through_production_input() {
     );
 }
 
-/// Phase 22: the `App::set_focus` override updates framework focus
-/// and records app-pane visits for render selection styling.
+/// The `App::set_focus` override updates framework focus and records
+/// app-pane visits for render selection styling.
 #[test]
 fn set_focus_override_updates_framework_focus_and_visits() {
     let project = super::make_project(Some("demo"), "~/demo");
@@ -1355,11 +1352,11 @@ fn enter_on_focused_toast_with_action_dispatches() {
 
 #[test]
 fn focused_package_bar_nav_region_renders_arrow_keys() {
-    // Phase 14.7 locks the framework's nav-region rendering for a
-    // focused Mode::Navigable pane. The nav region surfaces the
-    // pane-cycle row plus the navigation defaults; the keymap's
-    // default for `NavigationAction::Up` is `↑` so we look for that
-    // glyph as a stable anchor.
+    // Lock the framework's nav-region rendering for a focused
+    // Mode::Navigable pane. The nav region surfaces the pane-cycle row
+    // plus the navigation defaults; the keymap's default for
+    // `NavigationAction::Up` is `↑` so we look for that glyph as a
+    // stable anchor.
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
     app.panes.package.set_content(package_data_no_version());

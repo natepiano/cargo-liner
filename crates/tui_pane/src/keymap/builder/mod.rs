@@ -335,9 +335,9 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     ///
     /// Errors during overlay are deferred until [`Self::build`] /
     /// [`Self::build_into`] so the chain stays a `Self`-returning
-    /// flow. Phase 9 / Phase 10's overlay logic does not currently
-    /// emit deferred errors per pane; that becomes relevant only when
-    /// the loader's validation surface widens.
+    /// flow. Today the overlay logic does not emit deferred errors per
+    /// pane; that becomes relevant only when the loader's validation
+    /// surface widens.
     ///
     /// Duplicate `APP_PANE_ID`s — two distinct `P` types claiming the
     /// same id — are recorded and surfaced as

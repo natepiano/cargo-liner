@@ -3,9 +3,9 @@
 //!
 //! Unifies the dispatch loop so the caller reads one return type across
 //! [`Keymap::dispatch_app_pane`](super::Keymap::dispatch_app_pane)
-//! (app panes) and the framework panes' inherent `handle_key` methods
-//! (Phase 11). [`Self::Unhandled`] tells the caller to continue down
-//! the dispatch chain (globals → dismiss → fallback).
+//! (app panes) and the framework panes' inherent `handle_key` methods.
+//! [`Self::Unhandled`] tells the caller to continue down the dispatch
+//! chain (globals → dismiss → fallback).
 
 /// Outcome of dispatching a key against a single scope.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
