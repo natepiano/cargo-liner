@@ -6,6 +6,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::render_overflow_affordance;
 use unicode_width::UnicodeWidthStr;
 
 use super::DetailField;
@@ -22,6 +23,7 @@ use crate::tui::constants::COLUMN_HEADER_COLOR;
 use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::INACTIVE_BORDER_COLOR;
 use crate::tui::constants::INACTIVE_TITLE_COLOR;
+use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
 use crate::tui::pane;
@@ -699,7 +701,12 @@ pub(super) fn render_git_pane_body(
     let layout = render_git_column_inner(frame, &git_ctx, area, content_area);
     pane.viewport.set_scroll_offset(layout.scroll_offset);
     pane.set_row_layout(content_area, layout.row_line_ys);
-    pane::render_overflow_affordance(frame, area, &pane.viewport);
+    render_overflow_affordance(
+        frame,
+        area,
+        pane.viewport.overflow(),
+        Style::default().fg(LABEL_COLOR),
+    );
     let _ = ctx;
 }
 

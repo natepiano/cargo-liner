@@ -159,6 +159,7 @@ pub(super) use super::project_list::ExpandKey;
 pub(super) use super::project_list::VisibleRow;
 use super::settings;
 use super::settings::SettingOption;
+use super::settings::StartupSettings;
 use crate::project;
 use crate::project::RootItem;
 use crate::scan::MetadataDispatchContext;
@@ -265,7 +266,7 @@ impl App {
         projects: &[RootItem],
         bg_tx: Sender<BackgroundMsg>,
         bg_rx: Receiver<BackgroundMsg>,
-        startup_settings: settings::StartupSettings,
+        startup_settings: StartupSettings,
         http_client: HttpClient,
         scan_started_at: Instant,
         metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,

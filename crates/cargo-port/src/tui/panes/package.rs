@@ -12,6 +12,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
+use tui_pane::render_overflow_affordance;
 use unicode_width::UnicodeWidthStr;
 
 use super::DetailField;
@@ -282,7 +283,12 @@ pub(super) fn render_package_pane_body(
 
     let scroll_offset = render_project_metadata(frame, &pane.viewport, &context, areas.lower);
     pane.viewport.set_scroll_offset(scroll_offset);
-    pane::render_overflow_affordance(frame, area, &pane.viewport);
+    render_overflow_affordance(
+        frame,
+        area,
+        pane.viewport.overflow(),
+        Style::default().fg(LABEL_COLOR),
+    );
 }
 
 fn render_project_description_section(

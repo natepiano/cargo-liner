@@ -22,6 +22,7 @@ use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use tui_pane::AppContext;
 use tui_pane::FocusedPane;
+use tui_pane::render_overflow_affordance;
 
 use super::app::App;
 use super::constants::ACCENT_COLOR;
@@ -713,13 +714,14 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         )
     };
 
-    let inner = PopupFrame {
+    let popup = PopupFrame {
         title:        Some(title),
         border_color: ACTIVE_BORDER_COLOR,
         width:        popup_width,
         height:       FINDER_POPUP_HEIGHT,
     }
-    .render(frame);
+    .render_with_areas(frame);
+    let inner = popup.inner;
 
     if inner.height < 3 {
         return;
@@ -774,7 +776,11 @@ pub(super) fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         .finder_pane
         .viewport
         .set_content_area(results_area);
-    render_finder_results(frame, app, col_widths, results_area);
+    app.overlays
+        .finder_pane
+        .viewport
+        .set_viewport_rows(usize::from(results_area.height.saturating_sub(1)));
+    render_finder_results(frame, app, col_widths, results_area, popup.outer);
 }
 
 /// Build a `Line` where characters matching the fuzzy query get a tinted
@@ -855,6 +861,7 @@ fn render_finder_results(
     app: &mut App,
     col_widths: [usize; FINDER_COLUMN_COUNT],
     area: Rect,
+    popup_area: Rect,
 ) {
     if app.project_list.finder.results.is_empty() {
         let msg = if app.project_list.finder.query.is_empty() {
@@ -928,6 +935,12 @@ fn render_finder_results(
         .finder_pane
         .viewport
         .set_scroll_offset(table_state.offset());
+    render_overflow_affordance(
+        frame,
+        popup_area,
+        app.overlays.finder_pane.viewport.overflow(),
+        Style::default().fg(LABEL_COLOR),
+    );
 
     // FinderPane participates in hit-test dispatch via its
     // viewport (content_area covers the rows-area starting at the

@@ -24,9 +24,18 @@ pub(super) struct PopupFrame {
     pub height:       u16,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct PopupAreas {
+    pub outer: Rect,
+    pub inner: Rect,
+}
+
 impl PopupFrame {
     /// Render the popup chrome and return the usable inner `Rect`.
-    pub fn render(self, frame: &mut Frame) -> Rect {
+    pub fn render(self, frame: &mut Frame) -> Rect { self.render_with_areas(frame).inner }
+
+    /// Render the popup chrome and return both outer and inner `Rect`s.
+    pub fn render_with_areas(self, frame: &mut Frame) -> PopupAreas {
         let area = render::centered_rect(self.width, self.height, frame.area());
 
         frame.render_widget(Clear, area);
@@ -42,6 +51,6 @@ impl PopupFrame {
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        inner
+        PopupAreas { outer: area, inner }
     }
 }

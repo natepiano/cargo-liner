@@ -9,6 +9,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::render_overflow_affordance;
 
 use super::package::RenderStyles;
 use super::pane_impls::LangPane;
@@ -269,5 +270,10 @@ pub(super) fn render_lang_pane_body(
         render_lang_table(frame, pane, rows, widths, body_area);
     }
 
-    pane::render_overflow_affordance(frame, area, &pane.viewport);
+    render_overflow_affordance(
+        frame,
+        area,
+        pane.viewport.overflow(),
+        Style::default().fg(LABEL_COLOR),
+    );
 }

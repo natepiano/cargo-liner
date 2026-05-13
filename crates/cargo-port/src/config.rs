@@ -8,6 +8,8 @@ use std::sync::RwLock;
 
 use serde::Deserialize;
 use serde::Serialize;
+use toml::Table;
+use toml::Value;
 
 use super::constants::APP_NAME;
 use super::constants::CONFIG_FILE;
@@ -429,11 +431,11 @@ pub(crate) fn normalize_config(mut config: CargoPortConfig) -> Result<CargoPortC
 }
 
 impl CargoPortConfig {
-    pub(crate) fn from_table(table: &toml::Table) -> Result<Self, String> {
+    pub(crate) fn from_table(table: &Table) -> Result<Self, String> {
         use confique::Config as _;
         use confique::Layer as _;
 
-        let value = toml::Value::Table(table.clone());
+        let value = Value::Table(table.clone());
         let layer: <Self as confique::Config>::Layer = value
             .try_into()
             .map_err(|err| format!("config from table: {err}"))?;

@@ -1,6 +1,7 @@
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use tui_pane::ViewportOverflow;
 
 use crate::tui::constants::ACTIVE_FOCUS_COLOR;
 use crate::tui::constants::HOVER_FOCUS_COLOR;
@@ -132,6 +133,10 @@ impl Viewport {
 
     pub const fn scroll_offset(&self) -> usize { self.scroll_offset }
 
+    pub const fn overflow(&self) -> ViewportOverflow {
+        ViewportOverflow::new(self.len, self.scroll_offset, self.visible_rows)
+    }
+
     /// Convert a screen-space position to a local row within this
     /// viewport's content area, accounting for scroll offset and the
     /// pane's `len`. Returns `None` if `pos` is outside the content
@@ -152,22 +157,6 @@ impl Viewport {
     }
 
     pub const fn len(&self) -> usize { self.len }
-
-    pub const fn overflow_affordance(&self) -> Option<&'static str> {
-        let visible_rows = self.visible_rows;
-        if visible_rows == 0 || self.len <= visible_rows {
-            return None;
-        }
-
-        let has_above = self.scroll_offset > 0;
-        let has_below = self.scroll_offset.saturating_add(visible_rows) < self.len;
-        match (has_above, has_below) {
-            (true, true) => Some("▲ more ▼"),
-            (true, false) => Some("▲ more"),
-            (false, true) => Some("more ▼"),
-            (false, false) => None,
-        }
-    }
 
     pub const fn selection_state(&self, row: usize, focus: PaneFocusState) -> PaneSelectionState {
         self.selection_state_for(self.pos(), row, focus)
@@ -303,44 +292,5 @@ mod tests {
             pane.selection_state(0, PaneFocusState::Inactive),
             PaneSelectionState::Hovered
         );
-    }
-
-    #[test]
-    fn overflow_affordance_is_hidden_when_all_rows_fit() {
-        let mut pane = Viewport::new();
-        pane.set_len(3);
-        pane.set_viewport_rows(3);
-
-        assert_eq!(pane.overflow_affordance(), None);
-    }
-
-    #[test]
-    fn overflow_affordance_shows_bottom_only_at_top() {
-        let mut pane = Viewport::new();
-        pane.set_len(5);
-        pane.set_viewport_rows(3);
-        pane.set_scroll_offset(0);
-
-        assert_eq!(pane.overflow_affordance(), Some("more ▼"));
-    }
-
-    #[test]
-    fn overflow_affordance_shows_both_in_middle() {
-        let mut pane = Viewport::new();
-        pane.set_len(7);
-        pane.set_viewport_rows(3);
-        pane.set_scroll_offset(2);
-
-        assert_eq!(pane.overflow_affordance(), Some("▲ more ▼"));
-    }
-
-    #[test]
-    fn overflow_affordance_shows_top_only_at_bottom() {
-        let mut pane = Viewport::new();
-        pane.set_len(5);
-        pane.set_viewport_rows(3);
-        pane.set_scroll_offset(2);
-
-        assert_eq!(pane.overflow_affordance(), Some("▲ more"));
     }
 }

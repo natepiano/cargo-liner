@@ -8,7 +8,6 @@ mod title;
 pub(super) use chrome::PaneChrome;
 pub(super) use chrome::default_pane_chrome;
 pub(super) use chrome::empty_pane_block;
-pub(super) use chrome::render_overflow_affordance;
 pub(super) use dispatch::HITTABLE_Z_ORDER;
 pub(super) use dispatch::Hittable;
 pub(super) use dispatch::HittableId;

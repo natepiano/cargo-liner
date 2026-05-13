@@ -237,6 +237,14 @@ impl SettingsPane {
             .map(SettingsRowPayload::get)
     }
 
+    /// Return the first rendered line for a setting row target.
+    #[must_use]
+    pub fn line_for_selection(&self, selection: usize) -> Option<usize> {
+        self.line_targets
+            .iter()
+            .position(|target| target.is_some_and(|target| target.get() == selection))
+    }
+
     /// Render generic settings rows and update the pane's line-target
     /// map for mouse hit testing.
     #[must_use]
@@ -906,6 +914,20 @@ mod tests {
         assert_eq!(pane.line_target(1), Some(0));
         assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "▶ Projects  ");
         assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "            ");
+    }
+
+    #[test]
+    fn render_rows_records_first_line_for_selection() {
+        let mut pane = SettingsPane::new();
+        let rows = vec![
+            SettingsRow::section("General"),
+            SettingsRow::value(0, "Editor", "zed"),
+        ];
+
+        let rendered = pane.render_rows(&rows, render_options());
+
+        assert_eq!(rendered.selectable_count, 1);
+        assert_eq!(pane.line_for_selection(0), Some(1));
     }
 
     #[test]

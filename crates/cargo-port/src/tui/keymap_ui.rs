@@ -19,6 +19,7 @@ use tui_pane::KeymapPaneAction;
 use tui_pane::Pane;
 use tui_pane::ScopeMap as FrameworkScopeMap;
 use tui_pane::SettingsPaneAction;
+use tui_pane::render_overflow_affordance;
 
 use super::app::App;
 use super::constants::ACTIVE_BORDER_COLOR;
@@ -968,13 +969,14 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
 
     let height = keymap_popup_height(rows.len(), area.height);
 
-    let inner = PopupFrame {
+    let popup = PopupFrame {
         title: Some(" Keymap ".to_string()),
         border_color: ACTIVE_BORDER_COLOR,
         width,
         height,
     }
-    .render(frame);
+    .render_with_areas(frame);
+    let inner = popup.inner;
 
     let selectable_len = selectable_row_count(app);
     app.framework
@@ -1008,6 +1010,12 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
 
     let para = Paragraph::new(lines).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
     frame.render_widget(para, inner);
+    render_overflow_affordance(
+        frame,
+        popup.outer,
+        app.framework.keymap_pane.viewport().overflow(),
+        Style::default().fg(LABEL_COLOR),
+    );
 }
 
 #[cfg(test)]

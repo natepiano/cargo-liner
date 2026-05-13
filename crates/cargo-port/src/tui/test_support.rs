@@ -11,6 +11,8 @@ use tui_pane::SettingsStore;
 
 use super::app::App;
 use super::app::RetrySpawnMode;
+use super::settings;
+use super::settings::StartupSettings;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::constants::APP_NAME;
@@ -39,13 +41,11 @@ pub(super) fn make_app_with_config(projects: &[RootItem], config: &CargoPortConf
     let (bg_tx, bg_rx) = mpsc::channel();
     let metadata_store = Arc::new(Mutex::new(WorkspaceMetadataStore::new()));
     let settings_spec = SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(&config_path);
-    let mut loaded_settings = SettingsStore::load_for_startup(
-        settings_spec,
-        super::settings::cargo_port_settings_registry(),
-    )
-    .unwrap_or_else(|_| std::process::abort());
-    *loaded_settings.store.table_mut() = super::settings::settings_table_from_config(&config)
-        .unwrap_or_else(|_| std::process::abort());
+    let mut loaded_settings =
+        SettingsStore::load_for_startup(settings_spec, settings::cargo_port_settings_registry())
+            .unwrap_or_else(|_| std::process::abort());
+    *loaded_settings.store.table_mut() =
+        settings::settings_table_from_config(&config).unwrap_or_else(|_| std::process::abort());
     loaded_settings
         .toast_settings
         .write_to_table(loaded_settings.store.table_mut());
@@ -53,7 +53,7 @@ pub(super) fn make_app_with_config(projects: &[RootItem], config: &CargoPortConf
         .store
         .save()
         .unwrap_or_else(|_| std::process::abort());
-    let startup_settings = super::settings::StartupSettings {
+    let startup_settings = StartupSettings {
         config,
         store: loaded_settings.store,
         toast_settings: loaded_settings.toast_settings,

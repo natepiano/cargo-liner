@@ -4320,11 +4320,11 @@ End-of-phase spinner cleanup:
 ### Phase 29 Review
 
 - Phase 30 now excludes Toasts from the generic viewport overflow-affordance migration. Toast tracked-item overflow remains the existing in-card `(+N more)` row.
-- Phase 30 now splits already-participating app-pane migration from overlay onboarding. Finder must expose the needed viewport state; Settings and Keymap either render through a constrained scroll body with viewport state or stay explicitly excluded until they do.
+- Phase 30 now splits already-participating app-pane migration from overlay onboarding. Finder must expose the needed viewport state; Settings and Keymap render through constrained scroll bodies with viewport state before they are marked migrated.
 - Phase 30 now names `tui_pane::Viewport` as the owner of overflow label calculation so cargo-port's app-pane viewport does not remain a second source of truth.
 - Phase 31 closeout now greps for stale Phase 29/30 paths: `src/tui/animation.rs`, `LINT_SPINNER`, toast-only `SPINNER_FRAMES`, `pane::render_overflow_affordance`, `src/tui/pane/state.rs::overflow_affordance`, and live-code overflow literals outside the framework-owned path.
 
-### Phase 30 — Framework viewport overflow affordance
+### Phase 30 — Framework viewport overflow affordance (✅ landed)
 
 Move the generic `more ▼` / `▲ more ▼` / `▲ more` scroll affordance out of cargo-port pane chrome and into the framework viewport/chrome layer before final closeout.
 
@@ -4334,16 +4334,38 @@ Deliverables:
 - Toasts are excluded from this migration. Toast tracked-item overflow stays represented by the existing in-card `(+N more)` row; toast stack visibility remains governed by `ToastSettings::max_visible` and focused-toast navigation, not the generic `more ▼` / `▲ more` pane affordance.
 - Finder's popup results path participates in the same overflow affordance path as other scrollable panes. Opening Finder with more results than visible rows shows `more ▼`; scrolling down updates to `▲ more ▼`; reaching the end shows `▲ more`.
 - First migrate the already-participating app-pane callers from `pane::render_overflow_affordance` to the framework-owned helper: Project List, Package, Git, Targets, Lang, Lints, and CI.
-- Then onboard overlay/body targets one by one after each exposes the required viewport state. Finder must set visible row count and scroll offset for its result body. Settings and Keymap must either render through a constrained scroll body with viewport state or be explicitly excluded until they do. Each target gets an acceptance test for top/middle/bottom overflow labels before it is marked migrated.
+- Then onboard overlay/body targets one by one after each exposes the required viewport state. Finder must set visible row count and scroll offset for its result body. Settings and Keymap render through constrained scroll bodies and set visible row count / scroll offset before calling the framework helper. Each target gets acceptance coverage for the framework-owned overflow marker before it is marked migrated.
 - The framework-owned helper uses `Viewport::len`, `scroll_offset`, and visible row count as its source of truth; individual panes must set those values, not duplicate overflow math.
 - Acceptance tests render at least one normal pane and Finder in constrained heights and assert the correct affordance text appears and changes with scroll position.
 
+### Retrospective
+
+**What worked:**
+- `tui_pane::ViewportOverflow` and `tui_pane::render_overflow_affordance` now own the generic `more` label calculation and rendering.
+- Project List, Package, Git, Targets, Lang, Lints, CI, Finder, Settings, and Keymap all call the framework helper instead of a cargo-port pane-chrome helper.
+- Viewport unit tests cover top/middle/bottom label selection; cargo-port render tests cover constrained Project List, Finder, Settings, and Keymap popups.
+
+**What deviated from the plan:**
+- Settings was not excluded. Its existing framework `line_targets` map was enough to support constrained visual-line scrolling while keeping selection on logical settings rows.
+- The cargo-port app-pane `Viewport` keeps only a temporary `overflow()` forwarder to `tui_pane::ViewportOverflow`; the old `overflow_affordance()` source of truth was deleted.
+- `cargo mend --all-targets` surfaced unrelated inline-path warnings while validating the phase; those were cleaned up with import-only edits in `src/config.rs`, `src/tui/app/mod.rs`, and `src/tui/test_support.rs`.
+
+**Surprises:**
+- Settings hit testing needed to add `viewport.scroll_offset()` to the rendered-line lookup once the popup became scroll-constrained.
+- Keymap overlay already had enough viewport state for the framework helper; it only needed popup outer/inner areas so the affordance could render on the popup frame.
+
+**Implications for remaining phases:**
+- Phase 31 closeout should find no live cargo-port-owned generic overflow helper. Remaining `more ▼` / `▲ more` literals should be framework implementation, tests, or plan text.
+- Toast tracked-item overflow remains intentionally separate as the in-card `(+N more)` row.
+
 ### Phase 31 — Final closeout
 
-Phase 31 is the final cleanup checkpoint after Phases 28-30. It does not add new architecture.
+Phase 31 is the final cleanup checkpoint after Phases 28-30. It does not introduce new ownership decisions; it finishes known boundary cleanup.
 
 Deliverables:
 - Reconcile `What dissolves`, `What survives`, `Risks and unknowns`, `Definition of done`, and `Non-goals` against shipped code.
+- Replace cargo-port's duplicate app-pane viewport storage with `tui_pane::Viewport`. Delete `src/tui/pane/state.rs::Viewport` and `ScrollState`; app panes and app-owned overlays use `tui_pane::Viewport` for cursor position, hover row, row count, content area, scroll offset, visible rows, and overflow. If an existing caller needs a missing generic viewport helper, add it to `tui_pane::Viewport` instead of keeping a second binary viewport type. Keep cargo-port-specific focus/selection styling helpers in the binary unless a separate framework styling API is deliberately designed.
+- Audit every overflow caller where rendered visual lines and selectable rows can differ. `Viewport::len` / `visible_rows` must describe the rendered visual-line space used by overflow and scrolling; selection and hit testing must use the pane's row-target map. Settings is the known split case (`line_targets` maps rendered lines back to selectable setting rows). Simple row panes may use the same count for both.
 - Run stale-reference greps for deleted live-code paths: `app.toasts`, `ToastManager`, `handle_toast_key`, old cargo-port toast constants, `src/tui/animation.rs`, `LINT_SPINNER`, toast-only `SPINNER_FRAMES`, `pane::render_overflow_affordance`, `src/tui/pane/state.rs::overflow_affordance`, live-code `more ▼` / `▲ more` literals outside the framework-owned affordance path, legacy bar/keymap/focus names, legacy settings/keymap overlay ownership, and cargo-port-only framework shims.
 - Remove or justify any remaining temporary lint `expect` attributes in the framework crate.
 - Run the final validation stack and install the binary.
@@ -4364,11 +4386,13 @@ Deliverables:
 - `InputContext` enum.
 - cargo-port-owned toast storage and rendering (`app.toasts`, `ToastManager`, `src/tui/toasts/*`) — moved into `tui_pane::Toasts<Ctx>` / `tui_pane::render_toasts`; cargo-port keeps only `src/tui/toast_adapters.rs` for app-domain conversions.
 - cargo-port-owned status-line construction — `tui_pane::render_status_line` owns full-line fill, uptime / scanning text, global strip composition, placement, and styling. cargo-port supplies app facts, global-slot policy, and palette data.
+- cargo-port-owned generic viewport storage (`src/tui/pane/state.rs::Viewport` and `ScrollState`) — replaced by `tui_pane::Viewport`. cargo-port app panes keep app-specific row data and rendering, but cursor/hover/scroll/content-area/visible-row state is the framework viewport type.
 
 ## What survives
 
 - `Pane` trait — remains the app-pane contract. It gained `tab_stop()` during Phase 20.1 so the framework owns focus traversal; the bar refactor itself did not add pane-rendering requirements.
 - Per-pane host structs — keep their rendering/content ownership and gain framework trait impls (`Shortcuts`, tab metadata, dispatch hooks) without moving app-specific pane body rendering into `tui_pane`.
+- `PaneFocusState`, `PaneSelectionState`, and cargo-port-specific selection colors/styles — remain binary policy unless a separate framework styling API is designed. They do not justify keeping a second viewport storage type.
 - `GlobalAction::Dismiss` — keeps `'x'` as the single dismiss action. Routed through `dismiss_chain` (Phase 12 free fn) which calls `framework.dismiss_framework()` first (focused-toast dismiss owned by `tui_pane`, then `close_overlay`), then the binary's optional `dismiss_fallback` hook. There is no separate `ToastsAction::Dismiss`; binaries that want Esc to dismiss focused toasts rebind `GlobalAction::Dismiss`.
 - Vim-mode opt-in semantics — `h`/`j`/`k`/`l` still gated by `VimMode::Enabled`.
 - **Public bar surface:** `tui_pane::StatusBar`, `tui_pane::StatusLine`, `tui_pane::StatusLineGlobal`, `tui_pane::BarPalette`, `tui_pane::render_status_bar(focused, ctx, keymap, framework, &BarPalette) -> StatusBar`, `tui_pane::render_status_line(...)`, plus the accessors `Keymap::render_navigation_slots`, `Keymap::render_app_globals_slots`, and `Keymap::render_framework_globals_slots`. The framework owns region partitioning, suppression rules, per-slot resolution, global-strip composition, full-line fill, uptime / scanning text, left/center/right placement, and the styling pass. The binary supplies app facts and theme data only.
@@ -4393,7 +4417,7 @@ Verified during the migration. Closeout validation runs workspace-scoped Cargo c
 ## Risks and unknowns
 
 - **Workspace conversion.** Verified during Phase 1; no further action. Both crates build green, `cargo install --path .` still installs the binary, `Cargo.lock` and `target/` are unchanged in location.
-- **Framework public API completion.** cargo-port has now consumed the framework through the keymap, bar, overlay, settings, focus, and toast paths, but the migration is not complete until Phases 28-30 finish the remaining required boundary work: keymap capture ownership, settings row/view cleanup, reusable construction lifecycle, toast API/adapters, and generic viewport overflow affordance ownership.
+- **Framework public API completion.** Phases 28-30 landed the remaining required boundary work: keymap capture ownership, settings row/view cleanup, reusable construction lifecycle, toast API/adapters, and generic viewport overflow affordance ownership. Phase 31 removes the residual duplicate cargo-port viewport storage and runs closeout validation; it does not introduce another framework architecture layer.
 - **Scope precedence.** `NavigationAction::Right` and `ProjectListAction::ExpandRow` both default to `Right`. The "pane scope wins" rule is documented above and enforced by the input router. Lock with a unit test.
 - **`is_vim_reserved` load order.** It must read `Navigation::defaults()` (constant builder), not the in-progress keymap, to avoid a load-order cycle when called inside `resolve_scope`. Defaults are constant and always available.
 - **Framework grants `&mut Vec<Span>` to bar code.** Framework convention: each helper pushes only into vecs it owns content for. Reviewed at PR time.
@@ -4413,6 +4437,7 @@ Verified during the migration. Closeout validation runs workspace-scoped Cargo c
 - Every configurable command shortcut dispatches through the keymap; no `KeyCode::*` direct match for command keys remains. Structural preflights, modal confirmation, and text-input editing fallback may still inspect concrete keys.
 - `NAVIGATION_RESERVED`, `is_navigation_reserved`, hardcoded `VIM_RESERVED`, the seven `Shortcut::fixed` constants, the four group helpers, `App::enter_action`, `shortcuts::enter()`, `InputContext` enum — all deleted.
 - Framework owns the bar: region partitioning, global-strip composition, full-line fill, uptime / scanning text, left/center/right placement, per-slot resolution, and styling. cargo-port supplies app facts, global-slot policy, and palette data, but does not construct shortcut spans or lay out the status line.
+- Framework owns generic viewport state. No cargo-port `Viewport` or `ScrollState` type remains; app panes and app-owned overlays use `tui_pane::Viewport` for cursor/hover/scroll/content-area/visible-row state.
 - `make_app` hoisted to `src/tui/test_support.rs`.
 - Bar output for every focused-pane context is snapshot-locked under default bindings against the new static-label framework bar (`render_status_bar` + `cargo_port_bar_palette()`). The snapshots are not byte-identical to the pre-refactor bar — Phase 14's `bar_label` collapse drops today's row-dependent labels in favor of one static literal per variant.
 - All final validation passes: format, check, mend, clippy, workspace nextest, and install.
@@ -4421,7 +4446,7 @@ Verified during the migration. Closeout validation runs workspace-scoped Cargo c
 
 ## Non-goals
 
-- Not changing pane body render code. The `Pane` trait already gained `tab_stop()` in Phase 20.1 for framework-owned traversal; Phase 27 does not add another pane API change.
+- Not extracting app-specific pane bodies into `tui_pane` or adding another pane-body API. Phase 30 changed render call sites only to consume framework-owned viewport overflow chrome.
 - Not unifying `PaneId::is_overlay()` semantics across the codebase — `InputContext` is being deleted, so the asymmetry resolves itself.
 - Not making typed-character text input (Finder query, Settings numeric edit) keymap-driven — that's not what the keymap is for.
 - Not extracting `FinderPane` into the framework crate in this migration. Finder remains app-owned.

@@ -18,11 +18,13 @@ use tui_pane::SettingsSection;
 use tui_pane::SettingsStore;
 use tui_pane::ToastDuration;
 use tui_pane::ToastSettings;
+use tui_pane::ViewportOverflow;
 use tui_pane::read_array;
 use tui_pane::read_bool;
 use tui_pane::read_float;
 use tui_pane::read_int;
 use tui_pane::read_string;
+use tui_pane::render_overflow_affordance;
 use tui_pane::write_value;
 
 use super::app::App;
@@ -104,6 +106,22 @@ pub(super) fn selection_index_for_setting_for_test(
     target: SettingOption,
 ) -> Option<usize> {
     selection_index_for_setting(app, target)
+}
+
+fn settings_popup_height(line_count: usize, area_height: u16) -> u16 {
+    let content_height = u16::try_from(line_count)
+        .unwrap_or(u16::MAX)
+        .saturating_add(3);
+    content_height.min(area_height.saturating_sub(2))
+}
+
+fn settings_scroll_offset(selected_line: usize, visible_height: usize, line_count: usize) -> usize {
+    if visible_height == 0 {
+        return 0;
+    }
+    selected_line
+        .saturating_sub(visible_height.saturating_sub(1))
+        .min(line_count.saturating_sub(visible_height))
 }
 
 fn format_lint_projects(config: &CargoPortConfig) -> String {
@@ -1087,32 +1105,52 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
     );
     lines.extend(rendered.lines);
     lines.push(Line::from(""));
+    let line_count = lines.len();
 
-    let popup_height = u16::try_from(lines.len())
-        .unwrap_or(u16::MAX)
-        .saturating_add(2)
-        .saturating_add(1);
+    let popup_height = settings_popup_height(line_count, frame.area().height);
 
     app.framework
         .settings_pane
         .viewport_mut()
         .set_len(rendered.selectable_count);
 
-    let inner = PopupFrame {
+    let popup = PopupFrame {
         title:        Some(" Settings ".to_string()),
         border_color: ACTIVE_BORDER_COLOR,
         width:        SETTINGS_POPUP_WIDTH,
         height:       popup_height,
     }
-    .render(frame);
+    .render_with_areas(frame);
+    let inner = popup.inner;
 
     app.framework
         .settings_pane
         .viewport_mut()
         .set_content_area(inner);
+    let visible_height = usize::from(inner.height);
+    let selected_line = app
+        .framework
+        .settings_pane
+        .line_for_selection(app.framework.settings_pane.viewport().pos())
+        .unwrap_or_else(|| app.framework.settings_pane.viewport().pos());
+    let scroll_offset = settings_scroll_offset(selected_line, visible_height, line_count);
+    app.framework
+        .settings_pane
+        .viewport_mut()
+        .set_viewport_rows(visible_height);
+    app.framework
+        .settings_pane
+        .viewport_mut()
+        .set_scroll_offset(scroll_offset);
 
-    let paragraph = Paragraph::new(lines);
+    let paragraph = Paragraph::new(lines).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
     frame.render_widget(paragraph, inner);
+    render_overflow_affordance(
+        frame,
+        popup.outer,
+        ViewportOverflow::new(line_count, scroll_offset, visible_height),
+        Style::default().fg(LABEL_COLOR),
+    );
 }
 
 fn framework_settings_rows(app: &App, rows: &[SettingsUiRow]) -> Vec<FrameworkSettingsRow> {
@@ -1549,6 +1587,19 @@ mod tests {
             Some(SettingOption::StatusFlashSecs)
         );
         assert_eq!(setting_at_selection(&rows, 2), None);
+    }
+
+    #[test]
+    fn settings_popup_height_is_capped_to_terminal() {
+        assert_eq!(settings_popup_height(10, 80), 13);
+        assert_eq!(settings_popup_height(100, 20), 18);
+    }
+
+    #[test]
+    fn settings_scroll_keeps_selected_line_visible() {
+        assert_eq!(settings_scroll_offset(0, 5, 20), 0);
+        assert_eq!(settings_scroll_offset(7, 5, 20), 3);
+        assert_eq!(settings_scroll_offset(19, 5, 20), 15);
     }
 
     #[test]

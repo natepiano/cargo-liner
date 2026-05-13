@@ -190,6 +190,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
+    use tempfile::TempDir;
     use tui_pane::AppContext;
     use tui_pane::FocusedPane;
     use tui_pane::GlobalAction as FrameworkGlobalAction;
@@ -1285,6 +1286,64 @@ mod tests {
             text.push('\n');
         }
         text
+    }
+
+    fn make_many_packages(tmp: &TempDir, count: usize) -> Vec<RootItem> {
+        (0..count)
+            .map(|index| {
+                let name = format!("project-{index:02}");
+                let dir = tmp.path().join(&name);
+                std::fs::create_dir_all(&dir).unwrap_or_else(|_| std::process::abort());
+                make_package(&name, &dir)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn project_list_renders_framework_overflow_affordance() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let projects = make_many_packages(&tmp, 40);
+        let mut app = make_app(&projects);
+
+        let rendered = buffer_text_sized(&mut app, 100, 18);
+
+        assert!(
+            rendered.contains("more ▼"),
+            "project list should render the framework-owned overflow marker"
+        );
+    }
+
+    #[test]
+    fn finder_results_render_framework_overflow_affordance() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let projects = make_many_packages(&tmp, 40);
+        let mut app = make_app(&projects);
+        input::open_finder(&mut app);
+        let result_count = app.project_list.finder.index.len();
+        app.project_list.finder.results = (0..result_count).collect();
+        app.project_list.finder.total = result_count;
+
+        let rendered = buffer_text_sized(&mut app, 100, 20);
+
+        assert!(rendered.contains("Find Anything"));
+        assert!(
+            rendered.contains("more ▼"),
+            "finder should render the framework-owned overflow marker"
+        );
+    }
+
+    #[test]
+    fn settings_popup_renders_framework_overflow_affordance() {
+        let mut app = make_app(&[]);
+        open_settings_overlay(&mut app);
+
+        let rendered = buffer_text_sized(&mut app, 100, 18);
+
+        assert!(rendered.contains("Settings"));
+        assert!(
+            rendered.contains("more ▼"),
+            "settings should render the framework-owned overflow marker"
+        );
     }
 
     #[test]

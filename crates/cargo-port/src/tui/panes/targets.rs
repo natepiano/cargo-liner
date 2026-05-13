@@ -16,11 +16,13 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::render_overflow_affordance;
 
 use super::TargetsData;
 use super::package::RenderStyles;
 use super::spec::PaneId;
 use crate::tui::app::App;
+use crate::tui::constants::LABEL_COLOR;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneTitleCount;
@@ -137,5 +139,10 @@ pub fn render_targets_panel(
         .targets
         .viewport
         .set_scroll_offset(table_state.offset());
-    pane::render_overflow_affordance(frame, area, &app.panes.targets.viewport);
+    render_overflow_affordance(
+        frame,
+        area,
+        app.panes.targets.viewport.overflow(),
+        Style::default().fg(LABEL_COLOR),
+    );
 }

@@ -16,6 +16,7 @@ use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
+use tui_pane::render_overflow_affordance;
 
 use super::constants::PREFIX_GROUP_COLLAPSED;
 use super::constants::PREFIX_GROUP_EXPANDED;
@@ -212,7 +213,12 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
         render_project_list_footer(frame, content_area, line);
     }
 
-    pane::render_overflow_affordance(frame, area, &app.panes.project_list.viewport);
+    render_overflow_affordance(
+        frame,
+        area,
+        app.panes.project_list.viewport.overflow(),
+        Style::default().fg(LABEL_COLOR),
+    );
 }
 
 const DISMISS_SUFFIX: &str = " [x]";

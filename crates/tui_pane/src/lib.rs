@@ -124,3 +124,5 @@ pub use toasts::format_toast_items;
 pub use toasts::render_toasts;
 pub use toasts::toast_body_width;
 pub use viewport::Viewport;
+pub use viewport::ViewportOverflow;
+pub use viewport::render_overflow_affordance;

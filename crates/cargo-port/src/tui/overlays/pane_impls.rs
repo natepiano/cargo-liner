@@ -48,7 +48,8 @@ impl Hittable for SettingsPane {
         if !inner.contains(pos) {
             return None;
         }
-        let line_index = usize::from(pos.y.saturating_sub(inner.y));
+        let line_index =
+            usize::from(pos.y.saturating_sub(inner.y)) + self.viewport().scroll_offset();
         let row = self.line_target(line_index)?;
         Some(HoverTarget::PaneRow {
             pane: PaneId::Settings,

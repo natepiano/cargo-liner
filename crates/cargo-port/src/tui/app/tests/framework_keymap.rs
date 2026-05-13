@@ -1100,6 +1100,24 @@ fn keymap_popup_keeps_legacy_global_layout_compact() {
     );
 }
 
+#[test]
+fn keymap_popup_renders_framework_overflow_affordance() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let toml_path = temp_dir.path().join("keymap.toml");
+    let _keymap_path = keymap::override_keymap_path_for_test(toml_path);
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    open_framework_overlay(&mut app, FrameworkGlobalAction::OpenKeymap);
+
+    let text = buffer_text_sized(&mut app, 120, 18);
+
+    assert!(text.contains("Keymap"));
+    assert!(
+        text.contains("more ▼"),
+        "keymap overlay should render the framework-owned overflow marker"
+    );
+}
+
 // ── Phase 20.1 — framework-owned live tab cycle ───────────────────
 
 #[test]

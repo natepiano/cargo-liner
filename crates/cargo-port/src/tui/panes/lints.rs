@@ -14,6 +14,7 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use tui_pane::ACTIVITY_SPINNER;
+use tui_pane::render_overflow_affordance;
 
 use super::LintsData;
 use crate::lint::LintRun;
@@ -211,7 +212,12 @@ pub fn render_lints_pane_body(
     let mut table_state = TableState::default().with_selected(Some(pane.viewport.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
     pane.viewport.set_scroll_offset(table_state.offset());
-    pane::render_overflow_affordance(frame, area, &pane.viewport);
+    render_overflow_affordance(
+        frame,
+        area,
+        pane.viewport.overflow(),
+        Style::default().fg(LABEL_COLOR),
+    );
 
     let _ = ctx;
 }
