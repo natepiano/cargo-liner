@@ -19,12 +19,12 @@ use std::path::Path;
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use tui_pane::Viewport;
 
 use super::pane::Hittable;
 use super::pane::HoverTarget;
 use super::pane::Pane;
 use super::pane::PaneRenderCtx;
-use super::pane::Viewport;
 use super::panes;
 use super::panes::LintsData;
 use super::panes::PaneId;

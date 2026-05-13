@@ -14,6 +14,7 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use tui_pane::ACTIVITY_SPINNER;
+use tui_pane::Viewport;
 use tui_pane::render_overflow_affordance;
 
 use super::LintsData;
@@ -30,7 +31,6 @@ use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneTitleCount;
-use crate::tui::pane::Viewport;
 use crate::tui::render;
 
 fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
@@ -103,7 +103,7 @@ fn build_lint_rows(
             LintRunStatus::Failed => (Cell::from("failed"), Style::default().fg(ERROR_COLOR)),
         };
 
-        let selection = pane.selection_state(row_index, focus);
+        let selection = pane::selection_state(pane, row_index, focus);
         rows.push(
             Row::new(vec![
                 date_cell,

@@ -9,6 +9,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::Viewport;
 use tui_pane::render_overflow_affordance;
 
 use super::package::RenderStyles;
@@ -22,7 +23,6 @@ use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneTitleCount;
-use crate::tui::pane::Viewport;
 use crate::tui::render;
 
 /// Map a tokei language name to a 2-char icon for the Lang column.
@@ -151,7 +151,7 @@ fn build_lang_rows(
         .enumerate()
         .map(|(row_index, entry)| {
             lang_entry_row(entry, name_width)
-                .style(viewport.selection_state(row_index, focus).overlay_style())
+                .style(pane::selection_state(viewport, row_index, focus).overlay_style())
         })
         .collect()
 }

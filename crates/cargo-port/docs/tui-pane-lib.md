@@ -3016,7 +3016,7 @@ fn set_focus(&mut self, focus: FocusedPane<AppPaneId>) {
 - `handle_detail_key` rewrote the pane-scope match into an `is_some_and(|action| { match … ; true })` form so the consumed flag drives the post-match navigation fallthrough cleanly. This is a structural rewrite of the match, not just a body insertion — the original Up/Down/Home/End block at the top of the function has been deleted along with the inner `match app.focus.base()` early-returns.
 
 **Surprises:**
-- `crate::keymap::KeyBind` and `tui_pane::KeyBind` are distinct types (the former normalises uppercase Char + SHIFT → uppercase, the latter is plain). The Phase 16 navigation lookup constructs a `tui_pane::KeyBind` from the local `bind`'s code/modifiers (`framework_bind`) so `Keymap::navigation::<AppNavigation>().action_for(...)` resolves correctly. Phase 19's atomic cutover should consolidate on one `KeyBind` type at the dispatch boundary.
+- `crate::keymap::KeyBind` and `tui_pane::KeyBind` were distinct types at this point. The Phase 16 navigation lookup constructed a temporary `tui_pane::KeyBind` from the local bind's code/modifiers so `Keymap::navigation::<AppNavigation>().action_for(...)` resolved correctly. Phase 31 later moved event canonicalization into `tui_pane::KeyBind::from_key_event` and deleted the live dispatch bridge through `crate::keymap::KeyBind`.
 - `cargo mend` hoisted `use std::path::PathBuf` to the top-level after the inline `use` was added inside `build_framework_keymap_with_toml`. The helper is `#[cfg(test)]`, so the top-level import errored on non-test builds; the fix is `#[cfg(test)] use std::path::PathBuf;`.
 
 **Implications for remaining phases:**
@@ -3090,7 +3090,7 @@ Each registration calls the pane defaults once, stores the resolved `ScopeMap` u
 ### Phase 17 Review
 
 - **Phase 18 structural Output-cancel preflight** now requires an all-bind-aware reverse lookup (`is_key_bound_to_toml_key` or equivalent) instead of primary-only `key_for_toml_key`, with an acceptance test for `[output] cancel = ["Esc", "q"]`.
-- **Phase 18 `KeyBind` bridge** now explicitly constructs a temporary `tui_pane::KeyBind` from the legacy input bind before querying `app.framework_keymap`; Phase 19 deletes that bridge during KeyBind consolidation.
+- **Phase 18 `KeyBind` bridge** explicitly constructed a temporary `tui_pane::KeyBind` from the legacy input bind before querying `app.framework_keymap`; Phase 31 later replaced that bridge with `tui_pane::KeyBind::from_key_event`.
 - **Phase 19 overlay dispatch** now resolves Settings / Keymap overlay actions through `app.framework_keymap.settings_overlay()` / `keymap_overlay()` before mutating panes, so TOML rebinds drive both bar rendering and dispatch.
 - **Phase 23 rebind tests** now use the production TOML loader only; the stale pre-Phase-18 helper paragraph was removed.
 - **Phase 24 Toasts bar renderer** now includes `secondary_key: None` in the `RenderedSlot` construction plan.
@@ -3120,18 +3120,14 @@ The `.with_context(...)` wrapper is required so `App::new` errors include the TO
 **Structural Output-cancel preflight.** The current Esc-on-output pre-handler at `src/tui/input.rs:112-119` runs before overlays, globals, pane handlers, and Toasts focus handling. Preserve that cross-pane behavior, but compare the inbound bind against the framework keymap's resolved Output cancel bind:
 
 ```rust
-let bind = KeyBind::from(event);
-let framework_bind = tui_pane::KeyBind {
-    code: bind.code,
-    mods: bind.modifiers,
-};
+let bind = tui_pane::KeyBind::from_key_event(*event);
 if !app.inflight.example_output().is_empty()
    && !matches!(app.framework.focused_pane_mode(app), Some(Mode::TextInput(_)))
 {
     if app.framework_keymap.is_key_bound_to_toml_key(
         OutputPane::APP_PANE_ID,
         OutputAction::Cancel.toml_key(),
-        &framework_bind,
+        &bind,
     ) {
         let was_on_output = app.focus.is(PaneId::Output);
         app.inflight.example_output_mut().clear();
@@ -3143,7 +3139,7 @@ if !app.inflight.example_output().is_empty()
 
 `OutputAction::Cancel.toml_key()` resolves through `tui_pane::Action`; add `use tui_pane::Action;` in `src/tui/input.rs` if needed. The `Mode::TextInput` guard keeps Esc available for Settings edit cancel, Keymap capture cancel, and Finder text input. Focused Toasts is `Mode::Navigable`, so this preflight still wins over Toast dismiss when `example_output` is non-empty, matching today's ordering.
 
-The `framework_bind` conversion is a temporary Phase 18 bridge across the legacy `crate::keymap::KeyBind` / framework `tui_pane::KeyBind` split. Phase 19 deletes this bridge when it standardizes post-cutover dispatch on `tui_pane::KeyBind`; do not introduce new normalization behavior here.
+This conversion was the temporary Phase 18 bridge across the legacy `crate::keymap::KeyBind` / framework `tui_pane::KeyBind` split. Phase 31 replaces the live dispatch bridge with `tui_pane::KeyBind::from_key_event`; normalization policy lives in the framework key type.
 
 **Acceptance tests:**
 - With temp TOML `[output]\ncancel = "q"\n`, build `App` through the normal `App::new` path, focus a non-Output pane, push `example_output`, send `'q'` through `src/tui/input.rs`, and assert output is cleared while focus is unchanged.
@@ -3199,7 +3195,7 @@ Add the `What dissolves` / `What survives` summary (currently in this doc) as us
 - **Phase-15-deferred (b): Toasts focus gate chain** added to `src/tui/input.rs::handle_key_event`. Implements the six-step chain from Phase 15 (pre-globals → framework globals → app globals → ToastsAction slot → resolved navigation → unhandled) when current focus is `FocusedPane::Framework(FrameworkFocusId::Toasts)`. Replaces the `PaneBehavior::Toasts → handle_toast_key` arm at `src/tui/input.rs:148`.
 - **Phase-15-deferred (c): framework-pane text-input mutation path.** The Phase 19 cutover needed Settings/Keymap overlay text input to suppress global/nav dispatch while still mutating the active overlay state. The final ownership model no longer stores binary handlers on the framework panes: SettingsPane owns edit-buffer mutation through `handle_text_input`, and Phase 28 moves KeymapPane capture state into `handle_capture_key(...) -> KeymapCaptureCommand`. Finder remains app-owned and keeps its `Mode::TextInput(finder_keys)` path.
 - **Resolved overlay dispatch, not pane-local defaults.** Framework Settings / Keymap overlay input must resolve `bind` against `app.framework_keymap.settings_overlay()` / `keymap_overlay()` first, then apply the resolved `SettingsPaneAction` / `KeymapPaneAction` to the pane. Do not call `SettingsPane::handle_key` / `KeymapPane::handle_key` as the final dispatch path unless those methods are first refactored to accept a resolved action or a `&ScopeMap`; their current implementation rebuilds `Self::defaults().into_scope_map()` and would ignore user TOML. Acceptance test: rebind `[settings] start_edit = "F2"` and `[keymap] cancel = "F3"`; the bar and dispatch path both honor the rebound keys.
-- **`KeyBind` type consolidation at the dispatch boundary.** Phase 19 standardizes post-cutover dispatch on `tui_pane::KeyBind`. Audit every `crate::keymap::KeyBind` call site into one of three buckets: delete with `ResolvedKeymap`, migrate to `tui_pane::KeyBind`, or remain as an explicit survivor for a non-framework concern (for example keymap UI / settings code that has not moved yet). The four temporary `framework_bind = tui_pane::KeyBind { code: bind.code, mods: bind.modifiers }` shims at `src/tui/input.rs:651-654` and `src/tui/panes/actions.rs:109-112, 228-231, 325-328` delete once those handlers receive `tui_pane::KeyBind` directly. **Event-vs-stored canonicalization decision:** before deleting the shims, settle parity for `BackTab` / `Shift+Tab` and shifted letters such as restart's `R`, and add regression tests for the chosen behavior. Do not copy legacy `crate::keymap::KeyBind::new` normalization wholesale: `tui_pane` intentionally dropped the legacy `+` / `=` collapse. If shifted-letter normalization changes the framework `KeyBind` policy, update parser, defaults, display, and tests together as an explicit framework key policy change rather than hiding it inside the cutover.
+- **`KeyBind` type consolidation at the dispatch boundary.** Phase 19 standardizes post-cutover dispatch on `tui_pane::KeyBind`. Audit every `crate::keymap::KeyBind` call site into one of three buckets: delete with `ResolvedKeymap`, migrate to `tui_pane::KeyBind`, or remain as an explicit survivor for a non-framework concern. Phase 31 finishes the residual event-construction cleanup: `tui_pane::KeyBind::from_key_event` owns `BackTab` / `Shift+Tab` and shifted-letter canonicalization, with regression tests for the chosen policy. Do not copy legacy `crate::keymap::KeyBind::new` normalization wholesale: `tui_pane` intentionally keeps `+` and `=` distinct.
 
 **Atomic cutover constraint.** The dispatcher bodies and the deletion of the legacy dispatch reads (`handle_*_key` fn bodies + their call sites + the `app.keymap.current().<scope>` accessors) must land together in the same Phase 19 cutover changeset. Splitting the change leaves the binary in one of two failure modes: both paths fire on the same key (double-dispatch), or neither path fires (dead key). The "Wire dispatchers" inventory above and the `Delete:` list below describe halves of the same atomic swap — they cannot be sequenced apart.
 
@@ -3953,12 +3949,12 @@ enabled         = true
 default_timeout = 5.0
 task_linger     = 1.0
 width           = 60
-gap             = 1
+gap             = 0
 max_visible     = 5
 placement       = "bottom_right"
 ```
 
-cargo-port no longer parses or persists `[toasts]` through `src/config.rs`. `tui_pane` loads the section through `SettingsStore`, merges missing values with `ToastSettings::default()`, and saves it on SettingsPane edits. Migration precedence: explicit `[toasts]` values win; if `[toasts]` is absent, seed `default_timeout` / `task_linger` from old `[tui].status_flash_secs` / `[tui].task_linger_secs`; on save, write `[toasts]` and remove the old `[tui]` keys. The binary's settings.rs `toast_settings_rows` (`src/tui/settings.rs:286-304`) deletes for toast timing rows. `discovery_shimmer_secs` is not a toast setting; keep it registered as an app-owned cargo-port setting unless a later phase moves discovery animation into the framework.
+cargo-port no longer parses or persists `[toasts]` through `src/config.rs`. `tui_pane` loads the section through `SettingsStore`, merges missing values with `ToastSettings::default()`, and saves it on SettingsPane edits. Migration precedence: explicit `[toasts]` values win for active settings; if `[toasts]` is absent, seed `default_timeout` / `task_linger` from old `[tui].status_flash_secs` / `[tui].task_linger_secs`; on save, write `[toasts]` and remove the old `[tui]` keys. `gap` is accepted for compatibility with generated Phase 25 configs but normalizes to `0`; toast cards render adjacent with no blank row between cards. The binary's settings.rs `toast_settings_rows` (`src/tui/settings.rs:286-304`) deletes for toast timing rows. `discovery_shimmer_secs` is not a toast setting; keep it registered as an app-owned cargo-port setting unless a later phase moves discovery animation into the framework.
 
 **Phase 25 tests:**
 - `settings_store_resolves_default_path_from_app_id` — framework path resolution uses `SettingsFileSpec` when no explicit path is supplied.
@@ -4211,7 +4207,7 @@ Acceptance check: `rg 'app\\.toasts|ToastManager|crate::tui::toasts|super::toast
 
 **Surprises:**
 - Focus reconciliation depends on live toasts, not renderable toasts. `Toasts::has_active()` and `Toasts::is_alive()` now exclude exiting cards, while `active_views()` keeps exiting cards renderable for animation.
-- `tui_pane::Viewport` and cargo-port's app-pane `Viewport` are distinct types, so focused-toast hit testing stays a direct framework-toast path instead of sharing the binary's app-pane viewport helper.
+- `tui_pane::Viewport` and cargo-port's app-pane `Viewport` were still distinct types at this point, so focused-toast hit testing stayed a direct framework-toast path. Phase 31 later deletes the duplicate cargo-port viewport type.
 
 **Implications for remaining phases:**
 - Phase 27 is a required settings-boundary correction, not final closeout. It removes the last app-config generic from the framework settings store.
@@ -4358,7 +4354,7 @@ Deliverables:
 - Phase 31 closeout should find no live cargo-port-owned generic overflow helper. Remaining `more ▼` / `▲ more` literals should be framework implementation, tests, or plan text.
 - Toast tracked-item overflow remains intentionally separate as the in-card `(+N more)` row.
 
-### Phase 31 — Final closeout
+### Phase 31 — Final closeout ✅
 
 Phase 31 is the final cleanup checkpoint after Phases 28-30. It does not introduce new ownership decisions; it finishes known boundary cleanup.
 
@@ -4369,6 +4365,23 @@ Deliverables:
 - Run stale-reference greps for deleted live-code paths: `app.toasts`, `ToastManager`, `handle_toast_key`, old cargo-port toast constants, `src/tui/animation.rs`, `LINT_SPINNER`, toast-only `SPINNER_FRAMES`, `pane::render_overflow_affordance`, `src/tui/pane/state.rs::overflow_affordance`, live-code `more ▼` / `▲ more` literals outside the framework-owned affordance path, legacy bar/keymap/focus names, legacy settings/keymap overlay ownership, and cargo-port-only framework shims.
 - Remove or justify any remaining temporary lint `expect` attributes in the framework crate.
 - Run the final validation stack and install the binary.
+
+### Retrospective
+
+**What worked:**
+- `src/tui/pane/state.rs` shed cargo-port's duplicate `Viewport` / `ScrollState`; app panes and app-owned overlays now use `tui_pane::Viewport`.
+- `tui_pane::KeyBind::from_key_event` put configurable-dispatch event canonicalization in the framework and removed live dispatch construction through `crate::keymap::KeyBind`.
+- Toast cards now render adjacent; `[toasts].gap` remains accepted for compatibility but normalizes to `0`.
+
+**What deviated from the plan:**
+- Phase 31 included the toast-gap regression fix because it was visual closeout behavior, not a separate ownership phase.
+- The app still keeps `PaneFocusState` / `PaneSelectionState` and selection styling helpers in `src/tui/pane/state.rs`; only generic viewport storage moved.
+
+**Surprises:**
+- One existing `KeyInput::from_event` test still expected shifted lowercase events to remain `Shift+a`; after framework-owned canonicalization, the correct dispatch bind is `A`.
+
+**Implications for remaining phases:**
+- No numbered implementation phase remains. Future work should be a new plan, not another deferred cargo-port migration phase.
 
 ---
 
@@ -4387,6 +4400,7 @@ Deliverables:
 - cargo-port-owned toast storage and rendering (`app.toasts`, `ToastManager`, `src/tui/toasts/*`) — moved into `tui_pane::Toasts<Ctx>` / `tui_pane::render_toasts`; cargo-port keeps only `src/tui/toast_adapters.rs` for app-domain conversions.
 - cargo-port-owned status-line construction — `tui_pane::render_status_line` owns full-line fill, uptime / scanning text, global strip composition, placement, and styling. cargo-port supplies app facts, global-slot policy, and palette data.
 - cargo-port-owned generic viewport storage (`src/tui/pane/state.rs::Viewport` and `ScrollState`) — replaced by `tui_pane::Viewport`. cargo-port app panes keep app-specific row data and rendering, but cursor/hover/scroll/content-area/visible-row state is the framework viewport type.
+- Temporary framework-keymap event shims that converted through `crate::keymap::KeyBind` — replaced by `tui_pane::KeyBind::from_key_event`. The framework owns BackTab / shifted-letter event canonicalization and still does not restore the legacy `+` / `=` collapse.
 
 ## What survives
 
@@ -4428,7 +4442,7 @@ Verified during the migration. Closeout validation runs workspace-scoped Cargo c
 ## Definition of done
 
 - Workspace exists with `tui_pane` member crate; binary crate consumes it.
-- `tui_pane` exposes every supported public type at the crate root — `tui_pane::Foo` flat, never `tui_pane::keymap::Foo`: `AppContext`, `NoToastAction`, `BarPalette`, `BarRegion`, `BarSlot<A>`, `ShortcutState`, `StatusBar`, `StatusLine`, `StatusLineGlobal`, `StatusLineGlobalAction`, `Visibility`, `render_status_bar`, `render_status_line`, `status_line_global_spans`, `CycleDirection`, `Framework<Ctx>`, `ListNavigation`, `TabOrder`, `TabStop`, `Action`, `Bindings<A>`, `bindings!`, `Configuring`, `GlobalAction`, `Globals<Ctx>`, `KeyBind`, `KeyInput`, `KeyOutcome`, `KeyParseError`, `Keymap<Ctx>`, `KeymapBuilder<Ctx>`, `KeymapError`, `Navigation<Ctx>`, `Registering`, `RenderedSlot`, `ScopeMap<A>`, `Shortcuts<Ctx>`, `VimMode`, `Mode<Ctx>`, `Pane<Ctx>`, `FocusedPane`, `FrameworkFocusId`, `FrameworkOverlayId`, `KeymapPane`, `KeymapPaneAction`, `SettingsCommand`, `SettingsPane`, `SettingsPaneAction`, `SettingsRender`, `SettingsRenderOptions`, `ToastsAction`, `AdjustDirection`, `LoadedSettings`, `MaxVisibleToasts`, `ReloadedSettings`, `SettingAdjuster`, `SettingCodecs`, `SettingEntry`, `SettingKind`, `SettingValue`, `SettingsError`, `SettingsFileSpec`, `SettingsRegistry`, `SettingsRow`, `SettingsRowKind`, `SettingsSection`, `SettingsStore`, `ToastAnimationSettings`, `ToastDuration`, `ToastGap`, `ToastPlacement`, `ToastSettings`, `ToastWidth`, `Toast`, `ToastBody`, `ToastCommand`, `ToastHitbox`, `ToastId`, `ToastLifetime`, `ToastPhase`, `ToastRenderResult`, `ToastStyle`, `ToastTaskId`, `ToastTaskStatus`, `ToastView`, `Toasts<Ctx>`, `TrackedItem`, `TrackedItemKey`, `TrackedItemView`, `format_toast_items`, `render_toasts`, `toast_body_width`, `Viewport`, and `action_enum!`. The `__bindings_arms!` helper macro is `#[doc(hidden)]` but technically reachable as `tui_pane::__bindings_arms!` (a side-effect of `#[macro_export]`); it is not part of the supported surface.
+- `tui_pane` exposes every supported public item at the crate root — `tui_pane::Foo` flat, never `tui_pane::keymap::Foo`: `ACTIVITY_SPINNER`, `ACTIVITY_SPINNER_FRAMES`, `FrameCycle`, `Icon`, `AppContext`, `NoToastAction`, `BarPalette`, `BarRegion`, `BarSlot<A>`, `ShortcutState`, `StatusBar`, `StatusLine`, `StatusLineGlobal`, `StatusLineGlobalAction`, `Visibility`, `render_status_bar`, `render_status_line`, `status_line_global_spans`, `CycleDirection`, `Framework<Ctx>`, `ListNavigation`, `TabOrder`, `TabStop`, `Action`, `Bindings<A>`, `bindings!`, `Configuring`, `GlobalAction`, `Globals<Ctx>`, `KeyBind`, `KeyInput`, `KeyOutcome`, `KeyParseError`, `Keymap<Ctx>`, `KeymapBuilder<Ctx>`, `KeymapError`, `Navigation<Ctx>`, `Registering`, `RenderedSlot`, `ScopeMap<A>`, `Shortcuts<Ctx>`, `VimMode`, `Mode<Ctx>`, `Pane<Ctx>`, `FocusedPane`, `FrameworkFocusId`, `FrameworkOverlayId`, `KeymapCaptureCommand`, `KeymapPane`, `KeymapPaneAction`, `SettingsCommand`, `SettingsPane`, `SettingsPaneAction`, `SettingsRender`, `SettingsRenderOptions`, `ToastsAction`, `AdjustDirection`, `LoadedSettings`, `MaxVisibleToasts`, `ReloadedSettings`, `SettingAdjuster`, `SettingCodecs`, `SettingEntry`, `SettingKind`, `SettingValue`, `SettingsError`, `SettingsFileSpec`, `SettingsRegistry`, `SettingsRow`, `SettingsRowKind`, `SettingsRowPayload`, `SettingsSection`, `SettingsStore`, `ToastAnimationSettings`, `ToastDuration`, `ToastGap`, `ToastPlacement`, `ToastSettings`, `ToastWidth`, `read_array`, `read_bool`, `read_float`, `read_int`, `read_string`, `write_value`, `Toast`, `ToastBody`, `ToastCommand`, `ToastHitbox`, `ToastId`, `ToastLifetime`, `ToastPhase`, `ToastRenderResult`, `ToastStyle`, `ToastTaskId`, `ToastTaskStatus`, `ToastView`, `Toasts<Ctx>`, `TrackedItem`, `TrackedItemKey`, `TrackedItemView`, `format_toast_items`, `render_toasts`, `toast_body_width`, `Viewport`, `ViewportOverflow`, `render_overflow_affordance`, and `action_enum!`. The `__bindings_arms!` helper macro is `#[doc(hidden)]` but technically reachable as `tui_pane::__bindings_arms!` (a side-effect of `#[macro_export]`); it is not part of the supported surface.
 - `ScopeMap::by_action: HashMap<A, Vec<KeyBind>>`; `display_keys_for(action) -> &[KeyBind]` exists; primary-key invariant locked.
 - TOML parser accepts `key = "Enter"` and `key = ["Enter", "Return"]`; rejects in-array duplicates and cross-action collisions within a scope.
 - `NavigationAction`, `FinderAction`, `OutputAction`, `AppGlobalAction` exist in cargo-port. `ProjectListAction` has `ExpandRow` / `CollapseRow`.
@@ -4438,6 +4452,7 @@ Verified during the migration. Closeout validation runs workspace-scoped Cargo c
 - `NAVIGATION_RESERVED`, `is_navigation_reserved`, hardcoded `VIM_RESERVED`, the seven `Shortcut::fixed` constants, the four group helpers, `App::enter_action`, `shortcuts::enter()`, `InputContext` enum — all deleted.
 - Framework owns the bar: region partitioning, global-strip composition, full-line fill, uptime / scanning text, left/center/right placement, per-slot resolution, and styling. cargo-port supplies app facts, global-slot policy, and palette data, but does not construct shortcut spans or lay out the status line.
 - Framework owns generic viewport state. No cargo-port `Viewport` or `ScrollState` type remains; app panes and app-owned overlays use `tui_pane::Viewport` for cursor/hover/scroll/content-area/visible-row state.
+- Framework owns key-event canonicalization for configurable dispatch. Cargo-port dispatch converts crossterm events with `tui_pane::KeyBind::from_key_event`; it does not route framework-keymap dispatch through `crate::keymap::KeyBind`.
 - `make_app` hoisted to `src/tui/test_support.rs`.
 - Bar output for every focused-pane context is snapshot-locked under default bindings against the new static-label framework bar (`render_status_bar` + `cargo_port_bar_palette()`). The snapshots are not byte-identical to the pre-refactor bar — Phase 14's `bar_label` collapse drops today's row-dependent labels in favor of one static literal per variant.
 - All final validation passes: format, check, mend, clippy, workspace nextest, and install.

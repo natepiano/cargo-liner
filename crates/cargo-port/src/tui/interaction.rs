@@ -1,4 +1,6 @@
 use ratatui::layout::Position;
+use tui_pane::FrameworkOverlayId;
+use tui_pane::Viewport;
 
 use super::app::App;
 use super::app::DismissTarget;
@@ -7,7 +9,6 @@ use super::pane::HITTABLE_Z_ORDER;
 use super::pane::Hittable;
 use super::pane::HittableId;
 use super::pane::HoverTarget;
-use super::pane::Viewport;
 use super::panes::PaneId;
 
 pub(super) fn handle_click(app: &mut App, pos: Position) -> bool {
@@ -50,6 +51,15 @@ pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPan
 /// `hit_test_at` answer. Lives at App-level so per-arm reach can
 /// resolve to whichever owner holds the pane.
 pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
+    if app.overlays.is_finder_open() {
+        return app.overlays.finder_pane.hit_test_at(pos);
+    }
+    match app.framework.overlay() {
+        Some(FrameworkOverlayId::Settings) => return app.framework.settings_pane.hit_test_at(pos),
+        Some(FrameworkOverlayId::Keymap) => return app.framework.keymap_pane.hit_test_at(pos),
+        None => {},
+    }
+
     for id in HITTABLE_Z_ORDER {
         if id == HittableId::Toasts {
             if let Some(target) = hit_test_toasts(app, pos) {
@@ -196,6 +206,7 @@ mod tests {
     use tui_pane::GlobalAction as FrameworkGlobalAction;
     use tui_pane::ToastId;
     use tui_pane::ToastStyle;
+    use tui_pane::Viewport;
 
     use super::HoveredPaneRow;
     use crate::ci::CiJob;
@@ -244,7 +255,6 @@ mod tests {
     use crate::tui::pane::PaneFocusState;
     use crate::tui::pane::PaneRenderCtx;
     use crate::tui::pane::PaneSelectionState;
-    use crate::tui::pane::Viewport;
     use crate::tui::panes;
     use crate::tui::panes::LintsData;
     use crate::tui::panes::PaneId;
@@ -257,6 +267,11 @@ mod tests {
     fn open_settings_overlay(app: &mut App) {
         let keymap = Rc::clone(&app.framework_keymap);
         keymap.dispatch_framework_global(FrameworkGlobalAction::OpenSettings, app);
+    }
+
+    fn open_keymap_overlay(app: &mut App) {
+        let keymap = Rc::clone(&app.framework_keymap);
+        keymap.dispatch_framework_global(FrameworkGlobalAction::OpenKeymap, app);
     }
 
     fn make_package(name: &str, path: &Path) -> RootItem {
@@ -478,6 +493,18 @@ mod tests {
         );
     }
 
+    fn scroll_down(app: &mut App, column: u16, row: u16) {
+        input::handle_event(
+            app,
+            &Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+    }
+
     fn press_key(app: &mut App, code: KeyCode) {
         input::handle_event(
             app,
@@ -519,7 +546,7 @@ mod tests {
         )
     }
 
-    fn framework_pane_row_point(pane: &tui_pane::Viewport, row_index: usize) -> (u16, u16) {
+    fn framework_pane_row_point(pane: &Viewport, row_index: usize) -> (u16, u16) {
         let area = pane.content_area();
         (
             area.x.saturating_add(1),
@@ -539,8 +566,19 @@ mod tests {
         framework_pane_row_point(pane.viewport(), line)
     }
 
+    fn keymap_point_for_row_after(app: &App, min_row: usize) -> (u16, u16, usize) {
+        let pane = &app.framework.keymap_pane;
+        let height = usize::from(pane.viewport().content_area().height);
+        let (line, row) = (0..height)
+            .filter_map(|line| pane.line_target(line).map(|row| (line, row)))
+            .find(|(_, row)| *row > min_row)
+            .expect("keymap row must have a rendered hit target");
+        let (x, y) = framework_pane_row_point(pane.viewport(), line);
+        (x, y, row)
+    }
+
     fn framework_selection_state(
-        pane: &tui_pane::Viewport,
+        pane: &Viewport,
         row: usize,
         focus: PaneFocusState,
     ) -> PaneSelectionState {
@@ -815,6 +853,100 @@ mod tests {
             app.framework.settings_pane.viewport().pos(),
             ci_run_count_row,
             "clicking a rendered settings option should select the logical setting, not the visual line index including spacer/header rows"
+        );
+    }
+
+    #[test]
+    fn keymap_row_click_uses_keymap_line_targets() {
+        let mut app = make_app(&[]);
+        open_keymap_overlay(&mut app);
+        render_ui(&mut app);
+
+        let (x, y, row) = keymap_point_for_row_after(&app, 0);
+        click(&mut app, x, y);
+
+        assert_eq!(
+            app.framework.keymap_pane.viewport().pos(),
+            row,
+            "clicking a keymap row should select the logical keymap entry, not the visual line including spacer/header rows"
+        );
+    }
+
+    #[test]
+    fn keymap_overlay_blocks_underlying_project_list_mouse() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let first = tmp.path().join("first");
+        let second = tmp.path().join("second");
+        std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
+        let mut app = make_app(&[
+            make_package("first", &first),
+            make_package("second", &second),
+        ]);
+        render_ui(&mut app);
+        open_keymap_overlay(&mut app);
+        render_ui(&mut app);
+
+        let (x, y) = row_body_point(&app, 1);
+        click(&mut app, x, y);
+        scroll_down(&mut app, x, y);
+
+        assert_eq!(
+            app.project_list.cursor(),
+            0,
+            "project-list mouse input must not pass through an open keymap overlay"
+        );
+    }
+
+    #[test]
+    fn finder_overlay_blocks_underlying_project_list_mouse() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let first = tmp.path().join("first");
+        let second = tmp.path().join("second");
+        std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
+        let mut app = make_app(&[
+            make_package("first", &first),
+            make_package("second", &second),
+        ]);
+        render_ui(&mut app);
+        input::open_finder(&mut app);
+        render_ui(&mut app);
+
+        let (x, y) = row_body_point(&app, 1);
+        click(&mut app, x, y);
+        scroll_down(&mut app, x, y);
+
+        assert_eq!(
+            app.project_list.cursor(),
+            0,
+            "project-list mouse input must not pass through an open finder overlay"
+        );
+    }
+
+    #[test]
+    fn settings_overlay_blocks_underlying_project_list_mouse() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+        let first = tmp.path().join("first");
+        let second = tmp.path().join("second");
+        std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
+        std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
+        let mut app = make_app(&[
+            make_package("first", &first),
+            make_package("second", &second),
+        ]);
+        render_ui(&mut app);
+        open_settings_overlay(&mut app);
+        render_ui(&mut app);
+
+        let (x, y) = row_body_point(&app, 1);
+        click(&mut app, x, y);
+        scroll_down(&mut app, x, y);
+
+        assert_eq!(
+            app.project_list.cursor(),
+            0,
+            "project-list mouse input must not pass through an open settings overlay"
         );
     }
 

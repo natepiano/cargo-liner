@@ -111,6 +111,16 @@ impl Viewport {
         }
     }
 
+    /// Clear rendered viewport surface state.
+    pub const fn clear_surface(&mut self) {
+        self.len = 0;
+        self.hovered = None;
+        self.content_area = Rect::ZERO;
+        self.scroll_offset = 0;
+        self.visible_rows = 0;
+        self.pos = 0;
+    }
+
     /// Current backing row count.
     #[must_use]
     pub const fn len(&self) -> usize { self.len }
@@ -243,5 +253,25 @@ mod tests {
         viewport.set_viewport_rows(3);
 
         assert_eq!(viewport.overflow_affordance(), Some("more ▼"));
+    }
+
+    #[test]
+    fn clear_surface_resets_rendered_state() {
+        let mut viewport = Viewport::new();
+        viewport.set_len(5);
+        viewport.set_pos(3);
+        viewport.set_content_area(ratatui::layout::Rect::new(1, 2, 3, 4));
+        viewport.set_scroll_offset(2);
+        viewport.set_viewport_rows(3);
+        viewport.set_hovered(Some(4));
+
+        viewport.clear_surface();
+
+        assert_eq!(viewport.pos(), 0);
+        assert_eq!(viewport.len(), 0);
+        assert_eq!(viewport.content_area(), ratatui::layout::Rect::ZERO);
+        assert_eq!(viewport.scroll_offset(), 0);
+        assert_eq!(viewport.visible_rows(), 0);
+        assert_eq!(viewport.hovered(), None);
     }
 }

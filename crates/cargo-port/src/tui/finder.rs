@@ -33,6 +33,7 @@ use super::constants::LABEL_COLOR;
 use super::constants::MAX_FINDER_RESULTS;
 use super::constants::TITLE_COLOR;
 use super::framework_keymap::AppPaneId;
+use super::pane;
 use super::panes;
 use super::panes::PaneId;
 use super::panes::RunTargetKind;
@@ -903,11 +904,12 @@ fn render_finder_results(
                 )),
             ])
             .style(
-                app.overlays
-                    .finder_pane
-                    .viewport
-                    .selection_state(row_index, app.pane_focus_state(PaneId::Finder))
-                    .overlay_style(),
+                pane::selection_state(
+                    &app.overlays.finder_pane.viewport,
+                    row_index,
+                    app.pane_focus_state(PaneId::Finder),
+                )
+                .overlay_style(),
             )
         })
         .collect();

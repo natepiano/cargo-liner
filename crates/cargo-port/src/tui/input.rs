@@ -20,7 +20,7 @@ use tui_pane::FrameworkFocusId;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::Globals;
-use tui_pane::KeyBind as FrameworkKeyBind;
+use tui_pane::KeyBind;
 use tui_pane::KeyOutcome;
 use tui_pane::Mode;
 use tui_pane::Navigation;
@@ -44,7 +44,6 @@ use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::settings;
 use super::terminal;
-use crate::keymap::KeyBind;
 use crate::keymap::OutputAction;
 use crate::keymap::ProjectListAction;
 use crate::project::AbsolutePath;
@@ -127,13 +126,13 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         app.scan.mark_terminal_dirty();
         return;
     }
-    let framework_bind = framework_bind_from_event(raw);
+    let bind = key_bind_from_event(raw);
     if !app.inflight.example_output().is_empty()
         && !focused_text_input_mode(app)
         && app.framework_keymap.is_key_bound_to_toml_key(
             OutputPane::APP_PANE_ID,
             OutputAction::Cancel.toml_key(),
-            &framework_bind,
+            &bind,
         )
     {
         let was_on_output = app.focus_is(PaneId::Output);
@@ -146,40 +145,34 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     if handle_confirm_key(app, code) {
         return;
     }
-    if dispatch_framework_overlay(app, &framework_bind, &normalized) {
+    if dispatch_framework_overlay(app, &bind, &normalized) {
         return;
     }
-    if dispatch_finder_overlay(app, &framework_bind) {
+    if dispatch_finder_overlay(app, &bind) {
         return;
     }
     let focused = *app.framework.focused();
     let focused_on_toasts = matches!(focused, FocusedPane::Framework(FrameworkFocusId::Toasts));
-    if focused_on_toasts && dispatch_focused_toasts(app, &framework_bind) {
+    if focused_on_toasts && dispatch_focused_toasts(app, &bind) {
         return;
     }
-    if dispatch_framework_global(app, &framework_bind) {
+    if dispatch_framework_global(app, &bind) {
         return;
     }
-    if dispatch_app_global(app, &framework_bind) {
+    if dispatch_app_global(app, &bind) {
         return;
     }
     if let FocusedPane::App(id) = focused
-        && dispatch_focused_app_pane(app, id, &framework_bind)
+        && dispatch_focused_app_pane(app, id, &bind)
     {
         return;
     }
-    let _ = dispatch_navigation(app, focused, &framework_bind);
+    let _ = dispatch_navigation(app, focused, &bind);
 }
 
-fn framework_bind_from_event(event: &KeyEvent) -> FrameworkKeyBind {
-    let bind = KeyBind::new(event.code, event.modifiers);
-    FrameworkKeyBind {
-        code: bind.code,
-        mods: bind.modifiers,
-    }
-}
+fn key_bind_from_event(event: &KeyEvent) -> KeyBind { KeyBind::from_key_event(*event) }
 
-fn dispatch_framework_global(app: &mut App, bind: &FrameworkKeyBind) -> bool {
+fn dispatch_framework_global(app: &mut App, bind: &KeyBind) -> bool {
     let keymap = Rc::clone(&app.framework_keymap);
     let Some(action) = keymap.framework_globals().action_for(bind) else {
         return false;
@@ -208,7 +201,7 @@ fn clear_legacy_framework_overlay_state(app: &mut App, overlay: FrameworkOverlay
     }
 }
 
-fn dispatch_app_global(app: &mut App, bind: &FrameworkKeyBind) -> bool {
+fn dispatch_app_global(app: &mut App, bind: &KeyBind) -> bool {
     let keymap = Rc::clone(&app.framework_keymap);
     let Some(scope) = keymap.globals::<AppGlobalAction>() else {
         return false;
@@ -220,7 +213,7 @@ fn dispatch_app_global(app: &mut App, bind: &FrameworkKeyBind) -> bool {
     true
 }
 
-fn dispatch_focused_app_pane(app: &mut App, id: AppPaneId, bind: &FrameworkKeyBind) -> bool {
+fn dispatch_focused_app_pane(app: &mut App, id: AppPaneId, bind: &KeyBind) -> bool {
     let keymap = Rc::clone(&app.framework_keymap);
     matches!(
         keymap.dispatch_app_pane(id, bind, app),
@@ -228,7 +221,7 @@ fn dispatch_focused_app_pane(app: &mut App, id: AppPaneId, bind: &FrameworkKeyBi
     )
 }
 
-fn dispatch_focused_toasts(app: &mut App, bind: &FrameworkKeyBind) -> bool {
+fn dispatch_focused_toasts(app: &mut App, bind: &KeyBind) -> bool {
     let (outcome, command) = app.framework.toasts.handle_key_command(bind);
     if let ToastCommand::Activate(action) = command {
         app.handle_toast_action(action);
@@ -236,11 +229,7 @@ fn dispatch_focused_toasts(app: &mut App, bind: &FrameworkKeyBind) -> bool {
     matches!(outcome, KeyOutcome::Consumed)
 }
 
-fn dispatch_framework_overlay(
-    app: &mut App,
-    bind: &FrameworkKeyBind,
-    normalized: &KeyEvent,
-) -> bool {
+fn dispatch_framework_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEvent) -> bool {
     let Some(overlay) = app.framework.overlay() else {
         return false;
     };
@@ -273,7 +262,7 @@ fn dispatch_framework_overlay(
     true
 }
 
-fn dispatch_settings_overlay(app: &mut App, bind: &FrameworkKeyBind) {
+fn dispatch_settings_overlay(app: &mut App, bind: &KeyBind) {
     if let Some(action) = app.framework_keymap.settings_overlay().action_for(bind) {
         settings::dispatch_settings_action(action, app);
         return;
@@ -281,7 +270,7 @@ fn dispatch_settings_overlay(app: &mut App, bind: &FrameworkKeyBind) {
     settings::handle_settings_navigation_key(app, bind.code);
 }
 
-fn dispatch_keymap_overlay(app: &mut App, bind: &FrameworkKeyBind, normalized: &KeyEvent) {
+fn dispatch_keymap_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEvent) {
     if let Some(action) = app.framework_keymap.keymap_overlay().action_for(bind) {
         keymap_ui::dispatch_keymap_action(action, app);
         return;
@@ -289,7 +278,7 @@ fn dispatch_keymap_overlay(app: &mut App, bind: &FrameworkKeyBind, normalized: &
     keymap_ui::handle_keymap_navigation_key(app, normalized);
 }
 
-fn dispatch_finder_overlay(app: &mut App, bind: &FrameworkKeyBind) -> bool {
+fn dispatch_finder_overlay(app: &mut App, bind: &KeyBind) -> bool {
     if !app.overlays.is_finder_open() {
         return false;
     }
@@ -300,11 +289,7 @@ fn dispatch_finder_overlay(app: &mut App, bind: &FrameworkKeyBind) -> bool {
     true
 }
 
-fn dispatch_navigation(
-    app: &mut App,
-    focused: FocusedPane<AppPaneId>,
-    bind: &FrameworkKeyBind,
-) -> bool {
+fn dispatch_navigation(app: &mut App, focused: FocusedPane<AppPaneId>, bind: &KeyBind) -> bool {
     let keymap = Rc::clone(&app.framework_keymap);
     let Some(nav_scope) = keymap.navigation::<AppNavigation>() else {
         return false;
@@ -436,6 +421,10 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
     let up = scroll_up ^ app.config.invert_scroll().is_inverted();
     let pos = Position::new(column, row);
 
+    if scroll_modal_overlay_at(app, pos, up) {
+        return;
+    }
+
     if app.layout_cache.project_list_body.contains(pos) {
         if up {
             app.project_list.move_up();
@@ -464,6 +453,36 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
             }
         }
         return;
+    }
+}
+
+fn scroll_modal_overlay_at(app: &mut App, pos: Position, up: bool) -> bool {
+    if app.overlays.is_finder_open() {
+        scroll_viewport_if_contains(&mut app.overlays.finder_pane.viewport, pos, up);
+        return true;
+    }
+
+    match app.framework.overlay() {
+        Some(FrameworkOverlayId::Settings) => {
+            scroll_viewport_if_contains(app.framework.settings_pane.viewport_mut(), pos, up);
+            true
+        },
+        Some(FrameworkOverlayId::Keymap) => {
+            scroll_viewport_if_contains(app.framework.keymap_pane.viewport_mut(), pos, up);
+            true
+        },
+        None => false,
+    }
+}
+
+fn scroll_viewport_if_contains(viewport: &mut tui_pane::Viewport, pos: Position, up: bool) {
+    if !viewport.content_area().contains(pos) {
+        return;
+    }
+    if up {
+        viewport.up();
+    } else {
+        viewport.down();
     }
 }
 
@@ -636,7 +655,7 @@ fn open_paths_via_editor_command(editor: &str, paths: &[&Path]) -> Result<()> {
 
 fn handle_framework_overlay_editor_key(
     app: &mut App,
-    bind: &FrameworkKeyBind,
+    bind: &KeyBind,
     overlay: FrameworkOverlayId,
 ) -> bool {
     let keymap = Rc::clone(&app.framework_keymap);

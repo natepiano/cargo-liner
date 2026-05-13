@@ -59,7 +59,7 @@ clear_history = "d"
 activate    = "Enter"
 clear_cache = "d"
 fetch_more  = "f"
-toggle_view = "v"
+toggle_view = "b"
 
 [output]
 cancel = "Esc"

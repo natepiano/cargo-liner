@@ -68,6 +68,7 @@ pub enum KeymapCaptureCommand {
 pub struct KeymapPane {
     edit_state:    EditState,
     editor_target: Option<PathBuf>,
+    line_targets:  Vec<Option<usize>>,
     viewport:      Viewport,
 }
 
@@ -78,6 +79,7 @@ impl KeymapPane {
         Self {
             edit_state:    EditState::Browse,
             editor_target: None,
+            line_targets:  Vec::new(),
             viewport:      Viewport::new(),
         }
     }
@@ -153,6 +155,17 @@ impl KeymapPane {
     /// Mutably borrow the framework-owned viewport state.
     pub const fn viewport_mut(&mut self) -> &mut Viewport { &mut self.viewport }
 
+    /// Replace the rendered-line to selectable-row map used for mouse hit-testing.
+    pub fn replace_line_targets(&mut self, targets: Vec<Option<usize>>) {
+        self.line_targets = targets;
+    }
+
+    /// Selectable row rendered at `line`, if the line is clickable.
+    #[must_use]
+    pub fn line_target(&self, line: usize) -> Option<usize> {
+        self.line_targets.get(line).copied().flatten()
+    }
+
     /// Current input mode for the overlay.
     ///
     /// - [`EditState::Browse`] → [`Mode::Navigable`].
@@ -204,6 +217,7 @@ impl KeymapPane {
         Self {
             edit_state: EditState::Awaiting,
             editor_target,
+            line_targets: Vec::new(),
             viewport: Viewport::new(),
         }
     }
@@ -214,6 +228,7 @@ impl KeymapPane {
         Self {
             edit_state: EditState::Conflict,
             editor_target,
+            line_targets: Vec::new(),
             viewport: Viewport::new(),
         }
     }

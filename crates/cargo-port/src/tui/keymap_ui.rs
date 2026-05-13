@@ -140,7 +140,7 @@ fn push_scope<A: Action>(
             action_row(section, scope, action, toml_key(action), bind)
         })
         .collect();
-    section.sort_by_key(|r| r.description);
+    section.sort_by_key(|row| row.description);
     rows.extend(section);
 }
 
@@ -161,8 +161,27 @@ fn push_app_pane_scope<A: Action>(
             action_row(section, scope, action, toml_key, bind)
         })
         .collect();
-    section_rows.sort_by_key(|r| r.description);
+    sort_app_pane_rows(section, &mut section_rows);
     rows.extend(section_rows);
+}
+
+fn sort_app_pane_rows(section: &'static str, rows: &mut [KeymapRow]) {
+    if section == "Project List" {
+        rows.sort_by_key(project_list_keymap_sort_key);
+    } else {
+        rows.sort_by_key(|row| row.description);
+    }
+}
+
+fn project_list_keymap_sort_key(row: &KeymapRow) -> (u8, &'static str) {
+    match row.action {
+        "clean" => (0, row.description),
+        "collapse_all" => (1, row.description),
+        "expand_all" => (2, row.description),
+        "collapse_row" => (3, row.description),
+        "expand_row" => (4, row.description),
+        _ => (5, row.description),
+    }
 }
 
 fn framework_global_toml_key(action: FrameworkGlobalAction) -> &'static str {
@@ -259,7 +278,7 @@ fn push_navigation_rows(rows: &mut Vec<KeymapRow>, app: &App) {
     if let Some(scope) = app.framework_keymap.navigation::<AppNavigation>() {
         push_scope(
             rows,
-            "Navigation",
+            "List Navigation",
             "navigation",
             NavigationAction::ALL,
             scope,
@@ -841,7 +860,12 @@ pub(super) fn vim_mode_conflicts(app: &App) -> Vec<String> {
 // ── Rendering ────────────────────────────────────────────────────────
 
 const BASE_POPUP_WIDTH: u16 = 52;
-const KEYMAP_POPUP_MAX_HEIGHT: u16 = 36;
+const KEYMAP_POPUP_MAX_HEIGHT: u16 = 43;
+
+struct KeymapLines<'a> {
+    lines:        Vec<Line<'a>>,
+    line_targets: Vec<Option<usize>>,
+}
 
 fn framework_selection_state(
     app: &App,
@@ -872,13 +896,15 @@ fn keymap_header_line<'a>(row: &KeymapRow) -> Line<'a> {
     ])
 }
 
-fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_capturing: bool) -> Vec<Line<'a>> {
+fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_capturing: bool) -> KeymapLines<'a> {
     let mut selectable_index = 0usize;
     let mut lines = vec![Line::from("")];
+    let mut line_targets = vec![None];
 
     for row in rows {
         if row.is_header {
             lines.push(keymap_header_line(row));
+            line_targets.push(None);
             continue;
         }
 
@@ -939,11 +965,16 @@ fn build_lines<'a>(rows: &[KeymapRow], app: &App, is_capturing: bool) -> Vec<Lin
         };
 
         lines.push(line);
+        line_targets.push(Some(selectable_index));
         selectable_index += 1;
     }
 
     lines.push(Line::from(""));
-    lines
+    line_targets.push(None);
+    KeymapLines {
+        lines,
+        line_targets,
+    }
 }
 
 fn keymap_popup_height(row_count: usize, area_height: u16) -> u16 {
@@ -990,7 +1021,7 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
 
     let selected_pos = app.framework.keymap_pane.viewport().pos();
     let is_capturing = app.framework.keymap_pane.is_capturing();
-    let lines = build_lines(&rows, app, is_capturing);
+    let rendered = build_lines(&rows, app, is_capturing);
 
     // Scroll to keep selection visible.
     let visible_height = usize::from(inner.height);
@@ -1007,8 +1038,12 @@ pub(super) fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
         .keymap_pane
         .viewport_mut()
         .set_scroll_offset(scroll_offset);
+    app.framework
+        .keymap_pane
+        .replace_line_targets(rendered.line_targets);
 
-    let para = Paragraph::new(lines).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
+    let para =
+        Paragraph::new(rendered.lines).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
     frame.render_widget(para, inner);
     render_overflow_affordance(
         frame,
@@ -1036,6 +1071,88 @@ mod tests {
         assert_eq!(
             line_text(&line),
             format!("{SECTION_HEADER_INDENT}Global Navigation:")
+        );
+    }
+
+    #[test]
+    fn keymap_header_line_can_label_list_navigation() {
+        let line = keymap_header_line(&header("List Navigation"));
+
+        assert_eq!(
+            line_text(&line),
+            format!("{SECTION_HEADER_INDENT}List Navigation:")
+        );
+    }
+
+    #[test]
+    fn project_list_rows_keep_expand_collapse_pairs_adjacent() {
+        let mut rows = vec![
+            action_row_with_description(
+                "Project List",
+                "project_list",
+                "Expand row",
+                "expand_row",
+                None,
+            ),
+            action_row_with_description(
+                "Project List",
+                "project_list",
+                "Collapse all",
+                "collapse_all",
+                None,
+            ),
+            action_row_with_description(
+                "Project List",
+                "project_list",
+                "Clean project",
+                "clean",
+                None,
+            ),
+            action_row_with_description(
+                "Project List",
+                "project_list",
+                "Expand all",
+                "expand_all",
+                None,
+            ),
+            action_row_with_description(
+                "Project List",
+                "project_list",
+                "Collapse row",
+                "collapse_row",
+                None,
+            ),
+        ];
+
+        sort_app_pane_rows("Project List", &mut rows);
+
+        assert_eq!(
+            rows.iter().map(|row| row.action).collect::<Vec<_>>(),
+            vec![
+                "clean",
+                "collapse_all",
+                "expand_all",
+                "collapse_row",
+                "expand_row",
+            ],
+        );
+    }
+
+    #[test]
+    fn keymap_lines_track_selectable_rows_only() {
+        let app = crate::tui::test_support::make_app(&[]);
+        let rows = vec![
+            header("One"),
+            action_row_with_description("One", "one", "First", "first", None),
+            header("Two"),
+            action_row_with_description("Two", "two", "Second", "second", None),
+        ];
+
+        let rendered = build_lines(&rows, &app, false);
+
+        assert_eq!(
+            rendered.line_targets,
+            vec![None, None, Some(0), None, Some(1), None],
         );
     }
 

@@ -408,7 +408,7 @@ impl ResolvedKeymap {
         km.ci_runs
             .insert(KeyBind::plain(KeyCode::Char('f')), CiRunsAction::FetchMore);
         km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Char('v')), CiRunsAction::ToggleView);
+            .insert(KeyBind::plain(KeyCode::Char('b')), CiRunsAction::ToggleView);
         km.ci_runs
             .insert(KeyBind::plain(KeyCode::Char('d')), CiRunsAction::ClearCache);
 
@@ -1483,7 +1483,7 @@ clean = "h"
             km.project_list.display_key_for(ProjectListAction::Clean),
             "c"
         );
-        assert_eq!(km.ci_runs.display_key_for(CiRunsAction::ToggleView), "v");
+        assert_eq!(km.ci_runs.display_key_for(CiRunsAction::ToggleView), "b");
     }
 
     #[test]

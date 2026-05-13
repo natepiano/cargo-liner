@@ -16,6 +16,7 @@ use std::time::Instant;
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use tui_pane::Viewport;
 
 use super::PaneId;
 use super::cpu;
@@ -33,7 +34,6 @@ use crate::tui::pane::Hittable;
 use crate::tui::pane::HoverTarget;
 use crate::tui::pane::Pane;
 use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::Viewport;
 
 // ── Package ─────────────────────────────────────────────────────
 pub struct PackagePane {

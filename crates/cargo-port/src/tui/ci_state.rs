@@ -23,13 +23,13 @@ use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::ToastTaskId;
+use tui_pane::Viewport;
 
 use super::app::CiRunDisplayMode;
 use super::pane::Hittable;
 use super::pane::HoverTarget;
 use super::pane::Pane;
 use super::pane::PaneRenderCtx;
-use super::pane::Viewport;
 use super::panes;
 use super::panes::CiData;
 use super::panes::PaneId;

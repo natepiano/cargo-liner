@@ -745,6 +745,8 @@ pub struct ToastSettings {
     /// Toast card width.
     pub width:           ToastWidth,
     /// Gap between visible toast cards.
+    ///
+    /// Kept for settings-file compatibility; toast cards render adjacent today.
     pub gap:             ToastGap,
     /// Default timeout for timed toasts.
     pub default_timeout: ToastDuration,
@@ -788,7 +790,7 @@ impl ToastSettings {
             )?;
         }
         if let Some(value) = table.get("gap") {
-            self.gap = ToastGap::try_from_i64(
+            ToastGap::try_from_i64(
                 value
                     .as_integer()
                     .ok_or_else(|| invalid("toasts", "gap", "expected integer"))?,
@@ -893,7 +895,10 @@ impl Default for ToastWidth {
 }
 
 /// Gap between toasts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Existing settings files may contain this key. Rendering currently normalizes
+/// it to zero so separate toast cards remain adjacent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ToastGap(u16);
 
 impl ToastGap {
@@ -905,10 +910,6 @@ impl ToastGap {
         let value = u16::try_from(value).map_err(|_| invalid("toasts", "gap", "out of range"))?;
         Ok(Self(value))
     }
-}
-
-impl Default for ToastGap {
-    fn default() -> Self { Self(1) }
 }
 
 /// Toast duration.

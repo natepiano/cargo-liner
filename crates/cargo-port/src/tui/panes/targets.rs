@@ -105,6 +105,7 @@ pub fn render_targets_panel(
         .iter()
         .enumerate()
         .map(|(row_index, entry)| {
+            let selection = pane::selection_state(&app.panes.targets.viewport, row_index, focus);
             let display =
                 render::truncate_with_ellipsis(&entry.display_name, name_max_width, "\u{2026}");
             Row::new(vec![
@@ -114,13 +115,7 @@ pub fn render_targets_panel(
                 )
                 .style(Style::default().fg(entry.kind.color())),
             ])
-            .style(
-                app.panes
-                    .targets
-                    .viewport
-                    .selection_state(row_index, focus)
-                    .overlay_style(),
-            )
+            .style(selection.overlay_style())
         })
         .collect();
 

@@ -912,10 +912,7 @@ pub fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<ListItem<
         .enumerate()
         .map(|(row_index, row)| {
             let item = render_tree_item(app, row, &root_labels, root_sorted, child_sorted, widths);
-            item.style(
-                pane.selection_state_for(cursor, row_index, focus)
-                    .overlay_style(),
-            )
+            item.style(pane::selection_state_for(pane, cursor, row_index, focus).overlay_style())
         })
         .collect()
 }

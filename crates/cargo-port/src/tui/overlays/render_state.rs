@@ -8,7 +8,7 @@
 //! struct exists so the Finder viewport has a typed home that impls
 //! `Pane` and `Hittable`. The impls live in `pane_impls.rs`.
 
-use crate::tui::pane::Viewport;
+use tui_pane::Viewport;
 
 pub struct FinderPane {
     pub viewport: Viewport,

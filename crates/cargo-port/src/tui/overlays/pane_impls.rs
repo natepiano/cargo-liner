@@ -27,7 +27,16 @@ impl Pane for KeymapPane {
 
 impl Hittable for KeymapPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        let row = self.viewport().pos_to_local_row(pos)?;
+        let inner = self.viewport().content_area();
+        if inner.width == 0 || inner.height == 0 {
+            return None;
+        }
+        if !inner.contains(pos) {
+            return None;
+        }
+        let line_index =
+            usize::from(pos.y.saturating_sub(inner.y)) + self.viewport().scroll_offset();
+        let row = self.line_target(line_index)?;
         Some(HoverTarget::PaneRow {
             pane: PaneId::Keymap,
             row,

@@ -38,6 +38,7 @@ use super::constants::SETTINGS_POPUP_WIDTH;
 use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
 use super::keymap_ui;
+use super::pane;
 use super::pane::PaneFocusState;
 use super::popup::PopupFrame;
 use super::render;
@@ -1098,8 +1099,8 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
             success_style: Style::default().fg(SUCCESS_COLOR),
             error_style: Style::default().fg(ERROR_COLOR),
             inline_error_style: Style::default().fg(INLINE_ERROR_COLOR),
-            active_style: super::pane::Viewport::selection_style(PaneFocusState::Active),
-            remembered_style: super::pane::Viewport::selection_style(PaneFocusState::Remembered),
+            active_style: pane::selection_style(PaneFocusState::Active),
+            remembered_style: pane::selection_style(PaneFocusState::Remembered),
             hovered_style: Style::default().bg(super::constants::HOVER_FOCUS_COLOR),
         },
     );

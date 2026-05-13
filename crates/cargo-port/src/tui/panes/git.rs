@@ -6,6 +6,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::Viewport;
 use tui_pane::render_overflow_affordance;
 use unicode_width::UnicodeWidthStr;
 
@@ -33,7 +34,6 @@ use crate::tui::pane::PaneRule;
 use crate::tui::pane::PaneSelectionState;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::RuleTitle;
-use crate::tui::pane::Viewport;
 use crate::tui::panes;
 
 struct GitRenderCtx<'a> {
@@ -200,7 +200,7 @@ fn append_remotes_section(
         if active && row_index == ctx.pane.pos() {
             *accum.focused_output_line = accum.lines.len();
         }
-        let selection = ctx.pane.selection_state(row_index, ctx.focus);
+        let selection = pane::selection_state(ctx.pane, row_index, ctx.focus);
         accum
             .lines
             .push(remote_row_line(remote, &col_widths, selection));
@@ -239,7 +239,7 @@ fn append_worktrees_section(
         if active && row_index == ctx.pane.pos() {
             *accum.focused_output_line = accum.lines.len();
         }
-        let selection = ctx.pane.selection_state(row_index, ctx.focus);
+        let selection = pane::selection_state(ctx.pane, row_index, ctx.focus);
         accum
             .lines
             .push(worktree_row_line(wt, &col_widths, selection));
@@ -373,7 +373,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
             DetailField::RateLimitCore | DetailField::RateLimitGraphQl
         );
         let value = build_field_value(data, *field, is_rate_limit_row);
-        let selection = pane.selection_state(i, focus);
+        let selection = pane::selection_state(pane, i, focus);
         let base_value_style = if matches!(*field, DetailField::VsLocal) && value == IN_SYNC {
             Style::default().fg(SUCCESS_COLOR)
         } else if matches!(*field, DetailField::VsLocal)

@@ -13,9 +13,8 @@ use thiserror::Error;
 /// It carries no press/release information; that lives in [`KeyInput`].
 ///
 /// Construct via `From<KeyCode>` / `From<char>` for the modifier-free case,
-/// or [`KeyBind::shift`] / [`KeyBind::ctrl`] when modifiers matter. To bridge
-/// from a crossterm `KeyEvent`, use [`KeyInput::from_event`] and then
-/// pattern-match on the kind.
+/// [`KeyBind::shift`] / [`KeyBind::ctrl`] when modifiers matter, or
+/// [`KeyBind::from_key_event`] to canonicalize a crossterm event for dispatch.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct KeyBind {
     /// The key being pressed (letter, named key, function key, etc.).
@@ -63,14 +62,14 @@ pub enum KeyInput {
 }
 
 impl KeyInput {
-    /// Convert a crossterm `KeyEvent` to a [`KeyInput`]. Lossless on
-    /// `(code, modifiers, kind)`; drops `state`.
+    /// Convert a crossterm `KeyEvent` to a [`KeyInput`].
+    ///
+    /// Canonicalizes the key/modifier pair the same way dispatch does through
+    /// [`KeyBind::from_key_event`], preserves the event kind, and drops
+    /// `state`.
     #[must_use]
-    pub const fn from_event(event: KeyEvent) -> Self {
-        let bind = KeyBind {
-            code: event.code,
-            mods: event.modifiers,
-        };
+    pub fn from_event(event: KeyEvent) -> Self {
+        let bind = KeyBind::from_key_event(event);
         match event.kind {
             KeyEventKind::Press => Self::Press(bind),
             KeyEventKind::Release => Self::Release(bind),
@@ -98,6 +97,33 @@ impl KeyInput {
 }
 
 impl KeyBind {
+    /// Canonicalize a crossterm key event into the keymap dispatch form.
+    ///
+    /// Crossterm can report `BackTab` separately from `Tab + Shift`, and shifted
+    /// ASCII letters as both an uppercase character and a `SHIFT` modifier. The
+    /// keymap stores those as `Tab + Shift` and uppercase `Char` without
+    /// `SHIFT`, respectively. The legacy `+` / `=` collapse is intentionally not
+    /// restored.
+    #[must_use]
+    pub fn from_key_event(event: KeyEvent) -> Self {
+        let (code, mods) = match event.code {
+            KeyCode::BackTab => (KeyCode::Tab, event.modifiers | KeyModifiers::SHIFT),
+            KeyCode::Char(c)
+                if c.is_ascii_lowercase() && event.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                (
+                    KeyCode::Char(c.to_ascii_uppercase()),
+                    event.modifiers - KeyModifiers::SHIFT,
+                )
+            },
+            KeyCode::Char(c) if c.is_ascii_uppercase() => {
+                (event.code, event.modifiers - KeyModifiers::SHIFT)
+            },
+            _ => (event.code, event.modifiers),
+        };
+        Self { code, mods }
+    }
+
     /// `const`-friendly constructor for `Char(c)` with no modifiers.
     /// `From<char>` is not `const`, so `static` arrays of
     /// `(Action, KeyBind)` pairs (e.g. vim-extras tables) reach for
@@ -390,6 +416,36 @@ mod tests {
     }
 
     #[test]
+    fn from_key_event_normalizes_crossterm_backtab() {
+        let event = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
+
+        assert_eq!(KeyBind::from_key_event(event), KeyBind::shift(KeyCode::Tab));
+    }
+
+    #[test]
+    fn from_key_event_normalizes_shifted_ascii_letters() {
+        let upper = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
+        let lower_with_shift = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::SHIFT);
+
+        assert_eq!(KeyBind::from_key_event(upper), KeyBind::from('R'));
+        assert_eq!(
+            KeyBind::from_key_event(lower_with_shift),
+            KeyBind::from('R')
+        );
+    }
+
+    #[test]
+    fn from_key_event_does_not_collapse_plus_and_equals() {
+        let plus = KeyBind::from_key_event(KeyEvent::new(KeyCode::Char('+'), KeyModifiers::SHIFT));
+        let equals =
+            KeyBind::from_key_event(KeyEvent::new(KeyCode::Char('='), KeyModifiers::SHIFT));
+
+        assert_eq!(plus.code, KeyCode::Char('+'));
+        assert_eq!(equals.code, KeyCode::Char('='));
+        assert_ne!(plus, equals);
+    }
+
+    #[test]
     fn parse_plus_and_equals_distinct() {
         let plus = KeyBind::parse("+").unwrap();
         let eq = KeyBind::parse("=").unwrap();
@@ -497,10 +553,7 @@ mod tests {
             kind,
             state: KeyEventState::CAPS_LOCK,
         };
-        let expected_bind = KeyBind {
-            code: KeyCode::Char('a'),
-            mods: KeyModifiers::SHIFT,
-        };
+        let expected_bind = KeyBind::from('A');
 
         assert_eq!(
             KeyInput::from_event(make(KeyEventKind::Press)),

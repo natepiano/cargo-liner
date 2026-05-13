@@ -323,7 +323,7 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
                 ci_run,
                 &cols,
                 show_durations,
-                viewport_ref.selection_state(row_index, ci_focus),
+                pane::selection_state(viewport_ref, row_index, ci_focus),
             )
         })
         .collect();

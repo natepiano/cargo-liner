@@ -12,6 +12,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
+use tui_pane::Viewport;
 use tui_pane::render_overflow_affordance;
 use unicode_width::UnicodeWidthStr;
 
@@ -30,7 +31,6 @@ use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneRule;
 use crate::tui::pane::RuleTitle;
-use crate::tui::pane::Viewport;
 use crate::tui::panes;
 use crate::tui::render;
 
@@ -112,7 +112,7 @@ fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect
             focused_output_line = lines.len();
         }
         let label = field.label();
-        let selection = pane.selection_state(i, focus);
+        let selection = pane::selection_state(pane, i, focus);
         let value = if *field == DetailField::Lint {
             lint_display_to_string(&data.lint_display, ctx.animation_elapsed, ctx.lint_enabled)
         } else if *field == DetailField::Ci {

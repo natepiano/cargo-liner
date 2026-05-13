@@ -496,7 +496,7 @@ impl Shortcuts<App> for CiRunsPane {
         tui_pane::bindings! {
             crossterm::event::KeyCode::Enter => CiRunsAction::Activate,
             'f' => CiRunsAction::FetchMore,
-            'v' => CiRunsAction::ToggleView,
+            'b' => CiRunsAction::ToggleView,
             'd' => CiRunsAction::ClearCache,
         }
     }
@@ -739,5 +739,16 @@ mod tests {
             <PackageAction as Action>::toml_key(PackageAction::Activate),
             PackageAction::Activate.toml_key(),
         );
+    }
+
+    #[test]
+    fn ci_runs_toggle_view_defaults_to_branch_key() {
+        let defaults = CiRunsPane::defaults().into_scope_map();
+
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::from('b')),
+            Some(CiRunsAction::ToggleView),
+        );
+        assert_eq!(defaults.action_for(&tui_pane::KeyBind::from('v')), None);
     }
 }

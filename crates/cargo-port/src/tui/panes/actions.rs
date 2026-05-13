@@ -5,8 +5,9 @@ use crossterm::event::KeyEvent;
 use tui_pane::FocusedPane;
 use tui_pane::FrameworkFocusId;
 #[cfg(test)]
-use tui_pane::KeyBind as FrameworkKeyBind;
+use tui_pane::KeyBind as TuiKeyBind;
 use tui_pane::TrackedItem;
+use tui_pane::Viewport;
 
 use super::BuildMode;
 use super::CiFetchKind;
@@ -38,7 +39,6 @@ use crate::tui::framework_keymap::CpuAction;
 use crate::tui::framework_keymap::LangAction;
 use crate::tui::framework_keymap::NavigationAction;
 use crate::tui::input;
-use crate::tui::pane::Viewport;
 use crate::tui::toast_adapters;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
@@ -307,12 +307,9 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     }
 
     // Navigation scope — Phase 16.
-    let framework_bind = FrameworkKeyBind {
-        code: bind.code,
-        mods: bind.modifiers,
-    };
+    let dispatch_bind = TuiKeyBind::from_key_event(*event);
     if let Some(nav_scope) = app.framework_keymap.navigation::<AppNavigation>()
-        && let Some(nav_action) = nav_scope.action_for(&framework_bind)
+        && let Some(nav_action) = nav_scope.action_for(&dispatch_bind)
     {
         match nav_action {
             NavigationAction::Up => app.ci.viewport.up(),

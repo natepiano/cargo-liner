@@ -61,7 +61,7 @@ pub fn render_toasts(
     let max_visible = settings.max_visible.get().max(1);
     let start = toasts.len().saturating_sub(max_visible);
     let visible_toasts = &toasts[start..];
-    let gap = settings.gap.get();
+    let gap: u16 = 0;
     let available =
         area.height.saturating_sub(gap.saturating_mul(
             u16::try_from(visible_toasts.len().saturating_sub(1)).unwrap_or(u16::MAX),
@@ -544,13 +544,77 @@ fn format_elapsed(elapsed: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use toml::Table;
+
     use super::*;
+    use crate::AppContext;
+    use crate::FocusedPane;
+    use crate::Framework;
+    use crate::NoToastAction;
+    use crate::Toasts;
+
+    struct TestApp {
+        framework: Framework<Self>,
+    }
+
+    impl AppContext for TestApp {
+        type AppPaneId = ();
+        type ToastAction = NoToastAction;
+
+        fn framework(&self) -> &Framework<Self> { &self.framework }
+
+        fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
+    }
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    #[test]
+    fn configured_toast_gap_does_not_insert_blank_rows_between_cards() {
+        let table: Table = "[toasts]\ngap = 1\n"
+            .parse()
+            .unwrap_or_else(|_| std::process::abort());
+        let settings = ToastSettings::from_table(&table).unwrap_or_else(|_| std::process::abort());
+        assert_eq!(settings.gap.get(), 0);
+        let mut toasts = Toasts::<TestApp>::new();
+        let _ = toasts.push("one", "body");
+        let _ = toasts.push("two", "body");
+        let views = toasts.active_views(Instant::now(), &settings);
+        let _app = TestApp {
+            framework: Framework::new(FocusedPane::App(())),
+        };
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+        let mut result = None;
+
+        terminal
+            .draw(|frame| {
+                result = Some(render_toasts(
+                    frame,
+                    frame.area(),
+                    &views,
+                    &settings,
+                    false,
+                    None,
+                ));
+            })
+            .unwrap_or_else(|_| std::process::abort());
+
+        let hitboxes = result.unwrap_or_else(|| std::process::abort()).hitboxes;
+        assert_eq!(hitboxes.len(), 2);
+        assert_eq!(
+            hitboxes[0].card_rect.bottom(),
+            hitboxes[1].card_rect.y,
+            "toast cards should be adjacent with no blank row"
+        );
     }
 
     #[test]

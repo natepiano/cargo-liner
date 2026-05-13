@@ -1,67 +1,9 @@
-use ratatui::layout::Position;
-use ratatui::layout::Rect;
 use ratatui::style::Style;
-use tui_pane::ViewportOverflow;
+use tui_pane::Viewport;
 
 use crate::tui::constants::ACTIVE_FOCUS_COLOR;
 use crate::tui::constants::HOVER_FOCUS_COLOR;
 use crate::tui::constants::REMEMBERED_FOCUS_COLOR;
-
-/// A bounded cursor for scrollable lists. Replaces raw `usize` index + manual
-/// bounds checking with a single type that enforces invariants.
-#[derive(Default, Clone)]
-pub(super) struct ScrollState {
-    pos: usize,
-}
-
-impl ScrollState {
-    pub(super) const fn pos(&self) -> usize { self.pos }
-
-    pub(super) const fn set(&mut self, pos: usize) { self.pos = pos; }
-
-    pub(super) const fn up(&mut self) {
-        if self.pos > 0 {
-            self.pos -= 1;
-        }
-    }
-
-    pub(super) const fn down(&mut self, len: usize) {
-        if len > 0 && self.pos < len - 1 {
-            self.pos += 1;
-        }
-    }
-
-    pub(super) const fn jump_home(&mut self) { self.pos = 0; }
-
-    pub(super) const fn jump_end(&mut self, len: usize) { self.pos = len.saturating_sub(1); }
-
-    /// Clamp position to `0..len`. Useful after the backing list shrinks.
-    pub(super) const fn clamp(&mut self, len: usize) {
-        if len == 0 {
-            self.pos = 0;
-        } else if self.pos >= len {
-            self.pos = len - 1;
-        }
-    }
-}
-
-/// The shared UI-mechanics state every pane carries: cursor, scroll,
-/// viewport rows, content area, hovered row, len.
-///
-/// Each per-pane struct embeds a `Viewport` and exposes it via the
-/// `Pane` trait's `viewport()` / `viewport_mut()` accessors. Default
-/// methods on the trait (cursor moves, scroll, hover, etc.) delegate to
-/// the embedded `Viewport`, so per-pane impls only write the
-/// genuinely-different methods.
-#[derive(Default, Clone)]
-pub struct Viewport {
-    cursor:        ScrollState,
-    hovered:       Option<usize>,
-    len:           usize,
-    content_area:  Rect,
-    scroll_offset: usize,
-    visible_rows:  usize,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneFocusState {
@@ -78,127 +20,48 @@ pub enum PaneSelectionState {
     Unselected,
 }
 
-impl Viewport {
-    pub const fn new() -> Self {
-        Self {
-            cursor:        ScrollState { pos: 0 },
-            hovered:       None,
-            len:           0,
-            content_area:  Rect::new(0, 0, 0, 0),
-            scroll_offset: 0,
-            visible_rows:  0,
-        }
+pub const fn selection_state(
+    viewport: &Viewport,
+    row: usize,
+    focus: PaneFocusState,
+) -> PaneSelectionState {
+    selection_state_for(viewport, viewport.pos(), row, focus)
+}
+
+/// `selection_state` variant that takes the cursor explicitly, for callers whose
+/// cursor lives outside this viewport. The hovered-row check still reads the
+/// viewport's own hovered field because hover is always per pane.
+pub const fn selection_state_for(
+    viewport: &Viewport,
+    cursor: usize,
+    row: usize,
+    focus: PaneFocusState,
+) -> PaneSelectionState {
+    if row == cursor && matches!(focus, PaneFocusState::Active) {
+        PaneSelectionState::Active
+    } else if matches!(viewport.hovered(), Some(hovered_row) if hovered_row == row) {
+        PaneSelectionState::Hovered
+    } else if row == cursor && matches!(focus, PaneFocusState::Remembered) {
+        PaneSelectionState::Remembered
+    } else {
+        PaneSelectionState::Unselected
     }
+}
 
-    pub const fn up(&mut self) { self.cursor.up(); }
-
-    pub const fn down(&mut self) { self.cursor.down(self.len); }
-
-    pub const fn home(&mut self) { self.cursor.jump_home(); }
-
-    pub const fn end(&mut self) { self.cursor.jump_end(self.len); }
-
-    pub const fn pos(&self) -> usize { self.cursor.pos() }
-
-    pub const fn set_pos(&mut self, pos: usize) { self.cursor.set(pos); }
-
-    pub const fn set_len(&mut self, len: usize) {
-        self.len = len;
-        self.cursor.clamp(len);
-        if let Some(row) = self.hovered
-            && row >= len
-        {
-            self.hovered = None;
-        }
-    }
-
-    pub const fn clear_surface(&mut self) {
-        self.len = 0;
-        self.hovered = None;
-        self.content_area = Rect::ZERO;
-        self.scroll_offset = 0;
-        self.visible_rows = 0;
-        self.cursor.clamp(0);
-    }
-
-    pub const fn set_content_area(&mut self, area: Rect) { self.content_area = area; }
-
-    pub const fn set_scroll_offset(&mut self, offset: usize) { self.scroll_offset = offset; }
-
-    pub const fn set_viewport_rows(&mut self, rows: usize) { self.visible_rows = rows; }
-
-    pub const fn set_hovered(&mut self, hovered: Option<usize>) { self.hovered = hovered; }
-
-    pub const fn content_area(&self) -> Rect { self.content_area }
-
-    pub const fn scroll_offset(&self) -> usize { self.scroll_offset }
-
-    pub const fn overflow(&self) -> ViewportOverflow {
-        ViewportOverflow::new(self.len, self.scroll_offset, self.visible_rows)
-    }
-
-    /// Convert a screen-space position to a local row within this
-    /// viewport's content area, accounting for scroll offset and the
-    /// pane's `len`. Returns `None` if `pos` is outside the content
-    /// area or maps past the last valid row.
-    pub const fn pos_to_local_row(&self, pos: Position) -> Option<usize> {
-        if self.content_area.width == 0 || self.content_area.height == 0 {
-            return None;
-        }
-        if !self.content_area.contains(pos) {
-            return None;
-        }
-        let visual_row = pos.y.saturating_sub(self.content_area.y);
-        let row = self.scroll_offset + visual_row as usize;
-        if row >= self.len {
-            return None;
-        }
-        Some(row)
-    }
-
-    pub const fn len(&self) -> usize { self.len }
-
-    pub const fn selection_state(&self, row: usize, focus: PaneFocusState) -> PaneSelectionState {
-        self.selection_state_for(self.pos(), row, focus)
-    }
-
-    /// `selection_state` variant that takes the cursor explicitly,
-    /// for callers whose cursor lives outside this viewport (e.g.,
-    /// the project-list cursor lives on `Selection.cursor`). The
-    /// hovered-row check still reads the viewport's own `hovered`
-    /// field — hover is always per-pane.
-    pub const fn selection_state_for(
-        &self,
-        cursor: usize,
-        row: usize,
-        focus: PaneFocusState,
-    ) -> PaneSelectionState {
-        if row == cursor && matches!(focus, PaneFocusState::Active) {
-            PaneSelectionState::Active
-        } else if matches!(self.hovered, Some(hovered_row) if hovered_row == row) {
-            PaneSelectionState::Hovered
-        } else if row == cursor && matches!(focus, PaneFocusState::Remembered) {
-            PaneSelectionState::Remembered
-        } else {
-            PaneSelectionState::Unselected
-        }
-    }
-
-    pub fn selection_style(focus: PaneFocusState) -> Style {
-        match focus {
-            PaneFocusState::Active => Style::default().bg(ACTIVE_FOCUS_COLOR),
-            PaneFocusState::Remembered => Style::default().bg(REMEMBERED_FOCUS_COLOR),
-            PaneFocusState::Inactive => Style::default(),
-        }
+pub fn selection_style(focus: PaneFocusState) -> Style {
+    match focus {
+        PaneFocusState::Active => Style::default().bg(ACTIVE_FOCUS_COLOR),
+        PaneFocusState::Remembered => Style::default().bg(REMEMBERED_FOCUS_COLOR),
+        PaneFocusState::Inactive => Style::default(),
     }
 }
 
 impl PaneSelectionState {
     pub fn overlay_style(self) -> Style {
         match self {
-            Self::Active => Viewport::selection_style(PaneFocusState::Active),
+            Self::Active => selection_style(PaneFocusState::Active),
             Self::Hovered => Style::default().bg(HOVER_FOCUS_COLOR),
-            Self::Remembered => Viewport::selection_style(PaneFocusState::Remembered),
+            Self::Remembered => selection_style(PaneFocusState::Remembered),
             Self::Unselected => Style::default(),
         }
     }
@@ -214,14 +77,14 @@ mod tests {
     use ratatui::style::Color;
     use ratatui::style::Modifier;
     use ratatui::style::Style;
+    use tui_pane::Viewport;
 
     use super::PaneFocusState;
     use super::PaneSelectionState;
-    use super::Viewport;
 
     #[test]
     fn active_selection_style_only_adds_background_and_emphasis() {
-        let style = Viewport::selection_style(PaneFocusState::Active);
+        let style = super::selection_style(PaneFocusState::Active);
 
         assert_eq!(style.fg, None);
         assert_eq!(style.bg, Some(super::ACTIVE_FOCUS_COLOR));
@@ -263,7 +126,7 @@ mod tests {
         pane.set_hovered(Some(2));
 
         assert_eq!(
-            pane.selection_state(2, PaneFocusState::Inactive),
+            super::selection_state(&pane, 2, PaneFocusState::Inactive),
             PaneSelectionState::Hovered
         );
     }
@@ -276,7 +139,7 @@ mod tests {
         pane.set_hovered(Some(1));
 
         assert_eq!(
-            pane.selection_state(1, PaneFocusState::Active),
+            super::selection_state(&pane, 1, PaneFocusState::Active),
             PaneSelectionState::Active
         );
     }
@@ -289,7 +152,7 @@ mod tests {
         pane.set_hovered(Some(0));
 
         assert_eq!(
-            pane.selection_state(0, PaneFocusState::Inactive),
+            super::selection_state(&pane, 0, PaneFocusState::Inactive),
             PaneSelectionState::Hovered
         );
     }

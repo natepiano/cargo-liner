@@ -8,6 +8,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::Viewport;
 
 use super::package::RenderStyles;
 use super::pane_impls::CpuPane;
@@ -22,7 +23,6 @@ use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneRule;
 use crate::tui::pane::PaneTitleCount;
-use crate::tui::pane::Viewport;
 
 const CPU_BAR_WIDTH: usize = 10;
 pub(super) const CPU_CONTENT_WIDTH: u16 = 17;
@@ -208,7 +208,7 @@ fn cpu_panel_title(core_count: usize, cursor: Option<usize>) -> String {
 }
 
 fn cpu_row_overlay_style(viewport: &Viewport, logical_row: usize, focus: PaneFocusState) -> Style {
-    viewport.selection_state(logical_row, focus).overlay_style()
+    pane::selection_state(viewport, logical_row, focus).overlay_style()
 }
 
 fn render_selectable_row(
