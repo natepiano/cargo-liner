@@ -75,8 +75,8 @@ use super::background::Background;
 use super::columns;
 use super::columns::LintCell;
 use super::columns::StyledSegment;
-use super::integration::framework_keymap;
-use super::integration::framework_keymap::AppPaneId;
+use super::integration;
+use super::integration::AppPaneId;
 use super::overlays::Overlays;
 use super::pane::PaneFocusState;
 use super::panes::LayoutCache;
@@ -747,7 +747,7 @@ impl App {
 
     pub(super) fn rebuild_framework_keymap_from_disk(&mut self) -> Result<(), String> {
         let framework_builder = FrameworkKeymap::<Self>::builder().vim_mode(
-            framework_keymap::vim_mode_from_config(self.config.current().tui.navigation_keys),
+            integration::vim_mode_from_config(self.config.current().tui.navigation_keys),
         );
         let framework_builder = if let Some(path) = self.keymap.path().map(Path::to_path_buf) {
             let display_path = path.display().to_string();
@@ -761,7 +761,7 @@ impl App {
             framework_builder
         };
         let framework_keymap =
-            framework_keymap::build_framework_keymap(framework_builder, &mut self.framework)
+            integration::build_framework_keymap(framework_builder, &mut self.framework)
                 .map_err(|err| format!("building framework keymap: {err}"))?;
         self.framework_keymap = Rc::new(framework_keymap);
         Ok(())

@@ -44,8 +44,8 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::tui::background::Background;
 use crate::tui::background::BackgroundChannels;
-use crate::tui::integration::framework_keymap;
-use crate::tui::integration::framework_keymap::AppPaneId;
+use crate::tui::integration;
+use crate::tui::integration::AppPaneId;
 use crate::tui::panes::Panes;
 use crate::tui::project_list::ProjectList;
 use crate::tui::settings::StartupSettings;
@@ -218,7 +218,7 @@ impl AppBuilder<Started> {
             },
         );
         let framework_builder = FrameworkKeymap::<App>::builder().vim_mode(
-            framework_keymap::vim_mode_from_config(config.current().tui.navigation_keys),
+            integration::vim_mode_from_config(config.current().tui.navigation_keys),
         );
         let framework_builder = if let Some(path) = keymap_path_buf {
             let display_path = path.display().to_string();
@@ -231,7 +231,7 @@ impl AppBuilder<Started> {
             framework_builder
         };
         let framework_keymap =
-            framework_keymap::build_framework_keymap(framework_builder, &mut framework)
+            integration::build_framework_keymap(framework_builder, &mut framework)
                 .with_context(|| "building framework keymap")?;
         let mut app = App {
             net: crate::tui::state::Net::new(inputs.http_client),

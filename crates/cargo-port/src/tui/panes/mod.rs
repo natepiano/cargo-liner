@@ -110,10 +110,10 @@ pub(super) use widths::compute_project_list_widths;
 pub(super) use widths::name_width_with_gutter;
 
 use super::app::App;
-use super::integration::framework_keymap::AppPaneId;
-use super::integration::framework_keymap::CpuAction;
-use super::integration::framework_keymap::LangAction;
-use super::integration::framework_keymap::NavigationAction;
+use super::integration::AppPaneId;
+use super::integration::CpuAction;
+use super::integration::LangAction;
+use super::integration::NavigationAction;
 pub(super) use super::state::CiDisplay;
 pub(super) use super::state::Lint;
 pub(super) use super::state::LintDisplay;

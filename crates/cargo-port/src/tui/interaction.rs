@@ -250,7 +250,7 @@ mod tests {
     use crate::tui::app::ExpandKey;
     use crate::tui::finder;
     use crate::tui::input;
-    use crate::tui::integration::framework_keymap::AppPaneId;
+    use crate::tui::integration::AppPaneId;
     use crate::tui::pane::HoverTarget;
     use crate::tui::pane::PaneFocusState;
     use crate::tui::pane::PaneRenderCtx;

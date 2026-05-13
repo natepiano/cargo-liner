@@ -13,9 +13,9 @@ use crate::lint;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::app::CargoPortToastAction;
-use crate::tui::integration::config_reload;
-use crate::tui::integration::config_reload::ReloadContext;
-use crate::tui::integration::config_reload::TreeReaction;
+use crate::tui::integration;
+use crate::tui::integration::ReloadContext;
+use crate::tui::integration::TreeReaction;
 use crate::tui::keymap_ui;
 
 impl App {
@@ -158,7 +158,7 @@ impl App {
         let prev_force = self.config.current().debug.force_github_rate_limit;
         let next_force = cfg.debug.force_github_rate_limit;
 
-        let actions = config_reload::collect_reload_actions(
+        let actions = integration::collect_reload_actions(
             self.config.current(),
             cfg,
             ReloadContext {

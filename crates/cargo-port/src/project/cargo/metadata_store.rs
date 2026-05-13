@@ -27,27 +27,27 @@ use crate::project::AbsolutePath;
 /// `App::resolve_metadata` / `App::resolve_target_dir` rather than touching
 /// this type directly.
 #[derive(Debug, Default)]
-pub(crate) struct WorkspaceMetadataStore {
-    pub(crate) by_root:              HashMap<AbsolutePath, WorkspaceMetadata>,
+pub struct WorkspaceMetadataStore {
+    pub by_root:              HashMap<AbsolutePath, WorkspaceMetadata>,
     /// Per-workspace monotonic counter. Every dispatch bumps the counter
     /// and stamps the spawned work with the new value; arrivals only
     /// commit if their stamp still matches the current counter. This
     /// coalesces rapid edits to a single accepted result.
-    pub(crate) dispatch_generations: HashMap<AbsolutePath, u64>,
+    pub dispatch_generations: HashMap<AbsolutePath, u64>,
 }
 
 impl WorkspaceMetadataStore {
-    pub(crate) fn new() -> Self { Self::default() }
+    pub fn new() -> Self { Self::default() }
 
     /// Look up the metadata for the workspace whose root is `workspace_root`.
-    pub(crate) fn get(&self, workspace_root: &AbsolutePath) -> Option<&WorkspaceMetadata> {
+    pub fn get(&self, workspace_root: &AbsolutePath) -> Option<&WorkspaceMetadata> {
         self.by_root.get(workspace_root)
     }
 
     /// Walk `path`'s ancestors and return the first one that has metadata.
     /// Enables callers to resolve `target_directory` from any path inside a
     /// known workspace without having to find the workspace root themselves.
-    pub(crate) fn containing_workspace_root(&self, path: &AbsolutePath) -> Option<&AbsolutePath> {
+    pub fn containing_workspace_root(&self, path: &AbsolutePath) -> Option<&AbsolutePath> {
         let mut cursor: Option<&Path> = Some(path.as_path());
         while let Some(p) = cursor {
             if let Some((root, _)) = self.by_root.iter().find(|(root, _)| root.as_path() == p) {
@@ -62,7 +62,7 @@ impl WorkspaceMetadataStore {
     /// inside a known workspace. Returns `None` when no metadata covers
     /// `path` yet; callers should fall back to `<project_root>/target`.
     /// This is the lock-free core of [`crate::tui::App::resolve_target_dir`].
-    pub(crate) fn resolved_target_dir(&self, path: &AbsolutePath) -> Option<&AbsolutePath> {
+    pub fn resolved_target_dir(&self, path: &AbsolutePath) -> Option<&AbsolutePath> {
         let root = self.containing_workspace_root(path)?;
         self.by_root.get(root).map(|snap| &snap.target_directory)
     }
@@ -76,7 +76,7 @@ impl WorkspaceMetadataStore {
     /// matches — the latter happens transiently when a manifest has
     /// been edited and the follow-up `cargo metadata` hasn't landed
     /// yet, so callers should treat `None` as "Loading…".
-    pub(crate) fn package_for_path(&self, path: &AbsolutePath) -> Option<&PackageRecord> {
+    pub fn package_for_path(&self, path: &AbsolutePath) -> Option<&PackageRecord> {
         let root = self.containing_workspace_root(path)?;
         let snap = self.by_root.get(root)?;
         let expected_manifest = path.as_path().join("Cargo.toml");
@@ -86,7 +86,7 @@ impl WorkspaceMetadataStore {
     }
 
     /// Insert or replace the metadata for `workspace_root`.
-    pub(crate) fn upsert(&mut self, workspace_metadata: WorkspaceMetadata) {
+    pub fn upsert(&mut self, workspace_metadata: WorkspaceMetadata) {
         self.by_root.insert(
             workspace_metadata.workspace_root.clone(),
             workspace_metadata,
@@ -98,7 +98,7 @@ impl WorkspaceMetadataStore {
     /// been replaced between dispatch and arrival) or when the entry's
     /// current `target_directory` no longer matches `target_dir` (a follow-
     /// up `cargo metadata` redirected the target before the walk landed).
-    pub(crate) fn set_out_of_tree_target_bytes(
+    pub fn set_out_of_tree_target_bytes(
         &mut self,
         workspace_root: &AbsolutePath,
         target_dir: &AbsolutePath,
@@ -117,7 +117,7 @@ impl WorkspaceMetadataStore {
     /// Bump the dispatch generation for `workspace_root` and return the new
     /// value. Callers should stamp the spawned work with this value and use
     /// [`Self::is_current_generation`] at merge time.
-    pub(crate) fn next_generation(&mut self, workspace_root: &AbsolutePath) -> u64 {
+    pub fn next_generation(&mut self, workspace_root: &AbsolutePath) -> u64 {
         let slot = self
             .dispatch_generations
             .entry(workspace_root.clone())
@@ -129,18 +129,14 @@ impl WorkspaceMetadataStore {
     /// `true` when the captured `generation` still matches the latest
     /// dispatch for `workspace_root`. Arrivals that fail this check are
     /// stale and should be discarded.
-    pub(crate) fn is_current_generation(
-        &self,
-        workspace_root: &AbsolutePath,
-        generation: u64,
-    ) -> bool {
+    pub fn is_current_generation(&self, workspace_root: &AbsolutePath, generation: u64) -> bool {
         self.dispatch_generations.get(workspace_root).copied() == Some(generation)
     }
 }
 
 /// A single workspace's resolved `cargo metadata` output.
 #[derive(Clone, Debug)]
-pub(crate) struct WorkspaceMetadata {
+pub struct WorkspaceMetadata {
     pub workspace_root:           AbsolutePath,
     pub target_directory:         AbsolutePath,
     pub packages:                 HashMap<PackageId, PackageRecord>,
@@ -160,7 +156,7 @@ pub(crate) struct WorkspaceMetadata {
 /// `cargo_metadata::Package` but keep only the bits the UI and query paths
 /// actually need.
 #[derive(Clone, Debug)]
-pub(crate) struct PackageRecord {
+pub struct PackageRecord {
     pub name:          String,
     pub version:       Version,
     pub edition:       String,
@@ -177,7 +173,7 @@ pub(crate) struct PackageRecord {
 /// encodes three states: any-registry (omitted), never (`publish = false`),
 /// and allowlisted (`publish = ["crates-io", ...]`).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum PublishPolicy {
+pub enum PublishPolicy {
     Any,
     Never,
     Registries(Vec<String>),
@@ -187,7 +183,7 @@ impl PublishPolicy {
     /// Construct from `cargo_metadata::Package::publish` — `None` means any
     /// registry, `Some(empty)` is the canonical `publish = false`, and a
     /// non-empty list is an allowlist.
-    pub(crate) fn from_cargo_publish(raw: Option<&[String]>) -> Self {
+    pub fn from_cargo_publish(raw: Option<&[String]>) -> Self {
         match raw {
             None => Self::Any,
             Some([]) => Self::Never,
@@ -198,7 +194,7 @@ impl PublishPolicy {
 
 /// A single build target (bin, lib, example, test, bench, proc-macro, …).
 #[derive(Clone, Debug)]
-pub(crate) struct TargetRecord {
+pub struct TargetRecord {
     pub name:     String,
     pub kinds:    Vec<TargetKind>,
     pub src_path: AbsolutePath,
@@ -212,7 +208,7 @@ pub(crate) struct TargetRecord {
 /// rationale (content-hash authoritative, `(mtime, len)` as a pre-check,
 /// inode deliberately omitted).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ManifestFingerprint {
+pub struct ManifestFingerprint {
     pub manifest:       FileStamp,
     pub lockfile:       Option<FileStamp>,
     pub rust_toolchain: Option<FileStamp>,
@@ -226,14 +222,14 @@ pub(crate) struct ManifestFingerprint {
 /// bytes. Inode is deliberately omitted — editor atomic-save workflows
 /// rotate inodes on every save even when bytes are identical.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct FileStamp {
+pub struct FileStamp {
     pub content_hash: [u8; 32],
 }
 
 impl FileStamp {
     /// Read `path` and compute its stamp. SHA-256 of the bytes is the
     /// authoritative identity.
-    pub(crate) fn from_path(path: &Path) -> io::Result<Self> {
+    pub fn from_path(path: &Path) -> io::Result<Self> {
         let bytes = fs::read(path)?;
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
@@ -253,7 +249,7 @@ impl ManifestFingerprint {
     /// Missing files are represented as `None` in [`Self::configs`]; a
     /// `None → Some` transition on any config slot is a real change and
     /// invalidates the cached metadata even though no tracked-file edit occurred.
-    pub(crate) fn capture(workspace_root: &Path) -> io::Result<Self> {
+    pub fn capture(workspace_root: &Path) -> io::Result<Self> {
         let manifest = FileStamp::from_path(&workspace_root.join("Cargo.toml"))?;
         let lockfile = optional_stamp(&workspace_root.join("Cargo.lock"))?;
         let rust_toolchain = toolchain_stamp(workspace_root)?;

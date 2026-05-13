@@ -32,7 +32,7 @@ use super::constants::FINDER_POPUP_HEIGHT;
 use super::constants::LABEL_COLOR;
 use super::constants::MAX_FINDER_RESULTS;
 use super::constants::TITLE_COLOR;
-use super::integration::framework_keymap::AppPaneId;
+use super::integration::AppPaneId;
 use super::overlays::PopupFrame;
 use super::pane;
 use super::panes;

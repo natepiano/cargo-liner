@@ -33,13 +33,13 @@ use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::CleanSelection;
 use crate::tui::input;
+use crate::tui::integration;
 #[cfg(test)]
-use crate::tui::integration::framework_keymap::AppNavigation;
-use crate::tui::integration::framework_keymap::AppPaneId;
-use crate::tui::integration::framework_keymap::CpuAction;
-use crate::tui::integration::framework_keymap::LangAction;
-use crate::tui::integration::framework_keymap::NavigationAction;
-use crate::tui::integration::toast_adapters;
+use crate::tui::integration::AppNavigation;
+use crate::tui::integration::AppPaneId;
+use crate::tui::integration::CpuAction;
+use crate::tui::integration::LangAction;
+use crate::tui::integration::NavigationAction;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
     let Some(targets_data) = app.panes.targets.content().cloned() else {
@@ -384,7 +384,7 @@ fn handle_ci_fetch_more(app: &mut App) {
         .start_task("Fetching CI", &project_name);
     let item = TrackedItem {
         label:        project_name,
-        key:          toast_adapters::path_key(&ci_path),
+        key:          integration::path_key(&ci_path),
         started_at:   Some(std::time::Instant::now()),
         completed_at: None,
     };

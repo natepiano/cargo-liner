@@ -7,10 +7,10 @@ use std::path::Path;
 
 use cargo_metadata::TargetKind;
 
-use super::cargo::ExampleGroup;
-use super::cargo::ProjectType;
 use super::metadata_store::PackageRecord;
 use super::metadata_store::PublishPolicy;
+use super::parse::ExampleGroup;
+use super::parse::ProjectType;
 use crate::lint::LintRuns;
 use crate::project::info::ProjectInfo;
 use crate::project::vendored_package::VendoredPackage;
@@ -18,25 +18,25 @@ use crate::project::vendored_package::VendoredPackage;
 /// Rust-specific project data shared by both `Workspace` and `Package`.
 /// Derefs to `ProjectInfo` for uniform metadata access.
 #[derive(Clone, Default)]
-pub(crate) struct RustInfo {
-    pub(crate) info:             ProjectInfo,
-    pub(crate) cargo:            Cargo,
-    pub(crate) vendored:         Vec<VendoredPackage>,
-    pub(crate) lint_runs:        LintRuns,
-    pub(crate) crates_version:   Option<String>,
-    pub(crate) crates_downloads: Option<u64>,
+pub struct RustInfo {
+    pub info:             ProjectInfo,
+    pub cargo:            Cargo,
+    pub vendored:         Vec<VendoredPackage>,
+    pub lint_runs:        LintRuns,
+    pub crates_version:   Option<String>,
+    pub crates_downloads: Option<u64>,
 }
 
 impl RustInfo {
-    pub(crate) fn vendored(&self) -> &[VendoredPackage] { &self.vendored }
+    pub fn vendored(&self) -> &[VendoredPackage] { &self.vendored }
 
-    pub(crate) const fn vendored_mut(&mut self) -> &mut Vec<VendoredPackage> { &mut self.vendored }
+    pub const fn vendored_mut(&mut self) -> &mut Vec<VendoredPackage> { &mut self.vendored }
 
-    pub(crate) fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
+    pub fn crates_version(&self) -> Option<&str> { self.crates_version.as_deref() }
 
-    pub(crate) const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
+    pub const fn crates_downloads(&self) -> Option<u64> { self.crates_downloads }
 
-    pub(crate) fn set_crates_io(&mut self, version: String, downloads: u64) {
+    pub fn set_crates_io(&mut self, version: String, downloads: u64) {
         self.crates_version = Some(version);
         self.crates_downloads = Some(downloads);
     }
@@ -63,12 +63,12 @@ impl DerefMut for RustInfo {
 /// pre-metadata (matches pre-retirement behavior; the metadata later
 /// flips it to `false` when `publish = false`).
 #[derive(Clone, Debug)]
-pub(crate) struct Cargo {
-    pub(crate) types:       Vec<ProjectType>,
-    pub(crate) examples:    Vec<ExampleGroup>,
-    pub(crate) benches:     Vec<String>,
-    pub(crate) test_count:  usize,
-    pub(crate) publishable: bool,
+pub struct Cargo {
+    pub types:       Vec<ProjectType>,
+    pub examples:    Vec<ExampleGroup>,
+    pub benches:     Vec<String>,
+    pub test_count:  usize,
+    pub publishable: bool,
 }
 
 impl Default for Cargo {
@@ -84,28 +84,26 @@ impl Default for Cargo {
 }
 
 impl Cargo {
-    pub(crate) fn types(&self) -> &[ProjectType] { &self.types }
+    pub fn types(&self) -> &[ProjectType] { &self.types }
 
-    pub(crate) fn examples(&self) -> &[ExampleGroup] { &self.examples }
+    pub fn examples(&self) -> &[ExampleGroup] { &self.examples }
 
-    pub(crate) fn benches(&self) -> &[String] { &self.benches }
+    pub fn benches(&self) -> &[String] { &self.benches }
 
-    pub(crate) const fn test_count(&self) -> usize { self.test_count }
+    pub const fn test_count(&self) -> usize { self.test_count }
 
-    pub(crate) fn example_count(&self) -> usize {
-        self.examples.iter().map(|g| g.names.len()).sum()
-    }
+    pub fn example_count(&self) -> usize { self.examples.iter().map(|g| g.names.len()).sum() }
 
     #[allow(
         dead_code,
         reason = "no production callers; kept for future reuse against \
                   PackageRecord.targets."
     )]
-    pub(crate) fn is_binary(&self) -> bool {
+    pub(super) fn is_binary(&self) -> bool {
         self.types.iter().any(|t| matches!(t, ProjectType::Binary))
     }
 
-    pub(crate) const fn publishable(&self) -> bool { self.publishable }
+    pub const fn publishable(&self) -> bool { self.publishable }
 
     /// Derive a `Cargo` from the authoritative [`PackageRecord`] returned
     /// by `cargo metadata`. Called on every metadata arrival (and on
@@ -114,7 +112,7 @@ impl Cargo {
     ///
     /// `ProjectType::Workspace` is not derived here — that's a property
     /// of the `[workspace]` table presence, owned by the parse path.
-    pub(crate) fn from_package_record(record: &PackageRecord) -> Self {
+    pub fn from_package_record(record: &PackageRecord) -> Self {
         let manifest_dir = record.manifest_path.as_path().parent();
         let mut has_lib = false;
         let mut has_bin = false;

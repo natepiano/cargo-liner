@@ -23,7 +23,7 @@ pub(super) use popup::PopupFrame;
 pub(crate) use render_state::FinderPane;
 use tui_pane::FocusedPane;
 
-use super::integration::framework_keymap::AppPaneId;
+use super::integration::AppPaneId;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum FinderMode {

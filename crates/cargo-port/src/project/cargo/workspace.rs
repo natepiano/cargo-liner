@@ -22,23 +22,23 @@ use crate::project::project_fields::ProjectFields;
 /// Construct via struct literal — all fields default to empty/none, so tests
 /// can use `..Default::default()`.
 #[derive(Clone, Default)]
-pub(crate) struct Workspace {
-    pub(crate) path:            AbsolutePath,
-    pub(crate) name:            Option<String>,
-    pub(crate) worktree_status: WorktreeStatus,
-    pub(crate) rust:            RustInfo,
-    pub(crate) groups:          Vec<MemberGroup>,
+pub struct Workspace {
+    pub path:            AbsolutePath,
+    pub name:            Option<String>,
+    pub worktree_status: WorktreeStatus,
+    pub rust:            RustInfo,
+    pub groups:          Vec<MemberGroup>,
 }
 
 impl Workspace {
-    pub(crate) fn groups(&self) -> &[MemberGroup] { &self.groups }
+    pub fn groups(&self) -> &[MemberGroup] { &self.groups }
 
-    pub(crate) const fn groups_mut(&mut self) -> &mut Vec<MemberGroup> { &mut self.groups }
+    pub const fn groups_mut(&mut self) -> &mut Vec<MemberGroup> { &mut self.groups }
 
-    pub(crate) fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members().is_empty()) }
+    pub fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members().is_empty()) }
 
     /// Cargo package name when present, otherwise directory leaf.
-    pub(crate) fn package_name(&self) -> PackageName {
+    pub fn package_name(&self) -> PackageName {
         PackageName(self.name.as_deref().map_or_else(
             || paths::directory_leaf(self.path.as_path()),
             str::to_string,

@@ -6,8 +6,8 @@ use tokei::Languages;
 
 use super::BackgroundMsg;
 use super::cargo_metadata::StreamingScanContext;
-use super::disk_usage::DiskUsageTree;
 use super::disk_usage;
+use super::disk_usage::DiskUsageTree;
 use crate::project::AbsolutePath;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;

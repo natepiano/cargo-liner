@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::git;
-use super::git::CheckoutInfo;
-use super::git::WorktreeStatus;
+use super::state;
+use super::state::CheckoutInfo;
+use super::state::WorktreeStatus;
 use crate::project::info::ProjectInfo;
 use crate::project::info::Visibility;
 use crate::project::info::WorktreeHealth;
@@ -15,7 +15,7 @@ use crate::project::project_fields::ProjectFields;
 
 /// A git submodule that participates as a concrete project-list node.
 #[derive(Clone)]
-pub(crate) struct Submodule {
+pub struct Submodule {
     /// The submodule name from `.gitmodules` (e.g. `glTF-IBL-Sampler`).
     pub name:          String,
     /// Absolute path on disk.
@@ -62,7 +62,7 @@ impl ProjectFields for Submodule {
 static NOT_GIT: WorktreeStatus = WorktreeStatus::NotGit;
 
 /// Parse `.gitmodules` and resolve pinned commits for all submodules.
-pub(crate) fn get_submodules(project_root: &Path) -> Vec<Submodule> {
+pub fn get_submodules(project_root: &Path) -> Vec<Submodule> {
     let gitmodules_path = project_root.join(".gitmodules");
     let Ok(content) = std::fs::read_to_string(&gitmodules_path) else {
         return Vec::new();
@@ -137,7 +137,7 @@ fn parse_key_value(line: &str) -> Option<(&str, &str)> {
 /// Returns a map of `relative_path` → short SHA.
 fn ls_tree_submodule_commits(project_root: &Path) -> HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
-    let output = git::git_command(project_root)
+    let output = state::git_command(project_root)
         .args(["ls-tree", "HEAD"])
         .output();
     let Ok(output) = output else {

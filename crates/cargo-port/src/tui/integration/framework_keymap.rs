@@ -61,7 +61,7 @@ use crate::tui::panes::PaneId;
 /// Stable identifier for every app-side pane the framework keys its
 /// per-pane registries on.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum AppPaneId {
+pub enum AppPaneId {
     ProjectList,
     Package,
     Lang,
@@ -96,7 +96,7 @@ impl AppPaneId {
     /// `AppPaneId` bridges back to the legacy id. App-only variants
     /// only — framework panes (Toasts, Settings, Keymap) are not part
     /// of [`AppPaneId`].
-    pub(crate) const fn to_legacy(self) -> PaneId {
+    pub const fn to_legacy(self) -> PaneId {
         match self {
             Self::ProjectList => PaneId::ProjectList,
             Self::Package => PaneId::Package,
@@ -111,7 +111,7 @@ impl AppPaneId {
         }
     }
 
-    pub(crate) const fn from_legacy(pane: PaneId) -> Option<Self> {
+    pub const fn from_legacy(pane: PaneId) -> Option<Self> {
         match pane {
             PaneId::ProjectList => Some(Self::ProjectList),
             PaneId::Package => Some(Self::Package),
@@ -148,7 +148,7 @@ fn output_is_tabbable(app: &App) -> bool { app.is_pane_tabbable(PaneId::Output) 
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub(crate) enum NavigationAction {
+    pub enum NavigationAction {
         Up    => ("up",    "up",    "Move up");
         Down  => ("down",  "down",  "Move down");
         Left  => ("left",  "left",  "Move left");
@@ -160,7 +160,7 @@ tui_pane::action_enum! {
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub(crate) enum AppGlobalAction {
+    pub enum AppGlobalAction {
         Find         => ("find",          "find",     "Open finder");
         OpenEditor   => ("open_editor",   "editor",   "Open in editor");
         OpenTerminal => ("open_terminal", "terminal", "Open terminal");
@@ -198,7 +198,7 @@ impl AppContext for App {
 
 /// `Navigation<App>` host. Zero-sized because the framework only needs
 /// the type; navigation defaults / dispatch are static methods.
-pub(crate) struct AppNavigation;
+pub struct AppNavigation;
 
 impl Navigation<App> for AppNavigation {
     type Actions = NavigationAction;
@@ -253,7 +253,7 @@ fn dispatch_app_global(action: AppGlobalAction, app: &mut App) {
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Package detail pane.
-pub(crate) struct PackagePane;
+pub struct PackagePane;
 
 impl Pane<App> for PackagePane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Package;
@@ -305,7 +305,7 @@ fn activate_state(ctx: &App) -> ShortcutState {
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Git detail pane.
-pub(crate) struct GitPane;
+pub struct GitPane;
 
 impl Pane<App> for GitPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Git;
@@ -366,20 +366,20 @@ fn git_activate_state(ctx: &App) -> ShortcutState {
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub(crate) enum LangAction {
+    pub enum LangAction {
         Clean => ("clean", "Clean project");
     }
 }
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub(crate) enum CpuAction {
+    pub enum CpuAction {
         Clean => ("clean", "Clean project");
     }
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Lang detail pane.
-pub(crate) struct LangPane;
+pub struct LangPane;
 
 impl Pane<App> for LangPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Lang;
@@ -402,7 +402,7 @@ impl Shortcuts<App> for LangPane {
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Cpu pane.
-pub(crate) struct CpuPane;
+pub struct CpuPane;
 
 impl Pane<App> for CpuPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Cpu;
@@ -425,7 +425,7 @@ impl Shortcuts<App> for CpuPane {
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Targets pane.
-pub(crate) struct TargetsPane;
+pub struct TargetsPane;
 
 impl Pane<App> for TargetsPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Targets;
@@ -450,7 +450,7 @@ impl Shortcuts<App> for TargetsPane {
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Lints pane.
-pub(crate) struct LintsPane;
+pub struct LintsPane;
 
 impl Pane<App> for LintsPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Lints;
@@ -474,7 +474,7 @@ impl Shortcuts<App> for LintsPane {
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the `CiRuns` pane.
-pub(crate) struct CiRunsPane;
+pub struct CiRunsPane;
 
 impl Pane<App> for CiRunsPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::CiRuns;
@@ -521,7 +521,7 @@ fn ci_runs_activate_visibility(ctx: &App) -> Visibility {
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the `ProjectList` pane.
-pub(crate) struct ProjectListPane;
+pub struct ProjectListPane;
 
 impl Pane<App> for ProjectListPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::ProjectList;
@@ -583,7 +583,7 @@ static PROJECT_LIST_VIM_EXTRAS: [(ProjectListAction, KeyBind); 2] = [
 /// First non-`Navigable` pane: `Mode::Static` suppresses the `Nav`
 /// region so the bar shows only `PaneAction` (the `Esc close` slot)
 /// plus the global strip.
-pub(crate) struct OutputPane;
+pub struct OutputPane;
 
 impl Pane<App> for OutputPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Output;
@@ -614,7 +614,7 @@ impl Shortcuts<App> for OutputPane {
 ///   dispatches Finder actions through the framework keymap before falling back to text entry.
 /// - closed → `Mode::Navigable` (default Browse-style behaviour, though while closed the Finder
 ///   pane never actually has focus).
-pub(crate) struct FinderPane;
+pub struct FinderPane;
 
 impl Pane<App> for FinderPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Finder;

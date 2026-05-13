@@ -19,7 +19,7 @@ use crate::project::paths::AbsolutePath;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum ProjectType {
+pub enum ProjectType {
     Workspace,
     Binary,
     Library,
@@ -39,13 +39,13 @@ impl Display for ProjectType {
 
 /// A group of examples in a subdirectory, or root-level examples (empty category).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ExampleGroup {
+pub struct ExampleGroup {
     /// Subdirectory name, or empty for root-level examples.
     pub category: String,
     pub names:    Vec<String>,
 }
 
-pub(crate) enum ProjectParseError {
+pub enum ProjectParseError {
     Read(io::Error),
     Parse(toml::de::Error),
 }
@@ -60,7 +60,7 @@ impl Display for ProjectParseError {
 }
 
 /// Result of parsing a `Cargo.toml`: either a workspace or a standalone package.
-pub(crate) enum CargoParseResult {
+pub enum CargoParseResult {
     Workspace(Workspace),
     Package(Package),
 }
@@ -77,9 +77,7 @@ pub(crate) enum CargoParseResult {
 /// extracts the fields needed to classify a project at parse time
 /// (`[package] name`, `[workspace]` presence) and the on-disk
 /// worktree state.
-pub(crate) fn from_cargo_toml(
-    cargo_toml_path: &Path,
-) -> Result<CargoParseResult, ProjectParseError> {
+pub fn from_cargo_toml(cargo_toml_path: &Path) -> Result<CargoParseResult, ProjectParseError> {
     let contents = std::fs::read_to_string(cargo_toml_path).map_err(ProjectParseError::Read)?;
     let table: Table = contents.parse().map_err(ProjectParseError::Parse)?;
 
@@ -123,7 +121,7 @@ pub(crate) fn from_cargo_toml(
 }
 
 /// Create a project entry for a non-Rust git repository (no `Cargo.toml`).
-pub(crate) fn from_git_dir(project_dir: &Path) -> NonRustProject {
+pub fn from_git_dir(project_dir: &Path) -> NonRustProject {
     let name = project_dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string());

@@ -5,7 +5,7 @@ use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
 use crate::scan::DirSizes;
 use crate::tui::app::App;
-use crate::tui::integration::toast_adapters;
+use crate::tui::integration;
 
 impl App {
     pub fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
@@ -58,7 +58,7 @@ impl App {
         let abs = AbsolutePath::from(path);
         self.startup.disk.seen.insert(abs.clone());
         if let Some(disk_toast) = self.startup.disk.toast {
-            let key = toast_adapters::path_key(&abs);
+            let key = integration::path_key(&abs);
             self.framework.toasts.mark_item_completed(disk_toast, &key);
         }
         self.handle_disk_usage(path, bytes);
@@ -72,7 +72,7 @@ impl App {
         self.scan.bump_generation();
         self.startup.disk.seen.insert(root_path.clone());
         if let Some(disk_toast) = self.startup.disk.toast {
-            let key = toast_adapters::path_key(root_path);
+            let key = integration::path_key(root_path);
             self.framework.toasts.mark_item_completed(disk_toast, &key);
         }
         self.handle_disk_usage_batch(entries);

@@ -1,15 +1,10 @@
-mod cargo;
 mod metadata_store;
 mod package;
+mod parse;
 mod rust_info;
 mod rust_project;
 mod workspace;
 
-pub(crate) use cargo::CargoParseResult;
-pub(crate) use cargo::ExampleGroup;
-pub(crate) use cargo::ProjectType;
-pub(crate) use cargo::from_cargo_toml;
-pub(crate) use cargo::from_git_dir;
 pub(crate) use metadata_store::FileStamp;
 pub(crate) use metadata_store::ManifestFingerprint;
 pub(crate) use metadata_store::PackageRecord;
@@ -18,6 +13,11 @@ pub(crate) use metadata_store::TargetRecord;
 pub(crate) use metadata_store::WorkspaceMetadata;
 pub(crate) use metadata_store::WorkspaceMetadataStore;
 pub(crate) use package::Package;
+pub(crate) use parse::CargoParseResult;
+pub(crate) use parse::ExampleGroup;
+pub(crate) use parse::ProjectType;
+pub(crate) use parse::from_cargo_toml;
+pub(crate) use parse::from_git_dir;
 pub(crate) use rust_info::Cargo;
 pub(crate) use rust_info::RustInfo;
 pub(crate) use rust_project::RustProject;

@@ -3,13 +3,9 @@ use tui_pane::TrackedItemKey;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 
-pub(crate) fn path_key(path: &AbsolutePath) -> TrackedItemKey {
-    TrackedItemKey::new(path.to_string())
-}
+pub fn path_key(path: &AbsolutePath) -> TrackedItemKey { TrackedItemKey::new(path.to_string()) }
 
-pub(crate) fn owner_repo_key(repo: &OwnerRepo) -> TrackedItemKey {
-    TrackedItemKey::new(repo.to_string())
-}
+pub fn owner_repo_key(repo: &OwnerRepo) -> TrackedItemKey { TrackedItemKey::new(repo.to_string()) }
 
 #[cfg(test)]
 mod tests {

@@ -37,11 +37,15 @@ impl SelectionMutation<'_> {
 
     /// Insert `key` into the expansion set. Returns `true` if the key
     /// was newly inserted.
-    pub fn expand(&mut self, key: ExpandKey) -> bool { self.project_list.expanded.insert(key) }
+    pub(super) fn expand(&mut self, key: ExpandKey) -> bool {
+        self.project_list.expanded.insert(key)
+    }
 
     /// Remove `key` from the expansion set. Returns `true` if the key
     /// was present.
-    pub fn collapse(&mut self, key: &ExpandKey) -> bool { self.project_list.expanded.remove(key) }
+    pub(super) fn collapse(&mut self, key: &ExpandKey) -> bool {
+        self.project_list.expanded.remove(key)
+    }
 
     /// Mutable access to the underlying expansion set, for bulk
     /// operations (e.g. `clear`, multi-key inserts) that still want

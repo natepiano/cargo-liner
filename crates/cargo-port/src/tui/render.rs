@@ -37,7 +37,7 @@ use super::constants::STATUS_BAR_COLOR;
 use super::constants::SUCCESS_COLOR;
 use super::constants::TITLE_COLOR;
 use super::finder;
-use super::integration::framework_keymap::AppGlobalAction;
+use super::integration::AppGlobalAction;
 use super::interaction;
 use super::keymap_ui;
 use super::overlays::PopupFrame;

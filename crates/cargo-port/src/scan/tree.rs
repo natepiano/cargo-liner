@@ -514,10 +514,7 @@ mod tests {
     use crate::project::Workspace;
     use crate::project::WorktreeStatus;
 
-    fn status_for(
-        is_linked_worktree: bool,
-        primary_abs: Option<&str>,
-    ) -> WorktreeStatus {
+    fn status_for(is_linked_worktree: bool, primary_abs: Option<&str>) -> WorktreeStatus {
         match (is_linked_worktree, primary_abs) {
             (_, None) => WorktreeStatus::NotGit,
             (true, Some(p)) => WorktreeStatus::Linked {

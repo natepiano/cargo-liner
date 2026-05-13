@@ -11,6 +11,7 @@ use super::BackgroundMsg;
 use super::emit_git_info;
 use super::emit_service_signal;
 use super::tree;
+use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::config::NonRustInclusion;
 use crate::enrichment;
@@ -20,7 +21,6 @@ use crate::project::AbsolutePath;
 use crate::project::GitRepoPresence;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
-use crate::ci::CiRun;
 
 /// Build a normalized project item for a discovered root directory.
 ///

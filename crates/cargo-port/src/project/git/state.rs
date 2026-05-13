@@ -19,7 +19,7 @@ use crate::project::paths::AbsolutePath;
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum GitOrigin {
+pub enum GitOrigin {
     /// A local-only repo (no origin remote).
     Local,
     /// A plain git clone (has "origin" remote).
@@ -30,7 +30,7 @@ pub(crate) enum GitOrigin {
 
 /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-pub(crate) enum WorkflowPresence {
+pub enum WorkflowPresence {
     /// At least one workflow YAML file exists.
     Present,
     /// No workflow files found (or no `.github/workflows/` directory).
@@ -39,14 +39,14 @@ pub(crate) enum WorkflowPresence {
 }
 
 impl WorkflowPresence {
-    pub(crate) const fn is_present(self) -> bool { matches!(self, Self::Present) }
+    pub const fn is_present(self) -> bool { matches!(self, Self::Present) }
 }
 
 /// How a single git remote relates to the repo: a plain clone or the fork
 /// origin when an `upstream` remote also exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum RemoteKind {
+pub enum RemoteKind {
     Clone,
     Fork,
 }
@@ -54,7 +54,7 @@ pub(crate) enum RemoteKind {
 /// Per-remote metadata. A repo may have any number of these (`origin`,
 /// `upstream`, and others).
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct RemoteInfo {
+pub struct RemoteInfo {
     pub name:         String,
     pub url:          Option<String>,
     pub owner:        Option<String>,
@@ -67,7 +67,7 @@ pub(crate) struct RemoteInfo {
 /// Per-checkout git metadata: state that can legitimately differ between
 /// two worktrees of the same repo. Lives inside `ProjectInfo.local_git_state`.
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct CheckoutInfo {
+pub struct CheckoutInfo {
     /// Git path state (clean, modified, untracked, etc.) for this project path.
     pub status:              GitStatus,
     /// The current branch name.
@@ -87,7 +87,7 @@ impl CheckoutInfo {
     /// The remote matching the current branch's `@{upstream}` within
     /// `repo`, if any. Lookup is by name match against
     /// `repo.remotes[i].tracked_ref` — this is rendered data, not hot.
-    pub(crate) fn primary_remote<'r>(&self, repo: &'r RepoInfo) -> Option<&'r RemoteInfo> {
+    pub fn primary_remote<'r>(&self, repo: &'r RepoInfo) -> Option<&'r RemoteInfo> {
         let want = self.primary_tracked_ref.as_deref()?;
         repo.remotes
             .iter()
@@ -95,24 +95,24 @@ impl CheckoutInfo {
     }
 
     /// The primary remote's URL, looked up against `repo`.
-    pub(crate) fn primary_url<'r>(&self, repo: &'r RepoInfo) -> Option<&'r str> {
+    pub fn primary_url<'r>(&self, repo: &'r RepoInfo) -> Option<&'r str> {
         self.primary_remote(repo).and_then(|r| r.url.as_deref())
     }
 
     /// The primary remote's ahead/behind vs its tracked ref.
-    pub(crate) fn primary_ahead_behind(&self, repo: &RepoInfo) -> Option<(usize, usize)> {
+    pub fn primary_ahead_behind(&self, repo: &RepoInfo) -> Option<(usize, usize)> {
         self.primary_remote(repo).and_then(|r| r.ahead_behind)
     }
 
     /// The primary remote's tracked ref (e.g. `origin/main`).
-    pub(crate) fn primary_tracked_ref(&self) -> Option<&str> { self.primary_tracked_ref.as_deref() }
+    pub fn primary_tracked_ref(&self) -> Option<&str> { self.primary_tracked_ref.as_deref() }
 }
 
 /// Repo-level metadata: state that is the same across every checkout of
 /// the same git repo. Lives on `GitRepo::repo_info` so siblings cannot
 /// drift.
 #[derive(Debug, Clone, Default, Serialize)]
-pub(crate) struct RepoInfo {
+pub struct RepoInfo {
     /// All remotes declared for this repo.
     pub remotes:           Vec<RemoteInfo>,
     /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
@@ -130,7 +130,7 @@ pub(crate) struct RepoInfo {
 
 impl RepoInfo {
     /// Repo-level origin classification derived from `remotes`.
-    pub(crate) fn origin_kind(&self) -> GitOrigin {
+    pub fn origin_kind(&self) -> GitOrigin {
         if self.remotes.is_empty() {
             GitOrigin::Local
         } else if self.remotes.iter().any(|r| r.name == "upstream") {
@@ -146,7 +146,7 @@ impl RepoInfo {
     /// primary checkout's path) and shared across every linked
     /// worktree. Excludes `first_commit`, which is handled by
     /// `schedule_git_first_commit_refreshes` batched by repo root.
-    pub(crate) fn get(probe_path: &Path) -> Option<Self> {
+    pub fn get(probe_path: &Path) -> Option<Self> {
         let repo_root = git_repo_root(probe_path)?;
         let cfg = config::active_config();
 
@@ -193,7 +193,7 @@ impl CheckoutInfo {
     /// usually pulled from the entry's `RepoInfo.local_main_branch`,
     /// which is identical across siblings so probing it once at the
     /// `RepoInfo::get` call avoids redundant work.
-    pub(crate) fn get(probe_path: &Path, local_main_branch: Option<&str>) -> Option<Self> {
+    pub fn get(probe_path: &Path, local_main_branch: Option<&str>) -> Option<Self> {
         let repo_root = git_repo_root(probe_path)?;
 
         let branch = get_current_branch(&repo_root);
@@ -450,7 +450,7 @@ fn get_workflow_presence(repo_root: &Path) -> WorkflowPresence {
 /// Ahead/behind of `worktree_dir`'s HEAD vs `primary_dir`'s HEAD. The
 /// primary HEAD is resolved to a commit SHA so refs resolve cleanly across
 /// the worktree's ref namespace.
-pub(crate) fn worktree_ahead_behind_primary(
+pub fn worktree_ahead_behind_primary(
     worktree_dir: &Path,
     primary_dir: &Path,
 ) -> Option<(usize, usize)> {
@@ -467,7 +467,7 @@ pub(crate) fn worktree_ahead_behind_primary(
     )
 }
 
-pub(crate) fn get_first_commit(project_dir: &Path) -> Option<String> {
+pub fn get_first_commit(project_dir: &Path) -> Option<String> {
     let repo_root = git_repo_root(project_dir)?;
     git_output_logged(
         &repo_root,
@@ -526,7 +526,7 @@ fn git_output_logged<const N: usize>(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum GitStatus {
+pub enum GitStatus {
     Clean,
     Modified,
     Untracked,
@@ -534,7 +534,7 @@ pub(crate) enum GitStatus {
 }
 
 impl GitStatus {
-    pub(crate) const fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Clean => "clean",
             Self::Modified => "modified",
@@ -543,7 +543,7 @@ impl GitStatus {
         }
     }
 
-    pub(crate) const fn icon(self) -> &'static str {
+    pub const fn icon(self) -> &'static str {
         match self {
             Self::Clean => GIT_STATUS_CLEAN,
             Self::Modified => GIT_STATUS_MODIFIED,
@@ -552,7 +552,7 @@ impl GitStatus {
         }
     }
 
-    pub(crate) fn label_with_icon(self) -> String {
+    pub fn label_with_icon(self) -> String {
         let icon = self.icon();
         if icon.is_empty() {
             self.label().to_string()
@@ -565,7 +565,7 @@ impl GitStatus {
 /// Wrapper for `CheckoutInfo` that distinguishes "not yet detected"
 /// from "detected with full metadata."
 #[derive(Clone, Debug, Default)]
-pub(crate) enum LocalGitState {
+pub enum LocalGitState {
     /// Not yet detected (during startup/scan).
     #[default]
     Pending,
@@ -574,7 +574,7 @@ pub(crate) enum LocalGitState {
 }
 
 impl LocalGitState {
-    pub(crate) fn info(&self) -> Option<&CheckoutInfo> {
+    pub fn info(&self) -> Option<&CheckoutInfo> {
         match self {
             Self::Detected(info) => Some(info),
             Self::Pending => None,
@@ -648,7 +648,7 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
     state
 }
 
-pub(crate) fn git_repo_root(project_dir: &Path) -> Option<AbsolutePath> {
+pub fn git_repo_root(project_dir: &Path) -> Option<AbsolutePath> {
     project_dir
         .ancestors()
         .find(|dir| {
@@ -663,7 +663,7 @@ pub(crate) fn git_repo_root(project_dir: &Path) -> Option<AbsolutePath> {
 /// For normal repos, returns `repo_root/.git`.
 /// For worktrees, `.git` is a file containing `gitdir: <path>` — this
 /// function reads that file and returns the resolved path.
-pub(crate) fn resolve_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
+pub fn resolve_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
     let git_path = repo_root.join(".git");
     if git_path.is_dir() {
         return Some(git_path.into());
@@ -681,7 +681,7 @@ pub(crate) fn resolve_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
 /// For normal repos this is the same path as [`resolve_git_dir`]. For linked
 /// worktrees, the resolved git dir may contain a `commondir` file pointing back
 /// to the shared `<primary>/.git` directory where branch refs are updated.
-pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
+pub fn resolve_common_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
     let git_dir = resolve_git_dir(repo_root)?;
     let commondir_path = git_dir.join("commondir");
     if !commondir_path.is_file() {
@@ -818,18 +818,18 @@ fn parse_remote_url(raw: &str) -> (Option<String>, Option<String>, Option<String
 
 /// Whether a project path lives inside a git repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GitRepoPresence {
+pub enum GitRepoPresence {
     InRepo,
     OutsideRepo,
 }
 
 impl GitRepoPresence {
-    pub(crate) const fn is_in_repo(self) -> bool { matches!(self, Self::InRepo) }
+    pub const fn is_in_repo(self) -> bool { matches!(self, Self::InRepo) }
 }
 
 /// Check if a project directory is a broken worktree — `.git` is a file whose
 /// gitdir target does not exist on disk.
-pub(crate) fn get_worktree_health(project_dir: &Path) -> WorktreeHealth {
+pub fn get_worktree_health(project_dir: &Path) -> WorktreeHealth {
     let git_path = project_dir.join(".git");
     if !git_path.is_file() {
         return WorktreeHealth::Normal;
@@ -857,7 +857,7 @@ pub(crate) fn get_worktree_health(project_dir: &Path) -> WorktreeHealth {
 /// distinguishing the two ensures we always know whether this project
 /// sits on the main checkout or on a linked one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum WorktreeStatus {
+pub enum WorktreeStatus {
     #[default]
     NotGit,
     Primary {
@@ -869,12 +869,12 @@ pub(crate) enum WorktreeStatus {
 }
 
 impl WorktreeStatus {
-    pub(crate) const fn is_linked_worktree(&self) -> bool { matches!(self, Self::Linked { .. }) }
+    pub const fn is_linked_worktree(&self) -> bool { matches!(self, Self::Linked { .. }) }
 
     /// Canonical path of the primary repo root (where `.git/` is a
     /// directory). For `NotGit` returns `None`; for both `Primary` and
     /// `Linked` returns the primary repo's root.
-    pub(crate) const fn primary_root(&self) -> Option<&AbsolutePath> {
+    pub const fn primary_root(&self) -> Option<&AbsolutePath> {
         match self {
             Self::NotGit => None,
             Self::Primary { root } => Some(root),
@@ -886,7 +886,7 @@ impl WorktreeStatus {
 /// Get the git worktree status for a project directory by walking up
 /// until a `.git` entry is found: file → `Linked`, directory → `Primary`,
 /// nothing found → `NotGit`.
-pub(crate) fn get_worktree_status(project_dir: &Path) -> WorktreeStatus {
+pub fn get_worktree_status(project_dir: &Path) -> WorktreeStatus {
     let mut dir = project_dir;
     loop {
         let git_path = dir.join(".git");

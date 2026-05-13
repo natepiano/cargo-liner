@@ -51,10 +51,11 @@ pub(crate) use tree::build_tree;
 pub(crate) use tree::cargo_project_to_item;
 pub(crate) use tree::dir_size;
 pub(crate) use tree::normalize_workspace_path;
-use crate::project::LanguageStats;
-use crate::lint::LintStatus;
-use crate::ci::OwnerRepo;
+
 use crate::ci::CiRun;
+use crate::ci::OwnerRepo;
+use crate::lint::LintStatus;
+use crate::project::LanguageStats;
 
 /// Messages sent from background threads to the main event loop.
 pub(crate) enum BackgroundMsg {

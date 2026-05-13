@@ -18,7 +18,7 @@ use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
 use crate::tui::app::App;
 use crate::tui::constants::STARTUP_PHASE_GITHUB;
-use crate::tui::integration::toast_adapters;
+use crate::tui::integration;
 
 impl App {
     pub(super) fn spawn_repo_fetch_for_git_info(&mut self, path: &Path, repo_url: &str) {
@@ -117,7 +117,7 @@ impl App {
                 .unwrap_or_else(|| AbsolutePath::from(path));
             self.startup.git.seen.insert(git_dir.clone());
             if let Some(git_toast) = self.startup.git.toast {
-                let key = toast_adapters::path_key(&git_dir);
+                let key = integration::path_key(&git_dir);
                 self.framework.toasts.mark_item_completed(git_toast, &key);
             }
             self.maybe_log_startup_phase_completions();

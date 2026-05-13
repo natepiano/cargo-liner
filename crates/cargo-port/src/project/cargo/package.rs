@@ -19,16 +19,16 @@ use crate::project::project_fields::ProjectFields;
 /// Construct via struct literal: `Package { path, name, rust: RustInfo { .. } }`.
 /// All fields default to empty/none, so tests can use `..Default::default()`.
 #[derive(Clone, Default)]
-pub(crate) struct Package {
-    pub(crate) path:            AbsolutePath,
-    pub(crate) name:            Option<String>,
-    pub(crate) worktree_status: WorktreeStatus,
-    pub(crate) rust:            RustInfo,
+pub struct Package {
+    pub path:            AbsolutePath,
+    pub name:            Option<String>,
+    pub worktree_status: WorktreeStatus,
+    pub rust:            RustInfo,
 }
 
 impl Package {
     /// Cargo package name when present, otherwise directory leaf.
-    pub(crate) fn package_name(&self) -> PackageName {
+    pub fn package_name(&self) -> PackageName {
         PackageName(self.name.as_deref().map_or_else(
             || paths::directory_leaf(self.path.as_path()),
             str::to_string,
@@ -36,7 +36,7 @@ impl Package {
     }
 
     /// Language icon for the project list.
-    pub(crate) const fn lang_icon() -> &'static str { "\u{1f980}" }
+    pub const fn lang_icon() -> &'static str { "\u{1f980}" }
 }
 
 impl ProjectFields for Package {

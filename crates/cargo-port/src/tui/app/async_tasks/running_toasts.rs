@@ -8,13 +8,13 @@ use tui_pane::toast_body_width;
 
 use crate::project;
 use crate::tui::app::App;
-use crate::tui::integration::toast_adapters;
+use crate::tui::integration;
 
 impl App {
     pub fn sync_running_clean_toast(&mut self) {
         let (toast_slot, items) = self.inflight.clean().items_for_toast(
             |p| project::home_relative_path(p.as_path()),
-            toast_adapters::path_key,
+            integration::path_key,
         );
         let next = self.sync_running_toast(toast_slot, "cargo clean", &items[..]);
         self.inflight.clean_mut().toast = next;
@@ -22,7 +22,7 @@ impl App {
     pub(super) fn sync_running_lint_toast(&mut self) {
         let (toast_slot, items) = self.lint.running().items_for_toast(
             |p| project::home_relative_path(p.as_path()),
-            toast_adapters::path_key,
+            integration::path_key,
         );
         let next = self.sync_running_toast(toast_slot, "Lints", &items);
         self.lint.running_mut().toast = next;
@@ -34,7 +34,7 @@ impl App {
             .net
             .github
             .running()
-            .items_for_toast(ToString::to_string, toast_adapters::owner_repo_key);
+            .items_for_toast(ToString::to_string, integration::owner_repo_key);
         let next = self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &items);
         self.net.github.running_mut().toast = next;
     }

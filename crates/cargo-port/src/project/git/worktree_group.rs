@@ -17,19 +17,19 @@ use crate::project::vendored_package::VendoredPackage;
 /// `Package`). Mixed-kind groups arise during workspace conversion when one
 /// checkout has been converted and another has not.
 #[derive(Clone)]
-pub(crate) struct WorktreeGroup {
-    pub(crate) primary: RustProject,
-    pub(crate) linked:  Vec<RustProject>,
+pub struct WorktreeGroup {
+    pub primary: RustProject,
+    pub linked:  Vec<RustProject>,
 }
 
 impl WorktreeGroup {
-    pub(crate) const fn new(primary: RustProject, linked: Vec<RustProject>) -> Self {
+    pub const fn new(primary: RustProject, linked: Vec<RustProject>) -> Self {
         Self { primary, linked }
     }
 
-    pub(crate) fn primary_path(&self) -> &AbsolutePath { self.primary.path() }
+    pub fn primary_path(&self) -> &AbsolutePath { self.primary.path() }
 
-    pub(crate) fn derived_visibility(&self) -> Visibility {
+    pub fn derived_visibility(&self) -> Visibility {
         if self.visible_entry_count() > 0 {
             return Visibility::Visible;
         }
@@ -39,11 +39,9 @@ impl WorktreeGroup {
         Visibility::Dismissed
     }
 
-    pub(crate) fn primary_worktree_health(&self) -> WorktreeHealth {
-        self.primary.worktree_health()
-    }
+    pub fn primary_worktree_health(&self) -> WorktreeHealth { self.primary.worktree_health() }
 
-    pub(crate) fn live_entry_count(&self) -> usize {
+    pub fn live_entry_count(&self) -> usize {
         self.iter_visibility()
             .filter(|v| !matches!(v, Visibility::Dismissed))
             .count()
@@ -51,21 +49,21 @@ impl WorktreeGroup {
 
     fn has_deleted_entry(&self) -> bool { self.iter_visibility().any(|v| v == Visibility::Deleted) }
 
-    pub(crate) fn visible_entry_count(&self) -> usize {
+    pub fn visible_entry_count(&self) -> usize {
         self.iter_visibility()
             .filter(|v| *v == Visibility::Visible)
             .count()
     }
 
-    pub(crate) fn renders_as_group(&self) -> bool { self.live_entry_count() > 1 }
+    pub fn renders_as_group(&self) -> bool { self.live_entry_count() > 1 }
 
     /// Iterate every entry (primary + linked) in canonical order.
-    pub(crate) fn iter_entries(&self) -> impl Iterator<Item = &RustProject> + '_ {
+    pub fn iter_entries(&self) -> impl Iterator<Item = &RustProject> + '_ {
         std::iter::once(&self.primary).chain(self.linked.iter())
     }
 
     /// Returns the single non-dismissed entry if exactly one is live.
-    pub(crate) fn single_live(&self) -> Option<&RustProject> {
+    pub fn single_live(&self) -> Option<&RustProject> {
         if self.live_entry_count() != 1 {
             return None;
         }
@@ -74,7 +72,7 @@ impl WorktreeGroup {
     }
 
     /// If the only live entry is a workspace, return it.
-    pub(crate) fn single_live_workspace(&self) -> Option<&Workspace> {
+    pub fn single_live_workspace(&self) -> Option<&Workspace> {
         match self.single_live()? {
             RustProject::Workspace(ws) => Some(ws),
             RustProject::Package(_) => None,
@@ -85,7 +83,7 @@ impl WorktreeGroup {
     ///
     /// Running takes priority: if any entry is actively running, the rollup
     /// reports Running so the user sees that work is in progress.
-    pub(crate) fn lint_rollup_status(&self) -> LintStatus {
+    pub fn lint_rollup_status(&self) -> LintStatus {
         let statuses: Vec<LintStatus> =
             std::iter::once(self.primary.rust_info().lint_runs.status())
                 .chain(
@@ -109,7 +107,7 @@ impl WorktreeGroup {
 
     /// Iterate the group's checkout paths in canonical order: primary first,
     /// then each linked checkout.
-    pub(crate) fn iter_paths(&self) -> impl Iterator<Item = &AbsolutePath> + '_ {
+    pub fn iter_paths(&self) -> impl Iterator<Item = &AbsolutePath> + '_ {
         self.iter_entries().map(ProjectFields::path)
     }
 
@@ -120,7 +118,7 @@ impl WorktreeGroup {
     }
 
     /// Resolve the entry at index `wi` (0 = primary).
-    pub(crate) fn entry(&self, wi: usize) -> Option<&RustProject> {
+    pub fn entry(&self, wi: usize) -> Option<&RustProject> {
         if wi == 0 {
             Some(&self.primary)
         } else {
@@ -130,7 +128,7 @@ impl WorktreeGroup {
 
     /// Resolve a member `Package` inside a worktree workspace entry. Returns
     /// `None` if the entry is a `Package` (no member-of-workspace).
-    pub(crate) fn member_ref(
+    pub fn member_ref(
         &self,
         worktree_index: usize,
         group_index: usize,
@@ -143,7 +141,7 @@ impl WorktreeGroup {
     }
 
     /// Resolve a vendored package inside a worktree entry.
-    pub(crate) fn vendored_ref(
+    pub fn vendored_ref(
         &self,
         worktree_index: usize,
         vendored_index: usize,
@@ -155,12 +153,12 @@ impl WorktreeGroup {
     }
 
     /// Display path for a single worktree entry (0 = primary).
-    pub(crate) fn worktree_display_path(&self, wi: usize) -> Option<DisplayPath> {
+    pub fn worktree_display_path(&self, wi: usize) -> Option<DisplayPath> {
         self.entry(wi).map(ProjectFields::display_path)
     }
 
     /// Display path for a member inside a worktree workspace entry.
-    pub(crate) fn worktree_member_display_path(
+    pub fn worktree_member_display_path(
         &self,
         wi: usize,
         gi: usize,
@@ -177,11 +175,7 @@ impl WorktreeGroup {
     }
 
     /// Display path for a vendored package inside a worktree entry.
-    pub(crate) fn worktree_vendored_display_path(
-        &self,
-        wi: usize,
-        vi: usize,
-    ) -> Option<DisplayPath> {
+    pub fn worktree_vendored_display_path(&self, wi: usize, vi: usize) -> Option<DisplayPath> {
         self.entry(wi)?
             .rust_info()
             .vendored()
@@ -190,12 +184,12 @@ impl WorktreeGroup {
     }
 
     /// Owned absolute path for a worktree entry.
-    pub(crate) fn worktree_abs_path(&self, wi: usize) -> Option<AbsolutePath> {
+    pub fn worktree_abs_path(&self, wi: usize) -> Option<AbsolutePath> {
         self.entry(wi).map(|p| p.path().clone())
     }
 
     /// Owned absolute path for a member inside a worktree workspace entry.
-    pub(crate) fn worktree_member_abs_path(
+    pub fn worktree_member_abs_path(
         &self,
         wi: usize,
         gi: usize,
@@ -212,7 +206,7 @@ impl WorktreeGroup {
     }
 
     /// Owned absolute path for a vendored package inside a worktree entry.
-    pub(crate) fn worktree_vendored_abs_path(&self, wi: usize, vi: usize) -> Option<AbsolutePath> {
+    pub fn worktree_vendored_abs_path(&self, wi: usize, vi: usize) -> Option<AbsolutePath> {
         self.entry(wi)?
             .rust_info()
             .vendored()
@@ -221,17 +215,12 @@ impl WorktreeGroup {
     }
 
     /// Borrowed `Path` for a worktree entry.
-    pub(crate) fn worktree_path_ref(&self, wi: usize) -> Option<&Path> {
+    pub fn worktree_path_ref(&self, wi: usize) -> Option<&Path> {
         self.entry(wi).map(|p| p.path().as_path())
     }
 
     /// Borrowed `Path` for a member inside a worktree workspace entry.
-    pub(crate) fn worktree_member_path_ref(
-        &self,
-        wi: usize,
-        gi: usize,
-        mi: usize,
-    ) -> Option<&Path> {
+    pub fn worktree_member_path_ref(&self, wi: usize, gi: usize, mi: usize) -> Option<&Path> {
         let RustProject::Workspace(ws) = self.entry(wi)? else {
             return None;
         };
@@ -243,7 +232,7 @@ impl WorktreeGroup {
     }
 
     /// Borrowed `Path` for a vendored package inside a worktree entry.
-    pub(crate) fn worktree_vendored_path_ref(&self, wi: usize, vi: usize) -> Option<&Path> {
+    pub fn worktree_vendored_path_ref(&self, wi: usize, vi: usize) -> Option<&Path> {
         self.entry(wi)?
             .rust_info()
             .vendored()
@@ -252,7 +241,7 @@ impl WorktreeGroup {
     }
 
     /// Lint status for a single worktree entry by index (0 = primary).
-    pub(crate) fn lint_status_for_worktree(&self, worktree_index: usize) -> LintStatus {
+    pub fn lint_status_for_worktree(&self, worktree_index: usize) -> LintStatus {
         self.entry(worktree_index).map_or(LintStatus::NoLog, |p| {
             p.rust_info().lint_runs.status().clone()
         })

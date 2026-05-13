@@ -6,7 +6,7 @@ use crate::scan;
 use crate::scan::CargoMetadataError;
 use crate::tui::app::App;
 use crate::tui::app::target_index::TargetDirMember;
-use crate::tui::integration::toast_adapters;
+use crate::tui::integration;
 
 impl App {
     /// Merge a `cargo metadata` arrival back into the process-wide store and
@@ -85,7 +85,7 @@ impl App {
         }
 
         if let Some(task_id) = self.startup.metadata.toast {
-            let key = toast_adapters::path_key(&workspace_root);
+            let key = integration::path_key(&workspace_root);
             self.framework.toasts.mark_item_completed(task_id, &key);
         }
         // If the user had a confirm popup waiting on this workspace's
