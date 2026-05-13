@@ -26,6 +26,7 @@ use tui_pane::Mode;
 use tui_pane::Navigation;
 use tui_pane::Pane;
 use tui_pane::ToastCommand;
+use tui_pane::Viewport;
 
 use super::app::App;
 use super::app::CleanSelection;
@@ -456,7 +457,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
     }
 }
 
-fn scroll_modal_overlay_at(app: &mut App, pos: Position, up: bool) -> bool {
+const fn scroll_modal_overlay_at(app: &mut App, pos: Position, up: bool) -> bool {
     if app.overlays.is_finder_open() {
         scroll_viewport_if_contains(&mut app.overlays.finder_pane.viewport, pos, up);
         return true;
@@ -475,7 +476,7 @@ fn scroll_modal_overlay_at(app: &mut App, pos: Position, up: bool) -> bool {
     }
 }
 
-fn scroll_viewport_if_contains(viewport: &mut tui_pane::Viewport, pos: Position, up: bool) {
+const fn scroll_viewport_if_contains(viewport: &mut Viewport, pos: Position, up: bool) {
     if !viewport.content_area().contains(pos) {
         return;
     }
