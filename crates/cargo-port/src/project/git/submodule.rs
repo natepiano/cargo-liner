@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::state;
-use super::state::CheckoutInfo;
-use super::state::WorktreeStatus;
+use super::checkout::CheckoutInfo;
+use super::command;
+use super::discovery::WorktreeStatus;
 use crate::project::info::ProjectInfo;
 use crate::project::info::Visibility;
 use crate::project::info::WorktreeHealth;
@@ -137,7 +137,7 @@ fn parse_key_value(line: &str) -> Option<(&str, &str)> {
 /// Returns a map of `relative_path` → short SHA.
 fn ls_tree_submodule_commits(project_root: &Path) -> HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
-    let output = state::git_command(project_root)
+    let output = command::git_command(project_root)
         .args(["ls-tree", "HEAD"])
         .output();
     let Ok(output) = output else {

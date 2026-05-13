@@ -30,6 +30,7 @@ use crate::lint::LintCommand;
 use crate::lint::LintCommandStatus;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
+use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::CheckoutInfo;
@@ -65,6 +66,7 @@ use crate::tui::app::HoveredPaneRow;
 use crate::tui::finder;
 use crate::tui::input;
 use crate::tui::integration::AppPaneId;
+use crate::tui::interaction;
 use crate::tui::pane::HoverTarget;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
@@ -515,7 +517,7 @@ fn mouse_and_keyboard_dismiss_resolve_same_deleted_project_target() {
         .focused_dismiss_target()
         .unwrap_or_else(|| std::process::abort());
     let (x, y) = row_dismiss_point(&app, 0);
-    let Some(hit) = crate::tui::interaction::hit_test_at(&app, Position::new(x, y)) else {
+    let Some(hit) = interaction::hit_test_at(&app, Position::new(x, y)) else {
         std::process::abort();
     };
     let HoverTarget::Dismiss(mouse_target) = hit else {
@@ -1212,7 +1214,7 @@ fn buffer_text_sized(app: &mut App, width: u16, height: u16) -> String {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
     terminal
-        .draw(|frame| crate::tui::render::ui(frame, app))
+        .draw(|frame| render::ui(frame, app))
         .unwrap_or_else(|_| std::process::abort());
     let area = terminal.size().unwrap_or_else(|_| std::process::abort());
     let buffer = terminal.backend().buffer();
@@ -1318,7 +1320,7 @@ fn clean_confirm_popup_shows_resolved_out_of_tree_target_dir() {
         rendered.contains("Run cargo clean?"),
         "prompt line still renders"
     );
-    let expected = crate::project::home_relative_path(custom_target.as_path());
+    let expected = project::home_relative_path(custom_target.as_path());
     assert!(
         rendered.contains(&expected),
         "resolved out-of-tree target dir is shown in the popup (expected {expected:?})"
@@ -1615,7 +1617,7 @@ fn clean_confirm_popup_lists_affected_siblings_on_shared_target() {
         rendered.contains("Also affects:"),
         "shared-target popup should label the collateral list"
     );
-    let sibling_label = crate::project::home_relative_path(sibling_dir.as_path());
+    let sibling_label = project::home_relative_path(sibling_dir.as_path());
     assert!(
         rendered.contains(&sibling_label),
         "sibling path should appear in the affected list (expected {sibling_label:?})"
@@ -1635,7 +1637,7 @@ fn clean_confirm_popup_falls_back_to_in_tree_target_without_metadata() {
     let rendered = buffer_text(&mut app);
 
     let fallback_target = project_dir.join("target");
-    let expected = crate::project::home_relative_path(fallback_target.as_path());
+    let expected = project::home_relative_path(fallback_target.as_path());
     assert!(
         rendered.contains(&expected),
         "without metadata, popup shows the default <project>/target (expected {expected:?})"
@@ -1675,7 +1677,7 @@ fn clean_group_confirm_popup_lists_all_checkouts() {
         "group confirm labels the checkout list"
     );
     for dir in [&primary, &linked_a, &linked_b] {
-        let label = crate::project::home_relative_path(dir.as_path());
+        let label = project::home_relative_path(dir.as_path());
         assert!(
             rendered.contains(&label),
             "every checkout appears in the popup (expected {label:?})"

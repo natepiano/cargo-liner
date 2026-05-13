@@ -25,6 +25,7 @@ use crate::tui::constants::INACTIVE_BORDER_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
+use crate::tui::integration;
 use crate::tui::pane;
 use crate::tui::pane::PaneChrome;
 use crate::tui::pane::PaneFocusState;
@@ -545,7 +546,7 @@ fn lint_display_to_string(
         LintDisplay::NoRuns => "No lint runs".to_string(),
         LintDisplay::Runs { count, status } => {
             let icon = if lint_enabled {
-                crate::tui::integration::lint_icon_for(status.kind()).frame_at(animation_elapsed)
+                integration::lint_icon_for(status.kind()).frame_at(animation_elapsed)
             } else {
                 crate::constants::LINT_NO_LOG
             };
