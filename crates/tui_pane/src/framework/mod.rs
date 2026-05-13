@@ -25,10 +25,7 @@ use crate::SettingsPane;
 use crate::SettingsStore;
 use crate::ToastSettings;
 use crate::Toasts;
-
-/// `fn` pointer the framework stores per registered pane to query
-/// the pane's current input mode.
-pub(crate) type ModeQuery<Ctx> = fn(&Ctx) -> Mode<Ctx>;
+use crate::pane::ModeQuery;
 
 /// The framework aggregator owned by every binary that uses
 /// `tui_pane`.

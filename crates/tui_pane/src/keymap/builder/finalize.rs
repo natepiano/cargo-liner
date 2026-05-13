@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use toml::Table;
 
 use super::KeymapBuilder;
-use super::overlay::apply_toml_overlay_with_peer;
+use super::overlay;
 use crate::AppContext;
 use crate::GlobalAction;
 use crate::Keymap;
@@ -46,7 +46,7 @@ pub(super) fn finalize<Ctx: AppContext + 'static, State>(
     if let Some(render) = builder.globals_render_fn {
         keymap.set_app_globals_render_fn(render);
     }
-    let framework_globals = apply_toml_overlay_with_peer::<GlobalAction>(
+    let framework_globals = overlay::apply_toml_overlay_with_peer::<GlobalAction>(
         "global",
         GlobalAction::defaults(),
         builder.toml_table.as_ref(),

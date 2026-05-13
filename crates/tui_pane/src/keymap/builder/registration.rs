@@ -1,6 +1,6 @@
 use toml::Table;
 
-use super::overlay::apply_toml_overlay;
+use super::overlay;
 use crate::AppContext;
 use crate::Bindings;
 use crate::KeyBind;
@@ -22,7 +22,8 @@ pub(super) fn build_pane_bindings<Ctx: AppContext + 'static, P: Shortcuts<Ctx>>(
     vim_mode: VimMode,
 ) -> Result<Bindings<P::Actions>, KeymapError> {
     let scope_name = <P as Shortcuts<Ctx>>::SCOPE_NAME;
-    let mut bindings = apply_toml_overlay::<P::Actions>(scope_name, P::defaults(), toml_table)?;
+    let mut bindings =
+        overlay::apply_toml_overlay::<P::Actions>(scope_name, P::defaults(), toml_table)?;
     if matches!(vim_mode, VimMode::Enabled) {
         for (action, key) in P::vim_extras() {
             if !bindings.has_key(key) {

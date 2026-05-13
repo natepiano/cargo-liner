@@ -39,7 +39,7 @@ use crate::Pane;
 use crate::SettingsPane;
 use crate::SettingsPaneAction;
 use crate::TabStop;
-use crate::framework::ModeQuery;
+use crate::pane::ModeQuery;
 
 mod finalize;
 mod overlay;

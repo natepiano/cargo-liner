@@ -1,13 +1,13 @@
 # `tui_pane` Module Restructure
 
-**Status:** Proposed
+**Status:** Implemented
 **Source:** Team review in this session — synthesis of 3 expert agents on cohesion, coupling, and root-vs-submodule placement.
 
 ## Constraint
 
 Every item lives either at the crate root (single `.rs` file) or inside a directory submodule. No mid-tier orphans.
 
-## Current layout
+## Starting layout
 
 ```
 tui_pane/src/
@@ -43,9 +43,11 @@ tui_pane/src/
 
 **Why.** Every type in `settings_store/toast.rs` is framework-owned toast configuration. It sits in `settings_store/` only because that module also holds the generic TOML codecs that load `[toasts]` from disk. After the move, `settings_store/` is purely the generic mechanism; `toasts/` owns every toast type including its configuration.
 
-**Path change.** Internal `use crate::settings_store::ToastSettings` becomes `use crate::toasts::ToastSettings`. Crate-root re-exports update:
-
-- `tui_pane/src/lib.rs:95-100` — change from `pub use settings_store::Toast*` to `pub use toasts::Toast*`.
+**Path change.** Internal `use crate::settings_store::ToastSettings` becomes
+`use crate::toasts::ToastSettings` or the stable crate-root
+`use crate::ToastSettings`. Crate-root re-exports retarget from
+`settings_store::Toast*` to `toasts::Toast*`, but the public caller path stays
+stable: `tui_pane::ToastSettings`, `tui_pane::ToastDuration`, etc.
 
 **TOML codec consequence.** `settings_store/registry.rs` / `settings_store/store.rs` parse the `[toasts]` section into `ToastSettings`. The parse code stays in `settings_store/`; only the type definitions move. The store imports `ToastSettings` from `toasts::` rather than from its own subtree.
 
@@ -59,7 +61,7 @@ tui_pane/src/
 
 **What moves.** Contents of `tui_pane/src/panes/toasts.rs` (currently 9 lines — just the `ToastsAction` enum and its `Action` impl).
 
-**Destination.** `tui_pane/src/toasts/action.rs` (new file) or folded into `tui_pane/src/toasts/mod.rs`.
+**Destination.** `tui_pane/src/toasts/action.rs`.
 
 **Why.** `toasts/stack.rs:37` imports `crate::panes::ToastsAction` — a sibling module reaching into a "higher" organizational module for one enum. After the move, `ToastsAction` lives where `Toasts` lives. The inverted import vanishes.
 
@@ -80,13 +82,14 @@ tui_pane/src/
 **What moves.** The `ModeQuery<Ctx>` type alias (currently `pub(crate)` in `tui_pane/src/framework/mod.rs`).
 
 **Destination.** `tui_pane/src/pane.rs`, alongside `Mode<Ctx>` and `Pane<Ctx>`.
+The alias stays `pub(crate)`; it is an internal storage helper, not public API.
 
 **Why.** `ModeQuery<Ctx>` is `fn(&Ctx) -> Mode<Ctx>` — a property of `Pane<Ctx>`, not a property of `Framework<Ctx>`. The `keymap/builder/` module currently imports `crate::framework::ModeQuery` to register panes, which creates a soft cycle (keymap → framework). After the move, both `framework/` and `keymap/builder/` import `ModeQuery` from `pane`, which is a leaf.
 
 **Path change.**
-- `tui_pane/src/pane.rs` — add `pub(crate) type ModeQuery<Ctx> = fn(&Ctx) -> Mode<Ctx>;` (or whatever the actual signature is — verify before moving).
-- `tui_pane/src/framework/mod.rs` — drop the local definition; replace internal references with `use crate::pane::ModeQuery;` or `use crate::ModeQuery;` via crate root if exposed.
-- `tui_pane/src/keymap/builder/mod.rs` — change `use crate::framework::ModeQuery` to `use crate::pane::ModeQuery` (or remove if already re-exported via `crate::ModeQuery`).
+- `tui_pane/src/pane.rs` — add `pub(crate) type ModeQuery<Ctx> = fn(&Ctx) -> Mode<Ctx>;`.
+- `tui_pane/src/framework/mod.rs` — drop the local definition; replace internal references with `use crate::pane::ModeQuery;`.
+- `tui_pane/src/keymap/builder/mod.rs` — change `use crate::framework::ModeQuery` to `use crate::pane::ModeQuery`.
 
 **Verification.**
 - `cargo check --workspace --all-targets`
@@ -108,7 +111,7 @@ tui_pane/src/
 ├── keymap/           (unchanged — uses ModeQuery via pane.rs)
 ├── panes/            (− toasts.rs; now KeymapPane + SettingsPane only)
 ├── settings_store/   (− toast.rs; now purely generic codec/registry mechanism)
-└── toasts/           (+ settings.rs from settings_store; + action.rs from panes)
+└── toasts/           (+ settings.rs from settings_store/; + action.rs from panes/)
 ```
 
 Five single-file root modules + six directory modules. No mid-tier orphans. Inverted toasts↔panes import gone. Soft keymap↔framework cycle gone.
@@ -122,7 +125,9 @@ Five single-file root modules + six directory modules. No mid-tier orphans. Inve
 
 ## Order of operations
 
-Do move 3 first (smallest, breaks no public API), then move 1 (renames the public path for toast settings — visible in `lib.rs`), then move 2 (deletes `panes/toasts.rs`). All three are mechanically independent.
+Do move 3 first (smallest, breaks no public API), then move 1 (retargets the
+crate-root re-export source while keeping the public path stable), then move 2
+(deletes `panes/toasts.rs`). All three are mechanically independent.
 
 ## Verification after all three
 

@@ -215,8 +215,7 @@ impl<Ctx: AppContext> Toast<Ctx> {
         } else {
             self.tracked_items.len()
         };
-        let elapsed_line = usize::from(matches!(self.lifetime, ToastLifetime::Task { .. }));
-        let interior = self.min_interior_lines.max(item_lines + elapsed_line);
+        let interior = self.min_interior_lines.max(item_lines);
         (interior + 2).try_into().unwrap_or(u16::MAX)
     }
 

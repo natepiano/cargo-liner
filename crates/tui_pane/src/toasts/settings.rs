@@ -5,8 +5,15 @@ use std::time::Duration;
 use toml::Table;
 use toml::Value;
 
-use super::SettingsError;
-use super::invalid;
+use crate::settings_store::SettingsError;
+
+fn invalid(section: &str, key: &str, message: &str) -> SettingsError {
+    SettingsError::Invalid {
+        section: section.to_string(),
+        key:     key.to_string(),
+        message: message.to_string(),
+    }
+}
 
 /// Framework-owned toast settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -297,7 +304,7 @@ impl Default for ToastAnimationSettings {
     }
 }
 
-pub(super) fn remove_legacy_toast_keys(table: &mut Table) {
+pub(crate) fn remove_legacy_toast_keys(table: &mut Table) {
     if let Some(Value::Table(tui)) = table.get_mut("tui") {
         tui.remove("status_flash_secs");
         tui.remove("task_linger_secs");

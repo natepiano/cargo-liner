@@ -1,17 +1,15 @@
-//! Framework settings store, registry, rows, TOML table helpers, and framework-owned setting
-//! groups.
+//! Framework settings store, registry, rows, and TOML table helpers.
 //!
 //! `SettingsStore` owns generic settings persistence for apps that
 //! embed `tui_pane`: path resolution, TOML load/save, dirty state, and
 //! registered settings metadata. Apps register their own settings through
-//! `SettingsRegistry`; framework-owned settings, such as
-//! `ToastSettings`, live directly on `Framework<Ctx>`.
+//! `SettingsRegistry`; framework-owned setting types live with their
+//! owning framework module.
 
 mod registry;
 mod row;
 mod store;
 mod table;
-mod toast;
 
 pub use registry::AdjustDirection;
 pub use registry::SettingAdjuster;
@@ -35,13 +33,6 @@ pub use table::read_float;
 pub use table::read_int;
 pub use table::read_string;
 pub use table::write_value;
-pub use toast::MaxVisibleToasts;
-pub use toast::ToastAnimationSettings;
-pub use toast::ToastDuration;
-pub use toast::ToastGap;
-pub use toast::ToastPlacement;
-pub use toast::ToastSettings;
-pub use toast::ToastWidth;
 
 pub(super) fn invalid(section: &str, key: &str, message: &str) -> SettingsError {
     SettingsError::Invalid {
@@ -65,13 +56,14 @@ mod tests {
     use toml::Value;
 
     use super::SettingCodecs;
+    use super::SettingKind;
     use super::SettingsFileSpec;
     use super::SettingsRegistry;
     use super::SettingsRow;
     use super::SettingsRowPayload;
     use super::SettingsSection;
     use super::SettingsStore;
-    use super::ToastSettings;
+    use crate::ToastSettings;
 
     fn set_enabled(table: &mut Table, value: bool) -> Result<(), super::SettingsError> {
         super::write_value(table, "tui", "enabled", Value::Boolean(value))
@@ -276,13 +268,13 @@ mod tests {
 
         let items_entry = &registry.entries()[0];
         let command_entry = &registry.entries()[1];
-        let super::SettingKind::Custom {
+        let SettingKind::Custom {
             codecs: items_codecs,
         } = &items_entry.kind
         else {
             panic!("expected custom items entry");
         };
-        let super::SettingKind::Custom {
+        let SettingKind::Custom {
             codecs: command_codecs,
         } = &command_entry.kind
         else {

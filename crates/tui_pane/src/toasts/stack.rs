@@ -14,6 +14,7 @@ use super::ToastStyle;
 use super::ToastTaskId;
 use super::ToastTaskStatus;
 use super::ToastView;
+use super::ToastsAction;
 use super::TrackedItem;
 use super::TrackedItemKey;
 use crate::AppContext;
@@ -28,7 +29,6 @@ use crate::Mode;
 use crate::ToastSettings;
 use crate::Viewport;
 use crate::keymap::Action;
-use crate::panes::ToastsAction;
 
 /// Result of handling a focused toast key.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -122,13 +122,13 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         let now = Instant::now();
         self.push_entry(
             ToastSpec {
-                title:    title.into(),
-                body:     ToastBody::from(body.into()),
+                title: title.into(),
+                body: ToastBody::from(body.into()),
                 style,
                 lifetime: ToastLifetime::Timed {
                     timeout_at: now + timeout,
                 },
-                action:   None,
+                action: None,
                 min_interior_lines,
                 item_linger: Duration::ZERO,
             },
@@ -147,14 +147,14 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         let now = Instant::now();
         self.push_entry(
             ToastSpec {
-                title:    title.into(),
-                body:     ToastBody::from(body.into()),
-                style:    ToastStyle::Normal,
+                title: title.into(),
+                body: ToastBody::from(body.into()),
+                style: ToastStyle::Normal,
                 lifetime: ToastLifetime::Task {
                     task_id: id,
                     status:  ToastTaskStatus::Running,
                 },
-                action:   None,
+                action: None,
                 min_interior_lines,
                 item_linger: Duration::ZERO,
             },
@@ -179,8 +179,8 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     ) -> ToastId {
         self.push_entry(
             ToastSpec {
-                title:    title.into(),
-                body:     ToastBody::from(body.into()),
+                title: title.into(),
+                body: ToastBody::from(body.into()),
                 style,
                 lifetime: ToastLifetime::Persistent,
                 action,

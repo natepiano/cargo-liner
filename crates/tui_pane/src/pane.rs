@@ -11,6 +11,10 @@ use crate::AppContext;
 use crate::TabStop;
 use crate::keymap::KeyBind;
 
+/// `fn` pointer stored per registered pane to query the pane's
+/// current input mode.
+pub(crate) type ModeQuery<Ctx> = fn(&Ctx) -> Mode<Ctx>;
+
 /// Per-pane identity + input mode. Implemented by every app pane type.
 ///
 /// The framework keys per-pane registries on

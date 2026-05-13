@@ -7,8 +7,8 @@ use thiserror::Error;
 use toml::Table;
 
 use super::SettingsRegistry;
-use super::ToastSettings;
-use super::toast::remove_legacy_toast_keys;
+use crate::toasts;
+use crate::toasts::ToastSettings;
 
 /// Error returned by settings load, validation, and save operations.
 #[derive(Debug, Error)]
@@ -216,7 +216,7 @@ impl SettingsStore {
     ///
     /// Returns [`SettingsError`] if serialization or writing fails.
     pub fn save(&mut self) -> Result<(), SettingsError> {
-        remove_legacy_toast_keys(&mut self.table);
+        toasts::remove_legacy_toast_keys(&mut self.table);
         let Some(path) = &self.path else {
             self.dirty = false;
             return Ok(());

@@ -1,6 +1,6 @@
-//! Framework-owned panes: built-in overlays and the toast stack.
+//! Framework-owned panes: built-in overlays.
 //!
-//! Two overlay structs live here, plus the toast action vocabulary:
+//! Two overlay structs live here:
 //! - [`KeymapPane`]: keymap viewer/editor overlay.
 //! - [`SettingsPane`]: settings overlay.
 //!
@@ -14,7 +14,6 @@
 
 mod keymap;
 mod settings;
-mod toasts;
 
 pub use keymap::KeymapCaptureCommand;
 pub use keymap::KeymapPane;
@@ -24,4 +23,3 @@ pub use settings::SettingsPane;
 pub use settings::SettingsPaneAction;
 pub use settings::SettingsRender;
 pub use settings::SettingsRenderOptions;
-pub use toasts::ToastsAction;

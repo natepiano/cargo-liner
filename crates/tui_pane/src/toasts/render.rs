@@ -20,8 +20,8 @@ use super::ToastStyle;
 use super::ToastView;
 use super::TrackedItemView;
 use crate::ACTIVITY_SPINNER;
+use crate::ToastPlacement;
 use crate::ToastSettings;
-use crate::settings_store::ToastPlacement;
 
 const ACCENT_COLOR: Color = Color::Cyan;
 const ACTIVE_BORDER_COLOR: Color = Color::Yellow;
@@ -562,6 +562,7 @@ mod tests {
     use crate::Framework;
     use crate::NoToastAction;
     use crate::Toasts;
+    use crate::TrackedItem;
 
     struct TestApp {
         framework: Framework<Self>,
@@ -639,6 +640,43 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(line_text(&lines[0]), "one");
         assert_eq!(line_text(&lines[1]), "(+3 more)");
+    }
+
+    #[test]
+    fn tracked_task_toast_height_fits_visible_items_without_blank_bottom_row() {
+        let settings = ToastSettings::default();
+        let mut toasts = Toasts::<TestApp>::new();
+        let task_id = toasts.start_task("Lints", "");
+        let items = [
+            TrackedItem::new("~/rust/cargo-port-api-fix", "cargo-port-api-fix"),
+            TrackedItem::new("~/rust/bevy_hana", "bevy_hana"),
+        ];
+        assert!(toasts.set_tracked_items(task_id, &items, settings.task_linger.get()));
+
+        let views = toasts.active_views(Instant::now() + Duration::from_secs(5), &settings);
+        let backend = TestBackend::new(90, 20);
+        let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+        let mut result = None;
+
+        terminal
+            .draw(|frame| {
+                result = Some(render_toasts(
+                    frame,
+                    frame.area(),
+                    &views,
+                    &settings,
+                    false,
+                    None,
+                ));
+            })
+            .unwrap_or_else(|_| std::process::abort());
+
+        let hitboxes = result.unwrap_or_else(|| std::process::abort()).hitboxes;
+        assert_eq!(hitboxes.len(), 1);
+        assert_eq!(
+            hitboxes[0].card_rect.height, 4,
+            "two tracked rows should render as top border + two rows + bottom border"
+        );
     }
 
     #[test]
