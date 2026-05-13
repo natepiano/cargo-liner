@@ -1,7 +1,7 @@
 use crate::config::CargoPortConfig;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ConfigKey {
+pub enum ConfigKey {
     CpuPollMs,
     CpuGreenMax,
     CpuYellowMax,
@@ -24,14 +24,14 @@ pub(super) enum ConfigKey {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum ReloadDecision {
+pub enum ReloadDecision {
     #[default]
     Skip,
     Apply,
 }
 
 impl ReloadDecision {
-    pub(super) const fn should_apply(self) -> bool { matches!(self, Self::Apply) }
+    pub const fn should_apply(self) -> bool { matches!(self, Self::Apply) }
 }
 
 /// What the config reload should do to the project tree. The three
@@ -39,7 +39,7 @@ impl ReloadDecision {
 /// over `RegroupMembers`, which wins over `None`. The enum makes the
 /// mutual exclusion exhaustive at the type level.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum TreeReaction {
+pub enum TreeReaction {
     #[default]
     None,
     RegroupMembers,
@@ -55,14 +55,14 @@ impl TreeReaction {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct ReloadActions {
+pub struct ReloadActions {
     pub tree:                 TreeReaction,
     pub refresh_cpu:          ReloadDecision,
     pub refresh_lint_runtime: ReloadDecision,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct ReloadContext {
+pub struct ReloadContext {
     pub scan_complete:       bool,
     pub has_cached_non_rust: bool,
 }
@@ -200,7 +200,7 @@ const fn mark_include_non_rust(
     }
 }
 
-pub(super) fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<ConfigKey> {
+pub fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<ConfigKey> {
     let mut keys = Vec::new();
 
     if old.cpu.poll_ms != new.cpu.poll_ms {
@@ -264,7 +264,7 @@ pub(super) fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<
     keys
 }
 
-pub(super) fn collect_reload_actions(
+pub fn collect_reload_actions(
     old: &CargoPortConfig,
     new: &CargoPortConfig,
     context: ReloadContext,

@@ -22,13 +22,13 @@ use std::collections::HashSet;
 
 use tui_pane::ToastId;
 
-use super::running_tracker::RunningTracker;
 use crate::ci::OwnerRepo;
 use crate::http::GitHubRateLimit;
 use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::scan;
 use crate::scan::RepoCache;
+use crate::tui::support::RunningTracker;
 
 /// Three-way availability for a single service. `Unreachable` means
 /// the network layer can't talk to the service at all; `RateLimited`
@@ -212,10 +212,7 @@ impl Net {
     /// keep their state across rescans.
     pub fn clear_for_tree_change(&mut self) { self.github.clear_for_tree_change(); }
 
-    pub(super) const fn availability_for(
-        &mut self,
-        service: ServiceKind,
-    ) -> &mut ServiceAvailability {
+    pub const fn availability_for(&mut self, service: ServiceKind) -> &mut ServiceAvailability {
         match service {
             ServiceKind::GitHub => &mut self.github.availability,
             ServiceKind::CratesIo => &mut self.crates_io.availability,
@@ -227,7 +224,7 @@ impl Net {
     /// is quota-exempt, so this is safe to run even when GitHub is
     /// refusing other calls. Logged via `rate_limit_prime_ok` /
     /// `rate_limit_prime_failed`.
-    pub(super) fn spawn_rate_limit_prime(&self) {
+    pub fn spawn_rate_limit_prime(&self) {
         let client = self.http_client();
         std::thread::spawn(move || {
             let (rate_limit, _signal) = client.fetch_rate_limit();

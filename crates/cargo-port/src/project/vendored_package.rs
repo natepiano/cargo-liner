@@ -1,3 +1,4 @@
+use super::cargo::Cargo;
 use super::git::CheckoutInfo;
 use super::git::WorktreeStatus;
 use super::info::ProjectInfo;
@@ -9,7 +10,6 @@ use super::paths::DisplayPath;
 use super::paths::PackageName;
 use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
-use super::rust_info::Cargo;
 
 /// A crate vendored under a parent Rust project.
 ///

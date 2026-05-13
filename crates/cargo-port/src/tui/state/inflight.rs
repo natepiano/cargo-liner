@@ -6,22 +6,22 @@
 //! - `example_running`, `example_child`, `example_output`
 //!
 //! Lint lifecycle (`runtime`, running paths, toast) lives on
-//! [`Lint`](super::lint_state::Lint); CI fetch lifecycle lives on
-//! [`Ci`](super::ci_state::Ci).
+//! [`Lint`](super::state::Lint); CI fetch lifecycle lives on
+//! [`Ci`](super::state::Ci).
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use super::app::PendingClean;
-use super::panes::PendingCiFetch;
-use super::panes::PendingExampleRun;
-use super::running_tracker::RunningTracker;
 use crate::project::AbsolutePath;
+use crate::tui::app::PendingClean;
+use crate::tui::panes::PendingCiFetch;
+use crate::tui::panes::PendingExampleRun;
+use crate::tui::support::RunningTracker;
 
 /// Owns App's in-flight bookkeeping. App holds a single
 /// `inflight: Inflight`.
-pub(super) struct Inflight {
+pub struct Inflight {
     /// In-flight cargo clean state — same lifecycle as
     /// `Lint::running` and `Github::running`.
     clean:               RunningTracker<AbsolutePath>,
@@ -34,7 +34,7 @@ pub(super) struct Inflight {
 }
 
 impl Inflight {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             clean:               RunningTracker::new(),
             pending_cleans:      VecDeque::new(),
@@ -48,68 +48,60 @@ impl Inflight {
 
     // ── running clean tracker ───────────────────────────────────────
 
-    pub(super) const fn clean(&self) -> &RunningTracker<AbsolutePath> { &self.clean }
+    pub const fn clean(&self) -> &RunningTracker<AbsolutePath> { &self.clean }
 
-    pub(super) const fn clean_mut(&mut self) -> &mut RunningTracker<AbsolutePath> {
-        &mut self.clean
-    }
+    pub const fn clean_mut(&mut self) -> &mut RunningTracker<AbsolutePath> { &mut self.clean }
 
     // ── pending queues ──────────────────────────────────────────────
 
-    pub(super) const fn pending_cleans_mut(&mut self) -> &mut VecDeque<PendingClean> {
+    pub const fn pending_cleans_mut(&mut self) -> &mut VecDeque<PendingClean> {
         &mut self.pending_cleans
     }
 
-    pub(super) fn set_pending_ci_fetch(&mut self, fetch: PendingCiFetch) {
+    pub fn set_pending_ci_fetch(&mut self, fetch: PendingCiFetch) {
         self.pending_ci_fetch = Some(fetch);
     }
 
     /// Test-only inspection accessor — production paths consume
     /// the slot via [`Self::take_pending_ci_fetch`].
     #[cfg(test)]
-    pub(super) const fn pending_ci_fetch_ref(&self) -> Option<&PendingCiFetch> {
+    pub const fn pending_ci_fetch_ref(&self) -> Option<&PendingCiFetch> {
         self.pending_ci_fetch.as_ref()
     }
 
-    pub(super) const fn take_pending_ci_fetch(&mut self) -> Option<PendingCiFetch> {
+    pub const fn take_pending_ci_fetch(&mut self) -> Option<PendingCiFetch> {
         self.pending_ci_fetch.take()
     }
 
-    pub(super) fn clear_pending_ci_fetch(&mut self) { self.pending_ci_fetch = None; }
+    pub fn clear_pending_ci_fetch(&mut self) { self.pending_ci_fetch = None; }
 
-    pub(super) fn set_pending_example_run(&mut self, run: PendingExampleRun) {
+    pub fn set_pending_example_run(&mut self, run: PendingExampleRun) {
         self.pending_example_run = Some(run);
     }
 
-    pub(super) const fn take_pending_example_run(&mut self) -> Option<PendingExampleRun> {
+    pub const fn take_pending_example_run(&mut self) -> Option<PendingExampleRun> {
         self.pending_example_run.take()
     }
 
     // ── example runner ──────────────────────────────────────────────
 
-    pub(super) fn example_running(&self) -> Option<&str> { self.example_running.as_deref() }
+    pub fn example_running(&self) -> Option<&str> { self.example_running.as_deref() }
 
-    pub(super) fn set_example_running(&mut self, running: Option<String>) {
+    pub fn set_example_running(&mut self, running: Option<String>) {
         self.example_running = running;
     }
 
-    pub(super) fn example_child(&self) -> Arc<Mutex<Option<u32>>> {
-        Arc::clone(&self.example_child)
-    }
+    pub fn example_child(&self) -> Arc<Mutex<Option<u32>>> { Arc::clone(&self.example_child) }
 
-    pub(super) fn example_output(&self) -> &[String] { &self.example_output }
+    pub fn example_output(&self) -> &[String] { &self.example_output }
 
-    pub(super) const fn example_output_mut(&mut self) -> &mut Vec<String> {
-        &mut self.example_output
-    }
+    pub const fn example_output_mut(&mut self) -> &mut Vec<String> { &mut self.example_output }
 
-    pub(super) fn set_example_output(&mut self, output: Vec<String>) {
-        self.example_output = output;
-    }
+    pub fn set_example_output(&mut self, output: Vec<String>) { self.example_output = output; }
 
-    pub(super) const fn example_output_is_empty(&self) -> bool { self.example_output.is_empty() }
+    pub const fn example_output_is_empty(&self) -> bool { self.example_output.is_empty() }
 
-    pub(super) fn apply_example_progress(&mut self, line: String) {
+    pub fn apply_example_progress(&mut self, line: String) {
         if let Some(last) = self.example_output.last_mut() {
             *last = line;
         } else {

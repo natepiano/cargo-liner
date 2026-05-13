@@ -17,34 +17,31 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use super::app::DirtyState;
-use super::app::DiscoveryShimmer;
-#[cfg(test)]
-use super::app::RetrySpawnMode;
-use super::app::ScanState;
-use super::app::TargetDirIndex;
 use crate::project::AbsolutePath;
 use crate::project::WorkspaceMetadataStore;
+use crate::tui::app::DirtyState;
+use crate::tui::app::DiscoveryShimmer;
+#[cfg(test)]
+use crate::tui::app::RetrySpawnMode;
+use crate::tui::app::ScanState;
+use crate::tui::app::TargetDirIndex;
 
-pub(super) struct Scan {
-    pub(super) state:            ScanState,
-    dirty:                       DirtyState,
-    data_generation:             u64,
-    discovery_shimmers:          HashMap<AbsolutePath, DiscoveryShimmer>,
-    pending_git_first_commit:    HashMap<AbsolutePath, String>,
-    metadata_store:              Arc<Mutex<WorkspaceMetadataStore>>,
-    pub(super) target_dir_index: TargetDirIndex,
-    priority_fetch_path:         Option<AbsolutePath>,
-    confirm_verifying:           Option<AbsolutePath>,
+pub struct Scan {
+    pub state:                ScanState,
+    dirty:                    DirtyState,
+    data_generation:          u64,
+    discovery_shimmers:       HashMap<AbsolutePath, DiscoveryShimmer>,
+    pending_git_first_commit: HashMap<AbsolutePath, String>,
+    metadata_store:           Arc<Mutex<WorkspaceMetadataStore>>,
+    pub target_dir_index:     TargetDirIndex,
+    priority_fetch_path:      Option<AbsolutePath>,
+    confirm_verifying:        Option<AbsolutePath>,
     #[cfg(test)]
-    retry_spawn_mode:            RetrySpawnMode,
+    retry_spawn_mode:         RetrySpawnMode,
 }
 
 impl Scan {
-    pub(super) fn new(
-        state: ScanState,
-        metadata_store: Arc<Mutex<WorkspaceMetadataStore>>,
-    ) -> Self {
+    pub fn new(state: ScanState, metadata_store: Arc<Mutex<WorkspaceMetadataStore>>) -> Self {
         Self {
             state,
             dirty: DirtyState::initial(),
@@ -62,35 +59,33 @@ impl Scan {
 
     // ── scan-state machine ──────────────────────────────────────────
 
-    pub(super) const fn is_complete(&self) -> bool { self.state.phase.is_complete() }
+    pub const fn is_complete(&self) -> bool { self.state.phase.is_complete() }
 
     // ── dirty tracker ───────────────────────────────────────────────
 
-    pub(super) const fn terminal_is_dirty(&self) -> bool { self.dirty.terminal.is_dirty() }
+    pub const fn terminal_is_dirty(&self) -> bool { self.dirty.terminal.is_dirty() }
 
-    pub(super) const fn mark_terminal_dirty(&mut self) { self.dirty.terminal.mark_dirty(); }
+    pub const fn mark_terminal_dirty(&mut self) { self.dirty.terminal.mark_dirty(); }
 
-    pub(super) const fn clear_terminal_dirty(&mut self) { self.dirty.terminal.mark_clean(); }
+    pub const fn clear_terminal_dirty(&mut self) { self.dirty.terminal.mark_clean(); }
 
     // ── data generation ─────────────────────────────────────────────
 
-    pub(super) const fn generation(&self) -> u64 { self.data_generation }
+    pub const fn generation(&self) -> u64 { self.data_generation }
 
-    pub(super) const fn bump_generation(&mut self) { self.data_generation += 1; }
+    pub const fn bump_generation(&mut self) { self.data_generation += 1; }
 
     // ── discovery shimmers ──────────────────────────────────────────
 
-    pub(super) const fn discovery_shimmers(&self) -> &HashMap<AbsolutePath, DiscoveryShimmer> {
+    pub const fn discovery_shimmers(&self) -> &HashMap<AbsolutePath, DiscoveryShimmer> {
         &self.discovery_shimmers
     }
 
-    pub(super) const fn discovery_shimmers_mut(
-        &mut self,
-    ) -> &mut HashMap<AbsolutePath, DiscoveryShimmer> {
+    pub const fn discovery_shimmers_mut(&mut self) -> &mut HashMap<AbsolutePath, DiscoveryShimmer> {
         &mut self.discovery_shimmers
     }
 
-    pub(super) fn prune_shimmers(&mut self, now: Instant) {
+    pub fn prune_shimmers(&mut self, now: Instant) {
         self.discovery_shimmers
             .retain(|_, shimmer| shimmer.is_active_at(now));
     }
@@ -98,32 +93,30 @@ impl Scan {
     // ── pending git first-commit cache ──────────────────────────────
 
     #[cfg(test)]
-    pub(super) const fn pending_git_first_commit(&self) -> &HashMap<AbsolutePath, String> {
+    pub const fn pending_git_first_commit(&self) -> &HashMap<AbsolutePath, String> {
         &self.pending_git_first_commit
     }
 
-    pub(super) const fn pending_git_first_commit_mut(
-        &mut self,
-    ) -> &mut HashMap<AbsolutePath, String> {
+    pub const fn pending_git_first_commit_mut(&mut self) -> &mut HashMap<AbsolutePath, String> {
         &mut self.pending_git_first_commit
     }
 
     // ── metadata store ──────────────────────────────────────────────
 
-    pub(super) const fn metadata_store(&self) -> &Arc<Mutex<WorkspaceMetadataStore>> {
+    pub const fn metadata_store(&self) -> &Arc<Mutex<WorkspaceMetadataStore>> {
         &self.metadata_store
     }
 
     /// Clone of the process-wide metadata store handle. Used by scan
     /// dispatchers and async-task spawners that need a `Send` handle
     /// independent of the borrow on `Scan`.
-    pub(super) fn metadata_store_handle(&self) -> Arc<Mutex<WorkspaceMetadataStore>> {
+    pub fn metadata_store_handle(&self) -> Arc<Mutex<WorkspaceMetadataStore>> {
         Arc::clone(&self.metadata_store)
     }
 
     /// Resolve the owning workspace's `target_directory` for any path
     /// inside a known workspace.
-    pub(super) fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
+    pub fn resolve_target_dir(&self, path: &AbsolutePath) -> Option<AbsolutePath> {
         self.metadata_store
             .lock()
             .ok()
@@ -134,28 +127,28 @@ impl Scan {
 
     // ── priority fetch path ─────────────────────────────────────────
 
-    pub(super) const fn priority_fetch_path(&self) -> Option<&AbsolutePath> {
+    pub const fn priority_fetch_path(&self) -> Option<&AbsolutePath> {
         self.priority_fetch_path.as_ref()
     }
 
-    pub(super) fn set_priority_fetch_path(&mut self, path: Option<AbsolutePath>) {
+    pub fn set_priority_fetch_path(&mut self, path: Option<AbsolutePath>) {
         self.priority_fetch_path = path;
     }
 
     // ── confirm-verifying slot ──────────────────────────────────────
 
-    pub(super) const fn confirm_verifying(&self) -> Option<&AbsolutePath> {
+    pub const fn confirm_verifying(&self) -> Option<&AbsolutePath> {
         self.confirm_verifying.as_ref()
     }
 
-    pub(super) fn set_confirm_verifying(&mut self, path: Option<AbsolutePath>) {
+    pub fn set_confirm_verifying(&mut self, path: Option<AbsolutePath>) {
         self.confirm_verifying = path;
     }
 
     /// Clear `confirm_verifying` if it currently points to
     /// `workspace_root`. Called when a verifying clean for that
     /// workspace finishes (regardless of outcome).
-    pub(super) fn clear_confirm_verifying_for(&mut self, workspace_root: &AbsolutePath) {
+    pub fn clear_confirm_verifying_for(&mut self, workspace_root: &AbsolutePath) {
         if self.confirm_verifying.as_ref() == Some(workspace_root) {
             self.confirm_verifying = None;
         }
@@ -164,10 +157,10 @@ impl Scan {
     // ── retry-spawn mode (test-only) ────────────────────────────────
 
     #[cfg(test)]
-    pub(super) const fn retry_spawn_mode(&self) -> RetrySpawnMode { self.retry_spawn_mode }
+    pub const fn retry_spawn_mode(&self) -> RetrySpawnMode { self.retry_spawn_mode }
 
     #[cfg(test)]
-    pub(super) const fn set_retry_spawn_mode(&mut self, mode: RetrySpawnMode) {
+    pub const fn set_retry_spawn_mode(&mut self, mode: RetrySpawnMode) {
         self.retry_spawn_mode = mode;
     }
 
@@ -176,7 +169,7 @@ impl Scan {
     /// fingerprint differs from the stored metadata's fingerprint
     /// (a `.cargo/config.toml` edit, a manifest save, etc.), OR when
     /// no metadata covers `project_path` at all.
-    pub(super) fn should_verify_before_clean(&self, project_path: &AbsolutePath) -> bool {
+    pub fn should_verify_before_clean(&self, project_path: &AbsolutePath) -> bool {
         let Ok(store) = self.metadata_store.lock() else {
             return false;
         };
@@ -197,7 +190,7 @@ impl Scan {
     /// Merge an out-of-tree target walk result into the metadata cache.
     /// Declines when the cached metadata's `target_directory` has since been
     /// redirected — a fresh walk is already in flight under the new dir.
-    pub(super) fn handle_out_of_tree_target_size(
+    pub fn handle_out_of_tree_target_size(
         &self,
         workspace_root: &AbsolutePath,
         target_dir: &AbsolutePath,

@@ -9,11 +9,11 @@ use cargo_metadata::TargetKind;
 
 use super::cargo::ExampleGroup;
 use super::cargo::ProjectType;
-use super::cargo_metadata_store::PackageRecord;
-use super::cargo_metadata_store::PublishPolicy;
-use super::info::ProjectInfo;
-use super::vendored_package::VendoredPackage;
+use super::metadata_store::PackageRecord;
+use super::metadata_store::PublishPolicy;
 use crate::lint::LintRuns;
+use crate::project::info::ProjectInfo;
+use crate::project::vendored_package::VendoredPackage;
 
 /// Rust-specific project data shared by both `Workspace` and `Package`.
 /// Derefs to `ProjectInfo` for uniform metadata access.

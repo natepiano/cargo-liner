@@ -4,14 +4,14 @@ use std::path::Path;
 use super::git;
 use super::git::CheckoutInfo;
 use super::git::WorktreeStatus;
-use super::info::ProjectInfo;
-use super::info::Visibility;
-use super::info::WorktreeHealth;
-use super::paths;
-use super::paths::AbsolutePath;
-use super::paths::DisplayPath;
-use super::paths::RootDirectoryName;
-use super::project_fields::ProjectFields;
+use crate::project::info::ProjectInfo;
+use crate::project::info::Visibility;
+use crate::project::info::WorktreeHealth;
+use crate::project::paths;
+use crate::project::paths::AbsolutePath;
+use crate::project::paths::DisplayPath;
+use crate::project::paths::RootDirectoryName;
+use crate::project::project_fields::ProjectFields;
 
 /// A git submodule that participates as a concrete project-list node.
 #[derive(Clone)]

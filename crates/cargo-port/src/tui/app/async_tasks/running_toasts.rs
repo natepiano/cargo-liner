@@ -8,7 +8,7 @@ use tui_pane::toast_body_width;
 
 use crate::project;
 use crate::tui::app::App;
-use crate::tui::toast_adapters;
+use crate::tui::integration::toast_adapters;
 
 impl App {
     pub fn sync_running_clean_toast(&mut self) {

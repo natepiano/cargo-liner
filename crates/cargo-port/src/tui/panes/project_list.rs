@@ -348,7 +348,7 @@ fn render_root_item(
             .and_then(|ls| ls.entries.first())
             .map_or("  ", |e| lang::language_icon(&e.language))
     };
-    let lint_cell = app.lint_cell(&crate::tui::lint_state::Lint::status_for_root(&item.item));
+    let lint_cell = app.lint_cell(&crate::tui::state::Lint::status_for_root(&item.item));
     let origin_sync = app.project_list.git_sync(item.path());
     let main_sync = app.project_list.git_main(item.path());
     let git_status = app.project_list.git_status_for_item(item);
@@ -411,7 +411,7 @@ fn render_child_item<P: project::ProjectFields>(
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project::Package::lang_icon();
     let lint_cell = if app.project_list.is_rust_at_path(path) {
-        app.lint_cell(&crate::tui::lint_state::Lint::status_for_path(
+        app.lint_cell(&crate::tui::state::Lint::status_for_path(
             &app.project_list,
             path,
         ))
@@ -514,7 +514,7 @@ fn render_worktree_entry<'a>(
     let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, sorted));
     let lang = item.lang_icon();
-    let lint_cell = app.lint_cell(&crate::tui::lint_state::Lint::status_for_worktree(
+    let lint_cell = app.lint_cell(&crate::tui::state::Lint::status_for_worktree(
         &item.item, wi,
     ));
     let ci = app.project_list.ci_status_for(wt_abs, &app.ci);

@@ -11,7 +11,7 @@
 //! [`Inflight`]) because they thread cross-subsystem dependencies
 //! (`Scan`, `Net`, framework toasts).
 //!
-//! [`Inflight`]: super::inflight::Inflight
+//! [`Inflight`]: super::state::Inflight
 
 #[cfg(test)]
 use std::sync::mpsc;

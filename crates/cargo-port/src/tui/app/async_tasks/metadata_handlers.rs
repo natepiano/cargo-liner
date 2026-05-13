@@ -6,7 +6,7 @@ use crate::scan;
 use crate::scan::CargoMetadataError;
 use crate::tui::app::App;
 use crate::tui::app::target_index::TargetDirMember;
-use crate::tui::toast_adapters;
+use crate::tui::integration::toast_adapters;
 
 impl App {
     /// Merge a `cargo metadata` arrival back into the process-wide store and

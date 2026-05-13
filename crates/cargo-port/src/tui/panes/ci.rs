@@ -15,7 +15,6 @@ use super::CiData;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
-use crate::tui::ci_state::Ci;
 use crate::tui::columns::ColumnSpec;
 use crate::tui::columns::ColumnWidths;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
@@ -27,6 +26,7 @@ use crate::tui::pane::PaneSelectionState;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::render;
 use crate::tui::render::CiColumn;
+use crate::tui::state::Ci;
 
 fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
     let right_aligned = Style::default()

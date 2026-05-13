@@ -3,7 +3,7 @@
 //! Owns App's keymap-file state: `current_keymap`, `keymap_path`,
 //! `keymap_last_seen`, and `keymap_diagnostics_id` (the toast id
 //! used to dismiss diagnostics from a previous parse failure).
-//! Composes [`super::watched_file::WatchedFile<T>`] for the
+//! Composes [`super::support::WatchedFile<T>`] for the
 //! load-watch-reload contract.
 
 use std::path::Path;
@@ -11,18 +11,18 @@ use std::path::PathBuf;
 
 use tui_pane::ToastId;
 
-use super::watched_file::WatchedFile;
 use crate::keymap::ResolvedKeymap;
+use crate::tui::support::WatchedFile;
 
 /// Owns the parsed keymap plus the on-disk watch state and the
 /// diagnostics-toast slot.
-pub(super) struct Keymap {
+pub struct Keymap {
     file:           WatchedFile<ResolvedKeymap>,
     diagnostics_id: Option<ToastId>,
 }
 
 impl Keymap {
-    pub(super) fn new(path: Option<PathBuf>, current: ResolvedKeymap) -> Self {
+    pub fn new(path: Option<PathBuf>, current: ResolvedKeymap) -> Self {
         Self {
             file:           WatchedFile::new(path, current),
             diagnostics_id: None,
@@ -30,38 +30,34 @@ impl Keymap {
     }
 
     #[cfg(test)]
-    pub(super) const fn current(&self) -> &ResolvedKeymap { &self.file.current }
+    pub const fn current(&self) -> &ResolvedKeymap { &self.file.current }
 
-    pub(super) fn path(&self) -> Option<&Path> { self.file.path() }
+    pub fn path(&self) -> Option<&Path> { self.file.path() }
 
     /// Replace the parsed keymap (used by reload paths that parse
     /// the file themselves before consulting the stamp — the
     /// existing `App::maybe_reload_keymap_from_disk` path captures
     /// `result.keymap` from `keymap::load_keymap_from_str` and
     /// installs it directly).
-    pub(super) fn replace_current(&mut self, value: ResolvedKeymap) { self.file.current = value; }
+    pub fn replace_current(&mut self, value: ResolvedKeymap) { self.file.current = value; }
 
     /// Refresh the cached stamp without re-parsing. Used after App
     /// itself writes the file (defaults written for missing
     /// actions) so the next reload doesn't see the self-write.
-    pub(super) fn sync_stamp(&mut self) { self.file.sync_stamp(); }
+    pub fn sync_stamp(&mut self) { self.file.sync_stamp(); }
 
     /// Return `Some(path)` if the keymap file's stamp has changed
     /// since the last seen value, swallowing the stamp delta.
     /// Used by `App::maybe_reload_keymap_from_disk`, which drives
     /// its own rich parser (`keymap::load_keymap_from_str`) whose
     /// `KeymapLoadResult` doesn't fit
-    /// [`crate::tui::watched_file::WatchedFile::try_reload`]'s
+    /// [`crate::tui::support::WatchedFile::try_reload`]'s
     /// `Result<T, String>` signature.
-    pub(super) fn take_stamp_change(&mut self) -> Option<&Path> { self.file.take_stamp_change() }
+    pub fn take_stamp_change(&mut self) -> Option<&Path> { self.file.take_stamp_change() }
 
-    pub(super) const fn set_diagnostics_id(&mut self, id: Option<ToastId>) {
-        self.diagnostics_id = id;
-    }
+    pub const fn set_diagnostics_id(&mut self, id: Option<ToastId>) { self.diagnostics_id = id; }
 
-    pub(super) const fn take_diagnostics_id(&mut self) -> Option<ToastId> {
-        self.diagnostics_id.take()
-    }
+    pub const fn take_diagnostics_id(&mut self) -> Option<ToastId> { self.diagnostics_id.take() }
 }
 
 #[cfg(test)]

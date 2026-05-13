@@ -40,14 +40,6 @@ use tui_pane::TabStop;
 use tui_pane::VimMode;
 use tui_pane::Visibility;
 
-use super::app::App;
-use super::app::CargoPortToastAction;
-use super::finder;
-use super::input;
-use super::panes;
-use super::panes::DetailField;
-use super::panes::GitRow;
-use super::panes::PaneId;
 use crate::config::NavigationKeys;
 use crate::keymap::CiRunsAction;
 use crate::keymap::FinderAction;
@@ -57,6 +49,14 @@ use crate::keymap::OutputAction;
 use crate::keymap::PackageAction;
 use crate::keymap::ProjectListAction;
 use crate::keymap::TargetsAction;
+use crate::tui::app::App;
+use crate::tui::app::CargoPortToastAction;
+use crate::tui::finder;
+use crate::tui::input;
+use crate::tui::panes;
+use crate::tui::panes::DetailField;
+use crate::tui::panes::GitRow;
+use crate::tui::panes::PaneId;
 
 /// Stable identifier for every app-side pane the framework keys its
 /// per-pane registries on.
@@ -74,7 +74,7 @@ pub(crate) enum AppPaneId {
     Finder,
 }
 
-pub(super) const fn vim_mode_from_config(navigation_keys: NavigationKeys) -> VimMode {
+pub const fn vim_mode_from_config(navigation_keys: NavigationKeys) -> VimMode {
     match navigation_keys {
         NavigationKeys::ArrowsOnly => VimMode::Disabled,
         NavigationKeys::ArrowsAndVim => VimMode::Enabled,
@@ -663,7 +663,7 @@ fn finder_keys(bind: KeyBind, app: &mut App) {
 /// production keymap TOML, if any. Errors propagate so the caller can
 /// surface them through the existing keymap-diagnostics toast
 /// plumbing.
-pub(super) fn build_framework_keymap(
+pub fn build_framework_keymap(
     builder: KeymapBuilder<App, Configuring>,
     framework: &mut Framework<App>,
 ) -> Result<Keymap<App>, KeymapError> {

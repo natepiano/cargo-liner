@@ -14,14 +14,16 @@
 //! - `pane_impls.rs` — `Pane` and `Hittable` impls for Finder and the framework panes.
 
 mod pane_impls;
+mod popup;
 mod render_state;
 
 use std::time::Instant;
 
+pub(super) use popup::PopupFrame;
 pub(crate) use render_state::FinderPane;
 use tui_pane::FocusedPane;
 
-use super::framework_keymap::AppPaneId;
+use super::integration::framework_keymap::AppPaneId;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum FinderMode {

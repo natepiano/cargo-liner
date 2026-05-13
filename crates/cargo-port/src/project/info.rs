@@ -1,5 +1,5 @@
 use super::git::LocalGitState;
-use super::submodule::Submodule;
+use super::git::Submodule;
 use crate::ci::CiRun;
 
 // Per-repo metadata (`github_info`, `ci_data`, ...) lives on

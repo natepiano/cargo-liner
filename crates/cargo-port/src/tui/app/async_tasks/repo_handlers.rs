@@ -18,7 +18,7 @@ use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
 use crate::tui::app::App;
 use crate::tui::constants::STARTUP_PHASE_GITHUB;
-use crate::tui::toast_adapters;
+use crate::tui::integration::toast_adapters;
 
 impl App {
     pub(super) fn spawn_repo_fetch_for_git_info(&mut self, path: &Path, repo_url: &str) {

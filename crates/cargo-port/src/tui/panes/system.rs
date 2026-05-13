@@ -25,11 +25,11 @@ use super::pane_impls::ProjectListPane;
 use super::pane_impls::TargetsPane;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
-use crate::tui::config_state::Config;
 use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::project_list::ProjectList;
+use crate::tui::state::Config;
 
 /// Bundle of refs the dispatchers need to construct a
 /// `PaneRenderCtx`. Constructed at the call site from

@@ -40,8 +40,8 @@
 //! bespoke state, write the lifecycle as a generic struct and have
 //! each subsystem compose it.
 //!
-//! - See [`super::watched_file::WatchedFile<T>`], composed by [`super::config_state::Config`] and
-//!   [`super::keymap_state::Keymap`] (with the diagnostics-toast id). The primitive captures the
+//! - See [`super::support::WatchedFile<T>`], composed by [`super::state::Config`] and
+//!   [`super::state::Keymap`] (with the diagnostics-toast id). The primitive captures the
 //!   load-on-disk-change contract once; the two subsystems add their bespoke state on top.
 
 mod async_tasks;
@@ -75,18 +75,18 @@ use super::background::Background;
 use super::columns;
 use super::columns::LintCell;
 use super::columns::StyledSegment;
-use super::config_state::Config;
-use super::framework_keymap;
-use super::framework_keymap::AppPaneId;
-use super::inflight::Inflight;
-use super::keymap_state::Keymap;
+use super::integration::framework_keymap;
+use super::integration::framework_keymap::AppPaneId;
 use super::overlays::Overlays;
 use super::pane::PaneFocusState;
 use super::panes::LayoutCache;
 use super::panes::PaneId;
 use super::panes::Panes;
 use super::project_list::ProjectList;
-use super::scan_state::Scan;
+use super::state::Config;
+use super::state::Inflight;
+use super::state::Keymap;
+use super::state::Scan;
 use crate::ci::OwnerRepo;
 use crate::http::HttpClient;
 use crate::keymap;
@@ -148,18 +148,18 @@ pub(super) use types::ScanState;
 pub(super) use types::SelectionPaths;
 pub(super) use types::SelectionSync;
 
-use super::ci_state::Ci;
 pub(super) use super::columns::ProjectListWidths;
 use super::interaction;
-use super::lint_state::Lint;
-pub(super) use super::net_state::AvailabilityStatus;
-use super::net_state::Net;
 use super::panes::BottomRow;
 pub(super) use super::project_list::ExpandKey;
 pub(super) use super::project_list::VisibleRow;
 use super::settings;
 use super::settings::SettingOption;
 use super::settings::StartupSettings;
+pub(super) use super::state::AvailabilityStatus;
+use super::state::Ci;
+use super::state::Lint;
+use super::state::Net;
 use crate::project;
 use crate::project::RootItem;
 use crate::scan::MetadataDispatchContext;

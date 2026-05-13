@@ -13,9 +13,9 @@ use crate::lint;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::app::CargoPortToastAction;
-use crate::tui::config_reload;
-use crate::tui::config_reload::ReloadContext;
-use crate::tui::config_reload::TreeReaction;
+use crate::tui::integration::config_reload;
+use crate::tui::integration::config_reload::ReloadContext;
+use crate::tui::integration::config_reload::TreeReaction;
 use crate::tui::keymap_ui;
 
 impl App {

@@ -20,9 +20,9 @@ use tui_pane::ToastId;
 
 use super::PaneFocusState;
 use crate::tui::app::DismissTarget;
-use crate::tui::config_state::Config;
 use crate::tui::panes::PaneId;
 use crate::tui::project_list::ProjectList;
+use crate::tui::state::Config;
 
 /// Bundle of references a pane needs at render time.
 pub struct PaneRenderCtx<'a> {

@@ -32,14 +32,14 @@ use crate::project::ProjectCiInfo;
 use crate::scan;
 use crate::tui::app::App;
 use crate::tui::app::CleanSelection;
-#[cfg(test)]
-use crate::tui::framework_keymap::AppNavigation;
-use crate::tui::framework_keymap::AppPaneId;
-use crate::tui::framework_keymap::CpuAction;
-use crate::tui::framework_keymap::LangAction;
-use crate::tui::framework_keymap::NavigationAction;
 use crate::tui::input;
-use crate::tui::toast_adapters;
+#[cfg(test)]
+use crate::tui::integration::framework_keymap::AppNavigation;
+use crate::tui::integration::framework_keymap::AppPaneId;
+use crate::tui::integration::framework_keymap::CpuAction;
+use crate::tui::integration::framework_keymap::LangAction;
+use crate::tui::integration::framework_keymap::NavigationAction;
+use crate::tui::integration::toast_adapters;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
     let Some(targets_data) = app.panes.targets.content().cloned() else {

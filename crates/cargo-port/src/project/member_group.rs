@@ -1,4 +1,4 @@
-use super::package::Package;
+use super::cargo::Package;
 
 /// Members within a workspace organized into groups.
 #[derive(Clone)]

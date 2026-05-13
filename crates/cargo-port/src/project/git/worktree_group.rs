@@ -1,15 +1,15 @@
 use std::path::Path;
 
-use super::info::Visibility;
-use super::info::WorktreeHealth;
-use super::package::Package;
-use super::paths::AbsolutePath;
-use super::paths::DisplayPath;
-use super::project_fields::ProjectFields;
-use super::rust_project::RustProject;
-use super::vendored_package::VendoredPackage;
-use super::workspace::Workspace;
 use crate::lint::LintStatus;
+use crate::project::cargo::Package;
+use crate::project::cargo::RustProject;
+use crate::project::cargo::Workspace;
+use crate::project::info::Visibility;
+use crate::project::info::WorktreeHealth;
+use crate::project::paths::AbsolutePath;
+use crate::project::paths::DisplayPath;
+use crate::project::project_fields::ProjectFields;
+use crate::project::vendored_package::VendoredPackage;
 
 /// A worktree group: primary checkout + linked worktree checkouts.
 ///

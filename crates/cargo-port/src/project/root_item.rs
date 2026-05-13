@@ -1,19 +1,19 @@
 use std::path::Path;
 
+use super::cargo::Package;
+use super::cargo::RustProject;
 use super::git::CheckoutInfo;
+use super::git::Submodule;
+use super::git::WorktreeGroup;
 use super::info::ProjectInfo;
 use super::info::Visibility;
 use super::info::WorktreeHealth;
 use super::non_rust::NonRustProject;
-use super::package::Package;
 use super::paths::AbsolutePath;
 use super::paths::DisplayPath;
 use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
-use super::rust_project::RustProject;
-use super::submodule::Submodule;
 use super::vendored_package::VendoredPackage;
-use super::worktree_group::WorktreeGroup;
 use crate::ci::CiStatus;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
@@ -472,5 +472,5 @@ fn sum_disk(primary: Option<u64>, linked: impl Iterator<Item = Option<u64>>) -> 
     any.then_some(total)
 }
 
+use super::cargo::RustInfo;
 use super::git;
-use super::rust_info::RustInfo;

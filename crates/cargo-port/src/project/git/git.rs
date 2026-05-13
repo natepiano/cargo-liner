@@ -8,13 +8,13 @@ use std::time::SystemTime;
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::info::WorktreeHealth;
-use super::paths::AbsolutePath;
 use crate::config;
 use crate::config::CargoPortConfig;
 use crate::constants::GIT_STATUS_CLEAN;
 use crate::constants::GIT_STATUS_MODIFIED;
 use crate::constants::GIT_STATUS_UNTRACKED;
+use crate::project::info::WorktreeHealth;
+use crate::project::paths::AbsolutePath;
 
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -886,7 +886,7 @@ impl WorktreeStatus {
 /// Get the git worktree status for a project directory by walking up
 /// until a `.git` entry is found: file → `Linked`, directory → `Primary`,
 /// nothing found → `NotGit`.
-pub(super) fn get_worktree_status(project_dir: &Path) -> WorktreeStatus {
+pub(crate) fn get_worktree_status(project_dir: &Path) -> WorktreeStatus {
     let mut dir = project_dir;
     loop {
         let git_path = dir.join(".git");

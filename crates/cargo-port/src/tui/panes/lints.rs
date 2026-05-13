@@ -26,12 +26,12 @@ use crate::tui::constants::ERROR_COLOR;
 use crate::tui::constants::LABEL_COLOR;
 use crate::tui::constants::SUCCESS_COLOR;
 use crate::tui::constants::TITLE_COLOR;
-use crate::tui::lint_state::Lint;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::render;
+use crate::tui::state::Lint;
 
 fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
     if data.runs.is_empty() {

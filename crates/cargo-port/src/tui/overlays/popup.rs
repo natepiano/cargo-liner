@@ -8,8 +8,8 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 
-use super::constants::TITLE_COLOR;
-use super::render;
+use crate::tui::constants::TITLE_COLOR;
+use crate::tui::render;
 
 const TITLE_STYLE: Style = Style::new().fg(TITLE_COLOR).add_modifier(Modifier::BOLD);
 
@@ -17,7 +17,7 @@ const TITLE_STYLE: Style = Style::new().fg(TITLE_COLOR).add_modifier(Modifier::B
 ///
 /// Handles centering, background clearing, and a bordered frame with
 /// an optional left-aligned yellow-bold title.
-pub(super) struct PopupFrame {
+pub struct PopupFrame {
     pub title:        Option<String>,
     pub border_color: Color,
     pub width:        u16,
@@ -25,7 +25,7 @@ pub(super) struct PopupFrame {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct PopupAreas {
+pub struct PopupAreas {
     pub outer: Rect,
     pub inner: Rect,
 }

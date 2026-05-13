@@ -14,7 +14,7 @@ use crate::tui::constants::STARTUP_PHASE_GIT;
 use crate::tui::constants::STARTUP_PHASE_GITHUB;
 use crate::tui::constants::STARTUP_PHASE_LINT;
 use crate::tui::constants::STARTUP_PHASE_METADATA;
-use crate::tui::toast_adapters;
+use crate::tui::integration::toast_adapters;
 
 impl Startup {
     pub(super) fn log_phase_plan(&self) {

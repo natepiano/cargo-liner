@@ -18,7 +18,7 @@ use cargo_metadata::TargetKind;
 use cargo_metadata::semver::Version;
 use sha2::Digest as _;
 
-use super::AbsolutePath;
+use crate::project::AbsolutePath;
 
 /// Process-wide cache of `cargo metadata` results, keyed by workspace root.
 ///

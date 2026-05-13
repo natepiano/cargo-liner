@@ -628,7 +628,7 @@ pub(super) fn format_rate_limit_bucket(quota: Option<RateLimitQuota>) -> String 
     let secs = reset_at.saturating_sub(now);
     format!(
         "{base} resets {}",
-        crate::tui::duration_fmt::format_progressive(secs)
+        crate::tui::support::format_progressive(secs)
     )
 }
 
@@ -755,7 +755,7 @@ pub struct PackageData {
     pub lint_display:             super::LintDisplay,
     /// Typed display value for the Ci row in the Package detail
     /// pane. Renderer matches on variants directly. Domain
-    /// authority lives on [`crate::tui::ci_state::Ci`]; produced
+    /// authority lives on [`crate::tui::state::Ci`]; produced
     /// by `Ci::package_display`.
     pub ci_display:               super::CiDisplay,
     /// Byte size of the workspace's out-of-tree `target_directory`

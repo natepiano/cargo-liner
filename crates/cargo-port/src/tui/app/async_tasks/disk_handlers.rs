@@ -5,7 +5,7 @@ use crate::project::Visibility::Deleted;
 use crate::project::Visibility::Visible;
 use crate::scan::DirSizes;
 use crate::tui::app::App;
-use crate::tui::toast_adapters;
+use crate::tui::integration::toast_adapters;
 
 impl App {
     pub fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {

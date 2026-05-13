@@ -44,15 +44,15 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::tui::background::Background;
 use crate::tui::background::BackgroundChannels;
-use crate::tui::config_state::Config;
-use crate::tui::framework_keymap;
-use crate::tui::framework_keymap::AppPaneId;
-use crate::tui::inflight::Inflight;
-use crate::tui::keymap_state::Keymap;
+use crate::tui::integration::framework_keymap;
+use crate::tui::integration::framework_keymap::AppPaneId;
 use crate::tui::panes::Panes;
 use crate::tui::project_list::ProjectList;
-use crate::tui::scan_state::Scan;
 use crate::tui::settings::StartupSettings;
+use crate::tui::state::Config;
+use crate::tui::state::Inflight;
+use crate::tui::state::Keymap;
+use crate::tui::state::Scan;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -191,7 +191,7 @@ impl AppBuilder<Started> {
             example:  (channeled.example_tx, channeled.example_rx),
             watch_tx: started.watch_tx,
         });
-        let lint = crate::tui::lint_state::Lint::new(started.lint_runtime);
+        let lint = crate::tui::state::Lint::new(started.lint_runtime);
         let inflight = Inflight::new();
         let config_path_buf = started
             .config_path
@@ -234,13 +234,13 @@ impl AppBuilder<Started> {
             framework_keymap::build_framework_keymap(framework_builder, &mut framework)
                 .with_context(|| "building framework keymap")?;
         let mut app = App {
-            net: crate::tui::net_state::Net::new(inputs.http_client),
+            net: crate::tui::state::Net::new(inputs.http_client),
             panes,
             project_list: projects,
             background,
             inflight,
             lint,
-            ci: crate::tui::ci_state::Ci::new(),
+            ci: crate::tui::state::Ci::new(),
             config,
             keymap,
             scan,

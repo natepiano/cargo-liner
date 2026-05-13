@@ -2,7 +2,7 @@
 //! work paired with the single sticky `ToastTaskId` that displays
 //! "N <thing> running."
 //!
-//! Used by the [`Lint`](super::lint_state::Lint) subsystem
+//! Used by the [`Lint`](super::state::Lint) subsystem
 //! (`RunningTracker<AbsolutePath>`), GitHub repo fetches
 //! (`RunningTracker<OwnerRepo>`), and `Inflight.clean`. Not used
 //! for CI: `Ci.fetch_toast` is fire-once (consumed via

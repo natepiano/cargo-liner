@@ -8,14 +8,14 @@ use serde::Deserialize;
 use serde::Serialize;
 use toml::Table;
 
-use super::git;
-use super::info::ProjectInfo;
-use super::non_rust::NonRustProject;
 use super::package::Package;
-use super::paths::AbsolutePath;
 use super::rust_info::Cargo;
 use super::rust_info::RustInfo;
 use super::workspace::Workspace;
+use crate::project::git;
+use crate::project::info::ProjectInfo;
+use crate::project::non_rust::NonRustProject;
+use crate::project::paths::AbsolutePath;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

@@ -25,14 +25,6 @@ use ratatui::layout::Rect;
 use tui_pane::ToastTaskId;
 use tui_pane::Viewport;
 
-use super::app::CiRunDisplayMode;
-use super::pane::Hittable;
-use super::pane::HoverTarget;
-use super::pane::Pane;
-use super::pane::PaneRenderCtx;
-use super::panes;
-use super::panes::CiData;
-use super::panes::PaneId;
 #[cfg(test)]
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
@@ -40,6 +32,14 @@ use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::ProjectCiInfo;
 use crate::project::RepoInfo;
+use crate::tui::app::CiRunDisplayMode;
+use crate::tui::pane::Hittable;
+use crate::tui::pane::HoverTarget;
+use crate::tui::pane::Pane;
+use crate::tui::pane::PaneRenderCtx;
+use crate::tui::panes;
+use crate::tui::panes::CiData;
+use crate::tui::panes::PaneId;
 
 /// Display value for the Ci row in the Package detail pane.
 ///
@@ -134,7 +134,7 @@ impl Ci {
         self.display_modes.get(path).copied().unwrap_or_default()
     }
 
-    pub(super) fn display_mode_label_for(&self, path: &Path) -> &'static str {
+    pub fn display_mode_label_for(&self, path: &Path) -> &'static str {
         match self.display_mode_for(path) {
             CiRunDisplayMode::BranchOnly => "branch",
             CiRunDisplayMode::All => "all",
@@ -250,20 +250,20 @@ impl Ci {
 /// hierarchy; this only records which owner paths currently have a request
 /// in flight.
 #[derive(Default)]
-pub(super) struct CiFetchTracker {
+pub struct CiFetchTracker {
     inner: HashSet<AbsolutePath>,
 }
 
 impl CiFetchTracker {
-    pub(super) fn start(&mut self, path: AbsolutePath) { self.inner.insert(path); }
+    pub fn start(&mut self, path: AbsolutePath) { self.inner.insert(path); }
 
-    pub(super) fn complete(&mut self, path: &Path) -> bool { self.inner.remove(path) }
+    pub fn complete(&mut self, path: &Path) -> bool { self.inner.remove(path) }
 
-    pub(super) fn is_fetching(&self, path: &Path) -> bool { self.inner.contains(path) }
+    pub fn is_fetching(&self, path: &Path) -> bool { self.inner.contains(path) }
 
-    pub(super) fn clear(&mut self) { self.inner.clear(); }
+    pub fn clear(&mut self) { self.inner.clear(); }
 
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&AbsolutePath) -> bool) {
+    pub fn retain(&mut self, mut keep: impl FnMut(&AbsolutePath) -> bool) {
         self.inner.retain(|path| keep(path));
     }
 }

@@ -1003,7 +1003,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
         .unwrap_or_else(|| std::process::abort())
         .ci_display;
 
-    assert_eq!(display, crate::tui::ci_state::CiDisplay::UnpublishedBranch);
+    assert_eq!(display, crate::tui::state::CiDisplay::UnpublishedBranch);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! Generic "load from disk + watch stamp + try-reload" lifecycle.
 //!
-//! Two consumers today: [`super::config_state::Config`] (composes
-//! `WatchedFile<CargoPortConfig>`) and [`super::keymap_state::Keymap`]
+//! Two consumers today: [`super::state::Config`] (composes
+//! `WatchedFile<CargoPortConfig>`) and [`super::state::Keymap`]
 //! (composes `WatchedFile<ResolvedKeymap>`).
 //!
 //! The primitive captures the load-watch-reload contract once: it
@@ -10,8 +10,8 @@
 //! every tick; if the file's stamp has not changed it short-circuits
 //! [`ReloadOutcome::Unchanged`] without touching disk content.
 //!
-//! [`super::config_state::Config`]: crate::tui::config_state::Config
-//! [`super::keymap_state::Keymap`]: crate::tui::keymap_state::Keymap
+//! [`super::state::Config`]: crate::tui::state::Config
+//! [`super::state::Keymap`]: crate::tui::state::Keymap
 
 use std::fs;
 use std::path::Path;
@@ -32,17 +32,17 @@ struct Stamp {
 /// [`Self::try_reload`]. The path may be `None` (no on-disk source —
 /// e.g. config defaults loaded from environment) in which case
 /// `try_reload` is always [`ReloadOutcome::Unchanged`].
-pub(super) struct WatchedFile<T> {
-    path:               Option<PathBuf>,
-    stamp:              Option<Stamp>,
-    pub(super) current: T,
+pub struct WatchedFile<T> {
+    path:        Option<PathBuf>,
+    stamp:       Option<Stamp>,
+    pub current: T,
 }
 
 impl<T> WatchedFile<T> {
     /// Build a `WatchedFile` for an already-parsed value. Captures
     /// the on-disk stamp at this moment so the next `try_reload`
     /// short-circuits unless the file changes again.
-    pub(super) fn new(path: Option<PathBuf>, current: T) -> Self {
+    pub fn new(path: Option<PathBuf>, current: T) -> Self {
         let stamp = path.as_deref().and_then(read_stamp);
         Self {
             path,
@@ -51,27 +51,27 @@ impl<T> WatchedFile<T> {
         }
     }
 
-    pub(super) fn path(&self) -> Option<&Path> { self.path.as_deref() }
+    pub fn path(&self) -> Option<&Path> { self.path.as_deref() }
 
     /// Refresh the cached stamp without re-parsing. Used after the
     /// caller writes the file itself (saving settings, writing
     /// keymap defaults) so the next `try_reload` does not see the
     /// caller's own write as an external change.
-    pub(super) fn sync_stamp(&mut self) { self.stamp = self.path.as_deref().and_then(read_stamp); }
+    pub fn sync_stamp(&mut self) { self.stamp = self.path.as_deref().and_then(read_stamp); }
 
     /// Test-only — drop the cached stamp so the next
     /// [`Self::take_stamp_change`] / [`Self::try_reload`] always
     /// sees a delta. Used by tests that swap the watched path and
     /// need to force a reload regardless of the new file's mtime.
     #[cfg(test)]
-    pub(super) const fn clear_stamp_for_test(&mut self) { self.stamp = None; }
+    pub const fn clear_stamp_for_test(&mut self) { self.stamp = None; }
 
     /// Return `Some(path)` if the file's on-disk stamp has changed
     /// since the last seen value, updating the cached stamp before
     /// returning. Used by callers (e.g. keymap reload) that need to
     /// drive a custom parser whose result type doesn't fit
     /// [`Self::try_reload`]'s `Result<T, String>` signature.
-    pub(super) fn take_stamp_change(&mut self) -> Option<&Path> {
+    pub fn take_stamp_change(&mut self) -> Option<&Path> {
         let path = self.path.as_deref()?;
         let current = read_stamp(path);
         if current == self.stamp {

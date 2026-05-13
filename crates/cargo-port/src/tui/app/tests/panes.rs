@@ -587,7 +587,7 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         name:              &item.root_directory_name().into_string(),
         name_segments:     None,
         git_status:        app.project_list.git_status_for(item.path()),
-        lint:              app.lint_cell(&crate::tui::lint_state::Lint::status_for_root(item)),
+        lint:              app.lint_cell(&crate::tui::state::Lint::status_for_root(item)),
         disk:              "0.0",
         disk_style:        Style::default(),
         disk_suffix:       Some(" [x]"),

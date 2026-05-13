@@ -10,7 +10,7 @@ over-large files along their natural seams.
 
 | Phase | What                                                       | Risk    | Rough size |
 |-------|------------------------------------------------------------|---------|------------|
-| 1     | Placement — group `tui/` and `project/` files into dirs    | Low     | ~80–120 import updates, 6 commits |
+| 1     | Placement — group `tui/` and `project/` files into dirs    | Low     | ~80–120 import updates, one commit |
 | 2     | Split `src/scan.rs` (1988 prod lines)                      | Medium  | New `src/scan/` dir with 6–7 files |
 | 3     | Split `src/tui/project_list.rs` (2352 lines)               | Medium  | New `src/tui/project_list/` dir with 4 files |
 | 4     | Move `src/tui/interaction.rs` test module out              | Low     | One-file move; production stays one file |
@@ -258,8 +258,8 @@ State and integration files import from `support`, so `support` lands first.
    cross-import.
 6. `project/git/` — move.
 
-Each step is one commit. `cargo build` + `cargo nextest run` between
-steps.
+Run `cargo build` + `cargo nextest run` between steps as in-flight
+checkpoints. The whole phase lands as a single commit once green.
 
 ---
 
@@ -346,8 +346,9 @@ leaves first.
 5. `cargo_metadata.rs` — depends on `tree.rs`.
 6. `discovery.rs` — depends on `cargo_metadata.rs` and `tree.rs`.
 
-Each step is one commit. `cargo build` + `cargo nextest run` between
-steps. After all six, `mod.rs` retains only `BackgroundMsg` and the
+Run `cargo build` + `cargo nextest run` between steps as in-flight
+checkpoints. The whole phase lands as a single commit once green; after
+all six extractions, `mod.rs` retains only `BackgroundMsg` and the
 service-signal layer.
 
 ---
@@ -403,7 +404,8 @@ unless they themselves have an internal seam (TBD at extraction time).
 3. `visible_rows.rs` — depends on the `ProjectList` field layout but not on
    `grouping` or `selection`.
 
-Each step is one commit. `cargo build` + `cargo nextest run` between steps.
+Run `cargo build` + `cargo nextest run` between steps as in-flight
+checkpoints. The whole phase lands as a single commit once green.
 
 ---
 

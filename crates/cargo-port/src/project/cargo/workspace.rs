@@ -1,32 +1,42 @@
 use std::ops::Deref;
 use std::ops::DerefMut;
 
-use super::git::CheckoutInfo;
-use super::git::WorktreeStatus;
-use super::info::ProjectInfo;
-use super::info::Visibility;
-use super::info::WorktreeHealth;
-use super::paths;
-use super::paths::AbsolutePath;
-use super::paths::DisplayPath;
-use super::paths::PackageName;
-use super::paths::RootDirectoryName;
-use super::project_fields::ProjectFields;
 use super::rust_info::RustInfo;
+use crate::project::git::CheckoutInfo;
+use crate::project::git::WorktreeStatus;
+use crate::project::info::ProjectInfo;
+use crate::project::info::Visibility;
+use crate::project::info::WorktreeHealth;
+use crate::project::member_group::MemberGroup;
+use crate::project::paths;
+use crate::project::paths::AbsolutePath;
+use crate::project::paths::DisplayPath;
+use crate::project::paths::PackageName;
+use crate::project::paths::RootDirectoryName;
+use crate::project::project_fields::ProjectFields;
 
-/// A standalone Rust package project. Derefs to `RustInfo` for uniform access.
+/// A Rust workspace project. Contains member groups in addition to the
+/// shared `RustInfo` data. Implements `Deref<Target = RustInfo>` for uniform
+/// access.
 ///
-/// Construct via struct literal: `Package { path, name, rust: RustInfo { .. } }`.
-/// All fields default to empty/none, so tests can use `..Default::default()`.
+/// Construct via struct literal — all fields default to empty/none, so tests
+/// can use `..Default::default()`.
 #[derive(Clone, Default)]
-pub(crate) struct Package {
+pub(crate) struct Workspace {
     pub(crate) path:            AbsolutePath,
     pub(crate) name:            Option<String>,
     pub(crate) worktree_status: WorktreeStatus,
     pub(crate) rust:            RustInfo,
+    pub(crate) groups:          Vec<MemberGroup>,
 }
 
-impl Package {
+impl Workspace {
+    pub(crate) fn groups(&self) -> &[MemberGroup] { &self.groups }
+
+    pub(crate) const fn groups_mut(&mut self) -> &mut Vec<MemberGroup> { &mut self.groups }
+
+    pub(crate) fn has_members(&self) -> bool { self.groups.iter().any(|g| !g.members().is_empty()) }
+
     /// Cargo package name when present, otherwise directory leaf.
     pub(crate) fn package_name(&self) -> PackageName {
         PackageName(self.name.as_deref().map_or_else(
@@ -34,12 +44,9 @@ impl Package {
             str::to_string,
         ))
     }
-
-    /// Language icon for the project list.
-    pub(crate) const fn lang_icon() -> &'static str { "\u{1f980}" }
 }
 
-impl ProjectFields for Package {
+impl ProjectFields for Workspace {
     fn path(&self) -> &AbsolutePath { &self.path }
 
     fn name(&self) -> Option<&str> { self.name.as_deref() }
@@ -69,12 +76,12 @@ impl ProjectFields for Package {
     }
 }
 
-impl Deref for Package {
+impl Deref for Workspace {
     type Target = RustInfo;
 
     fn deref(&self) -> &RustInfo { &self.rust }
 }
 
-impl DerefMut for Package {
+impl DerefMut for Workspace {
     fn deref_mut(&mut self) -> &mut RustInfo { &mut self.rust }
 }

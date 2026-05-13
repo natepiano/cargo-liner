@@ -1,34 +1,23 @@
 mod app;
 mod background;
-mod ci_state;
 mod columns;
-mod config_reload;
-mod config_state;
 mod constants;
 mod cpu;
-mod duration_fmt;
 mod finder;
-mod framework_keymap;
-mod inflight;
 mod input;
+mod integration;
 mod interaction;
-mod keymap_state;
 mod keymap_ui;
-mod lint_state;
-mod net_state;
 mod overlays;
 mod pane;
 mod panes;
-mod popup;
 mod project_list;
 mod render;
-mod running_tracker;
-mod scan_state;
 mod settings;
+mod state;
+mod support;
 mod terminal;
 #[cfg(test)]
 mod test_support;
-mod toast_adapters;
-mod watched_file;
 
 pub use terminal::run;
