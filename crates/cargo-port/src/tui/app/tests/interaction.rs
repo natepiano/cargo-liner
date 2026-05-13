@@ -1,0 +1,1684 @@
+use std::path::Path;
+use std::rc::Rc;
+use std::time::Duration;
+use std::time::Instant;
+
+use crossterm::event::Event;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::layout::Position;
+use tempfile::TempDir;
+use tui_pane::AppContext;
+use tui_pane::FocusedPane;
+use tui_pane::GlobalAction as FrameworkGlobalAction;
+use tui_pane::ToastId;
+use tui_pane::ToastStyle;
+use tui_pane::Viewport;
+
+use crate::ci::CiJob;
+use crate::ci::CiRun;
+use crate::ci::CiStatus;
+use crate::ci::FetchStatus;
+use crate::lint::LintCommand;
+use crate::lint::LintCommandStatus;
+use crate::lint::LintRun;
+use crate::lint::LintRunStatus;
+use crate::project::AbsolutePath;
+use crate::project::Cargo;
+use crate::project::CheckoutInfo;
+use crate::project::ExampleGroup;
+use crate::project::FileStamp;
+use crate::project::GitStatus;
+use crate::project::ManifestFingerprint;
+use crate::project::MemberGroup;
+use crate::project::Package;
+use crate::project::PackageRecord;
+use crate::project::ProjectType;
+use crate::project::PublishPolicy;
+use crate::project::RemoteInfo;
+use crate::project::RemoteKind;
+use crate::project::RepoInfo;
+use crate::project::RootItem;
+use crate::project::RustInfo;
+use crate::project::RustProject;
+use crate::project::TargetRecord;
+use crate::project::Visibility;
+use crate::project::WorkflowPresence;
+use crate::project::Workspace;
+use crate::project::WorkspaceMetadata;
+use crate::project::WorktreeGroup;
+use crate::project::WorktreeStatus;
+use crate::scan::BackgroundMsg;
+use crate::scan::DirSizes;
+use crate::tui::app::App;
+use crate::tui::app::ConfirmAction;
+use crate::tui::app::DismissTarget;
+use crate::tui::app::ExpandKey;
+use crate::tui::app::HoveredPaneRow;
+use crate::tui::finder;
+use crate::tui::input;
+use crate::tui::integration::AppPaneId;
+use crate::tui::pane::HoverTarget;
+use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneRenderCtx;
+use crate::tui::pane::PaneSelectionState;
+use crate::tui::panes;
+use crate::tui::panes::LintsData;
+use crate::tui::panes::PaneId;
+use crate::tui::project_list::ProjectList;
+use crate::tui::render;
+use crate::tui::settings;
+use crate::tui::settings::SettingOption;
+use crate::tui::test_support as tui_test_support;
+
+fn open_settings_overlay(app: &mut App) {
+    let keymap = Rc::clone(&app.framework_keymap);
+    keymap.dispatch_framework_global(FrameworkGlobalAction::OpenSettings, app);
+}
+
+fn open_keymap_overlay(app: &mut App) {
+    let keymap = Rc::clone(&app.framework_keymap);
+    keymap.dispatch_framework_global(FrameworkGlobalAction::OpenKeymap, app);
+}
+
+fn make_package(name: &str, path: &Path) -> RootItem {
+    make_package_with_cargo(name, path, Cargo::default())
+}
+
+fn make_package_with_cargo(name: &str, path: &Path, cargo: Cargo) -> RootItem {
+    RootItem::Rust(RustProject::Package(Package {
+        path: AbsolutePath::from(path),
+        name: Some(name.to_string()),
+        rust: RustInfo {
+            cargo,
+            ..RustInfo::default()
+        },
+        ..Package::default()
+    }))
+}
+
+fn make_package_worktree(
+    name: &str,
+    path: &Path,
+    is_linked_worktree: bool,
+    primary_abs_path: Option<&Path>,
+) -> Package {
+    let worktree_status = match (is_linked_worktree, primary_abs_path) {
+        (true, Some(p)) => WorktreeStatus::Linked {
+            primary: AbsolutePath::from(p),
+        },
+        (false, Some(p)) => WorktreeStatus::Primary {
+            root: AbsolutePath::from(p),
+        },
+        _ => WorktreeStatus::NotGit,
+    };
+    Package {
+        path: AbsolutePath::from(path),
+        name: Some(name.to_string()),
+        worktree_status,
+        ..Package::default()
+    }
+}
+
+fn inline_group(members: Vec<Package>) -> MemberGroup { MemberGroup::Inline { members } }
+
+fn make_member(name: &str, path: &Path) -> Package {
+    Package {
+        path: AbsolutePath::from(path),
+        name: Some(name.to_string()),
+        ..Package::default()
+    }
+}
+
+fn make_workspace_with_members(name: &str, path: &Path, groups: Vec<MemberGroup>) -> RootItem {
+    RootItem::Rust(RustProject::Workspace(Workspace {
+        path: AbsolutePath::from(path),
+        name: Some(name.to_string()),
+        groups,
+        ..Workspace::default()
+    }))
+}
+
+fn make_git_info(url: Option<&str>) -> (CheckoutInfo, RepoInfo) {
+    let checkout = CheckoutInfo {
+        status:              GitStatus::Clean,
+        branch:              Some("main".to_string()),
+        last_commit:         Some("2024-01-02T00:00:00Z".to_string()),
+        ahead_behind_local:  Some((0, 0)),
+        primary_tracked_ref: Some("origin/main".to_string()),
+    };
+    let repo = RepoInfo {
+        remotes:           vec![RemoteInfo {
+            name:         "origin".to_string(),
+            url:          url.map(str::to_string),
+            owner:        Some("natepiano".to_string()),
+            repo:         Some("demo".to_string()),
+            tracked_ref:  Some("origin/main".to_string()),
+            ahead_behind: Some((0, 0)),
+            kind:         RemoteKind::Clone,
+        }],
+        workflows:         WorkflowPresence::Present,
+        first_commit:      Some("2024-01-01T00:00:00Z".to_string()),
+        last_fetched:      None,
+        default_branch:    Some("main".to_string()),
+        local_main_branch: Some("main".to_string()),
+    };
+    (checkout, repo)
+}
+
+fn make_ci_run(run_id: u64, conclusion: CiStatus) -> CiRun {
+    CiRun {
+        run_id,
+        created_at: "2024-01-01T00:00:00Z".to_string(),
+        branch: "main".to_string(),
+        url: format!("https://github.com/natepiano/demo/actions/runs/{run_id}"),
+        ci_status: conclusion,
+        jobs: vec![CiJob {
+            name:          "build".to_string(),
+            ci_status:     conclusion,
+            duration:      "1m".to_string(),
+            duration_secs: Some(60),
+        }],
+        wall_clock_secs: Some(60),
+        commit_title: Some("commit".to_string()),
+        updated_at: None,
+        fetched: FetchStatus::Fetched,
+    }
+}
+
+fn make_lint_run(run_id: &str, status: LintRunStatus) -> LintRun {
+    LintRun {
+        run_id: run_id.to_string(),
+        started_at: "2024-01-01T00:00:00Z".to_string(),
+        finished_at: Some("2024-01-01T00:01:00Z".to_string()),
+        duration_ms: Some(60_000),
+        status,
+        commands: vec![LintCommand {
+            name:        "clippy".to_string(),
+            command:     "cargo clippy".to_string(),
+            status:      LintCommandStatus::Passed,
+            duration_ms: Some(1_000),
+            exit_code:   Some(0),
+            log_file:    "clippy.log".to_string(),
+        }],
+    }
+}
+
+fn make_app(projects: &[RootItem]) -> App { tui_test_support::make_app(projects) }
+
+fn render_ui(app: &mut App) {
+    app.ensure_visible_rows_cached();
+    app.ensure_detail_cached();
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+    terminal
+        .draw(|frame| render::ui(frame, app))
+        .unwrap_or_else(|_| std::process::abort());
+}
+
+fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
+    app.ensure_detail_cached();
+    app.lint.set_content(LintsData {
+        runs:    runs.to_vec(),
+        sizes:   vec![Some(0); runs.len()],
+        is_rust: true,
+    });
+    let backend = TestBackend::new(120, 20);
+    let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+    let focus_state = app.pane_focus_state(PaneId::Lints);
+    let is_focused = app.focus_is(PaneId::Lints);
+    let animation_elapsed = app.animation_started.elapsed();
+    let selected_path = app
+        .selected_project_path_for_render()
+        .map(std::path::Path::to_path_buf);
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            let (lint, config, projects) = app.split_lint_for_render();
+            let ctx = PaneRenderCtx {
+                focus_state,
+                is_focused,
+                animation_elapsed,
+                config,
+                project_list: projects,
+                selected_project_path: selected_path.as_deref(),
+            };
+            panes::render_lints_pane_body(frame, area, lint, &ctx);
+        })
+        .unwrap_or_else(|_| std::process::abort());
+}
+
+fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
+    app.ensure_detail_cached();
+    app.ci.override_runs_for_test(runs.to_vec());
+    let backend = TestBackend::new(120, 20);
+    let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+    let focus_state = app.pane_focus_state(PaneId::CiRuns);
+    let is_focused = app.focus_is(PaneId::CiRuns);
+    let animation_elapsed = app.animation_started.elapsed();
+    let selected_path = app
+        .selected_project_path_for_render()
+        .map(std::path::Path::to_path_buf);
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            let (ci, config, projects) = app.split_ci_for_render();
+            let ctx = PaneRenderCtx {
+                focus_state,
+                is_focused,
+                animation_elapsed,
+                config,
+                project_list: projects,
+                selected_project_path: selected_path.as_deref(),
+            };
+            panes::render_ci_pane_body(frame, area, ci, &ctx);
+        })
+        .unwrap_or_else(|_| std::process::abort());
+}
+
+fn click(app: &mut App, column: u16, row: u16) {
+    input::handle_event(
+        app,
+        &Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }),
+    );
+}
+
+fn move_mouse(app: &mut App, column: u16, row: u16) {
+    input::handle_event(
+        app,
+        &Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }),
+    );
+}
+
+fn scroll_down(app: &mut App, column: u16, row: u16) {
+    input::handle_event(
+        app,
+        &Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }),
+    );
+}
+
+fn press_key(app: &mut App, code: KeyCode) {
+    input::handle_event(
+        app,
+        &Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }),
+    );
+}
+
+fn focus_gained(app: &mut App) { input::handle_event(app, &Event::FocusGained); }
+
+fn row_body_point(app: &App, row_index: usize) -> (u16, u16) {
+    let area = app.layout_cache.project_list_body;
+    (
+        area.x.saturating_add(1),
+        area.y
+            .saturating_add(u16::try_from(row_index).unwrap_or(u16::MAX)),
+    )
+}
+
+fn row_dismiss_point(app: &App, row_index: usize) -> (u16, u16) {
+    let area = app.layout_cache.project_list_body;
+    (
+        area.x.saturating_add(area.width.saturating_sub(2)),
+        area.y
+            .saturating_add(u16::try_from(row_index).unwrap_or(u16::MAX)),
+    )
+}
+
+fn pane_row_point(pane: &Viewport, row_index: usize) -> (u16, u16) {
+    let area = pane.content_area();
+    (
+        area.x.saturating_add(1),
+        area.y
+            .saturating_add(u16::try_from(row_index).unwrap_or(u16::MAX)),
+    )
+}
+
+fn framework_pane_row_point(pane: &Viewport, row_index: usize) -> (u16, u16) {
+    let area = pane.content_area();
+    (
+        area.x.saturating_add(1),
+        area.y
+            .saturating_add(u16::try_from(row_index).unwrap_or(u16::MAX)),
+    )
+}
+
+fn settings_point_for_setting(app: &App, setting: SettingOption) -> (u16, u16) {
+    let row = settings::selection_index_for_setting_for_test(app, setting)
+        .expect("setting must be visible");
+    let pane = &app.framework.settings_pane;
+    let height = usize::from(pane.viewport().content_area().height);
+    let line = (0..height)
+        .find(|line| pane.line_target(*line) == Some(row))
+        .expect("setting must have a rendered hit target");
+    framework_pane_row_point(pane.viewport(), line)
+}
+
+fn keymap_point_for_row_after(app: &App, min_row: usize) -> (u16, u16, usize) {
+    let pane = &app.framework.keymap_pane;
+    let height = usize::from(pane.viewport().content_area().height);
+    let (line, row) = (0..height)
+        .filter_map(|line| pane.line_target(line).map(|row| (line, row)))
+        .find(|(_, row)| *row > min_row)
+        .expect("keymap row must have a rendered hit target");
+    let (x, y) = framework_pane_row_point(pane.viewport(), line);
+    (x, y, row)
+}
+
+fn framework_selection_state(
+    pane: &Viewport,
+    row: usize,
+    focus: PaneFocusState,
+) -> PaneSelectionState {
+    if row == pane.pos() && matches!(focus, PaneFocusState::Active) {
+        PaneSelectionState::Active
+    } else if pane.hovered() == Some(row) {
+        PaneSelectionState::Hovered
+    } else if row == pane.pos() && matches!(focus, PaneFocusState::Remembered) {
+        PaneSelectionState::Remembered
+    } else {
+        PaneSelectionState::Unselected
+    }
+}
+
+fn finder_result_point(app: &App, result_index: usize) -> (u16, u16) {
+    let area = app.overlays.finder_pane.viewport.content_area();
+    (
+        area.x.saturating_add(1),
+        area.y
+            .saturating_add(1)
+            .saturating_add(u16::try_from(result_index).unwrap_or(u16::MAX)),
+    )
+}
+
+fn lint_run_point(app: &App, run_index: usize) -> (u16, u16) {
+    let area = app.lint.viewport.content_area();
+    (
+        area.x.saturating_add(1),
+        area.y
+            .saturating_add(1)
+            .saturating_add(u16::try_from(run_index).unwrap_or(u16::MAX)),
+    )
+}
+
+fn ci_run_point(app: &App, run_index: usize) -> (u16, u16) {
+    let area = app.ci.viewport.content_area();
+    (
+        area.x.saturating_add(1),
+        area.y
+            .saturating_add(1)
+            .saturating_add(u16::try_from(run_index).unwrap_or(u16::MAX)),
+    )
+}
+
+fn toast_close_point(app: &App, toast_id: ToastId) -> (u16, u16) {
+    let Some(rect) = app
+        .framework
+        .toasts
+        .hits()
+        .iter()
+        .find(|h| h.id == toast_id)
+        .map(|h| h.close_rect)
+    else {
+        std::process::abort();
+    };
+    (
+        rect.x.saturating_add(rect.width.saturating_sub(1) / 2),
+        rect.y.saturating_add(rect.height.saturating_sub(1) / 2),
+    )
+}
+
+fn toast_body_point(app: &App, toast_id: ToastId) -> (u16, u16) {
+    let Some(rect) = app
+        .framework
+        .toasts
+        .hits()
+        .iter()
+        .find(|h| h.id == toast_id)
+        .map(|h| h.card_rect)
+    else {
+        std::process::abort();
+    };
+    (
+        rect.x.saturating_add(rect.width.saturating_sub(1) / 2),
+        rect.y.saturating_add(rect.height.saturating_sub(1) / 2),
+    )
+}
+
+fn mark_deleted(app: &mut App, path: &Path) {
+    let project = app
+        .project_list
+        .at_path_mut(path)
+        .unwrap_or_else(|| std::process::abort());
+    project.disk_usage_bytes = Some(0);
+    project.visibility = Visibility::Deleted;
+}
+
+#[test]
+fn deleted_project_row_mouse_click_dismisses_it() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let deleted_dir = tmp.path().join("deleted");
+    std::fs::create_dir_all(&deleted_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("deleted", &deleted_dir)]);
+    mark_deleted(&mut app, &deleted_dir);
+    render_ui(&mut app);
+
+    let (x, y) = row_dismiss_point(&app, 0);
+    click(&mut app, x, y);
+    render_ui(&mut app);
+
+    assert!(
+        app.visible_rows().is_empty(),
+        "clicking deleted row [x] should stop rendering that row"
+    );
+}
+
+#[test]
+fn mouse_and_keyboard_dismiss_resolve_same_deleted_project_target() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let deleted_dir = tmp.path().join("deleted");
+    std::fs::create_dir_all(&deleted_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("deleted", &deleted_dir)]);
+    mark_deleted(&mut app, &deleted_dir);
+    app.project_list.set_cursor(0);
+    render_ui(&mut app);
+
+    let keyboard_target = app
+        .focused_dismiss_target()
+        .unwrap_or_else(|| std::process::abort());
+    let (x, y) = row_dismiss_point(&app, 0);
+    let Some(hit) = crate::tui::interaction::hit_test_at(&app, Position::new(x, y)) else {
+        std::process::abort();
+    };
+    let HoverTarget::Dismiss(mouse_target) = hit else {
+        std::process::abort();
+    };
+
+    let DismissTarget::DeletedProject(lhs) = keyboard_target else {
+        std::process::abort();
+    };
+    let DismissTarget::DeletedProject(rhs) = mouse_target else {
+        std::process::abort();
+    };
+    assert_eq!(lhs, rhs);
+}
+
+#[test]
+fn row_body_click_selects_clicked_project() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let first = tmp.path().join("first");
+    let second = tmp.path().join("second");
+    std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[
+        make_package("first", &first),
+        make_package("second", &second),
+    ]);
+    render_ui(&mut app);
+
+    let (x, y) = row_body_point(&app, 1);
+    click(&mut app, x, y);
+
+    assert_eq!(app.focused_pane_id(), PaneId::ProjectList);
+    assert_eq!(app.project_list.cursor(), 1);
+    assert_eq!(
+        app.project_list
+            .selected_project_path()
+            .map(Path::to_path_buf),
+        Some(second),
+    );
+}
+
+// The "overlay surface beats content surface" priority is now
+// encoded by the order of `HITTABLE_Z_ORDER` in
+// `panes::dispatch`. The strum-backed
+// `z_order_covers_every_hittable_id` test pins coverage; the
+// ordering itself is enforced by the literal constant value.
+
+#[test]
+fn hovered_pane_row_resolves_project_list_rows() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let first = tmp.path().join("first");
+    let second = tmp.path().join("second");
+    std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[
+        make_package("first", &first),
+        make_package("second", &second),
+    ]);
+    render_ui(&mut app);
+
+    let (x, y) = row_body_point(&app, 1);
+    assert_eq!(
+        crate::tui::interaction::hovered_pane_row_at(&app, Position::new(x, y)),
+        Some(HoveredPaneRow {
+            pane: PaneId::ProjectList,
+            row:  1,
+        }),
+    );
+}
+
+#[test]
+fn finder_row_click_uses_result_index_not_visual_table_row() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let alpha = tmp.path().join("alpha");
+    let beta = tmp.path().join("beta");
+    std::fs::create_dir_all(&alpha).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&beta).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
+    let (index, col_widths) = finder::build_finder_index(&app.project_list);
+    let finder = &mut app.project_list.finder;
+    finder.index = index;
+    finder.col_widths = col_widths;
+    finder.results = vec![0, 1];
+    finder.total = 2;
+    app.overlays
+        .set_finder_return(FocusedPane::App(AppPaneId::ProjectList));
+    app.set_focus(FocusedPane::App(AppPaneId::Finder));
+    app.overlays.open_finder();
+    render_ui(&mut app);
+
+    let (x, y) = finder_result_point(&app, 1);
+    click(&mut app, x, y);
+
+    assert_eq!(
+        app.overlays.finder_pane.viewport.pos(),
+        1,
+        "clicking the second rendered finder result should select result index 1, not the header-offset visual row"
+    );
+}
+
+#[test]
+fn git_hover_uses_owner_backed_pane_surface_for_workspace_member() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let workspace = tmp.path().join("ws");
+    let member = workspace.join("core");
+    std::fs::create_dir_all(&member).unwrap_or_else(|_| std::process::abort());
+
+    let root = make_workspace_with_members(
+        "ws",
+        &workspace,
+        vec![inline_group(vec![make_member("core", &member)])],
+    );
+    let mut app = make_app(&[root]);
+    app.project_list.expanded.insert(ExpandKey::Node(0));
+    app.ensure_visible_rows_cached();
+    app.project_list.move_down();
+    let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
+    app.handle_repo_info(&workspace, repo);
+    app.handle_checkout_info(&workspace, checkout);
+
+    render_ui(&mut app);
+
+    let (x, y) = pane_row_point(&app.panes.git.viewport, 0);
+    assert_eq!(
+        crate::tui::interaction::hovered_pane_row_at(&app, Position::new(x, y)),
+        Some(HoveredPaneRow {
+            pane: PaneId::Git,
+            row:  0,
+        }),
+    );
+}
+
+#[test]
+fn settings_row_click_uses_setting_index_not_visual_line() {
+    let mut app = make_app(&[]);
+    open_settings_overlay(&mut app);
+    render_ui(&mut app);
+    let ci_run_count_row =
+        settings::selection_index_for_setting_for_test(&app, SettingOption::CiRunCount)
+            .expect("CI run count row");
+
+    let (x, y) = settings_point_for_setting(&app, SettingOption::CiRunCount);
+    click(&mut app, x, y);
+
+    assert_eq!(
+        app.framework.settings_pane.viewport().pos(),
+        ci_run_count_row,
+        "clicking a rendered settings option should select the logical setting, not the visual line index including spacer/header rows"
+    );
+}
+
+#[test]
+fn keymap_row_click_uses_keymap_line_targets() {
+    let mut app = make_app(&[]);
+    open_keymap_overlay(&mut app);
+    render_ui(&mut app);
+
+    let (x, y, row) = keymap_point_for_row_after(&app, 0);
+    click(&mut app, x, y);
+
+    assert_eq!(
+        app.framework.keymap_pane.viewport().pos(),
+        row,
+        "clicking a keymap row should select the logical keymap entry, not the visual line including spacer/header rows"
+    );
+}
+
+#[test]
+fn keymap_overlay_blocks_underlying_project_list_mouse() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let first = tmp.path().join("first");
+    let second = tmp.path().join("second");
+    std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
+    let mut app = make_app(&[
+        make_package("first", &first),
+        make_package("second", &second),
+    ]);
+    render_ui(&mut app);
+    open_keymap_overlay(&mut app);
+    render_ui(&mut app);
+
+    let (x, y) = row_body_point(&app, 1);
+    click(&mut app, x, y);
+    scroll_down(&mut app, x, y);
+
+    assert_eq!(
+        app.project_list.cursor(),
+        0,
+        "project-list mouse input must not pass through an open keymap overlay"
+    );
+}
+
+#[test]
+fn finder_overlay_blocks_underlying_project_list_mouse() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let first = tmp.path().join("first");
+    let second = tmp.path().join("second");
+    std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
+    let mut app = make_app(&[
+        make_package("first", &first),
+        make_package("second", &second),
+    ]);
+    render_ui(&mut app);
+    input::open_finder(&mut app);
+    render_ui(&mut app);
+
+    let (x, y) = row_body_point(&app, 1);
+    click(&mut app, x, y);
+    scroll_down(&mut app, x, y);
+
+    assert_eq!(
+        app.project_list.cursor(),
+        0,
+        "project-list mouse input must not pass through an open finder overlay"
+    );
+}
+
+#[test]
+fn settings_overlay_blocks_underlying_project_list_mouse() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let first = tmp.path().join("first");
+    let second = tmp.path().join("second");
+    std::fs::create_dir_all(&first).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&second).unwrap_or_else(|_| std::process::abort());
+    let mut app = make_app(&[
+        make_package("first", &first),
+        make_package("second", &second),
+    ]);
+    render_ui(&mut app);
+    open_settings_overlay(&mut app);
+    render_ui(&mut app);
+
+    let (x, y) = row_body_point(&app, 1);
+    click(&mut app, x, y);
+    scroll_down(&mut app, x, y);
+
+    assert_eq!(
+        app.project_list.cursor(),
+        0,
+        "project-list mouse input must not pass through an open settings overlay"
+    );
+}
+
+#[test]
+fn keyboard_navigation_clears_stale_settings_hover() {
+    let mut app = make_app(&[]);
+    open_settings_overlay(&mut app);
+    render_ui(&mut app);
+
+    let hovered_row =
+        settings::selection_index_for_setting_for_test(&app, SettingOption::CiRunCount)
+            .expect("CI run count row");
+    let (x, y) = settings_point_for_setting(&app, SettingOption::CiRunCount);
+    move_mouse(&mut app, x, y);
+    render_ui(&mut app);
+
+    assert_eq!(
+        framework_selection_state(
+            app.framework.settings_pane.viewport(),
+            hovered_row,
+            PaneFocusState::Active,
+        ),
+        PaneSelectionState::Hovered,
+    );
+
+    press_key(&mut app, KeyCode::Down);
+    render_ui(&mut app);
+
+    assert_eq!(app.framework.settings_pane.viewport().pos(), 1);
+    assert_eq!(
+        framework_selection_state(
+            app.framework.settings_pane.viewport(),
+            hovered_row,
+            PaneFocusState::Active,
+        ),
+        PaneSelectionState::Unselected,
+    );
+    assert_eq!(
+        framework_selection_state(
+            app.framework.settings_pane.viewport(),
+            1,
+            PaneFocusState::Active,
+        ),
+        PaneSelectionState::Active,
+    );
+}
+
+#[test]
+fn mouse_move_restores_hover_after_keyboard_navigation() {
+    let mut app = make_app(&[]);
+    open_settings_overlay(&mut app);
+    render_ui(&mut app);
+
+    let hovered_row =
+        settings::selection_index_for_setting_for_test(&app, SettingOption::CiRunCount)
+            .expect("CI run count row");
+    let (x, y) = settings_point_for_setting(&app, SettingOption::CiRunCount);
+    move_mouse(&mut app, x, y);
+    render_ui(&mut app);
+    press_key(&mut app, KeyCode::Down);
+    render_ui(&mut app);
+
+    assert_eq!(
+        framework_selection_state(
+            app.framework.settings_pane.viewport(),
+            hovered_row,
+            PaneFocusState::Active,
+        ),
+        PaneSelectionState::Unselected,
+    );
+
+    move_mouse(&mut app, x, y);
+    render_ui(&mut app);
+
+    assert_eq!(
+        framework_selection_state(
+            app.framework.settings_pane.viewport(),
+            hovered_row,
+            PaneFocusState::Active,
+        ),
+        PaneSelectionState::Hovered,
+    );
+}
+
+#[test]
+fn focus_gained_restores_selection_from_last_mouse_position() {
+    let mut app = make_app(&[]);
+    open_settings_overlay(&mut app);
+    render_ui(&mut app);
+
+    let hovered_row =
+        settings::selection_index_for_setting_for_test(&app, SettingOption::CiRunCount)
+            .expect("CI run count row");
+    let (x, y) = settings_point_for_setting(&app, SettingOption::CiRunCount);
+    input::set_last_mouse_pos_for_test(Some((x, y)));
+    focus_gained(&mut app);
+    render_ui(&mut app);
+
+    assert_eq!(app.framework.settings_pane.viewport().pos(), hovered_row);
+    assert_eq!(
+        framework_selection_state(
+            app.framework.settings_pane.viewport(),
+            hovered_row,
+            PaneFocusState::Active,
+        ),
+        PaneSelectionState::Active,
+    );
+}
+
+#[test]
+fn lint_row_click_uses_run_index_not_header_row() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+    let runs = vec![
+        make_lint_run("run-1", LintRunStatus::Passed),
+        make_lint_run("run-2", LintRunStatus::Failed),
+    ];
+    render_lints_panel(&mut app, &runs);
+
+    let (x, y) = lint_run_point(&app, 1);
+    click(&mut app, x, y);
+
+    assert_eq!(
+        app.lint.viewport.pos(),
+        1,
+        "clicking the second rendered lint run should select run index 1, not the header-offset visual row"
+    );
+}
+
+#[test]
+fn ci_row_click_uses_run_index_not_header_row() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package_with_cargo(
+        "demo",
+        &project_dir,
+        Cargo {
+            types: vec![ProjectType::Binary],
+            examples: vec![ExampleGroup {
+                category: String::new(),
+                names:    vec!["example".to_string()],
+            }],
+            ..Cargo::default()
+        },
+    )]);
+    let runs = vec![
+        make_ci_run(1, CiStatus::Passed),
+        make_ci_run(2, CiStatus::Failed),
+    ];
+    render_ci_panel(&mut app, &runs);
+
+    let (x, y) = ci_run_point(&app, 1);
+    click(&mut app, x, y);
+
+    assert_eq!(
+        app.ci.viewport.pos(),
+        1,
+        "clicking the second rendered CI run should select run index 1, not the header-offset visual row"
+    );
+}
+
+#[test]
+fn expanded_tree_rebuild_refreshes_clickable_rows() {
+    let primary: AbsolutePath = "/abs/app".into();
+    let linked: AbsolutePath = "/abs/app_feat".into();
+    let mut app = make_app(&[RootItem::Rust(RustProject::Package(make_package_worktree(
+        "app",
+        &primary,
+        false,
+        Some(primary.as_path()),
+    )))]);
+    app.project_list.expanded.insert(ExpandKey::Node(0));
+    render_ui(&mut app);
+
+    app.project_list
+        .replace_roots_from(ProjectList::new(vec![RootItem::Worktrees(
+            WorktreeGroup::new(
+                RustProject::Package(make_package_worktree(
+                    "app",
+                    &primary,
+                    false,
+                    Some(primary.as_path()),
+                )),
+                vec![RustProject::Package(make_package_worktree(
+                    "app",
+                    &linked,
+                    true,
+                    Some(primary.as_path()),
+                ))],
+            ),
+        )]));
+    render_ui(&mut app);
+
+    let (x, y) = row_body_point(&app, 2);
+    click(&mut app, x, y);
+
+    assert_eq!(
+        app.project_list.selected_project_path(),
+        Some(linked.as_path()),
+        "clicking the linked worktree row after regroup should select it"
+    );
+}
+
+#[test]
+fn old_dismiss_click_location_does_not_dismiss_surviving_row_after_rerender() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let deleted_dir = tmp.path().join("deleted");
+    let live_dir = tmp.path().join("live");
+    std::fs::create_dir_all(&deleted_dir).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&live_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[
+        make_package("deleted", &deleted_dir),
+        make_package("live", &live_dir),
+    ]);
+    mark_deleted(&mut app, &deleted_dir);
+    render_ui(&mut app);
+    let stale_click = row_dismiss_point(&app, 0);
+
+    app.project_list.set_cursor(0);
+    let target = app
+        .focused_dismiss_target()
+        .unwrap_or_else(|| std::process::abort());
+    app.dismiss(target);
+    render_ui(&mut app);
+
+    click(&mut app, stale_click.0, stale_click.1);
+    render_ui(&mut app);
+
+    assert!(
+        app.project_list
+            .at_path(&live_dir)
+            .is_some_and(|info| info.visibility == Visibility::Visible),
+        "clicking the old dismiss location after rerender must not dismiss the surviving row"
+    );
+    assert_eq!(
+        app.project_list
+            .selected_project_path()
+            .map(Path::to_path_buf),
+        Some(live_dir),
+        "the surviving row may be selected, but it must not be dismissed by stale geometry"
+    );
+}
+
+#[test]
+fn toast_close_click_dismisses_toast() {
+    let mut app = make_app(&[]);
+    let toast_id =
+        app.framework
+            .toasts
+            .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
+    let toast_len = app.framework.toasts.active_now().len();
+    app.framework.toasts.viewport.set_len(toast_len);
+    render_ui(&mut app);
+
+    let (x, y) = toast_close_point(&app, toast_id);
+    click(&mut app, x, y);
+    let after_exit = Instant::now() + Duration::from_secs(1);
+    app.framework.toasts.prune(after_exit);
+
+    assert!(
+        app.framework
+            .toasts
+            .active_views(after_exit, &tui_pane::ToastSettings::default())
+            .iter()
+            .all(|toast| toast.id() != toast_id),
+        "clicking the toast close affordance should start dismissal and let the toast exit"
+    );
+}
+
+#[test]
+fn toast_body_click_focuses_toast_over_underlying_content() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+    let toast_id =
+        app.framework
+            .toasts
+            .push_persistent("Error", "toast body", ToastStyle::Error, None, 1);
+    let toast_len = app.framework.toasts.active_now().len();
+    app.framework.toasts.viewport.set_len(toast_len);
+    render_ui(&mut app);
+
+    let (x, y) = toast_body_point(&app, toast_id);
+    click(&mut app, x, y);
+
+    assert_eq!(
+        app.focused_pane_id(),
+        PaneId::Toasts,
+        "toast body click should focus the toast surface over underlying content"
+    );
+}
+
+#[test]
+fn finder_row_click_selects_result() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let alpha = tmp.path().join("alpha");
+    let beta = tmp.path().join("beta");
+    std::fs::create_dir_all(&alpha).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&beta).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("alpha", &alpha), make_package("beta", &beta)]);
+    let (index, col_widths) = finder::build_finder_index(&app.project_list);
+    let finder = &mut app.project_list.finder;
+    finder.index = index;
+    finder.col_widths = col_widths;
+    finder.query = "a".to_string();
+    finder.results = vec![0, 1];
+    finder.total = 2;
+    app.overlays
+        .set_finder_return(FocusedPane::App(AppPaneId::ProjectList));
+    app.set_focus(FocusedPane::App(AppPaneId::Finder));
+    app.overlays.open_finder();
+    render_ui(&mut app);
+
+    let (x, y) = finder_result_point(&app, 1);
+    click(&mut app, x, y);
+
+    assert_eq!(app.overlays.finder_pane.viewport.pos(), 1);
+}
+
+#[test]
+fn settings_row_click_selects_setting() {
+    let mut app = make_app(&[]);
+    open_settings_overlay(&mut app);
+    render_ui(&mut app);
+
+    let (x, y) = settings_point_for_setting(&app, SettingOption::InvertScroll);
+    click(&mut app, x, y);
+
+    assert_eq!(
+        app.framework.settings_pane.viewport().pos(),
+        settings::selection_index_for_setting_for_test(&app, SettingOption::InvertScroll)
+            .expect("invert scroll row")
+    );
+}
+
+#[test]
+fn package_pane_row_click_selects_field() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+    render_ui(&mut app);
+
+    let (x, y) = pane_row_point(&app.panes.package.viewport, 1);
+    click(&mut app, x, y);
+
+    assert_eq!(app.focused_pane_id(), PaneId::Package);
+    assert_eq!(app.panes.package.viewport.pos(), 1);
+}
+
+#[test]
+fn targets_pane_row_click_selects_target() {
+    use cargo_metadata::PackageId;
+    use cargo_metadata::TargetKind;
+    use cargo_metadata::semver::Version;
+    // The Targets pane sources its data from the `cargo metadata`
+    // result. Populate two Example targets via a CargoMetadata
+    // arrival so the pane has at least two rows to click on.
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+    let make_target = |name: &str| TargetRecord {
+        name:     name.to_string(),
+        kinds:    vec![TargetKind::Example],
+        src_path: AbsolutePath::from(project_dir.join(format!("examples/{name}.rs"))),
+    };
+    let pkg_id = PackageId {
+        repr: "demo-id".into(),
+    };
+    let pkg = PackageRecord {
+        name:          "demo".into(),
+        version:       Version::new(0, 1, 0),
+        edition:       "2021".into(),
+        description:   None,
+        license:       None,
+        homepage:      None,
+        repository:    None,
+        manifest_path: AbsolutePath::from(project_dir.join("Cargo.toml")),
+        targets:       vec![make_target("example_a"), make_target("example_b")],
+        publish:       PublishPolicy::Any,
+    };
+    let mut packages = std::collections::HashMap::new();
+    packages.insert(pkg_id, pkg);
+    app.scan
+        .metadata_store_handle()
+        .lock()
+        .unwrap_or_else(|_| std::process::abort())
+        .upsert(WorkspaceMetadata {
+            workspace_root: AbsolutePath::from(project_dir.clone()),
+            target_directory: AbsolutePath::from(project_dir.join("target")),
+            packages,
+            fingerprint: ManifestFingerprint {
+                manifest:       FileStamp {
+                    content_hash: [0_u8; 32],
+                },
+                lockfile:       None,
+                rust_toolchain: None,
+                configs:        std::collections::BTreeMap::new(),
+            },
+            out_of_tree_target_bytes: None,
+        });
+    render_ui(&mut app);
+
+    let (x, y) = pane_row_point(&app.panes.targets.viewport, 1);
+    click(&mut app, x, y);
+
+    assert_eq!(app.focused_pane_id(), PaneId::Targets);
+    assert_eq!(app.panes.targets.viewport.pos(), 1);
+}
+
+#[test]
+fn git_pane_row_click_selects_field() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+    let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
+    app.handle_repo_info(&project_dir, repo);
+    app.handle_checkout_info(&project_dir, checkout);
+    render_ui(&mut app);
+
+    let (x, y) = pane_row_point(&app.panes.git.viewport, 1);
+    click(&mut app, x, y);
+
+    assert_eq!(app.focused_pane_id(), PaneId::Git);
+    assert_eq!(app.panes.git.viewport.pos(), 1);
+}
+
+// ── Confirm popup renders resolved target dir (Step 2) ─────────
+
+fn buffer_text(app: &mut App) -> String { buffer_text_sized(app, 120, 40) }
+
+fn buffer_text_sized(app: &mut App, width: u16, height: u16) -> String {
+    app.ensure_visible_rows_cached();
+    app.ensure_detail_cached();
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
+    terminal
+        .draw(|frame| crate::tui::render::ui(frame, app))
+        .unwrap_or_else(|_| std::process::abort());
+    let area = terminal.size().unwrap_or_else(|_| std::process::abort());
+    let buffer = terminal.backend().buffer();
+    let mut text = String::new();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            text.push_str(buffer[(x, y)].symbol());
+        }
+        text.push('\n');
+    }
+    text
+}
+
+fn make_many_packages(tmp: &TempDir, count: usize) -> Vec<RootItem> {
+    (0..count)
+        .map(|index| {
+            let name = format!("project-{index:02}");
+            let dir = tmp.path().join(&name);
+            std::fs::create_dir_all(&dir).unwrap_or_else(|_| std::process::abort());
+            make_package(&name, &dir)
+        })
+        .collect()
+}
+
+#[test]
+fn project_list_renders_framework_overflow_affordance() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let projects = make_many_packages(&tmp, 40);
+    let mut app = make_app(&projects);
+
+    let rendered = buffer_text_sized(&mut app, 100, 18);
+
+    assert!(
+        rendered.contains("more ▼"),
+        "project list should render the framework-owned overflow marker"
+    );
+}
+
+#[test]
+fn finder_results_render_framework_overflow_affordance() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let projects = make_many_packages(&tmp, 40);
+    let mut app = make_app(&projects);
+    input::open_finder(&mut app);
+    let result_count = app.project_list.finder.index.len();
+    app.project_list.finder.results = (0..result_count).collect();
+    app.project_list.finder.total = result_count;
+
+    let rendered = buffer_text_sized(&mut app, 100, 20);
+
+    assert!(rendered.contains("Find Anything"));
+    assert!(
+        rendered.contains("more ▼"),
+        "finder should render the framework-owned overflow marker"
+    );
+}
+
+#[test]
+fn settings_popup_renders_framework_overflow_affordance() {
+    let mut app = make_app(&[]);
+    open_settings_overlay(&mut app);
+
+    let rendered = buffer_text_sized(&mut app, 100, 18);
+
+    assert!(rendered.contains("Settings"));
+    assert!(
+        rendered.contains("more ▼"),
+        "settings should render the framework-owned overflow marker"
+    );
+}
+
+#[test]
+fn clean_confirm_popup_shows_resolved_out_of_tree_target_dir() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+
+    let custom_target = tmp.path().join("out-of-tree-target");
+    app.scan
+        .metadata_store_handle()
+        .lock()
+        .unwrap_or_else(|_| std::process::abort())
+        .upsert(WorkspaceMetadata {
+            workspace_root:           AbsolutePath::from(project_dir.clone()),
+            target_directory:         AbsolutePath::from(custom_target.clone()),
+            packages:                 std::collections::HashMap::new(),
+            fingerprint:              ManifestFingerprint {
+                manifest:       FileStamp {
+                    content_hash: [0_u8; 32],
+                },
+                lockfile:       None,
+                rust_toolchain: None,
+                configs:        std::collections::BTreeMap::new(),
+            },
+            out_of_tree_target_bytes: None,
+        });
+
+    app.set_confirm(ConfirmAction::Clean(AbsolutePath::from(project_dir)));
+    let rendered = buffer_text(&mut app);
+
+    assert!(
+        rendered.contains("Run cargo clean?"),
+        "prompt line still renders"
+    );
+    let expected = crate::project::home_relative_path(custom_target.as_path());
+    assert!(
+        rendered.contains(&expected),
+        "resolved out-of-tree target dir is shown in the popup (expected {expected:?})"
+    );
+}
+
+fn upsert_fake_package_metadata(
+    app: &App,
+    project_dir: &Path,
+    license: Option<&str>,
+    homepage: Option<&str>,
+    repository: Option<&str>,
+) {
+    use cargo_metadata::PackageId;
+    use cargo_metadata::semver::Version;
+    let root = AbsolutePath::from(project_dir);
+    let manifest = AbsolutePath::from(project_dir.join("Cargo.toml"));
+    let pkg_id = PackageId {
+        repr: "demo-id".into(),
+    };
+    let pkg = PackageRecord {
+        name:          "demo".into(),
+        version:       Version::new(0, 1, 0),
+        edition:       "2021".into(),
+        description:   None,
+        license:       license.map(String::from),
+        homepage:      homepage.map(String::from),
+        repository:    repository.map(String::from),
+        manifest_path: manifest,
+        targets:       Vec::new(),
+        publish:       PublishPolicy::Any,
+    };
+    let mut packages = std::collections::HashMap::new();
+    packages.insert(pkg_id, pkg);
+    let workspace_metadata = WorkspaceMetadata {
+        workspace_root: root,
+        target_directory: AbsolutePath::from(project_dir.join("target")),
+        packages,
+        fingerprint: ManifestFingerprint {
+            manifest:       FileStamp {
+                content_hash: [0_u8; 32],
+            },
+            lockfile:       None,
+            rust_toolchain: None,
+            configs:        std::collections::BTreeMap::new(),
+        },
+        out_of_tree_target_bytes: None,
+    };
+    app.scan
+        .metadata_store_handle()
+        .lock()
+        .unwrap_or_else(|_| std::process::abort())
+        .upsert(workspace_metadata);
+}
+
+#[test]
+fn package_pane_renders_metadata_edition_license_homepage_repository() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+    upsert_fake_package_metadata(
+        &app,
+        &project_dir,
+        Some("MIT"),
+        Some("a.test/hp"),
+        Some("a.test/rp"),
+    );
+    // Use a taller backend so the package pane's full field list
+    // fits without scrolling — recent steps added rows (Targets /
+    // Lint / CI / Disk breakdown) ahead of Edition..Repository.
+    let rendered = buffer_text_sized(&mut app, 120, 80);
+
+    // All four Step-4 field labels must be present when their
+    // corresponding value is populated (edition is always set by
+    // the fake metadata). Value fragments are kept short to fit
+    // the test backend's 120-column layout once the package pane
+    // has split off its allotted share.
+    for label in ["Edition", "License", "Homepage", "Repository"] {
+        assert!(
+            rendered.contains(label),
+            "{label} label missing from rendered package pane"
+        );
+    }
+    assert!(rendered.contains("2021"), "edition value (2021) missing");
+    assert!(rendered.contains("MIT"), "license value missing");
+    assert!(rendered.contains("a.test/hp"), "homepage value missing");
+    assert!(rendered.contains("a.test/rp"), "repository value missing");
+}
+
+#[test]
+fn package_pane_renders_em_dash_for_missing_metadata_fields() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+    upsert_fake_package_metadata(&app, &project_dir, None, None, None);
+    // Taller backend so the full field list fits — see the sibling
+    // test for why the default 120×40 isn't enough here.
+    let rendered = buffer_text_sized(&mut app, 120, 80);
+
+    // Absent manifest fields render as `—`. Count dashes in the
+    // rendered screen — license / homepage / repository are all
+    // None here, so at least three should show.
+    let dash_count = rendered.matches('—').count();
+    assert!(
+        dash_count >= 3,
+        "expected at least 3 em-dash placeholders for missing \
+         license/homepage/repository, got {dash_count}"
+    );
+}
+
+#[test]
+fn package_pane_renders_target_and_non_target_disk_breakdown() {
+    // When the walker has reported the breakdown, the Package
+    // pane shows two rows beneath `Disk` — `target/` and `other` —
+    // so the user can see at a glance which half of their disk is
+    // build artifact vs source. Uses the bytes reported by
+    // handle_bg_msg::DiskUsageBatch.
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+
+    // Stage a disk-usage batch with a clearly-split breakdown.
+    // 10 MiB target, 2 MiB source: assert both lines render with
+    // distinct byte formatting.
+    let abs_path = AbsolutePath::from(project_dir);
+    let sizes = DirSizes {
+        total:                 12 * 1024 * 1024,
+        in_project_target:     10 * 1024 * 1024,
+        in_project_non_target: 2 * 1024 * 1024,
+    };
+    app.handle_bg_msg(BackgroundMsg::DiskUsageBatch {
+        root_path: abs_path.clone(),
+        entries:   vec![(abs_path, sizes)],
+    });
+
+    let rendered = buffer_text(&mut app);
+    assert!(
+        rendered.contains("target/"),
+        "detail pane must surface the target/ breakdown label"
+    );
+    assert!(
+        rendered.contains("other"),
+        "detail pane must surface the non-target (other) breakdown label"
+    );
+    assert!(
+        rendered.contains("10.0 MiB"),
+        "in-target value renders using format_bytes"
+    );
+    assert!(
+        rendered.contains("2.0 MiB"),
+        "non-target value renders using format_bytes"
+    );
+}
+
+#[test]
+fn package_pane_renders_out_of_tree_target_size_for_sharer() {
+    // When the workspace's target_directory sits outside
+    // workspace_root (e.g. redirected via CARGO_TARGET_DIR or an
+    // ancestor .cargo/config.toml), the per-project walker can't
+    // reach it. The cached walk fills in the sharer target size,
+    // which shows up beneath Disk as `target/ (out of tree)`.
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    let shared_target = tmp.path().join("shared-target");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+
+    let root = AbsolutePath::from(project_dir);
+    let target = AbsolutePath::from(shared_target);
+    {
+        let store = app.scan.metadata_store_handle();
+        let mut guard = store.lock().unwrap_or_else(|_| std::process::abort());
+        guard.upsert(WorkspaceMetadata {
+            workspace_root:           root,
+            target_directory:         target,
+            packages:                 std::collections::HashMap::new(),
+            fingerprint:              ManifestFingerprint {
+                manifest:       FileStamp {
+                    content_hash: [0_u8; 32],
+                },
+                lockfile:       None,
+                rust_toolchain: None,
+                configs:        std::collections::BTreeMap::new(),
+            },
+            out_of_tree_target_bytes: Some(42 * 1024 * 1024),
+        });
+    }
+
+    let rendered = buffer_text(&mut app);
+    assert!(
+        rendered.contains("out of tree"),
+        "sharer detail pane must surface the out-of-tree target label"
+    );
+    assert!(
+        rendered.contains("42.0 MiB"),
+        "out-of-tree target size renders using format_bytes"
+    );
+}
+
+/// Helper for the shared-target popup tests: stage two project
+/// metadata "arrivals" pointing at the same `target_directory`,
+/// so the `TargetDirIndex` reports sibling B when we confirm a
+/// clean on A.
+fn upsert_shared_target_metadata(
+    app: &mut App,
+    primary_dir: &Path,
+    sibling_dirs: &[&Path],
+    target_dir: &Path,
+) {
+    use cargo_metadata::PackageId;
+    use cargo_metadata::semver::Version;
+    for dir in std::iter::once(primary_dir).chain(sibling_dirs.iter().copied()) {
+        let root = AbsolutePath::from(dir);
+        let manifest = AbsolutePath::from(dir.join("Cargo.toml"));
+        let pkg_name = dir
+            .file_name()
+            .map_or_else(|| "demo".to_string(), |n| n.to_string_lossy().into_owned());
+        let pkg_id = PackageId {
+            repr: format!("{pkg_name}-id"),
+        };
+        let pkg = PackageRecord {
+            name:          pkg_name,
+            version:       Version::new(0, 1, 0),
+            edition:       "2021".into(),
+            description:   None,
+            license:       None,
+            homepage:      None,
+            repository:    None,
+            manifest_path: manifest,
+            targets:       Vec::new(),
+            publish:       PublishPolicy::Any,
+        };
+        let mut packages = std::collections::HashMap::new();
+        packages.insert(pkg_id, pkg);
+        let workspace_metadata = WorkspaceMetadata {
+            workspace_root: root.clone(),
+            target_directory: AbsolutePath::from(target_dir),
+            packages,
+            fingerprint: ManifestFingerprint {
+                manifest:       FileStamp {
+                    content_hash: [0_u8; 32],
+                },
+                lockfile:       None,
+                rust_toolchain: None,
+                configs:        std::collections::BTreeMap::new(),
+            },
+            out_of_tree_target_bytes: None,
+        };
+        // Route through handle_bg_msg so the TargetDirIndex gets
+        // refreshed alongside the store (Step 6c handler path).
+        let store = app.scan.metadata_store_handle();
+        let generation = store
+            .lock()
+            .unwrap_or_else(|_| std::process::abort())
+            .next_generation(&root);
+        app.handle_bg_msg(BackgroundMsg::CargoMetadata {
+            workspace_root: root,
+            generation,
+            fingerprint: workspace_metadata.fingerprint.clone(),
+            result: Ok(workspace_metadata),
+        });
+    }
+}
+
+#[test]
+fn clean_confirm_popup_lists_affected_siblings_on_shared_target() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("main");
+    let sibling_dir = tmp.path().join("feat");
+    let target_dir = tmp.path().join("shared-target");
+    for dir in [&primary_dir, &sibling_dir] {
+        std::fs::create_dir_all(dir).unwrap_or_else(|_| std::process::abort());
+    }
+    std::fs::create_dir_all(&target_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[
+        make_package("main", &primary_dir),
+        make_package("feat", &sibling_dir),
+    ]);
+    upsert_shared_target_metadata(
+        &mut app,
+        &primary_dir,
+        &[sibling_dir.as_path()],
+        &target_dir,
+    );
+
+    app.set_confirm(ConfirmAction::Clean(AbsolutePath::from(primary_dir)));
+    let rendered = buffer_text(&mut app);
+
+    assert!(
+        rendered.contains("Also affects:"),
+        "shared-target popup should label the collateral list"
+    );
+    let sibling_label = crate::project::home_relative_path(sibling_dir.as_path());
+    assert!(
+        rendered.contains(&sibling_label),
+        "sibling path should appear in the affected list (expected {sibling_label:?})"
+    );
+}
+
+#[test]
+fn clean_confirm_popup_falls_back_to_in_tree_target_without_metadata() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+
+    app.set_confirm(ConfirmAction::Clean(AbsolutePath::from(
+        project_dir.clone(),
+    )));
+    let rendered = buffer_text(&mut app);
+
+    let fallback_target = project_dir.join("target");
+    let expected = crate::project::home_relative_path(fallback_target.as_path());
+    assert!(
+        rendered.contains(&expected),
+        "without metadata, popup shows the default <project>/target (expected {expected:?})"
+    );
+}
+
+#[test]
+fn clean_group_confirm_popup_lists_all_checkouts() {
+    // Selecting Clean on a worktree-group root should open the
+    // confirm popup with every checkout listed — the UX regression
+    // was that the WorktreeGroup arm was stubbed out so the popup
+    // never appeared at all.
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary = tmp.path().join("main");
+    let linked_a = tmp.path().join("feat-a");
+    let linked_b = tmp.path().join("feat-b");
+    for dir in [&primary, &linked_a, &linked_b] {
+        std::fs::create_dir_all(dir).unwrap_or_else(|_| std::process::abort());
+    }
+
+    let mut app = make_app(&[]);
+    app.set_confirm(ConfirmAction::CleanGroup {
+        primary: AbsolutePath::from(primary.clone()),
+        linked:  vec![
+            AbsolutePath::from(linked_a.clone()),
+            AbsolutePath::from(linked_b.clone()),
+        ],
+    });
+    let rendered = buffer_text_sized(&mut app, 160, 40);
+
+    assert!(
+        rendered.contains("Run cargo clean on all checkouts?"),
+        "group confirm uses the fan-out prompt"
+    );
+    assert!(
+        rendered.contains("Checkouts:"),
+        "group confirm labels the checkout list"
+    );
+    for dir in [&primary, &linked_a, &linked_b] {
+        let label = crate::project::home_relative_path(dir.as_path());
+        assert!(
+            rendered.contains(&label),
+            "every checkout appears in the popup (expected {label:?})"
+        );
+    }
+}

@@ -15,6 +15,7 @@ over-large files along their natural seams.
 | 3     | Split `src/tui/project_list.rs` (2352 lines)               | Medium  | New `src/tui/project_list/` dir with 4 files | uncommitted (working tree) |
 | 4     | Move `src/tui/interaction.rs` test module out              | Low     | One-file move; production stays one file | pending |
 | 5     | Fix `lint/types.rs` → `tui_pane::Icon` domain-to-UI leak   | Low     | One new adapter file in `tui/integration/` | pending |
+| 6     | Split `src/project/git/state.rs` (1001 lines)              | Medium  | New peer modules under `project/git/`; retires `state.rs` | pending |
 | —     | Optional: `tui/app/api.rs` stable surface                  | n/a     | Speculative; revisit later | deferred |
 
 Phases are ordered to minimise re-shuffling: placement (1) makes the
@@ -460,6 +461,118 @@ depending on the UI framework — the only such leak in the crate.
 4. Remove the `tui_pane` import from `lint/types.rs`.
 
 Single commit. After this, `lint/` has zero `tui_pane` imports.
+
+---
+
+## Phase 6 — Split `src/project/git/state.rs`
+
+1001 lines (production + ~70 lines of unit tests for repo-root / git-dir
+resolution). The file landed at `git/state.rs` during the mend/clippy sweep
+because clippy's `module_inception` lint forbids the original `git/git.rs`
+name; the rename was reactive, not a designed home. `state.rs` reads as a
+placeholder, and it collides namespace-wise with `src/tui/state/` even
+though the two have nothing in common.
+
+The file contains four cohesive responsibilities that already form natural
+seams.
+
+### Target layout
+
+```
+src/project/git/
+├── mod.rs            (re-exports for the parent facade)
+├── command.rs        (git_command, git_output_logged — git subprocess + tracing)
+├── discovery.rs      (git_repo_root, resolve_git_dir, resolve_common_git_dir,
+│                      get_worktree_health, get_worktree_status,
+│                      WorktreeStatus, GitRepoPresence — locating + classifying
+│                      a directory's relationship to git)
+├── repo.rs           (RepoInfo, RemoteInfo, RemoteKind, GitOrigin,
+│                      WorkflowPresence, get_first_commit, build_remote_info,
+│                      resolve_tracked_ref, remote-ref/branch resolution —
+│                      state shared across every checkout of the same repo)
+├── checkout.rs       (CheckoutInfo, GitStatus, LocalGitState,
+│                      worktree_ahead_behind_primary, get_git_status,
+│                      parse_ahead_behind — state that legitimately differs
+│                      between two worktrees of the same repo)
+├── submodule.rs      (unchanged in structure; import paths updated)
+└── worktree_group.rs (unchanged)
+```
+
+### What goes where
+
+- **`command.rs`** — currently lines 499–525: `git_command` (pub for sibling
+  use by `submodule.rs`, `discovery.rs`, `repo.rs`, `checkout.rs`) plus
+  `git_output_logged`. Foundational; every other module here depends on it.
+
+- **`discovery.rs`** — currently lines 651–694 and 819–931: `git_repo_root`,
+  `resolve_git_dir`, `resolve_common_git_dir`, `get_worktree_health`,
+  `get_worktree_status`, `linked_status_from_gitfile`, `WorktreeStatus`,
+  `GitRepoPresence`. The existing `#[cfg(test)] mod tests` (lines 933–1001)
+  is entirely discovery-focused — moves alongside this module.
+
+- **`repo.rs`** — currently lines 19–65, 111–188, 228–448, 470–491,
+  696–765, 788–817: `GitOrigin`, `WorkflowPresence`, `RemoteKind`,
+  `RemoteInfo`, `RepoInfo` + its `get`/`origin_kind` impls,
+  `get_first_commit`, `get_current_branch`, `get_upstream_branch`,
+  `get_default_branch`, `list_remote_names`, `build_remote_info`,
+  `remote_url_info`, `resolve_tracked_ref`, `remote_ref_exists`,
+  `resolve_local_main_branch`, `local_branch_exists`,
+  `get_workflow_presence`, `get_last_fetched`, `system_time_to_iso8601_utc`,
+  `civil_from_days`, `parse_remote_url`.
+
+- **`checkout.rs`** — currently lines 67–109, 190–226, 453–491, 527–649,
+  746–786: `CheckoutInfo` + its `get` and primary-* methods, `GitStatus`,
+  `LocalGitState`, `worktree_ahead_behind_primary`, `get_git_status`,
+  `relative_git_path`, `parse_ahead_behind`.
+
+### Cross-module dependencies
+
+- All four new modules depend on `command::{git_command, git_output_logged}`.
+- `checkout.rs` depends on `repo::RepoInfo` (for the `primary_*` methods on
+  `CheckoutInfo`) and on `discovery::git_repo_root` (for `CheckoutInfo::get`).
+- `repo.rs` depends on `discovery::{git_repo_root, resolve_common_git_dir}`
+  (for `RepoInfo::get` and `get_last_fetched`).
+- `discovery.rs` depends only on `command`.
+- `submodule.rs` already imports `git_command` and re-exports
+  `CheckoutInfo` + `WorktreeStatus` from this directory; it updates to
+  pull `git_command` from `command::` and the types from their new
+  module homes.
+
+### Module re-exports
+
+`project/git/mod.rs` re-exports every type and free function the parent
+facade currently surfaces, so `project/mod.rs`'s `pub(crate) use git::*`
+keeps working unchanged. After the split, peer-only helpers (e.g.
+`get_git_status`, `parse_ahead_behind`, `system_time_to_iso8601_utc`,
+`civil_from_days`) stay private to their modules; only the items that
+external callers reach through `crate::project::*` need `pub(super) use`
+lines in `mod.rs`.
+
+### Sequencing
+
+Move leaves first.
+
+1. `command.rs` — extract `git_command` + `git_output_logged`. Update
+   `state.rs` and `submodule.rs` to import from the new module.
+2. `discovery.rs` — extract repo-root / git-dir / worktree-presence
+   helpers + types + their tests. Depends on `command`.
+3. `repo.rs` — extract repo-level types + readers. Depends on `command`
+   and `discovery`.
+4. `checkout.rs` — extract checkout-level types + readers. Depends on
+   `command`, `discovery`, `repo`.
+5. Delete the now-empty `state.rs`; update `project/git/mod.rs`
+   declarations and re-exports.
+
+Run `cargo build` + `cargo nextest run` between steps as in-flight
+checkpoints. The whole phase lands as a single commit once green.
+
+### What this corrects
+
+The `state.rs` filename was a tactical workaround for `module_inception`
+during the mend/clippy sweep, not a designed module boundary. Splitting
+along the four already-present responsibilities (command, discovery,
+repo, checkout) gives each name describing its actual content and
+removes the directory-level collision with `tui/state/`.
 
 ---
 

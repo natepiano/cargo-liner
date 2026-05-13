@@ -63,6 +63,7 @@ use crate::tui::test_support as tui_test_support;
 mod background;
 mod discovery_shimmer;
 mod framework_keymap;
+mod interaction;
 mod panes;
 mod rows;
 mod state;
