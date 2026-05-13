@@ -512,17 +512,18 @@ pub(crate) fn cargo_project_to_item(cp: CargoParseResult) -> RootItem {
 mod tests {
     use super::*;
     use crate::project::Workspace;
+    use crate::project::WorktreeStatus;
 
     fn status_for(
         is_linked_worktree: bool,
         primary_abs: Option<&str>,
-    ) -> crate::project::WorktreeStatus {
+    ) -> WorktreeStatus {
         match (is_linked_worktree, primary_abs) {
-            (_, None) => crate::project::WorktreeStatus::NotGit,
-            (true, Some(p)) => crate::project::WorktreeStatus::Linked {
+            (_, None) => WorktreeStatus::NotGit,
+            (true, Some(p)) => WorktreeStatus::Linked {
                 primary: AbsolutePath::from(p.to_string()),
             },
-            (false, Some(p)) => crate::project::WorktreeStatus::Primary {
+            (false, Some(p)) => WorktreeStatus::Primary {
                 root: AbsolutePath::from(p.to_string()),
             },
         }

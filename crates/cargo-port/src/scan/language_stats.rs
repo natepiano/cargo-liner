@@ -7,7 +7,7 @@ use tokei::Languages;
 use super::BackgroundMsg;
 use super::cargo_metadata::StreamingScanContext;
 use super::disk_usage::DiskUsageTree;
-use super::disk_usage::group_disk_usage_trees;
+use super::disk_usage;
 use crate::project::AbsolutePath;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
@@ -16,7 +16,7 @@ pub(super) fn spawn_initial_language_stats(
     scan_context: &StreamingScanContext,
     disk_entries: &[(String, AbsolutePath)],
 ) {
-    for tree in group_disk_usage_trees(disk_entries) {
+    for tree in disk_usage::group_disk_usage_trees(disk_entries) {
         spawn_language_stats_tree(scan_context, tree);
     }
 }

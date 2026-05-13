@@ -10,9 +10,7 @@ use walkdir::WalkDir;
 use super::BackgroundMsg;
 use super::emit_git_info;
 use super::emit_service_signal;
-use super::tree::build_tree;
-use super::tree::cargo_project_to_item;
-use super::tree::dir_size;
+use super::tree;
 use crate::ci::OwnerRepo;
 use crate::config::NonRustInclusion;
 use crate::enrichment;
@@ -22,6 +20,7 @@ use crate::project::AbsolutePath;
 use crate::project::GitRepoPresence;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
+use crate::ci::CiRun;
 
 /// Build a normalized project item for a discovered root directory.
 ///
@@ -41,7 +40,7 @@ pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
         }
         if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
             let parsed = project::from_cargo_toml(entry.path()).ok()?;
-            items.push(cargo_project_to_item(parsed));
+            items.push(tree::cargo_project_to_item(parsed));
         }
     }
 
@@ -49,7 +48,7 @@ pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
         return None;
     }
 
-    build_tree(&items, &[])
+    tree::build_tree(&items, &[])
         .into_iter()
         .find(|item| item.path() == root_dir)
 }
@@ -116,7 +115,7 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
 
     // Disk usage last — walking large `target/` dirs is the slowest
     // local operation and doesn't block anything else.
-    let bytes = dir_size(abs_path);
+    let bytes = tree::dir_size(abs_path);
     let _ = tx.send(BackgroundMsg::DiskUsage { path: abs, bytes });
 }
 
@@ -131,7 +130,7 @@ pub(crate) struct RepoMetaInfo {
 /// HTTP calls.
 #[derive(Clone)]
 pub(crate) struct CachedRepoData {
-    pub(crate) runs:         Vec<crate::ci::CiRun>,
+    pub(crate) runs:         Vec<CiRun>,
     pub(crate) meta:         Option<RepoMetaInfo>,
     pub(crate) github_total: u32,
 }
@@ -281,7 +280,7 @@ pub(super) fn phase1_discover(
                     "phase1_manifest_parse"
                 );
                 stats.projects += 1;
-                let item = cargo_project_to_item(cargo_project);
+                let item = tree::cargo_project_to_item(cargo_project);
                 let abs_path = item.path().clone();
                 let repo_presence_started = std::time::Instant::now();
                 let repo_presence = if project::git_repo_root(&abs_path).is_some() {

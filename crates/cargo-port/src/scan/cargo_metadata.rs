@@ -16,10 +16,10 @@ use tokio::sync::Semaphore;
 use walkdir::WalkDir;
 
 use super::BackgroundMsg;
-use super::discovery::phase1_discover;
-use super::disk_usage::spawn_initial_disk_usage;
-use super::language_stats::spawn_initial_language_stats;
-use super::tree::build_tree;
+use super::discovery;
+use super::disk_usage;
+use super::language_stats;
+use super::tree;
 use crate::config::NonRustInclusion;
 use crate::constants::CARGO_METADATA_TIMEOUT;
 use crate::constants::SCAN_DISK_CONCURRENCY;
@@ -106,7 +106,7 @@ pub(crate) fn spawn_streaming_scan(
         };
 
         let phase1_started = std::time::Instant::now();
-        let phase1 = phase1_discover(&scan_dirs, non_rust);
+        let phase1 = discovery::phase1_discover(&scan_dirs, non_rust);
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(phase1_started.elapsed().as_millis()),
             scan_dirs = scan_dirs.len(),
@@ -119,7 +119,7 @@ pub(crate) fn spawn_streaming_scan(
         );
 
         let tree_started = std::time::Instant::now();
-        let projects = build_tree(&phase1.items, &inline_dirs);
+        let projects = tree::build_tree(&phase1.items, &inline_dirs);
         tracing::info!(
             elapsed_ms = crate::perf_log::ms(tree_started.elapsed().as_millis()),
             input_items = phase1.items.len(),
@@ -132,8 +132,8 @@ pub(crate) fn spawn_streaming_scan(
             projects,
             disk_entries: phase1.disk_entries.clone(),
         });
-        spawn_initial_disk_usage(&scan_context, &phase1.disk_entries);
-        spawn_initial_language_stats(&scan_context, &phase1.disk_entries);
+        disk_usage::spawn_initial_disk_usage(&scan_context, &phase1.disk_entries);
+        language_stats::spawn_initial_language_stats(&scan_context, &phase1.disk_entries);
         spawn_cargo_metadata_tree(&scan_context, workspace_roots);
     });
 
@@ -451,18 +451,19 @@ mod tests {
     use crate::project::Package;
     use crate::project::RustProject;
     use crate::project::Workspace;
-    use crate::scan::tree::merge_worktrees_new;
+    use crate::scan::tree;
+    use crate::project::WorktreeStatus;
 
     fn status_for(
         is_linked_worktree: bool,
         primary_abs: Option<&str>,
-    ) -> crate::project::WorktreeStatus {
+    ) -> WorktreeStatus {
         match (is_linked_worktree, primary_abs) {
-            (_, None) => crate::project::WorktreeStatus::NotGit,
-            (true, Some(p)) => crate::project::WorktreeStatus::Linked {
+            (_, None) => WorktreeStatus::NotGit,
+            (true, Some(p)) => WorktreeStatus::Linked {
                 primary: AbsolutePath::from(p.to_string()),
             },
-            (false, Some(p)) => crate::project::WorktreeStatus::Primary {
+            (false, Some(p)) => WorktreeStatus::Primary {
                 root: AbsolutePath::from(p.to_string()),
             },
         }
@@ -535,7 +536,7 @@ mod tests {
         let linked_b = make_workspace(Some("ws_bug"), "/ws_bug", true, Some("/ws"));
         let mut items = vec![primary, linked_a, linked_b];
         // Use the merge logic the production scan uses.
-        merge_worktrees_new(&mut items);
+        tree::merge_worktrees_new(&mut items);
         assert_eq!(items.len(), 1, "merged into one worktree group");
 
         let mut roots = collect_cargo_metadata_roots(&items);

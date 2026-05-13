@@ -51,6 +51,10 @@ pub(crate) use tree::build_tree;
 pub(crate) use tree::cargo_project_to_item;
 pub(crate) use tree::dir_size;
 pub(crate) use tree::normalize_workspace_path;
+use crate::project::LanguageStats;
+use crate::lint::LintStatus;
+use crate::ci::OwnerRepo;
+use crate::ci::CiRun;
 
 /// Messages sent from background threads to the main event loop.
 pub(crate) enum BackgroundMsg {
@@ -66,17 +70,17 @@ pub(crate) enum BackgroundMsg {
     /// GitHub Actions CI runs fetched for a project.
     CiRuns {
         path:         AbsolutePath,
-        runs:         Vec<crate::ci::CiRun>,
+        runs:         Vec<CiRun>,
         github_total: u32,
     },
     /// A GitHub repo fetch has been queued (for startup tracking).
-    RepoFetchQueued { repo: crate::ci::OwnerRepo },
+    RepoFetchQueued { repo: OwnerRepo },
     /// A `spawn_repo_fetch_for_git_info` thread has finished. Sent
     /// regardless of whether the spawn hit the network or returned a
     /// cached result. Drives both the startup "GitHub repos" toast
     /// progress (no-op on cache hit, since no `RepoFetchQueued` was
     /// sent) and the `repo_fetch_in_flight` dedup set.
-    RepoFetchComplete { repo: crate::ci::OwnerRepo },
+    RepoFetchComplete { repo: OwnerRepo },
     /// Per-checkout git state for a project (branch, status, ahead/
     /// behind, `last_commit`, `primary_tracked_ref`). Sent by
     /// `CheckoutInfo::get` for every affected checkout — primary AND
@@ -130,7 +134,7 @@ pub(crate) enum BackgroundMsg {
     /// change and the lint runtime re-checks a project.
     LintStatus {
         path:   AbsolutePath,
-        status: crate::lint::LintStatus,
+        status: LintStatus,
     },
     /// Startup lint cache check result. Sent once per registered project
     /// when the lint runtime reads cached lint results from disk during
@@ -138,7 +142,7 @@ pub(crate) enum BackgroundMsg {
     /// when all startup cache checks are complete.
     LintStartupStatus {
         path:   AbsolutePath,
-        status: crate::lint::LintStatus,
+        status: LintStatus,
     },
     /// Lint cache pruned — old runs evicted to stay within the configured
     /// cache size limit.
@@ -158,7 +162,7 @@ pub(crate) enum BackgroundMsg {
     ServiceRateLimited { service: ServiceKind },
     /// Language statistics (file counts + LOC by language) computed by tokei.
     LanguageStatsBatch {
-        entries: Vec<(AbsolutePath, crate::project::LanguageStats)>,
+        entries: Vec<(AbsolutePath, LanguageStats)>,
     },
     /// `cargo metadata --no-deps --offline` result for one workspace root.
     /// The `fingerprint` was captured *before* the spawn; callers recompute
