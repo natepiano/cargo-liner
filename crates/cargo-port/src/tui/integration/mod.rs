@@ -1,5 +1,6 @@
 mod config_reload;
 mod framework_keymap;
+mod lint_display;
 mod toast_adapters;
 
 pub(super) use config_reload::ReloadContext;
@@ -23,5 +24,6 @@ pub(super) use framework_keymap::ProjectListPane;
 pub(super) use framework_keymap::TargetsPane;
 pub(super) use framework_keymap::build_framework_keymap;
 pub(super) use framework_keymap::vim_mode_from_config;
+pub(super) use lint_display::icon_for as lint_icon_for;
 pub(super) use toast_adapters::owner_repo_key;
 pub(super) use toast_adapters::path_key;

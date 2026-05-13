@@ -545,7 +545,7 @@ fn lint_display_to_string(
         LintDisplay::NoRuns => "No lint runs".to_string(),
         LintDisplay::Runs { count, status } => {
             let icon = if lint_enabled {
-                status.icon().frame_at(animation_elapsed)
+                crate::tui::integration::lint_icon_for(status.kind()).frame_at(animation_elapsed)
             } else {
                 crate::constants::LINT_NO_LOG
             };

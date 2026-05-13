@@ -2,13 +2,19 @@ use chrono::DateTime;
 use chrono::FixedOffset;
 use serde::Deserialize;
 use serde::Serialize;
-use tui_pane::ACTIVITY_SPINNER;
-use tui_pane::Icon;
 
-use crate::constants::LINT_FAILED;
-use crate::constants::LINT_NO_LOG;
-use crate::constants::LINT_PASSED;
-use crate::constants::LINT_STALE;
+/// Display-agnostic discriminant of [`LintStatus`]. The TUI integration
+/// layer (`crate::tui::integration::lint_display`) maps this to the
+/// concrete `tui_pane::Icon` used at render time, keeping `lint/` free
+/// of UI-framework imports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LintStatusKind {
+    Running,
+    Passed,
+    Failed,
+    Stale,
+    NoLog,
+}
 
 /// Lint status derived from the latest lint run record.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -22,14 +28,14 @@ pub enum LintStatus {
 }
 
 impl LintStatus {
-    /// Returns the `Icon` for this lint status.
-    pub const fn icon(&self) -> Icon {
+    /// Returns the display-agnostic [`LintStatusKind`] discriminant.
+    pub const fn kind(&self) -> LintStatusKind {
         match self {
-            Self::Running(_) => Icon::Animated(ACTIVITY_SPINNER),
-            Self::Passed(_) => Icon::Static(LINT_PASSED),
-            Self::Failed(_) => Icon::Static(LINT_FAILED),
-            Self::Stale => Icon::Static(LINT_STALE),
-            Self::NoLog => Icon::Static(LINT_NO_LOG),
+            Self::Running(_) => LintStatusKind::Running,
+            Self::Passed(_) => LintStatusKind::Passed,
+            Self::Failed(_) => LintStatusKind::Failed,
+            Self::Stale => LintStatusKind::Stale,
+            Self::NoLog => LintStatusKind::NoLog,
         }
     }
 

@@ -1,9 +1,7 @@
 use std::path::Path;
-use std::time::Duration;
 
 use chrono::DateTime;
 use chrono::Utc;
-use tui_pane::ACTIVITY_SPINNER;
 
 use super::history;
 use super::history::PruneStats;
@@ -85,17 +83,6 @@ fn aggregate_keeps_latest_timestamp_within_variant() {
     let newer = DateTime::parse_from_rfc3339("2026-03-30T15:22:18-05:00").expect("newer");
     let status = LintStatus::aggregate([LintStatus::Passed(older), LintStatus::Passed(newer)]);
     assert_eq!(status, LintStatus::Passed(newer));
-}
-
-#[test]
-fn running_lint_status_uses_framework_activity_spinner() {
-    let timestamp = DateTime::parse_from_rfc3339("2026-03-30T14:22:18-05:00").expect("timestamp");
-    let elapsed = Duration::from_millis(100);
-
-    assert_eq!(
-        LintStatus::Running(timestamp).icon().frame_at(elapsed),
-        ACTIVITY_SPINNER.frame_at(elapsed)
-    );
 }
 
 // ── read_status (end-to-end) ────────────────────────────────────

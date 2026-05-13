@@ -50,7 +50,6 @@ mod construct;
 mod dismiss;
 mod navigation;
 mod phase_state;
-mod query;
 mod startup;
 
 pub(super) use phase_state::CountedPhase;
@@ -326,7 +325,8 @@ impl App {
                 ratatui::style::Style::default(),
             );
         }
-        let icon = status.icon().frame_at(self.animation_started.elapsed());
+        let icon = crate::tui::integration::lint_icon_for(status.kind())
+            .frame_at(self.animation_started.elapsed());
         let style = if matches!(status, LintStatus::Running(_)) {
             ratatui::style::Style::default().fg(crate::tui::constants::ACCENT_COLOR)
         } else {

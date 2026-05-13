@@ -41,3 +41,4 @@ pub use types::LintCommandStatus;
 pub use types::LintRun;
 pub use types::LintRunStatus;
 pub use types::LintStatus;
+pub use types::LintStatusKind;
