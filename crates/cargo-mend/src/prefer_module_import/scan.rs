@@ -125,7 +125,7 @@ fn scan_file(
 
     let mut detector = ImportDetector {
         source_root,
-        current_module_path: &current_module_path,
+        current_module_path: current_module_path.clone(),
         declared_modules: &declared_modules,
         candidates: Vec::new(),
     };

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `prefer_module_import --fix` no longer produces a wrong-parent `use super::module;` when rewriting a function import that lives inside an inline `mod` (e.g. `mod tests`). The detector now pushes inline module idents onto its tracked module path so shortened paths are computed against the actual scope, not the file scope.
+
 ## [0.12.2] - 2026-05-11
 
 ### Fixed

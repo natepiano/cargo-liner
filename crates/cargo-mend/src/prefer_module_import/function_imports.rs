@@ -2,9 +2,11 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use proc_macro2::LineColumn;
+use syn::ItemMod;
 use syn::ItemUse;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
+use syn::visit::visit_item_mod;
 
 use super::shared;
 use crate::constants::PATH_KEYWORD_CRATE;
@@ -31,7 +33,7 @@ pub(super) struct RawCandidate {
 
 pub(super) struct ImportDetector<'a> {
     pub(super) source_root:         &'a Path,
-    pub(super) current_module_path: &'a [String],
+    pub(super) current_module_path: Vec<String>,
     pub(super) declared_modules:    &'a BTreeSet<String>,
     pub(super) candidates:          Vec<RawCandidate>,
 }
@@ -40,11 +42,21 @@ impl Visit<'_> for ImportDetector<'_> {
     fn visit_item_use(&mut self, node: &ItemUse) {
         if let Some(candidate) = analyze_function_import(
             self.source_root,
-            self.current_module_path,
+            &self.current_module_path,
             self.declared_modules,
             node,
         ) {
             self.candidates.push(candidate);
+        }
+    }
+
+    fn visit_item_mod(&mut self, node: &ItemMod) {
+        if node.content.is_some() {
+            self.current_module_path.push(node.ident.to_string());
+            visit_item_mod(self, node);
+            self.current_module_path.pop();
+        } else {
+            visit_item_mod(self, node);
         }
     }
 }

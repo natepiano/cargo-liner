@@ -1413,6 +1413,89 @@ mod tests {
 }
 
 #[test]
+fn function_use_inside_nested_mod_shortens_against_nested_path() {
+    // Regression (bevy_lagrange): a `use crate::parent::utils::do_thing;`
+    // inside `mod tests` was being rewritten to `use super::utils;`. The
+    // detector treated the file's module path as the current path and
+    // ignored the inline `mod tests`, so `up_count` was off by one and
+    // `super` resolved to the wrong parent at the use site, producing
+    // E0432: unresolved import.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "nested_use_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod utils;\nmod consumer;\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/utils.rs"),
+        "pub fn do_thing() -> i32 { 42 }\n",
+    )
+    .expect("write utils");
+    fs::write(
+        temp.path().join("src/parent/consumer.rs"),
+        r#"fn example() {}
+
+#[cfg(test)]
+mod tests {
+    use crate::parent::utils::do_thing;
+
+    #[test]
+    fn calls_it() {
+        assert_eq!(do_thing(), 42);
+    }
+}
+"#,
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let consumer =
+        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read consumer");
+    assert!(
+        !consumer.contains("use super::utils;"),
+        "must not shorten to `super::utils` from inside `mod tests` — \
+         `super` there points at `parent::consumer`, not `parent`. Got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("use crate::parent::utils;")
+            || consumer.contains("use super::super::utils;"),
+        "expected the use to stay absolute (or use `super::super`), got:\n{consumer}"
+    );
+    assert!(
+        consumer.contains("utils::do_thing()"),
+        "expected qualified call, got:\n{consumer}"
+    );
+}
+
+#[test]
 fn skips_bare_ref_shadowed_by_local_binding() {
     // Regression: when a `let NAME = ...;` binding shadows an imported
     // function with the same name, later bare references to NAME refer to
