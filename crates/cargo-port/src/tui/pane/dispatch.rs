@@ -23,6 +23,7 @@ use super::PaneFocusState;
 use crate::tui::panes::PaneId;
 use crate::tui::project_list::ProjectList;
 use crate::tui::state::Config;
+use crate::tui::state::Inflight;
 
 /// Bundle of references a pane needs at render time.
 pub struct PaneRenderCtx<'a> {
@@ -32,6 +33,10 @@ pub struct PaneRenderCtx<'a> {
     pub config:                &'a Config,
     pub project_list:          &'a ProjectList,
     pub selected_project_path: Option<&'a Path>,
+    /// In-flight runtime state read by tiled panes during render
+    /// (currently only `OutputPane` for the running-example title
+    /// and the captured output lines).
+    pub inflight:              &'a Inflight,
 }
 
 /// Per-pane render dispatch.

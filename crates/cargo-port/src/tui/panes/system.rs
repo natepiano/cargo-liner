@@ -31,6 +31,7 @@ use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::project_list::ProjectList;
 use crate::tui::state::Config;
+use crate::tui::state::Inflight;
 
 /// Bundle of refs the dispatchers need to construct a
 /// `PaneRenderCtx`. Constructed at the call site from
@@ -43,6 +44,7 @@ pub struct DispatchArgs<'a> {
     pub config:                &'a Config,
     pub project_list:          &'a ProjectList,
     pub selected_project_path: Option<&'a Path>,
+    pub inflight:              &'a Inflight,
 }
 
 const fn build_ctx<'a>(args: &DispatchArgs<'a>) -> PaneRenderCtx<'a> {
@@ -53,6 +55,7 @@ const fn build_ctx<'a>(args: &DispatchArgs<'a>) -> PaneRenderCtx<'a> {
         config:                args.config,
         project_list:          args.project_list,
         selected_project_path: args.selected_project_path,
+        inflight:              args.inflight,
     }
 }
 
@@ -171,6 +174,30 @@ impl Panes {
         let ctx = build_ctx(args);
         let ctx = &ctx;
         Pane::render(&mut self.git, frame, area, ctx);
+    }
+
+    /// Dispatch `TargetsPane`'s render through the `Pane` trait.
+    pub fn dispatch_targets_render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        args: &DispatchArgs<'_>,
+    ) {
+        let ctx = build_ctx(args);
+        let ctx = &ctx;
+        Pane::render(&mut self.targets, frame, area, ctx);
+    }
+
+    /// Dispatch `OutputPane`'s render through the `Pane` trait.
+    pub fn dispatch_output_render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        args: &DispatchArgs<'_>,
+    ) {
+        let ctx = build_ctx(args);
+        let ctx = &ctx;
+        Pane::render(&mut self.output, frame, area, ctx);
     }
 
     pub const fn set_hover(&mut self, hovered: Option<HoveredPaneRow>) {

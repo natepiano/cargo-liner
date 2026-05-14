@@ -22,8 +22,10 @@ use super::PaneId;
 use super::cpu;
 use super::git;
 use super::lang;
+use super::output;
 use super::package;
 use super::package::RenderStyles;
+use super::targets;
 use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
 use crate::tui::cpu::CpuPoller;
@@ -314,14 +316,13 @@ impl Hittable<HoverTarget> for TargetsPane {
     }
 }
 
-// TargetsPane is rendered by free functions in `panes/targets.rs`
-// (no `Pane` trait impl yet). To still participate in
-// `Hittable`-trait dispatch we provide a no-op `Pane` impl here so
-// `Hittable: Pane` is satisfied.
 impl Pane for TargetsPane {
-    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {
-        // Render handled by `panes::render_targets_panel` /
-        // `render_empty_targets_panel`.
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
+        let styles = RenderStyles {
+            readonly_label: ratatui::style::Style::default().fg(tui_pane::LABEL_COLOR),
+            chrome:         pane::default_pane_chrome(),
+        };
+        targets::render_targets_pane_body(frame, area, self, &styles, ctx);
     }
 }
 
@@ -382,6 +383,12 @@ impl OutputPane {
         Self {
             viewport: Viewport::new(),
         }
+    }
+}
+
+impl Pane for OutputPane {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
+        output::render_output_pane_body(frame, area, ctx);
     }
 }
 

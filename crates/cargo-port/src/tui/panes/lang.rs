@@ -188,6 +188,7 @@ pub(super) fn render_lang_pane_body(
         selected_project_path,
         animation_elapsed: _,
         config: _,
+        inflight: _,
     } = ctx;
 
     let lang_stats = projects

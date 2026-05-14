@@ -42,13 +42,12 @@ use super::integration::AppGlobalAction;
 use super::interaction;
 use super::keymap_ui;
 use super::overlays::PopupFrame;
-use super::pane;
+use super::pane::Pane;
 use super::pane::PaneRenderCtx;
 use super::panes;
 use super::panes::DispatchArgs;
 use super::panes::PaneId;
 use super::panes::Panes;
-use super::panes::RenderStyles;
 use super::settings;
 use crate::ci::CiStatus;
 use crate::project;
@@ -335,13 +334,6 @@ fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
     panes::render_project_list(frame, app, area);
 }
 
-fn pane_render_styles() -> RenderStyles {
-    RenderStyles {
-        readonly_label: Style::default().fg(LABEL_COLOR),
-        chrome:         pane::default_pane_chrome(),
-    }
-}
-
 fn dispatch_via_trait(
     app: &mut App,
     area: Rect,
@@ -358,7 +350,7 @@ fn dispatch_via_trait(
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (panes, config, projects) = app.split_panes_for_render();
+    let (panes, config, projects, inflight) = app.split_panes_for_render();
     let args = DispatchArgs {
         focus_state,
         is_focused,
@@ -366,18 +358,19 @@ fn dispatch_via_trait(
         config,
         project_list: projects,
         selected_project_path: selected_project_path.as_deref(),
+        inflight,
     };
     dispatcher(panes, frame, area, &args);
 }
 
-fn render_lints_pane(app: &mut App, frame: &mut Frame, area: Rect) {
+fn dispatch_lints_render(app: &mut App, frame: &mut Frame, area: Rect) {
     let focus_state = app.pane_focus_state(PaneId::Lints);
     let is_focused = app.focus_is(PaneId::Lints);
     let animation_elapsed = app.animation_started.elapsed();
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (lint, config, projects) = app.split_lint_for_render();
+    let (lint, config, projects, inflight) = app.split_lint_for_render();
     let ctx = PaneRenderCtx {
         focus_state,
         is_focused,
@@ -385,18 +378,19 @@ fn render_lints_pane(app: &mut App, frame: &mut Frame, area: Rect) {
         config,
         project_list: projects,
         selected_project_path: selected_project_path.as_deref(),
+        inflight,
     };
-    panes::render_lints_pane_body(frame, area, lint, &ctx);
+    Pane::render(lint, frame, area, &ctx);
 }
 
-fn render_ci_pane(app: &mut App, frame: &mut Frame, area: Rect) {
+fn dispatch_ci_render(app: &mut App, frame: &mut Frame, area: Rect) {
     let focus_state = app.pane_focus_state(PaneId::CiRuns);
     let is_focused = app.focus_is(PaneId::CiRuns);
     let animation_elapsed = app.animation_started.elapsed();
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (ci, config, projects) = app.split_ci_for_render();
+    let (ci, config, projects, inflight) = app.split_ci_for_render();
     let ctx = PaneRenderCtx {
         focus_state,
         is_focused,
@@ -404,8 +398,9 @@ fn render_ci_pane(app: &mut App, frame: &mut Frame, area: Rect) {
         config,
         project_list: projects,
         selected_project_path: selected_project_path.as_deref(),
+        inflight,
     };
-    panes::render_ci_pane_body(frame, area, ci, &ctx);
+    Pane::render(ci, frame, area, &ctx);
 }
 
 fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect) {
@@ -439,18 +434,22 @@ fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect)
             frame,
             panes::Panes::dispatch_cpu_render,
         ),
-        PaneId::Targets => {
-            if let Some(targets_data) = app.panes.targets.content().cloned()
-                && targets_data.has_targets()
-            {
-                panes::render_targets_panel(frame, app, &targets_data, &pane_render_styles(), area);
-            } else {
-                panes::render_empty_targets_panel(frame, app, area);
-            }
-        },
-        PaneId::Lints => render_lints_pane(app, frame, area),
-        PaneId::CiRuns => render_ci_pane(app, frame, area),
-        PaneId::Output => panes::render_output_panel(frame, app, area),
+        PaneId::Targets => dispatch_via_trait(
+            app,
+            area,
+            PaneId::Targets,
+            frame,
+            panes::Panes::dispatch_targets_render,
+        ),
+        PaneId::Lints => dispatch_lints_render(app, frame, area),
+        PaneId::CiRuns => dispatch_ci_render(app, frame, area),
+        PaneId::Output => dispatch_via_trait(
+            app,
+            area,
+            PaneId::Output,
+            frame,
+            panes::Panes::dispatch_output_render,
+        ),
         PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {},
     }
 }

@@ -46,8 +46,6 @@ pub(super) use layout::BottomRow;
 pub(super) use layout::resolve_layout;
 pub(super) use layout::tab_order;
 pub(super) use lints::render_lints_pane_body;
-pub(super) use output::render_output_panel;
-pub(super) use package::RenderStyles;
 #[cfg(test)]
 pub(super) use package::description_lines;
 #[cfg(test)]
@@ -101,8 +99,6 @@ pub(super) use spec::behavior;
 pub(super) use spec::size_spec;
 pub(super) use system::DispatchArgs;
 pub(super) use system::Panes;
-pub(super) use targets::render_empty_targets_panel;
-pub(super) use targets::render_targets_panel;
 use tui_pane::FocusedPane;
 pub(super) use widths::compute_project_list_widths;
 #[cfg(test)]

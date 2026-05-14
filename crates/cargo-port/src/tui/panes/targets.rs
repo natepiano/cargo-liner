@@ -1,10 +1,8 @@
-//! Targets pane render bodies.
+//! Targets pane render body.
 //!
-//! `render_targets_panel` and `render_empty_targets_panel` live
-//! alongside `TargetsPane`. They are free functions (no `Pane`
-//! trait impl) because the body touches App shell state during
-//! render — `pane_focus_state` plus the typed
-//! `panes_mut().targets_mut().viewport` accessors.
+//! Entry: `TargetsPane::render` in `pane_impls.rs` calls
+//! `render_targets_pane_body`, which delegates to the data /
+//! empty branches below.
 
 use ratatui::Frame;
 use ratatui::layout::Alignment;
@@ -21,34 +19,51 @@ use tui_pane::render_overflow_affordance;
 
 use super::TargetsData;
 use super::package::RenderStyles;
-use super::spec::PaneId;
-use crate::tui::app::App;
+use super::pane_impls::TargetsPane;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
 use crate::tui::panes;
 use crate::tui::render;
 
-pub fn render_empty_targets_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.panes.targets.viewport.clear_surface();
+pub fn render_targets_pane_body(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &mut TargetsPane,
+    styles: &RenderStyles,
+    ctx: &PaneRenderCtx<'_>,
+) {
+    if let Some(data) = pane.content().cloned()
+        && data.has_targets()
+    {
+        render_targets_with_data(frame, area, pane, &data, styles, ctx);
+    } else {
+        render_empty_targets(frame, area, pane);
+    }
+}
+
+fn render_empty_targets(frame: &mut Frame, area: Rect, pane: &mut TargetsPane) {
+    pane.viewport.clear_surface();
     let empty_targets = pane::empty_pane_block(" No Targets ");
     frame.render_widget(empty_targets, area);
 }
 
-pub fn render_targets_panel(
+fn render_targets_with_data(
     frame: &mut Frame,
-    app: &mut App,
+    area: Rect,
+    pane: &mut TargetsPane,
     data: &TargetsData,
     styles: &RenderStyles,
-    area: Rect,
+    ctx: &PaneRenderCtx<'_>,
 ) {
     let bin_count: usize = usize::from(data.primary_binary.is_some());
     let ex_count: usize = data.examples.iter().map(|group| group.names.len()).sum();
     let bench_count = data.benches.len();
 
-    let focus = app.pane_focus_state(PaneId::Targets);
-    let cursor = app.panes.targets.viewport.pos();
+    let focus = ctx.focus_state;
+    let cursor = pane.viewport.pos();
 
     let targets_title = {
         let focused_cursor = matches!(focus, PaneFocusState::Active).then_some(cursor);
@@ -87,12 +102,10 @@ pub fn render_targets_panel(
         .block(targets_title, matches!(focus, PaneFocusState::Active));
 
     let entries = panes::build_target_list_from_data(data);
-    app.panes.targets.viewport.set_len(entries.len());
+    pane.viewport.set_len(entries.len());
     let content_inner = targets_block.inner(area);
-    app.panes.targets.viewport.set_content_area(content_inner);
-    app.panes
-        .targets
-        .viewport
+    pane.viewport.set_content_area(content_inner);
+    pane.viewport
         .set_viewport_rows(usize::from(content_inner.height));
 
     let kind_col_width = panes::RunTargetKind::padded_label_width();
@@ -105,7 +118,7 @@ pub fn render_targets_panel(
         .iter()
         .enumerate()
         .map(|(row_index, entry)| {
-            let selection = pane::selection_state(&app.panes.targets.viewport, row_index, focus);
+            let selection = pane::selection_state(&pane.viewport, row_index, focus);
             let display =
                 render::truncate_with_ellipsis(&entry.display_name, name_max_width, "\u{2026}");
             Row::new(vec![
@@ -130,14 +143,12 @@ pub fn render_targets_panel(
 
     let mut table_state = TableState::default().with_selected(Some(cursor));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.panes
-        .targets
-        .viewport
-        .set_scroll_offset(table_state.offset());
+    pane.viewport.set_scroll_offset(table_state.offset());
     render_overflow_affordance(
         frame,
         area,
-        app.panes.targets.viewport.overflow(),
+        pane.viewport.overflow(),
         Style::default().fg(LABEL_COLOR),
     );
+    let _ = ctx;
 }

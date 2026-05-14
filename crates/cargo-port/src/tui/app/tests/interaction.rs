@@ -243,7 +243,7 @@ fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
     terminal
         .draw(|frame| {
             let area = frame.area();
-            let (lint, config, projects) = app.split_lint_for_render();
+            let (lint, config, projects, inflight) = app.split_lint_for_render();
             let ctx = PaneRenderCtx {
                 focus_state,
                 is_focused,
@@ -251,6 +251,7 @@ fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
                 config,
                 project_list: projects,
                 selected_project_path: selected_path.as_deref(),
+                inflight,
             };
             panes::render_lints_pane_body(frame, area, lint, &ctx);
         })
@@ -271,7 +272,7 @@ fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
     terminal
         .draw(|frame| {
             let area = frame.area();
-            let (ci, config, projects) = app.split_ci_for_render();
+            let (ci, config, projects, inflight) = app.split_ci_for_render();
             let ctx = PaneRenderCtx {
                 focus_state,
                 is_focused,
@@ -279,6 +280,7 @@ fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
                 config,
                 project_list: projects,
                 selected_project_path: selected_path.as_deref(),
+                inflight,
             };
             panes::render_ci_pane_body(frame, area, ci, &ctx);
         })

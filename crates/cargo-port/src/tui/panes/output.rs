@@ -1,10 +1,8 @@
 //! Output pane render body.
 //!
-//! `render_output_panel` is a free function rather than a `Pane`
-//! trait impl — Output's data dependencies (`example_running`,
-//! `example_output`) live on App-shell rather than
-//! `PaneRenderCtx`, so it doesn't fit the trait-dispatch path
-//! used by the detail panes.
+//! Entry: `OutputPane::render` in `pane_impls.rs` calls
+//! `render_output_pane_body`. The body reads in-flight example
+//! state from `PaneRenderCtx::inflight`.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -14,21 +12,20 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::LABEL_COLOR;
 
-use super::spec::PaneId;
-use crate::tui::app::App;
 use crate::tui::pane;
+use crate::tui::pane::PaneRenderCtx;
 
-pub fn render_output_panel(frame: &mut Frame, app: &App, area: Rect) {
-    let title = app.inflight.example_running().map_or_else(
+pub fn render_output_pane_body(frame: &mut Frame, area: Rect, ctx: &PaneRenderCtx<'_>) {
+    let title = ctx.inflight.example_running().map_or_else(
         || " Output (Esc to close) ".to_string(),
         |n| format!(" Running: {n} "),
     );
 
     let block = pane::default_pane_chrome()
         .with_inactive_border(Style::default().fg(LABEL_COLOR))
-        .block(title, app.focus_is(PaneId::Output));
+        .block(title, ctx.is_focused);
 
-    let lines: Vec<Line> = app
+    let lines: Vec<Line> = ctx
         .inflight
         .example_output()
         .iter()

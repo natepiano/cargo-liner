@@ -549,24 +549,46 @@ impl App {
     }
 
     /// Split-borrow accessor for per-pane render dispatch.
-    /// Returns `(&mut Panes, &Config, &ProjectList)` — the refs the
+    /// Returns the `&mut Panes` plus the read-only refs the
     /// dispatcher passes through to construct `PaneRenderCtx`. All
-    /// disjoint `App` fields, so holding them simultaneously is sound.
-    pub(super) const fn split_panes_for_render(&mut self) -> (&mut Panes, &Config, &ProjectList) {
-        (&mut self.panes, &self.config, &self.project_list)
+    /// disjoint `App` fields, so holding them simultaneously is
+    /// sound.
+    pub(super) const fn split_panes_for_render(
+        &mut self,
+    ) -> (&mut Panes, &Config, &ProjectList, &Inflight) {
+        (
+            &mut self.panes,
+            &self.config,
+            &self.project_list,
+            &self.inflight,
+        )
     }
 
     /// Split-borrow accessor for the CI pane render path. CI content
     /// lives on the `Ci` subsystem (not `Panes`), so it has its own
     /// split.
-    pub(super) const fn split_ci_for_render(&mut self) -> (&mut Ci, &Config, &ProjectList) {
-        (&mut self.ci, &self.config, &self.project_list)
+    pub(super) const fn split_ci_for_render(
+        &mut self,
+    ) -> (&mut Ci, &Config, &ProjectList, &Inflight) {
+        (
+            &mut self.ci,
+            &self.config,
+            &self.project_list,
+            &self.inflight,
+        )
     }
 
     /// Split-borrow accessor for the Lints pane render path. Lints
     /// content lives on the `Lint` subsystem (not `Panes`).
-    pub(super) const fn split_lint_for_render(&mut self) -> (&mut Lint, &Config, &ProjectList) {
-        (&mut self.lint, &self.config, &self.project_list)
+    pub(super) const fn split_lint_for_render(
+        &mut self,
+    ) -> (&mut Lint, &Config, &ProjectList, &Inflight) {
+        (
+            &mut self.lint,
+            &self.config,
+            &self.project_list,
+            &self.inflight,
+        )
     }
 
     /// Compute `selected_project_path` once for the current frame

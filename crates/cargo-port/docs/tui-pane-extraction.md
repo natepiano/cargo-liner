@@ -16,8 +16,9 @@ funnel through one trait) that the hit-test dispatch does not need.
 | 1 | Leaf utilities + color palette | None | Low | ~5 files moved, one commit |
 | 2 | Pane chrome bundle + layout state moves onto Framework | None | Low | ~7 files moved, `LayoutCache` dissolved, one commit |
 | 3 | Generic `Hittable` trait + hit-test dispatch loop | Associated `Target` type | Medium | 1 trait moved, 11 impl sites updated, one commit |
-| 4 | Cargo-port-side render unification (no tui_pane changes) | None | Medium | 5 tiled + 3 overlay renderers absorbed into `impl Pane` blocks, one commit |
-| 5 | `Renderable` trait + render dispatch loop | Generic `Ctx` param + HRTB on registry, new `PaneRegistry` trait | Medium | 1 trait moved, 11 impl sites renamed, render orchestration switches to generic loop, one commit |
+| 4 | Cargo-port-side render unification — tier-one panes | None | Medium | Targets/Lints/CiRuns/Output routed through `Pane::render`, `PaneRenderCtx` widened with `inflight`, one commit |
+| 5 | Cargo-port-side render unification — tier-two panes | None | Medium | `ProjectList` body and 3 overlay popups absorbed into `impl Pane`, `PaneRenderCtx` further widened (scan/ci/lint/inline_error), one commit |
+| 6 | `Renderable` trait + render dispatch loop | Generic `Ctx` param + HRTB on registry, new `PaneRegistry` trait | Medium | 1 trait moved, 11 impl sites renamed, render orchestration switches to generic loop, one commit |
 
 Each phase lands as a single commit after `cargo build && cargo nextest
 run && cargo clippy && cargo mend && cargo +nightly fmt` all pass green.
@@ -31,9 +32,9 @@ tui_pane/src/
 ├── bar/                      (unchanged)
 ├── constants.rs              ← generic palette extracted from src/tui/constants.rs
 ├── dispatch/
-│   ├── mod.rs                ← Hittable trait (Phase 3) + Renderable trait + PaneRegistry (Phase 5)
+│   ├── mod.rs                ← Hittable trait (Phase 3) + Renderable trait + PaneRegistry (Phase 6)
 │   ├── hit_test.rs           ← generic hit-test dispatch loop (Phase 3)
-│   └── render.rs             ← generic render dispatch loop (Phase 5)
+│   └── render.rs             ← generic render dispatch loop (Phase 6)
 ├── framework/                (unchanged)
 ├── keymap/                   (unchanged)
 ├── layout.rs                 ← was src/tui/pane/layout.rs
@@ -285,7 +286,7 @@ Moves the reusable hit-test machinery: the `Hittable` trait, the
 z-order walk, and the first-hit-wins dispatch helper. The render trait
 (`Pane` in `src/tui/pane/dispatch.rs`) stays in cargo-port for now —
 it can't move until every cargo-port pane funnels through one render
-trait — that's Phase 4's job. The trait move itself happens in Phase 5.
+trait — that's Phases 4 and 5's job. The trait move itself happens in Phase 6.
 
 ### Trait design
 
@@ -372,7 +373,7 @@ layer exclusively.
 ### What stays in `src/tui/`
 
 - `Pane` trait (the render dispatch) — stays in `src/tui/pane/dispatch.rs`
-  unchanged. Phase 4 unifies pane bodies; Phase 5 moves the trait.
+  unchanged. Phases 4 and 5 unify pane bodies; Phase 6 moves the trait.
 - `PaneRenderCtx` struct — concrete aggregate of cargo-port refs.
 - `HoverTarget` enum — references cargo-port `PaneId` and `DismissTarget`.
 - `HittableId` enum + `HITTABLE_Z_ORDER` array (Toasts removed from
@@ -421,7 +422,7 @@ pub use dispatch::{HitTestRegistry, Hittable, hit_test_at};
    `hit_test_toasts` first, then `tui_pane::hit_test_at(self, pos)`.
 6. Delete cargo-port's `Hittable` trait declaration from
    `src/tui/pane/dispatch.rs`. Keep the `Pane` (render) trait in
-   that file — Phase 5 moves it.
+   that file — Phase 6 moves it.
 7. Cargo checkpoint.
 
 ### Risk note
@@ -442,104 +443,146 @@ After Phase 3, `src/tui/pane/` contains:
   items for call-site convenience.
 - `dispatch.rs` — keeps the `Pane` (render) trait, `PaneRenderCtx`,
   `HoverTarget`, `HittableId`, and the Toasts-free `HITTABLE_Z_ORDER`.
-  Phase 5 moves the render trait out.
+  Phase 6 moves the render trait out.
 - `dismiss.rs` — `DismissTarget` enum, unchanged.
 
-## Phase 4 — Cargo-port-side render unification
+## Phase 4 — Cargo-port-side render unification (tier-one panes)
 
-Before the render trait can move to `tui_pane`, every cargo-port pane
-needs to funnel through a single render trait with a real body — no
-free-function bypasses, no stub impls that defer to popup-render code
-paths. This phase does that unification entirely inside cargo-port,
-with zero `tui_pane` involvement.
-
-The render trait stays named `Pane` in cargo-port for this phase; the
-rename to `Renderable` happens in Phase 5 alongside the move.
-
-### Why this needs its own phase
-
-Cargo-port currently splits render dispatch across two paths:
-
-- **Tiled-pane dispatch** in `src/tui/render.rs::render_tiled_pane`
-  (lines 416–461). Of nine tiled-pane arms: 4 call `dispatch_via_trait`
-  (Package, Git, Lang, Cpu) — these use the `Pane` trait. 5 are
-  bespoke free functions (`render_left_panel`, Targets branching,
-  `render_lints_pane`, `render_ci_pane`, `render_output_panel`).
-- **Overlay dispatch** runs separately in cargo-port's main render
-  function. Keymap, Settings, and Finder are rendered by calling
-  `render_keymap_popup`, `render_settings_popup`, `render_finder_popup`
-  (or equivalent) conditionally on overlay activation. Their pane
-  structs have stub `impl Pane` bodies.
-
-Phase 5's generic dispatch loop requires every pane to render through
-the trait. This phase makes that true for cargo-port without touching
+This phase routes the easy-to-absorb tiled panes through
+`Pane::render` and widens `PaneRenderCtx` once with the minimum
+additional ref needed (in-flight runtime state). The harder
+absorptions (`ProjectListPane` and the three overlay popups) move in
+Phase 5, which widens `PaneRenderCtx` further. The render trait
+rename to `Renderable` happens in Phase 6 alongside the move to
 `tui_pane`.
 
-Toasts stays outside `Renderable` entirely — its render is fully
-framework-owned in `tui_pane::toasts` and runs as a separate pass
-after the main render loop in Phase 5.
+### What this phase absorbed
 
-### Unification work
+| Free function | Target pane type | Outcome |
+|---------------|------------------|---------|
+| Targets has-data branching (inline in `render_tiled_pane`) | `TargetsPane` | Branching + both bodies absorbed into `TargetsPane::render`; `render_targets_pane_body` is the new body fn. |
+| `render_lints_pane` (wrapper in `render.rs`) | `Lint` | Wrapper renamed to `dispatch_lints_render` and now calls `Pane::render(&mut app.lint, …)`. The existing `render_lints_pane_body` is unchanged. |
+| `render_ci_pane` (wrapper in `render.rs`) | `Ci` | Same pattern — wrapper renamed to `dispatch_ci_render` and routes through `Pane::render`. |
+| `panes::render_output_panel` (free fn in `panes/output.rs`) | `OutputPane` | Body refactored to `render_output_pane_body(frame, area, ctx)`; new `impl Pane for OutputPane` calls it. Reads come from `ctx.inflight`. |
 
-Eight pane types have stub `impl Pane for X` blocks (or bypass the
-trait entirely via free functions). Unification fills in real bodies:
-
-**Tiled panes (5):**
-
-| Free function | Lines (approx) | Target pane type | Location of stub impl |
-|---------------|---------------|------------------|-----------------------|
-| `render_left_panel` (2-line wrapper) → `panes::render_project_list` | ~96 (in `src/tui/panes/project_list.rs:127`) | `ProjectListPane` | `pane_impls.rs:350` |
-| Targets has-data branching (inline in `render_tiled_pane`) | ~10 (inline at `render.rs:447-455`) | `TargetsPane` | `pane_impls.rs:321` |
-| `render_lints_pane` | ~20 (in `render.rs:378`) | `Lint` (the state type) | `state/lint.rs:214` |
-| `render_ci_pane` | ~20 (in `render.rs:397`) | `Ci` (the state type) | `state/ci.rs:271` |
-| `panes::render_output_panel` | ? (in `src/tui/panes/output.rs`) | `OutputPane` | `OutputPane` (`pane_impls.rs:372`) currently has **no** `impl Pane` — Phase 4 adds one, absorbing `render_output_panel`'s body. Verify before unification that no later refactor added a stub impl. |
-
-**Overlays (3):**
-
-| Render function | Target pane type | Location of stub impl | Absorbed logic |
-|-----------------|------------------|-----------------------|----------------|
-| `render_keymap_popup` (find the actual location) | `KeymapPane` | `overlays/pane_impls.rs:24` | Visibility check + centered area + popup body |
-| `render_settings_popup` (find the actual location) | `SettingsPane` | `overlays/pane_impls.rs:47` | Visibility check + centered area + popup body |
-| `render_finder_popup` (find the actual location) | `FinderPane` | `overlays/pane_impls.rs:70` | Visibility check + centered area + popup body |
-
-Each overlay's render method short-circuits when the overlay isn't
-active, computes its own centered area from `frame.area()`, and
-draws.
-
-Note: `Lint` and `Ci` are state types (not `LintsPane`/`CiRunsPane`)
-that double as the pane types for those tiled cells. They already
-have `impl Pane` blocks; the rename to a dedicated pane struct, if
-any, is out of scope.
+`Panes` gains `dispatch_targets_render` and `dispatch_output_render`
+helpers symmetric with the existing
+`dispatch_{package,lang,cpu,git}_render` methods.
+`render_tiled_pane`'s Targets / Lints / CiRuns / Output arms now
+route through these dispatchers.
 
 ### What changes
 
-- Free render functions absorbed into pane `impl Pane` bodies (5 tiled
-  + 3 overlay = 8 functions absorbed and deleted).
-- `render_tiled_pane`'s match collapses: every arm now calls
-  `dispatch_via_trait` (no bespoke calls).
-- Cargo-port's main render function stops calling
-  `render_keymap_popup`, `render_settings_popup`, `render_finder_popup`
-  directly — those overlays now render through the trait dispatch
-  alongside tiled panes (visibility short-circuit inside each impl).
+- `PaneRenderCtx` gains one new field: `inflight: &Inflight`
+  (used by `OutputPane::render`). `App::split_panes_for_render`,
+  `split_lint_for_render`, `split_ci_for_render` widen to return
+  `&Inflight` alongside the existing refs.
+- `panes/output.rs::render_output_panel` is renamed to
+  `render_output_pane_body` and takes `(frame, area, &PaneRenderCtx)`
+  instead of `(frame, &App, area)`.
+- `panes/targets.rs::render_targets_panel` /
+  `render_empty_targets_panel` are dissolved into
+  `render_targets_pane_body` which dispatches the has-data /
+  empty branches internally.
+- `render_tiled_pane` arms for Targets / Lints / CiRuns / Output now
+  call `dispatch_via_trait` (or the lint/ci dispatch helpers).
 
-### What stays put
+### What stays put for Phase 5
 
-- `Pane` trait in `src/tui/pane/dispatch.rs` (renamed in Phase 5).
-- `PaneRenderCtx` struct — unchanged.
-- `tui_pane` — no changes this phase.
+- `render_left_panel(frame, app, area)` and
+  `render_project_list(frame, &mut App, area)` still bypass the trait.
+- The three overlay popup render functions (`render_keymap_popup`,
+  `render_settings_popup`, `render_finder_popup`) still get called
+  directly from cargo-port's main render function.
+- `KeymapPane`, `SettingsPane`, `FinderPane`, `ProjectListPane`
+  retain stub `impl Pane` bodies.
+
+### End-state contents
+
+After Phase 4:
+- `PaneRenderCtx` has the `inflight` field.
+- `TargetsPane`, `OutputPane`, `Lint`, `Ci` all render through
+  `Pane::render` via their `dispatch_*_render` helpers.
+- `render_tiled_pane` has bespoke calls only for `ProjectList` (now
+  the single remaining bypass on the tiled path) — every other arm
+  uses `dispatch_via_trait` or the lint/ci dispatchers.
+- `render_targets_panel`, `render_empty_targets_panel`,
+  `render_output_panel`, `render_lints_pane`, `render_ci_pane`
+  are deleted (replaced by the new body fns / dispatchers).
+
+## Phase 5 — Cargo-port-side render unification (tier-two panes)
+
+The remaining absorptions: `ProjectListPane` (the ~96-line
+`render_project_list` body) and the three overlay popups
+(`KeymapPane`, `SettingsPane`, `FinderPane`). This phase widens
+`PaneRenderCtx` with the additional refs these renderers need and
+absorbs each body into its `Pane::render` impl.
+
+### Why this needs its own phase
+
+`render_project_list` reads from many App subsystems
+(`Scan`, `Ci`, `Lint`, `ProjectList`, `Config`) and uses several
+App-shell methods that aren't currently on subsystem types:
+`app.visible_rows()`, `app.dismiss_target_for_row(row)`,
+`app.lint_cell(status)`, `app.discovery_name_segments_for_path(...)`.
+The overlay popups have the same problem — each reads framework /
+overlay / app state that `PaneRenderCtx` doesn't carry today, and
+each mutates self (the framework-owned or overlays-owned pane) during
+render.
+
+Folding all that into Phase 4 made the diff too large for a single
+green commit. Phase 5 widens the context once and absorbs all four
+renderers together.
+
+### What changes
+
+- `PaneRenderCtx` gains fields for the additional subsystem refs:
+  `scan: &Scan`, `ci: Option<&Ci>`, `lint: Option<&Lint>`,
+  `inline_error: Option<&str>` (from overlays).
+  `ci`/`lint` are `Option` because their self-render aliases:
+  when `Ci::render(&mut self, ..)` is called, the disjoint `&Ci`
+  can't be supplied in the same context.
+- `App::split_panes_for_render` widens to return the additional
+  refs. Two new split-borrow accessors land for the overlay panes:
+  one returning `&mut KeymapPane` + ctx refs, one for
+  `SettingsPane`, one for `FinderPane`. Each disjoint-borrow split
+  destructures `App` so the pane and its supporting refs don't
+  alias.
+- App methods used by `render_project_list` are refactored into
+  free functions taking explicit refs from `PaneRenderCtx`:
+  - `lint_cell(status, &Config, animation_elapsed) -> LintCell`
+  - `discovery_name_segments_for_path(&Scan, &Config, ...)`
+  - `dismiss_target_for_row(&ProjectList, row)` — already a thin
+    delegator; call the inner method directly.
+  - `visible_rows()` — already on `ProjectList`; use ctx ref.
+- `render_project_list` becomes `render_project_list_pane_body`
+  taking `(frame, area, &mut ProjectListPane, &PaneRenderCtx)`.
+  `ProjectListPane::render` calls it.
+- `render_left_panel` is deleted.
+- The three overlay popup render functions become
+  `render_keymap_pane_body`, `render_settings_pane_body`,
+  `render_finder_pane_body`, taking `(frame, area, &mut Self, &PaneRenderCtx)`.
+  Each overlay's `impl Pane::render` calls its body fn and
+  short-circuits when the overlay isn't currently active.
+- Cargo-port's main render function dispatches the overlays
+  through `Pane::render` via dedicated dispatch helpers (or
+  collapses them into the tiled-render loop entry).
 
 ### Sequencing
 
-1. For each of the 8 panes in the unification tables, absorb the
-   render logic from the free function (or popup function) into the
-   pane's `impl Pane`. Five iterations for tiled panes, three for
-   overlays. Order suggested: do the simplest ones first (Targets
-   branching, the overlay visibility checks) to gain confidence,
-   then tackle `render_project_list` (the largest absorption).
-2. Delete each absorbed free function.
-3. Update `render_tiled_pane` so every arm uses `dispatch_via_trait`.
-4. Update cargo-port's main render function to dispatch overlays
-   through the same trait path as tiled panes.
+1. Widen `PaneRenderCtx` with the additional ref fields and update
+   every existing destructure / construction site. Verify the build
+   is green with no functional change yet.
+2. Refactor the App methods used by `render_project_list` into free
+   functions on the relevant subsystem (or free fns taking explicit
+   ref args).
+3. Absorb `render_project_list` into `ProjectListPane::render`.
+   Delete `render_left_panel`. Update `render_tiled_pane`'s
+   `PaneId::ProjectList` arm to `dispatch_via_trait`.
+4. Absorb each overlay popup body into its `Pane::render` impl.
+   Add the visibility short-circuit at the top of each body.
+   Update cargo-port's main render function to route the overlays
+   through their trait impls.
 5. Cargo checkpoint.
 
 ### Risk notes
@@ -549,18 +592,12 @@ any, is out of scope.
   visually — these renderers handle empty states, shimmer overlays,
   and conditional layouts that can break in subtle ways. The cargo
   checkpoint catches type errors but not visual regressions.
-- **`dispatch_via_trait` signature compatibility.** Confirm before
-  step 1 that the current `dispatch_via_trait` threads `PaneRenderCtx`
-  through correctly. Note: Phase 2 already moves `layout_cache` onto
-  `Framework` and `project_list_body` onto `ProjectListPane`, so the
-  absorbed `render_project_list` no longer needs `app.layout_cache` —
-  it writes `self.body_rect` and `app.framework.set_tiled_layout(...)`
-  instead. Verify the remaining App-state accesses (cursor mutation,
-  cached widths) can flow through `PaneRenderCtx` as-is or need a
-  small widening.
-- **`render_project_list` is the largest absorption (~96 lines).**
-  Schedule it as its own session if needed; it accesses `&mut App`
-  state that `PaneRenderCtx` doesn't currently carry.
+- **`render_project_list` mutates `app.project_list.set_cursor(...)`
+  during render** — the line near the end that syncs cursor with
+  ratatui's `ListState::selected()`. Phase 5 should either drop
+  this (it appears to be a no-op since `selected` is what we set
+  it to) or expose a narrow setter through ctx. Verify behavior is
+  unchanged after the drop.
 - **Overlay render functions mutate viewport state during render.**
   `render_keymap_popup` writes to `app.framework.keymap_pane.viewport_mut()`;
   `render_settings_popup` writes to `app.framework.settings_pane.viewport_mut()`;
@@ -573,7 +610,7 @@ any, is out of scope.
 
 ### End-state contents
 
-After Phase 4:
+After Phase 5:
 - `src/tui/render.rs::render_tiled_pane` — every arm calls
   `dispatch_via_trait`. No bespoke render functions remain in the file.
 - `src/tui/panes/pane_impls.rs`, `state/lint.rs`, `state/ci.rs`,
@@ -583,11 +620,12 @@ After Phase 4:
 - Cargo-port's main render function — overlays render through the
   same trait dispatch as tiled panes.
 
-## Phase 5 — `Renderable` trait and render dispatch loop
+## Phase 6 — `Renderable` trait and render dispatch loop
 
-With cargo-port unified in Phase 4, the render trait can move to
-`tui_pane` and the dispatch loop becomes generic. Symmetric with the
-`Hittable` + `HitTestRegistry` + `hit_test_at` stack from Phase 3.
+With cargo-port unified after Phases 4 and 5, the render trait can
+move to `tui_pane` and the dispatch loop becomes generic. Symmetric
+with the `Hittable` + `HitTestRegistry` + `hit_test_at` stack from
+Phase 3.
 
 ### Trait design
 
@@ -675,12 +713,12 @@ pub use dispatch::{PaneRegistry, Renderable, render_panes};
    still uses its own `Pane` trait at this point.
 2. Rename cargo-port impls. Change every `impl Pane for X` to
    `impl tui_pane::Renderable<PaneRenderCtx<'_>> for X`. After
-   Phase 4 there should be 11 impl sites: PackagePane, LangPane,
+   Phase 5 there should be 12 impl sites: PackagePane, LangPane,
    CpuPane, GitPane, TargetsPane, ProjectListPane, OutputPane in
    `panes/pane_impls.rs`; Lint in `state/lint.rs`; Ci in
    `state/ci.rs`; KeymapPane, SettingsPane, FinderPane in
    `overlays/pane_impls.rs`. Verify with `rg "impl Pane for" src/`
-   beforehand; expect total of 11.
+   beforehand.
 3. Add `impl PaneRegistry for Panes` (likely on the same registry
    struct used by `HitTestRegistry` from Phase 3). `pane_mut(id)`
    matches each `PaneId` variant to a `&mut dyn Renderable<…>`
@@ -697,12 +735,12 @@ pub use dispatch::{PaneRegistry, Renderable, render_panes};
 - **Sequencing with Phase 3's `HitTestRegistry`.** Both impls live
   on the same `Panes` struct. Plan to declare both traits on the
   same registry impl. The registry type itself may need fields
-  added during Phase 5 — that's fine, as long as Phase 3's
+  added during Phase 6 — that's fine, as long as Phase 3's
   checkpoint was green at the time.
 
 ### End-state contents
 
-After Phase 5:
+After Phase 6:
 - `src/tui/pane/dispatch.rs` — deleted (or trimmed to nothing).
 - `src/tui/render.rs::render_tiled_pane` — replaced by a call to
   `tui_pane::render_panes`. Cargo-port's main render orchestration
@@ -713,9 +751,9 @@ After Phase 5:
   `Hittable`, `PaneRegistry`, `HitTestRegistry`. `hit_test.rs` and
   `render.rs` carry the two generic loops.
 
-## Post-Phase-5 — `Renderable` design review
+## Post-Phase-6 — `Renderable` design review
 
-After Phase 5 lands, hold an explicit review pass on the `Renderable`
+After Phase 6 lands, hold an explicit review pass on the `Renderable`
 trait and the `PaneRegistry` abstraction before declaring this plan
 complete. The trait design is the most novel piece of this extraction
 and may want refinement once it has been exercised by all 11 panes
@@ -729,7 +767,7 @@ Questions to answer in the review:
   the alternative is a generic `Renderable<Ctx>` with a fixed
   lifetime newtype, or even a non-generic trait that takes
   `&PaneRenderCtx<'_>` directly (which then forces the trait to live
-  in cargo-port, undoing Phase 5).
+  in cargo-port, undoing Phase 6).
 - **Is `PaneRegistry::pane_mut` ergonomic in practice?** The
   trait-object signature is unusual. If impl sites end up writing
   large match statements that handle every `PaneId` variant
