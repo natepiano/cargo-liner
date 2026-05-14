@@ -4,7 +4,7 @@ use super::CI_COMPACT_DURATION_WIDTH;
 use super::DetailField;
 use super::GitData;
 use super::PackageData;
-use super::support as model;
+use super::pane_data as model;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;

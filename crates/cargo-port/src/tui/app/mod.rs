@@ -122,7 +122,6 @@ use std::sync::mpsc::Sender;
 
 use anyhow::Error;
 use async_tasks::Startup;
-pub(super) use dismiss::DismissTarget;
 pub(super) use target_index::CleanSelection;
 pub(super) use target_index::TargetDirIndex;
 use tui_pane::AppContext;
@@ -149,6 +148,7 @@ pub(super) use types::SelectionSync;
 
 pub(super) use super::columns::ProjectListWidths;
 use super::interaction;
+pub(super) use super::pane::DismissTarget;
 use super::panes::BottomRow;
 pub(super) use super::project_list::ExpandKey;
 pub(super) use super::project_list::VisibleRow;

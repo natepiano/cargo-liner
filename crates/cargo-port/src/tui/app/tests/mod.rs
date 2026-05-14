@@ -15,7 +15,6 @@ use ratatui::widgets::List;
 use ratatui::widgets::Widget;
 
 pub(super) use super::App;
-use super::DismissTarget;
 use super::types::*;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
@@ -52,6 +51,7 @@ use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
 use crate::tui::columns::ProjectListWidths;
+use crate::tui::pane::DismissTarget;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PaneId;

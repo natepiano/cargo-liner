@@ -3,8 +3,8 @@ use tui_pane::FrameworkOverlayId;
 use tui_pane::Viewport;
 
 use super::app::App;
-use super::app::DismissTarget;
 use super::app::HoveredPaneRow;
+use super::pane::DismissTarget;
 use super::pane::HITTABLE_Z_ORDER;
 use super::pane::Hittable;
 use super::pane::HittableId;

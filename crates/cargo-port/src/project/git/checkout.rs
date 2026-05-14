@@ -4,9 +4,9 @@ use std::path::Path;
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::command::git_command;
-use super::command::git_output_logged;
-use super::discovery::git_repo_root;
+use super::command;
+use super::discovery;
+use super::repo;
 use super::repo::RemoteInfo;
 use super::repo::RepoInfo;
 use crate::constants::GIT_STATUS_CLEAN;
@@ -62,10 +62,10 @@ impl CheckoutInfo {
     /// which is identical across siblings so probing it once at the
     /// `RepoInfo::get` call avoids redundant work.
     pub fn get(probe_path: &Path, local_main_branch: Option<&str>) -> Option<Self> {
-        let repo_root = git_repo_root(probe_path)?;
+        let repo_root = discovery::git_repo_root(probe_path)?;
 
-        let branch = super::repo::get_current_branch(&repo_root);
-        let current_upstream = super::repo::get_upstream_branch(&repo_root);
+        let branch = repo::get_current_branch(&repo_root);
+        let current_upstream = repo::get_upstream_branch(&repo_root);
         let ahead_behind_local = local_main_branch
             .filter(|branch_name| branch.as_deref() != Some(*branch_name))
             .and_then(|branch_name| {
@@ -75,13 +75,16 @@ impl CheckoutInfo {
                     "configured_local_main",
                 )
             });
-        let last_commit =
-            git_output_logged(&repo_root, "log_last_commit", ["log", "-1", "--format=%aI"])
-                .ok()
-                .and_then(|o| {
-                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if s.is_empty() { None } else { Some(s) }
-                });
+        let last_commit = command::git_output_logged(
+            &repo_root,
+            "log_last_commit",
+            ["log", "-1", "--format=%aI"],
+        )
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        });
 
         Some(Self {
             status: get_git_status(probe_path, &repo_root),
@@ -158,12 +161,13 @@ pub fn worktree_ahead_behind_primary(
     worktree_dir: &Path,
     primary_dir: &Path,
 ) -> Option<(usize, usize)> {
-    let primary_sha = git_output_logged(primary_dir, "worktree_primary_sha", ["rev-parse", "HEAD"])
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { None } else { Some(s) }
-        })?;
+    let primary_sha =
+        command::git_output_logged(primary_dir, "worktree_primary_sha", ["rev-parse", "HEAD"])
+            .ok()
+            .and_then(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if s.is_empty() { None } else { Some(s) }
+            })?;
     parse_ahead_behind(
         worktree_dir,
         &format!("HEAD...{primary_sha}"),
@@ -177,7 +181,7 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
     let started = std::time::Instant::now();
     let relative_path = relative_git_path(repo_root, project_dir);
     if relative_path != "." {
-        let ignored = git_command(repo_root)
+        let ignored = command::git_command(repo_root)
             .args(["check-ignore", "-q", "--", &relative_path])
             .status()
             .ok()
@@ -194,7 +198,7 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
             return state;
         }
     }
-    let status_output = git_command(repo_root)
+    let status_output = command::git_command(repo_root)
         .args([
             "status",
             "--porcelain=v1",
@@ -264,7 +268,7 @@ pub(super) fn parse_ahead_behind(
     revspec: &str,
     op_suffix: &str,
 ) -> Option<(usize, usize)> {
-    git_output_logged(
+    command::git_output_logged(
         project_dir,
         &format!("rev_list_{op_suffix}"),
         ["rev-list", "--left-right", "--count", revspec],

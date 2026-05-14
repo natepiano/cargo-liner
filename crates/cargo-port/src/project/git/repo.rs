@@ -3,10 +3,9 @@ use std::time::SystemTime;
 
 use serde::Serialize;
 
-use super::checkout::parse_ahead_behind;
-use super::command::git_output_logged;
-use super::discovery::git_repo_root;
-use super::discovery::resolve_common_git_dir;
+use super::checkout;
+use super::command;
+use super::discovery;
 use crate::config;
 use crate::config::CargoPortConfig;
 
@@ -95,7 +94,7 @@ impl RepoInfo {
     /// worktree. Excludes `first_commit`, which is handled by
     /// `schedule_git_first_commit_refreshes` batched by repo root.
     pub fn get(probe_path: &Path) -> Option<Self> {
-        let repo_root = git_repo_root(probe_path)?;
+        let repo_root = discovery::git_repo_root(probe_path)?;
         let cfg = config::active_config();
 
         // Branch / upstream / default-branch context is probed here
@@ -136,7 +135,7 @@ impl RepoInfo {
 }
 
 pub(super) fn get_current_branch(repo_root: &Path) -> Option<String> {
-    git_output_logged(
+    command::git_output_logged(
         repo_root,
         "rev_parse_head",
         ["rev-parse", "--abbrev-ref", "HEAD"],
@@ -149,7 +148,7 @@ pub(super) fn get_current_branch(repo_root: &Path) -> Option<String> {
 }
 
 pub(super) fn get_upstream_branch(project_dir: &Path) -> Option<String> {
-    git_output_logged(
+    command::git_output_logged(
         project_dir,
         "rev_parse_upstream_name",
         [
@@ -168,7 +167,7 @@ pub(super) fn get_upstream_branch(project_dir: &Path) -> Option<String> {
 
 /// Resolve the repo's default branch from `origin/HEAD` (e.g. `main`).
 fn get_default_branch(repo_root: &Path) -> Option<String> {
-    git_output_logged(
+    command::git_output_logged(
         repo_root,
         "symbolic_ref_origin_head",
         ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
@@ -183,7 +182,7 @@ fn get_default_branch(repo_root: &Path) -> Option<String> {
 }
 
 fn list_remote_names(repo_root: &Path) -> Vec<String> {
-    git_output_logged(repo_root, "remote", ["remote"])
+    command::git_output_logged(repo_root, "remote", ["remote"])
         .ok()
         .map(|o| {
             String::from_utf8_lossy(&o.stdout)
@@ -215,7 +214,7 @@ fn build_remote_info(
         cfg,
     );
     let ahead_behind = tracked_ref.as_deref().and_then(|r| {
-        parse_ahead_behind(
+        checkout::parse_ahead_behind(
             repo_root,
             &format!("HEAD...{r}"),
             &format!("tracked_{name}"),
@@ -241,7 +240,7 @@ fn remote_url_info(
     repo_root: &Path,
     name: &str,
 ) -> (Option<String>, Option<String>, Option<String>) {
-    git_output_logged(
+    command::git_output_logged(
         repo_root,
         &format!("remote_get_url_{name}"),
         ["remote", "get-url", name],
@@ -275,7 +274,7 @@ fn resolve_tracked_ref(
     {
         return Some(us.to_string());
     }
-    if let Ok(out) = git_output_logged(
+    if let Ok(out) = command::git_output_logged(
         repo_root,
         &format!("symbolic_ref_{remote_name}_head"),
         [
@@ -306,7 +305,7 @@ fn resolve_tracked_ref(
 }
 
 fn remote_ref_exists(repo_root: &Path, remote_name: &str, branch: &str) -> bool {
-    git_output_logged(
+    command::git_output_logged(
         repo_root,
         &format!("show_ref_{remote_name}"),
         [
@@ -328,7 +327,7 @@ fn resolve_local_main_branch(project_dir: &Path) -> Option<String> {
 }
 
 fn local_branch_exists(project_dir: &Path, branch: &str) -> bool {
-    git_output_logged(
+    command::git_output_logged(
         project_dir,
         "show_ref_local_main",
         [
@@ -358,8 +357,8 @@ fn get_workflow_presence(repo_root: &Path) -> WorkflowPresence {
 }
 
 pub fn get_first_commit(project_dir: &Path) -> Option<String> {
-    let repo_root = git_repo_root(project_dir)?;
-    git_output_logged(
+    let repo_root = discovery::git_repo_root(project_dir)?;
+    command::git_output_logged(
         &repo_root,
         "log_first_commit",
         [
@@ -384,7 +383,7 @@ pub fn get_first_commit(project_dir: &Path) -> Option<String> {
 /// 8601. `FETCH_HEAD` is rewritten on every `git fetch` regardless of whether
 /// refs changed, so its mtime is the most reliable "last fetched" signal.
 fn get_last_fetched(repo_root: &Path) -> Option<String> {
-    let common_dir = resolve_common_git_dir(repo_root)?;
+    let common_dir = discovery::resolve_common_git_dir(repo_root)?;
     let fetch_head = common_dir.join("FETCH_HEAD");
     let modified = std::fs::metadata(&fetch_head).ok()?.modified().ok()?;
     system_time_to_iso8601_utc(modified)

@@ -18,8 +18,8 @@ use ratatui::layout::Rect;
 use strum::EnumIter;
 use tui_pane::ToastId;
 
+use super::DismissTarget;
 use super::PaneFocusState;
-use crate::tui::app::DismissTarget;
 use crate::tui::panes::PaneId;
 use crate::tui::project_list::ProjectList;
 use crate::tui::state::Config;

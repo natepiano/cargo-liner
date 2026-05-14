@@ -1186,8 +1186,8 @@ impl ProjectList {
     pub(super) fn dismiss_target_for_row_inner(
         &self,
         row: VisibleRow,
-    ) -> Option<crate::tui::app::DismissTarget> {
-        use super::app::DismissTarget;
+    ) -> Option<crate::tui::pane::DismissTarget> {
+        use super::pane::DismissTarget;
         let dismiss_path = match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 self.get(node_index).map(|item| item.path().clone())

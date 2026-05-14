@@ -1,18 +1,7 @@
-use tui_pane::ToastId;
-
 use super::App;
-use crate::project::AbsolutePath;
 use crate::project::Visibility::Dismissed;
+use crate::tui::pane::DismissTarget;
 use crate::tui::panes::PaneId;
-
-// ── Dismiss target ──────────────────────────────────────────────
-
-/// Identifies what is being dismissed by a `GlobalAction::Dismiss`.
-#[derive(Clone, Debug)]
-pub enum DismissTarget {
-    Toast(ToastId),
-    DeletedProject(AbsolutePath),
-}
 
 // ── Resolution + dispatch ───────────────────────────────────────
 

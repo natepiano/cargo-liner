@@ -37,9 +37,11 @@ use tui_pane::Pane;
 use tui_pane::ShortcutState;
 use tui_pane::Shortcuts;
 use tui_pane::TabStop;
+use tui_pane::TrackedItemKey;
 use tui_pane::VimMode;
 use tui_pane::Visibility;
 
+use crate::ci::OwnerRepo;
 use crate::config::NavigationKeys;
 use crate::keymap::CiRunsAction;
 use crate::keymap::FinderAction;
@@ -49,6 +51,7 @@ use crate::keymap::OutputAction;
 use crate::keymap::PackageAction;
 use crate::keymap::ProjectListAction;
 use crate::keymap::TargetsAction;
+use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::app::CargoPortToastAction;
 use crate::tui::finder;
@@ -694,6 +697,10 @@ fn dismiss_fallback(app: &mut App) -> bool {
     true
 }
 
+pub fn path_key(path: &AbsolutePath) -> TrackedItemKey { TrackedItemKey::new(path.to_string()) }
+
+pub fn owner_repo_key(repo: &OwnerRepo) -> TrackedItemKey { TrackedItemKey::new(repo.to_string()) }
+
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -705,6 +712,20 @@ mod tests {
     use tui_pane::Action;
 
     use super::*;
+
+    #[test]
+    fn path_key_uses_cargo_port_absolute_path_string() {
+        let path = AbsolutePath::from("/tmp/cargo-port");
+
+        assert_eq!(path_key(&path).as_str(), "/tmp/cargo-port");
+    }
+
+    #[test]
+    fn owner_repo_key_uses_cargo_port_owner_repo_string() {
+        let repo = OwnerRepo::new("natepiano", "cargo-port");
+
+        assert_eq!(owner_repo_key(&repo).as_str(), "natepiano/cargo-port");
+    }
 
     #[test]
     fn nav_action_count_is_six() {
