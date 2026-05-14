@@ -217,7 +217,7 @@ impl Pane for Lint {
     }
 }
 
-impl Hittable for Lint {
+impl Hittable<HoverTarget> for Lint {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
         let row = panes::hit_test_table_row(&self.viewport, pos)?;
         Some(HoverTarget::PaneRow {

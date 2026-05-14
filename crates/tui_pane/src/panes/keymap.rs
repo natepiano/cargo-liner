@@ -9,6 +9,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
+use ratatui::layout::Position;
 
 use crate::Action;
 use crate::AppContext;
@@ -163,6 +164,19 @@ impl KeymapPane {
     #[must_use]
     pub fn line_target(&self, line: usize) -> Option<usize> {
         self.line_targets.get(line).copied().flatten()
+    }
+
+    /// Selectable row at screen `pos`, or `None` if `pos` lies
+    /// outside the rendered content area, the overlay is not
+    /// rendered (zero-sized content area), or the line is inert.
+    #[must_use]
+    pub fn row_at(&self, pos: Position) -> Option<usize> {
+        let inner = self.viewport.content_area();
+        if inner.width == 0 || inner.height == 0 || !inner.contains(pos) {
+            return None;
+        }
+        let line_index = usize::from(pos.y.saturating_sub(inner.y)) + self.viewport.scroll_offset();
+        self.line_target(line_index)
     }
 
     /// Current input mode for the overlay.

@@ -35,5 +35,6 @@ pub use toast::ToastLifetime;
 pub use toast::ToastPhase;
 pub use toast::ToastStyle;
 pub use toast::ToastTaskStatus;
+pub use view::ToastHit;
 pub use view::ToastHitbox;
 pub use view::ToastView;

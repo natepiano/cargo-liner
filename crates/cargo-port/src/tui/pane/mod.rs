@@ -3,11 +3,12 @@ mod dispatch;
 
 pub(super) use dismiss::DismissTarget;
 pub(super) use dispatch::HITTABLE_Z_ORDER;
-pub(super) use dispatch::Hittable;
 pub(super) use dispatch::HittableId;
 pub(super) use dispatch::HoverTarget;
 pub(super) use dispatch::Pane;
 pub(super) use dispatch::PaneRenderCtx;
+pub(super) use tui_pane::HitTestRegistry;
+pub(super) use tui_pane::Hittable;
 pub(super) use tui_pane::PaneAxisSize;
 pub(super) use tui_pane::PaneChrome;
 pub(super) use tui_pane::PaneFocusState;

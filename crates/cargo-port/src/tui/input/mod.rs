@@ -180,13 +180,35 @@ fn dispatch_framework_global(app: &mut App, bind: &KeyBind) -> bool {
     };
     let overlay_before = app.framework.overlay();
     keymap.dispatch_framework_global(action, app);
-    if matches!(action, FrameworkGlobalAction::Dismiss)
-        && app.framework.overlay().is_none()
+    if app.framework.overlay().is_none()
         && let Some(overlay) = overlay_before
     {
         clear_legacy_framework_overlay_state(app, overlay);
     }
     true
+}
+
+const fn matches_open_overlay_toggle(
+    action: FrameworkGlobalAction,
+    overlay: FrameworkOverlayId,
+) -> bool {
+    matches!(
+        (action, overlay),
+        (
+            FrameworkGlobalAction::OpenKeymap,
+            FrameworkOverlayId::Keymap
+        ) | (
+            FrameworkGlobalAction::OpenSettings,
+            FrameworkOverlayId::Settings
+        )
+    )
+}
+
+const fn overlay_is_in_text_mode(app: &App, overlay: FrameworkOverlayId) -> bool {
+    match overlay {
+        FrameworkOverlayId::Settings => app.framework.settings_pane.is_editing(),
+        FrameworkOverlayId::Keymap => app.framework.keymap_pane.is_capturing(),
+    }
 }
 
 fn clear_legacy_framework_overlay_state(app: &mut App, overlay: FrameworkOverlayId) {
@@ -234,6 +256,20 @@ fn dispatch_framework_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEve
     let Some(overlay) = app.framework.overlay() else {
         return false;
     };
+
+    // When the user presses the global open-overlay key for the
+    // currently-open overlay, fall through to the global dispatcher
+    // so it can toggle the overlay closed. Keeps overlay open/close
+    // symmetric across every framework overlay regardless of what the
+    // overlay-local scope binds. Editing and capture modes still
+    // short-circuit below — text input should not be hijacked into a
+    // close.
+    if let Some(action) = app.framework_keymap.framework_globals().action_for(bind)
+        && matches_open_overlay_toggle(action, overlay)
+        && !overlay_is_in_text_mode(app, overlay)
+    {
+        return false;
+    }
 
     if overlay == FrameworkOverlayId::Settings && app.framework.settings_pane.is_editing() {
         let command = app.framework.settings_pane.handle_text_input(*bind);

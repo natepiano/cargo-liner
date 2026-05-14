@@ -1,11 +1,15 @@
 use ratatui::layout::Position;
+use tui_pane::FrameworkHit;
 use tui_pane::FrameworkOverlayId;
+use tui_pane::InputContext;
+use tui_pane::ToastHit;
 use tui_pane::Viewport;
 
 use super::app::App;
 use super::app::HoveredPaneRow;
 use super::pane::DismissTarget;
 use super::pane::HITTABLE_Z_ORDER;
+use super::pane::HitTestRegistry;
 use super::pane::Hittable;
 use super::pane::HittableId;
 use super::pane::HoverTarget;
@@ -47,57 +51,83 @@ pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPan
     }
 }
 
-/// Walk `HITTABLE_Z_ORDER` top-to-bottom and return the first pane's
-/// `hit_test_at` answer. Lives at App-level so per-arm reach can
-/// resolve to whichever owner holds the pane.
+/// Run the framework's full hit-test ladder for `pos`. Delegates
+/// to [`tui_pane::dispatch_hit_test`]; the framework orchestrates
+/// toast → framework overlay → app-modal overlay (finder) → tiled
+/// z-order through this app's [`InputContext`] impl below.
 pub(super) fn hit_test_at(app: &App, pos: Position) -> Option<HoverTarget> {
-    if app.overlays.is_finder_open() {
-        return app.overlays.finder_pane.hit_test_at(pos);
-    }
-    match app.framework.overlay() {
-        Some(FrameworkOverlayId::Settings) => return app.framework.settings_pane.hit_test_at(pos),
-        Some(FrameworkOverlayId::Keymap) => return app.framework.keymap_pane.hit_test_at(pos),
-        None => {},
-    }
-
-    for id in HITTABLE_Z_ORDER {
-        if id == HittableId::Toasts {
-            if let Some(target) = hit_test_toasts(app, pos) {
-                return Some(target);
-            }
-            continue;
-        }
-        let pane: &dyn Hittable = match id {
-            HittableId::Toasts => continue,
-            HittableId::Finder => &app.overlays.finder_pane,
-            HittableId::Settings => &app.framework.settings_pane,
-            HittableId::Keymap => &app.framework.keymap_pane,
-            HittableId::ProjectList => &app.panes.project_list,
-            HittableId::Package => &app.panes.package,
-            HittableId::Lang => &app.panes.lang,
-            HittableId::Cpu => &app.panes.cpu,
-            HittableId::Git => &app.panes.git,
-            HittableId::Targets => &app.panes.targets,
-            HittableId::Lints => &app.lint,
-            HittableId::CiRuns => &app.ci,
-        };
-        if let Some(hit) = pane.hit_test_at(pos) {
-            return Some(hit);
-        }
-    }
-    None
+    tui_pane::dispatch_hit_test(app, pos)
 }
 
-fn hit_test_toasts(app: &App, pos: Position) -> Option<HoverTarget> {
-    for hit in app.framework.toasts.hits().iter().rev() {
-        if hit.close_rect.contains(pos) {
-            return Some(HoverTarget::Dismiss(DismissTarget::Toast(hit.id)));
-        }
-        if hit.card_rect.contains(pos) {
-            return Some(HoverTarget::ToastCard(hit.id));
+impl HitTestRegistry for App {
+    type PaneId = HittableId;
+    type Target = HoverTarget;
+
+    fn z_order() -> &'static [HittableId] { &HITTABLE_Z_ORDER }
+
+    fn pane(&self, id: HittableId) -> Option<&dyn Hittable<HoverTarget>> {
+        Some(match id {
+            HittableId::ProjectList => &self.panes.project_list,
+            HittableId::Package => &self.panes.package,
+            HittableId::Lang => &self.panes.lang,
+            HittableId::Cpu => &self.panes.cpu,
+            HittableId::Git => &self.panes.git,
+            HittableId::Targets => &self.panes.targets,
+            HittableId::Lints => &self.lint,
+            HittableId::CiRuns => &self.ci,
+        })
+    }
+
+    fn viewport_mut(&mut self, id: HittableId) -> Option<&mut Viewport> {
+        Some(match id {
+            HittableId::ProjectList => &mut self.panes.project_list.viewport,
+            HittableId::Package => &mut self.panes.package.viewport,
+            HittableId::Lang => &mut self.panes.lang.viewport,
+            HittableId::Cpu => &mut self.panes.cpu.viewport,
+            HittableId::Git => &mut self.panes.git.viewport,
+            HittableId::Targets => &mut self.panes.targets.viewport,
+            HittableId::Lints => &mut self.lint.viewport,
+            HittableId::CiRuns => &mut self.ci.viewport,
+        })
+    }
+}
+
+impl InputContext for App {
+    fn framework_hit(&self, pos: Position) -> Option<FrameworkHit> {
+        self.framework.hit_test_at(pos)
+    }
+
+    fn app_modal_overlay_hit(&self, pos: Position) -> Option<Option<HoverTarget>> {
+        if self.overlays.is_finder_open() {
+            Some(self.overlays.finder_pane.hit_test_at(pos))
+        } else {
+            None
         }
     }
-    None
+
+    fn map_framework_hit(&self, hit: FrameworkHit) -> Option<HoverTarget> {
+        match hit {
+            FrameworkHit::Toast(ToastHit::Close(id)) => {
+                Some(HoverTarget::Dismiss(DismissTarget::Toast(id)))
+            },
+            FrameworkHit::Toast(ToastHit::Card(id)) => Some(HoverTarget::ToastCard(id)),
+            FrameworkHit::Overlay {
+                id: FrameworkOverlayId::Keymap,
+                row,
+            } => Some(HoverTarget::PaneRow {
+                pane: PaneId::Keymap,
+                row,
+            }),
+            FrameworkHit::Overlay {
+                id: FrameworkOverlayId::Settings,
+                row,
+            } => Some(HoverTarget::PaneRow {
+                pane: PaneId::Settings,
+                row,
+            }),
+            FrameworkHit::ModalMissed => None,
+        }
+    }
 }
 
 /// Set the cursor position for `id`'s viewport. Matches by `PaneId`
@@ -152,26 +182,16 @@ const fn set_hovered(app: &mut App, pane: PaneId, row: Option<usize>) {
 /// Push the current `hovered_pane_row` into the per-pane viewports.
 /// Clears any prior hover across every pane first, then sets the row
 /// on the pane indicated by `hovered_pane_row` (if any).
-pub(super) const fn apply_hovered_pane_row(app: &mut App) {
+pub(super) fn apply_hovered_pane_row(app: &mut App) {
     clear_all_hover(app);
     if let Some(hovered) = app.panes.hovered_row() {
         set_hovered(app, hovered.pane, Some(hovered.row));
     }
 }
 
-const fn clear_all_hover(app: &mut App) {
-    app.framework.toasts.viewport.set_hovered(None);
-    app.ci.viewport.set_hovered(None);
-    app.lint.viewport.set_hovered(None);
-    app.framework.keymap_pane.viewport_mut().set_hovered(None);
-    app.framework.settings_pane.viewport_mut().set_hovered(None);
+fn clear_all_hover(app: &mut App) {
+    app.framework.clear_hover();
     app.overlays.finder_pane.viewport.set_hovered(None);
-    let panes = &mut app.panes;
-    panes.package.viewport.set_hovered(None);
-    panes.lang.viewport.set_hovered(None);
-    panes.cpu.viewport.set_hovered(None);
-    panes.git.viewport.set_hovered(None);
-    panes.output.viewport.set_hovered(None);
-    panes.targets.viewport.set_hovered(None);
-    panes.project_list.viewport.set_hovered(None);
+    app.panes.output.viewport.set_hovered(None);
+    tui_pane::clear_all_hover(app);
 }

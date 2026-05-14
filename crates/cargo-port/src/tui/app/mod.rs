@@ -578,9 +578,7 @@ impl App {
         self.project_list.selected_project_path()
     }
 
-    pub(super) const fn apply_hovered_pane_row(&mut self) {
-        interaction::apply_hovered_pane_row(self);
-    }
+    pub(super) fn apply_hovered_pane_row(&mut self) { interaction::apply_hovered_pane_row(self); }
 
     #[cfg(test)]
     pub(super) fn set_confirm(&mut self, action: ConfirmAction) { self.confirm = Some(action); }

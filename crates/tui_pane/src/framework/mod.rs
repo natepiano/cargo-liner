@@ -8,6 +8,8 @@ mod tab_stop;
 use std::collections::HashMap;
 use std::path::Path;
 
+use ratatui::layout::Position;
+
 pub(crate) use self::dispatch::dispatch_global;
 pub use self::list_navigation::CycleDirection;
 pub use self::list_navigation::ListNavigation;
@@ -17,6 +19,7 @@ pub use self::tab_stop::TabStop;
 use crate::AppContext;
 use crate::FocusedPane;
 use crate::FrameworkFocusId;
+use crate::FrameworkHit;
 use crate::FrameworkOverlayId;
 use crate::KeymapPane;
 use crate::LoadedSettings;
@@ -244,6 +247,52 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// `overlay` is `Some(_)`.
     #[must_use]
     pub const fn overlay(&self) -> Option<FrameworkOverlayId> { self.overlay }
+
+    /// Clear hovered-row state on every framework-owned pane
+    /// (toasts, keymap overlay, settings overlay). Use alongside
+    /// [`crate::clear_all_hover`] (which handles the embedding app's
+    /// tiled panes) to wipe hover before re-applying it from a fresh
+    /// hit-test pass.
+    pub const fn clear_hover(&mut self) {
+        self.toasts.viewport.set_hovered(None);
+        self.keymap_pane.viewport_mut().set_hovered(None);
+        self.settings_pane.viewport_mut().set_hovered(None);
+    }
+
+    /// Run the framework-owned hit-test ladder at `pos`: first the
+    /// toast stack (close button > card body), then, if a framework
+    /// overlay is open, that overlay's row geometry. When an overlay
+    /// is open the framework consumes the click whether or not it
+    /// lands on a selectable row — the
+    /// [`crate::FrameworkHit::ModalMissed`] variant signals "modal
+    /// active, click missed" so dispatch never falls through to the
+    /// tiled panes underneath. Returns `None` only when no
+    /// framework-owned surface is participating in dispatch.
+    #[must_use]
+    pub fn hit_test_at(&self, pos: Position) -> Option<crate::FrameworkHit> {
+        use crate::Hittable;
+
+        if let Some(hit) = self.toasts.hit_test_at(pos) {
+            return Some(FrameworkHit::Toast(hit));
+        }
+        match self.overlay {
+            Some(FrameworkOverlayId::Keymap) => Some(self.keymap_pane.row_at(pos).map_or(
+                FrameworkHit::ModalMissed,
+                |row| FrameworkHit::Overlay {
+                    id: FrameworkOverlayId::Keymap,
+                    row,
+                },
+            )),
+            Some(FrameworkOverlayId::Settings) => Some(self.settings_pane.row_at(pos).map_or(
+                FrameworkHit::ModalMissed,
+                |row| FrameworkHit::Overlay {
+                    id: FrameworkOverlayId::Settings,
+                    row,
+                },
+            )),
+            None => None,
+        }
+    }
 
     /// Open a framework overlay over the currently focused pane.
     /// `pub(super)` so only the framework's own dispatch (sibling:

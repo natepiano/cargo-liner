@@ -3,9 +3,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crossterm::event::KeyCode;
+use ratatui::layout::Position;
 
 use super::Toast;
 use super::ToastBody;
+use super::ToastHit;
 use super::ToastHitbox;
 use super::ToastId;
 use super::ToastLifetime;
@@ -22,6 +24,7 @@ use crate::BarRegion;
 use crate::BarSlot;
 use crate::Bindings;
 use crate::CycleDirection;
+use crate::Hittable;
 use crate::KeyBind;
 use crate::KeyOutcome;
 use crate::ListNavigation;
@@ -591,6 +594,23 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         } else if self.viewport.pos() >= len {
             self.viewport.set_pos(len - 1);
         }
+    }
+}
+
+impl<Ctx: AppContext> Hittable<ToastHit> for Toasts<Ctx> {
+    /// Walk hitboxes top-to-bottom (latest-rendered first) and return
+    /// the matching toast hit. The close button takes priority over
+    /// the card body within a single toast.
+    fn hit_test_at(&self, pos: Position) -> Option<ToastHit> {
+        for hit in self.hits.iter().rev() {
+            if hit.close_rect.contains(pos) {
+                return Some(ToastHit::Close(hit.id));
+            }
+            if hit.card_rect.contains(pos) {
+                return Some(ToastHit::Card(hit.id));
+            }
+        }
+        None
     }
 }
 

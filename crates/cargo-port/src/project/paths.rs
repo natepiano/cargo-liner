@@ -9,21 +9,19 @@ use std::path::PathBuf;
 /// An absolute filesystem path. Used as `HashMap` keys and for filesystem operations.
 /// Wraps `PathBuf`. Created from absolute paths only.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub(crate) struct AbsolutePath(PathBuf);
+pub struct AbsolutePath(PathBuf);
 
 impl AbsolutePath {
-    pub(crate) fn as_path(&self) -> &Path { &self.0 }
+    pub fn as_path(&self) -> &Path { &self.0 }
 
-    pub(crate) fn to_path_buf(&self) -> PathBuf { self.0.clone() }
+    pub fn to_path_buf(&self) -> PathBuf { self.0.clone() }
 
-    pub(crate) fn display_path(&self) -> DisplayPath {
-        DisplayPath::new(home_relative_path(&self.0))
-    }
+    pub fn display_path(&self) -> DisplayPath { DisplayPath::new(home_relative_path(&self.0)) }
 
     /// Resolve a raw path string that may be relative to a base directory.
     /// If the raw path is absolute, use it directly. Otherwise, join it with
     /// `base`. Canonicalizes the result when possible.
-    pub(crate) fn resolve(raw: &str, base: &Path) -> Self {
+    pub fn resolve(raw: &str, base: &Path) -> Self {
         let raw_path = Path::new(raw);
         let resolved = if raw_path.is_absolute() {
             PathBuf::from(raw)
@@ -35,7 +33,7 @@ impl AbsolutePath {
 
     /// Resolve a raw path string that may be relative to a base directory.
     /// Does not canonicalize.
-    pub(crate) fn resolve_no_canonicalize(raw: &str, base: &Path) -> Self {
+    pub fn resolve_no_canonicalize(raw: &str, base: &Path) -> Self {
         let raw_path = Path::new(raw);
         if raw_path.is_absolute() {
             Self::from(raw)
@@ -126,14 +124,14 @@ impl From<&Path> for AbsolutePath {
 
 /// A display path for the UI (e.g. `~/rust/bevy`). Never used as a `HashMap` key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct DisplayPath(String);
+pub struct DisplayPath(String);
 
 impl DisplayPath {
-    pub(crate) const fn new(s: String) -> Self { Self(s) }
+    pub const fn new(s: String) -> Self { Self(s) }
 
-    pub(crate) fn as_str(&self) -> &str { &self.0 }
+    pub fn as_str(&self) -> &str { &self.0 }
 
-    pub(crate) fn into_string(self) -> String { self.0 }
+    pub fn into_string(self) -> String { self.0 }
 }
 
 impl Display for DisplayPath {

@@ -62,11 +62,20 @@ pub(crate) fn dispatch_global<Ctx: AppContext>(
         GlobalAction::NextPane => focus_step(ctx, CycleDirection::Next),
         GlobalAction::PrevPane => focus_step(ctx, CycleDirection::Prev),
         GlobalAction::OpenKeymap => {
-            ctx.framework_mut().open_overlay(FrameworkOverlayId::Keymap);
+            let framework = ctx.framework_mut();
+            if framework.overlay() == Some(FrameworkOverlayId::Keymap) {
+                let _ = framework.close_overlay();
+            } else {
+                framework.open_overlay(FrameworkOverlayId::Keymap);
+            }
         },
         GlobalAction::OpenSettings => {
-            ctx.framework_mut()
-                .open_overlay(FrameworkOverlayId::Settings);
+            let framework = ctx.framework_mut();
+            if framework.overlay() == Some(FrameworkOverlayId::Settings) {
+                let _ = framework.close_overlay();
+            } else {
+                framework.open_overlay(FrameworkOverlayId::Settings);
+            }
         },
         GlobalAction::Dismiss => {
             let _ = dismiss_chain(ctx, keymap.dismiss_fallback_hook());

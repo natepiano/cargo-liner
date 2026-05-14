@@ -1,11 +1,15 @@
-//! `Pane` and `Hittable` impls for overlay panes.
+//! `Pane` impls for overlay panes plus `Hittable` for `FinderPane`.
 //!
-//! Render is a no-op for these panes — the popup body is drawn by
-//! `keymap_ui::render_keymap_popup`, `settings::render_settings_popup`,
-//! and `finder::render_finder_popup` directly from the top-level
-//! `render::ui` path. These impls exist so each pane has a typed home
-//! for `Hittable::hit_test_at`, which the click/hover dispatch in
-//! `tui/interaction.rs::hit_test_at` walks via `HITTABLE_Z_ORDER`.
+//! Render is a no-op for the framework-owned overlays — the popup
+//! bodies are drawn by `keymap_ui::render_keymap_popup`,
+//! `settings::render_settings_popup`, and `finder::render_finder_popup`
+//! directly from the top-level `render::ui` path.
+//!
+//! Hit-testing for `KeymapPane` and `SettingsPane` lives in
+//! `tui_pane` (their `row_at(pos)` methods); cargo-port consumes those
+//! through `Framework::hit_test_at` via the
+//! `InputContext::map_framework_hit` hook in `tui/interaction.rs`.
+//! The finder is app-owned, so its `Hittable` impl stays here.
 
 use ratatui::Frame;
 use ratatui::layout::Position;
@@ -25,53 +29,15 @@ impl Pane for KeymapPane {
     fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
 }
 
-impl Hittable for KeymapPane {
-    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        let inner = self.viewport().content_area();
-        if inner.width == 0 || inner.height == 0 {
-            return None;
-        }
-        if !inner.contains(pos) {
-            return None;
-        }
-        let line_index =
-            usize::from(pos.y.saturating_sub(inner.y)) + self.viewport().scroll_offset();
-        let row = self.line_target(line_index)?;
-        Some(HoverTarget::PaneRow {
-            pane: PaneId::Keymap,
-            row,
-        })
-    }
-}
-
 impl Pane for SettingsPane {
     fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
-}
-
-impl Hittable for SettingsPane {
-    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        let inner = self.viewport().content_area();
-        if inner.width == 0 || inner.height == 0 {
-            return None;
-        }
-        if !inner.contains(pos) {
-            return None;
-        }
-        let line_index =
-            usize::from(pos.y.saturating_sub(inner.y)) + self.viewport().scroll_offset();
-        let row = self.line_target(line_index)?;
-        Some(HoverTarget::PaneRow {
-            pane: PaneId::Settings,
-            row,
-        })
-    }
 }
 
 impl Pane for FinderPane {
     fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
 }
 
-impl Hittable for FinderPane {
+impl Hittable<HoverTarget> for FinderPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
         let row = panes::hit_test_table_row(&self.viewport, pos)?;
         Some(HoverTarget::PaneRow {

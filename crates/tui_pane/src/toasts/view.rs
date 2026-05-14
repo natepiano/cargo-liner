@@ -71,3 +71,15 @@ pub struct ToastHitbox {
     /// Close-button rectangle.
     pub close_rect: Rect,
 }
+
+/// Result of `Hittable::hit_test_at` on the toast stack.
+///
+/// The close-button rectangle takes priority over the card body so a
+/// click on the X never accidentally fires the card-card behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToastHit {
+    /// Click landed on a toast's close button.
+    Close(ToastId),
+    /// Click landed on a toast's card body (not the close button).
+    Card(ToastId),
+}

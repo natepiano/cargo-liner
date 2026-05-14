@@ -66,7 +66,7 @@ impl Pane for PackagePane {
     }
 }
 
-impl Hittable for PackagePane {
+impl Hittable<HoverTarget> for PackagePane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
         let row = self.viewport.pos_to_local_row(pos)?;
         Some(HoverTarget::PaneRow {
@@ -99,7 +99,7 @@ impl Pane for LangPane {
     }
 }
 
-impl Hittable for LangPane {
+impl Hittable<HoverTarget> for LangPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
         let row = self.viewport.pos_to_local_row(pos)?;
         Some(HoverTarget::PaneRow {
@@ -166,7 +166,7 @@ impl Pane for CpuPane {
     }
 }
 
-impl Hittable for CpuPane {
+impl Hittable<HoverTarget> for CpuPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
         let (_rect, row) = self
             .row_rects
@@ -252,7 +252,7 @@ impl Pane for GitPane {
     }
 }
 
-impl Hittable for GitPane {
+impl Hittable<HoverTarget> for GitPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
         let layout = &self.row_layout;
         let inner = layout.content_area;
@@ -304,7 +304,7 @@ impl TargetsPane {
     pub fn clear_content(&mut self) { self.content = None; }
 }
 
-impl Hittable for TargetsPane {
+impl Hittable<HoverTarget> for TargetsPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
         let row = self.viewport.pos_to_local_row(pos)?;
         Some(HoverTarget::PaneRow {
@@ -357,7 +357,7 @@ impl Pane for ProjectListPane {
     }
 }
 
-impl Hittable for ProjectListPane {
+impl Hittable<HoverTarget> for ProjectListPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
         for (rect, target) in &self.dismiss_actions {
             if rect.contains(pos) {

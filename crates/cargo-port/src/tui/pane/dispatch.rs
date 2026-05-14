@@ -1,9 +1,10 @@
-//! The `Pane` trait, the `Hittable` sub-trait, and the
-//! `PaneRenderCtx` bundle.
+//! The `Pane` trait, the `PaneRenderCtx` bundle, and the `HittableId`
+//! z-order discriminant.
 //!
 //! Each clickable pane retains its own hit-test layout (computed
-//! during render) and answers `Hittable::hit_test_at(pos)`
-//! directly, rather than pushing hitboxes into a global vec.
+//! during render) and answers
+//! [`Hittable::hit_test_at`](tui_pane::Hittable::hit_test_at) directly,
+//! rather than pushing hitboxes into a global vec.
 //!
 //! Lives at `crate::tui::pane::dispatch` (not `crate::tui::panes::dispatch`)
 //! so `pub(super)` reaches `crate::tui` — every subsystem under `tui/`
@@ -13,7 +14,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use ratatui::Frame;
-use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use strum::EnumIter;
 use tui_pane::ToastId;
@@ -34,8 +34,7 @@ pub struct PaneRenderCtx<'a> {
     pub selected_project_path: Option<&'a Path>,
 }
 
-/// Per-pane render dispatch. `Hittable` is a separate sub-trait
-/// for panes that participate in click/hover dispatch.
+/// Per-pane render dispatch.
 pub trait Pane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>);
 }
@@ -48,29 +47,19 @@ pub enum HoverTarget {
     ToastCard(ToastId),
 }
 
-/// Sub-trait implemented only by panes that participate in click /
-/// hover dispatch. Keeping `Pane` and `Hittable` separate lets the
-/// dispatch match in `Panes::hit_test_at` reject non-clickable
-/// panes at compile time.
-pub trait Hittable: Pane {
-    /// Return the hit target if `pos` lands inside this pane's
-    /// rendered area, or `None` otherwise. Implementations rely on
-    /// state recorded during render (viewport content area + scroll
-    /// offset for uniform-row panes; per-row rect lists for non-
-    /// uniform panes; per-toast rects for the toasts overlay).
-    fn hit_test_at(&self, pos: Position) -> Option<HoverTarget>;
-}
-
-/// Compile-time enumeration of every pane that implements
-/// `Hittable`. The `strum::EnumIter` derive lets the unit test in
-/// `hit_test_tests` walk all variants and assert each one appears
-/// in `HITTABLE_Z_ORDER`.
+/// Compile-time enumeration of every tiled pane that implements
+/// [`tui_pane::Hittable`]. The `strum::EnumIter` derive lets the unit
+/// test in `hit_test_tests` walk all variants and assert each one
+/// appears in `HITTABLE_Z_ORDER`.
+///
+/// Toasts and the framework overlays (Keymap, Settings) are dispatched
+/// by [`tui_pane::dispatch_hit_test`] through the framework's own
+/// hit-test ladder, not through this registry. The app-modal Finder
+/// overlay is dispatched via
+/// [`tui_pane::InputContext::app_modal_overlay_hit`]. None of those
+/// three appear here.
 #[derive(EnumIter, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum HittableId {
-    Toasts,
-    Finder,
-    Settings,
-    Keymap,
     ProjectList,
     Package,
     Lang,
@@ -81,15 +70,9 @@ pub enum HittableId {
     CiRuns,
 }
 
-/// Stacking order used by `Panes::hit_test_at`: top of stack first.
-/// Overlays sit above tiled panes; within a category the order
-/// matches how panes are drawn (later-drawn overlays occlude earlier
-/// ones on the screen).
-pub const HITTABLE_Z_ORDER: [HittableId; 12] = [
-    HittableId::Toasts,
-    HittableId::Finder,
-    HittableId::Settings,
-    HittableId::Keymap,
+/// Stacking order used for tiled-pane hit-test dispatch: top of stack
+/// first. Overlays and toasts are not here — see [`HittableId`].
+pub const HITTABLE_Z_ORDER: [HittableId; 8] = [
     HittableId::ProjectList,
     HittableId::Package,
     HittableId::Lang,
