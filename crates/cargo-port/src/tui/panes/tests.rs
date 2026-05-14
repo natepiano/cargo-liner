@@ -1,4 +1,5 @@
 use ratatui::text::Line;
+use tui_pane::LABEL_COLOR;
 
 use super::CI_COMPACT_DURATION_WIDTH;
 use super::DetailField;
@@ -11,7 +12,6 @@ use crate::ci::CiStatus;
 use crate::ci::FetchStatus::Fetched;
 use crate::project::GitStatus;
 use crate::tui::app::AvailabilityStatus;
-use crate::tui::constants::LABEL_COLOR;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::panes;
 use crate::tui::render::CiColumn;

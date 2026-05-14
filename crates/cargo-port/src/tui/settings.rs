@@ -5,7 +5,14 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use toml::Table;
 use toml::Value;
+use tui_pane::ACTIVE_BORDER_COLOR;
+use tui_pane::ERROR_COLOR;
 use tui_pane::FrameworkOverlayId;
+use tui_pane::INLINE_ERROR_COLOR;
+use tui_pane::LABEL_COLOR;
+use tui_pane::SECTION_HEADER_INDENT;
+use tui_pane::SECTION_ITEM_INDENT;
+use tui_pane::SUCCESS_COLOR;
 use tui_pane::SettingCodecs;
 use tui_pane::SettingsCommand;
 use tui_pane::SettingsError;
@@ -16,6 +23,7 @@ use tui_pane::SettingsRenderOptions;
 use tui_pane::SettingsRow as FrameworkSettingsRow;
 use tui_pane::SettingsSection;
 use tui_pane::SettingsStore;
+use tui_pane::TITLE_COLOR;
 use tui_pane::ToastDuration;
 use tui_pane::ToastSettings;
 use tui_pane::ViewportOverflow;
@@ -28,15 +36,7 @@ use tui_pane::render_overflow_affordance;
 use tui_pane::write_value;
 
 use super::app::App;
-use super::constants::ACTIVE_BORDER_COLOR;
-use super::constants::ERROR_COLOR;
-use super::constants::INLINE_ERROR_COLOR;
-use super::constants::LABEL_COLOR;
-use super::constants::SECTION_HEADER_INDENT;
-use super::constants::SECTION_ITEM_INDENT;
 use super::constants::SETTINGS_POPUP_WIDTH;
-use super::constants::SUCCESS_COLOR;
-use super::constants::TITLE_COLOR;
 use super::keymap_ui;
 use super::overlays::PopupFrame;
 use super::pane;
@@ -1101,7 +1101,7 @@ pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
             inline_error_style: Style::default().fg(INLINE_ERROR_COLOR),
             active_style: pane::selection_style(PaneFocusState::Active),
             remembered_style: pane::selection_style(PaneFocusState::Remembered),
-            hovered_style: Style::default().bg(super::constants::HOVER_FOCUS_COLOR),
+            hovered_style: Style::default().bg(tui_pane::HOVER_FOCUS_COLOR),
         },
     );
     lines.extend(rendered.lines);

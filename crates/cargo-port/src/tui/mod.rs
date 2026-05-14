@@ -15,7 +15,6 @@ mod project_list;
 mod render;
 mod settings;
 mod state;
-mod support;
 mod terminal;
 #[cfg(test)]
 mod test_support;

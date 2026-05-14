@@ -1,17 +1,10 @@
 //! Generic "load from disk + watch stamp + try-reload" lifecycle.
 //!
-//! Two consumers today: [`super::state::Config`] (composes
-//! `WatchedFile<CargoPortConfig>`) and [`super::state::Keymap`]
-//! (composes `WatchedFile<ResolvedKeymap>`).
-//!
 //! The primitive captures the load-watch-reload contract once: it
 //! owns the path, a stamp (modified time + len), and the most
 //! recently parsed value. Callers invoke [`WatchedFile::try_reload`]
 //! every tick; if the file's stamp has not changed it short-circuits
-//! [`ReloadOutcome::Unchanged`] without touching disk content.
-//!
-//! [`super::state::Config`]: crate::tui::state::Config
-//! [`super::state::Keymap`]: crate::tui::state::Keymap
+//! without touching disk content.
 
 use std::fs;
 use std::path::Path;
@@ -29,18 +22,19 @@ struct Stamp {
 /// A value of type `T` parsed from a watched file on disk.
 ///
 /// Construct with [`Self::new`]; refresh on each tick with
-/// [`Self::try_reload`]. The path may be `None` (no on-disk source —
-/// e.g. config defaults loaded from environment) in which case
-/// `try_reload` is always [`ReloadOutcome::Unchanged`].
+/// `take_stamp_change`. The path may be `None` (no on-disk source)
+/// in which case `take_stamp_change` always returns `None`.
 pub struct WatchedFile<T> {
     path:        Option<PathBuf>,
     stamp:       Option<Stamp>,
+    /// Most recently parsed value. Callers replace this directly
+    /// after their own parse step.
     pub current: T,
 }
 
 impl<T> WatchedFile<T> {
     /// Build a `WatchedFile` for an already-parsed value. Captures
-    /// the on-disk stamp at this moment so the next `try_reload`
+    /// the on-disk stamp at this moment so the next `take_stamp_change`
     /// short-circuits unless the file changes again.
     pub fn new(path: Option<PathBuf>, current: T) -> Self {
         let stamp = path.as_deref().and_then(read_stamp);
@@ -51,26 +45,23 @@ impl<T> WatchedFile<T> {
         }
     }
 
+    /// Path being watched, or `None` for an in-memory-only value.
     pub fn path(&self) -> Option<&Path> { self.path.as_deref() }
 
     /// Refresh the cached stamp without re-parsing. Used after the
-    /// caller writes the file itself (saving settings, writing
-    /// keymap defaults) so the next `try_reload` does not see the
-    /// caller's own write as an external change.
+    /// caller writes the file itself so the next `take_stamp_change`
+    /// does not see the caller's own write as an external change.
     pub fn sync_stamp(&mut self) { self.stamp = self.path.as_deref().and_then(read_stamp); }
 
-    /// Test-only — drop the cached stamp so the next
-    /// [`Self::take_stamp_change`] / [`Self::try_reload`] always
-    /// sees a delta. Used by tests that swap the watched path and
-    /// need to force a reload regardless of the new file's mtime.
-    #[cfg(test)]
+    /// Drop the cached stamp so the next
+    /// [`Self::take_stamp_change`] always sees a delta. Test-only
+    /// support: used when swapping the watched path so the new
+    /// file's identical mtime doesn't get treated as unchanged.
     pub const fn clear_stamp_for_test(&mut self) { self.stamp = None; }
 
     /// Return `Some(path)` if the file's on-disk stamp has changed
     /// since the last seen value, updating the cached stamp before
-    /// returning. Used by callers (e.g. keymap reload) that need to
-    /// drive a custom parser whose result type doesn't fit
-    /// [`Self::try_reload`]'s `Result<T, String>` signature.
+    /// returning.
     pub fn take_stamp_change(&mut self) -> Option<&Path> {
         let path = self.path.as_deref()?;
         let current = read_stamp(path);
@@ -152,9 +143,8 @@ mod tests {
         write_synced_file(&path, "before");
         let mut wf = WatchedFile::new(Some(path.clone()), "before".to_string());
         std::thread::sleep(Duration::from_millis(20));
-        // Caller writes the file itself (e.g. saving settings) and
-        // updates the stamp so the next take_stamp_change doesn't
-        // see its own write.
+        // Caller writes the file itself and updates the stamp so
+        // the next take_stamp_change doesn't see its own write.
         write_synced_file(&path, "self-written");
         wf.sync_stamp();
         assert!(wf.take_stamp_change().is_none());

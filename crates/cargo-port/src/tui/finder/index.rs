@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use ratatui::style::Color;
+use tui_pane::TITLE_COLOR;
 
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
@@ -12,7 +13,6 @@ use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::VendoredPackage;
 use crate::project::Workspace;
-use crate::tui::constants::TITLE_COLOR;
 use crate::tui::panes::RunTargetKind;
 use crate::tui::project_list::ProjectList;
 

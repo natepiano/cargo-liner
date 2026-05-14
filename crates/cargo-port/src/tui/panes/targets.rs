@@ -16,13 +16,13 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::LABEL_COLOR;
 use tui_pane::render_overflow_affordance;
 
 use super::TargetsData;
 use super::package::RenderStyles;
 use super::spec::PaneId;
 use crate::tui::app::App;
-use crate::tui::constants::LABEL_COLOR;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneTitleCount;

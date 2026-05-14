@@ -13,13 +13,13 @@ use tui_pane::KeyBind as FrameworkKeyBind;
 use tui_pane::KeymapCaptureCommand;
 use tui_pane::KeymapPaneAction;
 use tui_pane::Pane;
+#[cfg(test)]
+use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::ScopeMap as FrameworkScopeMap;
 use tui_pane::SettingsPaneAction;
 pub(super) use view::render_keymap_popup;
 
 use super::app::App;
-#[cfg(test)]
-use super::constants::SECTION_HEADER_INDENT;
 use super::integration::AppGlobalAction;
 use super::integration::AppNavigation;
 use super::integration::AppPaneId;

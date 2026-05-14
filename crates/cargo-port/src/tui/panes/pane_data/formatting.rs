@@ -212,10 +212,7 @@ pub(super) fn format_rate_limit_bucket(quota: Option<RateLimitQuota>) -> String 
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let secs = reset_at.saturating_sub(now);
-    format!(
-        "{base} resets {}",
-        crate::tui::support::format_progressive(secs)
-    )
+    format!("{base} resets {}", tui_pane::format_progressive(secs))
 }
 
 pub fn format_ahead_behind((ahead, behind): (usize, usize)) -> String {

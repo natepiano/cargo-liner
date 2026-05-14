@@ -113,9 +113,9 @@ pub enum RunTargetKind {
 }
 
 impl RunTargetKind {
-    pub const BINARY_COLOR: Color = crate::tui::constants::SUCCESS_COLOR;
-    pub const EXAMPLE_COLOR: Color = crate::tui::constants::ACCENT_COLOR;
-    pub const BENCH_COLOR: Color = crate::tui::constants::TARGET_BENCH_COLOR;
+    pub const BINARY_COLOR: Color = tui_pane::SUCCESS_COLOR;
+    pub const EXAMPLE_COLOR: Color = tui_pane::ACCENT_COLOR;
+    pub const BENCH_COLOR: Color = tui_pane::TARGET_BENCH_COLOR;
 
     pub const fn color(self) -> Color {
         match self {

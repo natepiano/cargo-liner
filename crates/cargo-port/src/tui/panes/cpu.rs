@@ -8,14 +8,14 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::ACCENT_COLOR;
+use tui_pane::COLUMN_HEADER_COLOR;
+use tui_pane::ERROR_COLOR;
 use tui_pane::Viewport;
 
 use super::package::RenderStyles;
 use super::pane_impls::CpuPane;
 use crate::config::CpuConfig;
-use crate::tui::constants::ACCENT_COLOR;
-use crate::tui::constants::COLUMN_HEADER_COLOR;
-use crate::tui::constants::ERROR_COLOR;
 use crate::tui::cpu;
 use crate::tui::cpu::CpuUsage;
 use crate::tui::pane;

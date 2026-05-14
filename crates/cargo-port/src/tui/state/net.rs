@@ -20,6 +20,7 @@
 
 use std::collections::HashSet;
 
+use tui_pane::RunningTracker;
 use tui_pane::ToastId;
 
 use crate::ci::OwnerRepo;
@@ -28,7 +29,6 @@ use crate::http::HttpClient;
 use crate::http::ServiceKind;
 use crate::scan;
 use crate::scan::RepoCache;
-use crate::tui::support::RunningTracker;
 
 /// Three-way availability for a single service. `Unreachable` means
 /// the network layer can't talk to the service at all; `RateLimited`

@@ -1,30 +1,27 @@
 //! Generic in-flight tracker: a `HashMap<K, Instant>` of running
-//! work paired with the single sticky `ToastTaskId` that displays
+//! work paired with the single sticky [`ToastTaskId`] that displays
 //! "N <thing> running."
 //!
-//! Used by the [`Lint`](super::state::Lint) subsystem
-//! (`RunningTracker<AbsolutePath>`), GitHub repo fetches
-//! (`RunningTracker<OwnerRepo>`), and `Inflight.clean`. Not used
-//! for CI: `Ci.fetch_toast` is fire-once (consumed via
-//! `take_fetch_toast` at fetch completion) rather than
-//! sticky-during-flight, and `Ci.fetch_tracker` is a bare
-//! `HashSet<AbsolutePath>` with no started-at timestamp.
-//!
 //! The tracker only owns state — it does not drive the toast itself.
-//! Callers sync the toast via `App::sync_tracked_path_toast` (and its
-//! GitHub counterpart), reading the `running` / `toast` fields directly.
+//! Callers materialize a `Vec<TrackedItem>` from the tracker and
+//! hand it to a toast-sync sink, reading the `running` / `toast`
+//! fields directly.
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::time::Instant;
 
-use tui_pane::ToastTaskId;
-use tui_pane::TrackedItem;
-use tui_pane::TrackedItemKey;
+use crate::ToastTaskId;
+use crate::TrackedItem;
+use crate::TrackedItemKey;
 
+/// In-flight tracker pairing a `HashMap<K, Instant>` of running keys
+/// with a single sticky toast slot.
 pub struct RunningTracker<K: Eq + Hash> {
+    /// Each in-flight key with its start instant.
     pub running: HashMap<K, Instant>,
+    /// Sticky toast slot displayed while at least one key is in flight.
     pub toast:   Option<ToastTaskId>,
 }
 
@@ -33,6 +30,8 @@ impl<K: Eq + Hash> Default for RunningTracker<K> {
 }
 
 impl<K: Eq + Hash> RunningTracker<K> {
+    /// Construct an empty tracker with no running keys and no toast.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             running: HashMap::new(),
@@ -40,9 +39,9 @@ impl<K: Eq + Hash> RunningTracker<K> {
         }
     }
 
-    /// Test-only today; non-test callers materialize a
-    /// `Vec<TrackedItem>` and check that for emptiness instead.
-    #[cfg(test)]
+    /// True when no keys are currently tracked. Non-test callers
+    /// typically materialize a `Vec<TrackedItem>` and inspect that.
+    #[must_use]
     pub fn is_empty(&self) -> bool { self.running.is_empty() }
 
     /// Insert `k` with `started`. Returns `true` when the key was
@@ -52,6 +51,7 @@ impl<K: Eq + Hash> RunningTracker<K> {
         self.running.insert(k, started).is_none()
     }
 
+    /// Remove a tracked key. Returns its start instant when present.
     pub fn remove<Q>(&mut self, k: &Q) -> Option<Instant>
     where
         K: Borrow<Q>,
@@ -60,6 +60,7 @@ impl<K: Eq + Hash> RunningTracker<K> {
         self.running.remove(k)
     }
 
+    /// Drop all running keys and the toast slot.
     pub fn clear(&mut self) {
         self.running.clear();
         self.toast = None;

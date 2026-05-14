@@ -3,16 +3,16 @@
 //! Owns App's keymap-file state: `current_keymap`, `keymap_path`,
 //! `keymap_last_seen`, and `keymap_diagnostics_id` (the toast id
 //! used to dismiss diagnostics from a previous parse failure).
-//! Composes [`super::support::WatchedFile<T>`] for the
+//! Composes [`tui_pane::WatchedFile<T>`] for the
 //! load-watch-reload contract.
 
 use std::path::Path;
 use std::path::PathBuf;
 
 use tui_pane::ToastId;
+use tui_pane::WatchedFile;
 
 use crate::keymap::ResolvedKeymap;
-use crate::tui::support::WatchedFile;
 
 /// Owns the parsed keymap plus the on-disk watch state and the
 /// diagnostics-toast slot.
@@ -51,8 +51,8 @@ impl Keymap {
     /// Used by `App::maybe_reload_keymap_from_disk`, which drives
     /// its own rich parser (`keymap::load_keymap_from_str`) whose
     /// `KeymapLoadResult` doesn't fit
-    /// [`crate::tui::support::WatchedFile::try_reload`]'s
-    /// `Result<T, String>` signature.
+    /// [`tui_pane::WatchedFile`]'s
+    /// `take_stamp_change` signature.
     pub fn take_stamp_change(&mut self) -> Option<&Path> { self.file.take_stamp_change() }
 
     pub const fn set_diagnostics_id(&mut self, id: Option<ToastId>) { self.diagnostics_id = id; }

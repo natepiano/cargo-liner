@@ -12,10 +12,10 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::LABEL_COLOR;
 
 use super::spec::PaneId;
 use crate::tui::app::App;
-use crate::tui::constants::LABEL_COLOR;
 use crate::tui::pane;
 
 pub fn render_output_panel(frame: &mut Frame, app: &App, area: Rect) {

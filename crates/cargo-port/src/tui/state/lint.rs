@@ -19,6 +19,7 @@ use std::path::Path;
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use tui_pane::RunningTracker;
 use tui_pane::Viewport;
 
 use crate::lint::CacheUsage;
@@ -34,7 +35,6 @@ use crate::tui::panes;
 use crate::tui::panes::LintsData;
 use crate::tui::panes::PaneId;
 use crate::tui::project_list::ProjectList;
-use crate::tui::support::RunningTracker;
 
 /// Display value for the Lint row in the Package detail pane.
 ///

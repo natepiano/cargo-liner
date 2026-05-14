@@ -13,11 +13,12 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use tui_pane::RunningTracker;
+
 use crate::project::AbsolutePath;
 use crate::tui::app::PendingClean;
 use crate::tui::panes::PendingCiFetch;
 use crate::tui::panes::PendingExampleRun;
-use crate::tui::support::RunningTracker;
 
 /// Owns App's in-flight bookkeeping. App holds a single
 /// `inflight: Inflight`.

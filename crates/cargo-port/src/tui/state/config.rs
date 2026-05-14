@@ -2,18 +2,19 @@
 //!
 //! Owns App's `cargo-port.toml` state: `current_config`,
 //! `config_path`, and `config_last_seen`. Composes
-//! [`super::support::WatchedFile<T>`] for the
+//! [`tui_pane::WatchedFile<T>`] for the
 //! load-watch-reload contract.
 
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use tui_pane::WatchedFile;
+
 use crate::config::CargoPortConfig;
 use crate::config::NavigationKeys;
 use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
-use crate::tui::support::WatchedFile;
 
 /// Owns the parsed config plus the on-disk watch state.
 pub struct Config {

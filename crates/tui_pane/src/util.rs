@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 /// - Trailing zero units below the lowest nonzero unit are dropped, so a duration that lands
 ///   exactly on a unit boundary stays compact (`"1h"` rather than `"1h 0m 0s"`).
 /// - Zero is rendered `"0s"`.
+#[must_use]
 pub fn format_progressive(secs: u64) -> String {
     const WEEK: u64 = 7 * 24 * 3600;
     const DAY: u64 = 24 * 3600;

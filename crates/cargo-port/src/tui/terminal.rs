@@ -30,11 +30,11 @@ use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use tui_pane::FRAME_POLL_MILLIS;
 
 use super::app::App;
 use super::app::PendingClean;
 use super::app::PollBackgroundStats;
-use super::constants::FRAME_POLL_MILLIS;
 use super::input;
 use super::panes::CiFetchKind;
 use super::panes::PendingCiFetch;

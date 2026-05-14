@@ -6,11 +6,11 @@ use ratatui::style::Color;
 use sysinfo::CpuRefreshKind;
 use sysinfo::RefreshKind;
 use sysinfo::System;
+use tui_pane::ERROR_COLOR;
+use tui_pane::INACTIVE_BORDER_COLOR;
+use tui_pane::SUCCESS_COLOR;
+use tui_pane::TITLE_COLOR;
 
-use super::constants::ERROR_COLOR;
-use super::constants::INACTIVE_BORDER_COLOR;
-use super::constants::SUCCESS_COLOR;
-use super::constants::TITLE_COLOR;
 use crate::config::CpuConfig;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

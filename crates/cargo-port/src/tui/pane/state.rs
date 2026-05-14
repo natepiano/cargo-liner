@@ -1,9 +1,8 @@
 use ratatui::style::Style;
+use tui_pane::ACTIVE_FOCUS_COLOR;
+use tui_pane::HOVER_FOCUS_COLOR;
+use tui_pane::REMEMBERED_FOCUS_COLOR;
 use tui_pane::Viewport;
-
-use crate::tui::constants::ACTIVE_FOCUS_COLOR;
-use crate::tui::constants::HOVER_FOCUS_COLOR;
-use crate::tui::constants::REMEMBERED_FOCUS_COLOR;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneFocusState {

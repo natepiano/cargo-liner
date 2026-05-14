@@ -328,7 +328,7 @@ impl App {
         let icon =
             integration::lint_icon_for(status.kind()).frame_at(self.animation_started.elapsed());
         let style = if matches!(status, LintStatus::Running(_)) {
-            ratatui::style::Style::default().fg(crate::tui::constants::ACCENT_COLOR)
+            ratatui::style::Style::default().fg(tui_pane::ACCENT_COLOR)
         } else {
             ratatui::style::Style::default()
         };

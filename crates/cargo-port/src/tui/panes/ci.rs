@@ -8,6 +8,8 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::COLUMN_HEADER_COLOR;
+use tui_pane::LABEL_COLOR;
 use tui_pane::render_overflow_affordance;
 use unicode_width::UnicodeWidthStr;
 
@@ -18,8 +20,6 @@ use crate::ci::CiStatus;
 use crate::tui::columns::ColumnSpec;
 use crate::tui::columns::ColumnWidths;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
-use crate::tui::constants::COLUMN_HEADER_COLOR;
-use crate::tui::constants::LABEL_COLOR;
 use crate::tui::pane;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneSelectionState;

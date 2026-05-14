@@ -2,11 +2,10 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
-
-use crate::tui::constants::ACTIVE_BORDER_COLOR;
-use crate::tui::constants::INACTIVE_BORDER_COLOR;
-use crate::tui::constants::INACTIVE_TITLE_COLOR;
-use crate::tui::constants::TITLE_COLOR;
+use tui_pane::ACTIVE_BORDER_COLOR;
+use tui_pane::INACTIVE_BORDER_COLOR;
+use tui_pane::INACTIVE_TITLE_COLOR;
+use tui_pane::TITLE_COLOR;
 
 #[derive(Clone, Copy)]
 pub struct PaneChrome {

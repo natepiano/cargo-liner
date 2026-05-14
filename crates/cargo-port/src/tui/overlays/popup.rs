@@ -7,8 +7,8 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
+use tui_pane::TITLE_COLOR;
 
-use crate::tui::constants::TITLE_COLOR;
 use crate::tui::render;
 
 const TITLE_STYLE: Style = Style::new().fg(TITLE_COLOR).add_modifier(Modifier::BOLD);
