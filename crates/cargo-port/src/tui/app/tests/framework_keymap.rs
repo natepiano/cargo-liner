@@ -171,30 +171,53 @@ fn package_data_no_version() -> PackageData {
 }
 
 #[test]
-fn focused_package_bar_renders_pane_action_labels() {
-    let project = super::make_project(Some("demo"), "~/demo");
-    let mut app = make_app(&[project]);
-    app.panes.package.set_content(package_data_no_version());
-    focus_app_pane_in_framework(&mut app, AppPaneId::Package);
+fn focused_app_panes_render_expected_pane_action_labels() {
+    type Setup = fn(&mut App);
+    let cases: &[(AppPaneId, &[&str], Setup)] = &[
+        (AppPaneId::Package, &["activate", "clean"], |app| {
+            app.panes.package.set_content(package_data_no_version());
+        }),
+        (AppPaneId::Git, &["activate", "clean"], |app| {
+            app.panes.git.set_content(GitData::default());
+        }),
+        (AppPaneId::Targets, &["run", "release", "clean"], |_| {}),
+        (AppPaneId::Lints, &["open", "clear cache"], |_| {}),
+        (AppPaneId::Lang, &["clean"], |_| {}),
+        (AppPaneId::Cpu, &["clean"], |_| {}),
+        (
+            AppPaneId::CiRuns,
+            &["open", "fetch more", "branch/all", "clear cache"],
+            |app| {
+                app.ci.set_content(ci_data_with_runs(2));
+                app.ci.viewport.set_pos(0);
+            },
+        ),
+        (AppPaneId::Finder, &["go to", "close"], |_| {}),
+    ];
 
-    let palette = BarPalette::default();
-    let bar = render_status_bar(
-        &FocusedPane::App(AppPaneId::Package),
-        &app,
-        &app.framework_keymap,
-        app.framework(),
-        &palette,
-    );
-    let pane_action = flatten(&bar.pane_action);
+    for (pane, expected_labels, setup) in cases {
+        let project = super::make_project(Some("demo"), "~/demo");
+        let mut app = make_app(&[project]);
+        setup(&mut app);
+        focus_app_pane_in_framework(&mut app, *pane);
 
-    assert!(
-        pane_action.contains("activate"),
-        "Package pane bar must show the Activate label (got {pane_action:?})",
-    );
-    assert!(
-        pane_action.contains("clean"),
-        "Package pane bar must show the Clean label (got {pane_action:?})",
-    );
+        let palette = BarPalette::default();
+        let bar = render_status_bar(
+            &FocusedPane::App(*pane),
+            &app,
+            &app.framework_keymap,
+            app.framework(),
+            &palette,
+        );
+        let pane_action = flatten(&bar.pane_action);
+
+        for label in *expected_labels {
+            assert!(
+                pane_action.contains(label),
+                "{pane:?} bar must show label {label:?} (got {pane_action:?})",
+            );
+        }
+    }
 }
 
 #[test]
@@ -258,33 +281,6 @@ fn git_remote_with_url(url: &str) -> RemoteRow {
 }
 
 #[test]
-fn focused_git_bar_renders_pane_action_labels() {
-    let project = super::make_project(Some("demo"), "~/demo");
-    let mut app = make_app(&[project]);
-    app.panes.git.set_content(GitData::default());
-    focus_app_pane_in_framework(&mut app, AppPaneId::Git);
-
-    let palette = BarPalette::default();
-    let bar = render_status_bar(
-        &FocusedPane::App(AppPaneId::Git),
-        &app,
-        &app.framework_keymap,
-        app.framework(),
-        &palette,
-    );
-    let pane_action = flatten(&bar.pane_action);
-
-    assert!(
-        pane_action.contains("activate"),
-        "Git pane bar must show the Activate label (got {pane_action:?})",
-    );
-    assert!(
-        pane_action.contains("clean"),
-        "Git pane bar must show the Clean label (got {pane_action:?})",
-    );
-}
-
-#[test]
 fn git_activate_state_disabled_when_cursor_not_on_remote() {
     // Default GitData has only the two rate-limit flat fields and no
     // remotes — the cursor at position 0 lands on a flat field whose
@@ -329,108 +325,6 @@ fn git_activate_state_enabled_on_remote_with_url() {
     );
 }
 
-// ── Bar snapshots for the remaining app panes ────────────────────
-
-#[test]
-fn focused_targets_bar_renders_pane_action_labels() {
-    let project = super::make_project(Some("demo"), "~/demo");
-    let mut app = make_app(&[project]);
-    focus_app_pane_in_framework(&mut app, AppPaneId::Targets);
-
-    let palette = BarPalette::default();
-    let bar = render_status_bar(
-        &FocusedPane::App(AppPaneId::Targets),
-        &app,
-        &app.framework_keymap,
-        app.framework(),
-        &palette,
-    );
-    let pane_action = flatten(&bar.pane_action);
-
-    assert!(
-        pane_action.contains("run"),
-        "Targets bar must show the Activate label \"run\" (got {pane_action:?})",
-    );
-    assert!(
-        pane_action.contains("release"),
-        "Targets bar must show the ReleaseBuild label \"release\" (got {pane_action:?})",
-    );
-    assert!(
-        pane_action.contains("clean"),
-        "Targets bar must show the Clean label (got {pane_action:?})",
-    );
-}
-
-#[test]
-fn focused_lints_bar_renders_pane_action_labels() {
-    let project = super::make_project(Some("demo"), "~/demo");
-    let mut app = make_app(&[project]);
-    focus_app_pane_in_framework(&mut app, AppPaneId::Lints);
-
-    let palette = BarPalette::default();
-    let bar = render_status_bar(
-        &FocusedPane::App(AppPaneId::Lints),
-        &app,
-        &app.framework_keymap,
-        app.framework(),
-        &palette,
-    );
-    let pane_action = flatten(&bar.pane_action);
-
-    assert!(
-        pane_action.contains("open"),
-        "Lints bar must show the Activate label \"open\" (got {pane_action:?})",
-    );
-    assert!(
-        pane_action.contains("clear cache"),
-        "Lints bar must show the ClearHistory label \"clear cache\" (got {pane_action:?})",
-    );
-}
-
-#[test]
-fn focused_lang_bar_renders_pane_action_labels() {
-    let project = super::make_project(Some("demo"), "~/demo");
-    let mut app = make_app(&[project]);
-    focus_app_pane_in_framework(&mut app, AppPaneId::Lang);
-
-    let palette = BarPalette::default();
-    let bar = render_status_bar(
-        &FocusedPane::App(AppPaneId::Lang),
-        &app,
-        &app.framework_keymap,
-        app.framework(),
-        &palette,
-    );
-    let pane_action = flatten(&bar.pane_action);
-
-    assert!(
-        pane_action.contains("clean"),
-        "Lang bar must show the Clean label (got {pane_action:?})",
-    );
-}
-
-#[test]
-fn focused_cpu_bar_renders_pane_action_labels() {
-    let project = super::make_project(Some("demo"), "~/demo");
-    let mut app = make_app(&[project]);
-    focus_app_pane_in_framework(&mut app, AppPaneId::Cpu);
-
-    let palette = BarPalette::default();
-    let bar = render_status_bar(
-        &FocusedPane::App(AppPaneId::Cpu),
-        &app,
-        &app.framework_keymap,
-        app.framework(),
-        &palette,
-    );
-    let pane_action = flatten(&bar.pane_action);
-
-    assert!(
-        pane_action.contains("clean"),
-        "Cpu bar must show the Clean label (got {pane_action:?})",
-    );
-}
-
 fn ci_data_with_runs(count: usize) -> CiData {
     let runs = (0..count)
         .map(|i| CiRun {
@@ -470,42 +364,6 @@ fn lints_data_with_runs(count: usize) -> LintsData {
         sizes: Vec::new(),
         is_rust: true,
     }
-}
-
-#[test]
-fn focused_ci_runs_bar_renders_pane_action_labels() {
-    let project = super::make_project(Some("demo"), "~/demo");
-    let mut app = make_app(&[project]);
-    app.ci.set_content(ci_data_with_runs(2));
-    app.ci.viewport.set_pos(0);
-    focus_app_pane_in_framework(&mut app, AppPaneId::CiRuns);
-
-    let palette = BarPalette::default();
-    let bar = render_status_bar(
-        &FocusedPane::App(AppPaneId::CiRuns),
-        &app,
-        &app.framework_keymap,
-        app.framework(),
-        &palette,
-    );
-    let pane_action = flatten(&bar.pane_action);
-
-    assert!(
-        pane_action.contains("open"),
-        "CiRuns bar must show the Activate label \"open\" on a real run row (got {pane_action:?})",
-    );
-    assert!(
-        pane_action.contains("fetch more"),
-        "CiRuns bar must show the FetchMore label (got {pane_action:?})",
-    );
-    assert!(
-        pane_action.contains("branch/all"),
-        "CiRuns bar must show the ToggleView label (got {pane_action:?})",
-    );
-    assert!(
-        pane_action.contains("clear cache"),
-        "CiRuns bar must show the ClearCache label (got {pane_action:?})",
-    );
 }
 
 #[test]
@@ -663,35 +521,6 @@ fn finder_text_input_inserts_char_into_query() {
     assert_eq!(
         app.project_list.finder.query, "k",
         "TextInput handler must insert the typed character into the query",
-    );
-}
-
-#[test]
-fn focused_finder_closed_bar_renders_pane_action_labels() {
-    // With finder closed, FinderPane::mode() returns Mode::Navigable
-    // — the bar renders all regions normally and the PaneAction slots
-    // show Activate's "go to" and Cancel's "close".
-    let project = super::make_project(Some("demo"), "~/demo");
-    let mut app = make_app(&[project]);
-    focus_app_pane_in_framework(&mut app, AppPaneId::Finder);
-
-    let palette = BarPalette::default();
-    let bar = render_status_bar(
-        &FocusedPane::App(AppPaneId::Finder),
-        &app,
-        &app.framework_keymap,
-        app.framework(),
-        &palette,
-    );
-    let pane_action = flatten(&bar.pane_action);
-
-    assert!(
-        pane_action.contains("go to"),
-        "Finder bar must show the Activate label \"go to\" (got {pane_action:?})",
-    );
-    assert!(
-        pane_action.contains("close"),
-        "Finder bar must show the Cancel label \"close\" (got {pane_action:?})",
     );
 }
 
