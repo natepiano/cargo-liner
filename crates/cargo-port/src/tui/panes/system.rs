@@ -14,6 +14,7 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use tui_pane::ResolvedPaneLayout;
 
 use super::data::PaneDataStore;
 use super::pane_impls::CpuPane;
@@ -66,8 +67,12 @@ pub struct Panes {
     pub targets:      TargetsPane,
     pub project_list: ProjectListPane,
 
-    pub pane_data: PaneDataStore,
-    hovered_row:   Option<HoveredPaneRow>,
+    pub pane_data:    PaneDataStore,
+    /// Resolved tiled-pane layout computed by the most recent render.
+    /// Input dispatch (mouse hit-tests, scroll routing) reads this;
+    /// render writes it once per draw.
+    pub tiled_layout: ResolvedPaneLayout<super::PaneId>,
+    hovered_row:      Option<HoveredPaneRow>,
 }
 
 impl Panes {
@@ -81,8 +86,9 @@ impl Panes {
             targets:      TargetsPane::new(),
             project_list: ProjectListPane::new(),
 
-            pane_data:   PaneDataStore::new(),
-            hovered_row: None,
+            pane_data:    PaneDataStore::new(),
+            tiled_layout: ResolvedPaneLayout::default(),
+            hovered_row:  None,
         }
     }
 

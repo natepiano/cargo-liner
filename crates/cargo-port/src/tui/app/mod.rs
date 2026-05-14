@@ -78,7 +78,6 @@ use super::integration;
 use super::integration::AppPaneId;
 use super::overlays::Overlays;
 use super::pane::PaneFocusState;
-use super::panes::LayoutCache;
 use super::panes::PaneId;
 use super::panes::Panes;
 use super::project_list::ProjectList;
@@ -235,12 +234,6 @@ pub(super) struct App {
     confirm:                      Option<ConfirmAction>,
     pub(super) animation_started: Instant,
     pub(super) mouse_pos:         Option<Position>,
-    /// Layout coordination cache. Computed once per draw and shared
-    /// across the render path: tile layout, project-list body rect,
-    /// and the row-hitbox map for click/hover dispatch. Lives on
-    /// App-shell because it's coordination state, not pane state —
-    /// it describes what rect each pane occupies.
-    pub(super) layout_cache:      LayoutCache,
     /// Framework aggregator from `tui_pane`. Owns the focused-pane id,
     /// quit/restart flags, the per-pane mode-query registry, and the
     /// framework-side `Toasts`/`KeymapPane`/`SettingsPane` overlays.
@@ -556,19 +549,11 @@ impl App {
     }
 
     /// Split-borrow accessor for per-pane render dispatch.
-    /// Returns `(&mut Panes, &mut LayoutCache, &Config, &Selection,
-    /// &ProjectList)` — the refs the dispatcher passes through to
-    /// construct `PaneRenderCtx`. All disjoint `App` fields, so holding
-    /// them simultaneously is sound.
-    pub(super) const fn split_panes_for_render(
-        &mut self,
-    ) -> (&mut Panes, &mut LayoutCache, &Config, &ProjectList) {
-        (
-            &mut self.panes,
-            &mut self.layout_cache,
-            &self.config,
-            &self.project_list,
-        )
+    /// Returns `(&mut Panes, &Config, &ProjectList)` — the refs the
+    /// dispatcher passes through to construct `PaneRenderCtx`. All
+    /// disjoint `App` fields, so holding them simultaneously is sound.
+    pub(super) const fn split_panes_for_render(&mut self) -> (&mut Panes, &Config, &ProjectList) {
+        (&mut self.panes, &self.config, &self.project_list)
     }
 
     /// Split-borrow accessor for the CI pane render path. CI content

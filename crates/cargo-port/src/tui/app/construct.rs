@@ -250,7 +250,6 @@ impl AppBuilder<Started> {
             confirm: None,
             animation_started: Instant::now(),
             mouse_pos: None,
-            layout_cache: crate::tui::panes::LayoutCache::default(),
             framework,
             framework_keymap: Rc::new(framework_keymap),
         };

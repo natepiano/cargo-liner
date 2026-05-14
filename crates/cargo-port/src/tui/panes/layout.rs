@@ -13,12 +13,6 @@ use crate::tui::pane::PanePlacement;
 use crate::tui::pane::ResolvedPane;
 use crate::tui::pane::ResolvedPaneLayout;
 
-#[derive(Default)]
-pub struct LayoutCache {
-    pub project_list_body: Rect,
-    pub tiled:             ResolvedPaneLayout<PaneId>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BottomRow {
     Diagnostics,

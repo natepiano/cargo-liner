@@ -2,20 +2,29 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
-use tui_pane::ACTIVE_BORDER_COLOR;
-use tui_pane::INACTIVE_BORDER_COLOR;
-use tui_pane::INACTIVE_TITLE_COLOR;
-use tui_pane::TITLE_COLOR;
 
+use crate::ACTIVE_BORDER_COLOR;
+use crate::INACTIVE_BORDER_COLOR;
+use crate::INACTIVE_TITLE_COLOR;
+use crate::TITLE_COLOR;
+
+/// Pane chrome styling bundle: border and title styles for the
+/// focused / unfocused render paths of a bordered pane.
 #[derive(Clone, Copy)]
 pub struct PaneChrome {
+    /// Border style when the pane is focused.
     pub active_border:   Style,
+    /// Border style when the pane is unfocused.
     pub inactive_border: Style,
+    /// Title style when the pane is focused.
     pub active_title:    Style,
+    /// Title style when the pane is unfocused.
     pub inactive_title:  Style,
 }
 
 impl PaneChrome {
+    /// Build a bordered ratatui [`Block`] using this chrome.
+    #[must_use]
     pub fn block(self, title: String, focused: bool) -> Block<'static> {
         Block::default()
             .borders(Borders::ALL)
@@ -28,6 +37,8 @@ impl PaneChrome {
             })
     }
 
+    /// The title style this chrome applies given focus.
+    #[must_use]
     pub const fn title_style(self, focused: bool) -> Style {
         if focused {
             self.active_title
@@ -36,6 +47,8 @@ impl PaneChrome {
         }
     }
 
+    /// Replace the inactive border style.
+    #[must_use]
     pub const fn with_inactive_border(self, inactive_border: Style) -> Self {
         Self {
             inactive_border,
@@ -44,6 +57,9 @@ impl PaneChrome {
     }
 }
 
+/// Default pane chrome: yellow accent border + bold title when focused,
+/// dim border + dim title when unfocused.
+#[must_use]
 pub fn default_pane_chrome() -> PaneChrome {
     let title_style = Style::default().add_modifier(Modifier::BOLD);
     PaneChrome {
@@ -54,6 +70,9 @@ pub fn default_pane_chrome() -> PaneChrome {
     }
 }
 
+/// Bordered empty-state block — used for panes that have no content
+/// to render (no data yet, no git repo, etc.).
+#[must_use]
 pub fn empty_pane_block(title: impl Into<String>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)

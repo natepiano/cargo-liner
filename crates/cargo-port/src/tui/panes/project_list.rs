@@ -149,7 +149,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(block, area);
     if inner.height == 0 {
         clear_project_list_surface(app);
-        app.layout_cache.project_list_body = Rect::ZERO;
+        app.panes.project_list.body_rect = Rect::ZERO;
         return;
     }
 
@@ -166,7 +166,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     if content_area.height == 0 {
         clear_project_list_surface(app);
-        app.layout_cache.project_list_body = Rect::ZERO;
+        app.panes.project_list.body_rect = Rect::ZERO;
         return;
     }
 
@@ -200,7 +200,7 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut list_state = ListState::default().with_selected(Some(app.project_list.cursor()));
     *list_state.offset_mut() = app.panes.project_list.viewport.scroll_offset();
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
-    app.layout_cache.project_list_body = list_area;
+    app.panes.project_list.body_rect = list_area;
     app.panes
         .project_list
         .viewport

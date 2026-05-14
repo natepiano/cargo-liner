@@ -1,24 +1,39 @@
 use ratatui::style::Style;
-use tui_pane::ACTIVE_FOCUS_COLOR;
-use tui_pane::HOVER_FOCUS_COLOR;
-use tui_pane::REMEMBERED_FOCUS_COLOR;
-use tui_pane::Viewport;
 
+use crate::ACTIVE_FOCUS_COLOR;
+use crate::HOVER_FOCUS_COLOR;
+use crate::REMEMBERED_FOCUS_COLOR;
+use crate::Viewport;
+
+/// Whether a pane currently has keyboard focus, last had it before the
+/// user moved focus elsewhere, or is fully inactive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneFocusState {
+    /// Pane has keyboard focus.
     Active,
+    /// Pane last had focus and is still highlighted.
     Remembered,
+    /// Pane is unfocused.
     Inactive,
 }
 
+/// Selection state for a single row within a pane: focused-and-selected,
+/// hovered, last-focused-and-selected, or none of those.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneSelectionState {
+    /// This row is the cursor row in a focused pane.
     Active,
+    /// The mouse cursor is hovering this row.
     Hovered,
+    /// This row was the cursor row when focus moved away.
     Remembered,
+    /// Default row state.
     Unselected,
 }
 
+/// Resolve the selection state for `row` using `viewport.pos()` as the
+/// cursor.
+#[must_use]
 pub const fn selection_state(
     viewport: &Viewport,
     row: usize,
@@ -27,9 +42,12 @@ pub const fn selection_state(
     selection_state_for(viewport, viewport.pos(), row, focus)
 }
 
-/// `selection_state` variant that takes the cursor explicitly, for callers whose
-/// cursor lives outside this viewport. The hovered-row check still reads the
-/// viewport's own hovered field because hover is always per pane.
+/// [`selection_state`] variant that takes the cursor explicitly.
+///
+/// For callers whose cursor lives outside this viewport. The hovered-row
+/// check still reads the viewport's own hovered field because hover is
+/// always per pane.
+#[must_use]
 pub const fn selection_state_for(
     viewport: &Viewport,
     cursor: usize,
@@ -47,6 +65,9 @@ pub const fn selection_state_for(
     }
 }
 
+/// Background style for a cursor row given the owning pane's focus
+/// state.
+#[must_use]
 pub fn selection_style(focus: PaneFocusState) -> Style {
     match focus {
         PaneFocusState::Active => Style::default().bg(ACTIVE_FOCUS_COLOR),
@@ -56,6 +77,8 @@ pub fn selection_style(focus: PaneFocusState) -> Style {
 }
 
 impl PaneSelectionState {
+    /// Style overlay that visually communicates this selection state.
+    #[must_use]
     pub fn overlay_style(self) -> Style {
         match self {
             Self::Active => selection_style(PaneFocusState::Active),
@@ -65,10 +88,13 @@ impl PaneSelectionState {
         }
     }
 
+    /// Patch `style` with this selection state's overlay.
+    #[must_use]
     pub fn patch(self, style: Style) -> Style { style.patch(self.overlay_style()) }
 }
 
 /// Format a 1-based scroll position as `"{pos+1} of {len}"`.
+#[must_use]
 pub fn scroll_indicator(pos: usize, len: usize) -> String { format!("{} of {len}", pos + 1) }
 
 #[cfg(test)]
@@ -76,17 +102,20 @@ mod tests {
     use ratatui::style::Color;
     use ratatui::style::Modifier;
     use ratatui::style::Style;
-    use tui_pane::Viewport;
 
     use super::PaneFocusState;
     use super::PaneSelectionState;
+    use crate::ACTIVE_FOCUS_COLOR;
+    use crate::HOVER_FOCUS_COLOR;
+    use crate::REMEMBERED_FOCUS_COLOR;
+    use crate::Viewport;
 
     #[test]
     fn active_selection_style_only_adds_background_and_emphasis() {
         let style = super::selection_style(PaneFocusState::Active);
 
         assert_eq!(style.fg, None);
-        assert_eq!(style.bg, Some(super::ACTIVE_FOCUS_COLOR));
+        assert_eq!(style.bg, Some(ACTIVE_FOCUS_COLOR));
         assert_eq!(style.add_modifier, Modifier::default());
     }
 
@@ -96,7 +125,7 @@ mod tests {
         let patched = PaneSelectionState::Active.patch(base);
 
         assert_eq!(patched.fg, Some(Color::Red));
-        assert_eq!(patched.bg, Some(super::ACTIVE_FOCUS_COLOR));
+        assert_eq!(patched.bg, Some(ACTIVE_FOCUS_COLOR));
         assert_eq!(patched.add_modifier, Modifier::default());
     }
 
@@ -106,7 +135,7 @@ mod tests {
         let patched = PaneSelectionState::Remembered.patch(base);
 
         assert_eq!(patched.fg, Some(Color::Green));
-        assert_eq!(patched.bg, Some(super::REMEMBERED_FOCUS_COLOR));
+        assert_eq!(patched.bg, Some(REMEMBERED_FOCUS_COLOR));
     }
 
     #[test]
@@ -115,7 +144,7 @@ mod tests {
         let patched = PaneSelectionState::Hovered.patch(base);
 
         assert_eq!(patched.fg, Some(Color::Blue));
-        assert_eq!(patched.bg, Some(super::HOVER_FOCUS_COLOR));
+        assert_eq!(patched.bg, Some(HOVER_FOCUS_COLOR));
     }
 
     #[test]

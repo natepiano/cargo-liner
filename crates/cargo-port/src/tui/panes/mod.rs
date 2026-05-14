@@ -43,7 +43,6 @@ pub(super) use data::DetailCacheKey;
 #[cfg(test)]
 pub(super) use git::git_label_width;
 pub(super) use layout::BottomRow;
-pub(super) use layout::LayoutCache;
 pub(super) use layout::resolve_layout;
 pub(super) use layout::tab_order;
 pub(super) use lints::render_lints_pane_body;

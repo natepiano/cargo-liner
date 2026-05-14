@@ -1,10 +1,4 @@
 //! Generic "fit columns to content with min-width-per-column" helper.
-//!
-//! Two consumers today: the project list (via
-//! [`super::ProjectListWidths`]) and the CI pane
-//! (`tui::panes::ci::build_ci_widths`). New table-style panes that
-//! fit columns to content use this primitive rather than
-//! re-implementing the seed/observe/total pattern.
 
 use ratatui::layout::Constraint;
 
@@ -23,9 +17,11 @@ pub struct ColumnSpec {
 impl ColumnSpec {
     /// Fit-to-content column with a header-label minimum and no
     /// upper cap.
+    #[must_use]
     pub const fn fit(min: u16) -> Self { Self { min, max: None } }
 
     /// Fixed-width column whose width is independent of content.
+    #[must_use]
     pub const fn fixed(width: u16) -> Self {
         Self {
             min: width,
@@ -44,6 +40,7 @@ pub struct ColumnWidths {
 
 impl ColumnWidths {
     /// Seed widths to each spec's minimum.
+    #[must_use]
     pub fn new(specs: Vec<ColumnSpec>) -> Self {
         let widths = specs.iter().map(|spec| spec.min).collect();
         Self { specs, widths }
@@ -64,10 +61,12 @@ impl ColumnWidths {
     }
 
     /// Resolved width for `col`.
+    #[must_use]
     pub fn get(&self, col: usize) -> u16 { self.widths[col] }
 
     /// Convert to ratatui [`Constraint::Length`] entries — one per
     /// column, in order.
+    #[must_use]
     pub fn to_constraints(&self) -> Vec<Constraint> {
         self.widths
             .iter()

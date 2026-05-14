@@ -6,17 +6,27 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+/// One rule segment to draw inside a pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneRule {
+    /// Horizontal line with `├`/`┤` endcaps and an optional `┬`
+    /// connector where a vertical rule tees in from above.
     Horizontal {
+        /// Rect that the rule fills.
         area:        Rect,
+        /// Optional absolute x column rendered as `┬`.
         connector_x: Option<u16>,
     },
+    /// Vertical line of `│` glyphs.
     Vertical {
+        /// Rect that the rule fills.
         area: Rect,
     },
+    /// Single-cell symbol (e.g. a corner or connector).
     Symbol {
+        /// Rect for the symbol cell.
         area:  Rect,
+        /// Glyph drawn into the cell.
         glyph: char,
     },
 }
@@ -24,10 +34,13 @@ pub enum PaneRule {
 /// Optional title to embed near the left end of a horizontal rule.
 #[derive(Clone, Copy)]
 pub struct RuleTitle<'a> {
+    /// Title text.
     pub text:  &'a str,
+    /// Style applied to the title text.
     pub style: Style,
 }
 
+/// Render every rule in `rules` using `style` for the line glyphs.
 pub fn render_rules(frame: &mut Frame, rules: &[PaneRule], style: Style) {
     for rule in rules {
         match *rule {

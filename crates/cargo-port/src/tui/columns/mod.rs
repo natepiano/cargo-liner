@@ -1,19 +1,17 @@
-mod widths;
-
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use tui_pane::COLUMN_HEADER_COLOR;
+pub(super) use tui_pane::ColumnSpec;
+pub(super) use tui_pane::ColumnWidths;
 use tui_pane::DISCOVERY_SHIMMER_COLOR;
 use tui_pane::ERROR_COLOR;
 use tui_pane::LABEL_COLOR;
 use tui_pane::SECONDARY_TEXT_COLOR;
 use tui_pane::TITLE_COLOR;
 use unicode_width::UnicodeWidthStr;
-pub(super) use widths::ColumnSpec;
-pub(super) use widths::ColumnWidths;
 
 use super::render;
 use crate::ci::CiStatus;

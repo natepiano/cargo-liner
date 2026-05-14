@@ -426,7 +426,7 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
         return;
     }
 
-    if app.layout_cache.project_list_body.contains(pos) {
+    if app.panes.project_list.body_rect.contains(pos) {
         if up {
             app.project_list.move_up();
         } else {
@@ -436,8 +436,8 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
     }
 
     let pane_regions = app
-        .layout_cache
-        .tiled
+        .panes
+        .tiled_layout
         .panes
         .iter()
         .map(|resolved| (resolved.pane, resolved.area))
@@ -531,10 +531,10 @@ fn handle_mouse_click(app: &mut App, column: u16, row: u16) {
         return;
     }
 
-    let project_list = app.layout_cache.project_list_body;
+    let project_list = app.panes.project_list.body_rect;
     let pane_regions = app
-        .layout_cache
-        .tiled
+        .panes
+        .tiled_layout
         .panes
         .iter()
         .map(|resolved| (resolved.pane, resolved.area))

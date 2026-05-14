@@ -332,6 +332,9 @@ pub struct ProjectListPane {
     /// the resolved `DismissTarget`. The action region wins over
     /// the row body in `Hittable::hit_test_at`.
     dismiss_actions: Vec<(Rect, DismissTarget)>,
+    /// Rect occupied by the list body, recorded during render and
+    /// read by input dispatch for click / scroll hit-testing.
+    pub body_rect:   Rect,
 }
 
 impl ProjectListPane {
@@ -339,6 +342,7 @@ impl ProjectListPane {
         Self {
             viewport:        Viewport::new(),
             dismiss_actions: Vec::new(),
+            body_rect:       Rect::ZERO,
         }
     }
 

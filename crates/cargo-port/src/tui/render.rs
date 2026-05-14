@@ -22,6 +22,7 @@ use tui_pane::ERROR_COLOR;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::LABEL_COLOR;
+use tui_pane::ResolvedPaneLayout;
 use tui_pane::SECONDARY_TEXT_COLOR;
 use tui_pane::STATUS_BAR_COLOR;
 use tui_pane::SUCCESS_COLOR;
@@ -45,7 +46,6 @@ use super::pane;
 use super::pane::PaneRenderCtx;
 use super::panes;
 use super::panes::DispatchArgs;
-use super::panes::LayoutCache;
 use super::panes::PaneId;
 use super::panes::Panes;
 use super::panes::RenderStyles;
@@ -116,15 +116,10 @@ pub(super) fn conclusion_style(ci_status: Option<CiStatus>) -> Style {
     }
 }
 
-pub(super) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
-    let x = area.x + area.width.saturating_sub(width) / 2;
-    let y = area.y + area.height.saturating_sub(height) / 2;
-    Rect::new(x, y, width.min(area.width), height.min(area.height))
-}
-
 pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     sync_hovered_pane_row(app);
-    app.layout_cache = LayoutCache::default();
+    app.panes.tiled_layout = ResolvedPaneLayout::default();
+    app.panes.project_list.body_rect = Rect::ZERO;
     app.prune_toasts();
 
     let outer_layout = Layout::default()
@@ -147,7 +142,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     for resolved in &tiled.panes {
         render_tiled_pane(frame, app, resolved.pane, resolved.area);
     }
-    app.layout_cache.tiled = tiled;
+    app.panes.tiled_layout = tiled;
 
     render_status_bar(frame, app, outer_layout[1]);
     let toast_settings = app.framework.toast_settings();
@@ -363,7 +358,7 @@ fn dispatch_via_trait(
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (panes, _layout_cache, config, projects) = app.split_panes_for_render();
+    let (panes, config, projects) = app.split_panes_for_render();
     let args = DispatchArgs {
         focus_state,
         is_focused,
