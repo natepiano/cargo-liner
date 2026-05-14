@@ -211,6 +211,29 @@ impl Lint {
     }
 }
 
+/// Resolve a [`LintStatus`] to the [`LintCell`] (icon + style
+/// pair) rendered in the Lint column. Free fn so renderers can
+/// call it from `Pane::render` with typed refs (no `&App`).
+pub fn lint_cell_for(
+    status: &LintStatus,
+    config: &crate::tui::state::Config,
+    animation_elapsed: std::time::Duration,
+) -> crate::tui::columns::LintCell {
+    if !config.lint_enabled() {
+        return crate::tui::columns::LintCell::from_parts(
+            crate::constants::LINT_NO_LOG,
+            ratatui::style::Style::default(),
+        );
+    }
+    let icon = crate::tui::integration::lint_icon_for(status.kind()).frame_at(animation_elapsed);
+    let style = if matches!(status, LintStatus::Running(_)) {
+        ratatui::style::Style::default().fg(tui_pane::ACCENT_COLOR)
+    } else {
+        ratatui::style::Style::default()
+    };
+    crate::tui::columns::LintCell::from_parts(icon, style)
+}
+
 impl Pane for Lint {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         panes::render_lints_pane_body(frame, area, self, ctx);

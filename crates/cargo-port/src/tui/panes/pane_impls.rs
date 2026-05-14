@@ -353,8 +353,8 @@ impl ProjectListPane {
 }
 
 impl Pane for ProjectListPane {
-    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {
-        // Render handled by `panes::project_list::render_left_panel`.
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
+        super::project_list::render_project_list_pane_body(frame, area, self, ctx);
     }
 }
 

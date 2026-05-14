@@ -3,7 +3,7 @@ mod index;
 
 pub(super) use dispatch::dispatch_finder_action;
 pub(super) use dispatch::handle_finder_text_key;
-pub(super) use dispatch::render_finder_popup;
+pub(super) use dispatch::render_finder_pane_body;
 #[cfg(test)]
 use dispatch::search_finder;
 pub(super) use index::FINDER_COLUMN_COUNT;

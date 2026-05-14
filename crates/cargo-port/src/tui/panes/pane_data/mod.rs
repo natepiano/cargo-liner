@@ -1426,7 +1426,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 
     let t_disk = std::time::Instant::now();
     let disk = wt_item.map_or_else(
-        || super::formatted_disk(app, abs_path),
+        || super::formatted_disk(&app.project_list, abs_path),
         super::formatted_disk_for_item,
     );
     let ci = compute_ci_status(app, abs_path, wt_item);

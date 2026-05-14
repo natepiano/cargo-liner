@@ -37,7 +37,6 @@ use unicode_width::UnicodeWidthStr;
 use super::app::App;
 use super::app::ConfirmAction;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
-use super::finder;
 use super::integration::AppGlobalAction;
 use super::interaction;
 use super::keymap_ui;
@@ -160,13 +159,13 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     app.framework.toasts.set_hits(toast_result.hitboxes);
 
     if app.framework.overlay() == Some(FrameworkOverlayId::Settings) {
-        settings::render_settings_popup(frame, app);
+        dispatch_settings_overlay(app, frame);
     }
     if app.framework.overlay() == Some(FrameworkOverlayId::Keymap) {
-        keymap_ui::render_keymap_popup(frame, app);
+        dispatch_keymap_overlay(app, frame);
     }
     if app.overlays.is_finder_open() {
-        finder::render_finder_popup(frame, app);
+        dispatch_finder_render(app, frame);
     }
     if let Some(action) = app.confirm() {
         let body = confirm_action_body(app, action);
@@ -330,10 +329,6 @@ fn render_confirm_popup(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_left_panel(frame: &mut Frame, app: &mut App, area: Rect) {
-    panes::render_project_list(frame, app, area);
-}
-
 fn dispatch_via_trait(
     app: &mut App,
     area: Rect,
@@ -350,17 +345,21 @@ fn dispatch_via_trait(
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (panes, config, projects, inflight) = app.split_panes_for_render();
+    let split = app.split_panes_for_render();
     let args = DispatchArgs {
         focus_state,
         is_focused,
         animation_elapsed,
-        config,
-        project_list: projects,
+        config: split.config,
+        project_list: split.project_list,
         selected_project_path: selected_project_path.as_deref(),
-        inflight,
+        inflight: split.inflight,
+        scan: split.scan,
+        ci: Some(split.ci),
+        lint: Some(split.lint),
+        inline_error: split.inline_error,
     };
-    dispatcher(panes, frame, area, &args);
+    dispatcher(split.panes, frame, area, &args);
 }
 
 fn dispatch_lints_render(app: &mut App, frame: &mut Frame, area: Rect) {
@@ -370,17 +369,63 @@ fn dispatch_lints_render(app: &mut App, frame: &mut Frame, area: Rect) {
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (lint, config, projects, inflight) = app.split_lint_for_render();
+    let split = app.split_lint_for_render();
     let ctx = PaneRenderCtx {
         focus_state,
         is_focused,
         animation_elapsed,
-        config,
-        project_list: projects,
+        config: split.config,
+        project_list: split.project_list,
         selected_project_path: selected_project_path.as_deref(),
-        inflight,
+        inflight: split.inflight,
+        scan: split.scan,
+        ci: Some(split.ci),
+        lint: None,
+        inline_error: split.inline_error,
     };
-    Pane::render(lint, frame, area, &ctx);
+    Pane::render(split.lint, frame, area, &ctx);
+}
+
+/// Dispatch the Keymap overlay popup. Named helper so `ui()`
+/// stays uniform across overlays. The legacy free fn still owns
+/// the body — moving it into `KeymapPane::render` is deferred
+/// because the renderer reads `app.framework_keymap` (a generic
+/// `Keymap<App>`), `app.framework.overlay()`, and other `&App`
+/// state that does not plumb cleanly through [`PaneRenderCtx`].
+fn dispatch_keymap_overlay(app: &mut App, frame: &mut Frame) {
+    keymap_ui::render_keymap_popup(frame, app);
+}
+
+/// Dispatch the Settings overlay popup. Same deferral as
+/// [`dispatch_keymap_overlay`] — legacy free fn owns the body
+/// today.
+fn dispatch_settings_overlay(app: &mut App, frame: &mut Frame) {
+    settings::render_settings_popup(frame, app);
+}
+
+fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
+    let focus_state = app.pane_focus_state(PaneId::Finder);
+    let is_focused = app.focus_is(PaneId::Finder);
+    let animation_elapsed = app.animation_started.elapsed();
+    let selected_project_path: Option<PathBuf> = app
+        .selected_project_path_for_render()
+        .map(std::path::Path::to_path_buf);
+    let split = app.split_finder_for_render();
+    let ctx = PaneRenderCtx {
+        focus_state,
+        is_focused,
+        animation_elapsed,
+        config: split.config,
+        project_list: split.project_list,
+        selected_project_path: selected_project_path.as_deref(),
+        inflight: split.inflight,
+        scan: split.scan,
+        ci: Some(split.ci),
+        lint: Some(split.lint),
+        inline_error: split.inline_error,
+    };
+    // Finder body sizes the popup itself; area arg is unused.
+    Pane::render(split.finder_pane, frame, frame.area(), &ctx);
 }
 
 fn dispatch_ci_render(app: &mut App, frame: &mut Frame, area: Rect) {
@@ -390,22 +435,32 @@ fn dispatch_ci_render(app: &mut App, frame: &mut Frame, area: Rect) {
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
-    let (ci, config, projects, inflight) = app.split_ci_for_render();
+    let split = app.split_ci_for_render();
     let ctx = PaneRenderCtx {
         focus_state,
         is_focused,
         animation_elapsed,
-        config,
-        project_list: projects,
+        config: split.config,
+        project_list: split.project_list,
         selected_project_path: selected_project_path.as_deref(),
-        inflight,
+        inflight: split.inflight,
+        scan: split.scan,
+        ci: None,
+        lint: Some(split.lint),
+        inline_error: split.inline_error,
     };
-    Pane::render(ci, frame, area, &ctx);
+    Pane::render(split.ci, frame, area, &ctx);
 }
 
 fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect) {
     match pane {
-        PaneId::ProjectList => render_left_panel(frame, app, area),
+        PaneId::ProjectList => dispatch_via_trait(
+            app,
+            area,
+            PaneId::ProjectList,
+            frame,
+            panes::Panes::dispatch_project_list_render,
+        ),
         PaneId::Package => dispatch_via_trait(
             app,
             area,

@@ -90,7 +90,6 @@ pub(super) use pane_impls::hit_test_table_row;
 pub(super) use project_list::compute_disk_cache;
 pub(super) use project_list::formatted_disk;
 pub(super) use project_list::formatted_disk_for_item;
-pub(super) use project_list::render_project_list;
 #[cfg(test)]
 pub(super) use project_list::render_tree_items;
 pub(super) use spec::PaneBehavior;

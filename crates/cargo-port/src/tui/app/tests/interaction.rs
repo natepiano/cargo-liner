@@ -243,17 +243,21 @@ fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
     terminal
         .draw(|frame| {
             let area = frame.area();
-            let (lint, config, projects, inflight) = app.split_lint_for_render();
+            let split = app.split_lint_for_render();
             let ctx = PaneRenderCtx {
                 focus_state,
                 is_focused,
                 animation_elapsed,
-                config,
-                project_list: projects,
+                config: split.config,
+                project_list: split.project_list,
                 selected_project_path: selected_path.as_deref(),
-                inflight,
+                inflight: split.inflight,
+                scan: split.scan,
+                ci: Some(split.ci),
+                lint: None,
+                inline_error: split.inline_error,
             };
-            panes::render_lints_pane_body(frame, area, lint, &ctx);
+            panes::render_lints_pane_body(frame, area, split.lint, &ctx);
         })
         .unwrap_or_else(|_| std::process::abort());
 }
@@ -272,17 +276,21 @@ fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
     terminal
         .draw(|frame| {
             let area = frame.area();
-            let (ci, config, projects, inflight) = app.split_ci_for_render();
+            let split = app.split_ci_for_render();
             let ctx = PaneRenderCtx {
                 focus_state,
                 is_focused,
                 animation_elapsed,
-                config,
-                project_list: projects,
+                config: split.config,
+                project_list: split.project_list,
                 selected_project_path: selected_path.as_deref(),
-                inflight,
+                inflight: split.inflight,
+                scan: split.scan,
+                ci: None,
+                lint: Some(split.lint),
+                inline_error: split.inline_error,
             };
-            panes::render_ci_pane_body(frame, area, ci, &ctx);
+            panes::render_ci_pane_body(frame, area, split.ci, &ctx);
         })
         .unwrap_or_else(|_| std::process::abort());
 }

@@ -22,8 +22,11 @@ use super::DismissTarget;
 use super::PaneFocusState;
 use crate::tui::panes::PaneId;
 use crate::tui::project_list::ProjectList;
+use crate::tui::state::Ci;
 use crate::tui::state::Config;
 use crate::tui::state::Inflight;
+use crate::tui::state::Lint;
+use crate::tui::state::Scan;
 
 /// Bundle of references a pane needs at render time.
 pub struct PaneRenderCtx<'a> {
@@ -37,6 +40,35 @@ pub struct PaneRenderCtx<'a> {
     /// (currently only `OutputPane` for the running-example title
     /// and the captured output lines).
     pub inflight:              &'a Inflight,
+    /// Scan subsystem ref. Needed by `ProjectListPane::render` for
+    /// discovery-shimmer lookups; tiled detail panes leave it
+    /// unread.
+    pub scan:                  &'a Scan,
+    /// CI subsystem ref. `None` for the CI pane's own dispatch
+    /// (which holds `&mut Ci` and can't supply a disjoint `&Ci`
+    /// in the same ctx). Other panes get `Some(&ci)`.
+    pub ci:                    Option<&'a Ci>,
+    /// Lint subsystem ref. `None` for the Lints pane's own
+    /// dispatch (same aliasing reason as `ci`). Read by the
+    /// Settings popup for lint-cache size display. Reserved for
+    /// the deferred Settings overlay absorption; currently
+    /// populated by every dispatcher but only consumed by tests.
+    #[allow(
+        dead_code,
+        reason = "reserved for Settings overlay absorption — populated today, consumed once \
+                  KeymapPane / SettingsPane gain real Pane::render bodies"
+    )]
+    pub lint:                  Option<&'a Lint>,
+    /// Inline error string from the overlays subsystem (Settings /
+    /// Keymap inline-error line). `None` when no error is pinned.
+    /// Reserved for the deferred Keymap / Settings overlay
+    /// absorption; populated today, consumed by tests.
+    #[allow(
+        dead_code,
+        reason = "reserved for Keymap / Settings overlay absorption — populated today, \
+                  consumed once those panes gain real Pane::render bodies"
+    )]
+    pub inline_error:          Option<&'a str>,
 }
 
 /// Per-pane render dispatch.

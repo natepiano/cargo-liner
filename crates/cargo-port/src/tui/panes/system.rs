@@ -30,8 +30,11 @@ use crate::tui::pane::Pane;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::project_list::ProjectList;
+use crate::tui::state::Ci;
 use crate::tui::state::Config;
 use crate::tui::state::Inflight;
+use crate::tui::state::Lint;
+use crate::tui::state::Scan;
 
 /// Bundle of refs the dispatchers need to construct a
 /// `PaneRenderCtx`. Constructed at the call site from
@@ -45,6 +48,10 @@ pub struct DispatchArgs<'a> {
     pub project_list:          &'a ProjectList,
     pub selected_project_path: Option<&'a Path>,
     pub inflight:              &'a Inflight,
+    pub scan:                  &'a Scan,
+    pub ci:                    Option<&'a Ci>,
+    pub lint:                  Option<&'a Lint>,
+    pub inline_error:          Option<&'a str>,
 }
 
 const fn build_ctx<'a>(args: &DispatchArgs<'a>) -> PaneRenderCtx<'a> {
@@ -56,6 +63,10 @@ const fn build_ctx<'a>(args: &DispatchArgs<'a>) -> PaneRenderCtx<'a> {
         project_list:          args.project_list,
         selected_project_path: args.selected_project_path,
         inflight:              args.inflight,
+        scan:                  args.scan,
+        ci:                    args.ci,
+        lint:                  args.lint,
+        inline_error:          args.inline_error,
     }
 }
 
@@ -186,6 +197,18 @@ impl Panes {
         let ctx = build_ctx(args);
         let ctx = &ctx;
         Pane::render(&mut self.targets, frame, area, ctx);
+    }
+
+    /// Dispatch `ProjectListPane`'s render through the `Pane` trait.
+    pub fn dispatch_project_list_render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        args: &DispatchArgs<'_>,
+    ) {
+        let ctx = build_ctx(args);
+        let ctx = &ctx;
+        Pane::render(&mut self.project_list, frame, area, ctx);
     }
 
     /// Dispatch `OutputPane`'s render through the `Pane` trait.

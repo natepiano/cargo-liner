@@ -135,6 +135,22 @@ fn loaded_ci<'a>(app: &'a App, path: &Path) -> &'a ProjectCiInfo {
     }
 }
 
+fn build_project_list_render_ctx_for_test(app: &App) -> crate::tui::pane::PaneRenderCtx<'_> {
+    crate::tui::pane::PaneRenderCtx {
+        focus_state:           app.pane_focus_state(PaneId::ProjectList),
+        is_focused:            app.focus_is(PaneId::ProjectList),
+        animation_elapsed:     app.animation_started.elapsed(),
+        config:                &app.config,
+        project_list:          &app.project_list,
+        selected_project_path: app.selected_project_path_for_render(),
+        inflight:              &app.inflight,
+        scan:                  &app.scan,
+        ci:                    Some(&app.ci),
+        lint:                  Some(&app.lint),
+        inline_error:          app.overlays.inline_error_ref(),
+    }
+}
+
 fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
     app.ensure_visible_rows_cached();
     let labels = app
@@ -146,7 +162,11 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
         app.config.lint_enabled(),
         0,
     );
-    let items = crate::tui::panes::render_tree_items(app, &widths);
+    let items = {
+        let viewport = app.panes.project_list.viewport.clone();
+        let ctx = build_project_list_render_ctx_for_test(app);
+        crate::tui::panes::render_tree_items(&ctx, &viewport, &widths)
+    };
     let area = Rect::new(
         0,
         0,
@@ -178,7 +198,11 @@ fn render_tree_buffer(app: &mut App) -> (Buffer, ProjectListWidths) {
         app.config.lint_enabled(),
         0,
     );
-    let items = crate::tui::panes::render_tree_items(app, &widths);
+    let items = {
+        let viewport = app.panes.project_list.viewport.clone();
+        let ctx = build_project_list_render_ctx_for_test(app);
+        crate::tui::panes::render_tree_items(&ctx, &viewport, &widths)
+    };
     let area = Rect::new(
         0,
         0,

@@ -189,6 +189,10 @@ pub(super) fn render_lang_pane_body(
         animation_elapsed: _,
         config: _,
         inflight: _,
+        scan: _,
+        ci: _,
+        lint: _,
+        inline_error: _,
     } = ctx;
 
     let lang_stats = projects

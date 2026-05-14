@@ -40,7 +40,6 @@ use crate::tui::integration::AppPaneId;
 use crate::tui::overlays::PopupFrame;
 use crate::tui::pane;
 use crate::tui::panes;
-use crate::tui::panes::PaneId;
 use crate::tui::panes::RunTargetKind;
 
 /// "bench diegetic" and "diegetic bench" produce the same results.
@@ -231,9 +230,19 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
 
 // ── Rendering ───────────────────────────────────────────────────────────
 
-pub fn render_finder_popup(frame: &mut Frame, app: &mut App) {
+/// Body of `FinderPane::render`. Same pattern as the other
+/// Phase-4/5 absorptions: typed parameters through `ctx`.
+/// Short-circuits when no overlay is active (caller decides
+/// whether to invoke; the trait dispatch in `render::ui` only
+/// fires when finder is open).
+pub fn render_finder_pane_body(
+    frame: &mut Frame,
+    _area: Rect,
+    pane: &mut crate::tui::overlays::FinderPane,
+    ctx: &crate::tui::pane::PaneRenderCtx<'_>,
+) {
     // Use cached column widths (computed at index build time) for stable popup sizing
-    let col_widths = app.project_list.finder.col_widths;
+    let col_widths = ctx.project_list.finder.col_widths;
 
     // Size popup to fit all columns + spacing (4 gaps) + borders (2), capped at terminal width
     let natural_width: usize = col_widths.iter().sum::<usize>() + 4 + 2;
@@ -243,15 +252,15 @@ pub fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         .unwrap_or(u16::MAX)
         .clamp(min_popup_width, max_popup_width);
 
-    let title = if app.project_list.finder.query.is_empty() {
+    let title = if ctx.project_list.finder.query.is_empty() {
         " Find Anything ".to_string()
-    } else if app.project_list.finder.total <= app.project_list.finder.results.len() {
-        format!(" Find Anything ({}) ", app.project_list.finder.total)
+    } else if ctx.project_list.finder.total <= ctx.project_list.finder.results.len() {
+        format!(" Find Anything ({}) ", ctx.project_list.finder.total)
     } else {
         format!(
             " Find Anything ({} of {}) ",
-            app.project_list.finder.results.len(),
-            app.project_list.finder.total
+            ctx.project_list.finder.results.len(),
+            ctx.project_list.finder.total
         )
     };
 
@@ -281,7 +290,7 @@ pub fn render_finder_popup(frame: &mut Frame, app: &mut App) {
     let input_line = Line::from(vec![
         Span::styled("  / ", prompt_style),
         Span::styled(
-            format!("{}_", app.project_list.finder.query),
+            format!("{}_", ctx.project_list.finder.query),
             Style::default().fg(TITLE_COLOR),
         ),
     ]);
@@ -311,17 +320,12 @@ pub fn render_finder_popup(frame: &mut Frame, app: &mut App) {
         height: inner.height.saturating_sub(2),
     };
 
-    let result_count = app.project_list.finder.results.len();
-    app.overlays.finder_pane.viewport.set_len(result_count);
-    app.overlays
-        .finder_pane
-        .viewport
-        .set_content_area(results_area);
-    app.overlays
-        .finder_pane
-        .viewport
+    let result_count = ctx.project_list.finder.results.len();
+    pane.viewport.set_len(result_count);
+    pane.viewport.set_content_area(results_area);
+    pane.viewport
         .set_viewport_rows(usize::from(results_area.height.saturating_sub(1)));
-    render_finder_results(frame, app, col_widths, results_area, popup.outer);
+    render_finder_results(frame, pane, ctx, col_widths, results_area, popup.outer);
 }
 
 /// Build a `Line` where characters matching the fuzzy query get a tinted
@@ -399,13 +403,14 @@ fn highlighted_spans(text: &str, query: &str, fg: Color) -> Line<'static> {
 
 fn render_finder_results(
     frame: &mut Frame,
-    app: &mut App,
+    pane: &mut crate::tui::overlays::FinderPane,
+    ctx: &crate::tui::pane::PaneRenderCtx<'_>,
     col_widths: [usize; FINDER_COLUMN_COUNT],
     area: Rect,
     popup_area: Rect,
 ) {
-    if app.project_list.finder.results.is_empty() {
-        let msg = if app.project_list.finder.query.is_empty() {
+    if ctx.project_list.finder.results.is_empty() {
+        let msg = if ctx.project_list.finder.query.is_empty() {
             "Type to search projects, examples, benches..."
         } else {
             "No matches"
@@ -418,15 +423,15 @@ fn render_finder_results(
         return;
     }
 
-    let query = app.project_list.finder.query.clone();
-    let rows: Vec<Row> = app
+    let query = ctx.project_list.finder.query.clone();
+    let rows: Vec<Row> = ctx
         .project_list
         .finder
         .results
         .iter()
         .enumerate()
         .map(|(row_index, &idx)| {
-            let item = &app.project_list.finder.index[idx];
+            let item = &ctx.project_list.finder.index[idx];
             let parent = if item.kind == FinderKind::Project {
                 String::new()
             } else {
@@ -444,12 +449,7 @@ fn render_finder_results(
                 )),
             ])
             .style(
-                pane::selection_state(
-                    &app.overlays.finder_pane.viewport,
-                    row_index,
-                    app.pane_focus_state(PaneId::Finder),
-                )
-                .overlay_style(),
+                pane::selection_state(&pane.viewport, row_index, ctx.focus_state).overlay_style(),
             )
         })
         .collect();
@@ -470,22 +470,13 @@ fn render_finder_results(
         .column_spacing(1)
         .row_highlight_style(Style::default());
 
-    let mut table_state =
-        TableState::default().with_selected(Some(app.overlays.finder_pane.viewport.pos()));
+    let mut table_state = TableState::default().with_selected(Some(pane.viewport.pos()));
     frame.render_stateful_widget(table, area, &mut table_state);
-    app.overlays
-        .finder_pane
-        .viewport
-        .set_scroll_offset(table_state.offset());
+    pane.viewport.set_scroll_offset(table_state.offset());
     render_overflow_affordance(
         frame,
         popup_area,
-        app.overlays.finder_pane.viewport.overflow(),
+        pane.viewport.overflow(),
         Style::default().fg(LABEL_COLOR),
     );
-
-    // FinderPane participates in hit-test dispatch via its
-    // viewport (content_area covers the rows-area starting at the
-    // header line; `Hittable` skips that header row internally).
-    let _ = app;
 }

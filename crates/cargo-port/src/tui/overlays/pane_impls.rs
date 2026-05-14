@@ -34,7 +34,9 @@ impl Pane for SettingsPane {
 }
 
 impl Pane for FinderPane {
-    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
+        crate::tui::finder::render_finder_pane_body(frame, area, self, ctx);
+    }
 }
 
 impl Hittable<HoverTarget> for FinderPane {

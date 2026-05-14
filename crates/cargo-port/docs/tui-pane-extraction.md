@@ -608,17 +608,49 @@ renderers together.
   `app\.overlays\.<pane>` in the render function to enumerate every
   mutation path that needs re-routing.
 
-### End-state contents
+### End-state contents (as shipped)
 
 After Phase 5:
 - `src/tui/render.rs::render_tiled_pane` — every arm calls
-  `dispatch_via_trait`. No bespoke render functions remain in the file.
-- `src/tui/panes/pane_impls.rs`, `state/lint.rs`, `state/ci.rs`,
-  `overlays/pane_impls.rs` — every pane has a real `impl Pane` body.
-  No stubs.
-- `src/tui/pane/dispatch.rs` — unchanged; still holds the `Pane` trait.
-- Cargo-port's main render function — overlays render through the
-  same trait dispatch as tiled panes.
+  `dispatch_via_trait` (`ProjectList` included; previous bespoke
+  `render_left_panel` deleted).
+- `src/tui/panes/pane_impls.rs` — `ProjectListPane` has a real
+  `impl Pane` body that calls
+  `project_list::render_project_list_pane_body`. `state/lint.rs`
+  and `state/ci.rs` already had real bodies from Phase 4.
+- `src/tui/overlays/pane_impls.rs` — `FinderPane` has a real
+  `impl Pane` body that calls `finder::render_finder_pane_body`.
+  `KeymapPane` and `SettingsPane` still have no-op `impl Pane`
+  bodies; their popup rendering remains in
+  `keymap_ui::render_keymap_popup` / `settings::render_settings_popup`,
+  invoked through `dispatch_keymap_overlay` /
+  `dispatch_settings_overlay` helpers in `render.rs`. Absorbing
+  those two into the trait would require either widening
+  `PaneRenderCtx` with `&FrameworkKeymap<App>` (which carries the
+  `App` generic — entangling the trait with cargo-port's own
+  type) or refactoring the keymap-row builders in `keymap_ui` to
+  drop their `&App` dependency. Deferred to a follow-up phase.
+- `PaneRenderCtx` gained `scan: &Scan`, `ci: Option<&Ci>`,
+  `lint: Option<&Lint>`, `inline_error: Option<&str>`. Tile-pane
+  dispatchers populate every field; the lint and inline_error
+  fields are currently consumed only by tests and are reserved
+  for the deferred Keymap / Settings absorption (see `#[allow]`
+  on the field docs in `src/tui/pane/dispatch.rs`).
+- App methods that the legacy ProjectList renderer used —
+  `App::lint_cell`, `App::discovery_name_segments_for_path`,
+  `App::dismiss_target_for_row` — are now either `#[cfg(test)]`
+  thin delegators (the first two) or removed entirely (the last,
+  reachable via `ProjectList::dismiss_target_for_row_inner`).
+  The production renderer calls free fns:
+  `tui::state::lint_cell_for(status, &Config, animation_elapsed)`
+  and
+  `tui::app::discovery_name_segments_for_path_with_refs(&Scan, &Config, &ProjectList, ...)`.
+- Cargo-port's main render function — every tile pane and the
+  Finder overlay render through `Pane::render`. The Keymap and
+  Settings overlays render through named `dispatch_*_overlay`
+  helpers in `render.rs` rather than trait dispatch; the
+  helpers exist so `ui()` is uniform across overlay entry
+  points even though the bodies haven't been absorbed yet.
 
 ## Phase 6 — `Renderable` trait and render dispatch loop
 

@@ -71,7 +71,7 @@ use tui_pane::ToastStyle::Warning;
 use tui_pane::TrackedItem;
 
 use super::background::Background;
-use super::columns;
+#[cfg(test)]
 use super::columns::LintCell;
 use super::columns::StyledSegment;
 use super::integration;
@@ -89,6 +89,7 @@ use crate::ci::OwnerRepo;
 use crate::http::HttpClient;
 use crate::keymap;
 use crate::lint::LintRuns;
+#[cfg(test)]
 use crate::lint::LintStatus;
 use crate::project::AbsolutePath;
 use crate::project::GitStatus;
@@ -147,7 +148,6 @@ pub(super) use types::SelectionSync;
 
 pub(super) use super::columns::ProjectListWidths;
 use super::interaction;
-pub(super) use super::pane::DismissTarget;
 use super::panes::BottomRow;
 pub(super) use super::project_list::ExpandKey;
 pub(super) use super::project_list::VisibleRow;
@@ -161,6 +161,56 @@ use super::state::Net;
 use crate::project;
 use crate::project::RootItem;
 use crate::scan::MetadataDispatchContext;
+
+/// Result of `App::split_panes_for_render`: the tiled-pane render
+/// path's split-borrow. Holds `&mut Panes` plus disjoint
+/// read-only refs to the subsystems each pane's render may need.
+pub(super) struct PanesSplit<'a> {
+    pub panes:        &'a mut Panes,
+    pub config:       &'a Config,
+    pub project_list: &'a ProjectList,
+    pub inflight:     &'a Inflight,
+    pub scan:         &'a Scan,
+    pub ci:           &'a Ci,
+    pub lint:         &'a Lint,
+    pub inline_error: Option<&'a str>,
+}
+
+/// Result of `App::split_ci_for_render`. `ci` is `&mut`; the
+/// ctx ref for `ci` is `None` on this path.
+pub(super) struct CiSplit<'a> {
+    pub ci:           &'a mut Ci,
+    pub config:       &'a Config,
+    pub project_list: &'a ProjectList,
+    pub inflight:     &'a Inflight,
+    pub scan:         &'a Scan,
+    pub lint:         &'a Lint,
+    pub inline_error: Option<&'a str>,
+}
+
+/// Result of `App::split_lint_for_render`. `lint` is `&mut`; the
+/// ctx ref for `lint` is `None` on this path.
+pub(super) struct LintSplit<'a> {
+    pub lint:         &'a mut Lint,
+    pub config:       &'a Config,
+    pub project_list: &'a ProjectList,
+    pub inflight:     &'a Inflight,
+    pub scan:         &'a Scan,
+    pub ci:           &'a Ci,
+    pub inline_error: Option<&'a str>,
+}
+
+/// Result of `App::split_finder_for_render`.
+pub(super) struct FinderSplit<'a> {
+    pub finder_pane:  &'a mut super::overlays::FinderPane,
+    pub config:       &'a Config,
+    pub project_list: &'a ProjectList,
+    pub inflight:     &'a Inflight,
+    pub scan:         &'a Scan,
+    pub ci:           &'a Ci,
+    pub lint:         &'a Lint,
+    pub inline_error: Option<&'a str>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum CargoPortToastAction {
@@ -309,8 +359,11 @@ impl App {
     /// the same status here. Returns the `NoLog` cell when lint
     /// is disabled.
     ///
-    /// Declared in `mod.rs` (not `lint.rs`) so `pub(super)` reaches
-    /// `tui` and satisfies callers in `tui/panes/project_list.rs`.
+    /// Test-only thin delegator to
+    /// [`crate::tui::state::lint_cell_for`]. Production callers
+    /// in `tui/panes/project_list.rs` use the free fn directly
+    /// because `Pane::render` has no `&App` to call methods on.
+    #[cfg(test)]
     pub(super) fn lint_cell(&self, status: &LintStatus) -> LintCell {
         if !self.config.lint_enabled() {
             return LintCell::from_parts(
@@ -424,6 +477,10 @@ impl App {
             .insert(AbsolutePath::from(path), shimmer);
     }
 
+    /// Test-only thin delegator to
+    /// [`discovery_name_segments_for_path_with_refs`]. Production
+    /// callers use the free fn directly.
+    #[cfg(test)]
     pub(super) fn discovery_name_segments_for_path(
         &self,
         row_path: &Path,
@@ -431,86 +488,15 @@ impl App {
         git_status: Option<GitStatus>,
         row_kind: DiscoveryRowKind,
     ) -> Option<Vec<StyledSegment>> {
-        if !self.config.discovery_shimmer_enabled() {
-            return None;
-        }
-        let now = Instant::now();
-        let (session_path, shimmer) =
-            self.discovery_shimmer_session_for_path(row_path, now, row_kind)?;
-        let char_count = name.chars().count();
-        if char_count == 0 {
-            return None;
-        }
-
-        let base_style = columns::project_name_style(git_status);
-        let accent_style = columns::project_name_shimmer_style(git_status);
-        let window = discovery_shimmer_window_len(char_count);
-        let elapsed_ms = usize::try_from(now.duration_since(shimmer.started_at).as_millis())
-            .unwrap_or(usize::MAX);
-        let step = elapsed_ms / discovery_shimmer_step_millis();
-        let head = (step
-            + discovery_shimmer_phase_offset(
-                session_path.as_path(),
-                row_path,
-                row_kind,
-                char_count,
-            ))
-            % char_count;
-
-        Some(columns::build_shimmer_segments(
+        discovery_name_segments_for_path_with_refs(
+            &self.scan,
+            &self.config,
+            &self.project_list,
+            row_path,
             name,
-            base_style,
-            accent_style,
-            head,
-            window,
-        ))
-    }
-
-    fn discovery_shimmer_session_for_path(
-        &self,
-        row_path: &Path,
-        now: Instant,
-        row_kind: DiscoveryRowKind,
-    ) -> Option<(AbsolutePath, DiscoveryShimmer)> {
-        self.scan
-            .discovery_shimmers()
-            .iter()
-            .filter(|(session_path, shimmer)| {
-                shimmer.is_active_at(now)
-                    && self.discovery_shimmer_session_matches(
-                        session_path.as_path(),
-                        row_path,
-                        row_kind,
-                    )
-            })
-            .max_by_key(|(_, shimmer)| shimmer.started_at)
-            .map(|(session_path, shimmer)| (session_path.clone(), *shimmer))
-    }
-
-    fn discovery_shimmer_session_matches(
-        &self,
-        session_path: &Path,
-        row_path: &Path,
-        row_kind: DiscoveryRowKind,
-    ) -> bool {
-        self.discovery_scope_contains(session_path, row_path)
-            || self
-                .discovery_parent_row(session_path)
-                .is_some_and(|parent| {
-                    parent.path.as_path() == row_path && row_kind.allows_parent_kind(parent.kind)
-                })
-    }
-
-    fn discovery_scope_contains(&self, session_path: &Path, row_path: &Path) -> bool {
-        self.project_list
-            .iter()
-            .any(|item| root_item_scope_contains(item, session_path, row_path))
-    }
-
-    fn discovery_parent_row(&self, session_path: &Path) -> Option<DiscoveryParentRow> {
-        self.project_list
-            .iter()
-            .find_map(|item| root_item_parent_row(item, session_path))
+            git_status,
+            row_kind,
+        )
     }
 
     pub(super) fn prune_inactive_project_state(&mut self) {
@@ -553,42 +539,66 @@ impl App {
     /// dispatcher passes through to construct `PaneRenderCtx`. All
     /// disjoint `App` fields, so holding them simultaneously is
     /// sound.
-    pub(super) const fn split_panes_for_render(
-        &mut self,
-    ) -> (&mut Panes, &Config, &ProjectList, &Inflight) {
-        (
-            &mut self.panes,
-            &self.config,
-            &self.project_list,
-            &self.inflight,
-        )
+    pub(super) fn split_panes_for_render(&mut self) -> PanesSplit<'_> {
+        PanesSplit {
+            panes:        &mut self.panes,
+            config:       &self.config,
+            project_list: &self.project_list,
+            inflight:     &self.inflight,
+            scan:         &self.scan,
+            ci:           &self.ci,
+            lint:         &self.lint,
+            inline_error: self.overlays.inline_error_ref(),
+        }
     }
 
     /// Split-borrow accessor for the CI pane render path. CI content
     /// lives on the `Ci` subsystem (not `Panes`), so it has its own
-    /// split.
-    pub(super) const fn split_ci_for_render(
-        &mut self,
-    ) -> (&mut Ci, &Config, &ProjectList, &Inflight) {
-        (
-            &mut self.ci,
-            &self.config,
-            &self.project_list,
-            &self.inflight,
-        )
+    /// split. `ci` is `&mut` here; `PaneRenderCtx.ci` is `None` on
+    /// this path to avoid aliasing.
+    pub(super) fn split_ci_for_render(&mut self) -> CiSplit<'_> {
+        CiSplit {
+            ci:           &mut self.ci,
+            config:       &self.config,
+            project_list: &self.project_list,
+            inflight:     &self.inflight,
+            scan:         &self.scan,
+            lint:         &self.lint,
+            inline_error: self.overlays.inline_error_ref(),
+        }
     }
 
     /// Split-borrow accessor for the Lints pane render path. Lints
-    /// content lives on the `Lint` subsystem (not `Panes`).
-    pub(super) const fn split_lint_for_render(
-        &mut self,
-    ) -> (&mut Lint, &Config, &ProjectList, &Inflight) {
-        (
-            &mut self.lint,
-            &self.config,
-            &self.project_list,
-            &self.inflight,
-        )
+    /// content lives on the `Lint` subsystem (not `Panes`). `lint`
+    /// is `&mut` here; `PaneRenderCtx.lint` is `None` on this path
+    /// to avoid aliasing.
+    pub(super) fn split_lint_for_render(&mut self) -> LintSplit<'_> {
+        LintSplit {
+            lint:         &mut self.lint,
+            config:       &self.config,
+            project_list: &self.project_list,
+            inflight:     &self.inflight,
+            scan:         &self.scan,
+            ci:           &self.ci,
+            inline_error: self.overlays.inline_error_ref(),
+        }
+    }
+
+    /// Split-borrow accessor for the app-modal Finder overlay
+    /// render path. The finder pane lives on `overlays`; the
+    /// disjoint borrow of `&self.config` and `&self.project_list`
+    /// is sound.
+    pub(super) const fn split_finder_for_render(&mut self) -> FinderSplit<'_> {
+        FinderSplit {
+            finder_pane:  &mut self.overlays.finder_pane,
+            config:       &self.config,
+            project_list: &self.project_list,
+            inflight:     &self.inflight,
+            scan:         &self.scan,
+            ci:           &self.ci,
+            lint:         &self.lint,
+            inline_error: None,
+        }
     }
 
     /// Compute `selected_project_path` once for the current frame
@@ -702,10 +712,6 @@ impl App {
     }
 
     pub(super) const fn take_confirm(&mut self) -> Option<ConfirmAction> { self.confirm.take() }
-
-    pub(super) fn dismiss_target_for_row(&self, row: VisibleRow) -> Option<DismissTarget> {
-        self.project_list.dismiss_target_for_row_inner(row)
-    }
 
     pub(super) fn owner_repo_for_path(&self, path: &Path) -> Option<OwnerRepo> {
         self.project_list.owner_repo_for_path_inner(path)
@@ -1009,6 +1015,101 @@ impl Drop for TreeMutation<'_> {
 }
 
 // ── Discovery shimmer helpers ──
+
+/// Free-fn equivalent of `App::discovery_name_segments_for_path`.
+/// Used by `ProjectListPane::render` and re-used by the App
+/// method as a thin delegator.
+pub(super) fn discovery_name_segments_for_path_with_refs(
+    scan: &Scan,
+    config: &Config,
+    project_list: &ProjectList,
+    row_path: &Path,
+    name: &str,
+    git_status: Option<GitStatus>,
+    row_kind: DiscoveryRowKind,
+) -> Option<Vec<StyledSegment>> {
+    if !config.discovery_shimmer_enabled() {
+        return None;
+    }
+    let now = Instant::now();
+    let (session_path, shimmer) =
+        discovery_shimmer_session_for_path(scan, project_list, row_path, now, row_kind)?;
+    let char_count = name.chars().count();
+    if char_count == 0 {
+        return None;
+    }
+
+    let base_style = super::columns::project_name_style(git_status);
+    let accent_style = super::columns::project_name_shimmer_style(git_status);
+    let window = discovery_shimmer_window_len(char_count);
+    let elapsed_ms =
+        usize::try_from(now.duration_since(shimmer.started_at).as_millis()).unwrap_or(usize::MAX);
+    let step = elapsed_ms / discovery_shimmer_step_millis();
+    let head = (step
+        + discovery_shimmer_phase_offset(session_path.as_path(), row_path, row_kind, char_count))
+        % char_count;
+
+    Some(super::columns::build_shimmer_segments(
+        name,
+        base_style,
+        accent_style,
+        head,
+        window,
+    ))
+}
+
+fn discovery_shimmer_session_for_path(
+    scan: &Scan,
+    project_list: &ProjectList,
+    row_path: &Path,
+    now: Instant,
+    row_kind: DiscoveryRowKind,
+) -> Option<(AbsolutePath, DiscoveryShimmer)> {
+    scan.discovery_shimmers()
+        .iter()
+        .filter(|(session_path, shimmer)| {
+            shimmer.is_active_at(now)
+                && discovery_shimmer_session_matches(
+                    project_list,
+                    session_path.as_path(),
+                    row_path,
+                    row_kind,
+                )
+        })
+        .max_by_key(|(_, shimmer)| shimmer.started_at)
+        .map(|(session_path, shimmer)| (session_path.clone(), *shimmer))
+}
+
+fn discovery_shimmer_session_matches(
+    project_list: &ProjectList,
+    session_path: &Path,
+    row_path: &Path,
+    row_kind: DiscoveryRowKind,
+) -> bool {
+    discovery_scope_contains(project_list, session_path, row_path)
+        || discovery_parent_row(project_list, session_path).is_some_and(|parent| {
+            parent.path.as_path() == row_path && row_kind.allows_parent_kind(parent.kind)
+        })
+}
+
+fn discovery_scope_contains(
+    project_list: &ProjectList,
+    session_path: &Path,
+    row_path: &Path,
+) -> bool {
+    project_list
+        .iter()
+        .any(|item| root_item_scope_contains(item, session_path, row_path))
+}
+
+fn discovery_parent_row(
+    project_list: &ProjectList,
+    session_path: &Path,
+) -> Option<DiscoveryParentRow> {
+    project_list
+        .iter()
+        .find_map(|item| root_item_parent_row(item, session_path))
+}
 
 const fn discovery_shimmer_window_len(char_count: usize) -> usize {
     match char_count {

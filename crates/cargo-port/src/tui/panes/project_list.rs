@@ -39,7 +39,7 @@ use super::constants::PREFIX_WT_MEMBER_INLINE;
 use super::constants::PREFIX_WT_MEMBER_NAMED;
 use super::constants::PREFIX_WT_VENDORED;
 use super::lang;
-use super::spec::PaneId;
+use super::pane_impls::ProjectListPane;
 use crate::project;
 use crate::project::MemberGroup;
 use crate::project::ProjectFields;
@@ -49,19 +49,21 @@ use crate::project::VendoredPackage;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
 use crate::scan;
-use crate::tui::app::App;
 use crate::tui::app::DiscoveryRowKind;
 use crate::tui::app::ExpandKey;
 use crate::tui::app::ProjectListWidths;
 use crate::tui::app::VisibleRow;
+use crate::tui::app::discovery_name_segments_for_path_with_refs;
 use crate::tui::columns;
 use crate::tui::columns::ProjectRow;
 use crate::tui::pane;
 use crate::tui::pane::DismissTarget;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
 use crate::tui::project_list::ProjectList;
 use crate::tui::render;
+use crate::tui::state::lint_cell_for;
 
 /// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
 #[allow(
@@ -110,9 +112,30 @@ fn disk_color(percentile: Option<f64>) -> Style {
     Style::default().fg(Color::Rgb(r, g, b))
 }
 
-pub fn formatted_disk(app: &App, path: &Path) -> String {
-    let bytes = app
-        .project_list
+/// Borrow the CI subsystem from the render ctx. The
+/// `ProjectList` render path always populates `PaneRenderCtx::ci`
+/// (the dispatcher sets it from `App::split_panes_for_render`);
+/// the `Lints` / `CI` panes that pass `None` never reach this
+/// code. Names the broken invariant via a panic message if a
+/// future caller violates it.
+#[allow(
+    clippy::panic,
+    reason = "render-time invariant violation — `PaneRenderCtx::ci` is required on the \
+              ProjectList render path"
+)]
+fn ci_ref_for_render<'a>(
+    ctx: &'a crate::tui::pane::PaneRenderCtx<'_>,
+) -> &'a crate::tui::state::Ci {
+    ctx.ci.unwrap_or_else(|| {
+        panic!(
+            "PaneRenderCtx::ci must be populated on the ProjectList render path; \
+             only the CI pane's own dispatcher sets it to None"
+        )
+    })
+}
+
+pub fn formatted_disk(projects: &ProjectList, path: &Path) -> String {
+    let bytes = projects
         .at_path(path)
         .and_then(|project| project.disk_usage_bytes)
         .unwrap_or(0);
@@ -124,12 +147,20 @@ pub fn formatted_disk_for_item(item: &RootItem) -> String {
         .map_or_else(|| render::format_bytes(0), render::format_bytes)
 }
 
-pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
+/// Body of `ProjectListPane::render`. Same pattern as the
+/// other Phase-4 absorptions: typed parameters through `ctx`.
+pub fn render_project_list_pane_body(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &mut ProjectListPane,
+    ctx: &PaneRenderCtx<'_>,
+) {
+    let projects = ctx.project_list;
     let (mut items, header, summary_line, row_width) = {
-        let widths = &app.project_list.cached_fit_widths;
-        let items: Vec<ListItem> = render_tree_items(app, widths);
+        let widths = &projects.cached_fit_widths;
+        let items: Vec<ListItem> = render_tree_items(ctx, &pane.viewport, widths);
         let total_str = render::format_bytes(
-            app.project_list
+            projects
                 .iter()
                 .filter_map(|entry| entry.item.disk_usage_bytes())
                 .sum(),
@@ -143,13 +174,13 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let total_project_rows = items.len();
 
-    let title = project_panel_title_with_counts(app, area.width.saturating_sub(2).into());
-    let block = pane::default_pane_chrome().block(title, app.focus_is(PaneId::ProjectList));
+    let title = project_panel_title_with_counts(ctx, area.width.saturating_sub(2).into());
+    let block = pane::default_pane_chrome().block(title, ctx.is_focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
-        clear_project_list_surface(app);
-        app.panes.project_list.body_rect = Rect::ZERO;
+        pane.viewport.clear_surface();
+        pane.body_rect = Rect::ZERO;
         return;
     }
 
@@ -165,8 +196,8 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
         Rect::new(inner.x, inner.y, inner.width, 0)
     };
     if content_area.height == 0 {
-        clear_project_list_surface(app);
-        app.panes.project_list.body_rect = Rect::ZERO;
+        pane.viewport.clear_surface();
+        pane.body_rect = Rect::ZERO;
         return;
     }
 
@@ -190,24 +221,23 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         content_area
     };
-    app.panes.project_list.viewport.set_len(total_project_rows);
-    app.panes.project_list.viewport.set_content_area(list_area);
-    app.panes
-        .project_list
-        .viewport
+    pane.viewport.set_len(total_project_rows);
+    pane.viewport.set_content_area(list_area);
+    pane.viewport
         .set_viewport_rows(usize::from(list_area.height));
     let project_list = List::new(items);
-    let mut list_state = ListState::default().with_selected(Some(app.project_list.cursor()));
-    *list_state.offset_mut() = app.panes.project_list.viewport.scroll_offset();
+    let mut list_state = ListState::default().with_selected(Some(projects.cursor()));
+    *list_state.offset_mut() = pane.viewport.scroll_offset();
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
-    app.panes.project_list.body_rect = list_area;
-    app.panes
-        .project_list
-        .viewport
-        .set_scroll_offset(list_state.offset());
-    app.project_list
-        .set_cursor(list_state.selected().unwrap_or(0));
-    set_project_list_dismiss_actions(app, list_area, row_width);
+    pane.body_rect = list_area;
+    pane.viewport.set_scroll_offset(list_state.offset());
+    // The pre-Phase-5 implementation also called
+    // `ctx.project_list.set_cursor(list_state.selected().unwrap_or(0))`
+    // here; that mutation was a no-op (the cursor we passed in via
+    // `with_selected` is the same value `selected()` returns) and
+    // it required `&mut ProjectList`, which the trait dispatch
+    // path doesn't supply. Dropped.
+    set_project_list_dismiss_actions(pane, ctx, list_area, row_width);
 
     if pin_summary && let Some(line) = summary_line {
         render_project_list_footer(frame, content_area, line);
@@ -216,19 +246,22 @@ pub fn render_project_list(frame: &mut Frame, app: &mut App, area: Rect) {
     render_overflow_affordance(
         frame,
         area,
-        app.panes.project_list.viewport.overflow(),
+        pane.viewport.overflow(),
         Style::default().fg(LABEL_COLOR),
     );
 }
 
 const DISMISS_SUFFIX: &str = " [x]";
 
-fn set_project_list_dismiss_actions(app: &mut App, list_area: Rect, row_width: u16) {
+fn set_project_list_dismiss_actions(
+    pane: &mut ProjectListPane,
+    ctx: &PaneRenderCtx<'_>,
+    list_area: Rect,
+    row_width: u16,
+) {
     let visible_height = usize::from(list_area.height);
-    let visible_start = app.panes.project_list.viewport.scroll_offset();
-    let visible_end = app
-        .panes
-        .project_list
+    let visible_start = pane.viewport.scroll_offset();
+    let visible_end = pane
         .viewport
         .len()
         .min(visible_start.saturating_add(visible_height));
@@ -236,11 +269,12 @@ fn set_project_list_dismiss_actions(app: &mut App, list_area: Rect, row_width: u
 
     let mut actions: Vec<(Rect, DismissTarget)> = Vec::new();
     for (screen_row, row_index) in (visible_start..visible_end).enumerate() {
-        let dismiss_target = app
+        let dismiss_target = ctx
+            .project_list
             .visible_rows()
             .get(row_index)
             .copied()
-            .and_then(|row| app.dismiss_target_for_row(row));
+            .and_then(|row| ctx.project_list.dismiss_target_for_row_inner(row));
         let Some(target) = dismiss_target else {
             continue;
         };
@@ -252,11 +286,7 @@ fn set_project_list_dismiss_actions(app: &mut App, list_area: Rect, row_width: u
             .saturating_add(row_width.saturating_sub(suffix_width));
         actions.push((Rect::new(x, y, suffix_width, 1), target));
     }
-    app.panes.project_list.set_dismiss_actions(actions);
-}
-
-const fn clear_project_list_surface(app: &mut App) {
-    app.panes.project_list.viewport.clear_surface();
+    pane.set_dismiss_actions(actions);
 }
 
 fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<'static>) {
@@ -269,17 +299,17 @@ fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<
     frame.render_widget(Paragraph::new(line), footer_area);
 }
 
-fn project_panel_title_with_counts(app: &App, max_width: usize) -> String {
-    let focused = app.focus_is(PaneId::ProjectList);
-    let cursor = app.project_list.cursor();
-    let roots = scan::resolve_include_dirs(&app.config.current().tui.include_dirs);
+fn project_panel_title_with_counts(ctx: &PaneRenderCtx<'_>, max_width: usize) -> String {
+    let focused = ctx.is_focused;
+    let cursor = ctx.project_list.cursor();
+    let roots = scan::resolve_include_dirs(&ctx.config.current().tui.include_dirs);
 
     // Count visible rows per root directory and determine which root the
     // cursor is in.
     let mut root_counts: Vec<(String, usize, usize)> = Vec::new(); // (name, count, start_row)
     for root_path in &roots {
         let name = project::home_relative_path(root_path.as_path());
-        let count = app
+        let count = ctx
             .project_list
             .iter()
             .filter(|item| item.path().starts_with(root_path.as_path()))
@@ -325,35 +355,39 @@ fn should_pin_project_summary(project_rows: usize, has_summary: bool, inner_heig
 }
 
 fn render_root_item(
-    app: &App,
+    ctx: &PaneRenderCtx<'_>,
     node_index: usize,
     root_labels: &[String],
     root_sorted: &[u64],
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
-    let item = &app.project_list[node_index];
+    let item = &ctx.project_list[node_index];
     let name = &root_labels[node_index];
     let disk = formatted_disk_for_item(item);
     let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
-    let ci = app
+    let ci = ctx
         .project_list
-        .ci_status_for_root_item(&item.item, &app.ci);
+        .ci_status_for_root_item(&item.item, ci_ref_for_render(ctx));
     let lang = if item.is_rust() {
         item.lang_icon()
     } else {
-        app.project_list
+        ctx.project_list
             .at_path(item.path())
             .and_then(|p| p.language_stats.as_ref())
             .and_then(|ls| ls.entries.first())
             .map_or("  ", |e| lang::language_icon(&e.language))
     };
-    let lint_cell = app.lint_cell(&crate::tui::state::Lint::status_for_root(&item.item));
-    let origin_sync = app.project_list.git_sync(item.path());
-    let main_sync = app.project_list.git_main(item.path());
-    let git_status = app.project_list.git_status_for_item(item);
+    let lint_cell = lint_cell_for(
+        &crate::tui::state::Lint::status_for_root(&item.item),
+        ctx.config,
+        ctx.animation_elapsed,
+    );
+    let origin_sync = ctx.project_list.git_sync(item.path());
+    let main_sync = ctx.project_list.git_main(item.path());
+    let git_status = ctx.project_list.git_status_for_item(item);
     let prefix = if item.has_children() {
-        if app
+        if ctx
             .project_list
             .expanded
             .contains(&ExpandKey::Node(node_index))
@@ -365,14 +399,17 @@ fn render_root_item(
     } else {
         PREFIX_ROOT_LEAF
     };
-    let deleted = app.project_list.is_deleted(item.path());
+    let deleted = ctx.project_list.is_deleted(item.path());
     let wt_health = item.worktree_health();
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, wt_health);
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
-        name_segments: app.discovery_name_segments_for_path(
+        name_segments: discovery_name_segments_for_path_with_refs(
+            ctx.scan,
+            ctx.config,
+            ctx.project_list,
             item.path(),
             name,
             git_status,
@@ -397,7 +434,7 @@ fn render_root_item(
 /// Build a `ListItem` for a child project (workspace member, vendored crate,
 /// or worktree).
 fn render_child_item<P: project::ProjectFields>(
-    app: &App,
+    ctx: &PaneRenderCtx<'_>,
     project: &P,
     name: &str,
     child_sorted: &[u64],
@@ -406,40 +443,41 @@ fn render_child_item<P: project::ProjectFields>(
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let path = project.path();
-    let disk = formatted_disk(app, path);
+    let disk = formatted_disk(ctx.project_list, path);
     let disk_bytes = project.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project::Package::lang_icon();
-    let lint_cell = if app.project_list.is_rust_at_path(path) {
-        app.lint_cell(&crate::tui::state::Lint::status_for_path(
-            &app.project_list,
-            path,
-        ))
+    let lint_cell = if ctx.project_list.is_rust_at_path(path) {
+        lint_cell_for(
+            &crate::tui::state::Lint::status_for_path(ctx.project_list, path),
+            ctx.config,
+            ctx.animation_elapsed,
+        )
     } else {
         crate::tui::columns::LintCell::hidden()
     };
-    let ci = app.project_list.ci_status_for(path, &app.ci);
-    let hide_git_status = app.project_list.is_workspace_member_path(path);
+    let ci = ctx.project_list.ci_status_for(path, ci_ref_for_render(ctx));
+    let hide_git_status = ctx.project_list.is_workspace_member_path(path);
     let origin_sync = if hide_git_status
         || matches!(
-            app.project_list.git_status_for(path),
+            ctx.project_list.git_status_for(path),
             Some(crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored)
         ) {
         String::new()
     } else {
-        app.project_list.git_sync(path)
+        ctx.project_list.git_sync(path)
     };
     let main_sync = if hide_git_status
         || matches!(
-            app.project_list.git_status_for(path),
+            ctx.project_list.git_status_for(path),
             Some(crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored)
         ) {
         String::new()
     } else {
-        app.project_list.git_main(path)
+        ctx.project_list.git_main(path)
     };
-    let deleted = inherited_deleted || app.project_list.is_deleted(project.path());
-    let git_status = app.project_list.git_status_for(path);
+    let deleted = inherited_deleted || ctx.project_list.is_deleted(project.path());
+    let git_status = ctx.project_list.git_status_for(path);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
         ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
     } else {
@@ -448,7 +486,10 @@ fn render_child_item<P: project::ProjectFields>(
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
-        name_segments: app.discovery_name_segments_for_path(
+        name_segments: discovery_name_segments_for_path_with_refs(
+            ctx.scan,
+            ctx.config,
+            ctx.project_list,
             path,
             name,
             git_status,
@@ -471,21 +512,21 @@ fn render_child_item<P: project::ProjectFields>(
 }
 
 fn render_worktree_entry<'a>(
-    app: &App,
+    ctx: &PaneRenderCtx<'_>,
     ni: usize,
     wi: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'a> {
-    let item = &app.project_list[ni];
-    let display_path = app
+    let item = &ctx.project_list[ni];
+    let display_path = ctx
         .project_list
         .display_path_for_row(VisibleRow::WorktreeEntry {
             node_index:     ni,
             worktree_index: wi,
         });
     let dp = display_path.unwrap_or_default().to_string();
-    let abs_path = app
+    let abs_path = ctx
         .project_list
         .abs_path_for_row(VisibleRow::WorktreeEntry {
             node_index:     ni,
@@ -497,7 +538,7 @@ fn render_worktree_entry<'a>(
     let (wt_name, has_expandable_children) = worktree_entry_name_and_expandable(item, wi, &dp);
 
     let prefix = if has_expandable_children {
-        if app
+        if ctx
             .project_list
             .expanded
             .contains(&ExpandKey::Worktree(ni, wi))
@@ -510,25 +551,32 @@ fn render_worktree_entry<'a>(
         PREFIX_WT_FLAT
     };
     let wt_abs = abs_path.as_deref().unwrap_or_else(|| Path::new(""));
-    let disk = formatted_disk(app, wt_abs);
+    let disk = formatted_disk(ctx.project_list, wt_abs);
     let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, sorted));
     let lang = item.lang_icon();
-    let lint_cell = app.lint_cell(&crate::tui::state::Lint::status_for_worktree(
-        &item.item, wi,
-    ));
-    let ci = app.project_list.ci_status_for(wt_abs, &app.ci);
-    let origin_sync = app.project_list.git_sync(wt_abs);
-    let main_sync = app.project_list.git_main(wt_abs);
-    let deleted = app.project_list.is_deleted(wt_abs);
-    let git_status = app.project_list.git_status_for(wt_abs);
+    let lint_cell = lint_cell_for(
+        &crate::tui::state::Lint::status_for_worktree(&item.item, wi),
+        ctx.config,
+        ctx.animation_elapsed,
+    );
+    let ci = ctx
+        .project_list
+        .ci_status_for(wt_abs, ci_ref_for_render(ctx));
+    let origin_sync = ctx.project_list.git_sync(wt_abs);
+    let main_sync = ctx.project_list.git_main(wt_abs);
+    let deleted = ctx.project_list.is_deleted(wt_abs);
+    let git_status = ctx.project_list.git_status_for(wt_abs);
     let wt_health = worktree_health_for_entry(item, wi);
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, wt_health);
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name: &wt_name,
-        name_segments: app.discovery_name_segments_for_path(
+        name_segments: discovery_name_segments_for_path_with_refs(
+            ctx.scan,
+            ctx.config,
+            ctx.project_list,
             wt_abs,
             &wt_name,
             git_status,
@@ -595,13 +643,13 @@ fn worktree_health_for_entry(item: &RootItem, wi: usize) -> WorktreeHealth {
 }
 
 fn render_wt_group_header<'a>(
-    app: &App,
+    ctx: &PaneRenderCtx<'_>,
     ni: usize,
     wi: usize,
     gi: usize,
     widths: &ProjectListWidths,
 ) -> ListItem<'a> {
-    let item = &app.project_list[ni];
+    let item = &ctx.project_list[ni];
     let (group_name, member_count) = match &item.item {
         RootItem::Worktrees(group) => match group.entry(wi).unwrap_or(&group.primary) {
             RustProject::Workspace(ws) => {
@@ -612,7 +660,7 @@ fn render_wt_group_header<'a>(
         },
         _ => (String::new(), 0),
     };
-    let prefix = if app
+    let prefix = if ctx
         .project_list
         .expanded
         .contains(&ExpandKey::WorktreeGroup(ni, wi, gi))
@@ -627,7 +675,7 @@ fn render_wt_group_header<'a>(
 }
 
 fn render_wt_member<'a>(
-    app: &App,
+    ctx: &PaneRenderCtx<'_>,
     ni: usize,
     wi: usize,
     gi: usize,
@@ -635,7 +683,7 @@ fn render_wt_member<'a>(
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'a> {
-    let item = &app.project_list[ni];
+    let item = &ctx.project_list[ni];
     let empty = Vec::new();
     let sorted = child_sorted.get(&ni).unwrap_or(&empty);
 
@@ -662,13 +710,13 @@ fn render_wt_member<'a>(
         },
         |m| {
             let inherited_deleted = match &item.item {
-                RootItem::Worktrees(group) => app
+                RootItem::Worktrees(group) => ctx
                     .project_list
                     .is_deleted(group.entry(wi).unwrap_or(&group.primary).path()),
                 _ => false,
             };
             render_child_item(
-                app,
+                ctx,
                 m,
                 &member_name,
                 sorted,
@@ -681,14 +729,14 @@ fn render_wt_member<'a>(
 }
 
 fn render_member_item(
-    app: &App,
+    ctx: &PaneRenderCtx<'_>,
     node_index: usize,
     group_index: usize,
     member_index: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
-    let item = &app.project_list[node_index];
+    let item = &ctx.project_list[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (member, member_name, is_named) = match &item.item {
@@ -721,9 +769,9 @@ fn render_member_item(
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |m| {
-            let inherited_deleted = app.project_list.is_deleted(item.path());
+            let inherited_deleted = ctx.project_list.is_deleted(item.path());
             render_child_item(
-                app,
+                ctx,
                 m,
                 &member_name,
                 sorted,
@@ -736,13 +784,13 @@ fn render_member_item(
 }
 
 fn render_vendored_item(
-    app: &App,
+    ctx: &PaneRenderCtx<'_>,
     node_index: usize,
     vendored_index: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
-    let item = &app.project_list[node_index];
+    let item = &ctx.project_list[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let (vendored, vendored_display_name) = match &item.item {
@@ -768,9 +816,9 @@ fn render_vendored_item(
             ListItem::new(columns::row_to_line(&row, widths))
         },
         |v| {
-            let inherited_deleted = app.project_list.is_deleted(item.path());
+            let inherited_deleted = ctx.project_list.is_deleted(item.path());
             render_child_item(
-                app,
+                ctx,
                 v,
                 &name,
                 sorted,
@@ -783,13 +831,13 @@ fn render_vendored_item(
 }
 
 fn render_submodule_item(
-    app: &App,
+    ctx: &PaneRenderCtx<'_>,
     node_index: usize,
     submodule_index: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
-    let item = &app.project_list[node_index];
+    let item = &ctx.project_list[node_index];
     let Some(submodule) = item.submodules().get(submodule_index) else {
         let row = columns::build_group_header_cells(PREFIX_SUBMODULE, "");
         return ListItem::new(columns::row_to_line(&row, widths));
@@ -797,7 +845,7 @@ fn render_submodule_item(
     let name = format!("{} (s)", submodule.name);
     let sorted = child_sorted.get(&node_index).map_or(&[][..], Vec::as_slice);
     render_path_only_entry(
-        app,
+        ctx,
         submodule,
         item.path(),
         PREFIX_SUBMODULE,
@@ -808,7 +856,7 @@ fn render_submodule_item(
 }
 
 fn render_path_only_entry(
-    app: &App,
+    ctx: &PaneRenderCtx<'_>,
     entry: &impl crate::project::ProjectFields,
     inherited_deleted_path: &Path,
     prefix: &'static str,
@@ -817,17 +865,20 @@ fn render_path_only_entry(
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
     let path = entry.path().as_path();
-    let disk = formatted_disk(app, path);
+    let disk = formatted_disk(ctx.project_list, path);
     let ds = disk_color(disk_percentile(entry.info().disk_usage_bytes, sorted));
-    let git_status = app.project_list.git_status_for(path);
+    let git_status = ctx.project_list.git_status_for(path);
     let deleted =
-        app.project_list.is_deleted(inherited_deleted_path) || app.project_list.is_deleted(path);
+        ctx.project_list.is_deleted(inherited_deleted_path) || ctx.project_list.is_deleted(path);
     let (disk_text, disk_suffix, disk_suffix_style) =
         disk_suffix_for_state(&disk, deleted, entry.info().worktree_health);
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
-        name_segments: app.discovery_name_segments_for_path(
+        name_segments: discovery_name_segments_for_path_with_refs(
+            ctx.scan,
+            ctx.config,
+            ctx.project_list,
             path,
             name,
             git_status,
@@ -850,14 +901,14 @@ fn render_path_only_entry(
 }
 
 fn render_wt_vendored_item(
-    app: &App,
+    ctx: &PaneRenderCtx<'_>,
     node_index: usize,
     worktree_index: usize,
     vendored_index: usize,
     child_sorted: &HashMap<usize, Vec<u64>>,
     widths: &ProjectListWidths,
 ) -> ListItem<'static> {
-    let item = &app.project_list[node_index];
+    let item = &ctx.project_list[node_index];
     let empty = Vec::new();
     let sorted = child_sorted.get(&node_index).unwrap_or(&empty);
     let vendored_pkg = match &item.item {
@@ -879,13 +930,13 @@ fn render_wt_vendored_item(
         },
         |v| {
             let inherited_deleted = match &item.item {
-                RootItem::Worktrees(group) => app
+                RootItem::Worktrees(group) => ctx
                     .project_list
                     .is_deleted(group.entry(worktree_index).unwrap_or(&group.primary).path()),
                 _ => false,
             };
             render_child_item(
-                app,
+                ctx,
                 v,
                 &name,
                 sorted,
@@ -897,28 +948,33 @@ fn render_wt_vendored_item(
     )
 }
 
-pub fn render_tree_items(app: &App, widths: &ProjectListWidths) -> Vec<ListItem<'static>> {
-    let root_sorted = &app.project_list.cached_root_sorted;
-    let child_sorted = &app.project_list.cached_child_sorted;
-    let root_labels = app
+pub fn render_tree_items(
+    ctx: &PaneRenderCtx<'_>,
+    viewport: &tui_pane::Viewport,
+    widths: &ProjectListWidths,
+) -> Vec<ListItem<'static>> {
+    let root_sorted = &ctx.project_list.cached_root_sorted;
+    let child_sorted = &ctx.project_list.cached_child_sorted;
+    let root_labels = ctx
         .project_list
-        .resolved_root_labels(app.config.include_non_rust().includes_non_rust());
-    let focus = app.pane_focus_state(PaneId::ProjectList);
-    let pane = &app.panes.project_list.viewport;
-    let cursor = app.project_list.cursor();
+        .resolved_root_labels(ctx.config.include_non_rust().includes_non_rust());
+    let focus = ctx.focus_state;
+    let cursor = ctx.project_list.cursor();
 
-    let rows = app.visible_rows();
+    let rows = ctx.project_list.visible_rows();
     rows.iter()
         .enumerate()
         .map(|(row_index, row)| {
-            let item = render_tree_item(app, row, &root_labels, root_sorted, child_sorted, widths);
-            item.style(pane::selection_state_for(pane, cursor, row_index, focus).overlay_style())
+            let item = render_tree_item(ctx, row, &root_labels, root_sorted, child_sorted, widths);
+            item.style(
+                pane::selection_state_for(viewport, cursor, row_index, focus).overlay_style(),
+            )
         })
         .collect()
 }
 
 fn render_tree_item(
-    app: &App,
+    ctx: &PaneRenderCtx<'_>,
     row: &VisibleRow,
     root_labels: &[String],
     root_sorted: &[u64],
@@ -927,13 +983,13 @@ fn render_tree_item(
 ) -> ListItem<'static> {
     match row {
         VisibleRow::Root { node_index } => {
-            render_root_item(app, *node_index, root_labels, root_sorted, widths)
+            render_root_item(ctx, *node_index, root_labels, root_sorted, widths)
         },
         VisibleRow::GroupHeader {
             node_index,
             group_index,
         } => {
-            let item = &app.project_list[*node_index];
+            let item = &ctx.project_list[*node_index];
             let (group_name, member_count) = match &item.item {
                 RootItem::Rust(RustProject::Workspace(ws)) => {
                     let group = &ws.groups()[*group_index];
@@ -941,7 +997,7 @@ fn render_tree_item(
                 },
                 _ => (String::new(), 0),
             };
-            let prefix = if app
+            let prefix = if ctx
                 .project_list
                 .expanded
                 .contains(&ExpandKey::Group(*node_index, *group_index))
@@ -959,7 +1015,7 @@ fn render_tree_item(
             group_index,
             member_index,
         } => render_member_item(
-            app,
+            ctx,
             *node_index,
             *group_index,
             *member_index,
@@ -969,23 +1025,23 @@ fn render_tree_item(
         VisibleRow::Vendored {
             node_index,
             vendored_index,
-        } => render_vendored_item(app, *node_index, *vendored_index, child_sorted, widths),
+        } => render_vendored_item(ctx, *node_index, *vendored_index, child_sorted, widths),
         VisibleRow::WorktreeEntry {
             node_index,
             worktree_index,
-        } => render_worktree_entry(app, *node_index, *worktree_index, child_sorted, widths),
+        } => render_worktree_entry(ctx, *node_index, *worktree_index, child_sorted, widths),
         VisibleRow::WorktreeGroupHeader {
             node_index,
             worktree_index,
             group_index,
-        } => render_wt_group_header(app, *node_index, *worktree_index, *group_index, widths),
+        } => render_wt_group_header(ctx, *node_index, *worktree_index, *group_index, widths),
         VisibleRow::WorktreeMember {
             node_index,
             worktree_index,
             group_index,
             member_index,
         } => render_wt_member(
-            app,
+            ctx,
             *node_index,
             *worktree_index,
             *group_index,
@@ -998,7 +1054,7 @@ fn render_tree_item(
             worktree_index,
             vendored_index,
         } => render_wt_vendored_item(
-            app,
+            ctx,
             *node_index,
             *worktree_index,
             *vendored_index,
@@ -1008,7 +1064,7 @@ fn render_tree_item(
         VisibleRow::Submodule {
             node_index,
             submodule_index,
-        } => render_submodule_item(app, *node_index, *submodule_index, child_sorted, widths),
+        } => render_submodule_item(ctx, *node_index, *submodule_index, child_sorted, widths),
     }
 }
 // ── Disk-cache ───────────────────────────────────────────────────────

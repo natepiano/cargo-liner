@@ -13,6 +13,7 @@ pub(super) use inflight::Inflight;
 pub(super) use keymap::Keymap;
 pub(super) use lint::Lint;
 pub(super) use lint::LintDisplay;
+pub(super) use lint::lint_cell_for;
 pub(super) use net::AvailabilityStatus;
 pub(super) use net::Net;
 pub(super) use scan::Scan;
