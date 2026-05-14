@@ -14,6 +14,7 @@ use super::source_cache::ExtractedPaths;
 use super::source_cache::PathOrigin;
 use super::source_cache::SourceCache;
 use super::source_cache::UseRename;
+use crate::constants::MODULE_PATH_SEPARATOR;
 use crate::constants::PATH_KEYWORD_CRATE;
 use crate::constants::PATH_KEYWORD_SELF;
 use crate::constants::PATH_KEYWORD_SUPER;
@@ -258,7 +259,10 @@ pub(super) fn workspace_source_mentions_parent_export_literal(
         return Ok(false);
     }
 
-    let module_prefix = format!("crate::{}", parent_boundary.module_path.join("::"));
+    let module_prefix = format!(
+        "{PATH_KEYWORD_CRATE}{MODULE_PATH_SEPARATOR}{}",
+        parent_boundary.module_path.join(MODULE_PATH_SEPARATOR)
+    );
     let findings_root = settings
         .findings_dir
         .parent()
@@ -667,7 +671,10 @@ pub(super) fn public_reexport_exists_outside_parent(
     }
 
     if settings.config_root != settings.package_root {
-        let module_prefix = format!("crate::{}", child_module_path.join("::"));
+        let module_prefix = format!(
+            "{PATH_KEYWORD_CRATE}{MODULE_PATH_SEPARATOR}{}",
+            child_module_path.join(MODULE_PATH_SEPARATOR)
+        );
         let findings_root = settings
             .findings_dir
             .parent()

@@ -20,6 +20,7 @@ use super::references::BareReference;
 use super::references::ReferenceCollector;
 use super::shared;
 use crate::config::DiagnosticCode;
+use crate::constants::MODULE_PATH_SEPARATOR;
 use crate::constants::PATH_KEYWORD_SUPER;
 use crate::constants::RUST_SOURCE_FILE_EXTENSION;
 use crate::constants::SOURCE_DIR_SRC;
@@ -32,7 +33,7 @@ use crate::imports::ValidatedFixSet;
 use crate::module_paths;
 use crate::selection::Selection;
 
-pub(crate) struct PreferModuleImportScan {
+pub struct PreferModuleImportScan {
     pub findings: Vec<Finding>,
     pub fixes:    ValidatedFixSet,
 }
@@ -66,7 +67,7 @@ pub(super) struct InlineCallFindingInputs<'a> {
     pub(super) file_insertion_offset: usize,
 }
 
-pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImportScan> {
+pub fn scan_selection(selection: &Selection) -> Result<PreferModuleImportScan> {
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
     for package_root in &selection.package_roots {
@@ -357,7 +358,7 @@ fn build_function_use_fix(
     };
     let group = Some(ImportGroup {
         bare_name: function.module_name.clone(),
-        full_path: function.absolute_module.join("::"),
+        full_path: function.absolute_module.join(MODULE_PATH_SEPARATOR),
     });
 
     if function.import_target == ImportTarget::ParentModule {
@@ -403,7 +404,7 @@ fn build_reference_fixes(
                 .find(|function| function.module_name == module_name)
                 .map(|function| ImportGroup {
                     bare_name: function.module_name.clone(),
-                    full_path: function.absolute_module.join("::"),
+                    full_path: function.absolute_module.join(MODULE_PATH_SEPARATOR),
                 });
             let prefix = if import_target == ImportTarget::ParentModule {
                 PATH_KEYWORD_SUPER

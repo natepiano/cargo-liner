@@ -98,6 +98,10 @@ pub(crate) const PATH_KEYWORD_CRATE: &str = "crate";
 pub(crate) const PATH_KEYWORD_SELF: &str = "self";
 pub(crate) const PATH_KEYWORD_SUPER: &str = "super";
 
+// rust module paths
+pub(crate) const MODULE_GLOB_SUFFIX: &str = "::*";
+pub(crate) const MODULE_PATH_SEPARATOR: &str = "::";
+
 // rust source files
 pub(crate) const RUST_SOURCE_FILE_EXTENSION: &str = "rs";
 pub(crate) const RUST_SOURCE_FILE_SUFFIX: &str = ".rs";

@@ -14,6 +14,8 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 
 use super::validated_plan;
+use crate::constants::MODULE_GLOB_SUFFIX;
+use crate::constants::MODULE_PATH_SEPARATOR;
 use crate::constants::PATH_KEYWORD_SELF;
 use crate::constants::PATH_KEYWORD_SUPER;
 use crate::imports::UseFix;
@@ -258,7 +260,10 @@ fn collect_use_lines(
         UseTree::Name(name) => {
             let mut segments = path_prefix;
             segments.push(name.ident.to_string());
-            lines.push(format!("{use_prefix} {};", segments.join("::")));
+            lines.push(format!(
+                "{use_prefix} {};",
+                segments.join(MODULE_PATH_SEPARATOR)
+            ));
             Ok(())
         },
         UseTree::Rename(rename) => {
@@ -266,7 +271,7 @@ fn collect_use_lines(
             segments.push(rename.ident.to_string());
             lines.push(format!(
                 "{use_prefix} {} as {};",
-                segments.join("::"),
+                segments.join(MODULE_PATH_SEPARATOR),
                 rename.rename
             ));
             Ok(())
@@ -275,7 +280,10 @@ fn collect_use_lines(
             let rendered_prefix = if path_prefix.is_empty() {
                 "*".to_string()
             } else {
-                format!("{}::*", path_prefix.join("::"))
+                format!(
+                    "{}{MODULE_GLOB_SUFFIX}",
+                    path_prefix.join(MODULE_PATH_SEPARATOR)
+                )
             };
             lines.push(format!("{use_prefix} {rendered_prefix};"));
             Ok(())

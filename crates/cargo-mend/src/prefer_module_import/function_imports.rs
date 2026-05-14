@@ -9,6 +9,7 @@ use syn::visit::Visit;
 use syn::visit::visit_item_mod;
 
 use super::shared;
+use crate::constants::MODULE_PATH_SEPARATOR;
 use crate::constants::PATH_KEYWORD_CRATE;
 use crate::constants::PATH_KEYWORD_SUPER;
 
@@ -111,7 +112,7 @@ fn analyze_function_import(
     } else {
         ImportTarget::OtherModule
     };
-    let module_path = shortened_module_segments.join("::");
+    let module_path = shortened_module_segments.join(MODULE_PATH_SEPARATOR);
     let replacement_use = if import_target == ImportTarget::ParentModule {
         String::new()
     } else {

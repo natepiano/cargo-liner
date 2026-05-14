@@ -14,6 +14,7 @@ use serde::Serialize;
 use super::settings;
 use crate::config::DiagnosticCode;
 use crate::constants::FINDINGS_SCHEMA_VERSION;
+use crate::constants::MODULE_PATH_SEPARATOR;
 use crate::diagnostics::CompilerWarningFacts;
 use crate::diagnostics::Finding;
 use crate::diagnostics::PubUseFixFact;
@@ -385,7 +386,7 @@ fn def_path_is_descendant(caller_path: &str, narrower_scope: &str) -> bool {
         return true;
     }
     if let Some(rest) = caller_path.strip_prefix(narrower_scope)
-        && rest.starts_with("::")
+        && rest.starts_with(MODULE_PATH_SEPARATOR)
     {
         return true;
     }

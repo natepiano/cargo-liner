@@ -35,6 +35,7 @@ use syn::visit::Visit;
 use walkdir::WalkDir;
 
 use super::config::DiagnosticCode;
+use super::constants::MODULE_PATH_SEPARATOR;
 use super::constants::PATH_KEYWORD_CRATE;
 use super::constants::PATH_KEYWORD_SELF;
 use super::constants::PATH_KEYWORD_SUPER;
@@ -282,7 +283,7 @@ fn shadows_prelude(name: &str) -> bool {
 /// `std::fmt::Display`. The returned import is self-contained — it doesn't
 /// rely on a sibling module import staying in place.
 fn absolutize_import_path(import_path: &str, existing_imports: &BTreeSet<String>) -> String {
-    let Some((leading, rest)) = import_path.split_once("::") else {
+    let Some((leading, rest)) = import_path.split_once(MODULE_PATH_SEPARATOR) else {
         return import_path.to_string();
     };
     if leading == PATH_KEYWORD_CRATE
@@ -296,7 +297,7 @@ fn absolutize_import_path(import_path: &str, existing_imports: &BTreeSet<String>
     // Without a parent segment, the existing import is itself a top-level
     // crate name — already absolute.
     for existing in existing_imports {
-        let Some((parent, last)) = existing.rsplit_once("::") else {
+        let Some((parent, last)) = existing.rsplit_once(MODULE_PATH_SEPARATOR) else {
             continue;
         };
         if last == leading {
@@ -408,7 +409,7 @@ fn collect_scopes(
         if let Item::Use(item_use) = item {
             if let Some(import_path) = flatten_use_path(&item_use.tree) {
                 if !matches!(item_use.vis, Visibility::Inherited)
-                    && let Some(import_name) = import_path.rsplit("::").next()
+                    && let Some(import_name) = import_path.rsplit(MODULE_PATH_SEPARATOR).next()
                 {
                     existing_reexport_names.insert(import_name.to_string());
                 }
@@ -490,7 +491,7 @@ fn indentation_at(text: &str, byte_offset: usize) -> String {
 }
 
 fn canonicalize_inserted_use_path(scope: &ScopeInfo, full_path: &str) -> String {
-    let segments: Vec<&str> = full_path.split("::").collect();
+    let segments: Vec<&str> = full_path.split(MODULE_PATH_SEPARATOR).collect();
     let super_count = segments
         .iter()
         .take_while(|segment| **segment == PATH_KEYWORD_SUPER)
@@ -511,7 +512,7 @@ fn canonicalize_inserted_use_path(scope: &ScopeInfo, full_path: &str) -> String 
             .iter()
             .map(|segment| (*segment).to_string()),
     );
-    absolute_segments.join("::")
+    absolute_segments.join(MODULE_PATH_SEPARATOR)
 }
 
 /// Finds type names that cannot be safely imported because they either:
@@ -631,7 +632,7 @@ impl InlinePathVisitor {
             return;
         }
 
-        let full_path = segments.join("::");
+        let full_path = segments.join(MODULE_PATH_SEPARATOR);
 
         // Heuristic: if the penultimate segment is also PascalCase, the leaf
         // is almost certainly an enum variant (or associated type/const) of
@@ -648,7 +649,7 @@ impl InlinePathVisitor {
             } else {
                 (segments.clone(), leaf.clone(), leaf.clone())
             };
-        let import_path = import_segments.join("::");
+        let import_path = import_segments.join(MODULE_PATH_SEPARATOR);
 
         // Use ident spans to exclude generic arguments from the replacement range.
         // path.span() includes generic args (e.g., `<T>`), but we only want to
@@ -872,7 +873,7 @@ fn flatten_use_path(tree: &UseTree) -> Option<String> {
             _ => return None,
         }
     }
-    Some(segments.join("::"))
+    Some(segments.join(MODULE_PATH_SEPARATOR))
 }
 
 fn is_pascal_case(name: &str) -> bool {

@@ -15,6 +15,7 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 
 use super::parent_boundary::ParentBoundaryKey;
+use crate::constants::MODULE_PATH_SEPARATOR;
 use crate::constants::PATH_KEYWORD_CRATE;
 use crate::constants::PATH_KEYWORD_SELF;
 use crate::constants::PATH_KEYWORD_SUPER;
@@ -400,7 +401,7 @@ fn relative_path_from_module(
 }
 
 fn format_path(segments: &[String], rename: Option<&str>) -> String {
-    let mut path = segments.join("::");
+    let mut path = segments.join(MODULE_PATH_SEPARATOR);
     if let Some(rename) = rename {
         path.push_str(" as ");
         path.push_str(rename);

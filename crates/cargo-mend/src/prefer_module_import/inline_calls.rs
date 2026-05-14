@@ -13,6 +13,7 @@ use super::scan::InlineCallFindingInputs;
 use super::scan::ScanFileContext;
 use super::shared;
 use crate::config::DiagnosticCode;
+use crate::constants::MODULE_PATH_SEPARATOR;
 use crate::constants::PATH_KEYWORD_CRATE;
 use crate::constants::PATH_KEYWORD_SUPER;
 use crate::diagnostics::Finding;
@@ -141,7 +142,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
 
         let group = Some(ImportGroup {
             bare_name: candidate.module_name.clone(),
-            full_path: candidate.absolute_module.join("::"),
+            full_path: candidate.absolute_module.join(MODULE_PATH_SEPARATOR),
         });
 
         let call_prefix = if candidate.import_target == ImportTarget::ParentModule {
@@ -238,7 +239,7 @@ fn analyze_inline_call(
     } else {
         ImportTarget::OtherModule
     };
-    let module_path = shortened.join("::");
+    let module_path = shortened.join(MODULE_PATH_SEPARATOR);
 
     let first_seg = path.segments.first()?;
     let leaf_seg = path.segments.last()?;

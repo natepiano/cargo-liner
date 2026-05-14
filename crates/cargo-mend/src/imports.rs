@@ -18,6 +18,7 @@ use syn::visit::Visit;
 use walkdir::WalkDir;
 
 use super::config::DiagnosticCode;
+use super::constants::MODULE_PATH_SEPARATOR;
 use super::constants::PATH_KEYWORD_CRATE;
 use super::constants::PATH_KEYWORD_SUPER;
 use super::constants::RUST_SOURCE_FILE_EXTENSION;
@@ -492,7 +493,7 @@ fn common_prefix_len(left: &[String], right: &[String]) -> usize {
 }
 
 fn format_path(segments: &[String], rename: Option<&str>) -> String {
-    let mut path = segments.join("::");
+    let mut path = segments.join(MODULE_PATH_SEPARATOR);
     if let Some(rename) = rename {
         path.push_str(" as ");
         path.push_str(rename);
