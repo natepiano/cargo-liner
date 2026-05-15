@@ -421,14 +421,13 @@ fn collect_matching_pub_use_exports(
         if pub_use_is_fix_supported(&item_use.tree, child_module_name, item_name) {
             exported.fix_supported = ParentFacadeFixSupport::Supported;
         }
-        exported.visibility = Some(match exported.visibility {
-            None => use_visibility,
-            Some(existing) => widest_visibility(existing, use_visibility),
-        });
+        exported.visibility = Some(exported.visibility.map_or(use_visibility, |existing| {
+            widest_visibility(existing, use_visibility)
+        }));
     }
 }
 
-fn widest_visibility(
+const fn widest_visibility(
     a: ParentFacadeVisibility,
     b: ParentFacadeVisibility,
 ) -> ParentFacadeVisibility {
