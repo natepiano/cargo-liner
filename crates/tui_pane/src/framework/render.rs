@@ -2,8 +2,10 @@
 //! [`PaneRegistry`] mapping from pane id to render target, and the
 //! [`render_panes`] loop that ties them together.
 //!
-//! Symmetric with [`super::Hittable`] / [`super::HitTestRegistry`] /
-//! [`super::hit_test_at`] on the input side. Each pane implements
+//! Symmetric with [`Hittable`](super::hit_test::Hittable) /
+//! [`HitTestRegistry`](super::hit_test::HitTestRegistry) /
+//! [`hit_test_at`](super::hit_test::hit_test_at) on the input side.
+//! Each pane implements
 //! [`Renderable`] against its embedding application's render-context
 //! type; the embedding crate hands out `&mut dyn Renderable` trait
 //! objects from a [`PaneRegistry`]; [`render_panes`] walks the resolved
@@ -23,7 +25,7 @@ use crate::ResolvedPaneLayout;
 /// rather than an associated type so impls for foreign types (the
 /// framework's own pane structs) can be written in the embedding
 /// crate against an embedding-defined context without tripping the
-/// orphan rule — same reasoning as [`super::Hittable`].
+/// orphan rule — same reasoning as [`Hittable`](super::hit_test::Hittable).
 pub trait Renderable<Ctx> {
     /// Draw the pane into `area` of `frame`, reading `ctx` for the
     /// refs the pane needs.

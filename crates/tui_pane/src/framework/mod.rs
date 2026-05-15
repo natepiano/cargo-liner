@@ -1,8 +1,12 @@
 //! `Framework<Ctx>`: the framework aggregator owned by every binary
 //! that uses `tui_pane`.
 
-mod dispatch;
+mod focus;
+mod global_action;
+mod hit_test;
+mod input;
 mod list_navigation;
+mod render;
 mod tab_stop;
 
 use std::collections::HashMap;
@@ -10,16 +14,27 @@ use std::path::Path;
 
 use ratatui::layout::Position;
 
-pub(crate) use self::dispatch::dispatch_global;
+pub(crate) use self::global_action::dispatch_global;
+pub use self::hit_test::HitTestRegistry;
+pub use self::hit_test::Hittable;
+pub use self::hit_test::clear_all_hover;
+pub use self::hit_test::hit_test_at;
+pub use self::hit_test::set_pane_hovered;
+pub use self::hit_test::set_pane_pos;
+pub use self::input::FrameworkHit;
+pub use self::input::InputContext;
+pub use self::input::dispatch_hit_test;
 pub use self::list_navigation::CycleDirection;
 pub use self::list_navigation::ListNavigation;
+pub use self::render::PaneRegistry;
+pub use self::render::Renderable;
+pub use self::render::render_panes;
 use self::tab_stop::RegisteredTabStop;
 pub use self::tab_stop::TabOrder;
 pub use self::tab_stop::TabStop;
 use crate::AppContext;
 use crate::FocusedPane;
 use crate::FrameworkFocusId;
-use crate::FrameworkHit;
 use crate::FrameworkOverlayId;
 use crate::KeymapPane;
 use crate::LoadedSettings;
@@ -160,7 +175,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
 
     /// Flip `quit_requested` to `true`. `pub(super)` because only the
     /// framework's built-in [`GlobalAction::Quit`](crate::GlobalAction::Quit)
-    /// dispatcher (sibling: `framework/dispatch.rs`) calls it.
+    /// dispatcher (sibling: `framework/global_action.rs`) calls it.
     pub(super) const fn request_quit(&mut self) { self.quit_requested = true; }
 
     /// Flip `restart_requested` to `true`. `pub(super)` for the same
@@ -332,7 +347,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
 
     /// Run the framework dismiss chain. Returns `true` when something
     /// was dismissed at the framework level. The free
-    /// [`dismiss_chain`](crate::framework::dispatch::dismiss_chain)
+    /// [`dismiss_chain`](crate::framework::global_action::dismiss_chain)
     /// helper (called from the
     /// [`GlobalAction::Dismiss`](crate::GlobalAction::Dismiss)
     /// dispatcher) consults this; on `false`, it falls through to the

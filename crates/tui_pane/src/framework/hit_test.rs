@@ -1,9 +1,28 @@
-//! Generic hit-test dispatch loop.
+//! Per-pane hit-test routing: the [`Hittable`] trait that panes
+//! implement and the [`hit_test_at`] loop that walks a
+//! [`HitTestRegistry`].
 
 use ratatui::layout::Position;
 
-use super::Hittable;
 use crate::Viewport;
+
+/// Trait implemented by panes that participate in click / hover
+/// dispatch.
+///
+/// `Target` is the concrete hit-result type the embedding application
+/// uses (typically an enum carrying the matched pane id plus a row
+/// index or affordance variant). The trait stays free of generic
+/// associated types and supertraits so it is object-safe — the
+/// dispatch loop in [`hit_test_at`] needs `&dyn Hittable<Target>`
+/// to work. `Target` is a generic parameter rather than an associated
+/// type so impls for foreign types (the framework's own pane structs)
+/// can be written in the embedding crate against an
+/// embedding-defined `Target` without tripping the orphan rule.
+pub trait Hittable<Target> {
+    /// Return the hit target if `pos` lands inside this pane's
+    /// rendered area, or `None` otherwise.
+    fn hit_test_at(&self, pos: Position) -> Option<Target>;
+}
 
 /// Top-down walk of every hittable pane in stacking order.
 ///
