@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix narrow-pub-crate firing on items reached through `pub use` when the parent file also contained an earlier `pub(crate) use` for a sibling
+
 ## [0.13.0] - 2026-05-14
 
 ### Changed
