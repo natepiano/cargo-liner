@@ -376,8 +376,13 @@ pub(super) fn exported_names_from_parent_boundary(
         let Some(visibility) = parent_facade_visibility(&item_use.vis) else {
             continue;
         };
-        exported.visibility = Some(exported.visibility.map_or(visibility, |existing| existing));
-        collect_matching_pub_use_exports(item_use, child_module_name, item_name, &mut exported);
+        collect_matching_pub_use_exports(
+            item_use,
+            visibility,
+            child_module_name,
+            item_name,
+            &mut exported,
+        );
     }
     exported.explicit.sort();
     exported.explicit.dedup();
@@ -386,15 +391,14 @@ pub(super) fn exported_names_from_parent_boundary(
 
 fn collect_matching_pub_use_exports(
     item_use: &ItemUse,
+    use_visibility: ParentFacadeVisibility,
     child_module_name: &str,
     item_name: &str,
     exported: &mut ParentFacadeExports,
 ) {
-    if pub_use_is_fix_supported(&item_use.tree, child_module_name, item_name) {
-        exported.fix_supported = ParentFacadeFixSupport::Supported;
-    }
     let mut paths = Vec::new();
     source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
+    let mut matched = false;
     for path in paths {
         let normalized = if path
             .first()
@@ -410,7 +414,31 @@ fn collect_matching_pub_use_exports(
             && let Some(export_name) = normalized.last()
         {
             exported.explicit.push(export_name.clone());
+            matched = true;
         }
+    }
+    if matched {
+        if pub_use_is_fix_supported(&item_use.tree, child_module_name, item_name) {
+            exported.fix_supported = ParentFacadeFixSupport::Supported;
+        }
+        exported.visibility = Some(match exported.visibility {
+            None => use_visibility,
+            Some(existing) => widest_visibility(existing, use_visibility),
+        });
+    }
+}
+
+fn widest_visibility(
+    a: ParentFacadeVisibility,
+    b: ParentFacadeVisibility,
+) -> ParentFacadeVisibility {
+    use ParentFacadeVisibility::Crate;
+    use ParentFacadeVisibility::Public;
+    use ParentFacadeVisibility::Super;
+    match (a, b) {
+        (Public, _) | (_, Public) => Public,
+        (Crate, _) | (_, Crate) => Crate,
+        (Super, Super) => Super,
     }
 }
 
@@ -724,6 +752,41 @@ mod tests {
             exported_names_from_parent_boundary(&file, "report_writer", "ReportDefinition");
         assert_eq!(exports.explicit, vec!["ReportDefinition".to_string()]);
         assert_eq!(exports.fix_supported, ParentFacadeFixSupport::Supported);
+    }
+
+    #[test]
+    fn mixed_pub_uses_pick_visibility_from_matching_re_export() {
+        // Parent file has both `pub(crate) use` and `pub use` lines pointing at
+        // different children. The visibility on `ParentFacadeExports` must come
+        // from the line that actually re-exports the queried item, not from
+        // whichever pub-ish `use` appears first in the file.
+        let source = "\
+pub(crate) use first_child::Alpha;
+pub use second_child::Beta;
+";
+        let file = syn::parse_file(source).unwrap();
+
+        let exports = exported_names_from_parent_boundary(&file, "first_child", "Alpha");
+        assert_eq!(exports.explicit, vec!["Alpha".to_string()]);
+        assert_eq!(exports.visibility, Some(ParentFacadeVisibility::Crate));
+
+        let exports = exported_names_from_parent_boundary(&file, "second_child", "Beta");
+        assert_eq!(exports.explicit, vec!["Beta".to_string()]);
+        assert_eq!(exports.visibility, Some(ParentFacadeVisibility::Public));
+    }
+
+    #[test]
+    fn duplicate_re_exports_take_widest_visibility() {
+        // Same item re-exported with both `pub(crate) use` and `pub use` —
+        // widest reach wins so `narrow-pub-crate` doesn't fire on an item
+        // that's already public.
+        let source = "\
+pub(crate) use child::Thing;
+pub use child::Thing;
+";
+        let file = syn::parse_file(source).unwrap();
+        let exports = exported_names_from_parent_boundary(&file, "child", "Thing");
+        assert_eq!(exports.visibility, Some(ParentFacadeVisibility::Public));
     }
 
     #[test]
