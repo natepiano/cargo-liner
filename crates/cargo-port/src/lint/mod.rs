@@ -1,5 +1,7 @@
 //! Reads per-project lint state from cache-rooted JSON artifacts.
 
+use std::path::Path;
+
 mod history;
 mod lint_runs;
 mod paths;
@@ -8,6 +10,21 @@ mod runtime;
 mod status;
 mod trigger;
 mod types;
+
+/// Reclaim a project's lint cache directory. Best-effort: silent
+/// on missing or locked paths. Called from the dismiss flow when
+/// the project at `project_root` is gone from disk so a future
+/// worktree/branch reusing this exact path starts clean.
+pub(crate) fn reclaim_project_cache(project_root: &Path) {
+    reclaim_project_cache_under(paths::cache_root().as_path(), project_root);
+}
+
+/// Cache-root-explicit variant of [`reclaim_project_cache`].
+/// Matches the `_under` pattern used by the rest of the module so
+/// tests can target a tempdir.
+pub(super) fn reclaim_project_cache_under(cache_root: &Path, project_root: &Path) {
+    let _ = std::fs::remove_dir_all(paths::project_dir_under(cache_root, project_root));
+}
 
 #[cfg(test)]
 #[allow(

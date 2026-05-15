@@ -20,5 +20,4 @@ pub use keymap::KeymapPaneAction;
 pub use settings::SettingsCommand;
 pub use settings::SettingsPane;
 pub use settings::SettingsPaneAction;
-pub use settings::SettingsRender;
 pub use settings::SettingsRenderOptions;

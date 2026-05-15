@@ -1,4 +1,5 @@
 use super::App;
+use crate::lint;
 use crate::project::Visibility::Dismissed;
 use crate::tui::pane::DismissTarget;
 use crate::tui::panes::PaneId;
@@ -27,6 +28,13 @@ impl App {
         match target {
             DismissTarget::Toast(id) => self.dismiss_toast(id),
             DismissTarget::DeletedProject(path) => {
+                // The project at `path` is gone from disk and the
+                // user has confirmed dismissal. Reclaim its lint
+                // cache so a future worktree/branch reusing this
+                // exact path starts clean. CI cache is keyed by
+                // (owner, repo) and shared across sibling worktrees
+                // — left alone here.
+                lint::reclaim_project_cache(path.as_path());
                 let parent_node_index = self.project_list.worktree_parent_node_index(&path);
                 if let Some(project) = self.project_list.at_path_mut(&path) {
                     project.visibility = Dismissed;

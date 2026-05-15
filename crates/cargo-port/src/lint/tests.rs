@@ -680,3 +680,50 @@ fn no_cache_size_returns_zero_stats() {
     assert_eq!(stats.runs_evicted, 0);
     assert_eq!(stats.bytes_reclaimed, 0);
 }
+
+// ── reclaim_project_cache ───────────────────────────────────────
+
+#[test]
+fn reclaim_project_cache_removes_existing_directory() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = tempfile::tempdir().expect("tempdir");
+
+    history::append_history_under(
+        cache_dir.path(),
+        project_dir.path(),
+        &run(LintRunStatus::Passed),
+        None,
+    )
+    .expect("append history");
+    let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
+    assert!(
+        project_cache.as_path().is_dir(),
+        "project cache directory must exist before reclamation",
+    );
+
+    super::reclaim_project_cache_under(cache_dir.path(), project_dir.path());
+
+    assert!(
+        !project_cache.as_path().exists(),
+        "project cache directory must be removed after reclamation",
+    );
+    assert!(
+        cache_dir.path().is_dir(),
+        "cache root must survive — only the per-project subdir is reclaimed",
+    );
+}
+
+#[test]
+fn reclaim_project_cache_is_noop_when_directory_missing() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = tempfile::tempdir().expect("tempdir");
+
+    // No history written — the per-project directory was never
+    // created. Reclamation must not panic and must not disturb
+    // the cache root.
+    super::reclaim_project_cache_under(cache_dir.path(), project_dir.path());
+
+    assert!(cache_dir.path().is_dir());
+    let project_cache = paths::project_dir_under(cache_dir.path(), project_dir.path());
+    assert!(!project_cache.as_path().exists());
+}
