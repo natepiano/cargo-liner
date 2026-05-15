@@ -9,7 +9,7 @@
 | 1 | Create `pane/` submodule (7 files in via `pane/mod.rs`) + rename `panes/` → `overlays/` | Low | 8 file/dir relocations, ~18 lib.rs paths updated, one commit |
 | 2 | Create `layout/` submodule; move `viewport.rs` + `column_widths.rs` into it | Low | 2 files relocated, ~8 lib.rs re-export paths updated, one commit |
 | 3 | Extract tests from `keymap/builder/mod.rs` into `keymap/builder/tests.rs` | Low | ~1198 test lines relocated, one commit |
-| 4 | Split `toasts/stack.rs` (616 prod) into a `stack/` submodule | Medium | Internal-only callers, one commit |
+| 4 | Lift `Toasts<Ctx>` into `toasts/mod.rs`; split `toasts/stack.rs` (616 prod) across 4 new toasts-level siblings | Medium | Internal-only callers, one commit |
 | 5 | Split `toasts/render.rs` (587 prod) into a `render/` submodule | Medium | Internal-only callers, one commit |
 
 > Line ranges named inside Phases 4 and 5 reference the file snapshot taken when this plan was written. The file has continued to grow; when executing, locate each item by **function/type name** rather than line number. The submodule assignments and dependency order remain correct.
@@ -118,13 +118,14 @@ Single commit; checkpoint with `cargo build -p tui_pane` + `cargo nextest run -p
    - `git mv src/pane_title.rs src/pane/title.rs`
    - `git mv src/popup.rs src/pane/popup.rs`
    - `git mv src/rules.rs src/pane/rules.rs`
-3. In `src/pane/mod.rs`, prepend `mod chrome; mod id; mod popup; mod rules; mod state; mod title;`.
+3. In `src/pane/mod.rs` (the moved former `pane.rs`), prepend `mod chrome; mod id; mod popup; mod rules; mod state; mod title;` above the existing `Pane<Ctx>` trait and `Mode<Ctx>` enum.
 4. In `src/lib.rs`: remove the seven module declarations (`mod pane; mod pane_chrome; mod pane_id; mod pane_state; mod pane_title; mod popup; mod rules;`) and replace with a single `mod pane;`. Update the `pub use` block as shown above.
 5. Fix the one intra-crate import: `src/pane/title.rs` (was `src/pane_title.rs`) had `use crate::pane_state;` — change to `use super::state;` and update references to `super::state::scroll_indicator`.
 6. Rename `panes/` → `overlays/`:
    - `git mv src/panes src/overlays`
    - In `src/lib.rs`: rename `mod panes;` to `mod overlays;` and rewrite every `pub use panes::X;` line to `pub use overlays::X;`.
-   - Grep the crate for `crate::panes::` and `use super::panes` (or sibling references inside `panes/`) and rewrite each.
+   - Grep code for `crate::panes::` and `use super::panes` (or sibling references inside the renamed dir) and rewrite each.
+   - Grep doc comments and prose: `rg "panes::" tui_pane/src/ --include='*.rs'` — rustdoc intra-doc links (`[crate::panes::Foo]`) break silently at doc-build time, not compile time. Rewrite each hit.
 7. `cargo build -p tui_pane` + `cargo nextest run -p tui_pane`; commit.
 
 ## Phase 2 — Create `layout/` submodule
@@ -211,83 +212,96 @@ Single commit; checkpoint with `cargo build -p tui_pane` + `cargo nextest run -p
 4. Confirm no production item required `pub(super)` widening (the test block already saw `super::*` items).
 5. `cargo build -p tui_pane` + `cargo nextest run -p tui_pane`; commit.
 
-## Phase 4 — Split `toasts/stack.rs`
+## Phase 4 — Split `toasts/stack.rs` by lifting `Toasts<Ctx>` into `toasts/mod.rs`
 
-`toasts/stack.rs` is 616 production lines housing the `Toasts<Ctx>` manager. It covers push / dismiss commands, lifecycle (prune, task status, tracked-item maintenance), viewport navigation, bar-slot emission, hit-test integration, and key-command dispatch — six concerns on one struct.
+`Toasts<Ctx>` is the anchor type for the whole `toasts/` module — every other type in the subsystem (`Toast`, `ToastView`, `ToastCommand`, `ToastSettings`, …) exists to serve it. Its current home in `toasts/stack.rs` is the wrong placement under the anchor-type rule: the parent module name `toasts` matches the snake_case of `Toasts`, so the type belongs in `toasts/mod.rs`. `toasts/stack.rs` itself disappears; its 616 production lines redistribute across new toasts-level siblings, each holding one impl-block concern.
 
 ### Target layout
 
 ```
-toasts/stack/
-├── mod.rs            # Toasts<Ctx> struct + ToastCommand + ToastSpec + new() + Default
-├── commands.rs       # push variants, dismiss, task mutators (start_task, finish_task, etc.)
-├── lifecycle.rs      # prune, prune_tracked_items, queries (is_alive, active, has_active, ...)
-├── navigation.rs     # focused_id, reset_to_first / reset_to_last, on_navigation, try_consume_cycle_step
-├── bar.rs            # mode, defaults, bar_slots, hits / set_hits, Hittable impl
-└── dispatch.rs       # handle_key_command, handle_key
+toasts/
+├── mod.rs               # Toasts<Ctx> struct + ToastCommand + ToastSpec + new() + Default + sync_viewport_len() (private helper)
+├── body.rs              # unchanged
+├── commands.rs          # impl Toasts<Ctx> { push variants, dismiss, task mutators } — NEW
+├── format.rs            # unchanged
+├── item.rs              # unchanged
+├── lifecycle.rs         # impl Toasts<Ctx> { prune, queries, tracked-item maintenance } — NEW
+├── navigation.rs        # impl Toasts<Ctx> { focus + cursor stepping } — NEW
+├── render.rs            # unchanged (Phase 5 splits this further)
+├── settings.rs          # unchanged
+├── slots.rs             # impl Toasts<Ctx> { mode, defaults, bar_slots, hits, set_hits, handle_key, handle_key_command, Hittable impl } — NEW
+├── toast.rs             # unchanged
+└── view.rs              # unchanged
 ```
+
+Naming choice: `slots.rs` instead of `bar.rs` — the top-level `bar/` module already owns "bar". This submodule contributes status-bar slots and the input dispatch that drives them, so `slots` reads correctly without a name clash. If `slots.rs` grows substantially (mouse routing, focus handling, modal interactions), split key dispatch back out as `toasts/input.rs`.
 
 ### What goes where
 
-Line ranges below reference the current `toasts/stack.rs`.
+Line ranges below reference the current `toasts/stack.rs`. When executing, locate by function/type name — the file has grown since the plan was written.
 
-**`stack/mod.rs`** — retained production code
-- `struct ToastCommand<A>` (38–43), `struct ToastSpec<Ctx>` (45–53)
-- `struct Toasts<Ctx>` definition (56–62), `impl Default` (64–66)
-- `pub fn new()` constructor (71–78)
-- Private helper `sync_viewport_len()` stays here as a `pub(super)` shared helper — both `commands.rs` and `lifecycle.rs` call it, so housing it in the parent module avoids cross-sibling imports
-- `mod` declarations + `pub use` for the submodules below
+**`toasts/mod.rs`** — gains the manager and its constructor
+- `struct ToastCommand<A>` (lines 38–43)
+- `struct ToastSpec<Ctx>` (lines 45–53)
+- `struct Toasts<Ctx>` definition (lines 56–62), `impl Default` (lines 64–66)
+- `impl Toasts<Ctx> { pub fn new() }` constructor (lines 71–78)
+- `impl Toasts<Ctx> { fn sync_viewport_len() }` private helper — kept here as a `pub(super)` shared helper because both `commands.rs` and `lifecycle.rs` invoke it (housing it in the parent avoids cross-sibling imports)
+- Existing `mod` declarations + `pub use` block stays; new entries: `mod commands; mod dispatch; mod lifecycle; mod navigation; mod slots;`. The current `mod stack;` and `pub use stack::ToastCommand; pub use stack::Toasts;` lines are removed (types are now defined directly).
 
-**`stack/commands.rs`** (lines 81–222, 263–313, 412–427)
-- `push`, `push_styled`, `push_with_action`, `push_timed`, `push_timed_styled`, `push_task`, `push_persistent`, `push_persistent_styled`
-- `start_task`, `finish_task`, `reactivate_task`, `update_task_body`, `set_tracked_items`
-- `dismiss`, `dismiss_focused`
-- `mark_item_completed`, `mark_tracked_item_completed`
-- Private helper `push_entry()` (557–575) — widen to `pub(super)`
+**`toasts/commands.rs`** (lines 81–222, 263–313, 412–427)
+- `impl Toasts<Ctx> { push, push_styled, push_with_action, push_timed, push_timed_styled, push_task, push_persistent, push_persistent_styled }`
+- `impl Toasts<Ctx> { start_task, finish_task, reactivate_task, update_task_body, set_tracked_items }`
+- `impl Toasts<Ctx> { dismiss, dismiss_focused }`
+- `impl Toasts<Ctx> { mark_item_completed, mark_tracked_item_completed }`
+- Private helper `push_entry()` (lines 557–575)
 
-**`stack/lifecycle.rs`** (lines 227–260, 317–409, 430–453)
-- `has_active`, `active`, `active_now`, `active_views`, `focused_toast_id`
-- `is_alive`, `is_task_finished`, `tracked_item_count`
-- `complete_missing_items`, `add_new_tracked_items`, `restart_tracked_item`
-- `prune`, `prune_tracked_items`
-- Private helpers `toast_for_task()`, `toast_for_task_mut()` — widen to `pub(super)`
-- Calls `super::sync_viewport_len()` (defined in `mod.rs`)
+**`toasts/lifecycle.rs`** (lines 227–260, 317–409, 430–453)
+- `impl Toasts<Ctx> { has_active, active, active_now, active_views, focused_toast_id }`
+- `impl Toasts<Ctx> { is_alive, is_task_finished, tracked_item_count }`
+- `impl Toasts<Ctx> { complete_missing_items, add_new_tracked_items, restart_tracked_item }`
+- `impl Toasts<Ctx> { prune, prune_tracked_items }`
+- Private helpers `toast_for_task()`, `toast_for_task_mut()`
+- Calls `Self::sync_viewport_len()` defined in `mod.rs`
 
-**`stack/navigation.rs`** (lines 226, 456–501)
-- `focused_id`, `reset_to_first`, `reset_to_last`
-- `on_navigation` (consumes a `CycleDirection`)
-- `try_consume_cycle_step`
+**`toasts/navigation.rs`** (lines 226, 456–501)
+- `impl Toasts<Ctx> { focused_id, reset_to_first, reset_to_last }`
+- `impl Toasts<Ctx> { on_navigation }` (consumes a `CycleDirection`)
+- `impl Toasts<Ctx> { try_consume_cycle_step }`
 
-**`stack/bar.rs`** (lines 531–555, 600–614)
-- `mode`, `defaults`
-- `bar_slots`
-- `hits`, `set_hits`
+**`toasts/slots.rs`** (lines 504–555, 600–614)
+- `impl Toasts<Ctx> { mode, defaults }`
+- `impl Toasts<Ctx> { bar_slots }`
+- `impl Toasts<Ctx> { hits, set_hits }`
+- `impl Toasts<Ctx> { handle_key_command, handle_key }` — input dispatch lives here alongside the bar surface it drives
 - `impl Hittable for Toasts<Ctx>`
-
-**`stack/dispatch.rs`** (lines 504–529)
-- `handle_key_command`, `handle_key`
 
 ### Visibility changes required
 
-Private helpers used across submodules become `pub(super)`:
-- `push_entry` (commands; called via `super::commands::push_entry()` from sibling submodules if needed, but mostly internal to `commands.rs`)
-- `toast_for_task`, `toast_for_task_mut` (used inside `lifecycle.rs`)
-- `sync_viewport_len` (stays in `stack/mod.rs` because both `commands.rs` and `lifecycle.rs` invoke it; making it `pub(super)` on the parent avoids commands ⇄ lifecycle cross-imports)
+Rust gotcha: an inherent method's privacy is scoped to the module where the `impl` block lives, not where the type is defined. Two `impl Toasts<Ctx>` blocks in sibling files (`commands.rs` and `lifecycle.rs`) cannot see each other's private methods just by virtue of being on the same type.
 
-No public surface changes. `toasts/mod.rs` continues to `pub use stack::ToastCommand;` and `pub use stack::Toasts;` because `stack/mod.rs` keeps both.
+This restructure dodges that issue by design:
+
+- **`sync_viewport_len` lives in `toasts/mod.rs`.** Both `commands.rs` and `lifecycle.rs` invoke it via `self.sync_viewport_len()`. Child modules can call private items of their parent module, so this works without `pub(super)`.
+- **`push_entry`** stays in `commands.rs`. Verified by grep: its three callers (the various `push_*` methods) all land in `commands.rs`. No cross-sibling call; stays private.
+- **`toast_for_task`, `toast_for_task_mut`** stay in `lifecycle.rs`. All callers (task-status query and mutation methods) also land in `lifecycle.rs`. No cross-sibling call; stay private.
+
+If a future caller of one of these helpers lands in a different sibling, that helper widens to `pub(super)` at that point. For the initial split, no widening is needed.
+
+No public surface changes. `tui_pane::Toasts` and `tui_pane::ToastCommand` continue to work through the crate-root re-exports; the underlying paths simplify from `tui_pane::toasts::stack::Toasts` to `tui_pane::toasts::Toasts`.
 
 ### Sequencing
 
-Single commit; checkpoint between steps. Leaves first.
+Single commit; checkpoint with `cargo build -p tui_pane` + `cargo nextest run -p tui_pane` between steps.
 
-1. Create `toasts/stack/` directory; move the current `stack.rs` content into `stack/mod.rs` unchanged. `cargo build -p tui_pane` + `cargo nextest run -p tui_pane` (sanity).
-2. Extract `dispatch.rs` (no inter-submodule deps).
-3. Extract `bar.rs` (no inter-submodule deps).
-4. Extract `navigation.rs` (no inter-submodule deps).
-5. Before extracting commands/lifecycle, widen `sync_viewport_len()` in `stack/mod.rs` to `pub(super)` so both submodules can call it via `super::sync_viewport_len()`.
-6. Extract `commands.rs` (widen `push_entry` to `pub(super)`; calls `super::sync_viewport_len()`).
-7. Extract `lifecycle.rs` (widen `toast_for_task` / `toast_for_task_mut` to `pub(super)`; calls `super::sync_viewport_len()`).
-8. `cargo build -p tui_pane` + `cargo nextest run -p tui_pane`; commit.
+1. Open `toasts/stack.rs`. Cut the struct definitions (`ToastCommand<A>`, `ToastSpec<Ctx>`, `Toasts<Ctx>`), the `impl Default for Toasts<Ctx>`, the `new()` constructor, and the `sync_viewport_len` helper. Paste them into `toasts/mod.rs` (after the existing `mod` declarations).
+2. In `toasts/mod.rs`: remove `mod stack;` and the `pub use stack::*` re-exports for `Toasts` and `ToastCommand` — those types are defined inline now.
+3. Create `toasts/slots.rs` with the bar-slot methods, `Hittable` impl, and the two key-dispatch methods (`handle_key`, `handle_key_command`). In `mod.rs`, add `mod slots;`.
+4. Create `toasts/navigation.rs` with the cursor-stepping methods. In `mod.rs`, add `mod navigation;`.
+5. Create `toasts/commands.rs` with the push/dismiss/task-mutator methods plus the `push_entry` helper. In `mod.rs`, add `mod commands;`.
+6. Create `toasts/lifecycle.rs` with the prune/query/tracked-item methods plus `toast_for_task` helpers. In `mod.rs`, add `mod lifecycle;`.
+7. Relocate the `#[cfg(test)] mod tests { ... }` block at the bottom of `stack.rs` (~241 lines covering 11 cases that exercise the full `Toasts<Ctx>` manager) into `toasts/tests.rs`. The block uses `use super::*;` and tests the manager as a whole, so a single co-located test file matches the existing `bar/tests.rs` precedent better than scattering tests across the four new siblings. In `mod.rs`, add `#[cfg(test)] mod tests;`.
+8. Delete the now-empty `toasts/stack.rs`. The `mod stack;` declaration was already removed in step 2.
+9. `cargo build -p tui_pane` + `cargo nextest run -p tui_pane`; commit.
 
 ## Phase 5 — Split `toasts/render.rs`
 
@@ -349,4 +363,4 @@ Single commit; checkpoint between steps. Leaves first.
 
 **`settings_store::store` imports `crate::toasts::ToastSettings`.** A generic persistence layer pulling a UI-feature type is a backward dependency. Options: (a) move `ToastSettings` to a shared module the toasts layer also imports, (b) make `SettingsStore` generic over the settings types it serializes. Severity: important. Cost: ~1 day. Not blocking; the import is one line and isolated.
 
-**`keymap::Keymap<Ctx>` stores `ScopeMap<SettingsPaneAction>` and `ScopeMap<KeymapPaneAction>`.** Generic keymap container knows about two framework overlay action types by name. Move overlay scope maps to `Framework<Ctx>`; `Keymap` keeps only the navigation scope plus the type-erased map for app-pane scopes. Severity: important. Cost: ~1 day; touches `keymap/mod.rs`, `keymap/builder/mod.rs`, and the framework wiring.
+**`keymap::Keymap<Ctx>` stores `ScopeMap<SettingsPaneAction>` and `ScopeMap<KeymapPaneAction>`.** Generic keymap container knows about two framework overlay action types by name. After Phase 1 the action types live in `overlays/` (formerly `panes/`); the issue itself is unchanged. Move overlay scope maps to `Framework<Ctx>`; `Keymap` keeps only the navigation scope plus the type-erased map for app-pane scopes. Severity: important. Cost: ~1 day; touches `keymap/mod.rs`, `keymap/builder/mod.rs`, and the framework wiring.
