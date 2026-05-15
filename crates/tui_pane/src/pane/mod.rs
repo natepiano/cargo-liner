@@ -7,6 +7,38 @@
 //! framework consumers (e.g. text-input routing) can depend on
 //! `Pane<Ctx>` alone.
 
+mod chrome;
+mod id;
+mod popup;
+mod rules;
+mod state;
+mod title;
+
+pub use chrome::PaneChrome;
+pub use chrome::default_pane_chrome;
+pub use chrome::empty_pane_block;
+pub use id::FocusedPane;
+pub use id::FrameworkFocusId;
+pub use id::FrameworkOverlayId;
+pub use popup::PopupAreas;
+pub use popup::PopupFrame;
+pub use popup::centered_rect;
+pub use rules::PaneRule;
+pub use rules::RuleTitle;
+pub use rules::render_horizontal_rule;
+pub use rules::render_rules;
+pub use state::PaneFocusState;
+pub use state::PaneSelectionState;
+pub use state::RenderFocus;
+pub use state::scroll_indicator;
+pub use state::selection_state;
+pub use state::selection_state_for;
+pub use state::selection_style;
+pub use title::PaneTitleCount;
+pub use title::PaneTitleGroup;
+pub use title::pane_title;
+pub use title::prefixed_pane_title;
+
 use crate::AppContext;
 use crate::TabStop;
 use crate::keymap::KeyBind;

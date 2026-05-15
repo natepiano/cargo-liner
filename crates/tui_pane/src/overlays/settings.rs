@@ -119,7 +119,7 @@ pub struct SettingsPane {
     edit_cursor:   usize,
     /// Render-time focus snapshot stamped by the embedding crate's
     /// overlay dispatcher right before [`crate::Renderable::render`]
-    /// runs. See [`crate::panes::KeymapPane::focus`] for the
+    /// runs. See [`crate::overlays::KeymapPane::focus`] for the
     /// matching pattern.
     pub focus:     crate::RenderFocus,
 }

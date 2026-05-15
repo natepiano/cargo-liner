@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::pane_state;
+use super::state;
 
 /// One labelled group of items inside a [`PaneTitleCount::Grouped`]
 /// title — e.g. `Binary (1 of 1)`.
@@ -37,7 +37,7 @@ impl PaneTitleCount<'_> {
         if let Some(pos) = cursor
             && pos < len
         {
-            pane_state::scroll_indicator(pos, len)
+            state::scroll_indicator(pos, len)
         } else {
             len.to_string()
         }

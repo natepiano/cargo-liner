@@ -1,5 +1,13 @@
+mod column_widths;
+mod viewport;
+
+pub use column_widths::ColumnSpec;
+pub use column_widths::ColumnWidths;
 use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
+pub use viewport::Viewport;
+pub use viewport::ViewportOverflow;
+pub use viewport::render_overflow_affordance;
 
 /// Axis length spec for a pane in a grid layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
