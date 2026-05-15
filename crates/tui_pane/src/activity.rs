@@ -75,7 +75,7 @@ impl Icon {
 }
 
 /// Default framework activity-spinner frames.
-pub const ACTIVITY_SPINNER_FRAMES: &[&str] = &[
+pub(crate) const ACTIVITY_SPINNER_FRAMES: &[&str] = &[
     "⠉⠉", "⠈⠙", "⠀⠹", "⠀⢸", "⠀⣰", "⢀⣠", "⣀⣀", "⣄⡀", "⣆⠀", "⡇⠀", "⠏⠀", "⠋⠁",
 ];
 
