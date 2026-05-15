@@ -114,7 +114,17 @@ pub(super) trait PhaseCompletion {
 
 impl<K: Eq + Hash> PhaseCompletion for KeyedPhase<K> {
     fn is_complete(&self) -> bool {
-        matches!(&self.expected, Some(expected) if self.seen.len() >= expected.len())
+        // `expected.is_subset(&self.seen)` — every expected key must
+        // actually be in `seen`, not just enough total entries. The
+        // disk-usage batch path inserts a tree's root plus all
+        // nested entries (workspace members, etc.) into `seen`, so
+        // a length-only comparison would mark the phase complete
+        // long before every expected top-level project was seen.
+        // That early completion clears the embedding's toast slot
+        // via `take_toast()`, after which subsequent disk-usage
+        // messages can't reach the toast — leaving items stuck
+        // pending forever.
+        matches!(&self.expected, Some(expected) if expected.is_subset(&self.seen))
     }
 
     fn complete_at(&self) -> Option<Instant> { self.complete_at }

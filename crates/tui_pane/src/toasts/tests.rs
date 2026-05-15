@@ -299,7 +299,7 @@ fn auto_finish_does_not_fire_on_zero_item_task_toast() {
 }
 
 #[test]
-fn finish_task_is_idempotent_for_already_finished_toast() {
+fn finish_task_anchors_finished_at_to_last_item_completion() {
     let mut toasts = toasts_with_linger(5.0);
     let task = toasts.start_task("phase", "body");
     assert!(toasts.set_tracked_items(task, &[TrackedItem::new("only", "only")]));
@@ -321,12 +321,10 @@ fn finish_task_is_idempotent_for_already_finished_toast() {
     };
 
     std::thread::sleep(Duration::from_millis(5));
-    // Second `finish_task` must NOT overwrite `finished_at` — otherwise
-    // the countdown visibly resets to the full linger duration.
-    assert!(
-        !toasts.finish_task(task),
-        "finish_task on an already-finished toast must return false",
-    );
+    // Calling finish_task again must not bump `finished_at` forward —
+    // the anchor is `max(item.completed_at)`, which hasn't moved
+    // because no item was re-marked. The countdown stays stable.
+    assert!(toasts.finish_task(task));
 
     let toast = toasts
         .toast_for_task(task)
@@ -343,4 +341,102 @@ fn finish_task_is_idempotent_for_already_finished_toast() {
         std::process::abort();
     };
     assert_eq!(original_finished_at, later_finished_at);
+}
+
+#[test]
+fn adding_incomplete_item_reverts_finished_toast_to_running() {
+    let mut toasts = toasts_with_linger(5.0);
+    let task = toasts.start_task("phase", "body");
+    assert!(toasts.set_tracked_items(task, &[TrackedItem::new("first", "first")]));
+
+    // Mark the only item completed → toast auto-finishes.
+    assert!(toasts.mark_tracked_item_completed(task, "first"));
+    assert!(toasts.is_task_finished(task));
+
+    // A new incomplete item arrives after auto-finish (e.g. a
+    // tracker queues a late phase). The toast must revert to
+    // Running so the countdown re-anchors when the new item
+    // eventually completes.
+    assert!(toasts.add_new_tracked_items(task, &[TrackedItem::new("late", "late")]));
+    assert!(!toasts.is_task_finished(task));
+
+    // When the late item finally completes, auto-finish re-fires.
+    assert!(toasts.mark_tracked_item_completed(task, "late"));
+    assert!(toasts.is_task_finished(task));
+}
+
+#[test]
+fn late_completion_extends_finished_at_past_original_anchor() {
+    let mut toasts = toasts_with_linger(5.0);
+    let task = toasts.start_task("phase", "body");
+    assert!(toasts.set_tracked_items(task, &[TrackedItem::new("first", "first")]));
+
+    assert!(toasts.mark_tracked_item_completed(task, "first"));
+    let toast = toasts
+        .toast_for_task(task)
+        .unwrap_or_else(|| std::process::abort());
+    let ToastLifetime::Task {
+        status:
+            ToastTaskStatus::Finished {
+                finished_at: anchor_after_first,
+                ..
+            },
+        ..
+    } = toast.lifetime
+    else {
+        std::process::abort();
+    };
+
+    // Add a second incomplete item, sleep, mark it completed.
+    assert!(toasts.add_new_tracked_items(task, &[TrackedItem::new("late", "late")]));
+    std::thread::sleep(Duration::from_millis(5));
+    assert!(toasts.mark_tracked_item_completed(task, "late"));
+
+    let toast = toasts
+        .toast_for_task(task)
+        .unwrap_or_else(|| std::process::abort());
+    let ToastLifetime::Task {
+        status:
+            ToastTaskStatus::Finished {
+                finished_at: anchor_after_late,
+                ..
+            },
+        ..
+    } = toast.lifetime
+    else {
+        std::process::abort();
+    };
+    assert!(
+        anchor_after_late > anchor_after_first,
+        "finished_at must move forward when a later item completes",
+    );
+}
+
+#[test]
+fn task_toast_skips_exit_animation_after_countdown() {
+    let mut toasts = toasts_with_linger(0.0);
+    let task = toasts.start_task("phase", "body");
+    assert!(toasts.set_tracked_items(task, &[TrackedItem::new("only", "only")]));
+    assert!(toasts.mark_tracked_item_completed(task, "only"));
+    // finished_at + linger(=0) <= now, so should_exit is true on
+    // the next prune. Task toasts skip the Exiting render phase
+    // entirely: the toast is removed in the same prune pass.
+    toasts.prune(Instant::now());
+    assert!(!toasts.is_task_finished(task));
+    assert!(toasts.toast_for_task(task).is_none());
+}
+
+#[test]
+fn restarting_a_completed_item_reverts_finished_toast_to_running() {
+    let mut toasts = toasts_with_linger(5.0);
+    let task = toasts.start_task("phase", "body");
+    let key = TrackedItemKey::new("a");
+    assert!(toasts.set_tracked_items(task, &[TrackedItem::new("a", key.clone())]));
+    assert!(toasts.mark_tracked_item_completed(task, "a"));
+    assert!(toasts.is_task_finished(task));
+
+    // Restarting clears the item's `completed_at` — the toast
+    // reverts to Running until the item completes again.
+    assert!(toasts.restart_tracked_item(task, &key, Instant::now()));
+    assert!(!toasts.is_task_finished(task));
 }

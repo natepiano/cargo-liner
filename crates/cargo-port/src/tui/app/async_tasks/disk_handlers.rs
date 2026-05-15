@@ -70,10 +70,37 @@ impl App {
         entries: Vec<(AbsolutePath, DirSizes)>,
     ) {
         self.scan.bump_generation();
+        // Every path inside this tree counts as "seen" — not just
+        // the tree root. `group_disk_usage_trees` folds nested
+        // discovered projects (workspace members, linked
+        // worktrees, etc.) under their shallowest ancestor as
+        // `root_path` and lists the rest in `entries`. When the
+        // startup-disk phase's `expected` set was built from
+        // `ProjectList::iter()` (after `build_tree` consolidated
+        // workspaces and worktree groups) but the disk-usage
+        // scan was dispatched from phase-1's flat
+        // `disk_entries`, the two sources can disagree about
+        // what's "the" root. Marking only `root_path` leaves any
+        // expected path that ends up listed in `entries` stuck
+        // on the toast forever; marking all of them is a no-op
+        // for keys that aren't tracked.
         self.startup.disk.seen.insert(root_path.clone());
+        for (path, _) in &entries {
+            if path != root_path {
+                self.startup.disk.seen.insert(path.clone());
+            }
+        }
         if let Some(disk_toast) = self.startup.disk.toast {
-            let key = integration::path_key(root_path);
-            self.framework.toasts.mark_item_completed(disk_toast, &key);
+            let root_key = integration::path_key(root_path);
+            self.framework
+                .toasts
+                .mark_item_completed(disk_toast, &root_key);
+            for (path, _) in &entries {
+                if path != root_path {
+                    let key = integration::path_key(path);
+                    self.framework.toasts.mark_item_completed(disk_toast, &key);
+                }
+            }
         }
         self.handle_disk_usage_batch(entries);
         self.maybe_log_startup_phase_completions();

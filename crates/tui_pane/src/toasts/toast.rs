@@ -139,6 +139,20 @@ impl<Ctx: AppContext> Toast<Ctx> {
     pub(super) fn is_renderable(&self, now: Instant, settings: &ToastSettings) -> bool {
         match self.phase {
             ToastPhase::Visible => !self.should_exit(now),
+            // Task toasts skip the post-countdown exit animation:
+            // the "Closing in N" countdown is itself the visual
+            // closure signal, and the last tracked item's
+            // individual linger ends at the same instant the
+            // countdown reaches zero. Letting the Exiting phase
+            // render past that point would leave the frame
+            // visible without any countdown while items continue
+            // to prune, which contradicts the deterministic
+            // "countdown is the last thing on screen" contract.
+            // Timed and Persistent toasts keep the exit animation
+            // because they have no countdown of their own.
+            ToastPhase::Exiting { .. } if matches!(self.lifetime, ToastLifetime::Task { .. }) => {
+                false
+            },
             ToastPhase::Exiting { started_at } => self.exit_lines(now, settings, started_at) > 0,
         }
     }

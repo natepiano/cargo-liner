@@ -42,44 +42,41 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             .collect()
     }
 
-    /// Mark a task toast as finished. Linger is read from
-    /// [`ToastSettings::finished_task_visible`](crate::ToastSettings::finished_task_visible)
-    /// when the task has tracked items still on the toast, or
-    /// `Duration::ZERO` when none remain — a tracked-item-less task toast
-    /// closes immediately on finish.
+    /// Mark a task toast as finished.
     ///
-    /// Idempotent: a call on an already-finished toast is a no-op and
-    /// returns `false`. Without this, a second `finish_task` would
-    /// reset `finished_at` to `now` and the "Closing in N" countdown
-    /// would visibly jump back to the full linger duration. Auto-finish
-    /// (in [`Self::mark_item_completed`] and
-    /// [`Self::complete_missing_items`]) may have already fired before
-    /// an embedding's explicit `finish_task`; the early return keeps
-    /// the original countdown intact.
+    /// For a toast with tracked items, this marks any still-incomplete
+    /// item as completed at `now` and then runs [`Self::recompute_task_status`],
+    /// which derives `finished_at = max(item.completed_at)`. That
+    /// anchoring makes the "Closing in N" countdown coincide exactly
+    /// with the last item's individual `item_linger`.
+    ///
+    /// For a toast with no items, transitions directly to
+    /// [`ToastTaskStatus::Finished`] with `Duration::ZERO` linger —
+    /// the toast closes on the next prune pass.
     pub fn finish_task(&mut self, task_id: ToastTaskId) -> bool {
-        if self.is_task_finished(task_id) {
-            return false;
-        }
-        let linger = self
-            .toast_for_task(task_id)
-            .map_or(Duration::ZERO, |toast| {
-                if toast.tracked_items.is_empty() {
-                    Duration::ZERO
-                } else {
-                    self.settings().finished_task_visible.get()
-                }
-            });
+        let now = Instant::now();
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
         };
-        let now = Instant::now();
-        toast.lifetime = ToastLifetime::Task {
-            task_id,
-            status: ToastTaskStatus::Finished {
-                finished_at: now,
-                linger,
-            },
-        };
+        if !matches!(toast.lifetime, ToastLifetime::Task { .. }) {
+            return false;
+        }
+        if toast.tracked_items.is_empty() {
+            toast.lifetime = ToastLifetime::Task {
+                task_id,
+                status: ToastTaskStatus::Finished {
+                    finished_at: now,
+                    linger:      Duration::ZERO,
+                },
+            };
+            return true;
+        }
+        for item in &mut toast.tracked_items {
+            if item.completed_at.is_none() {
+                item.completed_at = Some(now);
+            }
+        }
+        self.recompute_task_status(task_id);
         true
     }
 
@@ -118,6 +115,9 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// Replace the tracked-item list for a task toast. Item linger
     /// is read from
     /// [`ToastSettings::finished_task_visible`](crate::ToastSettings::finished_task_visible).
+    /// After replacement, the toast's lifetime status is recomputed
+    /// — replacing the list with incomplete items reverts a
+    /// previously-finished toast back to running.
     pub fn set_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) -> bool {
         let linger = self.settings().finished_task_visible.get();
         let Some(toast) = self.toast_for_task_mut(task_id) else {
@@ -125,6 +125,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         };
         toast.tracked_items = items.to_vec();
         toast.item_linger = linger;
+        self.recompute_task_status(task_id);
         true
     }
 
@@ -178,7 +179,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             }
         }
         if changed {
-            self.auto_finish_if_all_items_completed(task_id);
+            self.recompute_task_status(task_id);
         }
         changed
     }
@@ -186,6 +187,9 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// Add tracked items whose keys are not already present. Item
     /// linger is read from
     /// [`ToastSettings::finished_task_visible`](crate::ToastSettings::finished_task_visible).
+    /// After insertion, the toast's lifetime status is recomputed —
+    /// a previously-finished toast reverts to running so the
+    /// countdown re-anchors when the new items complete.
     pub fn add_new_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) -> bool {
         let item_linger = self.settings().finished_task_visible.get();
         let Some(toast) = self.toast_for_task_mut(task_id) else {
@@ -204,10 +208,15 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             }
         }
         toast.item_linger = item_linger;
+        if changed {
+            self.recompute_task_status(task_id);
+        }
         changed
     }
 
-    /// Restart one tracked item by key.
+    /// Restart one tracked item by key. After clearing the item's
+    /// `completed_at`, the toast's lifetime status is recomputed —
+    /// a previously-finished toast reverts to running.
     pub fn restart_tracked_item(
         &mut self,
         task_id: ToastTaskId,
@@ -222,6 +231,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         };
         item.started_at = Some(now);
         item.completed_at = None;
+        self.recompute_task_status(task_id);
         true
     }
 
@@ -235,7 +245,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             return false;
         };
         item.completed_at = Some(now);
-        self.auto_finish_if_all_items_completed(task_id);
+        self.recompute_task_status(task_id);
         true
     }
 
@@ -273,33 +283,64 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         self.sync_viewport_len();
     }
 
-    /// Transition a task toast to `Finished` if every tracked item
-    /// on it has been marked completed. The `has_items` guard is
-    /// essential: a zero-item toast vacuously satisfies "all
-    /// completed", and auto-firing on creation would close every
-    /// task toast before any items get added. Auto-finish only
-    /// fires for toasts that held at least one item and have now
-    /// had every one of them marked completed. The early
-    /// `still_running` check makes this idempotent — calling
-    /// auto-finish on an already-finished toast is a no-op.
-    fn auto_finish_if_all_items_completed(&mut self, task_id: ToastTaskId) {
+    /// Recompute a task toast's lifetime status from its tracked-item
+    /// state, then call this after every item mutation. Invariant:
+    /// the toast is `Finished` if and only if every tracked item
+    /// has `completed_at = Some(_)`, with `finished_at = max(item.completed_at)`.
+    ///
+    /// * All items have `completed_at` → transition to `Finished` with `finished_at` anchored to
+    ///   the latest completion. This makes the countdown's expiry coincide with the last item's
+    ///   individual `item_linger` end.
+    /// * Any item is still incomplete → transition (or stay) in `Running`. Reverts a
+    ///   previously-finished toast back to running when new incomplete items arrive, so the
+    ///   countdown re-anchors when the new work completes.
+    /// * Zero items → no transition. A brand-new task toast with no items added yet stays in its
+    ///   initial `Running` state until the embedding either adds items or calls
+    ///   [`Self::finish_task`] explicitly.
+    ///
+    /// `phase` is also snapped back to `Visible` whenever the lifetime
+    /// status reverts to `Running`, so an already-Exiting toast (only
+    /// reachable for `Timed`/`Persistent` lifetimes — task toasts
+    /// skip the exit animation) cannot get stuck mid-animation when
+    /// its lifetime changes.
+    pub(super) fn recompute_task_status(&mut self, task_id: ToastTaskId) {
         let Some(toast) = self.toast_for_task(task_id) else {
             return;
         };
-        let still_running = matches!(
-            toast.lifetime,
-            ToastLifetime::Task {
-                status: ToastTaskStatus::Running,
-                ..
-            },
-        );
-        let has_items = !toast.tracked_items.is_empty();
+        if !matches!(toast.lifetime, ToastLifetime::Task { .. }) {
+            return;
+        }
+        if toast.tracked_items.is_empty() {
+            return;
+        }
         let all_completed = toast
             .tracked_items
             .iter()
             .all(|item| item.completed_at.is_some());
-        if still_running && has_items && all_completed {
-            self.finish_task(task_id);
+        let latest_completion = toast
+            .tracked_items
+            .iter()
+            .filter_map(|item| item.completed_at)
+            .max();
+        let linger = self.settings().finished_task_visible.get();
+        let Some(toast) = self.toast_for_task_mut(task_id) else {
+            return;
+        };
+        if all_completed {
+            let finished_at = latest_completion.unwrap_or_else(Instant::now);
+            toast.lifetime = ToastLifetime::Task {
+                task_id,
+                status: ToastTaskStatus::Finished {
+                    finished_at,
+                    linger,
+                },
+            };
+        } else {
+            toast.lifetime = ToastLifetime::Task {
+                task_id,
+                status: ToastTaskStatus::Running,
+            };
+            toast.phase = ToastPhase::Visible;
         }
     }
 

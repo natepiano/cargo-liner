@@ -99,12 +99,15 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
 
     // Submodules (local, fast — reads .gitmodules + one git ls-tree).
     // Send the Submodules message first so `at_path_mut` can resolve each
-    // submodule before its per-entry enrichment messages arrive.
+    // submodule before its per-entry enrichment messages arrive. Each
+    // submodule's `enrich` call emits its own disk-usage message — that
+    // path is *not* covered by the initial batch scan, so the per-submodule
+    // singular `BackgroundMsg::DiskUsage` is the only writer for it.
     if repo_presence.is_in_repo() {
         let submodules = project::get_submodules(abs_path);
         if !submodules.is_empty() {
             let _ = tx.send(BackgroundMsg::Submodules {
-                path:       abs.clone(),
+                path:       abs,
                 submodules: submodules.clone(),
             });
             for sub in &submodules {
@@ -113,10 +116,15 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
         }
     }
 
-    // Disk usage last — walking large `target/` dirs is the slowest
-    // local operation and doesn't block anything else.
-    let bytes = tree::dir_size(abs_path);
-    let _ = tx.send(BackgroundMsg::DiskUsage { path: abs, bytes });
+    // Disk usage for the top-level project itself is computed by the
+    // initial batch scan (`spawn_initial_disk_usage` →
+    // `BackgroundMsg::DiskUsageBatch`), which folds workspace members
+    // under their root and walks each tree exactly once. We deliberately
+    // don't emit a singular `BackgroundMsg::DiskUsage` here — doing so
+    // would re-walk the same tree (an expensive duplicate, especially
+    // for projects with large `target/` directories) and feed a second
+    // path into the startup-disk phase's `seen` set, where mismatched
+    // keys could silently fail to mark the toast item.
 }
 
 #[derive(Clone)]
