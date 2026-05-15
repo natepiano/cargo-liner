@@ -34,6 +34,7 @@ use tui_pane::ShortcutState;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::TITLE_COLOR;
+use tui_pane::ToastsRenderCtx;
 use tui_pane::render_status_line as render_framework_status_line;
 use unicode_width::UnicodeWidthStr;
 
@@ -168,7 +169,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
 
     render_status_bar(frame, app, outer_layout[1]);
     let toasts_pane_focused = app.focus_is(PaneId::Toasts);
-    let toasts_ctx = tui_pane::ToastsRenderCtx {
+    let toasts_ctx = ToastsRenderCtx {
         now:          Instant::now(),
         pane_focused: toasts_pane_focused,
     };
