@@ -326,6 +326,71 @@ impl MyWidget {
 }
 
 #[test]
+fn type_reachable_via_reexported_enum_variant_is_not_flagged() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "narrow_reachable_variant_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod types;\npub use types::Icon;\npub use types::DEFAULT_FRAME;\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/types.rs"),
+        r#"pub struct FrameCycle {
+    frames: &'static [&'static str],
+}
+
+impl FrameCycle {
+    pub const fn new(frames: &'static [&'static str]) -> Self {
+        Self { frames }
+    }
+
+    pub fn first(&self) -> &'static str {
+        self.frames[0]
+    }
+}
+
+pub enum Icon {
+    Static(&'static str),
+    Animated(FrameCycle),
+}
+
+pub const DEFAULT_FRAME: FrameCycle = FrameCycle::new(&["a", "b"]);
+"#,
+    )
+    .expect("write types");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let narrow_findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.code == DiagnosticCode::NarrowToPubCrate)
+        .collect();
+    let frame_cycle_flagged: Vec<_> = narrow_findings
+        .iter()
+        .filter(|f| {
+            f.item.as_deref() == Some("struct FrameCycle") || f.item.as_deref() == Some("fn first")
+        })
+        .collect();
+    assert!(
+        frame_cycle_flagged.is_empty(),
+        "struct FrameCycle and its `first` method are reachable through the re-exported \
+         `Icon::Animated` variant and the `DEFAULT_FRAME` const, so they must not be flagged \
+         for narrowing: {frame_cycle_flagged:?}"
+    );
+}
+
+#[test]
 fn methods_on_non_exported_type_are_flagged() {
     let temp = tempdir().expect("create temp fixture dir");
 

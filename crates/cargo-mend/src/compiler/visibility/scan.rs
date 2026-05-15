@@ -9,6 +9,7 @@ use rustc_hir::ImplItem;
 use rustc_hir::Item;
 use rustc_hir::ItemKind;
 use rustc_middle::middle::privacy::EffectiveVisibilities;
+use rustc_middle::middle::privacy::Level;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::Span;
 use rustc_span::def_id::CRATE_DEF_ID;
@@ -562,6 +563,12 @@ fn maybe_record_narrow_to_pub_crate(
     let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
         return Ok(());
     };
+    if ctx
+        .effective_visibilities
+        .is_public_at_level(item.def_id, Level::Reachable)
+    {
+        return Ok(());
+    }
     if facade::root_module_exports_item(ctx.source_cache, ctx.root_module, item.file_path, name) {
         return Ok(());
     }
