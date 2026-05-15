@@ -1,17 +1,17 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use super::cli::CargoCheckCli;
-use super::cli::TargetSelection;
-use super::constants::CARGO_TARGET_KIND_BENCH;
-use super::constants::CARGO_TARGET_KIND_BIN;
-use super::constants::CARGO_TARGET_KIND_EXAMPLE;
-use super::constants::CARGO_TARGET_KIND_LIB;
-use super::constants::CARGO_TARGET_KIND_TEST;
-use super::constants::SOURCE_DIR_SRC;
-use super::diagnostics::Report;
-use super::selection::PackageMetadata;
-use super::selection::TargetMetadata;
+use crate::cli::CargoCheckCli;
+use crate::cli::TargetSelection;
+use crate::constants::CARGO_TARGET_KIND_BENCH;
+use crate::constants::CARGO_TARGET_KIND_BIN;
+use crate::constants::CARGO_TARGET_KIND_EXAMPLE;
+use crate::constants::CARGO_TARGET_KIND_LIB;
+use crate::constants::CARGO_TARGET_KIND_TEST;
+use crate::constants::SOURCE_DIR_SRC;
+use crate::diagnostics::Report;
+use crate::selection::PackageMetadata;
+use crate::selection::TargetMetadata;
 
 /// Filters mend findings based on the user's target-selection flags.
 ///

@@ -19,7 +19,7 @@ use syn::Pat;
 use syn::TraitItemFn;
 use syn::visit::Visit;
 
-use super::shared;
+use crate::prefer_module_import::shared;
 
 pub(super) struct BareReference {
     pub(super) name:       String,

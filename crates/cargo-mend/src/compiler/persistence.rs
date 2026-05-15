@@ -11,7 +11,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::settings;
+use crate::compiler::settings;
 use crate::config::DiagnosticCode;
 use crate::constants::FINDINGS_SCHEMA_VERSION;
 use crate::constants::MODULE_PATH_SEPARATOR;

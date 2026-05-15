@@ -12,14 +12,14 @@ use cargo_metadata::Target;
 use serde::Serialize;
 use serde::Serializer;
 
-use super::cli::CargoCheckCli;
-use super::cli::WorkspaceSelection;
-use super::constants::CARGO_FLAG_ALL_TARGETS;
-use super::constants::CARGO_FLAG_EXCLUDE;
-use super::constants::CARGO_FLAG_MANIFEST_PATH;
-use super::constants::CARGO_FLAG_PACKAGE;
-use super::constants::CARGO_FLAG_WORKSPACE;
-use super::constants::CARGO_MANIFEST_FILE;
+use crate::cli::CargoCheckCli;
+use crate::cli::WorkspaceSelection;
+use crate::constants::CARGO_FLAG_ALL_TARGETS;
+use crate::constants::CARGO_FLAG_EXCLUDE;
+use crate::constants::CARGO_FLAG_MANIFEST_PATH;
+use crate::constants::CARGO_FLAG_PACKAGE;
+use crate::constants::CARGO_FLAG_WORKSPACE;
+use crate::constants::CARGO_MANIFEST_FILE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectionScope {

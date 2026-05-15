@@ -1,16 +1,16 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use super::constants::ANSI_BOLD;
-use super::constants::ANSI_BOLD_BLUE;
-use super::constants::ANSI_BOLD_GREEN;
-use super::constants::ANSI_BOLD_RED;
-use super::constants::ANSI_BOLD_YELLOW;
-use super::constants::ANSI_DIM;
-use super::diagnostics;
-use super::diagnostics::Finding;
-use super::diagnostics::Report;
-use super::diagnostics::Severity;
+use crate::constants::ANSI_BOLD;
+use crate::constants::ANSI_BOLD_BLUE;
+use crate::constants::ANSI_BOLD_GREEN;
+use crate::constants::ANSI_BOLD_RED;
+use crate::constants::ANSI_BOLD_YELLOW;
+use crate::constants::ANSI_DIM;
+use crate::diagnostics;
+use crate::diagnostics::Finding;
+use crate::diagnostics::Report;
+use crate::diagnostics::Severity;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ColorMode {

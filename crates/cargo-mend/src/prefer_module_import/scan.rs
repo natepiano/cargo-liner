@@ -10,15 +10,6 @@ use syn::File;
 use syn::Item;
 use syn::spanned::Spanned;
 
-use super::function_imports::ImportDetector;
-use super::function_imports::ImportTarget;
-use super::function_imports::RawCandidate;
-use super::inline_calls;
-use super::inline_calls::InlineCallCandidate;
-use super::inline_calls::InlineCallDetector;
-use super::references::BareReference;
-use super::references::ReferenceCollector;
-use super::shared;
 use crate::config::DiagnosticCode;
 use crate::constants::MODULE_PATH_SEPARATOR;
 use crate::constants::PATH_KEYWORD_SUPER;
@@ -31,6 +22,15 @@ use crate::imports::ImportGroup;
 use crate::imports::UseFix;
 use crate::imports::ValidatedFixSet;
 use crate::module_paths;
+use crate::prefer_module_import::function_imports::ImportDetector;
+use crate::prefer_module_import::function_imports::ImportTarget;
+use crate::prefer_module_import::function_imports::RawCandidate;
+use crate::prefer_module_import::inline_calls;
+use crate::prefer_module_import::inline_calls::InlineCallCandidate;
+use crate::prefer_module_import::inline_calls::InlineCallDetector;
+use crate::prefer_module_import::references::BareReference;
+use crate::prefer_module_import::references::ReferenceCollector;
+use crate::prefer_module_import::shared;
 use crate::selection::Selection;
 
 pub(crate) struct PreferModuleImportScan {

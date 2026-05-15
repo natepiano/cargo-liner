@@ -17,17 +17,17 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use walkdir::WalkDir;
 
-use super::config::DiagnosticCode;
-use super::constants::MODULE_PATH_SEPARATOR;
-use super::constants::PATH_KEYWORD_CRATE;
-use super::constants::PATH_KEYWORD_SUPER;
-use super::constants::RUST_SOURCE_FILE_EXTENSION;
-use super::constants::SOURCE_DIR_SRC;
-use super::diagnostics::Finding;
-use super::diagnostics::Severity;
-use super::fix_support::FixSupport;
-use super::module_paths;
-use super::selection::Selection;
+use crate::config::DiagnosticCode;
+use crate::constants::MODULE_PATH_SEPARATOR;
+use crate::constants::PATH_KEYWORD_CRATE;
+use crate::constants::PATH_KEYWORD_SUPER;
+use crate::constants::RUST_SOURCE_FILE_EXTENSION;
+use crate::constants::SOURCE_DIR_SRC;
+use crate::diagnostics::Finding;
+use crate::diagnostics::Severity;
+use crate::fix_support::FixSupport;
+use crate::module_paths;
+use crate::selection::Selection;
 
 pub(crate) struct ImportScan {
     pub findings: Vec<Finding>,

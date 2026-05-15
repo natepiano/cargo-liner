@@ -14,7 +14,6 @@ use syn::UseTree;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
-use super::parent_boundary::ParentBoundaryKey;
 use crate::constants::MODULE_PATH_SEPARATOR;
 use crate::constants::PATH_KEYWORD_CRATE;
 use crate::constants::PATH_KEYWORD_SELF;
@@ -23,6 +22,7 @@ use crate::constants::RUST_SOURCE_FILE_EXTENSION;
 use crate::constants::SOURCE_DIR_SRC;
 use crate::imports::UseFix;
 use crate::module_paths;
+use crate::pub_use_fixes::parent_boundary::ParentBoundaryKey;
 use crate::selection::Selection;
 
 pub(super) struct ValidatedPubUsePlan {

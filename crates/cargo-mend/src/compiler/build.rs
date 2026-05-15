@@ -15,7 +15,7 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::Result;
 
-use super::persistence;
+use crate::compiler::persistence;
 use crate::config::LoadedConfig;
 use crate::constants::CARGO_BIN;
 use crate::constants::CARGO_FLAG_ALL_TARGETS;

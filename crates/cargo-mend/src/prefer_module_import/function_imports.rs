@@ -8,10 +8,10 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::visit::visit_item_mod;
 
-use super::shared;
 use crate::constants::MODULE_PATH_SEPARATOR;
 use crate::constants::PATH_KEYWORD_CRATE;
 use crate::constants::PATH_KEYWORD_SUPER;
+use crate::prefer_module_import::shared;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ImportTarget {

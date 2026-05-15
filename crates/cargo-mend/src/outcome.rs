@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use anyhow::Error;
 
-use super::constants::EXIT_CODE_WARNING;
-use super::diagnostics::CompilerWarningFacts;
-use super::diagnostics::Report;
-use super::run_mode::OperationIntent;
+use crate::constants::EXIT_CODE_WARNING;
+use crate::diagnostics::CompilerWarningFacts;
+use crate::diagnostics::Report;
+use crate::run_mode::OperationIntent;
 
 #[derive(Debug)]
 pub(crate) struct ExecutionOutcome {

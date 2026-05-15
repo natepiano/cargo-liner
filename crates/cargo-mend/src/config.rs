@@ -11,9 +11,9 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::constants::APP_NAME;
-use super::constants::DEFAULT_GLOBAL_CONFIG_TOML;
-use super::constants::GLOBAL_CONFIG_FILE;
+use crate::constants::APP_NAME;
+use crate::constants::DEFAULT_GLOBAL_CONFIG_TOML;
+use crate::constants::GLOBAL_CONFIG_FILE;
 
 // --- Diagnostic codes ---
 

@@ -6,20 +6,20 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::constants::CARGO_TARGET_KIND_BIN;
-use super::constants::CARGO_TARGET_KIND_LIB;
-use super::constants::RUST_LIB_FILE;
-use super::constants::RUST_MAIN_FILE;
-use super::constants::SOURCE_DIR_SRC;
-use super::diagnostics;
-use super::diagnostics::BuildOutcome;
-use super::diagnostics::Finding;
-use super::diagnostics::Report;
-use super::diagnostics::Severity;
-use super::selection::PackageMetadata;
-use super::selection::Selection;
-use super::selection::TargetMetadata;
-use super::selection::TargetSupport;
+use crate::constants::CARGO_TARGET_KIND_BIN;
+use crate::constants::CARGO_TARGET_KIND_LIB;
+use crate::constants::RUST_LIB_FILE;
+use crate::constants::RUST_MAIN_FILE;
+use crate::constants::SOURCE_DIR_SRC;
+use crate::diagnostics;
+use crate::diagnostics::BuildOutcome;
+use crate::diagnostics::Finding;
+use crate::diagnostics::Report;
+use crate::diagnostics::Severity;
+use crate::selection::PackageMetadata;
+use crate::selection::Selection;
+use crate::selection::TargetMetadata;
+use crate::selection::TargetSupport;
 
 pub(crate) fn render_report(report: &Report, selection: &Selection) -> Result<String> {
     let mut output = String::new();

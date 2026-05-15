@@ -2,9 +2,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
 
-use super::config::DiagnosticCode;
-use super::fix_support::FixSummaryBucket;
-use super::fix_support::FixSupport;
+use crate::config::DiagnosticCode;
+use crate::fix_support::FixSummaryBucket;
+use crate::fix_support::FixSupport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

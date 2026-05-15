@@ -8,10 +8,6 @@ use syn::ItemUse;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
-use super::function_imports::ImportTarget;
-use super::scan::InlineCallFindingInputs;
-use super::scan::ScanFileContext;
-use super::shared;
 use crate::config::DiagnosticCode;
 use crate::constants::MODULE_PATH_SEPARATOR;
 use crate::constants::PATH_KEYWORD_CRATE;
@@ -21,6 +17,10 @@ use crate::diagnostics::Severity;
 use crate::fix_support::FixSupport;
 use crate::imports::ImportGroup;
 use crate::imports::UseFix;
+use crate::prefer_module_import::function_imports::ImportTarget;
+use crate::prefer_module_import::scan::InlineCallFindingInputs;
+use crate::prefer_module_import::scan::ScanFileContext;
+use crate::prefer_module_import::shared;
 
 pub(super) struct InlineCallCandidate {
     pub(super) function_name:   String,

@@ -13,12 +13,12 @@ use syn::Visibility;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 
-use super::validated_plan;
 use crate::constants::MODULE_GLOB_SUFFIX;
 use crate::constants::MODULE_PATH_SEPARATOR;
 use crate::constants::PATH_KEYWORD_SELF;
 use crate::constants::PATH_KEYWORD_SUPER;
 use crate::imports::UseFix;
+use crate::pub_use_fixes::validated_plan;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ParentBoundaryKey {

@@ -7,16 +7,16 @@ use std::path::PathBuf;
 use anyhow::Context;
 use anyhow::Result;
 
-use super::parent_boundary;
-use super::parent_boundary::ParentBoundaryKey;
-use super::validated_plan;
-use super::validated_plan::ValidatedPubUsePlan;
 use crate::constants::PUB_VISIBILITY_PREFIX;
 use crate::constants::RUST_MODULE_FILE;
 use crate::diagnostics::Report;
 use crate::imports::UseFix;
 use crate::imports::ValidatedFixSet;
 use crate::module_paths;
+use crate::pub_use_fixes::parent_boundary;
+use crate::pub_use_fixes::parent_boundary::ParentBoundaryKey;
+use crate::pub_use_fixes::validated_plan;
+use crate::pub_use_fixes::validated_plan::ValidatedPubUsePlan;
 use crate::selection::Selection;
 
 pub(crate) struct PubUseFixScan {
