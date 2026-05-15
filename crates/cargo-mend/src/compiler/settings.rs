@@ -7,12 +7,17 @@ use anyhow::Context;
 use anyhow::Result;
 
 use crate::config::VisibilityConfig;
-use crate::constants::CONFIG_FINGERPRINT_ENV;
-use crate::constants::CONFIG_JSON_ENV;
-use crate::constants::CONFIG_ROOT_ENV;
-use crate::constants::FINDINGS_DIR_ENV;
-use crate::constants::PACKAGE_ROOT_ENV;
-use crate::constants::SCOPE_FINGERPRINT_ENV;
+
+// driver-IPC environment variables
+pub(crate) const CONFIG_FINGERPRINT_ENV: &str = "MEND_CONFIG_FINGERPRINT";
+pub(crate) const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
+pub(crate) const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
+pub(crate) const DRIVER_ENV: &str = "MEND_DRIVER";
+pub(crate) const DRIVER_ENV_ENABLED: &str = "1";
+pub(crate) const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
+pub(crate) const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
+pub(crate) const RUSTC_WORKSPACE_WRAPPER_ENV: &str = "RUSTC_WORKSPACE_WRAPPER";
+pub(crate) const SCOPE_FINGERPRINT_ENV: &str = "MEND_SCOPE_FINGERPRINT";
 
 pub(super) fn current_analysis_fingerprint() -> String {
     let version = env!("CARGO_PKG_VERSION");

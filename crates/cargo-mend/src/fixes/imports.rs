@@ -17,16 +17,16 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use walkdir::WalkDir;
 
+use crate::compiler::RUST_SOURCE_FILE_EXTENSION;
+use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
-use crate::constants::MODULE_PATH_SEPARATOR;
-use crate::constants::PATH_KEYWORD_CRATE;
-use crate::constants::PATH_KEYWORD_SUPER;
-use crate::constants::RUST_SOURCE_FILE_EXTENSION;
-use crate::constants::SOURCE_DIR_SRC;
-use crate::diagnostics::Finding;
-use crate::diagnostics::Severity;
-use crate::fix_support::FixSupport;
-use crate::module_paths;
+use crate::reporting::Finding;
+use crate::reporting::FixSupport;
+use crate::reporting::Severity;
+use crate::rust_syntax;
+use crate::rust_syntax::MODULE_PATH_SEPARATOR;
+use crate::rust_syntax::PATH_KEYWORD_CRATE;
+use crate::rust_syntax::PATH_KEYWORD_SUPER;
 use crate::selection::Selection;
 
 pub(crate) struct ImportScan {
@@ -274,7 +274,7 @@ fn scan_file(analysis_root: &Path, source_root: &Path, path: &Path) -> Result<Ve
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
         syn::parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    let base_module_path = module_paths::file_module_path(source_root, path)
+    let base_module_path = rust_syntax::file_module_path(source_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = line_offsets(&text);
     let mut visitor = UseVisitor {

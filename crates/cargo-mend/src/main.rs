@@ -6,25 +6,12 @@ extern crate rustc_interface;
 extern crate rustc_middle;
 extern crate rustc_span;
 
-mod cargo_json;
-mod cli;
 mod compiler;
 mod config;
-mod constants;
-mod diagnostics;
-mod display_filter;
-mod field_visibility_fix;
-mod fix_support;
-mod imports;
-mod inline_path_qualified_type;
-mod module_paths;
-mod narrow_pub_crate;
-mod outcome;
-mod prefer_module_import;
-mod pub_use_fixes;
-mod render;
-mod run_mode;
+mod fixes;
+mod reporting;
 mod runner;
+mod rust_syntax;
 mod selection;
 
 use std::io::IsTerminal;
@@ -33,33 +20,33 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Result;
-use cli::BuildInfoMode;
-use cli::FixExecution;
-use cli::WarningPolicy;
+use compiler::DRIVER_ENV;
+use config::BuildInfoMode;
 use config::DiagnosticsConfig;
-use constants::CARGO_TERM_COLOR_ALWAYS;
-use constants::CARGO_TERM_COLOR_ENV;
-use constants::CARGO_TERM_COLOR_NEVER;
-use constants::CLICOLOR_DISABLED_VALUE;
-use constants::CLICOLOR_ENV;
-use constants::CLICOLOR_FORCE_ENV;
-use constants::DIAGNOSTICS_HELP_NAME_COLUMN_WIDTH;
-use constants::DRIVER_ENV;
-use constants::EXIT_CODE_ERROR;
-use constants::EXIT_CODE_WARNING;
-use constants::FIX_ALL_MAX_PASSES;
-use constants::TERM_DUMB_VALUE;
-use constants::TERM_ENV;
-use diagnostics::BuildOutcome;
-use diagnostics::CompilerWarningFacts;
-use display_filter::DisplayFilter;
-use outcome::ExecutionOutcome;
-use outcome::MendFailure;
-use render::ColorMode;
-use render::CompilerStats;
-use render::OutputFormat;
-use run_mode::OperationMode;
+use config::FixExecution;
+use config::OperationMode;
+use config::WarningPolicy;
+use reporting::BuildOutcome;
+use reporting::CARGO_TERM_COLOR_ALWAYS;
+use reporting::CARGO_TERM_COLOR_ENV;
+use reporting::CARGO_TERM_COLOR_NEVER;
+use reporting::CLICOLOR_DISABLED_VALUE;
+use reporting::CLICOLOR_ENV;
+use reporting::CLICOLOR_FORCE_ENV;
+use reporting::ColorMode;
+use reporting::CompilerStats;
+use reporting::CompilerWarningFacts;
+use reporting::DIAGNOSTICS_HELP_NAME_COLUMN_WIDTH;
+use reporting::EXIT_CODE_ERROR;
+use reporting::EXIT_CODE_WARNING;
+use reporting::ExecutionOutcome;
+use reporting::MendFailure;
+use reporting::OutputFormat;
+use reporting::TERM_DUMB_VALUE;
+use reporting::TERM_ENV;
+use runner::FIX_ALL_MAX_PASSES;
 use runner::MendRunner;
+use selection::DisplayFilter;
 use selection::Selection;
 
 fn main() -> ExitCode {
@@ -116,7 +103,7 @@ const fn total_fixables(outcome: &ExecutionOutcome) -> usize {
 fn run() -> Result<ExitCode, MendFailure> {
     let global_diagnostics = config::load_global_diagnostics();
     let after_help = build_diagnostics_help(&global_diagnostics);
-    let cli = cli::parse(&after_help);
+    let cli = config::parse(&after_help);
     if cli.build_info == BuildInfoMode::Show {
         println!("{}", build_info_text());
         return Ok(ExitCode::SUCCESS);
@@ -232,14 +219,14 @@ fn render_outcome(
         OutputFormat::Json => {
             print!(
                 "{}",
-                cargo_json::render_report(&outcome.report, selection)
+                reporting::render_report(&outcome.report, selection)
                     .map_err(MendFailure::Unexpected)?
             );
         },
         OutputFormat::Human => {
             print!(
                 "{}",
-                render::render_human_report(&outcome.report, &compiler_stats, color)
+                reporting::render_human_report(&outcome.report, &compiler_stats, color)
             );
         },
     }
@@ -248,7 +235,7 @@ fn render_outcome(
         let mend_duration = total_duration.saturating_sub(check_duration);
         eprintln!(
             "{}",
-            render::render_timing(total_duration, check_duration, mend_duration, color)
+            reporting::render_timing(total_duration, check_duration, mend_duration, color)
         );
     }
 
@@ -300,14 +287,14 @@ mod tests {
 
     use super::build_info_text;
     use super::color_mode;
-    use super::render::ColorMode;
-    use crate::constants::CARGO_TERM_COLOR_ALWAYS;
-    use crate::constants::CARGO_TERM_COLOR_ENV;
-    use crate::constants::CARGO_TERM_COLOR_NEVER;
-    use crate::constants::CLICOLOR_DISABLED_VALUE;
-    use crate::constants::CLICOLOR_ENV;
-    use crate::constants::CLICOLOR_FORCE_ENV;
-    use crate::constants::TERM_ENV;
+    use crate::reporting::CARGO_TERM_COLOR_ALWAYS;
+    use crate::reporting::CARGO_TERM_COLOR_ENV;
+    use crate::reporting::CARGO_TERM_COLOR_NEVER;
+    use crate::reporting::CLICOLOR_DISABLED_VALUE;
+    use crate::reporting::CLICOLOR_ENV;
+    use crate::reporting::CLICOLOR_FORCE_ENV;
+    use crate::reporting::ColorMode;
+    use crate::reporting::TERM_ENV;
 
     struct EnvGuard {
         key:      &'static str,

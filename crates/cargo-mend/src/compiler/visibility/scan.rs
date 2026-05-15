@@ -24,6 +24,7 @@ use crate::compiler::facade::ParentFacadeExportStatus;
 use crate::compiler::facade::ParentFacadeVisibility;
 use crate::compiler::persistence;
 use crate::compiler::persistence::CacheBuildKind;
+use crate::compiler::persistence::FINDINGS_SCHEMA_VERSION;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::persistence::StoredPubUseFixFact;
 use crate::compiler::persistence::StoredReport;
@@ -32,13 +33,12 @@ use crate::compiler::settings::DriverSettings;
 use crate::compiler::source_cache;
 use crate::compiler::source_cache::SourceCache;
 use crate::config::DiagnosticCode;
-use crate::constants::FINDINGS_SCHEMA_VERSION;
-use crate::constants::PUB_CRATE_VISIBILITY;
-use crate::constants::PUB_IN_CRATE_VISIBILITY_PREFIX;
-use crate::constants::PUB_VISIBILITY_TOKEN;
-use crate::diagnostics::CompilerWarningFacts;
-use crate::diagnostics::Severity;
-use crate::fix_support::FixSupport;
+use crate::reporting::CompilerWarningFacts;
+use crate::reporting::FixSupport;
+use crate::reporting::Severity;
+use crate::rust_syntax::PUB_CRATE_VISIBILITY;
+use crate::rust_syntax::PUB_IN_CRATE_VISIBILITY_PREFIX;
+use crate::rust_syntax::PUB_VISIBILITY_TOKEN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CrateKind {

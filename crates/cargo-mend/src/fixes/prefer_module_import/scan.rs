@@ -10,27 +10,27 @@ use syn::File;
 use syn::Item;
 use syn::spanned::Spanned;
 
+use super::function_imports::ImportDetector;
+use super::function_imports::ImportTarget;
+use super::function_imports::RawCandidate;
+use super::inline_calls;
+use super::inline_calls::InlineCallCandidate;
+use super::inline_calls::InlineCallDetector;
+use super::references::BareReference;
+use super::references::ReferenceCollector;
+use super::shared;
+use crate::compiler::RUST_SOURCE_FILE_EXTENSION;
+use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
-use crate::constants::MODULE_PATH_SEPARATOR;
-use crate::constants::PATH_KEYWORD_SUPER;
-use crate::constants::RUST_SOURCE_FILE_EXTENSION;
-use crate::constants::SOURCE_DIR_SRC;
-use crate::diagnostics::Finding;
-use crate::diagnostics::Severity;
-use crate::fix_support::FixSupport;
-use crate::imports::ImportGroup;
-use crate::imports::UseFix;
-use crate::imports::ValidatedFixSet;
-use crate::module_paths;
-use crate::prefer_module_import::function_imports::ImportDetector;
-use crate::prefer_module_import::function_imports::ImportTarget;
-use crate::prefer_module_import::function_imports::RawCandidate;
-use crate::prefer_module_import::inline_calls;
-use crate::prefer_module_import::inline_calls::InlineCallCandidate;
-use crate::prefer_module_import::inline_calls::InlineCallDetector;
-use crate::prefer_module_import::references::BareReference;
-use crate::prefer_module_import::references::ReferenceCollector;
-use crate::prefer_module_import::shared;
+use crate::fixes::imports::ImportGroup;
+use crate::fixes::imports::UseFix;
+use crate::fixes::imports::ValidatedFixSet;
+use crate::reporting::Finding;
+use crate::reporting::FixSupport;
+use crate::reporting::Severity;
+use crate::rust_syntax;
+use crate::rust_syntax::MODULE_PATH_SEPARATOR;
+use crate::rust_syntax::PATH_KEYWORD_SUPER;
 use crate::selection::Selection;
 
 pub(crate) struct PreferModuleImportScan {
@@ -112,7 +112,7 @@ fn scan_file(
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
         syn::parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    let current_module_path = module_paths::file_module_path(source_root, path)
+    let current_module_path = rust_syntax::file_module_path(source_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = shared::line_offsets(&text);
     let file_context = ScanFileContext {

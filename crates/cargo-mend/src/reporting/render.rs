@@ -1,16 +1,19 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use crate::constants::ANSI_BOLD;
-use crate::constants::ANSI_BOLD_BLUE;
-use crate::constants::ANSI_BOLD_GREEN;
-use crate::constants::ANSI_BOLD_RED;
-use crate::constants::ANSI_BOLD_YELLOW;
-use crate::constants::ANSI_DIM;
-use crate::diagnostics;
-use crate::diagnostics::Finding;
-use crate::diagnostics::Report;
-use crate::diagnostics::Severity;
+use super::colors::ANSI_BOLD;
+use super::colors::ANSI_BOLD_BLUE;
+use super::colors::ANSI_BOLD_GREEN;
+use super::colors::ANSI_BOLD_RED;
+use super::colors::ANSI_BOLD_YELLOW;
+use super::colors::ANSI_DIM;
+use super::diagnostics;
+use super::diagnostics::Finding;
+use super::diagnostics::Report;
+use super::diagnostics::Severity;
+
+// diagnostics help
+pub(crate) const DIAGNOSTICS_HELP_NAME_COLUMN_WIDTH: usize = 40;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ColorMode {
@@ -384,11 +387,11 @@ mod tests {
     use super::CompilerStats;
     use super::render_human_report;
     use crate::config::DiagnosticCode;
-    use crate::diagnostics::Finding;
-    use crate::diagnostics::Report;
-    use crate::diagnostics::ReportSummary;
-    use crate::diagnostics::Severity;
-    use crate::fix_support::FixSupport;
+    use crate::reporting::diagnostics::Finding;
+    use crate::reporting::diagnostics::FixSupport;
+    use crate::reporting::diagnostics::Report;
+    use crate::reporting::diagnostics::ReportSummary;
+    use crate::reporting::diagnostics::Severity;
 
     fn compiler_stats(warnings: usize, fixable: usize) -> CompilerStats {
         CompilerStats { warnings, fixable }

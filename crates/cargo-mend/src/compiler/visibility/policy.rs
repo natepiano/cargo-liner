@@ -21,12 +21,12 @@ use crate::compiler::facade::ParentFacadeExportStatus;
 use crate::compiler::facade::ParentFacadeFixSupport;
 use crate::compiler::facade::ParentFacadeUsage;
 use crate::compiler::facade::ParentFacadeVisibility;
-use crate::constants::RUST_LIB_FILE;
-use crate::constants::RUST_MODULE_FILE;
-use crate::constants::SOURCE_DIR_BENCHES;
-use crate::constants::SOURCE_DIR_EXAMPLES;
-use crate::constants::SOURCE_DIR_TESTS;
-use crate::fix_support::FixSupport;
+use crate::compiler::source_cache::RUST_LIB_FILE;
+use crate::compiler::source_cache::RUST_MODULE_FILE;
+use crate::compiler::source_cache::SOURCE_DIR_BENCHES;
+use crate::compiler::source_cache::SOURCE_DIR_EXAMPLES;
+use crate::compiler::source_cache::SOURCE_DIR_TESTS;
+use crate::reporting::FixSupport;
 
 pub(super) fn classify_suspicious_pub(
     ctx: &VisibilityContext<'_, '_>,
@@ -334,9 +334,9 @@ mod tests {
     use super::crate_kind_for_root;
     use super::forbidden_pub_crate_help;
     use super::suspicious_pub_note;
-    use crate::constants::SOURCE_DIR_BENCHES;
-    use crate::constants::SOURCE_DIR_EXAMPLES;
-    use crate::constants::SOURCE_DIR_TESTS;
+    use crate::compiler::source_cache::SOURCE_DIR_BENCHES;
+    use crate::compiler::source_cache::SOURCE_DIR_EXAMPLES;
+    use crate::compiler::source_cache::SOURCE_DIR_TESTS;
 
     #[test]
     fn allow_pub_crate_allows_library_crate_root_items() {

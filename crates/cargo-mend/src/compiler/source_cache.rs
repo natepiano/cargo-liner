@@ -11,16 +11,22 @@ use syn::ItemUse;
 use syn::UseTree;
 use syn::visit::Visit;
 
-use crate::constants::CARGO_TARGET_KIND_LIB;
-use crate::constants::CARGO_TARGET_KIND_MAIN;
-use crate::constants::PATH_KEYWORD_CRATE;
-use crate::constants::RUST_MODULE_FILE;
-use crate::constants::RUST_SOURCE_FILE_EXTENSION;
-use crate::constants::RUST_SOURCE_FILE_SUFFIX;
-use crate::constants::SOURCE_DIR_BENCHES;
-use crate::constants::SOURCE_DIR_EXAMPLES;
-use crate::constants::SOURCE_DIR_SRC;
-use crate::constants::SOURCE_DIR_TESTS;
+use crate::rust_syntax::PATH_KEYWORD_CRATE;
+use crate::selection::CARGO_TARGET_KIND_LIB;
+use crate::selection::CARGO_TARGET_KIND_MAIN;
+
+// rust source files
+pub(crate) const RUST_LIB_FILE: &str = "lib.rs";
+pub(crate) const RUST_MAIN_FILE: &str = "main.rs";
+pub(crate) const RUST_MODULE_FILE: &str = "mod.rs";
+pub(crate) const RUST_SOURCE_FILE_EXTENSION: &str = "rs";
+pub(crate) const RUST_SOURCE_FILE_SUFFIX: &str = ".rs";
+
+// source-tree directories
+pub(crate) const SOURCE_DIR_BENCHES: &str = "benches";
+pub(crate) const SOURCE_DIR_EXAMPLES: &str = "examples";
+pub(crate) const SOURCE_DIR_SRC: &str = "src";
+pub(crate) const SOURCE_DIR_TESTS: &str = "tests";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PathOrigin {

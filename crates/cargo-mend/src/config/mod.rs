@@ -1,3 +1,6 @@
+mod cli;
+mod run_mode;
+
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
@@ -8,12 +11,40 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+pub(crate) use cli::BuildInfoMode;
+pub(crate) use cli::CargoCheckCli;
+pub(crate) use cli::FixExecution;
+pub(crate) use cli::TargetSelection;
+pub(crate) use cli::WarningPolicy;
+pub(crate) use cli::WorkspaceSelection;
+pub(crate) use cli::parse;
+pub(crate) use run_mode::FixKind;
+pub(crate) use run_mode::OperationIntent;
+pub(crate) use run_mode::OperationMode;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::constants::APP_NAME;
-use crate::constants::DEFAULT_GLOBAL_CONFIG_TOML;
-use crate::constants::GLOBAL_CONFIG_FILE;
+// app/config file
+pub(crate) const APP_NAME: &str = "cargo-mend";
+pub(crate) const GLOBAL_CONFIG_FILE: &str = "config.toml";
+pub(crate) const DEFAULT_GLOBAL_CONFIG_TOML: &str = r"# cargo-mend global configuration
+# See https://github.com/natepiano/cargo-mend#diagnostics for details on each rule.
+# Per-project overrides go in mend.toml at your project or workspace root.
+
+[diagnostics]
+forbidden_pub_crate = true
+forbidden_pub_in_crate = true
+review_pub_mod = true
+suspicious_pub = true
+prefer_module_import = true
+inline_path_qualified_type = true
+shorten_local_crate_import = true
+replace_deep_super_import = true
+wildcard_parent_pub_use = true
+internal_parent_pub_use_facade = true
+narrow_to_pub_crate = true
+field_visibility_wider_than_type = true
+";
 
 // --- Diagnostic codes ---
 

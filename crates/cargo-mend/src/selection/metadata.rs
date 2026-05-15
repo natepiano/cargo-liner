@@ -12,14 +12,22 @@ use cargo_metadata::Target;
 use serde::Serialize;
 use serde::Serializer;
 
-use crate::cli::CargoCheckCli;
-use crate::cli::WorkspaceSelection;
-use crate::constants::CARGO_FLAG_ALL_TARGETS;
-use crate::constants::CARGO_FLAG_EXCLUDE;
-use crate::constants::CARGO_FLAG_MANIFEST_PATH;
-use crate::constants::CARGO_FLAG_PACKAGE;
-use crate::constants::CARGO_FLAG_WORKSPACE;
-use crate::constants::CARGO_MANIFEST_FILE;
+use crate::compiler::CARGO_FLAG_ALL_TARGETS;
+use crate::compiler::CARGO_FLAG_EXCLUDE;
+use crate::compiler::CARGO_FLAG_MANIFEST_PATH;
+use crate::compiler::CARGO_FLAG_PACKAGE;
+use crate::compiler::CARGO_FLAG_WORKSPACE;
+use crate::compiler::CARGO_MANIFEST_FILE;
+use crate::config::CargoCheckCli;
+use crate::config::WorkspaceSelection;
+
+// cargo target kinds
+pub(crate) const CARGO_TARGET_KIND_BENCH: &str = "bench";
+pub(crate) const CARGO_TARGET_KIND_BIN: &str = "bin";
+pub(crate) const CARGO_TARGET_KIND_EXAMPLE: &str = "example";
+pub(crate) const CARGO_TARGET_KIND_LIB: &str = "lib";
+pub(crate) const CARGO_TARGET_KIND_MAIN: &str = "main";
+pub(crate) const CARGO_TARGET_KIND_TEST: &str = "test";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectionScope {
@@ -302,16 +310,16 @@ mod tests {
     use super::TargetSupport;
     use super::build_cargo_check_plan;
     use super::resolve_cargo_selection;
-    use crate::cli::CargoCheckCli;
-    use crate::cli::TargetSelection;
-    use crate::cli::WorkspaceSelection;
-    use crate::constants::CARGO_FLAG_ALL_TARGETS;
-    use crate::constants::CARGO_FLAG_EXCLUDE;
-    use crate::constants::CARGO_FLAG_MANIFEST_PATH;
-    use crate::constants::CARGO_FLAG_PACKAGE;
-    use crate::constants::CARGO_FLAG_WORKSPACE;
-    use crate::constants::CARGO_MANIFEST_FILE;
-    use crate::constants::CARGO_TARGET_KIND_LIB;
+    use crate::compiler::CARGO_FLAG_ALL_TARGETS;
+    use crate::compiler::CARGO_FLAG_EXCLUDE;
+    use crate::compiler::CARGO_FLAG_MANIFEST_PATH;
+    use crate::compiler::CARGO_FLAG_PACKAGE;
+    use crate::compiler::CARGO_FLAG_WORKSPACE;
+    use crate::compiler::CARGO_MANIFEST_FILE;
+    use crate::config::CargoCheckCli;
+    use crate::config::TargetSelection;
+    use crate::config::WorkspaceSelection;
+    use crate::selection::CARGO_TARGET_KIND_LIB;
 
     fn workspace_manifest_path() -> PathBuf {
         PathBuf::from("/workspace").join(CARGO_MANIFEST_FILE)

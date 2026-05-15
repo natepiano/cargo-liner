@@ -2,44 +2,47 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
-use render::ColorMode;
-use render::OutputFormat;
 
-use super::compiler;
-use super::compiler::BuildOutputMode;
-use super::compiler::SelectionResult;
-use super::config::DiagnosticCode;
-use super::config::DiagnosticStatus;
-use super::config::LoadedConfig;
-use super::diagnostics::Report;
-use super::field_visibility_fix;
-use super::field_visibility_fix::FieldVisibilityFixScan;
-use super::imports;
-use super::imports::ImportScan;
-use super::imports::ValidatedFixSet;
-use super::inline_path_qualified_type;
-use super::inline_path_qualified_type::InlinePathScan;
-use super::narrow_pub_crate;
-use super::narrow_pub_crate::NarrowPubCrateScan;
-use super::outcome::CompilerFailureCause;
-use super::outcome::ExecutionNotice;
-use super::outcome::ExecutionOutcome;
-use super::outcome::FixNotice;
-use super::outcome::FixValidationFailure;
-use super::outcome::MendFailure;
-use super::outcome::NoticeKind;
-use super::outcome::PubUseNotice;
-use super::outcome::RollbackStatus;
-use super::prefer_module_import;
-use super::prefer_module_import::PreferModuleImportScan;
-use super::pub_use_fixes;
-use super::pub_use_fixes::PubUseFixScan;
-use super::render;
-use super::run_mode::FixKind;
-use super::run_mode::OperationIntent;
-use super::run_mode::OperationMode;
-use super::selection::CargoCheckPlan;
-use super::selection::Selection;
+use crate::compiler;
+use crate::compiler::BuildOutputMode;
+use crate::compiler::SelectionResult;
+use crate::config::DiagnosticCode;
+use crate::config::DiagnosticStatus;
+use crate::config::FixKind;
+use crate::config::LoadedConfig;
+use crate::config::OperationIntent;
+use crate::config::OperationMode;
+use crate::fixes::field_visibility;
+use crate::fixes::field_visibility::FieldVisibilityFixScan;
+use crate::fixes::imports;
+use crate::fixes::imports::ImportScan;
+use crate::fixes::imports::ValidatedFixSet;
+use crate::fixes::inline_path_qualified_type;
+use crate::fixes::inline_path_qualified_type::InlinePathScan;
+use crate::fixes::narrow_pub_crate;
+use crate::fixes::narrow_pub_crate::NarrowPubCrateScan;
+use crate::fixes::prefer_module_import;
+use crate::fixes::prefer_module_import::PreferModuleImportScan;
+use crate::fixes::pub_use_fixes;
+use crate::fixes::pub_use_fixes::PubUseFixScan;
+use crate::reporting::ColorMode;
+use crate::reporting::CompilerFailureCause;
+use crate::reporting::ExecutionNotice;
+use crate::reporting::ExecutionOutcome;
+use crate::reporting::FixNotice;
+use crate::reporting::FixValidationFailure;
+use crate::reporting::MendFailure;
+use crate::reporting::NoticeKind;
+use crate::reporting::OutputFormat;
+use crate::reporting::PubUseNotice;
+use crate::reporting::Report;
+use crate::reporting::RollbackStatus;
+use crate::selection::CargoCheckPlan;
+use crate::selection::Selection;
+
+/// Maximum number of mend passes during `--fix-all`. Prevents an infinite
+/// loop if a fix oscillates; in practice convergence happens in 1–2 passes.
+pub(crate) const FIX_ALL_MAX_PASSES: usize = 5;
 
 pub(crate) struct MendRunner<'a> {
     selection:     &'a Selection,
@@ -172,7 +175,7 @@ impl<'a> MendRunner<'a> {
         let field_visibility_fix_scan = (operation_mode.fixes.contains(FixKind::FieldVisibility)
             && diagnostics_config.is_enabled(DiagnosticCode::FieldVisibilityWiderThanType)
                 == DiagnosticStatus::Enabled)
-            .then(|| field_visibility_fix::scan_from_report(&report))
+            .then(|| field_visibility::scan_from_report(&report))
             .transpose()
             .map_err(MendFailure::Unexpected)?;
         let pub_use_scan = operation_mode
@@ -504,7 +507,7 @@ mod tests {
     use super::drop_conflicting_import_groups;
     use super::imports::ImportGroup;
     use super::imports::UseFix;
-    use crate::run_mode::OperationIntent;
+    use crate::config::OperationIntent;
 
     fn tagged(path: &str, start: usize, replacement: &str, bare: &str, full: &str) -> UseFix {
         UseFix {

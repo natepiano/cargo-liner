@@ -5,10 +5,10 @@ use syn::ItemUse;
 use syn::UseTree;
 use syn::Visibility;
 
-use crate::constants::PATH_KEYWORD_CRATE;
-use crate::constants::PATH_KEYWORD_SUPER;
-use crate::constants::PUB_VISIBILITY_PREFIX;
-use crate::constants::RUST_MODULE_FILE;
+use crate::compiler::RUST_MODULE_FILE;
+use crate::rust_syntax::PATH_KEYWORD_CRATE;
+use crate::rust_syntax::PATH_KEYWORD_SUPER;
+use crate::rust_syntax::PUB_VISIBILITY_PREFIX;
 
 pub(super) struct FlattenedImport {
     pub(super) segments: Vec<String>,

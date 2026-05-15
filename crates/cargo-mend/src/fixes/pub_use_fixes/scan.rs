@@ -7,16 +7,16 @@ use std::path::PathBuf;
 use anyhow::Context;
 use anyhow::Result;
 
-use crate::constants::PUB_VISIBILITY_PREFIX;
-use crate::constants::RUST_MODULE_FILE;
-use crate::diagnostics::Report;
-use crate::imports::UseFix;
-use crate::imports::ValidatedFixSet;
-use crate::module_paths;
-use crate::pub_use_fixes::parent_boundary;
-use crate::pub_use_fixes::parent_boundary::ParentBoundaryKey;
-use crate::pub_use_fixes::validated_plan;
-use crate::pub_use_fixes::validated_plan::ValidatedPubUsePlan;
+use super::parent_boundary;
+use super::parent_boundary::ParentBoundaryKey;
+use super::validated_plan;
+use super::validated_plan::ValidatedPubUsePlan;
+use crate::compiler::RUST_MODULE_FILE;
+use crate::fixes::imports::UseFix;
+use crate::fixes::imports::ValidatedFixSet;
+use crate::reporting::Report;
+use crate::rust_syntax;
+use crate::rust_syntax::PUB_VISIBILITY_PREFIX;
 use crate::selection::Selection;
 
 pub(crate) struct PubUseFixScan {
@@ -269,5 +269,5 @@ fn module_path_from_boundary_file(source_root: &Path, boundary_file: &Path) -> O
         return module_path_from_dir(source_root, boundary_file.parent()?);
     }
 
-    module_paths::file_module_path(source_root, boundary_file)
+    rust_syntax::file_module_path(source_root, boundary_file)
 }

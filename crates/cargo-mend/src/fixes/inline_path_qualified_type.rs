@@ -34,20 +34,20 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use walkdir::WalkDir;
 
+use super::imports::ImportGroup;
+use super::imports::UseFix;
+use super::imports::ValidatedFixSet;
+use crate::compiler::RUST_SOURCE_FILE_EXTENSION;
+use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
-use crate::constants::MODULE_PATH_SEPARATOR;
-use crate::constants::PATH_KEYWORD_CRATE;
-use crate::constants::PATH_KEYWORD_SELF;
-use crate::constants::PATH_KEYWORD_SUPER;
-use crate::constants::RUST_SOURCE_FILE_EXTENSION;
-use crate::constants::SOURCE_DIR_SRC;
-use crate::diagnostics::Finding;
-use crate::diagnostics::Severity;
-use crate::fix_support::FixSupport;
-use crate::imports::ImportGroup;
-use crate::imports::UseFix;
-use crate::imports::ValidatedFixSet;
-use crate::module_paths;
+use crate::reporting::Finding;
+use crate::reporting::FixSupport;
+use crate::reporting::Severity;
+use crate::rust_syntax;
+use crate::rust_syntax::MODULE_PATH_SEPARATOR;
+use crate::rust_syntax::PATH_KEYWORD_CRATE;
+use crate::rust_syntax::PATH_KEYWORD_SELF;
+use crate::rust_syntax::PATH_KEYWORD_SUPER;
 use crate::selection::Selection;
 
 pub(crate) struct InlinePathScan {
@@ -317,7 +317,7 @@ fn scan_file(
     let syntax =
         syn::parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
     let offsets = line_offsets(&text);
-    let base_module_path = module_paths::file_module_path(source_root, path)
+    let base_module_path = rust_syntax::file_module_path(source_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let mut scopes = Vec::new();
     let mut scope_collection_context = ScopeCollectionContext {

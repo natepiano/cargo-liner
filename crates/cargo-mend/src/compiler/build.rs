@@ -15,33 +15,44 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::Result;
 
-use crate::compiler::persistence;
+use super::persistence;
+use super::settings::CONFIG_FINGERPRINT_ENV;
+use super::settings::CONFIG_JSON_ENV;
+use super::settings::CONFIG_ROOT_ENV;
+use super::settings::DRIVER_ENV;
+use super::settings::DRIVER_ENV_ENABLED;
+use super::settings::FINDINGS_DIR_ENV;
+use super::settings::RUSTC_WORKSPACE_WRAPPER_ENV;
+use super::settings::SCOPE_FINGERPRINT_ENV;
 use crate::config::LoadedConfig;
-use crate::constants::CARGO_BIN;
-use crate::constants::CARGO_FLAG_ALL_TARGETS;
-use crate::constants::CARGO_FLAG_ALLOW_DIRTY;
-use crate::constants::CARGO_FLAG_ALLOW_STAGED;
-use crate::constants::CARGO_FLAG_TESTS;
-use crate::constants::CARGO_SUBCOMMAND_CHECK;
-use crate::constants::CARGO_SUBCOMMAND_FIX;
-use crate::constants::CARGO_TERM_COLOR_ALWAYS;
-use crate::constants::CARGO_TERM_COLOR_ENV;
-use crate::constants::CONFIG_FINGERPRINT_ENV;
-use crate::constants::CONFIG_JSON_ENV;
-use crate::constants::CONFIG_ROOT_ENV;
-use crate::constants::DRIVER_ENV;
-use crate::constants::DRIVER_ENV_ENABLED;
-use crate::constants::FINDINGS_DIR_ENV;
-use crate::constants::RUSTC_WORKSPACE_WRAPPER_ENV;
-use crate::constants::SCOPE_FINGERPRINT_ENV;
-use crate::diagnostics::CompilerWarningFacts;
-use crate::diagnostics::Report;
-use crate::outcome::AnalysisFailure;
-use crate::outcome::CompilerFailureCause;
-use crate::outcome::MendFailure;
-use crate::render::ColorMode;
+use crate::reporting::AnalysisFailure;
+use crate::reporting::CARGO_TERM_COLOR_ALWAYS;
+use crate::reporting::CARGO_TERM_COLOR_ENV;
+use crate::reporting::ColorMode;
+use crate::reporting::CompilerFailureCause;
+use crate::reporting::CompilerWarningFacts;
+use crate::reporting::MendFailure;
+use crate::reporting::Report;
 use crate::selection::CargoCheckPlan;
 use crate::selection::Selection;
+
+// cargo cli flags
+pub(crate) const CARGO_FLAG_ALL_TARGETS: &str = "--all-targets";
+pub(crate) const CARGO_FLAG_ALLOW_DIRTY: &str = "--allow-dirty";
+pub(crate) const CARGO_FLAG_ALLOW_STAGED: &str = "--allow-staged";
+pub(crate) const CARGO_FLAG_EXCLUDE: &str = "--exclude";
+pub(crate) const CARGO_FLAG_MANIFEST_PATH: &str = "--manifest-path";
+pub(crate) const CARGO_FLAG_PACKAGE: &str = "--package";
+pub(crate) const CARGO_FLAG_TESTS: &str = "--tests";
+pub(crate) const CARGO_FLAG_WORKSPACE: &str = "--workspace";
+
+// cargo subcommands
+pub(crate) const CARGO_BIN: &str = "cargo";
+pub(crate) const CARGO_SUBCOMMAND_CHECK: &str = "check";
+pub(crate) const CARGO_SUBCOMMAND_FIX: &str = "fix";
+
+// cargo manifest filename
+pub(crate) const CARGO_MANIFEST_FILE: &str = "Cargo.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BuildOutputMode {

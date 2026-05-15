@@ -8,7 +8,7 @@ use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
 
-use crate::render::OutputFormat;
+use crate::reporting::OutputFormat;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BuildInfoMode {

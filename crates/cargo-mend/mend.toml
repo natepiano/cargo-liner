@@ -1,0 +1,9 @@
+# cargo-mend project configuration
+
+[visibility]
+# Each fix pass lives in its own submodule; the names collide on `scan_selection`
+# and `scan_from_report`, so each must be reachable via `crate::fixes::<pass>::*`
+# rather than collapsed at the parent. Allowlist the file that declares them.
+allow_pub_mod = [
+    "src/fixes/mod.rs",
+]

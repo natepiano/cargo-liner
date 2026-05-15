@@ -28,8 +28,8 @@ use super::scan::VisibilityContext;
 use super::source;
 use crate::compiler::persistence::FindingsSink;
 use crate::config::DiagnosticCode;
-use crate::diagnostics::Severity;
-use crate::fix_support::FixSupport;
+use crate::reporting::FixSupport;
+use crate::reporting::Severity;
 
 pub(super) fn check_item(
     ctx: &VisibilityContext<'_, '_>,

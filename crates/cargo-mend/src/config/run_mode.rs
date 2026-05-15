@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
-use crate::cli::FixCli;
-use crate::cli::FixExecution;
-use crate::cli::FixRequest;
+use super::cli::FixCli;
+use super::cli::FixExecution;
+use super::cli::FixRequest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum FixKind {
@@ -97,9 +97,9 @@ mod tests {
     use super::FixKind;
     use super::OperationIntent;
     use super::OperationMode;
-    use crate::cli::FixCli;
-    use crate::cli::FixExecution;
-    use crate::cli::FixRequest;
+    use crate::config::cli::FixCli;
+    use crate::config::cli::FixExecution;
+    use crate::config::cli::FixRequest;
 
     #[test]
     fn operation_mode_is_read_only_without_fix_flags() {

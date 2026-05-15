@@ -12,9 +12,9 @@ use rustc_driver::Compilation;
 use rustc_interface::interface::Compiler;
 use rustc_middle::ty::TyCtxt;
 
-use crate::compiler::settings::DriverSettings;
-use crate::compiler::visibility;
-use crate::constants::EXIT_CODE_ERROR;
+use super::settings::DriverSettings;
+use super::visibility;
+use crate::reporting::EXIT_CODE_ERROR;
 
 #[derive(Debug)]
 struct AnalysisCallbacks {

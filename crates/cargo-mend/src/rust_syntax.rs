@@ -1,9 +1,24 @@
 use std::ffi::OsStr;
 use std::path::Path;
 
-use crate::constants::RUST_LIB_FILE;
-use crate::constants::RUST_MAIN_FILE;
-use crate::constants::RUST_MODULE_FILE;
+use crate::compiler::RUST_LIB_FILE;
+use crate::compiler::RUST_MAIN_FILE;
+use crate::compiler::RUST_MODULE_FILE;
+
+// path keywords
+pub(crate) const PATH_KEYWORD_CRATE: &str = "crate";
+pub(crate) const PATH_KEYWORD_SELF: &str = "self";
+pub(crate) const PATH_KEYWORD_SUPER: &str = "super";
+
+// rust module paths
+pub(crate) const MODULE_GLOB_SUFFIX: &str = "::*";
+pub(crate) const MODULE_PATH_SEPARATOR: &str = "::";
+
+// visibility
+pub(crate) const PUB_CRATE_VISIBILITY: &str = "pub(crate)";
+pub(crate) const PUB_IN_CRATE_VISIBILITY_PREFIX: &str = "pub(in crate::";
+pub(crate) const PUB_VISIBILITY_PREFIX: &str = "pub ";
+pub(crate) const PUB_VISIBILITY_TOKEN: &str = "pub";
 
 pub(crate) fn file_module_path(source_root: &Path, path: &Path) -> Option<Vec<String>> {
     let relative = path.strip_prefix(source_root).ok()?;

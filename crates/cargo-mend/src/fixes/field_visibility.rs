@@ -4,10 +4,10 @@ use std::path::Path;
 use anyhow::Context;
 use anyhow::Result;
 
+use super::imports::UseFix;
 use crate::config::DiagnosticCode;
-use crate::constants::PUB_VISIBILITY_TOKEN;
-use crate::diagnostics::Report;
-use crate::imports::UseFix;
+use crate::reporting::Report;
+use crate::rust_syntax::PUB_VISIBILITY_TOKEN;
 
 pub(crate) struct FieldVisibilityFixScan {
     pub fixes: Vec<UseFix>,

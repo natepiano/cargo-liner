@@ -4,10 +4,10 @@ use std::path::Path;
 use anyhow::Context;
 use anyhow::Result;
 
+use super::imports::UseFix;
 use crate::config::DiagnosticCode;
-use crate::constants::PUB_VISIBILITY_PREFIX;
-use crate::diagnostics::Report;
-use crate::imports::UseFix;
+use crate::reporting::Report;
+use crate::rust_syntax::PUB_VISIBILITY_PREFIX;
 
 pub(crate) struct NarrowPubCrateScan {
     pub fixes: Vec<UseFix>,

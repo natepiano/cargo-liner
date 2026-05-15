@@ -8,19 +8,19 @@ use syn::ItemUse;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
+use super::function_imports::ImportTarget;
+use super::scan::InlineCallFindingInputs;
+use super::scan::ScanFileContext;
+use super::shared;
 use crate::config::DiagnosticCode;
-use crate::constants::MODULE_PATH_SEPARATOR;
-use crate::constants::PATH_KEYWORD_CRATE;
-use crate::constants::PATH_KEYWORD_SUPER;
-use crate::diagnostics::Finding;
-use crate::diagnostics::Severity;
-use crate::fix_support::FixSupport;
-use crate::imports::ImportGroup;
-use crate::imports::UseFix;
-use crate::prefer_module_import::function_imports::ImportTarget;
-use crate::prefer_module_import::scan::InlineCallFindingInputs;
-use crate::prefer_module_import::scan::ScanFileContext;
-use crate::prefer_module_import::shared;
+use crate::fixes::imports::ImportGroup;
+use crate::fixes::imports::UseFix;
+use crate::reporting::Finding;
+use crate::reporting::FixSupport;
+use crate::reporting::Severity;
+use crate::rust_syntax::MODULE_PATH_SEPARATOR;
+use crate::rust_syntax::PATH_KEYWORD_CRATE;
+use crate::rust_syntax::PATH_KEYWORD_SUPER;
 
 pub(super) struct InlineCallCandidate {
     pub(super) function_name:   String,

@@ -6,10 +6,13 @@ use std::time::Duration;
 
 use anyhow::Error;
 
-use crate::constants::EXIT_CODE_WARNING;
-use crate::diagnostics::CompilerWarningFacts;
-use crate::diagnostics::Report;
-use crate::run_mode::OperationIntent;
+use super::diagnostics::CompilerWarningFacts;
+use super::diagnostics::Report;
+use crate::config::OperationIntent;
+
+// exit codes
+pub(crate) const EXIT_CODE_ERROR: u8 = 1;
+pub(crate) const EXIT_CODE_WARNING: u8 = 2;
 
 #[derive(Debug)]
 pub(crate) struct ExecutionOutcome {
@@ -288,7 +291,7 @@ mod tests {
     use super::NoticeKind;
     use super::PubUseNotice;
     use super::RollbackStatus;
-    use crate::run_mode::OperationIntent;
+    use crate::config::OperationIntent;
 
     #[test]
     fn analysis_failure_message_uses_typed_collection_wording() {

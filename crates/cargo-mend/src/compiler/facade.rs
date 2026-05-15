@@ -12,16 +12,16 @@ use super::settings::DriverSettings;
 use super::source_cache;
 use super::source_cache::ExtractedPaths;
 use super::source_cache::PathOrigin;
+use super::source_cache::RUST_LIB_FILE;
+use super::source_cache::RUST_MAIN_FILE;
+use super::source_cache::RUST_MODULE_FILE;
 use super::source_cache::SourceCache;
 use super::source_cache::UseRename;
-use crate::constants::MODULE_PATH_SEPARATOR;
-use crate::constants::PATH_KEYWORD_CRATE;
-use crate::constants::PATH_KEYWORD_SELF;
-use crate::constants::PATH_KEYWORD_SUPER;
-use crate::constants::RUST_LIB_FILE;
-use crate::constants::RUST_MAIN_FILE;
-use crate::constants::RUST_MODULE_FILE;
-use crate::module_paths;
+use crate::rust_syntax;
+use crate::rust_syntax::MODULE_PATH_SEPARATOR;
+use crate::rust_syntax::PATH_KEYWORD_CRATE;
+use crate::rust_syntax::PATH_KEYWORD_SELF;
+use crate::rust_syntax::PATH_KEYWORD_SUPER;
 
 #[derive(Debug, Clone)]
 pub(super) struct ParentBoundary {
@@ -86,7 +86,7 @@ pub(super) fn root_module_exports_item(
     child_file: &Path,
     item_name: &str,
 ) -> bool {
-    let Some(child_module_name) = module_paths::module_name_for_child_boundary_file(child_file)
+    let Some(child_module_name) = rust_syntax::module_name_for_child_boundary_file(child_file)
     else {
         return false;
     };
@@ -115,7 +115,7 @@ pub(super) fn parent_facade_export_status(
 
     let exported_names = loop {
         let Some(child_module_name) =
-            module_paths::module_name_for_child_boundary_file(&current_child)
+            rust_syntax::module_name_for_child_boundary_file(&current_child)
         else {
             return Ok(None);
         };

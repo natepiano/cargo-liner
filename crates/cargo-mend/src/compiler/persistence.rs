@@ -11,19 +11,21 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::compiler::settings;
+use super::settings;
 use crate::config::DiagnosticCode;
-use crate::constants::FINDINGS_SCHEMA_VERSION;
-use crate::constants::MODULE_PATH_SEPARATOR;
-use crate::diagnostics::CompilerWarningFacts;
-use crate::diagnostics::Finding;
-use crate::diagnostics::PubUseFixFact;
-use crate::diagnostics::Report;
-use crate::diagnostics::ReportFacts;
-use crate::diagnostics::ReportSummary;
-use crate::diagnostics::Severity;
-use crate::fix_support::FixSupport;
+use crate::reporting::CompilerWarningFacts;
+use crate::reporting::Finding;
+use crate::reporting::FixSupport;
+use crate::reporting::PubUseFixFact;
+use crate::reporting::Report;
+use crate::reporting::ReportFacts;
+use crate::reporting::ReportSummary;
+use crate::reporting::Severity;
+use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::selection::Selection;
+
+// findings
+pub(crate) const FINDINGS_SCHEMA_VERSION: u32 = 13;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct StoredReport {

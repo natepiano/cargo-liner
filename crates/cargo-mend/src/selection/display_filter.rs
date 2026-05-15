@@ -1,17 +1,17 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use crate::cli::CargoCheckCli;
-use crate::cli::TargetSelection;
-use crate::constants::CARGO_TARGET_KIND_BENCH;
-use crate::constants::CARGO_TARGET_KIND_BIN;
-use crate::constants::CARGO_TARGET_KIND_EXAMPLE;
-use crate::constants::CARGO_TARGET_KIND_LIB;
-use crate::constants::CARGO_TARGET_KIND_TEST;
-use crate::constants::SOURCE_DIR_SRC;
-use crate::diagnostics::Report;
-use crate::selection::PackageMetadata;
-use crate::selection::TargetMetadata;
+use super::CARGO_TARGET_KIND_BENCH;
+use super::CARGO_TARGET_KIND_BIN;
+use super::CARGO_TARGET_KIND_EXAMPLE;
+use super::CARGO_TARGET_KIND_LIB;
+use super::CARGO_TARGET_KIND_TEST;
+use super::PackageMetadata;
+use super::TargetMetadata;
+use crate::compiler::SOURCE_DIR_SRC;
+use crate::config::CargoCheckCli;
+use crate::config::TargetSelection;
+use crate::reporting::Report;
 
 /// Filters mend findings based on the user's target-selection flags.
 ///
@@ -176,11 +176,11 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::cli::TargetSelection;
-    use crate::constants::CARGO_MANIFEST_FILE;
-    use crate::constants::CARGO_TARGET_KIND_BIN;
-    use crate::constants::CARGO_TARGET_KIND_EXAMPLE;
-    use crate::constants::CARGO_TARGET_KIND_LIB;
+    use crate::compiler::CARGO_MANIFEST_FILE;
+    use crate::config::TargetSelection;
+    use crate::selection::CARGO_TARGET_KIND_BIN;
+    use crate::selection::CARGO_TARGET_KIND_EXAMPLE;
+    use crate::selection::CARGO_TARGET_KIND_LIB;
     use crate::selection::PackageMetadata;
     use crate::selection::TargetMetadata;
     use crate::selection::TargetSupport;

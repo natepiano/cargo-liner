@@ -14,15 +14,15 @@ use syn::UseTree;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
-use crate::constants::MODULE_PATH_SEPARATOR;
-use crate::constants::PATH_KEYWORD_CRATE;
-use crate::constants::PATH_KEYWORD_SELF;
-use crate::constants::PATH_KEYWORD_SUPER;
-use crate::constants::RUST_SOURCE_FILE_EXTENSION;
-use crate::constants::SOURCE_DIR_SRC;
-use crate::imports::UseFix;
-use crate::module_paths;
-use crate::pub_use_fixes::parent_boundary::ParentBoundaryKey;
+use super::parent_boundary::ParentBoundaryKey;
+use crate::compiler::RUST_SOURCE_FILE_EXTENSION;
+use crate::compiler::SOURCE_DIR_SRC;
+use crate::fixes::imports::UseFix;
+use crate::rust_syntax;
+use crate::rust_syntax::MODULE_PATH_SEPARATOR;
+use crate::rust_syntax::PATH_KEYWORD_CRATE;
+use crate::rust_syntax::PATH_KEYWORD_SELF;
+use crate::rust_syntax::PATH_KEYWORD_SUPER;
 use crate::selection::Selection;
 
 pub(super) struct ValidatedPubUsePlan {
@@ -87,7 +87,7 @@ fn rewrite_in_subtree_imports(
             analysis_root.display()
         )
     })?;
-    let base_module_path = module_paths::file_module_path(&source_root, file)
+    let base_module_path = rust_syntax::file_module_path(&source_root, file)
         .with_context(|| format!("failed to determine module path for {}", file.display()))?;
     let offsets = line_offsets(&source);
     let mut visitor = PubUseFixVisitor {
