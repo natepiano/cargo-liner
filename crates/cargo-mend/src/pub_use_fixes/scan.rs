@@ -19,7 +19,7 @@ use crate::imports::ValidatedFixSet;
 use crate::module_paths;
 use crate::selection::Selection;
 
-pub struct PubUseFixScan {
+pub(crate) struct PubUseFixScan {
     pub fixes:   ValidatedFixSet,
     pub applied: usize,
     pub skipped: usize,
@@ -63,7 +63,7 @@ enum ChildVisibilityState {
     AlreadyNarrowed,
 }
 
-pub fn scan_selection(selection: &Selection, report: &Report) -> Result<PubUseFixScan> {
+pub(crate) fn scan_selection(selection: &Selection, report: &Report) -> Result<PubUseFixScan> {
     let mut fixes = Vec::new();
     let facts = collect_pub_use_fix_facts(selection, report);
     let analysis = analyze_pub_use_candidates(&facts)?;

@@ -561,7 +561,7 @@ edition = "2024"
 }
 
 #[test]
-fn pub_crate_at_depth_3_is_forbidden() {
+fn pub_crate_at_depth_3_is_allowed_when_parent_caps_at_pub_crate() {
     let temp = tempdir().expect("create temp fixture dir");
 
     fs::write(
@@ -600,8 +600,57 @@ edition = "2024"
         })
         .count();
     assert_eq!(
-        forbidden_count, 1,
-        "depth-3 pub(crate) in a nested module should be forbidden: {:?}",
+        forbidden_count, 0,
+        "pub(crate) at depth 3 should be permitted when the parent facade re-exports as \
+         `pub(crate) use` (modifier matches the cap): {:?}",
+        report.findings,
+    );
+}
+
+#[test]
+fn pub_at_depth_3_is_narrowed_when_parent_caps_at_pub_crate() {
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "narrow_nested_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/foo/bar")).expect("create src/foo/bar");
+    fs::write(temp.path().join("src/lib.rs"), "mod foo;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/foo/mod.rs"),
+        "mod bar;\npub(crate) use bar::helper;\n",
+    )
+    .expect("write foo/mod.rs");
+    fs::write(
+        temp.path().join("src/foo/bar/mod.rs"),
+        "mod baz;\npub(crate) use baz::helper;\n\
+         pub(crate) fn use_helper() { let _ = helper; }\n",
+    )
+    .expect("write foo/bar/mod.rs");
+    fs::write(
+        temp.path().join("src/foo/bar/baz.rs"),
+        "pub fn helper() {}\n",
+    )
+    .expect("write foo/bar/baz.rs");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let narrow_count = report
+        .findings
+        .iter()
+        .filter(|f| {
+            f.code == DiagnosticCode::NarrowToPubCrate && f.path.ends_with("src/foo/bar/baz.rs")
+        })
+        .count();
+    assert_eq!(
+        narrow_count, 1,
+        "bare `pub` at depth 3 should be flagged for narrowing when the parent facade re-exports \
+         as `pub(crate) use`: {:?}",
         report.findings,
     );
 }

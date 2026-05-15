@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `narrow_to_pub_crate` now also fires in nested modules: when an item is
+  bare `pub` and its parent re-exports it as `pub(crate) use`, `cargo mend`
+  suggests `pub(crate)` and auto-fixes it. The matching definition-site
+  `pub(crate)` is now permitted at any depth.
+
 ## [0.12.3] - 2026-05-12
 
 ### Fixed

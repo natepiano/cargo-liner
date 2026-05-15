@@ -33,7 +33,7 @@ use crate::imports::ValidatedFixSet;
 use crate::module_paths;
 use crate::selection::Selection;
 
-pub struct PreferModuleImportScan {
+pub(crate) struct PreferModuleImportScan {
     pub findings: Vec<Finding>,
     pub fixes:    ValidatedFixSet,
 }
@@ -67,7 +67,7 @@ pub(super) struct InlineCallFindingInputs<'a> {
     pub(super) file_insertion_offset: usize,
 }
 
-pub fn scan_selection(selection: &Selection) -> Result<PreferModuleImportScan> {
+pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImportScan> {
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
     for package_root in &selection.package_roots {

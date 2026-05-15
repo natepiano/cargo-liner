@@ -67,6 +67,7 @@ pub(super) enum ParentFacadeUsage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ParentFacadeVisibility {
     Public,
+    Crate,
     Super,
 }
 
@@ -455,6 +456,12 @@ pub(super) fn parent_facade_visibility(vis: &Visibility) -> Option<ParentFacadeV
                 && restricted.path.segments[0].ident == PATH_KEYWORD_SUPER =>
         {
             Some(ParentFacadeVisibility::Super)
+        },
+        Visibility::Restricted(restricted)
+            if restricted.path.segments.len() == 1
+                && restricted.path.segments[0].ident == PATH_KEYWORD_CRATE =>
+        {
+            Some(ParentFacadeVisibility::Crate)
         },
         _ => None,
     }

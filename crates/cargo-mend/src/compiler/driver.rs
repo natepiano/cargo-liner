@@ -43,7 +43,7 @@ impl Callbacks for AnalysisCallbacks {
     }
 }
 
-pub fn driver_main() -> ExitCode {
+pub(crate) fn driver_main() -> ExitCode {
     match driver_main_impl() {
         Ok(code) => code,
         Err(err) => {

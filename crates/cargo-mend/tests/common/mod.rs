@@ -210,7 +210,7 @@ pub(super) const fn diagnostic_spec(code: DiagnosticCode) -> &'static Diagnostic
         fix_support: FixSupport::InternalParentFacade,
     };
     const NARROW_TO_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "`pub` in top-level private module should be `pub(crate)`",
+        headline:    "`pub` exceeds the item's effective reach — use `pub(crate)`",
         help_anchor: "narrow-to-pub-crate",
         fix_support: FixSupport::NarrowToPubCrate,
     };

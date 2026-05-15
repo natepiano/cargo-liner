@@ -20,6 +20,7 @@ use super::source;
 use super::use_sites;
 use crate::compiler::facade;
 use crate::compiler::facade::ParentFacadeExportStatus;
+use crate::compiler::facade::ParentFacadeVisibility;
 use crate::compiler::persistence;
 use crate::compiler::persistence::CacheBuildKind;
 use crate::compiler::persistence::FindingsSink;
@@ -388,6 +389,14 @@ fn record_visibility_findings(
     }
 
     if item.vis_text == PUB_VISIBILITY_TOKEN
+        && finding_context.parent_visibility == ParentVisibility::Private
+        && !policy::is_top_level_module_file(ctx.source_root, ctx.root_module, item.file_path)
+        && finding_context.crate_kind != CrateKind::IntegrationTest
+    {
+        maybe_record_narrow_to_pub_crate_nested(ctx, item, sink)?;
+    }
+
+    if item.vis_text == PUB_VISIBILITY_TOKEN
         && !policy::is_boundary_file(ctx.source_root, ctx.root_module, item.file_path)
     {
         maybe_record_suspicious_pub(
@@ -423,6 +432,9 @@ fn record_forbidden_pub_crate(
         finding_context.module_location,
         finding_context.parent_visibility,
     ) {
+        return Ok(());
+    }
+    if parent_facade_caps_at_pub_crate(ctx, item)? {
         return Ok(());
     }
     sink.findings.push(source::build_finding(
@@ -582,6 +594,58 @@ fn maybe_record_narrow_to_pub_crate(
         },
     )?);
     Ok(())
+}
+
+fn maybe_record_narrow_to_pub_crate_nested(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    sink: &mut FindingsSink,
+) -> Result<()> {
+    let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
+        return Ok(());
+    };
+    if !parent_facade_caps_at_pub_crate(ctx, item)? {
+        return Ok(());
+    }
+    sink.findings.push(source::build_finding(
+        ctx.tcx,
+        item.file_path,
+        item.highlight_span,
+        FindingParams {
+            severity:                Severity::Warning,
+            code:                    DiagnosticCode::NarrowToPubCrate,
+            item:                    Some(format!("{kind_label} {name}")),
+            message:                 String::from(
+                "parent facade caps reach at `pub(crate)` — narrow source to match",
+            ),
+            suggestion:              Some(String::from("consider using: `pub(crate)`")),
+            fixability:              FixSupport::NarrowToPubCrate,
+            related:                 None,
+            item_def_path:           None,
+            narrower_scope_def_path: None,
+        },
+    )?);
+    Ok(())
+}
+
+fn parent_facade_caps_at_pub_crate(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+) -> Result<bool> {
+    let Some(name) = item.name else {
+        return Ok(false);
+    };
+    let status = facade::parent_facade_export_status(
+        ctx.source_cache,
+        ctx.settings,
+        ctx.source_root,
+        item.file_path,
+        name,
+    )?;
+    Ok(matches!(
+        status.as_ref().map(|s| s.visibility),
+        Some(ParentFacadeVisibility::Crate)
+    ))
 }
 
 fn maybe_record_suspicious_pub(

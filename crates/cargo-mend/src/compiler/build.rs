@@ -44,7 +44,7 @@ use crate::selection::CargoCheckPlan;
 use crate::selection::Selection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuildOutputMode {
+pub(crate) enum BuildOutputMode {
     Full,
     Json,
     SuppressUnusedImportWarnings,
@@ -70,14 +70,14 @@ struct CommandOutcome {
     compiler_fixable:  usize,
 }
 
-pub struct SelectionResult {
+pub(crate) struct SelectionResult {
     pub report:            Report,
     pub check_duration:    Duration,
     pub compiler_warnings: usize,
     pub compiler_fixable:  usize,
 }
 
-pub fn run_selection(
+pub(crate) fn run_selection(
     selection: &Selection,
     cargo_plan: &CargoCheckPlan,
     loaded_config: &LoadedConfig,
@@ -181,7 +181,10 @@ fn scope_fingerprint_for(cargo_plan: &CargoCheckPlan) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-pub fn run_cargo_fix(cargo_plan: &CargoCheckPlan, color_mode: ColorMode) -> Result<Duration> {
+pub(crate) fn run_cargo_fix(
+    cargo_plan: &CargoCheckPlan,
+    color_mode: ColorMode,
+) -> Result<Duration> {
     let start = Instant::now();
     let mut command = Command::new(CARGO_BIN);
     command

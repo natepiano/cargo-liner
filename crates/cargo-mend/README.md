@@ -617,24 +617,38 @@ That can be intentional, but it is worth review because it usually means one of 
 <a id="narrow-to-pub-crate"></a>
 ### Narrow `pub` to `pub(crate)`
 
-This warning flags `pub` items in top-level private modules that are not re-exported by the crate
-root (`lib.rs` or `main.rs`).
+This warning flags bare `pub` items that can't actually escape the crate. Writing `pub(crate)` at
+the definition makes the real reach visible at a glance, instead of forcing the reader to walk up
+the module tree.
 
-In a top-level private module, `pub` and `pub(crate)` have the same effect — but `pub` misleadingly
-suggests the item is part of the public API. Using `pub(crate)` makes the intent explicit: the item
-is shared within the crate, not exported.
+It fires in two situations:
 
-Example:
+**The crate root doesn't re-export the item.**
 
 ```rust
 // src/lib.rs
-mod helpers;       // private module — not `pub mod`
-pub use helpers::publicly_exported_fn;
+mod helpers;
+pub use helpers::exported_fn;
 
 // src/helpers.rs
-pub fn publicly_exported_fn() {}  // re-exported → must stay `pub`
-pub fn internal_fn() {}           // NOT re-exported → should be `pub(crate)`
+pub fn exported_fn() {}    // re-exported → must stay `pub`
+pub fn internal_fn() {}    // NOT re-exported → should be `pub(crate)`
 ```
+
+**The parent re-exports the item as `pub(crate) use`.** The `pub(crate) use` already caps reach at
+the crate boundary, so the source modifier should match.
+
+```rust
+// src/keyboard/mod.rs
+mod keys;
+pub(crate) use keys::send_keys_handler;
+
+// src/keyboard/keys.rs
+pub fn send_keys_handler() {}   // → should be `pub(crate)`
+```
+
+Glob re-exports (`pub(crate) use foo::*`) are ignored — they neither trigger nor block this lint.
+Items widened by a `pub use` somewhere in the chain are left alone.
 
 Run `cargo mend --fix` to auto-fix these items to `pub(crate)`.
 

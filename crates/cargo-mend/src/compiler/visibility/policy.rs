@@ -113,8 +113,11 @@ pub(super) fn classify_suspicious_pub(
 // library layout: when the top-level module is private, nothing outside its
 // subtree can reach the child regardless of `pub(crate)` vs `pub(super)`, so
 // the policy treats them the same as depth-1 items. Depth 3+ falls through to
-// `Nested`, where `pub(crate)` can meaningfully widen reach beyond what
-// `pub(super)` would allow.
+// `Nested`. `pub(crate)` is still rejected at `Nested` by
+// `allow_pub_crate_by_policy` alone — but the visibility scan separately
+// permits it when the parent facade re-exports the item as `pub(crate) use`,
+// because in that case the parent has already capped reach at `pub(crate)`
+// and the source modifier should match the cap (visible-at-a-glance).
 pub(super) fn resolve_module_location(tcx: TyCtxt<'_>, parent_def: LocalDefId) -> ModuleLocation {
     if parent_def == CRATE_DEF_ID {
         return ModuleLocation::CrateRoot;

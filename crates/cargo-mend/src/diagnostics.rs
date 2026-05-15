@@ -102,7 +102,7 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         fixability:  FixSupport::None,
     };
     static NARROW_TO_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "`pub` in top-level private module should be `pub(crate)`",
+        headline:    "`pub` exceeds the item's effective reach — use `pub(crate)`",
         inline_help: Some("consider using: `pub(crate)`"),
         help_anchor: "narrow-to-pub-crate",
         detail_mode: DetailMode::MessageRelatedAndFix,
