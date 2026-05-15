@@ -39,11 +39,8 @@ pub use settings::ToastPlacement;
 pub use settings::ToastSettings;
 pub(crate) use settings::remove_legacy_toast_keys;
 pub use toast::Toast;
-pub use toast::ToastDismissal;
-pub use toast::ToastLifetime;
-pub use toast::ToastPhase;
+use toast::ToastLifetime;
 pub use toast::ToastStyle;
-pub use toast::ToastTaskStatus;
 pub use view::ToastHit;
 pub use view::ToastHitbox;
 pub use view::ToastView;
@@ -83,11 +80,11 @@ pub enum ReactivateOutcome {
     /// create a fresh toast for the tracker.
     NotFound,
     /// Toast existed and was returned to
-    /// [`ToastPhase::Visible`] with task status reset to
+    /// [`toast::ToastPhase::Visible`] with task status reset to
     /// `Running`.
     Revived,
     /// Toast existed but its dismissal is
-    /// [`ToastDismissal::ClosedByUser`]. Caller should neither
+    /// [`toast::ToastDismissal::ClosedByUser`]. Caller should neither
     /// touch the toast nor create a replacement — the user
     /// closed it, and the underlying tracker work continues
     /// without UI surface.

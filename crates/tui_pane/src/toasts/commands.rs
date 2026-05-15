@@ -3,15 +3,15 @@ use std::time::Instant;
 
 use super::Toast;
 use super::ToastBody;
-use super::ToastDismissal;
 use super::ToastId;
-use super::ToastLifetime;
-use super::ToastPhase;
 use super::ToastSpec;
 use super::ToastStyle;
 use super::ToastTaskId;
-use super::ToastTaskStatus;
 use super::Toasts;
+use super::toast::ToastDismissal;
+use super::toast::ToastLifetime;
+use super::toast::ToastPhase;
+use super::toast::ToastTaskStatus;
 use crate::AppContext;
 
 impl<Ctx: AppContext> Toasts<Ctx> {

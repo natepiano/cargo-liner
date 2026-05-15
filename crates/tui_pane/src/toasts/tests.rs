@@ -3,6 +3,8 @@ use std::time::Instant;
 
 use crossterm::event::KeyCode;
 
+use super::toast::ToastDismissal;
+use super::toast::ToastPhase;
 use super::*;
 use crate::FocusedPane;
 use crate::Framework;
@@ -108,7 +110,7 @@ fn user_dismissed_task_toast_is_not_revived_by_reactivate() {
         .toast_for_task(task)
         .unwrap_or_else(|| std::process::abort());
     assert!(matches!(toast.phase, ToastPhase::Exiting { .. }));
-    assert_eq!(toast.dismissal, super::ToastDismissal::ClosedByUser);
+    assert_eq!(toast.dismissal, ToastDismissal::ClosedByUser);
 }
 
 fn toasts_with_linger(linger_secs: f64) -> Toasts<TestApp> {

@@ -5,15 +5,15 @@ use std::time::Instant;
 use super::ReactivateOutcome;
 use super::Toast;
 use super::ToastBody;
-use super::ToastDismissal;
-use super::ToastLifetime;
-use super::ToastPhase;
 use super::ToastTaskId;
-use super::ToastTaskStatus;
 use super::ToastView;
 use super::Toasts;
 use super::TrackedItem;
 use super::TrackedItemKey;
+use super::toast::ToastDismissal;
+use super::toast::ToastLifetime;
+use super::toast::ToastPhase;
+use super::toast::ToastTaskStatus;
 use crate::AppContext;
 
 impl<Ctx: AppContext> Toasts<Ctx> {

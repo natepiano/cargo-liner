@@ -1,16 +1,13 @@
-//! `KeyBind`, `KeyInput`, `KeyParseError`: the framework's key abstraction
-//! plus a tagged event enum for press / release / repeat semantics.
+//! `KeyBind` + `KeyParseError`: the framework's key abstraction.
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
-use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use thiserror::Error;
 
 /// A single keystroke: a [`KeyCode`] plus its [`KeyModifiers`] flags.
 ///
 /// `KeyBind` is the dispatch-time type — what the keymap stores and looks up.
-/// It carries no press/release information; that lives in [`KeyInput`].
 ///
 /// Construct via `From<KeyCode>` / `From<char>` for the modifier-free case,
 /// [`KeyBind::shift`] / [`KeyBind::ctrl`] when modifiers matter, or
@@ -37,61 +34,6 @@ impl From<char> for KeyBind {
         Self {
             code: KeyCode::Char(c),
             mods: KeyModifiers::NONE,
-        }
-    }
-}
-
-/// Kind-tagged keyboard event.
-///
-/// The framework's event-loop entry converts each crossterm `KeyEvent`
-/// into a `KeyInput`; downstream dispatch pattern-matches on the variant.
-/// The keymap dispatcher only handles [`KeyInput::Press`]; future handlers
-/// may opt in to `Release` / `Repeat` (vim-style modal sequences, key-up
-/// cancellation, etc.).
-///
-/// `state` (`CapsLock` / `NumLock` flags) is not preserved — the framework
-/// does not bind on those.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum KeyInput {
-    /// Key down. The only variant the keymap dispatcher acts on.
-    Press(KeyBind),
-    /// Key up.
-    Release(KeyBind),
-    /// Auto-repeat (held key, OS-driven).
-    Repeat(KeyBind),
-}
-
-impl KeyInput {
-    /// Convert a crossterm `KeyEvent` to a [`KeyInput`].
-    ///
-    /// Canonicalizes the key/modifier pair the same way dispatch does through
-    /// [`KeyBind::from_key_event`], preserves the event kind, and drops
-    /// `state`.
-    #[must_use]
-    pub fn from_event(event: KeyEvent) -> Self {
-        let bind = KeyBind::from_key_event(event);
-        match event.kind {
-            KeyEventKind::Press => Self::Press(bind),
-            KeyEventKind::Release => Self::Release(bind),
-            KeyEventKind::Repeat => Self::Repeat(bind),
-        }
-    }
-
-    /// The underlying [`KeyBind`], regardless of kind.
-    #[must_use]
-    pub const fn bind(&self) -> &KeyBind {
-        match self {
-            Self::Press(b) | Self::Release(b) | Self::Repeat(b) => b,
-        }
-    }
-
-    /// `Some(bind)` only when this is a [`KeyInput::Press`]. Idiomatic
-    /// at keymap dispatch sites: `let Some(bind) = input.press() else { return; };`.
-    #[must_use]
-    pub const fn press(&self) -> Option<&KeyBind> {
-        match self {
-            Self::Press(b) => Some(b),
-            Self::Release(_) | Self::Repeat(_) => None,
         }
     }
 }
@@ -358,8 +300,6 @@ pub enum KeyParseError {
 )]
 mod tests {
     use crossterm::event::KeyEvent;
-    use crossterm::event::KeyEventKind;
-    use crossterm::event::KeyEventState;
 
     use super::*;
 
@@ -542,46 +482,6 @@ mod tests {
             }
         }
         out
-    }
-
-    #[test]
-    fn key_input_from_event_tags_kind() {
-        let make = |kind| KeyEvent {
-            code: KeyCode::Char('a'),
-            modifiers: KeyModifiers::SHIFT,
-            kind,
-            state: KeyEventState::CAPS_LOCK,
-        };
-        let expected_bind = KeyBind::from('A');
-
-        assert_eq!(
-            KeyInput::from_event(make(KeyEventKind::Press)),
-            KeyInput::Press(expected_bind)
-        );
-        assert_eq!(
-            KeyInput::from_event(make(KeyEventKind::Release)),
-            KeyInput::Release(expected_bind)
-        );
-        assert_eq!(
-            KeyInput::from_event(make(KeyEventKind::Repeat)),
-            KeyInput::Repeat(expected_bind)
-        );
-    }
-
-    #[test]
-    fn key_input_press_returns_bind_only_for_press() {
-        let bind = KeyBind::from('a');
-        assert_eq!(KeyInput::Press(bind).press(), Some(&bind));
-        assert_eq!(KeyInput::Release(bind).press(), None);
-        assert_eq!(KeyInput::Repeat(bind).press(), None);
-    }
-
-    #[test]
-    fn key_input_bind_returns_underlying_for_all_kinds() {
-        let bind = KeyBind::ctrl('k');
-        assert_eq!(KeyInput::Press(bind).bind(), &bind);
-        assert_eq!(KeyInput::Release(bind).bind(), &bind);
-        assert_eq!(KeyInput::Repeat(bind).bind(), &bind);
     }
 
     #[test]

@@ -46,9 +46,9 @@ pub trait HitTestRegistry {
 
     /// Mutably borrow the [`Viewport`] for `id`, or `None` if the id
     /// has no hover-tracking viewport. Used by framework helpers
-    /// such as [`clear_all_hover`] and [`set_pane_pos`] to mutate
-    /// per-pane viewport state without the embedding app re-deriving
-    /// the per-pane match at every call site.
+    /// such as [`clear_all_hover`] to mutate per-pane viewport state
+    /// without the embedding app re-deriving the per-pane match at
+    /// every call site.
     fn viewport_mut(&mut self, id: Self::PaneId) -> Option<&mut Viewport>;
 }
 
@@ -63,22 +63,6 @@ pub fn clear_all_hover<R: HitTestRegistry>(registry: &mut R) {
         if let Some(v) = registry.viewport_mut(*id) {
             v.set_hovered(None);
         }
-    }
-}
-
-/// Set the cursor row on the tiled pane identified by `id`. No-op
-/// when the id has no hover-tracking viewport.
-pub fn set_pane_pos<R: HitTestRegistry>(registry: &mut R, id: R::PaneId, row: usize) {
-    if let Some(v) = registry.viewport_mut(id) {
-        v.set_pos(row);
-    }
-}
-
-/// Set the hovered row on the tiled pane identified by `id`. No-op
-/// when the id has no hover-tracking viewport.
-pub fn set_pane_hovered<R: HitTestRegistry>(registry: &mut R, id: R::PaneId, row: Option<usize>) {
-    if let Some(v) = registry.viewport_mut(id) {
-        v.set_hovered(row);
     }
 }
 

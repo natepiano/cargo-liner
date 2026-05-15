@@ -50,13 +50,13 @@ mod tests {
     use toml::Value;
 
     use super::SettingCodecs;
-    use super::SettingKind;
     use super::SettingsFileSpec;
     use super::SettingsRegistry;
     use super::SettingsRow;
     use super::SettingsRowPayload;
     use super::SettingsSection;
     use super::SettingsStore;
+    use super::registry::SettingKind;
     use crate::ToastSettings;
 
     fn set_enabled(table: &mut Table, value: bool) -> Result<(), super::SettingsError> {

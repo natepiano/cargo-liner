@@ -27,7 +27,7 @@ pub use self::render::PaneRegistry;
 pub use self::render::Renderable;
 pub use self::render::render_panes;
 use self::tab_stop::RegisteredTabStop;
-pub use self::tab_stop::TabOrder;
+use self::tab_stop::TabOrder;
 pub use self::tab_stop::TabStop;
 use crate::AppContext;
 use crate::FocusedPane;

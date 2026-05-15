@@ -1,18 +1,3 @@
-/// Common setting values used by built-in `SettingsPane` widgets.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SettingValue {
-    /// Boolean setting.
-    Bool(bool),
-    /// Integer setting.
-    Int(i64),
-    /// Floating-point setting.
-    Float(f64),
-    /// String setting.
-    String(String),
-    /// Closed-set enum setting.
-    Enum(String),
-}
-
 /// One renderable row in a framework-owned settings pane.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingsRow {

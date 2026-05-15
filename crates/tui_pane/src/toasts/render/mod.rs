@@ -128,7 +128,7 @@ mod tests {
     use crate::NoToastAction;
     use crate::Toasts;
     use crate::TrackedItem;
-    use crate::TrackedItemView;
+    use crate::toasts::TrackedItemView;
 
     struct TestApp {
         framework: Framework<Self>,
