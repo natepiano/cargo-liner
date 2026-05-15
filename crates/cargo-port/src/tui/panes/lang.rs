@@ -193,7 +193,6 @@ pub(super) fn render_lang_pane_body(
         ci_status_lookup: _,
         keymap_render_inputs: _,
         settings_render_inputs: _,
-        inline_error: _,
     } = ctx;
 
     let lang_stats = projects

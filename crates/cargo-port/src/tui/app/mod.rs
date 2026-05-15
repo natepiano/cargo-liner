@@ -240,7 +240,6 @@ pub(super) struct FinderSplit<'a> {
     pub project_list: &'a ProjectList,
     pub inflight:     &'a Inflight,
     pub scan:         &'a Scan,
-    pub inline_error: Option<&'a str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -414,21 +413,15 @@ impl App {
 
     pub(super) fn prune_toasts(&mut self) {
         let now = Instant::now();
-        let linger = self.framework.toast_settings().task_linger.get();
-        self.framework.toasts.prune_tracked_items(now, linger);
+        self.framework.toasts.prune_tracked_items(now);
         self.framework.toasts.prune(now);
-        let toast_len = self.framework.toasts.active_now().len();
-        self.framework.toasts.viewport.set_len(toast_len);
         if self.base_focus() == PaneId::Toasts && self.framework.toasts.active_now().is_empty() {
             self.set_focus_to_pane(PaneId::ProjectList);
         }
     }
 
     pub(super) fn show_timed_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {
-        let timeout = self.framework.toast_settings().default_timeout.get();
-        self.framework.toasts.push_timed(title, body, timeout, 1);
-        let toast_len = self.framework.toasts.active_now().len();
-        self.framework.toasts.viewport.set_len(toast_len);
+        self.framework.toasts.push_status(title, body);
     }
 
     pub(super) fn show_timed_warning_toast(
@@ -436,34 +429,18 @@ impl App {
         title: impl Into<String>,
         body: impl Into<String>,
     ) {
-        self.framework.toasts.push_timed_styled(
-            title,
-            body,
-            self.framework.toast_settings().default_timeout.get(),
-            1,
-            Warning,
-        );
-        let toast_len = self.framework.toasts.active_now().len();
-        self.framework.toasts.viewport.set_len(toast_len);
+        self.framework
+            .toasts
+            .push_status_styled(title, body, Warning);
     }
 
     pub(super) fn finish_task_toast(&mut self, task_id: ToastTaskId) {
-        let linger = if self.framework.toasts.tracked_item_count(task_id) > 0 {
-            self.framework.toast_settings().task_linger.get()
-        } else {
-            Duration::ZERO
-        };
-        self.framework.toasts.finish_task(task_id, linger);
+        self.framework.toasts.finish_task(task_id);
         self.prune_toasts();
     }
 
     pub(super) fn set_task_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) {
-        let linger = self.framework.toast_settings().task_linger.get();
-        self.framework
-            .toasts
-            .set_tracked_items(task_id, items, linger);
-        let toast_len = self.framework.toasts.active_now().len();
-        self.framework.toasts.viewport.set_len(toast_len);
+        self.framework.toasts.set_tracked_items(task_id, items);
     }
 
     /// Begin a clean for `project_path`. Returns `true` if a cargo clean
@@ -580,7 +557,7 @@ impl App {
     /// requires `&self` (multi-subsystem queries / a clone of CI
     /// display-mode state), which has to be released before the
     /// `&mut` split here.
-    pub(super) fn split_for_render<'a>(
+    pub(super) const fn split_for_render<'a>(
         &'a mut self,
         selected_project_path: Option<&'a Path>,
         animation_elapsed: Duration,
@@ -596,7 +573,6 @@ impl App {
             project_list,
             inflight,
             scan,
-            overlays,
             framework,
             ..
         } = self;
@@ -623,7 +599,6 @@ impl App {
             ci_status_lookup,
             keymap_render_inputs,
             settings_render_inputs,
-            inline_error: overlays.inline_error_ref(),
         };
         RenderBorrows { registry, ctx }
     }
@@ -640,7 +615,6 @@ impl App {
             project_list: &self.project_list,
             inflight:     &self.inflight,
             scan:         &self.scan,
-            inline_error: None,
         }
     }
 

@@ -231,7 +231,6 @@ impl App {
             self.startup.repo.complete_at = None;
             self.startup.complete_at = None;
             if let Some(toast) = self.startup.toast {
-                let linger = self.framework.toast_settings().task_linger.get();
                 self.framework.toasts.add_new_tracked_items(
                     toast,
                     &[TrackedItem {
@@ -240,10 +239,7 @@ impl App {
                         started_at:   Some(Instant::now()),
                         completed_at: None,
                     }],
-                    linger,
                 );
-                let toast_len = self.framework.toasts.active_now().len();
-                self.framework.toasts.viewport.set_len(toast_len);
             }
         }
         self.sync_running_repo_fetch_toast();

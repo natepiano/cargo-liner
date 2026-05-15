@@ -114,8 +114,6 @@ impl App {
             1,
         );
         self.keymap.set_diagnostics_id(Some(id));
-        let toast_len = self.framework.toasts.active_now().len();
-        self.framework.toasts.viewport.set_len(toast_len);
     }
     pub(super) fn dismiss_keymap_diagnostics(&mut self) {
         if let Some(id) = self.keymap.take_diagnostics_id() {

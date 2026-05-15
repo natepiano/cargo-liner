@@ -67,13 +67,9 @@ impl App {
         kind: AvailabilityKind,
     ) -> ToastId {
         let (title, body) = service_unavailable_message(service, kind);
-        let id = self
-            .framework
+        self.framework
             .toasts
-            .push_persistent(title, body, Warning, None, 1);
-        let toast_len = self.framework.toasts.active_now().len();
-        self.framework.toasts.viewport.set_len(toast_len);
-        id
+            .push_persistent(title, body, Warning, None, 1)
     }
     pub(super) fn spawn_service_retry(&self, service: ServiceKind) {
         #[cfg(test)]

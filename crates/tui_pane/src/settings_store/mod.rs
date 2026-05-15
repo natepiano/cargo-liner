@@ -187,11 +187,11 @@ mod tests {
         assert_eq!(count(loaded.store.table()), 7);
         assert_eq!(name(loaded.store.table()), "hana");
         assert_eq!(
-            loaded.toast_settings.default_timeout.get(),
+            loaded.toast_settings.status_toast_visible.get(),
             Duration::from_secs(9)
         );
         assert_eq!(
-            loaded.toast_settings.task_linger.get(),
+            loaded.toast_settings.finished_task_visible.get(),
             Duration::from_secs(2)
         );
         let _ = std::fs::remove_file(path);
@@ -235,7 +235,7 @@ mod tests {
 
         assert_eq!(name(loaded.store.table()), "reload");
         assert_eq!(
-            reloaded.toast_settings.default_timeout.get(),
+            reloaded.toast_settings.status_toast_visible.get(),
             Duration::from_secs(6)
         );
         assert_eq!(loaded.store.path(), Some(reload_path.as_path()));
@@ -295,8 +295,67 @@ mod tests {
             .expect("parse toml");
         let settings = ToastSettings::from_table(&table).expect("toast settings");
 
-        assert_eq!(settings.default_timeout.get(), Duration::from_secs(4));
-        assert_eq!(settings.task_linger.get(), Duration::from_secs(3));
+        assert_eq!(settings.status_toast_visible.get(), Duration::from_secs(4));
+        assert_eq!(settings.finished_task_visible.get(), Duration::from_secs(3));
+    }
+
+    #[test]
+    fn legacy_toast_keys_default_timeout_and_task_linger_migrate() {
+        let table: Table = "[toasts]\ndefault_timeout = 9.0\ntask_linger = 2.0\n"
+            .parse()
+            .expect("parse toml");
+        let settings = ToastSettings::from_table(&table).expect("toast settings");
+
+        assert_eq!(settings.status_toast_visible.get(), Duration::from_secs(9));
+        assert_eq!(settings.finished_task_visible.get(), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn new_toast_keys_take_precedence_over_legacy_keys() {
+        let table: Table = "[toasts]\nstatus_toast_visible = 7.0\ndefault_timeout = 99.0\n\
+             finished_task_visible = 4.0\ntask_linger = 88.0\n"
+            .parse()
+            .expect("parse toml");
+        let settings = ToastSettings::from_table(&table).expect("toast settings");
+
+        assert_eq!(settings.status_toast_visible.get(), Duration::from_secs(7));
+        assert_eq!(settings.finished_task_visible.get(), Duration::from_secs(4));
+    }
+
+    #[test]
+    fn save_removes_legacy_default_timeout_and_task_linger_keys() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "tui_pane_settings_{}_{}.toml",
+            std::process::id(),
+            "migrate"
+        ));
+        // Seed an on-disk settings file carrying the legacy keys.
+        std::fs::write(
+            &path,
+            "[toasts]\ndefault_timeout = 9.0\ntask_linger = 2.0\n",
+        )
+        .expect("write legacy");
+        let registry = SettingsRegistry::new();
+        let mut loaded = SettingsStore::load_for_startup(
+            SettingsFileSpec::new("test", "settings.toml").with_path(&path),
+            registry,
+        )
+        .expect("load settings");
+
+        // Re-save and confirm legacy keys are gone and new keys
+        // are written in their place.
+        loaded
+            .toast_settings
+            .write_to_table(loaded.store.table_mut());
+        loaded.store.save().expect("save settings");
+        let saved = std::fs::read_to_string(&path).expect("read saved");
+
+        assert!(!saved.contains("default_timeout"));
+        assert!(!saved.contains("task_linger"));
+        assert!(saved.contains("status_toast_visible"));
+        assert!(saved.contains("finished_task_visible"));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -78,6 +79,38 @@ pub fn render_toasts(
     };
 
     ToastRenderResult { hitboxes }
+}
+
+/// Render-time context for [`super::Toasts`]'s
+/// [`crate::Renderable`] impl.
+///
+/// Built directly by the embedding immediately before rendering.
+/// `ToastSettings` lives on `Toasts` itself, so the render impl
+/// reads it from `self` — the embedding only supplies wall-clock
+/// time and the focused-pane bit.
+pub struct ToastsRenderCtx {
+    /// Wall-clock timestamp passed to `Toasts::active_views` for
+    /// the prune-and-collect pass.
+    pub now:          Instant,
+    /// Whether the embedding's "toasts pane" focus slot is the
+    /// current focus. Drives focused-toast border styling.
+    pub pane_focused: bool,
+}
+
+impl<Ctx: crate::AppContext> crate::Renderable<ToastsRenderCtx> for super::Toasts<Ctx> {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &ToastsRenderCtx) {
+        let focused_id = self.focused_toast_id();
+        let active = self.active_views(ctx.now);
+        let result = render_toasts(
+            frame,
+            area,
+            &active,
+            self.settings(),
+            ctx.pane_focused,
+            focused_id,
+        );
+        self.set_hits(result.hitboxes);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -591,10 +624,10 @@ mod tests {
             .unwrap_or_else(|_| std::process::abort());
         let settings = ToastSettings::from_table(&table).unwrap_or_else(|_| std::process::abort());
         assert_eq!(settings.gap.get(), 0);
-        let mut toasts = Toasts::<TestApp>::new();
+        let mut toasts = Toasts::<TestApp>::with_settings(settings.clone());
         let _ = toasts.push("one", "body");
         let _ = toasts.push("two", "body");
-        let views = toasts.active_views(Instant::now(), &settings);
+        let views = toasts.active_views(Instant::now());
         let _app = TestApp {
             framework: Framework::new(FocusedPane::App(())),
         };
@@ -645,15 +678,15 @@ mod tests {
     #[test]
     fn tracked_task_toast_height_fits_visible_items_without_blank_bottom_row() {
         let settings = ToastSettings::default();
-        let mut toasts = Toasts::<TestApp>::new();
+        let mut toasts = Toasts::<TestApp>::with_settings(settings.clone());
         let task_id = toasts.start_task("Lints", "");
         let items = [
             TrackedItem::new("~/rust/cargo-port-api-fix", "cargo-port-api-fix"),
             TrackedItem::new("~/rust/bevy_hana", "bevy_hana"),
         ];
-        assert!(toasts.set_tracked_items(task_id, &items, settings.task_linger.get()));
+        assert!(toasts.set_tracked_items(task_id, &items));
 
-        let views = toasts.active_views(Instant::now() + Duration::from_secs(5), &settings);
+        let views = toasts.active_views(Instant::now() + Duration::from_secs(5));
         let backend = TestBackend::new(90, 20);
         let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
         let mut result = None;

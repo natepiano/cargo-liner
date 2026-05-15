@@ -1034,7 +1034,7 @@ fn toast_close_click_dismisses_toast() {
     assert!(
         app.framework
             .toasts
-            .active_views(after_exit, &tui_pane::ToastSettings::default())
+            .active_views(after_exit)
             .iter()
             .all(|toast| toast.id() != toast_id),
         "clicking the toast close affordance should start dismissal and let the toast exit"

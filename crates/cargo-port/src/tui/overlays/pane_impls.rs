@@ -35,8 +35,8 @@ impl Renderable<PaneRenderCtx<'_>> for KeymapPane {
 }
 
 impl Renderable<PaneRenderCtx<'_>> for SettingsPane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        settings::render_settings_pane_body(frame, area, self, ctx);
+    fn render(&mut self, frame: &mut Frame<'_>, _: Rect, ctx: &PaneRenderCtx<'_>) {
+        settings::render_settings_pane_body(frame, self, ctx);
     }
 }
 

@@ -67,6 +67,28 @@ pub enum ToastPhase {
     },
 }
 
+/// Records whether the user has clicked the close affordance on a
+/// toast.
+///
+/// Consulted by [`Toasts::reactivate_task`](crate::Toasts::reactivate_task)
+/// so that a toast the user dismissed stays closed even while its
+/// tracker keeps reporting new items — the underlying work
+/// continues, only the UI surface stays gone for the rest of this
+/// tracker session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToastDismissal {
+    /// Toast has not been dismissed by the user. The toast may
+    /// still be auto-exiting via timer or completion path, but
+    /// [`Toasts::reactivate_task`](crate::Toasts::reactivate_task)
+    /// is free to bring it back when new work arrives.
+    #[default]
+    Open,
+    /// User clicked the close affordance. Reactivation paths
+    /// honor the close and leave the toast alone until prune
+    /// removes it.
+    ClosedByUser,
+}
+
 /// Stored toast entry.
 #[derive(Clone, Debug)]
 pub struct Toast<Ctx: AppContext> {
@@ -76,6 +98,7 @@ pub struct Toast<Ctx: AppContext> {
     pub(super) style:              ToastStyle,
     pub(super) lifetime:           ToastLifetime,
     pub(super) phase:              ToastPhase,
+    pub(super) dismissal:          ToastDismissal,
     pub(super) action:             Option<Ctx::ToastAction>,
     pub(super) tracked_items:      Vec<TrackedItem>,
     pub(super) created_at:         Instant,

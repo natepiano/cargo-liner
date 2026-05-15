@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::Constraint;
@@ -34,7 +35,6 @@ use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::TITLE_COLOR;
 use tui_pane::render_status_line as render_framework_status_line;
-use tui_pane::render_toasts;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
@@ -167,20 +167,17 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     app.panes.tiled_layout = tiled;
 
     render_status_bar(frame, app, outer_layout[1]);
-    let toast_settings = app.framework.toast_settings();
-    let active_toasts = app
-        .framework
-        .toasts
-        .active_views(std::time::Instant::now(), toast_settings);
-    let toast_result = render_toasts(
+    let toasts_pane_focused = app.focus_is(PaneId::Toasts);
+    let toasts_ctx = tui_pane::ToastsRenderCtx {
+        now:          Instant::now(),
+        pane_focused: toasts_pane_focused,
+    };
+    Renderable::render(
+        &mut app.framework.toasts,
         frame,
         outer_layout[0],
-        &active_toasts,
-        toast_settings,
-        app.focus_is(PaneId::Toasts),
-        app.framework.toasts.focused_toast_id(),
+        &toasts_ctx,
     );
-    app.framework.toasts.set_hits(toast_result.hitboxes);
 
     if app.framework.overlay() == Some(FrameworkOverlayId::Settings) {
         dispatch_settings_overlay(app, frame);
@@ -435,7 +432,6 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         ci_status_lookup: &ci_status_lookup,
         keymap_render_inputs: None,
         settings_render_inputs: None,
-        inline_error: split.inline_error,
     };
     // Finder body sizes the popup itself; area arg is unused.
     Renderable::render(split.finder_pane, frame, frame.area(), &ctx);

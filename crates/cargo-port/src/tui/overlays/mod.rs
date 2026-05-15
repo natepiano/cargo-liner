@@ -69,10 +69,6 @@ impl Overlays {
 
     pub(crate) const fn inline_error(&self) -> Option<&String> { self.inline_error.as_ref() }
 
-    /// Borrow the inline-error message as a `&str`, for ctx
-    /// construction at render time.
-    pub(crate) fn inline_error_ref(&self) -> Option<&str> { self.inline_error.as_deref() }
-
     pub(crate) fn set_inline_error(&mut self, error: impl Into<String>) {
         self.inline_error = Some(error.into());
     }

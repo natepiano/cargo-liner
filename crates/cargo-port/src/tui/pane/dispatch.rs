@@ -67,17 +67,6 @@ pub(crate) struct PaneRenderCtx<'a> {
     /// dispatcher; `Some` when the overlay is open. Built by
     /// [`crate::tui::settings::prepare_settings_render_inputs`].
     pub(crate) settings_render_inputs: Option<&'a SettingsRenderInputs>,
-    /// Inline error string from the overlays subsystem (Settings /
-    /// Keymap inline-error line). `None` when no error is pinned.
-    /// Reserved for the deferred Keymap / Settings overlay
-    /// absorption — populated today, consumed once those panes
-    /// gain real `Renderable::render` bodies.
-    #[allow(
-        dead_code,
-        reason = "reserved for Keymap / Settings overlay absorption — populated today, \
-                  consumed once those panes gain real Renderable::render bodies"
-    )]
-    pub(crate) inline_error:           Option<&'a str>,
 }
 
 /// Result of a single pane's hit-test at a screen position.

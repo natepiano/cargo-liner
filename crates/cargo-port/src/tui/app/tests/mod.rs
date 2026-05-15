@@ -156,7 +156,6 @@ fn build_project_list_render_ctx_for_test<'a>(
         ci_status_lookup:       &holder.ci_status_lookup,
         keymap_render_inputs:   None,
         settings_render_inputs: None,
-        inline_error:           app.overlays.inline_error_ref(),
     }
 }
 

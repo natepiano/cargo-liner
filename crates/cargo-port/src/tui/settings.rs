@@ -1,6 +1,5 @@
 use crossterm::event::KeyCode;
 use ratatui::Frame;
-use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
@@ -63,8 +62,8 @@ pub(super) enum SettingOption {
     OtherPrimaryBranches,
     IncludeDirs,
     InlineDirs,
-    StatusFlashSecs,
-    TaskLingerSecs,
+    StatusToastVisibleSecs,
+    FinishedTaskVisibleSecs,
     DiscoveryShimmerSecs,
     CpuPollMs,
     CpuGreenMaxPercent,
@@ -339,12 +338,12 @@ fn format_toast_duration_secs(duration: ToastDuration) -> String {
     format_secs(duration.as_secs_f64())
 }
 
-fn format_flash_secs(app: &App) -> String {
-    format_toast_duration_secs(app.framework.toast_settings().default_timeout)
+fn format_status_toast_visible_secs(app: &App) -> String {
+    format_toast_duration_secs(app.framework.toast_settings().status_toast_visible)
 }
 
-fn format_linger_secs(app: &App) -> String {
-    format_toast_duration_secs(app.framework.toast_settings().task_linger)
+fn format_finished_task_visible_secs(app: &App) -> String {
+    format_toast_duration_secs(app.framework.toast_settings().finished_task_visible)
 }
 
 fn format_discovery_shimmer_secs(config: &CargoPortConfig) -> String {
@@ -970,14 +969,14 @@ fn toast_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow
     vec![
         (None, "Toasts", String::new()),
         (
-            Some(SettingOption::StatusFlashSecs),
-            "Status flash secs",
-            format_flash_secs(app),
+            Some(SettingOption::StatusToastVisibleSecs),
+            "Status toast visible secs",
+            format_status_toast_visible_secs(app),
         ),
         (
-            Some(SettingOption::TaskLingerSecs),
-            "Task linger secs",
-            format_linger_secs(app),
+            Some(SettingOption::FinishedTaskVisibleSecs),
+            "Finished task visible secs",
+            format_finished_task_visible_secs(app),
         ),
         (
             Some(SettingOption::DiscoveryShimmerSecs),
@@ -1141,7 +1140,6 @@ pub(super) fn prepare_settings_render_inputs(
 /// `pane`, and draws the popup into `area`.
 pub(super) fn render_settings_pane_body(
     frame: &mut Frame,
-    area: Rect,
     pane: &mut SettingsPane,
     ctx: &PaneRenderCtx<'_>,
 ) {
@@ -1159,7 +1157,6 @@ pub(super) fn render_settings_pane_body(
     }
     .render_with_areas(frame);
     let inner = popup.inner;
-    let _ = area;
 
     pane.viewport_mut().set_content_area(inner);
     let visible_height = usize::from(inner.height);
@@ -1311,8 +1308,8 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             | SettingOption::OtherPrimaryBranches
             | SettingOption::IncludeDirs
             | SettingOption::InlineDirs
-            | SettingOption::StatusFlashSecs
-            | SettingOption::TaskLingerSecs
+            | SettingOption::StatusToastVisibleSecs
+            | SettingOption::FinishedTaskVisibleSecs
             | SettingOption::DiscoveryShimmerSecs
             | SettingOption::CpuPollMs
             | SettingOption::CpuGreenMaxPercent
@@ -1361,11 +1358,11 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         Some(SettingOption::LintCacheSize) => {
             begin_settings_edit(app, app.config.current().lint.cache_size.clone());
         },
-        Some(SettingOption::StatusFlashSecs) => {
-            begin_settings_edit(app, format_flash_secs(app));
+        Some(SettingOption::StatusToastVisibleSecs) => {
+            begin_settings_edit(app, format_status_toast_visible_secs(app));
         },
-        Some(SettingOption::TaskLingerSecs) => {
-            begin_settings_edit(app, format_linger_secs(app));
+        Some(SettingOption::FinishedTaskVisibleSecs) => {
+            begin_settings_edit(app, format_finished_task_visible_secs(app));
         },
         Some(SettingOption::DiscoveryShimmerSecs) => {
             begin_settings_edit(app, format_discovery_shimmer_secs(app.config.current()));
@@ -1472,17 +1469,27 @@ fn apply_general_settings_edit(
         | SettingOption::LintProjects
         | SettingOption::LintCommands
         | SettingOption::LintCacheSize => return Ok(false),
-        SettingOption::StatusFlashSecs => {
-            if !save_toast_number_setting(app, value, "default_timeout", |settings, duration| {
-                settings.default_timeout = duration;
-            }) {
+        SettingOption::StatusToastVisibleSecs => {
+            if !save_toast_number_setting(
+                app,
+                value,
+                "status_toast_visible",
+                |settings, duration| {
+                    settings.status_toast_visible = duration;
+                },
+            ) {
                 return Ok(true);
             }
         },
-        SettingOption::TaskLingerSecs => {
-            if !save_toast_number_setting(app, value, "task_linger", |settings, duration| {
-                settings.task_linger = duration;
-            }) {
+        SettingOption::FinishedTaskVisibleSecs => {
+            if !save_toast_number_setting(
+                app,
+                value,
+                "finished_task_visible",
+                |settings, duration| {
+                    settings.finished_task_visible = duration;
+                },
+            ) {
                 return Ok(true);
             }
         },
@@ -1600,7 +1607,7 @@ mod tests {
             ),
             (None, "Toasts", String::new()),
             (
-                Some(SettingOption::StatusFlashSecs),
+                Some(SettingOption::StatusToastVisibleSecs),
                 "Status flash secs",
                 "5".to_string(),
             ),
@@ -1612,7 +1619,7 @@ mod tests {
         );
         assert_eq!(
             setting_at_selection(&rows, 1),
-            Some(SettingOption::StatusFlashSecs)
+            Some(SettingOption::StatusToastVisibleSecs)
         );
         assert_eq!(setting_at_selection(&rows, 2), None);
     }
@@ -1689,7 +1696,7 @@ mod tests {
         let mut config = CargoPortConfig::default();
         config.tui.ci_run_count = 9;
         let toast_settings = ToastSettings {
-            default_timeout: ToastDuration::try_from_secs("default_timeout", 3.0)
+            status_toast_visible: ToastDuration::try_from_secs("status_toast_visible", 3.0)
                 .expect("toast duration"),
             ..ToastSettings::default()
         };
@@ -1701,7 +1708,7 @@ mod tests {
         let saved = std::fs::read_to_string(path).expect("read saved config");
         assert!(saved.contains("ci_run_count = 9"));
         assert!(saved.contains("[toasts]"));
-        assert!(saved.contains("default_timeout = 3.0"));
+        assert!(saved.contains("status_toast_visible = 3.0"));
     }
 
     #[test]

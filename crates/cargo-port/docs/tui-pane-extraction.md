@@ -651,6 +651,8 @@ After Phase 5:
   helpers in `render.rs` rather than trait dispatch; the
   helpers exist so `ui()` is uniform across overlay entry
   points even though the bodies haven't been absorbed yet.
+  (Updated: Phase 6.11 / 6.12 absorbed those overlay bodies
+  into `Renderable::render`. See Phase 6 end-state.)
 
 ## Phase 6 — `Renderable` trait and render dispatch loop
 
@@ -689,16 +691,20 @@ pub trait PaneRegistry {
 pub fn render_panes<R: PaneRegistry>(
     frame: &mut Frame<'_>,
     registry: &mut R,
-    layout: &[(R::PaneId, Rect)],
+    layout: &ResolvedPaneLayout<R::PaneId>,
     ctx: &R::Ctx<'_>,
 ) {
-    for (id, area) in layout {
-        if let Some(pane) = registry.pane_mut(*id) {
-            pane.render(frame, *area, ctx);
+    for resolved in &layout.panes {
+        if let Some(pane) = registry.pane_mut(resolved.pane) {
+            pane.render(frame, resolved.area, ctx);
         }
     }
 }
 ```
+
+(Shipped version. The original draft took `layout: &[(R::PaneId,
+Rect)]` — switched to `ResolvedPaneLayout` so the embedding hands
+in the same layout type it already builds for input dispatch.)
 
 The `for<'a>` in `pane_mut`'s return type is a higher-ranked trait
 bound (HRTB). It says "this trait object works for any lifetime of
@@ -770,64 +776,223 @@ pub use dispatch::{PaneRegistry, Renderable, render_panes};
   added during Phase 6 — that's fine, as long as Phase 3's
   checkpoint was green at the time.
 
-### End-state contents
+### End-state contents (as shipped)
 
 After Phase 6:
-- `src/tui/pane/dispatch.rs` — deleted (or trimmed to nothing).
-- `src/tui/render.rs::render_tiled_pane` — replaced by a call to
-  `tui_pane::render_panes`. Cargo-port's main render orchestration
-  reduces to: build registry, call `render_panes`, call
-  `render_toasts`.
-- All `impl Pane` in cargo-port — now `impl Renderable<PaneRenderCtx<'_>>`.
-- `tui_pane/src/dispatch/` — `mod.rs` declares `Renderable`,
-  `Hittable`, `PaneRegistry`, `HitTestRegistry`. `hit_test.rs` and
-  `render.rs` carry the two generic loops.
 
-## Post-Phase-6 — `Renderable` design review
+- **`tui_pane/src/dispatch/`** contains:
+  - `mod.rs` declares `Hittable`, `Renderable`, `HitTestRegistry`,
+    `PaneRegistry`.
+  - `hit_test.rs` — generic hit-test dispatch loop (from Phase 3).
+  - `render.rs` — `Renderable<Ctx>` trait, `PaneRegistry` trait with
+    GAT `Ctx<'a>` and HRTB `for<'a>` on `pane_mut`, `render_panes`
+    generic function that walks a `ResolvedPaneLayout<R::PaneId>`.
 
-After Phase 6 lands, hold an explicit review pass on the `Renderable`
-trait and the `PaneRegistry` abstraction before declaring this plan
-complete. The trait design is the most novel piece of this extraction
-and may want refinement once it has been exercised by all 11 panes
-and the generic loop.
+- **`PaneRenderCtx` (cargo-port)** is uniform across all panes in
+  one frame's render pass. Per-pane state moved out of ctx onto
+  the panes themselves:
+  - `focus_state` / `is_focused` → each pane carries a
+    `pub focus: tui_pane::RenderFocus` field, stamped by
+    `sync_pane_focus` before the tile loop and by the overlay
+    dispatchers before their dispatch.
+  - `ci: Option<&Ci>` → replaced by `ci_status_lookup: &CiStatusLookup`,
+    an owned snapshot built via `Ci::status_lookup()` before the
+    split-borrow runs. `ProjectListPane` reads CI status per row
+    through this lookup instead of `&Ci`, which frees the CI
+    pane's own dispatcher to consume `&mut self.ci`.
+  - `lint: Option<&Lint>` → removed entirely. The Lints pane reads
+    its own data via `&mut self`; no other pane consumed it.
 
-Questions to answer in the review:
+- **`PaneRenderCtx`** carries: `animation_elapsed`, `config`,
+  `project_list`, `selected_project_path`, `inflight`, `scan`,
+  `ci_status_lookup`, plus `keymap_render_inputs` and
+  `settings_render_inputs` (both `Option`, populated only by their
+  own overlay dispatcher).
 
-- **Does `type Ctx<'a>` justify its cost?** Every pane in cargo-port
-  sets it to `PaneRenderCtx<'a>`. If there's no realistic second
-  context type, an associated type adds complexity without payoff —
-  the alternative is a generic `Renderable<Ctx>` with a fixed
-  lifetime newtype, or even a non-generic trait that takes
-  `&PaneRenderCtx<'_>` directly (which then forces the trait to live
-  in cargo-port, undoing Phase 6).
-- **Is `PaneRegistry::pane_mut` ergonomic in practice?** The
-  trait-object signature is unusual. If impl sites end up writing
-  large match statements that handle every `PaneId` variant
-  by-hand, the generic-loop savings may not justify the abstraction
-  cost.
+- **`KeymapRenderInputs`** (in `tui/keymap_ui`) and
+  **`SettingsRenderInputs`** (in `tui/settings`) are owned
+  precomputed snapshots built before `App::split_for_render`.
+  Their constructors (`prepare_keymap_render_inputs` /
+  `prepare_settings_render_inputs`) walk the still-current `&App`
+  to build the row lines, popup-width hints, and selectable
+  counts. Each is plumbed into ctx as `Option<&'a …>` and read
+  inside the matching pane's `Renderable::render` body.
+
+- **`App::split_for_render`** is the single render-time
+  split-borrow entry point. It destructures `App`'s pane-owning
+  fields and returns `RenderBorrows { registry: RenderRegistry,
+  ctx: PaneRenderCtx }`. The four pre-Phase-6 split helpers
+  (`split_panes_for_render`, `split_ci_for_render`,
+  `split_lint_for_render`, plus `DispatchArgs`/`build_ctx` in
+  `panes/system.rs`) are deleted.
+
+- **`RenderRegistry<'a>`** holds disjoint `&mut` refs to every
+  renderable cargo-port pane: `PackagePane`, `LangPane`,
+  `CpuPane`, `GitPane`, `TargetsPane`, `ProjectListPane`,
+  `OutputPane`, `Lint`, `Ci`, plus framework-owned `KeymapPane`
+  and `SettingsPane` (reached via `app.framework.keymap_pane` /
+  `app.framework.settings_pane`). The `Finder` overlay stays
+  out — sized off the whole frame, not part of the tile layout.
+
+- **`impl tui_pane::PaneRegistry for RenderRegistry`** maps each
+  `PaneId` to its `&mut dyn for<'ctx> Renderable<PaneRenderCtx<'ctx>>`.
+  `Toasts` and `Finder` return `None` from `pane_mut`.
+
+- **All twelve `Renderable<PaneRenderCtx<'_>>` impls** live in
+  cargo-port: tile panes in `panes/pane_impls.rs`, `Lint` in
+  `state/lint.rs`, `Ci` in `state/ci.rs`, framework-owned
+  overlays in `overlays/pane_impls.rs` (which delegate to body
+  fns in `keymap_ui` and `settings`).
+
+- **`src/tui/render.rs::ui`** now reads, in order:
+  1. `sync_pane_focus(app)` — stamps each pane's `focus` field.
+  2. `app.ci.status_lookup()` — builds the owned CI snapshot.
+  3. `app.split_for_render(...)` — produces `RenderBorrows`.
+  4. `tui_pane::render_panes(frame, &mut split.registry, &tiled,
+     &split.ctx)` — dispatches every tile pane through the trait.
+  5. `tui_pane::render_toasts(...)` — post-pass (still outside
+     `Renderable`; see "Toasts asymmetry" below).
+  6. `dispatch_keymap_overlay` / `dispatch_settings_overlay` /
+     `dispatch_finder_render` — overlay dispatchers that
+     precompute their own inputs, split, and call
+     `Renderable::render` directly on the relevant registry
+     entry.
+
+- **`src/tui/pane/dispatch.rs`** — kept (not deleted). Holds
+  `PaneRenderCtx`, `HoverTarget`, `HittableId`, and
+  `HITTABLE_Z_ORDER`. The `Pane` trait is gone; cargo-port-side
+  refs use `tui_pane::Renderable` directly.
+
+- **`render_tiled_pane`, `dispatch_via_trait`,
+  `dispatch_lints_render`, `dispatch_ci_render`, `DispatchArgs`,
+  `build_ctx`, and the seven `Panes::dispatch_*_render`
+  methods** are deleted.
+
+## Post-Phase-6 — `Renderable` design review (resolved)
+
+The trait + registry shipped through all of cargo-port's panes
+and both framework-owned overlay popups. Resolution of the
+review questions:
+
+- **Does `type Ctx<'a>` justify its cost?** Yes. The GAT is what
+  lets the registry's `&mut Pane` borrows and the ctx's `&` borrows
+  carry independent lifetimes. Cargo-port instantiates with
+  `type Ctx<'ctx> = PaneRenderCtx<'ctx>`, and the HRTB on
+  `pane_mut`'s return type lets a single `&mut dyn Renderable`
+  trait object work across any ctx lifetime. `render_panes`
+  builds its own `ctx: &Ctx<'_>` per call, never tied to the
+  registry's borrow — which is exactly the property the
+  split-borrow design needs.
+
+- **Is `PaneRegistry::pane_mut` ergonomic in practice?**
+  Acceptable. The `impl PaneRegistry for RenderRegistry` match is
+  one arm per `PaneId` variant returning a `&mut dyn Renderable`
+  trait object. It's mechanical but readable; no surprising
+  trait-object coercion errors after the initial prototype
+  confirmed the HRTB design.
+
 - **Is it acceptable that framework-owned overlay panes
   (`KeymapPane`, `SettingsPane`, `FinderPane`) impl `Renderable`
-  via cargo-port-side `impl` blocks?** The trait sits in `tui_pane`
-  but the impls live in cargo-port because they reference
-  cargo-port's `PaneRenderCtx`. Note whether a future framework
-  refactor should move the trait body / context type into `tui_pane`
-  so the impls can live in the same crate as the structs.
-- **Should the framework's `Toasts` render go through `Renderable`
-  too?** Currently `Toasts` stays separate (rendered via
-  `tui_pane::render_toasts` as a post-pass). If `Toasts` fit the
-  `Renderable` contract, the framework would gain an internal
-  consumer of its own trait — closing the "no internal consumers"
-  asymmetry.
-- **Did `HitTestRegistry` and `PaneRegistry` collapse into one
-  trait?** If both are implemented on the same struct (`Panes`)
-  with the same `PaneId` type, a single `Registry` trait with both
-  `pane` and `pane_mut` methods plus z-order may be the right
-  unification.
+  via cargo-port-side `impl` blocks?** Yes — the cross-crate
+  `impl Renderable<PaneRenderCtx<'_>> for KeymapPane` satisfies
+  the orphan rule because `PaneRenderCtx` is a local generic
+  parameter. No need to move trait bodies into `tui_pane`.
 
-The review produces either "design holds, plan complete" or a list
-of follow-up changes scoped as a separate post-extraction refinement.
-Record the outcome in this doc and link the refinement plan if one
-is needed.
+- **Should the framework's `Toasts` render go through
+  `Renderable` too?** Identified as the remaining asymmetry —
+  `Toasts` is rendered via `tui_pane::render_toasts` as a
+  post-pass in `render::ui`, not through the trait. Folding it
+  in is tracked as Phase 6.14 below.
+
+- **Did `HitTestRegistry` and `PaneRegistry` collapse into one
+  trait?** No. They live on different types (`HitTestRegistry`
+  on `App`, `PaneRegistry` on `RenderRegistry<'_>` because the
+  render path needs disjoint `&mut` borrows that `App`-as-a-whole
+  can't supply). Collapsing them would require both traits to
+  operate on the same borrow tier, which the split-borrow design
+  prevents. Leaving them split.
+
+## Phase 6.7 – 6.12 — Sub-phases that shipped during Phase 6
+
+The Phase 6 work expanded beyond the original three-step
+sequence as cargo-port's split-borrow patterns made themselves
+felt. The actual sub-phases that landed:
+
+- **6.7 — Add `PaneRegistry` + `render_panes` to `tui_pane`.**
+  Trait with GAT `Ctx<'a>` and HRTB `for<'a>` on `pane_mut`'s
+  return; `render_panes` walks `ResolvedPaneLayout<R::PaneId>`.
+
+- **6.8 — Restructure `PaneRenderCtx` for uniform-loop dispatch.**
+  Moved `focus_state` / `is_focused` onto each pane as a
+  `RenderFocus` field. Dropped `ci`/`lint` from ctx; introduced
+  `CiStatusLookup` owned snapshot built via `Ci::status_lookup()`.
+  Renamed `ProjectList::ci_status_for` →
+  `ci_status_using_lookup` (and the `_root_item` variant).
+
+- **6.9 — Build `RenderRegistry` + `impl PaneRegistry` on
+  cargo-port side.** Single split-borrow accessor
+  `App::split_for_render` returning
+  `RenderBorrows { registry, ctx }`.
+
+- **6.10 — Replace `render_tiled_pane` with `render_panes`.**
+  Deleted the per-pane match, all `Panes::dispatch_*_render`
+  methods, `DispatchArgs`, `build_ctx`, `dispatch_via_trait`,
+  `dispatch_lints_render`, `dispatch_ci_render`. Tile loop is
+  now one `tui_pane::render_panes` call.
+
+- **6.11 — Absorb the Keymap overlay into `Renderable`.** Added
+  `KeymapRenderInputs` owned snapshot, `prepare_keymap_render_inputs`
+  builder. `render_keymap_popup` → `render_keymap_pane_body`
+  signature `(frame, area, &mut KeymapPane, &PaneRenderCtx)`.
+  `KeymapPane::render` impl no longer no-op. `RenderRegistry`
+  gained `keymap_pane: &'a mut KeymapPane`. `KeymapPane` (in
+  `tui_pane`) gained a `pub focus: RenderFocus` field.
+
+- **6.12 — Absorb the Settings overlay into `Renderable`.**
+  Same pattern as Keymap: `SettingsRenderInputs`,
+  `prepare_settings_render_inputs`, body fn,
+  `SettingsPane::render` impl wired up, registry field added,
+  `SettingsPane.focus` field added in `tui_pane`.
+
+## Phase 6.13 — Post-commit cleanups (planned)
+
+Small follow-ups identified after Phase 6.12 shipped:
+
+- Remove the stale `#[allow(dead_code)]` on
+  `PaneRenderCtx::inline_error` — the absorption shipped, the
+  reason no longer applies. Delete the field if it's still
+  unread, or wire its consumer if a reader exists.
+- Drop the unused `area` parameter from
+  `render_settings_pane_body` — the popup centers itself off
+  `frame.area()` via `PopupFrame::render_with_areas`.
+- Sync this document's Phase 6 end-state with what actually
+  shipped (i.e. the rewrite this section sits in).
+
+## Phase 6.14 — Fold Toasts into `Renderable` (planned)
+
+The only remaining pane-like thing not going through the trait.
+`Toasts` is framework-owned and currently rendered via
+`tui_pane::render_toasts(...)` as a post-pass in `render::ui`.
+
+Folding `Toasts` into `Renderable` would add an
+`impl Renderable<Ctx> for Toasts` inside `tui_pane` itself —
+closing the "no internal consumers of `Renderable`" gap. The
+context type needs design: `Toasts` reads toast settings, the
+active-toast list, the focused-toast id, and the focused-pane
+flag — none of which fit cargo-port's `PaneRenderCtx`. Two
+options on the table:
+
+1. **Framework-local ctx type.** Define
+   `tui_pane::ToastsRenderCtx<'a>` carrying just what `Toasts`
+   reads. `Toasts: Renderable<ToastsRenderCtx<'_>>`. Embedding
+   builds the ctx and calls `Renderable::render` directly (no
+   registry — toasts aren't keyed by `PaneId`).
+2. **Generic Ctx with framework-side impl.** Keep ctx
+   embedding-defined; require embeddings to implement a small
+   `ToastsContext` trait that `Toasts::render` reads through.
+   More flexible, more boilerplate.
+
+Option 1 is simpler and matches cargo-port's usage pattern.
 
 ## Deferred (not in this plan)
 

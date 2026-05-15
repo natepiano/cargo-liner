@@ -19,23 +19,28 @@ fn invalid(section: &str, key: &str, message: &str) -> SettingsError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToastSettings {
     /// Whether toast rendering is enabled.
-    pub enabled:         bool,
+    pub enabled:               bool,
     /// Toast card width.
-    pub width:           ToastWidth,
+    pub width:                 ToastWidth,
     /// Gap between visible toast cards.
     ///
     /// Kept for settings-file compatibility; toast cards render adjacent today.
-    pub gap:             ToastGap,
-    /// Default timeout for timed toasts.
-    pub default_timeout: ToastDuration,
-    /// Linger for completed task toasts.
-    pub task_linger:     ToastDuration,
+    pub gap:                   ToastGap,
+    /// How many seconds a "status" toast (a quick `push_timed`
+    /// pop-up like "Saved" or "Already clean") stays on screen
+    /// before auto-closing. Was previously named `default_timeout`.
+    pub status_toast_visible:  ToastDuration,
+    /// How many seconds a task toast stays on screen after the
+    /// tracked task finishes (and how long each completed
+    /// tracked item lingers in the toast body). Was previously
+    /// named `task_linger`.
+    pub finished_task_visible: ToastDuration,
     /// Maximum number of visible toasts.
-    pub max_visible:     MaxVisibleToasts,
+    pub max_visible:           MaxVisibleToasts,
     /// Toast placement.
-    pub placement:       ToastPlacement,
+    pub placement:             ToastPlacement,
     /// Toast animation timing.
-    pub animation:       ToastAnimationSettings,
+    pub animation:             ToastAnimationSettings,
 }
 
 impl ToastSettings {
@@ -74,11 +79,21 @@ impl ToastSettings {
                     .ok_or_else(|| invalid("toasts", "gap", "expected integer"))?,
             )?;
         }
-        if let Some(value) = table.get("default_timeout") {
-            self.default_timeout = ToastDuration::try_from_value("default_timeout", value)?;
+        if let Some(value) = table.get("status_toast_visible") {
+            self.status_toast_visible =
+                ToastDuration::try_from_value("status_toast_visible", value)?;
+        } else if let Some(value) = table.get("default_timeout") {
+            // Legacy key (pre-`status_toast_visible` rename). Read
+            // it as a fall-through; the next save removes it via
+            // [`remove_legacy_toast_keys`].
+            self.status_toast_visible = ToastDuration::try_from_value("default_timeout", value)?;
         }
-        if let Some(value) = table.get("task_linger") {
-            self.task_linger = ToastDuration::try_from_value("task_linger", value)?;
+        if let Some(value) = table.get("finished_task_visible") {
+            self.finished_task_visible =
+                ToastDuration::try_from_value("finished_task_visible", value)?;
+        } else if let Some(value) = table.get("task_linger") {
+            // Legacy key (pre-`finished_task_visible` rename).
+            self.finished_task_visible = ToastDuration::try_from_value("task_linger", value)?;
         }
         if let Some(value) = table.get("max_visible") {
             self.max_visible = MaxVisibleToasts::try_from_i64(
@@ -99,10 +114,10 @@ impl ToastSettings {
 
     fn apply_legacy_tui_table(&mut self, table: &Table) -> Result<(), SettingsError> {
         if let Some(value) = table.get("status_flash_secs") {
-            self.default_timeout = ToastDuration::try_from_value("status_flash_secs", value)?;
+            self.status_toast_visible = ToastDuration::try_from_value("status_flash_secs", value)?;
         }
         if let Some(value) = table.get("task_linger_secs") {
-            self.task_linger = ToastDuration::try_from_value("task_linger_secs", value)?;
+            self.finished_task_visible = ToastDuration::try_from_value("task_linger_secs", value)?;
         }
         Ok(())
     }
@@ -117,12 +132,12 @@ impl ToastSettings {
         );
         toasts.insert("gap".to_string(), Value::Integer(i64::from(self.gap.get())));
         toasts.insert(
-            "default_timeout".to_string(),
-            Value::Float(self.default_timeout.as_secs_f64()),
+            "status_toast_visible".to_string(),
+            Value::Float(self.status_toast_visible.as_secs_f64()),
         );
         toasts.insert(
-            "task_linger".to_string(),
-            Value::Float(self.task_linger.as_secs_f64()),
+            "finished_task_visible".to_string(),
+            Value::Float(self.finished_task_visible.as_secs_f64()),
         );
         toasts.insert(
             "max_visible".to_string(),
@@ -139,14 +154,14 @@ impl ToastSettings {
 impl Default for ToastSettings {
     fn default() -> Self {
         Self {
-            enabled:         true,
-            width:           ToastWidth::default(),
-            gap:             ToastGap::default(),
-            default_timeout: ToastDuration::DEFAULT_TIMEOUT,
-            task_linger:     ToastDuration::TASK_LINGER,
-            max_visible:     MaxVisibleToasts::default(),
-            placement:       ToastPlacement::BottomRight,
-            animation:       ToastAnimationSettings::default(),
+            enabled:               true,
+            width:                 ToastWidth::default(),
+            gap:                   ToastGap::default(),
+            status_toast_visible:  ToastDuration::STATUS_TOAST_VISIBLE,
+            finished_task_visible: ToastDuration::FINISHED_TASK_VISIBLE,
+            max_visible:           MaxVisibleToasts::default(),
+            placement:             ToastPlacement::BottomRight,
+            animation:             ToastAnimationSettings::default(),
         }
     }
 }
@@ -195,10 +210,10 @@ impl ToastGap {
 pub struct ToastDuration(Duration);
 
 impl ToastDuration {
-    /// Default timed-toast timeout.
-    pub const DEFAULT_TIMEOUT: Self = Self(Duration::from_secs(5));
-    /// Default completed-task linger.
-    pub const TASK_LINGER: Self = Self(Duration::from_secs(1));
+    /// Default visible duration for status toasts.
+    pub const STATUS_TOAST_VISIBLE: Self = Self(Duration::from_secs(5));
+    /// Default visible duration for finished task toasts.
+    pub const FINISHED_TASK_VISIBLE: Self = Self(Duration::from_secs(1));
 
     /// Build from seconds.
     ///
@@ -308,5 +323,13 @@ pub(crate) fn remove_legacy_toast_keys(table: &mut Table) {
     if let Some(Value::Table(tui)) = table.get_mut("tui") {
         tui.remove("status_flash_secs");
         tui.remove("task_linger_secs");
+    }
+    if let Some(Value::Table(toasts)) = table.get_mut("toasts") {
+        // One-shot migration: `default_timeout` →
+        // `status_toast_visible`, `task_linger` →
+        // `finished_task_visible`. Remove the old keys after the
+        // load path has copied their values into the new fields.
+        toasts.remove("default_timeout");
+        toasts.remove("task_linger");
     }
 }

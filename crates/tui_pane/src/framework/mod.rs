@@ -62,9 +62,11 @@ pub struct Framework<Ctx: AppContext> {
     /// [`Self::overlay`] is `Some(FrameworkOverlayId::Settings)`.
     pub settings_pane: SettingsPane,
     settings_store:    SettingsStore,
-    toast_settings:    ToastSettings,
     /// Transient notification stack. Tab-focusable when
-    /// [`Toasts::has_active`](crate::Toasts::has_active) returns `true`.
+    /// [`Toasts::has_active`](crate::Toasts::has_active) returns
+    /// `true`. Owns its own [`ToastSettings`]; framework accessors
+    /// (`toast_settings`, `set_toast_settings`) delegate here so
+    /// embeddings never thread duration values into toast methods.
     pub toasts:        Toasts<Ctx>,
 }
 
@@ -84,7 +86,6 @@ impl<Ctx: AppContext> Framework<Ctx> {
             keymap_pane:       KeymapPane::new(),
             settings_pane:     SettingsPane::new(),
             settings_store:    SettingsStore::empty(),
-            toast_settings:    ToastSettings::default(),
             toasts:            Toasts::new(),
         }
     }
@@ -104,7 +105,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// Install framework settings loaded from disk.
     pub fn install_loaded_settings(&mut self, loaded_settings: LoadedSettings) {
         self.settings_store = loaded_settings.store;
-        self.toast_settings = loaded_settings.toast_settings;
+        self.toasts.set_settings(loaded_settings.toast_settings);
     }
 
     /// Install the framework-owned settings store.
@@ -117,17 +118,20 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// Mutably borrow the framework-owned settings store.
     pub const fn settings_store_mut(&mut self) -> &mut SettingsStore { &mut self.settings_store }
 
-    /// Replace framework-owned toast settings.
+    /// Replace framework-owned toast settings. Delegates to
+    /// [`Toasts::set_settings`], which owns the canonical copy.
     pub const fn set_toast_settings(&mut self, settings: ToastSettings) {
-        self.toast_settings = settings;
+        self.toasts.set_settings(settings);
     }
 
-    /// Borrow framework-owned toast settings.
+    /// Borrow framework-owned toast settings. Delegates to
+    /// [`Toasts::settings`].
     #[must_use]
-    pub const fn toast_settings(&self) -> &ToastSettings { &self.toast_settings }
+    pub const fn toast_settings(&self) -> &ToastSettings { self.toasts.settings() }
 
-    /// Mutably borrow framework-owned toast settings.
-    pub const fn toast_settings_mut(&mut self) -> &mut ToastSettings { &mut self.toast_settings }
+    /// Mutably borrow framework-owned toast settings. Delegates to
+    /// [`Toasts::settings_mut`].
+    pub const fn toast_settings_mut(&mut self) -> &mut ToastSettings { self.toasts.settings_mut() }
 
     /// The currently focused pane.
     #[must_use]

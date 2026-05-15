@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use tui_pane::ReactivateOutcome;
 use tui_pane::ToastTaskId;
 use tui_pane::TrackedItem;
 use tui_pane::TrackedItemKey;
@@ -56,8 +57,7 @@ impl App {
                     .toasts
                     .complete_missing_items(task_id, &empty);
                 if !self.framework.toasts.is_task_finished(task_id) {
-                    let linger = self.framework.toast_settings().task_linger.get();
-                    self.framework.toasts.finish_task(task_id, linger);
+                    self.framework.toasts.finish_task(task_id);
                 }
             }
             return toast_slot;
@@ -66,31 +66,46 @@ impl App {
         let running_keys: HashSet<TrackedItemKey> =
             running_items.iter().map(|item| item.key.clone()).collect();
 
-        if let Some(task_id) = toast_slot
-            && self.framework.toasts.reactivate_task(task_id)
-        {
-            self.framework
-                .toasts
-                .complete_missing_items(task_id, &running_keys);
-            let linger = self.framework.toast_settings().task_linger.get();
-            self.framework
-                .toasts
-                .add_new_tracked_items(task_id, running_items, linger);
-            for item in running_items {
-                if let Some(started) = item.started_at {
-                    self.framework
-                        .toasts
-                        .restart_tracked_item(task_id, &item.key, started);
+        let outcome = toast_slot.map_or(ReactivateOutcome::NotFound, |task_id| {
+            self.framework.toasts.reactivate_task(task_id)
+        });
+
+        match outcome {
+            ReactivateOutcome::Revived => {
+                // toast_slot is guaranteed `Some` here — `NotFound`
+                // is the only outcome reachable from `None`.
+                let task_id = toast_slot.unwrap_or_else(|| std::process::abort());
+                self.framework
+                    .toasts
+                    .complete_missing_items(task_id, &running_keys);
+                self.framework
+                    .toasts
+                    .add_new_tracked_items(task_id, running_items);
+                for item in running_items {
+                    if let Some(started) = item.started_at {
+                        self.framework
+                            .toasts
+                            .restart_tracked_item(task_id, &item.key, started);
+                    }
                 }
-            }
-            Some(task_id)
-        } else {
-            let labels: Vec<&str> = running_items.iter().map(|i| i.label.as_str()).collect();
-            let width = toast_body_width(self.framework.toast_settings());
-            let body = format_toast_items(&labels, width);
-            let task_id = self.framework.toasts.start_task(title, body);
-            self.set_task_tracked_items(task_id, running_items);
-            Some(task_id)
+                Some(task_id)
+            },
+            ReactivateOutcome::DismissedByUser => {
+                // User closed the toast for this tracker session.
+                // Keep the slot wired (so we don't create a
+                // duplicate next frame) but don't touch the toast.
+                // The underlying tracker keeps running; only the
+                // UI surface stays gone.
+                toast_slot
+            },
+            ReactivateOutcome::NotFound => {
+                let labels: Vec<&str> = running_items.iter().map(|i| i.label.as_str()).collect();
+                let width = toast_body_width(self.framework.toast_settings());
+                let body = format_toast_items(&labels, width);
+                let task_id = self.framework.toasts.start_task(title, body);
+                self.set_task_tracked_items(task_id, running_items);
+                Some(task_id)
+            },
         }
     }
 }

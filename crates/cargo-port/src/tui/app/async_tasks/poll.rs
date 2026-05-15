@@ -92,12 +92,9 @@ impl App {
                             started_at: None,
                             completed_at: None,
                         };
-                        let linger = self.framework.toast_settings().task_linger.get();
-                        self.framework.toasts.add_new_tracked_items(
-                            task_id,
-                            &[result_item],
-                            linger,
-                        );
+                        self.framework
+                            .toasts
+                            .add_new_tracked_items(task_id, &[result_item]);
                         self.finish_task_toast(task_id);
                     }
                 },
