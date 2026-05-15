@@ -22,7 +22,7 @@ use crate::project::project_fields::ProjectFields;
 /// Construct via struct literal — all fields default to empty/none, so tests
 /// can use `..Default::default()`.
 #[derive(Clone, Default)]
-pub struct Workspace {
+pub(crate) struct Workspace {
     pub path:            AbsolutePath,
     pub name:            Option<String>,
     pub worktree_status: WorktreeStatus,

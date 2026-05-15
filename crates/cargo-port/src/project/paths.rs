@@ -9,7 +9,7 @@ use std::path::PathBuf;
 /// An absolute filesystem path. Used as `HashMap` keys and for filesystem operations.
 /// Wraps `PathBuf`. Created from absolute paths only.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct AbsolutePath(PathBuf);
+pub(crate) struct AbsolutePath(PathBuf);
 
 impl AbsolutePath {
     pub fn as_path(&self) -> &Path { &self.0 }
@@ -124,7 +124,7 @@ impl From<&Path> for AbsolutePath {
 
 /// A display path for the UI (e.g. `~/rust/bevy`). Never used as a `HashMap` key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DisplayPath(String);
+pub(crate) struct DisplayPath(String);
 
 impl DisplayPath {
     pub const fn new(s: String) -> Self { Self(s) }

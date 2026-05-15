@@ -22,6 +22,9 @@ use tui_pane::ERROR_COLOR;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::LABEL_COLOR;
+use tui_pane::PaneFocusState;
+use tui_pane::RenderFocus;
+use tui_pane::Renderable;
 use tui_pane::ResolvedPaneLayout;
 use tui_pane::SECONDARY_TEXT_COLOR;
 use tui_pane::STATUS_BAR_COLOR;
@@ -41,12 +44,9 @@ use super::integration::AppGlobalAction;
 use super::interaction;
 use super::keymap_ui;
 use super::overlays::PopupFrame;
-use super::pane::Pane;
 use super::pane::PaneRenderCtx;
 use super::panes;
-use super::panes::DispatchArgs;
 use super::panes::PaneId;
-use super::panes::Panes;
 use super::settings;
 use crate::ci::CiStatus;
 use crate::project;
@@ -137,8 +137,32 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     let core_count = app.panes.cpu.content().map_or(1, |usage| usage.cores.len());
     let tiled = panes::resolve_layout(outer_layout[0], left_width, core_count, bottom_row);
 
-    for resolved in &tiled.panes {
-        render_tiled_pane(frame, app, resolved.pane, resolved.area);
+    // Stamp every renderable pane's focus snapshot before splitting
+    // App so each pane can read its own focus state from `&mut self`
+    // inside the trait-dispatched render loop.
+    sync_pane_focus(app);
+
+    // Build the CI lookup snapshot now, while we still hold `&app.ci`;
+    // the upcoming split takes `&mut app.ci` for the registry, which
+    // would alias an `&Ci` ref carried in the ctx.
+    let ci_status_lookup = app.ci.status_lookup();
+
+    // `selected_project_path` needs both `&Selection` and `&Scan`;
+    // resolve and own it before the split releases those borrows.
+    let selected_path: Option<PathBuf> = app
+        .selected_project_path_for_render()
+        .map(std::path::Path::to_path_buf);
+    let animation_elapsed = app.animation_started.elapsed();
+
+    {
+        let mut split = app.split_for_render(
+            selected_path.as_deref(),
+            animation_elapsed,
+            &ci_status_lookup,
+            None,
+            None,
+        );
+        tui_pane::render_panes(frame, &mut split.registry, &tiled, &split.ctx);
     }
     app.panes.tiled_layout = tiled;
 
@@ -249,8 +273,7 @@ fn append_sibling_lines(
     lines: &mut Vec<String>,
 ) {
     let siblings = app.scan.target_dir_index.siblings(target, selection);
-    let project_siblings: Vec<&AbsolutePath> =
-        siblings.iter().map(|member| &member.project_root).collect();
+    let project_siblings = siblings;
     if !project_siblings.is_empty() {
         lines.push("Also affects:".to_string());
         for sibling in project_siblings.iter().take(AFFECTED_EXTRAS_VISIBLE_CAP) {
@@ -329,183 +352,129 @@ fn render_confirm_popup(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn dispatch_via_trait(
-    app: &mut App,
-    area: Rect,
-    id: PaneId,
-    frame: &mut Frame,
-    dispatcher: fn(&mut Panes, &mut Frame, Rect, &DispatchArgs<'_>),
-) {
-    let focus_state = app.pane_focus_state(id);
-    let is_focused = app.focus_is(id);
-    let animation_elapsed = app.animation_started.elapsed();
-    // Compute `selected_project_path` before the split-borrow — it
-    // crosses Selection + Scan via `path_for_row`, so the
-    // dispatcher's typed refs alone can't reproduce it.
-    let selected_project_path: Option<PathBuf> = app
-        .selected_project_path_for_render()
-        .map(std::path::Path::to_path_buf);
-    let split = app.split_panes_for_render();
-    let args = DispatchArgs {
-        focus_state,
-        is_focused,
-        animation_elapsed,
-        config: split.config,
-        project_list: split.project_list,
-        selected_project_path: selected_project_path.as_deref(),
-        inflight: split.inflight,
-        scan: split.scan,
-        ci: Some(split.ci),
-        lint: Some(split.lint),
-        inline_error: split.inline_error,
-    };
-    dispatcher(split.panes, frame, area, &args);
-}
-
-fn dispatch_lints_render(app: &mut App, frame: &mut Frame, area: Rect) {
-    let focus_state = app.pane_focus_state(PaneId::Lints);
-    let is_focused = app.focus_is(PaneId::Lints);
-    let animation_elapsed = app.animation_started.elapsed();
-    let selected_project_path: Option<PathBuf> = app
-        .selected_project_path_for_render()
-        .map(std::path::Path::to_path_buf);
-    let split = app.split_lint_for_render();
-    let ctx = PaneRenderCtx {
-        focus_state,
-        is_focused,
-        animation_elapsed,
-        config: split.config,
-        project_list: split.project_list,
-        selected_project_path: selected_project_path.as_deref(),
-        inflight: split.inflight,
-        scan: split.scan,
-        ci: Some(split.ci),
-        lint: None,
-        inline_error: split.inline_error,
-    };
-    Pane::render(split.lint, frame, area, &ctx);
-}
-
-/// Dispatch the Keymap overlay popup. Named helper so `ui()`
-/// stays uniform across overlays. The legacy free fn still owns
-/// the body — moving it into `KeymapPane::render` is deferred
-/// because the renderer reads `app.framework_keymap` (a generic
-/// `Keymap<App>`), `app.framework.overlay()`, and other `&App`
-/// state that does not plumb cleanly through [`PaneRenderCtx`].
+/// Dispatch the Keymap overlay popup via [`tui_pane::Renderable`].
+///
+/// The expensive `&App`-reading work (walking `framework_keymap`,
+/// laying out rows, building lines) happens here before
+/// `App::split_for_render`; the trait method on `KeymapPane` reads
+/// the resulting [`crate::tui::keymap_ui::KeymapRenderInputs`] from
+/// `PaneRenderCtx` and draws into `frame`.
 fn dispatch_keymap_overlay(app: &mut App, frame: &mut Frame) {
-    keymap_ui::render_keymap_popup(frame, app);
+    // Overlay focus is always `Active` while the popup is open.
+    app.framework.keymap_pane.focus = RenderFocus {
+        state:      PaneFocusState::Active,
+        is_focused: true,
+    };
+    let inputs = keymap_ui::prepare_keymap_render_inputs(app);
+    let animation_elapsed = app.animation_started.elapsed();
+    let selected_path: Option<PathBuf> = app
+        .selected_project_path_for_render()
+        .map(std::path::Path::to_path_buf);
+    let ci_status_lookup = app.ci.status_lookup();
+    let split = app.split_for_render(
+        selected_path.as_deref(),
+        animation_elapsed,
+        &ci_status_lookup,
+        Some(&inputs),
+        None,
+    );
+    Renderable::render(split.registry.keymap_pane, frame, frame.area(), &split.ctx);
 }
 
-/// Dispatch the Settings overlay popup. Same deferral as
-/// [`dispatch_keymap_overlay`] — legacy free fn owns the body
-/// today.
+/// Dispatch the Settings overlay popup via [`tui_pane::Renderable`].
+/// Mirror of [`dispatch_keymap_overlay`] — the precompute step calls
+/// [`tui_pane::SettingsPane::render_rows`] (which mutates the pane)
+/// before `App::split_for_render`, then the trait method draws the
+/// popup.
 fn dispatch_settings_overlay(app: &mut App, frame: &mut Frame) {
-    settings::render_settings_popup(frame, app);
+    app.framework.settings_pane.focus = RenderFocus {
+        state:      PaneFocusState::Active,
+        is_focused: true,
+    };
+    let frame_height = frame.area().height;
+    let inputs = settings::prepare_settings_render_inputs(app, frame_height);
+    let animation_elapsed = app.animation_started.elapsed();
+    let selected_path: Option<PathBuf> = app
+        .selected_project_path_for_render()
+        .map(std::path::Path::to_path_buf);
+    let ci_status_lookup = app.ci.status_lookup();
+    let split = app.split_for_render(
+        selected_path.as_deref(),
+        animation_elapsed,
+        &ci_status_lookup,
+        None,
+        Some(&inputs),
+    );
+    Renderable::render(
+        split.registry.settings_pane,
+        frame,
+        frame.area(),
+        &split.ctx,
+    );
 }
 
 fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
-    let focus_state = app.pane_focus_state(PaneId::Finder);
-    let is_focused = app.focus_is(PaneId::Finder);
+    let finder_focus = RenderFocus {
+        state:      app.pane_focus_state(PaneId::Finder),
+        is_focused: app.focus_is(PaneId::Finder),
+    };
+    app.overlays.finder_pane.focus = finder_focus;
     let animation_elapsed = app.animation_started.elapsed();
     let selected_project_path: Option<PathBuf> = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
+    let ci_status_lookup = app.ci.status_lookup();
     let split = app.split_finder_for_render();
     let ctx = PaneRenderCtx {
-        focus_state,
-        is_focused,
         animation_elapsed,
         config: split.config,
         project_list: split.project_list,
         selected_project_path: selected_project_path.as_deref(),
         inflight: split.inflight,
         scan: split.scan,
-        ci: Some(split.ci),
-        lint: Some(split.lint),
+        ci_status_lookup: &ci_status_lookup,
+        keymap_render_inputs: None,
+        settings_render_inputs: None,
         inline_error: split.inline_error,
     };
     // Finder body sizes the popup itself; area arg is unused.
-    Pane::render(split.finder_pane, frame, frame.area(), &ctx);
+    Renderable::render(split.finder_pane, frame, frame.area(), &ctx);
 }
 
-fn dispatch_ci_render(app: &mut App, frame: &mut Frame, area: Rect) {
-    let focus_state = app.pane_focus_state(PaneId::CiRuns);
-    let is_focused = app.focus_is(PaneId::CiRuns);
-    let animation_elapsed = app.animation_started.elapsed();
-    let selected_project_path: Option<PathBuf> = app
-        .selected_project_path_for_render()
-        .map(std::path::Path::to_path_buf);
-    let split = app.split_ci_for_render();
-    let ctx = PaneRenderCtx {
-        focus_state,
-        is_focused,
-        animation_elapsed,
-        config: split.config,
-        project_list: split.project_list,
-        selected_project_path: selected_project_path.as_deref(),
-        inflight: split.inflight,
-        scan: split.scan,
-        ci: None,
-        lint: Some(split.lint),
-        inline_error: split.inline_error,
-    };
-    Pane::render(split.ci, frame, area, &ctx);
-}
-
-fn render_tiled_pane(frame: &mut Frame, app: &mut App, pane: PaneId, area: Rect) {
-    match pane {
-        PaneId::ProjectList => dispatch_via_trait(
-            app,
-            area,
-            PaneId::ProjectList,
-            frame,
-            panes::Panes::dispatch_project_list_render,
-        ),
-        PaneId::Package => dispatch_via_trait(
-            app,
-            area,
-            PaneId::Package,
-            frame,
-            panes::Panes::dispatch_package_render,
-        ),
-        PaneId::Git => dispatch_via_trait(
-            app,
-            area,
-            PaneId::Git,
-            frame,
-            panes::Panes::dispatch_git_render,
-        ),
-        PaneId::Lang => dispatch_via_trait(
-            app,
-            area,
-            PaneId::Lang,
-            frame,
-            panes::Panes::dispatch_lang_render,
-        ),
-        PaneId::Cpu => dispatch_via_trait(
-            app,
-            area,
-            PaneId::Cpu,
-            frame,
-            panes::Panes::dispatch_cpu_render,
-        ),
-        PaneId::Targets => dispatch_via_trait(
-            app,
-            area,
-            PaneId::Targets,
-            frame,
-            panes::Panes::dispatch_targets_render,
-        ),
-        PaneId::Lints => dispatch_lints_render(app, frame, area),
-        PaneId::CiRuns => dispatch_ci_render(app, frame, area),
-        PaneId::Output => dispatch_via_trait(
-            app,
-            area,
-            PaneId::Output,
-            frame,
-            panes::Panes::dispatch_output_render,
-        ),
-        PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {},
+/// Stamp each renderable pane's [`tui_pane::RenderFocus`] snapshot
+/// before [`tui_pane::render_panes`] dispatches the loop. After this,
+/// every pane reads its own focus state from `&mut self` instead of
+/// the shared [`PaneRenderCtx`] — which is what frees the ctx of any
+/// per-pane field and lets the generic loop carry one ctx per frame.
+fn sync_pane_focus(app: &mut App) {
+    let ids = [
+        PaneId::Package,
+        PaneId::Lang,
+        PaneId::Cpu,
+        PaneId::Git,
+        PaneId::Targets,
+        PaneId::ProjectList,
+        PaneId::Output,
+        PaneId::Lints,
+        PaneId::CiRuns,
+    ];
+    for id in ids {
+        let focus = RenderFocus {
+            state:      app.pane_focus_state(id),
+            is_focused: app.focus_is(id),
+        };
+        match id {
+            PaneId::Package => app.panes.package.focus = focus,
+            PaneId::Lang => app.panes.lang.focus = focus,
+            PaneId::Cpu => app.panes.cpu.focus = focus,
+            PaneId::Git => app.panes.git.focus = focus,
+            PaneId::Targets => app.panes.targets.focus = focus,
+            PaneId::ProjectList => app.panes.project_list.focus = focus,
+            PaneId::Output => app.panes.output.focus = focus,
+            PaneId::Lints => app.lint.focus = focus,
+            PaneId::CiRuns => app.ci.focus = focus,
+            PaneId::Toasts | PaneId::Settings | PaneId::Finder | PaneId::Keymap => {},
+        }
     }
 }
 

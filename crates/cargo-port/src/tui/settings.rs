@@ -1,5 +1,6 @@
 use crossterm::event::KeyCode;
 use ratatui::Frame;
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
@@ -17,6 +18,7 @@ use tui_pane::SettingCodecs;
 use tui_pane::SettingsCommand;
 use tui_pane::SettingsError;
 use tui_pane::SettingsFileSpec;
+use tui_pane::SettingsPane;
 use tui_pane::SettingsPaneAction;
 use tui_pane::SettingsRegistry;
 use tui_pane::SettingsRenderOptions;
@@ -41,6 +43,7 @@ use super::keymap_ui;
 use super::overlays::PopupFrame;
 use super::pane;
 use super::pane::PaneFocusState;
+use super::pane::PaneRenderCtx;
 use super::render;
 use crate::config;
 use crate::config::CargoPortConfig;
@@ -1079,77 +1082,101 @@ fn toggle_vim_mode(app: &mut App) {
     let _ = save_app_setting_with_toast(app, |table| set_navigation_keys(table, next));
 }
 
-pub(super) fn render_settings_popup(frame: &mut Frame, app: &mut App) {
+/// Precomputed render inputs for the Settings overlay. Built in
+/// [`prepare_settings_render_inputs`] before `App::split_for_render`
+/// runs; consumed by `SettingsPane`'s [`tui_pane::Renderable`] impl
+/// via [`crate::tui::pane::PaneRenderCtx`].
+pub(crate) struct SettingsRenderInputs {
+    pub lines:            Vec<Line<'static>>,
+    pub line_count:       usize,
+    pub selectable_count: usize,
+    pub popup_height:     u16,
+}
+
+/// Build the [`SettingsRenderInputs`] for the current frame. Takes
+/// `&mut App` because [`tui_pane::SettingsPane::render_rows`]
+/// records line-target metadata on the pane.
+pub(super) fn prepare_settings_render_inputs(
+    app: &mut App,
+    frame_area_height: u16,
+) -> SettingsRenderInputs {
     let rows = settings_rows(app, app.config.current());
     let content_width = usize::from(SETTINGS_POPUP_WIDTH.saturating_sub(2));
-
-    let mut lines: Vec<Line<'static>> = vec![Line::from("")];
     let framework_rows = framework_settings_rows(app, &rows);
-    let rendered = app.framework.settings_pane.render_rows(
-        &framework_rows,
-        SettingsRenderOptions {
-            active: app.framework.overlay() == Some(FrameworkOverlayId::Settings),
-            inline_error: app.overlays.inline_error().map(String::as_str),
-            content_width,
-            section_header_indent: SECTION_HEADER_INDENT,
-            section_item_indent: SECTION_ITEM_INDENT,
-            title_style: Style::default().fg(TITLE_COLOR),
-            label_style: Style::default().fg(LABEL_COLOR),
-            muted_style: Style::default().fg(LABEL_COLOR),
-            success_style: Style::default().fg(SUCCESS_COLOR),
-            error_style: Style::default().fg(ERROR_COLOR),
-            inline_error_style: Style::default().fg(INLINE_ERROR_COLOR),
-            active_style: pane::selection_style(PaneFocusState::Active),
-            remembered_style: pane::selection_style(PaneFocusState::Remembered),
-            hovered_style: Style::default().bg(tui_pane::HOVER_FOCUS_COLOR),
-        },
-    );
+    let render_options = SettingsRenderOptions {
+        active: app.framework.overlay() == Some(FrameworkOverlayId::Settings),
+        inline_error: app.overlays.inline_error().map(String::as_str),
+        content_width,
+        section_header_indent: SECTION_HEADER_INDENT,
+        section_item_indent: SECTION_ITEM_INDENT,
+        title_style: Style::default().fg(TITLE_COLOR),
+        label_style: Style::default().fg(LABEL_COLOR),
+        muted_style: Style::default().fg(LABEL_COLOR),
+        success_style: Style::default().fg(SUCCESS_COLOR),
+        error_style: Style::default().fg(ERROR_COLOR),
+        inline_error_style: Style::default().fg(INLINE_ERROR_COLOR),
+        active_style: pane::selection_style(PaneFocusState::Active),
+        remembered_style: pane::selection_style(PaneFocusState::Remembered),
+        hovered_style: Style::default().bg(tui_pane::HOVER_FOCUS_COLOR),
+    };
+    let rendered = app
+        .framework
+        .settings_pane
+        .render_rows(&framework_rows, render_options);
+    let mut lines: Vec<Line<'static>> = vec![Line::from("")];
     lines.extend(rendered.lines);
     lines.push(Line::from(""));
     let line_count = lines.len();
+    let popup_height = settings_popup_height(line_count, frame_area_height);
+    SettingsRenderInputs {
+        lines,
+        line_count,
+        selectable_count: rendered.selectable_count,
+        popup_height,
+    }
+}
 
-    let popup_height = settings_popup_height(line_count, frame.area().height);
+/// Body fn invoked by `SettingsPane`'s [`tui_pane::Renderable`]
+/// impl. Reads precomputed inputs from `ctx`, viewport state from
+/// `pane`, and draws the popup into `area`.
+pub(super) fn render_settings_pane_body(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &mut SettingsPane,
+    ctx: &PaneRenderCtx<'_>,
+) {
+    let Some(inputs) = ctx.settings_render_inputs else {
+        return;
+    };
 
-    app.framework
-        .settings_pane
-        .viewport_mut()
-        .set_len(rendered.selectable_count);
+    pane.viewport_mut().set_len(inputs.selectable_count);
 
     let popup = PopupFrame {
         title:        Some(" Settings ".to_string()),
         border_color: ACTIVE_BORDER_COLOR,
         width:        SETTINGS_POPUP_WIDTH,
-        height:       popup_height,
+        height:       inputs.popup_height,
     }
     .render_with_areas(frame);
     let inner = popup.inner;
+    let _ = area;
 
-    app.framework
-        .settings_pane
-        .viewport_mut()
-        .set_content_area(inner);
+    pane.viewport_mut().set_content_area(inner);
     let visible_height = usize::from(inner.height);
-    let selected_line = app
-        .framework
-        .settings_pane
-        .line_for_selection(app.framework.settings_pane.viewport().pos())
-        .unwrap_or_else(|| app.framework.settings_pane.viewport().pos());
-    let scroll_offset = settings_scroll_offset(selected_line, visible_height, line_count);
-    app.framework
-        .settings_pane
-        .viewport_mut()
-        .set_viewport_rows(visible_height);
-    app.framework
-        .settings_pane
-        .viewport_mut()
-        .set_scroll_offset(scroll_offset);
+    let selected_line = pane
+        .line_for_selection(pane.viewport().pos())
+        .unwrap_or_else(|| pane.viewport().pos());
+    let scroll_offset = settings_scroll_offset(selected_line, visible_height, inputs.line_count);
+    pane.viewport_mut().set_viewport_rows(visible_height);
+    pane.viewport_mut().set_scroll_offset(scroll_offset);
 
-    let paragraph = Paragraph::new(lines).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
+    let paragraph =
+        Paragraph::new(inputs.lines.clone()).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
     frame.render_widget(paragraph, inner);
     render_overflow_affordance(
         frame,
         popup.outer,
-        ViewportOverflow::new(line_count, scroll_offset, visible_height),
+        ViewportOverflow::new(inputs.line_count, scroll_offset, visible_height),
         Style::default().fg(LABEL_COLOR),
     );
 }

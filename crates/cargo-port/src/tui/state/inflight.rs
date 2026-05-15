@@ -22,7 +22,7 @@ use crate::tui::panes::PendingExampleRun;
 
 /// Owns App's in-flight bookkeeping. App holds a single
 /// `inflight: Inflight`.
-pub struct Inflight {
+pub(crate) struct Inflight {
     /// In-flight cargo clean state — same lifecycle as
     /// `Lint::running` and `Github::running`.
     clean:               RunningTracker<AbsolutePath>,

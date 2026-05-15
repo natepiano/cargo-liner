@@ -369,13 +369,13 @@ pub(super) fn render_cpu_pane_body(
     styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
 ) {
-    let focus = ctx.focus_state;
+    let focus = pane.focus.state;
     let cursor = matches!(focus, PaneFocusState::Active).then(|| pane.viewport.pos());
     let title = pane.content().map_or_else(
         || " CPU ".to_string(),
         |usage| cpu_panel_title(usage.cores.len(), cursor),
     );
-    let block = styles.chrome.block(title, ctx.is_focused);
+    let block = styles.chrome.block(title, pane.focus.is_focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

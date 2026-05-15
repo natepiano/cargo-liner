@@ -10,8 +10,8 @@ use std::collections::HashSet;
 use crate::project::AbsolutePath;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TargetDirMember {
-    pub project_root: AbsolutePath,
+pub(super) struct TargetDirMember {
+    pub(super) project_root: AbsolutePath,
 }
 
 /// Forward map: `target_directory` → projects that resolve to it.
@@ -19,7 +19,7 @@ pub struct TargetDirMember {
 /// Both maps stay in sync via [`TargetDirIndex::upsert`] /
 /// [`TargetDirIndex::remove`].
 #[derive(Debug, Default)]
-pub struct TargetDirIndex {
+pub(crate) struct TargetDirIndex {
     by_target_dir: HashMap<AbsolutePath, Vec<TargetDirMember>>,
     by_project:    HashMap<AbsolutePath, AbsolutePath>,
 }
@@ -31,7 +31,7 @@ impl TargetDirIndex {
     /// project previously lived under a different target dir, the
     /// stale entry is evicted before inserting the new one. Safe to
     /// call repeatedly with the same inputs.
-    pub fn upsert(&mut self, member: TargetDirMember, target_dir: AbsolutePath) {
+    pub(super) fn upsert(&mut self, member: TargetDirMember, target_dir: AbsolutePath) {
         let project_root = member.project_root.clone();
         if let Some(previous_dir) = self.by_project.get(&project_root).cloned() {
             if previous_dir == target_dir {
@@ -61,7 +61,7 @@ impl TargetDirIndex {
         &'a self,
         target_dir: &AbsolutePath,
         exclude: &[AbsolutePath],
-    ) -> Vec<&'a TargetDirMember> {
+    ) -> Vec<&'a AbsolutePath> {
         let excluded: HashSet<&AbsolutePath> = exclude.iter().collect();
         self.by_target_dir
             .get(target_dir)
@@ -69,6 +69,7 @@ impl TargetDirIndex {
                 members
                     .iter()
                     .filter(|m| !excluded.contains(&m.project_root))
+                    .map(|m| &m.project_root)
                     .collect()
             })
             .unwrap_or_default()
@@ -93,7 +94,7 @@ impl TargetDirIndex {
 /// case — `primary` is the canonical checkout, `linked` lists every
 /// linked worktree at selection time.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CleanSelection {
+pub(crate) enum CleanSelection {
     Project {
         root: AbsolutePath,
     },
@@ -128,7 +129,7 @@ mod tests {
 
         let siblings = index.siblings(&dir("/ws/a/target"), &[]);
         assert_eq!(siblings.len(), 1);
-        assert_eq!(siblings[0].project_root, dir("/ws/a"));
+        assert_eq!(*siblings[0], dir("/ws/a"));
     }
 
     #[test]
@@ -146,7 +147,7 @@ mod tests {
         );
         let new = index.siblings(&dir("/tmp/custom"), &[]);
         assert_eq!(new.len(), 1);
-        assert_eq!(new[0].project_root, dir("/ws/a"));
+        assert_eq!(*new[0], dir("/ws/a"));
     }
 
     #[test]
@@ -168,7 +169,7 @@ mod tests {
 
         let siblings = index.siblings(&dir("/shared"), &[dir("/ws/a"), dir("/ws/b")]);
         assert_eq!(siblings.len(), 1);
-        assert_eq!(siblings[0].project_root, dir("/ws/c"));
+        assert_eq!(*siblings[0], dir("/ws/c"));
     }
 
     #[test]

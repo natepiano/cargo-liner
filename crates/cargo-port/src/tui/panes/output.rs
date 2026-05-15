@@ -12,10 +12,16 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::LABEL_COLOR;
 
+use super::pane_impls::OutputPane;
 use crate::tui::pane;
 use crate::tui::pane::PaneRenderCtx;
 
-pub fn render_output_pane_body(frame: &mut Frame, area: Rect, ctx: &PaneRenderCtx<'_>) {
+pub fn render_output_pane_body(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &OutputPane,
+    ctx: &PaneRenderCtx<'_>,
+) {
     let title = ctx.inflight.example_running().map_or_else(
         || " Output (Esc to close) ".to_string(),
         |n| format!(" Running: {n} "),
@@ -23,7 +29,7 @@ pub fn render_output_pane_body(frame: &mut Frame, area: Rect, ctx: &PaneRenderCt
 
     let block = pane::default_pane_chrome()
         .with_inactive_border(Style::default().fg(LABEL_COLOR))
-        .block(title, ctx.is_focused);
+        .block(title, pane.focus.is_focused);
 
     let lines: Vec<Line> = ctx
         .inflight

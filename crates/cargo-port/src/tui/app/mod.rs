@@ -122,23 +122,26 @@ use std::sync::mpsc::Sender;
 
 use anyhow::Error;
 use async_tasks::Startup;
-pub(super) use target_index::CleanSelection;
-pub(super) use target_index::TargetDirIndex;
+pub(crate) use target_index::CleanSelection;
+pub(crate) use target_index::TargetDirIndex;
 use tui_pane::AppContext;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::FrameworkFocusId;
 use tui_pane::GlobalAction;
 use tui_pane::Keymap as FrameworkKeymap;
+use tui_pane::KeymapPane;
+use tui_pane::PaneRegistry;
+use tui_pane::SettingsPane;
 use tui_pane::ToastTaskId;
 pub(super) use types::CiRunDisplayMode;
-pub(super) use types::ConfirmAction;
+pub(crate) use types::ConfirmAction;
 pub(super) use types::DirtyState;
 pub(super) use types::DiscoveryRowKind;
 pub(super) use types::DiscoveryShimmer;
 pub(super) use types::FinderState;
 pub(super) use types::HoveredPaneRow;
-pub(super) use types::PendingClean;
+pub(crate) use types::PendingClean;
 pub(super) use types::PollBackgroundStats;
 #[cfg(test)]
 pub(super) use types::RetrySpawnMode;
@@ -146,69 +149,97 @@ pub(super) use types::ScanState;
 pub(super) use types::SelectionPaths;
 pub(super) use types::SelectionSync;
 
+use super::columns;
 pub(super) use super::columns::ProjectListWidths;
 use super::interaction;
+use super::keymap_ui::KeymapRenderInputs;
+use super::overlays::FinderPane;
+use super::pane::PaneRenderCtx;
 use super::panes::BottomRow;
+use super::panes::CpuPane;
+use super::panes::GitPane;
+use super::panes::LangPane;
+use super::panes::OutputPane;
+use super::panes::PackagePane;
+use super::panes::ProjectListPane;
+use super::panes::TargetsPane;
 pub(super) use super::project_list::ExpandKey;
 pub(super) use super::project_list::VisibleRow;
 use super::settings;
 use super::settings::SettingOption;
+use super::settings::SettingsRenderInputs;
 use super::settings::StartupSettings;
 pub(super) use super::state::AvailabilityStatus;
 use super::state::Ci;
+use super::state::CiStatusLookup;
 use super::state::Lint;
 use super::state::Net;
 use crate::project;
 use crate::project::RootItem;
 use crate::scan::MetadataDispatchContext;
 
-/// Result of `App::split_panes_for_render`: the tiled-pane render
-/// path's split-borrow. Holds `&mut Panes` plus disjoint
-/// read-only refs to the subsystems each pane's render may need.
-pub(super) struct PanesSplit<'a> {
-    pub panes:        &'a mut Panes,
-    pub config:       &'a Config,
-    pub project_list: &'a ProjectList,
-    pub inflight:     &'a Inflight,
-    pub scan:         &'a Scan,
-    pub ci:           &'a Ci,
-    pub lint:         &'a Lint,
-    pub inline_error: Option<&'a str>,
+/// Render-time borrows of `App`. Holds disjoint `&mut` references to
+/// every renderable pane (organized for [`tui_pane::PaneRegistry`])
+/// alongside a fully-built [`PaneRenderCtx`] whose borrows are
+/// disjoint from the registry's. Single source of truth for "what
+/// each frame's render loop needs."
+pub(super) struct RenderBorrows<'a> {
+    pub registry: RenderRegistry<'a>,
+    pub ctx:      PaneRenderCtx<'a>,
 }
 
-/// Result of `App::split_ci_for_render`. `ci` is `&mut`; the
-/// ctx ref for `ci` is `None` on this path.
-pub(super) struct CiSplit<'a> {
-    pub ci:           &'a mut Ci,
-    pub config:       &'a Config,
-    pub project_list: &'a ProjectList,
-    pub inflight:     &'a Inflight,
-    pub scan:         &'a Scan,
-    pub lint:         &'a Lint,
-    pub inline_error: Option<&'a str>,
+/// Disjoint `&mut` borrows of every renderable pane on `App`.
+/// Cargo-port's [`tui_pane::PaneRegistry`] impl lives on this type;
+/// the embedding-side match in [`tui_pane::render_panes`]'s loop
+/// hands out each entry as a `&mut dyn Renderable`.
+pub(super) struct RenderRegistry<'a> {
+    pub package:       &'a mut PackagePane,
+    pub lang:          &'a mut LangPane,
+    pub cpu:           &'a mut CpuPane,
+    pub git:           &'a mut GitPane,
+    pub targets:       &'a mut TargetsPane,
+    pub project_list:  &'a mut ProjectListPane,
+    pub output:        &'a mut OutputPane,
+    pub lint:          &'a mut Lint,
+    pub ci:            &'a mut Ci,
+    pub keymap_pane:   &'a mut KeymapPane,
+    pub settings_pane: &'a mut SettingsPane,
 }
 
-/// Result of `App::split_lint_for_render`. `lint` is `&mut`; the
-/// ctx ref for `lint` is `None` on this path.
-pub(super) struct LintSplit<'a> {
-    pub lint:         &'a mut Lint,
-    pub config:       &'a Config,
-    pub project_list: &'a ProjectList,
-    pub inflight:     &'a Inflight,
-    pub scan:         &'a Scan,
-    pub ci:           &'a Ci,
-    pub inline_error: Option<&'a str>,
+impl PaneRegistry for RenderRegistry<'_> {
+    type Ctx<'ctx> = PaneRenderCtx<'ctx>;
+    type PaneId = PaneId;
+
+    fn pane_mut(
+        &mut self,
+        id: Self::PaneId,
+    ) -> Option<&mut dyn for<'ctx> tui_pane::Renderable<Self::Ctx<'ctx>>> {
+        use super::panes::PaneId;
+        let pane: &mut dyn for<'ctx> tui_pane::Renderable<Self::Ctx<'ctx>> = match id {
+            PaneId::Package => self.package,
+            PaneId::Lang => self.lang,
+            PaneId::Cpu => self.cpu,
+            PaneId::Git => self.git,
+            PaneId::Targets => self.targets,
+            PaneId::ProjectList => self.project_list,
+            PaneId::Output => self.output,
+            PaneId::Lints => self.lint,
+            PaneId::CiRuns => self.ci,
+            PaneId::Keymap => self.keymap_pane,
+            PaneId::Settings => self.settings_pane,
+            PaneId::Toasts | PaneId::Finder => return None,
+        };
+        Some(pane)
+    }
 }
 
 /// Result of `App::split_finder_for_render`.
 pub(super) struct FinderSplit<'a> {
-    pub finder_pane:  &'a mut super::overlays::FinderPane,
+    pub finder_pane:  &'a mut FinderPane,
     pub config:       &'a Config,
     pub project_list: &'a ProjectList,
     pub inflight:     &'a Inflight,
     pub scan:         &'a Scan,
-    pub ci:           &'a Ci,
-    pub lint:         &'a Lint,
     pub inline_error: Option<&'a str>,
 }
 
@@ -537,57 +568,71 @@ impl App {
     /// Split-borrow accessor for per-pane render dispatch.
     /// Returns the `&mut Panes` plus the read-only refs the
     /// dispatcher passes through to construct `PaneRenderCtx`. All
-    /// disjoint `App` fields, so holding them simultaneously is
-    /// sound.
-    pub(super) fn split_panes_for_render(&mut self) -> PanesSplit<'_> {
-        PanesSplit {
-            panes:        &mut self.panes,
-            config:       &self.config,
-            project_list: &self.project_list,
-            inflight:     &self.inflight,
-            scan:         &self.scan,
-            ci:           &self.ci,
-            lint:         &self.lint,
-            inline_error: self.overlays.inline_error_ref(),
-        }
-    }
-
-    /// Split-borrow accessor for the CI pane render path. CI content
-    /// lives on the `Ci` subsystem (not `Panes`), so it has its own
-    /// split. `ci` is `&mut` here; `PaneRenderCtx.ci` is `None` on
-    /// this path to avoid aliasing.
-    pub(super) fn split_ci_for_render(&mut self) -> CiSplit<'_> {
-        CiSplit {
-            ci:           &mut self.ci,
-            config:       &self.config,
-            project_list: &self.project_list,
-            inflight:     &self.inflight,
-            scan:         &self.scan,
-            lint:         &self.lint,
-            inline_error: self.overlays.inline_error_ref(),
-        }
-    }
-
-    /// Split-borrow accessor for the Lints pane render path. Lints
-    /// content lives on the `Lint` subsystem (not `Panes`). `lint`
-    /// is `&mut` here; `PaneRenderCtx.lint` is `None` on this path
-    /// to avoid aliasing.
-    pub(super) fn split_lint_for_render(&mut self) -> LintSplit<'_> {
-        LintSplit {
-            lint:         &mut self.lint,
-            config:       &self.config,
-            project_list: &self.project_list,
-            inflight:     &self.inflight,
-            scan:         &self.scan,
-            ci:           &self.ci,
-            inline_error: self.overlays.inline_error_ref(),
-        }
+    /// Split-borrow accessor for the tiled render loop. Returns the
+    /// `&mut` registry plus a fully-built `PaneRenderCtx` whose
+    /// borrows are disjoint from the registry's. The single split
+    /// pattern lets [`tui_pane::render_panes`] dispatch every tile
+    /// pane through one `PaneRegistry` impl, including Lint and Ci
+    /// which were on their own split paths before this phase.
+    ///
+    /// `selected_project_path`, `animation_elapsed`, and
+    /// `ci_status_lookup` are passed in because their construction
+    /// requires `&self` (multi-subsystem queries / a clone of CI
+    /// display-mode state), which has to be released before the
+    /// `&mut` split here.
+    pub(super) fn split_for_render<'a>(
+        &'a mut self,
+        selected_project_path: Option<&'a Path>,
+        animation_elapsed: Duration,
+        ci_status_lookup: &'a CiStatusLookup,
+        keymap_render_inputs: Option<&'a KeymapRenderInputs>,
+        settings_render_inputs: Option<&'a SettingsRenderInputs>,
+    ) -> RenderBorrows<'a> {
+        let Self {
+            panes,
+            lint,
+            ci,
+            config,
+            project_list,
+            inflight,
+            scan,
+            overlays,
+            framework,
+            ..
+        } = self;
+        let registry = RenderRegistry {
+            package: &mut panes.package,
+            lang: &mut panes.lang,
+            cpu: &mut panes.cpu,
+            git: &mut panes.git,
+            targets: &mut panes.targets,
+            project_list: &mut panes.project_list,
+            output: &mut panes.output,
+            lint,
+            ci,
+            keymap_pane: &mut framework.keymap_pane,
+            settings_pane: &mut framework.settings_pane,
+        };
+        let ctx = PaneRenderCtx {
+            animation_elapsed,
+            config,
+            project_list,
+            selected_project_path,
+            inflight,
+            scan,
+            ci_status_lookup,
+            keymap_render_inputs,
+            settings_render_inputs,
+            inline_error: overlays.inline_error_ref(),
+        };
+        RenderBorrows { registry, ctx }
     }
 
     /// Split-borrow accessor for the app-modal Finder overlay
     /// render path. The finder pane lives on `overlays`; the
     /// disjoint borrow of `&self.config` and `&self.project_list`
-    /// is sound.
+    /// is sound. Finder sits outside the tiled render loop because
+    /// the popup sizes itself off the whole frame area.
     pub(super) const fn split_finder_for_render(&mut self) -> FinderSplit<'_> {
         FinderSplit {
             finder_pane:  &mut self.overlays.finder_pane,
@@ -595,8 +640,6 @@ impl App {
             project_list: &self.project_list,
             inflight:     &self.inflight,
             scan:         &self.scan,
-            ci:           &self.ci,
-            lint:         &self.lint,
             inline_error: None,
         }
     }
@@ -1039,8 +1082,8 @@ pub(super) fn discovery_name_segments_for_path_with_refs(
         return None;
     }
 
-    let base_style = super::columns::project_name_style(git_status);
-    let accent_style = super::columns::project_name_shimmer_style(git_status);
+    let base_style = columns::project_name_style(git_status);
+    let accent_style = columns::project_name_shimmer_style(git_status);
     let window = discovery_shimmer_window_len(char_count);
     let elapsed_ms =
         usize::try_from(now.duration_since(shimmer.started_at).as_millis()).unwrap_or(usize::MAX);
@@ -1049,7 +1092,7 @@ pub(super) fn discovery_name_segments_for_path_with_refs(
         + discovery_shimmer_phase_offset(session_path.as_path(), row_path, row_kind, char_count))
         % char_count;
 
-    Some(super::columns::build_shimmer_segments(
+    Some(columns::build_shimmer_segments(
         name,
         base_style,
         accent_style,

@@ -595,7 +595,9 @@ fn top_level_deleted_project_enters_deleted_state_and_renders_as_deleted() {
         lang_icon:         item.lang_icon(),
         git_origin_sync:   &app.project_list.git_sync(item.path()),
         git_main:          &app.project_list.git_main(item.path()),
-        ci:                app.project_list.ci_status_for_root_item(item, &app.ci),
+        ci:                app
+            .project_list
+            .ci_status_for_root_item_using_lookup(item, &app.ci.status_lookup()),
         deleted:           true,
         worktree_health:   Normal,
     });

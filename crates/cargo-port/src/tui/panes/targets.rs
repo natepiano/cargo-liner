@@ -62,7 +62,7 @@ fn render_targets_with_data(
     let ex_count: usize = data.examples.iter().map(|group| group.names.len()).sum();
     let bench_count = data.benches.len();
 
-    let focus = ctx.focus_state;
+    let focus = pane.focus.state;
     let cursor = pane.viewport.pos();
 
     let targets_title = {

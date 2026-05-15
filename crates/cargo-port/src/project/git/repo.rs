@@ -12,7 +12,7 @@ use crate::config::CargoPortConfig;
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum GitOrigin {
+pub(crate) enum GitOrigin {
     /// A local-only repo (no origin remote).
     Local,
     /// A plain git clone (has "origin" remote).
@@ -23,7 +23,7 @@ pub enum GitOrigin {
 
 /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-pub enum WorkflowPresence {
+pub(crate) enum WorkflowPresence {
     /// At least one workflow YAML file exists.
     Present,
     /// No workflow files found (or no `.github/workflows/` directory).
@@ -39,7 +39,7 @@ impl WorkflowPresence {
 /// origin when an `upstream` remote also exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum RemoteKind {
+pub(crate) enum RemoteKind {
     Clone,
     Fork,
 }
@@ -47,7 +47,7 @@ pub enum RemoteKind {
 /// Per-remote metadata. A repo may have any number of these (`origin`,
 /// `upstream`, and others).
 #[derive(Debug, Clone, Serialize)]
-pub struct RemoteInfo {
+pub(crate) struct RemoteInfo {
     pub name:         String,
     pub url:          Option<String>,
     pub owner:        Option<String>,
@@ -61,7 +61,7 @@ pub struct RemoteInfo {
 /// the same git repo. Lives on `GitRepo::repo_info` so siblings cannot
 /// drift.
 #[derive(Debug, Clone, Default, Serialize)]
-pub struct RepoInfo {
+pub(crate) struct RepoInfo {
     /// All remotes declared for this repo.
     pub remotes:           Vec<RemoteInfo>,
     /// Whether `.github/workflows/` contains any `.yml` or `.yaml` files.
@@ -356,7 +356,7 @@ fn get_workflow_presence(repo_root: &Path) -> WorkflowPresence {
     }
 }
 
-pub fn get_first_commit(project_dir: &Path) -> Option<String> {
+pub(crate) fn get_first_commit(project_dir: &Path) -> Option<String> {
     let repo_root = discovery::git_repo_root(project_dir)?;
     command::git_output_logged(
         &repo_root,

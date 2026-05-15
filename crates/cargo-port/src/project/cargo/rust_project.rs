@@ -20,7 +20,7 @@ use crate::project::vendored_package::VendoredPackage;
 /// Delegation methods forward to the concrete type via 2-arm matches.
 /// For kind-specific access (e.g. `.groups()`), match on the variant.
 #[derive(Clone)]
-pub enum RustProject {
+pub(crate) enum RustProject {
     Workspace(Workspace),
     Package(Package),
 }

@@ -17,7 +17,7 @@ use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
 
 /// Owns the parsed config plus the on-disk watch state.
-pub struct Config {
+pub(crate) struct Config {
     file: WatchedFile<CargoPortConfig>,
 }
 

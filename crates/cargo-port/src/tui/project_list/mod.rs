@@ -14,6 +14,7 @@ use super::app::SelectionPaths;
 use super::app::SelectionSync;
 use super::columns::ProjectListWidths;
 use super::state::Ci;
+use super::state::CiStatusLookup;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
@@ -76,7 +77,7 @@ use visible_rows::worst_git_status;
 /// convention. Every mutation site updates keys and values together, so
 /// the "key matches the root's own path" invariant cannot silently drift.
 #[derive(Default)]
-pub(super) struct ProjectList {
+pub(crate) struct ProjectList {
     roots:                          IndexMap<AbsolutePath, ProjectEntry>,
     pub(super) paths:               SelectionPaths,
     sync:                           SelectionSync,
@@ -475,14 +476,19 @@ impl ProjectList {
             .flatten()
     }
 
-    /// Latest CI status at `path`, with display-mode resolved internally
-    /// against `ci`. Suppressed for unpublished worktree branches whose
-    /// parent-repo CI doesn't apply.
-    pub(super) fn ci_status_for(&self, path: &Path, ci: &Ci) -> Option<CiStatus> {
+    /// Latest CI status at `path`, with display-mode resolved through
+    /// the render-time [`CiStatusLookup`] snapshot. Suppressed for
+    /// unpublished worktree branches whose parent-repo CI doesn't
+    /// apply.
+    pub(super) fn ci_status_using_lookup(
+        &self,
+        path: &Path,
+        lookup: &CiStatusLookup,
+    ) -> Option<CiStatus> {
         if self.unpublished_ci_branch_name(path).is_some() {
             return None;
         }
-        let display_mode = ci.display_mode_for(path);
+        let display_mode = lookup.display_mode_for(path);
         let info = self.ci_info_for(path)?;
         let runs = info.runs.as_slice();
         let latest = match self.current_branch_for(path) {
@@ -497,8 +503,12 @@ impl ProjectList {
     /// lookup or `RootItem::ci_status`'s aggregator (for `WorktreeGroup`,
     /// which spans multiple checkouts and therefore can't be addressed by a
     /// single path).
-    pub(super) fn ci_status_for_root_item(&self, item: &RootItem, ci: &Ci) -> Option<CiStatus> {
-        item.ci_status(|p| self.ci_status_for(p, ci))
+    pub(super) fn ci_status_for_root_item_using_lookup(
+        &self,
+        item: &RootItem,
+        lookup: &CiStatusLookup,
+    ) -> Option<CiStatus> {
+        item.ci_status(|p| self.ci_status_using_lookup(p, lookup))
     }
 
     pub(super) fn is_deleted(&self, path: &Path) -> bool {

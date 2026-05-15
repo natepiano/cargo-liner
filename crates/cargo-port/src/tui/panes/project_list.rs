@@ -19,6 +19,7 @@ use ratatui::widgets::Paragraph;
 use tui_pane::COLUMN_HEADER_COLOR;
 use tui_pane::ERROR_COLOR;
 use tui_pane::LABEL_COLOR;
+use tui_pane::Viewport;
 use tui_pane::render_overflow_affordance;
 
 use super::constants::PREFIX_GROUP_COLLAPSED;
@@ -49,11 +50,11 @@ use crate::project::VendoredPackage;
 use crate::project::WorktreeHealth;
 use crate::project::WorktreeHealth::Normal;
 use crate::scan;
+use crate::tui::app;
 use crate::tui::app::DiscoveryRowKind;
 use crate::tui::app::ExpandKey;
 use crate::tui::app::ProjectListWidths;
 use crate::tui::app::VisibleRow;
-use crate::tui::app::discovery_name_segments_for_path_with_refs;
 use crate::tui::columns;
 use crate::tui::columns::ProjectRow;
 use crate::tui::pane;
@@ -63,7 +64,7 @@ use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
 use crate::tui::project_list::ProjectList;
 use crate::tui::render;
-use crate::tui::state::lint_cell_for;
+use crate::tui::state;
 
 /// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
 #[allow(
@@ -112,28 +113,6 @@ fn disk_color(percentile: Option<f64>) -> Style {
     Style::default().fg(Color::Rgb(r, g, b))
 }
 
-/// Borrow the CI subsystem from the render ctx. The
-/// `ProjectList` render path always populates `PaneRenderCtx::ci`
-/// (the dispatcher sets it from `App::split_panes_for_render`);
-/// the `Lints` / `CI` panes that pass `None` never reach this
-/// code. Names the broken invariant via a panic message if a
-/// future caller violates it.
-#[allow(
-    clippy::panic,
-    reason = "render-time invariant violation — `PaneRenderCtx::ci` is required on the \
-              ProjectList render path"
-)]
-fn ci_ref_for_render<'a>(
-    ctx: &'a crate::tui::pane::PaneRenderCtx<'_>,
-) -> &'a crate::tui::state::Ci {
-    ctx.ci.unwrap_or_else(|| {
-        panic!(
-            "PaneRenderCtx::ci must be populated on the ProjectList render path; \
-             only the CI pane's own dispatcher sets it to None"
-        )
-    })
-}
-
 pub fn formatted_disk(projects: &ProjectList, path: &Path) -> String {
     let bytes = projects
         .at_path(path)
@@ -158,7 +137,7 @@ pub fn render_project_list_pane_body(
     let projects = ctx.project_list;
     let (mut items, header, summary_line, row_width) = {
         let widths = &projects.cached_fit_widths;
-        let items: Vec<ListItem> = render_tree_items(ctx, &pane.viewport, widths);
+        let items: Vec<ListItem> = render_tree_items(ctx, pane, &pane.viewport, widths);
         let total_str = render::format_bytes(
             projects
                 .iter()
@@ -174,8 +153,8 @@ pub fn render_project_list_pane_body(
 
     let total_project_rows = items.len();
 
-    let title = project_panel_title_with_counts(ctx, area.width.saturating_sub(2).into());
-    let block = pane::default_pane_chrome().block(title, ctx.is_focused);
+    let title = project_panel_title_with_counts(pane, ctx, area.width.saturating_sub(2).into());
+    let block = pane::default_pane_chrome().block(title, pane.focus.is_focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
@@ -299,8 +278,12 @@ fn render_project_list_footer(frame: &mut Frame, content_area: Rect, line: Line<
     frame.render_widget(Paragraph::new(line), footer_area);
 }
 
-fn project_panel_title_with_counts(ctx: &PaneRenderCtx<'_>, max_width: usize) -> String {
-    let focused = ctx.is_focused;
+fn project_panel_title_with_counts(
+    pane: &ProjectListPane,
+    ctx: &PaneRenderCtx<'_>,
+    max_width: usize,
+) -> String {
+    let focused = pane.focus.is_focused;
     let cursor = ctx.project_list.cursor();
     let roots = scan::resolve_include_dirs(&ctx.config.current().tui.include_dirs);
 
@@ -368,7 +351,7 @@ fn render_root_item(
     let ds = disk_color(disk_percentile(disk_bytes, root_sorted));
     let ci = ctx
         .project_list
-        .ci_status_for_root_item(&item.item, ci_ref_for_render(ctx));
+        .ci_status_for_root_item_using_lookup(&item.item, ctx.ci_status_lookup);
     let lang = if item.is_rust() {
         item.lang_icon()
     } else {
@@ -378,7 +361,7 @@ fn render_root_item(
             .and_then(|ls| ls.entries.first())
             .map_or("  ", |e| lang::language_icon(&e.language))
     };
-    let lint_cell = lint_cell_for(
+    let lint_cell = state::lint_cell_for(
         &crate::tui::state::Lint::status_for_root(&item.item),
         ctx.config,
         ctx.animation_elapsed,
@@ -406,7 +389,7 @@ fn render_root_item(
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
-        name_segments: discovery_name_segments_for_path_with_refs(
+        name_segments: app::discovery_name_segments_for_path_with_refs(
             ctx.scan,
             ctx.config,
             ctx.project_list,
@@ -448,7 +431,7 @@ fn render_child_item<P: project::ProjectFields>(
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project::Package::lang_icon();
     let lint_cell = if ctx.project_list.is_rust_at_path(path) {
-        lint_cell_for(
+        state::lint_cell_for(
             &crate::tui::state::Lint::status_for_path(ctx.project_list, path),
             ctx.config,
             ctx.animation_elapsed,
@@ -456,7 +439,9 @@ fn render_child_item<P: project::ProjectFields>(
     } else {
         crate::tui::columns::LintCell::hidden()
     };
-    let ci = ctx.project_list.ci_status_for(path, ci_ref_for_render(ctx));
+    let ci = ctx
+        .project_list
+        .ci_status_using_lookup(path, ctx.ci_status_lookup);
     let hide_git_status = ctx.project_list.is_workspace_member_path(path);
     let origin_sync = if hide_git_status
         || matches!(
@@ -486,7 +471,7 @@ fn render_child_item<P: project::ProjectFields>(
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
-        name_segments: discovery_name_segments_for_path_with_refs(
+        name_segments: app::discovery_name_segments_for_path_with_refs(
             ctx.scan,
             ctx.config,
             ctx.project_list,
@@ -555,14 +540,14 @@ fn render_worktree_entry<'a>(
     let disk_bytes = item.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, sorted));
     let lang = item.lang_icon();
-    let lint_cell = lint_cell_for(
+    let lint_cell = state::lint_cell_for(
         &crate::tui::state::Lint::status_for_worktree(&item.item, wi),
         ctx.config,
         ctx.animation_elapsed,
     );
     let ci = ctx
         .project_list
-        .ci_status_for(wt_abs, ci_ref_for_render(ctx));
+        .ci_status_using_lookup(wt_abs, ctx.ci_status_lookup);
     let origin_sync = ctx.project_list.git_sync(wt_abs);
     let main_sync = ctx.project_list.git_main(wt_abs);
     let deleted = ctx.project_list.is_deleted(wt_abs);
@@ -573,7 +558,7 @@ fn render_worktree_entry<'a>(
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name: &wt_name,
-        name_segments: discovery_name_segments_for_path_with_refs(
+        name_segments: app::discovery_name_segments_for_path_with_refs(
             ctx.scan,
             ctx.config,
             ctx.project_list,
@@ -875,7 +860,7 @@ fn render_path_only_entry(
     let row = columns::build_row_cells(ProjectRow {
         prefix,
         name,
-        name_segments: discovery_name_segments_for_path_with_refs(
+        name_segments: app::discovery_name_segments_for_path_with_refs(
             ctx.scan,
             ctx.config,
             ctx.project_list,
@@ -950,7 +935,8 @@ fn render_wt_vendored_item(
 
 pub fn render_tree_items(
     ctx: &PaneRenderCtx<'_>,
-    viewport: &tui_pane::Viewport,
+    pane: &ProjectListPane,
+    viewport: &Viewport,
     widths: &ProjectListWidths,
 ) -> Vec<ListItem<'static>> {
     let root_sorted = &ctx.project_list.cached_root_sorted;
@@ -958,7 +944,7 @@ pub fn render_tree_items(
     let root_labels = ctx
         .project_list
         .resolved_root_labels(ctx.config.include_non_rust().includes_non_rust());
-    let focus = ctx.focus_state;
+    let focus = pane.focus.state;
     let cursor = ctx.project_list.cursor();
 
     let rows = ctx.project_list.visible_rows();

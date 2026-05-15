@@ -8,12 +8,8 @@
 //! `handle_input`-style methods that need cross-subsystem access
 //! remain free functions taking `&mut App`.
 
-use std::path::Path;
-use std::time::Duration;
 use std::time::Instant;
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
 use tui_pane::ResolvedPaneLayout;
 
 use super::data::PaneDataStore;
@@ -26,49 +22,6 @@ use super::pane_impls::ProjectListPane;
 use super::pane_impls::TargetsPane;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
-use crate::tui::pane::Pane;
-use crate::tui::pane::PaneFocusState;
-use crate::tui::pane::PaneRenderCtx;
-use crate::tui::project_list::ProjectList;
-use crate::tui::state::Ci;
-use crate::tui::state::Config;
-use crate::tui::state::Inflight;
-use crate::tui::state::Lint;
-use crate::tui::state::Scan;
-
-/// Bundle of refs the dispatchers need to construct a
-/// `PaneRenderCtx`. Constructed at the call site from
-/// `App::split_panes_for_render` and the pane-specific focus
-/// args, then handed to the `dispatch_*_render` method.
-pub struct DispatchArgs<'a> {
-    pub focus_state:           PaneFocusState,
-    pub is_focused:            bool,
-    pub animation_elapsed:     Duration,
-    pub config:                &'a Config,
-    pub project_list:          &'a ProjectList,
-    pub selected_project_path: Option<&'a Path>,
-    pub inflight:              &'a Inflight,
-    pub scan:                  &'a Scan,
-    pub ci:                    Option<&'a Ci>,
-    pub lint:                  Option<&'a Lint>,
-    pub inline_error:          Option<&'a str>,
-}
-
-const fn build_ctx<'a>(args: &DispatchArgs<'a>) -> PaneRenderCtx<'a> {
-    PaneRenderCtx {
-        focus_state:           args.focus_state,
-        is_focused:            args.is_focused,
-        animation_elapsed:     args.animation_elapsed,
-        config:                args.config,
-        project_list:          args.project_list,
-        selected_project_path: args.selected_project_path,
-        inflight:              args.inflight,
-        scan:                  args.scan,
-        ci:                    args.ci,
-        lint:                  args.lint,
-        inline_error:          args.inline_error,
-    }
-}
 
 /// Owns every pane-related piece of state. App holds a single `panes:
 /// Panes` field.
@@ -137,90 +90,6 @@ impl Panes {
         self.git.clear_content();
         self.targets.clear_content();
         self.pane_data.set_detail_stamp(stamp);
-    }
-
-    /// Dispatch `CpuPane`'s render through the `Pane` trait.
-    pub fn dispatch_cpu_render(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        args: &DispatchArgs<'_>,
-    ) {
-        let ctx = build_ctx(args);
-        let ctx = &ctx;
-        Pane::render(&mut self.cpu, frame, area, ctx);
-    }
-
-    /// Dispatch `LangPane`'s render through the `Pane` trait.
-    pub fn dispatch_lang_render(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        args: &DispatchArgs<'_>,
-    ) {
-        let ctx = build_ctx(args);
-        let ctx = &ctx;
-        Pane::render(&mut self.lang, frame, area, ctx);
-    }
-
-    /// Dispatch `PackagePane`'s render through the `Pane` trait.
-    pub fn dispatch_package_render(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        args: &DispatchArgs<'_>,
-    ) {
-        let ctx = build_ctx(args);
-        let ctx = &ctx;
-        Pane::render(&mut self.package, frame, area, ctx);
-    }
-
-    /// Dispatch `GitPane`'s render through the `Pane` trait.
-    pub fn dispatch_git_render(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        args: &DispatchArgs<'_>,
-    ) {
-        let ctx = build_ctx(args);
-        let ctx = &ctx;
-        Pane::render(&mut self.git, frame, area, ctx);
-    }
-
-    /// Dispatch `TargetsPane`'s render through the `Pane` trait.
-    pub fn dispatch_targets_render(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        args: &DispatchArgs<'_>,
-    ) {
-        let ctx = build_ctx(args);
-        let ctx = &ctx;
-        Pane::render(&mut self.targets, frame, area, ctx);
-    }
-
-    /// Dispatch `ProjectListPane`'s render through the `Pane` trait.
-    pub fn dispatch_project_list_render(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        args: &DispatchArgs<'_>,
-    ) {
-        let ctx = build_ctx(args);
-        let ctx = &ctx;
-        Pane::render(&mut self.project_list, frame, area, ctx);
-    }
-
-    /// Dispatch `OutputPane`'s render through the `Pane` trait.
-    pub fn dispatch_output_render(
-        &mut self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        args: &DispatchArgs<'_>,
-    ) {
-        let ctx = build_ctx(args);
-        let ctx = &ctx;
-        Pane::render(&mut self.output, frame, area, ctx);
     }
 
     pub const fn set_hover(&mut self, hovered: Option<HoveredPaneRow>) {

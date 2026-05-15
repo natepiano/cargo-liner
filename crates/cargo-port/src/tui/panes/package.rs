@@ -226,17 +226,17 @@ pub(super) fn render_package_pane_body(
     styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
 ) {
+    let focus_state = pane.focus.state;
     let PaneRenderCtx {
-        focus_state,
-        is_focused: _,
         animation_elapsed,
         config,
         project_list: _,
         selected_project_path: _,
         inflight: _,
         scan: _,
-        ci: _,
-        lint: _,
+        ci_status_lookup: _,
+        keymap_render_inputs: _,
+        settings_render_inputs: _,
         inline_error: _,
     } = ctx;
     let lint_enabled = config.current().lint.enabled;
@@ -274,7 +274,7 @@ pub(super) fn render_package_pane_body(
     let context = ProjectPanelRender {
         pkg_data: &pkg_data,
         fields: &fields,
-        focus: *focus_state,
+        focus: focus_state,
         styles,
         border_style,
         animation_elapsed: *animation_elapsed,

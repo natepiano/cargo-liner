@@ -151,7 +151,7 @@ pub fn render_lints_pane_body(
         return;
     };
 
-    let focused = ctx.is_focused;
+    let focused = pane.focus.is_focused;
     let title = lints_panel_title(&lints_data, focused, pane.viewport.pos());
     let block = lints_panel_block(title, focused, !lints_data.runs.is_empty());
 
@@ -169,7 +169,7 @@ pub fn render_lints_pane_body(
     }
 
     let viewport_clone = pane.viewport.clone();
-    let focus = ctx.focus_state;
+    let focus = pane.focus.state;
     let rows = build_lint_rows(
         &lints_data.runs,
         &lints_data.sizes,

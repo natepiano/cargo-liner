@@ -181,17 +181,18 @@ pub(super) fn render_lang_pane_body(
     styles: &RenderStyles,
     ctx: &PaneRenderCtx<'_>,
 ) {
+    let focus_state = pane.focus.state;
+    let is_focused = pane.focus.is_focused;
     let PaneRenderCtx {
-        focus_state,
-        is_focused,
         project_list: projects,
         selected_project_path,
         animation_elapsed: _,
         config: _,
         inflight: _,
         scan: _,
-        ci: _,
-        lint: _,
+        ci_status_lookup: _,
+        keymap_render_inputs: _,
+        settings_render_inputs: _,
         inline_error: _,
     } = ctx;
 
@@ -209,7 +210,7 @@ pub(super) fn render_lang_pane_body(
             cursor,
         },
     );
-    let block = styles.chrome.block(title, *is_focused);
+    let block = styles.chrome.block(title, is_focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -246,7 +247,7 @@ pub(super) fn render_lang_pane_body(
     let rows_needed = u16::try_from(entry_count + 1).unwrap_or(u16::MAX);
     let pin_footer = rows_needed > content_below_header;
 
-    let mut rows = build_lang_rows(&pane.viewport, &stats, name_width, *focus_state);
+    let mut rows = build_lang_rows(&pane.viewport, &stats, name_width, focus_state);
 
     if pin_footer {
         let footer_y = inner.y + inner.height.saturating_sub(1);

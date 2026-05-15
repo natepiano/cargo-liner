@@ -117,6 +117,11 @@ pub struct SettingsPane {
     line_targets:  Vec<Option<SettingsRowPayload>>,
     edit_buffer:   String,
     edit_cursor:   usize,
+    /// Render-time focus snapshot stamped by the embedding crate's
+    /// overlay dispatcher right before [`crate::Renderable::render`]
+    /// runs. See [`crate::panes::KeymapPane::focus`] for the
+    /// matching pattern.
+    pub focus:     crate::RenderFocus,
 }
 
 impl SettingsPane {
@@ -130,6 +135,7 @@ impl SettingsPane {
             line_targets:  Vec::new(),
             edit_buffer:   String::new(),
             edit_cursor:   0,
+            focus:         crate::RenderFocus::inactive(),
         }
     }
 
@@ -467,6 +473,7 @@ impl SettingsPane {
             line_targets: Vec::new(),
             edit_buffer: String::new(),
             edit_cursor: 0,
+            focus: crate::RenderFocus::inactive(),
         }
     }
 }

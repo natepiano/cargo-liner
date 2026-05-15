@@ -70,6 +70,12 @@ pub struct KeymapPane {
     editor_target: Option<PathBuf>,
     line_targets:  Vec<Option<usize>>,
     viewport:      Viewport,
+    /// Render-time focus snapshot stamped by the embedding crate's
+    /// overlay dispatcher right before
+    /// [`crate::Renderable::render`] runs. Lets the body fn read
+    /// focus state from `&mut self` instead of a per-pane field on
+    /// the render context.
+    pub focus:     crate::RenderFocus,
 }
 
 impl KeymapPane {
@@ -81,6 +87,7 @@ impl KeymapPane {
             editor_target: None,
             line_targets:  Vec::new(),
             viewport:      Viewport::new(),
+            focus:         crate::RenderFocus::inactive(),
         }
     }
 
@@ -231,6 +238,7 @@ impl KeymapPane {
             editor_target,
             line_targets: Vec::new(),
             viewport: Viewport::new(),
+            focus: crate::RenderFocus::inactive(),
         }
     }
 
@@ -242,6 +250,7 @@ impl KeymapPane {
             editor_target,
             line_targets: Vec::new(),
             viewport: Viewport::new(),
+            focus: crate::RenderFocus::inactive(),
         }
     }
 }

@@ -5,7 +5,7 @@ use crate::project::paths::AbsolutePath;
 
 /// Whether a project path lives inside a git repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GitRepoPresence {
+pub(crate) enum GitRepoPresence {
     InRepo,
     OutsideRepo,
 }
@@ -23,7 +23,7 @@ impl GitRepoPresence {
 /// distinguishing the two ensures we always know whether this project
 /// sits on the main checkout or on a linked one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum WorktreeStatus {
+pub(crate) enum WorktreeStatus {
     #[default]
     NotGit,
     Primary {
@@ -49,7 +49,7 @@ impl WorktreeStatus {
     }
 }
 
-pub fn git_repo_root(project_dir: &Path) -> Option<AbsolutePath> {
+pub(crate) fn git_repo_root(project_dir: &Path) -> Option<AbsolutePath> {
     project_dir
         .ancestors()
         .find(|dir| {
@@ -64,7 +64,7 @@ pub fn git_repo_root(project_dir: &Path) -> Option<AbsolutePath> {
 /// For normal repos, returns `repo_root/.git`.
 /// For worktrees, `.git` is a file containing `gitdir: <path>` — this
 /// function reads that file and returns the resolved path.
-pub fn resolve_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
+pub(crate) fn resolve_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
     let git_path = repo_root.join(".git");
     if git_path.is_dir() {
         return Some(git_path.into());
@@ -82,7 +82,7 @@ pub fn resolve_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
 /// For normal repos this is the same path as [`resolve_git_dir`]. For linked
 /// worktrees, the resolved git dir may contain a `commondir` file pointing back
 /// to the shared `<primary>/.git` directory where branch refs are updated.
-pub fn resolve_common_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
+pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
     let git_dir = resolve_git_dir(repo_root)?;
     let commondir_path = git_dir.join("commondir");
     if !commondir_path.is_file() {
@@ -96,7 +96,7 @@ pub fn resolve_common_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
 
 /// Check if a project directory is a broken worktree — `.git` is a file whose
 /// gitdir target does not exist on disk.
-pub fn get_worktree_health(project_dir: &Path) -> WorktreeHealth {
+pub(crate) fn get_worktree_health(project_dir: &Path) -> WorktreeHealth {
     let git_path = project_dir.join(".git");
     if !git_path.is_file() {
         return WorktreeHealth::Normal;
@@ -118,7 +118,7 @@ pub fn get_worktree_health(project_dir: &Path) -> WorktreeHealth {
 /// Get the git worktree status for a project directory by walking up
 /// until a `.git` entry is found: file → `Linked`, directory → `Primary`,
 /// nothing found → `NotGit`.
-pub fn get_worktree_status(project_dir: &Path) -> WorktreeStatus {
+pub(crate) fn get_worktree_status(project_dir: &Path) -> WorktreeStatus {
     let mut dir = project_dir;
     loop {
         let git_path = dir.join(".git");

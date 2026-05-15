@@ -19,7 +19,7 @@ use crate::project::project_fields::ProjectFields;
 /// Construct via struct literal: `Package { path, name, rust: RustInfo { .. } }`.
 /// All fields default to empty/none, so tests can use `..Default::default()`.
 #[derive(Clone, Default)]
-pub struct Package {
+pub(crate) struct Package {
     pub path:            AbsolutePath,
     pub name:            Option<String>,
     pub worktree_status: WorktreeStatus,

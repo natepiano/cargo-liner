@@ -48,7 +48,7 @@ impl LintTriggerEvent {
 /// why the fingerprint — rather than the kind — decides whether a pending
 /// spawn is still relevant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CargoMetadataTriggerKind {
+pub(crate) enum CargoMetadataTriggerKind {
     Manifest,
     Lockfile,
     Toolchain,
@@ -68,7 +68,7 @@ pub enum CargoMetadataTriggerKind {
 /// leak in through the shared recursive watch — the ancestor
 /// `.cargo/config` case that lives *above* the project is handled
 /// separately by the ancestor watch-set subsystem.
-pub fn classify_cargo_metadata_event_path(
+pub(crate) fn classify_cargo_metadata_event_path(
     project_root: &Path,
     path: &Path,
 ) -> Option<CargoMetadataTriggerKind> {
@@ -86,7 +86,7 @@ pub fn classify_cargo_metadata_event_path(
 
 /// Basename-only variant used by the ancestor `.cargo/` watch-set path,
 /// where the `starts_with(project_root)` gate does not apply.
-pub fn classify_cargo_metadata_basename(path: &Path) -> Option<CargoMetadataTriggerKind> {
+pub(crate) fn classify_cargo_metadata_basename(path: &Path) -> Option<CargoMetadataTriggerKind> {
     let file_name = path.file_name().and_then(|name| name.to_str())?;
     match file_name {
         "Cargo.toml" => Some(CargoMetadataTriggerKind::Manifest),
@@ -112,7 +112,7 @@ pub fn classify_event(project_root: &Path, event: &Event) -> Option<LintTriggerE
         .find_map(|path| classify_event_path(project_root, event.kind, path))
 }
 
-pub fn classify_event_path(
+pub(crate) fn classify_event_path(
     project_root: &Path,
     event_kind: EventKind,
     path: &Path,

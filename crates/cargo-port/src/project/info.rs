@@ -96,7 +96,7 @@ pub(crate) struct LanguageStats {
 /// they must not be exposed through `info_mut()` to prevent accidental
 /// mutation of lookup keys.
 #[derive(Clone, Default)]
-pub struct ProjectInfo {
+pub(crate) struct ProjectInfo {
     pub disk_usage_bytes:      Option<u64>,
     /// Bytes rooted at this project's path that do **not** live inside
     /// any `target/` subtree (source, docs, .git, etc.). Populated by

@@ -16,6 +16,8 @@ use std::time::Instant;
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use tui_pane::RenderFocus;
+use tui_pane::Renderable;
 use tui_pane::Viewport;
 
 use super::PaneId;
@@ -25,6 +27,7 @@ use super::lang;
 use super::output;
 use super::package;
 use super::package::RenderStyles;
+use super::project_list;
 use super::targets;
 use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
@@ -34,12 +37,12 @@ use crate::tui::pane;
 use crate::tui::pane::DismissTarget;
 use crate::tui::pane::Hittable;
 use crate::tui::pane::HoverTarget;
-use crate::tui::pane::Pane;
 use crate::tui::pane::PaneRenderCtx;
 
 // ── Package ─────────────────────────────────────────────────────
 pub struct PackagePane {
     pub viewport: Viewport,
+    pub focus:    RenderFocus,
     content:      Option<super::PackageData>,
 }
 
@@ -47,6 +50,7 @@ impl PackagePane {
     pub const fn new() -> Self {
         Self {
             viewport: Viewport::new(),
+            focus:    RenderFocus::inactive(),
             content:  None,
         }
     }
@@ -58,7 +62,7 @@ impl PackagePane {
     pub fn clear_content(&mut self) { self.content = None; }
 }
 
-impl Pane for PackagePane {
+impl Renderable<PaneRenderCtx<'_>> for PackagePane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::LABEL_COLOR),
@@ -81,17 +85,19 @@ impl Hittable<HoverTarget> for PackagePane {
 // ── Lang ────────────────────────────────────────────────────────
 pub struct LangPane {
     pub viewport: Viewport,
+    pub focus:    RenderFocus,
 }
 
 impl LangPane {
     pub const fn new() -> Self {
         Self {
             viewport: Viewport::new(),
+            focus:    RenderFocus::inactive(),
         }
     }
 }
 
-impl Pane for LangPane {
+impl Renderable<PaneRenderCtx<'_>> for LangPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::LABEL_COLOR),
@@ -114,6 +120,7 @@ impl Hittable<HoverTarget> for LangPane {
 // ── Cpu ─────────────────────────────────────────────────────────
 pub struct CpuPane {
     pub viewport: Viewport,
+    pub focus:    RenderFocus,
     content:      Option<CpuUsage>,
     poller:       CpuPoller,
     /// Per-rendered-row `(Rect, logical_row)` recorded each frame
@@ -128,6 +135,7 @@ impl CpuPane {
     pub fn new(cfg: &CpuConfig) -> Self {
         let mut pane = Self {
             viewport:  Viewport::new(),
+            focus:     RenderFocus::inactive(),
             content:   None,
             poller:    CpuPoller::new(cfg),
             row_rects: Vec::new(),
@@ -158,7 +166,7 @@ impl CpuPane {
     pub fn clear_row_rects(&mut self) { self.row_rects.clear(); }
 }
 
-impl Pane for CpuPane {
+impl Renderable<PaneRenderCtx<'_>> for CpuPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::LABEL_COLOR),
@@ -185,6 +193,7 @@ impl Hittable<HoverTarget> for CpuPane {
 // ── Git ─────────────────────────────────────────────────────────
 pub struct GitPane {
     pub viewport:           Viewport,
+    pub focus:              RenderFocus,
     content:                Option<super::GitData>,
     worktree_summary_cache: RefCell<HashMap<AbsolutePath, Vec<super::WorktreeInfo>>>,
     /// Per-row `inner_y` positions recorded each frame, indexed by
@@ -205,6 +214,7 @@ impl GitPane {
     pub fn new() -> Self {
         Self {
             viewport:               Viewport::new(),
+            focus:                  RenderFocus::inactive(),
             content:                None,
             worktree_summary_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             row_layout:             GitRowLayout::default(),
@@ -244,7 +254,7 @@ impl GitPane {
     }
 }
 
-impl Pane for GitPane {
+impl Renderable<PaneRenderCtx<'_>> for GitPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::LABEL_COLOR),
@@ -288,6 +298,7 @@ impl Hittable<HoverTarget> for GitPane {
 // ── Targets ─────────────────────────────────────────────────────
 pub struct TargetsPane {
     pub viewport: Viewport,
+    pub focus:    RenderFocus,
     content:      Option<super::TargetsData>,
 }
 
@@ -295,6 +306,7 @@ impl TargetsPane {
     pub const fn new() -> Self {
         Self {
             viewport: Viewport::new(),
+            focus:    RenderFocus::inactive(),
             content:  None,
         }
     }
@@ -316,7 +328,7 @@ impl Hittable<HoverTarget> for TargetsPane {
     }
 }
 
-impl Pane for TargetsPane {
+impl Renderable<PaneRenderCtx<'_>> for TargetsPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::LABEL_COLOR),
@@ -329,6 +341,7 @@ impl Pane for TargetsPane {
 // ── ProjectList ─────────────────────────────────────────────────
 pub struct ProjectListPane {
     pub viewport:    Viewport,
+    pub focus:       RenderFocus,
     /// Per-row dismiss `[x]` rects recorded each frame, alongside
     /// the resolved `DismissTarget`. The action region wins over
     /// the row body in `Hittable::hit_test_at`.
@@ -342,6 +355,7 @@ impl ProjectListPane {
     pub const fn new() -> Self {
         Self {
             viewport:        Viewport::new(),
+            focus:           RenderFocus::inactive(),
             dismiss_actions: Vec::new(),
             body_rect:       Rect::ZERO,
         }
@@ -352,9 +366,9 @@ impl ProjectListPane {
     }
 }
 
-impl Pane for ProjectListPane {
+impl Renderable<PaneRenderCtx<'_>> for ProjectListPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        super::project_list::render_project_list_pane_body(frame, area, self, ctx);
+        project_list::render_project_list_pane_body(frame, area, self, ctx);
     }
 }
 
@@ -376,19 +390,21 @@ impl Hittable<HoverTarget> for ProjectListPane {
 // ── Output ──────────────────────────────────────────────────────
 pub struct OutputPane {
     pub viewport: Viewport,
+    pub focus:    RenderFocus,
 }
 
 impl OutputPane {
     pub const fn new() -> Self {
         Self {
             viewport: Viewport::new(),
+            focus:    RenderFocus::inactive(),
         }
     }
 }
 
-impl Pane for OutputPane {
+impl Renderable<PaneRenderCtx<'_>> for OutputPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        output::render_output_pane_body(frame, area, ctx);
+        output::render_output_pane_body(frame, area, self, ctx);
     }
 }
 

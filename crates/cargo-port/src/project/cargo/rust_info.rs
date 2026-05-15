@@ -18,7 +18,7 @@ use crate::project::vendored_package::VendoredPackage;
 /// Rust-specific project data shared by both `Workspace` and `Package`.
 /// Derefs to `ProjectInfo` for uniform metadata access.
 #[derive(Clone, Default)]
-pub struct RustInfo {
+pub(crate) struct RustInfo {
     pub info:             ProjectInfo,
     pub cargo:            Cargo,
     pub vendored:         Vec<VendoredPackage>,
@@ -63,7 +63,7 @@ impl DerefMut for RustInfo {
 /// pre-metadata (matches pre-retirement behavior; the metadata later
 /// flips it to `false` when `publish = false`).
 #[derive(Clone, Debug)]
-pub struct Cargo {
+pub(crate) struct Cargo {
     pub types:       Vec<ProjectType>,
     pub examples:    Vec<ExampleGroup>,
     pub benches:     Vec<String>,

@@ -27,7 +27,7 @@ use crate::project::AbsolutePath;
 /// `App::resolve_metadata` / `App::resolve_target_dir` rather than touching
 /// this type directly.
 #[derive(Debug, Default)]
-pub struct WorkspaceMetadataStore {
+pub(crate) struct WorkspaceMetadataStore {
     pub by_root:              HashMap<AbsolutePath, WorkspaceMetadata>,
     /// Per-workspace monotonic counter. Every dispatch bumps the counter
     /// and stamps the spawned work with the new value; arrivals only
@@ -136,7 +136,7 @@ impl WorkspaceMetadataStore {
 
 /// A single workspace's resolved `cargo metadata` output.
 #[derive(Clone, Debug)]
-pub struct WorkspaceMetadata {
+pub(crate) struct WorkspaceMetadata {
     pub workspace_root:           AbsolutePath,
     pub target_directory:         AbsolutePath,
     pub packages:                 HashMap<PackageId, PackageRecord>,
@@ -156,7 +156,7 @@ pub struct WorkspaceMetadata {
 /// `cargo_metadata::Package` but keep only the bits the UI and query paths
 /// actually need.
 #[derive(Clone, Debug)]
-pub struct PackageRecord {
+pub(crate) struct PackageRecord {
     pub name:          String,
     pub version:       Version,
     pub edition:       String,
@@ -173,7 +173,7 @@ pub struct PackageRecord {
 /// encodes three states: any-registry (omitted), never (`publish = false`),
 /// and allowlisted (`publish = ["crates-io", ...]`).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PublishPolicy {
+pub(crate) enum PublishPolicy {
     Any,
     Never,
     Registries(Vec<String>),
@@ -194,7 +194,7 @@ impl PublishPolicy {
 
 /// A single build target (bin, lib, example, test, bench, proc-macro, …).
 #[derive(Clone, Debug)]
-pub struct TargetRecord {
+pub(crate) struct TargetRecord {
     pub name:     String,
     pub kinds:    Vec<TargetKind>,
     pub src_path: AbsolutePath,
@@ -208,7 +208,7 @@ pub struct TargetRecord {
 /// rationale (content-hash authoritative, `(mtime, len)` as a pre-check,
 /// inode deliberately omitted).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ManifestFingerprint {
+pub(crate) struct ManifestFingerprint {
     pub manifest:       FileStamp,
     pub lockfile:       Option<FileStamp>,
     pub rust_toolchain: Option<FileStamp>,
@@ -222,7 +222,7 @@ pub struct ManifestFingerprint {
 /// bytes. Inode is deliberately omitted — editor atomic-save workflows
 /// rotate inodes on every save even when bytes are identical.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FileStamp {
+pub(crate) struct FileStamp {
     pub content_hash: [u8; 32],
 }
 

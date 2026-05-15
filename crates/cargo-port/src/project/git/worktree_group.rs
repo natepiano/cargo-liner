@@ -17,7 +17,7 @@ use crate::project::vendored_package::VendoredPackage;
 /// `Package`). Mixed-kind groups arise during workspace conversion when one
 /// checkout has been converted and another has not.
 #[derive(Clone)]
-pub struct WorktreeGroup {
+pub(crate) struct WorktreeGroup {
     pub primary: RustProject,
     pub linked:  Vec<RustProject>,
 }

@@ -18,10 +18,13 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
+use std::path::PathBuf;
 
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use tui_pane::RenderFocus;
+use tui_pane::Renderable;
 use tui_pane::ToastTaskId;
 use tui_pane::Viewport;
 
@@ -35,7 +38,6 @@ use crate::project::RepoInfo;
 use crate::tui::app::CiRunDisplayMode;
 use crate::tui::pane::Hittable;
 use crate::tui::pane::HoverTarget;
-use crate::tui::pane::Pane;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::panes::CiData;
@@ -84,6 +86,8 @@ pub struct Ci {
     display_modes:     HashMap<AbsolutePath, CiRunDisplayMode>,
     /// Per-pane cursor for the CI runs pane.
     pub viewport:      Viewport,
+    /// Per-pane focus snapshot stamped before the render loop.
+    pub focus:         RenderFocus,
     /// Cached CI table content built per-frame in
     /// `panes::build_ci_data`.
     content:           Option<CiData>,
@@ -96,6 +100,7 @@ impl Ci {
             fetch_toast:   None,
             display_modes: HashMap::new(),
             viewport:      Viewport::new(),
+            focus:         RenderFocus::inactive(),
             content:       None,
         }
     }
@@ -148,6 +153,50 @@ impl Ci {
     pub fn remove_display_mode(&mut self, path: &Path) { self.display_modes.remove(path); }
 
     pub fn clear_display_modes(&mut self) { self.display_modes.clear(); }
+}
+
+/// Render-time CI snapshot.
+///
+/// Owns a copy of every [`Ci`] field that the per-row CI status
+/// lookup needs. Built by [`Ci::status_lookup`] before the render
+/// loop runs; consumed by
+/// [`crate::tui::project_list::ProjectList::ci_status_using_lookup`].
+///
+/// Owning the data (instead of borrowing `&Ci`) is what lets the
+/// render dispatch loop hand the CI pane's own `&mut Ci` to its
+/// `Renderable::render` impl in the same pass — the lookup carries
+/// what other panes (mainly `ProjectListPane`) need to read.
+pub struct CiStatusLookup {
+    display_modes: HashMap<PathBuf, CiRunDisplayMode>,
+}
+
+impl CiStatusLookup {
+    /// Per-path display mode (`BranchOnly` / `All`), or the default
+    /// when the path has no explicit override.
+    pub fn display_mode_for(&self, path: &Path) -> CiRunDisplayMode {
+        self.display_modes.get(path).copied().unwrap_or_default()
+    }
+}
+
+impl Ci {
+    /// Take a render-time snapshot of the per-project display-mode
+    /// map.
+    ///
+    /// The returned [`CiStatusLookup`] owns its data, so the render
+    /// loop can read CI status (via
+    /// [`crate::tui::project_list::ProjectList::ci_status_using_lookup`])
+    /// without holding a `&Ci` — which is what frees the CI pane's
+    /// own dispatcher to hold `&mut self.ci` at the same time.
+    #[must_use]
+    pub fn status_lookup(&self) -> CiStatusLookup {
+        CiStatusLookup {
+            display_modes: self
+                .display_modes
+                .iter()
+                .map(|(path, mode)| (path.as_path().to_path_buf(), *mode))
+                .collect(),
+        }
+    }
 
     /// Build the [`CiDisplay`] for the Ci row in the Package
     /// detail pane at the selected project (or worktree-group
@@ -268,7 +317,7 @@ impl CiFetchTracker {
     }
 }
 
-impl Pane for Ci {
+impl Renderable<PaneRenderCtx<'_>> for Ci {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         panes::render_ci_pane_body(frame, area, self, ctx);
     }

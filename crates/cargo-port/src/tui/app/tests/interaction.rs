@@ -18,6 +18,7 @@ use tempfile::TempDir;
 use tui_pane::AppContext;
 use tui_pane::FocusedPane;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
+use tui_pane::RenderFocus;
 use tui_pane::ToastId;
 use tui_pane::ToastStyle;
 use tui_pane::Viewport;
@@ -69,9 +70,7 @@ use crate::tui::interaction;
 use crate::tui::pane::DismissTarget;
 use crate::tui::pane::HoverTarget;
 use crate::tui::pane::PaneFocusState;
-use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneSelectionState;
-use crate::tui::panes;
 use crate::tui::panes::LintsData;
 use crate::tui::panes::PaneId;
 use crate::tui::project_list::ProjectList;
@@ -234,30 +233,27 @@ fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
     });
     let backend = TestBackend::new(120, 20);
     let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
-    let focus_state = app.pane_focus_state(PaneId::Lints);
-    let is_focused = app.focus_is(PaneId::Lints);
+    let focus = RenderFocus {
+        state:      app.pane_focus_state(PaneId::Lints),
+        is_focused: app.focus_is(PaneId::Lints),
+    };
+    app.lint.focus = focus;
     let animation_elapsed = app.animation_started.elapsed();
     let selected_path = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
+    let ci_status_lookup = app.ci.status_lookup();
     terminal
         .draw(|frame| {
             let area = frame.area();
-            let split = app.split_lint_for_render();
-            let ctx = PaneRenderCtx {
-                focus_state,
-                is_focused,
+            let split = app.split_for_render(
+                selected_path.as_deref(),
                 animation_elapsed,
-                config: split.config,
-                project_list: split.project_list,
-                selected_project_path: selected_path.as_deref(),
-                inflight: split.inflight,
-                scan: split.scan,
-                ci: Some(split.ci),
-                lint: None,
-                inline_error: split.inline_error,
-            };
-            panes::render_lints_pane_body(frame, area, split.lint, &ctx);
+                &ci_status_lookup,
+                None,
+                None,
+            );
+            tui_pane::Renderable::render(split.registry.lint, frame, area, &split.ctx);
         })
         .unwrap_or_else(|_| std::process::abort());
 }
@@ -267,30 +263,27 @@ fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
     app.ci.override_runs_for_test(runs.to_vec());
     let backend = TestBackend::new(120, 20);
     let mut terminal = Terminal::new(backend).unwrap_or_else(|_| std::process::abort());
-    let focus_state = app.pane_focus_state(PaneId::CiRuns);
-    let is_focused = app.focus_is(PaneId::CiRuns);
+    let focus = RenderFocus {
+        state:      app.pane_focus_state(PaneId::CiRuns),
+        is_focused: app.focus_is(PaneId::CiRuns),
+    };
+    app.ci.focus = focus;
     let animation_elapsed = app.animation_started.elapsed();
     let selected_path = app
         .selected_project_path_for_render()
         .map(std::path::Path::to_path_buf);
+    let ci_status_lookup = app.ci.status_lookup();
     terminal
         .draw(|frame| {
             let area = frame.area();
-            let split = app.split_ci_for_render();
-            let ctx = PaneRenderCtx {
-                focus_state,
-                is_focused,
+            let split = app.split_for_render(
+                selected_path.as_deref(),
                 animation_elapsed,
-                config: split.config,
-                project_list: split.project_list,
-                selected_project_path: selected_path.as_deref(),
-                inflight: split.inflight,
-                scan: split.scan,
-                ci: None,
-                lint: Some(split.lint),
-                inline_error: split.inline_error,
-            };
-            panes::render_ci_pane_body(frame, area, split.ci, &ctx);
+                &ci_status_lookup,
+                None,
+                None,
+            );
+            tui_pane::Renderable::render(split.registry.ci, frame, area, &split.ctx);
         })
         .unwrap_or_else(|_| std::process::abort());
 }

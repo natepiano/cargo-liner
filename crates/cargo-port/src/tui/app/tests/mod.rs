@@ -13,6 +13,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::widgets::List;
 use ratatui::widgets::Widget;
+use tui_pane::RenderFocus;
 
 pub(super) use super::App;
 use super::types::*;
@@ -53,11 +54,13 @@ use crate::scan::CiFetchResult;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::pane::DismissTarget;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PaneId;
 pub(super) use crate::tui::project_list::ExpandKey;
 use crate::tui::project_list::ProjectList;
 pub(super) use crate::tui::project_list::VisibleRow;
+use crate::tui::state::CiStatusLookup;
 use crate::tui::test_support as tui_test_support;
 
 mod background;
@@ -135,20 +138,37 @@ fn loaded_ci<'a>(app: &'a App, path: &Path) -> &'a ProjectCiInfo {
     }
 }
 
-fn build_project_list_render_ctx_for_test(app: &App) -> crate::tui::pane::PaneRenderCtx<'_> {
-    crate::tui::pane::PaneRenderCtx {
-        focus_state:           app.pane_focus_state(PaneId::ProjectList),
-        is_focused:            app.focus_is(PaneId::ProjectList),
-        animation_elapsed:     app.animation_started.elapsed(),
-        config:                &app.config,
-        project_list:          &app.project_list,
-        selected_project_path: app.selected_project_path_for_render(),
-        inflight:              &app.inflight,
-        scan:                  &app.scan,
-        ci:                    Some(&app.ci),
-        lint:                  Some(&app.lint),
-        inline_error:          app.overlays.inline_error_ref(),
+struct TestRenderCtxHolder {
+    ci_status_lookup: CiStatusLookup,
+}
+
+fn build_project_list_render_ctx_for_test<'a>(
+    app: &'a App,
+    holder: &'a TestRenderCtxHolder,
+) -> PaneRenderCtx<'a> {
+    PaneRenderCtx {
+        animation_elapsed:      app.animation_started.elapsed(),
+        config:                 &app.config,
+        project_list:           &app.project_list,
+        selected_project_path:  app.selected_project_path_for_render(),
+        inflight:               &app.inflight,
+        scan:                   &app.scan,
+        ci_status_lookup:       &holder.ci_status_lookup,
+        keymap_render_inputs:   None,
+        settings_render_inputs: None,
+        inline_error:           app.overlays.inline_error_ref(),
     }
+}
+
+#[allow(
+    dead_code,
+    reason = "called by tests in rendered_root_name_cells / render_tree_buffer to seed the \
+              ProjectList pane's focus snapshot before invoking render_tree_items"
+)]
+fn sync_project_list_focus_for_test(app: &mut App) {
+    let state = app.pane_focus_state(PaneId::ProjectList);
+    let is_focused = app.focus_is(PaneId::ProjectList);
+    app.panes.project_list.focus = RenderFocus { state, is_focused };
 }
 
 fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
@@ -164,8 +184,11 @@ fn rendered_root_name_cells(app: &mut App) -> Vec<String> {
     );
     let items = {
         let viewport = app.panes.project_list.viewport.clone();
-        let ctx = build_project_list_render_ctx_for_test(app);
-        crate::tui::panes::render_tree_items(&ctx, &viewport, &widths)
+        let holder = TestRenderCtxHolder {
+            ci_status_lookup: app.ci.status_lookup(),
+        };
+        let ctx = build_project_list_render_ctx_for_test(app, &holder);
+        crate::tui::panes::render_tree_items(&ctx, &app.panes.project_list, &viewport, &widths)
     };
     let area = Rect::new(
         0,
@@ -200,8 +223,11 @@ fn render_tree_buffer(app: &mut App) -> (Buffer, ProjectListWidths) {
     );
     let items = {
         let viewport = app.panes.project_list.viewport.clone();
-        let ctx = build_project_list_render_ctx_for_test(app);
-        crate::tui::panes::render_tree_items(&ctx, &viewport, &widths)
+        let holder = TestRenderCtxHolder {
+            ci_status_lookup: app.ci.status_lookup(),
+        };
+        let ctx = build_project_list_render_ctx_for_test(app, &holder);
+        crate::tui::panes::render_tree_items(&ctx, &app.panes.project_list, &viewport, &widths)
     };
     let area = Rect::new(
         0,

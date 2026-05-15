@@ -26,18 +26,18 @@ use crate::tui::app::RetrySpawnMode;
 use crate::tui::app::ScanState;
 use crate::tui::app::TargetDirIndex;
 
-pub struct Scan {
-    pub state:                ScanState,
-    dirty:                    DirtyState,
-    data_generation:          u64,
-    discovery_shimmers:       HashMap<AbsolutePath, DiscoveryShimmer>,
-    pending_git_first_commit: HashMap<AbsolutePath, String>,
-    metadata_store:           Arc<Mutex<WorkspaceMetadataStore>>,
-    pub target_dir_index:     TargetDirIndex,
-    priority_fetch_path:      Option<AbsolutePath>,
-    confirm_verifying:        Option<AbsolutePath>,
+pub(crate) struct Scan {
+    pub(crate) state:            ScanState,
+    dirty:                       DirtyState,
+    data_generation:             u64,
+    discovery_shimmers:          HashMap<AbsolutePath, DiscoveryShimmer>,
+    pending_git_first_commit:    HashMap<AbsolutePath, String>,
+    metadata_store:              Arc<Mutex<WorkspaceMetadataStore>>,
+    pub(crate) target_dir_index: TargetDirIndex,
+    priority_fetch_path:         Option<AbsolutePath>,
+    confirm_verifying:           Option<AbsolutePath>,
     #[cfg(test)]
-    retry_spawn_mode:         RetrySpawnMode,
+    retry_spawn_mode:            RetrySpawnMode,
 }
 
 impl Scan {

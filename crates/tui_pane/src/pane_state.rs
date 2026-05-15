@@ -17,6 +17,34 @@ pub enum PaneFocusState {
     Inactive,
 }
 
+/// Cached per-pane focus snapshot.
+///
+/// Stamped onto each pane immediately before the render loop runs,
+/// so render bodies can read focus from `&mut self` instead of the
+/// shared render context. This is what frees the context of per-pane
+/// fields and lets the generic [`crate::render_panes`] loop carry one
+/// ctx for the entire pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderFocus {
+    /// Cached [`PaneFocusState`] for this pane.
+    pub state:      PaneFocusState,
+    /// Cached `is_focused` flag for this pane.
+    pub is_focused: bool,
+}
+
+impl RenderFocus {
+    /// Default render-focus snapshot — [`PaneFocusState::Inactive`]
+    /// and not focused. Used to construct panes before App has had
+    /// a chance to stamp real focus state.
+    #[must_use]
+    pub const fn inactive() -> Self {
+        Self {
+            state:      PaneFocusState::Inactive,
+            is_focused: false,
+        }
+    }
+}
+
 /// Selection state for a single row within a pane: focused-and-selected,
 /// hovered, last-focused-and-selected, or none of those.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

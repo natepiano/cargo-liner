@@ -16,7 +16,7 @@ use crate::constants::GIT_STATUS_UNTRACKED;
 /// Per-checkout git metadata: state that can legitimately differ between
 /// two worktrees of the same repo. Lives inside `ProjectInfo.local_git_state`.
 #[derive(Debug, Clone, Serialize)]
-pub struct CheckoutInfo {
+pub(crate) struct CheckoutInfo {
     /// Git path state (clean, modified, untracked, etc.) for this project path.
     pub status:              GitStatus,
     /// The current branch name.
@@ -98,7 +98,7 @@ impl CheckoutInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum GitStatus {
+pub(crate) enum GitStatus {
     Clean,
     Modified,
     Untracked,
@@ -137,7 +137,7 @@ impl GitStatus {
 /// Wrapper for `CheckoutInfo` that distinguishes "not yet detected"
 /// from "detected with full metadata."
 #[derive(Clone, Debug, Default)]
-pub enum LocalGitState {
+pub(crate) enum LocalGitState {
     /// Not yet detected (during startup/scan).
     #[default]
     Pending,
@@ -157,7 +157,7 @@ impl LocalGitState {
 /// Ahead/behind of `worktree_dir`'s HEAD vs `primary_dir`'s HEAD. The
 /// primary HEAD is resolved to a commit SHA so refs resolve cleanly across
 /// the worktree's ref namespace.
-pub fn worktree_ahead_behind_primary(
+pub(crate) fn worktree_ahead_behind_primary(
     worktree_dir: &Path,
     primary_dir: &Path,
 ) -> Option<(usize, usize)> {

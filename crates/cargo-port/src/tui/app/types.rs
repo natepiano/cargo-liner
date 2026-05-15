@@ -8,7 +8,7 @@ use crate::tui::panes::PaneId;
 use crate::tui::terminal;
 
 /// An action waiting for user confirmation (y/n).
-pub enum ConfirmAction {
+pub(crate) enum ConfirmAction {
     /// `cargo clean` on the project at this absolute path.
     Clean(AbsolutePath),
     /// `cargo clean` fanned out across every checkout in a worktree
@@ -22,8 +22,8 @@ pub enum ConfirmAction {
 }
 
 #[derive(Clone)]
-pub struct PendingClean {
-    pub abs_path: AbsolutePath,
+pub(crate) struct PendingClean {
+    pub(crate) abs_path: AbsolutePath,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

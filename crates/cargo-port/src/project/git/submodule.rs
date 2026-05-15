@@ -15,7 +15,7 @@ use crate::project::project_fields::ProjectFields;
 
 /// A git submodule that participates as a concrete project-list node.
 #[derive(Clone)]
-pub struct Submodule {
+pub(crate) struct Submodule {
     /// The submodule name from `.gitmodules` (e.g. `glTF-IBL-Sampler`).
     pub name:          String,
     /// Absolute path on disk.
@@ -62,7 +62,7 @@ impl ProjectFields for Submodule {
 static NOT_GIT: WorktreeStatus = WorktreeStatus::NotGit;
 
 /// Parse `.gitmodules` and resolve pinned commits for all submodules.
-pub fn get_submodules(project_root: &Path) -> Vec<Submodule> {
+pub(crate) fn get_submodules(project_root: &Path) -> Vec<Submodule> {
     let gitmodules_path = project_root.join(".gitmodules");
     let Ok(content) = std::fs::read_to_string(&gitmodules_path) else {
         return Vec::new();

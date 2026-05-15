@@ -62,7 +62,7 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
 
     assert_eq!(
         app.project_list
-            .ci_status_for(test_path("~/ws").as_path(), &app.ci),
+            .ci_status_using_lookup(test_path("~/ws").as_path(), &app.ci.status_lookup()),
         Some(CiStatus::Passed)
     );
     assert!(matches!(
@@ -71,7 +71,7 @@ fn workspace_members_show_parent_owner_ci_without_storing_member_state() {
     ));
     assert_eq!(
         app.project_list
-            .ci_status_for(test_path("~/ws/core").as_path(), &app.ci),
+            .ci_status_using_lookup(test_path("~/ws/core").as_path(), &app.ci.status_lookup()),
         Some(CiStatus::Passed)
     );
     assert!(
@@ -255,7 +255,8 @@ fn ci_for_prefers_runs_matching_local_branch() {
     );
 
     assert_eq!(
-        app.project_list.ci_status_for(project.path(), &app.ci),
+        app.project_list
+            .ci_status_using_lookup(project.path(), &app.ci.status_lookup()),
         Some(CiStatus::Failed)
     );
 }
@@ -311,7 +312,8 @@ fn ci_for_default_branch_prefers_matching_branch_runs() {
     );
 
     assert_eq!(
-        app.project_list.ci_status_for(project.path(), &app.ci),
+        app.project_list
+            .ci_status_using_lookup(project.path(), &app.ci.status_lookup()),
         Some(CiStatus::Passed)
     );
     assert_eq!(
@@ -375,7 +377,8 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
     );
 
     assert_eq!(
-        app.project_list.ci_status_for(project.path(), &app.ci),
+        app.project_list
+            .ci_status_using_lookup(project.path(), &app.ci.status_lookup()),
         Some(CiStatus::Failed)
     );
     assert_eq!(
@@ -390,7 +393,8 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
     app.toggle_ci_display_mode_for(project.path());
 
     assert_eq!(
-        app.project_list.ci_status_for(project.path(), &app.ci),
+        app.project_list
+            .ci_status_using_lookup(project.path(), &app.ci.status_lookup()),
         Some(CiStatus::Passed)
     );
     assert_eq!(

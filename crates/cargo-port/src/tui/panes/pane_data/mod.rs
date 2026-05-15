@@ -1379,9 +1379,13 @@ fn compute_in_project_bytes(pl: &ProjectList, abs_path: &Path) -> (Option<u64>, 
 }
 
 fn compute_ci_status(app: &App, abs_path: &Path, wt_item: Option<&RootItem>) -> Option<CiStatus> {
+    let lookup = app.ci.status_lookup();
     wt_item.map_or_else(
-        || app.project_list.ci_status_for(abs_path, &app.ci),
-        |item| app.project_list.ci_status_for_root_item(item, &app.ci),
+        || app.project_list.ci_status_using_lookup(abs_path, &lookup),
+        |item| {
+            app.project_list
+                .ci_status_for_root_item_using_lookup(item, &lookup)
+        },
     )
 }
 

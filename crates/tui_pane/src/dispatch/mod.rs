@@ -1,7 +1,8 @@
-//! Generic dispatch primitives for routing input to panes.
+//! Generic dispatch primitives for routing input and render to panes.
 
 mod hit_test;
 mod input;
+mod render;
 
 pub use hit_test::HitTestRegistry;
 pub use hit_test::clear_all_hover;
@@ -12,6 +13,9 @@ pub use input::FrameworkHit;
 pub use input::InputContext;
 pub use input::dispatch_hit_test;
 use ratatui::layout::Position;
+pub use render::PaneRegistry;
+pub use render::Renderable;
+pub use render::render_panes;
 
 /// Trait implemented by panes that participate in click / hover
 /// dispatch.

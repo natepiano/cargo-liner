@@ -1,4 +1,5 @@
 use ratatui::Frame;
+use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -8,20 +9,19 @@ use ratatui::widgets::Paragraph;
 use tui_pane::ACTIVE_BORDER_COLOR;
 use tui_pane::ERROR_COLOR;
 use tui_pane::FrameworkOverlayId;
+use tui_pane::KeymapPane;
 use tui_pane::LABEL_COLOR;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::TITLE_COLOR;
 use tui_pane::render_overflow_affordance;
 
-use super::BASE_POPUP_WIDTH;
 use super::KEYMAP_POPUP_MAX_HEIGHT;
 use super::KeymapRow;
-use super::build_rows;
-use super::selectable_row_count;
 use crate::tui::app::App;
 use crate::tui::overlays::PopupFrame;
 use crate::tui::pane::PaneFocusState;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneSelectionState;
 use crate::tui::panes::PaneId;
 
@@ -152,20 +152,30 @@ pub(super) fn keymap_popup_height(row_count: usize, area_height: u16) -> u16 {
         .min(KEYMAP_POPUP_MAX_HEIGHT)
 }
 
-pub fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
-    let area = frame.area();
-    let rows = build_rows(app);
+/// Render the Keymap overlay through the [`tui_pane::Renderable`]
+/// trait. The expensive `&App` work (walking `framework_keymap`,
+/// laying out rows, building [`ratatui::text::Line`]s) happens in
+/// [`super::prepare_keymap_render_inputs`] before `App` is split for
+/// render; this body fn just reads `self` (viewport), the
+/// precomputed lines, and the inline-error string from
+/// [`PaneRenderCtx`].
+///
+/// `area` is the full frame area — the popup centers itself within
+/// it via [`PopupFrame::render_with_areas`].
+pub fn render_keymap_pane_body(
+    frame: &mut Frame,
+    area: Rect,
+    pane: &mut KeymapPane,
+    ctx: &PaneRenderCtx<'_>,
+) {
+    let Some(inputs) = ctx.keymap_render_inputs else {
+        return;
+    };
 
-    // Dynamic width: base fits all normal keys, expands for conflict messages.
-    let content_width = app.overlays.inline_error().map_or(BASE_POPUP_WIDTH, |msg| {
-        // 2 indent + 25 desc + msg len + 2 pad
-        let needed = u16::try_from(2 + 25 + msg.len() + 2).unwrap_or(u16::MAX);
-        BASE_POPUP_WIDTH.max(needed)
-    });
     // +2 for left/right border
-    let width = (content_width + 2).min(area.width.saturating_sub(4));
-
-    let height = keymap_popup_height(rows.len(), area.height);
+    let width = (inputs.content_width + 2).min(area.width.saturating_sub(4));
+    let row_count = inputs.lines.len();
+    let height = keymap_popup_height(row_count, area.height);
 
     let popup = PopupFrame {
         title: Some(" Keymap ".to_string()),
@@ -176,20 +186,10 @@ pub fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
     .render_with_areas(frame);
     let inner = popup.inner;
 
-    let selectable_len = selectable_row_count(app);
-    app.framework
-        .keymap_pane
-        .viewport_mut()
-        .set_len(selectable_len);
-    app.framework
-        .keymap_pane
-        .viewport_mut()
-        .set_content_area(inner);
+    pane.viewport_mut().set_len(inputs.selectable_len);
+    pane.viewport_mut().set_content_area(inner);
 
-    let selected_pos = app.framework.keymap_pane.viewport().pos();
-    let is_capturing = app.framework.keymap_pane.is_capturing();
-    let rendered = build_lines(&rows, app, is_capturing);
-
+    let selected_pos = pane.viewport().pos();
     // Scroll to keep selection visible.
     let visible_height = usize::from(inner.height);
     let scroll_offset = if selected_pos >= visible_height {
@@ -197,25 +197,17 @@ pub fn render_keymap_popup(frame: &mut Frame, app: &mut App) {
     } else {
         0
     };
-    app.framework
-        .keymap_pane
-        .viewport_mut()
-        .set_viewport_rows(visible_height);
-    app.framework
-        .keymap_pane
-        .viewport_mut()
-        .set_scroll_offset(scroll_offset);
-    app.framework
-        .keymap_pane
-        .replace_line_targets(rendered.line_targets);
+    pane.viewport_mut().set_viewport_rows(visible_height);
+    pane.viewport_mut().set_scroll_offset(scroll_offset);
+    pane.replace_line_targets(inputs.line_targets.clone());
 
     let para =
-        Paragraph::new(rendered.lines).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
+        Paragraph::new(inputs.lines.clone()).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
     frame.render_widget(para, inner);
     render_overflow_affordance(
         frame,
         popup.outer,
-        app.framework.keymap_pane.viewport().overflow(),
+        pane.viewport().overflow(),
         Style::default().fg(LABEL_COLOR),
     );
 }

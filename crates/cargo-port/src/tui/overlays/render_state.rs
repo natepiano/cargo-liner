@@ -8,10 +8,12 @@
 //! struct exists so the Finder viewport has a typed home that impls
 //! `Pane` and `Hittable`. The impls live in `pane_impls.rs`.
 
+use tui_pane::RenderFocus;
 use tui_pane::Viewport;
 
-pub struct FinderPane {
+pub(crate) struct FinderPane {
     pub viewport: Viewport,
+    pub focus:    RenderFocus,
 }
 
 impl FinderPane {}
@@ -20,6 +22,7 @@ impl Default for FinderPane {
     fn default() -> Self {
         Self {
             viewport: Viewport::new(),
+            focus:    RenderFocus::inactive(),
         }
     }
 }

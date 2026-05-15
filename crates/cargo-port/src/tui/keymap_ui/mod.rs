@@ -5,7 +5,6 @@ use std::fmt::Write as _;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
-#[cfg(test)]
 use ratatui::text::Line;
 use tui_pane::Action;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
@@ -17,7 +16,8 @@ use tui_pane::Pane;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::ScopeMap as FrameworkScopeMap;
 use tui_pane::SettingsPaneAction;
-pub(super) use view::render_keymap_popup;
+use view::KeymapLines;
+pub(super) use view::render_keymap_pane_body;
 
 use super::app::App;
 use super::integration::AppGlobalAction;
@@ -190,6 +190,43 @@ const GLOBAL_SHORTCUTS: &[FrameworkGlobalAction] = &[
     FrameworkGlobalAction::Quit,
     FrameworkGlobalAction::Restart,
 ];
+
+/// Precomputed render inputs for the Keymap overlay. Built in
+/// `prepare_keymap_render_inputs` while we still hold `&App`, then
+/// stashed on [`crate::tui::pane::PaneRenderCtx::keymap_render_inputs`]
+/// for `KeymapPane`'s `Renderable::render` impl to consume from
+/// `&mut self` + `&PaneRenderCtx` without further `&App` access.
+pub(crate) struct KeymapRenderInputs {
+    pub lines:          Vec<Line<'static>>,
+    pub line_targets:   Vec<Option<usize>>,
+    pub selectable_len: usize,
+    pub content_width:  u16,
+}
+
+/// Build the [`KeymapRenderInputs`] the overlay's body fn reads.
+/// Called from `render::ui` before `App::split_for_render` runs,
+/// so the still-current `&App` borrow can walk
+/// `app.framework_keymap` to enumerate rows.
+pub(super) fn prepare_keymap_render_inputs(app: &App) -> KeymapRenderInputs {
+    let rows = build_rows(app);
+    let is_capturing = app.framework.keymap_pane.is_capturing();
+    let KeymapLines {
+        lines,
+        line_targets,
+    } = view::build_lines(&rows, app, is_capturing);
+    let selectable_len = selectable_row_count(app);
+    let content_width = app.overlays.inline_error().map_or(BASE_POPUP_WIDTH, |msg| {
+        // 2 indent + 25 desc + msg len + 2 pad
+        let needed = u16::try_from(2 + 25 + msg.len() + 2).unwrap_or(u16::MAX);
+        BASE_POPUP_WIDTH.max(needed)
+    });
+    KeymapRenderInputs {
+        lines,
+        line_targets,
+        selectable_len,
+        content_width,
+    }
+}
 
 fn build_rows(app: &App) -> Vec<KeymapRow> {
     let mut rows = Vec::new();

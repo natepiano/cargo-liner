@@ -37,8 +37,10 @@ use crate::tui::app::App;
 use crate::tui::constants::FINDER_POPUP_HEIGHT;
 use crate::tui::constants::MAX_FINDER_RESULTS;
 use crate::tui::integration::AppPaneId;
+use crate::tui::overlays::FinderPane;
 use crate::tui::overlays::PopupFrame;
 use crate::tui::pane;
+use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::panes::RunTargetKind;
 
@@ -238,8 +240,8 @@ fn navigate_to_target(app: &mut App, item: &FinderItem) {
 pub fn render_finder_pane_body(
     frame: &mut Frame,
     _area: Rect,
-    pane: &mut crate::tui::overlays::FinderPane,
-    ctx: &crate::tui::pane::PaneRenderCtx<'_>,
+    pane: &mut FinderPane,
+    ctx: &PaneRenderCtx<'_>,
 ) {
     // Use cached column widths (computed at index build time) for stable popup sizing
     let col_widths = ctx.project_list.finder.col_widths;
@@ -403,8 +405,8 @@ fn highlighted_spans(text: &str, query: &str, fg: Color) -> Line<'static> {
 
 fn render_finder_results(
     frame: &mut Frame,
-    pane: &mut crate::tui::overlays::FinderPane,
-    ctx: &crate::tui::pane::PaneRenderCtx<'_>,
+    pane: &mut FinderPane,
+    ctx: &PaneRenderCtx<'_>,
     col_widths: [usize; FINDER_COLUMN_COUNT],
     area: Rect,
     popup_area: Rect,
@@ -449,7 +451,7 @@ fn render_finder_results(
                 )),
             ])
             .style(
-                pane::selection_state(&pane.viewport, row_index, ctx.focus_state).overlay_style(),
+                pane::selection_state(&pane.viewport, row_index, pane.focus.state).overlay_style(),
             )
         })
         .collect();

@@ -663,7 +663,7 @@ pub(super) fn render_git_pane_body(
     }
 
     pane.viewport.set_len(total_rows);
-    let focus = ctx.focus_state;
+    let focus = pane.focus.state;
     let border_style = if matches!(focus, PaneFocusState::Active) {
         styles.chrome.active_border
     } else {

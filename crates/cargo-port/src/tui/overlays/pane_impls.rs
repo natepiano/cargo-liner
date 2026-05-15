@@ -15,27 +15,34 @@ use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::KeymapPane;
+use tui_pane::Renderable;
 use tui_pane::SettingsPane;
 
 use super::FinderPane;
+use crate::tui::finder;
+use crate::tui::keymap_ui;
 use crate::tui::pane::Hittable;
 use crate::tui::pane::HoverTarget;
-use crate::tui::pane::Pane;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::panes::PaneId;
+use crate::tui::settings;
 
-impl Pane for KeymapPane {
-    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
-}
-
-impl Pane for SettingsPane {
-    fn render(&mut self, _frame: &mut Frame<'_>, _area: Rect, _ctx: &PaneRenderCtx<'_>) {}
-}
-
-impl Pane for FinderPane {
+impl Renderable<PaneRenderCtx<'_>> for KeymapPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
-        crate::tui::finder::render_finder_pane_body(frame, area, self, ctx);
+        keymap_ui::render_keymap_pane_body(frame, area, self, ctx);
+    }
+}
+
+impl Renderable<PaneRenderCtx<'_>> for SettingsPane {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
+        settings::render_settings_pane_body(frame, area, self, ctx);
+    }
+}
+
+impl Renderable<PaneRenderCtx<'_>> for FinderPane {
+    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
+        finder::render_finder_pane_body(frame, area, self, ctx);
     }
 }
 

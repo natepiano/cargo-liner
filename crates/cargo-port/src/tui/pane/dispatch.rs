@@ -1,79 +1,83 @@
-//! The `Pane` trait, the `PaneRenderCtx` bundle, and the `HittableId`
-//! z-order discriminant.
+//! The `PaneRenderCtx` bundle, the `HoverTarget` hit-result, and the
+//! `HittableId` z-order discriminant for the cargo-port hit-test
+//! registry.
 //!
 //! Each clickable pane retains its own hit-test layout (computed
 //! during render) and answers
 //! [`Hittable::hit_test_at`](tui_pane::Hittable::hit_test_at) directly,
-//! rather than pushing hitboxes into a global vec.
-//!
-//! Lives at `crate::tui::pane::dispatch` (not `crate::tui::panes::dispatch`)
-//! so `pub(super)` reaches `crate::tui` — every subsystem under `tui/`
-//! can `impl Pane` without widening the trait's visibility.
+//! rather than pushing hitboxes into a global vec. Render dispatch
+//! goes through [`tui_pane::Renderable`] — impls live alongside each
+//! pane struct.
 
 use std::path::Path;
 use std::time::Duration;
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
 use strum::EnumIter;
 use tui_pane::ToastId;
 
 use super::DismissTarget;
-use super::PaneFocusState;
+use crate::tui::keymap_ui::KeymapRenderInputs;
 use crate::tui::panes::PaneId;
 use crate::tui::project_list::ProjectList;
-use crate::tui::state::Ci;
+use crate::tui::settings::SettingsRenderInputs;
+use crate::tui::state::CiStatusLookup;
 use crate::tui::state::Config;
 use crate::tui::state::Inflight;
-use crate::tui::state::Lint;
 use crate::tui::state::Scan;
 
 /// Bundle of references a pane needs at render time.
-pub struct PaneRenderCtx<'a> {
-    pub focus_state:           PaneFocusState,
-    pub is_focused:            bool,
-    pub animation_elapsed:     Duration,
-    pub config:                &'a Config,
-    pub project_list:          &'a ProjectList,
-    pub selected_project_path: Option<&'a Path>,
+///
+/// Every field is uniform across the tile-render pass: every pane in
+/// the loop reads the same context. Per-pane state lives on the
+/// pane structs themselves (focus snapshot via
+/// [`tui_pane::RenderFocus`], precomputed CI status cache on
+/// `ProjectListPane`), set by App immediately before
+/// [`tui_pane::render_panes`] runs. That separation is what lets the
+/// generic dispatch loop carry one `&PaneRenderCtx` for the entire
+/// frame.
+pub(crate) struct PaneRenderCtx<'a> {
+    pub(crate) animation_elapsed:      Duration,
+    pub(crate) config:                 &'a Config,
+    pub(crate) project_list:           &'a ProjectList,
+    pub(crate) selected_project_path:  Option<&'a Path>,
     /// In-flight runtime state read by tiled panes during render
     /// (currently only `OutputPane` for the running-example title
     /// and the captured output lines).
-    pub inflight:              &'a Inflight,
+    pub(crate) inflight:               &'a Inflight,
     /// Scan subsystem ref. Needed by `ProjectListPane::render` for
     /// discovery-shimmer lookups; tiled detail panes leave it
     /// unread.
-    pub scan:                  &'a Scan,
-    /// CI subsystem ref. `None` for the CI pane's own dispatch
-    /// (which holds `&mut Ci` and can't supply a disjoint `&Ci`
-    /// in the same ctx). Other panes get `Some(&ci)`.
-    pub ci:                    Option<&'a Ci>,
-    /// Lint subsystem ref. `None` for the Lints pane's own
-    /// dispatch (same aliasing reason as `ci`). Read by the
-    /// Settings popup for lint-cache size display. Reserved for
-    /// the deferred Settings overlay absorption; currently
-    /// populated by every dispatcher but only consumed by tests.
-    #[allow(
-        dead_code,
-        reason = "reserved for Settings overlay absorption — populated today, consumed once \
-                  KeymapPane / SettingsPane gain real Pane::render bodies"
-    )]
-    pub lint:                  Option<&'a Lint>,
+    pub(crate) scan:                   &'a Scan,
+    /// Pre-render CI snapshot built from `&Ci` before the dispatch
+    /// loop runs. `ProjectListPane` reads CI status per row through
+    /// this lookup instead of holding `&Ci` directly, which lets
+    /// the CI pane's own dispatcher consume `&mut self.ci` in the
+    /// same pass.
+    pub(crate) ci_status_lookup:       &'a CiStatusLookup,
+    /// Precomputed render inputs for the Keymap overlay. `None` for
+    /// every render path that isn't the Keymap overlay dispatcher;
+    /// `Some` when the overlay is open and `KeymapPane`'s
+    /// [`tui_pane::Renderable`] impl is about to draw the popup.
+    /// Built by [`crate::tui::keymap_ui::prepare_keymap_render_inputs`]
+    /// before `App::split_for_render`, so the still-current `&App`
+    /// borrow can walk `framework_keymap`.
+    pub(crate) keymap_render_inputs:   Option<&'a KeymapRenderInputs>,
+    /// Precomputed render inputs for the Settings overlay. `None`
+    /// for every render path that isn't the Settings overlay
+    /// dispatcher; `Some` when the overlay is open. Built by
+    /// [`crate::tui::settings::prepare_settings_render_inputs`].
+    pub(crate) settings_render_inputs: Option<&'a SettingsRenderInputs>,
     /// Inline error string from the overlays subsystem (Settings /
     /// Keymap inline-error line). `None` when no error is pinned.
     /// Reserved for the deferred Keymap / Settings overlay
-    /// absorption; populated today, consumed by tests.
+    /// absorption — populated today, consumed once those panes
+    /// gain real `Renderable::render` bodies.
     #[allow(
         dead_code,
         reason = "reserved for Keymap / Settings overlay absorption — populated today, \
-                  consumed once those panes gain real Pane::render bodies"
+                  consumed once those panes gain real Renderable::render bodies"
     )]
-    pub inline_error:          Option<&'a str>,
-}
-
-/// Per-pane render dispatch.
-pub trait Pane {
-    fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>);
+    pub(crate) inline_error:           Option<&'a str>,
 }
 
 /// Result of a single pane's hit-test at a screen position.

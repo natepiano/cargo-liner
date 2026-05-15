@@ -15,21 +15,26 @@
 //! `LintDisplay` rather than a pre-rendered string.
 
 use std::path::Path;
+use std::time::Duration;
 
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use tui_pane::RenderFocus;
+use tui_pane::Renderable;
 use tui_pane::RunningTracker;
 use tui_pane::Viewport;
 
+use super::Config;
 use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
+use crate::tui::columns::LintCell;
+use crate::tui::integration;
 use crate::tui::pane::Hittable;
 use crate::tui::pane::HoverTarget;
-use crate::tui::pane::Pane;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::panes::LintsData;
@@ -80,6 +85,8 @@ pub struct Lint {
     pub cache_usage: CacheUsage,
     /// Per-pane cursor for the Lints pane.
     pub viewport:    Viewport,
+    /// Per-pane focus snapshot stamped before the render loop.
+    pub focus:       RenderFocus,
     /// Cached Lints table content built per-frame in
     /// `panes::build_lints_data`.
     content:         Option<LintsData>,
@@ -95,6 +102,7 @@ impl Lint {
             running: RunningTracker::new(),
             cache_usage: CacheUsage::default(),
             viewport: Viewport::new(),
+            focus: RenderFocus::inactive(),
             content: None,
         }
     }
@@ -216,16 +224,16 @@ impl Lint {
 /// call it from `Pane::render` with typed refs (no `&App`).
 pub fn lint_cell_for(
     status: &LintStatus,
-    config: &crate::tui::state::Config,
-    animation_elapsed: std::time::Duration,
-) -> crate::tui::columns::LintCell {
+    config: &Config,
+    animation_elapsed: Duration,
+) -> LintCell {
     if !config.lint_enabled() {
         return crate::tui::columns::LintCell::from_parts(
             crate::constants::LINT_NO_LOG,
             ratatui::style::Style::default(),
         );
     }
-    let icon = crate::tui::integration::lint_icon_for(status.kind()).frame_at(animation_elapsed);
+    let icon = integration::lint_icon_for(status.kind()).frame_at(animation_elapsed);
     let style = if matches!(status, LintStatus::Running(_)) {
         ratatui::style::Style::default().fg(tui_pane::ACCENT_COLOR)
     } else {
@@ -234,7 +242,7 @@ pub fn lint_cell_for(
     crate::tui::columns::LintCell::from_parts(icon, style)
 }
 
-impl Pane for Lint {
+impl Renderable<PaneRenderCtx<'_>> for Lint {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         panes::render_lints_pane_body(frame, area, self, ctx);
     }
