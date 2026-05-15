@@ -35,23 +35,25 @@ pub(super) struct DriverSettings {
 impl DriverSettings {
     pub(super) fn from_env() -> Result<Self> {
         let config_root = PathBuf::from(
-            env::var_os(CONFIG_ROOT_ENV).context("missing MEND_CONFIG_ROOT for compiler driver")?,
+            env::var_os(CONFIG_ROOT_ENV)
+                .with_context(|| format!("missing {CONFIG_ROOT_ENV} for compiler driver"))?,
         );
         let visibility_config = serde_json::from_str(
-            &env::var(CONFIG_JSON_ENV).context("missing MEND_CONFIG_JSON for compiler driver")?,
+            &env::var(CONFIG_JSON_ENV)
+                .with_context(|| format!("missing {CONFIG_JSON_ENV} for compiler driver"))?,
         )
-        .context("failed to parse MEND_CONFIG_JSON")?;
-        let config_fingerprint =
-            env::var(CONFIG_FINGERPRINT_ENV).context("missing MEND_CONFIG_FINGERPRINT")?;
+        .with_context(|| format!("failed to parse {CONFIG_JSON_ENV}"))?;
+        let config_fingerprint = env::var(CONFIG_FINGERPRINT_ENV)
+            .with_context(|| format!("missing {CONFIG_FINGERPRINT_ENV}"))?;
         let findings_dir = PathBuf::from(
             env::var_os(FINDINGS_DIR_ENV)
-                .context("missing MEND_FINDINGS_DIR for compiler driver")?,
+                .with_context(|| format!("missing {FINDINGS_DIR_ENV} for compiler driver"))?,
         );
-        let scope_fingerprint =
-            env::var(SCOPE_FINGERPRINT_ENV).context("missing MEND_SCOPE_FINGERPRINT")?;
+        let scope_fingerprint = env::var(SCOPE_FINGERPRINT_ENV)
+            .with_context(|| format!("missing {SCOPE_FINGERPRINT_ENV}"))?;
         let package_root = PathBuf::from(
             env::var_os(PACKAGE_ROOT_ENV)
-                .context("missing CARGO_MANIFEST_DIR for compiler driver")?,
+                .with_context(|| format!("missing {PACKAGE_ROOT_ENV} for compiler driver"))?,
         );
 
         Ok(Self {

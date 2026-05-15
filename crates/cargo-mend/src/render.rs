@@ -289,13 +289,7 @@ fn render_summary_rows(rows: &[SummaryRow], color_mode: ColorMode) -> String {
     let indent = " ".repeat("summary:".len());
     // Continuation indent fills the count + description columns so the dash
     // aligns with the inline fixable on the parent row.
-    let cont_indent = format!(
-        "{indent} {:>cw$} {:<dw$}",
-        "",
-        "",
-        cw = count_width,
-        dw = desc_width
-    );
+    let cont_indent = format!("{indent} {:>count_width$} {:<desc_width$}", "", "");
 
     let mut result = String::new();
     let mut first = true;
@@ -316,11 +310,8 @@ fn render_summary_rows(rows: &[SummaryRow], color_mode: ColorMode) -> String {
         first = false;
         let _ = write!(
             result,
-            "{leader} {:>cw$} {:<dw$}{inline_part}",
-            row.count,
-            row.description,
-            cw = count_width,
-            dw = desc_width,
+            "{leader} {:>count_width$} {:<desc_width$}{inline_part}",
+            row.count, row.description,
         );
         for f in row.fixables.iter().skip(1) {
             result.push('\n');
