@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.13.2] - 2026-05-15
 
 ### Fixed
 - `narrow_to_pub_crate` no longer fires on a `pub` item that is publicly reachable through another `pub` item's signature (e.g. a struct named in a re-exported enum variant's field type, or in a re-exported `pub const`'s type). Suggesting `pub(crate)` for such items would have introduced a `private_interfaces` error. The check now mirrors rustc's effective-visibility analysis at `Level::Reachable`.
