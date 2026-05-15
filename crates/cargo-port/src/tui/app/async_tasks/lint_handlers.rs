@@ -33,11 +33,12 @@ impl App {
                 .toasts
                 .mark_tracked_item_completed(toast, STARTUP_PHASE_LINT);
         }
-        // If core startup already finished, now finish the startup toast.
-        if self.startup.complete_at.is_some()
-            && let Some(toast) = self.startup.toast.take()
-        {
-            self.finish_task_toast(toast);
+        // Clear the embedding's slot if core startup already finished.
+        // The overall startup toast auto-finishes when its last item
+        // (the Lint item, just marked completed above) is marked
+        // completed — matching the prior explicit-finish gate.
+        if self.startup.complete_at.is_some() {
+            let _ = self.startup.toast.take();
         }
         if let Some(scan_complete_at) = self.startup.scan_complete_at {
             tracing::info!(

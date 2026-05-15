@@ -188,9 +188,11 @@ impl App {
         if !self.startup.disk.complete_once(now) {
             return;
         }
-        if let Some(disk_toast) = self.startup.disk.take_toast() {
-            self.finish_task_toast(disk_toast);
-        }
+        // Clear the embedding's slot. The toast itself has already
+        // auto-finished — the last per-project disk handler that
+        // satisfied `seen.len() == expected.len()` also marked the
+        // last item completed on the toast.
+        let _ = self.startup.disk.take_toast();
         if let Some(toast) = self.startup.toast {
             self.framework
                 .toasts
@@ -209,9 +211,8 @@ impl App {
         if !self.startup.git.complete_once(now) {
             return;
         }
-        if let Some(git_toast) = self.startup.git.take_toast() {
-            self.finish_task_toast(git_toast);
-        }
+        // Same auto-finish pattern as `maybe_complete_startup_disk`.
+        let _ = self.startup.git.take_toast();
         if let Some(toast) = self.startup.toast {
             self.framework
                 .toasts
@@ -261,9 +262,8 @@ impl App {
         if !self.startup.metadata.complete_once(now) {
             return;
         }
-        if let Some(metadata_toast) = self.startup.metadata.take_toast() {
-            self.finish_task_toast(metadata_toast);
-        }
+        // Same auto-finish pattern as `maybe_complete_startup_disk`.
+        let _ = self.startup.metadata.take_toast();
         if let Some(toast) = self.startup.toast {
             self.framework
                 .toasts
@@ -293,11 +293,13 @@ impl App {
             return;
         }
         self.startup.complete_at = Some(now);
-        // Finish the startup toast only when lint startup cache check
-        // is also done, so "Lint cache" doesn't spin while the toast
-        // exits.
-        if lint_done && let Some(toast) = self.startup.toast.take() {
-            self.finish_task_toast(toast);
+        // Clear the embedding's slot when lint cache check is also
+        // done. The overall startup toast auto-finishes when its
+        // last tracked item (the Lint item, marked completed in
+        // `maybe_complete_startup_lint_cache`) is marked completed,
+        // so timing matches the prior explicit-finish gate.
+        if lint_done {
+            let _ = self.startup.toast.take();
         }
         let since_scan_ms = perf_log::ms(now.duration_since(scan_complete_at).as_millis());
         tracing::info!(

@@ -47,7 +47,19 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// when the task has tracked items still on the toast, or
     /// `Duration::ZERO` when none remain — a tracked-item-less task toast
     /// closes immediately on finish.
+    ///
+    /// Idempotent: a call on an already-finished toast is a no-op and
+    /// returns `false`. Without this, a second `finish_task` would
+    /// reset `finished_at` to `now` and the "Closing in N" countdown
+    /// would visibly jump back to the full linger duration. Auto-finish
+    /// (in [`Self::mark_item_completed`] and
+    /// [`Self::complete_missing_items`]) may have already fired before
+    /// an embedding's explicit `finish_task`; the early return keeps
+    /// the original countdown intact.
     pub fn finish_task(&mut self, task_id: ToastTaskId) -> bool {
+        if self.is_task_finished(task_id) {
+            return false;
+        }
         let linger = self
             .toast_for_task(task_id)
             .map_or(Duration::ZERO, |toast| {
@@ -165,6 +177,9 @@ impl<Ctx: AppContext> Toasts<Ctx> {
                 changed = true;
             }
         }
+        if changed {
+            self.auto_finish_if_all_items_completed(task_id);
+        }
         changed
     }
 
@@ -220,6 +235,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             return false;
         };
         item.completed_at = Some(now);
+        self.auto_finish_if_all_items_completed(task_id);
         true
     }
 
@@ -255,6 +271,36 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         self.entries
             .retain(|toast| toast.is_renderable(now, settings));
         self.sync_viewport_len();
+    }
+
+    /// Transition a task toast to `Finished` if every tracked item
+    /// on it has been marked completed. The `has_items` guard is
+    /// essential: a zero-item toast vacuously satisfies "all
+    /// completed", and auto-firing on creation would close every
+    /// task toast before any items get added. Auto-finish only
+    /// fires for toasts that held at least one item and have now
+    /// had every one of them marked completed. The early
+    /// `still_running` check makes this idempotent — calling
+    /// auto-finish on an already-finished toast is a no-op.
+    fn auto_finish_if_all_items_completed(&mut self, task_id: ToastTaskId) {
+        let Some(toast) = self.toast_for_task(task_id) else {
+            return;
+        };
+        let still_running = matches!(
+            toast.lifetime,
+            ToastLifetime::Task {
+                status: ToastTaskStatus::Running,
+                ..
+            },
+        );
+        let has_items = !toast.tracked_items.is_empty();
+        let all_completed = toast
+            .tracked_items
+            .iter()
+            .all(|item| item.completed_at.is_some());
+        if still_running && has_items && all_completed {
+            self.finish_task(task_id);
+        }
     }
 
     pub(super) fn toast_for_task(&self, task_id: ToastTaskId) -> Option<&Toast<Ctx>> {

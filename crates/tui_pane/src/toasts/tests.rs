@@ -4,7 +4,9 @@ use std::time::Instant;
 use crossterm::event::KeyCode;
 
 use super::toast::ToastDismissal;
+use super::toast::ToastLifetime;
 use super::toast::ToastPhase;
+use super::toast::ToastTaskStatus;
 use super::*;
 use crate::FocusedPane;
 use crate::Framework;
@@ -240,4 +242,105 @@ fn toasts_can_live_on_framework() {
     let _ = app.framework.toasts.push("hello", "body");
 
     assert!(app.framework.toasts.has_active());
+}
+
+#[test]
+fn marking_last_item_completed_auto_finishes_task_toast() {
+    let mut toasts = toasts_with_linger(5.0);
+    let task = toasts.start_task("phase", "body");
+    assert!(toasts.set_tracked_items(
+        task,
+        &[TrackedItem::new("a", "a"), TrackedItem::new("b", "b")],
+    ));
+
+    assert!(toasts.mark_tracked_item_completed(task, "a"));
+    assert!(
+        !toasts.is_task_finished(task),
+        "auto-finish must not fire while any item is incomplete",
+    );
+
+    assert!(toasts.mark_tracked_item_completed(task, "b"));
+    assert!(
+        toasts.is_task_finished(task),
+        "marking the final item completed must transition the toast to Finished",
+    );
+}
+
+#[test]
+fn auto_finish_does_not_fire_with_pending_items() {
+    let mut toasts = toasts_with_linger(5.0);
+    let task = toasts.start_task("phase", "body");
+    assert!(toasts.set_tracked_items(
+        task,
+        &[
+            TrackedItem::new("a", "a"),
+            TrackedItem::new("b", "b"),
+            TrackedItem::new("c", "c"),
+        ],
+    ));
+
+    assert!(toasts.mark_tracked_item_completed(task, "a"));
+    assert!(toasts.mark_tracked_item_completed(task, "b"));
+    assert!(!toasts.is_task_finished(task));
+}
+
+#[test]
+fn auto_finish_does_not_fire_on_zero_item_task_toast() {
+    let mut toasts = toasts_with_linger(5.0);
+    let task = toasts.start_task("empty", "body");
+
+    // No items were ever added. Auto-finish must not fire on its
+    // own — an empty task toast stays Running until the embedding
+    // calls `finish_task` explicitly.
+    assert!(!toasts.is_task_finished(task));
+
+    assert!(toasts.finish_task(task));
+    assert!(toasts.is_task_finished(task));
+}
+
+#[test]
+fn finish_task_is_idempotent_for_already_finished_toast() {
+    let mut toasts = toasts_with_linger(5.0);
+    let task = toasts.start_task("phase", "body");
+    assert!(toasts.set_tracked_items(task, &[TrackedItem::new("only", "only")]));
+
+    assert!(toasts.mark_tracked_item_completed(task, "only"));
+    let toast = toasts
+        .toast_for_task(task)
+        .unwrap_or_else(|| std::process::abort());
+    let ToastLifetime::Task {
+        status:
+            ToastTaskStatus::Finished {
+                finished_at: original_finished_at,
+                ..
+            },
+        ..
+    } = toast.lifetime
+    else {
+        std::process::abort();
+    };
+
+    std::thread::sleep(Duration::from_millis(5));
+    // Second `finish_task` must NOT overwrite `finished_at` — otherwise
+    // the countdown visibly resets to the full linger duration.
+    assert!(
+        !toasts.finish_task(task),
+        "finish_task on an already-finished toast must return false",
+    );
+
+    let toast = toasts
+        .toast_for_task(task)
+        .unwrap_or_else(|| std::process::abort());
+    let ToastLifetime::Task {
+        status:
+            ToastTaskStatus::Finished {
+                finished_at: later_finished_at,
+                ..
+            },
+        ..
+    } = toast.lifetime
+    else {
+        std::process::abort();
+    };
+    assert_eq!(original_finished_at, later_finished_at);
 }

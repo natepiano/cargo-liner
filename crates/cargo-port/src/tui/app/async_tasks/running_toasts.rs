@@ -53,12 +53,12 @@ impl App {
         if running_items.is_empty() {
             if let Some(task_id) = toast_slot {
                 let empty: HashSet<TrackedItemKey> = HashSet::new();
+                // Marking every item completed via `complete_missing_items`
+                // triggers the framework's auto-finish path — no explicit
+                // `finish_task` needed.
                 self.framework
                     .toasts
                     .complete_missing_items(task_id, &empty);
-                if !self.framework.toasts.is_task_finished(task_id) {
-                    self.framework.toasts.finish_task(task_id);
-                }
             }
             return toast_slot;
         }
