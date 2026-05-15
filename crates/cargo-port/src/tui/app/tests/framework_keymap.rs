@@ -434,7 +434,7 @@ fn focused_project_list_bar_renders_pane_action_and_nav_slots() {
         "ProjectList nav region must not show row expand help (got {nav:?})",
     );
     assert!(
-        nav.contains("+/- all"),
+        nav.contains("=/- all"),
         "ProjectList nav region must include the paired all row (got {nav:?})",
     );
     assert_contains_in_order(&nav, &["nav", "all", "pane"]);

@@ -467,11 +467,15 @@ thread_local! {
 #[cfg(test)]
 pub(crate) struct KeymapPathOverrideGuard {
     previous: Option<PathBuf>,
+    active:   bool,
 }
 
 #[cfg(test)]
 impl Drop for KeymapPathOverrideGuard {
     fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
         let previous = self.previous.take();
         KEYMAP_PATH_OVERRIDE.with(|slot| {
             *slot.borrow_mut() = previous;
@@ -482,7 +486,29 @@ impl Drop for KeymapPathOverrideGuard {
 #[cfg(test)]
 pub(crate) fn override_keymap_path_for_test(path: PathBuf) -> KeymapPathOverrideGuard {
     let previous = KEYMAP_PATH_OVERRIDE.with(|slot| slot.replace(Some(path)));
-    KeymapPathOverrideGuard { previous }
+    KeymapPathOverrideGuard {
+        previous,
+        active: true,
+    }
+}
+
+/// Set the keymap path override only if no override is already
+/// active. Returned guard is a no-op when an override existed; the
+/// caller's outer override stays in effect. Lets `make_app` provide
+/// a hermetic-default fallback that test helpers like
+/// `make_app_with_keymap_toml` can layer on top of without being
+/// clobbered.
+#[cfg(test)]
+pub(crate) fn override_keymap_path_for_test_if_absent(path: PathBuf) -> KeymapPathOverrideGuard {
+    let already_set = KEYMAP_PATH_OVERRIDE.with(|slot| slot.borrow().is_some());
+    if already_set {
+        KeymapPathOverrideGuard {
+            previous: None,
+            active:   false,
+        }
+    } else {
+        override_keymap_path_for_test(path)
+    }
 }
 
 pub(crate) fn migrate_removed_action_keys_on_disk(path: &Path) -> std::io::Result<()> {
