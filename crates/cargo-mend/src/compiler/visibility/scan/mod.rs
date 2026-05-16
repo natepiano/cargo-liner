@@ -9,9 +9,9 @@ use rustc_span::Span;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 
-mod analyze;
 mod classify;
 mod record;
+mod visit;
 
 pub(super) use classify::CrateKind;
 pub(super) use classify::ModuleLocation;
@@ -139,16 +139,16 @@ pub(super) fn collect_and_store_findings(
 
     for item_id in crate_items.free_items() {
         let item = tcx.hir_item(item_id);
-        analyze::analyze_item(&ctx, item, &mut sink)?;
+        visit::visit_item(&ctx, item, &mut sink)?;
         field_visibility::check_item(&ctx, item, &mut sink)?;
     }
 
     for item_id in crate_items.impl_items() {
-        analyze::analyze_impl_item(&ctx, tcx.hir_impl_item(item_id), &mut sink)?;
+        visit::visit_impl_item(&ctx, tcx.hir_impl_item(item_id), &mut sink)?;
     }
 
     for item_id in crate_items.foreign_items() {
-        analyze::analyze_foreign_item(&ctx, tcx.hir_foreign_item(item_id), &mut sink)?;
+        visit::visit_foreign_item(&ctx, tcx.hir_foreign_item(item_id), &mut sink)?;
     }
 
     use_sites::collect_use_sites(tcx, &mut sink.use_sites);

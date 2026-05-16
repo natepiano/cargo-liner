@@ -17,7 +17,7 @@ use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 use crate::rust_syntax::PUB_VISIBILITY_TOKEN;
 
-pub(super) fn analyze_item(
+pub(super) fn visit_item(
     ctx: &VisibilityContext<'_, '_>,
     item: &Item<'_>,
     sink: &mut FindingsSink,
@@ -80,7 +80,7 @@ pub(super) fn analyze_item(
     )
 }
 
-pub(super) fn analyze_impl_item(
+pub(super) fn visit_impl_item(
     ctx: &VisibilityContext<'_, '_>,
     item: &ImplItem<'_>,
     sink: &mut FindingsSink,
@@ -117,7 +117,7 @@ pub(super) fn analyze_impl_item(
     )
 }
 
-pub(super) fn analyze_foreign_item(
+pub(super) fn visit_foreign_item(
     ctx: &VisibilityContext<'_, '_>,
     item: &ForeignItem<'_>,
     sink: &mut FindingsSink,
