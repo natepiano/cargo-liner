@@ -11,7 +11,6 @@ mod config;
 mod constants;
 mod fixes;
 mod reporting;
-mod runner;
 mod rust_syntax;
 mod selection;
 
@@ -28,6 +27,8 @@ use config::FixExecution;
 use config::OperationMode;
 use config::WarningPolicy;
 use constants::BUILD_INFO_UNKNOWN;
+use fixes::FIX_ALL_MAX_PASSES;
+use fixes::MendRunner;
 use reporting::BuildOutcome;
 use reporting::CARGO_TERM_COLOR_ALWAYS;
 use reporting::CARGO_TERM_COLOR_ENV;
@@ -46,8 +47,6 @@ use reporting::MendFailure;
 use reporting::OutputFormat;
 use reporting::TERM_DUMB_VALUE;
 use reporting::TERM_ENV;
-use runner::FIX_ALL_MAX_PASSES;
-use runner::MendRunner;
 use selection::DisplayFilter;
 use selection::Selection;
 

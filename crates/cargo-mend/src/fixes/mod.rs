@@ -1,7 +1,11 @@
-pub(crate) mod constants;
-pub(crate) mod field_visibility;
-pub(crate) mod imports;
-pub(crate) mod inline_path_qualified_type;
-pub(crate) mod narrow_pub_crate;
-pub(crate) mod prefer_module_import;
-pub(crate) mod pub_use_fixes;
+mod constants;
+mod field_visibility;
+mod imports;
+mod inline_path_qualified_type;
+mod narrow_pub_crate;
+mod prefer_module_import;
+mod pub_use_fixes;
+mod runner;
+
+pub(crate) use runner::FIX_ALL_MAX_PASSES;
+pub(crate) use runner::MendRunner;
