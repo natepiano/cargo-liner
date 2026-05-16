@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use chrono::Local;
 
+use super::cache_size_index;
 use super::history;
 use super::paths;
 use super::read_write;
@@ -142,10 +143,17 @@ fn supervisor_loop(
     bg_tx: Sender<BackgroundMsg>,
 ) {
     let mut workers: HashMap<AbsolutePath, ProjectWorker> = HashMap::new();
-    let _ = read_write::clear_running_latest_files_under(&cache_root);
-    let status_cache = Arc::new(Mutex::new(hydrate_status_cache(&cache_root)));
+    // Lazy hydration: the cache starts empty and `cached_status_for_project`
+    // reads disk on miss, treating any leftover `Running` latest.json as
+    // stale (a previous app died mid-lint) and falling through to history.
+    // The next real lint run for that project naturally overwrites the
+    // stale file. The previous eager scan walked every cache subdirectory
+    // (~8000 stale project keys after a few months of use), blocking the
+    // supervisor for ~2s before it could process a single registration.
+    let status_cache: Arc<Mutex<HashMap<String, LintStatus>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let worker_config = WorkerConfig {
-        cache_root,
+        cache_root: cache_root.clone(),
         commands: lint.resolved_commands(),
         cache_size_bytes,
         on_discovery: lint.on_discovery,
@@ -156,7 +164,7 @@ fn supervisor_loop(
         match rx.recv() {
             Ok(SupervisorMsg::SyncProjects { projects }) => {
                 let desired = desired_projects(&lint, projects);
-                emit_current_statuses(&desired, &status_cache, &bg_tx);
+                emit_current_statuses(&desired, &status_cache, &cache_root, &bg_tx);
                 reconcile_workers(&mut workers, desired, &worker_config, &bg_tx);
             },
             Ok(SupervisorMsg::RegisterProject { project }) => {
@@ -173,7 +181,7 @@ fn supervisor_loop(
                 }
                 let _ = bg_tx.send(BackgroundMsg::LintStartupStatus {
                     path:   abs_path.clone(),
-                    status: cached_status_for_project(&status_cache, &abs_path),
+                    status: cached_status_for_project(&status_cache, &cache_root, &abs_path),
                 });
             },
             Ok(SupervisorMsg::UnregisterProject { abs_path }) => {
@@ -200,55 +208,54 @@ fn supervisor_loop(
     }
 }
 
-fn hydrate_status_cache(cache_root: &Path) -> HashMap<String, LintStatus> {
-    let Ok(entries) = std::fs::read_dir(cache_root) else {
-        return HashMap::new();
-    };
-
-    entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let dir = entry.path();
-            let run = read_write::read_latest_file(&dir.join(LINTS_LATEST_JSON)).or_else(|| {
-                // `latest.json` may be missing if the app was killed mid-lint and
-                // the stale file was cleaned up. Fall back to the last completed
-                // run from history so the status icon isn't lost.
-                read_write::read_history_file(&dir.join(LINTS_HISTORY_JSONL))
-                    .into_iter()
-                    .rev()
-                    .find(|r| !matches!(r.status, LintRunStatus::Running))
-            })?;
-            let status = status::parse_run(&run);
-            if matches!(status, LintStatus::NoLog) {
-                return None;
-            }
-            Some((entry.file_name().to_string_lossy().to_string(), status))
-        })
-        .collect()
-}
-
 fn emit_current_statuses(
     desired: &HashMap<AbsolutePath, RegisterProjectRequest>,
     status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
+    cache_root: &Path,
     bg_tx: &Sender<BackgroundMsg>,
 ) {
     for request in desired.values() {
         let _ = bg_tx.send(BackgroundMsg::LintStartupStatus {
             path:   request.abs_path.clone(),
-            status: cached_status_for_project(status_cache, &request.abs_path),
+            status: cached_status_for_project(status_cache, cache_root, &request.abs_path),
         });
     }
 }
 
 fn cached_status_for_project(
     status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
+    cache_root: &Path,
     project_root: &Path,
 ) -> LintStatus {
-    status_cache
-        .lock()
-        .ok()
-        .and_then(|statuses| statuses.get(&paths::project_key(project_root)).cloned())
-        .unwrap_or(LintStatus::NoLog)
+    let key = paths::project_key(project_root);
+    if let Ok(statuses) = status_cache.lock()
+        && let Some(status) = statuses.get(&key)
+    {
+        return status.clone();
+    }
+    let status = read_status_from_disk(cache_root, project_root);
+    if let Ok(mut statuses) = status_cache.lock() {
+        statuses.insert(key, status.clone());
+    }
+    status
+}
+
+/// Read a project's most recent terminal lint status from disk. Tries
+/// `latest.json` first, then falls back to the newest non-`Running` line
+/// from `history.jsonl`. A `Running` `latest.json` is always stale on
+/// hydration (the active runtime has its own in-memory `Running` state)
+/// and is treated as missing so the history fallback fires.
+fn read_status_from_disk(cache_root: &Path, project_root: &Path) -> LintStatus {
+    let project_dir = paths::project_dir_under(cache_root, project_root);
+    let latest = read_write::read_latest_file(&project_dir.join(LINTS_LATEST_JSON))
+        .filter(|run| !matches!(run.status, LintRunStatus::Running));
+    let run = latest.or_else(|| {
+        read_write::read_history_file(&project_dir.join(LINTS_HISTORY_JSONL))
+            .into_iter()
+            .rev()
+            .find(|r| !matches!(r.status, LintRunStatus::Running))
+    });
+    run.map_or(LintStatus::NoLog, |run| status::parse_run(&run))
 }
 
 fn desired_projects(
@@ -553,7 +560,14 @@ fn execute_commands(
             return Ok(CommandsResult::ProjectRemoved);
         }
         let cmd_started = Instant::now();
-        let execution = run_command(project_root, &manifest_path, output_dir, command, index)?;
+        let execution = run_command(
+            project_root,
+            &manifest_path,
+            cache_root,
+            output_dir,
+            command,
+            index,
+        )?;
         tracing::info!(
             command = %command.name,
             duration_ms = crate::perf_log::ms(cmd_started.elapsed().as_millis()),
@@ -608,6 +622,7 @@ fn publish_status(
 fn run_command(
     project_root: &Path,
     manifest_path: &Path,
+    cache_root: &Path,
     output_dir: &Path,
     command: &LintCommandConfig,
     index: usize,
@@ -643,8 +658,11 @@ fn run_command(
         ),
     };
 
+    let old_size = cache_size_index::file_size_or_zero(&log_path);
     std::fs::write(&tmp_path, bytes)?;
-    std::fs::rename(tmp_path, log_path)?;
+    std::fs::rename(tmp_path, &log_path)?;
+    let new_size = cache_size_index::file_size_or_zero(&log_path);
+    cache_size_index::apply_write_delta(cache_root, old_size, new_size);
     Ok(CommandExecution {
         success,
         exit_code,

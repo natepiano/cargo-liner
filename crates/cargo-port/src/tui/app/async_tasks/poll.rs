@@ -170,6 +170,7 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::ProjectDiscovered { .. }
         | BackgroundMsg::ProjectRefreshed { .. }
         | BackgroundMsg::LintCachePruned { .. }
+        | BackgroundMsg::LintCacheUsage { .. }
         | BackgroundMsg::ServiceReachable { .. }
         | BackgroundMsg::ServiceRecovered { .. }
         | BackgroundMsg::ServiceUnreachable { .. }

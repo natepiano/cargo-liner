@@ -54,6 +54,7 @@ pub(crate) use tree::normalize_workspace_path;
 
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
+use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
 use crate::project::LanguageStats;
 
@@ -151,6 +152,12 @@ pub(crate) enum BackgroundMsg {
         runs_evicted:    usize,
         bytes_reclaimed: u64,
     },
+    /// Total bytes retained under the lint cache root, computed off the
+    /// main thread. Drives the lint cache usage display. Spawned by
+    /// `App::refresh_lint_cache_usage_from_disk`; the disk walk would
+    /// otherwise block the first paint when the cache has thousands of
+    /// archived run files.
+    LintCacheUsage { usage: CacheUsage },
     /// An external service (GitHub, crates.io) is reachable.
     ServiceReachable { service: ServiceKind },
     /// An external service recovered after being unreachable or
@@ -241,8 +248,10 @@ impl BackgroundMsg {
             // Fetch lifecycle is reflected via toasts, not detail data.
             | Self::RepoFetchQueued { .. }
             | Self::RepoFetchComplete { .. }
-            // Cache pruning is internal to the lint subsystem.
+            // Cache pruning and cache usage refreshes are internal to
+            // the lint subsystem.
             | Self::LintCachePruned { .. }
+            | Self::LintCacheUsage { .. }
             // Service availability is a separate UI surface.
             | Self::ServiceReachable { .. }
             | Self::ServiceRecovered { .. }

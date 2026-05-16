@@ -157,6 +157,7 @@ impl App {
                 runs_evicted,
                 bytes_reclaimed,
             } => self.handle_lint_cache_pruned(runs_evicted, bytes_reclaimed),
+            BackgroundMsg::LintCacheUsage { usage } => self.lint.set_cache_usage(usage),
             BackgroundMsg::LintStatus { path, status } => {
                 self.handle_lint_status_msg(path.as_path(), status);
             },

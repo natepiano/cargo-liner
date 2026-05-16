@@ -7,6 +7,7 @@ use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::scan;
+use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::watcher;
 use crate::watcher::WatcherMsg;
@@ -64,15 +65,29 @@ impl App {
             lr.set_runs(runs, project_path);
         }
     }
-    pub fn refresh_lint_cache_usage_from_disk(&mut self) {
+    /// Spawn the lint-cache-size disk walk on the tokio blocking pool.
+    /// The result lands on the main thread as
+    /// [`BackgroundMsg::LintCacheUsage`] and is applied by
+    /// [`crate::tui::state::Lint::set_cache_usage`]. Returns immediately
+    /// so callers don't block the first paint (or any frame) on a walk
+    /// of `~/Library/Caches/cargo-port/lint-runs`, which can hold
+    /// thousands of archived run files.
+    pub fn refresh_lint_cache_usage_from_disk(&self) {
         let cache_size_bytes = self
             .config
             .current()
             .lint
             .cache_size_bytes()
             .unwrap_or(None);
-        self.lint
-            .set_cache_usage(lint::retained_cache_usage(cache_size_bytes));
+        let tx = self.background.bg_sender();
+        let handle = self.net.http_client().handle;
+        handle.spawn(async move {
+            let usage =
+                tokio::task::spawn_blocking(move || lint::retained_cache_usage(cache_size_bytes))
+                    .await
+                    .unwrap_or_default();
+            let _ = tx.send(BackgroundMsg::LintCacheUsage { usage });
+        });
     }
     pub fn lint_runtime_projects(&self) -> Vec<RegisterProjectRequest> {
         if !self.scan.is_complete() {

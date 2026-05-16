@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+mod cache_size_index;
 mod history;
 mod lint_runs;
 mod paths;
@@ -23,7 +24,11 @@ pub(crate) fn reclaim_project_cache(project_root: &Path) {
 /// Matches the `_under` pattern used by the rest of the module so
 /// tests can target a tempdir.
 pub(super) fn reclaim_project_cache_under(cache_root: &Path, project_root: &Path) {
-    let _ = std::fs::remove_dir_all(paths::project_dir_under(cache_root, project_root));
+    let project_dir = paths::project_dir_under(cache_root, project_root);
+    let bytes = history::project_dir_bytes(&project_dir);
+    if std::fs::remove_dir_all(&project_dir).is_ok() && bytes > 0 {
+        cache_size_index::adjust(cache_root, -i64::try_from(bytes).unwrap_or(i64::MAX));
+    }
 }
 
 #[cfg(test)]

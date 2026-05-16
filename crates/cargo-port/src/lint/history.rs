@@ -10,6 +10,7 @@ use std::path::Path;
 
 use walkdir::WalkDir;
 
+use super::cache_size_index;
 use super::paths;
 use super::read_write;
 use super::status;
@@ -47,8 +48,13 @@ pub(super) fn retained_cache_usage_under(
     cache_root: &Path,
     cache_size_bytes: Option<u64>,
 ) -> CacheUsage {
+    let bytes = cache_size_index::read(cache_root).unwrap_or_else(|| {
+        let bytes = total_bytes_under(cache_root);
+        let _ = cache_size_index::write(cache_root, bytes);
+        bytes
+    });
     CacheUsage {
-        bytes: total_bytes_under(cache_root),
+        bytes,
         cache_size_bytes,
     }
 }
@@ -71,6 +77,7 @@ pub(super) fn archive_run_output(
     let mut archived = run.clone();
     let mut any_copied = false;
 
+    let mut archived_bytes: u64 = 0;
     for command in &mut archived.commands {
         let archived_name = format!("{}.log", command.name);
         let archived_rel = format!("runs/{}/{archived_name}", run.run_id);
@@ -84,10 +91,17 @@ pub(super) fn archive_run_output(
                 std::fs::create_dir_all(&run_dir)?;
                 any_copied = true;
             }
-            std::fs::copy(&source, run_dir.join(&archived_name))?;
+            let dest = run_dir.join(&archived_name);
+            archived_bytes = archived_bytes.saturating_add(std::fs::copy(&source, &dest)?);
         }
     }
 
+    if archived_bytes > 0 {
+        cache_size_index::adjust(
+            cache_root,
+            i64::try_from(archived_bytes).unwrap_or(i64::MAX),
+        );
+    }
     Ok(archived)
 }
 
@@ -108,6 +122,8 @@ pub fn append_history_under(
     let json =
         serde_json::to_string(run).map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
     writeln!(file, "{json}")?;
+    let line_bytes = u64::try_from(json.len().saturating_add(1)).unwrap_or(u64::MAX);
+    cache_size_index::adjust(cache_root, i64::try_from(line_bytes).unwrap_or(i64::MAX));
     enforce_cache_size_under(cache_root, cache_size_bytes, Some((&path, &run.run_id)))
 }
 
@@ -142,6 +158,11 @@ fn enforce_cache_size_under(
     };
     prune_runs_under(cache_root, cache_size, protected)
 }
+
+/// Total bytes under a single project's cache subdirectory. Used by
+/// [`crate::lint::reclaim_project_cache`] to compute the delta before
+/// the directory is removed so the cache-size index can be decremented.
+pub(super) fn project_dir_bytes(project_dir: &Path) -> u64 { total_bytes_under(project_dir) }
 
 pub(super) fn total_bytes_under(root: &Path) -> u64 {
     WalkDir::new(root)
@@ -332,8 +353,9 @@ fn prune_runs_under(
         total_bytes = total_bytes.saturating_sub(file_before.saturating_sub(file_after));
     }
 
+    let _ = cache_size_index::write(cache_root, total_bytes);
     Ok(PruneStats {
         runs_evicted,
-        bytes_reclaimed: bytes_before.saturating_sub(total_bytes_under(cache_root)),
+        bytes_reclaimed: bytes_before.saturating_sub(total_bytes),
     })
 }
