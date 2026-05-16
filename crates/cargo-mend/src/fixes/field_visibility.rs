@@ -4,6 +4,8 @@ use std::path::Path;
 use anyhow::Context;
 use anyhow::Result;
 
+use super::constants::RUSTC_FIELD_VIS_REMOVE_SUGGESTION;
+use super::constants::RUSTC_LINT_SUGGESTION_PREFIX;
 use super::imports::UseFix;
 use crate::config::DiagnosticCode;
 use crate::reporting::Report;
@@ -73,11 +75,10 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<FieldVisibilityFixScan
 /// suggestion is to remove the annotation entirely).
 fn parse_replacement_from_suggestion(suggestion: Option<&str>) -> Option<String> {
     let text = suggestion?;
-    if text == "remove the field's visibility annotation" {
+    if text == RUSTC_FIELD_VIS_REMOVE_SUGGESTION {
         return Some(String::new());
     }
-    let prefix = "consider using: `";
-    let rest = text.strip_prefix(prefix)?;
+    let rest = text.strip_prefix(RUSTC_LINT_SUGGESTION_PREFIX)?;
     let end = rest.find('`')?;
     Some(rest[..end].to_string())
 }

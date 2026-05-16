@@ -21,6 +21,7 @@ use crate::reporting::Severity;
 use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::rust_syntax::PATH_KEYWORD_CRATE;
 use crate::rust_syntax::PATH_KEYWORD_SUPER;
+use crate::rust_syntax::PATH_PREFIX_SUPER;
 
 pub(super) struct InlineCallCandidate {
     pub(super) function_name:   String,
@@ -146,7 +147,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
         });
 
         let call_prefix = if candidate.import_target == ImportTarget::ParentModule {
-            "super::".to_string()
+            PATH_PREFIX_SUPER.to_string()
         } else {
             format!("{}::", candidate.module_name)
         };

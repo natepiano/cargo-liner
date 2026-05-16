@@ -19,6 +19,7 @@ use crate::selection::CARGO_TARGET_KIND_MAIN;
 pub(crate) const RUST_LIB_FILE: &str = "lib.rs";
 pub(crate) const RUST_MAIN_FILE: &str = "main.rs";
 pub(crate) const RUST_MODULE_FILE: &str = "mod.rs";
+pub(crate) const RUST_MODULE_FILE_STEM: &str = "mod";
 pub(crate) const RUST_SOURCE_FILE_EXTENSION: &str = "rs";
 pub(crate) const RUST_SOURCE_FILE_SUFFIX: &str = ".rs";
 

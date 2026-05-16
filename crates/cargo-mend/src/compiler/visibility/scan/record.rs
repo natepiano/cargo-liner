@@ -13,6 +13,7 @@ use super::classify;
 use super::classify::CrateKind;
 use super::classify::ParentVisibility;
 use super::classify::VisibilityFindingContext;
+use crate::compiler::RUST_MODULE_FILE_STEM;
 use crate::compiler::facade;
 use crate::compiler::facade::ParentFacadeVisibility;
 use crate::compiler::persistence::FindingsSink;
@@ -374,7 +375,7 @@ fn maybe_record_suspicious_pub(
                     .file_path
                     .file_stem()
                     .and_then(OsStr::to_str)
-                    .filter(|stem| *stem != "mod")
+                    .filter(|stem| *stem != RUST_MODULE_FILE_STEM)
                     .map(String::from)
                 else {
                     return Ok(());

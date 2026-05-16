@@ -46,13 +46,31 @@ pub(crate) const CARGO_FLAG_PACKAGE: &str = "--package";
 pub(crate) const CARGO_FLAG_TESTS: &str = "--tests";
 pub(crate) const CARGO_FLAG_WORKSPACE: &str = "--workspace";
 
+// cargo manifest filename
+pub(crate) const CARGO_MANIFEST_FILE: &str = "Cargo.toml";
+
+// cargo output protocol
+pub(crate) const CARGO_PROGRESS_PREFIX_BLOCKING: &str = "Blocking waiting for file lock";
+pub(crate) const CARGO_PROGRESS_PREFIX_BUILDING: &str = "Building ";
+pub(crate) const CARGO_PROGRESS_PREFIX_CHECKING: &str = "Checking ";
+pub(crate) const CARGO_PROGRESS_PREFIX_COMPILING: &str = "Compiling ";
+pub(crate) const CARGO_PROGRESS_PREFIX_FINISHED: &str = "Finished ";
+pub(crate) const CARGO_PROGRESS_PREFIX_FRESH: &str = "Fresh ";
+pub(crate) const CARGO_UNUSED_IMPORTS_WARNING: &str = "warning: unused imports:";
+pub(crate) const CARGO_UNUSED_IMPORT_WARNING: &str = "warning: unused import:";
+pub(crate) const CARGO_WARNING_SUMMARY_PREFIX: &str = "warning: `";
+pub(crate) const CARGO_WARNING_SUMMARY_TOKEN_GENERATED: &str = " generated ";
+pub(crate) const CARGO_WARNING_SUMMARY_TOKEN_TO_APPLY: &str = "to apply ";
+
 // cargo subcommands
 pub(crate) const CARGO_BIN: &str = "cargo";
 pub(crate) const CARGO_SUBCOMMAND_CHECK: &str = "check";
 pub(crate) const CARGO_SUBCOMMAND_FIX: &str = "fix";
+pub(crate) const CARGO_SUBCOMMAND_MEND: &str = "mend";
 
-// cargo manifest filename
-pub(crate) const CARGO_MANIFEST_FILE: &str = "Cargo.toml";
+// diagnostic severity prefixes
+pub(crate) const DIAGNOSTIC_SEVERITY_ERROR_PREFIX: &str = "error:";
+pub(crate) const DIAGNOSTIC_SEVERITY_WARNING_PREFIX: &str = "warning:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BuildOutputMode {
@@ -358,20 +376,24 @@ fn stream_cargo_stderr(
 pub(super) fn is_progress_line(line: &str) -> bool {
     let sanitized = sanitize_for_match(line);
     let trimmed = sanitized.trim_start();
-    if trimmed.contains("warning:") || trimmed.contains("error:") {
+    if trimmed.contains(DIAGNOSTIC_SEVERITY_WARNING_PREFIX)
+        || trimmed.contains(DIAGNOSTIC_SEVERITY_ERROR_PREFIX)
+    {
         return false;
     }
-    trimmed.starts_with("Blocking waiting for file lock")
-        || trimmed.starts_with("Building ")
-        || trimmed.starts_with("Checking ")
-        || trimmed.starts_with("Compiling ")
-        || trimmed.starts_with("Finished ")
-        || trimmed.starts_with("Fresh ")
+    trimmed.starts_with(CARGO_PROGRESS_PREFIX_BLOCKING)
+        || trimmed.starts_with(CARGO_PROGRESS_PREFIX_BUILDING)
+        || trimmed.starts_with(CARGO_PROGRESS_PREFIX_CHECKING)
+        || trimmed.starts_with(CARGO_PROGRESS_PREFIX_COMPILING)
+        || trimmed.starts_with(CARGO_PROGRESS_PREFIX_FINISHED)
+        || trimmed.starts_with(CARGO_PROGRESS_PREFIX_FRESH)
 }
 
 fn is_finished_line(line: &str) -> bool {
     let sanitized = sanitize_for_match(line);
-    sanitized.trim_start().starts_with("Finished ")
+    sanitized
+        .trim_start()
+        .starts_with(CARGO_PROGRESS_PREFIX_FINISHED)
 }
 
 pub(super) fn sanitize_for_match(line: &str) -> String {
@@ -404,20 +426,27 @@ fn parse_compiler_warning_summary(line: &str) -> Option<(usize, usize)> {
     let trimmed = sanitized.trim_start();
 
     // Match: warning: `pkg` (target) generated N warning(s)
-    if !trimmed.starts_with("warning: `") || !trimmed.contains(" generated ") {
+    if !trimmed.starts_with(CARGO_WARNING_SUMMARY_PREFIX)
+        || !trimmed.contains(CARGO_WARNING_SUMMARY_TOKEN_GENERATED)
+    {
         return None;
     }
 
-    let after_generated = trimmed.split(" generated ").nth(1)?;
+    let after_generated = trimmed
+        .split(CARGO_WARNING_SUMMARY_TOKEN_GENERATED)
+        .nth(1)?;
     let warning_count: usize = after_generated.split_whitespace().next()?.parse().ok()?;
 
-    let fixable_count = trimmed.split("to apply ").nth(1).map_or(0, |after_apply| {
-        after_apply
-            .split_whitespace()
-            .next()
-            .and_then(|n| n.parse().ok())
-            .unwrap_or(0)
-    });
+    let fixable_count = trimmed
+        .split(CARGO_WARNING_SUMMARY_TOKEN_TO_APPLY)
+        .nth(1)
+        .map_or(0, |after_apply| {
+            after_apply
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0)
+        });
 
     Some((warning_count, fixable_count))
 }
@@ -435,8 +464,8 @@ pub(super) fn classify_diagnostic_block(block: &[String]) -> DiagnosticBlockKind
                 fixable_count,
             }
         } else {
-            let contains_unused_import_warning = trimmed.contains("warning: unused import:")
-                || trimmed.contains("warning: unused imports:");
+            let contains_unused_import_warning = trimmed.contains(CARGO_UNUSED_IMPORT_WARNING)
+                || trimmed.contains(CARGO_UNUSED_IMPORTS_WARNING);
             if contains_unused_import_warning {
                 DiagnosticBlockKind::SuppressedUnusedImport
             } else {

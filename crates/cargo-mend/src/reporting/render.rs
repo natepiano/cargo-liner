@@ -11,6 +11,8 @@ use super::diagnostics;
 use super::diagnostics::Finding;
 use super::diagnostics::Report;
 use super::diagnostics::Severity;
+use crate::compiler::DIAGNOSTIC_SEVERITY_ERROR_PREFIX;
+use crate::compiler::DIAGNOSTIC_SEVERITY_WARNING_PREFIX;
 
 // diagnostics help
 pub(crate) const DIAGNOSTICS_HELP_NAME_COLUMN_WIDTH: usize = 40;
@@ -334,8 +336,12 @@ fn digit_count(n: usize) -> usize { n.to_string().len() }
 
 fn severity_label(severity: Severity, color_mode: ColorMode) -> String {
     match severity {
-        Severity::Error => paint("error:", ANSI_BOLD_RED, color_mode),
-        Severity::Warning => paint("warning:", ANSI_BOLD_YELLOW, color_mode),
+        Severity::Error => paint(DIAGNOSTIC_SEVERITY_ERROR_PREFIX, ANSI_BOLD_RED, color_mode),
+        Severity::Warning => paint(
+            DIAGNOSTIC_SEVERITY_WARNING_PREFIX,
+            ANSI_BOLD_YELLOW,
+            color_mode,
+        ),
     }
 }
 

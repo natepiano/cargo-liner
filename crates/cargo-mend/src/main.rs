@@ -8,6 +8,7 @@ extern crate rustc_span;
 
 mod compiler;
 mod config;
+mod constants;
 mod fixes;
 mod reporting;
 mod runner;
@@ -26,6 +27,7 @@ use config::DiagnosticsConfig;
 use config::FixExecution;
 use config::OperationMode;
 use config::WarningPolicy;
+use constants::BUILD_INFO_UNKNOWN;
 use reporting::BuildOutcome;
 use reporting::CARGO_TERM_COLOR_ALWAYS;
 use reporting::CARGO_TERM_COLOR_ENV;
@@ -82,9 +84,9 @@ fn build_diagnostics_help(diagnostics: &DiagnosticsConfig) -> String {
 
 fn build_info_text() -> String {
     let version = env!("CARGO_PKG_VERSION");
-    let git_hash = option_env!("MEND_GIT_HASH").unwrap_or("unknown");
-    let build_id = option_env!("MEND_BUILD_ID").unwrap_or("unknown");
-    let build_sysroot = option_env!("MEND_BUILD_SYSROOT").unwrap_or("unknown");
+    let git_hash = option_env!("MEND_GIT_HASH").unwrap_or(BUILD_INFO_UNKNOWN);
+    let build_id = option_env!("MEND_BUILD_ID").unwrap_or(BUILD_INFO_UNKNOWN);
+    let build_sysroot = option_env!("MEND_BUILD_SYSROOT").unwrap_or(BUILD_INFO_UNKNOWN);
     format!(
         "cargo-mend {version}\n\
          git_hash: {git_hash}\n\

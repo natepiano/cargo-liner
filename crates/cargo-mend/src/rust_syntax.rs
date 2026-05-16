@@ -8,7 +8,11 @@ use crate::compiler::RUST_MODULE_FILE;
 // path keywords
 pub(crate) const PATH_KEYWORD_CRATE: &str = "crate";
 pub(crate) const PATH_KEYWORD_SELF: &str = "self";
+pub(crate) const PATH_KEYWORD_SELF_TYPE: &str = "Self";
 pub(crate) const PATH_KEYWORD_SUPER: &str = "super";
+
+// path prefixes
+pub(crate) const PATH_PREFIX_SUPER: &str = "super::";
 
 // rust module paths
 pub(crate) const MODULE_GLOB_SUFFIX: &str = "::*";

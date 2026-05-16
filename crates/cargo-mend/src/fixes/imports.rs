@@ -27,6 +27,7 @@ use crate::rust_syntax;
 use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::rust_syntax::PATH_KEYWORD_CRATE;
 use crate::rust_syntax::PATH_KEYWORD_SUPER;
+use crate::rust_syntax::PATH_PREFIX_SUPER;
 use crate::selection::Selection;
 
 pub(crate) struct ImportScan {
@@ -386,7 +387,8 @@ fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<Im
 
     let relative = build_relative_path(current_module_path, target_segments, &import)?;
     if relative == import.original
-        || !(relative.starts_with("super::") || target_segments.starts_with(current_module_path))
+        || !(relative.starts_with(PATH_PREFIX_SUPER)
+            || target_segments.starts_with(current_module_path))
     {
         return None;
     }

@@ -8,6 +8,7 @@ use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
 
+use crate::compiler::CARGO_SUBCOMMAND_MEND;
 use crate::reporting::OutputFormat;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -412,7 +413,7 @@ impl From<RawFixCli> for FixCli {
 
 fn normalized_args() -> Vec<OsString> {
     let mut args: Vec<_> = std::env::args_os().collect();
-    if args.get(1).is_some_and(|arg| arg == "mend") {
+    if args.get(1).is_some_and(|arg| arg == CARGO_SUBCOMMAND_MEND) {
         args.remove(1);
     }
     args

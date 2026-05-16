@@ -1,3 +1,4 @@
+pub(crate) mod constants;
 pub(crate) mod field_visibility;
 pub(crate) mod imports;
 pub(crate) mod inline_path_qualified_type;

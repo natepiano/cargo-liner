@@ -27,6 +27,7 @@ use syn::visit::Visit;
 use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::rust_syntax::PATH_KEYWORD_CRATE;
 use crate::rust_syntax::PATH_KEYWORD_SELF;
+use crate::rust_syntax::PATH_KEYWORD_SELF_TYPE;
 use crate::rust_syntax::PATH_KEYWORD_SUPER;
 
 pub(super) struct InlinePathOccurrence {
@@ -98,7 +99,7 @@ impl InlinePathVisitor {
 
         // Filter obvious non-crate roots. `self::` is a same-module reference,
         // not a candidate for a `use`.
-        if first == PATH_KEYWORD_SELF || first == "Self" {
+        if first == PATH_KEYWORD_SELF || first == PATH_KEYWORD_SELF_TYPE {
             return;
         }
 
@@ -136,7 +137,7 @@ impl InlinePathVisitor {
         // same-named structs or other variants that share a leaf name.
         let penultimate = &segments[segments.len() - 2];
         let (import_segments, import_name, replacement) =
-            if is_pascal_case(penultimate) && penultimate != "Self" {
+            if is_pascal_case(penultimate) && penultimate != PATH_KEYWORD_SELF_TYPE {
                 let import_segments = segments[..segments.len() - 1].to_vec();
                 let replacement = format!("{penultimate}::{leaf}");
                 (import_segments, penultimate.clone(), replacement)
@@ -183,7 +184,7 @@ impl InlinePathVisitor {
         }
         if path.segments.len() == 1 {
             self.bare_type_names.insert(name);
-        } else if name != "Self" {
+        } else if name != PATH_KEYWORD_SELF_TYPE {
             // A bare `Self::method` is fine — `Self` isn't a name we'd ever
             // import. Anything else PascalCase as the first segment is a real
             // type reference whose meaning would change under a same-named

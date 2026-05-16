@@ -99,6 +99,13 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         detail_mode: DetailMode::None,
         fixability:  FixSupport::None,
     };
+    static SUSPICIOUS_PUB: DiagnosticSpec = DiagnosticSpec {
+        headline:    "`pub` is broader than this nested module boundary",
+        inline_help: Some("consider using: `pub(super)`"),
+        help_anchor: "suspicious-pub",
+        detail_mode: DetailMode::MessageRelatedAndFix,
+        fixability:  FixSupport::None,
+    };
     static PREFER_MODULE_IMPORT: DiagnosticSpec = DiagnosticSpec {
         headline:    "function import should use module-qualified form",
         inline_help: None,
@@ -143,13 +150,6 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         detail_mode: DetailMode::MessageRelatedAndFix,
         fixability:  FixSupport::InternalParentFacade,
     };
-    static SUSPICIOUS_PUB: DiagnosticSpec = DiagnosticSpec {
-        headline:    "`pub` is broader than this nested module boundary",
-        inline_help: Some("consider using: `pub(super)`"),
-        help_anchor: "suspicious-pub",
-        detail_mode: DetailMode::MessageRelatedAndFix,
-        fixability:  FixSupport::None,
-    };
     static NARROW_TO_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
         headline:    "`pub` exceeds the item's effective reach — use `pub(crate)`",
         inline_help: Some("consider using: `pub(crate)`"),
@@ -169,13 +169,13 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         DiagnosticCode::ForbiddenPubCrate => &FORBIDDEN_PUB_CRATE,
         DiagnosticCode::ForbiddenPubInCrate => &FORBIDDEN_PUB_IN_CRATE,
         DiagnosticCode::ReviewPubMod => &REVIEW_PUB_MOD,
+        DiagnosticCode::SuspiciousPub => &SUSPICIOUS_PUB,
         DiagnosticCode::PreferModuleImport => &PREFER_MODULE_IMPORT,
         DiagnosticCode::InlinePathQualifiedType => &INLINE_PATH_QUALIFIED_TYPE,
         DiagnosticCode::ShortenLocalCrateImport => &SHORTEN_LOCAL_CRATE_IMPORT,
         DiagnosticCode::ReplaceDeepSuperImport => &REPLACE_DEEP_SUPER_IMPORT,
         DiagnosticCode::WildcardParentPubUse => &WILDCARD_PARENT_PUB_USE,
         DiagnosticCode::InternalParentPubUseFacade => &INTERNAL_PARENT_PUB_USE_FACADE,
-        DiagnosticCode::SuspiciousPub => &SUSPICIOUS_PUB,
         DiagnosticCode::NarrowToPubCrate => &NARROW_TO_PUB_CRATE,
         DiagnosticCode::FieldVisibilityWiderThanType => &FIELD_VISIBILITY_WIDER_THAN_TYPE,
     }
