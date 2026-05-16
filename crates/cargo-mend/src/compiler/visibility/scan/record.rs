@@ -1,377 +1,38 @@
 use std::ffi::OsStr;
-use std::fs;
-use std::path::Path;
 
-use anyhow::Context;
 use anyhow::Result;
-use rustc_hir::ForeignItem;
-use rustc_hir::ImplItem;
-use rustc_hir::Item;
-use rustc_hir::ItemKind;
-use rustc_middle::middle::privacy::EffectiveVisibilities;
 use rustc_middle::middle::privacy::Level;
-use rustc_middle::ty::TyCtxt;
-use rustc_span::Span;
-use rustc_span::def_id::CRATE_DEF_ID;
-use rustc_span::def_id::LocalDefId;
 
-use super::field_visibility;
-use super::policy;
-use super::source;
-use super::use_sites;
+use super::FindingParams;
+use super::ItemCategory;
+use super::ItemInfo;
+use super::SuspiciousPubAssessment;
+use super::SuspiciousPubInput;
+use super::VisibilityContext;
+use super::classify;
+use super::classify::CrateKind;
+use super::classify::ParentVisibility;
+use super::classify::VisibilityFindingContext;
 use crate::compiler::facade;
-use crate::compiler::facade::ParentFacadeExportStatus;
 use crate::compiler::facade::ParentFacadeVisibility;
-use crate::compiler::persistence;
-use crate::compiler::persistence::CacheBuildKind;
-use crate::compiler::persistence::FINDINGS_SCHEMA_VERSION;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::persistence::StoredPubUseFixFact;
-use crate::compiler::persistence::StoredReport;
-use crate::compiler::settings;
-use crate::compiler::settings::DriverSettings;
-use crate::compiler::source_cache;
-use crate::compiler::source_cache::SourceCache;
+use crate::compiler::visibility::policy;
+use crate::compiler::visibility::source;
+use crate::compiler::visibility::use_sites;
 use crate::config::DiagnosticCode;
-use crate::reporting::CompilerWarningFacts;
 use crate::reporting::FixSupport;
 use crate::reporting::Severity;
 use crate::rust_syntax::PUB_CRATE_VISIBILITY;
 use crate::rust_syntax::PUB_IN_CRATE_VISIBILITY_PREFIX;
 use crate::rust_syntax::PUB_VISIBILITY_TOKEN;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CrateKind {
-    Binary,
-    Library,
-    IntegrationTest,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ModuleLocation {
-    CrateRoot,
-    ShallowPrivate,
-    Nested,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ParentVisibility {
-    Public,
-    Private,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ItemCategory {
-    Module,
-    NonModule,
-}
-
-pub(super) struct VisibilityContext<'a, 'tcx> {
-    pub(super) tcx:                    TyCtxt<'tcx>,
-    pub(super) settings:               &'a DriverSettings,
-    pub(super) source_root:            &'a Path,
-    pub(super) root_module:            &'a Path,
-    pub(super) effective_visibilities: &'a EffectiveVisibilities,
-    pub(super) source_cache:           &'a SourceCache,
-}
-
-struct ItemInfo<'a> {
-    def_id:         LocalDefId,
-    file_path:      &'a Path,
-    vis_text:       &'a str,
-    kind_label:     Option<&'static str>,
-    name:           Option<&'a str>,
-    highlight_span: Span,
-    category:       ItemCategory,
-    impl_self_name: Option<String>,
-}
-
-pub(super) struct SuspiciousPubInput<'a> {
-    pub(super) def_id:            LocalDefId,
-    pub(super) file_path:         &'a Path,
-    pub(super) config_rel_path:   Option<&'a str>,
-    pub(super) parent_visibility: ParentVisibility,
-    pub(super) module_location:   ModuleLocation,
-    pub(super) crate_kind:        CrateKind,
-    pub(super) kind_label:        Option<&'static str>,
-    pub(super) name:              Option<&'a str>,
-    pub(super) highlight_span:    Span,
-}
-
-pub(super) struct FindingParams {
-    pub(super) severity:                Severity,
-    pub(super) code:                    DiagnosticCode,
-    pub(super) item:                    Option<String>,
-    pub(super) message:                 String,
-    pub(super) suggestion:              Option<String>,
-    pub(super) fixability:              FixSupport,
-    pub(super) related:                 Option<String>,
-    pub(super) item_def_path:           Option<String>,
-    pub(super) narrower_scope_def_path: Option<String>,
-}
-
-struct VisibilityFindingContext {
-    crate_kind:        CrateKind,
-    config_rel_path:   Option<String>,
-    module_location:   ModuleLocation,
-    parent_visibility: ParentVisibility,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AllowanceReason {
-    Allowlist,
-    ParentIsPublic,
-    ShallowPrivatePolicy,
-    ReachablePublicApi,
-    ParentFacadeUsedOutsideParent,
-    InternalParentFacadeBoundary,
-    ExposedByOtherCrateVisibleSignature,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum SuspiciousPubAssessment {
-    Allowed(AllowanceReason),
-    ReviewInternalParentFacade {
-        related: Option<String>,
-    },
-    Warn {
-        fixability:           FixSupport,
-        related:              Option<String>,
-        stale_parent_pub_use: Option<ParentFacadeExportStatus>,
-    },
-}
-
-pub(super) fn collect_and_store_findings(
-    tcx: TyCtxt<'_>,
-    settings: &DriverSettings,
-) -> Result<bool> {
-    let crate_root_file = source::real_file_path(tcx, tcx.def_span(CRATE_DEF_ID))
-        .context("failed to determine local crate root file")?;
-    let Some(source_root) =
-        source_cache::analysis_source_root_for(&crate_root_file, &settings.package_root)
-    else {
-        return Ok(false);
-    };
-
-    let mut sink = FindingsSink::default();
-    let crate_items = tcx.hir_crate_items(());
-    let cache_roots: Vec<&Path> = if settings.config_root == settings.package_root {
-        vec![&source_root]
-    } else {
-        vec![&source_root, &settings.config_root]
-    };
-    let source_cache = SourceCache::build(&cache_roots)?;
-    let ctx = VisibilityContext {
-        tcx,
-        settings,
-        source_root: &source_root,
-        root_module: &crate_root_file,
-        effective_visibilities: tcx.effective_visibilities(()),
-        source_cache: &source_cache,
-    };
-
-    for item_id in crate_items.free_items() {
-        let item = tcx.hir_item(item_id);
-        analyze_item(&ctx, item, &mut sink)?;
-        field_visibility::check_item(&ctx, item, &mut sink)?;
-    }
-
-    for item_id in crate_items.impl_items() {
-        analyze_impl_item(&ctx, tcx.hir_impl_item(item_id), &mut sink)?;
-    }
-
-    for item_id in crate_items.foreign_items() {
-        analyze_foreign_item(&ctx, tcx.hir_foreign_item(item_id), &mut sink)?;
-    }
-
-    use_sites::collect_use_sites(tcx, &mut sink.use_sites);
-
-    let build_kind = if tcx.sess.opts.test {
-        CacheBuildKind::Test
-    } else {
-        CacheBuildKind::Library
-    };
-    let output_path = settings.findings_dir.join(persistence::cache_filename_for(
-        &settings.package_root,
-        &crate_root_file,
-        build_kind,
-    ));
-    let stored_crate_root = if crate_root_file.is_absolute() {
-        crate_root_file.clone()
-    } else {
-        settings.config_root.join(&crate_root_file)
-    };
-    if !sink.findings.is_empty() {
-        sink.findings.sort_by(|a, b| {
-            (&a.path, a.line, a.column, &a.code, &a.item, &a.message)
-                .cmp(&(&b.path, b.line, b.column, &b.code, &b.item, &b.message))
-        });
-        sink.findings.dedup_by(|a, b| {
-            a.code == b.code
-                && a.path == b.path
-                && a.line == b.line
-                && a.column == b.column
-                && a.message == b.message
-                && a.item == b.item
-        });
-    }
-
-    let report = StoredReport {
-        version:              FINDINGS_SCHEMA_VERSION,
-        analysis_fingerprint: settings.analysis_fingerprint.clone(),
-        scope_fingerprint:    settings.scope_fingerprint.clone(),
-        package_root:         settings.package_root.to_string_lossy().into_owned(),
-        crate_root_file:      stored_crate_root.to_string_lossy().into_owned(),
-        config_fingerprint:   settings.config_fingerprint.clone(),
-        findings:             sink.findings,
-        pub_use_fix_facts:    sink.pub_use_fix_facts,
-        compiler_warnings:    CompilerWarningFacts::None,
-        use_sites:            sink.use_sites,
-    };
-    fs::write(&output_path, serde_json::to_vec_pretty(&report)?)
-        .with_context(|| format!("failed to write findings file {}", output_path.display()))?;
-    Ok(true)
-}
-
-fn analyze_item(
-    ctx: &VisibilityContext<'_, '_>,
-    item: &Item<'_>,
-    sink: &mut FindingsSink,
-) -> Result<()> {
-    if item.span.from_expansion() || item.vis_span.from_expansion() {
-        return Ok(());
-    }
-    let Some(file_path) = source::real_file_path(ctx.tcx, item.vis_span) else {
-        return Ok(());
-    };
-    let Some(vis_text) = source::visibility_text(ctx.tcx, item.vis_span)? else {
-        return Ok(());
-    };
-
-    let name = item.kind.ident().as_ref().map(ToString::to_string);
-
-    if vis_text == PUB_VISIBILITY_TOKEN
-        && policy::is_boundary_file(ctx.source_root, ctx.root_module, &file_path)
-        && matches!(item.kind, ItemKind::Use(..))
-        && source::use_item_contains_glob(ctx.tcx, item.span)?
-    {
-        sink.findings.push(source::build_finding(
-            ctx.tcx,
-            &file_path,
-            item.span,
-            FindingParams {
-                severity:                Severity::Warning,
-                code:                    DiagnosticCode::WildcardParentPubUse,
-                item:                    None,
-                message:                 String::new(),
-                suggestion:              None,
-                fixability:              FixSupport::None,
-                related:                 None,
-                item_def_path:           None,
-                narrower_scope_def_path: None,
-            },
-        )?);
-    }
-
-    record_visibility_findings(
-        ctx,
-        &ItemInfo {
-            def_id:         item.owner_id.def_id,
-            file_path:      &file_path,
-            vis_text:       &vis_text,
-            kind_label:     source::item_kind_label(item.kind),
-            name:           name.as_deref(),
-            highlight_span: source::highlight_span(
-                item.vis_span,
-                item.kind.ident().map(|ident| ident.span),
-            ),
-            category:       if matches!(item.kind, ItemKind::Mod(..)) {
-                ItemCategory::Module
-            } else {
-                ItemCategory::NonModule
-            },
-            impl_self_name: None,
-        },
-        sink,
-    )
-}
-
-fn analyze_impl_item(
-    ctx: &VisibilityContext<'_, '_>,
-    item: &ImplItem<'_>,
-    sink: &mut FindingsSink,
-) -> Result<()> {
-    let Some(vis_span) = item.vis_span() else {
-        return Ok(());
-    };
-    if item.span.from_expansion() || vis_span.from_expansion() {
-        return Ok(());
-    }
-    let Some(file_path) = source::real_file_path(ctx.tcx, vis_span) else {
-        return Ok(());
-    };
-    let Some(vis_text) = source::visibility_text(ctx.tcx, vis_span)? else {
-        return Ok(());
-    };
-
-    let name = item.ident.to_string();
-    let impl_self_name = source::impl_self_type_name_from_tcx(ctx.tcx, item.owner_id.def_id);
-
-    record_visibility_findings(
-        ctx,
-        &ItemInfo {
-            def_id: item.owner_id.def_id,
-            file_path: &file_path,
-            vis_text: &vis_text,
-            kind_label: Some(source::impl_item_kind_label(item.kind)),
-            name: Some(name.as_str()),
-            highlight_span: source::highlight_span(vis_span, Some(item.ident.span)),
-            category: ItemCategory::NonModule,
-            impl_self_name,
-        },
-        sink,
-    )
-}
-
-fn analyze_foreign_item(
-    ctx: &VisibilityContext<'_, '_>,
-    item: &ForeignItem<'_>,
-    sink: &mut FindingsSink,
-) -> Result<()> {
-    if item.span.from_expansion() || item.vis_span.from_expansion() {
-        return Ok(());
-    }
-    let Some(file_path) = source::real_file_path(ctx.tcx, item.vis_span) else {
-        return Ok(());
-    };
-    let Some(vis_text) = source::visibility_text(ctx.tcx, item.vis_span)? else {
-        return Ok(());
-    };
-
-    let name = item.ident.to_string();
-
-    record_visibility_findings(
-        ctx,
-        &ItemInfo {
-            def_id:         item.owner_id.def_id,
-            file_path:      &file_path,
-            vis_text:       &vis_text,
-            kind_label:     Some(source::foreign_item_kind_label(item.kind)),
-            name:           Some(name.as_str()),
-            highlight_span: source::highlight_span(item.vis_span, Some(item.ident.span)),
-            category:       ItemCategory::NonModule,
-            impl_self_name: None,
-        },
-        sink,
-    )
-}
-
-fn record_visibility_findings(
+pub(super) fn record_visibility_findings(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
     sink: &mut FindingsSink,
 ) -> Result<()> {
-    let finding_context = visibility_finding_context(ctx, item);
+    let finding_context = classify::visibility_finding_context(ctx, item);
 
     record_forbidden_pub_crate(ctx, item, &finding_context, sink)?;
     record_forbidden_pub_in_crate(ctx, item, sink)?;
@@ -529,32 +190,6 @@ fn record_review_pub_mod(
     Ok(())
 }
 
-fn visibility_finding_context(
-    ctx: &VisibilityContext<'_, '_>,
-    item: &ItemInfo<'_>,
-) -> VisibilityFindingContext {
-    let crate_kind = policy::crate_kind_for_root(ctx.root_module, &ctx.settings.package_root);
-    let config_rel_path = settings::config_relative_path_for_settings(item.file_path, ctx.settings);
-    let parent_module = ctx.tcx.parent_module_from_def_id(item.def_id);
-    let parent_visibility = if ctx
-        .tcx
-        .local_visibility(parent_module.to_local_def_id())
-        .is_public()
-    {
-        ParentVisibility::Public
-    } else {
-        ParentVisibility::Private
-    };
-    let module_location = policy::resolve_module_location(ctx.tcx, parent_module.to_local_def_id());
-
-    VisibilityFindingContext {
-        crate_kind,
-        config_rel_path,
-        module_location,
-        parent_visibility,
-    }
-}
-
 fn maybe_record_narrow_to_pub_crate(
     ctx: &VisibilityContext<'_, '_>,
     item: &ItemInfo<'_>,
@@ -707,11 +342,6 @@ fn maybe_record_suspicious_pub(
             related,
             stale_parent_pub_use,
         } => {
-            // For suspicious_pub, expose the item's canonical def-path and
-            // the parent module's def-path. Cross-compilation merge in
-            // load_report uses these to suppress the finding when any
-            // caller (across all compilations) lives outside the proposed
-            // narrower scope.
             let item_def_path = Some(use_sites::def_path_string(ctx.tcx, input.def_id));
             let narrower_scope_def_path =
                 Some(use_sites::parent_module_def_path(ctx.tcx, input.def_id));
