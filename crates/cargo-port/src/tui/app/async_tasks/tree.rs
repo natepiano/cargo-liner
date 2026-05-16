@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use crate::lint::CacheUsage;
 #[cfg(test)]
 use crate::project::AbsolutePath;
 use crate::scan;
@@ -49,8 +50,7 @@ impl App {
         self.ci.fetch_tracker.clear();
         self.ci.clear_display_modes();
         self.clear_all_lint_state();
-        self.lint
-            .set_cache_usage(crate::lint::CacheUsage::default());
+        self.lint.set_cache_usage(CacheUsage::default());
         self.net.clear_for_tree_change();
         self.scan.discovery_shimmers_mut().clear();
         self.scan.state.phase = ScanPhase::Running;

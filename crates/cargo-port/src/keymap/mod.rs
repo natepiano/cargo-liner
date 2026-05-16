@@ -20,6 +20,8 @@ use toml::Value;
 use tui_pane::Action;
 
 use crate::config::NavigationKeys;
+use crate::constants::APP_NAME;
+use crate::constants::KEYMAP_FILE;
 use crate::project::AbsolutePath;
 
 const REMOVED_PROJECT_LIST_GLOBAL_ACTIONS: [(&str, &str); 2] =
@@ -450,11 +452,7 @@ pub(crate) fn keymap_path() -> Option<AbsolutePath> {
         return Some(path.into());
     }
 
-    dirs::config_dir().map(|d| {
-        d.join(crate::constants::APP_NAME)
-            .join(crate::constants::KEYMAP_FILE)
-            .into()
-    })
+    dirs::config_dir().map(|d| d.join(APP_NAME).join(KEYMAP_FILE).into())
 }
 
 #[cfg(test)]

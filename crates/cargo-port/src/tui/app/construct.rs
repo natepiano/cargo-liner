@@ -30,6 +30,7 @@ use tui_pane::SettingsStore;
 use tui_pane::ToastSettings;
 
 use super::App;
+use super::async_tasks::Startup;
 use super::types::ScanState;
 use crate::config;
 use crate::config::CargoPortConfig;
@@ -46,12 +47,16 @@ use crate::tui::background::Background;
 use crate::tui::background::BackgroundChannels;
 use crate::tui::integration;
 use crate::tui::integration::AppPaneId;
+use crate::tui::overlays::Overlays;
 use crate::tui::panes::Panes;
 use crate::tui::project_list::ProjectList;
 use crate::tui::settings::StartupSettings;
+use crate::tui::state::Ci;
 use crate::tui::state::Config;
 use crate::tui::state::Inflight;
 use crate::tui::state::Keymap;
+use crate::tui::state::Lint;
+use crate::tui::state::Net;
 use crate::tui::state::Scan;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
@@ -191,7 +196,7 @@ impl AppBuilder<Started> {
             example:  (channeled.example_tx, channeled.example_rx),
             watch_tx: started.watch_tx,
         });
-        let lint = crate::tui::state::Lint::new(started.lint_runtime);
+        let lint = Lint::new(started.lint_runtime);
         let inflight = Inflight::new();
         let config_path_buf = started
             .config_path
@@ -206,7 +211,7 @@ impl AppBuilder<Started> {
             ScanState::new(inputs.scan_started_at),
             inputs.metadata_store,
         );
-        let mut overlays = crate::tui::overlays::Overlays::new();
+        let mut overlays = Overlays::new();
         if let Some(warning) = started.lint_warning {
             overlays.set_status_flash(warning, Instant::now());
         }
@@ -234,17 +239,17 @@ impl AppBuilder<Started> {
             integration::build_framework_keymap(framework_builder, &mut framework)
                 .with_context(|| "building framework keymap")?;
         let mut app = App {
-            net: crate::tui::state::Net::new(inputs.http_client),
+            net: Net::new(inputs.http_client),
             panes,
             project_list: projects,
             background,
             inflight,
             lint,
-            ci: crate::tui::state::Ci::new(),
+            ci: Ci::new(),
             config,
             keymap,
             scan,
-            startup: crate::tui::app::async_tasks::Startup::new(),
+            startup: Startup::new(),
             visited_panes: std::iter::once(AppPaneId::ProjectList).collect(),
             overlays,
             confirm: None,

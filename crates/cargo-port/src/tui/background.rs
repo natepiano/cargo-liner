@@ -23,6 +23,7 @@ use super::terminal::CiFetchMsg;
 use super::terminal::CleanMsg;
 use super::terminal::ExampleMsg;
 use crate::project;
+use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::scan::BackgroundMsg;
 use crate::watcher::WatchRequest;
@@ -121,7 +122,7 @@ impl Background {
 
     pub(super) fn register_item_background_services(&self, item: &RootItem) {
         let started = std::time::Instant::now();
-        let abs_path = crate::project::AbsolutePath::from(item.path().to_path_buf());
+        let abs_path = AbsolutePath::from(item.path().to_path_buf());
         let repo_root = project::git_repo_root(&abs_path);
         let has_repo_root = repo_root.is_some();
         let _ = self.send_watcher(WatcherMsg::Register(WatchRequest {

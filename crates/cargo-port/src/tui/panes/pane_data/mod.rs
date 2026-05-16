@@ -16,6 +16,8 @@ use ratatui::style::Color;
 use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
+use crate::constants::GIT_CLONE;
+use crate::constants::GIT_FORK;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::http::RateLimitQuota;
 use crate::lint::LintRun;
@@ -943,8 +945,8 @@ fn build_remote_rows(repo: &RepoInfo, default_host: &str) -> Vec<RemoteRow> {
         .iter()
         .map(|remote| {
             let icon = match remote.kind {
-                RemoteKind::Fork => crate::constants::GIT_FORK,
-                RemoteKind::Clone => crate::constants::GIT_CLONE,
+                RemoteKind::Fork => GIT_FORK,
+                RemoteKind::Clone => GIT_CLONE,
             };
             let display_url = remote
                 .url

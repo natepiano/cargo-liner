@@ -26,6 +26,7 @@ use tui_pane::RunningTracker;
 use tui_pane::Viewport;
 
 use super::Config;
+use crate::constants::LINT_NO_LOG;
 use crate::lint::CacheUsage;
 use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
@@ -228,10 +229,7 @@ pub fn lint_cell_for(
     animation_elapsed: Duration,
 ) -> LintCell {
     if !config.lint_enabled() {
-        return crate::tui::columns::LintCell::from_parts(
-            crate::constants::LINT_NO_LOG,
-            ratatui::style::Style::default(),
-        );
+        return LintCell::from_parts(LINT_NO_LOG, ratatui::style::Style::default());
     }
     let icon = integration::lint_icon_for(status.kind()).frame_at(animation_elapsed);
     let style = if matches!(status, LintStatus::Running(_)) {
@@ -239,7 +237,7 @@ pub fn lint_cell_for(
     } else {
         ratatui::style::Style::default()
     };
-    crate::tui::columns::LintCell::from_parts(icon, style)
+    LintCell::from_parts(icon, style)
 }
 
 impl Renderable<PaneRenderCtx<'_>> for Lint {

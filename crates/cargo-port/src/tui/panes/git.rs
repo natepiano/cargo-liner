@@ -26,6 +26,9 @@ use super::package::RenderStyles;
 use super::pane_impls::GitPane;
 use crate::constants::GIT_LOCAL;
 use crate::constants::IN_SYNC;
+use crate::constants::NO_REMOTE_SYNC;
+use crate::constants::SYNC_DOWN;
+use crate::constants::SYNC_UP;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
@@ -376,9 +379,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         let selection = pane::selection_state(pane, i, focus);
         let base_value_style = if matches!(*field, DetailField::VsLocal) && value == IN_SYNC {
             Style::default().fg(SUCCESS_COLOR)
-        } else if matches!(*field, DetailField::VsLocal)
-            && value == crate::constants::NO_REMOTE_SYNC
-        {
+        } else if matches!(*field, DetailField::VsLocal) && value == NO_REMOTE_SYNC {
             Style::default().fg(INACTIVE_BORDER_COLOR)
         } else if *field == DetailField::WorktreeError {
             Style::default().fg(Color::White).bg(ERROR_COLOR)
@@ -619,14 +620,10 @@ fn worktree_row_line(
 fn worktree_status_text(ahead_behind: Option<(usize, usize)>) -> String {
     match ahead_behind {
         Some((0, 0)) => IN_SYNC.to_string(),
-        Some((a, 0)) => format!("{}{a}", crate::constants::SYNC_UP),
-        Some((0, b)) => format!("{}{b}", crate::constants::SYNC_DOWN),
-        Some((a, b)) => format!(
-            "{}{a} {}{b}",
-            crate::constants::SYNC_UP,
-            crate::constants::SYNC_DOWN
-        ),
-        None => crate::constants::NO_REMOTE_SYNC.to_string(),
+        Some((a, 0)) => format!("{SYNC_UP}{a}"),
+        Some((0, b)) => format!("{SYNC_DOWN}{b}"),
+        Some((a, b)) => format!("{SYNC_UP}{a} {SYNC_DOWN}{b}"),
+        None => NO_REMOTE_SYNC.to_string(),
     }
 }
 

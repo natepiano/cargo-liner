@@ -15,6 +15,7 @@ use super::paths::RootDirectoryName;
 use super::project_fields::ProjectFields;
 use super::vendored_package::VendoredPackage;
 use crate::ci::CiStatus;
+use crate::constants::WORKTREE;
 use crate::lint::LintRuns;
 use crate::lint::LintStatus;
 
@@ -84,8 +85,7 @@ impl RootItem {
             Self::Worktrees(g) if g.renders_as_group() => g.visible_entry_count(),
             _ => 0,
         };
-        (visible_worktrees > 0)
-            .then(|| format!(" {}:{visible_worktrees}", crate::constants::WORKTREE))
+        (visible_worktrees > 0).then(|| format!(" {WORKTREE}:{visible_worktrees}"))
     }
 
     /// Whether this item has expandable children.

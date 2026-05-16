@@ -236,10 +236,9 @@ impl GitPane {
             return infos.clone();
         }
         let infos = compute();
-        self.worktree_summary_cache.borrow_mut().insert(
-            crate::project::AbsolutePath::from(group_root),
-            infos.clone(),
-        );
+        self.worktree_summary_cache
+            .borrow_mut()
+            .insert(AbsolutePath::from(group_root), infos.clone());
         infos
     }
 

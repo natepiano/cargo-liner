@@ -18,6 +18,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::project::AbsolutePath;
+use crate::project::ManifestFingerprint;
 use crate::project::WorkspaceMetadataStore;
 use crate::tui::app::DirtyState;
 use crate::tui::app::DiscoveryShimmer;
@@ -180,8 +181,7 @@ impl Scan {
         let Some(metadata) = store.get(workspace_root) else {
             return true;
         };
-        let Ok(current) = crate::project::ManifestFingerprint::capture(workspace_root.as_path())
-        else {
+        let Ok(current) = ManifestFingerprint::capture(workspace_root.as_path()) else {
             return false;
         };
         current != metadata.fingerprint

@@ -81,8 +81,8 @@ impl WorktreeGroup {
 
     /// Aggregate lint status across all worktree entries (primary + linked).
     ///
-    /// Running takes priority: if any entry is actively running, the rollup
-    /// reports Running so the user sees that work is in progress.
+    /// `Running` takes priority: if any entry is actively running, the rollup
+    /// reports `Running` so the user sees that work is in progress.
     pub fn lint_rollup_status(&self) -> LintStatus {
         let statuses: Vec<LintStatus> =
             std::iter::once(self.primary.rust_info().lint_runs.status())

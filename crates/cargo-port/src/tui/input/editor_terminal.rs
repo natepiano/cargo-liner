@@ -213,7 +213,7 @@ pub fn open_terminal(app: &mut App) {
 }
 
 fn selected_project_display_name(app: &App) -> String {
-    if let Some(name) = app.selected_item().and_then(crate::project::RootItem::name) {
+    if let Some(name) = app.selected_item().and_then(RootItem::name) {
         return name.to_owned();
     }
     app.project_list

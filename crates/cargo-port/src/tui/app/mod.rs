@@ -86,6 +86,7 @@ use super::state::Inflight;
 use super::state::Keymap;
 use super::state::Scan;
 use crate::ci::OwnerRepo;
+use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::http::HttpClient;
 use crate::keymap;
 use crate::lint::LintRuns;
@@ -684,9 +685,7 @@ impl App {
             metadata_store: Arc::clone(self.scan.metadata_store()),
             // Use the shared scan-concurrency cap so confirm-triggered
             // refreshes can't monopolize the metadata blocking pool.
-            metadata_limit: Arc::new(tokio::sync::Semaphore::new(
-                crate::constants::SCAN_METADATA_CONCURRENCY,
-            )),
+            metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
         }
     }
 

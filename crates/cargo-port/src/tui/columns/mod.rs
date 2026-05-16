@@ -441,7 +441,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'s
                 span.style = strike;
             }
         }
-    } else if matches!(row.worktree_health, crate::project::WorktreeHealth::Broken) {
+    } else if matches!(row.worktree_health, WorktreeHealth::Broken) {
         let broken_style = Style::default().fg(Color::White).bg(ERROR_COLOR);
         for span in &mut spans {
             span.style = broken_style;

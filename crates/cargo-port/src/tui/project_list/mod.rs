@@ -13,6 +13,7 @@ use super::app::FinderState;
 use super::app::SelectionPaths;
 use super::app::SelectionSync;
 use super::columns::ProjectListWidths;
+use super::pane::DismissTarget;
 use super::state::Ci;
 use super::state::CiStatusLookup;
 use crate::ci;
@@ -1193,11 +1194,7 @@ impl ProjectList {
 
     pub(super) fn try_collapse(&mut self, key: &ExpandKey) -> bool { self.expanded.remove(key) }
 
-    pub(super) fn dismiss_target_for_row_inner(
-        &self,
-        row: VisibleRow,
-    ) -> Option<crate::tui::pane::DismissTarget> {
-        use super::pane::DismissTarget;
+    pub(super) fn dismiss_target_for_row_inner(&self, row: VisibleRow) -> Option<DismissTarget> {
         let dismiss_path = match row {
             VisibleRow::Root { node_index } | VisibleRow::GroupHeader { node_index, .. } => {
                 self.get(node_index).map(|item| item.path().clone())

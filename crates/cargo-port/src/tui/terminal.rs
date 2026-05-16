@@ -46,8 +46,10 @@ use crate::ci;
 use crate::config;
 use crate::http::HttpClient;
 use crate::perf_log;
+use crate::perf_log::SLOW_FRAME_MS;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
+use crate::project::WorkspaceMetadataStore;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
@@ -134,7 +136,7 @@ pub fn run() -> ExitCode {
     let scan_started_at = std::time::Instant::now();
     tracing::info!(kind = "initial", run = 1, "scan_start");
     let scan_dirs = scan::resolve_include_dirs(&cfg.tui.include_dirs);
-    let metadata_store = Arc::new(Mutex::new(crate::project::WorkspaceMetadataStore::new()));
+    let metadata_store = Arc::new(Mutex::new(WorkspaceMetadataStore::new()));
     let (bg_tx, bg_rx) = scan::spawn_streaming_scan(
         scan_dirs,
         &cfg.tui.inline_dirs,
@@ -389,11 +391,11 @@ fn idle_if_no_input(input_count: usize) -> Duration {
 }
 
 fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetrics) {
-    if metrics.frame_elapsed.as_millis() < crate::perf_log::SLOW_FRAME_MS {
+    if metrics.frame_elapsed.as_millis() < SLOW_FRAME_MS {
         return;
     }
     tracing::info!(
-        elapsed_ms = crate::perf_log::ms(metrics.frame_elapsed.as_millis()),
+        frame_ms = crate::perf_log::ms(metrics.frame_elapsed.as_millis()),
         input_ms = crate::perf_log::ms(metrics.input_elapsed.as_millis()),
         bg_ms = crate::perf_log::ms(metrics.bg_elapsed.as_millis()),
         rows_ms = crate::perf_log::ms(metrics.rows_elapsed.as_millis()),

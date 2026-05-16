@@ -25,6 +25,7 @@ use unicode_width::UnicodeWidthStr;
 use super::DetailField;
 use super::PackageData;
 use super::pane_impls::PackagePane;
+use crate::constants::LINT_NO_LOG;
 use crate::tui::integration;
 use crate::tui::pane;
 use crate::tui::pane::PaneChrome;
@@ -552,7 +553,7 @@ fn lint_display_to_string(
             let icon = if lint_enabled {
                 integration::lint_icon_for(status.kind()).frame_at(animation_elapsed)
             } else {
-                crate::constants::LINT_NO_LOG
+                LINT_NO_LOG
             };
             format!("{icon} {count}")
         },

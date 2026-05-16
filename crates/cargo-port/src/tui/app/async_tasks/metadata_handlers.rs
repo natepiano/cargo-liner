@@ -106,8 +106,7 @@ impl App {
         fingerprint: &ManifestFingerprint,
         workspace_metadata: WorkspaceMetadata,
     ) -> bool {
-        let current_fp =
-            crate::project::ManifestFingerprint::capture(workspace_root.as_path()).ok();
+        let current_fp = ManifestFingerprint::capture(workspace_root.as_path()).ok();
         let fingerprint_drift = current_fp
             .as_ref()
             .is_some_and(|current| current != fingerprint);

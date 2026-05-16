@@ -42,6 +42,7 @@ use super::constants::PREFIX_WT_VENDORED;
 use super::lang;
 use super::pane_impls::ProjectListPane;
 use crate::project;
+use crate::project::GitStatus;
 use crate::project::MemberGroup;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
@@ -56,6 +57,7 @@ use crate::tui::app::ExpandKey;
 use crate::tui::app::ProjectListWidths;
 use crate::tui::app::VisibleRow;
 use crate::tui::columns;
+use crate::tui::columns::LintCell;
 use crate::tui::columns::ProjectRow;
 use crate::tui::pane;
 use crate::tui::pane::DismissTarget;
@@ -65,6 +67,7 @@ use crate::tui::pane::PaneTitleGroup;
 use crate::tui::project_list::ProjectList;
 use crate::tui::render;
 use crate::tui::state;
+use crate::tui::state::Lint;
 
 /// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
 #[allow(
@@ -362,7 +365,7 @@ fn render_root_item(
             .map_or("  ", |e| lang::language_icon(&e.language))
     };
     let lint_cell = state::lint_cell_for(
-        &crate::tui::state::Lint::status_for_root(&item.item),
+        &Lint::status_for_root(&item.item),
         ctx.config,
         ctx.animation_elapsed,
     );
@@ -432,12 +435,12 @@ fn render_child_item<P: project::ProjectFields>(
     let lang = project::Package::lang_icon();
     let lint_cell = if ctx.project_list.is_rust_at_path(path) {
         state::lint_cell_for(
-            &crate::tui::state::Lint::status_for_path(ctx.project_list, path),
+            &Lint::status_for_path(ctx.project_list, path),
             ctx.config,
             ctx.animation_elapsed,
         )
     } else {
-        crate::tui::columns::LintCell::hidden()
+        LintCell::hidden()
     };
     let ci = ctx
         .project_list
@@ -446,7 +449,7 @@ fn render_child_item<P: project::ProjectFields>(
     let origin_sync = if hide_git_status
         || matches!(
             ctx.project_list.git_status_for(path),
-            Some(crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored)
+            Some(GitStatus::Untracked | GitStatus::Ignored)
         ) {
         String::new()
     } else {
@@ -455,7 +458,7 @@ fn render_child_item<P: project::ProjectFields>(
     let main_sync = if hide_git_status
         || matches!(
             ctx.project_list.git_status_for(path),
-            Some(crate::project::GitStatus::Untracked | crate::project::GitStatus::Ignored)
+            Some(GitStatus::Untracked | GitStatus::Ignored)
         ) {
         String::new()
     } else {
@@ -541,7 +544,7 @@ fn render_worktree_entry<'a>(
     let ds = disk_color(disk_percentile(disk_bytes, sorted));
     let lang = item.lang_icon();
     let lint_cell = state::lint_cell_for(
-        &crate::tui::state::Lint::status_for_worktree(&item.item, wi),
+        &Lint::status_for_worktree(&item.item, wi),
         ctx.config,
         ctx.animation_elapsed,
     );
@@ -870,7 +873,7 @@ fn render_path_only_entry(
             DiscoveryRowKind::PathOnly,
         ),
         git_status,
-        lint: crate::tui::columns::LintCell::hidden(),
+        lint: LintCell::hidden(),
         disk: disk_text,
         disk_style: ds,
         disk_suffix,
