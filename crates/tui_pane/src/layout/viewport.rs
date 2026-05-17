@@ -13,32 +13,43 @@ pub struct ViewportOverflow {
     len:           usize,
     scroll_offset: usize,
     visible_rows:  usize,
+    cursor:        usize,
 }
 
 impl ViewportOverflow {
-    /// Construct viewport overflow facts from rendered row counts.
+    /// Construct viewport overflow facts from rendered row counts and
+    /// the cursor row. The page index is anchored to the cursor so it
+    /// advances and retreats by one as the user moves up or down.
     #[must_use]
-    pub const fn new(len: usize, scroll_offset: usize, visible_rows: usize) -> Self {
+    pub const fn new(len: usize, scroll_offset: usize, visible_rows: usize, cursor: usize) -> Self {
         Self {
             len,
             scroll_offset,
             visible_rows,
+            cursor,
         }
     }
 
-    /// Return the overflow label for the current position.
+    /// Return the overflow label for the current position. The label
+    /// pairs scroll arrows with an `N of M` indicator. `M` is
+    /// `len.div_ceil(visible_rows)`; `N` is the page containing the
+    /// cursor row, so each step the cursor takes that crosses a page
+    /// boundary updates the indicator in both directions.
     #[must_use]
-    pub const fn label(self) -> Option<&'static str> {
+    pub fn label(self) -> Option<String> {
         if self.visible_rows == 0 || self.len <= self.visible_rows {
             return None;
         }
 
         let has_above = self.scroll_offset > 0;
         let has_below = self.scroll_offset.saturating_add(self.visible_rows) < self.len;
+        let page_count = self.len.div_ceil(self.visible_rows);
+        let page_number = (self.cursor / self.visible_rows + 1).min(page_count);
+        let body = format!("{page_number} of {page_count}");
         match (has_above, has_below) {
-            (true, true) => Some("▲ more ▼"),
-            (true, false) => Some("▲ more"),
-            (false, true) => Some("more ▼"),
+            (true, true) => Some(format!("▲ {body} ▼")),
+            (true, false) => Some(format!("▲ {body}")),
+            (false, true) => Some(format!("{body} ▼")),
             (false, false) => None,
         }
     }
@@ -157,15 +168,16 @@ impl Viewport {
     #[must_use]
     pub const fn hovered(&self) -> Option<usize> { self.hovered }
 
-    /// Scroll overflow facts for this viewport.
+    /// Scroll overflow facts for this viewport. Uses `pos` as the
+    /// cursor row anchoring the page indicator.
     #[must_use]
     pub const fn overflow(&self) -> ViewportOverflow {
-        ViewportOverflow::new(self.len, self.scroll_offset, self.visible_rows)
+        ViewportOverflow::new(self.len, self.scroll_offset, self.visible_rows, self.pos)
     }
 
     /// Current overflow label for this viewport.
     #[must_use]
-    pub const fn overflow_affordance(&self) -> Option<&'static str> { self.overflow().label() }
+    pub fn overflow_affordance(&self) -> Option<String> { self.overflow().label() }
 
     /// Convert a screen-space position to a row in this viewport.
     #[must_use]
@@ -220,30 +232,49 @@ mod tests {
 
     #[test]
     fn overflow_affordance_is_hidden_when_all_rows_fit() {
-        let overflow = ViewportOverflow::new(3, 0, 3);
+        let overflow = ViewportOverflow::new(3, 0, 3, 0);
 
         assert_eq!(overflow.label(), None);
     }
 
     #[test]
     fn overflow_affordance_shows_bottom_only_at_top() {
-        let overflow = ViewportOverflow::new(5, 0, 3);
+        let overflow = ViewportOverflow::new(5, 0, 3, 0);
 
-        assert_eq!(overflow.label(), Some("more ▼"));
+        assert_eq!(overflow.label().as_deref(), Some("1 of 2 ▼"));
     }
 
     #[test]
     fn overflow_affordance_shows_both_in_middle() {
-        let overflow = ViewportOverflow::new(7, 2, 3);
+        let overflow = ViewportOverflow::new(7, 2, 3, 3);
 
-        assert_eq!(overflow.label(), Some("▲ more ▼"));
+        assert_eq!(overflow.label().as_deref(), Some("▲ 2 of 3 ▼"));
+    }
+
+    #[test]
+    fn overflow_affordance_advances_when_cursor_crosses_page_boundary_down() {
+        // len=40, vr=10. Cursor=10 means we just stepped down from row 9
+        // into page 2; the page indicator updates immediately.
+        let overflow = ViewportOverflow::new(40, 1, 10, 10);
+
+        assert_eq!(overflow.label().as_deref(), Some("▲ 2 of 4 ▼"));
+    }
+
+    #[test]
+    fn overflow_affordance_retreats_when_cursor_crosses_page_boundary_up() {
+        // Symmetric reverse of the down case: cursor=29 (last row of
+        // page 3) after stepping up from row 30 in page 4. The page
+        // count retreats by one in the same step.
+        let overflow = ViewportOverflow::new(40, 21, 10, 29);
+
+        assert_eq!(overflow.label().as_deref(), Some("▲ 3 of 4 ▼"));
     }
 
     #[test]
     fn overflow_affordance_shows_top_only_at_bottom() {
-        let overflow = ViewportOverflow::new(5, 2, 3);
+        let overflow = ViewportOverflow::new(5, 2, 3, 4);
 
-        assert_eq!(overflow.label(), Some("▲ more"));
+        assert_eq!(overflow.label().as_deref(), Some("▲ 2 of 2"));
     }
 
     #[test]
@@ -252,7 +283,7 @@ mod tests {
         viewport.set_len(5);
         viewport.set_viewport_rows(3);
 
-        assert_eq!(viewport.overflow_affordance(), Some("more ▼"));
+        assert_eq!(viewport.overflow_affordance().as_deref(), Some("1 of 2 ▼"));
     }
 
     #[test]

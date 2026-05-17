@@ -1253,7 +1253,7 @@ fn project_list_renders_framework_overflow_affordance() {
     let rendered = buffer_text_sized(&mut app, 100, 18);
 
     assert!(
-        rendered.contains("more ▼"),
+        rendered.contains("1 of"),
         "project list should render the framework-owned overflow marker"
     );
 }
@@ -1272,7 +1272,7 @@ fn finder_results_render_framework_overflow_affordance() {
 
     assert!(rendered.contains("Find Anything"));
     assert!(
-        rendered.contains("more ▼"),
+        rendered.contains("1 of"),
         "finder should render the framework-owned overflow marker"
     );
 }
@@ -1286,7 +1286,7 @@ fn settings_popup_renders_framework_overflow_affordance() {
 
     assert!(rendered.contains("Settings"));
     assert!(
-        rendered.contains("more ▼"),
+        rendered.contains("1 of"),
         "settings should render the framework-owned overflow marker"
     );
 }

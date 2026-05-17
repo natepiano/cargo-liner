@@ -213,6 +213,7 @@ pub fn render_project_list_pane_body(
     frame.render_stateful_widget(project_list, list_area, &mut list_state);
     pane.body_rect = list_area;
     pane.viewport.set_scroll_offset(list_state.offset());
+    pane.viewport.set_pos(projects.cursor());
     // The pre-Phase-5 implementation also called
     // `ctx.project_list.set_cursor(list_state.selected().unwrap_or(0))`
     // here; that mutation was a no-op (the cursor we passed in via

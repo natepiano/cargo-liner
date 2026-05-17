@@ -1173,7 +1173,12 @@ pub(super) fn render_settings_pane_body(
     render_overflow_affordance(
         frame,
         popup.outer,
-        ViewportOverflow::new(inputs.line_count, scroll_offset, visible_height),
+        ViewportOverflow::new(
+            inputs.line_count,
+            scroll_offset,
+            visible_height,
+            selected_line,
+        ),
         Style::default().fg(LABEL_COLOR),
     );
 }

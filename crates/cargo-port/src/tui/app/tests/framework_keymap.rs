@@ -939,7 +939,7 @@ fn keymap_popup_renders_framework_overflow_affordance() {
 
     assert!(text.contains("Keymap"));
     assert!(
-        text.contains("more ▼"),
+        text.contains("1 of"),
         "keymap overlay should render the framework-owned overflow marker"
     );
 }
