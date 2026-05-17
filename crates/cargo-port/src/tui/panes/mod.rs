@@ -48,6 +48,7 @@ pub(super) use layout::tab_order;
 pub(super) use lints::render_lints_pane_body;
 #[cfg(test)]
 pub(super) use package::description_lines;
+pub(super) use package::description_natural_height;
 #[cfg(test)]
 pub(super) use package::detail_column_scroll_offset;
 #[cfg(test)]

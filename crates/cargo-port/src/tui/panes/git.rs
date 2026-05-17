@@ -675,12 +675,15 @@ pub(super) fn render_git_pane_body(
 
     let content_area = render_git_about_section(
         frame,
-        git_data.description.as_deref(),
-        &flat_fields,
-        &git_data,
-        area,
-        git_inner,
-        border_style,
+        &GitAboutCtx {
+            description: git_data.description.as_deref(),
+            flat_fields: &flat_fields,
+            data: &git_data,
+            outer_area: area,
+            git_inner,
+            border_style,
+            description_min_height: ctx.description_min_height,
+        },
     );
 
     {
@@ -707,39 +710,50 @@ pub(super) fn render_git_pane_body(
     let _ = ctx;
 }
 
+/// Inputs for [`render_git_about_section`]. Grouped into a struct
+/// so the function stays under the argument-count threshold.
+struct GitAboutCtx<'a> {
+    description:            Option<&'a str>,
+    flat_fields:            &'a [DetailField],
+    data:                   &'a GitData,
+    outer_area:             Rect,
+    git_inner:              Rect,
+    border_style:           Style,
+    description_min_height: u16,
+}
+
 /// Render the About section (repo description) at the top of the Git panel,
 /// separated from the rest of the pane by a horizontal rule with `├`/`┤`
 /// endcaps. Returns the area below the separator for the scrolling content.
-fn render_git_about_section(
-    frame: &mut Frame,
-    description: Option<&str>,
-    flat_fields: &[DetailField],
-    data: &GitData,
-    outer_area: Rect,
-    git_inner: Rect,
-    border_style: Style,
-) -> Rect {
-    let description = description.map(str::trim).filter(|d| !d.is_empty());
+fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> Rect {
+    let git_inner = ctx.git_inner;
+    let description = ctx.description.map(str::trim).filter(|d| !d.is_empty());
     let Some(description) = description else {
         return git_inner;
     };
 
-    let remotes_block = if data.remotes.is_empty() {
+    let remotes_block = if ctx.data.remotes.is_empty() {
         0
     } else {
-        3 + data.remotes.len()
+        3 + ctx.data.remotes.len()
     };
-    let worktrees_block = if data.worktrees.is_empty() {
+    let worktrees_block = if ctx.data.worktrees.is_empty() {
         0
     } else {
-        3 + data.worktrees.len()
+        3 + ctx.data.worktrees.len()
     };
-    let lower_content_height = flat_fields.len() + remotes_block + worktrees_block;
+    let lower_content_height = ctx.flat_fields.len() + remotes_block + worktrees_block;
     let reserved_lower_height = u16::try_from(lower_content_height).unwrap_or(u16::MAX);
     let reserved_separator_height = u16::from(git_inner.height > reserved_lower_height);
-    let description_max_height = git_inner
+    let baseline_max = git_inner
         .height
         .saturating_sub(reserved_lower_height.saturating_add(reserved_separator_height));
+    // Hard cap: keep at least one row for the separator below.
+    let synced_cap = git_inner.height.saturating_sub(1);
+    let synced_floor = ctx.description_min_height.min(synced_cap);
+    // Let the sync floor push lower content down — the viewport
+    // scrolls when the remaining lower area shrinks.
+    let description_max_height = baseline_max.max(synced_floor);
     if description_max_height == 0 {
         return git_inner;
     }
@@ -750,7 +764,8 @@ fn render_git_about_section(
         .saturating_sub(description_padding.saturating_mul(2));
     let lines =
         package::description_lines(Some(description), description_width, description_max_height);
-    let description_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let natural_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let description_height = natural_height.max(synced_floor);
     if description_height == 0 {
         return git_inner;
     }
@@ -778,14 +793,14 @@ fn render_git_about_section(
         frame,
         &[PaneRule::Horizontal {
             area:        Rect {
-                x:      outer_area.x,
+                x:      ctx.outer_area.x,
                 y:      separator_y,
-                width:  outer_area.width,
+                width:  ctx.outer_area.width,
                 height: 1,
             },
             connector_x: None,
         }],
-        border_style,
+        ctx.border_style,
     );
 
     let content_y = separator_y.saturating_add(1);

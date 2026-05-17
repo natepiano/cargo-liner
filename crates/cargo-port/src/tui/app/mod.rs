@@ -565,6 +565,7 @@ impl App {
         ci_status_lookup: &'a CiStatusLookup,
         keymap_render_inputs: Option<&'a KeymapRenderInputs>,
         settings_render_inputs: Option<&'a SettingsRenderInputs>,
+        description_min_height: u16,
     ) -> RenderBorrows<'a> {
         let Self {
             panes,
@@ -600,6 +601,7 @@ impl App {
             ci_status_lookup,
             keymap_render_inputs,
             settings_render_inputs,
+            description_min_height,
         };
         RenderBorrows { registry, ctx }
     }

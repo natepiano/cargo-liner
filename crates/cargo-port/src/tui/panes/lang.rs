@@ -186,13 +186,7 @@ pub(super) fn render_lang_pane_body(
     let PaneRenderCtx {
         project_list: projects,
         selected_project_path,
-        animation_elapsed: _,
-        config: _,
-        inflight: _,
-        scan: _,
-        ci_status_lookup: _,
-        keymap_render_inputs: _,
-        settings_render_inputs: _,
+        ..
     } = ctx;
 
     let lang_stats = projects

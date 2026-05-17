@@ -203,13 +203,18 @@ const NO_DESCRIPTION_AVAILABLE: &str = "No description available";
 const STATS_TITLE: &str = "Structure";
 
 struct ProjectPanelRender<'a> {
-    pkg_data:          &'a PackageData,
-    fields:            &'a [DetailField],
-    focus:             PaneFocusState,
-    styles:            &'a RenderStyles,
-    border_style:      Style,
-    animation_elapsed: Duration,
-    lint_enabled:      bool,
+    pkg_data:               &'a PackageData,
+    fields:                 &'a [DetailField],
+    focus:                  PaneFocusState,
+    styles:                 &'a RenderStyles,
+    border_style:           Style,
+    animation_elapsed:      Duration,
+    lint_enabled:           bool,
+    /// Floor applied to the description-block height so the Package
+    /// and Git panes align their description bottoms when both have
+    /// a description. Clamped per-pane by the available
+    /// `description_max_height`.
+    description_min_height: u16,
 }
 
 #[derive(Clone, Copy)]
@@ -231,13 +236,8 @@ pub(super) fn render_package_pane_body(
     let PaneRenderCtx {
         animation_elapsed,
         config,
-        project_list: _,
-        selected_project_path: _,
-        inflight: _,
-        scan: _,
-        ci_status_lookup: _,
-        keymap_render_inputs: _,
-        settings_render_inputs: _,
+        description_min_height,
+        ..
     } = ctx;
     let lint_enabled = config.current().lint.enabled;
 
@@ -279,6 +279,7 @@ pub(super) fn render_package_pane_body(
         border_style,
         animation_elapsed: *animation_elapsed,
         lint_enabled,
+        description_min_height: *description_min_height,
     };
     let areas = render_project_description_section(frame, &context, area, project_inner);
     {
@@ -306,9 +307,15 @@ fn render_project_description_section(
     let lower_metadata_height = context.fields.len().max(context.pkg_data.stats_rows.len());
     let reserved_lower_height = u16::try_from(lower_metadata_height).unwrap_or(u16::MAX);
     let reserved_separator_height = u16::from(project_inner.height > reserved_lower_height);
-    let description_max_height = project_inner
+    let baseline_max = project_inner
         .height
         .saturating_sub(reserved_lower_height.saturating_add(reserved_separator_height));
+    // Hard cap: keep at least one row for the separator below.
+    let synced_cap = project_inner.height.saturating_sub(1);
+    let synced_floor = context.description_min_height.min(synced_cap);
+    // Let the sync floor push lower content down — viewport scrolls
+    // when the lower area shrinks below `reserved_lower_height`.
+    let description_max_height = baseline_max.max(synced_floor);
     let description_padding = u16::from(project_inner.width > 2);
     let description_width = project_inner
         .width
@@ -318,7 +325,8 @@ fn render_project_description_section(
         description_width,
         description_max_height,
     );
-    let description_height = u16::try_from(description_lines.len()).unwrap_or(u16::MAX);
+    let natural_height = u16::try_from(description_lines.len()).unwrap_or(u16::MAX);
+    let description_height = natural_height.max(synced_floor);
     let description_area = Rect {
         x: project_inner.x.saturating_add(description_padding),
         width: description_width,
@@ -482,6 +490,29 @@ fn render_stats_column(
         })
         .collect();
     frame.render_widget(Paragraph::new(stat_lines), stats_inner);
+}
+
+/// Natural height (in rows) the description text would occupy inside
+/// `area`, computed from the same geometry the Package and Git panes
+/// use at render time: outer block borders cost 2 on each axis, then
+/// a 1-cell horizontal padding inside that. Returns `0` for missing
+/// or empty descriptions so callers can suppress sync when either
+/// side has nothing to render.
+pub fn description_natural_height(text: Option<&str>, area: Rect) -> u16 {
+    let inner_width = area.width.saturating_sub(2);
+    let inner_height = area.height.saturating_sub(2);
+    let description_padding = u16::from(inner_width > 2);
+    let description_width = inner_width.saturating_sub(description_padding.saturating_mul(2));
+    if description_width == 0 || inner_height == 0 {
+        return 0;
+    }
+    let Some(text) = text.map(str::trim).filter(|s| !s.is_empty()) else {
+        return 0;
+    };
+    let wrapped = word_wrap(text, usize::from(description_width));
+    u16::try_from(wrapped.len())
+        .unwrap_or(u16::MAX)
+        .min(inner_height)
 }
 
 pub fn description_lines(

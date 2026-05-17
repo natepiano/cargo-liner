@@ -67,6 +67,12 @@ pub(crate) struct PaneRenderCtx<'a> {
     /// dispatcher; `Some` when the overlay is open. Built by
     /// [`crate::tui::settings::prepare_settings_render_inputs`].
     pub(crate) settings_render_inputs: Option<&'a SettingsRenderInputs>,
+    /// Minimum description-section height shared between the Package
+    /// and Git panes so their description blocks render with matching
+    /// row counts (and bottom edges align) when both have a
+    /// description. `0` when no sync is requested. Each pane clamps
+    /// this by its own per-pane description max height.
+    pub(crate) description_min_height: u16,
 }
 
 /// Result of a single pane's hit-test at a screen position.

@@ -155,6 +155,31 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
         .map(std::path::Path::to_path_buf);
     let animation_elapsed = app.animation_started.elapsed();
 
+    // Sync description-section heights so the Package and Git panes'
+    // description blocks render with matching row counts (and bottom
+    // edges align) when both panes have a description. Computed from
+    // the resolved layout's areas before the split-borrow consumes
+    // `&mut self`.
+    let pkg_desc_h = panes::description_natural_height(
+        app.panes
+            .package
+            .content()
+            .and_then(|d| d.description.as_deref()),
+        tiled.area(PaneId::Package),
+    );
+    let git_desc_h = panes::description_natural_height(
+        app.panes
+            .git
+            .content()
+            .and_then(|d| d.description.as_deref()),
+        tiled.area(PaneId::Git),
+    );
+    let description_min_height = if pkg_desc_h > 0 && git_desc_h > 0 {
+        pkg_desc_h.max(git_desc_h)
+    } else {
+        0
+    };
+
     {
         let mut split = app.split_for_render(
             selected_path.as_deref(),
@@ -162,6 +187,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
             &ci_status_lookup,
             None,
             None,
+            description_min_height,
         );
         tui_pane::render_panes(frame, &mut split.registry, &tiled, &split.ctx);
     }
@@ -375,6 +401,7 @@ fn dispatch_keymap_overlay(app: &mut App, frame: &mut Frame) {
         &ci_status_lookup,
         Some(&inputs),
         None,
+        0,
     );
     Renderable::render(split.registry.keymap_pane, frame, frame.area(), &split.ctx);
 }
@@ -402,6 +429,7 @@ fn dispatch_settings_overlay(app: &mut App, frame: &mut Frame) {
         &ci_status_lookup,
         None,
         Some(&inputs),
+        0,
     );
     Renderable::render(
         split.registry.settings_pane,
@@ -433,6 +461,7 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         ci_status_lookup: &ci_status_lookup,
         keymap_render_inputs: None,
         settings_render_inputs: None,
+        description_min_height: 0,
     };
     // Finder body sizes the popup itself; area arg is unused.
     Renderable::render(split.finder_pane, frame, frame.area(), &ctx);
