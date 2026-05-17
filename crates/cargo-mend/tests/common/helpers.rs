@@ -271,6 +271,7 @@ fn code_from_str(code: &str) -> DiagnosticCode {
         "internal_parent_pub_use_facade" => DiagnosticCode::InternalParentPubUseFacade,
         "narrow_to_pub_crate" => DiagnosticCode::NarrowToPubCrate,
         "field_visibility_wider_than_type" => DiagnosticCode::FieldVisibilityWiderThanType,
+        "imports_at_top" => DiagnosticCode::ImportsAtTop,
         _ => panic!("unknown diagnostic code in cargo JSON output: {code}"),
     }
 }

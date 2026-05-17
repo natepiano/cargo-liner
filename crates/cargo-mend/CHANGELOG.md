@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Add `imports_at_top` diagnostic and fix that lifts in-body `use` statements to the top of their enclosing file or inline module
+
 ## [0.13.2] - 2026-05-15
 
 ### Fixed

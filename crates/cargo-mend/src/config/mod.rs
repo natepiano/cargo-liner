@@ -44,6 +44,7 @@ wildcard_parent_pub_use = true
 internal_parent_pub_use_facade = true
 narrow_to_pub_crate = true
 field_visibility_wider_than_type = true
+imports_at_top = true
 ";
 
 // --- Diagnostic codes ---
@@ -63,6 +64,7 @@ pub(crate) enum DiagnosticCode {
     InternalParentPubUseFacade,
     NarrowToPubCrate,
     FieldVisibilityWiderThanType,
+    ImportsAtTop,
 }
 
 impl DiagnosticCode {
@@ -79,6 +81,7 @@ impl DiagnosticCode {
         Self::InternalParentPubUseFacade,
         Self::NarrowToPubCrate,
         Self::FieldVisibilityWiderThanType,
+        Self::ImportsAtTop,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -95,6 +98,7 @@ impl DiagnosticCode {
             Self::InternalParentPubUseFacade => "internal_parent_pub_use_facade",
             Self::NarrowToPubCrate => "narrow_to_pub_crate",
             Self::FieldVisibilityWiderThanType => "field_visibility_wider_than_type",
+            Self::ImportsAtTop => "imports_at_top",
         }
     }
 }

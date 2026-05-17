@@ -18,6 +18,7 @@ mod common;
 mod field_visibility_wider_than_type;
 mod forbidden_pub_crate;
 mod import_fixes;
+mod imports_at_top;
 mod inline_path_fixes;
 mod narrow_pub_crate;
 mod prefer_module_import;

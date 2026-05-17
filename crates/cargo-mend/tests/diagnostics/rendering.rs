@@ -38,6 +38,7 @@ fn create_all_diagnostics_fixture() -> TempDir {
         "src/internal_parent",
         "src/deep_parent/nested",
         "src/field_vis_parent",
+        "src/in_body_use",
     ] {
         fs::create_dir_all(temp.path().join(dir)).expect("create fixture dir");
     }
@@ -63,6 +64,7 @@ mod type_parent;
 mod deep_parent;
 mod narrow_mod;
 mod field_vis_parent;
+mod in_body_use;
 pub mod review_mod;
 pub use private_parent::PublicContainer;
 
@@ -183,6 +185,17 @@ pub struct Suspicious;
     )
     .expect("write deep leaf");
     write_field_vis_fixture(root);
+    write_in_body_use_fixture(root);
+}
+
+fn write_in_body_use_fixture(root: &Path) {
+    fs::write(root.join("src/in_body_use/mod.rs"), "mod consumer;\n")
+        .expect("write in_body_use mod");
+    fs::write(
+        root.join("src/in_body_use/consumer.rs"),
+        "fn example() {\n    use std::collections::HashMap;\n    let _map: HashMap<u8, u8> = HashMap::new();\n}\n",
+    )
+    .expect("write in_body_use consumer");
 }
 
 fn write_field_vis_fixture(root: &Path) {
@@ -273,7 +286,7 @@ fn fixture_renders_every_current_diagnostic() {
         codes, expected_codes,
         "fixture should trigger every diagnostic at least once"
     );
-    assert_eq!(report.findings.len(), 14);
+    assert_eq!(report.findings.len(), 15);
     assert_summary_matches_findings(&report);
 
     let rendered_output = mend_command()
@@ -389,7 +402,7 @@ fn successive_json_runs_reuse_cached_findings_for_same_scope() {
     let first_codes: BTreeSet<_> = first.findings.iter().map(|finding| finding.code).collect();
     let second_codes: BTreeSet<_> = second.findings.iter().map(|finding| finding.code).collect();
 
-    assert_eq!(first.findings.len(), 14);
+    assert_eq!(first.findings.len(), 15);
     assert_eq!(second.findings.len(), first.findings.len());
     assert_eq!(second_codes, first_codes);
     assert_eq!(second.summary.errors, first.summary.errors);

@@ -11,6 +11,7 @@ pub(crate) enum FixKind {
     InlinePathQualifiedType,
     NarrowToPubCrate,
     FieldVisibility,
+    ImportsAtTop,
     PubUse,
 }
 
@@ -32,6 +33,7 @@ impl From<&FixCli> for FixSelection {
                     fix_kinds.insert(FixKind::InlinePathQualifiedType);
                     fix_kinds.insert(FixKind::NarrowToPubCrate);
                     fix_kinds.insert(FixKind::FieldVisibility);
+                    fix_kinds.insert(FixKind::ImportsAtTop);
                 }
                 if fix_cli.includes(FixRequest::PubUse) {
                     fix_kinds.insert(FixKind::PubUse);
@@ -50,6 +52,7 @@ impl FixSelection {
         fix_kinds.insert(FixKind::InlinePathQualifiedType);
         fix_kinds.insert(FixKind::NarrowToPubCrate);
         fix_kinds.insert(FixKind::FieldVisibility);
+        fix_kinds.insert(FixKind::ImportsAtTop);
         fix_kinds.insert(FixKind::PubUse);
         Self { fix_kinds }
     }

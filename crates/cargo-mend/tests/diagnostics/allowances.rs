@@ -791,7 +791,7 @@ edition = "2024"
     .expect("write child");
     fs::write(
         temp.path().join("src/consumer/mod.rs"),
-        "fn consume() {\n    use crate::private_parent::PublicContainer;\n    let _ = std::mem::size_of::<PublicContainer>();\n}\n",
+        "use crate::private_parent::PublicContainer;\n\nfn consume() {\n    let _ = std::mem::size_of::<PublicContainer>();\n}\n",
     )
     .expect("write consumer");
 

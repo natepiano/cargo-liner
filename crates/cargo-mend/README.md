@@ -694,6 +694,45 @@ struct Hidden {
 
 Run `cargo mend --fix` to auto-remove dead field annotations.
 
+<a id="imports-at-top"></a>
+### Imports at top of file
+
+This warning flags `use` statements written inside function bodies, closures, and other block
+expressions. They should live at the top of the enclosing file or the enclosing inline
+`mod { ... }` block instead.
+
+```rust
+// before
+fn example() {
+    use crate::movable::Movable;
+    let m = Movable::default();
+}
+```
+
+```rust
+// after
+use crate::movable::Movable;
+
+fn example() {
+    let m = Movable::default();
+}
+```
+
+`cargo mend --fix` lifts the `use` to the top of the enclosing file or inline module. The
+fix is conservative:
+
+- `use` statements with any attribute (most importantly `#[cfg(...)]`) are left in place
+  because lifting them could change what's in scope under a different configuration.
+- Glob imports (`use foo::*;`) inside a body are left in place; they may shadow arbitrary
+  names at the destination.
+- When the bare name the in-body `use` introduces is already bound at the top of the
+  destination — by another `use` with a different full path, or by a struct/enum/fn/etc.
+  defined at that level — the in-body `use` is left in place to avoid an `E0255` collision.
+- When the bare name and full path already match an existing top-level `use`, the in-body
+  duplicate is deleted.
+
+Run `cargo mend --fix` to auto-lift `use` statements.
+
 ## License
 
 Licensed under either of

@@ -8,6 +8,8 @@ use super::field_visibility::FieldVisibilityFixScan;
 use super::imports;
 use super::imports::ImportScan;
 use super::imports::ValidatedFixSet;
+use super::imports_at_top;
+use super::imports_at_top::ImportsAtTopScan;
 use super::inline_path_qualified_type;
 use super::inline_path_qualified_type::InlinePathScan;
 use super::narrow_pub_crate;
@@ -60,6 +62,7 @@ struct RunPlan {
     inline_path_scan:          Option<InlinePathScan>,
     narrow_pub_crate_scan:     Option<NarrowPubCrateScan>,
     field_visibility_fix_scan: Option<FieldVisibilityFixScan>,
+    imports_at_top_scan:       Option<ImportsAtTopScan>,
     pub_use_scan:              Option<PubUseFixScan>,
     check_duration:            Duration,
     compiler_warnings:         usize,
@@ -73,6 +76,7 @@ struct FixScans<'a> {
     inline_types:     Option<&'a InlinePathScan>,
     narrowed_pub:     Option<&'a NarrowPubCrateScan>,
     field_visibility: Option<&'a FieldVisibilityFixScan>,
+    imports_at_top:   Option<&'a ImportsAtTopScan>,
     pub_use:          Option<&'a PubUseFixScan>,
 }
 
@@ -84,6 +88,7 @@ impl RunPlan {
             inline_types:     self.inline_path_scan.as_ref(),
             narrowed_pub:     self.narrow_pub_crate_scan.as_ref(),
             field_visibility: self.field_visibility_fix_scan.as_ref(),
+            imports_at_top:   self.imports_at_top_scan.as_ref(),
             pub_use:          self.pub_use_scan.as_ref(),
         }
     }
@@ -97,6 +102,7 @@ impl FixScans<'_> {
             self.inline_types.map(|scan| scan.findings.len()),
             self.narrowed_pub.map(|scan| scan.fixes.len()),
             self.field_visibility.map(|scan| scan.fixes.len()),
+            self.imports_at_top.map(|scan| scan.findings.len()),
         ]
         .into_iter()
         .flatten()
@@ -178,6 +184,12 @@ impl<'a> MendRunner<'a> {
             .then(|| field_visibility::scan_from_report(&report))
             .transpose()
             .map_err(MendFailure::Unexpected)?;
+        let imports_at_top_scan = (operation_mode.fixes.contains(FixKind::ImportsAtTop)
+            && diagnostics_config.is_enabled(DiagnosticCode::ImportsAtTop)
+                == DiagnosticStatus::Enabled)
+            .then(|| imports_at_top::scan_selection(self.selection))
+            .transpose()
+            .map_err(MendFailure::Unexpected)?;
         let pub_use_scan = operation_mode
             .fixes
             .contains(FixKind::PubUse)
@@ -193,6 +205,7 @@ impl<'a> MendRunner<'a> {
             inline_path_scan,
             narrow_pub_crate_scan,
             field_visibility_fix_scan,
+            imports_at_top_scan,
             pub_use_scan,
             check_duration,
             compiler_warnings,
@@ -332,6 +345,9 @@ impl<'a> MendRunner<'a> {
         if let Some(scan) = fix_scans.field_visibility {
             fixes.extend(scan.fixes.iter().cloned());
         }
+        if let Some(scan) = fix_scans.imports_at_top {
+            fixes.extend(scan.fixes.iter().cloned());
+        }
         if let Some(scan) = fix_scans.pub_use {
             fixes.extend(scan.fixes.iter().cloned());
         }
@@ -409,6 +425,12 @@ impl<'a> MendRunner<'a> {
             let inline_path_scan = inline_path_qualified_type::scan_selection(self.selection)
                 .map_err(MendFailure::Unexpected)?;
             report.findings.extend(inline_path_scan.findings);
+        }
+        if diagnostics_config.is_enabled(DiagnosticCode::ImportsAtTop) == DiagnosticStatus::Enabled
+        {
+            let imports_at_top_scan =
+                imports_at_top::scan_selection(self.selection).map_err(MendFailure::Unexpected)?;
+            report.findings.extend(imports_at_top_scan.findings);
         }
         report.findings.sort_by(|a, b| {
             (
@@ -539,6 +561,7 @@ mod tests {
             inline_types:     None,
             narrowed_pub:     None,
             field_visibility: Some(field_visibility),
+            imports_at_top:   None,
             pub_use:          None,
         }
     }

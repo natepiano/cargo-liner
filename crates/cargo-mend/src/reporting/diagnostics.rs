@@ -23,6 +23,8 @@ pub(crate) enum FixSupport {
     NarrowToPubCrate,
     #[serde(rename = "fix_field_visibility")]
     FieldVisibility,
+    #[serde(rename = "fix_imports_at_top")]
+    ImportsAtTop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +41,8 @@ impl FixSupport {
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
             | Self::NarrowToPubCrate
-            | Self::FieldVisibility => Some(HINT_FIXABLE_WITH_FIX),
+            | Self::FieldVisibility
+            | Self::ImportsAtTop => Some(HINT_FIXABLE_WITH_FIX),
             Self::PubUse => Some(HINT_FIXABLE_WITH_FIX_PUB_USE),
         }
     }
@@ -51,7 +54,8 @@ impl FixSupport {
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
             | Self::NarrowToPubCrate
-            | Self::FieldVisibility => Some(FixSummaryBucket::Fix),
+            | Self::FieldVisibility
+            | Self::ImportsAtTop => Some(FixSummaryBucket::Fix),
             Self::PubUse => Some(FixSummaryBucket::PubUse),
         }
     }
@@ -79,94 +83,101 @@ pub(crate) struct DiagnosticSpec {
     pub fixability:  FixSupport,
 }
 
-pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
-    static FORBIDDEN_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "use of `pub(crate)` is forbidden by policy",
-        inline_help: None,
-        help_anchor: "forbidden-pub-crate",
-        detail_mode: DetailMode::None,
-        fixability:  FixSupport::None,
-    };
-    static FORBIDDEN_PUB_IN_CRATE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "use of `pub(in crate::...)` is forbidden by policy",
-        inline_help: None,
-        help_anchor: "forbidden-pub-in-crate",
-        detail_mode: DetailMode::None,
-        fixability:  FixSupport::None,
-    };
-    static REVIEW_PUB_MOD: DiagnosticSpec = DiagnosticSpec {
-        headline:    "`pub mod` requires explicit review or allowlisting",
-        inline_help: None,
-        help_anchor: "review-pub-mod",
-        detail_mode: DetailMode::None,
-        fixability:  FixSupport::None,
-    };
-    static SUSPICIOUS_PUB: DiagnosticSpec = DiagnosticSpec {
-        headline:    "`pub` is broader than this nested module boundary",
-        inline_help: Some("consider using: `pub(super)`"),
-        help_anchor: "suspicious-pub",
-        detail_mode: DetailMode::MessageRelatedAndFix,
-        fixability:  FixSupport::None,
-    };
-    static PREFER_MODULE_IMPORT: DiagnosticSpec = DiagnosticSpec {
-        headline:    "function import should use module-qualified form",
-        inline_help: None,
-        help_anchor: "prefer-module-import",
-        detail_mode: DetailMode::MessageRelatedAndFix,
-        fixability:  FixSupport::PreferModuleImport,
-    };
-    static INLINE_PATH_QUALIFIED_TYPE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "inline path-qualified type should use a `use` import",
-        inline_help: None,
-        help_anchor: "inline-path-qualified-type",
-        detail_mode: DetailMode::MessageRelatedAndFix,
-        fixability:  FixSupport::InlinePathQualifiedType,
-    };
-    static SHORTEN_LOCAL_CRATE_IMPORT: DiagnosticSpec = DiagnosticSpec {
-        headline:    "crate-relative import can be shortened to a local-relative import",
-        inline_help: None,
-        help_anchor: "shorten-local-crate-import",
-        detail_mode: DetailMode::MessageRelatedAndFix,
-        fixability:  FixSupport::ShortenImport,
-    };
-    static REPLACE_DEEP_SUPER_IMPORT: DiagnosticSpec = DiagnosticSpec {
-        headline:    "deep `super::` chain should use a `crate::` path",
-        inline_help: None,
-        help_anchor: "replace-deep-super-import",
-        detail_mode: DetailMode::MessageRelatedAndFix,
-        fixability:  FixSupport::ShortenImport,
-    };
-    static WILDCARD_PARENT_PUB_USE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "parent module `pub use *` should be explicit",
-        inline_help: Some("consider re-exporting explicit items instead of `*`"),
-        help_anchor: "wildcard-parent-pub-use",
-        detail_mode: DetailMode::None,
-        fixability:  FixSupport::None,
-    };
-    static INTERNAL_PARENT_PUB_USE_FACADE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "parent module `pub use` is acting as an internal facade",
-        inline_help: Some(
-            "consider removing this parent facade and importing the item from its defining child module",
-        ),
-        help_anchor: "internal-parent-pub-use-facade",
-        detail_mode: DetailMode::MessageRelatedAndFix,
-        fixability:  FixSupport::InternalParentFacade,
-    };
-    static NARROW_TO_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "`pub` exceeds the item's effective reach — use `pub(crate)`",
-        inline_help: Some("consider using: `pub(crate)`"),
-        help_anchor: "narrow-to-pub-crate",
-        detail_mode: DetailMode::MessageRelatedAndFix,
-        fixability:  FixSupport::NarrowToPubCrate,
-    };
-    static FIELD_VISIBILITY_WIDER_THAN_TYPE: DiagnosticSpec = DiagnosticSpec {
-        headline:    "field visibility is wider than its containing type",
-        inline_help: None,
-        help_anchor: "field-visibility-wider-than-type",
-        detail_mode: DetailMode::MessageRelatedAndFix,
-        fixability:  FixSupport::FieldVisibility,
-    };
+static FORBIDDEN_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
+    headline:    "use of `pub(crate)` is forbidden by policy",
+    inline_help: None,
+    help_anchor: "forbidden-pub-crate",
+    detail_mode: DetailMode::None,
+    fixability:  FixSupport::None,
+};
+static FORBIDDEN_PUB_IN_CRATE: DiagnosticSpec = DiagnosticSpec {
+    headline:    "use of `pub(in crate::...)` is forbidden by policy",
+    inline_help: None,
+    help_anchor: "forbidden-pub-in-crate",
+    detail_mode: DetailMode::None,
+    fixability:  FixSupport::None,
+};
+static REVIEW_PUB_MOD: DiagnosticSpec = DiagnosticSpec {
+    headline:    "`pub mod` requires explicit review or allowlisting",
+    inline_help: None,
+    help_anchor: "review-pub-mod",
+    detail_mode: DetailMode::None,
+    fixability:  FixSupport::None,
+};
+static SUSPICIOUS_PUB: DiagnosticSpec = DiagnosticSpec {
+    headline:    "`pub` is broader than this nested module boundary",
+    inline_help: Some("consider using: `pub(super)`"),
+    help_anchor: "suspicious-pub",
+    detail_mode: DetailMode::MessageRelatedAndFix,
+    fixability:  FixSupport::None,
+};
+static PREFER_MODULE_IMPORT: DiagnosticSpec = DiagnosticSpec {
+    headline:    "function import should use module-qualified form",
+    inline_help: None,
+    help_anchor: "prefer-module-import",
+    detail_mode: DetailMode::MessageRelatedAndFix,
+    fixability:  FixSupport::PreferModuleImport,
+};
+static INLINE_PATH_QUALIFIED_TYPE: DiagnosticSpec = DiagnosticSpec {
+    headline:    "inline path-qualified type should use a `use` import",
+    inline_help: None,
+    help_anchor: "inline-path-qualified-type",
+    detail_mode: DetailMode::MessageRelatedAndFix,
+    fixability:  FixSupport::InlinePathQualifiedType,
+};
+static SHORTEN_LOCAL_CRATE_IMPORT: DiagnosticSpec = DiagnosticSpec {
+    headline:    "crate-relative import can be shortened to a local-relative import",
+    inline_help: None,
+    help_anchor: "shorten-local-crate-import",
+    detail_mode: DetailMode::MessageRelatedAndFix,
+    fixability:  FixSupport::ShortenImport,
+};
+static REPLACE_DEEP_SUPER_IMPORT: DiagnosticSpec = DiagnosticSpec {
+    headline:    "deep `super::` chain should use a `crate::` path",
+    inline_help: None,
+    help_anchor: "replace-deep-super-import",
+    detail_mode: DetailMode::MessageRelatedAndFix,
+    fixability:  FixSupport::ShortenImport,
+};
+static WILDCARD_PARENT_PUB_USE: DiagnosticSpec = DiagnosticSpec {
+    headline:    "parent module `pub use *` should be explicit",
+    inline_help: Some("consider re-exporting explicit items instead of `*`"),
+    help_anchor: "wildcard-parent-pub-use",
+    detail_mode: DetailMode::None,
+    fixability:  FixSupport::None,
+};
+static INTERNAL_PARENT_PUB_USE_FACADE: DiagnosticSpec = DiagnosticSpec {
+    headline:    "parent module `pub use` is acting as an internal facade",
+    inline_help: Some(
+        "consider removing this parent facade and importing the item from its defining child module",
+    ),
+    help_anchor: "internal-parent-pub-use-facade",
+    detail_mode: DetailMode::MessageRelatedAndFix,
+    fixability:  FixSupport::InternalParentFacade,
+};
+static NARROW_TO_PUB_CRATE: DiagnosticSpec = DiagnosticSpec {
+    headline:    "`pub` exceeds the item's effective reach — use `pub(crate)`",
+    inline_help: Some("consider using: `pub(crate)`"),
+    help_anchor: "narrow-to-pub-crate",
+    detail_mode: DetailMode::MessageRelatedAndFix,
+    fixability:  FixSupport::NarrowToPubCrate,
+};
+static FIELD_VISIBILITY_WIDER_THAN_TYPE: DiagnosticSpec = DiagnosticSpec {
+    headline:    "field visibility is wider than its containing type",
+    inline_help: None,
+    help_anchor: "field-visibility-wider-than-type",
+    detail_mode: DetailMode::MessageRelatedAndFix,
+    fixability:  FixSupport::FieldVisibility,
+};
+static IMPORTS_AT_TOP: DiagnosticSpec = DiagnosticSpec {
+    headline:    "`use` statement should live at the top of the file or inline module",
+    inline_help: None,
+    help_anchor: "imports-at-top",
+    detail_mode: DetailMode::MessageRelatedAndFix,
+    fixability:  FixSupport::ImportsAtTop,
+};
 
+pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
     match code {
         DiagnosticCode::ForbiddenPubCrate => &FORBIDDEN_PUB_CRATE,
         DiagnosticCode::ForbiddenPubInCrate => &FORBIDDEN_PUB_IN_CRATE,
@@ -180,6 +191,7 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         DiagnosticCode::InternalParentPubUseFacade => &INTERNAL_PARENT_PUB_USE_FACADE,
         DiagnosticCode::NarrowToPubCrate => &NARROW_TO_PUB_CRATE,
         DiagnosticCode::FieldVisibilityWiderThanType => &FIELD_VISIBILITY_WIDER_THAN_TYPE,
+        DiagnosticCode::ImportsAtTop => &IMPORTS_AT_TOP,
     }
 }
 

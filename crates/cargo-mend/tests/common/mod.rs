@@ -66,6 +66,7 @@ pub(super) enum DiagnosticCode {
     InternalParentPubUseFacade,
     NarrowToPubCrate,
     FieldVisibilityWiderThanType,
+    ImportsAtTop,
 }
 
 impl DiagnosticCode {
@@ -82,6 +83,7 @@ impl DiagnosticCode {
         Self::InternalParentPubUseFacade,
         Self::NarrowToPubCrate,
         Self::FieldVisibilityWiderThanType,
+        Self::ImportsAtTop,
     ];
 
     pub(super) const fn as_str(self) -> &'static str {
@@ -98,6 +100,7 @@ impl DiagnosticCode {
             Self::InternalParentPubUseFacade => "internal_parent_pub_use_facade",
             Self::NarrowToPubCrate => "narrow_to_pub_crate",
             Self::FieldVisibilityWiderThanType => "field_visibility_wider_than_type",
+            Self::ImportsAtTop => "imports_at_top",
         }
     }
 }
@@ -117,6 +120,8 @@ pub(super) enum FixSupport {
     NarrowToPubCrate,
     #[serde(rename = "fix_field_visibility")]
     FieldVisibility,
+    #[serde(rename = "fix_imports_at_top")]
+    ImportsAtTop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,7 +138,8 @@ impl FixSupport {
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
             | Self::NarrowToPubCrate
-            | Self::FieldVisibility => Some("this warning is auto-fixable with `cargo mend --fix`"),
+            | Self::FieldVisibility
+            | Self::ImportsAtTop => Some("this warning is auto-fixable with `cargo mend --fix`"),
             Self::PubUse => Some("this warning is auto-fixable with `cargo mend --fix-pub-use`"),
         }
     }
@@ -145,7 +151,8 @@ impl FixSupport {
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
             | Self::NarrowToPubCrate
-            | Self::FieldVisibility => Some(FixSummaryBucket::Fix),
+            | Self::FieldVisibility
+            | Self::ImportsAtTop => Some(FixSummaryBucket::Fix),
             Self::PubUse => Some(FixSummaryBucket::PubUse),
         }
     }
@@ -219,6 +226,11 @@ pub(super) const fn diagnostic_spec(code: DiagnosticCode) -> &'static Diagnostic
         help_anchor: "field-visibility-wider-than-type",
         fix_support: FixSupport::FieldVisibility,
     };
+    const IMPORTS_AT_TOP: DiagnosticSpec = DiagnosticSpec {
+        headline:    "`use` statement should live at the top of the file or inline module",
+        help_anchor: "imports-at-top",
+        fix_support: FixSupport::ImportsAtTop,
+    };
 
     match code {
         DiagnosticCode::ForbiddenPubCrate => &FORBIDDEN_PUB_CRATE,
@@ -233,5 +245,6 @@ pub(super) const fn diagnostic_spec(code: DiagnosticCode) -> &'static Diagnostic
         DiagnosticCode::InternalParentPubUseFacade => &INTERNAL_PARENT_PUB_USE_FACADE,
         DiagnosticCode::NarrowToPubCrate => &NARROW_TO_PUB_CRATE,
         DiagnosticCode::FieldVisibilityWiderThanType => &FIELD_VISIBILITY_WIDER_THAN_TYPE,
+        DiagnosticCode::ImportsAtTop => &IMPORTS_AT_TOP,
     }
 }
