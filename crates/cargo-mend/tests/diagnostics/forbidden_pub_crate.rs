@@ -283,9 +283,7 @@ edition = "2024"
     let forbidden_count = report
         .findings
         .iter()
-        .filter(|f| {
-            f.code == DiagnosticCode::ForbiddenPubCrate && f.path.ends_with("src/foo.rs")
-        })
+        .filter(|f| f.code == DiagnosticCode::ForbiddenPubCrate && f.path.ends_with("src/foo.rs"))
         .count();
     assert_eq!(
         forbidden_count, 1,
