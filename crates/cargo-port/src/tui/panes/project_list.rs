@@ -443,9 +443,12 @@ fn render_child_item<P: project::ProjectFields>(
     } else {
         LintCell::hidden()
     };
-    let ci = ctx
-        .project_list
-        .ci_status_using_lookup(path, ctx.ci_status_lookup);
+    let ci = if is_workspace_member {
+        None
+    } else {
+        ctx.project_list
+            .ci_status_using_lookup(path, ctx.ci_status_lookup)
+    };
     let hide_git_status = is_workspace_member;
     let origin_sync = if hide_git_status
         || matches!(
