@@ -153,10 +153,13 @@ the interpolator — modifiers on these specs are ignored for the
 gradient itself.
 
 Phase 1 audits both `tui_pane/` and `src/tui/` for raw `Color::White` /
-`Color::Black` / `Color::DarkGray` / `Color::Cyan` / etc. literals
-(~17 occurrences) and routes each into the matching `Theme` substruct
-field (most land in `TextTheme`). The disk-gradient stops hard-coded
-inside `disk_color` (`Rgb(100,220,100)`, `Rgb(255,255,255)`,
+`Color::Black` / `Color::DarkGray` / `Color::Cyan` / etc. literals and
+routes each into the matching `Theme` substruct field. The audited
+count (see "Phase 1 audit" section below) is 24 non-test literal
+occurrences across 12 files: 17 `Color::White` text uses route to
+`text.default`, and 7 toast-local constants move into a separate
+`fallback_toast_palette()`. The disk-gradient stops hard-coded inside
+`disk_color` (`Rgb(100,220,100)`, `Rgb(255,255,255)`,
 `Rgb(255,100,100)` plus their interpolation deltas) move into
 `DiskUsageTheme.{low,mid,high}.color`; the interpolation arithmetic
 stays inline and now reads from `ctx.theme.disk_usage` instead of from
@@ -404,6 +407,175 @@ order:
 Doing theme first prevents keymap rendering from briefly using a stale
 palette.
 
+## Phase 1 audit (2026-05-17)
+
+Concrete inventory captured before any code lands so the constructors
+match shipped behavior exactly and the Phase 1 commit has no surprises.
+
+### Constants inventory (21 colors across 2 files)
+
+`tui_pane/src/constants.rs` — 18 `pub const FOO: Color` items:
+
+| Const | Value | Role | → Theme field |
+|-------|-------|------|---------------|
+| `ACCENT_COLOR` | `Cyan` | spinners, shortcut hints, finder cursor | `semantic.accent` |
+| `ACTIVE_BORDER_COLOR` | `Yellow` | focused pane border | `pane_chrome.active_border` |
+| `ACTIVE_FOCUS_COLOR` | `Rgb(125,125,125)` | focused row background | `focus.active` |
+| `HOVER_FOCUS_COLOR` | `Rgb(80,80,80)` | hovered row background | `focus.hover` |
+| `COLUMN_HEADER_COLOR` | `Rgb(150,190,180)` | project list column headers | `status.column_header` (+ Bold modifier) |
+| `DISCOVERY_SHIMMER_COLOR` | `Rgb(150,210,255)` | new-project shimmer | `finder.discovery_shimmer` |
+| `ERROR_COLOR` | `Red` | error text, broken-worktree backgrounds | `semantic.error` |
+| `INLINE_ERROR_COLOR` | `Yellow` | inline error on selected settings row | `semantic.inline_error` |
+| `INACTIVE_BORDER_COLOR` | `DarkGray` | unfocused pane border | `pane_chrome.inactive_border` |
+| `INACTIVE_TITLE_COLOR` | `White` | unfocused pane title | `pane_chrome.inactive_title` |
+| `LABEL_COLOR` | aliases `COLUMN_HEADER_COLOR` | labels, countdowns, hints, chevrons | `semantic.label` |
+| `REMEMBERED_FOCUS_COLOR` | `Rgb(40,40,40)` | last-focused row background | `focus.remembered` |
+| `SECONDARY_TEXT_COLOR` | `Gray` | dim secondary text | `text.secondary` |
+| `STATUS_BAR_COLOR` | `DarkGray` | bottom status bar background | `status.bar` |
+| `SUCCESS_COLOR` | `Green` | clean/passed/synced | `semantic.success` |
+| `TARGET_BENCH_COLOR` | `Magenta` | bench target type | `status.target_bench` |
+| `TITLE_COLOR` | `Yellow` | active titles, headers, stat numbers | `pane_chrome.active_title.color` |
+| `FINDER_MATCH_BG` | `Rgb(0,90,100)` | fuzzy match background tint | `finder.match_bg` |
+
+`src/tui/constants.rs` — 3 `pub(super) const` items:
+
+| Const | Value | Role | → Theme field |
+|-------|-------|------|---------------|
+| `GIT_MODIFIED_COLOR` | `Indexed(208)` | git modified marker | `git.modified` |
+| `GIT_UNTRACKED_COLOR` | `Green` | git untracked marker | `git.untracked` |
+| `GIT_IGNORED_COLOR` | `DarkGray` | git ignored marker | `git.ignored` |
+
+Notes:
+
+- `LABEL_COLOR` aliases `COLUMN_HEADER_COLOR` (same Rgb). The theme
+  split keeps them as separate fields (`semantic.label` and
+  `status.column_header`); both default to `Rgb(150,190,180)` so the
+  migration is behavior-preserving, but a user theme can later
+  override them independently.
+- `TITLE_COLOR`'s doc comment lists six roles ("active pane titles,
+  section headers, group header labels, stat numbers, confirm dialog
+  prompts, popup titles, summary row"). Phase 1 routes every call
+  site to `pane_chrome.active_title.color`; later phases can split
+  these if a user wants stat numbers in a different color from pane
+  titles.
+- `status.column_header` defaults to Bold because every current call
+  site adds `Modifier::BOLD` at the use point (e.g. `lang.rs:75`,
+  `lang.rs:91`). Absorbing it into the theme default lets call sites
+  drop the explicit modifier.
+
+### Raw `Color::` literal inventory (24 occurrences across 12 files)
+
+Non-test only. Test code retains its inline `Color::Red` / `Color::Blue`
+literals — those are pattern-match fixtures, not user-visible palette.
+
+#### Toast-local consts (7 — move into fallback toast palette)
+
+`tui_pane/src/toasts/render/mod.rs` declares its own private copies of
+six constants from the framework palette (so toasts stay readable even
+if the active theme is corrupt), plus `card.rs:55` uses an inline
+`Color::White` as the accent for non-error/non-warning toasts. All seven
+move into the new `fallback_toast_palette()` (see next subsection):
+
+| File:line | Value | Fallback palette field |
+|-----------|-------|------------------------|
+| `tui_pane/src/toasts/render/mod.rs:21` | `Cyan` | `accent` |
+| `tui_pane/src/toasts/render/mod.rs:22` | `Yellow` | `border_focused` |
+| `tui_pane/src/toasts/render/mod.rs:23` | `Red` | `error` |
+| `tui_pane/src/toasts/render/mod.rs:24` | `Rgb(150,190,180)` | `label` |
+| `tui_pane/src/toasts/render/mod.rs:25` | `Yellow` | `title` |
+| `tui_pane/src/toasts/render/mod.rs:26` | `Yellow` | `warning` |
+| `tui_pane/src/toasts/render/card.rs:55` | `White` | `plain_accent` |
+
+#### `Color::White` text uses (17 — route to `text.default`)
+
+`Color::White` is the universal "regular foreground" today. Every
+non-test occurrence routes to `text.default`:
+
+| File:line | Surrounding bg | Notes |
+|-----------|----------------|-------|
+| `src/tui/keymap_ui/view.rs:103` | (default) | keymap entry default text |
+| `src/tui/keymap_ui/view.rs:111` | (default) | keymap entry default text |
+| `src/tui/keymap_ui/view.rs:128` | (default) | keymap entry default text |
+| `src/tui/columns/mod.rs:445` | `ERROR_COLOR` | broken worktree style |
+| `src/tui/columns/mod.rs:530` | (default) | column text |
+| `src/tui/panes/project_list.rs:621` | `ERROR_COLOR` | broken worktree row |
+| `src/tui/render.rs:361` | (default) | finder prompt text |
+| `src/tui/render.rs:559` | `STATUS_BAR_COLOR` | status line |
+| `src/tui/render.rs:564` | (default) | status value |
+| `src/tui/panes/git.rs:385` | `ERROR_COLOR` | broken git pane |
+| `src/tui/panes/cpu.rs:116` | (default) | cpu label text |
+| `src/tui/panes/cpu.rs:136` | (default) | cpu value text |
+| `src/tui/panes/cpu.rs:450` | (default) | cpu chart color |
+| `src/tui/finder/dispatch.rs:443` | (default) | finder display_name |
+| `src/tui/finder/dispatch.rs:444` | (default) | finder parent |
+| `src/tui/finder/dispatch.rs:445` | (default) | finder branch |
+| `src/tui/finder/dispatch.rs:446` | (default) | finder dir |
+
+Plus four overlay-test inline literals in `tui_pane/src/overlays/settings.rs:810-818` and three in `tui_pane/src/pane/state.rs:152-174` and `src/tui/app/tests/panes.rs:594,612` — all `#[cfg(test)]` and left in place.
+
+### Fallback toast palette (7 fields, not 4)
+
+The earlier plan estimated four ("border, title, body, accent"); the
+real field count from reading `card.rs` and the toast-local `mod.rs`
+is seven. `format.rs::fade_to_style` computes `Rgb(v,v,v)` at runtime
+for the lifetime-fade animation — it's not a palette color and stays
+inline.
+
+```rust
+pub struct FallbackToastPalette {
+    /// Spinner color in tracked-item rows.
+    pub accent:          Color,
+    /// Border color when the toast is focused.
+    pub border_focused:  Color,
+    /// Border + text color for error toasts.
+    pub error:           Color,
+    /// Border + text color for warning toasts.
+    pub warning:         Color,
+    /// Countdown text, italic action hint, overflow rows.
+    pub label:           Color,
+    /// Running tracked-item duration suffix.
+    pub title:           Color,
+    /// Accent for non-error/non-warning toasts.
+    pub plain_accent:    Color,
+}
+
+pub fn fallback_toast_palette() -> FallbackToastPalette {
+    FallbackToastPalette {
+        accent:         Color::Cyan,
+        border_focused: Color::Yellow,
+        error:          Color::Red,
+        warning:        Color::Yellow,
+        label:          Color::Rgb(150, 190, 180),
+        title:          Color::Yellow,
+        plain_accent:   Color::White,
+    }
+}
+```
+
+A toast-fallback test asserts the seven fields exactly equal the values
+above, so a future refactor can't silently route toast rendering through
+the active theme.
+
+### `text.default` does not exist in today's constants
+
+The current code uses `Color::White` inline at 17 sites instead of a
+named constant. Phase 1 adds `text.default` as a new theme field (no
+constant to delete) and migrates the 17 sites in the same commit.
+
+### Derives required on `Theme` and substructs
+
+The plan calls for a roundtrip test (TOML starter ↔ Rust constructor).
+That requires:
+
+- `#[derive(Clone, Debug, PartialEq, Eq)]` on `Theme`, every substruct,
+  `StyleSpec`, and `Modifiers`.
+- `#[derive(Serialize)]` (custom or derived) on `StyleSpec`,
+  `Modifiers`, and the substructs — only consumed by the test, not by
+  runtime save-theme code (that's a deferred follow-up).
+
+Both are mechanical additions called out here so they don't surface as
+review surprises during Phase 1.
+
 ## Phase 1 — `Theme` type, static, constant migration
 
 ### New types
@@ -472,25 +644,25 @@ field reads poorly in a manual launch.
 | semantic.success               | `Green`                | `Rgb(0, 120, 0)`              | Darker green for white bg                            |
 | semantic.label                 | `Rgb(150, 190, 180)`   | `Rgb(60, 100, 90)`            | Darker complement of the dark teal-gray              |
 | text.default                   | `White`                | `Black`                       | Direct inversion                                     |
-| text.secondary                 | (dark equivalent)      | `Rgb(70, 70, 70)`             | One step lighter than default                        |
+| text.secondary                 | `Gray`                 | `Rgb(70, 70, 70)`             | One step lighter than text.default                   |
 | text.dim                       | `DarkGray`             | `Rgb(130, 130, 130)`          | Lighter than secondary, still readable               |
 | text.bright                    | `Cyan`                 | `Rgb(0, 95, 135)`             | Match semantic.accent                                |
 | text.bg_focus                  | `Black`                | `White`                       | Direct inversion                                     |
 | git.ignored                    | `DarkGray`             | `Rgb(150, 150, 150)`          | Same role: faded                                     |
 | git.modified                   | `Indexed(208)` orange  | `Indexed(208)` orange         | Indexed 208 reads on both backgrounds                |
-| git.untracked                  | `Yellow`               | `Rgb(180, 120, 0)` (amber)    | Match pane_chrome.active_border                      |
-| status.bar                     | (dark equivalent)      | `Black` on light bg           | Inverts cleanly                                      |
-| status.target_bench            | (dark equivalent)      | `Rgb(100, 60, 0)`             | Brown for a "build-target" affordance on white       |
-| status.column_header           | (dark equivalent)      | `Rgb(60, 60, 60)` + Bold      | Darker than text.default for header weight           |
-| finder.match_bg                | (dark equivalent)      | `Rgb(255, 245, 180)` (cream)  | Pale yellow highlight reads as "matched" on white    |
-| finder.discovery_shimmer       | (dark equivalent)      | `Rgb(180, 180, 180)`          | Faint sweep tone on white                            |
+| git.untracked                  | `Green`                | `Rgb(0, 120, 0)`              | Match semantic.success on white                      |
+| status.bar                     | `DarkGray`             | `Rgb(220, 220, 220)`          | Light bar bg; preserves the "bottom strip" affordance |
+| status.target_bench            | `Magenta`              | `Rgb(140, 0, 140)`            | Darker magenta for contrast on white                 |
+| status.column_header           | `Rgb(150,190,180)` + Bold | `Rgb(60, 100, 90)` + Bold  | Inverted darkness of the dark teal-gray              |
+| finder.match_bg                | `Rgb(0, 90, 100)`      | `Rgb(255, 245, 180)` (cream)  | Pale yellow highlight reads as "matched" on white    |
+| finder.discovery_shimmer       | `Rgb(150, 210, 255)`   | `Rgb(120, 140, 200)`          | Darker blue keeps the "new" hue affordance on white  |
 | disk_usage.low                 | `Rgb(100, 220, 100)`   | `Rgb(0, 140, 0)`              | Darker green; bright green washes out on white       |
 | disk_usage.mid                 | `Rgb(255, 255, 255)`   | `Rgb(90, 90, 90)`             | White mid-stop invisible on white bg; use dark gray  |
 | disk_usage.high                | `Rgb(255, 100, 100)`   | `Rgb(200, 0, 0)`              | Darker red for contrast on white                     |
 
-Phase 1 fills in the four `(dark equivalent)` rows by reading the
-current value from `tui_pane/src/constants.rs` and `src/tui/constants.rs`
-during the audit, then picks the light counterpart from the same family.
+All "Dark (existing)" values in this table come from the Phase 1 audit
+section below; "Light (proposed)" picks are starting points and may be
+adjusted during the Phase 1 manual launch if any field reads poorly.
 
 ### Starter-template TOML files (not loaded at runtime)
 
