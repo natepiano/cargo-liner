@@ -80,6 +80,7 @@ pub struct Theme {
     pub git:         GitTheme,
     pub status:      StatusTheme,
     pub finder:      FinderTheme,
+    pub disk_usage:  DiskUsageTheme,
 }
 
 pub struct PaneChromeTheme {
@@ -127,12 +128,39 @@ pub struct FinderTheme {
     pub match_bg:          StyleSpec,
     pub discovery_shimmer: StyleSpec,
 }
+
+pub struct DiskUsageTheme {
+    /// Smallest disk-usage rows. Default dark: green.
+    pub low:  StyleSpec,
+    /// Mid-percentile rows. Default dark: white. Default light: a
+    /// neutral gray so the gradient doesn't bottom out against the
+    /// terminal background.
+    pub mid:  StyleSpec,
+    /// Largest disk-usage rows. Default dark: red.
+    pub high: StyleSpec,
+}
 ```
+
+`DiskUsageTheme` exposes the three stops of the per-row disk-usage
+gradient computed in `src/tui/panes/project_list.rs::disk_color`. The
+interpolation math (green→white→red today, computed via `mul_add`
+against the row's percentile) stays in code; only the three endpoint
+colors come from the theme. This lets a user with red-green color
+vision substitute blue→white→orange or yellow→white→red and keep the
+"smaller is cooler, larger is warmer" reading without losing
+information to a single hue dimension. Only `.color` is consumed by
+the interpolator — modifiers on these specs are ignored for the
+gradient itself.
 
 Phase 1 audits both `tui_pane/` and `src/tui/` for raw `Color::White` /
 `Color::Black` / `Color::DarkGray` / `Color::Cyan` / etc. literals
 (~17 occurrences) and routes each into the matching `Theme` substruct
-field (most land in `TextTheme`).
+field (most land in `TextTheme`). The disk-gradient stops hard-coded
+inside `disk_color` (`Rgb(100,220,100)`, `Rgb(255,255,255)`,
+`Rgb(255,100,100)` plus their interpolation deltas) move into
+`DiskUsageTheme.{low,mid,high}.color`; the interpolation arithmetic
+stays inline and now reads from `ctx.theme.disk_usage` instead of from
+literals.
 
 ### `StyleSpec`
 
@@ -418,6 +446,51 @@ pub fn default_dark() -> Theme {
 Built-ins are compile-time-checked. A typo is a build error. No TOML
 parsing happens for defaults — they're available the instant the
 binary starts.
+
+### Default light palette
+
+Inverting the dark constants point-for-point fails: `Color::Yellow` text
+is unreadable on a white terminal, `Color::Cyan` washes out, raw
+`Color::DarkGray` lands too close to the focus-highlight ramp instead
+of contrasting against it. The light constructor picks each field for
+legibility on a white background, not by mechanical inversion. The
+mapping below is the starting point — adjust during Phase 1 if any
+field reads poorly in a manual launch.
+
+| Group / field                  | Dark (existing)        | Light (proposed)              | Why                                                  |
+|--------------------------------|------------------------|-------------------------------|------------------------------------------------------|
+| pane_chrome.active_border      | `Yellow`               | `Rgb(180, 120, 0)` (amber)    | Yellow vanishes on white; amber keeps the hue        |
+| pane_chrome.inactive_border    | `DarkGray`             | `Gray`                        | Lighter so it recedes against white                  |
+| pane_chrome.active_title       | `Yellow` + Bold        | `Rgb(160, 100, 0)` + Bold     | Same hue family, darker for contrast                 |
+| pane_chrome.inactive_title     | `White`                | `Black`                       | Direct inversion                                     |
+| focus.active                   | `Rgb(125, 125, 125)`   | `Rgb(200, 200, 200)`          | Subtle highlight that reads as "lighter" on white    |
+| focus.hover                    | `Rgb(80, 80, 80)`      | `Rgb(220, 220, 220)`          | Step lighter than active                             |
+| focus.remembered               | `Rgb(40, 40, 40)`      | `Rgb(235, 235, 235)`          | Step lighter than hover                              |
+| semantic.accent                | `Cyan`                 | `Rgb(0, 95, 135)` (steel)     | Bright cyan vanishes; darker blue holds              |
+| semantic.error                 | `Red`                  | `Rgb(170, 0, 0)`              | Standard red is fine; slightly darker for white bg   |
+| semantic.inline_error          | `Yellow`               | `Rgb(180, 95, 0)` (orange)    | Yellow unreadable; orange keeps the warning hue      |
+| semantic.success               | `Green`                | `Rgb(0, 120, 0)`              | Darker green for white bg                            |
+| semantic.label                 | `Rgb(150, 190, 180)`   | `Rgb(60, 100, 90)`            | Darker complement of the dark teal-gray              |
+| text.default                   | `White`                | `Black`                       | Direct inversion                                     |
+| text.secondary                 | (dark equivalent)      | `Rgb(70, 70, 70)`             | One step lighter than default                        |
+| text.dim                       | `DarkGray`             | `Rgb(130, 130, 130)`          | Lighter than secondary, still readable               |
+| text.bright                    | `Cyan`                 | `Rgb(0, 95, 135)`             | Match semantic.accent                                |
+| text.bg_focus                  | `Black`                | `White`                       | Direct inversion                                     |
+| git.ignored                    | `DarkGray`             | `Rgb(150, 150, 150)`          | Same role: faded                                     |
+| git.modified                   | `Indexed(208)` orange  | `Indexed(208)` orange         | Indexed 208 reads on both backgrounds                |
+| git.untracked                  | `Yellow`               | `Rgb(180, 120, 0)` (amber)    | Match pane_chrome.active_border                      |
+| status.bar                     | (dark equivalent)      | `Black` on light bg           | Inverts cleanly                                      |
+| status.target_bench            | (dark equivalent)      | `Rgb(100, 60, 0)`             | Brown for a "build-target" affordance on white       |
+| status.column_header           | (dark equivalent)      | `Rgb(60, 60, 60)` + Bold      | Darker than text.default for header weight           |
+| finder.match_bg                | (dark equivalent)      | `Rgb(255, 245, 180)` (cream)  | Pale yellow highlight reads as "matched" on white    |
+| finder.discovery_shimmer       | (dark equivalent)      | `Rgb(180, 180, 180)`          | Faint sweep tone on white                            |
+| disk_usage.low                 | `Rgb(100, 220, 100)`   | `Rgb(0, 140, 0)`              | Darker green; bright green washes out on white       |
+| disk_usage.mid                 | `Rgb(255, 255, 255)`   | `Rgb(90, 90, 90)`             | White mid-stop invisible on white bg; use dark gray  |
+| disk_usage.high                | `Rgb(255, 100, 100)`   | `Rgb(200, 0, 0)`              | Darker red for contrast on white                     |
+
+Phase 1 fills in the four `(dark equivalent)` rows by reading the
+current value from `tui_pane/src/constants.rs` and `src/tui/constants.rs`
+during the audit, then picks the light counterpart from the same family.
 
 ### Starter-template TOML files (not loaded at runtime)
 
