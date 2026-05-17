@@ -433,7 +433,8 @@ fn render_child_item<P: project::ProjectFields>(
     let disk_bytes = project.disk_usage_bytes();
     let ds = disk_color(disk_percentile(disk_bytes, child_sorted));
     let lang = project::Package::lang_icon();
-    let lint_cell = if ctx.project_list.is_rust_at_path(path) {
+    let is_workspace_member = ctx.project_list.is_workspace_member_path(path);
+    let lint_cell = if ctx.project_list.is_rust_at_path(path) && !is_workspace_member {
         state::lint_cell_for(
             &Lint::status_for_path(ctx.project_list, path),
             ctx.config,
@@ -445,7 +446,7 @@ fn render_child_item<P: project::ProjectFields>(
     let ci = ctx
         .project_list
         .ci_status_using_lookup(path, ctx.ci_status_lookup);
-    let hide_git_status = ctx.project_list.is_workspace_member_path(path);
+    let hide_git_status = is_workspace_member;
     let origin_sync = if hide_git_status
         || matches!(
             ctx.project_list.git_status_for(path),
