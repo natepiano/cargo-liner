@@ -1,10 +1,10 @@
 // ansi codes
-pub(crate) const ANSI_BOLD: &str = "1";
-pub(crate) const ANSI_BOLD_BLUE: &str = "1;34";
-pub(crate) const ANSI_BOLD_GREEN: &str = "1;32";
-pub(crate) const ANSI_BOLD_RED: &str = "1;31";
-pub(crate) const ANSI_BOLD_YELLOW: &str = "1;33";
-pub(crate) const ANSI_DIM: &str = "2";
+pub(super) const ANSI_BOLD: &str = "1";
+pub(super) const ANSI_BOLD_BLUE: &str = "1;34";
+pub(super) const ANSI_BOLD_GREEN: &str = "1;32";
+pub(super) const ANSI_BOLD_RED: &str = "1;31";
+pub(super) const ANSI_BOLD_YELLOW: &str = "1;33";
+pub(super) const ANSI_DIM: &str = "2";
 
 // color mode
 pub(crate) const CARGO_TERM_COLOR_ALWAYS: &str = "always";

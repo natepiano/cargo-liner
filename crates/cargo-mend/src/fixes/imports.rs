@@ -142,8 +142,8 @@ impl ValidatedFixSet {
 
 #[derive(Debug)]
 struct ImportFinding {
-    fact: ShortenImportFact,
-    fix:  UseFix,
+    shorten_import_fact: ShortenImportFact,
+    use_fix:             UseFix,
 }
 
 impl ShortenImportFact {
@@ -171,13 +171,13 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<ImportScan> {
     let fixes = ValidatedFixSet::try_from(
         findings_with_fixes
             .iter()
-            .map(|finding| finding.fix.clone())
+            .map(|finding| finding.use_fix.clone())
             .collect::<Vec<_>>(),
     )?;
     Ok(ImportScan {
         findings: findings_with_fixes
             .iter()
-            .map(|finding| finding.fact.clone().into_finding())
+            .map(|finding| finding.shorten_import_fact.clone().into_finding())
             .collect(),
         fixes,
     })
@@ -257,15 +257,23 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
         }
     }
     findings.sort_by(|a, b| {
-        (&a.fact.path, a.fact.line, a.fact.column, a.fact.code).cmp(&(
-            &b.fact.path,
-            b.fact.line,
-            b.fact.column,
-            b.fact.code,
-        ))
+        (
+            &a.shorten_import_fact.path,
+            a.shorten_import_fact.line,
+            a.shorten_import_fact.column,
+            a.shorten_import_fact.code,
+        )
+            .cmp(&(
+                &b.shorten_import_fact.path,
+                b.shorten_import_fact.line,
+                b.shorten_import_fact.column,
+                b.shorten_import_fact.code,
+            ))
     });
     findings.dedup_by(|a, b| {
-        a.fact.path == b.fact.path && a.fact.line == b.fact.line && a.fact.column == b.fact.column
+        a.shorten_import_fact.path == b.shorten_import_fact.path
+            && a.shorten_import_fact.line == b.shorten_import_fact.line
+            && a.shorten_import_fact.column == b.shorten_import_fact.column
     });
     Ok(findings)
 }
@@ -335,7 +343,7 @@ impl Visit<'_> for UseVisitor<'_> {
                 .to_string_lossy()
                 .replace('\\', "/");
             self.findings.push(ImportFinding {
-                fact: ShortenImportFact {
+                shorten_import_fact: ShortenImportFact {
                     code: candidate.code,
                     message: candidate.message,
                     path: display_path,
@@ -345,7 +353,7 @@ impl Visit<'_> for UseVisitor<'_> {
                     source_line,
                     replacement: replacement.clone(),
                 },
-                fix:  UseFix {
+                use_fix:             UseFix {
                     path: self.path.to_path_buf(),
                     start: start_offset,
                     end: end_offset,

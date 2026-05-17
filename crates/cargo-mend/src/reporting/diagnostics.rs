@@ -2,6 +2,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
 
+use super::constants::HINT_FIXABLE_WITH_FIX;
+use super::constants::HINT_FIXABLE_WITH_FIX_PUB_USE;
 use crate::config::DiagnosticCode;
 
 // --- FixSupport (folded from former fix_support.rs) ---
@@ -37,8 +39,8 @@ impl FixSupport {
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
             | Self::NarrowToPubCrate
-            | Self::FieldVisibility => Some("this warning is auto-fixable with `cargo mend --fix`"),
-            Self::PubUse => Some("this warning is auto-fixable with `cargo mend --fix-pub-use`"),
+            | Self::FieldVisibility => Some(HINT_FIXABLE_WITH_FIX),
+            Self::PubUse => Some(HINT_FIXABLE_WITH_FIX_PUB_USE),
         }
     }
 

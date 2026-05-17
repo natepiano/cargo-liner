@@ -1,5 +1,6 @@
 mod cargo_json;
 mod colors;
+mod constants;
 mod diagnostics;
 mod outcome;
 mod render;

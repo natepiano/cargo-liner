@@ -7,6 +7,10 @@ use super::colors::ANSI_BOLD_GREEN;
 use super::colors::ANSI_BOLD_RED;
 use super::colors::ANSI_BOLD_YELLOW;
 use super::colors::ANSI_DIM;
+use super::constants::CARGO_MEND_FIX;
+use super::constants::CARGO_MEND_FIX_ALL;
+use super::constants::CARGO_MEND_FIX_COMPILER;
+use super::constants::CARGO_MEND_FIX_PUB_USE;
 use super::diagnostics;
 use super::diagnostics::Finding;
 use super::diagnostics::Report;
@@ -231,7 +235,7 @@ fn summary_line(report: &Report, compiler_stats: &CompilerStats, color_mode: Col
         if compiler_stats.fixable > 0 {
             fixables.push(SummaryFixable {
                 count:   compiler_stats.fixable,
-                command: "cargo mend --fix-compiler",
+                command: CARGO_MEND_FIX_COMPILER,
             });
         }
         rows.push(SummaryRow {
@@ -246,13 +250,13 @@ fn summary_line(report: &Report, compiler_stats: &CompilerStats, color_mode: Col
         if report.summary.fixable_with_fix > 0 {
             fixables.push(SummaryFixable {
                 count:   report.summary.fixable_with_fix,
-                command: "cargo mend --fix",
+                command: CARGO_MEND_FIX,
             });
         }
         if report.summary.fixable_with_fix_pub_use > 0 {
             fixables.push(SummaryFixable {
                 count:   report.summary.fixable_with_fix_pub_use,
-                command: "cargo mend --fix-pub-use",
+                command: CARGO_MEND_FIX_PUB_USE,
             });
         }
         rows.push(SummaryRow {
@@ -274,7 +278,7 @@ fn summary_line(report: &Report, compiler_stats: &CompilerStats, color_mode: Col
     {
         last.fixables.push(SummaryFixable {
             count:   total_fixable,
-            command: "cargo mend --fix-all",
+            command: CARGO_MEND_FIX_ALL,
         });
     }
 

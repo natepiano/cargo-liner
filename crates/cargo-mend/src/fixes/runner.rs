@@ -281,7 +281,7 @@ impl<'a> MendRunner<'a> {
                 })
             },
             Err(err) => {
-                let rollback = match imports::restore_files(&snapshots) {
+                let rollback_status = match imports::restore_files(&snapshots) {
                     Ok(()) => RollbackStatus::Restored,
                     Err(_) => RollbackStatus::RestoreFailed,
                 };
@@ -291,7 +291,7 @@ impl<'a> MendRunner<'a> {
                     MendFailure::FixValidation(f) => f.cause,
                 };
                 Err(MendFailure::FixValidation(FixValidationFailure {
-                    rollback,
+                    rollback_status,
                     cause,
                 }))
             },

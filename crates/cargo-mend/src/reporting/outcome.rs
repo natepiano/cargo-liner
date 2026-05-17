@@ -89,8 +89,8 @@ pub(crate) enum RollbackStatus {
 
 #[derive(Debug)]
 pub(crate) struct FixValidationFailure {
-    pub rollback: RollbackStatus,
-    pub cause:    CompilerFailureCause,
+    pub rollback_status: RollbackStatus,
+    pub cause:           CompilerFailureCause,
 }
 
 impl MendFailure {
@@ -133,7 +133,7 @@ impl Display for FixValidationFailure {
             | CompilerFailureCause::DriverExecution(error)
             | CompilerFailureCause::Unexpected(error) => format!("{error:#}"),
         };
-        match self.rollback {
+        match self.rollback_status {
             RollbackStatus::Restored => write!(
                 f,
                 "compiler failed after applying mend fixes; changes were rolled back\n\n{source:#}"
@@ -307,8 +307,8 @@ mod tests {
     #[test]
     fn fix_validation_failure_reports_rollback_success() {
         let failure = FixValidationFailure {
-            rollback: RollbackStatus::Restored,
-            cause:    CompilerFailureCause::Unexpected(anyhow!("boom")),
+            rollback_status: RollbackStatus::Restored,
+            cause:           CompilerFailureCause::Unexpected(anyhow!("boom")),
         };
         assert!(
             failure
@@ -320,8 +320,8 @@ mod tests {
     #[test]
     fn fix_validation_failure_reports_rollback_failure() {
         let failure = FixValidationFailure {
-            rollback: RollbackStatus::RestoreFailed,
-            cause:    CompilerFailureCause::Unexpected(anyhow!("boom")),
+            rollback_status: RollbackStatus::RestoreFailed,
+            cause:           CompilerFailureCause::Unexpected(anyhow!("boom")),
         };
         assert!(
             failure
