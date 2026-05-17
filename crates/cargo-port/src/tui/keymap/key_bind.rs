@@ -1,8 +1,7 @@
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
 
-use super::parse::code_label;
-use super::parse::normalize_code;
+use super::parse;
 
 /// A bindable key: a `KeyCode` plus modifier flags from crossterm.
 ///
@@ -15,7 +14,7 @@ pub(crate) struct KeyBind {
 }
 
 impl KeyBind {
-    pub(crate) fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
+    pub fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
         // BackTab implies Shift — normalise to Tab + SHIFT.
         // Uppercase Char implies Shift — strip SHIFT since it's
         // encoded in the character itself (`Char('R')` already means
@@ -37,7 +36,7 @@ impl KeyBind {
             _ => (code, modifiers),
         };
         Self {
-            code: normalize_code(code),
+            code: parse::normalize_code(code),
             modifiers,
         }
     }
@@ -56,7 +55,7 @@ impl KeyBind {
         if self.modifiers.contains(KeyModifiers::SHIFT) {
             parts.push('⇧');
         }
-        parts.push_str(&code_label(self.code));
+        parts.push_str(&parse::code_label(self.code));
         parts
     }
 
@@ -72,7 +71,7 @@ impl KeyBind {
         if self.modifiers.contains(KeyModifiers::SHIFT) {
             parts.push("Shift".to_string());
         }
-        parts.push(code_label(self.code));
+        parts.push(parse::code_label(self.code));
         parts.join("+")
     }
 }

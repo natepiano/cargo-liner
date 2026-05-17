@@ -11,26 +11,26 @@ pub(crate) struct ScopeMap<A: Copy + Eq + std::hash::Hash> {
 }
 
 impl<A: Copy + Eq + std::hash::Hash> ScopeMap<A> {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             by_key:    HashMap::new(),
             by_action: HashMap::new(),
         }
     }
 
-    pub(crate) fn insert(&mut self, key: KeyBind, action: A) {
+    pub(super) fn insert(&mut self, key: KeyBind, action: A) {
         self.by_key.insert(key.clone(), action);
         self.by_action.insert(action, key);
     }
 
     #[cfg(test)]
-    pub(crate) fn action_for(&self, key: &KeyBind) -> Option<A> { self.by_key.get(key).copied() }
+    pub fn action_for(&self, key: &KeyBind) -> Option<A> { self.by_key.get(key).copied() }
 
-    pub(crate) fn key_for(&self, action: A) -> Option<&KeyBind> { self.by_action.get(&action) }
+    pub(super) fn key_for(&self, action: A) -> Option<&KeyBind> { self.by_action.get(&action) }
 
     /// Display string for an action's bound key, or `"—"` if unbound.
     #[cfg(test)]
-    pub(crate) fn display_key_for(&self, action: A) -> String {
+    pub(super) fn display_key_for(&self, action: A) -> String {
         self.key_for(action)
             .map_or_else(|| "—".to_string(), KeyBind::display)
     }

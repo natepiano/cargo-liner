@@ -6,13 +6,13 @@ use tui_pane::Action;
 
 use super::KeyBind;
 use super::ScopeMap;
+use super::actions;
 use super::actions::CiRunsAction;
 use super::actions::GitAction;
 use super::actions::LintsAction;
 use super::actions::PackageAction;
 use super::actions::ProjectListAction;
 use super::actions::TargetsAction;
-use super::actions::action_toml_key;
 
 /// Runtime lookup structure: one `ScopeMap` per scope, built from the
 /// TOML config at load time.
@@ -28,7 +28,7 @@ pub(crate) struct ResolvedKeymap {
 
 impl ResolvedKeymap {
     /// The built-in default keymap matching the current hardcoded bindings.
-    pub(crate) fn defaults() -> Self {
+    pub fn defaults() -> Self {
         let mut km = Self::default();
 
         // Project list
@@ -159,42 +159,42 @@ impl ResolvedKeymap {
             "project_list",
             &km.project_list,
             <ProjectListAction as Action>::ALL,
-            action_toml_key::<ProjectListAction>,
+            actions::action_toml_key::<ProjectListAction>,
         );
         Self::write_scope(
             out,
             "package",
             &km.package,
             <PackageAction as Action>::ALL,
-            action_toml_key::<PackageAction>,
+            actions::action_toml_key::<PackageAction>,
         );
         Self::write_scope(
             out,
             "git",
             &km.git,
             <GitAction as Action>::ALL,
-            action_toml_key::<GitAction>,
+            actions::action_toml_key::<GitAction>,
         );
         Self::write_scope(
             out,
             "targets",
             &km.targets,
             <TargetsAction as Action>::ALL,
-            action_toml_key::<TargetsAction>,
+            actions::action_toml_key::<TargetsAction>,
         );
         Self::write_scope(
             out,
             "ci_runs",
             &km.ci_runs,
             <CiRunsAction as Action>::ALL,
-            action_toml_key::<CiRunsAction>,
+            actions::action_toml_key::<CiRunsAction>,
         );
         Self::write_scope(
             out,
             "lints",
             &km.lints,
             <LintsAction as Action>::ALL,
-            action_toml_key::<LintsAction>,
+            actions::action_toml_key::<LintsAction>,
         );
     }
 }

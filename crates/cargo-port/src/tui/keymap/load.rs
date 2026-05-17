@@ -15,14 +15,13 @@ use tui_pane::Action;
 
 use super::KeyBind;
 use super::ScopeMap;
+use super::actions;
 use super::actions::CiRunsAction;
 use super::actions::GitAction;
 use super::actions::LintsAction;
 use super::actions::PackageAction;
 use super::actions::ProjectListAction;
 use super::actions::TargetsAction;
-use super::actions::action_from_toml_key;
-use super::actions::action_toml_key;
 use super::resolved::ResolvedKeymap;
 use crate::config::NavigationKeys;
 use crate::constants::APP_NAME;
@@ -32,7 +31,7 @@ use crate::project::AbsolutePath;
 const REMOVED_PROJECT_LIST_GLOBAL_ACTIONS: [(&str, &str); 2] =
     [("open_editor", "open_editor"), ("rescan", "rescan")];
 
-pub(crate) struct KeymapLoadResult {
+pub struct KeymapLoadResult {
     pub(crate) keymap:          ResolvedKeymap,
     pub(crate) errors:          Vec<KeymapError>,
     pub(crate) missing_actions: Vec<String>,
@@ -91,7 +90,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-pub(crate) struct KeymapPathOverrideGuard {
+pub struct KeymapPathOverrideGuard {
     previous: Option<PathBuf>,
     active:   bool,
 }
@@ -269,42 +268,42 @@ fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
         "project_list",
         &keymap.project_list,
         &vim_keys,
-        action_toml_key::<ProjectListAction>,
+        actions::action_toml_key::<ProjectListAction>,
         &mut conflicts,
     );
     check_scope(
         "package",
         &keymap.package,
         &vim_keys,
-        action_toml_key::<PackageAction>,
+        actions::action_toml_key::<PackageAction>,
         &mut conflicts,
     );
     check_scope(
         "git",
         &keymap.git,
         &vim_keys,
-        action_toml_key::<GitAction>,
+        actions::action_toml_key::<GitAction>,
         &mut conflicts,
     );
     check_scope(
         "targets",
         &keymap.targets,
         &vim_keys,
-        action_toml_key::<TargetsAction>,
+        actions::action_toml_key::<TargetsAction>,
         &mut conflicts,
     );
     check_scope(
         "ci_runs",
         &keymap.ci_runs,
         &vim_keys,
-        action_toml_key::<CiRunsAction>,
+        actions::action_toml_key::<CiRunsAction>,
         &mut conflicts,
     );
     check_scope(
         "lints",
         &keymap.lints,
         &vim_keys,
-        action_toml_key::<LintsAction>,
+        actions::action_toml_key::<LintsAction>,
         &mut conflicts,
     );
 
@@ -386,8 +385,8 @@ fn resolve_pane_scopes(
         ctx,
         "project_list",
         <ProjectListAction as Action>::ALL,
-        action_from_toml_key::<ProjectListAction>,
-        action_toml_key::<ProjectListAction>,
+        actions::action_from_toml_key::<ProjectListAction>,
+        actions::action_toml_key::<ProjectListAction>,
         &defaults.project_list,
         &mut keymap.project_list,
     );
@@ -395,8 +394,8 @@ fn resolve_pane_scopes(
         ctx,
         "package",
         <PackageAction as Action>::ALL,
-        action_from_toml_key::<PackageAction>,
-        action_toml_key::<PackageAction>,
+        actions::action_from_toml_key::<PackageAction>,
+        actions::action_toml_key::<PackageAction>,
         &defaults.package,
         &mut keymap.package,
     );
@@ -404,8 +403,8 @@ fn resolve_pane_scopes(
         ctx,
         "git",
         <GitAction as Action>::ALL,
-        action_from_toml_key::<GitAction>,
-        action_toml_key::<GitAction>,
+        actions::action_from_toml_key::<GitAction>,
+        actions::action_toml_key::<GitAction>,
         &defaults.git,
         &mut keymap.git,
     );
@@ -413,8 +412,8 @@ fn resolve_pane_scopes(
         ctx,
         "targets",
         <TargetsAction as Action>::ALL,
-        action_from_toml_key::<TargetsAction>,
-        action_toml_key::<TargetsAction>,
+        actions::action_from_toml_key::<TargetsAction>,
+        actions::action_toml_key::<TargetsAction>,
         &defaults.targets,
         &mut keymap.targets,
     );
@@ -422,8 +421,8 @@ fn resolve_pane_scopes(
         ctx,
         "ci_runs",
         <CiRunsAction as Action>::ALL,
-        action_from_toml_key::<CiRunsAction>,
-        action_toml_key::<CiRunsAction>,
+        actions::action_from_toml_key::<CiRunsAction>,
+        actions::action_toml_key::<CiRunsAction>,
         &defaults.ci_runs,
         &mut keymap.ci_runs,
     );
@@ -431,8 +430,8 @@ fn resolve_pane_scopes(
         ctx,
         "lints",
         <LintsAction as Action>::ALL,
-        action_from_toml_key::<LintsAction>,
-        action_toml_key::<LintsAction>,
+        actions::action_from_toml_key::<LintsAction>,
+        actions::action_toml_key::<LintsAction>,
         &defaults.lints,
         &mut keymap.lints,
     );
