@@ -26,38 +26,26 @@ In practice, that means:
   intended API surface
 - if an item is only meant for its parent module or peer modules under the same parent,
   `pub(super)` should say that directly
-- if you are in a top-level private module, plain `pub` can still be the right way to mark that
-  module's crate-internal boundary API
-- if an item is only local implementation detail, it should stay private
-
-The more the code says this directly, the less a reader has to reconstruct the real boundary by
-mentally walking the whole module tree.
-
-That is the design pressure behind this tool. It tries to catch places where the written
-visibility is broader, vaguer, or more global than the code relationship really is.
-
-In practice, that usually means:
-
-- if an item is only meant for its parent module in a nested private subtree, use `pub(super)`
-- if an item lives in a top-level private module and is part of that module's crate-internal API,
-  plain `pub` may be correct
+- if an item lives in a top-level private module and is not re-exported by the crate root, use
+  `pub(crate)` — bare `pub` there is misleading because the item can never escape the crate
+- if the crate root re-exports the item via `pub use`, the source must be bare `pub` (E0364)
 - if an item is only local implementation detail, keep it private
 - if an item seems to need a deeply nested visibility like `pub(in crate::feature::subtree)`,
-  the module tree may be wrong
-- if an item is marked `pub` but is not actually used outside its intended module boundary, that
-  is probably a design smell
+  the module tree is probably wrong; `cargo mend` rejects this form as a hard error so the
+  structural problem surfaces instead of getting papered over
+
+`cargo mend` flags places where the written visibility is broader, vaguer, or more global than
+the code relationship actually is.
 
 ## Mend Policy
 
 Hard errors:
 
-- `pub(crate)` is forbidden in nested modules
-- library crates may use `pub(crate)` at the crate root when the intent is to keep an item
-  crate-internal rather than part of the external library API
-- shallow private modules in library crates (one or two levels deep, e.g. `crate::foo` or
-  `crate::foo::bar`) may also use `pub(crate)` when the intent is to keep an item crate-internal
-  and prevent accidental exposure through the public library boundary
-- `pub(in crate::...)` is forbidden
+- `pub(crate)` is forbidden by default. Two narrow exceptions: at the crate root of a library
+  crate (item stays crate-internal but outside the public library API), and inside a top-level
+  private module with a private parent (any crate kind)
+- `pub(in crate::...)` is forbidden — a code smell that signals the module tree is wrong;
+  relocate the item to a better common parent instead
 - `pub mod` requires an explicit allowlist entry
 
 Warnings:
@@ -159,8 +147,8 @@ The usual review flow is:
 
 1. ask whether the item is truly part of the module's API
 2. if not, try private or `pub(super)` in a nested module
-3. if the item lives in a top-level private module, plain `pub` may already be the correct
-   crate-internal boundary
+3. if the item lives in a top-level private module and is not re-exported by the crate root,
+   use `pub(crate)` — `cargo mend --fix` will narrow bare `pub` for you here
 4. if `pub(super)` is too narrow, move the item to a better common parent
 5. only keep broader visibility when the module structure genuinely requires it
 
@@ -169,31 +157,26 @@ The usual review flow is:
 <a id="forbidden-pub-crate"></a>
 ### Forbidden `pub(crate)`
 
-`pub(crate)` is broad enough to be easy to reach for, but in many codebases it weakens module
-boundaries more than intended.
+`pub(crate)` lets any module in the crate touch the item, regardless of where the item lives.
+In a deep module tree that usually weakens the module boundaries the layout was meant to
+enforce.
 
-This tool treats it as forbidden in binaries and in nested modules.
+`cargo mend` forbids `pub(crate)` by default. Two narrow exceptions:
 
-There is one narrow exception:
+1. **Library crate root** — the item should stay crate-internal but outside the public library
+   API.
+2. **Top-level private module with a private parent** — the item should be reachable anywhere
+   in the crate but kept out of the public boundary. Applies to library and binary crates;
+   integration tests never qualify.
 
-- at the crate root of a library crate, when the item should stay crate-internal and not become
-  part of the external library API
-- in a library crate
-- inside a top-level private module
-- when the point is to keep something crate-internal and prevent accidental leakage through the
-  public library boundary
+Otherwise, prefer:
 
-Prefer:
 - private items when they are local implementation details
 - `pub(super)` when the parent module owns the boundary
 - moving the item to a better common parent when `pub(super)` is too narrow
 
-In this example, there is a parent module named `feature`, and `helpers.rs` exists only to support
-that parent module.
-
-The question is whether the helper should be available to the whole crate, or just to `feature`.
-
-Example:
+In this example, `feature` is a parent module and `helpers.rs` exists only to support it. The
+question is whether the helper should be available to the whole crate, or just to `feature`.
 
 ```rust
 // src/feature/mod.rs
@@ -203,32 +186,26 @@ mod helpers;
 pub(crate) fn helper() {}
 ```
 
-At first glance, `helper` looks reasonable: the whole crate can use it.
-
-But that is exactly the problem. The helper now ignores the `feature` module boundary.
-
-A better version is:
+`helper` here looks reasonable — any caller in the crate can use it — but that is the problem.
+The helper now ignores the `feature` module boundary. A better version:
 
 ```rust
 // src/feature/helpers.rs
 pub(super) fn helper() {}
 ```
 
-Now `helper` is available to `feature`, but not to unrelated parts of the crate.
+`helper` is now available to `feature` and nowhere else.
 
-One exception is the crate root of a library crate, for example:
+**Exception 1** — library crate root:
 
 ```rust
 // src/lib.rs
 pub(crate) type InternalDrawPhase = ();
 ```
 
-That can be acceptable when the intent is:
+Usable anywhere inside the crate, but not part of the external library API.
 
-- usable anywhere inside the crate
-- but not part of the external library API
-
-Another exception is a library crate with a top-level private module, for example:
+**Exception 2** — top-level private module:
 
 ```rust
 // src/lib.rs
@@ -238,104 +215,44 @@ mod internals;
 pub(crate) fn helper() {}
 ```
 
-That can be acceptable when the intent is:
-
-- usable anywhere inside the crate
-- but never part of the external library API
+`internals` is private to the crate, so `pub(crate)` inside it cannot leak. The item is
+reachable anywhere inside the crate; the public boundary still holds.
 
 <a id="forbidden-pub-in-crate"></a>
 ### Forbidden `pub(in crate::...)`
 
-`pub(in crate::...)` often means the item lives too deep in the module tree.
-
-This tool treats it as a design-review signal, not a normal visibility tool.
-
-Prefer:
-- `pub(super)` when the current module layout is already correct
-- moving the item to the nearest common parent as its own file
-
-In this example, a helper lives under `src/feature/deep/`, but the desired sharing boundary is
-somewhere higher up than that file.
-
-The example is showing what it looks like when the visibility path has to reach outward to describe
-the real boundary.
-
-Example:
+`pub(in crate::...)` is a code smell: the visibility path has to reach outward to describe the
+real boundary, which means the item lives too deep in the module tree. `cargo mend` rejects this
+form as a hard error so the structural problem surfaces.
 
 ```rust
 // src/feature/deep/helper.rs
 pub(in crate::feature::subtree) fn helper() {}
 ```
 
-This tells you the visibility boundary is somewhere far away from the item.
+Pick one:
 
-That usually means one of two things:
-
-- the item should just be `pub(super)`
-- the item should move upward so the right boundary is local and obvious
-
-A better version is usually either:
-
-```rust
-// src/feature/deep/helper.rs
-pub(super) fn helper() {}
-```
-
-or:
-
-```rust
-// src/feature/helper.rs
-pub(super) fn helper() {}
-```
+- `pub(super)` when the current layout is already correct
+- relocate the item upward so the boundary is local, then mark it `pub(super)`
 
 <a id="review-pub-mod"></a>
 ### Review `pub mod`
 
-`pub mod` requires explicit review or allowlisting.
-
-Keep it only when:
-- the module path itself is intentionally part of the API
-- macro or code-generation constraints make it a deliberate exception
-
-In this example, the code is at the crate root.
-
-The important thing to notice is that `pub mod` does not just declare a child module. It also
-publishes that module path as part of the crate API.
-
-Example:
+`pub mod` is disallowed by default — it publishes the module path as part of the crate's public
+API. Override per path via `allow_pub_mod` in `mend.toml` when the public path is intentional
+(e.g. macro or codegen constraints).
 
 ```rust
 // src/lib.rs
-pub mod tools;
+pub mod tools;   // module path is now part of the crate's public API
 ```
-
-`pub mod` does two things at once:
-
-- it declares a child module
-- it makes that module path part of the public API
-
-That is sometimes exactly what you want. It is also easy to do by accident.
-
-This tool asks you to review that choice explicitly instead of letting it slip in unnoticed.
 
 <a id="suspicious-pub"></a>
 ### Suspicious `pub`
 
-This warning is about a Rust visibility trap in nested private modules:
-
-- an item can be written as `pub`
-- but still be broader than the boundary that file actually lives under
-
-That happens when one of its parent modules is private and the file is not itself sitting at the
-top-level private boundary.
-
-In this example, there is a private parent module named `support`, and `helpers.rs` lives under
-that private boundary.
-
-The code in `helpers.rs` marks `Helper` as `pub`, but the example is specifically showing a case
-where that still does not make `Helper` part of the crate's public API.
-
-Example:
+A nested private module can declare `pub struct Helper;`, but if any parent module on the path
+is private, `Helper` cannot escape the crate — the bare `pub` is broader than the boundary the
+file actually participates in.
 
 ```rust
 // src/lib.rs
@@ -348,35 +265,24 @@ mod helpers;
 pub struct Helper;
 ```
 
-If you are new to Rust, it is easy to read `pub struct Helper;` and think:
+`Helper` is `pub`, but `support` is private, so `Helper` is unreachable from outside the crate.
+The declared visibility doesn't match the actual reach.
 
-- "`Helper` is public, so other crates can use it"
+Resolutions:
 
-But Rust does not work that way. The full path must be public too.
-
-In this example:
-
-- `Helper` is marked `pub`
-- but `support` is private
-- so `Helper` is not reachable from outside the crate
-
-That is why this tool warns here. In a nested private module like `support/helpers.rs`, the
-declared visibility (`pub`) is broader than the boundary that file is actually participating in.
-
-Possible resolutions:
 - make the item private
 - change it to `pub(super)`
-- move it to a better common parent if it is truly shared
+- move it to a better common parent if it is genuinely shared across the crate
 
-There is one important allowed case.
+This warning does not fire at a top-level private module — [Narrow `pub` to
+`pub(crate)`](#narrow-to-pub-crate) covers that case. At the top level, bare `pub` is only
+correct when the crate root re-exports the item via `pub use`; otherwise, narrow it to
+`pub(crate)`.
 
-If the parent boundary module is intentionally acting as a facade, it may re-export the child item.
-That boundary can be either:
+#### Parent-facade exception
 
-- a `mod.rs` file
-- or an ordinary file module like `markdown_file.rs`
-
-For example:
+When the parent module re-exports the child item, the child `pub` is intentional and the
+warning is suppressed:
 
 ```rust
 // src/private_parent/mod.rs
@@ -384,48 +290,10 @@ mod child;
 pub use child::Helper;
 ```
 
-If code outside `private_parent` actually uses `private_parent::Helper`, then keeping `Helper`
-as `pub` in `child.rs` is intentional and this warning should not fire.
-
-If the parent boundary module re-exports `Helper` but nothing outside the parent subtree ever uses that
-re-export, then the child `pub` is still broader than the boundary the code is actually using.
-In that case this warning should still appear.
-
-In practice, Rust itself will often warn on the parent `mod.rs` too:
-
-- `warning: unused import: ...`
-
-`cargo-mend` does not duplicate that parent warning. Instead, it warns on the child item and points
-back to the compiler's `unused import` warning so you can see the pair together:
-
-- the compiler warns that the parent `pub use` is stale
-- `cargo-mend` warns that the child item is still broader than needed
-
-That is also the case that `cargo mend --fix-pub-use` is designed to repair.
-
-For example:
-
-```rust
-// src/support/helpers.rs
-pub(super) struct Helper;
-```
-
-Now the code says what it actually means: `Helper` is shared with its parent module, not with the
-outside world.
-
-This warning does not apply the same way to a top-level private module. At the top level, plain
-`pub` can still be the right way to say "this belongs to this module's crate-internal API."
-
-Parent facade re-exports should also be explicit.
-
-If a parent boundary module does this:
-
-```rust
-pub use child::*;
-```
-
-`cargo-mend` treats that as a separate problem. Use explicit re-exports instead so the parent
-facade states exactly which child items it is exporting.
+The exception applies whether the parent boundary is a `mod.rs` file or an ordinary file module
+like `markdown_file.rs`. If nothing outside the parent subtree uses that re-export, the warning
+still fires — and the compiler usually emits a paired `unused import` warning on the parent.
+`cargo mend --fix-pub-use` is designed to repair that paired case.
 
 <a id="prefer-module-import"></a>
 ### Prefer module import
@@ -497,45 +365,23 @@ the prelude `Result` via `Result::ok`).
 <a id="shorten-local-crate-import"></a>
 ### Shorten local crate import
 
-This warning is about import paths that are technically correct, but more global than the code
-relationship actually is.
-
-In this example, there are two peer modules under the same private parent module:
-
-- `cargo_detector.rs`
-- `process.rs`
-
-The code in `process.rs` wants to import `TargetType` from its peer module `cargo_detector.rs`.
-
-Example:
+A `crate::a::b::c::*` import that crosses no module boundary makes the path look more global
+than the relationship is. When the importer and the imported module share a parent, prefer the
+local-relative form.
 
 ```rust
 // src/app_tools/support/process.rs
+
+// flagged — `cargo_detector` is a peer of `process` under `support`
 use crate::app_tools::support::cargo_detector::TargetType;
-```
 
-If you are reading `process.rs`, that import path makes `TargetType` look more global than it
-really is.
-
-But the real relationship is local:
-
-- `process.rs` and `cargo_detector.rs` are peers under `support`
-- the import is not crossing to a different domain
-- the shorter local-relative path is clearer
-
-A better import is:
-
-```rust
+// preferred
 use super::cargo_detector::TargetType;
 ```
 
-`cargo mend --fix` can rewrite these straightforward cases automatically.
-
-Today, that auto-fix mode is intentionally narrow:
-
-- it only rewrites local import-shortening cases
-- it preserves the original import visibility (`use`, `pub use`, `pub(crate) use`, and so on)
-- it rolls the edits back automatically if the follow-up `cargo check` fails
+`cargo mend --fix` rewrites these cases automatically. It preserves the original `use`
+visibility (`use`, `pub use`, `pub(crate) use`, etc.) and rolls the edits back if the follow-up
+`cargo check` fails.
 
 <a id="replace-deep-super-import"></a>
 ### Replace deep `super::` import
