@@ -36,15 +36,15 @@ use super::integration::OutputPane;
 use super::integration::PackagePane;
 use super::integration::ProjectListPane;
 use super::integration::TargetsPane;
-use crate::keymap;
-use crate::keymap::CiRunsAction;
-use crate::keymap::FinderAction;
-use crate::keymap::GitAction;
-use crate::keymap::LintsAction;
-use crate::keymap::OutputAction;
-use crate::keymap::PackageAction;
-use crate::keymap::ProjectListAction;
-use crate::keymap::TargetsAction;
+use super::keymap;
+use super::keymap::CiRunsAction;
+use super::keymap::FinderAction;
+use super::keymap::GitAction;
+use super::keymap::LintsAction;
+use super::keymap::OutputAction;
+use super::keymap::PackageAction;
+use super::keymap::ProjectListAction;
+use super::keymap::TargetsAction;
 
 // ── Row model ────────────────────────────────────────────────────────
 

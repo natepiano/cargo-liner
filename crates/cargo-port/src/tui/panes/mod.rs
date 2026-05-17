@@ -114,14 +114,14 @@ use super::integration::AppPaneId;
 use super::integration::CpuAction;
 use super::integration::LangAction;
 use super::integration::NavigationAction;
+use super::keymap::CiRunsAction;
+use super::keymap::GitAction;
+use super::keymap::LintsAction;
+use super::keymap::PackageAction;
+use super::keymap::TargetsAction;
 pub(super) use super::state::CiDisplay;
 pub(super) use super::state::Lint;
 pub(super) use super::state::LintDisplay;
-use crate::keymap::CiRunsAction;
-use crate::keymap::GitAction;
-use crate::keymap::LintsAction;
-use crate::keymap::PackageAction;
-use crate::keymap::TargetsAction;
 
 pub(super) fn dispatch_package_action(action: PackageAction, app: &mut App) {
     actions::dispatch_package_action(action, app);

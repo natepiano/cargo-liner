@@ -1,3 +1,11 @@
+use ratatui::style::Color;
+
+// ── Git colors ───────────────────────────────────────────────────────
+
+pub(super) const GIT_MODIFIED_COLOR: Color = Color::Indexed(208);
+pub(super) const GIT_UNTRACKED_COLOR: Color = Color::Green;
+pub(super) const GIT_IGNORED_COLOR: Color = Color::DarkGray;
+
 // App-specific popup dimensions.
 pub(super) const FINDER_POPUP_HEIGHT: u16 = 28;
 pub(super) const SETTINGS_POPUP_WIDTH: u16 = 90;

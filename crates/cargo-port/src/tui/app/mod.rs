@@ -76,6 +76,7 @@ use super::columns::LintCell;
 use super::columns::StyledSegment;
 use super::integration;
 use super::integration::AppPaneId;
+use super::keymap;
 use super::overlays::Overlays;
 use super::pane::PaneFocusState;
 use super::panes::PaneId;
@@ -88,7 +89,6 @@ use super::state::Scan;
 use crate::ci::OwnerRepo;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::http::HttpClient;
-use crate::keymap;
 use crate::lint::LintRuns;
 #[cfg(test)]
 use crate::lint::LintStatus;

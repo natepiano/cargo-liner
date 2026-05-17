@@ -17,13 +17,6 @@ use super::PaneId;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
 use super::build_target_list_from_data;
-use crate::keymap::CiRunsAction;
-use crate::keymap::GitAction;
-#[cfg(test)]
-use crate::keymap::KeyBind;
-use crate::keymap::LintsAction;
-use crate::keymap::PackageAction;
-use crate::keymap::TargetsAction;
 use crate::lint;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -40,6 +33,13 @@ use crate::tui::integration::AppPaneId;
 use crate::tui::integration::CpuAction;
 use crate::tui::integration::LangAction;
 use crate::tui::integration::NavigationAction;
+use crate::tui::keymap::CiRunsAction;
+use crate::tui::keymap::GitAction;
+#[cfg(test)]
+use crate::tui::keymap::KeyBind;
+use crate::tui::keymap::LintsAction;
+use crate::tui::keymap::PackageAction;
+use crate::tui::keymap::TargetsAction;
 
 fn handle_target_action(app: &mut App, mode: BuildMode) {
     let Some(targets_data) = app.panes.targets.content().cloned() else {

@@ -1,24 +1,29 @@
-mod parse;
-
 #[cfg(test)]
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::fmt::Write as _;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyModifiers;
-use parse::code_label;
-use parse::normalize_code;
 use toml::Table;
 use toml::Value;
 use tui_pane::Action;
 
+use super::KeyBind;
+use super::ScopeMap;
+use super::actions::CiRunsAction;
+use super::actions::GitAction;
+use super::actions::LintsAction;
+use super::actions::PackageAction;
+use super::actions::ProjectListAction;
+use super::actions::TargetsAction;
+use super::actions::action_from_toml_key;
+use super::actions::action_toml_key;
+use super::resolved::ResolvedKeymap;
 use crate::config::NavigationKeys;
 use crate::constants::APP_NAME;
 use crate::constants::KEYMAP_FILE;
@@ -27,394 +32,17 @@ use crate::project::AbsolutePath;
 const REMOVED_PROJECT_LIST_GLOBAL_ACTIONS: [(&str, &str); 2] =
     [("open_editor", "open_editor"), ("rescan", "rescan")];
 
-// ── Key representation ───────────────────────────────────────────────
-
-/// A bindable key: a `KeyCode` plus modifier flags from crossterm.
-///
-/// `=` and `+` are normalised to a single canonical form (`+`) so they
-/// are treated as the same physical key.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct KeyBind {
-    pub code:      KeyCode,
-    pub modifiers: KeyModifiers,
-}
-
-impl KeyBind {
-    pub(crate) fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
-        // BackTab implies Shift — normalise to Tab + SHIFT.
-        // Uppercase Char implies Shift — strip SHIFT since it's
-        // encoded in the character itself (`Char('R')` already means
-        // Shift+r).  This ensures the binding `"R"` matches the
-        // crossterm event `Char('R') + SHIFT`.
-        // Normalise Shift + lowercase letter → uppercase letter with
-        // SHIFT stripped, so `Shift+r` and `R` produce the same KeyBind.
-        let (code, modifiers) = match code {
-            KeyCode::BackTab => (code, modifiers | KeyModifiers::SHIFT),
-            KeyCode::Char(c)
-                if c.is_ascii_lowercase() && modifiers.contains(KeyModifiers::SHIFT) =>
-            {
-                (
-                    KeyCode::Char(c.to_ascii_uppercase()),
-                    modifiers - KeyModifiers::SHIFT,
-                )
-            },
-            KeyCode::Char(c) if c.is_ascii_uppercase() => (code, modifiers - KeyModifiers::SHIFT),
-            _ => (code, modifiers),
-        };
-        Self {
-            code: normalize_code(code),
-            modifiers,
-        }
-    }
-
-    pub(crate) fn plain(code: KeyCode) -> Self { Self::new(code, KeyModifiers::NONE) }
-
-    /// Human-readable glyph string for display in status bar / keymap UI.
-    pub(crate) fn display(&self) -> String {
-        let mut parts = String::new();
-        if self.modifiers.contains(KeyModifiers::CONTROL) {
-            parts.push('⌃');
-        }
-        if self.modifiers.contains(KeyModifiers::ALT) {
-            parts.push('⌥');
-        }
-        if self.modifiers.contains(KeyModifiers::SHIFT) {
-            parts.push('⇧');
-        }
-        parts.push_str(&code_label(self.code));
-        parts
-    }
-
-    /// TOML-serialisable string (e.g. `"Ctrl+r"`, `"Shift+Tab"`, `"q"`).
-    pub(crate) fn to_toml_string(&self) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        if self.modifiers.contains(KeyModifiers::CONTROL) {
-            parts.push("Ctrl".to_string());
-        }
-        if self.modifiers.contains(KeyModifiers::ALT) {
-            parts.push("Alt".to_string());
-        }
-        if self.modifiers.contains(KeyModifiers::SHIFT) {
-            parts.push("Shift".to_string());
-        }
-        parts.push(code_label(self.code));
-        parts.join("+")
-    }
-}
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub enum ProjectListAction {
-        ExpandAll   => ("expand_all",   "+",     "Expand all");
-        CollapseAll => ("collapse_all", "-",     "Collapse all");
-        ExpandRow   => ("expand_row",   "→",     "Expand row");
-        CollapseRow => ("collapse_row", "←",     "Collapse row");
-        Clean       => ("clean",        "clean", "Clean project");
-    }
-}
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub enum PackageAction {
-        Activate => ("activate", "Open URL or Cargo.toml");
-        Clean    => ("clean",    "Clean project");
-    }
-}
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub enum GitAction {
-        Activate => ("activate", "Open git URL");
-        Clean    => ("clean",    "Clean project");
-    }
-}
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub enum TargetsAction {
-        Activate     => ("activate",      "run",     "Run in debug mode");
-        ReleaseBuild => ("release_build", "release", "Run in release mode");
-        Clean        => ("clean",         "clean",   "Clean project");
-    }
-}
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub enum CiRunsAction {
-        Activate   => ("activate",    "open",        "Open run");
-        FetchMore  => ("fetch_more",  "fetch more",  "Fetch more CI runs");
-        ToggleView => ("toggle_view", "branch/all",  "Toggle branch/all filter");
-        ClearCache => ("clear_cache", "clear cache", "Clear CI cache");
-    }
-}
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub enum LintsAction {
-        Activate     => ("activate",      "open",        "Open lint output");
-        ClearHistory => ("clear_history", "clear cache", "Clear lint history");
-    }
-}
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub enum OutputAction {
-        Cancel => ("cancel", "close", "Close output pane");
-    }
-}
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub enum FinderAction {
-        Activate => ("activate", "go to", "Go to selected project");
-        Cancel   => ("cancel",   "close", "Close finder");
-    }
-}
-
-fn action_toml_key<A: Action>(action: A) -> &'static str { action.toml_key() }
-
-fn action_from_toml_key<A: Action>(key: &str) -> Option<A> { A::from_toml_key(key) }
-
-// ── Scope map ────────────────────────────────────────────────────────
-
-/// Bidirectional map for a single scope: key→action for dispatch,
-/// action→key for display.
-#[derive(Clone, Debug)]
-pub(crate) struct ScopeMap<A: Copy + Eq + std::hash::Hash> {
-    pub by_key:    HashMap<KeyBind, A>,
-    pub by_action: HashMap<A, KeyBind>,
-}
-
-impl<A: Copy + Eq + std::hash::Hash> ScopeMap<A> {
-    pub(crate) fn new() -> Self {
-        Self {
-            by_key:    HashMap::new(),
-            by_action: HashMap::new(),
-        }
-    }
-
-    pub(crate) fn insert(&mut self, key: KeyBind, action: A) {
-        self.by_key.insert(key.clone(), action);
-        self.by_action.insert(action, key);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn action_for(&self, key: &KeyBind) -> Option<A> { self.by_key.get(key).copied() }
-
-    pub(crate) fn key_for(&self, action: A) -> Option<&KeyBind> { self.by_action.get(&action) }
-
-    /// Display string for an action's bound key, or `"—"` if unbound.
-    #[cfg(test)]
-    pub(crate) fn display_key_for(&self, action: A) -> String {
-        self.key_for(action)
-            .map_or_else(|| "—".to_string(), KeyBind::display)
-    }
-}
-
-impl<A: Copy + Eq + std::hash::Hash> Default for ScopeMap<A> {
-    fn default() -> Self { Self::new() }
-}
-
-// ── Resolved keymap ──────────────────────────────────────────────────
-
-/// Runtime lookup structure: one `ScopeMap` per scope, built from the
-/// TOML config at load time.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ResolvedKeymap {
-    pub project_list: ScopeMap<ProjectListAction>,
-    pub package:      ScopeMap<PackageAction>,
-    pub git:          ScopeMap<GitAction>,
-    pub targets:      ScopeMap<TargetsAction>,
-    pub ci_runs:      ScopeMap<CiRunsAction>,
-    pub lints:        ScopeMap<LintsAction>,
-}
-
-impl ResolvedKeymap {
-    /// The built-in default keymap matching the current hardcoded bindings.
-    pub(crate) fn defaults() -> Self {
-        let mut km = Self::default();
-
-        // Project list
-        km.project_list.insert(
-            KeyBind::plain(KeyCode::Char('=')),
-            ProjectListAction::ExpandAll,
-        );
-        km.project_list.insert(
-            KeyBind::plain(KeyCode::Char('-')),
-            ProjectListAction::CollapseAll,
-        );
-        // ExpandRow / CollapseRow are pane-scope actions routed through
-        // the pane-scope match in `handle_normal_key`. Bare Right / Left
-        // are already mapped to NavigationAction::Right / ::Left in the
-        // framework keymap, so the pane-scope defaults bind ExpandRow /
-        // CollapseRow to Shift+Right / Shift+Left to avoid colliding
-        // with the navigation defaults.
-        km.project_list.insert(
-            KeyBind::new(KeyCode::Right, KeyModifiers::SHIFT),
-            ProjectListAction::ExpandRow,
-        );
-        km.project_list.insert(
-            KeyBind::new(KeyCode::Left, KeyModifiers::SHIFT),
-            ProjectListAction::CollapseRow,
-        );
-        km.project_list
-            .insert(KeyBind::plain(KeyCode::Char('c')), ProjectListAction::Clean);
-
-        // Package
-        km.package
-            .insert(KeyBind::plain(KeyCode::Enter), PackageAction::Activate);
-        km.package
-            .insert(KeyBind::plain(KeyCode::Char('c')), PackageAction::Clean);
-
-        // Git
-        km.git
-            .insert(KeyBind::plain(KeyCode::Enter), GitAction::Activate);
-        km.git
-            .insert(KeyBind::plain(KeyCode::Char('c')), GitAction::Clean);
-
-        // Targets
-        km.targets
-            .insert(KeyBind::plain(KeyCode::Enter), TargetsAction::Activate);
-        km.targets.insert(
-            KeyBind::plain(KeyCode::Char('r')),
-            TargetsAction::ReleaseBuild,
-        );
-        km.targets
-            .insert(KeyBind::plain(KeyCode::Char('c')), TargetsAction::Clean);
-
-        // CI runs
-        km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Enter), CiRunsAction::Activate);
-        km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Char('f')), CiRunsAction::FetchMore);
-        km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Char('b')), CiRunsAction::ToggleView);
-        km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Char('d')), CiRunsAction::ClearCache);
-
-        // Lints
-        km.lints
-            .insert(KeyBind::plain(KeyCode::Enter), LintsAction::Activate);
-        km.lints.insert(
-            KeyBind::plain(KeyCode::Char('d')),
-            LintsAction::ClearHistory,
-        );
-
-        km
-    }
-
-    fn write_scope<A: Copy + Eq + std::hash::Hash>(
-        out: &mut String,
-        header: &str,
-        scope: &ScopeMap<A>,
-        actions: &[A],
-        toml_key: fn(A) -> &'static str,
-    ) {
-        let _ = writeln!(out, "[{header}]");
-        let mut entries: Vec<(&str, String)> = actions
-            .iter()
-            .map(|&action| {
-                let key_str = scope
-                    .key_for(action)
-                    .map_or_else(String::new, KeyBind::to_toml_string);
-                (toml_key(action), key_str)
-            })
-            .collect();
-        entries.sort_by_key(|(name, _)| *name);
-        let max_len = entries
-            .iter()
-            .map(|(name, _)| name.len())
-            .max()
-            .unwrap_or(0);
-        for (name, value) in &entries {
-            let _ = writeln!(out, "{name:<max_len$} = \"{value}\"");
-        }
-        out.push('\n');
-    }
-
-    /// Generate the default TOML content for `keymap.toml`.
-    pub(crate) fn default_toml() -> String {
-        let km = Self::defaults();
-        let mut out = String::from(
-            "# cargo-port keymap configuration\n\
-             # Edit bindings below. Format: action = \"Key\" or \"Modifier+Key\"\n\
-             # Modifiers: Ctrl, Alt, Shift.  Examples: \"Ctrl+r\", \"Shift+Tab\", \"q\"\n\
-             # Note: = and + are treated as the same physical key.\n\
-             # Note: when vim navigation is enabled, h/j/k/l are reserved\n\
-             #       for navigation and cannot be used as action keys.\n\n",
-        );
-
-        Self::write_all_scopes(&mut out, &km);
-
-        out
-    }
-
-    /// Generate TOML content from the given keymap (for saving after UI edits).
-    pub(crate) fn default_toml_from(km: &Self) -> String {
-        let mut out = String::new();
-        Self::write_all_scopes(&mut out, km);
-        out
-    }
-
-    fn write_all_scopes(out: &mut String, km: &Self) {
-        Self::write_scope(
-            out,
-            "project_list",
-            &km.project_list,
-            <ProjectListAction as Action>::ALL,
-            action_toml_key::<ProjectListAction>,
-        );
-        Self::write_scope(
-            out,
-            "package",
-            &km.package,
-            <PackageAction as Action>::ALL,
-            action_toml_key::<PackageAction>,
-        );
-        Self::write_scope(
-            out,
-            "git",
-            &km.git,
-            <GitAction as Action>::ALL,
-            action_toml_key::<GitAction>,
-        );
-        Self::write_scope(
-            out,
-            "targets",
-            &km.targets,
-            <TargetsAction as Action>::ALL,
-            action_toml_key::<TargetsAction>,
-        );
-        Self::write_scope(
-            out,
-            "ci_runs",
-            &km.ci_runs,
-            <CiRunsAction as Action>::ALL,
-            action_toml_key::<CiRunsAction>,
-        );
-        Self::write_scope(
-            out,
-            "lints",
-            &km.lints,
-            <LintsAction as Action>::ALL,
-            action_toml_key::<LintsAction>,
-        );
-    }
-}
-
-// ── Loading & validation ─────────────────────────────────────────────
-
 pub(crate) struct KeymapLoadResult {
-    pub keymap:          ResolvedKeymap,
-    pub errors:          Vec<KeymapError>,
-    pub missing_actions: Vec<String>,
+    pub(crate) keymap:          ResolvedKeymap,
+    pub(crate) errors:          Vec<KeymapError>,
+    pub(crate) missing_actions: Vec<String>,
 }
 
 pub(crate) struct KeymapError {
-    pub scope:  String,
-    pub action: String,
-    pub key:    String,
-    pub reason: KeymapErrorReason,
+    pub(crate) scope:  String,
+    pub(crate) action: String,
+    pub(crate) key:    String,
+    pub(crate) reason: KeymapErrorReason,
 }
 
 impl Display for KeymapError {
@@ -614,7 +242,7 @@ pub(crate) fn load_keymap_from_str(toml_str: &str, vim_mode: NavigationKeys) -> 
 /// Check whether enabling vim mode would conflict with current keymap bindings.
 /// Returns the list of conflicting bindings (scope.action = key).
 #[cfg(test)]
-pub(crate) fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
+fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
     fn check_scope<A: Copy + Eq + std::hash::Hash>(
         scope_name: &str,
         scope: &ScopeMap<A>,
@@ -901,214 +529,10 @@ fn keymap_value_string(value: &Value) -> String {
         .map_or_else(|| value.to_string(), ToOwned::to_owned)
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use toml::Table;
-
     use super::*;
-
-    #[test]
-    fn parse_plain_char() {
-        let kb: KeyBind = "q".parse().unwrap();
-        assert_eq!(kb.code, KeyCode::Char('q'));
-        assert_eq!(kb.modifiers, KeyModifiers::NONE);
-    }
-
-    #[test]
-    fn parse_named_keys() {
-        assert_eq!("Enter".parse::<KeyBind>().unwrap().code, KeyCode::Enter);
-        assert_eq!("Esc".parse::<KeyBind>().unwrap().code, KeyCode::Esc);
-        assert_eq!("Tab".parse::<KeyBind>().unwrap().code, KeyCode::Tab);
-        assert_eq!("Space".parse::<KeyBind>().unwrap().code, KeyCode::Char(' '));
-        assert_eq!("F1".parse::<KeyBind>().unwrap().code, KeyCode::F(1));
-        assert_eq!("F12".parse::<KeyBind>().unwrap().code, KeyCode::F(12));
-    }
-
-    #[test]
-    fn parse_ctrl_modifier() {
-        let kb: KeyBind = "Ctrl+r".parse().unwrap();
-        assert_eq!(kb.code, KeyCode::Char('r'));
-        assert!(kb.modifiers.contains(KeyModifiers::CONTROL));
-    }
-
-    #[test]
-    fn parse_shift_modifier() {
-        let kb: KeyBind = "Shift+Tab".parse().unwrap();
-        assert_eq!(kb.code, KeyCode::Tab);
-        assert!(kb.modifiers.contains(KeyModifiers::SHIFT));
-    }
-
-    #[test]
-    fn parse_alt_modifier() {
-        let kb: KeyBind = "Alt+d".parse().unwrap();
-        assert_eq!(kb.code, KeyCode::Char('d'));
-        assert!(kb.modifiers.contains(KeyModifiers::ALT));
-    }
-
-    #[test]
-    fn parse_multiple_modifiers() {
-        // Shift+x normalizes to Char('X') with SHIFT stripped.
-        let kb: KeyBind = "Ctrl+Shift+x".parse().unwrap();
-        assert_eq!(kb.code, KeyCode::Char('X'));
-        assert!(kb.modifiers.contains(KeyModifiers::CONTROL));
-        assert!(!kb.modifiers.contains(KeyModifiers::SHIFT));
-    }
-
-    #[test]
-    fn serde_round_trip() {
-        let cases = [
-            "q",
-            "Ctrl+r",
-            "Alt+d",
-            "Shift+Tab",
-            "Enter",
-            "Esc",
-            "/",
-            "-",
-        ];
-        for input in cases {
-            let kb: KeyBind = input.parse().unwrap();
-            let serialized = kb.to_toml_string();
-            let reparsed: KeyBind = serialized.parse().unwrap();
-            assert_eq!(kb, reparsed, "round-trip failed for \"{input}\"");
-        }
-    }
-
-    #[test]
-    fn equals_plus_normalization() {
-        let plus: KeyBind = "+".parse().unwrap();
-        let equals: KeyBind = "=".parse().unwrap();
-        assert_eq!(plus, equals);
-    }
-
-    #[test]
-    fn uppercase_char_strips_shift() {
-        // Crossterm delivers Shift+R as Char('R') + SHIFT.
-        // Our normalization strips SHIFT since uppercase encodes it.
-        let from_event = KeyBind::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
-        let from_toml = KeyBind::plain(KeyCode::Char('R'));
-        assert_eq!(from_event, from_toml);
-        assert_eq!(from_event.modifiers, KeyModifiers::NONE);
-    }
-
-    #[test]
-    fn shift_plus_lowercase_becomes_uppercase() {
-        // TOML "Shift+r" should match bare "R".
-        let shift_r: KeyBind = "Shift+r".parse().unwrap();
-        let bare_r: KeyBind = "R".parse().unwrap();
-        assert_eq!(shift_r, bare_r);
-        assert_eq!(shift_r.code, KeyCode::Char('R'));
-        assert_eq!(shift_r.modifiers, KeyModifiers::NONE);
-    }
-
-    #[test]
-    fn ctrl_shift_letter_keeps_ctrl() {
-        // Ctrl+Shift+r → Char('R') + CONTROL (SHIFT stripped).
-        let kb = KeyBind::new(
-            KeyCode::Char('r'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-        );
-        assert_eq!(kb.code, KeyCode::Char('R'));
-        assert!(kb.modifiers.contains(KeyModifiers::CONTROL));
-        assert!(!kb.modifiers.contains(KeyModifiers::SHIFT));
-    }
-
-    #[test]
-    fn lowercase_without_shift_unchanged() {
-        let kb = KeyBind::plain(KeyCode::Char('r'));
-        assert_eq!(kb.code, KeyCode::Char('r'));
-        assert_eq!(kb.modifiers, KeyModifiers::NONE);
-    }
-
-    #[test]
-    fn restart_default_matches_crossterm_event() {
-        // Shifted-letter normalization remains on the legacy KeyBind bridge.
-        let crossterm_event = KeyBind::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
-        assert_eq!(KeyBind::plain(KeyCode::Char('R')), crossterm_event);
-    }
-
-    #[test]
-    fn display_glyphs() {
-        assert_eq!(
-            KeyBind::new(KeyCode::Char('r'), KeyModifiers::CONTROL).display(),
-            "⌃r"
-        );
-        assert_eq!(
-            KeyBind::new(KeyCode::Char('d'), KeyModifiers::ALT).display(),
-            "⌥d"
-        );
-        assert_eq!(
-            KeyBind::new(KeyCode::Tab, KeyModifiers::SHIFT).display(),
-            "⇧Tab"
-        );
-        assert_eq!(KeyBind::plain(KeyCode::Char('q')).display(), "q");
-    }
-
-    #[test]
-    fn plus_displays_as_plus() {
-        let kb = KeyBind::plain(KeyCode::Char('='));
-        assert_eq!(kb.display(), "+");
-        assert_eq!(kb.to_toml_string(), "+");
-    }
-
-    #[test]
-    fn parse_errors() {
-        assert!("".parse::<KeyBind>().is_err(), "empty string");
-        assert!("Ctrl+".parse::<KeyBind>().is_err(), "modifier with no key");
-        assert!("Ctrl+Ctrl".parse::<KeyBind>().is_err(), "modifier as key");
-    }
-
-    #[test]
-    fn valid_edge_cases() {
-        assert!("+".parse::<KeyBind>().is_ok(), "plus key");
-        assert!("/".parse::<KeyBind>().is_ok(), "slash key");
-        assert!("Space".parse::<KeyBind>().is_ok(), "space key");
-    }
-
-    #[test]
-    fn defaults_scope_map_consistency() {
-        fn check<A: Copy + Eq + std::hash::Hash>(scope: &ScopeMap<A>, actions: &[A]) {
-            for &action in actions {
-                assert!(
-                    scope.key_for(action).is_some(),
-                    "action missing from by_action"
-                );
-            }
-            for (key, &action) in &scope.by_key {
-                assert_eq!(
-                    scope.by_action.get(&action),
-                    Some(key),
-                    "by_key/by_action mismatch"
-                );
-            }
-            assert_eq!(scope.by_key.len(), scope.by_action.len());
-        }
-
-        let km = ResolvedKeymap::defaults();
-        check(&km.project_list, <ProjectListAction as Action>::ALL);
-        check(&km.package, <PackageAction as Action>::ALL);
-        check(&km.git, <GitAction as Action>::ALL);
-        check(&km.targets, <TargetsAction as Action>::ALL);
-        check(&km.ci_runs, <CiRunsAction as Action>::ALL);
-        check(&km.lints, <LintsAction as Action>::ALL);
-    }
-
-    #[test]
-    fn default_toml_is_parseable() {
-        let toml_str = ResolvedKeymap::default_toml();
-        let table: Table = toml_str.parse().unwrap();
-        assert!(table.contains_key("project_list"));
-        assert!(table.contains_key("package"));
-        assert!(table.contains_key("git"));
-        assert!(table.contains_key("targets"));
-        assert!(table.contains_key("ci_runs"));
-        assert!(table.contains_key("lints"));
-    }
-
-    // ── Validation tests ─────────────────────────────────────────────
 
     #[test]
     fn default_toml_loads_without_errors() {

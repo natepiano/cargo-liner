@@ -8,7 +8,6 @@ mod config;
 mod constants;
 mod enrichment;
 mod http;
-mod keymap;
 mod lint;
 mod perf_log;
 mod project;

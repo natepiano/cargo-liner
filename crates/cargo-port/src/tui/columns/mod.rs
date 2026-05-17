@@ -13,11 +13,11 @@ use tui_pane::SECONDARY_TEXT_COLOR;
 use tui_pane::TITLE_COLOR;
 use unicode_width::UnicodeWidthStr;
 
+use super::constants::GIT_IGNORED_COLOR;
+use super::constants::GIT_MODIFIED_COLOR;
+use super::constants::GIT_UNTRACKED_COLOR;
 use super::render;
 use crate::ci::CiStatus;
-use crate::constants::GIT_IGNORED_COLOR;
-use crate::constants::GIT_MODIFIED_COLOR;
-use crate::constants::GIT_UNTRACKED_COLOR;
 use crate::constants::IN_SYNC;
 use crate::project::GitStatus;
 use crate::project::WorktreeHealth;

@@ -7,6 +7,7 @@ mod finder;
 mod input;
 mod integration;
 mod interaction;
+mod keymap;
 mod keymap_ui;
 mod overlays;
 mod pane;

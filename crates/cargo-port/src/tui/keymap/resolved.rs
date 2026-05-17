@@ -1,0 +1,248 @@
+use std::fmt::Write as _;
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyModifiers;
+use tui_pane::Action;
+
+use super::KeyBind;
+use super::ScopeMap;
+use super::actions::CiRunsAction;
+use super::actions::GitAction;
+use super::actions::LintsAction;
+use super::actions::PackageAction;
+use super::actions::ProjectListAction;
+use super::actions::TargetsAction;
+use super::actions::action_toml_key;
+
+/// Runtime lookup structure: one `ScopeMap` per scope, built from the
+/// TOML config at load time.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ResolvedKeymap {
+    pub(crate) project_list: ScopeMap<ProjectListAction>,
+    pub(crate) package:      ScopeMap<PackageAction>,
+    pub(crate) git:          ScopeMap<GitAction>,
+    pub(crate) targets:      ScopeMap<TargetsAction>,
+    pub(crate) ci_runs:      ScopeMap<CiRunsAction>,
+    pub(crate) lints:        ScopeMap<LintsAction>,
+}
+
+impl ResolvedKeymap {
+    /// The built-in default keymap matching the current hardcoded bindings.
+    pub(crate) fn defaults() -> Self {
+        let mut km = Self::default();
+
+        // Project list
+        km.project_list.insert(
+            KeyBind::plain(KeyCode::Char('=')),
+            ProjectListAction::ExpandAll,
+        );
+        km.project_list.insert(
+            KeyBind::plain(KeyCode::Char('-')),
+            ProjectListAction::CollapseAll,
+        );
+        // ExpandRow / CollapseRow are pane-scope actions routed through
+        // the pane-scope match in `handle_normal_key`. Bare Right / Left
+        // are already mapped to NavigationAction::Right / ::Left in the
+        // framework keymap, so the pane-scope defaults bind ExpandRow /
+        // CollapseRow to Shift+Right / Shift+Left to avoid colliding
+        // with the navigation defaults.
+        km.project_list.insert(
+            KeyBind::new(KeyCode::Right, KeyModifiers::SHIFT),
+            ProjectListAction::ExpandRow,
+        );
+        km.project_list.insert(
+            KeyBind::new(KeyCode::Left, KeyModifiers::SHIFT),
+            ProjectListAction::CollapseRow,
+        );
+        km.project_list
+            .insert(KeyBind::plain(KeyCode::Char('c')), ProjectListAction::Clean);
+
+        // Package
+        km.package
+            .insert(KeyBind::plain(KeyCode::Enter), PackageAction::Activate);
+        km.package
+            .insert(KeyBind::plain(KeyCode::Char('c')), PackageAction::Clean);
+
+        // Git
+        km.git
+            .insert(KeyBind::plain(KeyCode::Enter), GitAction::Activate);
+        km.git
+            .insert(KeyBind::plain(KeyCode::Char('c')), GitAction::Clean);
+
+        // Targets
+        km.targets
+            .insert(KeyBind::plain(KeyCode::Enter), TargetsAction::Activate);
+        km.targets.insert(
+            KeyBind::plain(KeyCode::Char('r')),
+            TargetsAction::ReleaseBuild,
+        );
+        km.targets
+            .insert(KeyBind::plain(KeyCode::Char('c')), TargetsAction::Clean);
+
+        // CI runs
+        km.ci_runs
+            .insert(KeyBind::plain(KeyCode::Enter), CiRunsAction::Activate);
+        km.ci_runs
+            .insert(KeyBind::plain(KeyCode::Char('f')), CiRunsAction::FetchMore);
+        km.ci_runs
+            .insert(KeyBind::plain(KeyCode::Char('b')), CiRunsAction::ToggleView);
+        km.ci_runs
+            .insert(KeyBind::plain(KeyCode::Char('d')), CiRunsAction::ClearCache);
+
+        // Lints
+        km.lints
+            .insert(KeyBind::plain(KeyCode::Enter), LintsAction::Activate);
+        km.lints.insert(
+            KeyBind::plain(KeyCode::Char('d')),
+            LintsAction::ClearHistory,
+        );
+
+        km
+    }
+
+    fn write_scope<A: Copy + Eq + std::hash::Hash>(
+        out: &mut String,
+        header: &str,
+        scope: &ScopeMap<A>,
+        actions: &[A],
+        toml_key: fn(A) -> &'static str,
+    ) {
+        let _ = writeln!(out, "[{header}]");
+        let mut entries: Vec<(&str, String)> = actions
+            .iter()
+            .map(|&action| {
+                let key_str = scope
+                    .key_for(action)
+                    .map_or_else(String::new, KeyBind::to_toml_string);
+                (toml_key(action), key_str)
+            })
+            .collect();
+        entries.sort_by_key(|(name, _)| *name);
+        let max_len = entries
+            .iter()
+            .map(|(name, _)| name.len())
+            .max()
+            .unwrap_or(0);
+        for (name, value) in &entries {
+            let _ = writeln!(out, "{name:<max_len$} = \"{value}\"");
+        }
+        out.push('\n');
+    }
+
+    /// Generate the default TOML content for `keymap.toml`.
+    pub(super) fn default_toml() -> String {
+        let km = Self::defaults();
+        let mut out = String::from(
+            "# cargo-port keymap configuration\n\
+             # Edit bindings below. Format: action = \"Key\" or \"Modifier+Key\"\n\
+             # Modifiers: Ctrl, Alt, Shift.  Examples: \"Ctrl+r\", \"Shift+Tab\", \"q\"\n\
+             # Note: = and + are treated as the same physical key.\n\
+             # Note: when vim navigation is enabled, h/j/k/l are reserved\n\
+             #       for navigation and cannot be used as action keys.\n\n",
+        );
+
+        Self::write_all_scopes(&mut out, &km);
+
+        out
+    }
+
+    /// Generate TOML content from the given keymap (for saving after UI edits).
+    pub(super) fn default_toml_from(km: &Self) -> String {
+        let mut out = String::new();
+        Self::write_all_scopes(&mut out, km);
+        out
+    }
+
+    fn write_all_scopes(out: &mut String, km: &Self) {
+        Self::write_scope(
+            out,
+            "project_list",
+            &km.project_list,
+            <ProjectListAction as Action>::ALL,
+            action_toml_key::<ProjectListAction>,
+        );
+        Self::write_scope(
+            out,
+            "package",
+            &km.package,
+            <PackageAction as Action>::ALL,
+            action_toml_key::<PackageAction>,
+        );
+        Self::write_scope(
+            out,
+            "git",
+            &km.git,
+            <GitAction as Action>::ALL,
+            action_toml_key::<GitAction>,
+        );
+        Self::write_scope(
+            out,
+            "targets",
+            &km.targets,
+            <TargetsAction as Action>::ALL,
+            action_toml_key::<TargetsAction>,
+        );
+        Self::write_scope(
+            out,
+            "ci_runs",
+            &km.ci_runs,
+            <CiRunsAction as Action>::ALL,
+            action_toml_key::<CiRunsAction>,
+        );
+        Self::write_scope(
+            out,
+            "lints",
+            &km.lints,
+            <LintsAction as Action>::ALL,
+            action_toml_key::<LintsAction>,
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use toml::Table;
+
+    use super::*;
+
+    #[test]
+    fn defaults_scope_map_consistency() {
+        fn check<A: Copy + Eq + std::hash::Hash>(scope: &ScopeMap<A>, actions: &[A]) {
+            for &action in actions {
+                assert!(
+                    scope.key_for(action).is_some(),
+                    "action missing from by_action"
+                );
+            }
+            for (key, &action) in &scope.by_key {
+                assert_eq!(
+                    scope.by_action.get(&action),
+                    Some(key),
+                    "by_key/by_action mismatch"
+                );
+            }
+            assert_eq!(scope.by_key.len(), scope.by_action.len());
+        }
+
+        let km = ResolvedKeymap::defaults();
+        check(&km.project_list, <ProjectListAction as Action>::ALL);
+        check(&km.package, <PackageAction as Action>::ALL);
+        check(&km.git, <GitAction as Action>::ALL);
+        check(&km.targets, <TargetsAction as Action>::ALL);
+        check(&km.ci_runs, <CiRunsAction as Action>::ALL);
+        check(&km.lints, <LintsAction as Action>::ALL);
+    }
+
+    #[test]
+    fn default_toml_is_parseable() {
+        let toml_str = ResolvedKeymap::default_toml();
+        let table: Table = toml_str.parse().unwrap();
+        assert!(table.contains_key("project_list"));
+        assert!(table.contains_key("package"));
+        assert!(table.contains_key("git"));
+        assert!(table.contains_key("targets"));
+        assert!(table.contains_key("ci_runs"));
+        assert!(table.contains_key("lints"));
+    }
+}

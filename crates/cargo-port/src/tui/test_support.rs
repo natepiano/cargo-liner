@@ -11,6 +11,7 @@ use tui_pane::SettingsStore;
 
 use super::app::App;
 use super::app::RetrySpawnMode;
+use super::keymap;
 use super::settings;
 use super::settings::StartupSettings;
 use crate::config;
@@ -18,7 +19,6 @@ use crate::config::CargoPortConfig;
 use crate::constants::APP_NAME;
 use crate::constants::CONFIG_FILE;
 use crate::http::HttpClient;
-use crate::keymap;
 use crate::project::RootItem;
 use crate::project::WorkspaceMetadataStore;
 use crate::test_support;

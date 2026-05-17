@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use ratatui::style::Color;
-
 // ── Shared icons ─────────────────────────────────────────────────────
 
 pub(crate) const CI_PASSED: &str = "🟢";
@@ -28,9 +26,6 @@ pub(crate) const WORKTREE: &str = "🌲";
 pub(crate) const GIT_STATUS_CLEAN: &str = "✨";
 pub(crate) const GIT_STATUS_UNTRACKED: &str = "🆕";
 pub(crate) const GIT_STATUS_MODIFIED: &str = "🟠";
-pub(crate) const GIT_MODIFIED_COLOR: Color = Color::Indexed(208);
-pub(crate) const GIT_UNTRACKED_COLOR: Color = Color::Green;
-pub(crate) const GIT_IGNORED_COLOR: Color = Color::DarkGray;
 
 // ── CI constants ──────────────────────────────────────────────────────
 

@@ -43,14 +43,14 @@ use super::integration::AppPaneId;
 use super::integration::FinderPane;
 use super::integration::OutputPane;
 use super::interaction;
+use super::keymap::OutputAction;
+use super::keymap::ProjectListAction;
 use super::keymap_ui;
 use super::panes;
 use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::settings;
 use super::terminal;
-use crate::keymap::OutputAction;
-use crate::keymap::ProjectListAction;
 
 /// Last known mouse position, updated from every mouse event. Used to
 /// synthesize a click when `FocusGained` arrives because iTerm2 eats the

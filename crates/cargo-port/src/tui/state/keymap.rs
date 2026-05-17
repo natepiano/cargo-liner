@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use tui_pane::ToastId;
 use tui_pane::WatchedFile;
 
-use crate::keymap::ResolvedKeymap;
+use crate::tui::keymap::ResolvedKeymap;
 
 /// Owns the parsed keymap plus the on-disk watch state and the
 /// diagnostics-toast slot.

@@ -6,9 +6,6 @@ use crate::config;
 use crate::config::CargoPortConfig;
 use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
-use crate::keymap;
-use crate::keymap::KeymapError;
-use crate::keymap::KeymapErrorReason::Parse;
 use crate::lint;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
@@ -16,6 +13,9 @@ use crate::tui::app::CargoPortToastAction;
 use crate::tui::integration;
 use crate::tui::integration::ReloadContext;
 use crate::tui::integration::TreeReaction;
+use crate::tui::keymap;
+use crate::tui::keymap::KeymapError;
+use crate::tui::keymap::KeymapErrorReason::Parse;
 use crate::tui::keymap_ui;
 
 impl App {
