@@ -1,4 +1,7 @@
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -485,10 +488,6 @@ impl<'a> MendRunner<'a> {
 /// fixes land or is left for the user to reconcile. Untagged fixes
 /// (`import_group: None`) pass through unchanged.
 fn drop_conflicting_import_groups(fixes: Vec<imports::UseFix>) -> Vec<imports::UseFix> {
-    use std::collections::BTreeMap;
-    use std::collections::BTreeSet;
-    use std::path::PathBuf;
-
     let mut bare_name_to_paths: BTreeMap<(PathBuf, String), BTreeSet<String>> = BTreeMap::new();
     for fix in &fixes {
         if let Some(group) = &fix.import_group {

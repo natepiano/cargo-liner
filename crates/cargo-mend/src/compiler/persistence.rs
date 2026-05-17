@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsStr;
 use std::fs;
@@ -339,9 +341,6 @@ fn extend_report_from_stored(
 }
 
 fn apply_caller_aware_suppression(reports: &mut [StoredReport]) {
-    use std::collections::BTreeMap;
-    use std::collections::BTreeSet;
-
     // Build the union map: target item def-path -> set of caller modules.
     // Cloned into owned strings so we can release the immutable borrow on
     // `reports` before iterating mutably.
@@ -417,9 +416,6 @@ fn finding_intersection_key(finding: &StoredFinding) -> (DiagnosticCode, String,
 }
 
 fn apply_cross_compilation_intersection(reports: &mut [StoredReport]) {
-    use std::collections::BTreeMap;
-    use std::collections::BTreeSet;
-
     if reports.len() < 2 {
         return;
     }

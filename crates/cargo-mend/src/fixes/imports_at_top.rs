@@ -446,16 +446,20 @@ fn offset(line_offsets: &[usize], position: LineColumn) -> usize {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use syn::File;
+    use syn::Item;
+    use syn::UseTree;
+
     use super::flatten_use_to_bare_paths;
 
-    fn parse_tree(source: &str) -> syn::UseTree {
-        let file: syn::File = syn::parse_str(source).expect("parse");
+    fn parse_tree(source: &str) -> UseTree {
+        let file: File = syn::parse_str(source).expect("parse");
         let item = file
             .items
             .into_iter()
             .next()
             .expect("fixture should produce one item");
-        let syn::Item::Use(item_use) = item else {
+        let Item::Use(item_use) = item else {
             panic!("expected use item")
         };
         item_use.tree

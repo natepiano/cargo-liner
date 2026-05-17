@@ -1,6 +1,9 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use ParentFacadeVisibility::Crate;
+use ParentFacadeVisibility::Public;
+use ParentFacadeVisibility::Super;
 use anyhow::Result;
 use syn::File;
 use syn::Item;
@@ -195,9 +198,6 @@ const fn widest_visibility(
     a: ParentFacadeVisibility,
     b: ParentFacadeVisibility,
 ) -> ParentFacadeVisibility {
-    use ParentFacadeVisibility::Crate;
-    use ParentFacadeVisibility::Public;
-    use ParentFacadeVisibility::Super;
     match (a, b) {
         (Public, _) | (_, Public) => Public,
         (Crate, _) | (_, Crate) => Crate,
