@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn missing_directory_returns_only_builtins() {
         let registry = build_user_registry(Some(Path::new("/definitely/not/a/dir/xyzzy")));
-        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.len(), 4);
         assert!(registry.find(&ThemeId::new(BUILTIN_DARK_NAME)).is_some());
         assert!(registry.find(&ThemeId::new(BUILTIN_LIGHT_NAME)).is_some());
         assert!(registry.status().failed_files.is_empty());
@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn no_directory_argument_returns_only_builtins() {
         let registry = build_user_registry(None);
-        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.len(), 4);
     }
 
     #[test]
@@ -377,7 +377,7 @@ mod tests {
         let dir = temp_dir("override");
         write_file(&dir.join("override.toml"), MINIMAL_DARK_FAMILY);
         let registry = build_user_registry(Some(&dir));
-        assert_eq!(registry.len(), 2, "override must replace in place");
+        assert_eq!(registry.len(), 4, "override must replace in place");
         assert_eq!(
             registry.status().overridden,
             vec![ThemeId::new(BUILTIN_DARK_NAME)]
@@ -389,7 +389,7 @@ mod tests {
         let dir = temp_dir("badparse");
         write_file(&dir.join("bad.toml"), "this is not = valid toml [\n");
         let registry = build_user_registry(Some(&dir));
-        assert_eq!(registry.len(), 2, "built-ins survive a parse error");
+        assert_eq!(registry.len(), 4, "built-ins survive a parse error");
         assert_eq!(registry.status().failed_files.len(), 1);
         let (path, err) = &registry.status().failed_files[0];
         assert!(path.ends_with("bad.toml"));

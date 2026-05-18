@@ -21,6 +21,10 @@ use super::builtins;
 pub const BUILTIN_DARK_NAME: &str = "Default Dark";
 /// Name of the built-in light variant. Stable identifier used by config.
 pub const BUILTIN_LIGHT_NAME: &str = "Default Light";
+/// Name of the built-in high-contrast dark variant.
+pub const BUILTIN_HC_DARK_NAME: &str = "High Contrast Dark";
+/// Name of the built-in high-contrast light variant.
+pub const BUILTIN_HC_LIGHT_NAME: &str = "High Contrast Light";
 
 /// Cheaply cloneable identifier for a theme variant. Backed by an
 /// `Arc<str>` so the registry, config, and runtime references share
@@ -136,8 +140,9 @@ impl ThemeRegistry {
         }
     }
 
-    /// Seed the registry with the two compiled-in variants
-    /// ([`BUILTIN_DARK_NAME`] and [`BUILTIN_LIGHT_NAME`]).
+    /// Seed the registry with the compiled-in variants:
+    /// [`BUILTIN_DARK_NAME`], [`BUILTIN_LIGHT_NAME`],
+    /// [`BUILTIN_HC_DARK_NAME`], [`BUILTIN_HC_LIGHT_NAME`].
     #[must_use]
     pub fn new_with_builtins() -> Self {
         let mut registry = Self::empty();
@@ -150,6 +155,16 @@ impl ThemeRegistry {
             id:         ThemeId::new(BUILTIN_LIGHT_NAME),
             appearance: Appearance::Light,
             theme:      builtins::default_light(),
+        });
+        registry.variants.push(ThemeVariant {
+            id:         ThemeId::new(BUILTIN_HC_DARK_NAME),
+            appearance: Appearance::Dark,
+            theme:      builtins::high_contrast_dark(),
+        });
+        registry.variants.push(ThemeVariant {
+            id:         ThemeId::new(BUILTIN_HC_LIGHT_NAME),
+            appearance: Appearance::Light,
+            theme:      builtins::high_contrast_light(),
         });
         registry
     }
@@ -225,11 +240,17 @@ mod tests {
     }
 
     #[test]
-    fn new_with_builtins_seeds_two_named_variants() {
+    fn new_with_builtins_seeds_four_named_variants() {
         let registry = ThemeRegistry::new_with_builtins();
-        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.len(), 4);
         assert!(registry.find(&ThemeId::new(BUILTIN_DARK_NAME)).is_some());
         assert!(registry.find(&ThemeId::new(BUILTIN_LIGHT_NAME)).is_some());
+        assert!(registry.find(&ThemeId::new(BUILTIN_HC_DARK_NAME)).is_some());
+        assert!(
+            registry
+                .find(&ThemeId::new(BUILTIN_HC_LIGHT_NAME))
+                .is_some()
+        );
     }
 
     #[test]
@@ -248,7 +269,7 @@ mod tests {
             outcome,
             RegisterOutcome::Overrode(ThemeId::new(BUILTIN_DARK_NAME))
         );
-        assert_eq!(registry.len(), 2, "override must replace in place");
+        assert_eq!(registry.len(), 4, "override must replace in place");
         assert_eq!(
             registry.status().overridden,
             vec![ThemeId::new(BUILTIN_DARK_NAME)]
@@ -266,8 +287,8 @@ mod tests {
             .variants_by_appearance(Appearance::Light)
             .map(|v| v.id.as_str())
             .collect();
-        assert_eq!(darks, vec![BUILTIN_DARK_NAME]);
-        assert_eq!(lights, vec![BUILTIN_LIGHT_NAME]);
+        assert_eq!(darks, vec![BUILTIN_DARK_NAME, BUILTIN_HC_DARK_NAME]);
+        assert_eq!(lights, vec![BUILTIN_LIGHT_NAME, BUILTIN_HC_LIGHT_NAME]);
     }
 
     #[test]

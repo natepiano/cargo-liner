@@ -137,3 +137,114 @@ pub const fn default_light() -> Theme {
         },
     }
 }
+
+/// High-contrast dark variant.
+///
+/// Pure white on pure black with bold modifiers throughout; accent
+/// fields use the bright ANSI palette (`LightYellow`, `LightCyan`,
+/// `LightGreen`, `LightRed`, `LightMagenta`) for maximum legibility
+/// under reduced-vision or glare conditions.
+#[must_use]
+pub const fn high_contrast_dark() -> Theme {
+    Theme {
+        pane_chrome: PaneChromeTheme {
+            active_border:   StyleSpec::bold(Color::LightYellow),
+            inactive_border: StyleSpec::from_color(Color::White),
+            active_title:    StyleSpec::bold(Color::LightYellow),
+            inactive_title:  StyleSpec::bold(Color::White),
+        },
+        focus:       FocusTheme {
+            active:     StyleSpec::from_color(Color::Rgb(0, 60, 100)),
+            hover:      StyleSpec::from_color(Color::Rgb(0, 40, 70)),
+            remembered: StyleSpec::from_color(Color::Rgb(0, 25, 50)),
+        },
+        semantic:    SemanticTheme {
+            accent:       StyleSpec::bold(Color::LightCyan),
+            error:        StyleSpec::bold(Color::LightRed),
+            inline_error: StyleSpec::bold(Color::LightYellow),
+            success:      StyleSpec::bold(Color::LightGreen),
+            label:        StyleSpec::from_color(Color::White),
+        },
+        text:        TextTheme {
+            default:   StyleSpec::from_color(Color::White),
+            secondary: StyleSpec::from_color(Color::White),
+            dim:       StyleSpec::from_color(Color::Gray),
+            bright:    StyleSpec::bold(Color::LightYellow),
+            bg_focus:  StyleSpec::from_color(Color::Black),
+        },
+        git:         GitTheme {
+            ignored:   StyleSpec::from_color(Color::Gray),
+            modified:  StyleSpec::bold(Color::LightYellow),
+            untracked: StyleSpec::bold(Color::LightGreen),
+        },
+        status:      StatusTheme {
+            bar:           StyleSpec::from_color(Color::Rgb(60, 60, 60)),
+            target_bench:  StyleSpec::bold(Color::LightMagenta),
+            column_header: StyleSpec::bold(Color::LightCyan),
+        },
+        finder:      FinderTheme {
+            match_bg:          StyleSpec::from_color(Color::LightYellow),
+            discovery_shimmer: StyleSpec::bold(Color::LightCyan),
+        },
+        disk_usage:  DiskUsageTheme {
+            low:  StyleSpec::bold(Color::LightGreen),
+            mid:  StyleSpec::from_color(Color::White),
+            high: StyleSpec::bold(Color::LightRed),
+        },
+    }
+}
+
+/// High-contrast light variant.
+///
+/// Pure black on pure white with bold modifiers throughout; accent
+/// fields use saturated dark colors (deep red, deep green, deep blue,
+/// deep orange) chosen for AAA-grade contrast against a white canvas.
+#[must_use]
+pub const fn high_contrast_light() -> Theme {
+    Theme {
+        pane_chrome: PaneChromeTheme {
+            active_border:   StyleSpec::bold(Color::Rgb(140, 60, 0)),
+            inactive_border: StyleSpec::from_color(Color::Black),
+            active_title:    StyleSpec::bold(Color::Rgb(140, 60, 0)),
+            inactive_title:  StyleSpec::bold(Color::Black),
+        },
+        focus:       FocusTheme {
+            active:     StyleSpec::from_color(Color::Rgb(255, 230, 100)),
+            hover:      StyleSpec::from_color(Color::Rgb(255, 245, 180)),
+            remembered: StyleSpec::from_color(Color::Rgb(255, 250, 220)),
+        },
+        semantic:    SemanticTheme {
+            accent:       StyleSpec::bold(Color::Rgb(0, 0, 140)),
+            error:        StyleSpec::bold(Color::Rgb(180, 0, 0)),
+            inline_error: StyleSpec::bold(Color::Rgb(140, 60, 0)),
+            success:      StyleSpec::bold(Color::Rgb(0, 100, 0)),
+            label:        StyleSpec::from_color(Color::Black),
+        },
+        text:        TextTheme {
+            default:   StyleSpec::from_color(Color::Black),
+            secondary: StyleSpec::from_color(Color::Black),
+            dim:       StyleSpec::from_color(Color::Rgb(80, 80, 80)),
+            bright:    StyleSpec::bold(Color::Rgb(140, 60, 0)),
+            bg_focus:  StyleSpec::from_color(Color::White),
+        },
+        git:         GitTheme {
+            ignored:   StyleSpec::from_color(Color::Rgb(80, 80, 80)),
+            modified:  StyleSpec::bold(Color::Rgb(140, 60, 0)),
+            untracked: StyleSpec::bold(Color::Rgb(0, 100, 0)),
+        },
+        status:      StatusTheme {
+            bar:           StyleSpec::from_color(Color::Rgb(210, 210, 210)),
+            target_bench:  StyleSpec::bold(Color::Rgb(140, 0, 140)),
+            column_header: StyleSpec::bold(Color::Rgb(0, 0, 140)),
+        },
+        finder:      FinderTheme {
+            match_bg:          StyleSpec::from_color(Color::Rgb(255, 230, 100)),
+            discovery_shimmer: StyleSpec::bold(Color::Rgb(0, 0, 140)),
+        },
+        disk_usage:  DiskUsageTheme {
+            low:  StyleSpec::bold(Color::Rgb(0, 100, 0)),
+            mid:  StyleSpec::from_color(Color::Black),
+            high: StyleSpec::bold(Color::Rgb(180, 0, 0)),
+        },
+    }
+}

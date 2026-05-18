@@ -1,0 +1,108 @@
+# High Contrast — compiled-in built-in mirrored as TOML.
+#
+# This file is documentation. The app does NOT load it at startup; the
+# Rust constructors `tui_pane::high_contrast_dark()` and
+# `tui_pane::high_contrast_light()` produce the same values. Copy this
+# file into `~/.config/cargo-port/themes/` (or platform equivalent) as
+# a starting point for a custom theme.
+#
+# The test in tui_pane/tests/themes.rs locks this file against drift.
+
+name   = "High Contrast"
+schema = 1
+
+[[variants]]
+appearance = "dark"
+name       = "High Contrast Dark"
+
+[variants.pane_chrome]
+active_border   = { color = "LightYellow", bold = true }
+active_title    = { color = "LightYellow", bold = true }
+inactive_border = "White"
+inactive_title  = { color = "White", bold = true }
+
+[variants.focus]
+active     = { r = 0, g = 60, b = 100 }
+hover      = { r = 0, g = 40, b = 70 }
+remembered = { r = 0, g = 25, b = 50 }
+
+[variants.semantic]
+accent       = { color = "LightCyan", bold = true }
+error        = { color = "LightRed", bold = true }
+inline_error = { color = "LightYellow", bold = true }
+label        = "White"
+success      = { color = "LightGreen", bold = true }
+
+[variants.text]
+bg_focus  = "Black"
+bright    = { color = "LightYellow", bold = true }
+default   = "White"
+dim       = "Gray"
+secondary = "White"
+
+[variants.git]
+ignored   = "Gray"
+modified  = { color = "LightYellow", bold = true }
+untracked = { color = "LightGreen", bold = true }
+
+[variants.status]
+bar           = { r = 60, g = 60, b = 60 }
+column_header = { color = "LightCyan", bold = true }
+target_bench  = { color = "LightMagenta", bold = true }
+
+[variants.finder]
+discovery_shimmer = { color = "LightCyan", bold = true }
+match_bg          = "LightYellow"
+
+[variants.disk_usage]
+high = { color = "LightRed", bold = true }
+low  = { color = "LightGreen", bold = true }
+mid  = "White"
+
+[[variants]]
+appearance = "light"
+name       = "High Contrast Light"
+
+[variants.pane_chrome]
+active_border   = { color = { r = 140, g = 60, b = 0 }, bold = true }
+active_title    = { color = { r = 140, g = 60, b = 0 }, bold = true }
+inactive_border = "Black"
+inactive_title  = { color = "Black", bold = true }
+
+[variants.focus]
+active     = { r = 255, g = 230, b = 100 }
+hover      = { r = 255, g = 245, b = 180 }
+remembered = { r = 255, g = 250, b = 220 }
+
+[variants.semantic]
+accent       = { color = { r = 0, g = 0, b = 140 }, bold = true }
+error        = { color = { r = 180, g = 0, b = 0 }, bold = true }
+inline_error = { color = { r = 140, g = 60, b = 0 }, bold = true }
+label        = "Black"
+success      = { color = { r = 0, g = 100, b = 0 }, bold = true }
+
+[variants.text]
+bg_focus  = "White"
+bright    = { color = { r = 140, g = 60, b = 0 }, bold = true }
+default   = "Black"
+dim       = { r = 80, g = 80, b = 80 }
+secondary = "Black"
+
+[variants.git]
+ignored   = { r = 80, g = 80, b = 80 }
+modified  = { color = { r = 140, g = 60, b = 0 }, bold = true }
+untracked = { color = { r = 0, g = 100, b = 0 }, bold = true }
+
+[variants.status]
+bar           = { r = 210, g = 210, b = 210 }
+column_header = { color = { r = 0, g = 0, b = 140 }, bold = true }
+target_bench  = { color = { r = 140, g = 0, b = 140 }, bold = true }
+
+[variants.finder]
+discovery_shimmer = { color = { r = 0, g = 0, b = 140 }, bold = true }
+match_bg          = { r = 255, g = 230, b = 100 }
+
+[variants.disk_usage]
+high = { color = { r = 180, g = 0, b = 0 }, bold = true }
+low  = { color = { r = 0, g = 100, b = 0 }, bold = true }
+mid  = "Black"
