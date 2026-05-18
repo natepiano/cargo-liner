@@ -19,20 +19,8 @@ use crate::Bindings;
 use crate::KeyBind;
 use crate::KeyOutcome;
 use crate::Mode;
+use crate::OverlayAction;
 use crate::Viewport;
-
-crate::action_enum! {
-    /// Actions reachable on the keymap overlay's local bar.
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub enum KeymapPaneAction {
-        /// Begin editing the selected binding.
-        StartEdit => ("start_edit", "edit",   "Edit selected binding");
-        /// Persist pending edits.
-        Save      => ("save",       "save",   "Save changes");
-        /// Discard pending edits.
-        Cancel    => ("cancel",     "cancel", "Cancel edit");
-    }
-}
 
 /// Editor sub-state for the keymap overlay.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -95,11 +83,10 @@ impl KeymapPane {
     /// keymap builder can fold these through overlay registration so
     /// TOML overrides apply to the overlay, not just app panes.
     #[must_use]
-    pub fn defaults() -> Bindings<KeymapPaneAction> {
+    pub fn defaults() -> Bindings<OverlayAction> {
         crate::bindings! {
-            KeyCode::Enter => KeymapPaneAction::StartEdit,
-            's'            => KeymapPaneAction::Save,
-            KeyCode::Esc   => KeymapPaneAction::Cancel,
+            KeyCode::Enter => OverlayAction::StartEdit,
+            KeyCode::Esc   => OverlayAction::Cancel,
         }
     }
 
@@ -108,15 +95,15 @@ impl KeymapPane {
     /// when open, matching the existing cargo-port `keymap_open`
     /// behavior. Resolves `bind` against [`Self::defaults`] and flips
     /// [`EditState`] accordingly: `StartEdit` enters
-    /// [`EditState::Awaiting`] from `Browse`; `Save` and `Cancel`
-    /// return to `Browse` from any state. Capture-conflict resolution
+    /// [`EditState::Awaiting`] from `Browse`; `Cancel` returns to
+    /// `Browse` from any state. Capture-conflict resolution
     /// (`Awaiting → Conflict`) is driven by the binary's collision
     /// check.
     pub fn handle_key(&mut self, bind: &KeyBind) -> KeyOutcome {
         if let Some(action) = Self::defaults().into_scope_map().action_for(bind) {
             match action {
-                KeymapPaneAction::StartEdit => self.enter_awaiting(),
-                KeymapPaneAction::Save | KeymapPaneAction::Cancel => self.enter_browse(),
+                OverlayAction::StartEdit => self.enter_awaiting(),
+                OverlayAction::Cancel => self.enter_browse(),
             }
         }
         KeyOutcome::Consumed
@@ -221,8 +208,8 @@ impl KeymapPane {
     /// consults this when [`Framework::overlay`](crate::Framework::overlay)
     /// is `Some(FrameworkOverlayId::Keymap)`.
     #[must_use]
-    pub fn bar_slots(&self) -> Vec<(BarRegion, BarSlot<KeymapPaneAction>)> {
-        KeymapPaneAction::ALL
+    pub fn bar_slots(&self) -> Vec<(BarRegion, BarSlot<OverlayAction>)> {
+        OverlayAction::ALL
             .iter()
             .copied()
             .map(|a| (BarRegion::PaneAction, BarSlot::Single(a)))
@@ -341,7 +328,7 @@ mod tests {
     fn bar_slots_emit_one_slot_per_variant() {
         let pane = KeymapPane::new();
         let slots = pane.bar_slots();
-        assert_eq!(slots.len(), 3);
+        assert_eq!(slots.len(), 2);
     }
 
     #[test]
@@ -361,10 +348,10 @@ mod tests {
     }
 
     #[test]
-    fn save_in_conflict_returns_to_browse() {
+    fn esc_in_conflict_returns_to_browse() {
         let mut pane = KeymapPane::for_test_conflict(None);
         let app = fresh_app();
-        let _ = pane.handle_key(&KeyBind::from('s'));
+        let _ = pane.handle_key(&KeyCode::Esc.into());
         assert!(matches!(pane.mode(&app), Mode::Navigable));
     }
 

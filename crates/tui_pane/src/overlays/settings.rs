@@ -25,23 +25,11 @@ use crate::Bindings;
 use crate::KeyBind;
 use crate::KeyOutcome;
 use crate::Mode;
+use crate::OverlayAction;
 use crate::SettingsRow;
 use crate::SettingsRowKind;
 use crate::SettingsRowPayload;
 use crate::Viewport;
-
-crate::action_enum! {
-    /// Actions reachable on the settings overlay's local bar.
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub enum SettingsPaneAction {
-        /// Begin editing the selected setting.
-        StartEdit => ("start_edit", "edit",   "Edit selected setting");
-        /// Persist pending edits.
-        Save      => ("save",       "save",   "Save changes");
-        /// Discard pending edits.
-        Cancel    => ("cancel",     "cancel", "Cancel edit");
-    }
-}
 
 /// Command produced by [`SettingsPane::handle_text_input`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -143,11 +131,10 @@ impl SettingsPane {
     /// keymap builder can fold these through overlay registration so
     /// TOML overrides apply to the overlay, not just app panes.
     #[must_use]
-    pub fn defaults() -> Bindings<SettingsPaneAction> {
+    pub fn defaults() -> Bindings<OverlayAction> {
         crate::bindings! {
-            KeyCode::Enter => SettingsPaneAction::StartEdit,
-            's'            => SettingsPaneAction::Save,
-            KeyCode::Esc   => SettingsPaneAction::Cancel,
+            KeyCode::Enter => OverlayAction::StartEdit,
+            KeyCode::Esc   => OverlayAction::Cancel,
         }
     }
 
@@ -156,15 +143,14 @@ impl SettingsPane {
     /// when open, matching the existing cargo-port `settings_open`
     /// behavior. Resolves `bind` against [`Self::defaults`] and flips
     /// [`EditState`] accordingly: `StartEdit` enters [`EditState::Editing`]
-    /// from `Browse`; `Save` and `Cancel` return to `Browse`. Per-setting
-    /// buffer mutation lives on this pane; [`Self::handle_text_input`]
-    /// returns the command the binary applies after the framework
-    /// borrow ends.
+    /// from `Browse`; `Cancel` returns to `Browse`. Per-setting buffer
+    /// mutation lives on this pane; [`Self::handle_text_input`] returns
+    /// the command the binary applies after the framework borrow ends.
     pub fn handle_key(&mut self, bind: &KeyBind) -> KeyOutcome {
         if let Some(action) = Self::defaults().into_scope_map().action_for(bind) {
             match action {
-                SettingsPaneAction::StartEdit => self.enter_editing(),
-                SettingsPaneAction::Save | SettingsPaneAction::Cancel => self.enter_browse(),
+                OverlayAction::StartEdit => self.enter_editing(),
+                OverlayAction::Cancel => self.enter_browse(),
             }
         }
         KeyOutcome::Consumed
@@ -446,11 +432,11 @@ impl SettingsPane {
     /// consults this when [`Framework::overlay`](crate::Framework::overlay)
     /// is `Some(FrameworkOverlayId::Settings)`.
     #[must_use]
-    pub fn bar_slots(&self) -> Vec<(BarRegion, BarSlot<SettingsPaneAction>)> {
-        SettingsPaneAction::ALL
+    pub fn bar_slots(&self) -> Vec<(BarRegion, BarSlot<OverlayAction>)> {
+        OverlayAction::ALL
             .iter()
             .copied()
-            .map(|a| (BarRegion::PaneAction, BarSlot::Single(a)))
+            .map(|action| (BarRegion::PaneAction, BarSlot::Single(action)))
             .collect()
     }
 }
@@ -842,7 +828,7 @@ mod tests {
     fn bar_slots_emit_one_slot_per_variant() {
         let pane = SettingsPane::new();
         let slots = pane.bar_slots();
-        assert_eq!(slots.len(), 3);
+        assert_eq!(slots.len(), 2);
     }
 
     #[test]
@@ -858,14 +844,6 @@ mod tests {
         let mut pane = SettingsPane::for_test_editing(None);
         let app = fresh_app();
         let _ = pane.handle_key(&KeyCode::Esc.into());
-        assert!(matches!(pane.mode(&app), Mode::Navigable));
-    }
-
-    #[test]
-    fn save_in_editing_returns_to_browse() {
-        let mut pane = SettingsPane::for_test_editing(None);
-        let app = fresh_app();
-        let _ = pane.handle_key(&KeyBind::from('s'));
         assert!(matches!(pane.mode(&app), Mode::Navigable));
     }
 

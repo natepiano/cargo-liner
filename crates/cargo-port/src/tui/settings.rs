@@ -7,6 +7,7 @@ use toml::Table;
 use toml::Value;
 use tui_pane::Appearance;
 use tui_pane::FrameworkOverlayId;
+use tui_pane::OverlayAction;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::SettingCodecs;
@@ -14,7 +15,6 @@ use tui_pane::SettingsCommand;
 use tui_pane::SettingsError;
 use tui_pane::SettingsFileSpec;
 use tui_pane::SettingsPane;
-use tui_pane::SettingsPaneAction;
 use tui_pane::SettingsRegistry;
 use tui_pane::SettingsRenderOptions;
 use tui_pane::SettingsRow as FrameworkSettingsRow;
@@ -1407,14 +1407,14 @@ const fn is_stepper_setting(setting: SettingOption) -> bool {
 
 const fn settings_is_editing(app: &App) -> bool { app.framework.settings_pane.is_editing() }
 
-pub(super) fn dispatch_settings_action(action: SettingsPaneAction, app: &mut App) {
+pub(super) fn dispatch_settings_action(action: OverlayAction, app: &mut App) {
     let setting = selected_setting(app);
     match action {
-        SettingsPaneAction::StartEdit => {
+        OverlayAction::StartEdit => {
             app.overlays.clear_inline_error();
             handle_settings_activate_key(app, setting);
         },
-        SettingsPaneAction::Save | SettingsPaneAction::Cancel => close_settings_overlay(app),
+        OverlayAction::Cancel => close_settings_overlay(app),
     }
 }
 

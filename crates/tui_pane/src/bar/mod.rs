@@ -106,13 +106,12 @@ fn pane_slots_for<Ctx: AppContext + 'static>(
     framework: &Framework<Ctx>,
 ) -> Vec<RenderedSlot> {
     if let Some(overlay) = framework.overlay() {
+        let scope = keymap.overlay();
         return match overlay {
             FrameworkOverlayId::Keymap => {
-                let scope = keymap.keymap_overlay();
                 render_overlay_slots(framework.keymap_pane.bar_slots(), scope)
             },
             FrameworkOverlayId::Settings => {
-                let scope = keymap.settings_overlay();
                 render_overlay_slots(framework.settings_pane.bar_slots(), scope)
             },
         };

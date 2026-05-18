@@ -367,10 +367,6 @@ fn keymap_browse_renders_pane_actions_and_globals() {
         "got pane_action={pane_action:?}"
     );
     assert!(
-        pane_action.contains("save"),
-        "got pane_action={pane_action:?}"
-    );
-    assert!(
         pane_action.contains("cancel"),
         "got pane_action={pane_action:?}"
     );
@@ -417,7 +413,7 @@ fn keymap_conflict_renders_pane_actions_and_globals() {
     );
     assert!(
         !pane_action.is_empty(),
-        "Conflict shows local Cancel/Save (got pane_action={pane_action:?})",
+        "Conflict shows local Cancel (got pane_action={pane_action:?})",
     );
     assert!(
         !global.is_empty(),
@@ -434,7 +430,6 @@ fn settings_browse_renders_pane_actions_and_globals() {
     let bar = render(&focused, &app, &keymap, app.framework());
     let (_, pane_action, global) = flatten_bar(&bar);
     assert!(pane_action.contains("edit"));
-    assert!(pane_action.contains("save"));
     assert!(pane_action.contains("cancel"));
     assert!(!global.is_empty());
 }

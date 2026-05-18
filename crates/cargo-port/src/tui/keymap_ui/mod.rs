@@ -10,12 +10,11 @@ use tui_pane::Action;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::KeyBind as FrameworkKeyBind;
 use tui_pane::KeymapCaptureCommand;
-use tui_pane::KeymapPaneAction;
+use tui_pane::OverlayAction;
 use tui_pane::Pane;
 #[cfg(test)]
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::ScopeMap as FrameworkScopeMap;
-use tui_pane::SettingsPaneAction;
 use view::KeymapLines;
 pub(super) use view::render_keymap_pane_body;
 
@@ -398,18 +397,10 @@ fn push_app_pane_rows(rows: &mut Vec<KeymapRow>, app: &App) {
 fn push_overlay_rows(rows: &mut Vec<KeymapRow>, app: &App) {
     push_scope(
         rows,
-        "Settings",
-        "settings",
-        SettingsPaneAction::ALL,
-        app.framework_keymap.settings_overlay(),
-        action_toml_key,
-    );
-    push_scope(
-        rows,
-        "Keymap",
-        "keymap",
-        KeymapPaneAction::ALL,
-        app.framework_keymap.keymap_overlay(),
+        "Overlay",
+        "overlay",
+        OverlayAction::ALL,
+        app.framework_keymap.overlay(),
         action_toml_key,
     );
 }
@@ -421,13 +412,13 @@ pub(super) fn selectable_row_count(app: &App) -> usize {
 
 // ── Key handling ─────────────────────────────────────────────────────
 
-pub(super) fn dispatch_keymap_action(action: KeymapPaneAction, app: &mut App) {
+pub(super) fn dispatch_keymap_action(action: OverlayAction, app: &mut App) {
     match action {
-        KeymapPaneAction::StartEdit => {
+        OverlayAction::StartEdit => {
             app.overlays.clear_inline_error();
             app.framework.keymap_pane.enter_awaiting();
         },
-        KeymapPaneAction::Save | KeymapPaneAction::Cancel => {
+        OverlayAction::Cancel => {
             app.overlays.clear_inline_error();
             app.framework.keymap_pane.enter_browse();
             app.close_framework_overlay_if_open();
@@ -753,20 +744,10 @@ fn write_app_pane_sections(out: &mut String, app: &App, pending: Option<&Pending
 fn write_overlay_sections(out: &mut String, app: &App, pending: Option<&PendingRebind>) {
     write_section(
         out,
-        "settings",
+        "overlay",
         entries_from_scope(
-            SettingsPaneAction::ALL,
-            app.framework_keymap.settings_overlay(),
-            action_toml_key,
-        ),
-        pending,
-    );
-    write_section(
-        out,
-        "keymap",
-        entries_from_scope(
-            KeymapPaneAction::ALL,
-            app.framework_keymap.keymap_overlay(),
+            OverlayAction::ALL,
+            app.framework_keymap.overlay(),
             action_toml_key,
         ),
         pending,

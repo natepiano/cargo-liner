@@ -319,6 +319,13 @@ fn is_vim_reserved(bind: &KeyBind, vim_mode: NavigationKeys) -> bool {
 }
 
 fn migrate_removed_action_keys(table: &mut Table) -> bool {
+    let mut changed = false;
+    changed |= migrate_project_list_globals(table);
+    changed |= migrate_overlay_scopes(table);
+    changed
+}
+
+fn migrate_project_list_globals(table: &mut Table) -> bool {
     if matches!(table.get("global"), Some(value) if !value.is_table()) {
         return false;
     }
@@ -353,6 +360,49 @@ fn migrate_removed_action_keys(table: &mut Table) -> bool {
     }
 
     true
+}
+
+/// Fold the legacy `[settings]` and `[keymap]` overlay tables into a
+/// single `[overlay]` table. Drops the deprecated `save` action. The
+/// `[settings]` bindings win when both legacy tables disagree on a key,
+/// matching the order in which they were registered before the merge.
+fn migrate_overlay_scopes(table: &mut Table) -> bool {
+    let legacy_settings = take_legacy_overlay(table, "settings");
+    let legacy_keymap = take_legacy_overlay(table, "keymap");
+    if legacy_settings.is_none() && legacy_keymap.is_none() {
+        return false;
+    }
+
+    if !table.contains_key("overlay") {
+        table.insert("overlay".to_string(), Value::Table(Table::new()));
+    }
+    let Some(overlay) = table.get_mut("overlay").and_then(toml::Value::as_table_mut) else {
+        return false;
+    };
+
+    for legacy in [legacy_settings, legacy_keymap].into_iter().flatten() {
+        for (action, value) in legacy {
+            if action == "save" {
+                continue;
+            }
+            if !overlay.contains_key(&action) {
+                overlay.insert(action, value);
+            }
+        }
+    }
+
+    true
+}
+
+fn take_legacy_overlay(table: &mut Table, scope: &str) -> Option<Table> {
+    let value = table.remove(scope)?;
+    match value {
+        Value::Table(inner) => Some(inner),
+        other => {
+            table.insert(scope.to_string(), other);
+            None
+        },
+    }
 }
 
 fn resolve_from_table(table: &Table, vim_mode: NavigationKeys) -> KeymapLoadResult {

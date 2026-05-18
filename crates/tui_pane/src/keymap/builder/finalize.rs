@@ -53,11 +53,8 @@ pub(super) fn finalize<Ctx: AppContext + 'static, State>(
         builder.globals_action_keys.as_ref(),
     )?;
     keymap.set_framework_globals(framework_globals.into_scope_map());
-    if let Some(settings_overlay) = builder.settings_overlay {
-        keymap.set_settings_overlay(settings_overlay);
-    }
-    if let Some(keymap_overlay) = builder.keymap_overlay {
-        keymap.set_keymap_overlay(keymap_overlay);
+    if let Some(overlay_scope) = builder.overlay_scope {
+        keymap.set_overlay_scope(overlay_scope);
     }
     if let Some(hook) = builder.on_quit {
         keymap.set_on_quit(hook);

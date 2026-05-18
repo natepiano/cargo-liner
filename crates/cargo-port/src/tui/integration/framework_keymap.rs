@@ -707,8 +707,7 @@ pub fn build_framework_keymap(
         .dismiss_fallback(dismiss_fallback)
         .register_navigation::<AppNavigation>()?
         .register_globals::<AppGlobalAction>()?
-        .register_settings_overlay()?
-        .register_keymap_overlay()?
+        .register_overlay()?
         .register::<ProjectListPane>(ProjectListPane)
         .register::<PackagePane>(PackagePane)
         .register::<LangPane>(LangPane)

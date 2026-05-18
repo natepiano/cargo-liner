@@ -12,9 +12,8 @@ use crate::FrameworkFocusId;
 use crate::FrameworkOverlayId;
 use crate::GlobalAction;
 use crate::KeyBind;
-use crate::KeymapPaneAction;
+use crate::OverlayAction;
 use crate::Pane;
-use crate::SettingsPaneAction;
 use crate::TabStop;
 use crate::keymap::Bindings;
 use crate::keymap::Globals;
@@ -757,59 +756,53 @@ fn app_global_key_errors_without_registered_app_globals_peer() {
 }
 
 #[test]
-fn settings_overlay_toml_rebinds_registered_scope() {
+fn overlay_toml_rebinds_start_edit() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!(
-        "tui_pane_test_settings_overlay_{}.toml",
+        "tui_pane_test_overlay_start_edit_{}.toml",
         std::process::id()
     ));
-    std::fs::write(&path, "[settings]\nstart_edit = \"F2\"\n").expect("write toml");
+    std::fs::write(&path, "[overlay]\nstart_edit = \"F2\"\n").expect("write toml");
     let keymap = Keymap::<TestApp>::builder()
         .load_toml(path.clone())
         .expect("load_toml must succeed")
-        .register_settings_overlay()
-        .expect("settings overlay must register")
+        .register_overlay()
+        .expect("overlay must register")
         .build()
         .expect("build must succeed");
     let _ = std::fs::remove_file(&path);
 
     assert_eq!(
-        keymap
-            .settings_overlay()
-            .action_for(&KeyBind::from(KeyCode::F(2))),
-        Some(SettingsPaneAction::StartEdit),
+        keymap.overlay().action_for(&KeyBind::from(KeyCode::F(2))),
+        Some(OverlayAction::StartEdit),
     );
     assert_eq!(
-        keymap
-            .settings_overlay()
-            .action_for(&KeyBind::from(KeyCode::Enter)),
+        keymap.overlay().action_for(&KeyBind::from(KeyCode::Enter)),
         None,
         "TOML replaces the action's default binding",
     );
 }
 
 #[test]
-fn keymap_overlay_toml_rebinds_registered_scope() {
+fn overlay_toml_rebinds_cancel() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!(
-        "tui_pane_test_keymap_overlay_{}.toml",
+        "tui_pane_test_overlay_cancel_{}.toml",
         std::process::id()
     ));
-    std::fs::write(&path, "[keymap]\ncancel = \"F3\"\n").expect("write toml");
+    std::fs::write(&path, "[overlay]\ncancel = \"F3\"\n").expect("write toml");
     let keymap = Keymap::<TestApp>::builder()
         .load_toml(path.clone())
         .expect("load_toml must succeed")
-        .register_keymap_overlay()
-        .expect("keymap overlay must register")
+        .register_overlay()
+        .expect("overlay must register")
         .build()
         .expect("build must succeed");
     let _ = std::fs::remove_file(&path);
 
     assert_eq!(
-        keymap
-            .keymap_overlay()
-            .action_for(&KeyBind::from(KeyCode::F(3))),
-        Some(KeymapPaneAction::Cancel),
+        keymap.overlay().action_for(&KeyBind::from(KeyCode::F(3))),
+        Some(OverlayAction::Cancel),
     );
 }
 
@@ -817,21 +810,21 @@ fn keymap_overlay_toml_rebinds_registered_scope() {
 fn known_overlay_unknown_action_errors() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!(
-        "tui_pane_test_settings_unknown_action_{}.toml",
+        "tui_pane_test_overlay_unknown_action_{}.toml",
         std::process::id()
     ));
-    std::fs::write(&path, "[settings]\nbogus_action = \"x\"\n").expect("write toml");
+    std::fs::write(&path, "[overlay]\nbogus_action = \"x\"\n").expect("write toml");
     let result = Keymap::<TestApp>::builder()
         .load_toml(path.clone())
         .expect("load_toml must succeed")
-        .register_settings_overlay();
+        .register_overlay();
     let _ = std::fs::remove_file(&path);
 
     assert!(matches!(result, Err(KeymapError::UnknownAction { .. })));
 }
 
 #[test]
-fn unknown_overlay_table_still_errors_when_known_overlays_registered() {
+fn unknown_overlay_table_still_errors_when_overlay_registered() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!(
         "tui_pane_test_unknown_overlay_scope_{}.toml",
@@ -841,10 +834,8 @@ fn unknown_overlay_table_still_errors_when_known_overlays_registered() {
     let result = Keymap::<TestApp>::builder()
         .load_toml(path.clone())
         .expect("load_toml must succeed")
-        .register_settings_overlay()
-        .expect("settings overlay must register")
-        .register_keymap_overlay()
-        .expect("keymap overlay must register")
+        .register_overlay()
+        .expect("overlay must register")
         .build();
     let _ = std::fs::remove_file(&path);
 

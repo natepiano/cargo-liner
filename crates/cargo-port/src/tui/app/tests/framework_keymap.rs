@@ -771,8 +771,7 @@ fn keymap_ui_save_preserves_framework_owned_scopes() {
         &toml_path,
         "[output]\ncancel = \"q\"\n\
          [finder]\nactivate = \"Tab\"\n\
-         [settings]\nstart_edit = \"F2\"\n\
-         [keymap]\nstart_edit = \"F3\"\n",
+         [overlay]\nstart_edit = \"F2\"\n",
     )
     .expect("write keymap toml");
     let _keymap_path = keymap::override_keymap_path_for_test(toml_path.clone());
@@ -786,10 +785,8 @@ fn keymap_ui_save_preserves_framework_owned_scopes() {
     assert!(saved.contains("activate = \"Tab\""));
     assert!(saved.contains("[output]"));
     assert!(saved.contains("cancel = \"q\""));
-    assert!(saved.contains("[settings]"));
+    assert!(saved.contains("[overlay]"));
     assert!(saved.contains("start_edit = \"F2\""));
-    assert!(saved.contains("[keymap]"));
-    assert!(saved.contains("start_edit = \"F3\""));
 }
 
 #[test]

@@ -300,7 +300,7 @@ fn dispatch_framework_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEve
 }
 
 fn dispatch_settings_overlay(app: &mut App, bind: &KeyBind) {
-    if let Some(action) = app.framework_keymap.settings_overlay().action_for(bind) {
+    if let Some(action) = app.framework_keymap.overlay().action_for(bind) {
         settings::dispatch_settings_action(action, app);
         return;
     }
@@ -308,7 +308,7 @@ fn dispatch_settings_overlay(app: &mut App, bind: &KeyBind) {
 }
 
 fn dispatch_keymap_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEvent) {
-    if let Some(action) = app.framework_keymap.keymap_overlay().action_for(bind) {
+    if let Some(action) = app.framework_keymap.overlay().action_for(bind) {
         keymap_ui::dispatch_keymap_action(action, app);
         return;
     }

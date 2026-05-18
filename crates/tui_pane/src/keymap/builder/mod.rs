@@ -33,11 +33,9 @@ use super::scope_map::ScopeMap;
 use super::vim::VimMode;
 use crate::AppContext;
 use crate::Framework;
-use crate::KeymapPane;
-use crate::KeymapPaneAction;
+use crate::OverlayAction;
 use crate::Pane;
 use crate::SettingsPane;
-use crate::SettingsPaneAction;
 use crate::TabStop;
 use crate::pane::ModeQuery;
 
@@ -127,8 +125,7 @@ pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
     /// [`Self::register_globals`] time. See
     /// [`Self::navigation_render_fn`].
     globals_render_fn:     Option<ScopeRenderFn<Ctx>>,
-    settings_overlay:      Option<ScopeMap<SettingsPaneAction>>,
-    keymap_overlay:        Option<ScopeMap<KeymapPaneAction>>,
+    overlay_scope:         Option<ScopeMap<OverlayAction>>,
     deferred_error:        Option<KeymapError>,
     _state:                PhantomData<State>,
 }
@@ -154,8 +151,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             globals_scope_name:    None,
             globals_action_keys:   None,
             globals_render_fn:     None,
-            settings_overlay:      None,
-            keymap_overlay:        None,
+            overlay_scope:         None,
             deferred_error:        None,
             _state:                PhantomData,
         }
@@ -289,41 +285,23 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
         Ok(self)
     }
 
-    /// Register the framework-owned settings overlay scope. This
-    /// makes `[settings]` a known TOML table and applies its overrides
-    /// to the settings overlay bindings.
+    /// Register the framework-owned overlay scope. This makes
+    /// `[overlay]` a known TOML table and applies its overrides to the
+    /// single [`OverlayAction`] scope shared by both the settings and
+    /// keymap overlay panes.
     ///
     /// # Errors
     ///
     /// Returns [`KeymapError`] on TOML parse / validation failures
-    /// inside the `[settings]` table.
-    pub fn register_settings_overlay(mut self) -> Result<Self, KeymapError> {
-        let bindings = apply_toml_overlay::<SettingsPaneAction>(
-            "settings",
+    /// inside the `[overlay]` table.
+    pub fn register_overlay(mut self) -> Result<Self, KeymapError> {
+        let bindings = apply_toml_overlay::<OverlayAction>(
+            "overlay",
             SettingsPane::defaults(),
             self.toml_table.as_ref(),
         )?;
-        self.settings_overlay = Some(bindings.into_scope_map());
-        self.registered_scopes.insert("settings");
-        Ok(self)
-    }
-
-    /// Register the framework-owned keymap overlay scope. This makes
-    /// `[keymap]` a known TOML table and applies its overrides to the
-    /// keymap overlay bindings.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`KeymapError`] on TOML parse / validation failures
-    /// inside the `[keymap]` table.
-    pub fn register_keymap_overlay(mut self) -> Result<Self, KeymapError> {
-        let bindings = apply_toml_overlay::<KeymapPaneAction>(
-            "keymap",
-            KeymapPane::defaults(),
-            self.toml_table.as_ref(),
-        )?;
-        self.keymap_overlay = Some(bindings.into_scope_map());
-        self.registered_scopes.insert("keymap");
+        self.overlay_scope = Some(bindings.into_scope_map());
+        self.registered_scopes.insert("overlay");
         Ok(self)
     }
 
@@ -461,8 +439,7 @@ fn transition<Ctx: AppContext + 'static>(
         globals_scope_name:    src.globals_scope_name,
         globals_action_keys:   src.globals_action_keys,
         globals_render_fn:     src.globals_render_fn,
-        settings_overlay:      src.settings_overlay,
-        keymap_overlay:        src.keymap_overlay,
+        overlay_scope:         src.overlay_scope,
         deferred_error:        src.deferred_error,
         _state:                PhantomData,
     }
