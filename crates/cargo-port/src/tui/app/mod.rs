@@ -83,6 +83,7 @@ use super::panes::PaneId;
 use super::panes::Panes;
 use super::project_list::ProjectList;
 use super::state::Config;
+use super::state::GitStatusTracker;
 use super::state::Inflight;
 use super::state::Keymap;
 use super::state::Scan;
@@ -262,82 +263,86 @@ pub(super) struct App {
     /// (availability). App orchestration that touches Net plus
     /// other subsystems (toast push/dismiss, retry spawn) stays
     /// as named methods on `App`.
-    pub(super) net:               Net,
+    pub(super) net:                Net,
     /// Panes subsystem. Owns `pane_manager`, `pane_data`,
     /// `hovered_pane_row`, and `cpu_poller`. App's
     /// impl-files reach pane state through this handle.
-    pub(super) panes:             Panes,
+    pub(super) panes:              Panes,
     /// Background subsystem. Owns the four mpsc channel pairs plus
     /// `watch_tx`. The `bg_*` pair is replaced wholesale on every
     /// rescan via [`Background::swap_bg_channel`]; the others outlive
     /// any single rescan.
-    pub(super) background:        Background,
+    pub(super) background:         Background,
     /// Inflight subsystem. Owns the running-paths maps, toast
     /// slots, pending queues, and example-runner state.
-    pub(super) inflight:          Inflight,
+    pub(super) inflight:           Inflight,
     /// Lint subsystem. Owns the lint runtime, in-flight lint
     /// state, the disk cache stat counter, and the startup-pass
     /// trackers.
-    pub(super) lint:              Lint,
+    pub(super) lint:               Lint,
     /// Ci subsystem. Owns `fetch_tracker`, `fetch_toast`, and
     /// per-project `display_modes`, plus `Ci::package_display`
     /// which returns the typed [`CiDisplay`] for the package
     /// detail row.
-    pub(super) ci:                Ci,
+    pub(super) ci:                 Ci,
     /// Config subsystem. Owns `current_config`, `config_path`,
     /// and `config_last_seen`. Composes `WatchedFile<CargoPortConfig>`.
-    pub(super) config:            Config,
+    pub(super) config:             Config,
     /// Keymap subsystem. Owns `current_keymap`, `keymap_path`,
     /// `keymap_last_seen`, `keymap_diagnostics_id`. Composes
     /// `WatchedFile<ResolvedKeymap>`.
-    pub(super) keymap:            Keymap,
+    pub(super) keymap:             Keymap,
     /// Themes subsystem. Owns the user-themes directory watch and the
     /// parse-error toast slot used to dismiss prior diagnostics when
     /// the registry reloads cleanly. The active theme + registry
     /// themselves live in `tui_pane`'s `THEME_STATE`.
-    pub(super) themes:            Themes,
+    pub(super) themes:             Themes,
     /// Per-project ahead/behind tracker. Holds the eligibility flag,
     /// last-seen value, and the in-flight "Sync changes" task-toast
     /// id used to accumulate transitions within the linger window.
-    pub(super) sync_tracker:      SyncTracker,
+    pub(super) sync_tracker:       SyncTracker,
+    /// Per-project `GitStatus` tracker. Holds the last-seen value and
+    /// the in-flight "Git status changes" task-toast id used to
+    /// accumulate transitions within the linger window.
+    pub(super) git_status_tracker: GitStatusTracker,
     /// The central per-project data store. Lint runs, CI info, git
     /// info, language stats, package/workspace fields, and disk usage
     /// all live inside the tree. Every subsystem that produces
     /// per-project data writes into it.
-    pub(super) project_list:      ProjectList,
+    pub(super) project_list:       ProjectList,
     /// Scan subsystem. Owns `scan` (`ScanState`),
     /// `dirty`, `data_generation`, `discovery_shimmers`,
     /// `pending_git_first_commit`, `metadata_store`,
     /// `target_dir_index`, `priority_fetch_path`,
     /// `confirm_verifying`, `lint_cache_usage`, and (test-only)
     /// `retry_spawn_mode`.
-    pub(super) scan:              Scan,
+    pub(super) scan:               Scan,
     /// Startup-phase orchestrator. Owns the per-phase trackers
     /// (`disk`, `git`, `repo`, `metadata`, `lint_phase`,
     /// `lint_count`) plus the `scan_complete_at`, `toast`, and
     /// `complete_at` slots that drive the umbrella "Startup" toast
     /// and its detail toasts.
-    pub(super) startup:           Startup,
-    pub(super) visited_panes:     HashSet<AppPaneId>,
+    pub(super) startup:            Startup,
+    pub(super) visited_panes:      HashSet<AppPaneId>,
     /// Overlays subsystem. Owns the overlay-mode enums
     /// (`FinderMode`, `KeymapMode`),
     /// the transient `inline_error` UI feedback, and the
     /// `status_flash` slot.
-    pub(super) overlays:          Overlays,
-    confirm:                      Option<ConfirmAction>,
-    pub(super) animation_started: Instant,
-    pub(super) mouse_pos:         Option<Position>,
+    pub(super) overlays:           Overlays,
+    confirm:                       Option<ConfirmAction>,
+    pub(super) animation_started:  Instant,
+    pub(super) mouse_pos:          Option<Position>,
     /// Framework aggregator from `tui_pane`. Owns the focused-pane id,
     /// quit/restart flags, the per-pane mode-query registry, and the
     /// framework-side `Toasts`/`KeymapPane`/`SettingsPane` overlays.
     /// Stored alongside the legacy keymap path; dispatch routes
     /// through it for targeted structural lookups.
-    pub(super) framework:         Framework<Self>,
+    pub(super) framework:          Framework<Self>,
     /// Framework keymap built at startup from
     /// [`tui_pane::Keymap::builder`]. Held in parallel with the legacy
     /// `keymap` field; the legacy path remains authoritative for broad
     /// key dispatch.
-    pub(super) framework_keymap:  Rc<FrameworkKeymap<Self>>,
+    pub(super) framework_keymap:   Rc<FrameworkKeymap<Self>>,
 }
 
 impl App {

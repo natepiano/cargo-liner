@@ -54,6 +54,7 @@ use crate::tui::project_list::ProjectList;
 use crate::tui::settings::StartupSettings;
 use crate::tui::state::Ci;
 use crate::tui::state::Config;
+use crate::tui::state::GitStatusTracker;
 use crate::tui::state::Inflight;
 use crate::tui::state::Keymap;
 use crate::tui::state::Lint;
@@ -264,6 +265,7 @@ impl AppBuilder<Started> {
             keymap,
             themes,
             sync_tracker: SyncTracker::default(),
+            git_status_tracker: GitStatusTracker::default(),
             scan,
             startup: Startup::new(),
             visited_panes: std::iter::once(AppPaneId::ProjectList).collect(),

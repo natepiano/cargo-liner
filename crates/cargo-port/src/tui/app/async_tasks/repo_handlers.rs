@@ -9,6 +9,7 @@ use crate::ci;
 use crate::ci::OwnerRepo;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
+use crate::project::GitStatus;
 use crate::project::LocalGitState;
 use crate::project::RepoInfo;
 use crate::project::RootItem;
@@ -102,6 +103,7 @@ impl App {
             "checkout_info_applied"
         );
 
+        let status = info.status;
         if let Some(project) = self.project_list.at_path_mut(path) {
             project.local_git_state = LocalGitState::Detected(Box::new(info));
         }
@@ -124,7 +126,48 @@ impl App {
             self.maybe_log_startup_phase_completions();
         }
 
+        self.record_git_status_observation(path, status);
         self.maybe_trigger_repo_fetch(path);
+    }
+
+    /// Diff the current `GitStatus` for `path` against the tracker's
+    /// baseline; on transition, push or extend the "Git status changes"
+    /// task toast.
+    fn record_git_status_observation(&mut self, path: &Path, status: GitStatus) {
+        let Some(transition) = self
+            .git_status_tracker
+            .observe(AbsolutePath::from(path), status)
+        else {
+            return;
+        };
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?")
+            .to_string();
+        let label = state::format_git_status_transition(&name, &transition);
+        let seq = self.git_status_tracker.next_item_seq();
+        let key = format!("{}#{seq}", path.display());
+        let now = Instant::now();
+        let item = TrackedItem {
+            label,
+            key: key.into(),
+            started_at: Some(now),
+            completed_at: Some(now),
+        };
+
+        let reuse = self
+            .git_status_tracker
+            .current_toast()
+            .filter(|id| self.framework.toasts.tracked_item_count(*id) > 0);
+        let toast_id = reuse.unwrap_or_else(|| {
+            let id = self.framework.toasts.push_task("Git status changes", "", 1);
+            self.git_status_tracker.set_current_toast(Some(id));
+            id
+        });
+        self.framework
+            .toasts
+            .add_new_tracked_items(toast_id, &[item]);
     }
     /// Handle a per-repo git state update. Only the primary checkout
     /// writes `RepoInfo` (linked worktrees share the primary's
@@ -193,7 +236,7 @@ impl App {
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
-        let label = state::format_transition(&name, &transition);
+        let label = state::format_sync_transition(&name, &transition);
         let seq = self.sync_tracker.next_item_seq();
         let key = format!("{}#{seq}", path.display());
         let now = Instant::now();
