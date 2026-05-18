@@ -95,11 +95,11 @@ pub(super) enum DiagnosticBlockKind {
 
 #[derive(Debug, Clone, Copy)]
 struct CommandOutcome {
-    status:            ExitStatus,
-    warning_facts:     CompilerWarningFacts,
-    duration:          Duration,
-    compiler_warnings: usize,
-    compiler_fixable:  usize,
+    exit_status:            ExitStatus,
+    compiler_warning_facts: CompilerWarningFacts,
+    duration:               Duration,
+    compiler_warnings:      usize,
+    compiler_fixable:       usize,
 }
 
 pub(crate) struct SelectionResult {
@@ -138,7 +138,7 @@ pub(crate) fn run_selection(
         })
     })?;
 
-    if !command_outcome.status.success() {
+    if !command_outcome.exit_status.success() {
         return Err(MendFailure::Analysis(AnalysisFailure {
             cause: CompilerFailureCause::CargoCheck,
         }));
@@ -152,7 +152,7 @@ pub(crate) fn run_selection(
         })?;
 
     let mut report = report;
-    report.facts.compiler_warnings = command_outcome.warning_facts;
+    report.facts.compiler_warnings = command_outcome.compiler_warning_facts;
     Ok(SelectionResult {
         report,
         check_duration: command_outcome.duration,
@@ -283,11 +283,11 @@ fn run_cargo_command(
         .take()
         .context("failed to capture cargo stderr")?;
     let stderr_outcome = stream_cargo_stderr(stderr, output_mode)?;
-    let status = child.wait().context("failed to wait for cargo command")?;
+    let exit_status = child.wait().context("failed to wait for cargo command")?;
     let duration = start.elapsed();
     Ok(CommandOutcome {
-        status,
-        warning_facts: stderr_outcome.warnings,
+        exit_status,
+        compiler_warning_facts: stderr_outcome.compiler_warning_facts,
         duration,
         compiler_warnings: stderr_outcome.warning_count,
         compiler_fixable: stderr_outcome.fixable_count,
@@ -296,9 +296,9 @@ fn run_cargo_command(
 
 #[derive(Debug, Clone, Copy, Default)]
 struct StderrObservation {
-    warnings:      CompilerWarningFacts,
-    warning_count: usize,
-    fixable_count: usize,
+    compiler_warning_facts: CompilerWarningFacts,
+    warning_count:          usize,
+    fixable_count:          usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -316,7 +316,7 @@ fn stream_cargo_stderr(
     let mut line = String::new();
     let mut block = Vec::new();
     let mut suppression_notice = SuppressionNotice::Pending;
-    let mut compiler_warnings = CompilerWarningFacts::None;
+    let mut compiler_warning_facts = CompilerWarningFacts::None;
     let mut compiler_warning_count: usize = 0;
     let mut compiler_fixable_count: usize = 0;
 
@@ -327,7 +327,7 @@ fn stream_cargo_stderr(
             flush_diagnostic_block(
                 &mut block,
                 &mut suppression_notice,
-                &mut compiler_warnings,
+                &mut compiler_warning_facts,
                 &mut compiler_warning_count,
                 &mut compiler_fixable_count,
                 output_mode,
@@ -340,7 +340,7 @@ fn stream_cargo_stderr(
             flush_diagnostic_block(
                 &mut block,
                 &mut suppression_notice,
-                &mut compiler_warnings,
+                &mut compiler_warning_facts,
                 &mut compiler_warning_count,
                 &mut compiler_fixable_count,
                 output_mode,
@@ -359,7 +359,7 @@ fn stream_cargo_stderr(
             flush_diagnostic_block(
                 &mut block,
                 &mut suppression_notice,
-                &mut compiler_warnings,
+                &mut compiler_warning_facts,
                 &mut compiler_warning_count,
                 &mut compiler_fixable_count,
                 output_mode,
@@ -370,7 +370,7 @@ fn stream_cargo_stderr(
     }
 
     Ok(StderrObservation {
-        warnings:      compiler_warnings,
+        compiler_warning_facts,
         warning_count: compiler_warning_count,
         fixable_count: compiler_fixable_count,
     })
@@ -587,14 +587,14 @@ mod tests {
             "\n".to_string(),
         ];
         let mut suppression_notice = SuppressionNotice::Pending;
-        let mut compiler_warnings = CompilerWarningFacts::None;
+        let mut compiler_warning_facts = CompilerWarningFacts::None;
         let mut compiler_warning_count = 0;
         let mut compiler_fixable_count = 0;
 
         flush_diagnostic_block(
             &mut block,
             &mut suppression_notice,
-            &mut compiler_warnings,
+            &mut compiler_warning_facts,
             &mut compiler_warning_count,
             &mut compiler_fixable_count,
             BuildOutputMode::Quiet,

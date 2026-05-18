@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use super::offset;
+use super::offsets;
 use super::scope;
 use super::scope::ScopeInfo;
 use super::visitor::InlinePathOccurrence;
@@ -47,8 +47,8 @@ pub(super) fn process_occurrence(
         return;
     }
 
-    let byte_start = offset(ctx.text, ctx.offsets, occ.span_start);
-    let byte_end = offset(ctx.text, ctx.offsets, occ.span_end);
+    let byte_start = offsets::offset(ctx.text, ctx.offsets, occ.span_start);
+    let byte_end = offsets::offset(ctx.text, ctx.offsets, occ.span_end);
 
     let scope_id = scope::find_innermost_scope(ctx.scopes, byte_start);
     let scope = scope_id.map(|id| &ctx.scopes[id]);

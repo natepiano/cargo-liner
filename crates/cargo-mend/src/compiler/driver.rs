@@ -19,14 +19,14 @@ use crate::reporting::EXIT_CODE_ERROR;
 
 #[derive(Debug)]
 struct AnalysisCallbacks {
-    settings: DriverSettings,
-    error:    Option<Error>,
+    driver_settings: DriverSettings,
+    error:           Option<Error>,
 }
 
 impl AnalysisCallbacks {
-    const fn new(settings: DriverSettings) -> Self {
+    const fn new(driver_settings: DriverSettings) -> Self {
         Self {
-            settings,
+            driver_settings,
             error: None,
         }
     }
@@ -34,7 +34,7 @@ impl AnalysisCallbacks {
 
 impl Callbacks for AnalysisCallbacks {
     fn after_analysis(&mut self, _: &Compiler, tcx: TyCtxt<'_>) -> Compilation {
-        match visibility::collect_and_store_findings(tcx, &self.settings) {
+        match visibility::collect_and_store_findings(tcx, &self.driver_settings) {
             Ok(true | false) => Compilation::Continue,
             Err(err) => {
                 self.error = Some(err);
@@ -59,7 +59,7 @@ fn driver_main_impl() -> Result<ExitCode> {
     if wrapper_args.len() < 2 {
         anyhow::bail!("compiler driver expected rustc wrapper arguments");
     }
-    let Ok(settings) = DriverSettings::from_env() else {
+    let Ok(driver_settings) = DriverSettings::from_env() else {
         return passthrough_to_rustc(&wrapper_args);
     };
 
@@ -72,7 +72,7 @@ fn driver_main_impl() -> Result<ExitCode> {
         )
         .collect();
 
-    let mut callbacks = AnalysisCallbacks::new(settings);
+    let mut callbacks = AnalysisCallbacks::new(driver_settings);
     let compiler_exit_code = rustc_driver::catch_with_exit_code(|| {
         rustc_driver::run_compiler(&rustc_args, &mut callbacks);
     })

@@ -375,3 +375,33 @@ pub(super) fn is_pascal_case(name: &str) -> bool {
     };
     first.is_ascii_uppercase() && name.chars().any(|ch| ch.is_ascii_lowercase())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_pascal_case;
+
+    #[test]
+    fn pascal_case_detects_types() {
+        assert!(is_pascal_case("MyType"));
+        assert!(is_pascal_case("Thing"));
+        assert!(is_pascal_case("PublicContainer"));
+        assert!(is_pascal_case("Foo"));
+    }
+
+    #[test]
+    fn pascal_case_rejects_functions() {
+        assert!(!is_pascal_case("do_thing"));
+        assert!(!is_pascal_case("func_a"));
+    }
+
+    #[test]
+    fn pascal_case_rejects_constants() {
+        assert!(!is_pascal_case("MAX_SIZE"));
+        assert!(!is_pascal_case("A"));
+    }
+
+    #[test]
+    fn pascal_case_rejects_empty() {
+        assert!(!is_pascal_case(""));
+    }
+}

@@ -5,7 +5,7 @@ use syn::Item;
 use syn::Visibility;
 use syn::spanned::Spanned;
 
-use super::offset;
+use super::offsets;
 use super::visitor;
 use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::rust_syntax::PATH_KEYWORD_CRATE;
@@ -50,7 +50,7 @@ pub(super) fn collect_scopes(
     let mut first_item_start = None;
 
     for item in items {
-        let item_start = offset(
+        let item_start = offsets::offset(
             scope_collection_context.text,
             scope_collection_context.offsets,
             item.span().start(),
@@ -67,7 +67,7 @@ pub(super) fn collect_scopes(
                 existing_imports.insert(import_path);
             }
             last_use_start = Some(item_start);
-            let item_end = offset(
+            let item_end = offsets::offset(
                 scope_collection_context.text,
                 scope_collection_context.offsets,
                 item_use.span().end(),
@@ -104,12 +104,12 @@ pub(super) fn collect_scopes(
             collect_scopes(
                 child_items,
                 ScopeSpan::new(
-                    offset(
+                    offsets::offset(
                         scope_collection_context.text,
                         scope_collection_context.offsets,
                         item_mod.span().start(),
                     ),
-                    offset(
+                    offsets::offset(
                         scope_collection_context.text,
                         scope_collection_context.offsets,
                         item_mod.span().end(),
