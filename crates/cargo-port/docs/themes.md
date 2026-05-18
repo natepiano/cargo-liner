@@ -1237,6 +1237,38 @@ request_redraw();
 - **Headless / no DE:** `Unspecified` → poller emits nothing → user stays
   on whatever they picked. Correct behavior.
 
+### Phase 5 retrospective (2026-05-18)
+
+Deviations from the plan:
+
+- **No `[workspace.dependencies]` table in this repo.** The crate has
+  one top-level `[dependencies]` and a single-member workspace; the
+  `dark-light = "2"` entry landed in `[dependencies]` directly. Same
+  effect, fewer indirections.
+- **`tokio::task::spawn_blocking` wraps `dark_light::detect`.** macOS
+  is a cheap objc read; Linux hits D-Bus through the XDG portal, which
+  can block. Pushing the call off the runtime stops a slow detect from
+  stalling the runtime on every platform without per-cfg branches.
+- **`MissedTickBehavior::Skip` on the interval.** A long detect call
+  must not cause the next tick to fire immediately afterward — that
+  would burst-poll right after the slow case the backoff is meant to
+  cover.
+- **Module location: `src/themes/appearance_poller.rs`.** Belongs with
+  the theming subsystem; spawned from `terminal.rs::run` right after
+  the streaming scan, sharing the `bg_tx` and the tokio `Handle`.
+- **`AppearanceChanged` lost its `#[expect(dead_code)]`.** The variant
+  now has a real producer; clippy would (correctly) complain otherwise.
+
+Stays on plan:
+
+- 1500ms baseline cadence; 30s backoff after 10 consecutive errors;
+  transitions-only emission (identical values coalesce).
+- Receiver path (`handle_appearance_changed` → `set_os_appearance` →
+  `resolve_and_apply_active_theme`) was wired in Phase 3 and is
+  unchanged here.
+- `AppearanceMode::Pinned` ignores the signal — the gate lives in
+  `resolve_active_theme`, not in the poller or dispatch arm.
+
 ## Open questions
 
 - **Per-pane overrides** (one pane uses a different palette). Adds

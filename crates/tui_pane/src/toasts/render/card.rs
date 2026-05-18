@@ -14,6 +14,10 @@ use unicode_width::UnicodeWidthStr;
 use super::fallback_toast_palette;
 use super::format;
 use crate::ACTIVITY_SPINNER;
+use crate::active_border_color;
+use crate::inactive_border_color;
+use crate::inactive_title_color;
+use crate::title_color;
 use crate::toasts::ToastId;
 use crate::toasts::ToastStyle;
 use crate::toasts::ToastView;
@@ -42,25 +46,36 @@ pub(super) fn render_toast(
     let focused = pane_focused && focused_toast_id == Some(toast.id());
     let is_error = toast.style() == ToastStyle::Error;
     let is_warning = toast.style() == ToastStyle::Warning;
-    let accent_color = if is_error {
-        palette.error
+    // Error and warning toasts keep the safety-pinned palette so they
+    // stay legible under any user theme. Plain (info) toasts mirror
+    // `default_pane_chrome` so their border and title match every
+    // other pane in cargo-port.
+    let border_style = if is_error {
+        Style::default().fg(palette.error)
     } else if is_warning {
-        palette.warning
+        Style::default().fg(palette.warning)
+    } else if focused {
+        Style::default().fg(active_border_color())
     } else {
-        palette.plain_accent
+        Style::default().fg(inactive_border_color())
     };
-    let border_style = if focused {
-        Style::default().fg(palette.border_focused)
+    let text_style = if is_error {
+        Style::default().fg(palette.error)
+    } else if is_warning {
+        Style::default().fg(palette.warning)
+    } else if focused {
+        Style::default()
+            .fg(title_color())
+            .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(accent_color)
+        Style::default()
+            .fg(inactive_title_color())
+            .add_modifier(Modifier::BOLD)
     };
-    let text_style = if is_error || is_warning {
-        Style::default().fg(accent_color)
-    } else {
-        border_style.add_modifier(Modifier::BOLD)
-    };
-    let body_style = if is_error || is_warning {
-        Style::default().fg(accent_color)
+    let body_style = if is_error {
+        Style::default().fg(palette.error)
+    } else if is_warning {
+        Style::default().fg(palette.warning)
     } else {
         Style::default()
     };

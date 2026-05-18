@@ -6,6 +6,8 @@
 //! so the main loop can hot-reload. The framework-side
 //! [`tui_pane::ThemeRegistry`] only knows about variants — not files.
 
+mod appearance_poller;
+
 #[cfg(test)]
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -17,6 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+pub(crate) use appearance_poller::spawn_appearance_poller;
 use tui_pane::Appearance;
 use tui_pane::Theme;
 use tui_pane::ThemeFamily;

@@ -16,7 +16,7 @@ appearance = "light"
 
 [variants.pane_chrome]
 active_border   = { r = 180, g = 120, b = 0 }
-inactive_border = "Gray"
+inactive_border = { r = 140, g = 140, b = 140 }
 active_title    = { color = { r = 160, g = 100, b = 0 }, bold = true }
 inactive_title  = "Black"
 

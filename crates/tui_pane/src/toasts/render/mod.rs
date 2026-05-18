@@ -27,31 +27,24 @@ use crate::ToastSettings;
 /// every field against accidental drift.
 pub(super) struct FallbackToastPalette {
     /// Spinner color in tracked-item rows.
-    pub accent:         Color,
-    /// Border color when the toast is focused.
-    pub border_focused: Color,
+    pub accent:  Color,
     /// Border + text color for error toasts.
-    pub error:          Color,
+    pub error:   Color,
     /// Border + text color for warning toasts.
-    pub warning:        Color,
+    pub warning: Color,
     /// Countdown text, italic action hint, overflow rows.
-    pub label:          Color,
+    pub label:   Color,
     /// Running tracked-item duration suffix.
-    pub title:          Color,
-    /// Accent for non-error/non-warning toasts (the regular toast
-    /// border + title color).
-    pub plain_accent:   Color,
+    pub title:   Color,
 }
 
 pub(super) const fn fallback_toast_palette() -> FallbackToastPalette {
     FallbackToastPalette {
-        accent:         Color::Cyan,
-        border_focused: Color::Yellow,
-        error:          Color::Red,
-        warning:        Color::Yellow,
-        label:          Color::Rgb(150, 190, 180),
-        title:          Color::Yellow,
-        plain_accent:   Color::White,
+        accent:  Color::Cyan,
+        error:   Color::Red,
+        warning: Color::Yellow,
+        label:   Color::Rgb(150, 190, 180),
+        title:   Color::Yellow,
     }
 }
 
@@ -277,18 +270,16 @@ mod tests {
 
     #[test]
     fn fallback_toast_palette_is_pinned_to_safe_defaults() {
-        // This test locks the toast palette against accidental drift.
-        // Toasts deliberately do not read from the active theme; a
-        // future refactor that wires them up to a user-loadable
-        // palette must explicitly update these expected values.
+        // Locks the safety-pinned toast colors against drift. Plain
+        // (info) toast borders and titles read from the active theme
+        // (see `default_pane_chrome`); only the always-legible error
+        // and warning colors live here.
         let p = fallback_toast_palette();
         assert_eq!(p.accent, Color::Cyan);
-        assert_eq!(p.border_focused, Color::Yellow);
         assert_eq!(p.error, Color::Red);
         assert_eq!(p.warning, Color::Yellow);
         assert_eq!(p.label, Color::Rgb(150, 190, 180));
         assert_eq!(p.title, Color::Yellow);
-        assert_eq!(p.plain_accent, Color::White);
     }
 
     #[test]

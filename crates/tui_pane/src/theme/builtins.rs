@@ -85,7 +85,7 @@ pub const fn default_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             active_border:   StyleSpec::from_color(Color::Rgb(180, 120, 0)),
-            inactive_border: StyleSpec::from_color(Color::Gray),
+            inactive_border: StyleSpec::from_color(Color::Rgb(140, 140, 140)),
             active_title:    StyleSpec::bold(Color::Rgb(160, 100, 0)),
             inactive_title:  StyleSpec::from_color(Color::Black),
         },

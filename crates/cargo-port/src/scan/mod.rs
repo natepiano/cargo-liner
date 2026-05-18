@@ -200,11 +200,6 @@ pub(crate) enum BackgroundMsg {
     /// so the apply path can be wired before the poller ships). The
     /// receiver stashes the value on the `Themes` subsystem and
     /// re-resolves the active theme against the current config.
-    #[expect(
-        dead_code,
-        reason = "Phase 5's `dark-light` poller will be the sole producer; the variant ships in \
-                  Phase 3 so the receiver and theme-apply path can be wired ahead of the producer."
-    )]
     AppearanceChanged(Appearance),
 }
 

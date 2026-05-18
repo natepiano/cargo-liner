@@ -57,21 +57,31 @@ impl PaneChrome {
     }
 }
 
-/// Default pane chrome: yellow accent border + bold title when focused,
-/// dim border + dim title when unfocused.
+/// Default pane chrome.
+///
+/// Focused: accent border + bold accent title. Unfocused: the
+/// theme's `pane_chrome.inactive_border` colour + dim title. Driving
+/// the unfocused border from the theme (rather than
+/// `Style::default()`) so every pane in cargo-port draws the same
+/// shade, regardless of how a given terminal profile renders its
+/// "default foreground" colour.
 #[must_use]
 pub fn default_pane_chrome() -> PaneChrome {
     let title_style = Style::default().add_modifier(Modifier::BOLD);
     PaneChrome {
         active_border:   Style::default().fg(active_border_color()),
-        inactive_border: Style::default(),
+        inactive_border: Style::default().fg(inactive_border_color()),
         active_title:    title_style.fg(title_color()),
         inactive_title:  title_style.fg(inactive_title_color()),
     }
 }
 
-/// Bordered empty-state block — used for panes that have no content
-/// to render (no data yet, no git repo, etc.).
+/// Bordered empty-state block.
+///
+/// Used for panes that have no content to render (no data yet, no
+/// git repo, etc.). Matches the unfocused chrome of
+/// [`default_pane_chrome`] so empty and populated panes draw the
+/// same border shade.
 #[must_use]
 pub fn empty_pane_block(title: impl Into<String>) -> Block<'static> {
     Block::default()
