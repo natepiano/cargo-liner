@@ -177,7 +177,8 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::ServiceRateLimited { .. }
         | BackgroundMsg::LanguageStatsBatch { .. }
         | BackgroundMsg::CargoMetadata { .. }
-        | BackgroundMsg::OutOfTreeTargetSize { .. } => {},
+        | BackgroundMsg::OutOfTreeTargetSize { .. }
+        | BackgroundMsg::AppearanceChanged(_) => {},
     }
 }
 

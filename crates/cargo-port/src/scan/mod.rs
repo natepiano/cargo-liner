@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::sync::mpsc::Sender;
 
+use tui_pane::Appearance;
+
 use crate::cache_paths;
 use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
@@ -193,6 +195,17 @@ pub(crate) enum BackgroundMsg {
         target_dir:     AbsolutePath,
         bytes:          u64,
     },
+    /// OS appearance (light/dark) just changed. Emitted by the
+    /// `dark-light` poller (Phase 5; the variant exists from Phase 3
+    /// so the apply path can be wired before the poller ships). The
+    /// receiver stashes the value on the `Themes` subsystem and
+    /// re-resolves the active theme against the current config.
+    #[expect(
+        dead_code,
+        reason = "Phase 5's `dark-light` poller will be the sole producer; the variant ships in \
+                  Phase 3 so the receiver and theme-apply path can be wired ahead of the producer."
+    )]
+    AppearanceChanged(Appearance),
 }
 
 impl BackgroundMsg {
@@ -256,7 +269,10 @@ impl BackgroundMsg {
             | Self::ServiceReachable { .. }
             | Self::ServiceRecovered { .. }
             | Self::ServiceUnreachable { .. }
-            | Self::ServiceRateLimited { .. } => None,
+            | Self::ServiceRateLimited { .. }
+            // OS appearance changes swap the active theme; no per-project
+            // detail data flows through this variant.
+            | Self::AppearanceChanged(_) => None,
         }
     }
 }

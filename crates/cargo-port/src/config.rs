@@ -519,17 +519,53 @@ fn normalize_non_negative_secs(secs: f64) -> f64 {
 #[derive(Clone, Debug, Default, PartialEq, confique::Config, Serialize)]
 pub(crate) struct CargoPortConfig {
     #[config(nested)]
-    pub cache: CacheConfig,
+    pub cache:      CacheConfig,
     #[config(nested)]
-    pub cpu:   CpuConfig,
+    pub cpu:        CpuConfig,
     #[config(nested)]
-    pub mouse: MouseConfig,
+    pub mouse:      MouseConfig,
     #[config(nested)]
-    pub tui:   TuiConfig,
+    pub tui:        TuiConfig,
     #[config(nested)]
-    pub lint:  LintConfig,
+    pub lint:       LintConfig,
     #[config(nested)]
-    pub debug: DebugConfig,
+    pub debug:      DebugConfig,
+    #[config(nested)]
+    pub appearance: AppearanceConfig,
+}
+
+/// Theme selection and OS appearance tracking.
+///
+/// `mode` selects between three resolution strategies:
+/// - `"auto"`: follow the OS light/dark setting (Phase 5 plugs OS state in; until then `auto`
+///   behaves identically to `"dark"`).
+/// - `"light"`: always use `light_theme` regardless of OS state.
+/// - `"dark"`: always use `dark_theme` regardless of OS state.
+///
+/// `light_theme` and `dark_theme` are theme ids (display names) looked up
+/// in [`tui_pane::ThemeRegistry`]. Unknown names fall back to the
+/// compiled-in built-ins with a toast naming the missing id.
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+pub(crate) struct AppearanceConfig {
+    /// Theme appearance mode: `"auto"`, `"light"`, or `"dark"`.
+    #[config(default = "dark")]
+    pub mode:        String,
+    /// Theme name to use when the resolved appearance is light.
+    #[config(default = "Default Light")]
+    pub light_theme: String,
+    /// Theme name to use when the resolved appearance is dark.
+    #[config(default = "Default Dark")]
+    pub dark_theme:  String,
+}
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            mode:        "dark".to_string(),
+            light_theme: "Default Light".to_string(),
+            dark_theme:  "Default Dark".to_string(),
+        }
+    }
 }
 
 /// Developer / testing affordances. Intentionally narrow — anything here

@@ -166,6 +166,46 @@ impl App {
             self.themes.set_diagnostics_id(Some(id));
         }
     }
+    /// Resolve the active theme from the current config + cached OS
+    /// appearance and publish it via [`tui_pane::set_active_theme`].
+    ///
+    /// Called from two places:
+    /// 1. `apply_config` when the `[appearance]` section changed.
+    /// 2. The [`crate::scan::BackgroundMsg::AppearanceChanged`] handler when the OS appearance
+    ///    flips (Phase 5).
+    ///
+    /// On miss (configured id absent from the registry), surfaces a
+    /// persistent "Theme not found" toast and stashes its id on
+    /// `themes.miss_toast_id` so the next clean resolve dismisses it.
+    /// An invalid `mode` string surfaces a timed toast separately.
+    pub(super) fn resolve_and_apply_active_theme(&mut self) {
+        let registry = tui_pane::registry();
+        let resolved = themes::resolve_theme(
+            &self.config.current().appearance,
+            &registry,
+            self.themes.os_appearance(),
+        );
+        tui_pane::set_active_theme(resolved.theme);
+
+        // Dismiss the prior miss toast unconditionally; we'll push a
+        // fresh one below if this resolve also missed.
+        if let Some(id) = self.themes.take_miss_toast_id() {
+            self.framework.toasts.dismiss(id);
+        }
+        if let Some(miss) = resolved.miss {
+            let id = self.framework.toasts.push_persistent(
+                "Theme not found",
+                format!("{miss} (using built-in fallback)"),
+                Error,
+                None,
+                1,
+            );
+            self.themes.set_miss_toast_id(Some(id));
+        }
+        if let Some(err) = resolved.mode_error {
+            self.show_timed_toast("Appearance mode", err);
+        }
+    }
     pub fn maybe_reload_config_from_disk(&mut self) {
         let Some(path) = self.config.take_stamp_change() else {
             return;
@@ -199,6 +239,7 @@ impl App {
             return;
         }
 
+        let appearance_changed = self.config.current().appearance != cfg.appearance;
         let prev_force = self.config.current().debug.force_github_rate_limit;
         let next_force = cfg.debug.force_github_rate_limit;
 
@@ -255,6 +296,10 @@ impl App {
                     self.respawn_watcher_and_register_existing_projects();
                 }
             },
+        }
+
+        if appearance_changed {
+            self.resolve_and_apply_active_theme();
         }
     }
     /// Apply a lint configuration change. Cross-subsystem

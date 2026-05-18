@@ -926,49 +926,156 @@ Built and shipped 2026-05-18.
 
 ### Schema additions to `Config`
 
+A new `[appearance]` section nested in `CargoPortConfig`:
+
 ```rust
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct AppearanceConfig {
-    #[serde(default = "default_mode")]
-    pub mode:        AppearanceMode,
-    #[serde(default = "default_light_name")]
-    pub light_theme: ThemeId,
-    #[serde(default = "default_dark_name")]
-    pub dark_theme:  ThemeId,
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+pub(crate) struct AppearanceConfig {
+    #[config(default = "dark")]
+    pub mode:        String,
+    #[config(default = "Default Light")]
+    pub light_theme: String,
+    #[config(default = "Default Dark")]
+    pub dark_theme:  String,
 }
 ```
 
-Defaults when section absent: `mode = "dark"`, `light_theme =
+All three fields are `String` rather than typed enums / `ThemeId` so
+confique's `Layer` Deserialize stays on primitive types. Parsing
+happens at apply time inside `themes::resolve_theme`, where a typo in
+`mode` surfaces as a timed toast (without rejecting the rest of the
+config) and an unknown theme name surfaces as a persistent "Theme not
+found" toast plus a built-in fallback.
+
+Defaults when the section is absent: `mode = "dark"`, `light_theme =
 "Default Light"`, `dark_theme = "Default Dark"`.
+
+### `AppearanceMode` (cargo-port side)
+
+`AppearanceMode` lives in `src/themes/mod.rs` (not `tui_pane`) because
+it pairs a config-level concept (`Auto` vs explicit) with `tui_pane`'s
+[`Appearance`]:
+
+```rust
+pub(crate) enum AppearanceMode {
+    Auto,
+    Pinned(Appearance),
+}
+
+impl AppearanceMode {
+    pub(crate) fn parse(raw: &str) -> Result<Self, String>;
+    pub(crate) const fn resolve(self, os: Option<Appearance>) -> Appearance;
+}
+```
+
+`parse` is case-insensitive and accepts `"auto"`, `"light"`, `"dark"`;
+anything else returns an `Err(message)` the caller can toast. `resolve`
+returns `Pinned` directly and falls back from `Auto` to `Appearance::Dark`
+when no OS signal is available — the same default any other terminal
+app would pick.
+
+### Theme resolution helper
+
+`themes::resolve_theme(appearance_cfg, registry, os_appearance) ->
+ResolvedTheme` does the work shared by startup and apply-time:
+
+```rust
+pub(crate) struct ResolvedTheme {
+    pub theme:      Arc<Theme>,
+    pub miss:       Option<ThemeId>,    // configured id absent from registry
+    pub mode_error: Option<String>,     // mode failed to parse
+}
+```
+
+The two `Option` slots let the caller decide when to surface
+diagnostics — startup ignores both, the apply path toasts both.
 
 ### `BackgroundMsg` variant
 
-`BackgroundMsg` (currently in `src/scan/mod.rs`) gains:
+`BackgroundMsg` (in `src/scan/mod.rs`) gains:
 
 ```rust
+#[expect(dead_code, reason = "Phase 5 dark-light poller is the sole producer")]
 AppearanceChanged(Appearance),
 ```
 
+The variant ships in Phase 3 so the receiver and theme-apply path can
+be wired ahead of Phase 5's `dark-light` poller. Until that poller
+lands, the variant is never constructed; the `expect` keeps the strict
+clippy gate satisfied and self-removes when Phase 5's producer makes
+it live.
+
 ### Apply
 
-After Phase 2's registry is built, the `apply_config` function (in
-`src/tui/app/async_tasks/config.rs`) resolves the active theme:
+`App::resolve_and_apply_active_theme` (in
+`src/tui/app/async_tasks/config.rs`) is the one place the resolution
+runs after startup:
 
-1. Read `config.appearance.mode`.
-2. If `Auto`, defer to last-known OS appearance (Phase 5; until then,
-   use `Appearance::Dark`).
-3. Select `light_theme` or `dark_theme` accordingly.
-4. `registry.find(&id)`:
-   - hit → `set_active_theme(Arc::new(variant.theme.clone()))`
-   - miss → `set_active_theme(Arc::new(builtins::default_dark()))`,
-     toast naming the missing id, record the miss
-5. Trigger a redraw.
+1. Snapshot `tui_pane::registry()` (an `Arc<ThemeRegistry>`, cheap to clone).
+2. Call `themes::resolve_theme(&self.config.current().appearance, &registry,
+   self.themes.os_appearance())`.
+3. Publish via `tui_pane::set_active_theme(resolved.theme)`.
+4. Dismiss the prior `themes.miss_toast_id` if any. If `resolved.miss` is
+   `Some(id)`, push a persistent "Theme not found" toast and record its id
+   in `themes.miss_toast_id` so the next clean resolve dismisses it
+   (mirrors the keymap diagnostics pattern).
+5. If `resolved.mode_error` is `Some`, surface a timed "Appearance mode" toast.
 
-Config file watcher reloads invoke the same path. Reload order is
+Two callers invoke it:
+
+- `apply_config` calls it when `self.config.current().appearance != cfg.appearance`. Other config
+  changes (CPU poll, lint flags, etc.) skip the call so no toast fires on unrelated reloads.
+- `dispatch::handle_appearance_changed` (the `BackgroundMsg::AppearanceChanged` arm) updates
+  `themes.os_appearance` and calls it. The arm is extracted into its own method only because the
+  match would otherwise push `handle_bg_msg` past clippy's 100-line gate; the logic is two lines.
+
+Startup uses the same `themes::resolve_theme` helper inside
+`AppBuilder::run_startup` to pick the initial `ThemeState::with_registry`
+theme. Misses are silent at startup (no toast machinery yet — Phase 4's
+settings UI surfaces them via a "Not found" badge).
+
+Config file watcher reloads invoke `apply_config`, so the same path
+fires on `~/.config/cargo-port/config.toml` edits. Reload order is
 documented above (theme → keymap).
 
 `mode = "auto"` in Phase 3 behaves identically to `mode = "dark"`
-(no detection yet). Phase 5 plugs OS state into the resolve step.
+because `os_appearance` is always `None` until Phase 5 plugs in the
+`dark-light` poller. Phase 5 will start sending `AppearanceChanged`,
+which the dispatch handler routes through `resolve_and_apply_active_theme`
+— no further apply-path changes needed.
+
+### Phase 3 retrospective
+
+Built and shipped 2026-05-18.
+
+- `AppearanceConfig` fields are `String` rather than the plan's typed
+  `AppearanceMode` / `ThemeId`. confique's `Layer` Deserialize wants
+  concrete primitive types, and "parse + toast at apply time" beats
+  "config load fails on a typo" for user-edited files. The typed
+  forms still exist — `AppearanceMode::parse` and `ThemeId::new` —
+  but they run inside `themes::resolve_theme`, not at deserialization.
+- `AppearanceMode` lives in `src/themes/mod.rs` (cargo-port), not
+  `tui_pane`. It's a config-level concept that wraps tui_pane's
+  `Appearance`; tui_pane has no reason to know about it.
+- `ResolvedTheme` collects the three outputs (`theme`, `miss`,
+  `mode_error`) so startup and apply-time can share the same helper.
+  Earlier drafts returned a bare `Arc<Theme>` and routed diagnostics
+  through out-parameters; the struct reads cleaner.
+- `Themes` subsystem gained two slots: `miss_toast_id` (mirrors
+  `keymap.diagnostics_id`) and `os_appearance` (the
+  `BackgroundMsg::AppearanceChanged` receiver writes here).
+- `apply_config` gates the resolve call on
+  `self.config.current().appearance != cfg.appearance` so reloads that
+  only change unrelated fields (e.g. CPU poll) don't redundantly swap
+  the theme or fire spurious toasts.
+- The `BackgroundMsg::AppearanceChanged` dispatch arm is extracted into
+  `handle_appearance_changed` to keep `handle_bg_msg` under clippy's
+  100-line `too_many_lines` gate. The extracted function is two lines.
+- `tests/assets/default-config.toml` updated to include the new
+  `[appearance]` section so the template golden-file test stays
+  current.
+- 921 workspace tests pass; clippy `-D warnings` clean; mend clean;
+  binary reinstalled via `cargo install --path .`.
 
 ## Phase 4 — Settings overlay UI
 

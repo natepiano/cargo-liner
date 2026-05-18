@@ -157,10 +157,14 @@ impl AppBuilder<Channeled> {
         let inputs = &self.state.inputs;
         config::set_active_config(&inputs.cfg);
         let registry = themes::build_user_registry(themes::themes_dir().as_deref());
-        tui_pane::install_theme_state(tui_pane::ThemeState::with_registry(
-            registry,
-            tui_pane::default_dark(),
-        ));
+        // Resolve the initial theme from the loaded `[appearance]`
+        // section against the just-built registry. Misses fall back to
+        // the appearance-matched built-in silently here — toast
+        // machinery is not yet wired this early in startup, and
+        // surface for the miss arrives in Phase 4's settings UI badge.
+        let resolved = themes::resolve_theme(&inputs.cfg.appearance, &registry, None);
+        let initial_theme = (*resolved.theme).clone();
+        tui_pane::install_theme_state(tui_pane::ThemeState::with_registry(registry, initial_theme));
         let config_path = config::config_path();
         let lint_spawn = lint::spawn(&inputs.cfg, inputs.bg_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&inputs.cfg.tui.include_dirs);

@@ -147,3 +147,19 @@
 #
 # Default value: false
 #force_github_rate_limit = false
+
+[appearance]
+# Theme appearance mode: `"auto"`, `"light"`, or `"dark"`.
+#
+# Default value: "dark"
+#mode = "dark"
+
+# Theme name to use when the resolved appearance is light.
+#
+# Default value: "Default Light"
+#light_theme = "Default Light"
+
+# Theme name to use when the resolved appearance is dark.
+#
+# Default value: "Default Dark"
+#dark_theme = "Default Dark"
