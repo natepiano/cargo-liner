@@ -86,6 +86,7 @@ use super::state::Config;
 use super::state::Inflight;
 use super::state::Keymap;
 use super::state::Scan;
+use super::state::SyncTracker;
 use super::state::Themes;
 use crate::ci::OwnerRepo;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
@@ -295,6 +296,10 @@ pub(super) struct App {
     /// the registry reloads cleanly. The active theme + registry
     /// themselves live in `tui_pane`'s `THEME_STATE`.
     pub(super) themes:            Themes,
+    /// Per-project ahead/behind tracker. Holds the eligibility flag,
+    /// last-seen value, and the in-flight "Sync changes" task-toast
+    /// id used to accumulate transitions within the linger window.
+    pub(super) sync_tracker:      SyncTracker,
     /// The central per-project data store. Lint runs, CI info, git
     /// info, language stats, package/workspace fields, and disk usage
     /// all live inside the tree. Every subsystem that produces

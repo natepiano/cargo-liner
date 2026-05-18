@@ -19,6 +19,7 @@ use crate::scan::CiFetchResult;
 use crate::tui::app::App;
 use crate::tui::constants::STARTUP_PHASE_GITHUB;
 use crate::tui::integration;
+use crate::tui::state;
 
 impl App {
     pub(super) fn spawn_repo_fetch_for_git_info(&mut self, path: &Path, repo_url: &str) {
@@ -175,7 +176,46 @@ impl App {
             scan::invalidate_cached_repo_data(&self.net.github.fetch_cache, &owner_repo);
         }
 
+        self.record_sync_observation(path);
         self.maybe_trigger_repo_fetch(path);
+    }
+
+    /// Diff the current sync state for `path` against the tracker's
+    /// baseline; on transition, push or extend the "Sync changes" task
+    /// toast.
+    fn record_sync_observation(&mut self, path: &Path) {
+        let current = self.project_list.primary_ahead_behind_for(path);
+        let Some(transition) = self.sync_tracker.observe(AbsolutePath::from(path), current) else {
+            return;
+        };
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?")
+            .to_string();
+        let label = state::format_transition(&name, &transition);
+        let seq = self.sync_tracker.next_item_seq();
+        let key = format!("{}#{seq}", path.display());
+        let now = Instant::now();
+        let item = TrackedItem {
+            label,
+            key: key.into(),
+            started_at: Some(now),
+            completed_at: Some(now),
+        };
+
+        let reuse = self
+            .sync_tracker
+            .current_toast()
+            .filter(|id| self.framework.toasts.tracked_item_count(*id) > 0);
+        let toast_id = reuse.unwrap_or_else(|| {
+            let id = self.framework.toasts.push_task("Sync changes", "", 1);
+            self.sync_tracker.set_current_toast(Some(id));
+            id
+        });
+        self.framework
+            .toasts
+            .add_new_tracked_items(toast_id, &[item]);
     }
     /// Shared between `handle_repo_info` and `handle_checkout_info`:
     /// kick a GitHub fetch for this path's repo if we have a parseable
@@ -247,9 +287,32 @@ impl App {
     pub(super) fn handle_repo_fetch_complete(&mut self, repo: OwnerRepo) {
         self.net.github.repo_fetch_in_flight_mut().remove(&repo);
         self.net.github.running_mut().remove(&repo);
+        self.mark_sync_eligible_for(&repo);
         self.startup.repo.seen.insert(repo);
         self.maybe_log_startup_phase_completions();
         self.sync_running_repo_fetch_toast();
+    }
+
+    /// Flip the sync-toast eligibility flag for every project that
+    /// resolves to `repo` via its fetch URL, seeding each baseline with
+    /// the current ahead/behind so the next change toasts.
+    fn mark_sync_eligible_for(&mut self, repo: &OwnerRepo) {
+        let mut targets: Vec<(AbsolutePath, Option<(usize, usize)>)> = Vec::new();
+        self.project_list.for_each_leaf_path(|path, _| {
+            let Some(url) = self.project_list.fetch_url_for(path) else {
+                return;
+            };
+            if ci::parse_owner_repo(&url).as_ref() != Some(repo) {
+                return;
+            }
+            targets.push((
+                AbsolutePath::from(path),
+                self.project_list.primary_ahead_behind_for(path),
+            ));
+        });
+        for (path, current) in targets {
+            self.sync_tracker.mark_eligible(path, current);
+        }
     }
     pub fn handle_project_discovered(&mut self, item: RootItem) -> bool {
         let legacy_expansions = self.project_list.capture_legacy_root_expansions();

@@ -59,6 +59,7 @@ use crate::tui::state::Keymap;
 use crate::tui::state::Lint;
 use crate::tui::state::Net;
 use crate::tui::state::Scan;
+use crate::tui::state::SyncTracker;
 use crate::tui::state::Themes;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
@@ -262,6 +263,7 @@ impl AppBuilder<Started> {
             config,
             keymap,
             themes,
+            sync_tracker: SyncTracker::default(),
             scan,
             startup: Startup::new(),
             visited_panes: std::iter::once(AppPaneId::ProjectList).collect(),
