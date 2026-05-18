@@ -3,11 +3,10 @@ use tui_pane::Action;
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum ProjectListAction {
-        ExpandAll   => ("expand_all",   "+",     "Expand all");
-        CollapseAll => ("collapse_all", "-",     "Collapse all");
-        ExpandRow   => ("expand_row",   "→",     "Expand row");
-        CollapseRow => ("collapse_row", "←",     "Collapse row");
-        Clean       => ("clean",        "clean", "Clean project");
+        ExpandAll   => ("expand_all",   "+", "Expand all");
+        CollapseAll => ("collapse_all", "-", "Collapse all");
+        ExpandRow   => ("expand_row",   "→", "Expand row");
+        CollapseRow => ("collapse_row", "←", "Collapse row");
     }
 }
 
@@ -15,7 +14,6 @@ tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum PackageAction {
         Activate => ("activate", "Open URL or Cargo.toml");
-        Clean    => ("clean",    "Clean project");
     }
 }
 
@@ -23,7 +21,6 @@ tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum GitAction {
         Activate => ("activate", "Open git URL");
-        Clean    => ("clean",    "Clean project");
     }
 }
 
@@ -32,7 +29,6 @@ tui_pane::action_enum! {
     pub enum TargetsAction {
         Activate     => ("activate",      "run",     "Run in debug mode");
         ReleaseBuild => ("release_build", "release", "Run in release mode");
-        Clean        => ("clean",         "clean",   "Clean project");
     }
 }
 

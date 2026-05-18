@@ -31,8 +31,6 @@ use crate::tui::integration;
 #[cfg(test)]
 use crate::tui::integration::AppNavigation;
 use crate::tui::integration::AppPaneId;
-use crate::tui::integration::CpuAction;
-use crate::tui::integration::LangAction;
 use crate::tui::integration::NavigationAction;
 use crate::tui::keymap::CiRunsAction;
 use crate::tui::keymap::GitAction;
@@ -70,14 +68,12 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
 pub(super) fn dispatch_package_action(action: PackageAction, app: &mut App) {
     match action {
         PackageAction::Activate => handle_detail_enter(app),
-        PackageAction::Clean => request_clean(app),
     }
 }
 
 pub(super) fn dispatch_git_action(action: GitAction, app: &mut App) {
     match action {
         GitAction::Activate => handle_detail_enter(app),
-        GitAction::Clean => request_clean(app),
     }
 }
 
@@ -85,17 +81,8 @@ pub(super) fn dispatch_targets_action(action: TargetsAction, app: &mut App) {
     match action {
         TargetsAction::Activate => handle_detail_enter(app),
         TargetsAction::ReleaseBuild => handle_target_action(app, BuildMode::Release),
-        TargetsAction::Clean => request_clean(app),
     }
 }
-
-pub(super) fn dispatch_lang_action(action: LangAction, app: &mut App) {
-    match action {
-        LangAction::Clean => request_clean(app),
-    }
-}
-
-pub(super) const fn dispatch_cpu_action(_action: CpuAction, _app: &mut App) {}
 
 pub(super) fn dispatch_lints_action(action: LintsAction, app: &mut App) {
     match action {
@@ -209,14 +196,13 @@ fn navigate_toasts(app: &mut App, action: NavigationAction) {
     }
 }
 
-fn request_clean(app: &mut App) {
-    // Gated through App::clean_selection; see src/tui/input.rs for the
-    // symmetric site.
+pub(super) fn request_clean(app: &mut App) {
+    // Gated through App::clean_selection — the single source of truth
+    // for clean eligibility, regardless of which pane currently owns
+    // focus.
     if let Some(selection) = app.project_list.clean_selection() {
         match selection {
             CleanSelection::Project { root } => {
-                // Fingerprint re-check + possible Verifying popup state,
-                // per src/tui/input.rs.
                 app.request_clean_confirm(root);
             },
             CleanSelection::WorktreeGroup { primary, linked } => {

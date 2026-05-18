@@ -23,12 +23,8 @@ use super::integration::AppGlobalAction;
 use super::integration::AppNavigation;
 use super::integration::AppPaneId;
 use super::integration::CiRunsPane;
-use super::integration::CpuAction;
-use super::integration::CpuPane;
 use super::integration::FinderPane;
 use super::integration::GitPane;
-use super::integration::LangAction;
-use super::integration::LangPane;
 use super::integration::LintsPane;
 use super::integration::NavigationAction;
 use super::integration::OutputPane;
@@ -326,22 +322,6 @@ fn push_app_pane_rows(rows: &mut Vec<KeymapRow>, app: &App) {
         "package",
         PackagePane::APP_PANE_ID,
         <PackageAction as Action>::ALL,
-        app,
-    );
-    push_app_pane_scope(
-        rows,
-        "Lang",
-        "lang",
-        LangPane::APP_PANE_ID,
-        LangAction::ALL,
-        app,
-    );
-    push_app_pane_scope(
-        rows,
-        "CPU",
-        "cpu",
-        CpuPane::APP_PANE_ID,
-        CpuAction::ALL,
         app,
     );
     push_app_pane_scope(
@@ -659,18 +639,6 @@ fn write_app_pane_sections(out: &mut String, app: &App, pending: Option<&Pending
             <PackageAction as Action>::ALL,
             action_toml_key,
         ),
-        pending,
-    );
-    write_section(
-        out,
-        "lang",
-        entries_from_app_pane(app, LangPane::APP_PANE_ID, LangAction::ALL, action_toml_key),
-        pending,
-    );
-    write_section(
-        out,
-        "cpu",
-        entries_from_app_pane(app, CpuPane::APP_PANE_ID, CpuAction::ALL, action_toml_key),
         pending,
     );
     write_section(

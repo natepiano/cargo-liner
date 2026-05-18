@@ -33,7 +33,6 @@ use tui_pane::ToastCommand;
 use tui_pane::Viewport;
 
 use super::app::App;
-use super::app::CleanSelection;
 use super::app::ConfirmAction;
 use super::app::PendingClean;
 use super::finder;
@@ -605,7 +604,6 @@ pub(super) fn dispatch_project_list_action(action: ProjectListAction, app: &mut 
                 app.project_list.move_up();
             }
         },
-        ProjectListAction::Clean => request_project_list_clean(app),
     }
 }
 
@@ -617,25 +615,6 @@ pub(super) fn dispatch_output_action(action: OutputAction, app: &mut App) {
                 app.set_focus(FocusedPane::App(AppPaneId::Targets));
             }
         },
-    }
-}
-
-fn request_project_list_clean(app: &mut App) {
-    // Gate through `App::clean_selection` — the single source of
-    // truth for clean eligibility.
-    if let Some(selection) = app.project_list.clean_selection() {
-        match selection {
-            CleanSelection::Project { root } => {
-                // `request_clean_confirm` re-fingerprints the workspace.
-                // On drift it dispatches a metadata refresh and opens
-                // the confirm in Verifying state; on match it opens
-                // Ready.
-                app.request_clean_confirm(root);
-            },
-            CleanSelection::WorktreeGroup { primary, linked } => {
-                app.request_clean_group_confirm(primary, linked);
-            },
-        }
     }
 }
 

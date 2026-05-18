@@ -174,16 +174,14 @@ fn package_data_no_version() -> PackageData {
 fn focused_app_panes_render_expected_pane_action_labels() {
     type Setup = fn(&mut App);
     let cases: &[(AppPaneId, &[&str], Setup)] = &[
-        (AppPaneId::Package, &["activate", "clean"], |app| {
+        (AppPaneId::Package, &["activate"], |app| {
             app.panes.package.set_content(package_data_no_version());
         }),
-        (AppPaneId::Git, &["activate", "clean"], |app| {
+        (AppPaneId::Git, &["activate"], |app| {
             app.panes.git.set_content(GitData::default());
         }),
-        (AppPaneId::Targets, &["run", "release", "clean"], |_| {}),
+        (AppPaneId::Targets, &["run", "release"], |_| {}),
         (AppPaneId::Lints, &["open", "clear cache"], |_| {}),
-        (AppPaneId::Lang, &["clean"], |_| {}),
-        (AppPaneId::Cpu, &["clean"], |_| {}),
         (
             AppPaneId::CiRuns,
             &["open", "fetch more", "all", "clear cache"],
@@ -239,11 +237,6 @@ fn package_activate_state_disabled_when_no_crates_version() {
         ShortcutState::Disabled,
         "Activate must be Disabled when crates_version is None — no actionable row exists",
     );
-    assert_eq!(
-        pane.state(PackageAction::Clean, &app),
-        ShortcutState::Enabled,
-        "Clean is unaffected by the cursor-row rule",
-    );
 }
 
 #[test]
@@ -295,11 +288,6 @@ fn git_activate_state_disabled_when_cursor_not_on_remote() {
         pane.state(GitAction::Activate, &app),
         ShortcutState::Disabled,
         "Activate must be Disabled on a flat field row — only Remote rows dispatch",
-    );
-    assert_eq!(
-        pane.state(GitAction::Clean, &app),
-        ShortcutState::Enabled,
-        "Clean is unaffected by the cursor-row rule",
     );
 }
 
@@ -424,10 +412,11 @@ fn focused_project_list_bar_renders_pane_action_and_nav_slots() {
 
     // ProjectList keeps row expand/collapse keys active, but does not
     // spend bar space advertising them. Only the all pair lands in
-    // the Nav region; `Clean` lands in `pane_action`.
+    // the Nav region; no pane-local actions remain after Clean moved
+    // to the global scope.
     assert!(
-        pane_action.contains("clean"),
-        "ProjectList pane_action must include Clean (got {pane_action:?})",
+        pane_action.is_empty(),
+        "ProjectList has no pane-local actions (got {pane_action:?})",
     );
     assert!(
         !nav.contains(" expand"),
@@ -437,7 +426,7 @@ fn focused_project_list_bar_renders_pane_action_and_nav_slots() {
         nav.contains("=/- all"),
         "ProjectList nav region must include the paired all row (got {nav:?})",
     );
-    assert_contains_in_order(&nav, &["nav", "all", "pane"]);
+    assert_contains_in_order(&nav, &["nav", "all"]);
     assert!(
         !nav.contains(" home") && !nav.contains(" end"),
         "ProjectList nav region must stay compact and omit Home/End rows (got {nav:?})",

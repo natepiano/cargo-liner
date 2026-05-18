@@ -326,6 +326,19 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
         next
     }
 
+    /// Register a [`Pane<Ctx>`] that has no pane-local actions. Only
+    /// records the `(APP_PANE_ID, mode, tab_stop)` registration so the
+    /// pane participates in focus cycling; no scope is inserted, and
+    /// the pane contributes nothing to the bar's `PaneAction` region.
+    /// Use this for panes whose only interactions live on the global
+    /// or navigation scopes.
+    #[must_use]
+    pub fn register_pane<P: Pane<Ctx>>(self) -> KeymapBuilder<Ctx, Registering> {
+        let mut next = transition::<Ctx>(self);
+        next.insert_pane_no_shortcuts::<P>();
+        next
+    }
+
     /// Finalize the builder with no scopes registered. Returns the
     /// built [`Keymap<Ctx>`].
     ///
@@ -344,6 +357,14 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
     #[must_use]
     pub fn register<P: Shortcuts<Ctx>>(mut self, pane: P) -> Self {
         self.insert_pane::<P>(pane);
+        self
+    }
+
+    /// Register an additional [`Pane<Ctx>`] without a `Shortcuts`
+    /// impl. See [`KeymapBuilder::<Configuring>::register_pane`].
+    #[must_use]
+    pub fn register_pane<P: Pane<Ctx>>(mut self) -> Self {
+        self.insert_pane_no_shortcuts::<P>();
         self
     }
 
@@ -412,6 +433,17 @@ impl<Ctx: AppContext + 'static, State> KeymapBuilder<Ctx, State> {
         });
         self.registered_scopes
             .insert(<P as Shortcuts<Ctx>>::SCOPE_NAME);
+    }
+
+    /// Record a pane registration without inserting a scope. Used by
+    /// [`register_pane`](Self::register_pane) for panes that have no
+    /// pane-local actions but still need to appear in focus cycling.
+    fn insert_pane_no_shortcuts<P: Pane<Ctx>>(&mut self) {
+        self.pane_registrations.push(PaneRegistration {
+            id:         P::APP_PANE_ID,
+            mode_query: <P as Pane<Ctx>>::mode(),
+            tab_stop:   <P as Pane<Ctx>>::tab_stop(),
+        });
     }
 }
 

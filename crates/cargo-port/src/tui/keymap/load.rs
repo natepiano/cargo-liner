@@ -31,6 +31,12 @@ use crate::project::AbsolutePath;
 const REMOVED_PROJECT_LIST_GLOBAL_ACTIONS: [(&str, &str); 2] =
     [("open_editor", "open_editor"), ("rescan", "rescan")];
 
+/// Per-pane scopes that used to hold their own `clean` binding. The
+/// action moved to `[global].clean`; on migration the first scope in
+/// this list to define `clean` wins, matching the historical
+/// registration order.
+const LEGACY_CLEAN_SCOPES: [&str; 6] = ["project_list", "package", "git", "targets", "lang", "cpu"];
+
 pub struct KeymapLoadResult {
     pub(crate) keymap:          ResolvedKeymap,
     pub(crate) errors:          Vec<KeymapError>,
@@ -322,6 +328,7 @@ fn migrate_removed_action_keys(table: &mut Table) -> bool {
     let mut changed = false;
     changed |= migrate_project_list_globals(table);
     changed |= migrate_overlay_scopes(table);
+    changed |= migrate_clean_to_global(table);
     changed
 }
 
@@ -392,6 +399,45 @@ fn migrate_overlay_scopes(table: &mut Table) -> bool {
     }
 
     true
+}
+
+/// Fold legacy per-pane `clean` bindings into `[global].clean`. Each
+/// scope in [`LEGACY_CLEAN_SCOPES`] gets its `clean` key removed; the
+/// first non-empty value found is inserted into `[global]` (unless
+/// `[global].clean` already exists). Empty `[lang]` / `[cpu]` tables
+/// left behind by the removal get pruned, since those scopes no
+/// longer hold any pane-local actions.
+fn migrate_clean_to_global(table: &mut Table) -> bool {
+    let mut migrated_value: Option<Value> = None;
+    let mut changed = false;
+
+    for scope in LEGACY_CLEAN_SCOPES {
+        let Some(scope_table) = table.get_mut(scope).and_then(toml::Value::as_table_mut) else {
+            continue;
+        };
+        if let Some(value) = scope_table.remove("clean") {
+            changed = true;
+            if migrated_value.is_none() {
+                migrated_value = Some(value);
+            }
+        }
+        if matches!(scope, "lang" | "cpu") && scope_table.is_empty() {
+            table.remove(scope);
+        }
+    }
+
+    if let Some(value) = migrated_value {
+        if !table.contains_key("global") {
+            table.insert("global".to_string(), Value::Table(Table::new()));
+        }
+        if let Some(global) = table.get_mut("global").and_then(toml::Value::as_table_mut)
+            && !global.contains_key("clean")
+        {
+            global.insert("clean".to_string(), value);
+        }
+    }
+
+    changed
 }
 
 fn take_legacy_overlay(table: &mut Table, scope: &str) -> Option<Table> {
@@ -603,7 +649,7 @@ mod tests {
         let toml = r#"
 [project_list]
 expand_all = "c"
-clean = "c"
+collapse_all = "c"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
         assert!(
@@ -628,7 +674,7 @@ prev_pane = "Shift+Tab"
 open_keymap = "Ctrl+k"
 
 [project_list]
-clean = "c"
+expand_all = "d"
 
 [ci_runs]
 clear_cache = "d"
@@ -656,7 +702,7 @@ prev_pane = "Shift+Tab"
 open_keymap = "Ctrl+k"
 
 [project_list]
-clean = "h"
+expand_all = "h"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsAndVim);
         assert!(
@@ -733,7 +779,6 @@ open_editor = "Enter"
 rescan = "Ctrl+r"
 expand_all = "="
 collapse_all = "-"
-clean = "c"
 "#
         .parse()
         .unwrap();
@@ -773,7 +818,6 @@ open_editor = "E"
 
 [project_list]
 open_editor = "Enter"
-clean = "c"
 "#
         .parse()
         .unwrap();
@@ -792,7 +836,6 @@ clean = "c"
 [project_list]
 expand_all = "x"
 collapse_all = "x"
-clean = "c"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
         // expand_all = "x" should be accepted.
@@ -824,7 +867,7 @@ clean = "c"
             result
                 .keymap
                 .project_list
-                .key_for(ProjectListAction::Clean)
+                .key_for(ProjectListAction::ExpandAll)
                 .is_some()
         );
     }
@@ -839,8 +882,7 @@ clean = "c"
         // Build a keymap with 'h' bound.
         let toml = r#"
 [package]
-activate = "Enter"
-clean = "h"
+activate = "h"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
         let conflicts = vim_mode_conflicts(&result.keymap);
@@ -851,12 +893,13 @@ clean = "h"
     fn action_description_and_display_key() {
         let km = ResolvedKeymap::defaults();
         assert_eq!(
-            <ProjectListAction as tui_pane::Action>::description(ProjectListAction::Clean),
-            "Clean project"
+            <ProjectListAction as tui_pane::Action>::description(ProjectListAction::ExpandAll),
+            "Expand all"
         );
         assert_eq!(
-            km.project_list.display_key_for(ProjectListAction::Clean),
-            "c"
+            km.project_list
+                .display_key_for(ProjectListAction::ExpandAll),
+            "+"
         );
         assert_eq!(km.ci_runs.display_key_for(CiRunsAction::ShowBranch), "b");
         assert_eq!(km.ci_runs.display_key_for(CiRunsAction::ShowAll), "a");
@@ -901,21 +944,23 @@ clear_cache = "d"
 
     #[test]
     fn missing_action_detected() {
-        // Omit `clean` from package — should appear in missing_actions.
-        let toml = r#"
+        // Omit `activate` from package — should appear in missing_actions.
+        let toml = r"
 [package]
-activate = "Enter"
-"#;
+";
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
         assert!(
-            result.missing_actions.iter().any(|m| m == "package.clean"),
-            "expected package.clean in missing_actions: {:?}",
+            result
+                .missing_actions
+                .iter()
+                .any(|m| m == "package.activate"),
+            "expected package.activate in missing_actions: {:?}",
             result.missing_actions
         );
         // Default should still be applied.
         assert_eq!(
-            result.keymap.package.key_for(PackageAction::Clean),
-            Some(&KeyBind::plain(KeyCode::Char('c')))
+            result.keymap.package.key_for(PackageAction::Activate),
+            Some(&KeyBind::plain(KeyCode::Enter))
         );
     }
 

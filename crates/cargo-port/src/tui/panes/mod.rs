@@ -112,8 +112,6 @@ pub(super) use widths::name_width_with_gutter;
 
 use super::app::App;
 use super::integration::AppPaneId;
-use super::integration::CpuAction;
-use super::integration::LangAction;
 use super::integration::NavigationAction;
 use super::keymap::CiRunsAction;
 use super::keymap::GitAction;
@@ -136,14 +134,6 @@ pub(super) fn dispatch_targets_action(action: TargetsAction, app: &mut App) {
     actions::dispatch_targets_action(action, app);
 }
 
-pub(super) fn dispatch_lang_action(action: LangAction, app: &mut App) {
-    actions::dispatch_lang_action(action, app);
-}
-
-pub(super) const fn dispatch_cpu_action(action: CpuAction, app: &mut App) {
-    actions::dispatch_cpu_action(action, app);
-}
-
 pub(super) fn dispatch_lints_action(action: LintsAction, app: &mut App) {
     actions::dispatch_lints_action(action, app);
 }
@@ -159,3 +149,5 @@ pub(super) fn dispatch_navigation_action(
 ) {
     actions::dispatch_navigation_action(action, focused, app);
 }
+
+pub(super) fn request_clean(app: &mut App) { actions::request_clean(app); }

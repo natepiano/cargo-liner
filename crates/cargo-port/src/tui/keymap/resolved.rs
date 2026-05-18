@@ -54,20 +54,14 @@ impl ResolvedKeymap {
             KeyBind::new(KeyCode::Left, KeyModifiers::SHIFT),
             ProjectListAction::CollapseRow,
         );
-        km.project_list
-            .insert(KeyBind::plain(KeyCode::Char('c')), ProjectListAction::Clean);
 
         // Package
         km.package
             .insert(KeyBind::plain(KeyCode::Enter), PackageAction::Activate);
-        km.package
-            .insert(KeyBind::plain(KeyCode::Char('c')), PackageAction::Clean);
 
         // Git
         km.git
             .insert(KeyBind::plain(KeyCode::Enter), GitAction::Activate);
-        km.git
-            .insert(KeyBind::plain(KeyCode::Char('c')), GitAction::Clean);
 
         // Targets
         km.targets
@@ -76,8 +70,6 @@ impl ResolvedKeymap {
             KeyBind::plain(KeyCode::Char('r')),
             TargetsAction::ReleaseBuild,
         );
-        km.targets
-            .insert(KeyBind::plain(KeyCode::Char('c')), TargetsAction::Clean);
 
         // CI runs
         km.ci_runs

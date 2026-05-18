@@ -169,6 +169,7 @@ tui_pane::action_enum! {
         OpenEditor   => ("open_editor",   "editor",   "Open in editor");
         OpenTerminal => ("open_terminal", "terminal", "Open terminal");
         Rescan       => ("rescan",        "rescan",   "Rescan projects");
+        Clean        => ("clean",         "clean",    "Clean project");
     }
 }
 
@@ -241,6 +242,7 @@ impl Globals<App> for AppGlobalAction {
             'e'                  => Self::OpenEditor,
             't'                  => Self::OpenTerminal,
             KeyBind::ctrl('r')   => Self::Rescan,
+            'c'                  => Self::Clean,
         }
     }
 
@@ -253,6 +255,7 @@ fn dispatch_app_global(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::OpenEditor => input::open_in_editor(app),
         AppGlobalAction::OpenTerminal => input::open_terminal(app),
         AppGlobalAction::Rescan => app.rescan(),
+        AppGlobalAction::Clean => panes::request_clean(app),
     }
 }
 
@@ -273,14 +276,12 @@ impl Shortcuts<App> for PackagePane {
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
             crossterm::event::KeyCode::Enter => PackageAction::Activate,
-            'c' => PackageAction::Clean,
         }
     }
 
     fn state(&self, action: PackageAction, ctx: &App) -> ShortcutState {
         match action {
             PackageAction::Activate => activate_state(ctx),
-            PackageAction::Clean => ShortcutState::Enabled,
         }
     }
 
@@ -325,14 +326,12 @@ impl Shortcuts<App> for GitPane {
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
             crossterm::event::KeyCode::Enter => GitAction::Activate,
-            'c' => GitAction::Clean,
         }
     }
 
     fn state(&self, action: GitAction, ctx: &App) -> ShortcutState {
         match action {
             GitAction::Activate => git_activate_state(ctx),
-            GitAction::Clean => ShortcutState::Enabled,
         }
     }
 
@@ -359,30 +358,9 @@ fn git_activate_state(ctx: &App) -> ShortcutState {
     }
 }
 
-// ── Lang / Cpu action enums (framework-only) ─────────────────────────
-//
-// Lang and Cpu have no row-conditional dispatch in the legacy path
-// (Lang fall-throughs to PackageAction; Cpu's `handle_detail_key` arm
-// is empty). Each gets its own minimal action enum so the framework
-// keymap can register a real scope; the dispatcher fns are no-ops.
-// No facade required — these enums are not consumed by
-// `src/keymap.rs`'s `ResolvedKeymap` or any legacy call site.
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub enum LangAction {
-        Clean => ("clean", "Clean project");
-    }
-}
-
-tui_pane::action_enum! {
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub enum CpuAction {
-        Clean => ("clean", "Clean project");
-    }
-}
-
-/// `Pane<App>` + `Shortcuts<App>` host for the Lang detail pane.
+/// `Pane<App>` host for the Lang detail pane. No pane-local actions —
+/// `Clean` lives on [`AppGlobalAction`], and the pane has no
+/// row-conditional dispatch.
 pub struct LangPane;
 
 impl Pane<App> for LangPane {
@@ -391,41 +369,14 @@ impl Pane<App> for LangPane {
     fn tab_stop() -> TabStop<App> { TabStop::ordered(LANG_TAB_ORDER, lang_is_tabbable) }
 }
 
-impl Shortcuts<App> for LangPane {
-    type Actions = LangAction;
-
-    const SCOPE_NAME: &'static str = "lang";
-
-    fn defaults() -> Bindings<Self::Actions> {
-        tui_pane::bindings! {
-            'c' => LangAction::Clean,
-        }
-    }
-
-    fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_lang_action }
-}
-
-/// `Pane<App>` + `Shortcuts<App>` host for the Cpu pane.
+/// `Pane<App>` host for the Cpu pane. No pane-local actions — see
+/// [`LangPane`].
 pub struct CpuPane;
 
 impl Pane<App> for CpuPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Cpu;
 
     fn tab_stop() -> TabStop<App> { TabStop::ordered(CPU_TAB_ORDER, cpu_is_tabbable) }
-}
-
-impl Shortcuts<App> for CpuPane {
-    type Actions = CpuAction;
-
-    const SCOPE_NAME: &'static str = "cpu";
-
-    fn defaults() -> Bindings<Self::Actions> {
-        tui_pane::bindings! {
-            'c' => CpuAction::Clean,
-        }
-    }
-
-    fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_cpu_action }
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Targets pane.
@@ -446,7 +397,6 @@ impl Shortcuts<App> for TargetsPane {
         tui_pane::bindings! {
             crossterm::event::KeyCode::Enter => TargetsAction::Activate,
             'r' => TargetsAction::ReleaseBuild,
-            'c' => TargetsAction::Clean,
         }
     }
 
@@ -578,25 +528,18 @@ impl Shortcuts<App> for ProjectListPane {
             crossterm::event::KeyCode::Left => ProjectListAction::CollapseRow,
             '=' => ProjectListAction::ExpandAll,
             '-' => ProjectListAction::CollapseAll,
-            'c' => ProjectListAction::Clean,
         }
     }
 
     fn bar_slots(&self, _ctx: &App) -> Vec<(BarRegion, BarSlot<Self::Actions>)> {
-        vec![
-            (
-                BarRegion::Nav,
-                BarSlot::Paired(
-                    ProjectListAction::ExpandAll,
-                    ProjectListAction::CollapseAll,
-                    "all",
-                ),
+        vec![(
+            BarRegion::Nav,
+            BarSlot::Paired(
+                ProjectListAction::ExpandAll,
+                ProjectListAction::CollapseAll,
+                "all",
             ),
-            (
-                BarRegion::PaneAction,
-                BarSlot::Single(ProjectListAction::Clean),
-            ),
-        ]
+        )]
     }
 
     fn vim_extras() -> &'static [(Self::Actions, KeyBind)] { &PROJECT_LIST_VIM_EXTRAS }
@@ -710,8 +653,8 @@ pub fn build_framework_keymap(
         .register_overlay()?
         .register::<ProjectListPane>(ProjectListPane)
         .register::<PackagePane>(PackagePane)
-        .register::<LangPane>(LangPane)
-        .register::<CpuPane>(CpuPane)
+        .register_pane::<LangPane>()
+        .register_pane::<CpuPane>()
         .register::<GitPane>(GitPane)
         .register::<TargetsPane>(TargetsPane)
         .register::<LintsPane>(LintsPane)

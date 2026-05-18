@@ -570,7 +570,7 @@ pub(super) fn cargo_port_bar_palette() -> BarPalette {
     }
 }
 
-fn cargo_port_status_line_globals(app: &App) -> [StatusLineGlobal<AppGlobalAction>; 8] {
+fn cargo_port_status_line_globals(app: &App) -> [StatusLineGlobal<AppGlobalAction>; 9] {
     let selected_project_is_deleted = app.project_list.selected_project_is_deleted();
     let terminal_command_configured = !app.config.terminal_command().trim().is_empty();
     let editor_state = if selected_project_is_deleted {
@@ -583,10 +583,16 @@ fn cargo_port_status_line_globals(app: &App) -> [StatusLineGlobal<AppGlobalActio
     } else {
         ShortcutState::Disabled
     };
+    let clean_state = if app.project_list.clean_selection().is_some() {
+        ShortcutState::Enabled
+    } else {
+        ShortcutState::Disabled
+    };
     [
         StatusLineGlobal::app(AppGlobalAction::Find),
         StatusLineGlobal::app(AppGlobalAction::OpenEditor).with_state(editor_state),
         StatusLineGlobal::app(AppGlobalAction::OpenTerminal).with_state(terminal_state),
+        StatusLineGlobal::app(AppGlobalAction::Clean).with_state(clean_state),
         StatusLineGlobal::framework(FrameworkGlobalAction::OpenSettings),
         StatusLineGlobal::framework(FrameworkGlobalAction::OpenKeymap),
         StatusLineGlobal::app(AppGlobalAction::Rescan),

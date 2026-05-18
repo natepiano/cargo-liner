@@ -5,6 +5,7 @@
 #       for navigation and cannot be used as action keys.
 
 [global]
+clean         = "c"
 dismiss       = "x"
 find          = "/"
 next_pane     = "Tab"
@@ -26,7 +27,6 @@ right = "Right"
 up    = "Up"
 
 [project_list]
-clean        = "c"
 collapse_all = "-"
 collapse_row = "Left"
 expand_all   = "="
@@ -34,21 +34,12 @@ expand_row   = "Right"
 
 [package]
 activate = "Enter"
-clean    = "c"
-
-[lang]
-clean = "c"
-
-[cpu]
-clean = "c"
 
 [git]
 activate = "Enter"
-clean    = "c"
 
 [targets]
 activate      = "Enter"
-clean         = "c"
 release_build = "r"
 
 [lints]
