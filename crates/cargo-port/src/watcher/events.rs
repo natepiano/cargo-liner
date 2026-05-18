@@ -214,10 +214,8 @@ pub(super) fn handle_notify_event(
         .iter()
         .find(|(root, _)| event_path.starts_with(root))
     {
-        if !entry.is_alive() {
-            return;
-        }
         if let Some(lint_runtime) = lint_runtime
+            && entry.is_alive()
             && let Some(event) = event
             && let Some(lint_trigger) =
                 lint::classify_event_path(&entry.abs_path, event.kind, event_path)
@@ -225,6 +223,7 @@ pub(super) fn handle_notify_event(
             lint_runtime.lint_trigger(lint_trigger);
         }
         if let Some(dispatch) = metadata_dispatch
+            && entry.is_alive()
             && let Some(kind) =
                 lint::classify_cargo_metadata_event_path(entry.abs_path.as_path(), event_path)
         {
@@ -236,7 +235,9 @@ pub(super) fn handle_notify_event(
             );
             scan::spawn_cargo_metadata_refresh(dispatch.clone(), entry.abs_path.clone());
         }
-        if refresh::is_target_metadata_event(event_path, entry.abs_path.as_path()) {
+        if entry.is_alive()
+            && refresh::is_target_metadata_event(event_path, entry.abs_path.as_path())
+        {
             probe::spawn_project_refresh(bg_tx.clone(), entry.abs_path.clone());
         }
         if refresh::is_internal_git_path(event_path, entry) {
