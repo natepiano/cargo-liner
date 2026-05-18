@@ -7,17 +7,17 @@
 #
 # The test in tui_pane/tests/themes.rs locks this file against drift.
 
+name   = "Default"
 schema = 1
-name = "Default"
 
 [[variants]]
-name = "Default Light"
 appearance = "light"
+name       = "Default Light"
 
 [variants.pane_chrome]
 active_border   = { r = 180, g = 120, b = 0 }
-inactive_border = { r = 140, g = 140, b = 140 }
 active_title    = { color = { r = 160, g = 100, b = 0 }, bold = true }
+inactive_border = { r = 140, g = 140, b = 140 }
 inactive_title  = "Black"
 
 [variants.focus]
@@ -26,34 +26,34 @@ hover      = { r = 220, g = 220, b = 220 }
 remembered = { r = 235, g = 235, b = 235 }
 
 [variants.semantic]
-accent       = { r = 0,   g = 95,  b = 135 }
-error        = { r = 170, g = 0,   b = 0   }
-inline_error = { r = 180, g = 95,  b = 0   }
-success      = { r = 0,   g = 120, b = 0   }
-label        = { r = 60,  g = 100, b = 90  }
+accent       = { r = 0, g = 95, b = 135 }
+error        = { r = 170, g = 0, b = 0 }
+inline_error = { r = 180, g = 95, b = 0 }
+label        = { r = 60, g = 100, b = 90 }
+success      = { r = 0, g = 120, b = 0 }
 
 [variants.text]
-default   = "Black"
-secondary = { r = 70,  g = 70,  b = 70  }
-dim       = { r = 130, g = 130, b = 130 }
-bright    = { r = 0,   g = 95,  b = 135 }
 bg_focus  = "White"
+bright    = { r = 0, g = 95, b = 135 }
+default   = "Black"
+dim       = { r = 130, g = 130, b = 130 }
+secondary = { r = 70, g = 70, b = 70 }
 
 [variants.git]
 ignored   = { r = 150, g = 150, b = 150 }
 modified  = { indexed = 208 }
-untracked = { r = 0,   g = 120, b = 0   }
+untracked = { r = 0, g = 120, b = 0 }
 
 [variants.status]
 bar           = { r = 220, g = 220, b = 220 }
-target_bench  = { r = 140, g = 0,   b = 140 }
 column_header = { color = { r = 60, g = 100, b = 90 }, bold = true }
+target_bench  = { r = 140, g = 0, b = 140 }
 
 [variants.finder]
-match_bg          = { r = 255, g = 245, b = 180 }
 discovery_shimmer = { r = 120, g = 140, b = 200 }
+match_bg          = { r = 255, g = 245, b = 180 }
 
 [variants.disk_usage]
-low  = { r = 0,   g = 140, b = 0   }
-mid  = { r = 90,  g = 90,  b = 90  }
-high = { r = 200, g = 0,   b = 0   }
+high = { r = 200, g = 0, b = 0 }
+low  = { r = 0, g = 140, b = 0 }
+mid  = { r = 90, g = 90, b = 90 }
