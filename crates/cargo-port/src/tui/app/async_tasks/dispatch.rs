@@ -1,3 +1,5 @@
+use tui_pane::Appearance;
+
 use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
@@ -190,16 +192,14 @@ impl App {
             } => self
                 .scan
                 .handle_out_of_tree_target_size(&workspace_root, &target_dir, bytes),
-            BackgroundMsg::AppearanceChanged(appearance) => {
-                self.handle_appearance_changed(appearance)
-            },
+            BackgroundMsg::AppearanceChanged(appearance) => self.handle_appearance_changed(appearance),
         }
         false
     }
     /// Stash the OS appearance and re-resolve the active theme against
     /// the current `[appearance]` config. Producer: the Phase 5
     /// `dark-light` poller; receiver: a one-line dispatch arm above.
-    fn handle_appearance_changed(&mut self, appearance: tui_pane::Appearance) {
+    fn handle_appearance_changed(&mut self, appearance: Appearance) {
         self.themes.set_os_appearance(Some(appearance));
         self.resolve_and_apply_active_theme();
     }

@@ -1079,29 +1079,67 @@ Built and shipped 2026-05-18.
 
 ## Phase 4 — Settings overlay UI
 
-Three rows in the existing settings pane:
+Three rows in the existing settings pane, all under a new `Appearance`
+section:
 
-| Row         | Type            | Values |
-|-------------|-----------------|--------|
-| Mode        | enum dropdown   | auto / light / dark |
-| Light theme | string dropdown | every variant where `appearance == Light` |
-| Dark theme  | string dropdown | every variant where `appearance == Dark` |
+| Row         | Widget kind | Values |
+|-------------|-------------|--------|
+| Mode        | Stepper     | auto / light / dark (Left/Right/Enter cycle) |
+| Light theme | Stepper     | every variant where `appearance == Light`, cycled in registry order |
+| Dark theme  | Stepper     | every variant where `appearance == Dark`, cycled in registry order |
 
-On selection: write back to `config.toml`, re-run the Phase 3 apply path.
-No restart.
+The framework's existing `SettingsRowKind::Stepper` is the closest fit
+to a dropdown without adding a new widget kind: Left/Right adjust the
+value (cycling), Enter activates (cycles forward by one). Each cycle
+writes back to `config.toml`, then `apply_config` sees `appearance`
+changed and re-runs `resolve_and_apply_active_theme` (Phase 3). No
+restart.
 
-If a dropdown's current value isn't in the registry (typed-in or
-inherited from an older config), show a "Not found" badge next to the
-row, with the missing name preserved in the dropdown so the user can
-fix the typo by editing.
+When `config.appearance.light_theme` / `dark_theme` doesn't exist in
+the registry (typo or older config inherited from before a theme was
+removed), the row gets a `Not found` suffix. Cycling moves to a valid
+registry entry; the stale value isn't preserved across the cycle (the
+config still reflects it until the user advances).
 
-If `RegistryStatus.failed_files` is non-empty, show a header banner
-above the rows: "N theme files failed to load — see logs." This keeps
-silent degradation visible to the user.
+When `RegistryStatus.failed_files` is non-empty, the section header
+absorbs the banner — its label becomes
+`Appearance — N theme file(s) failed to load (see logs)`. The framework
+section row doesn't support suffixes, and the section label is the
+natural place for a once-per-render banner.
 
-The dropdown widgets follow the existing settings-pane pattern
-(`tui_pane/src/overlays/settings.rs` already supports enum and string
-fields).
+### Phase 4 retrospective (2026-05-18)
+
+Deviations from the plan, all driven by surface already in the
+framework:
+
+- **Stepper instead of dropdown.** `tui_pane`'s settings widgets are
+  Section / Value / Toggle / Stepper. Adding a true dropdown kind
+  would have meant changing tui_pane's row enum and its renderer for
+  three rows; Stepper covers the same UX (cycle through values) without
+  the boilerplate.
+- **Banner on the section label, not above it.** Section rows render
+  through a separate path that doesn't take a `suffix`. The simplest
+  surface is to fold the count into the section title.
+- **`SettingsUiRow` label widened from `&'static str` to `String`.**
+  Required so the dynamic banner can land in the section label slot.
+  Mechanical change across the four existing row builders.
+- **Bonus refactor: `is_stepper_setting` helper + extracted
+  `apply_cpu_settings_edit`.** Pulling appearance rows through Stepper
+  exposed a clippy `if_same_then_else` in `framework_settings_rows`
+  (the existing CiRunCount stepper and the new appearance steppers
+  were identical branches). The CPU extraction was a side-effect of
+  re-shrinking `apply_general_settings_edit` below the
+  `too_many_lines` 100-line gate after adding three appearance arms.
+
+Stays on plan:
+
+- Cycling writes back to `config.toml` and runs through Phase 3's
+  `apply_config` → `resolve_and_apply_active_theme` path.
+- "Not found" badge on `Light theme` / `Dark theme` rows when the
+  current value isn't in the live registry.
+- `[appearance]` is persisted on first run via the existing
+  `settings_table_from_config` seed path.
+- 921 workspace tests pass; clippy `-D warnings` clean; mend clean.
 
 ## Phase 5 — OS appearance tracking
 

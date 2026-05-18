@@ -5,6 +5,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use toml::Table;
 use toml::Value;
+use tui_pane::Appearance;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
@@ -73,6 +74,9 @@ pub(super) enum SettingOption {
     LintProjects,
     LintCommands,
     LintCacheSize,
+    AppearanceMode,
+    LightTheme,
+    DarkTheme,
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -83,7 +87,7 @@ fn parse_dir_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-type SettingsUiRow = (Option<SettingOption>, &'static str, String);
+type SettingsUiRow = (Option<SettingOption>, String, String);
 
 fn setting_at_selection(rows: &[SettingsUiRow], selection_index: usize) -> Option<SettingOption> {
     rows.iter()
@@ -364,7 +368,30 @@ pub(super) fn cargo_port_settings_registry() -> SettingsRegistry {
     let registry = SettingsRegistry::new();
     let registry = register_general_settings(registry);
     let registry = register_cpu_settings(registry);
-    register_lint_settings(registry)
+    let registry = register_lint_settings(registry);
+    register_appearance_settings(registry)
+}
+
+fn register_appearance_settings(registry: SettingsRegistry) -> SettingsRegistry {
+    registry
+        .add_string_in(
+            SettingsSection::App("appearance"),
+            "mode",
+            get_appearance_mode,
+            set_appearance_mode,
+        )
+        .add_string_in(
+            SettingsSection::App("appearance"),
+            "light_theme",
+            get_appearance_light_theme,
+            set_appearance_light_theme,
+        )
+        .add_string_in(
+            SettingsSection::App("appearance"),
+            "dark_theme",
+            get_appearance_dark_theme,
+            set_appearance_dark_theme,
+        )
 }
 
 fn register_general_settings(registry: SettingsRegistry) -> SettingsRegistry {
@@ -589,6 +616,9 @@ pub(super) fn settings_table_from_config(config: &CargoPortConfig) -> Result<Tab
         lint_commands_value(config.lint.commands.clone()),
     )?;
     set_lint_cache_size(&mut table, &config.lint.cache_size)?;
+    set_appearance_mode(&mut table, &config.appearance.mode)?;
+    set_appearance_light_theme(&mut table, &config.appearance.light_theme)?;
+    set_appearance_dark_theme(&mut table, &config.appearance.dark_theme)?;
     Ok(table)
 }
 
@@ -886,20 +916,122 @@ fn set_lint_cache_size(table: &mut Table, value: &str) -> Result<(), SettingsErr
     write_value(table, "lint", "cache_size", cache_size.into())
 }
 
+fn get_appearance_mode(table: &Table) -> String {
+    read_string(table, "appearance", "mode")
+        .map_or_else(|| default_config().appearance.mode, str::to_string)
+}
+
+fn set_appearance_mode(table: &mut Table, value: &str) -> Result<(), SettingsError> {
+    let trimmed = value.trim();
+    crate::themes::AppearanceMode::parse(trimmed)
+        .map_err(|err| settings_invalid("appearance", "mode", err))?;
+    write_value(table, "appearance", "mode", trimmed.into())
+}
+
+fn get_appearance_light_theme(table: &Table) -> String {
+    read_string(table, "appearance", "light_theme")
+        .map_or_else(|| default_config().appearance.light_theme, str::to_string)
+}
+
+fn set_appearance_light_theme(table: &mut Table, value: &str) -> Result<(), SettingsError> {
+    write_value(table, "appearance", "light_theme", value.trim().into())
+}
+
+fn get_appearance_dark_theme(table: &Table) -> String {
+    read_string(table, "appearance", "dark_theme")
+        .map_or_else(|| default_config().appearance.dark_theme, str::to_string)
+}
+
+fn set_appearance_dark_theme(table: &mut Table, value: &str) -> Result<(), SettingsError> {
+    write_value(table, "appearance", "dark_theme", value.trim().into())
+}
+
 fn settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     let mut rows = general_settings_rows(app, config);
     rows.extend(toast_settings_rows(app, config));
     rows.extend(cpu_settings_rows(config));
     rows.extend(lint_settings_rows(app, config));
+    rows.extend(appearance_settings_rows(config));
     rows
+}
+
+fn registry_contains(name: &str) -> bool {
+    let id = tui_pane::ThemeId::new(name);
+    tui_pane::registry().find(&id).is_some()
+}
+
+/// Cycle `current` forward through the registry's variants for `appearance`.
+/// If `current` isn't in the list, return the first variant. `step` is
+/// `+1` (Right/Enter/Space) or `-1` (Left).
+fn cycle_theme(current: &str, appearance: Appearance, step: i32) -> Option<String> {
+    let registry = tui_pane::registry();
+    let names: Vec<String> = registry
+        .variants_by_appearance(appearance)
+        .map(|v| v.id.as_str().to_string())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let next_index = names.iter().position(|n| n == current).map_or(0, |i| {
+        let len = i32::try_from(names.len()).unwrap_or(i32::MAX);
+        let raw = i32::try_from(i)
+            .unwrap_or(0)
+            .saturating_add(step)
+            .rem_euclid(len);
+        usize::try_from(raw).unwrap_or(0)
+    });
+    names.get(next_index).cloned()
+}
+
+fn cycle_appearance_mode(current: &str, step: i32) -> String {
+    const MODES: [&str; 3] = ["auto", "light", "dark"];
+    let position = MODES
+        .iter()
+        .position(|m| m.eq_ignore_ascii_case(current.trim()))
+        .unwrap_or(0);
+    let len = i32::try_from(MODES.len()).unwrap_or(i32::MAX);
+    let raw = i32::try_from(position)
+        .unwrap_or(0)
+        .saturating_add(step)
+        .rem_euclid(len);
+    let idx = usize::try_from(raw).unwrap_or(0);
+    MODES[idx.min(MODES.len() - 1)].to_string()
+}
+
+fn appearance_settings_rows(config: &CargoPortConfig) -> Vec<SettingsUiRow> {
+    let registry = tui_pane::registry();
+    let failed_count = registry.status().failed_files.len();
+    let section_label = match failed_count {
+        0 => "Appearance".to_string(),
+        1 => "Appearance — 1 theme file failed to load (see logs)".to_string(),
+        n => format!("Appearance — {n} theme files failed to load (see logs)"),
+    };
+    vec![
+        (None, section_label, String::new()),
+        (
+            Some(SettingOption::AppearanceMode),
+            "Mode".to_string(),
+            config.appearance.mode.clone(),
+        ),
+        (
+            Some(SettingOption::LightTheme),
+            "Light theme".to_string(),
+            config.appearance.light_theme.clone(),
+        ),
+        (
+            Some(SettingOption::DarkTheme),
+            "Dark theme".to_string(),
+            config.appearance.dark_theme.clone(),
+        ),
+    ]
 }
 
 fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     vec![
-        (None, "General", String::new()),
+        (None, "General".to_string(), String::new()),
         (
             Some(SettingOption::InvertScroll),
-            "Invert scroll",
+            "Invert scroll".to_string(),
             if app.config.invert_scroll().is_inverted() {
                 "ON"
             } else {
@@ -909,7 +1041,7 @@ fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiR
         ),
         (
             Some(SettingOption::IncludeNonRust),
-            "Non-Rust projects",
+            "Non-Rust projects".to_string(),
             if app.config.include_non_rust().includes_non_rust() {
                 "ON"
             } else {
@@ -919,7 +1051,7 @@ fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiR
         ),
         (
             Some(SettingOption::NavigationKeys),
-            "Vim nav keys",
+            "Vim nav keys".to_string(),
             if app.config.navigation_keys().uses_vim() {
                 "ON"
             } else {
@@ -929,37 +1061,37 @@ fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiR
         ),
         (
             Some(SettingOption::CiRunCount),
-            "CI run count",
+            "CI run count".to_string(),
             config.tui.ci_run_count.to_string(),
         ),
         (
             Some(SettingOption::Editor),
-            "Editor",
+            "Editor".to_string(),
             app.config.editor().to_string(),
         ),
         (
             Some(SettingOption::TerminalCommand),
-            "Terminal",
+            "Terminal".to_string(),
             format_terminal_command(config),
         ),
         (
             Some(SettingOption::MainBranch),
-            "Main branch",
+            "Main branch".to_string(),
             config.tui.main_branch.clone(),
         ),
         (
             Some(SettingOption::OtherPrimaryBranches),
-            "Other primary branches",
+            "Other primary branches".to_string(),
             format_other_primary_branches(config),
         ),
         (
             Some(SettingOption::IncludeDirs),
-            "Include dirs",
+            "Include dirs".to_string(),
             format_sorted_list(&config.tui.include_dirs),
         ),
         (
             Some(SettingOption::InlineDirs),
-            "Inline dirs",
+            "Inline dirs".to_string(),
             format_sorted_list(&config.tui.inline_dirs),
         ),
     ]
@@ -967,20 +1099,20 @@ fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiR
 
 fn toast_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     vec![
-        (None, "Toasts", String::new()),
+        (None, "Toasts".to_string(), String::new()),
         (
             Some(SettingOption::StatusToastVisibleSecs),
-            "Status toast visible secs",
+            "Status toast visible secs".to_string(),
             format_status_toast_visible_secs(app),
         ),
         (
             Some(SettingOption::FinishedTaskVisibleSecs),
-            "Finished task visible secs",
+            "Finished task visible secs".to_string(),
             format_finished_task_visible_secs(app),
         ),
         (
             Some(SettingOption::DiscoveryShimmerSecs),
-            "Discovery shimmer secs",
+            "Discovery shimmer secs".to_string(),
             format_discovery_shimmer_secs(config),
         ),
     ]
@@ -988,20 +1120,20 @@ fn toast_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow
 
 fn cpu_settings_rows(config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     vec![
-        (None, "CPU", String::new()),
+        (None, "CPU".to_string(), String::new()),
         (
             Some(SettingOption::CpuPollMs),
-            "Poll ms",
+            "Poll ms".to_string(),
             format_cpu_poll_ms(config),
         ),
         (
             Some(SettingOption::CpuGreenMaxPercent),
-            "Green max %",
+            "Green max %".to_string(),
             format_cpu_green_max(config),
         ),
         (
             Some(SettingOption::CpuYellowMaxPercent),
-            "Yellow max %",
+            "Yellow max %".to_string(),
             format_cpu_yellow_max(config),
         ),
     ]
@@ -1009,10 +1141,10 @@ fn cpu_settings_rows(config: &CargoPortConfig) -> Vec<SettingsUiRow> {
 
 fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     vec![
-        (None, "Lints", String::new()),
+        (None, "Lints".to_string(), String::new()),
         (
             Some(SettingOption::LintsEnabled),
-            "Enabled",
+            "Enabled".to_string(),
             if app.config.lint_enabled() {
                 "ON"
             } else {
@@ -1022,7 +1154,7 @@ fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow>
         ),
         (
             Some(SettingOption::LintOnDiscovery),
-            "Lint on discovery",
+            "Lint on discovery".to_string(),
             if config.lint.on_discovery.is_immediate() {
                 "ON"
             } else {
@@ -1032,17 +1164,17 @@ fn lint_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow>
         ),
         (
             Some(SettingOption::LintProjects),
-            "Projects",
+            "Projects".to_string(),
             format_lint_projects(config),
         ),
         (
             Some(SettingOption::LintCommands),
-            "Commands",
+            "Commands".to_string(),
             format_lint_commands(config),
         ),
         (
             Some(SettingOption::LintCacheSize),
-            "Cache size",
+            "Cache size".to_string(),
             format_lint_cache_size(config),
         ),
     ]
@@ -1189,16 +1321,23 @@ fn framework_settings_rows(app: &App, rows: &[SettingsUiRow]) -> Vec<FrameworkSe
     let mut framework_rows = Vec::with_capacity(rows.len());
     for (setting, label, value) in rows {
         let Some(setting) = *setting else {
-            framework_rows.push(FrameworkSettingsRow::section(*label));
+            framework_rows.push(FrameworkSettingsRow::section(label.clone()));
             continue;
         };
         let mut row = if is_toggle_setting(Some(setting)) {
-            FrameworkSettingsRow::toggle(selection_index, *label, value == "ON")
-        } else if setting == SettingOption::CiRunCount {
-            FrameworkSettingsRow::stepper(selection_index, *label, value.clone())
+            FrameworkSettingsRow::toggle(selection_index, label.clone(), value == "ON")
+        } else if is_stepper_setting(setting) {
+            FrameworkSettingsRow::stepper(selection_index, label.clone(), value.clone())
         } else {
-            FrameworkSettingsRow::value(selection_index, *label, value.clone())
+            FrameworkSettingsRow::value(selection_index, label.clone(), value.clone())
         };
+        if matches!(
+            setting,
+            SettingOption::LightTheme | SettingOption::DarkTheme
+        ) && !registry_contains(value)
+        {
+            row = row.with_suffix("  Not found");
+        }
         if setting == SettingOption::NavigationKeys
             && selected == Some(SettingOption::NavigationKeys)
             && !settings_is_editing(app)
@@ -1226,6 +1365,16 @@ const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
                 | SettingOption::LintsEnabled
                 | SettingOption::LintOnDiscovery,
         )
+    )
+}
+
+const fn is_stepper_setting(setting: SettingOption) -> bool {
+    matches!(
+        setting,
+        SettingOption::CiRunCount
+            | SettingOption::AppearanceMode
+            | SettingOption::LightTheme
+            | SettingOption::DarkTheme,
     )
 }
 
@@ -1306,6 +1455,21 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             let next = !app.config.current().lint.on_discovery.is_immediate();
             let _ = save_app_setting_with_toast(app, |table| set_lint_on_discovery(table, next));
         },
+        Some(SettingOption::AppearanceMode) => {
+            let step = if key == KeyCode::Right { 1 } else { -1 };
+            let next = cycle_appearance_mode(&app.config.current().appearance.mode, step);
+            let _ = save_app_setting_with_toast(app, |table| set_appearance_mode(table, &next));
+        },
+        Some(SettingOption::LightTheme) => cycle_appearance_theme_setting(
+            app,
+            Appearance::Light,
+            if key == KeyCode::Right { 1 } else { -1 },
+        ),
+        Some(SettingOption::DarkTheme) => cycle_appearance_theme_setting(
+            app,
+            Appearance::Dark,
+            if key == KeyCode::Right { 1 } else { -1 },
+        ),
         Some(
             SettingOption::Editor
             | SettingOption::TerminalCommand
@@ -1325,6 +1489,20 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
         )
         | None => {},
     }
+}
+
+fn cycle_appearance_theme_setting(app: &mut App, appearance: Appearance, step: i32) {
+    let current = match appearance {
+        Appearance::Light => app.config.current().appearance.light_theme.clone(),
+        Appearance::Dark => app.config.current().appearance.dark_theme.clone(),
+    };
+    let Some(next) = cycle_theme(&current, appearance, step) else {
+        return;
+    };
+    let _ = save_app_setting_with_toast(app, |table| match appearance {
+        Appearance::Light => set_appearance_light_theme(table, &next),
+        Appearance::Dark => set_appearance_dark_theme(table, &next),
+    });
 }
 
 fn finish_settings_edit_with_error(app: &mut App, error: impl Into<String>) {
@@ -1407,6 +1585,16 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
                 app.config.current().tui.other_primary_branches.join(", "),
             );
         },
+        Some(SettingOption::AppearanceMode) => {
+            let next = cycle_appearance_mode(&app.config.current().appearance.mode, 1);
+            let _ = save_app_setting_with_toast(app, |table| set_appearance_mode(table, &next));
+        },
+        Some(SettingOption::LightTheme) => {
+            cycle_appearance_theme_setting(app, Appearance::Light, 1);
+        },
+        Some(SettingOption::DarkTheme) => {
+            cycle_appearance_theme_setting(app, Appearance::Dark, 1);
+        },
         None => {},
     }
 }
@@ -1473,7 +1661,10 @@ fn apply_general_settings_edit(
         | SettingOption::LintOnDiscovery
         | SettingOption::LintProjects
         | SettingOption::LintCommands
-        | SettingOption::LintCacheSize => return Ok(false),
+        | SettingOption::LintCacheSize
+        | SettingOption::AppearanceMode
+        | SettingOption::LightTheme
+        | SettingOption::DarkTheme => return Ok(false),
         SettingOption::StatusToastVisibleSecs => {
             if !save_toast_number_setting(
                 app,
@@ -1518,29 +1709,30 @@ fn apply_general_settings_edit(
                 return Ok(true);
             }
         },
-        SettingOption::CpuPollMs => {
-            if !save_u32_setting(app, value, |table, poll_ms| {
-                set_cpu_poll_ms(table, i64::from(poll_ms))
-            }) {
-                return Ok(true);
-            }
-        },
-        SettingOption::CpuGreenMaxPercent => {
-            if !save_u32_setting(app, value, |table, percent| {
-                set_cpu_green_max(table, i64::from(bounded_u8_from_u32(percent.min(100))))
-            }) {
-                return Ok(true);
-            }
-        },
-        SettingOption::CpuYellowMaxPercent => {
-            if !save_u32_setting(app, value, |table, percent| {
-                set_cpu_yellow_max(table, i64::from(bounded_u8_from_u32(percent.min(100))))
-            }) {
+        SettingOption::CpuPollMs
+        | SettingOption::CpuGreenMaxPercent
+        | SettingOption::CpuYellowMaxPercent => {
+            if !apply_cpu_settings_edit(app, setting, value) {
                 return Ok(true);
             }
         },
     }
     Ok(true)
+}
+
+fn apply_cpu_settings_edit(app: &mut App, setting: SettingOption, value: &str) -> bool {
+    match setting {
+        SettingOption::CpuPollMs => save_u32_setting(app, value, |table, poll_ms| {
+            set_cpu_poll_ms(table, i64::from(poll_ms))
+        }),
+        SettingOption::CpuGreenMaxPercent => save_u32_setting(app, value, |table, percent| {
+            set_cpu_green_max(table, i64::from(bounded_u8_from_u32(percent.min(100))))
+        }),
+        SettingOption::CpuYellowMaxPercent => save_u32_setting(app, value, |table, percent| {
+            set_cpu_yellow_max(table, i64::from(bounded_u8_from_u32(percent.min(100))))
+        }),
+        _ => true,
+    }
 }
 
 fn apply_lint_settings_edit(app: &mut App, setting: SettingOption, value: &str) -> bool {
@@ -1603,17 +1795,17 @@ mod tests {
 
     #[test]
     fn setting_selection_ignores_section_headers() {
-        let rows = vec![
-            (None, "General", String::new()),
+        let rows: Vec<SettingsUiRow> = vec![
+            (None, "General".to_string(), String::new()),
             (
                 Some(SettingOption::InvertScroll),
-                "Invert scroll",
+                "Invert scroll".to_string(),
                 "ON".to_string(),
             ),
-            (None, "Toasts", String::new()),
+            (None, "Toasts".to_string(), String::new()),
             (
                 Some(SettingOption::StatusToastVisibleSecs),
-                "Status flash secs",
+                "Status flash secs".to_string(),
                 "5".to_string(),
             ),
         ];
