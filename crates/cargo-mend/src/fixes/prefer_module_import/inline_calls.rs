@@ -128,7 +128,7 @@ pub(super) fn build_inline_call_findings_and_fixes(
 
         findings.push(Finding {
             severity: Severity::Warning,
-            code: DiagnosticCode::PreferModuleImport,
+            diagnostic_code: DiagnosticCode::PreferModuleImport,
             path: display_path.clone(),
             line: candidate.full_span_start.line,
             column: candidate.full_span_start.column + 1,

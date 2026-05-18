@@ -36,6 +36,10 @@ use crate::reporting::Report;
 use crate::selection::CargoCheckPlan;
 use crate::selection::Selection;
 
+// binary names
+pub(crate) const CARGO_BIN: &str = "cargo";
+pub(crate) const RUSTC_BIN: &str = "rustc";
+
 // cargo cli flags
 pub(crate) const CARGO_FLAG_ALL_TARGETS: &str = "--all-targets";
 pub(crate) const CARGO_FLAG_ALLOW_DIRTY: &str = "--allow-dirty";
@@ -63,7 +67,6 @@ pub(crate) const CARGO_WARNING_SUMMARY_TOKEN_GENERATED: &str = " generated ";
 pub(crate) const CARGO_WARNING_SUMMARY_TOKEN_TO_APPLY: &str = "to apply ";
 
 // cargo subcommands
-pub(crate) const CARGO_BIN: &str = "cargo";
 pub(crate) const CARGO_SUBCOMMAND_CHECK: &str = "check";
 pub(crate) const CARGO_SUBCOMMAND_FIX: &str = "fix";
 pub(crate) const CARGO_SUBCOMMAND_MEND: &str = "mend";

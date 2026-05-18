@@ -71,7 +71,7 @@ pub(super) fn process_occurrence(
 
     findings.push(Finding {
         severity: Severity::Warning,
-        code: DiagnosticCode::InlinePathQualifiedType,
+        diagnostic_code: DiagnosticCode::InlinePathQualifiedType,
         path: ctx.display_path.to_string(),
         line: occ.span_start.line,
         column: occ.span_start.column + 1,

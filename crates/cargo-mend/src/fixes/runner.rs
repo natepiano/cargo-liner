@@ -441,7 +441,7 @@ impl<'a> MendRunner<'a> {
                 &a.path,
                 a.line,
                 a.column,
-                &a.code,
+                &a.diagnostic_code,
                 &a.item,
                 &a.message,
                 &a.suggestion,
@@ -451,7 +451,7 @@ impl<'a> MendRunner<'a> {
                     &b.path,
                     b.line,
                     b.column,
-                    &b.code,
+                    &b.diagnostic_code,
                     &b.item,
                     &b.message,
                     &b.suggestion,
@@ -459,7 +459,7 @@ impl<'a> MendRunner<'a> {
         });
         report.findings.dedup_by(|a, b| {
             a.severity == b.severity
-                && a.code == b.code
+                && a.diagnostic_code == b.diagnostic_code
                 && a.path == b.path
                 && a.line == b.line
                 && a.column == b.column
@@ -469,7 +469,10 @@ impl<'a> MendRunner<'a> {
         });
         // Filter out disabled diagnostics
         report.findings.retain(|f| {
-            self.loaded_config.diagnostics_config.is_enabled(f.code) == DiagnosticStatus::Enabled
+            self.loaded_config
+                .diagnostics_config
+                .is_enabled(f.diagnostic_code)
+                == DiagnosticStatus::Enabled
         });
         report.refresh_summary();
         Ok(result)

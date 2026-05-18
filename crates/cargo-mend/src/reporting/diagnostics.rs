@@ -197,20 +197,20 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Finding {
-    pub severity:      Severity,
-    pub code:          DiagnosticCode,
-    pub path:          String,
-    pub line:          usize,
-    pub column:        usize,
-    pub highlight_len: usize,
-    pub source_line:   String,
-    pub item:          Option<String>,
-    pub message:       String,
-    pub suggestion:    Option<String>,
+    pub severity:        Severity,
+    pub diagnostic_code: DiagnosticCode,
+    pub path:            String,
+    pub line:            usize,
+    pub column:          usize,
+    pub highlight_len:   usize,
+    pub source_line:     String,
+    pub item:            Option<String>,
+    pub message:         String,
+    pub suggestion:      Option<String>,
     #[serde(default)]
-    pub fixability:    FixSupport,
+    pub fixability:      FixSupport,
     #[serde(default)]
-    pub related:       Option<String>,
+    pub related:         Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -334,18 +334,20 @@ impl Report {
 
 pub(crate) fn effective_fixability(finding: &Finding) -> FixSupport {
     if matches!(finding.fixability, FixSupport::None) {
-        diagnostic_spec(finding.code).fixability
+        diagnostic_spec(finding.diagnostic_code).fixability
     } else {
         finding.fixability
     }
 }
 
 pub(crate) fn finding_headline(finding: &Finding) -> String {
-    diagnostic_spec(finding.code).headline.to_string()
+    diagnostic_spec(finding.diagnostic_code)
+        .headline
+        .to_string()
 }
 
 pub(crate) fn detail_reasons(finding: &Finding) -> Vec<String> {
-    match diagnostic_spec(finding.code).detail_mode {
+    match diagnostic_spec(finding.diagnostic_code).detail_mode {
         DetailMode::None => Vec::new(),
         DetailMode::MessageRelatedAndFix => {
             let mut reasons = Vec::new();
@@ -364,7 +366,7 @@ pub(crate) fn detail_reasons(finding: &Finding) -> Vec<String> {
 }
 
 pub(crate) fn inline_help_text(finding: &Finding) -> Option<&'static str> {
-    diagnostic_spec(finding.code).inline_help
+    diagnostic_spec(finding.diagnostic_code).inline_help
 }
 
 pub(crate) fn custom_inline_help_text(finding: &Finding) -> Option<&str> {
@@ -374,6 +376,6 @@ pub(crate) fn custom_inline_help_text(finding: &Finding) -> Option<&str> {
 pub(crate) fn finding_help_url(finding: &Finding) -> String {
     format!(
         "https://github.com/natepiano/cargo-mend#{}",
-        diagnostic_spec(finding.code).help_anchor
+        diagnostic_spec(finding.diagnostic_code).help_anchor
     )
 }

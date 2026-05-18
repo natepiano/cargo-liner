@@ -10,3 +10,6 @@ pub(super) const HINT_FIXABLE_WITH_FIX: &str =
     "this warning is auto-fixable with `cargo mend --fix`";
 pub(super) const HINT_FIXABLE_WITH_FIX_PUB_USE: &str =
     "this warning is auto-fixable with `cargo mend --fix-pub-use`";
+
+// summary block
+pub(super) const SUMMARY_LABEL: &str = "summary:";

@@ -12,6 +12,7 @@ use rustc_driver::Compilation;
 use rustc_interface::interface::Compiler;
 use rustc_middle::ty::TyCtxt;
 
+use super::build::RUSTC_BIN;
 use super::settings::DriverSettings;
 use super::visibility;
 use crate::reporting::EXIT_CODE_ERROR;
@@ -62,7 +63,7 @@ fn driver_main_impl() -> Result<ExitCode> {
         return passthrough_to_rustc(&wrapper_args);
     };
 
-    let rustc_args: Vec<String> = std::iter::once("rustc".to_string())
+    let rustc_args: Vec<String> = std::iter::once(RUSTC_BIN.to_string())
         .chain(
             wrapper_args
                 .into_iter()

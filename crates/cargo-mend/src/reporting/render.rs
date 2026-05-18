@@ -11,6 +11,7 @@ use super::constants::CARGO_MEND_FIX;
 use super::constants::CARGO_MEND_FIX_ALL;
 use super::constants::CARGO_MEND_FIX_COMPILER;
 use super::constants::CARGO_MEND_FIX_PUB_USE;
+use super::constants::SUMMARY_LABEL;
 use super::diagnostics;
 use super::diagnostics::Finding;
 use super::diagnostics::Report;
@@ -267,7 +268,7 @@ fn summary_line(report: &Report, compiler_stats: &CompilerStats, color_mode: Col
     }
 
     if rows.is_empty() {
-        return format!("{} no issues found", dim("summary:", color_mode));
+        return format!("{} no issues found", dim(SUMMARY_LABEL, color_mode));
     }
 
     // When fixables span multiple flag categories, append a `--fix-all` entry
@@ -294,8 +295,8 @@ fn render_summary_rows(rows: &[SummaryRow], color_mode: ColorMode) -> String {
         .map(|f| digit_count(f.count))
         .max()
         .unwrap_or(0);
-    let prefix = dim("summary:", color_mode);
-    let indent = " ".repeat("summary:".len());
+    let prefix = dim(SUMMARY_LABEL, color_mode);
+    let indent = " ".repeat(SUMMARY_LABEL.len());
     // Continuation indent fills the count + description columns so the dash
     // aligns with the inline fixable on the parent row.
     let cont_indent = format!("{indent} {:>count_width$} {:<desc_width$}", "", "");
@@ -416,18 +417,18 @@ mod tests {
                 ..ReportSummary::default()
             },
             findings: vec![Finding {
-                severity:      Severity::Warning,
-                code:          DiagnosticCode::NarrowToPubCrate,
-                path:          "src/lib.rs".to_string(),
-                line:          1,
-                column:        1,
-                highlight_len: 3,
-                source_line:   "pub fn example() {}".to_string(),
-                item:          Some("example".to_string()),
-                message:       "example warning".to_string(),
-                suggestion:    Some("pub(crate) fn example() {}".to_string()),
-                fixability:    FixSupport::NarrowToPubCrate,
-                related:       None,
+                severity:        Severity::Warning,
+                diagnostic_code: DiagnosticCode::NarrowToPubCrate,
+                path:            "src/lib.rs".to_string(),
+                line:            1,
+                column:          1,
+                highlight_len:   3,
+                source_line:     "pub fn example() {}".to_string(),
+                item:            Some("example".to_string()),
+                message:         "example warning".to_string(),
+                suggestion:      Some("pub(crate) fn example() {}".to_string()),
+                fixability:      FixSupport::NarrowToPubCrate,
+                related:         None,
             }],
             ..Report::default()
         }
@@ -522,18 +523,18 @@ mod tests {
                 ..ReportSummary::default()
             },
             findings: vec![Finding {
-                severity:      Severity::Warning,
-                code:          DiagnosticCode::InternalParentPubUseFacade,
-                path:          "src/lib.rs".to_string(),
-                line:          1,
-                column:        1,
-                highlight_len: 3,
-                source_line:   "pub use child::Foo;".to_string(),
-                item:          None,
-                message:       "example".to_string(),
-                suggestion:    None,
-                fixability:    FixSupport::PubUse,
-                related:       None,
+                severity:        Severity::Warning,
+                diagnostic_code: DiagnosticCode::InternalParentPubUseFacade,
+                path:            "src/lib.rs".to_string(),
+                line:            1,
+                column:          1,
+                highlight_len:   3,
+                source_line:     "pub use child::Foo;".to_string(),
+                item:            None,
+                message:         "example".to_string(),
+                suggestion:      None,
+                fixability:      FixSupport::PubUse,
+                related:         None,
             }],
             ..Report::default()
         }
@@ -547,18 +548,18 @@ mod tests {
                 ..ReportSummary::default()
             },
             findings: vec![Finding {
-                severity:      Severity::Error,
-                code:          DiagnosticCode::ForbiddenPubCrate,
-                path:          "src/lib.rs".to_string(),
-                line:          1,
-                column:        1,
-                highlight_len: 3,
-                source_line:   "pub(crate) fn x() {}".to_string(),
-                item:          Some("x".to_string()),
-                message:       "forbidden".to_string(),
-                suggestion:    None,
-                fixability:    FixSupport::None,
-                related:       None,
+                severity:        Severity::Error,
+                diagnostic_code: DiagnosticCode::ForbiddenPubCrate,
+                path:            "src/lib.rs".to_string(),
+                line:            1,
+                column:          1,
+                highlight_len:   3,
+                source_line:     "pub(crate) fn x() {}".to_string(),
+                item:            Some("x".to_string()),
+                message:         "forbidden".to_string(),
+                suggestion:      None,
+                fixability:      FixSupport::None,
+                related:         None,
             }],
             ..Report::default()
         }

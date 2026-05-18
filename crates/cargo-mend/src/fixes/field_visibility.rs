@@ -19,7 +19,7 @@ pub(crate) fn scan_from_report(report: &Report) -> Result<FieldVisibilityFixScan
     let root = Path::new(&report.root);
     let mut fixes = Vec::new();
     for finding in &report.findings {
-        if finding.code != DiagnosticCode::FieldVisibilityWiderThanType {
+        if finding.diagnostic_code != DiagnosticCode::FieldVisibilityWiderThanType {
             continue;
         }
         let Some(replacement_vis) =

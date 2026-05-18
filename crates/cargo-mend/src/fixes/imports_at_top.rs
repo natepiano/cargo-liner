@@ -336,7 +336,7 @@ impl InBodyUseFinder<'_> {
             .to_string();
         self.findings.push(Finding {
             severity: Severity::Warning,
-            code: DiagnosticCode::ImportsAtTop,
+            diagnostic_code: DiagnosticCode::ImportsAtTop,
             path: self.display_path.to_string(),
             line: use_span.start().line,
             column: use_span.start().column + 1,

@@ -119,7 +119,7 @@ fn check_field(
         highlight_span,
         FindingParams {
             severity:                Severity::Warning,
-            code:                    DiagnosticCode::FieldVisibilityWiderThanType,
+            diagnostic_code:         DiagnosticCode::FieldVisibilityWiderThanType,
             item:                    Some(format!("field {field_name}")),
             message:                 format_message(&field_vis_text, &type_vis_text),
             suggestion:              Some(suggested_replacement(&type_vis_text)),

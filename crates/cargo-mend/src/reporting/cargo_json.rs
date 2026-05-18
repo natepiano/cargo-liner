@@ -165,7 +165,7 @@ fn rustc_diagnostic(finding: &Finding, span: RustcSpan) -> RustcDiagnostic {
         message: diagnostics::finding_headline(finding),
         spans: vec![span],
         code: RustcCode {
-            code:        finding.code.as_str().to_string(),
+            code:        finding.diagnostic_code.as_str().to_string(),
             explanation: None,
         },
     }

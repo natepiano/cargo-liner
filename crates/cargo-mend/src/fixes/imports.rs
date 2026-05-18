@@ -37,14 +37,14 @@ pub(crate) struct ImportScan {
 
 #[derive(Debug, Clone)]
 struct ShortenImportFact {
-    code:          DiagnosticCode,
-    message:       &'static str,
-    path:          String,
-    line:          usize,
-    column:        usize,
-    highlight_len: usize,
-    source_line:   String,
-    replacement:   String,
+    diagnostic_code: DiagnosticCode,
+    message:         &'static str,
+    path:            String,
+    line:            usize,
+    column:          usize,
+    highlight_len:   usize,
+    source_line:     String,
+    replacement:     String,
 }
 
 /// Identifies a group of `UseFix`es that belong to a single "import + its
@@ -150,18 +150,18 @@ impl ShortenImportFact {
     fn into_finding(self) -> Finding {
         let replacement = self.replacement;
         Finding {
-            severity:      Severity::Warning,
-            code:          self.code,
-            path:          self.path,
-            line:          self.line,
-            column:        self.column,
-            highlight_len: self.highlight_len,
-            source_line:   self.source_line,
-            item:          None,
-            message:       self.message.to_string(),
-            suggestion:    Some(format!("consider using: `{replacement}`")),
-            fixability:    FixSupport::ShortenImport,
-            related:       None,
+            severity:        Severity::Warning,
+            diagnostic_code: self.diagnostic_code,
+            path:            self.path,
+            line:            self.line,
+            column:          self.column,
+            highlight_len:   self.highlight_len,
+            source_line:     self.source_line,
+            item:            None,
+            message:         self.message.to_string(),
+            suggestion:      Some(format!("consider using: `{replacement}`")),
+            fixability:      FixSupport::ShortenImport,
+            related:         None,
         }
     }
 }
@@ -261,13 +261,13 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
             &a.shorten_import_fact.path,
             a.shorten_import_fact.line,
             a.shorten_import_fact.column,
-            a.shorten_import_fact.code,
+            a.shorten_import_fact.diagnostic_code,
         )
             .cmp(&(
                 &b.shorten_import_fact.path,
                 b.shorten_import_fact.line,
                 b.shorten_import_fact.column,
-                b.shorten_import_fact.code,
+                b.shorten_import_fact.diagnostic_code,
             ))
     });
     findings.dedup_by(|a, b| {
@@ -344,7 +344,7 @@ impl Visit<'_> for UseVisitor<'_> {
                 .replace('\\', "/");
             self.findings.push(ImportFinding {
                 shorten_import_fact: ShortenImportFact {
-                    code: candidate.code,
+                    diagnostic_code: candidate.diagnostic_code,
                     message: candidate.message,
                     path: display_path,
                     line: start.line,
@@ -366,10 +366,10 @@ impl Visit<'_> for UseVisitor<'_> {
 }
 
 struct ImportCandidate {
-    original:    String,
-    replacement: String,
-    code:        DiagnosticCode,
-    message:     &'static str,
+    original:        String,
+    replacement:     String,
+    diagnostic_code: DiagnosticCode,
+    message:         &'static str,
 }
 
 fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<ImportCandidate> {
@@ -402,10 +402,10 @@ fn analyze_use_tree(current_module_path: &[String], tree: &UseTree) -> Option<Im
     }
 
     Some(ImportCandidate {
-        original:    import.original,
-        replacement: relative,
-        code:        DiagnosticCode::ShortenLocalCrateImport,
-        message:     "it stays within the same local module boundary",
+        original:        import.original,
+        replacement:     relative,
+        diagnostic_code: DiagnosticCode::ShortenLocalCrateImport,
+        message:         "it stays within the same local module boundary",
     })
 }
 
@@ -433,7 +433,7 @@ fn analyze_deep_super(current_module_path: &[String], tree: &UseTree) -> Option<
     Some(ImportCandidate {
         original: import.original,
         replacement,
-        code: DiagnosticCode::ReplaceDeepSuperImport,
+        diagnostic_code: DiagnosticCode::ReplaceDeepSuperImport,
         message: "deep `super::` chain is hard to follow — use a named `crate::` path",
     })
 }

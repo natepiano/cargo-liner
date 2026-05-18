@@ -45,7 +45,7 @@ pub(super) fn visit_item(
             item.span,
             FindingParams {
                 severity:                Severity::Warning,
-                code:                    DiagnosticCode::WildcardParentPubUse,
+                diagnostic_code:         DiagnosticCode::WildcardParentPubUse,
                 item:                    None,
                 message:                 String::new(),
                 suggestion:              None,

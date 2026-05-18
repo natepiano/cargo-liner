@@ -106,7 +106,7 @@ fn record_forbidden_pub_crate(
         item.highlight_span,
         FindingParams {
             severity:                Severity::Error,
-            code:                    DiagnosticCode::ForbiddenPubCrate,
+            diagnostic_code:         DiagnosticCode::ForbiddenPubCrate,
             item:                    None,
             message:                 "use of `pub(crate)` is forbidden by policy".to_string(),
             suggestion:              Some(
@@ -135,7 +135,7 @@ fn record_forbidden_pub_in_crate(
         item.highlight_span,
         FindingParams {
             severity:                Severity::Error,
-            code:                    DiagnosticCode::ForbiddenPubInCrate,
+            diagnostic_code:         DiagnosticCode::ForbiddenPubInCrate,
             item:                    None,
             message:                 "use of `pub(in crate::...)` is forbidden by policy"
                 .to_string(),
@@ -177,7 +177,7 @@ fn record_review_pub_mod(
         item.highlight_span,
         FindingParams {
             severity:                Severity::Error,
-            code:                    DiagnosticCode::ReviewPubMod,
+            diagnostic_code:         DiagnosticCode::ReviewPubMod,
             item:                    item.name.map(str::to_owned),
             message:                 "`pub mod` requires explicit review or allowlisting"
                 .to_string(),
@@ -224,7 +224,7 @@ fn maybe_record_narrow_to_pub_crate(
         item.highlight_span,
         FindingParams {
             severity:                Severity::Warning,
-            code:                    DiagnosticCode::NarrowToPubCrate,
+            diagnostic_code:         DiagnosticCode::NarrowToPubCrate,
             item:                    Some(format!("{kind_label} {name}")),
             message:                 String::from(
                 "item is not re-exported by the crate root — use `pub(crate)`",
@@ -256,7 +256,7 @@ fn maybe_record_narrow_to_pub_crate_nested(
         item.highlight_span,
         FindingParams {
             severity:                Severity::Warning,
-            code:                    DiagnosticCode::NarrowToPubCrate,
+            diagnostic_code:         DiagnosticCode::NarrowToPubCrate,
             item:                    Some(format!("{kind_label} {name}")),
             message:                 String::from(
                 "parent facade caps reach at `pub(crate)` — narrow source to match",
@@ -325,7 +325,7 @@ fn maybe_record_suspicious_pub(
                 status.parent_line,
                 FindingParams {
                     severity: Severity::Warning,
-                    code: DiagnosticCode::InternalParentPubUseFacade,
+                    diagnostic_code: DiagnosticCode::InternalParentPubUseFacade,
                     item: input.name.map(|name| format!("pub use {name}")),
                     message: String::from(
                         "this `pub use` is used inside its parent module subtree",
@@ -352,7 +352,7 @@ fn maybe_record_suspicious_pub(
                 input.highlight_span,
                 FindingParams {
                     severity: Severity::Warning,
-                    code: DiagnosticCode::SuspiciousPub,
+                    diagnostic_code: DiagnosticCode::SuspiciousPub,
                     item: input.name.map(|name| format!("{kind_label} {name}")),
                     message: policy::suspicious_pub_note(input.crate_kind, kind_label),
                     suggestion: None,

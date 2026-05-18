@@ -26,8 +26,11 @@ use crate::reporting::Severity;
 use crate::rust_syntax::MODULE_PATH_SEPARATOR;
 use crate::selection::Selection;
 
+// file extensions
+pub(crate) const JSON_FILE_EXTENSION: &str = "json";
+
 // findings
-pub(crate) const FINDINGS_SCHEMA_VERSION: u32 = 13;
+pub(crate) const FINDINGS_SCHEMA_VERSION: u32 = 14;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct StoredReport {
@@ -62,7 +65,7 @@ pub(super) struct UseSite {
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct StoredFinding {
     pub severity:                Severity,
-    pub code:                    DiagnosticCode,
+    pub diagnostic_code:         DiagnosticCode,
     pub path:                    String,
     pub line:                    usize,
     pub column:                  usize,
@@ -140,7 +143,7 @@ pub(super) fn load_report(
         )
     })? {
         let entry = entry?;
-        if entry.path().extension().and_then(OsStr::to_str) != Some("json") {
+        if entry.path().extension().and_then(OsStr::to_str) != Some(JSON_FILE_EXTENSION) {
             continue;
         }
 
@@ -189,23 +192,7 @@ pub(super) fn load_report(
         );
     }
 
-    findings.sort_by(|a, b| {
-        (
-            a.severity, &a.path, a.line, a.column, &a.code, &a.item, &a.message,
-        )
-            .cmp(&(
-                b.severity, &b.path, b.line, b.column, &b.code, &b.item, &b.message,
-            ))
-    });
-    findings.dedup_by(|a, b| {
-        a.severity == b.severity
-            && a.code == b.code
-            && a.path == b.path
-            && a.line == b.line
-            && a.column == b.column
-            && a.message == b.message
-            && a.item == b.item
-    });
+    sort_and_dedup_findings(&mut findings);
 
     // Dedup pub-use fix facts the same way: with bin + bin-test now
     // writing separate cache files, the same fact can be emitted twice
@@ -247,6 +234,38 @@ pub(super) fn load_report(
             compiler_warnings: CompilerWarningFacts::None,
         },
     })
+}
+
+fn sort_and_dedup_findings(findings: &mut Vec<Finding>) {
+    findings.sort_by(|a, b| {
+        (
+            a.severity,
+            &a.path,
+            a.line,
+            a.column,
+            &a.diagnostic_code,
+            &a.item,
+            &a.message,
+        )
+            .cmp(&(
+                b.severity,
+                &b.path,
+                b.line,
+                b.column,
+                &b.diagnostic_code,
+                &b.item,
+                &b.message,
+            ))
+    });
+    findings.dedup_by(|a, b| {
+        a.severity == b.severity
+            && a.diagnostic_code == b.diagnostic_code
+            && a.path == b.path
+            && a.line == b.line
+            && a.column == b.column
+            && a.message == b.message
+            && a.item == b.item
+    });
 }
 
 fn stored_report_matches_selection(
@@ -312,18 +331,18 @@ fn extend_report_from_stored(
 ) {
     for finding in stored.findings {
         findings.push(Finding {
-            severity:      finding.severity,
-            code:          finding.code,
-            path:          relativize_path(&finding.path, analysis_root),
-            line:          finding.line,
-            column:        finding.column,
-            highlight_len: finding.highlight_len,
-            source_line:   finding.source_line,
-            item:          finding.item,
-            message:       finding.message,
-            suggestion:    finding.suggestion,
-            fixability:    finding.fixability,
-            related:       finding
+            severity:        finding.severity,
+            diagnostic_code: finding.diagnostic_code,
+            path:            relativize_path(&finding.path, analysis_root),
+            line:            finding.line,
+            column:          finding.column,
+            highlight_len:   finding.highlight_len,
+            source_line:     finding.source_line,
+            item:            finding.item,
+            message:         finding.message,
+            suggestion:      finding.suggestion,
+            fixability:      finding.fixability,
+            related:         finding
                 .related
                 .map(|related| relativize_path(&related, analysis_root)),
         });
@@ -408,7 +427,7 @@ const fn requires_cross_compilation_agreement(code: DiagnosticCode) -> bool {
 
 fn finding_intersection_key(finding: &StoredFinding) -> (DiagnosticCode, String, usize, usize) {
     (
-        finding.code,
+        finding.diagnostic_code,
         finding.path.clone(),
         finding.line,
         finding.column,
@@ -443,7 +462,7 @@ fn apply_cross_compilation_intersection(reports: &mut [StoredReport]) {
             let mut seen_in_this_report: BTreeSet<(DiagnosticCode, String, usize, usize)> =
                 BTreeSet::new();
             for finding in &reports[idx].findings {
-                if requires_cross_compilation_agreement(finding.code) {
+                if requires_cross_compilation_agreement(finding.diagnostic_code) {
                     let key = finding_intersection_key(finding);
                     if seen_in_this_report.insert(key.clone()) {
                         *emission_count.entry(key).or_default() += 1;
@@ -459,7 +478,7 @@ fn apply_cross_compilation_intersection(reports: &mut [StoredReport]) {
         // visibility — typically lib-only views that strip cfg(test).)
         for &idx in &indices {
             reports[idx].findings.retain(|finding| {
-                if !requires_cross_compilation_agreement(finding.code) {
+                if !requires_cross_compilation_agreement(finding.diagnostic_code) {
                     return true;
                 }
                 let key = finding_intersection_key(finding);

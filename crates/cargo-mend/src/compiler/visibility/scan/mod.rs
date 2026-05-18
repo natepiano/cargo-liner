@@ -74,7 +74,7 @@ pub(super) struct SuspiciousPubInput<'a> {
 
 pub(super) struct FindingParams {
     pub(super) severity:                Severity,
-    pub(super) code:                    DiagnosticCode,
+    pub(super) diagnostic_code:         DiagnosticCode,
     pub(super) item:                    Option<String>,
     pub(super) message:                 String,
     pub(super) suggestion:              Option<String>,
@@ -170,11 +170,25 @@ pub(super) fn collect_and_store_findings(
     };
     if !sink.findings.is_empty() {
         sink.findings.sort_by(|a, b| {
-            (&a.path, a.line, a.column, &a.code, &a.item, &a.message)
-                .cmp(&(&b.path, b.line, b.column, &b.code, &b.item, &b.message))
+            (
+                &a.path,
+                a.line,
+                a.column,
+                &a.diagnostic_code,
+                &a.item,
+                &a.message,
+            )
+                .cmp(&(
+                    &b.path,
+                    b.line,
+                    b.column,
+                    &b.diagnostic_code,
+                    &b.item,
+                    &b.message,
+                ))
         });
         sink.findings.dedup_by(|a, b| {
-            a.code == b.code
+            a.diagnostic_code == b.diagnostic_code
                 && a.path == b.path
                 && a.line == b.line
                 && a.column == b.column

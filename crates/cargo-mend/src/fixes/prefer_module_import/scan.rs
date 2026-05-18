@@ -330,7 +330,7 @@ fn build_function_finding(
 
     Finding {
         severity: Severity::Warning,
-        code: DiagnosticCode::PreferModuleImport,
+        diagnostic_code: DiagnosticCode::PreferModuleImport,
         path: display_path.to_string(),
         line: function.span_start.line,
         column: function.span_start.column + 1,

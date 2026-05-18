@@ -36,7 +36,7 @@ pub(super) fn build_finding(
     let display = line_display(tcx, file_path, highlight_span)?;
     Ok(StoredFinding {
         severity:                params.severity,
-        code:                    params.code,
+        diagnostic_code:         params.diagnostic_code,
         path:                    file_path.to_string_lossy().into_owned(),
         line:                    display.line,
         column:                  display.column,
@@ -73,7 +73,7 @@ pub(super) fn build_line_finding(
 
     Ok(StoredFinding {
         severity: params.severity,
-        code: params.code,
+        diagnostic_code: params.diagnostic_code,
         path: file_path.to_string_lossy().into_owned(),
         line,
         column,
