@@ -219,13 +219,28 @@ fn render_sections(
     }
 
     if !center_spans.is_empty() {
-        let center_start = total_width.saturating_sub(center_width) / 2;
-        if center_start >= left_width {
+        // Right boundary the center text may not cross. Without a right
+        // region it's the full bar width; with one, it's the column the
+        // right region starts at — so the right region's keys never
+        // paint over center labels.
+        let right_boundary = if right_spans.is_empty() {
+            total_width
+        } else {
+            total_width.saturating_sub(right_width + 1)
+        };
+        // Natural centered start, then shift left as far as needed to
+        // fit before `right_boundary`. If even a left-flush start
+        // overflows, clip the rightmost text — start sits one cell past
+        // nav so labels never overlap nav keys.
+        let centered = total_width.saturating_sub(center_width) / 2;
+        let shifted = centered.min(right_boundary.saturating_sub(center_width));
+        let center_start = shifted.max(left_width);
+        if center_start < right_boundary {
+            let available = right_boundary - center_start;
             let center_area = Rect {
                 x:      area.x + u16::try_from(center_start).unwrap_or(u16::MAX),
                 y:      area.y,
-                width:  u16::try_from((total_width - center_start).min(center_width + 1))
-                    .unwrap_or(u16::MAX),
+                width:  u16::try_from(available.min(center_width + 1)).unwrap_or(u16::MAX),
                 height: 1,
             };
             frame.render_widget(
