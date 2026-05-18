@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -26,6 +27,7 @@ use crate::constants::SCAN_DISK_CONCURRENCY;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::http::HttpClient;
 use crate::project::AbsolutePath;
+use crate::project::FileStamp;
 use crate::project::ManifestFingerprint;
 use crate::project::PackageRecord;
 use crate::project::PublishPolicy;
@@ -389,9 +391,6 @@ fn format_cargo_metadata_error(err: &Error) -> String {
 }
 
 const fn synthetic_fingerprint() -> ManifestFingerprint {
-    use std::collections::BTreeMap;
-
-    use crate::project::FileStamp;
     ManifestFingerprint {
         manifest:       FileStamp {
             content_hash: [0_u8; 32],

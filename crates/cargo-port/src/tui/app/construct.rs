@@ -154,6 +154,7 @@ impl AppBuilder<Channeled> {
     pub(super) fn run_startup(self) -> AppBuilder<Started> {
         let inputs = &self.state.inputs;
         config::set_active_config(&inputs.cfg);
+        tui_pane::ensure_theme_state_installed();
         let config_path = config::config_path();
         let lint_spawn = lint::spawn(&inputs.cfg, inputs.bg_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&inputs.cfg.tui.include_dirs);

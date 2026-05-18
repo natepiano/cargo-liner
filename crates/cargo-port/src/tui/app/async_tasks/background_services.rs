@@ -4,8 +4,11 @@ use std::time::Instant;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::GitRepoPresence;
+use crate::project::Package;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
+use crate::project::RustProject;
+use crate::project::Workspace;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::FetchContext;
@@ -135,10 +138,6 @@ impl App {
 /// Collect publishable workspace members and vendored crates into a flat
 /// `(path, crates.io name)` list for crates.io scheduling.
 fn collect_publishable_children(item: &RootItem, out: &mut Vec<(AbsolutePath, String)>) {
-    use crate::project::Package;
-    use crate::project::RustProject;
-    use crate::project::Workspace;
-
     pub(super) fn push_workspace(ws: &Workspace, out: &mut Vec<(AbsolutePath, String)>) {
         for group in ws.groups() {
             for member in group.members() {

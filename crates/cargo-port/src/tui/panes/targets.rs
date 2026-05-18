@@ -14,7 +14,7 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
-use tui_pane::LABEL_COLOR;
+use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 
 use super::TargetsData;
@@ -148,7 +148,7 @@ fn render_targets_with_data(
         frame,
         area,
         pane.viewport.overflow(),
-        Style::default().fg(LABEL_COLOR),
+        Style::default().fg(label_color()),
     );
     let _ = ctx;
 }

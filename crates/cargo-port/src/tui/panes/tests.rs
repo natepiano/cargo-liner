@@ -1,5 +1,5 @@
 use ratatui::text::Line;
-use tui_pane::LABEL_COLOR;
+use tui_pane::label_color;
 
 use super::CI_COMPACT_DURATION_WIDTH;
 use super::DetailField;
@@ -177,7 +177,7 @@ fn description_lines_use_muted_fallback_when_missing() {
 
     assert_eq!(lines.len(), 1);
     assert_eq!(line_text(&lines[0]), "No description available");
-    assert_eq!(lines[0].spans[0].style.fg, Some(LABEL_COLOR));
+    assert_eq!(lines[0].spans[0].style.fg, Some(label_color()));
 }
 
 #[test]

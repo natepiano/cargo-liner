@@ -10,7 +10,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use tui_pane::LABEL_COLOR;
+use tui_pane::label_color;
 
 use super::pane_impls::OutputPane;
 use crate::tui::pane;
@@ -28,7 +28,7 @@ pub fn render_output_pane_body(
     );
 
     let block = pane::default_pane_chrome()
-        .with_inactive_border(Style::default().fg(LABEL_COLOR))
+        .with_inactive_border(Style::default().fg(label_color()))
         .block(title, pane.focus.is_focused);
 
     let lines: Vec<Line> = ctx

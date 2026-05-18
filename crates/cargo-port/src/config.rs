@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 
+use confique::Config as _;
 use serde::Deserialize;
 use serde::Serialize;
 use toml::Table;
@@ -432,7 +433,6 @@ pub(crate) fn normalize_config(mut config: CargoPortConfig) -> Result<CargoPortC
 
 impl CargoPortConfig {
     pub(crate) fn from_table(table: &Table) -> Result<Self, String> {
-        use confique::Config as _;
         use confique::Layer as _;
 
         let value = Value::Table(table.clone());

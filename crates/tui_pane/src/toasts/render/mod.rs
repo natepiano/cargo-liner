@@ -18,12 +18,42 @@ use super::ToastView;
 use crate::ToastPlacement;
 use crate::ToastSettings;
 
-const ACCENT_COLOR: Color = Color::Cyan;
-const ACTIVE_BORDER_COLOR: Color = Color::Yellow;
-const ERROR_COLOR: Color = Color::Red;
-const LABEL_COLOR: Color = Color::Rgb(150, 190, 180);
-const TITLE_COLOR: Color = Color::Yellow;
-const WARNING_COLOR: Color = Color::Yellow;
+/// Compiled-in palette consumed by toast rendering.
+///
+/// Toasts deliberately do NOT read from the active theme: an error
+/// toast must remain legible even if a user-loaded theme is corrupt
+/// or its contrast is so low the toast would vanish. This palette is
+/// fixed at compile time. The roundtrip test in `mod tests` locks
+/// every field against accidental drift.
+pub(super) struct FallbackToastPalette {
+    /// Spinner color in tracked-item rows.
+    pub accent:         Color,
+    /// Border color when the toast is focused.
+    pub border_focused: Color,
+    /// Border + text color for error toasts.
+    pub error:          Color,
+    /// Border + text color for warning toasts.
+    pub warning:        Color,
+    /// Countdown text, italic action hint, overflow rows.
+    pub label:          Color,
+    /// Running tracked-item duration suffix.
+    pub title:          Color,
+    /// Accent for non-error/non-warning toasts (the regular toast
+    /// border + title color).
+    pub plain_accent:   Color,
+}
+
+pub(super) const fn fallback_toast_palette() -> FallbackToastPalette {
+    FallbackToastPalette {
+        accent:         Color::Cyan,
+        border_focused: Color::Yellow,
+        error:          Color::Red,
+        warning:        Color::Yellow,
+        label:          Color::Rgb(150, 190, 180),
+        title:          Color::Yellow,
+        plain_accent:   Color::White,
+    }
+}
 
 /// Result of rendering toast cards.
 pub struct ToastRenderResult {
@@ -243,6 +273,22 @@ mod tests {
             hitboxes[0].card_rect.height, 4,
             "two tracked rows should render as top border + two rows + bottom border"
         );
+    }
+
+    #[test]
+    fn fallback_toast_palette_is_pinned_to_safe_defaults() {
+        // This test locks the toast palette against accidental drift.
+        // Toasts deliberately do not read from the active theme; a
+        // future refactor that wires them up to a user-loadable
+        // palette must explicitly update these expected values.
+        let p = fallback_toast_palette();
+        assert_eq!(p.accent, Color::Cyan);
+        assert_eq!(p.border_focused, Color::Yellow);
+        assert_eq!(p.error, Color::Red);
+        assert_eq!(p.warning, Color::Yellow);
+        assert_eq!(p.label, Color::Rgb(150, 190, 180));
+        assert_eq!(p.title, Color::Yellow);
+        assert_eq!(p.plain_accent, Color::White);
     }
 
     #[test]

@@ -1,3 +1,6 @@
+use cargo_metadata::PackageId;
+use cargo_metadata::TargetKind;
+use cargo_metadata::semver::Version;
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -86,9 +89,6 @@ fn name_width_with_gutter_reserves_space_before_lint() {
 /// pane becomes tabbable. Keeps the per-test setup out of line when
 /// the test's focus is pane behavior, not metadata plumbing.
 fn seed_single_example_metadata(app: &App, project_path: &AbsolutePath, example_name: &str) {
-    use cargo_metadata::PackageId;
-    use cargo_metadata::TargetKind;
-    use cargo_metadata::semver::Version;
     let pkg_id = PackageId {
         repr: "demo-id".into(),
     };
@@ -257,9 +257,6 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
     // Targets pane data comes exclusively from the `cargo metadata`
     // result. A CargoMetadata arrival with an Example target lights up
     // the pane.
-    use cargo_metadata::PackageId;
-    use cargo_metadata::TargetKind;
-    use cargo_metadata::semver::Version;
 
     let project = make_project(Some("demo"), "/never-real/demo");
     let mut app = make_app(std::slice::from_ref(&project));

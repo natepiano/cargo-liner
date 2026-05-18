@@ -1,6 +1,5 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -12,12 +11,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use unicode_width::UnicodeWidthStr;
 
-use super::ACCENT_COLOR;
-use super::ACTIVE_BORDER_COLOR;
-use super::ERROR_COLOR;
-use super::LABEL_COLOR;
-use super::TITLE_COLOR;
-use super::WARNING_COLOR;
+use super::fallback_toast_palette;
 use super::format;
 use crate::ACTIVITY_SPINNER;
 use crate::toasts::ToastId;
@@ -33,6 +27,7 @@ pub(super) fn render_toast(
     pane_focused: bool,
     focused_toast_id: Option<ToastId>,
 ) -> Rect {
+    let palette = fallback_toast_palette();
     let clear_rect = Rect {
         x:      card.x.saturating_sub(1),
         y:      card.y,
@@ -48,14 +43,14 @@ pub(super) fn render_toast(
     let is_error = toast.style() == ToastStyle::Error;
     let is_warning = toast.style() == ToastStyle::Warning;
     let accent_color = if is_error {
-        ERROR_COLOR
+        palette.error
     } else if is_warning {
-        WARNING_COLOR
+        palette.warning
     } else {
-        Color::White
+        palette.plain_accent
     };
     let border_style = if focused {
-        Style::default().fg(ACTIVE_BORDER_COLOR)
+        Style::default().fg(palette.border_focused)
     } else {
         Style::default().fg(accent_color)
     };
@@ -112,7 +107,7 @@ pub(super) fn render_toast(
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 countdown,
-                Style::default().fg(LABEL_COLOR),
+                Style::default().fg(palette.label),
             ))),
             countdown_rect,
         );
@@ -133,6 +128,7 @@ fn render_toast_body(
     body_area: Rect,
     alloc_interior: u16,
 ) {
+    let palette = fallback_toast_palette();
     let alloc_body = usize::from(alloc_interior);
     let has_action = toast.has_action() && alloc_body >= 2;
     let lines_for_body = if has_action {
@@ -171,7 +167,7 @@ fn render_toast_body(
             Paragraph::new(Line::from(Span::styled(
                 "Enter open",
                 Style::default()
-                    .fg(LABEL_COLOR)
+                    .fg(palette.label)
                     .add_modifier(Modifier::ITALIC),
             ))),
             hint_area,
@@ -216,7 +212,7 @@ fn body_lines_plain(
         .collect::<Vec<_>>();
     if let Some(overflow) = overflow_line {
         let overflow_style = Style::default()
-            .fg(LABEL_COLOR)
+            .fg(fallback_toast_palette().label)
             .add_modifier(Modifier::ITALIC);
         result.push(toast.linger_progress().map_or_else(
             || Line::from(Span::styled(overflow.clone(), overflow_style)),
@@ -248,7 +244,7 @@ pub(super) fn body_lines_tracked(
         .collect::<Vec<_>>();
     if let Some(overflow) = overflow_line {
         let overflow_style = Style::default()
-            .fg(LABEL_COLOR)
+            .fg(fallback_toast_palette().label)
             .add_modifier(Modifier::ITALIC);
         result.push(Line::from(Span::styled(overflow, overflow_style)));
     }
@@ -261,6 +257,7 @@ pub(super) fn tracked_item_line(
     line_width: usize,
 ) -> Line<'static> {
     const SPINNER_SLOT: usize = 4;
+    let palette = fallback_toast_palette();
 
     let label_style = item
         .linger_progress
@@ -284,14 +281,14 @@ pub(super) fn tracked_item_line(
     let padding = line_width.saturating_sub(used);
     let duration_style = item
         .linger_progress
-        .map_or_else(|| Style::default().fg(TITLE_COLOR), format::fade_to_style);
+        .map_or_else(|| Style::default().fg(palette.title), format::fade_to_style);
     Line::from(vec![
         Span::styled(label, label_style),
         Span::raw(" ".repeat(padding)),
         Span::styled(
             spinner_text,
             if is_running {
-                Style::default().fg(ACCENT_COLOR)
+                Style::default().fg(palette.accent)
             } else {
                 Style::default()
             },

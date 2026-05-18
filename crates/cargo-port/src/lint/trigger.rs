@@ -161,6 +161,8 @@ pub(crate) fn classify_event_path(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::path::Path;
+
     use notify::event::DataChange;
     use notify::event::ModifyKind;
     use notify::event::RemoveKind;
@@ -216,7 +218,6 @@ mod tests {
         // watch-set subsystem will classify events that live *above* any
         // registered project, where the `starts_with(project_root)` gate
         // on `classify_cargo_metadata_event_path` would filter them out.
-        use std::path::Path;
 
         let hits = [
             (

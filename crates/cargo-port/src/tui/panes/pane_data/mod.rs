@@ -1,9 +1,11 @@
 mod formatting;
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::path::Component;
 use std::path::Path;
 
+use cargo_metadata::TargetKind;
 use formatting::format_ahead_behind;
 pub use formatting::format_date;
 pub use formatting::format_duration;
@@ -115,15 +117,11 @@ pub enum RunTargetKind {
 }
 
 impl RunTargetKind {
-    pub const BINARY_COLOR: Color = tui_pane::SUCCESS_COLOR;
-    pub const EXAMPLE_COLOR: Color = tui_pane::ACCENT_COLOR;
-    pub const BENCH_COLOR: Color = tui_pane::TARGET_BENCH_COLOR;
-
-    pub const fn color(self) -> Color {
+    pub fn color(self) -> Color {
         match self {
-            Self::Binary => Self::BINARY_COLOR,
-            Self::Example => Self::EXAMPLE_COLOR,
-            Self::Bench => Self::BENCH_COLOR,
+            Self::Binary => tui_pane::success_color(),
+            Self::Example => tui_pane::accent_color(),
+            Self::Bench => tui_pane::target_bench_color(),
         }
     }
 
@@ -692,10 +690,6 @@ impl TargetsData {
     /// `title_name` (cargo's "default run" target); falls back to
     /// `None` if no such bin exists.
     pub fn from_package_record(record: &PackageRecord, title_name: &str) -> Self {
-        use std::collections::HashMap;
-
-        use cargo_metadata::TargetKind;
-
         let manifest_dir = record.manifest_path.as_path().parent();
 
         let mut example_groups: HashMap<String, Vec<String>> = HashMap::new();

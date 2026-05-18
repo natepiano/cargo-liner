@@ -6,10 +6,10 @@ use ratatui::style::Color;
 use sysinfo::CpuRefreshKind;
 use sysinfo::RefreshKind;
 use sysinfo::System;
-use tui_pane::ERROR_COLOR;
-use tui_pane::INACTIVE_BORDER_COLOR;
-use tui_pane::SUCCESS_COLOR;
-use tui_pane::TITLE_COLOR;
+use tui_pane::error_color;
+use tui_pane::inactive_border_color;
+use tui_pane::success_color;
+use tui_pane::title_color;
 
 use crate::config::CpuConfig;
 
@@ -58,11 +58,11 @@ pub(super) enum CpuSeverity {
 }
 
 impl CpuSeverity {
-    pub(super) const fn color(self) -> Color {
+    pub(super) fn color(self) -> Color {
         match self {
-            Self::Green => SUCCESS_COLOR,
-            Self::Yellow => TITLE_COLOR,
-            Self::Red => ERROR_COLOR,
+            Self::Green => success_color(),
+            Self::Yellow => title_color(),
+            Self::Red => error_color(),
         }
     }
 }
@@ -143,7 +143,7 @@ pub(super) const fn severity(percent: u8, config: &CpuConfig) -> CpuSeverity {
     }
 }
 
-pub(super) const fn blank_bar_color() -> Color { INACTIVE_BORDER_COLOR }
+pub(super) fn blank_bar_color() -> Color { inactive_border_color() }
 
 fn cpu_percent(value: f32) -> u8 { rounded_percent(f64::from(value)) }
 

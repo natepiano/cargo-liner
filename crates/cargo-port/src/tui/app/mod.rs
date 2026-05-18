@@ -156,12 +156,14 @@ use super::interaction;
 use super::keymap_ui::KeymapRenderInputs;
 use super::overlays::FinderPane;
 use super::pane::PaneRenderCtx;
+use super::panes;
 use super::panes::BottomRow;
 use super::panes::CpuPane;
 use super::panes::GitPane;
 use super::panes::LangPane;
 use super::panes::OutputPane;
 use super::panes::PackagePane;
+use super::panes::PaneBehavior;
 use super::panes::ProjectListPane;
 use super::panes::TargetsPane;
 pub(super) use super::project_list::ExpandKey;
@@ -215,7 +217,6 @@ impl PaneRegistry for RenderRegistry<'_> {
         &mut self,
         id: Self::PaneId,
     ) -> Option<&mut dyn for<'ctx> tui_pane::Renderable<Self::Ctx<'ctx>>> {
-        use super::panes::PaneId;
         let pane: &mut dyn for<'ctx> tui_pane::Renderable<Self::Ctx<'ctx>> = match id {
             PaneId::Package => self.package,
             PaneId::Lang => self.lang,
@@ -405,7 +406,7 @@ impl App {
         let icon =
             integration::lint_icon_for(status.kind()).frame_at(self.animation_started.elapsed());
         let style = if matches!(status, LintStatus::Running(_)) {
-            ratatui::style::Style::default().fg(tui_pane::ACCENT_COLOR)
+            ratatui::style::Style::default().fg(tui_pane::accent_color())
         } else {
             ratatui::style::Style::default()
         };
@@ -852,8 +853,6 @@ impl App {
     /// app state. Reads Selection (cursor → project), Scan (project
     /// data), Panes (pane content), Inflight (example output).
     pub(super) fn is_pane_tabbable(&self, pane: PaneId) -> bool {
-        use super::panes;
-        use super::panes::PaneBehavior;
         match panes::behavior(pane) {
             PaneBehavior::ProjectList => true,
             PaneBehavior::DetailFields => match pane {
@@ -894,7 +893,6 @@ impl App {
 
     /// All currently-tabbable panes, in tab order.
     pub(super) fn tabbable_panes(&self) -> Vec<PaneId> {
-        use super::panes;
         panes::tab_order(if self.inflight.example_output_is_empty() {
             BottomRow::Diagnostics
         } else {

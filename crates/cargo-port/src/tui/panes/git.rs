@@ -1,20 +1,20 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use tui_pane::COLUMN_HEADER_COLOR;
-use tui_pane::ERROR_COLOR;
-use tui_pane::INACTIVE_BORDER_COLOR;
-use tui_pane::INACTIVE_TITLE_COLOR;
-use tui_pane::LABEL_COLOR;
-use tui_pane::SUCCESS_COLOR;
-use tui_pane::TITLE_COLOR;
 use tui_pane::Viewport;
+use tui_pane::column_header_color;
+use tui_pane::error_color;
+use tui_pane::inactive_border_color;
+use tui_pane::inactive_title_color;
+use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
+use tui_pane::success_color;
+use tui_pane::text_default;
+use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::DetailField;
@@ -280,9 +280,9 @@ fn render_section_overlays(
             continue;
         }
         let title_color = if rule.focused {
-            TITLE_COLOR
+            title_color()
         } else {
-            INACTIVE_TITLE_COLOR
+            inactive_title_color()
         };
         let title_style = Style::default()
             .fg(title_color)
@@ -378,13 +378,13 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         let value = build_field_value(data, *field, is_rate_limit_row);
         let selection = pane::selection_state(pane, i, focus);
         let base_value_style = if matches!(*field, DetailField::VsLocal) && value == IN_SYNC {
-            Style::default().fg(SUCCESS_COLOR)
+            Style::default().fg(success_color())
         } else if matches!(*field, DetailField::VsLocal) && value == NO_REMOTE_SYNC {
-            Style::default().fg(INACTIVE_BORDER_COLOR)
+            Style::default().fg(inactive_border_color())
         } else if *field == DetailField::WorktreeError {
-            Style::default().fg(Color::White).bg(ERROR_COLOR)
+            Style::default().fg(text_default()).bg(error_color())
         } else if is_rate_limit_row && !data.github_status.is_available() {
-            Style::default().fg(ERROR_COLOR)
+            Style::default().fg(error_color())
         } else {
             Style::default()
         };
@@ -432,7 +432,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
                 && let Some(idx) = value.find(" resets ")
             {
                 let (base, reset) = value.split_at(idx);
-                let reset_style = selection.patch(Style::default().fg(INACTIVE_BORDER_COLOR));
+                let reset_style = selection.patch(Style::default().fg(inactive_border_color()));
                 spans.push(Span::styled(base.to_string(), vs));
                 spans.push(Span::styled(reset.to_string(), reset_style));
             } else {
@@ -495,7 +495,7 @@ fn remote_col_widths(remotes: &[RemoteRow]) -> RemoteColWidths {
 
 fn render_remote_header(lines: &mut Vec<Line<'static>>, widths: &RemoteColWidths) {
     let style = Style::default()
-        .fg(COLUMN_HEADER_COLOR)
+        .fg(column_header_color())
         .add_modifier(Modifier::BOLD);
     // Leading: 1 space pad + REMOTE_ICON_COL blank for icon alignment.
     let text = format!(
@@ -534,7 +534,7 @@ fn remote_row_line(
         tracked = widths.tracked,
         status = widths.status,
     );
-    let data_style = selection.patch(Style::default().fg(INACTIVE_TITLE_COLOR));
+    let data_style = selection.patch(Style::default().fg(inactive_title_color()));
     let icon_style = selection.patch(Style::default());
     Line::from(vec![
         Span::raw(" ".to_string()),
@@ -583,7 +583,7 @@ fn worktree_col_widths(worktrees: &[WorktreeInfo]) -> WorktreeColWidths {
 
 fn render_worktree_header(lines: &mut Vec<Line<'static>>, widths: &WorktreeColWidths) {
     let style = Style::default()
-        .fg(COLUMN_HEADER_COLOR)
+        .fg(column_header_color())
         .add_modifier(Modifier::BOLD);
     let text = format!(
         " {:<name$}  {:<branch$}  {:<status$}",
@@ -613,7 +613,7 @@ fn worktree_row_line(
         branch = widths.branch,
         status = widths.status,
     );
-    let style = selection.patch(Style::default().fg(INACTIVE_TITLE_COLOR));
+    let style = selection.patch(Style::default().fg(inactive_title_color()));
     Line::from(Span::styled(text, style))
 }
 
@@ -705,7 +705,7 @@ pub(super) fn render_git_pane_body(
         frame,
         area,
         pane.viewport.overflow(),
-        Style::default().fg(LABEL_COLOR),
+        Style::default().fg(label_color()),
     );
     let _ = ctx;
 }

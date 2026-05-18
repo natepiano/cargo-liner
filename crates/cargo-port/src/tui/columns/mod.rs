@@ -1,21 +1,21 @@
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use tui_pane::COLUMN_HEADER_COLOR;
 pub(super) use tui_pane::ColumnSpec;
 pub(super) use tui_pane::ColumnWidths;
-use tui_pane::DISCOVERY_SHIMMER_COLOR;
-use tui_pane::ERROR_COLOR;
-use tui_pane::LABEL_COLOR;
-use tui_pane::SECONDARY_TEXT_COLOR;
-use tui_pane::TITLE_COLOR;
+use tui_pane::column_header_color;
+use tui_pane::discovery_shimmer_color;
+use tui_pane::error_color;
+use tui_pane::git_ignored_color;
+use tui_pane::git_modified_color;
+use tui_pane::git_untracked_color;
+use tui_pane::label_color;
+use tui_pane::secondary_text_color;
+use tui_pane::text_default;
+use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
-use super::constants::GIT_IGNORED_COLOR;
-use super::constants::GIT_MODIFIED_COLOR;
-use super::constants::GIT_UNTRACKED_COLOR;
 use super::render;
 use crate::ci::CiStatus;
 use crate::constants::IN_SYNC;
@@ -434,7 +434,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'s
 
     if row.deleted {
         let strike = Style::default()
-            .fg(LABEL_COLOR)
+            .fg(label_color())
             .add_modifier(Modifier::CROSSED_OUT);
         for (i, span) in spans.iter_mut().enumerate() {
             if !suffix_indices.contains(&i) {
@@ -442,7 +442,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'s
             }
         }
     } else if matches!(row.worktree_health, WorktreeHealth::Broken) {
-        let broken_style = Style::default().fg(Color::White).bg(ERROR_COLOR);
+        let broken_style = Style::default().fg(text_default()).bg(error_color());
         for span in &mut spans {
             span.style = broken_style;
         }
@@ -456,7 +456,7 @@ pub(super) fn row_to_line(row: &RowCells, widths: &ProjectListWidths) -> Line<'s
 pub(super) fn header_line(widths: &ProjectListWidths, name_text: &str) -> Line<'static> {
     let defs = column_defs(widths.lint_enabled());
     let header_style = Style::default()
-        .fg(COLUMN_HEADER_COLOR)
+        .fg(column_header_color())
         .add_modifier(Modifier::BOLD);
 
     let mut spans = Vec::with_capacity(NUM_COLS);
@@ -525,9 +525,9 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
 
     let compact_status_style = |value: &str| {
         if value == IN_SYNC {
-            Style::default().fg(GIT_UNTRACKED_COLOR)
+            Style::default().fg(git_untracked_color())
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(text_default())
         }
     };
 
@@ -611,19 +611,19 @@ pub(super) fn build_row_cells(row: ProjectRow<'_>) -> RowCells {
 
 pub(super) fn project_name_style(git_status: Option<GitStatus>) -> Style {
     match git_status {
-        Some(GitStatus::Modified) => Style::default().fg(GIT_MODIFIED_COLOR),
-        Some(GitStatus::Untracked) => Style::default().fg(GIT_UNTRACKED_COLOR),
-        Some(GitStatus::Ignored) => Style::default().fg(GIT_IGNORED_COLOR),
+        Some(GitStatus::Modified) => Style::default().fg(git_modified_color()),
+        Some(GitStatus::Untracked) => Style::default().fg(git_untracked_color()),
+        Some(GitStatus::Ignored) => Style::default().fg(git_ignored_color()),
         Some(GitStatus::Clean) | None => Style::default(),
     }
 }
 
 pub(super) fn project_name_shimmer_style(git_status: Option<GitStatus>) -> Style {
     match git_status {
-        Some(GitStatus::Modified) => Style::default().fg(GIT_MODIFIED_COLOR),
-        Some(GitStatus::Untracked) => Style::default().fg(GIT_UNTRACKED_COLOR),
-        Some(GitStatus::Ignored) => Style::default().fg(SECONDARY_TEXT_COLOR),
-        Some(GitStatus::Clean) | None => Style::default().fg(DISCOVERY_SHIMMER_COLOR),
+        Some(GitStatus::Modified) => Style::default().fg(git_modified_color()),
+        Some(GitStatus::Untracked) => Style::default().fg(git_untracked_color()),
+        Some(GitStatus::Ignored) => Style::default().fg(secondary_text_color()),
+        Some(GitStatus::Clean) | None => Style::default().fg(discovery_shimmer_color()),
     }
 }
 
@@ -685,7 +685,7 @@ pub(super) fn build_group_header_cells(prefix: &str, label: &str) -> RowCells {
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
     cells[COL_NAME] = CellContent {
         text: String::from(label),
-        style: Style::default().fg(TITLE_COLOR),
+        style: Style::default().fg(title_color()),
         align_override: None,
         ..CellContent::default()
     };
@@ -707,7 +707,7 @@ fn summary_label_col(widths: &ProjectListWidths) -> usize {
 /// Build a `RowCells` for the summary (Σ) row.
 pub(super) fn build_summary_cells(widths: &ProjectListWidths, disk: &str) -> RowCells {
     let total_style = Style::default()
-        .fg(TITLE_COLOR)
+        .fg(title_color())
         .add_modifier(Modifier::BOLD);
 
     let mut cells = std::array::from_fn::<CellContent, NUM_COLS, _>(|_| CellContent::default());
@@ -1045,7 +1045,10 @@ mod tests {
             deleted:           false,
             worktree_health:   WorktreeHealth::Normal,
         });
-        assert_eq!(modified.cells[COL_NAME].style.fg, Some(GIT_MODIFIED_COLOR));
+        assert_eq!(
+            modified.cells[COL_NAME].style.fg,
+            Some(git_modified_color())
+        );
         assert_eq!(
             modified.cells[COL_GIT_PATH].text,
             crate::constants::GIT_STATUS_MODIFIED
@@ -1070,7 +1073,7 @@ mod tests {
         });
         assert_eq!(
             untracked.cells[COL_NAME].style.fg,
-            Some(GIT_UNTRACKED_COLOR)
+            Some(git_untracked_color())
         );
         assert_eq!(
             untracked.cells[COL_GIT_PATH].text,
@@ -1116,7 +1119,7 @@ mod tests {
             deleted:           false,
             worktree_health:   WorktreeHealth::Normal,
         });
-        assert_eq!(ignored.cells[COL_NAME].style.fg, Some(GIT_IGNORED_COLOR));
+        assert_eq!(ignored.cells[COL_NAME].style.fg, Some(git_ignored_color()));
         assert!(ignored.cells[COL_GIT_PATH].text.is_empty());
     }
 
@@ -1125,7 +1128,7 @@ mod tests {
         let segments = build_shimmer_segments(
             "abcd",
             Style::default(),
-            Style::default().fg(TITLE_COLOR),
+            Style::default().fg(title_color()),
             3,
             2,
         );
@@ -1137,9 +1140,9 @@ mod tests {
         assert_eq!(
             actual,
             vec![
-                ("a", Some(TITLE_COLOR)),
+                ("a", Some(title_color())),
                 ("bc", None),
-                ("d", Some(TITLE_COLOR)),
+                ("d", Some(title_color())),
             ]
         );
     }
@@ -1165,11 +1168,11 @@ mod tests {
     fn clean_shimmer_style_uses_explicit_high_contrast_foreground() {
         assert_eq!(
             project_name_shimmer_style(Some(GitStatus::Clean)).fg,
-            Some(DISCOVERY_SHIMMER_COLOR)
+            Some(discovery_shimmer_color())
         );
         assert_eq!(
             project_name_shimmer_style(None).fg,
-            Some(DISCOVERY_SHIMMER_COLOR)
+            Some(discovery_shimmer_color())
         );
     }
 }

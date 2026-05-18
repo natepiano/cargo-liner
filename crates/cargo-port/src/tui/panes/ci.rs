@@ -8,8 +8,8 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
-use tui_pane::COLUMN_HEADER_COLOR;
-use tui_pane::LABEL_COLOR;
+use tui_pane::column_header_color;
+use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use unicode_width::UnicodeWidthStr;
 
@@ -31,7 +31,7 @@ use crate::tui::state::Ci;
 fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
     let right_aligned = Style::default()
         .add_modifier(Modifier::BOLD)
-        .fg(COLUMN_HEADER_COLOR);
+        .fg(column_header_color());
     let mut header_cells = vec![
         Cell::from(" Commit").style(right_aligned),
         Cell::from("Branch").style(right_aligned),
@@ -92,7 +92,7 @@ fn build_ci_data_row(
         } else {
             cells.push(
                 Cell::from(ratatui::text::Line::from("—").alignment(Alignment::Right))
-                    .style(Style::default().fg(LABEL_COLOR)),
+                    .style(Style::default().fg(label_color())),
             );
             cells.push(Cell::from(""));
         }
@@ -343,7 +343,7 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
         frame,
         area,
         pane.viewport.overflow(),
-        Style::default().fg(LABEL_COLOR),
+        Style::default().fg(label_color()),
     );
 
     let _ = ctx;

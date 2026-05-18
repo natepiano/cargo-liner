@@ -65,7 +65,7 @@ impl PackagePane {
 impl Renderable<PaneRenderCtx<'_>> for PackagePane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
-            readonly_label: ratatui::style::Style::default().fg(tui_pane::LABEL_COLOR),
+            readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
             chrome:         pane::default_pane_chrome(),
         };
         package::render_package_pane_body(frame, area, self, &styles, ctx);
@@ -100,7 +100,7 @@ impl LangPane {
 impl Renderable<PaneRenderCtx<'_>> for LangPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
-            readonly_label: ratatui::style::Style::default().fg(tui_pane::LABEL_COLOR),
+            readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
             chrome:         pane::default_pane_chrome(),
         };
         lang::render_lang_pane_body(frame, area, self, &styles, ctx);
@@ -169,7 +169,7 @@ impl CpuPane {
 impl Renderable<PaneRenderCtx<'_>> for CpuPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
-            readonly_label: ratatui::style::Style::default().fg(tui_pane::LABEL_COLOR),
+            readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
             chrome:         pane::default_pane_chrome(),
         };
         cpu::render_cpu_pane_body(frame, area, self, &styles, ctx);
@@ -256,7 +256,7 @@ impl GitPane {
 impl Renderable<PaneRenderCtx<'_>> for GitPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
-            readonly_label: ratatui::style::Style::default().fg(tui_pane::LABEL_COLOR),
+            readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
             chrome:         pane::default_pane_chrome(),
         };
         git::render_git_pane_body(frame, area, self, &styles, ctx);
@@ -330,7 +330,7 @@ impl Hittable<HoverTarget> for TargetsPane {
 impl Renderable<PaneRenderCtx<'_>> for TargetsPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
-            readonly_label: ratatui::style::Style::default().fg(tui_pane::LABEL_COLOR),
+            readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
             chrome:         pane::default_pane_chrome(),
         };
         targets::render_targets_pane_body(frame, area, self, &styles, ctx);

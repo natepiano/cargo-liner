@@ -16,11 +16,12 @@ use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
-use tui_pane::COLUMN_HEADER_COLOR;
-use tui_pane::ERROR_COLOR;
-use tui_pane::LABEL_COLOR;
 use tui_pane::Viewport;
+use tui_pane::column_header_color;
+use tui_pane::error_color;
+use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
+use tui_pane::text_default;
 
 use super::constants::PREFIX_GROUP_COLLAPSED;
 use super::constants::PREFIX_GROUP_EXPANDED;
@@ -86,7 +87,9 @@ fn disk_percentile(bytes: Option<u64>, sorted_values: &[u64]) -> Option<f64> {
     Some(rank as f64 / (sorted_values.len() - 1) as f64)
 }
 
-/// Compute a color for a disk value: green (smallest) → white (middle) → red (largest).
+/// Compute a color for a disk value by interpolating the active
+/// theme's three `disk_usage` stops: low (smallest) → mid → high
+/// (largest). Modifiers on the theme stops are ignored.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -94,26 +97,51 @@ fn disk_percentile(bytes: Option<u64>, sorted_values: &[u64]) -> Option<f64> {
 )]
 fn disk_color(percentile: Option<f64>) -> Style {
     let Some(pos) = percentile else {
-        return Style::default().fg(LABEL_COLOR);
+        return Style::default().fg(label_color());
     };
 
-    // Green (0.0) → White (0.5) → Red (1.0)
-    let (r, g, b) = if pos < 0.5 {
-        // Green to white: increase R and B
-        let t = pos * 2.0;
-        (
-            155.0f64.mul_add(t, 100.0).clamp(0.0, 255.0) as u8,
-            35.0f64.mul_add(t, 220.0).clamp(0.0, 255.0) as u8,
-            155.0f64.mul_add(t, 100.0).clamp(0.0, 255.0) as u8,
-        )
+    let theme = tui_pane::theme();
+    let stops = &theme.disk_usage;
+    let (start, end, t) = if pos < 0.5 {
+        (stops.low.color, stops.mid.color, pos * 2.0)
     } else {
-        // White to red: decrease G and B
-        let t = (pos - 0.5) * 2.0;
-        let gb = 155.0f64.mul_add(-t, 255.0).clamp(0.0, 255.0) as u8;
-        (255, gb, gb)
+        (stops.mid.color, stops.high.color, (pos - 0.5) * 2.0)
+    };
+    let (sr, sg, sb) = rgb_channels(start);
+    let (er, eg, eb) = rgb_channels(end);
+    let lerp = |a: u8, b: u8| -> u8 {
+        let af = f64::from(a);
+        let bf = f64::from(b);
+        (bf - af).mul_add(t, af).clamp(0.0, 255.0) as u8
     };
 
-    Style::default().fg(Color::Rgb(r, g, b))
+    Style::default().fg(Color::Rgb(lerp(sr, er), lerp(sg, eg), lerp(sb, eb)))
+}
+
+/// Extract RGB channels from a [`Color`], converting named/indexed
+/// colors into their nearest ANSI 24-bit equivalents. Used by
+/// [`disk_color`] so a theme can supply a named color (e.g. `Green`)
+/// as a gradient stop and still interpolate smoothly.
+const fn rgb_channels(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Reset | Color::Black => (0, 0, 0),
+        Color::Red => (170, 0, 0),
+        Color::Green => (0, 170, 0),
+        Color::Yellow => (170, 85, 0),
+        Color::Blue => (0, 0, 170),
+        Color::Magenta => (170, 0, 170),
+        Color::Cyan => (0, 170, 170),
+        Color::Gray | Color::Indexed(_) => (170, 170, 170),
+        Color::DarkGray => (85, 85, 85),
+        Color::LightRed => (255, 85, 85),
+        Color::LightGreen => (85, 255, 85),
+        Color::LightYellow => (255, 255, 85),
+        Color::LightBlue => (85, 85, 255),
+        Color::LightMagenta => (255, 85, 255),
+        Color::LightCyan => (85, 255, 255),
+        Color::White => (255, 255, 255),
+    }
 }
 
 pub fn formatted_disk(projects: &ProjectList, path: &Path) -> String {
@@ -168,7 +196,7 @@ pub fn render_project_list_pane_body(
 
     let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
     frame.render_widget(
-        Paragraph::new(header).style(Style::default().fg(COLUMN_HEADER_COLOR)),
+        Paragraph::new(header).style(Style::default().fg(column_header_color())),
         header_area,
     );
 
@@ -230,7 +258,7 @@ pub fn render_project_list_pane_body(
         frame,
         area,
         pane.viewport.overflow(),
-        Style::default().fg(LABEL_COLOR),
+        Style::default().fg(label_color()),
     );
 }
 
@@ -472,7 +500,11 @@ fn render_child_item<P: project::ProjectFields>(
     let deleted = inherited_deleted || ctx.project_list.is_deleted(project.path());
     let git_status = ctx.project_list.git_status_for(path);
     let (disk_text, disk_suffix, disk_suffix_style) = if deleted {
-        ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
+        (
+            "0.0",
+            Some(" [x]"),
+            Some(Style::default().fg(label_color())),
+        )
     } else {
         (disk.as_str(), None, None)
     };
@@ -614,12 +646,16 @@ fn disk_suffix_for_state(
     health: project::WorktreeHealth,
 ) -> (&str, Option<&'static str>, Option<Style>) {
     if deleted {
-        ("0.0", Some(" [x]"), Some(Style::default().fg(LABEL_COLOR)))
+        (
+            "0.0",
+            Some(" [x]"),
+            Some(Style::default().fg(label_color())),
+        )
     } else if matches!(health, project::WorktreeHealth::Broken) {
         (
             disk,
             Some(" [broken]"),
-            Some(Style::default().fg(Color::White).bg(ERROR_COLOR)),
+            Some(Style::default().fg(text_default()).bg(error_color())),
         )
     } else {
         (disk, None, None)
@@ -1089,8 +1125,6 @@ pub fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Ve
 }
 
 fn collect_child_disk_values(item: &RootItem, values: &mut Vec<u64>) {
-    use crate::project::RootItem;
-    use crate::project::RustProject;
     match item {
         RootItem::Rust(RustProject::Workspace(ws)) => {
             collect_member_group_disk(ws.groups(), values);

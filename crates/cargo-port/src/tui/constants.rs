@@ -1,10 +1,5 @@
-use ratatui::style::Color;
-
-// ── Git colors ───────────────────────────────────────────────────────
-
-pub(super) const GIT_MODIFIED_COLOR: Color = Color::Indexed(208);
-pub(super) const GIT_UNTRACKED_COLOR: Color = Color::Green;
-pub(super) const GIT_IGNORED_COLOR: Color = Color::DarkGray;
+// Git colors moved to the theme system: see `tui_pane::git_modified_color`
+// / `git_untracked_color` / `git_ignored_color`.
 
 // App-specific popup dimensions.
 pub(super) const FINDER_POPUP_HEIGHT: u16 = 28;

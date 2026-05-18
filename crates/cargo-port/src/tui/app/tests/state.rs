@@ -2,6 +2,11 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
+
+use cargo_metadata::PackageId;
+use cargo_metadata::TargetKind;
+use cargo_metadata::semver::Version;
 
 use super::*;
 use crate::constants::IN_SYNC;
@@ -2200,10 +2205,6 @@ fn out_of_tree_target_size_message_stamps_metadata() {
 
 #[test]
 fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
-    use cargo_metadata::PackageId;
-    use cargo_metadata::TargetKind;
-    use cargo_metadata::semver::Version;
-
     let project_path = AbsolutePath::from(PathBuf::from("/abs/demo"));
     let pkg_item = RootItem::Rust(RustProject::Package(crate::project::Package {
         path: project_path.clone(),
@@ -2293,8 +2294,6 @@ fn cargo_metadata_arrival_stamps_cargo_fields_onto_package() {
 
 #[test]
 fn apply_lint_config_change_fans_out_to_inflight_scan_and_selection() {
-    use std::time::Instant;
-
     let project = make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
 

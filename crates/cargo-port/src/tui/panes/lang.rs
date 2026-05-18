@@ -9,11 +9,11 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
-use tui_pane::COLUMN_HEADER_COLOR;
-use tui_pane::LABEL_COLOR;
-use tui_pane::TITLE_COLOR;
 use tui_pane::Viewport;
+use tui_pane::column_header_color;
+use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
+use tui_pane::title_color;
 
 use super::package::RenderStyles;
 use super::pane_impls::LangPane;
@@ -72,7 +72,7 @@ const fn lang_table_widths() -> [Constraint; 7] {
 
 fn lang_header_row() -> Row<'static> {
     let style = Style::default()
-        .fg(COLUMN_HEADER_COLOR)
+        .fg(column_header_color())
         .add_modifier(Modifier::BOLD);
     Row::new(vec![
         Cell::from(""),
@@ -87,10 +87,10 @@ fn lang_header_row() -> Row<'static> {
 
 fn lang_footer_row(stats: &LanguageStats) -> Row<'static> {
     let num_bold = Style::default()
-        .fg(TITLE_COLOR)
+        .fg(title_color())
         .add_modifier(Modifier::BOLD);
     let dim_bold = Style::default()
-        .fg(LABEL_COLOR)
+        .fg(label_color())
         .add_modifier(Modifier::BOLD);
     let total_files: usize = stats.entries.iter().map(|e| e.files).sum();
     let total_code: usize = stats.entries.iter().map(|e| e.code).sum();
@@ -119,8 +119,8 @@ fn lang_entry_row(entry: &LangEntry, name_width: usize) -> Row<'static> {
     let icon = language_icon(&entry.language);
     let name = render::truncate_with_ellipsis(&entry.language, name_width, "\u{2026}");
     let total = entry.code + entry.comments + entry.blanks;
-    let num_style = Style::default().fg(TITLE_COLOR);
-    let dim_style = Style::default().fg(LABEL_COLOR);
+    let num_style = Style::default().fg(title_color());
+    let dim_style = Style::default().fg(label_color());
     Row::new(vec![
         Cell::from(format!(" {icon}")),
         Cell::from(name).style(dim_style),
@@ -273,6 +273,6 @@ pub(super) fn render_lang_pane_body(
         frame,
         area,
         pane.viewport.overflow(),
-        Style::default().fg(LABEL_COLOR),
+        Style::default().fg(label_color()),
     );
 }

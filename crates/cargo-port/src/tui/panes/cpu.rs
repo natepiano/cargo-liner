@@ -8,10 +8,11 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use tui_pane::ACCENT_COLOR;
-use tui_pane::COLUMN_HEADER_COLOR;
-use tui_pane::ERROR_COLOR;
 use tui_pane::Viewport;
+use tui_pane::accent_color;
+use tui_pane::column_header_color;
+use tui_pane::error_color;
+use tui_pane::text_default;
 
 use super::package::RenderStyles;
 use super::pane_impls::CpuPane;
@@ -113,7 +114,7 @@ fn metric_line(label: &str, percent: u8, color: Color, width: u16) -> Line<'stat
     );
     Line::from(vec![
         Span::raw(" "),
-        Span::styled(label_text, Style::default().fg(Color::White)),
+        Span::styled(label_text, Style::default().fg(text_default())),
         Span::raw(" ".repeat(space_count)),
         Span::styled(value_text, Style::default().fg(color)),
         Span::raw(" "),
@@ -131,9 +132,9 @@ fn aggregate_line(percent: u8, width: u16) -> Line<'static> {
     );
     Line::from(vec![
         Span::raw(" "),
-        Span::styled(label_text, Style::default().fg(COLUMN_HEADER_COLOR)),
+        Span::styled(label_text, Style::default().fg(column_header_color())),
         Span::raw(" ".repeat(space_count)),
-        Span::styled(value_text, Style::default().fg(Color::White)),
+        Span::styled(value_text, Style::default().fg(text_default())),
         Span::raw(" "),
     ])
 }
@@ -345,7 +346,7 @@ fn render_gpu_row(
         Paragraph::new(vec![
             Line::from(vec![
                 Span::raw(" "),
-                Span::styled("GPU", Style::default().fg(COLUMN_HEADER_COLOR)),
+                Span::styled("GPU", Style::default().fg(column_header_color())),
             ]),
             gpu_bar_line(usage.gpu_percent, cpu_cfg),
         ]),
@@ -421,7 +422,7 @@ pub(super) fn render_cpu_pane_body(
             logical_row: CpuSelectableRow::System.logical_index(layout.core_count),
             label:       "System",
             percent:     usage.breakdown.system,
-            color:       ERROR_COLOR,
+            color:       error_color(),
         },
     );
     render_breakdown_row(
@@ -434,7 +435,7 @@ pub(super) fn render_cpu_pane_body(
             logical_row: CpuSelectableRow::User.logical_index(layout.core_count),
             label:       "User",
             percent:     usage.breakdown.user,
-            color:       ACCENT_COLOR,
+            color:       accent_color(),
         },
     );
     render_breakdown_row(
@@ -447,7 +448,7 @@ pub(super) fn render_cpu_pane_body(
             logical_row: CpuSelectableRow::Idle.logical_index(layout.core_count),
             label:       "Idle",
             percent:     usage.breakdown.idle,
-            color:       Color::White,
+            color:       text_default(),
         },
     );
     render_gpu_row(

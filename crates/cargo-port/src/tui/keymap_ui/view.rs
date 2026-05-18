@@ -1,20 +1,20 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use tui_pane::ACTIVE_BORDER_COLOR;
-use tui_pane::ERROR_COLOR;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::KeymapPane;
-use tui_pane::LABEL_COLOR;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
-use tui_pane::TITLE_COLOR;
+use tui_pane::active_border_color;
+use tui_pane::error_color;
+use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
+use tui_pane::text_default;
+use tui_pane::title_color;
 
 use super::KEYMAP_POPUP_MAX_HEIGHT;
 use super::KeymapRow;
@@ -53,7 +53,7 @@ pub(super) fn keymap_header_line<'a>(row: &KeymapRow) -> Line<'a> {
         Span::styled(
             format!("{}:", row.section),
             Style::default()
-                .fg(TITLE_COLOR)
+                .fg(title_color())
                 .add_modifier(Modifier::BOLD),
         ),
     ])
@@ -100,24 +100,27 @@ pub(super) fn build_lines<'a>(
             Line::from(vec![
                 Span::styled(
                     format!("{SECTION_ITEM_INDENT}  {padded_desc}"),
-                    selection.patch(Style::default().fg(Color::White)),
+                    selection.patch(Style::default().fg(text_default())),
                 ),
-                Span::styled(key_text, selection.patch(Style::default().fg(ERROR_COLOR))),
+                Span::styled(
+                    key_text,
+                    selection.patch(Style::default().fg(error_color())),
+                ),
             ])
         } else if selection != PaneSelectionState::Unselected {
             Line::from(vec![
                 Span::styled(
                     format!("{SECTION_ITEM_INDENT}▸ {padded_desc}"),
-                    selection.patch(Style::default().fg(Color::White)),
+                    selection.patch(Style::default().fg(text_default())),
                 ),
                 Span::styled(
                     key_text,
                     selection.patch(if is_capturing {
                         Style::default()
-                            .fg(TITLE_COLOR)
+                            .fg(title_color())
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(LABEL_COLOR)
+                        Style::default().fg(label_color())
                     }),
                 ),
             ])
@@ -125,9 +128,9 @@ pub(super) fn build_lines<'a>(
             Line::from(vec![
                 Span::styled(
                     format!("{SECTION_ITEM_INDENT}  {padded_desc}"),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(text_default()),
                 ),
-                Span::styled(key_text, Style::default().fg(LABEL_COLOR)),
+                Span::styled(key_text, Style::default().fg(label_color())),
             ])
         };
 
@@ -179,7 +182,7 @@ pub fn render_keymap_pane_body(
 
     let popup = PopupFrame {
         title: Some(" Keymap ".to_string()),
-        border_color: ACTIVE_BORDER_COLOR,
+        border_color: active_border_color(),
         width,
         height,
     }
@@ -208,6 +211,6 @@ pub fn render_keymap_pane_body(
         frame,
         popup.outer,
         pane.viewport().overflow(),
-        Style::default().fg(LABEL_COLOR),
+        Style::default().fg(label_color()),
     );
 }

@@ -7,35 +7,35 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use tui_pane::ACCENT_COLOR;
 use tui_pane::BLOCK_BORDER_WIDTH;
 use tui_pane::BYTES_PER_GIB;
 use tui_pane::BYTES_PER_KIB;
 use tui_pane::BYTES_PER_MIB;
 use tui_pane::BarPalette;
-use tui_pane::ERROR_COLOR;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
-use tui_pane::LABEL_COLOR;
 use tui_pane::PaneFocusState;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::ResolvedPaneLayout;
-use tui_pane::SECONDARY_TEXT_COLOR;
-use tui_pane::STATUS_BAR_COLOR;
-use tui_pane::SUCCESS_COLOR;
 use tui_pane::ShortcutState;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
-use tui_pane::TITLE_COLOR;
 use tui_pane::ToastsRenderCtx;
+use tui_pane::accent_color;
+use tui_pane::error_color;
+use tui_pane::label_color;
 use tui_pane::render_status_line as render_framework_status_line;
+use tui_pane::secondary_text_color;
+use tui_pane::status_bar_color;
+use tui_pane::success_color;
+use tui_pane::text_default;
+use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
@@ -109,8 +109,8 @@ pub(super) fn format_bytes(bytes: u64) -> String {
 
 pub(super) fn conclusion_style(ci_status: Option<CiStatus>) -> Style {
     match ci_status {
-        Some(CiStatus::Passed) => Style::default().fg(SUCCESS_COLOR),
-        Some(CiStatus::Failed) => Style::default().fg(ERROR_COLOR),
+        Some(CiStatus::Passed) => Style::default().fg(success_color()),
+        Some(CiStatus::Failed) => Style::default().fg(error_color()),
         _ => Style::default(),
     }
 }
@@ -343,7 +343,7 @@ fn render_confirm_popup(
 
     let inner = PopupFrame {
         title: None,
-        border_color: TITLE_COLOR,
+        border_color: title_color(),
         width,
         height,
     }
@@ -353,16 +353,16 @@ fn render_confirm_popup(
         vec![Line::from(vec![Span::styled(
             " Verifying target dir… ",
             Style::default()
-                .fg(LABEL_COLOR)
+                .fg(label_color())
                 .add_modifier(Modifier::ITALIC),
         )])]
     } else {
         vec![Line::from(vec![
-            Span::styled(format!(" {prompt}  "), Style::default().fg(Color::White)),
+            Span::styled(format!(" {prompt}  "), Style::default().fg(text_default())),
             Span::styled(
                 "(y/n)",
                 Style::default()
-                    .fg(TITLE_COLOR)
+                    .fg(title_color())
                     .add_modifier(Modifier::BOLD),
             ),
         ])]
@@ -370,7 +370,7 @@ fn render_confirm_popup(
     for body_line in body {
         lines.push(Line::from(vec![Span::styled(
             format!(" {body_line} "),
-            Style::default().fg(LABEL_COLOR),
+            Style::default().fg(label_color()),
         )]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
@@ -542,26 +542,26 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize, ellipsis: &st
     format!("{prefix}{ellipsis}")
 }
 
-/// Palette wiring `ACCENT_COLOR` / `SECONDARY_TEXT_COLOR` / `Modifier::BOLD`
+/// Palette wiring `accent_color()` / `secondary_text_color()` / `Modifier::BOLD`
 /// to the framework bar so `tui_pane::render_status_line` output uses
 /// cargo-port's key/label styling. The framework ships a theme-neutral
 /// [`tui_pane::BarPalette::default`]; cargo-port supplies its own colors
 /// here.
 pub(super) fn cargo_port_bar_palette() -> BarPalette {
     let enabled_key_style = Style::default()
-        .fg(ACCENT_COLOR)
+        .fg(accent_color())
         .add_modifier(Modifier::BOLD);
     let disabled_key_style = Style::default()
-        .fg(SECONDARY_TEXT_COLOR)
+        .fg(secondary_text_color())
         .add_modifier(Modifier::BOLD);
-    let disabled_label_style = Style::default().fg(SECONDARY_TEXT_COLOR);
+    let disabled_label_style = Style::default().fg(secondary_text_color());
     BarPalette {
-        status_line_style: Style::default().bg(STATUS_BAR_COLOR).fg(Color::White),
+        status_line_style: Style::default().bg(status_bar_color()).fg(text_default()),
         status_activity_style: enabled_key_style,
         status_label_style: Style::default()
-            .fg(TITLE_COLOR)
+            .fg(title_color())
             .add_modifier(Modifier::BOLD),
-        status_value_style: Style::default().fg(Color::White),
+        status_value_style: Style::default().fg(text_default()),
         enabled_key_style,
         enabled_label_style: Style::default(),
         disabled_key_style,

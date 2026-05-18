@@ -13,15 +13,15 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
-use tui_pane::ACCENT_COLOR;
 use tui_pane::ACTIVITY_SPINNER;
-use tui_pane::COLUMN_HEADER_COLOR;
-use tui_pane::ERROR_COLOR;
-use tui_pane::LABEL_COLOR;
-use tui_pane::SUCCESS_COLOR;
-use tui_pane::TITLE_COLOR;
 use tui_pane::Viewport;
+use tui_pane::accent_color;
+use tui_pane::column_header_color;
+use tui_pane::error_color;
+use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
+use tui_pane::success_color;
+use tui_pane::title_color;
 
 use super::LintsData;
 use crate::lint::LintRun;
@@ -67,7 +67,7 @@ fn build_lint_rows(
     focus: PaneFocusState,
 ) -> Vec<Row<'static>> {
     let date_style = Style::default()
-        .fg(TITLE_COLOR)
+        .fg(title_color())
         .add_modifier(Modifier::BOLD);
 
     let mut rows = Vec::new();
@@ -97,10 +97,10 @@ fn build_lint_rows(
         let (result_cell, row_style) = match run.status {
             LintRunStatus::Running => {
                 let spinner = running_lint_spinner(animation_elapsed);
-                (Cell::from(spinner), Style::default().fg(ACCENT_COLOR))
+                (Cell::from(spinner), Style::default().fg(accent_color()))
             },
-            LintRunStatus::Passed => (Cell::from("passed"), Style::default().fg(SUCCESS_COLOR)),
-            LintRunStatus::Failed => (Cell::from("failed"), Style::default().fg(ERROR_COLOR)),
+            LintRunStatus::Passed => (Cell::from("passed"), Style::default().fg(success_color())),
+            LintRunStatus::Failed => (Cell::from("failed"), Style::default().fg(error_color())),
         };
 
         let selection = pane::selection_state(pane, row_index, focus);
@@ -108,19 +108,19 @@ fn build_lint_rows(
             Row::new(vec![
                 date_cell,
                 Cell::from(
-                    Line::from(Span::styled(start_time, Style::default().fg(LABEL_COLOR)))
+                    Line::from(Span::styled(start_time, Style::default().fg(label_color())))
                         .alignment(Alignment::Right),
                 ),
                 Cell::from(
-                    Line::from(Span::styled(end_time, Style::default().fg(LABEL_COLOR)))
+                    Line::from(Span::styled(end_time, Style::default().fg(label_color())))
                         .alignment(Alignment::Right),
                 ),
                 Cell::from(
-                    Line::from(Span::styled(duration, Style::default().fg(LABEL_COLOR)))
+                    Line::from(Span::styled(duration, Style::default().fg(label_color())))
                         .alignment(Alignment::Right),
                 ),
                 Cell::from(
-                    Line::from(Span::styled(size, Style::default().fg(LABEL_COLOR)))
+                    Line::from(Span::styled(size, Style::default().fg(label_color())))
                         .alignment(Alignment::Right),
                 ),
                 result_cell,
@@ -180,7 +180,7 @@ pub fn render_lints_pane_body(
     pane.viewport.set_len(rows.len());
 
     let col_header_style = Style::default()
-        .fg(COLUMN_HEADER_COLOR)
+        .fg(column_header_color())
         .add_modifier(Modifier::BOLD);
 
     let table = Table::new(
@@ -216,7 +216,7 @@ pub fn render_lints_pane_body(
         frame,
         area,
         pane.viewport.overflow(),
-        Style::default().fg(LABEL_COLOR),
+        Style::default().fg(label_color()),
     );
 
     let _ = ctx;

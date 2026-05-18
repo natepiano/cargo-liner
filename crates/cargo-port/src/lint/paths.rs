@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use sha2::Digest as _;
+
 use crate::cache_paths;
 use crate::constants::LINTS_HISTORY_JSONL;
 use crate::constants::LINTS_LATEST_JSON;
@@ -18,8 +20,6 @@ pub fn cache_root() -> AbsolutePath { cache_paths::lint_runs_root() }
 ///
 /// SYNC: must match `project_key()` in `~/.claude/scripts/clippy/check_cache.sh`.
 pub fn project_key(project_root: &Path) -> String {
-    use sha2::Digest as _;
-
     let path_str = project_root.to_string_lossy();
     let name = project_root
         .file_name()

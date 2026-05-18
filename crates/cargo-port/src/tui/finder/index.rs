@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use ratatui::style::Color;
-use tui_pane::TITLE_COLOR;
+use tui_pane::title_color;
 
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
@@ -55,12 +55,12 @@ impl FinderKind {
         }
     }
 
-    pub const fn color(self) -> Color {
+    pub fn color(self) -> Color {
         match self {
-            Self::Project => TITLE_COLOR,
-            Self::Binary => RunTargetKind::BINARY_COLOR,
-            Self::Example => RunTargetKind::EXAMPLE_COLOR,
-            Self::Bench => RunTargetKind::BENCH_COLOR,
+            Self::Project => title_color(),
+            Self::Binary => RunTargetKind::Binary.color(),
+            Self::Example => RunTargetKind::Example.color(),
+            Self::Bench => RunTargetKind::Bench.color(),
         }
     }
 }

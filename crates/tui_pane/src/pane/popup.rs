@@ -8,9 +8,9 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 
-use crate::TITLE_COLOR;
+use crate::title_color;
 
-const TITLE_STYLE: Style = Style::new().fg(TITLE_COLOR).add_modifier(Modifier::BOLD);
+fn title_style() -> Style { Style::new().fg(title_color()).add_modifier(Modifier::BOLD) }
 
 /// Shared chrome for popup overlays.
 ///
@@ -53,7 +53,7 @@ impl PopupFrame {
             .border_style(border_style);
 
         if let Some(title) = self.title {
-            block = block.title(Span::styled(title, TITLE_STYLE));
+            block = block.title(Span::styled(title, title_style()));
         }
 
         let inner = block.inner(area);

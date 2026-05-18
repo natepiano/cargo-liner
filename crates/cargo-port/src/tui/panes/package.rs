@@ -12,20 +12,23 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
-use tui_pane::ACCENT_COLOR;
-use tui_pane::ERROR_COLOR;
-use tui_pane::INACTIVE_BORDER_COLOR;
-use tui_pane::LABEL_COLOR;
-use tui_pane::SUCCESS_COLOR;
-use tui_pane::TITLE_COLOR;
 use tui_pane::Viewport;
+use tui_pane::accent_color;
+use tui_pane::error_color;
+use tui_pane::inactive_border_color;
+use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
+use tui_pane::success_color;
+use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
+use super::CiDisplay;
 use super::DetailField;
+use super::LintDisplay;
 use super::PackageData;
 use super::pane_impls::PackagePane;
 use crate::constants::LINT_NO_LOG;
+use crate::lint::LintStatus;
 use crate::tui::integration;
 use crate::tui::pane;
 use crate::tui::pane::PaneChrome;
@@ -243,7 +246,7 @@ pub(super) fn render_package_pane_body(
 
     let Some(pkg_data) = pane.content().cloned() else {
         let title_style = Style::default()
-            .fg(TITLE_COLOR)
+            .fg(title_color())
             .add_modifier(Modifier::BOLD);
         pane.viewport.clear_surface();
         let empty_block = Block::default()
@@ -294,7 +297,7 @@ pub(super) fn render_package_pane_body(
         frame,
         area,
         pane.viewport.overflow(),
-        Style::default().fg(LABEL_COLOR),
+        Style::default().fg(label_color()),
     );
 }
 
@@ -476,8 +479,8 @@ fn render_stats_column(
         height: area.height,
     };
 
-    let stat_label_style = Style::default().fg(LABEL_COLOR);
-    let stat_num_style = Style::default().fg(TITLE_COLOR);
+    let stat_label_style = Style::default().fg(label_color());
+    let stat_num_style = Style::default().fg(title_color());
     let dw = digit_width as usize;
     let stat_lines: Vec<Line<'_>> = data
         .stats_rows
@@ -530,7 +533,7 @@ pub fn description_lines(
         .map(str::trim)
         .filter(|description| !description.is_empty())
         .map_or_else(
-            || (NO_DESCRIPTION_AVAILABLE, Style::default().fg(LABEL_COLOR)),
+            || (NO_DESCRIPTION_AVAILABLE, Style::default().fg(label_color())),
             |description| (description, Style::default()),
         );
 
@@ -551,15 +554,12 @@ pub fn description_lines(
 /// Style for the Lint row in the Package detail pane, derived
 /// from the typed [`LintDisplay`].
 fn lint_display_style(display: &super::LintDisplay) -> Style {
-    use super::LintDisplay;
-    use crate::lint::LintStatus;
-
     match display {
-        LintDisplay::NotRust | LintDisplay::NoRuns => Style::default().fg(INACTIVE_BORDER_COLOR),
+        LintDisplay::NotRust | LintDisplay::NoRuns => Style::default().fg(inactive_border_color()),
         LintDisplay::Runs { status, .. } => match status {
-            LintStatus::Passed(_) => Style::default().fg(SUCCESS_COLOR),
-            LintStatus::Failed(_) => Style::default().fg(ERROR_COLOR),
-            LintStatus::Running(_) | LintStatus::Stale => Style::default().fg(ACCENT_COLOR),
+            LintStatus::Passed(_) => Style::default().fg(success_color()),
+            LintStatus::Failed(_) => Style::default().fg(error_color()),
+            LintStatus::Running(_) | LintStatus::Stale => Style::default().fg(accent_color()),
             LintStatus::NoLog => Style::default(),
         },
     }
@@ -575,8 +575,6 @@ fn lint_display_to_string(
     animation_elapsed: Duration,
     lint_enabled: bool,
 ) -> String {
-    use super::LintDisplay;
-
     match display {
         LintDisplay::NotRust => "No lint runs — not a Rust project".to_string(),
         LintDisplay::NoRuns => "No lint runs".to_string(),
@@ -594,11 +592,9 @@ fn lint_display_to_string(
 /// Style for the Ci row in the Package detail pane, derived
 /// from the typed [`CiDisplay`].
 fn ci_display_style(display: &super::CiDisplay) -> Style {
-    use super::CiDisplay;
-
     match display {
         CiDisplay::NoWorkflow | CiDisplay::UnpublishedBranch | CiDisplay::NoRuns => {
-            Style::default().fg(INACTIVE_BORDER_COLOR)
+            Style::default().fg(inactive_border_color())
         },
         CiDisplay::Runs {
             ci_status: conclusion,
@@ -612,8 +608,6 @@ fn ci_display_style(display: &super::CiDisplay) -> Style {
 /// `CiStatus::icon()` at render time, in parallel with
 /// `lint_display_to_string`.
 fn ci_display_to_string(display: &super::CiDisplay) -> String {
-    use super::CiDisplay;
-
     match display {
         CiDisplay::NoWorkflow => "No CI workflow configured".to_string(),
         CiDisplay::UnpublishedBranch => "unpublished branch".to_string(),

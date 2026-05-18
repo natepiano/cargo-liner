@@ -19,14 +19,15 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
-use tui_pane::ACCENT_COLOR;
-use tui_pane::ACTIVE_BORDER_COLOR;
 use tui_pane::AppContext;
-use tui_pane::FINDER_MATCH_BG;
 use tui_pane::FocusedPane;
-use tui_pane::LABEL_COLOR;
-use tui_pane::TITLE_COLOR;
+use tui_pane::accent_color;
+use tui_pane::active_border_color;
+use tui_pane::finder_match_bg;
+use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
+use tui_pane::text_default;
+use tui_pane::title_color;
 
 use super::index::FINDER_COLUMN_COUNT;
 use super::index::FINDER_HEADERS;
@@ -268,7 +269,7 @@ pub fn render_finder_pane_body(
 
     let popup = PopupFrame {
         title:        Some(title),
-        border_color: ACTIVE_BORDER_COLOR,
+        border_color: active_border_color(),
         width:        popup_width,
         height:       FINDER_POPUP_HEIGHT,
     }
@@ -287,13 +288,13 @@ pub fn render_finder_pane_body(
         height: 1,
     };
     let prompt_style = Style::default()
-        .fg(ACCENT_COLOR)
+        .fg(accent_color())
         .add_modifier(Modifier::BOLD);
     let input_line = Line::from(vec![
         Span::styled("  / ", prompt_style),
         Span::styled(
             format!("{}_", ctx.project_list.finder.query),
-            Style::default().fg(TITLE_COLOR),
+            Style::default().fg(title_color()),
         ),
     ]);
     frame.render_widget(ratatui::widgets::Paragraph::new(input_line), input_area);
@@ -310,7 +311,7 @@ pub fn render_finder_pane_body(
     };
     let sep = Line::from(Span::styled(
         "─".repeat(inner.width as usize),
-        Style::default().fg(LABEL_COLOR),
+        Style::default().fg(label_color()),
     ));
     frame.render_widget(ratatui::widgets::Paragraph::new(sep), sep_area);
 
@@ -334,7 +335,7 @@ pub fn render_finder_pane_body(
 /// background, similar to Zed's finder highlighting.
 fn highlighted_spans(text: &str, query: &str, fg: Color) -> Line<'static> {
     let base = Style::default().fg(fg);
-    let highlight = base.bg(FINDER_MATCH_BG);
+    let highlight = base.bg(finder_match_bg());
 
     if text.is_empty() || query.is_empty() {
         return Line::from(Span::styled(text.to_owned(), base));
@@ -419,7 +420,7 @@ fn render_finder_results(
         };
         let hint = ratatui::widgets::Paragraph::new(Line::from(Span::styled(
             format!("  {msg}"),
-            Style::default().fg(LABEL_COLOR),
+            Style::default().fg(label_color()),
         )));
         frame.render_widget(hint, area);
         return;
@@ -440,10 +441,14 @@ fn render_finder_results(
                 item.parent_label.clone()
             };
             Row::new(vec![
-                Cell::from(highlighted_spans(&item.display_name, &query, Color::White)),
-                Cell::from(highlighted_spans(&parent, &query, Color::White)),
-                Cell::from(highlighted_spans(&item.branch, &query, Color::White)),
-                Cell::from(highlighted_spans(&item.dir, &query, Color::White)),
+                Cell::from(highlighted_spans(
+                    &item.display_name,
+                    &query,
+                    text_default(),
+                )),
+                Cell::from(highlighted_spans(&parent, &query, text_default())),
+                Cell::from(highlighted_spans(&item.branch, &query, text_default())),
+                Cell::from(highlighted_spans(&item.dir, &query, text_default())),
                 Cell::from(highlighted_spans(
                     item.kind.label(),
                     &query,
@@ -459,7 +464,7 @@ fn render_finder_results(
     let widths = col_widths.map(|w| Constraint::Length(u16::try_from(w).unwrap_or(u16::MAX)));
 
     let header_style = Style::default()
-        .fg(LABEL_COLOR)
+        .fg(label_color())
         .add_modifier(Modifier::BOLD);
     let header = Row::new(
         FINDER_HEADERS
@@ -479,6 +484,6 @@ fn render_finder_results(
         frame,
         popup_area,
         pane.viewport.overflow(),
-        Style::default().fg(LABEL_COLOR),
+        Style::default().fg(label_color()),
     );
 }

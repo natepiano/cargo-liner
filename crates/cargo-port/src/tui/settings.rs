@@ -5,14 +5,9 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use toml::Table;
 use toml::Value;
-use tui_pane::ACTIVE_BORDER_COLOR;
-use tui_pane::ERROR_COLOR;
 use tui_pane::FrameworkOverlayId;
-use tui_pane::INLINE_ERROR_COLOR;
-use tui_pane::LABEL_COLOR;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
-use tui_pane::SUCCESS_COLOR;
 use tui_pane::SettingCodecs;
 use tui_pane::SettingsCommand;
 use tui_pane::SettingsError;
@@ -24,16 +19,21 @@ use tui_pane::SettingsRenderOptions;
 use tui_pane::SettingsRow as FrameworkSettingsRow;
 use tui_pane::SettingsSection;
 use tui_pane::SettingsStore;
-use tui_pane::TITLE_COLOR;
 use tui_pane::ToastDuration;
 use tui_pane::ToastSettings;
 use tui_pane::ViewportOverflow;
+use tui_pane::active_border_color;
+use tui_pane::error_color;
+use tui_pane::inline_error_color;
+use tui_pane::label_color;
 use tui_pane::read_array;
 use tui_pane::read_bool;
 use tui_pane::read_float;
 use tui_pane::read_int;
 use tui_pane::read_string;
 use tui_pane::render_overflow_affordance;
+use tui_pane::success_color;
+use tui_pane::title_color;
 use tui_pane::write_value;
 
 use super::app::App;
@@ -1108,15 +1108,15 @@ pub(super) fn prepare_settings_render_inputs(
         content_width,
         section_header_indent: SECTION_HEADER_INDENT,
         section_item_indent: SECTION_ITEM_INDENT,
-        title_style: Style::default().fg(TITLE_COLOR),
-        label_style: Style::default().fg(LABEL_COLOR),
-        muted_style: Style::default().fg(LABEL_COLOR),
-        success_style: Style::default().fg(SUCCESS_COLOR),
-        error_style: Style::default().fg(ERROR_COLOR),
-        inline_error_style: Style::default().fg(INLINE_ERROR_COLOR),
+        title_style: Style::default().fg(title_color()),
+        label_style: Style::default().fg(label_color()),
+        muted_style: Style::default().fg(label_color()),
+        success_style: Style::default().fg(success_color()),
+        error_style: Style::default().fg(error_color()),
+        inline_error_style: Style::default().fg(inline_error_color()),
         active_style: pane::selection_style(PaneFocusState::Active),
         remembered_style: pane::selection_style(PaneFocusState::Remembered),
-        hovered_style: Style::default().bg(tui_pane::HOVER_FOCUS_COLOR),
+        hovered_style: Style::default().bg(tui_pane::hover_focus_color()),
     };
     let rendered = app
         .framework
@@ -1151,7 +1151,7 @@ pub(super) fn render_settings_pane_body(
 
     let popup = PopupFrame {
         title:        Some(" Settings ".to_string()),
-        border_color: ACTIVE_BORDER_COLOR,
+        border_color: active_border_color(),
         width:        SETTINGS_POPUP_WIDTH,
         height:       inputs.popup_height,
     }
@@ -1179,7 +1179,7 @@ pub(super) fn render_settings_pane_body(
             visible_height,
             selected_line,
         ),
-        Style::default().fg(LABEL_COLOR),
+        Style::default().fg(label_color()),
     );
 }
 

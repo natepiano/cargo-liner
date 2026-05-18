@@ -3,6 +3,9 @@ use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
 
+use cargo_metadata::PackageId;
+use cargo_metadata::TargetKind;
+use cargo_metadata::semver::Version;
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -1130,9 +1133,6 @@ fn package_pane_row_click_selects_field() {
 
 #[test]
 fn targets_pane_row_click_selects_target() {
-    use cargo_metadata::PackageId;
-    use cargo_metadata::TargetKind;
-    use cargo_metadata::semver::Version;
     // The Targets pane sources its data from the `cargo metadata`
     // result. Populate two Example targets via a CargoMetadata
     // arrival so the pane has at least two rows to click on.
@@ -1339,8 +1339,6 @@ fn upsert_fake_package_metadata(
     homepage: Option<&str>,
     repository: Option<&str>,
 ) {
-    use cargo_metadata::PackageId;
-    use cargo_metadata::semver::Version;
     let root = AbsolutePath::from(project_dir);
     let manifest = AbsolutePath::from(project_dir.join("Cargo.toml"));
     let pkg_id = PackageId {
@@ -1538,8 +1536,6 @@ fn upsert_shared_target_metadata(
     sibling_dirs: &[&Path],
     target_dir: &Path,
 ) {
-    use cargo_metadata::PackageId;
-    use cargo_metadata::semver::Version;
     for dir in std::iter::once(primary_dir).chain(sibling_dirs.iter().copied()) {
         let root = AbsolutePath::from(dir);
         let manifest = AbsolutePath::from(dir.join("Cargo.toml"));

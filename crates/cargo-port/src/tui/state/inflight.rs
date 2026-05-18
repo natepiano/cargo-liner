@@ -124,6 +124,7 @@ mod tests {
     use tui_pane::ToastTaskId;
 
     use super::*;
+    use crate::tui::panes::CiFetchKind;
 
     fn fresh() -> Inflight { Inflight::new() }
 
@@ -160,8 +161,6 @@ mod tests {
 
     #[test]
     fn pending_ci_fetch_set_take_clear() {
-        use crate::tui::panes::CiFetchKind;
-
         fn fixture() -> PendingCiFetch {
             PendingCiFetch {
                 project_path:      "/tmp/proj".into(),

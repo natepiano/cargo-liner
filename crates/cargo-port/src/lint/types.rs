@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use chrono::DateTime;
 use chrono::FixedOffset;
 use serde::Deserialize;
@@ -50,8 +52,6 @@ impl LintStatus {
     }
 
     pub fn combine(self, other: Self) -> Self {
-        use std::cmp::Ordering;
-
         match self.severity_rank().cmp(&other.severity_rank()) {
             Ordering::Greater => self,
             Ordering::Less => other,

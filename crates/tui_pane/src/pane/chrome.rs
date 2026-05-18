@@ -3,10 +3,10 @@ use ratatui::style::Style;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 
-use crate::ACTIVE_BORDER_COLOR;
-use crate::INACTIVE_BORDER_COLOR;
-use crate::INACTIVE_TITLE_COLOR;
-use crate::TITLE_COLOR;
+use crate::active_border_color;
+use crate::inactive_border_color;
+use crate::inactive_title_color;
+use crate::title_color;
 
 /// Pane chrome styling bundle: border and title styles for the
 /// focused / unfocused render paths of a bordered pane.
@@ -63,10 +63,10 @@ impl PaneChrome {
 pub fn default_pane_chrome() -> PaneChrome {
     let title_style = Style::default().add_modifier(Modifier::BOLD);
     PaneChrome {
-        active_border:   Style::default().fg(ACTIVE_BORDER_COLOR),
+        active_border:   Style::default().fg(active_border_color()),
         inactive_border: Style::default(),
-        active_title:    title_style.fg(TITLE_COLOR),
-        inactive_title:  title_style.fg(INACTIVE_TITLE_COLOR),
+        active_title:    title_style.fg(title_color()),
+        inactive_title:  title_style.fg(inactive_title_color()),
     }
 }
 
@@ -77,6 +77,6 @@ pub fn empty_pane_block(title: impl Into<String>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .title(title.into())
-        .title_style(Style::default().fg(INACTIVE_BORDER_COLOR))
-        .border_style(Style::default().fg(INACTIVE_BORDER_COLOR))
+        .title_style(Style::default().fg(inactive_border_color()))
+        .border_style(Style::default().fg(inactive_border_color()))
 }
