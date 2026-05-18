@@ -186,6 +186,7 @@ impl App {
             self.themes.os_appearance(),
         );
         tui_pane::set_active_theme(resolved.theme);
+        tui_pane::set_focused_pane_tint(self.config.current().appearance.focused_pane_tint);
 
         // Dismiss the prior miss toast unconditionally; we'll push a
         // fresh one below if this resolve also missed.

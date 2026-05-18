@@ -165,6 +165,7 @@ impl AppBuilder<Channeled> {
         let resolved = themes::resolve_theme(&inputs.cfg.appearance, &registry, None);
         let initial_theme = (*resolved.theme).clone();
         tui_pane::install_theme_state(tui_pane::ThemeState::with_registry(registry, initial_theme));
+        tui_pane::set_focused_pane_tint(inputs.cfg.appearance.focused_pane_tint);
         let config_path = config::config_path();
         let lint_spawn = lint::spawn(&inputs.cfg, inputs.bg_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&inputs.cfg.tui.include_dirs);

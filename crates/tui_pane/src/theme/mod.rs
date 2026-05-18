@@ -18,6 +18,8 @@ mod spec;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::RwLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use serde::Deserialize;
 
@@ -207,8 +209,14 @@ pub struct Theme {
 /// compiled-in fallback" — that one struct enforces better than two
 /// independently-managed statics.
 pub struct ThemeState {
-    registry: RwLock<Arc<ThemeRegistry>>,
-    current:  RwLock<Arc<Theme>>,
+    registry:          RwLock<Arc<ThemeRegistry>>,
+    current:           RwLock<Arc<Theme>>,
+    /// When true, [`PaneChrome::block`](crate::PaneChrome::block) paints
+    /// a subtle background tint behind the focused pane to lift it
+    /// from neighbours. Defaults to true; cargo-port mirrors the
+    /// user's `appearance.focused_pane_tint` config bit into this slot
+    /// at startup and on config reload.
+    focused_pane_tint: AtomicBool,
 }
 
 impl ThemeState {
@@ -226,8 +234,9 @@ impl ThemeState {
     #[must_use]
     pub fn with_registry(registry: ThemeRegistry, initial: Theme) -> Self {
         Self {
-            registry: RwLock::new(Arc::new(registry)),
-            current:  RwLock::new(Arc::new(initial)),
+            registry:          RwLock::new(Arc::new(registry)),
+            current:           RwLock::new(Arc::new(initial)),
+            focused_pane_tint: AtomicBool::new(true),
         }
     }
 }
@@ -315,6 +324,27 @@ pub fn set_active_theme(new_theme: Arc<Theme>) {
     )]
     let mut slot = state.current.write().expect("theme RwLock poisoned");
     *slot = new_theme;
+}
+
+/// Whether the focused-pane background tint is enabled.
+///
+/// Read by [`PaneChrome::block`](crate::PaneChrome::block) every
+/// render; mirrored from cargo-port's
+/// `appearance.focused_pane_tint` config bit. Defaults to true when
+/// no state has been installed yet.
+#[must_use]
+pub fn focused_pane_tint_enabled() -> bool {
+    let state = THEME_STATE.get_or_init(|| ThemeState::new(default_dark()));
+    state.focused_pane_tint.load(Ordering::Relaxed)
+}
+
+/// Enable or disable the focused-pane background tint.
+///
+/// Idempotent; subsequent renders pick up the new value on the next
+/// frame.
+pub fn set_focused_pane_tint(enabled: bool) {
+    let state = THEME_STATE.get_or_init(|| ThemeState::new(default_dark()));
+    state.focused_pane_tint.store(enabled, Ordering::Relaxed);
 }
 
 /// Replace the theme registry. Subsequent calls to [`registry()`]

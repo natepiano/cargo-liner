@@ -549,21 +549,28 @@ pub(crate) struct CargoPortConfig {
 pub(crate) struct AppearanceConfig {
     /// Theme appearance mode: `"auto"`, `"light"`, or `"dark"`.
     #[config(default = "dark")]
-    pub mode:        String,
+    pub mode:              String,
     /// Theme name to use when the resolved appearance is light.
     #[config(default = "Default Light")]
-    pub light_theme: String,
+    pub light_theme:       String,
     /// Theme name to use when the resolved appearance is dark.
     #[config(default = "Default Dark")]
-    pub dark_theme:  String,
+    pub dark_theme:        String,
+    /// When true (default), the focused pane gets a subtle background
+    /// tint so it lifts away from neighbouring panes. Set to false to
+    /// keep every pane drawn against the terminal's native background
+    /// (preserves iTerm2 / window-level transparency).
+    #[config(default = true)]
+    pub focused_pane_tint: bool,
 }
 
 impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
-            mode:        "dark".to_string(),
-            light_theme: "Default Light".to_string(),
-            dark_theme:  "Default Dark".to_string(),
+            mode:              "dark".to_string(),
+            light_theme:       "Default Light".to_string(),
+            dark_theme:        "Default Dark".to_string(),
+            focused_pane_tint: true,
         }
     }
 }

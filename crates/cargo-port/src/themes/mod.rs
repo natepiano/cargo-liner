@@ -480,9 +480,10 @@ mod tests {
     fn resolve_theme_miss_falls_back_to_builtin() {
         let registry = ThemeRegistry::new_with_builtins();
         let cfg = AppearanceConfig {
-            mode:        "dark".to_string(),
-            dark_theme:  "Nonexistent".to_string(),
-            light_theme: "Default Light".to_string(),
+            mode:              "dark".to_string(),
+            dark_theme:        "Nonexistent".to_string(),
+            light_theme:       "Default Light".to_string(),
+            focused_pane_tint: true,
         };
         let resolved = resolve_theme(&cfg, &registry, None);
         assert_eq!(resolved.miss, Some(ThemeId::new("Nonexistent")));
@@ -493,9 +494,10 @@ mod tests {
     fn resolve_theme_invalid_mode_falls_back_to_dark_with_error() {
         let registry = ThemeRegistry::new_with_builtins();
         let cfg = AppearanceConfig {
-            mode:        "rainbow".to_string(),
-            light_theme: "Default Light".to_string(),
-            dark_theme:  "Default Dark".to_string(),
+            mode:              "rainbow".to_string(),
+            light_theme:       "Default Light".to_string(),
+            dark_theme:        "Default Dark".to_string(),
+            focused_pane_tint: true,
         };
         let resolved = resolve_theme(&cfg, &registry, Some(Appearance::Light));
         assert!(resolved.mode_error.is_some());
@@ -507,9 +509,10 @@ mod tests {
     fn resolve_theme_auto_uses_os_appearance_when_present() {
         let registry = ThemeRegistry::new_with_builtins();
         let cfg = AppearanceConfig {
-            mode:        "auto".to_string(),
-            light_theme: "Default Light".to_string(),
-            dark_theme:  "Default Dark".to_string(),
+            mode:              "auto".to_string(),
+            light_theme:       "Default Light".to_string(),
+            dark_theme:        "Default Dark".to_string(),
+            focused_pane_tint: true,
         };
         let resolved = resolve_theme(&cfg, &registry, Some(Appearance::Light));
         assert_eq!(*resolved.theme, default_light());

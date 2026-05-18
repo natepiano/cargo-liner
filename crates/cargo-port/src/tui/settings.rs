@@ -77,6 +77,7 @@ pub(super) enum SettingOption {
     AppearanceMode,
     LightTheme,
     DarkTheme,
+    FocusedPaneTint,
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -392,6 +393,12 @@ fn register_appearance_settings(registry: SettingsRegistry) -> SettingsRegistry 
             get_appearance_dark_theme,
             set_appearance_dark_theme,
         )
+        .add_bool_in(
+            SettingsSection::App("appearance"),
+            "focused_pane_tint",
+            get_focused_pane_tint,
+            set_focused_pane_tint,
+        )
 }
 
 fn register_general_settings(registry: SettingsRegistry) -> SettingsRegistry {
@@ -619,6 +626,7 @@ pub(super) fn settings_table_from_config(config: &CargoPortConfig) -> Result<Tab
     set_appearance_mode(&mut table, &config.appearance.mode)?;
     set_appearance_light_theme(&mut table, &config.appearance.light_theme)?;
     set_appearance_dark_theme(&mut table, &config.appearance.dark_theme)?;
+    set_focused_pane_tint(&mut table, config.appearance.focused_pane_tint)?;
     Ok(table)
 }
 
@@ -946,6 +954,15 @@ fn set_appearance_dark_theme(table: &mut Table, value: &str) -> Result<(), Setti
     write_value(table, "appearance", "dark_theme", value.trim().into())
 }
 
+fn get_focused_pane_tint(table: &Table) -> bool {
+    read_bool(table, "appearance", "focused_pane_tint")
+        .unwrap_or_else(|| default_config().appearance.focused_pane_tint)
+}
+
+fn set_focused_pane_tint(table: &mut Table, value: bool) -> Result<(), SettingsError> {
+    write_value(table, "appearance", "focused_pane_tint", value.into())
+}
+
 fn settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     let mut rows = general_settings_rows(app, config);
     rows.extend(toast_settings_rows(app, config));
@@ -1022,6 +1039,16 @@ fn appearance_settings_rows(config: &CargoPortConfig) -> Vec<SettingsUiRow> {
             Some(SettingOption::DarkTheme),
             "Dark theme".to_string(),
             config.appearance.dark_theme.clone(),
+        ),
+        (
+            Some(SettingOption::FocusedPaneTint),
+            "Focused pane tint".to_string(),
+            if config.appearance.focused_pane_tint {
+                "ON"
+            } else {
+                "OFF"
+            }
+            .to_string(),
         ),
     ]
 }
@@ -1470,6 +1497,10 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             Appearance::Dark,
             if key == KeyCode::Right { 1 } else { -1 },
         ),
+        Some(SettingOption::FocusedPaneTint) => {
+            let next = !app.config.current().appearance.focused_pane_tint;
+            let _ = save_app_setting_with_toast(app, |table| set_focused_pane_tint(table, next));
+        },
         Some(
             SettingOption::Editor
             | SettingOption::TerminalCommand
@@ -1595,6 +1626,10 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         Some(SettingOption::DarkTheme) => {
             cycle_appearance_theme_setting(app, Appearance::Dark, 1);
         },
+        Some(SettingOption::FocusedPaneTint) => {
+            let next = !app.config.current().appearance.focused_pane_tint;
+            let _ = save_app_setting_with_toast(app, |table| set_focused_pane_tint(table, next));
+        },
         None => {},
     }
 }
@@ -1664,7 +1699,8 @@ fn apply_general_settings_edit(
         | SettingOption::LintCacheSize
         | SettingOption::AppearanceMode
         | SettingOption::LightTheme
-        | SettingOption::DarkTheme => return Ok(false),
+        | SettingOption::DarkTheme
+        | SettingOption::FocusedPaneTint => return Ok(false),
         SettingOption::StatusToastVisibleSecs => {
             if !save_toast_number_setting(
                 app,

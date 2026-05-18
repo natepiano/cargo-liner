@@ -163,3 +163,11 @@
 #
 # Default value: "Default Dark"
 #dark_theme = "Default Dark"
+
+# When true (default), the focused pane gets a subtle background
+# tint so it lifts away from neighbouring panes. Set to false to
+# keep every pane drawn against the terminal's native background
+# (preserves iTerm2 / window-level transparency).
+#
+# Default value: true
+#focused_pane_tint = true

@@ -1,11 +1,14 @@
+use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 
 use crate::active_border_color;
+use crate::focused_pane_tint_enabled;
 use crate::inactive_border_color;
 use crate::inactive_title_color;
+use crate::theme;
 use crate::title_color;
 
 /// Pane chrome styling bundle: border and title styles for the
@@ -26,7 +29,7 @@ impl PaneChrome {
     /// Build a bordered ratatui [`Block`] using this chrome.
     #[must_use]
     pub fn block(self, title: String, focused: bool) -> Block<'static> {
-        Block::default()
+        let block = Block::default()
             .borders(Borders::ALL)
             .title(title)
             .title_style(self.title_style(focused))
@@ -34,7 +37,12 @@ impl PaneChrome {
                 self.active_border
             } else {
                 self.inactive_border
-            })
+            });
+        if focused && focused_pane_tint_enabled() {
+            block.style(Style::default().bg(focused_pane_tint()))
+        } else {
+            block
+        }
     }
 
     /// The title style this chrome applies given focus.
@@ -74,6 +82,36 @@ pub fn default_pane_chrome() -> PaneChrome {
             .fg(title_color())
             .add_modifier(Modifier::BOLD),
         inactive_title:  Style::default().fg(inactive_title_color()),
+    }
+}
+
+/// Subtle background tint for the focused pane.
+///
+/// Derived from `text.bg_focus` so it tracks the active appearance:
+/// dark themes get a small lift away from black; light themes get a
+/// small drop away from white. Terminals have no alpha channel, so
+/// this is a solid RGB nudge — see `docs/themes.md`.
+fn focused_pane_tint() -> Color {
+    match theme().text.bg_focus.color {
+        Color::Black => Color::Rgb(28, 28, 32),
+        Color::White => Color::Rgb(240, 240, 245),
+        Color::Rgb(r, g, b) => {
+            let avg = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
+            if avg < 128 {
+                Color::Rgb(
+                    r.saturating_add(18),
+                    g.saturating_add(18),
+                    b.saturating_add(22),
+                )
+            } else {
+                Color::Rgb(
+                    r.saturating_sub(14),
+                    g.saturating_sub(14),
+                    b.saturating_sub(10),
+                )
+            }
+        },
+        other => other,
     }
 }
 
