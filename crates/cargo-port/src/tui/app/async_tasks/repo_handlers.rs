@@ -148,12 +148,11 @@ impl App {
         let label = state::format_git_status_transition(&name, &transition);
         let seq = self.git_status_tracker.next_item_seq();
         let key = format!("{}#{seq}", path.display());
-        let now = Instant::now();
         let item = TrackedItem {
             label,
             key: key.into(),
-            started_at: Some(now),
-            completed_at: Some(now),
+            started_at: None,
+            completed_at: Some(Instant::now()),
         };
 
         let reuse = self
@@ -239,12 +238,11 @@ impl App {
         let label = state::format_sync_transition(&name, &transition);
         let seq = self.sync_tracker.next_item_seq();
         let key = format!("{}#{seq}", path.display());
-        let now = Instant::now();
         let item = TrackedItem {
             label,
             key: key.into(),
-            started_at: Some(now),
-            completed_at: Some(now),
+            started_at: None,
+            completed_at: Some(Instant::now()),
         };
 
         let reuse = self
