@@ -12,6 +12,7 @@
 
 mod accessors;
 mod builtins;
+mod registry;
 mod spec;
 
 use std::sync::Arc;
@@ -44,6 +45,14 @@ pub use self::accessors::text_default;
 pub use self::accessors::title_color;
 pub use self::builtins::default_dark;
 pub use self::builtins::default_light;
+pub use self::registry::BUILTIN_DARK_NAME;
+pub use self::registry::BUILTIN_LIGHT_NAME;
+pub use self::registry::RegisterOutcome;
+pub use self::registry::RegistryStatus;
+pub use self::registry::ThemeId;
+pub use self::registry::ThemeLoadError;
+pub use self::registry::ThemeRegistry;
+pub use self::registry::ThemeVariant;
 pub use self::spec::Modifiers;
 pub use self::spec::StyleSpec;
 
@@ -181,58 +190,70 @@ pub struct Theme {
     pub disk_usage:  DiskUsageTheme,
 }
 
-/// Global container for the active theme.
+/// Global container for the active theme and the variant registry.
 ///
 /// Held in a single `OnceLock` so init happens once and ordering is
-/// explicit. Reads via [`theme()`] take a `RwLock` read and clone the
-/// `Arc`; sub-µs and unmeasurable against ratatui's per-cell work.
+/// explicit. Both slots are `RwLock<Arc<...>>` so readers take a
+/// read lock + `Arc` clone (sub-µs, unmeasurable against ratatui's
+/// per-cell work) while hot-reload and theme swap take a write lock
+/// to publish a new value.
+///
+/// The registry and the active theme share an invariant — "the
+/// active theme's id should exist in the registry, or be a
+/// compiled-in fallback" — that one struct enforces better than two
+/// independently-managed statics.
 pub struct ThemeState {
-    current: RwLock<Arc<Theme>>,
+    registry: RwLock<Arc<ThemeRegistry>>,
+    current:  RwLock<Arc<Theme>>,
 }
 
 impl ThemeState {
-    /// Build a [`ThemeState`] with the given initial active theme.
+    /// Build a [`ThemeState`] with a seeded built-ins registry and the
+    /// given initial active theme. Phase 1 callers that don't yet
+    /// supply a registry use this constructor.
     #[must_use]
     pub fn new(initial: Theme) -> Self {
+        Self::with_registry(ThemeRegistry::new_with_builtins(), initial)
+    }
+
+    /// Build a [`ThemeState`] with a caller-supplied registry and
+    /// initial active theme. Phase 2's app startup uses this after
+    /// scanning the user themes directory.
+    #[must_use]
+    pub fn with_registry(registry: ThemeRegistry, initial: Theme) -> Self {
         Self {
-            current: RwLock::new(Arc::new(initial)),
+            registry: RwLock::new(Arc::new(registry)),
+            current:  RwLock::new(Arc::new(initial)),
         }
     }
 }
 
 static THEME_STATE: OnceLock<ThemeState> = OnceLock::new();
 
-/// Install the global theme state. Must be called once before any
-/// render runs.
+/// Install the global theme state if no state is present yet.
 ///
-/// # Panics
-///
-/// Panics if called more than once.
-pub fn install_theme_state(state: ThemeState) {
-    assert!(
-        THEME_STATE.set(state).is_ok(),
-        "theme state already installed"
-    );
-}
+/// Idempotent — a second call is a silent no-op so test binaries
+/// that re-run startup can call this without panicking. Use
+/// [`replace_registry`] or [`set_active_theme`] to update a
+/// previously-installed state.
+pub fn install_theme_state(state: ThemeState) { let _ = THEME_STATE.set(state); }
 
-/// Install the dark built-in if no theme state is present yet.
+/// Install the dark built-in plus the built-ins registry if no theme
+/// state is present yet.
 ///
 /// Idempotent — repeated calls are a no-op once installation has
-/// succeeded. Use this from app startup and test setups that may
-/// run more than once per process.
-pub fn ensure_theme_state_installed() {
-    if THEME_STATE.get().is_none() {
-        let _ = THEME_STATE.set(ThemeState::new(default_dark()));
-    }
-}
+/// succeeded. Use this from app startup paths that may run more than
+/// once per process; production startup prefers [`install_theme_state`]
+/// with an explicit registry.
+pub fn ensure_theme_state_installed() { install_theme_state(ThemeState::new(default_dark())); }
 
 /// Snapshot of the currently active theme.
 ///
 /// Cheap to call (`RwLock` read + `Arc` clone). If no theme state has
 /// been installed yet (tests that exercise render code without going
-/// through full app startup, for example), the dark built-in is
-/// installed on first access. App startup may call
-/// [`install_theme_state`] or [`ensure_theme_state_installed`]
+/// through full app startup, for example), the dark built-in plus a
+/// built-ins-only registry are installed on first access. App startup
+/// may call [`install_theme_state`] or [`ensure_theme_state_installed`]
 /// explicitly to make the initial value deterministic.
 ///
 /// # Panics
@@ -251,19 +272,38 @@ pub fn theme() -> Arc<Theme> {
     state.current.read().expect("theme RwLock poisoned").clone()
 }
 
+/// Snapshot of the currently-installed theme registry.
+///
+/// Returns an `Arc<ThemeRegistry>` so callers can hold it for the
+/// duration of a settings render or a config-apply step without
+/// racing against [`replace_registry`].
+///
+/// # Panics
+///
+/// Panics if the underlying `RwLock` is poisoned.
+#[must_use]
+pub fn registry() -> Arc<ThemeRegistry> {
+    let state = THEME_STATE.get_or_init(|| ThemeState::new(default_dark()));
+    #[expect(
+        clippy::expect_used,
+        reason = "RwLock poisoning here means a previous panic during a registry swap; \
+                  we cannot recover"
+    )]
+    state
+        .registry
+        .read()
+        .expect("registry RwLock poisoned")
+        .clone()
+}
+
 /// Replace the active theme. Subsequent calls to [`theme()`] return
 /// the new value.
 ///
 /// # Panics
 ///
-/// Panics if called before [`install_theme_state`], or if the
-/// underlying `RwLock` is poisoned.
+/// Panics if the underlying `RwLock` is poisoned.
 pub fn set_active_theme(new_theme: Arc<Theme>) {
-    #[expect(
-        clippy::expect_used,
-        reason = "theme state must be installed before swap"
-    )]
-    let state = THEME_STATE.get().expect("theme state not installed");
+    let state = THEME_STATE.get_or_init(|| ThemeState::new(default_dark()));
     #[expect(
         clippy::expect_used,
         reason = "RwLock poisoning here means a previous panic during a theme swap; \
@@ -271,6 +311,24 @@ pub fn set_active_theme(new_theme: Arc<Theme>) {
     )]
     let mut slot = state.current.write().expect("theme RwLock poisoned");
     *slot = new_theme;
+}
+
+/// Replace the theme registry. Subsequent calls to [`registry()`]
+/// return the new value. Used by the cargo-port-side hot-reload path
+/// when files under `~/.config/cargo-port/themes/` change.
+///
+/// # Panics
+///
+/// Panics if the underlying `RwLock` is poisoned.
+pub fn replace_registry(new_registry: ThemeRegistry) {
+    let state = THEME_STATE.get_or_init(|| ThemeState::new(default_dark()));
+    #[expect(
+        clippy::expect_used,
+        reason = "RwLock poisoning here means a previous panic during a registry swap; \
+                  we cannot recover"
+    )]
+    let mut slot = state.registry.write().expect("registry RwLock poisoned");
+    *slot = Arc::new(new_registry);
 }
 
 /// Wrapper accepted by the Phase 1 roundtrip test.

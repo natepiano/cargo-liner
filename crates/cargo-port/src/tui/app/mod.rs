@@ -86,6 +86,7 @@ use super::state::Config;
 use super::state::Inflight;
 use super::state::Keymap;
 use super::state::Scan;
+use super::state::Themes;
 use crate::ci::OwnerRepo;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::http::HttpClient;
@@ -289,6 +290,11 @@ pub(super) struct App {
     /// `keymap_last_seen`, `keymap_diagnostics_id`. Composes
     /// `WatchedFile<ResolvedKeymap>`.
     pub(super) keymap:            Keymap,
+    /// Themes subsystem. Owns the user-themes directory watch and the
+    /// parse-error toast slot used to dismiss prior diagnostics when
+    /// the registry reloads cleanly. The active theme + registry
+    /// themselves live in `tui_pane`'s `THEME_STATE`.
+    pub(super) themes:            Themes,
     /// The central per-project data store. Lint runs, CI info, git
     /// info, language stats, package/workspace fields, and disk usage
     /// all live inside the tree. Every subsystem that produces

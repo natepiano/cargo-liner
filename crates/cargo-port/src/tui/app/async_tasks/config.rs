@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::time::Instant;
 
 use tui_pane::ToastStyle::Error;
@@ -8,6 +9,7 @@ use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
 use crate::lint;
 use crate::project::AbsolutePath;
+use crate::themes;
 use crate::tui::app::App;
 use crate::tui::app::CargoPortToastAction;
 use crate::tui::integration;
@@ -118,6 +120,50 @@ impl App {
     pub(super) fn dismiss_keymap_diagnostics(&mut self) {
         if let Some(id) = self.keymap.take_diagnostics_id() {
             self.framework.toasts.dismiss(id);
+        }
+    }
+    /// Per-tick check for changes under the user themes directory.
+    /// On a detected change, re-scan, build a fresh registry, swap
+    /// it into `tui_pane`'s `THEME_STATE`, and surface a summary
+    /// toast. Persistent parse-error toasts are dismissed when the
+    /// next reload succeeds with zero failures, matching the keymap
+    /// diagnostics flow.
+    pub fn maybe_reload_themes_from_disk(&mut self) {
+        if self.themes.take_change().is_none() {
+            return;
+        }
+        let registry = themes::build_user_registry(self.themes.dir());
+        let failed = registry.status().failed_files.clone();
+        let overridden = registry.status().overridden.clone();
+        let total = registry.len();
+        tui_pane::replace_registry(registry);
+
+        if let Some(id) = self.themes.take_diagnostics_id() {
+            self.framework.toasts.dismiss(id);
+        }
+
+        if failed.is_empty() {
+            let mut body = format!("{total} variants registered");
+            if !overridden.is_empty() {
+                let names = overridden
+                    .iter()
+                    .map(|id| id.as_str().to_owned())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let _ = write!(body, " ({names} overridden)");
+            }
+            self.show_timed_toast("Themes reloaded", body);
+        } else {
+            let body = failed
+                .iter()
+                .map(|(path, err)| format!("{}: {}", path.display(), err))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let id =
+                self.framework
+                    .toasts
+                    .push_persistent("Themes reload errors", body, Error, None, 1);
+            self.themes.set_diagnostics_id(Some(id));
         }
     }
     pub fn maybe_reload_config_from_disk(&mut self) {

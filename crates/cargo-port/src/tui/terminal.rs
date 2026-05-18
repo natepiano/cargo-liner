@@ -334,6 +334,7 @@ fn poll_background_frame(app: &mut App) -> (PollBackgroundStats, Duration) {
     let started = Instant::now();
     app.maybe_reload_config_from_disk();
     app.maybe_reload_keymap_from_disk();
+    app.maybe_reload_themes_from_disk();
     let stats = app.poll_background();
     (stats, started.elapsed())
 }

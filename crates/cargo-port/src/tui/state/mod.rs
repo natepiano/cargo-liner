@@ -5,6 +5,7 @@ mod keymap;
 mod lint;
 mod net;
 mod scan;
+mod themes;
 
 pub(super) use ci::Ci;
 pub(super) use ci::CiDisplay;
@@ -18,3 +19,4 @@ pub(super) use lint::lint_cell_for;
 pub(super) use net::AvailabilityStatus;
 pub(super) use net::Net;
 pub(crate) use scan::Scan;
+pub(super) use themes::Themes;

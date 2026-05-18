@@ -42,6 +42,7 @@ use crate::project::RootItem;
 use crate::project::WorkspaceMetadataStore;
 use crate::scan;
 use crate::scan::BackgroundMsg;
+use crate::themes;
 use crate::tui::background::Background;
 use crate::tui::background::BackgroundChannels;
 use crate::tui::integration;
@@ -58,6 +59,7 @@ use crate::tui::state::Keymap;
 use crate::tui::state::Lint;
 use crate::tui::state::Net;
 use crate::tui::state::Scan;
+use crate::tui::state::Themes;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -154,7 +156,11 @@ impl AppBuilder<Channeled> {
     pub(super) fn run_startup(self) -> AppBuilder<Started> {
         let inputs = &self.state.inputs;
         config::set_active_config(&inputs.cfg);
-        tui_pane::ensure_theme_state_installed();
+        let registry = themes::build_user_registry(themes::themes_dir().as_deref());
+        tui_pane::install_theme_state(tui_pane::ThemeState::with_registry(
+            registry,
+            tui_pane::default_dark(),
+        ));
         let config_path = config::config_path();
         let lint_spawn = lint::spawn(&inputs.cfg, inputs.bg_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&inputs.cfg.tui.include_dirs);
@@ -208,6 +214,7 @@ impl AppBuilder<Started> {
             .as_ref()
             .map(|p| p.as_path().to_path_buf());
         let keymap = Keymap::new(keymap_path_buf.clone(), keymap::ResolvedKeymap::defaults());
+        let themes = Themes::new(themes::themes_dir());
         let scan = Scan::new(
             ScanState::new(inputs.scan_started_at),
             inputs.metadata_store,
@@ -249,6 +256,7 @@ impl AppBuilder<Started> {
             ci: Ci::new(),
             config,
             keymap,
+            themes,
             scan,
             startup: Startup::new(),
             visited_panes: std::iter::once(AppPaneId::ProjectList).collect(),

@@ -11,7 +11,7 @@ switches without restart.
 | Phase | What | Risk | Rough size |
 |-------|------|------|------------|
 | 1 | `Theme` type (grouped substructs of `StyleSpec` values) + `RwLock<Arc<Theme>>` static + replace every color constant and raw `Color::` literal with theme accessor reads; ship 2 compiled-in defaults as Rust constructors; toasts pinned to fallback palette | Medium | ~30 call sites updated, 2 default constructors, one commit |
-| 2 | User-themes registry in tui_pane (Registry type + registration API); cargo-port-side bootstrap scans `~/.config/cargo-port/themes/*.toml` (sorted) and calls into the registry; filesystem watcher extended to `themes/` for hot reload | Low | New `theme/registry.rs` in tui_pane, scan + watcher hook in cargo-port, one commit |
+| 2 | User-themes registry in tui_pane (Registry type + registration API); cargo-port-side bootstrap scans `~/.config/cargo-port/themes/*.toml` (sorted) and calls into the registry; polled per-tick fingerprint check on `themes/` drives hot reload | Low | New `theme/registry.rs` in tui_pane, scan + `ThemesWatch` + `maybe_reload_themes_from_disk` in cargo-port, one commit |
 | 3 | `[appearance]` section in `config.toml` (mode + light_theme + dark_theme); `BackgroundMsg::AppearanceChanged` enum variant; resolve on startup and config reload; unknown names fall back to compiled-in defaults with a toast | Low | Config schema + apply path inside `apply_config`, one commit |
 | 4 | Settings overlay UI: mode dropdown + two theme dropdowns sourced from the registry; surfaces "Theme not found" badge and registry load errors; writes back to config and re-applies live | Medium | Settings pane rows + edit handlers, one commit |
 | 5 | OS appearance tracking via `dark-light` crate, polled in a background task with backoff; `mode = "auto"` resolves dynamically | Low | New background task, one commit |
@@ -41,7 +41,7 @@ cloned `Arc`, never from the static.
 
 ```rust
 pub struct ThemeState {
-    registry: ThemeRegistry,
+    registry: RwLock<Arc<ThemeRegistry>>,
     current:  RwLock<Arc<Theme>>,
 }
 
@@ -52,6 +52,13 @@ One init point, one ownership story. The registry and the active theme
 share an invariant ("the active theme name must exist in the registry,
 or be a compiled-in default") that one struct enforces better than two
 independently-managed `OnceLock`s.
+
+Both slots are `RwLock<Arc<...>>`: readers (per-cell theme lookups,
+settings UI iterating variants) take a read lock + Arc clone; writers
+([`set_active_theme`] and [`replace_registry`]) take a write lock and
+publish a new `Arc`. Phase 2's hot-reload replaces the whole registry
+on disk-change, so the registry slot needs the same swappable
+`RwLock<Arc<T>>` as `current`.
 
 Both the registry and the active theme live in `tui_pane`. Theming is a
 framework capability — `tui_pane` owns the `Theme` type, the
@@ -680,42 +687,56 @@ between docs and reality.
 
 ```rust
 pub struct ThemeState {
-    registry: ThemeRegistry,
+    registry: RwLock<Arc<ThemeRegistry>>,
     current:  RwLock<Arc<Theme>>,
 }
 
 static THEME_STATE: OnceLock<ThemeState> = OnceLock::new();
 
 pub fn install_theme_state(state: ThemeState) {
-    THEME_STATE
-        .set(state)
-        .unwrap_or_else(|_| panic!("theme state already installed"));
+    // Idempotent: a second call is a silent no-op so test binaries
+    // that re-run startup don't panic. Production startup updates
+    // an installed state via `replace_registry` / `set_active_theme`.
+    let _ = THEME_STATE.set(state);
 }
 
 pub fn set_active_theme(theme: Arc<Theme>) {
-    let state = THEME_STATE.get().expect("theme state not installed");
+    let state = THEME_STATE.get_or_init(/* default-dark + builtins */);
     *state.current.write().expect("theme RwLock poisoned") = theme;
 }
 
+pub fn replace_registry(new_registry: ThemeRegistry) {
+    let state = THEME_STATE.get_or_init(/* default-dark + builtins */);
+    *state.registry.write().expect("registry RwLock poisoned") = Arc::new(new_registry);
+}
+
 pub fn theme() -> Arc<Theme> {
-    let state = THEME_STATE.get().expect("theme state not installed");
+    let state = THEME_STATE.get_or_init(/* default-dark + builtins */);
     state.current.read().expect("theme RwLock poisoned").clone()
 }
 
-pub fn registry() -> &'static ThemeRegistry {
-    &THEME_STATE.get().expect("theme state not installed").registry
+pub fn registry() -> Arc<ThemeRegistry> {
+    let state = THEME_STATE.get_or_init(/* default-dark + builtins */);
+    state.registry.read().expect("registry RwLock poisoned").clone()
 }
 ```
 
-Main startup must install the theme state before any render runs. The
-`OnceLock::set` returning an error if called twice catches accidental
-re-init. The `theme()` accessor panics if not installed — failing loud
-beats serving a silent compiled-in default that masks bugs in init
-ordering.
+Main startup calls `install_theme_state` with a registry built from
+the user themes directory. The accessors lazy-init a built-ins-only
+state on first call if no one has installed yet — keeps tests that
+exercise render code (without going through full app startup) from
+panicking, with the same default value the explicit install would
+have used.
+
+`registry()` returns an `Arc<ThemeRegistry>` snapshot rather than a
+`&'static`; the registry is replaced wholesale by hot-reload, so a
+`'static` borrow couldn't survive a swap. The Arc-clone cost is the
+same as `theme()`.
 
 In Phase 1 (before Phase 2's registry exists), `install_theme_state`
-is called with an empty registry holding only the two built-in
-variants from `builtins::default_dark()` and `builtins::default_light()`.
+was called via `ThemeState::new(default_dark())` which seeds the
+built-ins-only registry automatically. Phase 2 callers use
+`ThemeState::with_registry(registry, default_dark())`.
 
 ### Per-frame snapshot
 
@@ -777,14 +798,21 @@ pub struct ThemeRegistry {
 }
 
 impl ThemeRegistry {
+    pub fn empty() -> Self;
     pub fn new_with_builtins() -> Self;
     pub fn register(&mut self, variant: ThemeVariant) -> RegisterOutcome;
+    pub fn record_failed_file(&mut self, path: PathBuf, error: ThemeLoadError);
     pub fn find(&self, id: &ThemeId) -> Option<&ThemeVariant>;
     pub fn variants_by_appearance(&self, appearance: Appearance)
         -> impl Iterator<Item = &ThemeVariant>;
     pub fn all(&self) -> impl Iterator<Item = &ThemeVariant>;
-    pub fn status(&self) -> &RegistryStatus;
+    pub const fn status(&self) -> &RegistryStatus;
+    pub const fn len(&self) -> usize;
+    pub const fn is_empty(&self) -> bool;
 }
+
+pub const BUILTIN_DARK_NAME:  &str = "Default Dark";
+pub const BUILTIN_LIGHT_NAME: &str = "Default Light";
 
 pub enum RegisterOutcome {
     Inserted,
@@ -797,46 +825,102 @@ pub struct RegistryStatus {
 }
 ```
 
+`new_with_builtins()` seeds the two compiled-in variants under the
+stable ids `BUILTIN_DARK_NAME` / `BUILTIN_LIGHT_NAME`. User variants
+with the same name replace them in place (preserving registry
+ordering) and the override is recorded in `RegistryStatus.overridden`.
+
 ### Scan (cargo-port)
 
 cargo-port owns the scan code because the path layout is app-specific.
-At startup, after parsing `config.toml`, before installing the theme
-state:
+The implementation lives in `src/themes/mod.rs`. At startup, inside
+`AppBuilder::run_startup` (after `config::set_active_config`, before
+the rest of the startup pipeline):
 
-1. `ThemeRegistry::new_with_builtins()` to seed the registry.
-2. `read_dir` on the themes directory, sort entries by filename ASCII
-   order (sorted iteration is what makes the "later file overrides
-   earlier" tie-break deterministic across runs).
-3. For each `*.toml`: parse as `ThemeFamily`. Parse errors → record in
-   `RegistryStatus.failed_files`, toast, continue.
-4. For each variant in each parsed family: call `registry.register(...)`.
-   Each `Overrode` outcome is recorded in `RegistryStatus.overridden`
-   and toasted.
-5. `install_theme_state(ThemeState { registry, current: ... })`.
+1. `themes::build_user_registry(themes::themes_dir().as_deref())`:
+   1a. seed with `ThemeRegistry::new_with_builtins()`,
+   1b. `read_dir` on the themes directory, sort entries by filename
+       ASCII order (sorted iteration is what makes the "later file
+       overrides earlier" tie-break deterministic across runs),
+   1c. for each `*.toml`: parse as `ThemeFamily`; parse errors record
+       into `RegistryStatus.failed_files` and continue,
+   1d. for each variant in each parsed family: call `registry.register(...)`.
+       Each `Overrode` outcome appends to `RegistryStatus.overridden`.
+2. `tui_pane::install_theme_state(ThemeState::with_registry(registry, default_dark()))`.
+
+Startup parse-error / override toasts are not emitted in Phase 2 — the
+registry carries the diagnostics in `RegistryStatus`, and the Phase 4
+settings UI will surface them. The hot-reload path below does emit
+toasts because the user just edited a file.
 
 ### Hot-reload
 
-The existing config/keymap watcher already watches the cargo-port
-config directory; extending it to `themes/*.toml` is a one-line addition.
-On change:
+Per-tick polling, not notify subscription. `ThemesWatch` keeps a
+fingerprint hashed from `(filename, mtime, len)` of every `*.toml` in
+the directory. `App::maybe_reload_themes_from_disk` runs each tick
+from `terminal.rs` alongside `maybe_reload_config_from_disk` and
+`maybe_reload_keymap_from_disk`. On a fingerprint change:
 
-1. Re-scan the themes directory.
-2. Build a fresh registry; replace via a new helper
-   `replace_registry(new: ThemeRegistry)` on `ThemeState` (one write
-   lock).
-3. Re-resolve the active theme name from config and swap.
-4. Emit a toast naming what changed.
+1. Re-scan the themes directory via `themes::build_user_registry`.
+2. Snapshot `failed_files` + `overridden` + `len` off the new registry.
+3. Replace the global registry via `tui_pane::replace_registry`
+   (one write lock).
+4. Dismiss any prior persistent error-toast (the
+   `themes.diagnostics_id` slot, mirroring `keymap.diagnostics_id`).
+5. If `failed_files` is empty: emit a timed "Themes reloaded" toast
+   summarizing variant count + override list. Otherwise push a
+   persistent "Themes reload errors" toast and record its id in
+   `themes.diagnostics_id` so the next clean reload dismisses it.
+
+Re-resolving the active theme name from config (step 3 in the
+original plan) lands in Phase 3 when config gets an `[appearance]`
+section. Phase 2 leaves the active theme at `default_dark()`
+throughout.
+
+Notify-based watching was considered. Polling is simpler (no new
+`BackgroundMsg` variant, no thread, no event coalescing), shares the
+per-tick cadence with config and keymap reload, and the per-tick cost
+is one `read_dir` + a `stat` per `*.toml` (typically zero files).
 
 ### Custom `StyleSpec` deserializer
 
-Hand-rolled `Deserialize` for `StyleSpec` and `ColorSpec` — covered in
-the "File format" design point above. Emits field-name + offending-value
-errors instead of serde's default `unknown variant '...'`.
+Hand-rolled `Deserialize` for `StyleSpec` shipped in Phase 1 already
+(see `tui_pane/src/theme/spec.rs`) so the same code parses both
+in-repo starter templates and Phase 2's user files. Recognizes the
+three forms covered in the "File format" design point above; emits
+field-name + offending-value errors instead of serde's default
+`unknown variant '...'`.
 
 ### No UI yet
 
 A user can edit `config.toml` directly to test. The dropdown UI arrives
 in Phase 4.
+
+### Phase 2 retrospective
+
+Built and shipped 2026-05-18.
+
+- New file layout: `tui_pane/src/theme/registry.rs` for the registry
+  types; `src/themes/mod.rs` for scan + `ThemesWatch`;
+  `src/tui/state/themes.rs` for the App-side `Themes` subsystem
+  wrapping the watch + diagnostics-toast id.
+- `install_theme_state` was changed from "panic on re-install" to
+  "silent no-op on re-install" so test binaries that exercise startup
+  multiple times don't panic. Production startup hits it once.
+- `registry()` returns `Arc<ThemeRegistry>` (snapshot), not the plan's
+  literal `&'static ThemeRegistry`. The literal can't survive a
+  `replace_registry` swap; the Arc snapshot mirrors `theme()` and is
+  what Phase 4's settings UI will want anyway.
+- No `BackgroundMsg::ThemesChanged` variant. The watch is polled
+  inline per tick — see "Hot-reload" above.
+- Per-tick scan stays synchronous in `run_startup` (the disk walk is
+  `read_dir` + a stat per `*.toml`, typically zero files). If a real
+  user later ships dozens of themes and this shows up in the startup
+  perf log, route through the tokio blocking pool with a new
+  `BackgroundMsg::ThemesScanned` variant.
+- 8 unit tests in `src/themes/mod.rs`, 2 in `src/tui/state/themes.rs`,
+  3 registry tests in `tui_pane/tests/themes.rs`. 913 workspace tests
+  pass; clippy `-D warnings` clean; mend clean; binary reinstalled.
 
 ## Phase 3 — Config schema and apply
 

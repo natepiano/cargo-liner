@@ -14,6 +14,7 @@ mod project;
 mod scan;
 #[cfg(test)]
 mod test_support;
+mod themes;
 mod tui;
 mod watcher;
 
