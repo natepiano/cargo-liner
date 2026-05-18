@@ -50,6 +50,7 @@ mod construct;
 mod dismiss;
 mod navigation;
 mod phase_state;
+mod running_targets;
 mod startup;
 
 pub(super) use phase_state::CountedPhase;
@@ -82,6 +83,7 @@ use super::pane::PaneFocusState;
 use super::panes::PaneId;
 use super::panes::Panes;
 use super::project_list::ProjectList;
+use super::running_targets::RunningTargets;
 use super::state::Config;
 use super::state::GitStatusTracker;
 use super::state::Inflight;
@@ -240,11 +242,13 @@ impl PaneRegistry for RenderRegistry<'_> {
 
 /// Result of `App::split_finder_for_render`.
 pub(super) struct FinderSplit<'a> {
-    pub finder_pane:  &'a mut FinderPane,
-    pub config:       &'a Config,
-    pub project_list: &'a ProjectList,
-    pub inflight:     &'a Inflight,
-    pub scan:         &'a Scan,
+    pub finder_pane:         &'a mut FinderPane,
+    pub config:              &'a Config,
+    pub project_list:        &'a ProjectList,
+    pub inflight:            &'a Inflight,
+    pub scan:                &'a Scan,
+    pub running_targets:     &'a RunningTargets,
+    pub running_targets_dir: Option<&'a AbsolutePath>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -595,6 +599,8 @@ impl App {
             framework,
             ..
         } = self;
+        let running_targets = panes.running_targets.snapshot();
+        let running_targets_dir = panes.detail_target_dir.as_ref();
         let registry = RenderRegistry {
             package: &mut panes.package,
             lang: &mut panes.lang,
@@ -619,6 +625,8 @@ impl App {
             keymap_render_inputs,
             settings_render_inputs,
             description_min_height,
+            running_targets,
+            running_targets_dir,
         };
         RenderBorrows { registry, ctx }
     }
@@ -630,11 +638,13 @@ impl App {
     /// the popup sizes itself off the whole frame area.
     pub(super) const fn split_finder_for_render(&mut self) -> FinderSplit<'_> {
         FinderSplit {
-            finder_pane:  &mut self.overlays.finder_pane,
-            config:       &self.config,
-            project_list: &self.project_list,
-            inflight:     &self.inflight,
-            scan:         &self.scan,
+            finder_pane:         &mut self.overlays.finder_pane,
+            config:              &self.config,
+            project_list:        &self.project_list,
+            inflight:            &self.inflight,
+            scan:                &self.scan,
+            running_targets:     self.panes.running_targets.snapshot(),
+            running_targets_dir: self.panes.detail_target_dir.as_ref(),
         }
     }
 

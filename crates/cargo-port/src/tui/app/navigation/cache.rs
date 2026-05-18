@@ -58,8 +58,13 @@ impl App {
             let lints_ms = perf_log::ms(lints_started.elapsed().as_millis());
             self.ci.set_content(ci);
             self.lint.set_content(lints);
+            let target_dir = self
+                .project_list
+                .selected_project_path()
+                .map(crate::project::AbsolutePath::from)
+                .and_then(|path| self.scan.resolve_target_dir(&path));
             self.panes
-                .set_detail_data(key, data.package, data.git, data.targets);
+                .set_detail_data(key, data.package, data.git, data.targets, target_dir);
             tracing::info!(
                 total_ms = perf_log::ms(started.elapsed().as_millis()),
                 pane_ms,

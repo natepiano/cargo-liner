@@ -157,6 +157,8 @@ fn build_project_list_render_ctx_for_test<'a>(
         keymap_render_inputs:   None,
         settings_render_inputs: None,
         description_min_height: 0,
+        running_targets:        app.panes.running_targets.snapshot(),
+        running_targets_dir:    app.panes.detail_target_dir.as_ref(),
     }
 }
 

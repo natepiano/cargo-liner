@@ -8,6 +8,7 @@
 //! `handle_input`-style methods that need cross-subsystem access
 //! remain free functions taking `&mut App`.
 
+use std::time::Duration;
 use std::time::Instant;
 
 use tui_pane::ResolvedPaneLayout;
@@ -21,7 +22,14 @@ use super::pane_impls::PackagePane;
 use super::pane_impls::ProjectListPane;
 use super::pane_impls::TargetsPane;
 use crate::config::CpuConfig;
+use crate::project::AbsolutePath;
 use crate::tui::app::HoveredPaneRow;
+use crate::tui::running_targets::ProjectTargetSlice;
+use crate::tui::running_targets::RunningTargetsPoller;
+
+/// Cadence for the running-targets poller. Hardcoded for v1; moves to
+/// config alongside `CpuConfig` once the feature stabilizes.
+const RUNNING_TARGETS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Owns every pane-related piece of state. App holds a single `panes:
 /// Panes` field.
@@ -34,12 +42,19 @@ pub struct Panes {
     pub targets:      TargetsPane,
     pub project_list: ProjectListPane,
 
-    pub pane_data:    PaneDataStore,
+    pub pane_data:         PaneDataStore,
     /// Resolved tiled-pane layout computed by the most recent render.
     /// Input dispatch (mouse hit-tests, scroll routing) reads this;
     /// render writes it once per draw.
-    pub tiled_layout: ResolvedPaneLayout<super::PaneId>,
-    hovered_row:      Option<HoveredPaneRow>,
+    pub tiled_layout:      ResolvedPaneLayout<super::PaneId>,
+    hovered_row:           Option<HoveredPaneRow>,
+    /// Polls running OS processes and matches them against known cargo
+    /// targets. Ticked once per frame from the render thread.
+    pub running_targets:   RunningTargetsPoller,
+    /// Resolved canonical `target_directory` of the currently-displayed
+    /// project. Stashed by `set_detail_data` and read by the Targets
+    /// pane render path to build `RunningKey`s.
+    pub detail_target_dir: Option<AbsolutePath>,
 }
 
 impl Panes {
@@ -53,9 +68,11 @@ impl Panes {
             targets:      TargetsPane::new(),
             project_list: ProjectListPane::new(),
 
-            pane_data:    PaneDataStore::new(),
-            tiled_layout: ResolvedPaneLayout::default(),
-            hovered_row:  None,
+            pane_data:         PaneDataStore::new(),
+            tiled_layout:      ResolvedPaneLayout::default(),
+            hovered_row:       None,
+            running_targets:   RunningTargetsPoller::new(RUNNING_TARGETS_POLL_INTERVAL),
+            detail_target_dir: None,
         }
     }
 
@@ -75,11 +92,13 @@ impl Panes {
         package: super::PackageData,
         git: super::GitData,
         targets: super::TargetsData,
+        target_dir: Option<AbsolutePath>,
     ) {
         self.package.set_content(package);
         self.git.set_content(git);
         self.targets.set_content(targets);
         self.pane_data.set_detail_stamp(Some(stamp));
+        self.detail_target_dir = target_dir;
     }
 
     /// Clear the detail set across the migrated detail panes owned by `Panes`,
@@ -90,6 +109,7 @@ impl Panes {
         self.git.clear_content();
         self.targets.clear_content();
         self.pane_data.set_detail_stamp(stamp);
+        self.detail_target_dir = None;
     }
 
     pub const fn set_hover(&mut self, hovered: Option<HoveredPaneRow>) {
@@ -102,6 +122,13 @@ impl Panes {
 
     /// Tick the CPU pane's poller. Delegates to `CpuPane::tick`.
     pub fn cpu_tick(&mut self, now: Instant) { self.cpu.tick(now); }
+
+    /// Refresh the running-targets snapshot. Caller builds `projects`
+    /// from cached `cargo metadata` results. The poller gates its own
+    /// cadence — calling on every frame is cheap when not due.
+    pub fn running_targets_tick(&mut self, now: Instant, projects: &[ProjectTargetSlice<'_>]) {
+        self.running_targets.tick(now, projects);
+    }
 
     /// Reset the CPU pane after a config reload changes CPU poll
     /// behavior. Delegates to `CpuPane::reset`.
@@ -166,7 +193,7 @@ mod detail_set_tests {
             generation: 3,
         };
         let (pkg, git, targets) = empty_detail();
-        panes.set_detail_data(key, pkg, git, targets);
+        panes.set_detail_data(key, pkg, git, targets, None);
 
         assert!(panes.pane_data.detail_is_current(Some(key)));
         assert!(panes.package.content().is_some());
@@ -193,7 +220,7 @@ mod detail_set_tests {
             generation: 7,
         };
         let (pkg, git, targets) = empty_detail();
-        panes.set_detail_data(key, pkg, git, targets);
+        panes.set_detail_data(key, pkg, git, targets, None);
 
         let clear_key = DetailCacheKey {
             row:        other_row(),

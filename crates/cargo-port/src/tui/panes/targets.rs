@@ -20,6 +20,7 @@ use tui_pane::accent_color;
 use tui_pane::column_header_color;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
+use tui_pane::success_color;
 
 use super::TargetEntry;
 use super::TargetSource;
@@ -33,6 +34,7 @@ use crate::tui::pane::PaneTitleCount;
 use crate::tui::pane::PaneTitleGroup;
 use crate::tui::panes;
 use crate::tui::render;
+use crate::tui::running_targets::RunningKey;
 
 /// Cap on the Source column width so a single long member name can't
 /// crowd out the target name. Overflow truncates with an ellipsis.
@@ -88,7 +90,16 @@ fn render_targets_with_data(
         .chrome
         .block(targets_title, matches!(focus, PaneFocusState::Active));
 
-    let entries = panes::build_target_list_from_data(data);
+    let running_for = |entry: &TargetEntry| {
+        ctx.running_targets_dir.is_some_and(|dir| {
+            ctx.running_targets.is_running(&RunningKey {
+                target_dir: dir.clone(),
+                kind:       entry.kind,
+                name:       entry.name.clone(),
+            })
+        })
+    };
+    let entries = panes::build_target_list_from_data(data, &running_for);
     pane.viewport.set_len(entries.len());
     let content_inner = targets_block.inner(area);
 
@@ -108,7 +119,7 @@ fn render_targets_with_data(
         .set_viewport_rows(usize::from(data_area.height));
 
     let layout = compute_layout(&entries, content_inner.width);
-    let rows = build_rows(&entries, pane, focus, &layout);
+    let rows = build_rows(&entries, pane, focus, &layout, &running_for);
     let widths = build_widths(&layout);
 
     let table = Table::new(rows, widths)
@@ -179,23 +190,46 @@ fn compute_layout(entries: &[TargetEntry], content_width: u16) -> Layout {
     }
 }
 
+/// Trailing marker appended to the target name when the target's process
+/// is currently running. Includes a leading space so it sits one column
+/// off from the name (or the ellipsis when truncated).
+const RUNNING_SUFFIX: &str = " (r)";
+
 fn build_rows<'a>(
     entries: &'a [TargetEntry],
     pane: &TargetsPane,
     focus: PaneFocusState,
     layout: &Layout,
+    running_for: &dyn Fn(&TargetEntry) -> bool,
 ) -> Vec<Row<'a>> {
     entries
         .iter()
         .enumerate()
         .map(|(row_index, entry)| {
             let selection = pane::selection_state(&pane.viewport, row_index, focus);
-            let display =
-                render::truncate_with_ellipsis(&entry.display_name, layout.name_max, "\u{2026}");
+            let name_cell = if running_for(entry) {
+                let (visible, suffix) = render::truncate_with_suffix(
+                    &entry.display_name,
+                    RUNNING_SUFFIX,
+                    layout.name_max,
+                    "\u{2026}",
+                );
+                Cell::from(Line::from(vec![
+                    Span::raw(format!(" {visible}")),
+                    Span::styled(suffix, Style::default().fg(success_color())),
+                ]))
+            } else {
+                let display = render::truncate_with_ellipsis(
+                    &entry.display_name,
+                    layout.name_max,
+                    "\u{2026}",
+                );
+                Cell::from(format!(" {display}"))
+            };
             let source_label =
                 render::truncate_with_ellipsis(entry.source.label(), layout.source, "\u{2026}");
             Row::new(vec![
-                Cell::from(format!(" {display}")),
+                name_cell,
                 Cell::from(source_label).style(Style::default().fg(source_color(&entry.source))),
                 Cell::from(
                     Line::from(format!("{} ", entry.kind.label())).alignment(Alignment::Right),

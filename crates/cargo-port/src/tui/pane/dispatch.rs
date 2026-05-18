@@ -16,9 +16,11 @@ use strum::EnumIter;
 use tui_pane::ToastId;
 
 use super::DismissTarget;
+use crate::project::AbsolutePath;
 use crate::tui::keymap_ui::KeymapRenderInputs;
 use crate::tui::panes::PaneId;
 use crate::tui::project_list::ProjectList;
+use crate::tui::running_targets::RunningTargets;
 use crate::tui::settings::SettingsRenderInputs;
 use crate::tui::state::CiStatusLookup;
 use crate::tui::state::Config;
@@ -73,6 +75,16 @@ pub(crate) struct PaneRenderCtx<'a> {
     /// description. `0` when no sync is requested. Each pane clamps
     /// this by its own per-pane description max height.
     pub(crate) description_min_height: u16,
+    /// Snapshot of currently-running cargo targets across the host,
+    /// refreshed once per frame by `App::running_targets_tick`. The
+    /// Targets pane joins this against the displayed project's
+    /// `target_directory` to flag running rows.
+    pub(crate) running_targets:        &'a RunningTargets,
+    /// Resolved canonical `target_directory` of the currently-displayed
+    /// project, used to build `RunningKey`s. `None` when the
+    /// workspace's cargo metadata hasn't landed yet or no project is
+    /// selected.
+    pub(crate) running_targets_dir:    Option<&'a AbsolutePath>,
 }
 
 /// Result of a single pane's hit-test at a screen position.

@@ -257,8 +257,10 @@ fn event_loop(
         }
 
         let (bg_stats, bg_elapsed) = poll_background_frame(app);
-        app.panes.cpu_tick(Instant::now());
-        app.scan.prune_shimmers(Instant::now());
+        let tick_now = Instant::now();
+        app.panes.cpu_tick(tick_now);
+        app.running_targets_tick(tick_now);
+        app.scan.prune_shimmers(tick_now);
         clear_terminal_if_dirty(terminal, app)?;
 
         let rows_elapsed = measure(|| app.ensure_visible_rows_cached());

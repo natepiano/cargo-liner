@@ -45,7 +45,7 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
     let Some(targets_data) = app.panes.targets.content().cloned() else {
         return;
     };
-    let entries = build_target_list_from_data(&targets_data);
+    let entries = build_target_list_from_data(&targets_data, &|entry| app.target_is_running(entry));
     if let Some(entry) = entries.get(app.panes.targets.viewport.pos())
         && let Some(abs_path) = app.project_list.selected_project_path()
     {

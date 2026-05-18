@@ -108,7 +108,7 @@ impl ProjectCounts {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub enum RunTargetKind {
     Binary,
     Example,
@@ -202,14 +202,27 @@ impl BuildMode {
 }
 
 /// Flatten `TargetsData` into a single render order: binaries first,
-/// then examples, then benches. Each kind section is already
-/// pre-sorted by [`TargetsData::from_workspace_metadata`].
-pub fn build_target_list_from_data(data: &TargetsData) -> Vec<TargetEntry> {
-    let mut entries =
-        Vec::with_capacity(data.binaries.len() + data.examples.len() + data.benches.len());
-    entries.extend(data.binaries.iter().cloned());
-    entries.extend(data.examples.iter().cloned());
-    entries.extend(data.benches.iter().cloned());
+/// then examples, then benches. Each kind section is pre-sorted by
+/// [`TargetsData::from_workspace_metadata`]; this fn applies a stable
+/// running-first pre-pass per section, so running rows float to the top
+/// of their kind without disturbing alphabetical order otherwise.
+pub fn build_target_list_from_data(
+    data: &TargetsData,
+    running_for: &dyn Fn(&TargetEntry) -> bool,
+) -> Vec<TargetEntry> {
+    let mut binaries = data.binaries.clone();
+    let mut examples = data.examples.clone();
+    let mut benches = data.benches.clone();
+    let stable_running_first = |xs: &mut Vec<TargetEntry>| {
+        xs.sort_by_key(|entry| !running_for(entry));
+    };
+    stable_running_first(&mut binaries);
+    stable_running_first(&mut examples);
+    stable_running_first(&mut benches);
+    let mut entries = Vec::with_capacity(binaries.len() + examples.len() + benches.len());
+    entries.extend(binaries);
+    entries.extend(examples);
+    entries.extend(benches);
     entries
 }
 
@@ -793,6 +806,56 @@ fn example_category(manifest_dir: Option<&Path>, src_path: &Path) -> String {
             }
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod target_list_tests {
+    use super::*;
+
+    fn entry(name: &str, kind: RunTargetKind) -> TargetEntry {
+        TargetEntry {
+            name: name.into(),
+            display_name: name.into(),
+            kind,
+            source: TargetSource::Workspace,
+        }
+    }
+
+    fn data() -> TargetsData {
+        TargetsData {
+            binaries: vec![
+                entry("a", RunTargetKind::Binary),
+                entry("b", RunTargetKind::Binary),
+                entry("c", RunTargetKind::Binary),
+            ],
+            examples: vec![entry("ex1", RunTargetKind::Example)],
+            benches:  vec![entry("bn1", RunTargetKind::Bench)],
+        }
+    }
+
+    #[test]
+    fn running_binary_floats_to_top_of_its_section() {
+        let data = data();
+        let entries = build_target_list_from_data(&data, &|e| e.name == "b");
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["b", "a", "c", "ex1", "bn1"]);
+    }
+
+    #[test]
+    fn empty_running_set_preserves_input_order() {
+        let data = data();
+        let entries = build_target_list_from_data(&data, &|_| false);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "c", "ex1", "bn1"]);
+    }
+
+    #[test]
+    fn all_running_preserves_input_order() {
+        let data = data();
+        let entries = build_target_list_from_data(&data, &|_| true);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "c", "ex1", "bn1"]);
+    }
 }
 
 /// Within an examples section, sort root-level (no `/`) before

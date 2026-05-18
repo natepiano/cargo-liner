@@ -14,6 +14,7 @@ mod pane;
 mod panes;
 mod project_list;
 mod render;
+mod running_targets;
 mod settings;
 mod state;
 mod terminal;
