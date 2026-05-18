@@ -173,6 +173,14 @@ impl KeymapPane {
         self.line_targets.get(line).copied().flatten()
     }
 
+    /// First rendered line for the given selectable row, if any.
+    #[must_use]
+    pub fn line_for_selection(&self, selection: usize) -> Option<usize> {
+        self.line_targets
+            .iter()
+            .position(|target| *target == Some(selection))
+    }
+
     /// Selectable row at screen `pos`, or `None` if `pos` lies
     /// outside the rendered content area, the overlay is not
     /// rendered (zero-sized content area), or the line is inert.

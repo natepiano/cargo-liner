@@ -147,6 +147,26 @@ pub(super) fn build_lines<'a>(
     }
 }
 
+fn keep_visible_scroll_offset(
+    current_offset: usize,
+    selected_line: usize,
+    visible_height: usize,
+    line_count: usize,
+) -> usize {
+    if visible_height == 0 || line_count <= visible_height {
+        return 0;
+    }
+    let max_offset = line_count - visible_height;
+    let clamped = current_offset.min(max_offset);
+    if selected_line < clamped {
+        selected_line
+    } else if selected_line >= clamped + visible_height {
+        selected_line + 1 - visible_height
+    } else {
+        clamped
+    }
+}
+
 pub(super) fn keymap_popup_height(row_count: usize, area_height: u16) -> u16 {
     let content_height = u16::try_from(row_count).unwrap_or(u16::MAX);
     content_height
@@ -191,18 +211,22 @@ pub fn render_keymap_pane_body(
 
     pane.viewport_mut().set_len(inputs.selectable_len);
     pane.viewport_mut().set_content_area(inner);
+    pane.replace_line_targets(inputs.line_targets.clone());
 
     let selected_pos = pane.viewport().pos();
-    // Scroll to keep selection visible.
+    let line_count = inputs.lines.len();
     let visible_height = usize::from(inner.height);
-    let scroll_offset = if selected_pos >= visible_height {
-        selected_pos - visible_height + 1
-    } else {
-        0
-    };
+    let selected_line = pane
+        .line_for_selection(selected_pos)
+        .unwrap_or(selected_pos);
+    let scroll_offset = keep_visible_scroll_offset(
+        pane.viewport().scroll_offset(),
+        selected_line,
+        visible_height,
+        line_count,
+    );
     pane.viewport_mut().set_viewport_rows(visible_height);
     pane.viewport_mut().set_scroll_offset(scroll_offset);
-    pane.replace_line_targets(inputs.line_targets.clone());
 
     let para =
         Paragraph::new(inputs.lines.clone()).scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
@@ -210,7 +234,7 @@ pub fn render_keymap_pane_body(
     render_overflow_affordance(
         frame,
         popup.outer,
-        pane.viewport().overflow(),
+        tui_pane::ViewportOverflow::new(line_count, scroll_offset, visible_height, selected_line),
         Style::default().fg(label_color()),
     );
 }

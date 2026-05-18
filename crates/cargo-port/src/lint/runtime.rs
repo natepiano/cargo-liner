@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::io;
+use std::io::Read;
 use std::path::Path;
+use std::process::Child;
 use std::process::Command;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -106,9 +109,18 @@ enum SupervisorMsg {
     },
 }
 
+type ChildSlot = Arc<Mutex<Option<Child>>>;
+
+pub struct RunCommandsConfig<'a> {
+    pub cache_root:       &'a Path,
+    pub commands:         &'a [LintCommandConfig],
+    pub cache_size_bytes: Option<u64>,
+}
+
 struct ProjectWorker {
     stop:       Arc<AtomicBool>,
     trigger_tx: Sender<LintTriggerEvent>,
+    child:      ChildSlot,
     handle:     JoinHandle<()>,
 }
 
@@ -312,6 +324,12 @@ fn reconcile_workers(
 
 fn stop_worker(worker: ProjectWorker) {
     worker.stop.store(true, Ordering::Relaxed);
+    if let Ok(mut slot) = worker.child.lock()
+        && let Some(mut child) = slot.take()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     drop(worker.trigger_tx);
     let _ = worker.handle.join();
 }
@@ -324,6 +342,8 @@ fn spawn_project_worker(
 ) -> ProjectWorker {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::clone(&stop);
+    let child: ChildSlot = Arc::new(Mutex::new(None));
+    let child_slot = Arc::clone(&child);
     let (trigger_tx, trigger_rx) = mpsc::channel::<LintTriggerEvent>();
     let worker_project_label = project_label;
     let cache_root = config.cache_root.clone();
@@ -365,7 +385,7 @@ fn spawn_project_worker(
             if let Some(deadline) = next_run_at
                 && Instant::now() >= deadline
             {
-                if project_still_runnable(&project_root) {
+                if !stop_flag.load(Ordering::Relaxed) && project_still_runnable(&project_root) {
                     tracing::info!(
                         path = %project_root.display(),
                         "lint_worker_run_start"
@@ -374,11 +394,14 @@ fn spawn_project_worker(
                     let _ = run_commands_for_project(
                         &project_root,
                         &worker_project_label,
-                        &cache_root,
-                        &commands,
-                        cache_size_bytes,
+                        &RunCommandsConfig {
+                            cache_root: &cache_root,
+                            commands: &commands,
+                            cache_size_bytes,
+                        },
                         &status_cache,
                         &bg_tx,
+                        &child_slot,
                     );
                     tracing::info!(
                         path = %project_root.display(),
@@ -393,6 +416,7 @@ fn spawn_project_worker(
     ProjectWorker {
         stop,
         trigger_tx,
+        child,
         handle,
     }
 }
@@ -453,16 +477,18 @@ struct CommandExecution {
 pub fn run_commands_for_project(
     project_root: &Path,
     project_label: &str,
-    cache_root: &Path,
-    commands: &[LintCommandConfig],
-    cache_size_bytes: Option<u64>,
+    config: &RunCommandsConfig<'_>,
     status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
     bg_tx: &Sender<BackgroundMsg>,
+    child_slot: &ChildSlot,
 ) -> io::Result<()> {
     if !project_still_runnable(project_root) {
         return Ok(());
     }
 
+    let cache_root = config.cache_root;
+    let commands = config.commands;
+    let cache_size_bytes = config.cache_size_bytes;
     let output_dir = paths::output_dir_under(cache_root, project_root);
     std::fs::create_dir_all(&output_dir)?;
     let started_at = Local::now();
@@ -507,7 +533,14 @@ pub fn run_commands_for_project(
         bg_tx,
     );
 
-    let result = execute_commands(project_root, cache_root, commands, &output_dir, &mut run)?;
+    let result = execute_commands(
+        project_root,
+        cache_root,
+        commands,
+        &output_dir,
+        &mut run,
+        child_slot,
+    )?;
     if matches!(result, CommandsResult::ProjectRemoved) {
         let _ = read_write::clear_latest_under(cache_root, project_root);
         publish_status(status_cache, project_root, LintStatus::NoLog, bg_tx);
@@ -552,6 +585,7 @@ fn execute_commands(
     commands: &[LintCommandConfig],
     output_dir: &Path,
     run: &mut LintRun,
+    child_slot: &ChildSlot,
 ) -> io::Result<CommandsResult> {
     let manifest_path = project_root.join("Cargo.toml");
     let mut failed = false;
@@ -567,6 +601,7 @@ fn execute_commands(
             output_dir,
             command,
             index,
+            child_slot,
         )?;
         tracing::info!(
             command = %command.name,
@@ -626,26 +661,64 @@ fn run_command(
     output_dir: &Path,
     command: &LintCommandConfig,
     index: usize,
+    child_slot: &ChildSlot,
 ) -> io::Result<CommandExecution> {
     let log_name = command_log_name(command, index);
     let log_path = output_dir.join(format!("{log_name}-latest.log"));
     let tmp_path = output_dir.join(format!("{log_name}-latest.log.tmp"));
 
     let started = Instant::now();
-    let shell_output = Command::new("/bin/sh")
+    let spawn_result = Command::new("/bin/sh")
         .arg("-c")
         .arg(&command.command)
         .current_dir(project_root)
         .env("PROJECT_DIR", project_root)
         .env("MANIFEST_PATH", manifest_path)
         .env("LINT_OUTPUT_DIR", output_dir)
-        .output();
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
 
-    let (success, exit_code, bytes) = match shell_output {
-        Ok(output) => {
-            let mut bytes = output.stdout;
-            bytes.extend_from_slice(&output.stderr);
-            (output.status.success(), output.status.code(), bytes)
+    let (success, exit_code, bytes) = match spawn_result {
+        Ok(mut child) => {
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+            if let Ok(mut slot) = child_slot.lock() {
+                *slot = Some(child);
+            }
+            let stdout_join = thread::spawn(move || {
+                let mut buf = Vec::new();
+                if let Some(mut s) = stdout {
+                    let _ = s.read_to_end(&mut buf);
+                }
+                buf
+            });
+            let stderr_join = thread::spawn(move || {
+                let mut buf = Vec::new();
+                if let Some(mut s) = stderr {
+                    let _ = s.read_to_end(&mut buf);
+                }
+                buf
+            });
+            let mut bytes = stdout_join.join().unwrap_or_default();
+            bytes.extend(stderr_join.join().unwrap_or_default());
+            let taken = child_slot.lock().ok().and_then(|mut slot| slot.take());
+            match taken {
+                Some(mut child) => match child.wait() {
+                    Ok(status) => (status.success(), status.code(), bytes),
+                    Err(err) => (
+                        false,
+                        None,
+                        format!(
+                            "failed to await lint command '{}': {err}\n",
+                            command.command
+                        )
+                        .into_bytes(),
+                    ),
+                },
+                None => (false, None, bytes),
+            }
         },
         Err(err) => (
             false,
@@ -855,11 +928,14 @@ mod tests {
         run_commands_for_project(
             project_dir.path(),
             "~/rust/demo",
-            &cache_root,
-            &commands,
-            None,
+            &RunCommandsConfig {
+                cache_root:       cache_root.as_path(),
+                commands:         &commands,
+                cache_size_bytes: None,
+            },
             &Arc::new(Mutex::new(HashMap::new())),
             &tx,
+            &Arc::new(Mutex::new(None)),
         )
         .expect("run commands");
 
@@ -1007,11 +1083,14 @@ mod tests {
         run_commands_for_project(
             project_dir.path(),
             "~/rust/demo",
-            cache_dir.path(),
-            &commands,
-            None,
+            &RunCommandsConfig {
+                cache_root:       cache_dir.path(),
+                commands:         &commands,
+                cache_size_bytes: None,
+            },
             &Arc::new(Mutex::new(HashMap::new())),
             &tx,
+            &Arc::new(Mutex::new(None)),
         )
         .expect("run commands");
 
@@ -1094,6 +1173,7 @@ mod tests {
             ProjectWorker {
                 stop,
                 trigger_tx,
+                child: Arc::new(Mutex::new(None)),
                 handle,
             },
             exited,

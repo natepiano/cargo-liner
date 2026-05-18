@@ -217,6 +217,7 @@ pub(super) fn handle_notify_event(
             && let Some(event) = event
             && let Some(lint_trigger) =
                 lint::classify_event_path(&entry.abs_path, event.kind, event_path)
+            && entry.abs_path.join("Cargo.toml").is_file()
         {
             lint_runtime.lint_trigger(lint_trigger);
         }
