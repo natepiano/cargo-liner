@@ -51,7 +51,10 @@ pub fn search_finder(index: &[FinderItem], query: &str, max_results: usize) -> (
         return (Vec::new(), 0);
     }
 
-    let words: Vec<&str> = query.split_whitespace().collect();
+    let words: Vec<&str> = query
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, '/' | '\\'))
+        .filter(|word| !word.is_empty())
+        .collect();
     if words.is_empty() {
         return (Vec::new(), 0);
     }

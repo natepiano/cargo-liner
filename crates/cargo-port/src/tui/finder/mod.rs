@@ -143,6 +143,33 @@ mod tests {
     }
 
     #[test]
+    fn finder_query_treats_slash_as_word_separator() {
+        let item = FinderItem {
+            display_name:  "bevy".to_string(),
+            search_tokens: build_search_tokens(&[
+                "bevy",
+                "bevy",
+                "~/rust/bevy",
+                "main",
+                FinderKind::Project.label(),
+            ]),
+            kind:          FinderKind::Project,
+            project_path:  test_path("~/rust/bevy"),
+            target_name:   None,
+            parent_label:  "bevy".to_string(),
+            branch:        "main".to_string(),
+            dir:           "~/rust/bevy".to_string(),
+        };
+        let index = [item];
+        let (with_slash, total_slash) = search_finder(&index, "rust/", 50);
+        assert_eq!(with_slash, vec![0]);
+        assert_eq!(total_slash, 1);
+        let (with_path, total_path) = search_finder(&index, "rust/bevy", 50);
+        assert_eq!(with_path, vec![0]);
+        assert_eq!(total_path, 1);
+    }
+
+    #[test]
     fn build_finder_index_tokenizes_display_name_and_dir_segments() {
         let pkg = Package {
             path: test_path("~/rust/bevy/tools/build-easefunction-graphs"),
