@@ -39,7 +39,7 @@ tui_pane::action_enum! {
         FetchMore  => ("fetch_more",  "fetch more",  "Fetch more CI runs");
         ShowBranch => ("show_branch", "branch",      "Show branch-only runs");
         ShowAll    => ("show_all",    "all",         "Show all runs");
-        ClearCache => ("clear_cache", "clear cache", "Clear CI cache");
+        ClearCache => ("clear_cache", "del cache", "Clear CI cache");
     }
 }
 
@@ -47,7 +47,7 @@ tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum LintsAction {
         Activate     => ("activate",      "open",        "Open lint output");
-        ClearHistory => ("clear_history", "clear cache", "Clear lint history");
+        ClearHistory => ("clear_history", "del history", "Clear lint history");
     }
 }
 

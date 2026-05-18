@@ -181,10 +181,10 @@ fn focused_app_panes_render_expected_pane_action_labels() {
             app.panes.git.set_content(GitData::default());
         }),
         (AppPaneId::Targets, &["run", "release"], |_| {}),
-        (AppPaneId::Lints, &["open", "clear cache"], |_| {}),
+        (AppPaneId::Lints, &["open", "del history"], |_| {}),
         (
             AppPaneId::CiRuns,
-            &["open", "fetch more", "all", "clear cache"],
+            &["open", "fetch more", "all", "del cache"],
             |app| {
                 app.ci.set_content(ci_data_with_runs(2));
                 app.ci.viewport.set_pos(0);
@@ -555,12 +555,13 @@ fn focused_finder_open_bar_suppresses_all_regions() {
 // ── AppGlobalAction four-variant bar snapshots ────────────────────
 
 #[test]
-fn focused_package_bar_renders_four_app_globals() {
-    // `AppGlobalAction` has four variants: `{ Find, OpenEditor,
-    // OpenTerminal, Rescan }`. The Global region of a focused Navigable
-    // pane must surface every variant's bar_label so users can see the
-    // full app-globals strip. We focus Package (Mode::Navigable) and
-    // read `bar.global`.
+fn focused_package_bar_renders_every_app_global() {
+    // Walks `AppGlobalAction::ALL` so adding a variant automatically
+    // extends the assertion. Previously hardcoded `{find, editor,
+    // terminal, rescan}` and silently stayed green after `Clean` was
+    // added but missed from the status-line strip — that is the bug
+    // class this test now guards against, paired with the const checks
+    // in `tui::render`.
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
     app.panes.package.set_content(package_data_no_version());
@@ -576,10 +577,12 @@ fn focused_package_bar_renders_four_app_globals() {
     );
     let global = flatten(&bar.global);
 
-    for label in ["find", "editor", "terminal", "rescan"] {
+    for variant in AppGlobalAction::ALL {
+        let label = variant.bar_label();
         assert!(
             global.contains(label),
-            "Global region must include AppGlobalAction label {label:?} (got {global:?})",
+            "Global region must include AppGlobalAction::{variant:?} \
+             label {label:?} (got {global:?})",
         );
     }
 }

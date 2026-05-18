@@ -12,6 +12,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::Action;
 use tui_pane::BLOCK_BORDER_WIDTH;
 use tui_pane::BYTES_PER_GIB;
 use tui_pane::BYTES_PER_KIB;
@@ -570,32 +571,99 @@ pub(super) fn cargo_port_bar_palette() -> BarPalette {
     }
 }
 
-fn cargo_port_status_line_globals(app: &App) -> [StatusLineGlobal<AppGlobalAction>; 9] {
+/// Ordered list of [`AppGlobalAction`] variants that appear in the
+/// status-line strip, left-to-right. The runtime array reads positions
+/// from here; the const block below enforces that every variant of
+/// [`AppGlobalAction::ALL`] appears at least once.
+const STRIP_APP_GLOBALS_ORDER: &[AppGlobalAction] = &[
+    AppGlobalAction::Find,
+    AppGlobalAction::OpenEditor,
+    AppGlobalAction::OpenTerminal,
+    AppGlobalAction::Clean,
+    AppGlobalAction::Rescan,
+];
+
+const STRIP_FRAMEWORK_SLOT_COUNT: usize = 4;
+const STRIP_SLOT_COUNT: usize = STRIP_APP_GLOBALS_ORDER.len() + STRIP_FRAMEWORK_SLOT_COUNT;
+
+/// Unique index per [`AppGlobalAction`] variant for const-context
+/// comparison. The exhaustive `match` is what makes the compile-time
+/// guard work: adding a new variant makes this non-exhaustive → compile
+/// error, forcing the developer to assign it a position and decide its
+/// per-variant state in [`build_app_slot`].
+const fn app_global_idx(action: AppGlobalAction) -> u8 {
+    match action {
+        AppGlobalAction::Find => 0,
+        AppGlobalAction::OpenEditor => 1,
+        AppGlobalAction::OpenTerminal => 2,
+        AppGlobalAction::Rescan => 3,
+        AppGlobalAction::Clean => 4,
+    }
+}
+
+const _: () = {
+    let mut i = 0;
+    while i < AppGlobalAction::ALL.len() {
+        let target = app_global_idx(AppGlobalAction::ALL[i]);
+        let mut found = false;
+        let mut j = 0;
+        while j < STRIP_APP_GLOBALS_ORDER.len() {
+            if app_global_idx(STRIP_APP_GLOBALS_ORDER[j]) == target {
+                found = true;
+                break;
+            }
+            j += 1;
+        }
+        assert!(
+            found,
+            "AppGlobalAction variant missing from STRIP_APP_GLOBALS_ORDER — add it and \
+             place its slot in cargo_port_status_line_globals",
+        );
+        i += 1;
+    }
+};
+
+fn build_app_slot(action: AppGlobalAction, app: &App) -> StatusLineGlobal<AppGlobalAction> {
     let selected_project_is_deleted = app.project_list.selected_project_is_deleted();
-    let terminal_command_configured = !app.config.terminal_command().trim().is_empty();
-    let editor_state = if selected_project_is_deleted {
-        ShortcutState::Disabled
-    } else {
-        ShortcutState::Enabled
+    let state = match action {
+        AppGlobalAction::Find | AppGlobalAction::Rescan => ShortcutState::Enabled,
+        AppGlobalAction::OpenEditor => {
+            if selected_project_is_deleted {
+                ShortcutState::Disabled
+            } else {
+                ShortcutState::Enabled
+            }
+        },
+        AppGlobalAction::OpenTerminal => {
+            let configured = !app.config.terminal_command().trim().is_empty();
+            if configured && !selected_project_is_deleted {
+                ShortcutState::Enabled
+            } else {
+                ShortcutState::Disabled
+            }
+        },
+        AppGlobalAction::Clean => {
+            if app.project_list.clean_selection().is_some() {
+                ShortcutState::Enabled
+            } else {
+                ShortcutState::Disabled
+            }
+        },
     };
-    let terminal_state = if terminal_command_configured && !selected_project_is_deleted {
-        ShortcutState::Enabled
-    } else {
-        ShortcutState::Disabled
-    };
-    let clean_state = if app.project_list.clean_selection().is_some() {
-        ShortcutState::Enabled
-    } else {
-        ShortcutState::Disabled
-    };
+    StatusLineGlobal::app(action).with_state(state)
+}
+
+fn cargo_port_status_line_globals(
+    app: &App,
+) -> [StatusLineGlobal<AppGlobalAction>; STRIP_SLOT_COUNT] {
     [
-        StatusLineGlobal::app(AppGlobalAction::Find),
-        StatusLineGlobal::app(AppGlobalAction::OpenEditor).with_state(editor_state),
-        StatusLineGlobal::app(AppGlobalAction::OpenTerminal).with_state(terminal_state),
-        StatusLineGlobal::app(AppGlobalAction::Clean).with_state(clean_state),
+        build_app_slot(STRIP_APP_GLOBALS_ORDER[0], app),
+        build_app_slot(STRIP_APP_GLOBALS_ORDER[1], app),
+        build_app_slot(STRIP_APP_GLOBALS_ORDER[2], app),
+        build_app_slot(STRIP_APP_GLOBALS_ORDER[3], app),
         StatusLineGlobal::framework(FrameworkGlobalAction::OpenSettings),
         StatusLineGlobal::framework(FrameworkGlobalAction::OpenKeymap),
-        StatusLineGlobal::app(AppGlobalAction::Rescan),
+        build_app_slot(STRIP_APP_GLOBALS_ORDER[4], app),
         StatusLineGlobal::framework(FrameworkGlobalAction::Quit),
         StatusLineGlobal::framework(FrameworkGlobalAction::Restart),
     ]
