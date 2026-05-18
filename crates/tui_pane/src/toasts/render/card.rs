@@ -68,9 +68,7 @@ pub(super) fn render_toast(
             .fg(title_color())
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default()
-            .fg(inactive_title_color())
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(inactive_title_color())
     };
     let body_style = if is_error {
         Style::default().fg(palette.error)

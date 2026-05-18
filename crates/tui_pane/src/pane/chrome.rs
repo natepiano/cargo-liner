@@ -67,12 +67,13 @@ impl PaneChrome {
 /// "default foreground" colour.
 #[must_use]
 pub fn default_pane_chrome() -> PaneChrome {
-    let title_style = Style::default().add_modifier(Modifier::BOLD);
     PaneChrome {
         active_border:   Style::default().fg(active_border_color()),
         inactive_border: Style::default().fg(inactive_border_color()),
-        active_title:    title_style.fg(title_color()),
-        inactive_title:  title_style.fg(inactive_title_color()),
+        active_title:    Style::default()
+            .fg(title_color())
+            .add_modifier(Modifier::BOLD),
+        inactive_title:  Style::default().fg(inactive_title_color()),
     }
 }
 

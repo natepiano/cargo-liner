@@ -151,7 +151,7 @@ pub const fn high_contrast_dark() -> Theme {
             active_border:   StyleSpec::bold(Color::LightYellow),
             inactive_border: StyleSpec::from_color(Color::White),
             active_title:    StyleSpec::bold(Color::LightYellow),
-            inactive_title:  StyleSpec::bold(Color::White),
+            inactive_title:  StyleSpec::from_color(Color::White),
         },
         focus:       FocusTheme {
             active:     StyleSpec::from_color(Color::Rgb(0, 60, 100)),
@@ -206,7 +206,7 @@ pub const fn high_contrast_light() -> Theme {
             active_border:   StyleSpec::bold(Color::Rgb(140, 60, 0)),
             inactive_border: StyleSpec::from_color(Color::Black),
             active_title:    StyleSpec::bold(Color::Rgb(140, 60, 0)),
-            inactive_title:  StyleSpec::bold(Color::Black),
+            inactive_title:  StyleSpec::from_color(Color::Black),
         },
         focus:       FocusTheme {
             active:     StyleSpec::from_color(Color::Rgb(255, 230, 100)),

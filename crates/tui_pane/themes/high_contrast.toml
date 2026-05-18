@@ -19,7 +19,7 @@ name       = "High Contrast Dark"
 active_border   = { color = "LightYellow", bold = true }
 active_title    = { color = "LightYellow", bold = true }
 inactive_border = "White"
-inactive_title  = { color = "White", bold = true }
+inactive_title  = "White"
 
 [variants.focus]
 active     = { r = 0, g = 60, b = 100 }
@@ -67,7 +67,7 @@ name       = "High Contrast Light"
 active_border   = { color = { r = 140, g = 60, b = 0 }, bold = true }
 active_title    = { color = { r = 140, g = 60, b = 0 }, bold = true }
 inactive_border = "Black"
-inactive_title  = { color = "Black", bold = true }
+inactive_title  = "Black"
 
 [variants.focus]
 active     = { r = 255, g = 230, b = 100 }
