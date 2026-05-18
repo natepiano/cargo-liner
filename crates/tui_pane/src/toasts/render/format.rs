@@ -36,13 +36,32 @@ pub(super) fn truncate(text: &str, width: usize) -> String {
 }
 
 pub(super) fn truncate_with_ellipsis(text: &str, width: usize) -> String {
-    if text.len() <= width {
+    const ELLIPSIS: &str = "...";
+    const ELLIPSIS_WIDTH: usize = ELLIPSIS.len();
+
+    let total: usize = text
+        .chars()
+        .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+        .sum();
+    if total <= width {
         return text.to_owned();
     }
-    if width <= 1 {
-        return String::new();
+    if width <= ELLIPSIS_WIDTH {
+        return truncate(text, width);
     }
-    format!("{}...", &text[..width.saturating_sub(3)])
+    let budget = width - ELLIPSIS_WIDTH;
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > budget {
+            break;
+        }
+        out.push(ch);
+        used += ch_width;
+    }
+    out.push_str(ELLIPSIS);
+    out
 }
 
 pub(super) fn format_elapsed(elapsed: Duration) -> String {

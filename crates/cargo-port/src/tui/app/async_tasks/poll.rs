@@ -8,6 +8,7 @@ use tui_pane::TrackedItemKey;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::types::PollBackgroundStats;
+use crate::tui::panes::CiFetchKind;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -84,7 +85,10 @@ impl App {
                         let label = if new_runs > 0 {
                             format!("{new_runs} new runs fetched")
                         } else {
-                            "no new runs".to_string()
+                            match kind {
+                                CiFetchKind::FetchOlder => "no older runs found".to_string(),
+                                CiFetchKind::Sync => "no new runs found".to_string(),
+                            }
                         };
                         let result_item = TrackedItem {
                             label,

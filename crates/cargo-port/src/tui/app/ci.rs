@@ -91,7 +91,6 @@ impl App {
                         "no new runs found".to_string(),
                         std::time::Instant::now(),
                     );
-                    self.show_timed_warning_toast("CI", "No new runs found".to_string());
                     // Preserve current exhaustion state.
                     prev_exhausted
                 }
@@ -114,7 +113,6 @@ impl App {
                         "no older runs found".to_string(),
                         std::time::Instant::now(),
                     );
-                    self.show_timed_warning_toast("CI", "No older runs found".to_string());
                     true
                 }
             },
