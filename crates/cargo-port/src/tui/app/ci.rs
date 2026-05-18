@@ -150,16 +150,15 @@ impl App {
         self.ci.display_mode_for(path)
     }
 
-    pub(super) fn toggle_ci_display_mode_for_inner(&mut self, path: &Path) {
+    pub(super) fn set_ci_display_mode_for_inner(&mut self, path: &Path, mode: CiRunDisplayMode) {
         if !self.project_list.ci_toggle_available_for_inner(path) {
             self.ci.remove_display_mode(path);
             return;
         }
-        let new_mode = match self.ci_display_mode_for(path) {
-            CiRunDisplayMode::BranchOnly => CiRunDisplayMode::All,
-            CiRunDisplayMode::All => CiRunDisplayMode::BranchOnly,
-        };
-        self.ci.set_display_mode(AbsolutePath::from(path), new_mode);
+        if self.ci_display_mode_for(path) == mode {
+            return;
+        }
+        self.ci.set_display_mode(AbsolutePath::from(path), mode);
         self.ci.viewport.home();
         self.scan.bump_generation();
     }

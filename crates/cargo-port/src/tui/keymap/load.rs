@@ -808,7 +808,8 @@ clean = "h"
             km.project_list.display_key_for(ProjectListAction::Clean),
             "c"
         );
-        assert_eq!(km.ci_runs.display_key_for(CiRunsAction::ToggleView), "b");
+        assert_eq!(km.ci_runs.display_key_for(CiRunsAction::ShowBranch), "b");
+        assert_eq!(km.ci_runs.display_key_for(CiRunsAction::ShowAll), "a");
     }
 
     #[test]
@@ -828,7 +829,7 @@ open_keymap = "Ctrl+k"
 
 [ci_runs]
 activate = "Enter"
-toggle_view = "t"
+show_branch = "t"
 clear_cache = "d"
 "#;
         let result = load_keymap_from_str(toml, NavigationKeys::ArrowsOnly);
@@ -843,7 +844,7 @@ clear_cache = "d"
                 .collect::<Vec<_>>()
         );
         assert_eq!(
-            result.keymap.ci_runs.key_for(CiRunsAction::ToggleView),
+            result.keymap.ci_runs.key_for(CiRunsAction::ShowBranch),
             Some(&KeyBind::plain(KeyCode::Char('t')))
         );
     }

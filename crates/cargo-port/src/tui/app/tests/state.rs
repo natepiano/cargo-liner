@@ -395,7 +395,7 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
         vec!["feat/demo"]
     );
 
-    app.toggle_ci_display_mode_for(project.path());
+    app.set_ci_display_mode_for(project.path(), CiRunDisplayMode::All);
 
     assert_eq!(
         app.project_list

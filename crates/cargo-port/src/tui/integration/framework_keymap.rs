@@ -46,6 +46,7 @@ use crate::config::NavigationKeys;
 use crate::project::AbsolutePath;
 use crate::tui::app::App;
 use crate::tui::app::CargoPortToastAction;
+use crate::tui::app::CiRunDisplayMode;
 use crate::tui::finder;
 use crate::tui::input;
 use crate::tui::keymap::CiRunsAction;
@@ -494,7 +495,8 @@ impl Shortcuts<App> for CiRunsPane {
         tui_pane::bindings! {
             crossterm::event::KeyCode::Enter => CiRunsAction::Activate,
             'f' => CiRunsAction::FetchMore,
-            'b' => CiRunsAction::ToggleView,
+            'b' => CiRunsAction::ShowBranch,
+            'a' => CiRunsAction::ShowAll,
             'd' => CiRunsAction::ClearCache,
         }
     }
@@ -502,6 +504,8 @@ impl Shortcuts<App> for CiRunsPane {
     fn visibility(&self, action: CiRunsAction, ctx: &App) -> Visibility {
         match action {
             CiRunsAction::Activate => ci_runs_activate_visibility(ctx),
+            CiRunsAction::ShowBranch => ci_runs_show_branch_visibility(ctx),
+            CiRunsAction::ShowAll => ci_runs_show_all_visibility(ctx),
             _ => Visibility::Visible,
         }
     }
@@ -520,6 +524,35 @@ fn ci_runs_activate_visibility(ctx: &App) -> Visibility {
         Visibility::Hidden
     } else {
         Visibility::Visible
+    }
+}
+
+/// `ShowBranch` is visible only when the current project is in `All`
+/// mode (i.e., pressing it switches to the destination, `BranchOnly`).
+fn ci_runs_show_branch_visibility(ctx: &App) -> Visibility {
+    ci_runs_destination_visibility(ctx, CiRunDisplayMode::All)
+}
+
+/// `ShowAll` is visible only when the current project is in
+/// `BranchOnly` mode (i.e., pressing it switches to `All`).
+fn ci_runs_show_all_visibility(ctx: &App) -> Visibility {
+    ci_runs_destination_visibility(ctx, CiRunDisplayMode::BranchOnly)
+}
+
+/// Visible when the selected project's current mode is `current_mode`
+/// — the slot points at the destination state, so it shows only when
+/// the user is on the opposite side of the toggle. Hidden when no
+/// project is selected. The dispatcher itself is a no-op when the
+/// project has no current branch, so we don't gate on
+/// `ci_toggle_available_for` here.
+fn ci_runs_destination_visibility(ctx: &App, current_mode: CiRunDisplayMode) -> Visibility {
+    let Some(path) = ctx.project_list.selected_project_path() else {
+        return Visibility::Hidden;
+    };
+    if ctx.ci.display_mode_for(path) == current_mode {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
     }
 }
 
@@ -757,12 +790,16 @@ mod tests {
     }
 
     #[test]
-    fn ci_runs_toggle_view_defaults_to_branch_key() {
+    fn ci_runs_branch_and_all_defaults() {
         let defaults = CiRunsPane::defaults().into_scope_map();
 
         assert_eq!(
             defaults.action_for(&tui_pane::KeyBind::from('b')),
-            Some(CiRunsAction::ToggleView),
+            Some(CiRunsAction::ShowBranch),
+        );
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::from('a')),
+            Some(CiRunsAction::ShowAll),
         );
         assert_eq!(defaults.action_for(&tui_pane::KeyBind::from('v')), None);
     }

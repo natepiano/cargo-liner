@@ -59,7 +59,8 @@ clear_history = "d"
 activate    = "Enter"
 clear_cache = "d"
 fetch_more  = "f"
-toggle_view = "b"
+show_all    = "a"
+show_branch = "b"
 
 [output]
 cancel = "Esc"

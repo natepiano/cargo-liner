@@ -41,7 +41,8 @@ tui_pane::action_enum! {
     pub enum CiRunsAction {
         Activate   => ("activate",    "open",        "Open run");
         FetchMore  => ("fetch_more",  "fetch more",  "Fetch more CI runs");
-        ToggleView => ("toggle_view", "branch/all",  "Toggle branch/all filter");
+        ShowBranch => ("show_branch", "branch",      "Show branch-only runs");
+        ShowAll    => ("show_all",    "all",         "Show all runs");
         ClearCache => ("clear_cache", "clear cache", "Clear CI cache");
     }
 }

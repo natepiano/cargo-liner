@@ -756,8 +756,8 @@ impl App {
         self.project_list.ci_toggle_available_for_inner(path)
     }
 
-    pub(super) fn toggle_ci_display_mode_for(&mut self, path: &Path) {
-        self.toggle_ci_display_mode_for_inner(path);
+    pub(super) fn set_ci_display_mode_for(&mut self, path: &Path, mode: CiRunDisplayMode) {
+        self.set_ci_display_mode_for_inner(path, mode);
     }
 
     pub(super) fn reset_cpu_placeholder(&mut self) {

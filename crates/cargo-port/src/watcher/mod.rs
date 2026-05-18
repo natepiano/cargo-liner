@@ -176,6 +176,14 @@ struct ProjectEntry {
     common_git_dir: Option<AbsolutePath>,
 }
 
+impl ProjectEntry {
+    /// Whether the project's manifest still exists on disk. A
+    /// `rm -rf` of a worktree removes `Cargo.toml` early in its
+    /// traversal, so this is the cheapest watcher-side signal that the
+    /// project is being torn down.
+    fn is_alive(&self) -> bool { self.abs_path.join(crate::constants::CARGO_TOML).is_file() }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WatchState {
     Idle,

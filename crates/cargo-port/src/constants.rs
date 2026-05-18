@@ -36,6 +36,10 @@ pub(crate) const GH_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const CI_CACHE_DIR: &str = "ci";
 pub(crate) const LINTS_CACHE_DIR: &str = "lint-runs";
 
+// ── Cargo manifest ───────────────────────────────────────────────────
+
+pub(crate) const CARGO_TOML: &str = "Cargo.toml";
+
 // ── Scan constants ────────────────────────────────────────────────────
 
 pub(crate) const NO_MORE_RUNS_MARKER: &str = ".no_more_runs";

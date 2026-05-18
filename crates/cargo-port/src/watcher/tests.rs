@@ -933,9 +933,11 @@ fn repo_with_member_event_context(
 ) {
     let project_dir = tmp.path().join("my_project");
     std::fs::create_dir_all(&project_dir).expect("create project dir");
+    std::fs::write(project_dir.join("Cargo.toml"), b"[package]").expect("write project Cargo.toml");
     init_git_repo(&project_dir);
     let member_dir = project_dir.join("crates").join("member");
     std::fs::create_dir_all(&member_dir).expect("create member dir");
+    std::fs::write(member_dir.join("Cargo.toml"), b"[package]").expect("write member Cargo.toml");
 
     let mut projects = HashMap::new();
     projects.insert(
@@ -1054,6 +1056,7 @@ fn worktree_git_event_context(
 
     let wt_root = tmp.path().join("main_repo_style_fix");
     std::fs::create_dir_all(&wt_root).expect("create worktree root");
+    std::fs::write(wt_root.join("Cargo.toml"), b"[package]").expect("write worktree Cargo.toml");
     std::fs::write(
         wt_root.join(".git"),
         format!("gitdir: {}\n", wt_git_dir.display()),
@@ -1087,11 +1090,15 @@ fn worktree_git_event_context(
 
 #[test]
 fn known_project_event_goes_to_pending_disk() {
-    let watch_roots = vec![AbsolutePath::from("/home/user".to_string())];
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let bevy_dir = tmp.path().join("rust").join("bevy");
+    std::fs::create_dir_all(&bevy_dir).expect("create bevy dir");
+    std::fs::write(bevy_dir.join("Cargo.toml"), b"[package]").expect("write Cargo.toml");
+    let watch_roots = vec![AbsolutePath::from(tmp.path())];
     let mut projects = HashMap::new();
-    let (key, entry) = make_project_entry("~/rust/bevy", Path::new("/home/user/rust/bevy"));
+    let (key, entry) = make_project_entry("~/rust/bevy", &bevy_dir);
     projects.insert(key, entry);
-    let project_parents = HashSet::from(["/home/user/rust".into()]);
+    let project_parents = HashSet::from([AbsolutePath::from(tmp.path().join("rust"))]);
     let discovered = HashSet::new();
     let ctx = EventContext {
         watch_roots:     &watch_roots,
@@ -1105,7 +1112,7 @@ fn known_project_event_goes_to_pending_disk() {
     let mut pending_new = HashMap::new();
 
     events::handle_event(
-        Path::new("/home/user/rust/bevy/src/lib.rs"),
+        &bevy_dir.join("src").join("lib.rs"),
         &ctx,
         &bg_tx,
         &mut pending_disk,
@@ -1311,6 +1318,7 @@ fn tracked_file_projects(project_dir: &Path) -> HashMap<AbsolutePath, ProjectEnt
 
 fn write_tracked_file(project_dir: &Path, contents: &str) {
     std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+    std::fs::write(project_dir.join("Cargo.toml"), b"[package]").expect("write Cargo.toml");
     std::fs::write(project_dir.join("src").join("main.rs"), contents).expect("write main.rs");
 }
 
@@ -1540,10 +1548,12 @@ fn shared_common_git_dir_event_refreshes_all_projects() {
         .expect("create common refs dir");
 
     let main_root = tmp.path().join("main_repo");
+    std::fs::write(main_root.join("Cargo.toml"), b"[package]").expect("write main Cargo.toml");
     let wt_git_dir = common_git_dir.join("worktrees").join("style_fix");
     std::fs::create_dir_all(&wt_git_dir).expect("create worktree git dir");
     let wt_root = tmp.path().join("main_repo_style_fix");
     std::fs::create_dir_all(&wt_root).expect("create worktree root");
+    std::fs::write(wt_root.join("Cargo.toml"), b"[package]").expect("write wt Cargo.toml");
 
     let mut projects = HashMap::new();
     projects.insert(
@@ -1945,6 +1955,7 @@ fn replayed_event_for_already_registered_project_uses_known_project_path() {
     let base = tmp.path().to_path_buf();
     let project_dir = base.join("existing_project");
     std::fs::create_dir_all(project_dir.join("src")).expect("create project dir");
+    std::fs::write(project_dir.join("Cargo.toml"), b"[package]").expect("write Cargo.toml");
 
     let mut projects = HashMap::new();
     let (key, entry) = make_project_entry("~/existing_project", &project_dir);

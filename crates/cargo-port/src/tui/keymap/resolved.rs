@@ -85,7 +85,9 @@ impl ResolvedKeymap {
         km.ci_runs
             .insert(KeyBind::plain(KeyCode::Char('f')), CiRunsAction::FetchMore);
         km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Char('b')), CiRunsAction::ToggleView);
+            .insert(KeyBind::plain(KeyCode::Char('b')), CiRunsAction::ShowBranch);
+        km.ci_runs
+            .insert(KeyBind::plain(KeyCode::Char('a')), CiRunsAction::ShowAll);
         km.ci_runs
             .insert(KeyBind::plain(KeyCode::Char('d')), CiRunsAction::ClearCache);
 

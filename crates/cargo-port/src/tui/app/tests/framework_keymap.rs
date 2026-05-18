@@ -186,7 +186,7 @@ fn focused_app_panes_render_expected_pane_action_labels() {
         (AppPaneId::Cpu, &["clean"], |_| {}),
         (
             AppPaneId::CiRuns,
-            &["open", "fetch more", "branch/all", "clear cache"],
+            &["open", "fetch more", "all", "clear cache"],
             |app| {
                 app.ci.set_content(ci_data_with_runs(2));
                 app.ci.viewport.set_pos(0);

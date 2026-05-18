@@ -191,6 +191,7 @@ pub(super) fn handle_notify_event(
     let mut matched_fast_git = false;
     for entry in ctx.projects.values() {
         if refresh::is_fast_git_refresh_event(event_path, entry)
+            && entry.is_alive()
             && let Some(refresh_key) = refresh::git_refresh_key(entry)
         {
             matched_fast_git = true;
@@ -213,11 +214,13 @@ pub(super) fn handle_notify_event(
         .iter()
         .find(|(root, _)| event_path.starts_with(root))
     {
+        if !entry.is_alive() {
+            return;
+        }
         if let Some(lint_runtime) = lint_runtime
             && let Some(event) = event
             && let Some(lint_trigger) =
                 lint::classify_event_path(&entry.abs_path, event.kind, event_path)
-            && entry.abs_path.join("Cargo.toml").is_file()
         {
             lint_runtime.lint_trigger(lint_trigger);
         }

@@ -24,6 +24,7 @@ use crate::project::ProjectCiData;
 use crate::project::ProjectCiInfo;
 use crate::scan;
 use crate::tui::app::App;
+use crate::tui::app::CiRunDisplayMode;
 use crate::tui::app::CleanSelection;
 use crate::tui::input;
 use crate::tui::integration;
@@ -107,20 +108,23 @@ pub(super) fn dispatch_ci_runs_action(action: CiRunsAction, app: &mut App) {
     match action {
         CiRunsAction::Activate => handle_ci_enter(app),
         CiRunsAction::FetchMore => handle_ci_fetch_more(app),
-        CiRunsAction::ToggleView => {
-            if let Some(path) = app
-                .project_list
-                .selected_project_path()
-                .map(Path::to_path_buf)
-            {
-                app.toggle_ci_display_mode_for(&path);
-            }
-        },
+        CiRunsAction::ShowBranch => set_ci_display_mode(app, CiRunDisplayMode::BranchOnly),
+        CiRunsAction::ShowAll => set_ci_display_mode(app, CiRunDisplayMode::All),
         CiRunsAction::ClearCache => {
             if let Some(path) = app.project_list.selected_ci_path() {
                 clear_ci_cache(app, &path);
             }
         },
+    }
+}
+
+fn set_ci_display_mode(app: &mut App, mode: CiRunDisplayMode) {
+    if let Some(path) = app
+        .project_list
+        .selected_project_path()
+        .map(Path::to_path_buf)
+    {
+        app.set_ci_display_mode_for(&path, mode);
     }
 }
 
@@ -288,15 +292,8 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
         match action {
             CiRunsAction::Activate => handle_ci_enter(app),
             CiRunsAction::FetchMore => handle_ci_fetch_more(app),
-            CiRunsAction::ToggleView => {
-                if let Some(path) = app
-                    .project_list
-                    .selected_project_path()
-                    .map(Path::to_path_buf)
-                {
-                    app.toggle_ci_display_mode_for(&path);
-                }
-            },
+            CiRunsAction::ShowBranch => set_ci_display_mode(app, CiRunDisplayMode::BranchOnly),
+            CiRunsAction::ShowAll => set_ci_display_mode(app, CiRunDisplayMode::All),
             CiRunsAction::ClearCache => {
                 if let Some(path) = app.project_list.selected_ci_path() {
                     clear_ci_cache(app, &path);
