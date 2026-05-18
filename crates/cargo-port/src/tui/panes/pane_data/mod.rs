@@ -1,7 +1,6 @@
 mod formatting;
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::path::Component;
 use std::path::Path;
 
@@ -27,7 +26,6 @@ use crate::perf_log;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::Cargo;
-use crate::project::ExampleGroup;
 use crate::project::GitOrigin;
 use crate::project::GitStatus;
 use crate::project::NonRustProject;
@@ -43,6 +41,7 @@ use crate::project::RustProject;
 use crate::project::Submodule;
 use crate::project::VendoredPackage;
 use crate::project::Workspace;
+use crate::project::WorkspaceMetadata;
 use crate::tui::app::App;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::project_list::ProjectList;
@@ -109,7 +108,7 @@ impl ProjectCounts {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum RunTargetKind {
     Binary,
     Example,
@@ -148,10 +147,40 @@ impl RunTargetKind {
     }
 }
 
+/// Where a target lives within a workspace. `Workspace` is the root
+/// package (its manifest sits at `workspace_root/Cargo.toml`); `Member`
+/// is any other workspace member, tagged with its cargo `[package].name`
+/// so the UI can show it and downstream `cargo` invocations can pass
+/// `--package <name>`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TargetSource {
+    Workspace,
+    Member(String),
+}
+
+impl TargetSource {
+    pub const fn label(&self) -> &str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::Member(name) => name.as_str(),
+        }
+    }
+
+    /// Sort key: `Workspace` first, then members alphabetical by name.
+    const fn sort_key(&self) -> (u8, &str) {
+        match self {
+            Self::Workspace => (0, ""),
+            Self::Member(name) => (1, name.as_str()),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct TargetEntry {
     pub name:         String,
     pub display_name: String,
     pub kind:         RunTargetKind,
+    pub source:       TargetSource,
 }
 
 #[derive(Clone, Copy)]
@@ -172,62 +201,15 @@ impl BuildMode {
     }
 }
 
-/// Build a flat list of all runnable targets: binaries first, then examples alphabetically,
-/// then benches alphabetically.
+/// Flatten `TargetsData` into a single render order: binaries first,
+/// then examples, then benches. Each kind section is already
+/// pre-sorted by [`TargetsData::from_workspace_metadata`].
 pub fn build_target_list_from_data(data: &TargetsData) -> Vec<TargetEntry> {
-    let mut entries = Vec::new();
-
-    if let Some(name) = &data.primary_binary {
-        entries.push(TargetEntry {
-            display_name: name.clone(),
-            name:         name.clone(),
-            kind:         RunTargetKind::Binary,
-        });
-    }
-
-    // Collect examples with category prefix for display, sorted with
-    // categorized (containing '/') before uncategorized, then alphabetically.
-    let mut examples: Vec<(String, String)> = data
-        .examples
-        .iter()
-        .flat_map(|g| {
-            g.names.iter().map(|n| {
-                let display = if g.category.is_empty() {
-                    n.clone()
-                } else {
-                    format!("{}/{}", g.category, n)
-                };
-                (n.clone(), display)
-            })
-        })
-        .collect();
-    examples.sort_by(|a, b| {
-        let a_has_cat = a.1.contains('/');
-        let b_has_cat = b.1.contains('/');
-        match (a_has_cat, b_has_cat) {
-            (true, false) => Ordering::Less,
-            (false, true) => Ordering::Greater,
-            _ => a.1.cmp(&b.1),
-        }
-    });
-    for (name, display_name) in examples {
-        entries.push(TargetEntry {
-            name,
-            display_name,
-            kind: RunTargetKind::Example,
-        });
-    }
-
-    let mut bench_names = data.benches.clone();
-    bench_names.sort();
-    for name in bench_names {
-        entries.push(TargetEntry {
-            display_name: name.clone(),
-            name,
-            kind: RunTargetKind::Bench,
-        });
-    }
-
+    let mut entries =
+        Vec::with_capacity(data.binaries.len() + data.examples.len() + data.benches.len());
+    entries.extend(data.binaries.iter().cloned());
+    entries.extend(data.examples.iter().cloned());
+    entries.extend(data.benches.iter().cloned());
     entries
 }
 
@@ -670,92 +652,160 @@ pub fn git_row_at(data: &GitData, pos: usize) -> Option<GitRow<'_>> {
     data.worktrees.get(pos).map(GitRow::Worktree)
 }
 
-/// Per-pane data for the Targets panel.
+/// Per-pane data for the Targets panel. Each kind list is pre-sorted by
+/// (source bucket, then category for examples, then name). Source
+/// tagging lets the renderer expose a per-row origin column and lets
+/// `cargo` invocations pass `--package <name>` for member-owned
+/// targets.
 #[derive(Clone, Default)]
 pub struct TargetsData {
-    pub primary_binary: Option<String>,
-    pub examples:       Vec<ExampleGroup>,
-    pub benches:        Vec<String>,
+    pub binaries: Vec<TargetEntry>,
+    pub examples: Vec<TargetEntry>,
+    pub benches:  Vec<TargetEntry>,
 }
 
 impl TargetsData {
     pub const fn has_targets(&self) -> bool {
-        self.primary_binary.is_some() || !self.examples.is_empty() || !self.benches.is_empty()
+        !self.binaries.is_empty() || !self.examples.is_empty() || !self.benches.is_empty()
     }
 
-    /// Build from a [`PackageRecord`]. Examples grouped by
-    /// subdirectory derived from `TargetRecord.src_path` relative to
-    /// the package's manifest directory; benches listed flat. The
-    /// primary-binary name is the bin target whose name matches
-    /// `title_name` (cargo's "default run" target); falls back to
-    /// `None` if no such bin exists.
-    pub fn from_package_record(record: &PackageRecord, title_name: &str) -> Self {
-        let manifest_dir = record.manifest_path.as_path().parent();
+    /// Aggregate runnable targets for the project at `selected_path`.
+    ///
+    /// When `selected_path` is the workspace root, every package's
+    /// targets across the workspace are included. When it's any
+    /// other path (a workspace member), only that package's targets
+    /// appear — selecting a member narrows the view to that member's
+    /// own targets.
+    ///
+    /// Per included package: lift the bin target whose name matches
+    /// the package name (cargo's "default-run" convention) as a
+    /// `Binary` entry; every `Example` target becomes an entry with
+    /// category derived from `examples/<category>/<file>.rs`; every
+    /// `Bench` becomes a flat entry. Each entry's [`TargetSource`]
+    /// is `Workspace` only when the metadata describes a real
+    /// multi-package workspace AND the owning package's manifest
+    /// sits at the workspace root. Standalone packages (cargo's
+    /// implicit single-package workspace) always get
+    /// `Member(<package name>)` so the Source column shows the
+    /// package name, not the misleading word "workspace".
+    pub fn from_workspace_metadata(
+        metadata: &WorkspaceMetadata,
+        selected_path: &AbsolutePath,
+    ) -> Self {
+        let workspace_root = metadata.workspace_root.as_path();
+        let selected_path = selected_path.as_path();
+        let include_all_members = selected_path == workspace_root;
+        let is_real_workspace = metadata.packages.len() > 1;
+        let mut binaries: Vec<TargetEntry> = Vec::new();
+        let mut examples: Vec<TargetEntry> = Vec::new();
+        let mut benches: Vec<TargetEntry> = Vec::new();
 
-        let mut example_groups: HashMap<String, Vec<String>> = HashMap::new();
-        let mut benches: Vec<String> = Vec::new();
-        let mut has_bin_with_title = false;
+        for record in metadata.packages.values() {
+            let manifest_dir = record.manifest_path.as_path().parent();
+            if !include_all_members && manifest_dir != Some(selected_path) {
+                continue;
+            }
+            let source = if is_real_workspace && manifest_dir == Some(workspace_root) {
+                TargetSource::Workspace
+            } else {
+                TargetSource::Member(record.name.clone())
+            };
 
-        for target in &record.targets {
-            if target.kinds.contains(&TargetKind::Example) {
-                let category = manifest_dir
-                    .and_then(|dir| target.src_path.as_path().strip_prefix(dir).ok())
-                    .and_then(|rel| {
-                        let parts: Vec<_> = rel
-                            .components()
-                            .filter_map(|c| match c {
-                                Component::Normal(seg) => Some(seg.to_string_lossy().into_owned()),
-                                _ => None,
-                            })
-                            .collect();
-                        // `examples/<category>/<file>.rs` → category.
-                        // `examples/<file>.rs` → root-level (empty).
-                        if parts.len() >= 3 {
-                            Some(parts[1].clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default();
-                example_groups
-                    .entry(category)
-                    .or_default()
-                    .push(target.name.clone());
-            }
-            if target.kinds.contains(&TargetKind::Bench) {
-                benches.push(target.name.clone());
-            }
-            if target.kinds.contains(&TargetKind::Bin) && target.name == title_name {
-                has_bin_with_title = true;
+            for target in &record.targets {
+                if target.kinds.contains(&TargetKind::Bin) && target.name == record.name {
+                    binaries.push(TargetEntry {
+                        name:         target.name.clone(),
+                        display_name: target.name.clone(),
+                        kind:         RunTargetKind::Binary,
+                        source:       source.clone(),
+                    });
+                }
+                if target.kinds.contains(&TargetKind::Example) {
+                    let category = example_category(manifest_dir, target.src_path.as_path());
+                    let display_name = if category.is_empty() {
+                        target.name.clone()
+                    } else {
+                        format!("{category}/{}", target.name)
+                    };
+                    examples.push(TargetEntry {
+                        name: target.name.clone(),
+                        display_name,
+                        kind: RunTargetKind::Example,
+                        source: source.clone(),
+                    });
+                }
+                if target.kinds.contains(&TargetKind::Bench) {
+                    benches.push(TargetEntry {
+                        name:         target.name.clone(),
+                        display_name: target.name.clone(),
+                        kind:         RunTargetKind::Bench,
+                        source:       source.clone(),
+                    });
+                }
             }
         }
 
-        let mut examples: Vec<ExampleGroup> = example_groups
-            .into_iter()
-            .map(|(category, mut names)| {
-                names.sort();
-                ExampleGroup { category, names }
-            })
-            .collect();
-        // Root-level first, then alphabetical by category — matches
-        // the hand-parsed `build_sorted_groups` convention so the UI
-        // ordering doesn't shift across the migration.
-        examples.sort_by(|a, b| {
-            let a_root = a.category.is_empty();
-            let b_root = b.category.is_empty();
-            match (a_root, b_root) {
-                (true, false) => Ordering::Less,
-                (false, true) => Ordering::Greater,
-                _ => a.category.cmp(&b.category),
-            }
+        binaries.sort_by(|a, b| {
+            a.source
+                .sort_key()
+                .cmp(&b.source.sort_key())
+                .then_with(|| a.name.cmp(&b.name))
         });
-        benches.sort();
+        examples.sort_by(|a, b| {
+            a.source
+                .sort_key()
+                .cmp(&b.source.sort_key())
+                .then_with(|| example_display_order(&a.display_name, &b.display_name))
+        });
+        benches.sort_by(|a, b| {
+            a.source
+                .sort_key()
+                .cmp(&b.source.sort_key())
+                .then_with(|| a.name.cmp(&b.name))
+        });
 
         Self {
-            primary_binary: has_bin_with_title.then(|| title_name.to_string()),
+            binaries,
             examples,
             benches,
         }
+    }
+}
+
+/// Derive the example's category subdirectory from its `src_path`
+/// relative to its package's manifest dir. `examples/<file>.rs` is
+/// root-level (empty); `examples/<category>/<file>.rs` is categorized.
+fn example_category(manifest_dir: Option<&Path>, src_path: &Path) -> String {
+    manifest_dir
+        .and_then(|dir| src_path.strip_prefix(dir).ok())
+        .and_then(|rel| {
+            let parts: Vec<_> = rel
+                .components()
+                .filter_map(|c| match c {
+                    Component::Normal(seg) => Some(seg.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .collect();
+            if parts.len() >= 3 {
+                Some(parts[1].clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+}
+
+/// Within an examples section, sort root-level (no `/`) before
+/// categorized, then alphabetically by display name. Matches the
+/// Bevy-style listing convention preserved across the workspace
+/// aggregation.
+fn example_display_order(a: &str, b: &str) -> Ordering {
+    let a_root = !a.contains('/');
+    let b_root = !b.contains('/');
+    match (a_root, b_root) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        _ => a.cmp(b),
     }
 }
 
@@ -1138,11 +1188,7 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             remotes:            git_detail.remotes,
             worktrees:          Vec::new(),
         },
-        targets: TargetsData {
-            primary_binary: None,
-            examples:       Vec::new(),
-            benches:        Vec::new(),
-        },
+        targets: TargetsData::default(),
     }
 }
 
@@ -1504,21 +1550,35 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         ci_display,
     });
 
-    assemble_detail_pane_data(package, git_detail, worktrees, package_record.as_ref())
+    let targets = lookup_targets_data(app, &abs_path_owned);
+    assemble_detail_pane_data(package, git_detail, worktrees, targets)
+}
+
+/// Look up the workspace that covers `abs_path` and aggregate its
+/// runnable targets. Returns `TargetsData::default()` when no
+/// metadata covers the path yet — callers render an empty pane in
+/// that case so we don't surface a hand-parsed view that disagrees
+/// with cargo's discovery rules.
+fn lookup_targets_data(app: &App, abs_path: &AbsolutePath) -> TargetsData {
+    let handle = app.scan.metadata_store_handle();
+    let Ok(store) = handle.lock() else {
+        return TargetsData::default();
+    };
+    let Some(root) = store.containing_workspace_root(abs_path) else {
+        return TargetsData::default();
+    };
+    let Some(metadata) = store.get(root) else {
+        return TargetsData::default();
+    };
+    TargetsData::from_workspace_metadata(metadata, abs_path)
 }
 
 /// Assemble `DetailPaneData` from already-resolved inputs.
-/// Targets-pane data is derived from workspace metadata when it covers
-/// this project. Without metadata the pane stays empty (targets show
-/// "Loading…"). A hand-parsed fallback could disagree with cargo's
-/// real discovery rules (autoexamples, required-features, excluded
-/// targets), so we render nothing pre-metadata rather than render
-/// something misleading.
 fn assemble_detail_pane_data(
     package: PackageData,
     git_detail: GitDetailFields,
     worktrees: Vec<WorktreeInfo>,
-    package_record: Option<&PackageRecord>,
+    targets: TargetsData,
 ) -> DetailPaneData {
     DetailPaneData {
         package,
@@ -1539,9 +1599,7 @@ fn assemble_detail_pane_data(
             remotes: git_detail.remotes,
             worktrees,
         },
-        targets: package_record.map_or_else(TargetsData::default, |record| {
-            TargetsData::from_package_record(record, record.name.as_str())
-        }),
+        targets,
     }
 }
 

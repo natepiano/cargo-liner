@@ -265,11 +265,7 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
     app.sync_selected_project();
 
     app.ensure_detail_cached();
-    let example_count = app
-        .panes
-        .targets
-        .content()
-        .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
+    let example_count = app.panes.targets.content().map(|d| d.examples.len());
     assert_eq!(
         example_count,
         Some(0),
@@ -328,11 +324,7 @@ fn metadata_arrival_populates_selected_tree_project_targets() {
         result: Ok(workspace_metadata),
     });
     app.ensure_detail_cached();
-    let example_count = app
-        .panes
-        .targets
-        .content()
-        .map(|d| d.examples.iter().map(|g| g.names.len()).sum::<usize>());
+    let example_count = app.panes.targets.content().map(|d| d.examples.len());
     assert_eq!(
         example_count,
         Some(1),

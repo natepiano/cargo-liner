@@ -973,9 +973,14 @@ fn output_active_excludes_diagnostics_and_reaches_output() {
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
     app.panes.targets.set_content(TargetsData {
-        primary_binary: Some("demo".to_string()),
-        examples:       Vec::new(),
-        benches:        Vec::new(),
+        binaries: vec![crate::tui::panes::TargetEntry {
+            name:         "demo".to_string(),
+            display_name: "demo".to_string(),
+            kind:         crate::tui::panes::RunTargetKind::Binary,
+            source:       crate::tui::panes::TargetSource::Workspace,
+        }],
+        examples: Vec::new(),
+        benches:  Vec::new(),
     });
     app.lint.set_content(lints_data_with_runs(SINGLE_RUN_COUNT));
     app.ci.set_content(ci_data_with_runs(SINGLE_RUN_COUNT));

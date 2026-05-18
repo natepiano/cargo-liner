@@ -70,6 +70,8 @@ pub(super) use pane_data::PendingCiFetch;
 pub(super) use pane_data::PendingExampleRun;
 pub(super) use pane_data::RemoteRow;
 pub(super) use pane_data::RunTargetKind;
+pub(super) use pane_data::TargetEntry;
+pub(super) use pane_data::TargetSource;
 pub(super) use pane_data::TargetsData;
 pub(super) use pane_data::WorktreeInfo;
 pub(super) use pane_data::build_ci_data;

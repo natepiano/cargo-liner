@@ -16,6 +16,7 @@ use super::GitRow;
 use super::PaneId;
 use super::PendingCiFetch;
 use super::PendingExampleRun;
+use super::TargetSource;
 use super::build_target_list_from_data;
 use crate::lint;
 use crate::project;
@@ -48,13 +49,19 @@ fn handle_target_action(app: &mut App, mode: BuildMode) {
     if let Some(entry) = entries.get(app.panes.targets.viewport.pos())
         && let Some(abs_path) = app.project_list.selected_project_path()
     {
-        let package_name = app.panes.package.content().and_then(|d| {
-            if d.title_name == "-" {
-                None
-            } else {
-                Some(d.title_name.clone())
-            }
-        });
+        // Member-owned targets carry the owning package's name in
+        // `TargetSource::Member`, which downstream cargo invocations
+        // pass as `--package <name>`. Workspace-root targets fall back
+        // to the selected project's package title (cargo runs against
+        // the default-run package when no `-p` is given).
+        let package_name = match &entry.source {
+            TargetSource::Member(name) => Some(name.clone()),
+            TargetSource::Workspace => app
+                .panes
+                .package
+                .content()
+                .and_then(|d| (d.title_name != "-").then(|| d.title_name.clone())),
+        };
         app.inflight.set_pending_example_run(PendingExampleRun {
             abs_path: abs_path.display().to_string(),
             target_name: entry.name.clone(),

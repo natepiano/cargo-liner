@@ -298,19 +298,26 @@ fn ci_table_keeps_durations_when_fixed_columns_fit() {
     assert!(panes::ci_table_shows_durations(&runs, &cols, 80));
 }
 
-// ── TargetsData::from_package_record ──────────────────────────────────
+// ── TargetsData::from_workspace_metadata ──────────────────────────────
 
 #[cfg(test)]
 mod targets_from_metadata {
+    use std::collections::BTreeMap;
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
+    use cargo_metadata::PackageId;
     use cargo_metadata::TargetKind;
     use cargo_metadata::semver::Version;
 
     use crate::project::AbsolutePath;
+    use crate::project::FileStamp;
+    use crate::project::ManifestFingerprint;
     use crate::project::PackageRecord;
     use crate::project::PublishPolicy;
     use crate::project::TargetRecord;
+    use crate::project::WorkspaceMetadata;
+    use crate::tui::panes::TargetSource;
     use crate::tui::panes::TargetsData;
 
     fn target(name: &str, kinds: Vec<TargetKind>, src_path: &str) -> TargetRecord {
@@ -333,6 +340,33 @@ mod targets_from_metadata {
             manifest_path: AbsolutePath::from(PathBuf::from(manifest)),
             targets,
             publish: PublishPolicy::Any,
+        }
+    }
+
+    fn path(s: &str) -> AbsolutePath { AbsolutePath::from(PathBuf::from(s)) }
+
+    fn workspace(workspace_root: &str, packages: Vec<PackageRecord>) -> WorkspaceMetadata {
+        let root = AbsolutePath::from(PathBuf::from(workspace_root));
+        let mut map: HashMap<PackageId, PackageRecord> = HashMap::new();
+        for pkg in packages {
+            let id = PackageId {
+                repr: format!("{}-test-id", pkg.name),
+            };
+            map.insert(id, pkg);
+        }
+        WorkspaceMetadata {
+            workspace_root:           root.clone(),
+            target_directory:         AbsolutePath::from(root.as_path().join("target")),
+            packages:                 map,
+            fingerprint:              ManifestFingerprint {
+                manifest:       FileStamp {
+                    content_hash: [0_u8; 32],
+                },
+                lockfile:       None,
+                rust_toolchain: None,
+                configs:        BTreeMap::new(),
+            },
+            out_of_tree_target_bytes: None,
         }
     }
 
@@ -360,18 +394,21 @@ mod targets_from_metadata {
                 ),
             ],
         );
-        let data = TargetsData::from_package_record(&pkg, "demo");
-
-        assert_eq!(data.examples.len(), 3, "root + 2d + 3d");
-        assert!(
-            data.examples[0].category.is_empty(),
-            "root-level group first (Bevy-style convention)"
+        let data = TargetsData::from_workspace_metadata(
+            &workspace("/ws/demo", vec![pkg]),
+            &path("/ws/demo"),
         );
-        assert_eq!(data.examples[0].names, vec!["top"]);
-        assert_eq!(data.examples[1].category, "2d");
-        assert_eq!(data.examples[1].names, vec!["draw"]);
-        assert_eq!(data.examples[2].category, "3d");
-        assert_eq!(data.examples[2].names, vec!["cube", "mesh"]);
+
+        let display_names: Vec<&str> = data
+            .examples
+            .iter()
+            .map(|e| e.display_name.as_str())
+            .collect();
+        assert_eq!(
+            display_names,
+            vec!["top", "2d/draw", "3d/cube", "3d/mesh"],
+            "root-level first, then categorized alphabetically"
+        );
     }
 
     #[test]
@@ -392,16 +429,46 @@ mod targets_from_metadata {
                 ),
             ],
         );
-        let data = TargetsData::from_package_record(&pkg, "demo");
-        assert_eq!(data.benches, vec!["a_alpha", "b_zed"]);
+        let data = TargetsData::from_workspace_metadata(
+            &workspace("/ws/demo", vec![pkg]),
+            &path("/ws/demo"),
+        );
+        let names: Vec<&str> = data.benches.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["a_alpha", "b_zed"]);
     }
 
     #[test]
-    fn primary_binary_matches_title_name_only() {
+    fn standalone_package_uses_package_name_as_source_label() {
+        // bevy_liminal etc. — a project with no `[workspace]` table
+        // and a single package. Cargo still reports it with a
+        // workspace_root pointing at the package dir, but the
+        // Source column must say the package name, not "workspace".
+        let pkg = record(
+            "bevy_liminal",
+            "/repo/bevy_liminal/Cargo.toml",
+            vec![target(
+                "bevy_liminal",
+                vec![TargetKind::Bin],
+                "/repo/bevy_liminal/src/main.rs",
+            )],
+        );
+        let data = TargetsData::from_workspace_metadata(
+            &workspace("/repo/bevy_liminal", vec![pkg]),
+            &path("/repo/bevy_liminal"),
+        );
+        assert_eq!(data.binaries.len(), 1);
+        assert_eq!(
+            data.binaries[0].source,
+            TargetSource::Member("bevy_liminal".into()),
+            "standalone package must not borrow the misleading `workspace` label"
+        );
+    }
+
+    #[test]
+    fn primary_binary_matches_package_name_only() {
         // A bin target named "demo" is considered the default-run
-        // binary; other bin targets are not lifted into
-        // primary_binary (they'd show up in a separate bin list
-        // that today isn't surfaced by TargetsData).
+        // binary; other bin targets are not lifted into the
+        // workspace-aggregated binary list.
         let with_match = record(
             "demo",
             "/ws/demo/Cargo.toml",
@@ -411,10 +478,12 @@ mod targets_from_metadata {
                 "/ws/demo/src/main.rs",
             )],
         );
-        assert_eq!(
-            TargetsData::from_package_record(&with_match, "demo").primary_binary,
-            Some("demo".to_string())
+        let data = TargetsData::from_workspace_metadata(
+            &workspace("/ws/demo", vec![with_match]),
+            &path("/ws/demo"),
         );
+        assert_eq!(data.binaries.len(), 1);
+        assert_eq!(data.binaries[0].name, "demo");
 
         let without_match = record(
             "demo",
@@ -425,9 +494,12 @@ mod targets_from_metadata {
                 "/ws/demo/src/bin/other.rs",
             )],
         );
-        assert_eq!(
-            TargetsData::from_package_record(&without_match, "demo").primary_binary,
-            None,
+        let data = TargetsData::from_workspace_metadata(
+            &workspace("/ws/demo", vec![without_match]),
+            &path("/ws/demo"),
+        );
+        assert!(
+            data.binaries.is_empty(),
             "bin targets whose name != package name don't become primary"
         );
     }
@@ -447,9 +519,143 @@ mod targets_from_metadata {
                 ),
             ],
         );
-        let data = TargetsData::from_package_record(&pkg, "demo");
-        assert!(data.primary_binary.is_none());
+        let data = TargetsData::from_workspace_metadata(
+            &workspace("/ws/demo", vec![pkg]),
+            &path("/ws/demo"),
+        );
+        assert!(data.binaries.is_empty());
         assert!(data.examples.is_empty());
         assert!(data.benches.is_empty());
+    }
+
+    /// Three-package workspace: root "ws-root" plus members "core"
+    /// and "engine". Used by both the workspace-root and member-filter
+    /// tests below.
+    fn three_package_workspace() -> WorkspaceMetadata {
+        let ws_root = record(
+            "ws-root",
+            "/ws/Cargo.toml",
+            vec![
+                target("ws-root", vec![TargetKind::Bin], "/ws/src/main.rs"),
+                target(
+                    "root-ex",
+                    vec![TargetKind::Example],
+                    "/ws/examples/root-ex.rs",
+                ),
+            ],
+        );
+        let core = record(
+            "core",
+            "/ws/crates/core/Cargo.toml",
+            vec![
+                target("core", vec![TargetKind::Bin], "/ws/crates/core/src/main.rs"),
+                target(
+                    "core-ex",
+                    vec![TargetKind::Example],
+                    "/ws/crates/core/examples/core-ex.rs",
+                ),
+            ],
+        );
+        let engine = record(
+            "engine",
+            "/ws/crates/engine/Cargo.toml",
+            vec![target(
+                "engine-ex",
+                vec![TargetKind::Example],
+                "/ws/crates/engine/examples/engine-ex.rs",
+            )],
+        );
+        workspace("/ws", vec![ws_root, core, engine])
+    }
+
+    #[test]
+    fn aggregates_targets_across_root_and_members_when_selected_is_workspace_root() {
+        let metadata = three_package_workspace();
+        let data = TargetsData::from_workspace_metadata(&metadata, &path("/ws"));
+
+        let binary_sources: Vec<&TargetSource> = data.binaries.iter().map(|e| &e.source).collect();
+        assert!(binary_sources.contains(&&TargetSource::Workspace));
+        assert!(binary_sources.contains(&&TargetSource::Member("core".into())));
+        assert_eq!(data.binaries.len(), 2);
+
+        // Workspace bucket sorts before members.
+        assert_eq!(data.examples[0].source, TargetSource::Workspace);
+        assert_eq!(data.examples[0].name, "root-ex");
+        // Members alphabetical: core before engine.
+        assert_eq!(data.examples[1].source, TargetSource::Member("core".into()));
+        assert_eq!(
+            data.examples[2].source,
+            TargetSource::Member("engine".into())
+        );
+    }
+
+    #[test]
+    fn filters_to_member_when_selected_is_a_member_path() {
+        // When the selected project is a workspace member, the
+        // Targets pane shows only that member's targets — selecting
+        // sibling members or the workspace root surfaces a different
+        // view. Confirms the user-visible "narrow on member" rule.
+        let metadata = three_package_workspace();
+        let data = TargetsData::from_workspace_metadata(&metadata, &path("/ws/crates/core"));
+
+        assert_eq!(data.binaries.len(), 1, "only core's bin shows");
+        assert_eq!(data.binaries[0].name, "core");
+        assert_eq!(data.binaries[0].source, TargetSource::Member("core".into()));
+        assert_eq!(data.examples.len(), 1);
+        assert_eq!(data.examples[0].name, "core-ex");
+        assert!(
+            data.examples
+                .iter()
+                .all(|e| matches!(&e.source, TargetSource::Member(name) if name == "core")),
+            "no entry from sibling members or the workspace root"
+        );
+    }
+
+    #[test]
+    fn member_filter_returns_empty_for_unknown_path() {
+        // A selected path that doesn't match any member's manifest
+        // dir produces an empty pane rather than falling back to the
+        // workspace aggregation — selection must be unambiguous.
+        let metadata = three_package_workspace();
+        let data = TargetsData::from_workspace_metadata(&metadata, &path("/ws/crates/unknown"));
+
+        assert!(data.binaries.is_empty());
+        assert!(data.examples.is_empty());
+        assert!(data.benches.is_empty());
+    }
+
+    #[test]
+    fn virtual_workspace_has_no_workspace_source() {
+        // No root package — only members. Selecting the workspace
+        // root still aggregates both members, but no entry maps to
+        // `TargetSource::Workspace`.
+        let m1 = record(
+            "m1",
+            "/ws/crates/m1/Cargo.toml",
+            vec![target(
+                "m1-ex",
+                vec![TargetKind::Example],
+                "/ws/crates/m1/examples/m1-ex.rs",
+            )],
+        );
+        let m2 = record(
+            "m2",
+            "/ws/crates/m2/Cargo.toml",
+            vec![target(
+                "m2-ex",
+                vec![TargetKind::Example],
+                "/ws/crates/m2/examples/m2-ex.rs",
+            )],
+        );
+        let data =
+            TargetsData::from_workspace_metadata(&workspace("/ws", vec![m1, m2]), &path("/ws"));
+
+        assert!(
+            data.examples
+                .iter()
+                .all(|e| !matches!(e.source, TargetSource::Workspace)),
+            "no entry maps to Workspace when there's no root package"
+        );
+        assert_eq!(data.examples.len(), 2);
     }
 }
