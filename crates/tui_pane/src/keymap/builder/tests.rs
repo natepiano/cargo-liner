@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::process;
 
@@ -491,7 +492,7 @@ fn vim_mode_appends_hjkl_to_navigation() {
 
 #[test]
 fn vim_navigation_chords_survive_toml_home_end_overrides() {
-    let dir = std::env::temp_dir();
+    let dir = env::temp_dir();
     let path = dir.join(format!(
         "tui_pane_test_vim_home_end_overlay_{}.toml",
         process::id()

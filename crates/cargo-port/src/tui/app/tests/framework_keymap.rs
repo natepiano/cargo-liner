@@ -114,8 +114,10 @@ fn make_app_with_config_and_keymap_toml(
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let toml_path = temp_dir.path().join("keymap.toml");
     fs::write(&toml_path, toml).expect("write keymap toml");
-    let _keymap_path = keymap::override_keymap_path_for_test(toml_path);
-    super::make_app_with_config(projects, cfg)
+    let keymap_path_guard = keymap::override_keymap_path_for_test(toml_path);
+    let app = super::make_app_with_config(projects, cfg);
+    drop(keymap_path_guard);
+    app
 }
 
 fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
