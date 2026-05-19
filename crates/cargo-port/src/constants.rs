@@ -5,6 +5,7 @@ use std::time::Duration;
 pub(crate) const CI_PASSED: &str = "🟢";
 pub(crate) const CI_FAILED: &str = "🔴";
 pub(crate) const CI_CANCELLED: &str = "🌑";
+pub(crate) const CI_SKIPPED: &str = "⚪";
 pub(crate) const IN_SYNC: &str = "☑️";
 pub(crate) const NO_REMOTE_SYNC: &str = "──";
 pub(crate) const SYNC_UP: &str = "↑";

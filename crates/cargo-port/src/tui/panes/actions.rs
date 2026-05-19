@@ -384,13 +384,27 @@ fn handle_ci_fetch_more(app: &mut App) {
 
 /// Clear CI cache for a project and remove its runs from the app.
 fn clear_ci_cache(app: &mut App, abs: &Path) {
-    if let Some(repo) = app.owner_repo_for_path(abs) {
-        let _ = std::fs::remove_dir_all(scan::ci_cache_dir_pub(repo.owner(), repo.repo()));
+    let (title, body) = if let Some(repo) = app.owner_repo_for_path(abs) {
+        let dir = scan::ci_cache_dir_pub(repo.owner(), repo.repo());
+        let result = std::fs::remove_dir_all(&dir);
         scan::clear_exhausted(repo.owner(), repo.repo());
         if let Ok(mut cache) = app.net.github.fetch_cache.lock() {
             cache.remove(&repo);
         }
-    }
+        match result {
+            Ok(()) => (
+                "CI cache cleared",
+                format!("{}/{}", repo.owner(), repo.repo()),
+            ),
+            Err(err) => ("CI cache clear failed", format!("{}: {err}", dir.display())),
+        }
+    } else {
+        (
+            "CI cache clear failed",
+            format!("no owner/repo for {}", abs.display()),
+        )
+    };
+    let _ = app.framework.toasts.push_status(title, body);
     let prev_total = app
         .project_list
         .ci_data_for(abs)

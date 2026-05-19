@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io;
 use std::io::BufReader;
 use std::io::Read;
@@ -31,6 +32,7 @@ use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tui_pane::FRAME_POLL_MILLIS;
+use tui_pane::TrackedItemKey;
 
 use super::app::App;
 use super::app::PendingClean;
@@ -380,10 +382,14 @@ fn spawn_pending_background_tasks(app: &mut App) {
     }
 
     if let Some(fetch) = app.inflight.take_pending_ci_fetch() {
-        let abs_path = Path::new(&fetch.project_path);
-        app.ci.fetch_tracker.start(AbsolutePath::from(abs_path));
-        app.scan.bump_generation();
-        spawn_ci_fetch(app, &fetch);
+        let abs_path = AbsolutePath::from(Path::new(&fetch.project_path));
+        if spawn_ci_fetch(app, &fetch) {
+            app.ci.fetch_tracker.start(abs_path);
+            app.scan.bump_generation();
+        } else if let Some(task_id) = app.ci.take_fetch_toast() {
+            let empty: HashSet<TrackedItemKey> = HashSet::new();
+            app.framework.toasts.complete_missing_items(task_id, &empty);
+        }
     }
 }
 
@@ -554,14 +560,15 @@ fn spawn_clean_process(app: &mut App, pending: &PendingClean) {
     });
 }
 
-fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
-    // Derive (repo_url, owner, repo) from local git info — no network needed
+fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) -> bool {
+    // Derive (repo_url, owner, repo) from local git info — no network needed.
+    // Use `fetch_url_for` so a worktree without upstream tracking still resolves.
     let path = Path::new(&fetch.project_path);
-    let Some(repo_url) = app.project_list.primary_url_for(path) else {
-        return;
+    let Some(repo_url) = app.project_list.fetch_url_for(path) else {
+        return false;
     };
-    let Some(owner_repo) = ci::parse_owner_repo(repo_url) else {
-        return;
+    let Some(owner_repo) = ci::parse_owner_repo(&repo_url) else {
+        return false;
     };
 
     let tx = app.background.ci_fetch_sender();
@@ -571,7 +578,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     let ci_run_count = fetch.ci_run_count;
     let oldest_created_at = fetch.oldest_created_at.clone();
     let kind = fetch.kind;
-    let url = repo_url.to_string();
+    let url = repo_url;
 
     thread::spawn(move || {
         let (result, network) = match kind {
@@ -606,6 +613,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
             kind,
         });
     });
+    true
 }
 
 fn last_selected_path_file() -> AbsolutePath { scan::cache_dir().join("last_selected.txt").into() }

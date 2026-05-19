@@ -7,6 +7,7 @@ use serde::Serialize;
 use super::constants::CI_CANCELLED;
 use super::constants::CI_FAILED;
 use super::constants::CI_PASSED;
+use super::constants::CI_SKIPPED;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct OwnerRepo {
@@ -69,6 +70,7 @@ pub(crate) enum CiStatus {
     Passed,
     Failed,
     Cancelled,
+    Skipped,
 }
 
 impl CiStatus {
@@ -77,6 +79,7 @@ impl CiStatus {
             Self::Passed => CI_PASSED,
             Self::Failed => CI_FAILED,
             Self::Cancelled => CI_CANCELLED,
+            Self::Skipped => CI_SKIPPED,
         }
     }
 
@@ -186,15 +189,19 @@ fn run_conclusion(jobs: &[CiJob]) -> CiStatus {
     if jobs.iter().any(|j| j.ci_status == CiStatus::Cancelled) {
         return CiStatus::Cancelled;
     }
-    CiStatus::Passed
+    if jobs.iter().any(|j| j.ci_status.is_success()) {
+        return CiStatus::Passed;
+    }
+    CiStatus::Skipped
 }
 
 /// Parse conclusion from GraphQL `CheckRun` (`SUCCESS`, `FAILURE`,
-/// `CANCELLED`).
+/// `CANCELLED`, `SKIPPED`).
 fn parse_gql_conclusion(conclusion: Option<&str>) -> CiStatus {
     match conclusion {
         Some("SUCCESS") => CiStatus::Passed,
         Some("FAILURE") => CiStatus::Failed,
+        Some("SKIPPED") => CiStatus::Skipped,
         _ => CiStatus::Cancelled,
     }
 }

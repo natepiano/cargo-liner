@@ -1324,7 +1324,8 @@ impl ProjectList {
 
     pub(super) fn owner_repo_for_path_inner(&self, path: &Path) -> Option<OwnerRepo> {
         let entry_path = self.entry_containing(path)?.item.path().clone();
-        self.primary_url_for(entry_path.as_path())
+        self.fetch_url_for(entry_path.as_path())
+            .as_deref()
             .and_then(ci::parse_owner_repo)
     }
 }
