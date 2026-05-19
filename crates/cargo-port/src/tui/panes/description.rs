@@ -190,7 +190,7 @@ impl DescriptionBlock {
 /// function behavior.
 pub fn sync_floor(blocks: &[&DescriptionBlock]) -> SyncedDescriptionHeight {
     let heights: Vec<u16> = blocks.iter().map(|b| b.natural_sync_height()).collect();
-    if heights.iter().any(|&h| h == 0) {
+    if heights.contains(&0) {
         SyncedDescriptionHeight(0)
     } else {
         SyncedDescriptionHeight(heights.into_iter().max().unwrap_or(0))

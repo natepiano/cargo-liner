@@ -399,7 +399,6 @@ impl ProjectList {
     /// lands on the submodule's own `git_repo` instead of the parent's.
     pub(super) fn git_repo_for_mut(&mut self, path: &Path) -> Option<&mut GitRepo> {
         match GitRepoLookup::find(self, path)? {
-            GitRepoLookup::Direct(key) => self.roots.get_mut(&key)?.git_repo.as_mut(),
             GitRepoLookup::Submodule { entry, submodule } => self
                 .roots
                 .get_mut(&entry)?
@@ -407,7 +406,9 @@ impl ProjectList {
                 .find_submodule_mut(submodule.as_path())?
                 .git_repo
                 .as_mut(),
-            GitRepoLookup::Containing(key) => self.roots.get_mut(&key)?.git_repo.as_mut(),
+            GitRepoLookup::Direct(key) | GitRepoLookup::Containing(key) => {
+                self.roots.get_mut(&key)?.git_repo.as_mut()
+            },
         }
     }
 

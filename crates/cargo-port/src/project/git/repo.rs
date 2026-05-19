@@ -143,7 +143,7 @@ impl RepoInfo {
     /// `schedule_git_first_commit_refreshes` batched by repo root.
     pub fn get(probe_path: &Path) -> Option<Self> {
         let repo_root = discovery::git_repo_root(probe_path)?;
-        let cfg = config::active_config();
+        let active_config = config::active_config();
 
         // Branch / upstream / default-branch context is probed here
         // because `build_remote_info` uses it to resolve each remote's
@@ -157,17 +157,20 @@ impl RepoInfo {
         let remote_names = list_remote_names(&repo_root);
         let has_upstream = remote_names.iter().any(|n| n == "upstream");
         let pushurls = list_remote_pushurls(&repo_root);
+        let remote_context = RemoteResolveContext {
+            repo_root: &repo_root,
+            has_upstream,
+            current_upstream: current_upstream.as_deref(),
+            default_branch: default_branch.as_deref(),
+            current_branch: branch.as_deref(),
+            config: &active_config,
+        };
         let remotes: Vec<RemoteInfo> = remote_names
             .iter()
             .map(|name| {
                 build_remote_info(
-                    &repo_root,
+                    &remote_context,
                     name,
-                    has_upstream,
-                    current_upstream.as_deref(),
-                    default_branch.as_deref(),
-                    branch.as_deref(),
-                    &cfg,
                     pushurls.get(name.as_str()).map(String::as_str),
                 )
             })
@@ -245,33 +248,37 @@ fn list_remote_names(repo_root: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+struct RemoteResolveContext<'a> {
+    repo_root:        &'a Path,
+    has_upstream:     bool,
+    current_upstream: Option<&'a str>,
+    default_branch:   Option<&'a str>,
+    current_branch:   Option<&'a str>,
+    config:           &'a CargoPortConfig,
+}
+
 fn build_remote_info(
-    repo_root: &Path,
+    context: &RemoteResolveContext<'_>,
     name: &str,
-    has_upstream: bool,
-    current_upstream: Option<&str>,
-    default_branch: Option<&str>,
-    current_branch: Option<&str>,
-    cfg: &CargoPortConfig,
     pushurl: Option<&str>,
 ) -> RemoteInfo {
-    let (owner, url, repo) = remote_url_info(repo_root, name);
+    let (owner, url, repo) = remote_url_info(context.repo_root, name);
     let tracked_ref = resolve_tracked_ref(
-        repo_root,
+        context.repo_root,
         name,
-        current_upstream,
-        default_branch,
-        current_branch,
-        cfg,
+        context.current_upstream,
+        context.default_branch,
+        context.current_branch,
+        context.config,
     );
     let ahead_behind = tracked_ref.as_deref().and_then(|r| {
         checkout::parse_ahead_behind(
-            repo_root,
+            context.repo_root,
             &format!("HEAD...{r}"),
             &format!("tracked_{name}"),
         )
     });
-    let kind = if name == "origin" && has_upstream {
+    let kind = if name == "origin" && context.has_upstream {
         RemoteKind::Fork
     } else {
         RemoteKind::Clone
@@ -468,77 +475,6 @@ fn get_workflow_presence(repo_root: &Path) -> WorkflowPresence {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use serde_json::Value;
-
-    use super::*;
-
-    #[test]
-    fn push_state_unset_uses_fetch_url() {
-        let push = resolve_push_state(Some("https://github.com/a/b.git"), None);
-        assert_eq!(
-            push,
-            PushState::Enabled {
-                push_url: "https://github.com/a/b.git".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn push_state_empty_is_no_push_url() {
-        let push = resolve_push_state(Some("https://github.com/a/b.git"), Some(""));
-        assert_eq!(
-            push,
-            PushState::Disabled {
-                reason: PushDisabledReason::NoPushUrl,
-            }
-        );
-    }
-
-    #[test]
-    fn push_state_disabled_sentinel_case_insensitive() {
-        for value in ["DISABLED", "disabled", "Disabled"] {
-            let push = resolve_push_state(Some("ignored"), Some(value));
-            assert_eq!(
-                push,
-                PushState::Disabled {
-                    reason: PushDisabledReason::KnownSentinel(KnownSentinel::Disabled),
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn push_state_unknown_pushurl_stays_enabled() {
-        let push = resolve_push_state(Some("https://github.com/a/b.git"), Some("ssh://other/repo"));
-        assert_eq!(
-            push,
-            PushState::Enabled {
-                push_url: "ssh://other/repo".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn push_state_serde_round_trip() {
-        for state in [
-            PushState::Enabled {
-                push_url: "https://example.com".to_string(),
-            },
-            PushState::Disabled {
-                reason: PushDisabledReason::NoPushUrl,
-            },
-            PushState::Disabled {
-                reason: PushDisabledReason::KnownSentinel(KnownSentinel::Disabled),
-            },
-        ] {
-            let json = serde_json::to_string(&state).expect("serialize");
-            let _: Value = serde_json::from_str(&json).expect("valid JSON");
-        }
-    }
-}
-
 pub(crate) fn get_first_commit(project_dir: &Path) -> Option<String> {
     let repo_root = discovery::git_repo_root(project_dir)?;
     command::git_output_logged(
@@ -641,4 +577,79 @@ fn parse_remote_url(raw: &str) -> (Option<String>, Option<String>, Option<String
     }
 
     (None, None, None)
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod tests {
+    use serde_json::Value;
+
+    use super::*;
+
+    #[test]
+    fn push_state_unset_uses_fetch_url() {
+        let push = resolve_push_state(Some("https://github.com/a/b.git"), None);
+        assert_eq!(
+            push,
+            PushState::Enabled {
+                push_url: "https://github.com/a/b.git".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn push_state_empty_is_no_push_url() {
+        let push = resolve_push_state(Some("https://github.com/a/b.git"), Some(""));
+        assert_eq!(
+            push,
+            PushState::Disabled {
+                reason: PushDisabledReason::NoPushUrl,
+            }
+        );
+    }
+
+    #[test]
+    fn push_state_disabled_sentinel_case_insensitive() {
+        for value in ["DISABLED", "disabled", "Disabled"] {
+            let push = resolve_push_state(Some("ignored"), Some(value));
+            assert_eq!(
+                push,
+                PushState::Disabled {
+                    reason: PushDisabledReason::KnownSentinel(KnownSentinel::Disabled),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn push_state_unknown_pushurl_stays_enabled() {
+        let push = resolve_push_state(Some("https://github.com/a/b.git"), Some("ssh://other/repo"));
+        assert_eq!(
+            push,
+            PushState::Enabled {
+                push_url: "ssh://other/repo".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn push_state_serde_round_trip() {
+        for state in [
+            PushState::Enabled {
+                push_url: "https://example.com".to_string(),
+            },
+            PushState::Disabled {
+                reason: PushDisabledReason::NoPushUrl,
+            },
+            PushState::Disabled {
+                reason: PushDisabledReason::KnownSentinel(KnownSentinel::Disabled),
+            },
+        ] {
+            let json = serde_json::to_string(&state).expect("serialize");
+            let _: Value = serde_json::from_str(&json).expect("valid JSON");
+        }
+    }
 }

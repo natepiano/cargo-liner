@@ -33,7 +33,7 @@ impl HeadState {
     /// The branch name when `HEAD` points at one. `None` for detached
     /// and unborn checkouts. Use for comparisons against
     /// `local_main_branch` and other branch-name lookups.
-    pub fn branch_name(&self) -> Option<&str> {
+    pub const fn branch_name(&self) -> Option<&str> {
         match self {
             Self::Branch(name) => Some(name.as_str()),
             Self::Unborn | Self::Detached { .. } => None,
@@ -327,7 +327,32 @@ fn relative_git_path(repo_root: &Path, project_dir: &Path) -> String {
     )
 }
 
+/// Parse `git rev-list --left-right --count` output into `(ahead, behind)`.
+pub(super) fn parse_ahead_behind(
+    project_dir: &Path,
+    revspec: &str,
+    op_suffix: &str,
+) -> Option<(usize, usize)> {
+    command::git_output_logged(
+        project_dir,
+        &format!("rev_list_{op_suffix}"),
+        ["rev-list", "--left-right", "--count", revspec],
+    )
+    .ok()
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout);
+        let mut parts = s.trim().split('\t');
+        let ahead = parts.next()?.parse::<usize>().ok()?;
+        let behind = parts.next()?.parse::<usize>().ok()?;
+        Some((ahead, behind))
+    })
+}
+
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::*;
 
@@ -377,25 +402,4 @@ mod tests {
             assert_eq!(state, back);
         }
     }
-}
-
-/// Parse `git rev-list --left-right --count` output into `(ahead, behind)`.
-pub(super) fn parse_ahead_behind(
-    project_dir: &Path,
-    revspec: &str,
-    op_suffix: &str,
-) -> Option<(usize, usize)> {
-    command::git_output_logged(
-        project_dir,
-        &format!("rev_list_{op_suffix}"),
-        ["rev-list", "--left-right", "--count", revspec],
-    )
-    .ok()
-    .and_then(|o| {
-        let s = String::from_utf8_lossy(&o.stdout);
-        let mut parts = s.trim().split('\t');
-        let ahead = parts.next()?.parse::<usize>().ok()?;
-        let behind = parts.next()?.parse::<usize>().ok()?;
-        Some((ahead, behind))
-    })
 }

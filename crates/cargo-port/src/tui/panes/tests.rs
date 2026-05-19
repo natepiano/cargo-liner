@@ -3,6 +3,7 @@ use tui_pane::label_color;
 
 use super::CI_COMPACT_DURATION_WIDTH;
 use super::DetailField;
+use super::EmptyDescriptionBehavior;
 use super::GitData;
 use super::PackageData;
 use super::pane_data as model;
@@ -14,7 +15,6 @@ use crate::project::GitStatus;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::panes;
-use super::EmptyDescriptionBehavior;
 use crate::tui::render::CiColumn;
 
 fn package_data(is_rust_project: bool) -> PackageData {
@@ -165,8 +165,8 @@ fn package_label_width_matches_widest_visible_field() {
 }
 
 /// Helper: outer pane area sized so `DescriptionBlock::for_pane` yields
-/// the desired inner column width. Outer width = inner_width + 2 (borders)
-/// + 2 (padding). Outer height = inner_height + 2 (borders).
+/// the desired inner column width. Outer width = `inner_width` + 2 (borders)
+/// + 2 (padding). Outer height = `inner_height` + 2 (borders).
 fn description_area(column_width: u16, inner_height: u16) -> Rect {
     Rect {
         x:      0,

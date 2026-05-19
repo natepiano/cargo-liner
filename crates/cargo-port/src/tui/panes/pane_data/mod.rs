@@ -413,14 +413,11 @@ impl DetailField {
             Self::LastFetched => data.last_fetched.as_deref().unwrap_or("").to_string(),
             Self::RateLimitCore => format_rate_limit_bucket(data.rate_limit_core),
             Self::RateLimitGraphQl => format_rate_limit_bucket(data.rate_limit_graphql),
-            Self::Tracks => match data.submodule_ctx.as_ref() {
-                Some(ctx) => ctx
-                    .tracks
-                    .as_deref()
-                    .map(|t| format!("{t}  (from .gitmodules)"))
-                    .unwrap_or_default(),
-                None => String::new(),
-            },
+            Self::Tracks => data
+                .submodule_ctx
+                .as_ref()
+                .and_then(|context| context.tracks.as_deref())
+                .map_or_else(String::new, |t| format!("{t}  (from .gitmodules)")),
             Self::Pinned => data
                 .submodule_ctx
                 .as_ref()
@@ -1143,10 +1140,10 @@ fn format_push_annotation(push: &PushState) -> Option<String> {
         PushDisabledReason::KnownSentinel(s) => Some(s.label()),
         PushDisabledReason::NoPushUrl => None,
     };
-    Some(match suffix {
-        Some(label) => format!("\u{21A0} push disabled ({label})"),
-        None => "\u{21A0} push disabled".to_string(),
-    })
+    Some(suffix.map_or_else(
+        || "\u{21A0} push disabled".to_string(),
+        |label| format!("\u{21A0} push disabled ({label})"),
+    ))
 }
 
 /// If `url` starts with `default_host`, return `owner/repo` (stripping
