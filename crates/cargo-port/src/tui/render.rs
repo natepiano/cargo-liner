@@ -56,42 +56,16 @@ use crate::constants::TARGET_DIR;
 use crate::project;
 use crate::project::AbsolutePath;
 
-#[derive(Clone, Copy)]
-pub(super) enum CiColumn {
-    Fmt,
-    Taplo,
-    Clippy,
-    Mend,
-    Build,
-    Test,
-    Bench,
-}
+pub(super) const CI_COLUMN_LABEL_MAX: usize = 8;
 
-impl CiColumn {
-    pub(super) fn matches(self, job_name: &str) -> bool {
-        let lower = job_name.to_lowercase();
-        match self {
-            Self::Fmt => lower.contains("format") || lower.contains("fmt"),
-            Self::Taplo => lower.contains("taplo"),
-            Self::Clippy => lower.contains("clippy"),
-            Self::Mend => lower.contains("mend"),
-            Self::Build => lower.contains("build"),
-            Self::Test => lower.contains("test"),
-            Self::Bench => lower.contains("bench"),
-        }
+pub(super) fn truncate_ci_label(name: &str) -> String {
+    let count = name.chars().count();
+    if count <= CI_COLUMN_LABEL_MAX {
+        return name.to_string();
     }
-
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::Fmt => "fmt",
-            Self::Taplo => "taplo",
-            Self::Clippy => "clippy",
-            Self::Mend => "mend",
-            Self::Build => "build",
-            Self::Test => "test",
-            Self::Bench => "bench",
-        }
-    }
+    let mut out: String = name.chars().take(CI_COLUMN_LABEL_MAX - 1).collect();
+    out.push('…');
+    out
 }
 
 pub(super) fn format_bytes(bytes: u64) -> String {

@@ -5,6 +5,7 @@ use tui_pane::CopySelectionResult;
 use tui_pane::label_color;
 
 use super::CI_COMPACT_DURATION_WIDTH;
+use super::CiEmptyState;
 use super::DetailField;
 use super::EmptyDescriptionBehavior;
 use super::GitData;
@@ -21,6 +22,7 @@ use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::ci::FetchStatus::Fetched;
+use crate::lint;
 use crate::lint::LintCommand;
 use crate::lint::LintCommandStatus;
 use crate::lint::LintRun;
@@ -30,7 +32,6 @@ use crate::project::GitStatus;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::panes;
-use crate::tui::render::CiColumn;
 
 fn package_data(is_rust_project: bool) -> PackageData {
     PackageData {
@@ -178,7 +179,7 @@ fn ci_copy_returns_selected_run_url() {
         runs:           vec![ci_run_with_jobs(Vec::new())],
         mode_label:     None,
         current_branch: None,
-        empty_state:    super::CiEmptyState::NoRuns,
+        empty_state:    CiEmptyState::NoRuns,
     };
 
     assert_eq!(
@@ -250,7 +251,7 @@ fn lints_copy_returns_selected_run_log_path() {
         is_rust: true,
     };
 
-    let expected = crate::lint::project_dir(project_root.as_path())
+    let expected = lint::project_dir(project_root.as_path())
         .join("runs/run-1/clippy.log")
         .display()
         .to_string();
@@ -486,7 +487,7 @@ fn ci_table_hides_durations_when_fixed_columns_overflow() {
             duration_secs: Some(21),
         },
     ])];
-    let cols = vec![CiColumn::Fmt, CiColumn::Clippy];
+    let cols = vec!["fmt".to_string(), "clippy".to_string()];
 
     assert!(!panes::ci_table_shows_durations(&runs, &cols, 20));
     assert_eq!(
@@ -503,7 +504,7 @@ fn ci_table_keeps_durations_when_fixed_columns_fit() {
         duration:      "17s".to_string(),
         duration_secs: Some(17),
     }])];
-    let cols = vec![CiColumn::Fmt];
+    let cols = vec!["fmt".to_string()];
 
     assert!(panes::ci_table_shows_durations(&runs, &cols, 80));
 }

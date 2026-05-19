@@ -1893,12 +1893,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_lint_commands_accepts_builtin_commands() {
-        let commands = parse_lint_commands(
-            "cargo mend --manifest-path \"$MANIFEST_PATH\" --all-targets, cargo clippy --workspace",
-        );
+    fn parse_lint_commands_splits_on_commas() {
+        let commands = parse_lint_commands("cargo fmt --check, cargo clippy --workspace");
         assert_eq!(commands.len(), 2);
-        assert_eq!(commands[0].name, "mend");
+        assert_eq!(commands[0].name, "fmt");
         assert_eq!(commands[1].name, "clippy");
     }
 

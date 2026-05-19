@@ -25,6 +25,7 @@ use crate::constants::GIT_DIR;
 use crate::constants::GIT_FORK;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::http::RateLimitQuota;
+use crate::lint;
 use crate::lint::LintRun;
 use crate::perf_log;
 use crate::project;
@@ -838,7 +839,7 @@ pub fn copy_payload_for_lints(
         return CopySelectionResult::Nothing;
     };
     copy_payload(
-        crate::lint::project_dir(project_root)
+        lint::project_dir(project_root)
             .join(&command.log_file)
             .display()
             .to_string(),

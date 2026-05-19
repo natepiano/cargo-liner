@@ -203,10 +203,6 @@ pub(crate) fn default_clippy_lint_command() -> LintCommandConfig {
 
 pub(crate) fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
     match name.trim().to_ascii_lowercase().as_str() {
-        "mend" => Some(LintCommandConfig {
-            name:    "mend".to_string(),
-            command: "cargo mend --manifest-path \"$MANIFEST_PATH\" --all-targets".to_string(),
-        }),
         "clippy" => Some(default_clippy_lint_command()),
         _ => None,
     }
@@ -1027,28 +1023,6 @@ mod tests {
         assert_eq!(cfg.lint.commands.len(), 1);
         assert_eq!(cfg.lint.commands[0].name, "clippy");
         assert!(cfg.lint.commands[0].command.contains("cargo clippy"));
-    }
-
-    #[test]
-    fn normalize_config_resolves_mend_builtin_with_all_targets() {
-        let cfg = normalize_config(CargoPortConfig {
-            lint: LintConfig {
-                commands: vec![LintCommandConfig {
-                    name:    "mend".to_string(),
-                    command: String::new(),
-                }],
-                ..LintConfig::default()
-            },
-            ..CargoPortConfig::default()
-        })
-        .expect("normalize config");
-
-        assert_eq!(cfg.lint.commands.len(), 1);
-        assert_eq!(cfg.lint.commands[0].name, "mend");
-        assert_eq!(
-            cfg.lint.commands[0].command,
-            "cargo mend --manifest-path \"$MANIFEST_PATH\" --all-targets"
-        );
     }
 
     #[test]

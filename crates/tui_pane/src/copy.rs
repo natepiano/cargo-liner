@@ -4,8 +4,12 @@
 //! owns registration, routing, and the clipboard backend call.
 
 use std::fmt::Display;
+use std::fmt::Formatter;
 #[cfg(feature = "clipboard")]
 use std::io::Write as _;
+
+use crossterm::clipboard::CopyToClipboard;
+use crossterm::execute;
 
 use crate::AppContext;
 use crate::Pane;
@@ -106,7 +110,7 @@ impl ClipboardError {
 }
 
 impl Display for ClipboardError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unavailable => f.write_str("clipboard unavailable"),
             Self::WriteFailed(err) => write!(f, "{err}"),
@@ -152,9 +156,6 @@ impl ClipboardBackend for SystemClipboard {
 
 #[cfg(feature = "clipboard")]
 fn write_system_clipboard(text: &str) -> Result<(), ClipboardError> {
-    use crossterm::clipboard::CopyToClipboard;
-    use crossterm::execute;
-
     let mut stdout = std::io::stdout();
     execute!(stdout, CopyToClipboard::to_clipboard_from(text))?;
     stdout.flush()?;

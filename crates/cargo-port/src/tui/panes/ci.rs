@@ -25,10 +25,24 @@ use crate::tui::pane::PaneRenderCtx;
 use crate::tui::pane::PaneSelectionState;
 use crate::tui::pane::PaneTitleCount;
 use crate::tui::render;
-use crate::tui::render::CiColumn;
 use crate::tui::state::Ci;
 
-fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
+/// Columns in first-seen order across `runs` (newest first), deduped by exact
+/// job name.
+fn infer_ci_columns(runs: &[CiRun]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut cols = Vec::new();
+    for run in runs {
+        for job in &run.jobs {
+            if seen.insert(job.name.clone()) {
+                cols.push(job.name.clone());
+            }
+        }
+    }
+    cols
+}
+
+fn build_ci_header_row(cols: &[String]) -> Row<'static> {
     let right_aligned = Style::default()
         .add_modifier(Modifier::BOLD)
         .fg(column_header_color());
@@ -39,8 +53,11 @@ fn build_ci_header_row(cols: &[CiColumn]) -> Row<'static> {
     ];
     for col in cols {
         header_cells.push(
-            Cell::from(ratatui::text::Line::from(col.label()).alignment(Alignment::Right))
-                .style(right_aligned),
+            Cell::from(
+                ratatui::text::Line::from(render::truncate_ci_label(col))
+                    .alignment(Alignment::Right),
+            )
+            .style(right_aligned),
         );
         header_cells.push(Cell::from(""));
     }
@@ -56,7 +73,7 @@ pub const CI_COMPACT_DURATION_WIDTH: usize = 2;
 
 fn build_ci_data_row(
     ci_run: &CiRun,
-    cols: &[CiColumn],
+    cols: &[String],
     show_durations: bool,
     selection: PaneSelectionState,
 ) -> Row<'static> {
@@ -74,7 +91,7 @@ fn build_ci_data_row(
     ];
 
     for col in cols {
-        let job = ci_run.jobs.iter().find(|job| col.matches(&job.name));
+        let job = ci_run.jobs.iter().find(|job| &job.name == col);
         if let Some(job) = job {
             let style = render::conclusion_style(Some(job.ci_status));
             cells.push(
@@ -115,7 +132,7 @@ fn build_ci_data_row(
     Row::new(cells).style(selection.overlay_style())
 }
 
-fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -> Vec<Constraint> {
+fn build_ci_widths(ci_runs: &[CiRun], cols: &[String], show_durations: bool) -> Vec<Constraint> {
     let glyph_width = u16::try_from(
         CiStatus::Passed
             .icon()
@@ -133,7 +150,7 @@ fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -
         ColumnSpec::fixed(CI_TIMESTAMP_WIDTH),
     ];
     for col in cols {
-        let label_min = label_width(col.label());
+        let label_min = label_width(&render::truncate_ci_label(col));
         if show_durations {
             specs.push(ColumnSpec::fit(label_min));
         } else {
@@ -162,7 +179,7 @@ fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -
         for (i, col) in cols.iter().enumerate() {
             let col_idx = 3 + i * 2;
             for run in ci_runs {
-                if let Some(job) = run.jobs.iter().find(|job| col.matches(&job.name)) {
+                if let Some(job) = run.jobs.iter().find(|job| &job.name == col) {
                     widths.observe_cell_usize(col_idx, job.duration.trim().len());
                 }
             }
@@ -181,7 +198,7 @@ fn build_ci_widths(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -
 /// Display width of a header label, clamped to `u16`.
 fn label_width(label: &str) -> u16 { u16::try_from(label.len()).unwrap_or(u16::MAX) }
 
-fn ci_duration_width(ci_runs: &[CiRun], col: CiColumn, show_durations: bool) -> usize {
+fn ci_duration_width(ci_runs: &[CiRun], col: &str, show_durations: bool) -> usize {
     if show_durations {
         ci_duration_min_width(ci_runs, col)
     } else {
@@ -189,14 +206,14 @@ fn ci_duration_width(ci_runs: &[CiRun], col: CiColumn, show_durations: bool) -> 
     }
 }
 
-fn ci_duration_min_width(ci_runs: &[CiRun], col: CiColumn) -> usize {
+fn ci_duration_min_width(ci_runs: &[CiRun], col: &str) -> usize {
     let max_data = ci_runs
         .iter()
-        .filter_map(|run| run.jobs.iter().find(|job| col.matches(&job.name)))
+        .filter_map(|run| run.jobs.iter().find(|job| job.name == col))
         .map(|job| job.duration.trim().len())
         .max()
         .unwrap_or(0);
-    col.label().len().max(max_data)
+    render::truncate_ci_label(col).len().max(max_data)
 }
 
 pub fn ci_total_width(ci_runs: &[CiRun], show_durations: bool) -> usize {
@@ -217,7 +234,7 @@ fn ci_total_min_width(ci_runs: &[CiRun]) -> usize {
     "Total".len().max(max_data)
 }
 
-fn ci_table_fixed_width(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bool) -> usize {
+fn ci_table_fixed_width(ci_runs: &[CiRun], cols: &[String], show_durations: bool) -> usize {
     let glyph_width = CiStatus::Passed
         .icon()
         .width()
@@ -232,13 +249,13 @@ fn ci_table_fixed_width(ci_runs: &[CiRun], cols: &[CiColumn], show_durations: bo
     let base = branch_width + usize::from(CI_TIMESTAMP_WIDTH);
     let job_columns: usize = cols
         .iter()
-        .map(|col| ci_duration_width(ci_runs, *col, show_durations) + glyph_width)
+        .map(|col| ci_duration_width(ci_runs, col, show_durations) + glyph_width)
         .sum();
     let total = ci_total_width(ci_runs, show_durations) + glyph_width;
     base + job_columns + total + column_count.saturating_sub(1)
 }
 
-pub fn ci_table_shows_durations(ci_runs: &[CiRun], cols: &[CiColumn], inner_width: u16) -> bool {
+pub fn ci_table_shows_durations(ci_runs: &[CiRun], cols: &[String], inner_width: u16) -> bool {
     ci_table_fixed_width(ci_runs, cols, true) <= usize::from(inner_width)
 }
 
@@ -291,24 +308,7 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
         viewport.set_viewport_rows(usize::from(inner.height.saturating_sub(1)));
     }
 
-    let all_columns = [
-        CiColumn::Fmt,
-        CiColumn::Taplo,
-        CiColumn::Clippy,
-        CiColumn::Mend,
-        CiColumn::Build,
-        CiColumn::Test,
-        CiColumn::Bench,
-    ];
-    let cols: Vec<CiColumn> = all_columns
-        .into_iter()
-        .filter(|col| {
-            ci_data
-                .runs
-                .iter()
-                .any(|run| run.jobs.iter().any(|job| col.matches(&job.name)))
-        })
-        .collect();
+    let cols = infer_ci_columns(&ci_data.runs);
     let show_durations = ci_table_shows_durations(&ci_data.runs, &cols, inner.width);
 
     let header = build_ci_header_row(&cols);
