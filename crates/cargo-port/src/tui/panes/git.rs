@@ -29,6 +29,7 @@ use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
+use crate::project::HeadState;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::pane;
 use crate::tui::pane::PaneFocusState;
@@ -320,7 +321,7 @@ struct RenderFlatArgs<'a> {
 /// `(github unreachable)` / `(github rate-limited)` suffix on
 /// rate-limit rows).
 fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool) -> String {
-    if field == DetailField::Branch {
+    if field == DetailField::Head {
         let raw = field.git_value(data);
         return if data.is_local() && !raw.is_empty() {
             format!("{raw} ({GIT_LOCAL} local)")
@@ -392,7 +393,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         let vs = selection.patch(base_value_style);
         if matches!(
             *field,
-            DetailField::Branch | DetailField::RepoDesc | DetailField::WorktreeError
+            DetailField::Head | DetailField::RepoDesc | DetailField::WorktreeError
         ) && !value.is_empty()
         {
             let prefix = format!(" {label:<label_width$} ");
@@ -523,8 +524,13 @@ fn remote_row_line(
     let icon_width = row.icon.width();
     let icon_pad = REMOTE_ICON_COL.saturating_sub(icon_width);
     let icon_cell = format!("{}{}", row.icon, " ".repeat(icon_pad));
+    let push_suffix = row
+        .push_annotation
+        .as_deref()
+        .map(|annotation| format!("  {annotation}"))
+        .unwrap_or_default();
     let text = format!(
-        "{:<name$}  {:<url$}  {:<tracked$}  {:<status$}",
+        "{:<name$}  {:<url$}  {:<tracked$}  {:<status$}{push_suffix}",
         row.name,
         row.display_url,
         row.tracked_ref,
@@ -628,9 +634,12 @@ fn worktree_status_text(ahead_behind: Option<(usize, usize)>) -> String {
 }
 
 fn git_panel_title(data: &GitData) -> String {
-    match data.branch.as_deref() {
-        Some(branch) if !branch.is_empty() => format!(" Git - {branch} "),
-        _ => pane::pane_title("Git", &PaneTitleCount::None),
+    match data.head.as_ref() {
+        Some(HeadState::Branch(name)) if !name.is_empty() => format!(" Git - {name} "),
+        Some(HeadState::Detached { short_sha }) => format!(" Git - detached @ {short_sha} "),
+        Some(HeadState::Branch(_) | HeadState::Unborn) | None => {
+            pane::pane_title("Git", &PaneTitleCount::None)
+        },
     }
 }
 

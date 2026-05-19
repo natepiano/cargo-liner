@@ -35,7 +35,10 @@ pub(crate) use git::CheckoutInfo;
 pub(crate) use git::GitOrigin;
 pub(crate) use git::GitRepoPresence;
 pub(crate) use git::GitStatus;
+pub(crate) use git::HeadState;
 pub(crate) use git::LocalGitState;
+pub(crate) use git::PushDisabledReason;
+pub(crate) use git::PushState;
 #[cfg(test)]
 pub(crate) use git::RemoteInfo;
 pub(crate) use git::RemoteKind;
@@ -67,6 +70,7 @@ pub(crate) use non_rust::NonRustProject;
 pub(crate) use paths::AbsolutePath;
 pub(crate) use paths::DisplayPath;
 pub(crate) use paths::home_relative_path;
+pub(crate) use project_entry::GitRepo;
 pub(crate) use project_entry::ProjectEntry;
 pub(crate) use project_entry::entry_contains;
 pub(crate) use project_fields::ProjectFields;

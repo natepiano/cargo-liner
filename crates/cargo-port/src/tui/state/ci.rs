@@ -272,7 +272,7 @@ impl Ci {
             return false;
         };
         let default_branch = repo_info.and_then(|r| r.default_branch.as_deref());
-        git.primary_tracked_ref().is_none() && git.branch.as_deref() != default_branch
+        git.primary_tracked_ref().is_none() && git.head.branch_name() != default_branch
     }
 
     /// Count `info.runs` after applying the display-mode
@@ -285,7 +285,7 @@ impl Ci {
         git_info: Option<&CheckoutInfo>,
         display_mode: CiRunDisplayMode,
     ) -> usize {
-        let Some(branch) = git_info.and_then(|g| g.branch.as_deref()) else {
+        let Some(branch) = git_info.and_then(|g| g.head.branch_name()) else {
             return info.runs.len();
         };
         if matches!(display_mode, CiRunDisplayMode::All) {

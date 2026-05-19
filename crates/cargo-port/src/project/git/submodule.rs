@@ -4,6 +4,7 @@ use std::path::Path;
 use super::checkout::CheckoutInfo;
 use super::command;
 use super::discovery::WorktreeStatus;
+use crate::project::GitRepo;
 use crate::project::info::ProjectInfo;
 use crate::project::info::Visibility;
 use crate::project::info::WorktreeHealth;
@@ -31,6 +32,10 @@ pub(crate) struct Submodule {
     /// Shared metadata (git info, disk usage, etc.) — populated by
     /// background messages through the standard `at_path_mut` lookup.
     pub info:          ProjectInfo,
+    /// Per-repo data for the submodule's own git repo. `None` when the
+    /// submodule's working directory is missing or uninitialized, or
+    /// before `RepoInfo::get` has been invoked for this path.
+    pub git_repo:      Option<GitRepo>,
 }
 
 impl ProjectFields for Submodule {
@@ -107,6 +112,7 @@ fn parse_gitmodules(content: &str) -> Vec<Submodule> {
                 branch:        None,
                 commit:        None,
                 info:          ProjectInfo::default(),
+                git_repo:      None,
             });
         } else if let Some(ref mut entry) = current
             && let Some((key, value)) = parse_key_value(trimmed)

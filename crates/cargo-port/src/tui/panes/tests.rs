@@ -47,7 +47,8 @@ fn package_data(is_rust_project: bool) -> PackageData {
 
 fn git_data() -> GitData {
     GitData {
-        branch:             None,
+        head:               None,
+        submodule_ctx:      None,
         status:             None,
         vs_local:           None,
         local_main_branch:  None,

@@ -13,14 +13,53 @@ use crate::constants::GIT_STATUS_CLEAN;
 use crate::constants::GIT_STATUS_MODIFIED;
 use crate::constants::GIT_STATUS_UNTRACKED;
 
+/// The resolved state of `HEAD` for a checkout.
+///
+/// Replaces the older `branch: Option<String>` field, which conflated three
+/// distinct cases:
+/// - `Unborn`: repo exists but has no commits (`git rev-parse HEAD` fails).
+/// - `Branch(name)`: `HEAD` points at the named branch.
+/// - `Detached { short_sha }`: `HEAD` is a detached commit; `short_sha` is the 8-char abbreviation
+///   (matching `ls_tree_submodule_commits`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum HeadState {
+    Unborn,
+    Branch(String),
+    Detached { short_sha: String },
+}
+
+impl HeadState {
+    /// The branch name when `HEAD` points at one. `None` for detached
+    /// and unborn checkouts. Use for comparisons against
+    /// `local_main_branch` and other branch-name lookups.
+    pub fn branch_name(&self) -> Option<&str> {
+        match self {
+            Self::Branch(name) => Some(name.as_str()),
+            Self::Unborn | Self::Detached { .. } => None,
+        }
+    }
+
+    /// Short display label, suitable for compact UI like the finder
+    /// column. `Branch(name)` → `name`, `Detached { short_sha }` →
+    /// `"detached @ <short_sha>"`, `Unborn` → `""`.
+    pub fn display_label(&self) -> String {
+        match self {
+            Self::Branch(name) => name.clone(),
+            Self::Detached { short_sha } => format!("detached @ {short_sha}"),
+            Self::Unborn => String::new(),
+        }
+    }
+}
+
 /// Per-checkout git metadata: state that can legitimately differ between
 /// two worktrees of the same repo. Lives inside `ProjectInfo.local_git_state`.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CheckoutInfo {
     /// Git path state (clean, modified, untracked, etc.) for this project path.
     pub status:              GitStatus,
-    /// The current branch name.
-    pub branch:              Option<String>,
+    /// The resolved state of `HEAD` (branch, detached, or unborn).
+    pub head:                HeadState,
     /// ISO 8601 date of the most recent commit on this branch.
     pub last_commit:         Option<String>,
     /// Commits ahead and behind the local `{local_main_branch}`.
@@ -64,10 +103,10 @@ impl CheckoutInfo {
     pub fn get(probe_path: &Path, local_main_branch: Option<&str>) -> Option<Self> {
         let repo_root = discovery::git_repo_root(probe_path)?;
 
-        let branch = repo::get_current_branch(&repo_root);
+        let head = resolve_head_state(&repo_root);
         let current_upstream = repo::get_upstream_branch(&repo_root);
         let ahead_behind_local = local_main_branch
-            .filter(|branch_name| branch.as_deref() != Some(*branch_name))
+            .filter(|branch_name| head.branch_name() != Some(*branch_name))
             .and_then(|branch_name| {
                 parse_ahead_behind(
                     &repo_root,
@@ -88,11 +127,37 @@ impl CheckoutInfo {
 
         Some(Self {
             status: get_git_status(probe_path, &repo_root),
-            branch,
+            head,
             last_commit,
             ahead_behind_local,
             primary_tracked_ref: current_upstream,
         })
+    }
+}
+
+/// Resolve `HEAD` to a `HeadState`:
+/// - `rev-parse --abbrev-ref HEAD` returns the branch name, or the literal `"HEAD"` when detached,
+///   or empty when unborn.
+/// - For detached, run `rev-parse --short=8 HEAD` to fetch the SHA.
+/// - For an unborn or otherwise-unresolvable HEAD, return `Unborn`.
+fn resolve_head_state(repo_root: &Path) -> HeadState {
+    let abbrev = repo::get_current_branch(repo_root);
+    match abbrev.as_deref() {
+        None => HeadState::Unborn,
+        Some("HEAD") => command::git_output_logged(
+            repo_root,
+            "rev_parse_short_head",
+            ["rev-parse", "--short=8", "HEAD"],
+        )
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        })
+        .map_or(HeadState::Unborn, |short_sha| HeadState::Detached {
+            short_sha,
+        }),
+        Some(name) => HeadState::Branch(name.to_string()),
     }
 }
 
@@ -260,6 +325,58 @@ fn relative_git_path(repo_root: &Path, project_dir: &Path) -> String {
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn head_state_branch_name_for_branch() {
+        let h = HeadState::Branch("main".to_string());
+        assert_eq!(h.branch_name(), Some("main"));
+    }
+
+    #[test]
+    fn head_state_branch_name_for_detached() {
+        let h = HeadState::Detached {
+            short_sha: "abc12345".to_string(),
+        };
+        assert_eq!(h.branch_name(), None);
+    }
+
+    #[test]
+    fn head_state_branch_name_for_unborn() {
+        assert_eq!(HeadState::Unborn.branch_name(), None);
+    }
+
+    #[test]
+    fn head_state_display_label() {
+        assert_eq!(HeadState::Branch("dev".to_string()).display_label(), "dev");
+        assert_eq!(
+            HeadState::Detached {
+                short_sha: "deadbeef".to_string(),
+            }
+            .display_label(),
+            "detached @ deadbeef"
+        );
+        assert_eq!(HeadState::Unborn.display_label(), "");
+    }
+
+    #[test]
+    fn head_state_serde_round_trip() {
+        for state in [
+            HeadState::Unborn,
+            HeadState::Branch("feat/x".to_string()),
+            HeadState::Detached {
+                short_sha: "01234567".to_string(),
+            },
+        ] {
+            let json = serde_json::to_string(&state).expect("serialize");
+            let back: HeadState = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(state, back);
+        }
+    }
 }
 
 /// Parse `git rev-list --left-right --count` output into `(ahead, behind)`.

@@ -41,6 +41,7 @@ use crate::project::CheckoutInfo;
 use crate::project::ExampleGroup;
 use crate::project::FileStamp;
 use crate::project::GitStatus;
+use crate::project::HeadState;
 use crate::project::ManifestFingerprint;
 use crate::project::MemberGroup;
 use crate::project::Package;
@@ -153,7 +154,7 @@ fn make_workspace_with_members(name: &str, path: &Path, groups: Vec<MemberGroup>
 fn make_git_info(url: Option<&str>) -> (CheckoutInfo, RepoInfo) {
     let checkout = CheckoutInfo {
         status:              GitStatus::Clean,
-        branch:              Some("main".to_string()),
+        head:                HeadState::Branch("main".to_string()),
         last_commit:         Some("2024-01-02T00:00:00Z".to_string()),
         ahead_behind_local:  Some((0, 0)),
         primary_tracked_ref: Some("origin/main".to_string()),
@@ -167,6 +168,9 @@ fn make_git_info(url: Option<&str>) -> (CheckoutInfo, RepoInfo) {
             tracked_ref:  Some("origin/main".to_string()),
             ahead_behind: Some((0, 0)),
             kind:         RemoteKind::Clone,
+            push:         crate::project::PushState::Enabled {
+                push_url: String::new(),
+            },
         }],
         workflows:         WorkflowPresence::Present,
         first_commit:      Some("2024-01-01T00:00:00Z".to_string()),

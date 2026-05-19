@@ -29,6 +29,7 @@ use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
 use crate::project::GitStatus;
+use crate::project::HeadState;
 use crate::project::MemberGroup;
 use crate::project::NonRustProject;
 use crate::project::Package;
@@ -547,7 +548,7 @@ fn make_ci_run(run_id: u64, conclusion: CiStatus) -> CiRun {
 fn make_git_info(url: Option<&str>) -> (CheckoutInfo, RepoInfo) {
     let checkout = CheckoutInfo {
         status:              GitStatus::Clean,
-        branch:              Some("main".to_string()),
+        head:                HeadState::Branch("main".to_string()),
         last_commit:         None,
         ahead_behind_local:  None,
         primary_tracked_ref: Some("origin/main".to_string()),
@@ -561,6 +562,9 @@ fn make_git_info(url: Option<&str>) -> (CheckoutInfo, RepoInfo) {
             tracked_ref:  Some("origin/main".to_string()),
             ahead_behind: None,
             kind:         RemoteKind::Clone,
+            push:         crate::project::PushState::Enabled {
+                push_url: String::new(),
+            },
         }],
         workflows:         WorkflowPresence::Present,
         first_commit:      None,

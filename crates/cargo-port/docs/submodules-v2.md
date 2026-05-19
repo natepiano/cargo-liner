@@ -1,5 +1,18 @@
 # Submodule pane: give submodules their own `GitRepo`
 
+## Status & handoff (read first)
+
+- **Implementation status:** planned, not started. No source changes have been made.
+- **Predecessor:** `docs/git_repo.md` — the `ProjectEntry { item, git_repo }` refactor it introduced is **already shipped** and is the foundation this plan builds on. References below to `GitRepo`, `RepoInfo`, `repo_fetch_in_flight`, `entry_containing`, etc. point at code that exists today.
+- **Authoritative decisions:** the "Decisions log" section at the bottom of this file overrides anything earlier that contradicts it. Four architectural choices were made on 2026-05-18 — see that section before reading the rest. Body text has been reconciled with those decisions; if a future reader spots a drift, the log wins.
+- **What's actually new in code terms:**
+  1. `HeadState` enum in `src/project/git/checkout.rs`, replacing `CheckoutInfo.branch: Option<String>` (and `GitData.branch`).
+  2. `Submodule.git_repo: Option<GitRepo>` populated by detection, with `is_submodule_path` GitHub-fetch suppression at `repo_handlers.rs:268` removed.
+  3. `SubmoduleContext` struct + `GitData.submodule_ctx: Option<SubmoduleContext>` (decided as a sum type, not three independent fields).
+  4. `PushState`/`PushDisabledReason`/`KnownSentinel` on `RemoteInfo`, with batched `git config --get-regexp` detection.
+- **What's explicitly out:** promoting `Submodule` to a top-level `RootItem` variant, `CommitId`/`BranchName` newtypes, a `GitRepoProvider` trait. See Decisions log §1, §3, §4 for why.
+- **Recommended first PR:** Stage 1 (`HeadState`) alone — it's a self-contained type refactor and a user-visible fix (detached HEADs render correctly everywhere). Subsequent stages depend on it but compile-and-test-pass independently.
+
 ## Problem
 
 The submodule pane silently renders the **parent repo's** metadata for every repo-level field. `build_pane_data_for_submodule` (`src/tui/panes/pane_data/mod.rs:1200`) calls `build_git_detail_fields(app, submodule.path)`, which does two lookups:
@@ -69,27 +82,23 @@ Stage 1 also reworks `GitData` to use `HeadState` directly (removing the duplica
 struct GitData {
     // existing fields, but:
     head: Option<HeadState>,        // was: branch: Option<String>
-    // ...new submodule-only fields below...
+    submodule_ctx: Option<SubmoduleContext>, // NEW — populated only by submodule pane
+}
+
+pub struct SubmoduleContext {
+    pub tracks:        Option<String>,  // from .gitmodules `branch =`
+    pub pinned_commit: String,          // from parent ls-tree HEAD; always present when ctx exists
+    pub parent_repo:   String,          // display path of parent
 }
 ```
 
-Two new optional `GitData` fields populated only by the submodule pane builder:
+The three submodule-only render values are grouped into one `SubmoduleContext` (decision §2). `git_fields_from_data` does a single `if let Some(ctx) = &data.submodule_ctx` and pushes `Tracks` (when `ctx.tracks.is_some()`) and `Pinned` together, between `GitPath` and `VsLocal`. Parent-repo identity is rendered as a **second line in the existing About section** (`"Submodule of <ctx.parent_repo>"`) rather than a flat field, via a `parent_repo: Option<&'a str>` extension on `GitAboutCtx` (`src/tui/panes/git.rs:715`). No `ParentRepo` `DetailField` variant.
 
-```rust
-struct GitData {
-    // ...
-    pinned_commit: Option<String>,  // from Submodule.commit
-    tracks:        Option<String>,  // from Submodule.branch (.gitmodules)
-}
-```
+Two new `DetailField` variants: `Pinned` and `Tracks`. Their `git_value` formatting reads from `data.submodule_ctx.as_ref()` — the field is unrendered when the context is absent.
 
-Parent-repo identity ("Submodule of …") is rendered as a **second line in the existing About section** rather than as a flat field. That keeps the flat field list short and matches the mockup. Implementation: extend `GitAboutCtx` (`src/tui/panes/git.rs:715`) with `parent_repo: Option<&'a str>` and emit a second line after `description` when present. No new `DetailField` variant is needed for the parent.
+### Why a sum type rather than three independent options
 
-Two new `DetailField` variants: `Pinned` and `Tracks`. `git_fields_from_data` pushes them when `Some(_)`, in that order, between `GitPath` and `VsLocal`.
-
-### Why these two rather than an `is_submodule` flag
-
-A boolean `is_submodule` would push branching into every renderer. Optional fields keep render logic uniform: a field is present and rendered, or absent and skipped — same pattern `Stars`, `Inception`, `LastFetched` already use.
+Three optional fields would match `GitData`'s existing pattern (`stars`, `inception`, `last_fetched` are independent options). The sum type spells out "this whole group is the submodule overlay" — a single `Option` decides whether *any* of them render. Renderer reads stay short, and a future addition (e.g. `submodule_status: SubmoduleHealth`) lands inside `SubmoduleContext` without touching `GitData`'s top-level field list.
 
 ## Sanity check: per-repo vs per-checkout vs per-parent-relationship
 
@@ -227,18 +236,29 @@ Now the structural fix: submodules carry their own repo metadata.
 
 **Expected LOC:** ~300–400. **Files:** ~12–15. **User-visible:** the `⚠ bug` rows in the rendering diagram are fixed — Stars / Incept / About / Fetched / Remotes / `vs local main` now describe the submodule, not the parent.
 
-### Stage 3 — Add submodule render fields (`Tracks`, `Pinned`, parent About line)
+### Stage 3 — Add submodule render fields (`SubmoduleContext`)
 
 Pure render addition; no model changes beyond `GitData` and `DetailField`.
 
-- Add fields to `GitData`: `tracks: Option<String>`, `pinned_commit: Option<String>`, `parent_repo: Option<String>`. The `parent_repo` field feeds the About section, not a `DetailField`.
+- Add `SubmoduleContext` struct (see "Target data model" above) and `submodule_ctx: Option<SubmoduleContext>` to `GitData`.
 - Add `DetailField::Tracks` and `DetailField::Pinned` with labels `"Tracks"` and `"Pinned"`.
-- `git_fields_from_data` pushes them when `Some(_)`, in that order, between `GitPath` and `VsLocal`.
-- `git_value` formats:
+- `git_fields_from_data` does one `if let Some(ctx) = &data.submodule_ctx` and pushes `Tracks` (if `ctx.tracks.is_some()`) then `Pinned`, between `GitPath` and `VsLocal`.
+- `git_value` reads from `data.submodule_ctx.as_ref()`:
   - `Tracks` → `"<branch>  (from .gitmodules)"`.
   - `Pinned` → `"<short_sha>  (parent HEAD)"`.
 - About-section rendering: extend `GitAboutCtx` (`src/tui/panes/git.rs:715`) with `parent_repo: Option<&'a str>`. When present, emit a second line `"Submodule of <parent_repo>"` after the description.
-- `build_pane_data_for_submodule` populates these. Parent path is `app.project_list.entry_containing(submodule.path).map(|e| home_relative_path(e.item.path()))`. Other pane builders leave the three fields `None`.
+- `build_pane_data_for_submodule` constructs the context:
+  ```rust
+  let parent = app.project_list.entry_containing(submodule.path)
+      .map(|e| home_relative_path(e.item.path()))?;
+  let pinned = submodule.commit.clone()?;
+  Some(SubmoduleContext {
+      tracks: submodule.branch.clone(),
+      pinned_commit: pinned,
+      parent_repo: parent,
+  })
+  ```
+  Other pane builders leave `submodule_ctx: None`.
 
 **Expected LOC:** ~150–200. **Files:** ~4–6.
 
@@ -311,7 +331,7 @@ Constructors needed: `Submodule::for_tests()`, `CheckoutInfo::for_tests()`, `Rem
 
 - Submodule pane title renders `Git - <branch>` or `Git - detached @ <sha>` — never the literal `Git - HEAD`.
 - Submodule pane's `Stars`, `Incept`, `About`, `Fetched`, `Remotes`, `vs local main` describe the submodule's own repo, not the parent's.
-- Submodule pane renders `Tracks` and `Pinned` rows when `.gitmodules` / parent HEAD provide values, and a "Submodule of …" line in the About section.
+- Submodule pane renders `Tracks` and `Pinned` rows when `.gitmodules` / parent HEAD provide values, and a "Submodule of …" line in the About section. All three flow through `GitData.submodule_ctx: Option<SubmoduleContext>`.
 - A remote configured with `pushurl = DISABLED` renders an explicit push-disabled annotation in the Remotes table.
 - `CheckoutInfo.branch: Option<String>` no longer exists; `CheckoutInfo.head: HeadState` replaces it. `GitData.branch` likewise becomes `GitData.head: Option<HeadState>`.
 - `Submodule.git_repo: Option<GitRepo>` exists and is populated by detection for initialized submodules.

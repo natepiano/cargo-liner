@@ -107,12 +107,10 @@ impl App {
         if let Some(project) = self.project_list.at_path_mut(path) {
             project.local_git_state = LocalGitState::Detected(Box::new(info));
         }
-        // Detected git state implies the entry is in a git repo. Ensure
-        // the entry has a `git_repo` slot so per-repo writes (CI,
-        // GitHub meta, RepoInfo) can land on it.
-        if let Some(entry) = self.project_list.entry_containing_mut(path) {
-            entry.git_repo.get_or_insert_with(Default::default);
-        }
+        // Detected git state implies the entry (or submodule) is in a
+        // git repo. Ensure a `GitRepo` slot exists for `path` so per-repo
+        // writes (CI, GitHub meta, RepoInfo) can land on it.
+        self.project_list.ensure_git_repo_for(path);
 
         if self.scan.is_complete() {
             let git_dir = self
@@ -200,7 +198,14 @@ impl App {
         let fetch_head_advanced =
             info.last_fetched.is_some() && info.last_fetched != previous_last_fetched;
 
-        if let Some(entry) = self.project_list.entry_containing_mut(path) {
+        // Submodules write to their own `git_repo`; for top-level
+        // entries we still apply the primary-only-write policy below.
+        let is_submodule_target = self.project_list.is_submodule_path(path);
+        if is_submodule_target {
+            if let Some(git_repo) = self.project_list.ensure_git_repo_for(path) {
+                git_repo.repo_info = Some(info);
+            }
+        } else if let Some(entry) = self.project_list.entry_containing_mut(path) {
             if entry.item.path().as_path() != path {
                 // Non-primary write — discard per the policy above.
                 return;
@@ -260,14 +265,11 @@ impl App {
     }
     /// Shared between `handle_repo_info` and `handle_checkout_info`:
     /// kick a GitHub fetch for this path's repo if we have a parseable
-    /// remote URL. The dedup set absorbs concurrent attempts for the
-    /// same `OwnerRepo`; cache invalidation is gated inside
-    /// `handle_repo_info` by `last_fetched` advance. Submodule paths are
-    /// excluded — submodule CI/metadata is shown on the parent project.
+    /// remote URL. The dedup set in `App.net.github.repo_fetch_in_flight`
+    /// keys on `OwnerRepo`, so a submodule sharing its `OwnerRepo` with
+    /// the parent won't cause a duplicate fetch. Cache invalidation is
+    /// gated inside `handle_repo_info` by `last_fetched` advance.
     pub(super) fn maybe_trigger_repo_fetch(&mut self, path: &Path) {
-        if self.project_list.is_submodule_path(path) {
-            return;
-        }
         let Some(url) = self.project_list.fetch_url_for(path) else {
             return;
         };

@@ -27,6 +27,7 @@ fn submodule_rows_render_disk_usage() {
         branch:        None,
         commit:        None,
         info:          crate::project::ProjectInfo::default(),
+        git_repo:      None,
     });
 
     app.handle_disk_usage(Path::new(&root_path), 2_000_000);

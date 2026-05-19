@@ -154,7 +154,7 @@ fn tabbable_panes_follow_canonical_order() {
         (
             CheckoutInfo {
                 status:              GitStatus::Clean,
-                branch:              None,
+                head:                HeadState::Unborn,
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: None,
@@ -168,6 +168,9 @@ fn tabbable_panes_follow_canonical_order() {
                     tracked_ref:  None,
                     ahead_behind: None,
                     kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
                 }],
                 workflows:         WorkflowPresence::Present,
                 first_commit:      None,

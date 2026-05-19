@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -44,6 +45,52 @@ pub(crate) enum RemoteKind {
     Fork,
 }
 
+/// A well-known push-disable sentinel that users put in `remote.<name>.pushurl`
+/// to lock out accidental pushes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KnownSentinel {
+    Disabled,
+    NoPush,
+    DoNotPush,
+}
+
+impl KnownSentinel {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Disabled => "DISABLED",
+            Self::NoPush => "no-push",
+            Self::DoNotPush => "do_not_push",
+        }
+    }
+
+    fn from_pushurl(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "disabled" => Some(Self::Disabled),
+            "no-push" => Some(Self::NoPush),
+            "do_not_push" => Some(Self::DoNotPush),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case", tag = "kind")]
+pub(crate) enum PushDisabledReason {
+    KnownSentinel(KnownSentinel),
+    NoPushUrl,
+}
+
+/// Whether `git push` against this remote is enabled, and the URL it
+/// would push to. Derived from `git config remote.<name>.pushurl` —
+/// when unset, push resolves to the fetch URL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case", tag = "state")]
+pub(crate) enum PushState {
+    Enabled { push_url: String },
+    Disabled { reason: PushDisabledReason },
+}
+
 /// Per-remote metadata. A repo may have any number of these (`origin`,
 /// `upstream`, and others).
 #[derive(Debug, Clone, Serialize)]
@@ -55,6 +102,7 @@ pub(crate) struct RemoteInfo {
     pub tracked_ref:  Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
     pub kind:         RemoteKind,
+    pub push:         PushState,
 }
 
 /// Repo-level metadata: state that is the same across every checkout of
@@ -108,6 +156,7 @@ impl RepoInfo {
 
         let remote_names = list_remote_names(&repo_root);
         let has_upstream = remote_names.iter().any(|n| n == "upstream");
+        let pushurls = list_remote_pushurls(&repo_root);
         let remotes: Vec<RemoteInfo> = remote_names
             .iter()
             .map(|name| {
@@ -119,6 +168,7 @@ impl RepoInfo {
                     default_branch.as_deref(),
                     branch.as_deref(),
                     &cfg,
+                    pushurls.get(name.as_str()).map(String::as_str),
                 )
             })
             .collect();
@@ -203,6 +253,7 @@ fn build_remote_info(
     default_branch: Option<&str>,
     current_branch: Option<&str>,
     cfg: &CargoPortConfig,
+    pushurl: Option<&str>,
 ) -> RemoteInfo {
     let (owner, url, repo) = remote_url_info(repo_root, name);
     let tracked_ref = resolve_tracked_ref(
@@ -225,6 +276,7 @@ fn build_remote_info(
     } else {
         RemoteKind::Clone
     };
+    let push = resolve_push_state(url.as_deref(), pushurl);
     RemoteInfo {
         name: name.to_string(),
         url,
@@ -233,7 +285,67 @@ fn build_remote_info(
         tracked_ref,
         ahead_behind,
         kind,
+        push,
     }
+}
+
+/// Map `pushurl` (or its absence) and the remote's fetch URL into a
+/// `PushState`. Rules:
+///
+/// - No `pushurl` entry → `Enabled` with the fetch URL.
+/// - Empty `pushurl` → `Disabled { NoPushUrl }`.
+/// - `pushurl` matches a known sentinel (case-insensitive) → `Disabled { KnownSentinel(_) }`.
+/// - Any other `pushurl` → `Enabled` with that URL. Anything that looks intentionally non-routable
+///   is not heuristically demoted to disabled in this stage — explicit sentinels only.
+fn resolve_push_state(fetch_url: Option<&str>, pushurl: Option<&str>) -> PushState {
+    let push_url_for_fetch = || PushState::Enabled {
+        push_url: fetch_url.unwrap_or_default().to_string(),
+    };
+    let Some(value) = pushurl else {
+        return push_url_for_fetch();
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return PushState::Disabled {
+            reason: PushDisabledReason::NoPushUrl,
+        };
+    }
+    if let Some(sentinel) = KnownSentinel::from_pushurl(trimmed) {
+        return PushState::Disabled {
+            reason: PushDisabledReason::KnownSentinel(sentinel),
+        };
+    }
+    PushState::Enabled {
+        push_url: trimmed.to_string(),
+    }
+}
+
+/// Batch-read every `remote.<name>.pushurl` value with a single
+/// `git config --get-regexp` shell-out. Returns a map keyed by remote
+/// name (with `remote.` and `.pushurl` stripped).
+fn list_remote_pushurls(repo_root: &Path) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let Ok(output) = command::git_output_logged(
+        repo_root,
+        "config_get_regexp_pushurl",
+        ["config", "--get-regexp", r"^remote\..*\.pushurl$"],
+    ) else {
+        return map;
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let Some((key, value)) = line.split_once(' ') else {
+            continue;
+        };
+        let Some(rest) = key.strip_prefix("remote.") else {
+            continue;
+        };
+        let Some(name) = rest.strip_suffix(".pushurl") else {
+            continue;
+        };
+        map.insert(name.to_string(), value.to_string());
+    }
+    map
 }
 
 fn remote_url_info(
@@ -353,6 +465,77 @@ fn get_workflow_presence(repo_root: &Path) -> WorkflowPresence {
         WorkflowPresence::Present
     } else {
         WorkflowPresence::Missing
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::*;
+
+    #[test]
+    fn push_state_unset_uses_fetch_url() {
+        let push = resolve_push_state(Some("https://github.com/a/b.git"), None);
+        assert_eq!(
+            push,
+            PushState::Enabled {
+                push_url: "https://github.com/a/b.git".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn push_state_empty_is_no_push_url() {
+        let push = resolve_push_state(Some("https://github.com/a/b.git"), Some(""));
+        assert_eq!(
+            push,
+            PushState::Disabled {
+                reason: PushDisabledReason::NoPushUrl,
+            }
+        );
+    }
+
+    #[test]
+    fn push_state_disabled_sentinel_case_insensitive() {
+        for value in ["DISABLED", "disabled", "Disabled"] {
+            let push = resolve_push_state(Some("ignored"), Some(value));
+            assert_eq!(
+                push,
+                PushState::Disabled {
+                    reason: PushDisabledReason::KnownSentinel(KnownSentinel::Disabled),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn push_state_unknown_pushurl_stays_enabled() {
+        let push = resolve_push_state(Some("https://github.com/a/b.git"), Some("ssh://other/repo"));
+        assert_eq!(
+            push,
+            PushState::Enabled {
+                push_url: "ssh://other/repo".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn push_state_serde_round_trip() {
+        for state in [
+            PushState::Enabled {
+                push_url: "https://example.com".to_string(),
+            },
+            PushState::Disabled {
+                reason: PushDisabledReason::NoPushUrl,
+            },
+            PushState::Disabled {
+                reason: PushDisabledReason::KnownSentinel(KnownSentinel::Disabled),
+            },
+        ] {
+            let json = serde_json::to_string(&state).expect("serialize");
+            let _: Value = serde_json::from_str(&json).expect("valid JSON");
+        }
     }
 }
 

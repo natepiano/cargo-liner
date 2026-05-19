@@ -28,11 +28,14 @@ use crate::project::AbsolutePath;
 use crate::project::Cargo;
 use crate::project::GitOrigin;
 use crate::project::GitStatus;
+use crate::project::HeadState;
 use crate::project::NonRustProject;
 use crate::project::Package;
 use crate::project::PackageRecord;
 use crate::project::ProjectFields;
 use crate::project::ProjectType;
+use crate::project::PushDisabledReason;
+use crate::project::PushState;
 use crate::project::RemoteKind;
 use crate::project::RepoInfo;
 use crate::project::RootItem;
@@ -256,6 +259,10 @@ pub enum DetailField {
     Path,
     Targets,
     Disk,
+    /// Submodule overlay: `.gitmodules` tracking branch (the `branch =` line).
+    Tracks,
+    /// Submodule overlay: parent repo's pinned commit (`git ls-tree HEAD`).
+    Pinned,
     /// Bytes consumed by the `target/` subtree rooted at the project.
     /// Shown alongside Disk when the walker has reported a breakdown.
     DiskTarget,
@@ -270,7 +277,7 @@ pub enum DetailField {
     DiskOutOfTreeTarget,
     Lint,
     Ci,
-    Branch,
+    Head,
     GitPath,
     VsLocal,
     Stars,
@@ -301,7 +308,9 @@ impl DetailField {
             Self::DiskOutOfTreeTarget => "  target/ (out of tree)",
             Self::Lint => "Lint",
             Self::Ci => "CI",
-            Self::Branch => "Branch",
+            Self::Head => "Head",
+            Self::Tracks => "Tracks",
+            Self::Pinned => "Pinned",
             Self::GitPath => "Git Path",
             Self::VsLocal => "vs local main",
             Self::Stars => "Stars",
@@ -356,7 +365,9 @@ impl DetailField {
             // package_value. Lint and Ci are rendered directly from
             // their typed-enum fields (`PackageData.lint_display` /
             // `ci_display`) at render time.
-            Self::Branch
+            Self::Head
+            | Self::Tracks
+            | Self::Pinned
             | Self::GitPath
             | Self::VsLocal
             | Self::Stars
@@ -374,17 +385,20 @@ impl DetailField {
     /// Get the display value for a git field from `GitData`.
     pub fn git_value(self, data: &GitData) -> String {
         match self {
-            Self::Branch => {
-                let branch = data.branch.as_deref().unwrap_or("");
-                let is_default = data
-                    .local_main_branch
-                    .as_deref()
-                    .is_some_and(|db| db == branch);
-                if is_default {
-                    format!("{branch} (HEAD)")
-                } else {
-                    branch.to_string()
-                }
+            Self::Head => match data.head.as_ref() {
+                None | Some(HeadState::Unborn) => "unborn".to_string(),
+                Some(HeadState::Detached { short_sha }) => format!("detached @ {short_sha}"),
+                Some(HeadState::Branch(name)) => {
+                    let is_default = data
+                        .local_main_branch
+                        .as_deref()
+                        .is_some_and(|db| db == name);
+                    if is_default {
+                        format!("{name} (HEAD)")
+                    } else {
+                        name.clone()
+                    }
+                },
             },
             Self::GitPath => data
                 .status
@@ -399,6 +413,19 @@ impl DetailField {
             Self::LastFetched => data.last_fetched.as_deref().unwrap_or("").to_string(),
             Self::RateLimitCore => format_rate_limit_bucket(data.rate_limit_core),
             Self::RateLimitGraphQl => format_rate_limit_bucket(data.rate_limit_graphql),
+            Self::Tracks => match data.submodule_ctx.as_ref() {
+                Some(ctx) => ctx
+                    .tracks
+                    .as_deref()
+                    .map(|t| format!("{t}  (from .gitmodules)"))
+                    .unwrap_or_default(),
+                None => String::new(),
+            },
+            Self::Pinned => data
+                .submodule_ctx
+                .as_ref()
+                .map(|ctx| format!("{}  (parent HEAD)", ctx.pinned_commit))
+                .unwrap_or_default(),
             // Package fields — should not be called with git_value.
             Self::Path
             | Self::Disk
@@ -472,8 +499,14 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
 
 pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     let mut fields = Vec::new();
-    if data.branch.is_some() {
-        fields.push(DetailField::Branch);
+    if data.head.is_some() {
+        fields.push(DetailField::Head);
+    }
+    if let Some(ctx) = data.submodule_ctx.as_ref() {
+        if ctx.tracks.is_some() {
+            fields.push(DetailField::Tracks);
+        }
+        fields.push(DetailField::Pinned);
     }
     if data.status.is_some() {
         fields.push(DetailField::GitPath);
@@ -593,7 +626,7 @@ fn or_dash(value: Option<&str>) -> String {
 /// Per-pane data for the Git detail panel.
 #[derive(Clone, Default)]
 pub struct GitData {
-    pub branch:             Option<String>,
+    pub head:               Option<HeadState>,
     pub status:             Option<GitStatus>,
     pub vs_local:           Option<String>,
     pub local_main_branch:  Option<String>,
@@ -608,6 +641,25 @@ pub struct GitData {
     pub github_status:      AvailabilityStatus,
     pub remotes:            Vec<RemoteRow>,
     pub worktrees:          Vec<WorktreeInfo>,
+    /// Submodule-specific overlay. `Some` only when this `GitData` is
+    /// built for a submodule pane — the renderer reads this to decide
+    /// whether to emit the `Tracks` / `Pinned` rows. Submodule identity
+    /// is conveyed by the project-list `(s)` marker and the pane's
+    /// "Submodule — <name>" title, not by an About-section line.
+    pub submodule_ctx:      Option<SubmoduleContext>,
+}
+
+/// Submodule-only render context: facts the parent repo provides about
+/// the submodule that no normal repo has.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubmoduleContext {
+    /// Tracking branch from `.gitmodules` (the `branch =` line). `None`
+    /// when `.gitmodules` doesn't specify one.
+    pub tracks:        Option<String>,
+    /// Pinned commit SHA from `git ls-tree HEAD` in the parent repo.
+    /// Always present when `SubmoduleContext` is built — without it
+    /// there's no reason to render the overlay.
+    pub pinned_commit: String,
 }
 
 impl GitData {
@@ -620,12 +672,15 @@ impl GitData {
 /// for display — status and `tracked_ref` already reduce to rendered text.
 #[derive(Clone)]
 pub struct RemoteRow {
-    pub name:        String,
-    pub icon:        &'static str,
-    pub display_url: String,
-    pub tracked_ref: String,
-    pub status:      String,
-    pub full_url:    Option<String>,
+    pub name:            String,
+    pub icon:            &'static str,
+    pub display_url:     String,
+    pub tracked_ref:     String,
+    pub status:          String,
+    pub full_url:        Option<String>,
+    /// Pre-formatted push-disabled annotation (e.g. `"↛ push disabled"`
+    /// or `"↛ push disabled (DISABLED)"`). `None` when push is enabled.
+    pub push_annotation: Option<String>,
 }
 
 /// Per-worktree info rendered in the Git pane's Worktrees table.
@@ -983,7 +1038,7 @@ fn format_downloads(count: u64) -> String {
 }
 
 struct GitDetailFields {
-    branch:             Option<String>,
+    head:               Option<HeadState>,
     path:               Option<GitStatus>,
     vs_local:           Option<String>,
     local_main_branch:  Option<String>,
@@ -1000,12 +1055,11 @@ struct GitDetailFields {
 }
 
 fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
-    let entry = app.project_list.entry_containing(abs_path);
-    let git_repo = entry.and_then(|entry| entry.git_repo.as_ref());
+    let git_repo = app.project_list.git_repo_for(abs_path);
     let repo_info = git_repo.and_then(|repo| repo.repo_info.as_ref());
     let checkout = app.project_list.git_info_for(abs_path);
 
-    let branch = checkout.and_then(|info| info.branch.clone());
+    let head = checkout.map(|info| info.head.clone());
     let vs_local = checkout
         .and_then(|info| info.ahead_behind_local)
         .map(format_ahead_behind);
@@ -1027,7 +1081,7 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let remotes = repo_info.map_or_else(Vec::new, |repo| build_remote_rows(repo, &default_host));
     let rate_limit = app.net.rate_limit();
     GitDetailFields {
-        branch,
+        head,
         path: app.project_list.git_status_for(abs_path),
         vs_local,
         local_main_branch,
@@ -1064,6 +1118,7 @@ fn build_remote_rows(repo: &RepoInfo, default_host: &str) -> Vec<RemoteRow> {
                 .clone()
                 .unwrap_or_else(|| NO_REMOTE_SYNC.to_string());
             let status = format_remote_status(remote.ahead_behind);
+            let push_annotation = format_push_annotation(&remote.push);
             RemoteRow {
                 name: remote.name.clone(),
                 icon,
@@ -1071,9 +1126,27 @@ fn build_remote_rows(repo: &RepoInfo, default_host: &str) -> Vec<RemoteRow> {
                 tracked_ref,
                 status,
                 full_url: remote.url.clone(),
+                push_annotation,
             }
         })
         .collect()
+}
+
+/// Pre-format the `↛ push disabled` annotation rendered after the
+/// status column in the Remotes table. Returns `None` for enabled
+/// remotes — rendering then leaves the slot empty.
+fn format_push_annotation(push: &PushState) -> Option<String> {
+    let PushState::Disabled { reason } = push else {
+        return None;
+    };
+    let suffix = match reason {
+        PushDisabledReason::KnownSentinel(s) => Some(s.label()),
+        PushDisabledReason::NoPushUrl => None,
+    };
+    Some(match suffix {
+        Some(label) => format!("\u{21A0} push disabled ({label})"),
+        None => "\u{21A0} push disabled".to_string(),
+    })
 }
 
 /// If `url` starts with `default_host`, return `owner/repo` (stripping
@@ -1115,7 +1188,7 @@ fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
             let branch = app
                 .project_list
                 .git_info_for(path.as_path())
-                .and_then(|info| info.branch.clone());
+                .and_then(|info| info.head.branch_name().map(str::to_string));
             let ahead_behind = if path.as_path() == primary_path.as_path() {
                 Some((0, 0))
             } else {
@@ -1208,6 +1281,8 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
         .disk_usage_bytes
         .map_or_else(String::new, render::format_bytes);
 
+    let submodule_ctx = build_submodule_context(submodule);
+
     DetailPaneData {
         package: PackageData {
             package_title: "Submodule".to_string(),
@@ -1235,21 +1310,22 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             ci_display: super::CiDisplay::default(),
         },
         git:     GitData {
-            branch:             git_detail.branch,
-            status:             git_detail.path,
-            vs_local:           git_detail.vs_local,
-            local_main_branch:  git_detail.local_main_branch,
-            main_branch_label:  git_detail.main_branch_label,
-            stars:              git_detail.stars,
-            description:        git_detail.description,
-            inception:          git_detail.inception,
-            last_commit:        git_detail.last_commit,
-            last_fetched:       git_detail.last_fetched,
-            rate_limit_core:    git_detail.rate_limit_core,
+            head: git_detail.head,
+            status: git_detail.path,
+            vs_local: git_detail.vs_local,
+            local_main_branch: git_detail.local_main_branch,
+            main_branch_label: git_detail.main_branch_label,
+            stars: git_detail.stars,
+            description: git_detail.description,
+            inception: git_detail.inception,
+            last_commit: git_detail.last_commit,
+            last_fetched: git_detail.last_fetched,
+            rate_limit_core: git_detail.rate_limit_core,
             rate_limit_graphql: git_detail.rate_limit_graphql,
-            github_status:      git_detail.github_status,
-            remotes:            git_detail.remotes,
-            worktrees:          Vec::new(),
+            github_status: git_detail.github_status,
+            remotes: git_detail.remotes,
+            worktrees: Vec::new(),
+            submodule_ctx,
         },
         targets: TargetsData::default(),
     }
@@ -1646,7 +1722,7 @@ fn assemble_detail_pane_data(
     DetailPaneData {
         package,
         git: GitData {
-            branch: git_detail.branch,
+            head: git_detail.head,
             status: git_detail.path,
             vs_local: git_detail.vs_local,
             local_main_branch: git_detail.local_main_branch,
@@ -1661,9 +1737,21 @@ fn assemble_detail_pane_data(
             github_status: git_detail.github_status,
             remotes: git_detail.remotes,
             worktrees,
+            submodule_ctx: None,
         },
         targets,
     }
+}
+
+/// Build the submodule render overlay (`tracks`, `pinned_commit`).
+/// Returns `None` when the parent has no pinned commit recorded —
+/// without it there's nothing meaningful to render in the overlay.
+fn build_submodule_context(submodule: &Submodule) -> Option<SubmoduleContext> {
+    let pinned_commit = submodule.commit.clone()?;
+    Some(SubmoduleContext {
+        tracks: submodule.branch.clone(),
+        pinned_commit,
+    })
 }
 
 pub fn build_ci_data(app: &App) -> CiData {
@@ -1675,7 +1763,7 @@ pub fn build_ci_data(app: &App) -> CiData {
     let current_branch = selected_path.and_then(|path| {
         app.project_list
             .git_info_for(path)
-            .and_then(|git| git.branch.clone())
+            .and_then(|git| git.head.branch_name().map(str::to_string))
     });
     let unpublished_branch_name =
         selected_path.and_then(|path| app.project_list.unpublished_ci_branch_name(path));

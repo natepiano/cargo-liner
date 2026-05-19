@@ -31,6 +31,7 @@ use crate::project::Cargo;
 use crate::project::CheckoutInfo;
 use crate::project::DisplayPath;
 use crate::project::GitHubInfo;
+use crate::project::GitRepo;
 use crate::project::GitStatus;
 use crate::project::LanguageStats;
 use crate::project::ProjectCiData;
@@ -346,14 +347,12 @@ impl ProjectList {
             .find(|entry| project::entry_contains(entry, target))
     }
 
-    /// Replace `git_repo.ci_data` on the entry containing `path`.
-    /// Silently no-ops when no entry contains `path` or the entry
-    /// has no git repo.
+    /// Replace `git_repo.ci_data` for `path`. Routes through
+    /// `git_repo_for_mut` so a submodule path lands on the submodule's
+    /// own `git_repo`. Silently no-ops when `path` has no associated
+    /// `GitRepo`.
     pub(super) fn replace_ci_data_for_path(&mut self, path: &Path, ci_data: ProjectCiData) {
-        if let Some(repo) = self
-            .entry_containing_mut(path)
-            .and_then(|entry| entry.git_repo.as_mut())
-        {
+        if let Some(repo) = self.git_repo_for_mut(path) {
             repo.ci_data = ci_data;
         }
     }
@@ -370,8 +369,67 @@ impl ProjectList {
     /// known entry, the entry isn't in a git repo, or the background
     /// `LocalGitInfo::get` call hasn't completed yet.
     pub(super) fn repo_info_for(&self, path: &Path) -> Option<&RepoInfo> {
+        self.git_repo_for(path)
+            .and_then(|repo| repo.repo_info.as_ref())
+    }
+
+    /// Per-repo data for the git repo whose checkout lives at `path`.
+    ///
+    /// Walks in this order:
+    /// 1. Direct entry hit (path is a top-level project root).
+    /// 2. Submodule hit (path matches a submodule under some entry).
+    /// 3. Containing-entry fallback (path is inside an entry's hierarchy).
+    pub(super) fn git_repo_for(&self, path: &Path) -> Option<&GitRepo> {
+        for entry in self.roots.values() {
+            if entry.item.path() == path {
+                return entry.git_repo.as_ref();
+            }
+        }
+        for entry in self.roots.values() {
+            if let Some(submodule) = entry.item.find_submodule(path) {
+                return submodule.git_repo.as_ref();
+            }
+        }
         self.entry_containing(path)
-            .and_then(|entry| entry.git_repo.as_ref()?.repo_info.as_ref())
+            .and_then(|entry| entry.git_repo.as_ref())
+    }
+
+    /// Mutable counterpart of `git_repo_for`. Used by handlers writing
+    /// per-repo data (`handle_repo_info`, etc.) so a submodule path
+    /// lands on the submodule's own `git_repo` instead of the parent's.
+    pub(super) fn git_repo_for_mut(&mut self, path: &Path) -> Option<&mut GitRepo> {
+        match GitRepoLookup::find(self, path)? {
+            GitRepoLookup::Direct(key) => self.roots.get_mut(&key)?.git_repo.as_mut(),
+            GitRepoLookup::Submodule { entry, submodule } => self
+                .roots
+                .get_mut(&entry)?
+                .item
+                .find_submodule_mut(submodule.as_path())?
+                .git_repo
+                .as_mut(),
+            GitRepoLookup::Containing(key) => self.roots.get_mut(&key)?.git_repo.as_mut(),
+        }
+    }
+
+    /// Ensure a `GitRepo` slot exists for the given path (submodule or
+    /// entry) and return a mutable reference to it.
+    pub(super) fn ensure_git_repo_for(&mut self, path: &Path) -> Option<&mut GitRepo> {
+        match GitRepoLookup::find(self, path)? {
+            GitRepoLookup::Direct(key) | GitRepoLookup::Containing(key) => Some(
+                self.roots
+                    .get_mut(&key)?
+                    .git_repo
+                    .get_or_insert_with(Default::default),
+            ),
+            GitRepoLookup::Submodule { entry, submodule } => Some(
+                self.roots
+                    .get_mut(&entry)?
+                    .item
+                    .find_submodule_mut(submodule.as_path())?
+                    .git_repo
+                    .get_or_insert_with(Default::default),
+            ),
+        }
     }
 
     /// Convenience: the primary remote's URL for the checkout at `path`.
@@ -472,8 +530,8 @@ impl ProjectList {
         let default_branch = self
             .repo_info_for(path)
             .and_then(|repo| repo.default_branch.as_deref());
-        (git.primary_tracked_ref().is_none() && git.branch.as_deref() != default_branch)
-            .then(|| git.branch.clone())
+        (git.primary_tracked_ref().is_none() && git.head.branch_name() != default_branch)
+            .then(|| git.head.branch_name().map(str::to_string))
             .flatten()
     }
 
@@ -1256,7 +1314,7 @@ impl ProjectList {
     }
 
     pub(super) fn current_branch_for(&self, path: &Path) -> Option<&str> {
-        self.git_info_for(path)?.branch.as_deref()
+        self.git_info_for(path)?.head.branch_name()
     }
 
     pub(super) fn ci_toggle_available_for_inner(&self, path: &Path) -> bool {
@@ -1750,8 +1808,7 @@ impl ProjectList {
         stars: u64,
         description: Option<String>,
     ) {
-        if let Some(entry) = self.entry_containing_mut(path) {
-            let repo = entry.git_repo.get_or_insert_with(Default::default);
+        if let Some(repo) = self.ensure_git_repo_for(path) {
             repo.github_info = Some(GitHubInfo { stars, description });
         }
     }
@@ -1819,6 +1876,46 @@ impl ProjectList {
             .filter(|run| run.branch == branch)
             .cloned()
             .collect()
+    }
+}
+
+/// Classification of how a path resolves against `ProjectList.roots`, used
+/// by `git_repo_for_mut` / `ensure_git_repo_for` to look up by key in a
+/// second pass without holding a long-lived mutable borrow.
+enum GitRepoLookup {
+    /// `path` is the path of a top-level entry.
+    Direct(AbsolutePath),
+    /// `path` is a submodule (`submodule`) under entry `entry`.
+    Submodule {
+        entry:     AbsolutePath,
+        submodule: AbsolutePath,
+    },
+    /// `path` is inside some entry's hierarchy but isn't the entry root
+    /// itself or any submodule (e.g. a worktree's checkout path).
+    Containing(AbsolutePath),
+}
+
+impl GitRepoLookup {
+    fn find(list: &ProjectList, path: &Path) -> Option<Self> {
+        for (key, entry) in &list.roots {
+            if entry.item.path() == path {
+                return Some(Self::Direct(key.clone()));
+            }
+        }
+        for (key, entry) in &list.roots {
+            if let Some(submodule) = entry.item.find_submodule(path) {
+                return Some(Self::Submodule {
+                    entry:     key.clone(),
+                    submodule: submodule.path.clone(),
+                });
+            }
+        }
+        for (key, entry) in &list.roots {
+            if project::entry_contains(entry, path) {
+                return Some(Self::Containing(key.clone()));
+            }
+        }
+        None
     }
 }
 

@@ -893,7 +893,7 @@ impl App {
                             .is_some_and(|ls| !ls.entries.is_empty())
                     }),
                 PaneId::Git => self.panes.git.content().is_some_and(|g| {
-                    g.branch.is_some() || !g.remotes.is_empty() || !g.worktrees.is_empty()
+                    g.head.is_some() || !g.remotes.is_empty() || !g.worktrees.is_empty()
                 }),
                 _ => false,
             },

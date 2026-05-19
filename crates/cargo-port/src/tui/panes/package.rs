@@ -162,7 +162,7 @@ fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect
                     Span::styled(value, vs),
                 ]));
             }
-        } else if matches!(*field, DetailField::Branch) && !value.is_empty() {
+        } else if matches!(*field, DetailField::Head) && !value.is_empty() {
             let prefix = format!(" {label:<label_width$} ");
             let prefix_len = prefix.width();
             let col_width = area.width as usize;

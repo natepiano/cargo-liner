@@ -42,6 +42,7 @@ use crate::config::CargoPortConfig;
 use crate::config::NavigationKeys;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
+use crate::project::HeadState;
 use crate::project::RootItem;
 use crate::project::Submodule;
 use crate::test_support;
@@ -139,7 +140,7 @@ fn make_app_with_git_tabbable() -> App {
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
     app.panes.git.set_content(GitData {
-        branch: Some("main".to_string()),
+        head: Some(HeadState::Branch("main".to_string())),
         ..GitData::default()
     });
     app
@@ -264,12 +265,13 @@ fn package_activate_state_enabled_on_crates_io_with_version() {
 
 fn git_remote_with_url(url: &str) -> RemoteRow {
     RemoteRow {
-        name:        "origin".to_string(),
-        icon:        "",
-        display_url: url.to_string(),
-        tracked_ref: String::new(),
-        status:      String::new(),
-        full_url:    Some(url.to_string()),
+        name:            "origin".to_string(),
+        icon:            "",
+        display_url:     url.to_string(),
+        tracked_ref:     String::new(),
+        status:          String::new(),
+        full_url:        Some(url.to_string()),
+        push_annotation: None,
     }
 }
 
@@ -665,6 +667,7 @@ fn project_list_action_expand_row_rebound_to_tab_expands() {
         branch:        None,
         commit:        None,
         info:          crate::project::ProjectInfo::default(),
+        git_repo:      None,
     });
     app.ensure_visible_rows_cached();
     app.project_list.set_cursor(0);
@@ -1001,7 +1004,7 @@ fn rebound_next_pane_uses_framework_filtered_tab_cycle() {
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app_with_keymap_toml(&[project], "[global]\nnext_pane = \"F8\"\n");
     app.panes.git.set_content(GitData {
-        branch: Some("main".to_string()),
+        head: Some(HeadState::Branch("main".to_string())),
         ..GitData::default()
     });
     app.set_focus(FocusedPane::App(AppPaneId::Package));

@@ -129,6 +129,27 @@ impl RootItem {
         }
     }
 
+    pub(crate) fn submodules_mut(&mut self) -> &mut Vec<Submodule> {
+        match self {
+            Self::Rust(RustProject::Workspace(ws)) => &mut ws.info.submodules,
+            Self::Rust(RustProject::Package(pkg)) => &mut pkg.info.submodules,
+            Self::NonRust(p) => &mut p.info.submodules,
+            Self::Worktrees(g) => &mut g.primary.rust_info_mut().info.submodules,
+        }
+    }
+
+    /// Look up a submodule by absolute path.
+    pub(crate) fn find_submodule(&self, path: &Path) -> Option<&Submodule> {
+        self.submodules().iter().find(|s| s.path.as_path() == path)
+    }
+
+    /// Mutable lookup of a submodule by absolute path.
+    pub(crate) fn find_submodule_mut(&mut self, path: &Path) -> Option<&mut Submodule> {
+        self.submodules_mut()
+            .iter_mut()
+            .find(|s| s.path.as_path() == path)
+    }
+
     /// Whether this is a Rust project (has `Cargo.toml`).
     pub(crate) const fn is_rust(&self) -> bool {
         matches!(self, Self::Rust(_) | Self::Worktrees(_))

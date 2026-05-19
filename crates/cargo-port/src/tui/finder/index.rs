@@ -138,10 +138,7 @@ pub fn build_finder_index(
 }
 
 fn branch_for(git_info: Option<&CheckoutInfo>) -> String {
-    git_info
-        .and_then(|g| g.branch.as_deref())
-        .unwrap_or("")
-        .to_string()
+    git_info.map_or_else(String::new, |g| g.head.display_label())
 }
 
 fn add_workspace_items(items: &mut Vec<FinderItem>, ws: &Workspace) {

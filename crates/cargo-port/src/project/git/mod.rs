@@ -7,6 +7,7 @@ mod worktree_group;
 
 pub(crate) use checkout::CheckoutInfo;
 pub(crate) use checkout::GitStatus;
+pub(crate) use checkout::HeadState;
 pub(crate) use checkout::LocalGitState;
 pub(crate) use checkout::worktree_ahead_behind_primary;
 pub(crate) use discovery::GitRepoPresence;
@@ -17,6 +18,8 @@ pub(crate) use discovery::git_repo_root;
 pub(crate) use discovery::resolve_common_git_dir;
 pub(crate) use discovery::resolve_git_dir;
 pub(crate) use repo::GitOrigin;
+pub(crate) use repo::PushDisabledReason;
+pub(crate) use repo::PushState;
 #[cfg(test)]
 pub(crate) use repo::RemoteInfo;
 pub(crate) use repo::RemoteKind;

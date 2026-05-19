@@ -15,6 +15,7 @@ use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::project::AbsolutePath;
 use crate::project::FileStamp;
+use crate::project::HeadState;
 use crate::project::ManifestFingerprint;
 use crate::project::PackageRecord;
 use crate::project::PublishPolicy;
@@ -219,7 +220,7 @@ fn ci_for_prefers_runs_matching_local_branch() {
         (
             CheckoutInfo {
                 status:              GitStatus::Clean,
-                branch:              Some("feat/demo".to_string()),
+                head:                HeadState::Branch("feat/demo".to_string()),
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
@@ -233,6 +234,9 @@ fn ci_for_prefers_runs_matching_local_branch() {
                     tracked_ref:  Some("origin/main".to_string()),
                     ahead_behind: None,
                     kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
                 }],
                 workflows:         WorkflowPresence::Present,
                 first_commit:      None,
@@ -276,7 +280,7 @@ fn ci_for_default_branch_prefers_matching_branch_runs() {
         (
             CheckoutInfo {
                 status:              GitStatus::Clean,
-                branch:              Some("main".to_string()),
+                head:                HeadState::Branch("main".to_string()),
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
@@ -290,6 +294,9 @@ fn ci_for_default_branch_prefers_matching_branch_runs() {
                     tracked_ref:  Some("origin/main".to_string()),
                     ahead_behind: None,
                     kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
                 }],
                 workflows:         WorkflowPresence::Present,
                 first_commit:      None,
@@ -341,7 +348,7 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
         (
             CheckoutInfo {
                 status:              GitStatus::Clean,
-                branch:              Some("feat/demo".to_string()),
+                head:                HeadState::Branch("feat/demo".to_string()),
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
@@ -355,6 +362,9 @@ fn ci_toggle_switches_non_default_branch_between_branch_only_and_all_runs() {
                     tracked_ref:  Some("origin/main".to_string()),
                     ahead_behind: None,
                     kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
                 }],
                 workflows:         WorkflowPresence::Present,
                 first_commit:      None,
@@ -700,7 +710,7 @@ fn git_status_suppresses_sync_for_untracked_and_ignored() {
         (
             CheckoutInfo {
                 status:              GitStatus::Clean,
-                branch:              Some("feat/demo".to_string()),
+                head:                HeadState::Branch("feat/demo".to_string()),
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
@@ -714,6 +724,9 @@ fn git_status_suppresses_sync_for_untracked_and_ignored() {
                     tracked_ref:  Some("origin/main".to_string()),
                     ahead_behind: Some((2, 0)),
                     kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
                 }],
                 workflows:         WorkflowPresence::Present,
                 first_commit:      None,
@@ -760,6 +773,9 @@ fn background_git_info_updates_rendered_git_status() {
                     tracked_ref:  Some("origin/main".to_string()),
                     ahead_behind: Some((1, 0)),
                     kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
                 }],
                 workflows:         WorkflowPresence::Present,
                 first_commit:      None,
@@ -775,7 +791,7 @@ fn background_git_info_updates_rendered_git_status() {
             path: project.path().to_path_buf().into(),
             info: CheckoutInfo {
                 status:              GitStatus::Modified,
-                branch:              Some("feat/demo".to_string()),
+                head:                HeadState::Branch("feat/demo".to_string()),
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
@@ -800,6 +816,9 @@ fn background_git_info_updates_rendered_git_status() {
                     tracked_ref:  Some("origin/main".to_string()),
                     ahead_behind: Some((1, 0)),
                     kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
                 }],
                 workflows:         WorkflowPresence::Present,
                 first_commit:      None,
@@ -815,7 +834,7 @@ fn background_git_info_updates_rendered_git_status() {
             path: project.path().to_path_buf().into(),
             info: CheckoutInfo {
                 status:              GitStatus::Clean,
-                branch:              Some("feat/demo".to_string()),
+                head:                HeadState::Branch("feat/demo".to_string()),
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: Some("origin/main".to_string()),
@@ -839,7 +858,7 @@ fn git_sync_shows_ascii_fill_for_local_only_branch() {
         (
             CheckoutInfo {
                 status:              GitStatus::Clean,
-                branch:              Some("feat/demo".to_string()),
+                head:                HeadState::Branch("feat/demo".to_string()),
                 last_commit:         None,
                 ahead_behind_local:  Some((3, 0)),
                 primary_tracked_ref: None,
@@ -853,6 +872,9 @@ fn git_sync_shows_ascii_fill_for_local_only_branch() {
                     tracked_ref:  None,
                     ahead_behind: None,
                     kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
                 }],
                 workflows:         WorkflowPresence::Present,
                 first_commit:      None,
@@ -877,7 +899,7 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
         (
             CheckoutInfo {
                 status:              GitStatus::Clean,
-                branch:              Some("feature/demo".to_string()),
+                head:                HeadState::Branch("feature/demo".to_string()),
                 last_commit:         None,
                 ahead_behind_local:  Some((2, 1)),
                 primary_tracked_ref: None,
@@ -891,6 +913,9 @@ fn git_sync_shows_ascii_fill_for_branch_without_upstream() {
                     tracked_ref:  None,
                     ahead_behind: None,
                     kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
                 }],
                 workflows:         WorkflowPresence::Present,
                 first_commit:      None,
@@ -915,7 +940,7 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
         (
             CheckoutInfo {
                 status:              GitStatus::Clean,
-                branch:              Some("enh/various".to_string()),
+                head:                HeadState::Branch("enh/various".to_string()),
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: None,
@@ -929,6 +954,9 @@ fn ci_empty_state_reports_unpublished_branch_when_no_upstream_exists() {
                     tracked_ref:  None,
                     ahead_behind: None,
                     kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
                 }],
                 workflows:         WorkflowPresence::Present,
                 first_commit:      None,
@@ -970,7 +998,7 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
         (
             CheckoutInfo {
                 status:              GitStatus::Clean,
-                branch:              Some("enh/various".to_string()),
+                head:                HeadState::Branch("enh/various".to_string()),
                 last_commit:         None,
                 ahead_behind_local:  None,
                 primary_tracked_ref: None,
@@ -984,6 +1012,9 @@ fn package_details_show_unpublished_branch_for_ci_when_branch_has_no_upstream() 
                     tracked_ref:  None,
                     ahead_behind: None,
                     kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
                 }],
                 workflows:         WorkflowPresence::Present,
                 first_commit:      None,
@@ -1026,7 +1057,7 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
         (
             CheckoutInfo {
                 status:              GitStatus::Clean,
-                branch:              Some("feat/demo".to_string()),
+                head:                HeadState::Branch("feat/demo".to_string()),
                 last_commit:         None,
                 ahead_behind_local:  Some((0, 0)),
                 primary_tracked_ref: Some("origin/main".to_string()),
@@ -1040,6 +1071,9 @@ fn git_main_shows_synced_for_non_main_branch_in_sync_with_main() {
                     tracked_ref:  Some("origin/main".to_string()),
                     ahead_behind: Some((0, 0)),
                     kind:         RemoteKind::Clone,
+                    push:         crate::project::PushState::Enabled {
+                        push_url: String::new(),
+                    },
                 }],
                 workflows:         WorkflowPresence::Present,
                 first_commit:      None,
