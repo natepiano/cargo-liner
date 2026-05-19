@@ -264,6 +264,8 @@ pub(super) fn parent_facade_visibility(vis: &Visibility) -> Option<ParentFacadeV
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use syn::parse_file;
+
     use super::ParentFacadeExports;
     use super::ParentFacadeFixSupport;
     use super::ParentFacadeVisibility;
@@ -272,7 +274,7 @@ mod tests {
     #[test]
     fn grouped_parent_pub_use_is_fix_supported() {
         let source = "pub use report_writer::{ReportDefinition, ReportWriter};\n";
-        let file = syn::parse_file(source).unwrap();
+        let file = parse_file(source).unwrap();
         let exports =
             exported_names_from_parent_boundary(&file, "report_writer", "ReportDefinition");
         assert_eq!(exports.explicit, vec!["ReportDefinition".to_string()]);
@@ -289,7 +291,7 @@ mod tests {
 pub(crate) use first_child::Alpha;
 pub use second_child::Beta;
 ";
-        let file = syn::parse_file(source).unwrap();
+        let file = parse_file(source).unwrap();
 
         let exports = exported_names_from_parent_boundary(&file, "first_child", "Alpha");
         assert_eq!(exports.explicit, vec!["Alpha".to_string()]);
@@ -309,7 +311,7 @@ pub use second_child::Beta;
 pub(crate) use child::Thing;
 pub use child::Thing;
 ";
-        let file = syn::parse_file(source).unwrap();
+        let file = parse_file(source).unwrap();
         let exports = exported_names_from_parent_boundary(&file, "child", "Thing");
         assert_eq!(exports.visibility, Some(ParentFacadeVisibility::Public));
     }
@@ -317,7 +319,7 @@ pub use child::Thing;
     #[test]
     fn multiline_grouped_parent_pub_use_is_fix_supported() {
         let source = "pub use child::{\n    Thing,\n    Other,\n};\n";
-        let file = syn::parse_file(source).unwrap();
+        let file = parse_file(source).unwrap();
         let exports = exported_names_from_parent_boundary(&file, "child", "Thing");
         assert_eq!(exports.explicit, vec!["Thing".to_string()]);
         assert_eq!(exports.fix_supported, ParentFacadeFixSupport::Supported);
@@ -326,7 +328,7 @@ pub use child::Thing;
     #[test]
     fn grouped_parent_pub_use_with_rename_is_manual_only() {
         let source = "pub use child::{Thing as RenamedThing, Other};\n";
-        let file = syn::parse_file(source).unwrap();
+        let file = parse_file(source).unwrap();
         let exports = exported_names_from_parent_boundary(&file, "child", "Thing");
         assert_eq!(
             exports,

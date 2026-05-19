@@ -21,11 +21,11 @@ use crate::rust_syntax::PATH_KEYWORD_SUPER;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParentFacadeUsage {
     Unused,
-    UsedInsideParentSubtreeByRelativeImport,
-    UsedInsideParentSubtreeByRelativePath,
-    UsedInsideParentSubtreeByCrateImport,
-    UsedInsideParentSubtreeByCratePath,
-    UsedOutsideParentSubtree,
+    UsedInsideSubtreeByRelativeImport,
+    UsedInsideSubtreeByRelativePath,
+    UsedInsideSubtreeByCrateImport,
+    UsedInsideSubtreeByCratePath,
+    UsedOutsideSubtree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,9 +66,9 @@ pub(super) fn scan_facade_usage(
                 if matches!(usage, ParentFacadeUsage::Unused)
                     && source_path.starts_with(&parent_boundary.subtree_root)
                 {
-                    usage = ParentFacadeUsage::UsedInsideParentSubtreeByRelativeImport;
+                    usage = ParentFacadeUsage::UsedInsideSubtreeByRelativeImport;
                 } else if !source_path.starts_with(&parent_boundary.subtree_root) {
-                    usage = ParentFacadeUsage::UsedOutsideParentSubtree;
+                    usage = ParentFacadeUsage::UsedOutsideSubtree;
                     break;
                 }
             },
@@ -76,32 +76,32 @@ pub(super) fn scan_facade_usage(
                 if matches!(usage, ParentFacadeUsage::Unused)
                     && source_path.starts_with(&parent_boundary.subtree_root)
                 {
-                    usage = ParentFacadeUsage::UsedInsideParentSubtreeByCrateImport;
+                    usage = ParentFacadeUsage::UsedInsideSubtreeByCrateImport;
                 } else if !source_path.starts_with(&parent_boundary.subtree_root) {
-                    usage = ParentFacadeUsage::UsedOutsideParentSubtree;
+                    usage = ParentFacadeUsage::UsedOutsideSubtree;
                     break;
                 }
             },
             ParentFacadeReferenceUsage::DirectPath(PathOrigin::Relative) => {
                 if source_path.starts_with(&parent_boundary.subtree_root) {
-                    usage = ParentFacadeUsage::UsedInsideParentSubtreeByRelativePath;
+                    usage = ParentFacadeUsage::UsedInsideSubtreeByRelativePath;
                 } else {
-                    usage = ParentFacadeUsage::UsedOutsideParentSubtree;
+                    usage = ParentFacadeUsage::UsedOutsideSubtree;
                     break;
                 }
             },
             ParentFacadeReferenceUsage::DirectPath(PathOrigin::Crate) => {
                 if source_path.starts_with(&parent_boundary.subtree_root) {
-                    usage = ParentFacadeUsage::UsedInsideParentSubtreeByCratePath;
+                    usage = ParentFacadeUsage::UsedInsideSubtreeByCratePath;
                 } else {
-                    usage = ParentFacadeUsage::UsedOutsideParentSubtree;
+                    usage = ParentFacadeUsage::UsedOutsideSubtree;
                     break;
                 }
             },
         }
     }
 
-    if !matches!(usage, ParentFacadeUsage::UsedOutsideParentSubtree)
+    if !matches!(usage, ParentFacadeUsage::UsedOutsideSubtree)
         && workspace_source_mentions_parent_export_literal(
             source_cache,
             settings,
@@ -109,7 +109,7 @@ pub(super) fn scan_facade_usage(
             &exported_names.explicit,
         )?
     {
-        usage = ParentFacadeUsage::UsedOutsideParentSubtree;
+        usage = ParentFacadeUsage::UsedOutsideSubtree;
     }
 
     Ok(usage)

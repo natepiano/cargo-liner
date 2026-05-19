@@ -8,6 +8,7 @@ use rustc_middle::ty::TyCtxt;
 use rustc_span::Span;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
+use serde_json::to_vec_pretty;
 
 use super::visit;
 use crate::compiler::persistence;
@@ -147,7 +148,7 @@ pub fn collect_and_store_findings(tcx: TyCtxt<'_>, settings: &DriverSettings) ->
         compiler_warnings:    CompilerWarningFacts::None,
         use_sites:            sink.use_sites,
     };
-    fs::write(&output_path, serde_json::to_vec_pretty(&report)?)
+    fs::write(&output_path, to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write findings file {}", output_path.display()))?;
     Ok(true)
 }

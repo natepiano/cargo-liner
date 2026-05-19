@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use serde_json::from_str;
 
 use crate::config::VisibilityConfig;
 
@@ -43,7 +44,7 @@ impl DriverSettings {
             env::var_os(CONFIG_ROOT_ENV)
                 .with_context(|| format!("missing {CONFIG_ROOT_ENV} for compiler driver"))?,
         );
-        let visibility_config = serde_json::from_str(
+        let visibility_config = from_str(
             &env::var(CONFIG_JSON_ENV)
                 .with_context(|| format!("missing {CONFIG_JSON_ENV} for compiler driver"))?,
         )
@@ -110,23 +111,26 @@ fn normalize_relative_path(path: &Path) -> String { path.to_string_lossy().repla
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::fs;
     use std::path::PathBuf;
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
 
     use anyhow::Result;
+    use anyhow::anyhow;
+    use tempfile::tempdir;
 
     use crate::config::VisibilityConfig;
 
     #[test]
     fn config_relative_path_handles_nested_workspace_paths() -> Result<()> {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let workspace_root = std::env::temp_dir().join(format!("mend-config-root-test-{unique}"));
+        let workspace_root = env::temp_dir().join(format!("mend-config-root-test-{unique}"));
         let file_path = workspace_root.join("mcp/src/brp_tools/tools/mod.rs");
         let parent = file_path
             .parent()
-            .ok_or_else(|| anyhow::anyhow!("test path must have a parent directory"))?;
+            .ok_or_else(|| anyhow!("test path must have a parent directory"))?;
         fs::create_dir_all(parent)?;
         fs::write(&file_path, "pub mod world_query;\n")?;
 
@@ -159,11 +163,11 @@ mod tests {
 
     #[test]
     fn config_relative_path_for_settings_handles_workspace_relative_paths() -> Result<()> {
-        let temp = tempfile::tempdir()?;
+        let temp = tempdir()?;
         let config_root = temp.path().join("workspace");
         let package_root = config_root.join("mcp");
-        std::fs::create_dir_all(package_root.join("src/brp_tools/tools"))?;
-        std::fs::write(
+        fs::create_dir_all(package_root.join("src/brp_tools/tools"))?;
+        fs::write(
             package_root.join("src/brp_tools/tools/mod.rs"),
             "pub mod child;\n",
         )?;

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::anyhow;
 use rustc_hir::ForeignItemKind;
 use rustc_hir::ImplItemKind;
 use rustc_hir::ItemKind;
@@ -157,9 +158,10 @@ pub(super) fn real_file_path(tcx: TyCtxt<'_>, span: Span) -> Option<PathBuf> {
 }
 
 pub(super) fn use_item_contains_glob(tcx: TyCtxt<'_>, span: Span) -> Result<bool> {
-    let snippet = tcx.sess.source_map().span_to_snippet(span).map_err(|err| {
-        anyhow::anyhow!("failed to extract use item snippet for span {span:?}: {err:?}")
-    })?;
+    let snippet =
+        tcx.sess.source_map().span_to_snippet(span).map_err(|err| {
+            anyhow!("failed to extract use item snippet for span {span:?}: {err:?}")
+        })?;
     Ok(snippet.contains('*'))
 }
 
@@ -172,9 +174,7 @@ pub(super) fn visibility_text(tcx: TyCtxt<'_>, vis_span: Span) -> Result<Option<
             .source_map()
             .span_to_snippet(vis_span)
             .map_err(|err| {
-                anyhow::anyhow!(
-                    "failed to extract visibility snippet for span {vis_span:?}: {err:?}"
-                )
+                anyhow!("failed to extract visibility snippet for span {vis_span:?}: {err:?}")
             })?
             .trim()
             .to_string(),

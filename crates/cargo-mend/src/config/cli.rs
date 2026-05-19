@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::env;
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
@@ -412,7 +413,7 @@ impl From<RawFixCli> for FixCli {
 }
 
 fn normalized_args() -> Vec<OsString> {
-    let mut args: Vec<_> = std::env::args_os().collect();
+    let mut args: Vec<_> = env::args_os().collect();
     if args.get(1).is_some_and(|arg| arg == CARGO_SUBCOMMAND_MEND) {
         args.remove(1);
     }
@@ -426,6 +427,7 @@ fn normalized_args() -> Vec<OsString> {
 )]
 mod tests {
     use std::collections::BTreeSet;
+    use std::iter;
 
     use clap::CommandFactory;
     use clap::FromArgMatches;
@@ -437,7 +439,7 @@ mod tests {
     use super::RawCli;
 
     fn parse(cli_args: &[&str]) -> Cli {
-        let full_argv = std::iter::once("mend").chain(cli_args.iter().copied());
+        let full_argv = iter::once("mend").chain(cli_args.iter().copied());
         let matches = RawCli::command().get_matches_from(full_argv);
         Cli::from(RawCli::from_arg_matches(&matches).expect("test argv must parse"))
     }

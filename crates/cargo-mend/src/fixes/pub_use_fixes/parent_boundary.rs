@@ -3,13 +3,16 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::bail;
 use regex::Regex;
+use regex::escape;
 use syn::Item;
 use syn::ItemUse;
 use syn::UseGroup;
 use syn::UsePath;
 use syn::UseTree;
 use syn::Visibility;
+use syn::parse_file;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 
@@ -38,7 +41,7 @@ pub(super) fn build_parent_pub_use_edit_for_exports(
 ) -> Result<UseFix> {
     let source = fs::read_to_string(&parent_boundary.parent_module)
         .with_context(|| format!("failed to read {}", parent_boundary.parent_module.display()))?;
-    let file = syn::parse_file(&source).context("failed to parse parent module file")?;
+    let file = parse_file(&source).context("failed to parse parent module file")?;
     let offsets = validated_plan::line_offsets(&source);
     for item in file.items {
         let Item::Use(item_use) = item else {
@@ -68,7 +71,7 @@ pub(super) fn build_parent_pub_use_edit_for_exports(
         });
     }
 
-    anyhow::bail!(
+    bail!(
         "matching parent `pub use` item not found in {} for span {}..{}",
         parent_boundary.parent_module.display(),
         parent_boundary.item_start,
@@ -82,7 +85,7 @@ pub(super) fn resolve_parent_pub_use_export(
     child_module_name: &str,
     item_name: &str,
 ) -> Result<Option<ParentExportResolution>> {
-    let file = syn::parse_file(source).context("failed to parse parent module file")?;
+    let file = parse_file(source).context("failed to parse parent module file")?;
     let offsets = validated_plan::line_offsets(source);
     for item in file.items {
         let Item::Use(item_use) = item else {
@@ -327,7 +330,7 @@ fn locally_used_exports(
 
     let mut locally_used = Vec::new();
     for (child_module, item_name) in exports {
-        let pattern = Regex::new(&format!(r"\b{}\b", regex::escape(item_name)))
+        let pattern = Regex::new(&format!(r"\b{}\b", escape(item_name)))
             .with_context(|| format!("failed to build local-use regex for {item_name}"))?;
         if pattern.is_match(&source_without_use) {
             locally_used.push((child_module.clone(), item_name.clone()));

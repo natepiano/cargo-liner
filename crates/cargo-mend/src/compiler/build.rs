@@ -14,6 +14,8 @@ use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::bail;
+use serde_json::to_string;
 
 use super::persistence;
 use super::settings::CONFIG_FINGERPRINT_ENV;
@@ -192,7 +194,7 @@ fn run_cargo_check(
         .env(CONFIG_ROOT_ENV, &loaded_config.root)
         .env(
             CONFIG_JSON_ENV,
-            serde_json::to_string(&loaded_config.visibility_config)
+            to_string(&loaded_config.visibility_config)
                 .context("failed to serialize mend config for compiler driver")?,
         )
         .env(CONFIG_FINGERPRINT_ENV, &loaded_config.fingerprint)
@@ -254,7 +256,7 @@ pub(crate) fn run_cargo_fix(
         .context("failed to run cargo fix")?;
 
     if !status.success() {
-        anyhow::bail!("cargo fix failed");
+        bail!("cargo fix failed");
     }
 
     Ok(start.elapsed())

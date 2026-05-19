@@ -71,14 +71,14 @@ pub(super) fn classify_suspicious_pub(
                 "parent module also has an `unused import` warning for this `pub use` at {}:{}",
                 status.parent_rel_path, status.parent_line
             ),
-            ParentFacadeUsage::UsedInsideParentSubtreeByCratePath
-            | ParentFacadeUsage::UsedInsideParentSubtreeByCrateImport => format!(
+            ParentFacadeUsage::UsedInsideSubtreeByCratePath
+            | ParentFacadeUsage::UsedInsideSubtreeByCrateImport => format!(
                 "parent `pub use` at {}:{} is only used through crate-relative paths inside its own subtree",
                 status.parent_rel_path, status.parent_line
             ),
-            ParentFacadeUsage::UsedInsideParentSubtreeByRelativeImport
-            | ParentFacadeUsage::UsedInsideParentSubtreeByRelativePath
-            | ParentFacadeUsage::UsedOutsideParentSubtree => return None,
+            ParentFacadeUsage::UsedInsideSubtreeByRelativeImport
+            | ParentFacadeUsage::UsedInsideSubtreeByRelativePath
+            | ParentFacadeUsage::UsedOutsideSubtree => return None,
         };
         Some((message, status))
     });
@@ -268,19 +268,19 @@ fn assess_parent_facade_usage(
         ));
     }
     match status.usage {
-        ParentFacadeUsage::UsedOutsideParentSubtree => Some(SuspiciousPubAssessment::Allowed(
+        ParentFacadeUsage::UsedOutsideSubtree => Some(SuspiciousPubAssessment::Allowed(
             AllowanceReason::ParentFacadeUsedOutsideParent,
         )),
-        ParentFacadeUsage::UsedInsideParentSubtreeByRelativePath
-        | ParentFacadeUsage::UsedInsideParentSubtreeByRelativeImport => {
+        ParentFacadeUsage::UsedInsideSubtreeByRelativePath
+        | ParentFacadeUsage::UsedInsideSubtreeByRelativeImport => {
             let related = Some(format!(
                 "parent module uses this item as an internal facade at {}:{}",
                 status.parent_rel_path, status.parent_line
             ));
             Some(SuspiciousPubAssessment::ReviewInternalParentFacade { related })
         },
-        ParentFacadeUsage::UsedInsideParentSubtreeByCratePath
-        | ParentFacadeUsage::UsedInsideParentSubtreeByCrateImport
+        ParentFacadeUsage::UsedInsideSubtreeByCratePath
+        | ParentFacadeUsage::UsedInsideSubtreeByCrateImport
         | ParentFacadeUsage::Unused => None,
     }
 }

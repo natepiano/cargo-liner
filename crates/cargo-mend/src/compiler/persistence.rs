@@ -12,6 +12,7 @@ use anyhow::Context;
 use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::from_str;
 
 use super::settings;
 use crate::config::DiagnosticCode;
@@ -149,7 +150,7 @@ pub(super) fn load_report(
 
         let text = fs::read_to_string(entry.path())
             .with_context(|| format!("failed to read findings file {}", entry.path().display()))?;
-        let Ok(stored) = serde_json::from_str::<StoredReport>(&text) else {
+        let Ok(stored) = from_str::<StoredReport>(&text) else {
             continue;
         };
         if !stored_report_matches_selection(

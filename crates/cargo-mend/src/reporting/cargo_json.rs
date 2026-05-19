@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -5,6 +6,7 @@ use anyhow::Context;
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
+use serde_json::to_string;
 
 use super::diagnostics;
 use super::diagnostics::BuildOutcome;
@@ -25,10 +27,10 @@ pub(crate) fn render_report(report: &Report, selection: &Selection) -> Result<St
     let mut output = String::new();
     for finding in &report.findings {
         let message = compiler_message(finding, selection)?;
-        output.push_str(&serde_json::to_string(&message)?);
+        output.push_str(&to_string(&message)?);
         output.push('\n');
     }
-    output.push_str(&serde_json::to_string(&BuildFinished {
+    output.push_str(&to_string(&BuildFinished {
         reason:  "build-finished",
         success: report.outcome(),
     })?);
@@ -265,7 +267,7 @@ fn path_for_display(finding: &Finding, selection: &Selection) -> String {
 }
 
 fn byte_offset_for_position(path: &Path, line: usize, column: usize) -> Option<usize> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = fs::read_to_string(path).ok()?;
     let mut offset = 0;
     for (index, source_line) in text.lines().enumerate() {
         if index + 1 == line {

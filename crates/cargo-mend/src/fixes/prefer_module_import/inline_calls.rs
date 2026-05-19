@@ -6,6 +6,7 @@ use syn::ExprPath;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::spanned::Spanned;
+use syn::visit;
 use syn::visit::Visit;
 
 use super::function_imports::ImportTarget;
@@ -51,10 +52,10 @@ impl Visit<'_> for InlineCallDetector<'_> {
     fn visit_item_mod(&mut self, node: &ItemMod) {
         if node.content.is_some() {
             self.inline_mod_depth += 1;
-            syn::visit::visit_item_mod(self, node);
+            visit::visit_item_mod(self, node);
             self.inline_mod_depth -= 1;
         } else {
-            syn::visit::visit_item_mod(self, node);
+            visit::visit_item_mod(self, node);
         }
     }
 

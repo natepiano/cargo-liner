@@ -1,5 +1,6 @@
 use std::env;
 use std::ffi::OsString;
+use std::iter;
 use std::process::Command;
 use std::process::ExitCode;
 use std::process::Stdio;
@@ -7,6 +8,7 @@ use std::process::Stdio;
 use anyhow::Context;
 use anyhow::Error;
 use anyhow::Result;
+use anyhow::bail;
 use rustc_driver::Callbacks;
 use rustc_driver::Compilation;
 use rustc_interface::interface::Compiler;
@@ -57,13 +59,13 @@ pub(crate) fn driver_main() -> ExitCode {
 fn driver_main_impl() -> Result<ExitCode> {
     let wrapper_args: Vec<OsString> = env::args_os().collect();
     if wrapper_args.len() < 2 {
-        anyhow::bail!("compiler driver expected rustc wrapper arguments");
+        bail!("compiler driver expected rustc wrapper arguments");
     }
     let Ok(driver_settings) = DriverSettings::from_env() else {
         return passthrough_to_rustc(&wrapper_args);
     };
 
-    let rustc_args: Vec<String> = std::iter::once(RUSTC_BIN.to_string())
+    let rustc_args: Vec<String> = iter::once(RUSTC_BIN.to_string())
         .chain(
             wrapper_args
                 .into_iter()

@@ -11,6 +11,7 @@ use proc_macro2::LineColumn;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::UseTree;
+use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
@@ -79,7 +80,7 @@ fn rewrite_in_subtree_imports(
     let source =
         fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
     let syntax =
-        syn::parse_file(&source).with_context(|| format!("failed to parse {}", file.display()))?;
+        parse_file(&source).with_context(|| format!("failed to parse {}", file.display()))?;
     let source_root = find_source_root(file).with_context(|| {
         format!(
             "failed to determine src root for subtree file {} under {}",

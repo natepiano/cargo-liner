@@ -8,7 +8,10 @@ use anyhow::Context;
 use anyhow::Result;
 use syn::File;
 use syn::Item;
+use syn::parse_file;
 use syn::spanned::Spanned;
+use syn::visit::Visit;
+use walkdir::WalkDir;
 
 use super::function_imports::ImportDetector;
 use super::function_imports::ImportTarget;
@@ -75,7 +78,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImport
         if !source_root.is_dir() {
             continue;
         }
-        for entry in walkdir::WalkDir::new(&source_root)
+        for entry in WalkDir::new(&source_root)
             .into_iter()
             .filter_map(Result::ok)
         {
@@ -111,7 +114,7 @@ fn scan_file(
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
-        syn::parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
+        parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
     let current_module_path = rust_syntax::file_module_path(source_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = shared::line_offsets(&text);
@@ -130,7 +133,7 @@ fn scan_file(
         declared_modules: &declared_modules,
         candidates: Vec::new(),
     };
-    syn::visit::Visit::visit_file(&mut detector, &syntax);
+    Visit::visit_file(&mut detector, &syntax);
 
     let mut inline_detector = InlineCallDetector {
         source_root,
@@ -139,7 +142,7 @@ fn scan_file(
         candidates: Vec::new(),
         inline_mod_depth: 0,
     };
-    syn::visit::Visit::visit_file(&mut inline_detector, &syntax);
+    Visit::visit_file(&mut inline_detector, &syntax);
 
     if detector.candidates.is_empty() && inline_detector.candidates.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -160,7 +163,7 @@ fn scan_file(
         .collect();
 
     let mut collector = ReferenceCollector::new(&offsets, &imported_names);
-    syn::visit::Visit::visit_file(&mut collector, &syntax);
+    Visit::visit_file(&mut collector, &syntax);
 
     let mut func_to_module: BTreeMap<&str, (&str, ImportTarget)> = BTreeMap::new();
     for functions in module_to_functions.values() {

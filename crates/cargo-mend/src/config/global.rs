@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use dirs::config_dir;
 use serde::Deserialize;
+use toml::from_str;
 
 use super::diagnostics_config::DiagnosticsConfig;
 
@@ -37,7 +39,7 @@ struct GlobalConfigFile {
 }
 
 pub(crate) fn global_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join(APP_NAME).join(GLOBAL_CONFIG_FILE))
+    config_dir().map(|d| d.join(APP_NAME).join(GLOBAL_CONFIG_FILE))
 }
 
 pub(crate) fn load_global_diagnostics() -> DiagnosticsConfig {
@@ -50,7 +52,7 @@ pub(crate) fn load_global_diagnostics() -> DiagnosticsConfig {
         let Ok(contents) = fs::read_to_string(&path) else {
             return DiagnosticsConfig::default();
         };
-        return toml::from_str::<GlobalConfigFile>(&contents).map_or_else(
+        return from_str::<GlobalConfigFile>(&contents).map_or_else(
             |_| DiagnosticsConfig::default(),
             |file| file.diagnostics_config,
         );
@@ -60,7 +62,7 @@ pub(crate) fn load_global_diagnostics() -> DiagnosticsConfig {
         return DiagnosticsConfig::default();
     };
 
-    toml::from_str::<GlobalConfigFile>(&contents).map_or_else(
+    from_str::<GlobalConfigFile>(&contents).map_or_else(
         |_| DiagnosticsConfig::default(),
         |file| file.diagnostics_config,
     )
@@ -82,6 +84,8 @@ fn create_default_global_config(path: &Path) -> Result<()> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use toml::from_str;
+
     use super::DEFAULT_GLOBAL_CONFIG_TOML;
     use super::GlobalConfigFile;
     use crate::config::DiagnosticCode;
@@ -89,7 +93,7 @@ mod tests {
 
     #[test]
     fn default_global_config_toml_parses_correctly() {
-        let result: Result<GlobalConfigFile, _> = toml::from_str(DEFAULT_GLOBAL_CONFIG_TOML);
+        let result: Result<GlobalConfigFile, _> = from_str(DEFAULT_GLOBAL_CONFIG_TOML);
         assert!(result.is_ok(), "DEFAULT_GLOBAL_CONFIG_TOML should parse");
         let global_config_file = result.unwrap();
         for (code, enabled) in global_config_file.diagnostics_config.entries() {
@@ -107,7 +111,7 @@ mod tests {
 [diagnostics]
 prefer_module_import = false
 ";
-        let result: Result<GlobalConfigFile, _> = toml::from_str(toml_str);
+        let result: Result<GlobalConfigFile, _> = from_str(toml_str);
         assert!(result.is_ok(), "partial toml should parse");
         let global_config_file = result.unwrap();
         assert!(matches!(

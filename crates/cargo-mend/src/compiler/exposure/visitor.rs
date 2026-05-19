@@ -9,6 +9,7 @@ use syn::Path;
 use syn::TraitItem;
 use syn::Type;
 use syn::Visibility;
+use syn::visit;
 use syn::visit::Visit;
 
 pub(super) fn public_item_name(item: &Item) -> Option<String> {
@@ -217,7 +218,7 @@ impl<'ast> Visit<'ast> for ItemSurfaceReferenceVisitor<'_> {
             self.found = SurfaceReferenceMatch::Found;
             return;
         }
-        syn::visit::visit_path(self, path);
+        visit::visit_path(self, path);
     }
 }
 

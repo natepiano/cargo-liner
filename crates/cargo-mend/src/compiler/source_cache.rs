@@ -8,7 +8,10 @@ use anyhow::Context;
 use anyhow::Result;
 use syn::File;
 use syn::ItemUse;
+use syn::Path as SynPath;
 use syn::UseTree;
+use syn::parse_file;
+use syn::visit;
 use syn::visit::Visit;
 
 use crate::rust_syntax::PATH_KEYWORD_CRATE;
@@ -79,7 +82,7 @@ impl SourceCache {
         }
         let mut parsed = HashMap::new();
         for (path, source) in &contents {
-            if let Ok(ast) = syn::parse_file(source) {
+            if let Ok(ast) = parse_file(source) {
                 parsed.insert(path.clone(), ast);
             }
         }
@@ -271,11 +274,11 @@ impl<'ast> Visit<'ast> for PathExtractor {
         }
         extract_use_renames(Vec::new(), &item_use.tree, &mut self.use_renames);
         self.inside_use_item = UseItemPosition::Inside;
-        syn::visit::visit_item_use(self, item_use);
+        visit::visit_item_use(self, item_use);
         self.inside_use_item = UseItemPosition::Outside;
     }
 
-    fn visit_path(&mut self, path: &'ast syn::Path) {
+    fn visit_path(&mut self, path: &'ast SynPath) {
         if self.inside_use_item == UseItemPosition::Outside {
             let segments: Vec<String> = path
                 .segments
@@ -285,7 +288,7 @@ impl<'ast> Visit<'ast> for PathExtractor {
             let origin = path_origin(&segments);
             self.expr_paths.push((segments, origin));
         }
-        syn::visit::visit_path(self, path);
+        visit::visit_path(self, path);
     }
 }
 
@@ -331,6 +334,7 @@ pub(super) fn extract_use_renames(prefix: Vec<String>, tree: &UseTree, out: &mut
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::fs;
     use std::path::Path;
     use std::time::SystemTime;
@@ -366,7 +370,7 @@ mod tests {
     #[test]
     fn module_path_from_source_file_treats_main_rs_as_crate_root() -> Result<()> {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("mend-main-root-test-{unique}"));
+        let temp_dir = env::temp_dir().join(format!("mend-main-root-test-{unique}"));
         let source_dir = temp_dir.join("src");
         fs::create_dir_all(&source_dir)?;
         let main_rs = source_dir.join("main.rs");

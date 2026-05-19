@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::bail;
 
 use super::parent_boundary;
 use super::parent_boundary::ParentBoundaryKey;
@@ -218,7 +219,7 @@ fn build_child_pub_super_fix(candidate: &PubUseCandidate) -> Result<UseFix> {
         .context("failed to compute child visibility line span")?;
     let line_text = &source[line_span.0..line_span.1];
     let Some(relative_start) = line_text.find(PUB_VISIBILITY_PREFIX) else {
-        anyhow::bail!(
+        bail!(
             "child item line {} does not contain a plain `pub ` prefix",
             candidate.child_line
         );

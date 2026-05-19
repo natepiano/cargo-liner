@@ -9,10 +9,12 @@ use std::path::PathBuf;
 use anyhow::Context;
 use anyhow::Error;
 use anyhow::Result;
+use anyhow::bail;
 use proc_macro2::LineColumn;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::UseTree;
+use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use walkdir::WalkDir;
@@ -105,7 +107,7 @@ impl TryFrom<Vec<UseFix>> for ValidatedFixSet {
             let mut previous_fix: Option<&UseFix> = None;
             for fix in file_fixes {
                 if fix.start > fix.end {
-                    anyhow::bail!(
+                    bail!(
                         "invalid fix range {}..{} for {}",
                         fix.start,
                         fix.end,
@@ -115,7 +117,7 @@ impl TryFrom<Vec<UseFix>> for ValidatedFixSet {
                 if let Some(previous) = previous_fix
                     && fix.start < previous.end
                 {
-                    anyhow::bail!(
+                    bail!(
                         "overlapping fixes detected for {}: {}..{} ({:?}) overlaps {}..{} ({:?})",
                         path.display(),
                         previous.start,
@@ -282,7 +284,7 @@ fn scan_file(analysis_root: &Path, source_root: &Path, path: &Path) -> Result<Ve
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
-        syn::parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
+        parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
     let base_module_path = rust_syntax::file_module_path(source_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;
     let offsets = line_offsets(&text);

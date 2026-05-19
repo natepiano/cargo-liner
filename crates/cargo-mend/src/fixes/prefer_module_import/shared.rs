@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use proc_macro2::LineColumn;
+use quote::quote;
 use syn::ItemUse;
 use syn::UseTree;
 use syn::Visibility;
@@ -113,7 +114,7 @@ pub(super) fn extract_visibility_prefix(node: &ItemUse) -> String {
         Visibility::Public(_) => PUB_VISIBILITY_PREFIX.to_string(),
         Visibility::Restricted(vis) => {
             let path = &vis.path;
-            format!("pub({}) ", quote::quote!(#path))
+            format!("pub({}) ", quote!(#path))
         },
         Visibility::Inherited => String::new(),
     }

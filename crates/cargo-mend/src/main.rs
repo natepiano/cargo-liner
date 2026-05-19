@@ -14,6 +14,8 @@ mod reporting;
 mod rust_syntax;
 mod selection;
 
+use std::env;
+use std::io;
 use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -51,7 +53,7 @@ use selection::DisplayFilter;
 use selection::Selection;
 
 fn main() -> ExitCode {
-    if std::env::var_os(DRIVER_ENV).is_some() {
+    if env::var_os(DRIVER_ENV).is_some() {
         return compiler::driver_main();
     }
 
@@ -248,13 +250,13 @@ fn render_outcome(
 }
 
 fn color_mode() -> ColorMode {
-    if let Ok(choice) = std::env::var(CLICOLOR_FORCE_ENV)
+    if let Ok(choice) = env::var(CLICOLOR_FORCE_ENV)
         && choice != CLICOLOR_DISABLED_VALUE
     {
         return ColorMode::Enabled;
     }
 
-    if let Ok(choice) = std::env::var(CARGO_TERM_COLOR_ENV) {
+    if let Ok(choice) = env::var(CARGO_TERM_COLOR_ENV) {
         let color_mode = match choice.to_ascii_lowercase().as_str() {
             CARGO_TERM_COLOR_NEVER => Some(ColorMode::Disabled),
             CARGO_TERM_COLOR_ALWAYS => Some(ColorMode::Enabled),
@@ -265,17 +267,17 @@ fn color_mode() -> ColorMode {
         }
     }
 
-    if let Ok(choice) = std::env::var(CLICOLOR_ENV)
+    if let Ok(choice) = env::var(CLICOLOR_ENV)
         && choice == CLICOLOR_DISABLED_VALUE
     {
         return ColorMode::Disabled;
     }
 
-    if std::io::stdout().is_terminal() || std::io::stderr().is_terminal() {
+    if io::stdout().is_terminal() || io::stderr().is_terminal() {
         return ColorMode::Enabled;
     }
 
-    if std::env::var(TERM_ENV).is_ok_and(|term| term != TERM_DUMB_VALUE) {
+    if env::var(TERM_ENV).is_ok_and(|term| term != TERM_DUMB_VALUE) {
         ColorMode::Enabled
     } else {
         ColorMode::Disabled
@@ -284,6 +286,7 @@ fn color_mode() -> ColorMode {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::ffi::OsString;
 
     use super::build_info_text;
@@ -304,14 +307,14 @@ mod tests {
 
     impl EnvGuard {
         fn set(key: &'static str, value: &'static str) -> Self {
-            let previous = std::env::var_os(key);
-            unsafe { std::env::set_var(key, value) };
+            let previous = env::var_os(key);
+            unsafe { env::set_var(key, value) };
             Self { key, previous }
         }
 
         fn remove(key: &'static str) -> Self {
-            let previous = std::env::var_os(key);
-            unsafe { std::env::remove_var(key) };
+            let previous = env::var_os(key);
+            unsafe { env::remove_var(key) };
             Self { key, previous }
         }
     }
@@ -319,9 +322,9 @@ mod tests {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             if let Some(previous) = &self.previous {
-                unsafe { std::env::set_var(self.key, previous) };
+                unsafe { env::set_var(self.key, previous) };
             } else {
-                unsafe { std::env::remove_var(self.key) };
+                unsafe { env::remove_var(self.key) };
             }
         }
     }

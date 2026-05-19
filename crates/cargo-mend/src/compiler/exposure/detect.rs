@@ -335,7 +335,7 @@ fn type_is_exposed_outside_parent(
         child_file,
         item_name,
     )?
-    .is_some_and(|status| status.usage == ParentFacadeUsage::UsedOutsideParentSubtree)
+    .is_some_and(|status| status.usage == ParentFacadeUsage::UsedOutsideSubtree)
         || facade::public_reexport_exists_outside_parent(
             source_cache,
             settings,

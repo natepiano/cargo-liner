@@ -1,3 +1,4 @@
+use std::env;
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
@@ -103,7 +104,7 @@ pub(crate) struct TargetMetadata {
 pub(crate) fn resolve_cargo_selection(explicit_manifest_path: Option<&Path>) -> Result<Selection> {
     let manifest_path = match explicit_manifest_path {
         Some(path) => normalize_explicit_manifest_path(path)?,
-        None => find_nearest_manifest(&std::env::current_dir()?)?,
+        None => find_nearest_manifest(&env::current_dir()?)?,
     };
 
     let metadata = cargo_metadata_for(&manifest_path)?;
@@ -300,7 +301,10 @@ fn find_nearest_manifest(start: &Path) -> Result<PathBuf> {
 #[allow(clippy::panic, reason = "tests should panic on unexpected values")]
 mod tests {
     use std::collections::BTreeSet;
+    use std::fs;
     use std::path::PathBuf;
+
+    use tempfile::tempdir;
 
     use super::CargoCheckPlan;
     use super::PackageMetadata;
@@ -502,21 +506,20 @@ mod tests {
 
     #[test]
     fn resolve_virtual_workspace_root_with_single_member_selects_workspace() {
-        let temp =
-            tempfile::tempdir().unwrap_or_else(|error| panic!("create temp fixture dir: {error}"));
-        std::fs::create_dir_all(temp.path().join("member/src"))
+        let temp = tempdir().unwrap_or_else(|error| panic!("create temp fixture dir: {error}"));
+        fs::create_dir_all(temp.path().join("member/src"))
             .unwrap_or_else(|error| panic!("create member src dir: {error}"));
-        std::fs::write(
+        fs::write(
             temp.path().join(CARGO_MANIFEST_FILE),
             "[workspace]\nmembers = [\"member\"]\nresolver = \"3\"\n",
         )
         .unwrap_or_else(|error| panic!("write workspace manifest: {error}"));
-        std::fs::write(
+        fs::write(
             temp.path().join("member").join(CARGO_MANIFEST_FILE),
             "[package]\nname = \"member_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .unwrap_or_else(|error| panic!("write member manifest: {error}"));
-        std::fs::write(temp.path().join("member/src/main.rs"), "fn main() {}\n")
+        fs::write(temp.path().join("member/src/main.rs"), "fn main() {}\n")
             .unwrap_or_else(|error| panic!("write member main: {error}"));
 
         let selection = resolve_cargo_selection(Some(&temp.path().join(CARGO_MANIFEST_FILE)))
@@ -525,25 +528,24 @@ mod tests {
         assert_eq!(selection.scope, SelectionScope::Workspace);
         assert_eq!(selection.package_roots.len(), 1);
         assert_eq!(
-            std::fs::canonicalize(&selection.package_roots[0])
+            fs::canonicalize(&selection.package_roots[0])
                 .unwrap_or_else(|error| panic!("canonicalize selected package root: {error}")),
-            std::fs::canonicalize(temp.path().join("member"))
+            fs::canonicalize(temp.path().join("member"))
                 .unwrap_or_else(|error| panic!("canonicalize expected package root: {error}"))
         );
     }
 
     #[test]
     fn resolve_project_directory_uses_its_manifest() {
-        let temp =
-            tempfile::tempdir().unwrap_or_else(|error| panic!("create temp fixture dir: {error}"));
-        std::fs::create_dir_all(temp.path().join("src"))
+        let temp = tempdir().unwrap_or_else(|error| panic!("create temp fixture dir: {error}"));
+        fs::create_dir_all(temp.path().join("src"))
             .unwrap_or_else(|error| panic!("create src dir: {error}"));
-        std::fs::write(
+        fs::write(
             temp.path().join(CARGO_MANIFEST_FILE),
             "[package]\nname = \"dir_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .unwrap_or_else(|error| panic!("write manifest: {error}"));
-        std::fs::write(temp.path().join("src/lib.rs"), "pub fn exported() {}\n")
+        fs::write(temp.path().join("src/lib.rs"), "pub fn exported() {}\n")
             .unwrap_or_else(|error| panic!("write lib: {error}"));
 
         let selection = resolve_cargo_selection(Some(temp.path()))
@@ -551,7 +553,7 @@ mod tests {
 
         assert_eq!(
             selection.manifest_path,
-            std::fs::canonicalize(temp.path().join(CARGO_MANIFEST_FILE))
+            fs::canonicalize(temp.path().join(CARGO_MANIFEST_FILE))
                 .unwrap_or_else(|error| panic!("canonicalize manifest: {error}"))
         );
         assert_eq!(selection.scope, SelectionScope::SinglePackage);

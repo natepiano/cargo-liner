@@ -5,6 +5,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
+use syn::parse_file;
 use syn::visit::Visit;
 use walkdir::WalkDir;
 
@@ -68,7 +69,7 @@ fn scan_file(
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
-        syn::parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
+        parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
     let offsets = offsets::line_offsets(&text);
     let base_module_path = rust_syntax::file_module_path(source_root, path)
         .with_context(|| format!("failed to determine module path for {}", path.display()))?;

@@ -17,6 +17,7 @@ use syn::Local;
 use syn::Macro;
 use syn::Pat;
 use syn::TraitItemFn;
+use syn::visit;
 use syn::visit::Visit;
 
 use super::shared;
@@ -86,7 +87,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
 
     fn visit_block(&mut self, block: &Block) {
         self.enter_scope();
-        syn::visit::visit_block(self, block);
+        visit::visit_block(self, block);
         self.exit_scope();
     }
 
@@ -114,7 +115,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
         let mut params = BTreeSet::new();
         collect_fn_param_bindings(item.sig.inputs.iter(), &mut params);
         self.enter_scope_with(params);
-        syn::visit::visit_block(self, &item.block);
+        visit::visit_block(self, &item.block);
         self.exit_scope();
     }
 
@@ -125,7 +126,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
         let mut params = BTreeSet::new();
         collect_fn_param_bindings(item.sig.inputs.iter(), &mut params);
         self.enter_scope_with(params);
-        syn::visit::visit_block(self, &item.block);
+        visit::visit_block(self, &item.block);
         self.exit_scope();
     }
 
@@ -137,7 +138,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
             let mut params = BTreeSet::new();
             collect_fn_param_bindings(item.sig.inputs.iter(), &mut params);
             self.enter_scope_with(params);
-            syn::visit::visit_block(self, body);
+            visit::visit_block(self, body);
             self.exit_scope();
         }
     }
@@ -166,7 +167,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
         let mut bindings = BTreeSet::new();
         collect_pat_bindings(&for_loop.pat, &mut bindings);
         self.enter_scope_with(bindings);
-        syn::visit::visit_block(self, &for_loop.body);
+        visit::visit_block(self, &for_loop.body);
         self.exit_scope();
     }
 
@@ -218,7 +219,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
                     }
                 }
             },
-            _ => syn::visit::visit_expr(self, node),
+            _ => visit::visit_expr(self, node),
         }
     }
 
@@ -229,7 +230,7 @@ impl Visit<'_> for ReferenceCollector<'_> {
             self.imported_names,
             &mut self.references,
         );
-        syn::visit::visit_macro(self, node);
+        visit::visit_macro(self, node);
     }
 }
 

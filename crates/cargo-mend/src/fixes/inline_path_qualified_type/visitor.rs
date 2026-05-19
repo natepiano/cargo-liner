@@ -22,6 +22,7 @@ use syn::Path;
 use syn::TraitItemFn;
 use syn::TypePath;
 use syn::UseTree;
+use syn::visit;
 use syn::visit::Visit;
 
 use crate::rust_syntax::MODULE_PATH_SEPARATOR;
@@ -204,7 +205,7 @@ impl Visit<'_> for InlinePathVisitor {
             self.check_path(&node.path);
             self.record_bare_name_footprint(&node.path);
         }
-        syn::visit::visit_type_path(self, node);
+        visit::visit_type_path(self, node);
     }
 
     fn visit_expr_path(&mut self, node: &ExprPath) {
@@ -223,7 +224,7 @@ impl Visit<'_> for InlinePathVisitor {
             self.check_path(&node.path);
             self.record_bare_name_footprint(&node.path);
         }
-        syn::visit::visit_expr_struct(self, node);
+        visit::visit_expr_struct(self, node);
     }
 
     fn visit_pat_struct(&mut self, node: &PatStruct) {
@@ -234,7 +235,7 @@ impl Visit<'_> for InlinePathVisitor {
             self.check_path(&node.path);
             self.record_bare_name_footprint(&node.path);
         }
-        syn::visit::visit_pat_struct(self, node);
+        visit::visit_pat_struct(self, node);
     }
 
     fn visit_item_mod(&mut self, node: &ItemMod) {
@@ -242,7 +243,7 @@ impl Visit<'_> for InlinePathVisitor {
         // "is this at the file's top level". Names defined inside nested
         // modules don't collide with imports added at the top level.
         self.mod_depth += 1;
-        syn::visit::visit_item_mod(self, node);
+        visit::visit_item_mod(self, node);
         self.mod_depth -= 1;
     }
 
@@ -251,7 +252,7 @@ impl Visit<'_> for InlinePathVisitor {
             self.bare_type_names.insert(node.ident.to_string());
         }
         self.push_generics(&node.generics);
-        syn::visit::visit_item_struct(self, node);
+        visit::visit_item_struct(self, node);
         self.pop_generics();
     }
 
@@ -260,7 +261,7 @@ impl Visit<'_> for InlinePathVisitor {
             self.bare_type_names.insert(node.ident.to_string());
         }
         self.push_generics(&node.generics);
-        syn::visit::visit_item_enum(self, node);
+        visit::visit_item_enum(self, node);
         self.pop_generics();
     }
 
@@ -269,7 +270,7 @@ impl Visit<'_> for InlinePathVisitor {
             self.bare_type_names.insert(node.ident.to_string());
         }
         self.push_generics(&node.generics);
-        syn::visit::visit_item_type(self, node);
+        visit::visit_item_type(self, node);
         self.pop_generics();
     }
 
@@ -278,7 +279,7 @@ impl Visit<'_> for InlinePathVisitor {
             self.bare_type_names.insert(node.ident.to_string());
         }
         self.push_generics(&node.generics);
-        syn::visit::visit_item_trait(self, node);
+        visit::visit_item_trait(self, node);
         self.pop_generics();
     }
 
@@ -292,19 +293,19 @@ impl Visit<'_> for InlinePathVisitor {
         // A `visit_signature`-only push pops before the body is visited, so
         // those references would be misread as crate paths.
         self.push_generics(&node.sig.generics);
-        syn::visit::visit_item_fn(self, node);
+        visit::visit_item_fn(self, node);
         self.pop_generics();
     }
 
     fn visit_impl_item_fn(&mut self, node: &ImplItemFn) {
         self.push_generics(&node.sig.generics);
-        syn::visit::visit_impl_item_fn(self, node);
+        visit::visit_impl_item_fn(self, node);
         self.pop_generics();
     }
 
     fn visit_trait_item_fn(&mut self, node: &TraitItemFn) {
         self.push_generics(&node.sig.generics);
-        syn::visit::visit_trait_item_fn(self, node);
+        visit::visit_trait_item_fn(self, node);
         self.pop_generics();
     }
 
@@ -312,14 +313,14 @@ impl Visit<'_> for InlinePathVisitor {
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
-        syn::visit::visit_item_const(self, node);
+        visit::visit_item_const(self, node);
     }
 
     fn visit_item_static(&mut self, node: &ItemStatic) {
         if self.mod_depth == 0 {
             self.bare_type_names.insert(node.ident.to_string());
         }
-        syn::visit::visit_item_static(self, node);
+        visit::visit_item_static(self, node);
     }
 
     fn visit_item_impl(&mut self, node: &ItemImpl) {
@@ -335,7 +336,7 @@ impl Visit<'_> for InlinePathVisitor {
                 }
             }
         }
-        syn::visit::visit_item_impl(self, node);
+        visit::visit_item_impl(self, node);
         self.pop_generics();
     }
 
@@ -346,7 +347,7 @@ impl Visit<'_> for InlinePathVisitor {
             self.check_path(&node.path);
             self.record_bare_name_footprint(&node.path);
         }
-        syn::visit::visit_pat_tuple_struct(self, node);
+        visit::visit_pat_tuple_struct(self, node);
     }
 }
 

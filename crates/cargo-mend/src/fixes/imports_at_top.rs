@@ -12,7 +12,9 @@ use syn::ItemMod;
 use syn::ItemUse;
 use syn::Stmt;
 use syn::UseTree;
+use syn::parse_file;
 use syn::spanned::Spanned;
+use syn::visit;
 use syn::visit::Visit;
 use walkdir::WalkDir;
 
@@ -76,7 +78,7 @@ fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<Use
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let syntax =
-        syn::parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
+        parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
     let offsets = line_offsets(&text);
     let display_path = path
         .strip_prefix(analysis_root)
@@ -415,7 +417,7 @@ impl<'ast> Visit<'ast> for InBodyUseFinder<'_> {
         for stmt in &node.stmts {
             match stmt {
                 Stmt::Item(Item::Use(use_item)) => self.try_emit_fix(use_item),
-                _ => syn::visit::visit_stmt(self, stmt),
+                _ => visit::visit_stmt(self, stmt),
             }
         }
     }
@@ -449,11 +451,12 @@ mod tests {
     use syn::File;
     use syn::Item;
     use syn::UseTree;
+    use syn::parse_str;
 
     use super::flatten_use_to_bare_paths;
 
     fn parse_tree(source: &str) -> UseTree {
-        let file: File = syn::parse_str(source).expect("parse");
+        let file: File = parse_str(source).expect("parse");
         let item = file
             .items
             .into_iter()

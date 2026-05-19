@@ -9,6 +9,8 @@ use anyhow::Context;
 use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::to_string;
+use toml::from_str;
 
 use super::diagnostics_config::DiagnosticsConfig;
 
@@ -57,7 +59,7 @@ pub(crate) fn load_config(
         if path.exists() {
             let text = fs::read_to_string(&path)
                 .with_context(|| format!("failed to read config {}", path.display()))?;
-            let config_file: ConfigFile = toml::from_str(&text)
+            let config_file: ConfigFile = from_str(&text)
                 .with_context(|| format!("failed to parse config {}", path.display()))?;
             let root = path
                 .parent()
@@ -90,7 +92,7 @@ pub(crate) fn load_config(
 fn fingerprint_for(root: &Path, config: &VisibilityConfig) -> Result<String> {
     let mut hasher = DefaultHasher::new();
     root.to_string_lossy().hash(&mut hasher);
-    serde_json::to_string(config)
+    to_string(config)
         .context("failed to serialize mend config for fingerprinting")?
         .hash(&mut hasher);
     Ok(format!("{:016x}", hasher.finish()))
