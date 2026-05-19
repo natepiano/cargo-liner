@@ -19,6 +19,7 @@ use super::DismissTarget;
 use crate::project::AbsolutePath;
 use crate::tui::keymap_ui::KeymapRenderInputs;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::SyncedDescriptionHeight;
 use crate::tui::project_list::ProjectList;
 use crate::tui::running_targets::RunningTargets;
 use crate::tui::settings::SettingsRenderInputs;
@@ -38,24 +39,24 @@ use crate::tui::state::Scan;
 /// generic dispatch loop carry one `&PaneRenderCtx` for the entire
 /// frame.
 pub(crate) struct PaneRenderCtx<'a> {
-    pub(crate) animation_elapsed:      Duration,
-    pub(crate) config:                 &'a Config,
-    pub(crate) project_list:           &'a ProjectList,
-    pub(crate) selected_project_path:  Option<&'a Path>,
+    pub(crate) animation_elapsed:         Duration,
+    pub(crate) config:                    &'a Config,
+    pub(crate) project_list:              &'a ProjectList,
+    pub(crate) selected_project_path:     Option<&'a Path>,
     /// In-flight runtime state read by tiled panes during render
     /// (currently only `OutputPane` for the running-example title
     /// and the captured output lines).
-    pub(crate) inflight:               &'a Inflight,
+    pub(crate) inflight:                  &'a Inflight,
     /// Scan subsystem ref. Needed by `ProjectListPane::render` for
     /// discovery-shimmer lookups; tiled detail panes leave it
     /// unread.
-    pub(crate) scan:                   &'a Scan,
+    pub(crate) scan:                      &'a Scan,
     /// Pre-render CI snapshot built from `&Ci` before the dispatch
     /// loop runs. `ProjectListPane` reads CI status per row through
     /// this lookup instead of holding `&Ci` directly, which lets
     /// the CI pane's own dispatcher consume `&mut self.ci` in the
     /// same pass.
-    pub(crate) ci_status_lookup:       &'a CiStatusLookup,
+    pub(crate) ci_status_lookup:          &'a CiStatusLookup,
     /// Precomputed render inputs for the Keymap overlay. `None` for
     /// every render path that isn't the Keymap overlay dispatcher;
     /// `Some` when the overlay is open and `KeymapPane`'s
@@ -63,28 +64,29 @@ pub(crate) struct PaneRenderCtx<'a> {
     /// Built by [`crate::tui::keymap_ui::prepare_keymap_render_inputs`]
     /// before `App::split_for_render`, so the still-current `&App`
     /// borrow can walk `framework_keymap`.
-    pub(crate) keymap_render_inputs:   Option<&'a KeymapRenderInputs>,
+    pub(crate) keymap_render_inputs:      Option<&'a KeymapRenderInputs>,
     /// Precomputed render inputs for the Settings overlay. `None`
     /// for every render path that isn't the Settings overlay
     /// dispatcher; `Some` when the overlay is open. Built by
     /// [`crate::tui::settings::prepare_settings_render_inputs`].
-    pub(crate) settings_render_inputs: Option<&'a SettingsRenderInputs>,
-    /// Minimum description-section height shared between the Package
-    /// and Git panes so their description blocks render with matching
-    /// row counts (and bottom edges align) when both have a
-    /// description. `0` when no sync is requested. Each pane clamps
-    /// this by its own per-pane description max height.
-    pub(crate) description_min_height: u16,
+    pub(crate) settings_render_inputs:    Option<&'a SettingsRenderInputs>,
+    /// Inter-pane description sync floor: the height both the Package
+    /// and Git panes' description blocks must clear so their bottom
+    /// edges align. Constructed via [`crate::tui::panes::sync_floor`],
+    /// which reads each pane's [`DescriptionBlock`] so the rendered
+    /// content and the sync height can't diverge. `0` when either
+    /// pane has empty source text.
+    pub(crate) synced_description_height: SyncedDescriptionHeight,
     /// Snapshot of currently-running cargo targets across the host,
     /// refreshed once per frame by `App::running_targets_tick`. The
     /// Targets pane joins this against the displayed project's
     /// `target_directory` to flag running rows.
-    pub(crate) running_targets:        &'a RunningTargets,
+    pub(crate) running_targets:           &'a RunningTargets,
     /// Resolved canonical `target_directory` of the currently-displayed
     /// project, used to build `RunningKey`s. `None` when the
     /// workspace's cargo metadata hasn't landed yet or no project is
     /// selected.
-    pub(crate) running_targets_dir:    Option<&'a AbsolutePath>,
+    pub(crate) running_targets_dir:       Option<&'a AbsolutePath>,
 }
 
 /// Result of a single pane's hit-test at a screen position.

@@ -82,6 +82,7 @@ use super::overlays::Overlays;
 use super::pane::PaneFocusState;
 use super::panes::PaneId;
 use super::panes::Panes;
+use super::panes::SyncedDescriptionHeight;
 use super::project_list::ProjectList;
 use super::running_targets::RunningTargets;
 use super::state::Config;
@@ -586,7 +587,7 @@ impl App {
         ci_status_lookup: &'a CiStatusLookup,
         keymap_render_inputs: Option<&'a KeymapRenderInputs>,
         settings_render_inputs: Option<&'a SettingsRenderInputs>,
-        description_min_height: u16,
+        synced_description_height: SyncedDescriptionHeight,
     ) -> RenderBorrows<'a> {
         let Self {
             panes,
@@ -624,7 +625,7 @@ impl App {
             ci_status_lookup,
             keymap_render_inputs,
             settings_render_inputs,
-            description_min_height,
+            synced_description_height,
             running_targets,
             running_targets_dir,
         };

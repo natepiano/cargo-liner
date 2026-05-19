@@ -148,18 +148,18 @@ fn build_project_list_render_ctx_for_test<'a>(
     holder: &'a TestRenderCtxHolder,
 ) -> PaneRenderCtx<'a> {
     PaneRenderCtx {
-        animation_elapsed:      app.animation_started.elapsed(),
-        config:                 &app.config,
-        project_list:           &app.project_list,
-        selected_project_path:  app.selected_project_path_for_render(),
-        inflight:               &app.inflight,
-        scan:                   &app.scan,
-        ci_status_lookup:       &holder.ci_status_lookup,
-        keymap_render_inputs:   None,
-        settings_render_inputs: None,
-        description_min_height: 0,
-        running_targets:        app.panes.running_targets.snapshot(),
-        running_targets_dir:    app.panes.detail_target_dir.as_ref(),
+        animation_elapsed:         app.animation_started.elapsed(),
+        config:                    &app.config,
+        project_list:              &app.project_list,
+        selected_project_path:     app.selected_project_path_for_render(),
+        inflight:                  &app.inflight,
+        scan:                      &app.scan,
+        ci_status_lookup:          &holder.ci_status_lookup,
+        keymap_render_inputs:      None,
+        settings_render_inputs:    None,
+        synced_description_height: crate::tui::panes::SyncedDescriptionHeight::default(),
+        running_targets:           app.panes.running_targets.snapshot(),
+        running_targets_dir:       app.panes.detail_target_dir.as_ref(),
     }
 }
 

@@ -1,4 +1,4 @@
-use ratatui::text::Line;
+use ratatui::layout::Rect;
 use tui_pane::label_color;
 
 use super::CI_COMPACT_DURATION_WIDTH;
@@ -14,6 +14,7 @@ use crate::project::GitStatus;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::panes;
+use super::EmptyDescriptionBehavior;
 use crate::tui::render::CiColumn;
 
 fn package_data(is_rust_project: bool) -> PackageData {
@@ -79,13 +80,6 @@ fn ci_run_with_jobs(jobs: Vec<CiJob>) -> CiRun {
         updated_at: None,
         fetched: Fetched,
     }
-}
-
-fn line_text(line: &Line<'_>) -> String {
-    line.spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect()
 }
 
 #[test]
@@ -170,43 +164,76 @@ fn package_label_width_matches_widest_visible_field() {
     );
 }
 
-#[test]
-fn description_lines_use_muted_fallback_when_missing() {
-    let data = package_data(true);
-
-    let lines = panes::description_lines(data.description.as_deref(), 80, 3);
-
-    assert_eq!(lines.len(), 1);
-    assert_eq!(line_text(&lines[0]), "No description available");
-    assert_eq!(lines[0].spans[0].style.fg, Some(label_color()));
+/// Helper: outer pane area sized so `DescriptionBlock::for_pane` yields
+/// the desired inner column width. Outer width = inner_width + 2 (borders)
+/// + 2 (padding). Outer height = inner_height + 2 (borders).
+fn description_area(column_width: u16, inner_height: u16) -> Rect {
+    Rect {
+        x:      0,
+        y:      0,
+        width:  column_width.saturating_add(4),
+        height: inner_height.saturating_add(2),
+    }
 }
 
 #[test]
-fn description_lines_render_real_description_with_default_style() {
+fn description_block_uses_muted_placeholder_when_missing() {
+    let data = package_data(true);
+    let block = panes::DescriptionBlock::for_pane(
+        data.description.as_deref(),
+        description_area(80, 3),
+        EmptyDescriptionBehavior::ShowPlaceholder,
+    );
+
+    assert_eq!(block.rows(), &[panes::placeholder_text().to_string()]);
+    assert_eq!(block.style().fg, Some(label_color()));
+}
+
+#[test]
+fn description_block_empty_behavior_render_empty_produces_no_rows() {
+    let block = panes::DescriptionBlock::for_pane(
+        None,
+        description_area(80, 3),
+        EmptyDescriptionBehavior::RenderEmpty,
+    );
+
+    assert!(block.rows().is_empty());
+    assert_eq!(block.natural_sync_height(), 0);
+}
+
+#[test]
+fn description_block_renders_real_description_with_default_style() {
     let data = PackageData {
         description: Some("Real package description".to_string()),
         ..package_data(true)
     };
+    let block = panes::DescriptionBlock::for_pane(
+        data.description.as_deref(),
+        description_area(80, 3),
+        EmptyDescriptionBehavior::ShowPlaceholder,
+    );
 
-    let lines = panes::description_lines(data.description.as_deref(), 80, 3);
-
-    assert_eq!(lines.len(), 1);
-    assert_eq!(line_text(&lines[0]), "Real package description");
-    assert_eq!(lines[0].spans[0].style.fg, None);
+    assert_eq!(block.rows(), &["Real package description".to_string()]);
+    assert_eq!(block.style().fg, None);
 }
 
 #[test]
-fn description_lines_truncate_overflow_with_ellipsis() {
+fn description_block_wraps_overflowing_text_into_rows() {
     let data = PackageData {
         description: Some("one two three four five six seven eight".to_string()),
         ..package_data(true)
     };
+    let block = panes::DescriptionBlock::for_pane(
+        data.description.as_deref(),
+        description_area(13, 5),
+        EmptyDescriptionBehavior::ShowPlaceholder,
+    );
 
-    let lines = panes::description_lines(data.description.as_deref(), 13, 2);
-
-    assert_eq!(lines.len(), 2);
-    assert_eq!(line_text(&lines[0]), "one two three");
-    assert!(line_text(&lines[1]).ends_with('…'));
+    // Pre-truncation rows — the render path's ellipsis is applied
+    // when `max_height` clamps below `rows.len()`. natural_sync_height
+    // reflects what feeds the inter-pane sync.
+    assert!(block.rows().len() > 2);
+    assert_eq!(block.rows()[0], "one two three");
 }
 
 #[test]

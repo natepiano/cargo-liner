@@ -17,9 +17,12 @@ use tui_pane::text_default;
 use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
+use super::DescriptionBlock;
 use super::DetailField;
+use super::EmptyDescriptionBehavior;
 use super::GitData;
 use super::RemoteRow;
+use super::SyncedDescriptionHeight;
 use super::WorktreeInfo;
 use super::package;
 use super::package::RenderStyles;
@@ -691,7 +694,7 @@ pub(super) fn render_git_pane_body(
             outer_area: area,
             git_inner,
             border_style,
-            description_min_height: ctx.description_min_height,
+            synced_description_height: ctx.synced_description_height,
         },
     );
 
@@ -722,13 +725,13 @@ pub(super) fn render_git_pane_body(
 /// Inputs for [`render_git_about_section`]. Grouped into a struct
 /// so the function stays under the argument-count threshold.
 struct GitAboutCtx<'a> {
-    description:            Option<&'a str>,
-    flat_fields:            &'a [DetailField],
-    data:                   &'a GitData,
-    outer_area:             Rect,
-    git_inner:              Rect,
-    border_style:           Style,
-    description_min_height: u16,
+    description:               Option<&'a str>,
+    flat_fields:               &'a [DetailField],
+    data:                      &'a GitData,
+    outer_area:                Rect,
+    git_inner:                 Rect,
+    border_style:              Style,
+    synced_description_height: SyncedDescriptionHeight,
 }
 
 /// Render the About section (repo description) at the top of the Git panel,
@@ -736,10 +739,6 @@ struct GitAboutCtx<'a> {
 /// endcaps. Returns the area below the separator for the scrolling content.
 fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> Rect {
     let git_inner = ctx.git_inner;
-    let description = ctx.description.map(str::trim).filter(|d| !d.is_empty());
-    let Some(description) = description else {
-        return git_inner;
-    };
 
     let remotes_block = if ctx.data.remotes.is_empty() {
         0
@@ -757,35 +756,25 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> Rect {
     let baseline_max = git_inner
         .height
         .saturating_sub(reserved_lower_height.saturating_add(reserved_separator_height));
-    // Hard cap: keep at least one row for the separator below.
-    let synced_cap = git_inner.height.saturating_sub(1);
-    let synced_floor = ctx.description_min_height.min(synced_cap);
-    // Let the sync floor push lower content down — the viewport
-    // scrolls when the remaining lower area shrinks.
-    let description_max_height = baseline_max.max(synced_floor);
-    if description_max_height == 0 {
-        return git_inner;
-    }
 
-    let description_padding = u16::from(git_inner.width > 2);
-    let description_width = git_inner
-        .width
-        .saturating_sub(description_padding.saturating_mul(2));
-    let lines =
-        package::description_lines(Some(description), description_width, description_max_height);
-    let natural_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    let description_height = natural_height.max(synced_floor);
+    // Build the same DescriptionBlock that `sync_floor` consumed at the
+    // top of the frame and let it render — the block owns the wrapped
+    // rows so the rendered content can't drift from the height that
+    // fed the inter-pane sync.
+    let block = DescriptionBlock::for_pane(
+        ctx.description,
+        ctx.outer_area,
+        EmptyDescriptionBehavior::RenderEmpty,
+    );
+    let description_height = block.render(
+        frame,
+        git_inner,
+        ctx.synced_description_height,
+        baseline_max,
+    );
     if description_height == 0 {
         return git_inner;
     }
-
-    let description_area = Rect {
-        x:      git_inner.x.saturating_add(description_padding),
-        y:      git_inner.y,
-        width:  description_width,
-        height: description_height,
-    };
-    frame.render_widget(Paragraph::new(lines), description_area);
 
     let separator_y = git_inner.y.saturating_add(description_height);
     let has_room_for_separator = separator_y < git_inner.bottom();

@@ -77,6 +77,7 @@ use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneSelectionState;
 use crate::tui::panes::LintsData;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::SyncedDescriptionHeight;
 use crate::tui::project_list::ProjectList;
 use crate::tui::render;
 use crate::tui::settings;
@@ -259,7 +260,7 @@ fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
                 &ci_status_lookup,
                 None,
                 None,
-                0,
+                SyncedDescriptionHeight::default(),
             );
             tui_pane::Renderable::render(split.registry.lint, frame, area, &split.ctx);
         })
@@ -290,7 +291,7 @@ fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
                 &ci_status_lookup,
                 None,
                 None,
-                0,
+                SyncedDescriptionHeight::default(),
             );
             tui_pane::Renderable::render(split.registry.ci, frame, area, &split.ctx);
         })

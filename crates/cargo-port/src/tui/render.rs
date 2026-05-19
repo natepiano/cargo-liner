@@ -48,6 +48,7 @@ use super::keymap_ui;
 use super::overlays::PopupFrame;
 use super::pane::PaneRenderCtx;
 use super::panes;
+use super::panes::EmptyDescriptionBehavior;
 use super::panes::PaneId;
 use super::settings;
 use crate::ci::CiStatus;
@@ -158,28 +159,28 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
 
     // Sync description-section heights so the Package and Git panes'
     // description blocks render with matching row counts (and bottom
-    // edges align) when both panes have a description. Computed from
-    // the resolved layout's areas before the split-borrow consumes
-    // `&mut self`.
-    let pkg_desc_h = panes::description_natural_height(
+    // edges align) when both panes have a description. Build the
+    // pre-wrapped DescriptionBlocks here and ask `sync_floor` for the
+    // shared height — the same block is rebuilt by each pane's render
+    // path with the same inputs, so the sync floor matches what each
+    // pane actually draws (the structural enforcement).
+    let pkg_block = panes::DescriptionBlock::for_pane(
         app.panes
             .package
             .content()
             .and_then(|d| d.description.as_deref()),
         tiled.area(PaneId::Package),
+        EmptyDescriptionBehavior::ShowPlaceholder,
     );
-    let git_desc_h = panes::description_natural_height(
+    let git_block = panes::DescriptionBlock::for_pane(
         app.panes
             .git
             .content()
             .and_then(|d| d.description.as_deref()),
         tiled.area(PaneId::Git),
+        EmptyDescriptionBehavior::RenderEmpty,
     );
-    let description_min_height = if pkg_desc_h > 0 && git_desc_h > 0 {
-        pkg_desc_h.max(git_desc_h)
-    } else {
-        0
-    };
+    let synced_description_height = panes::sync_floor(&[&pkg_block, &git_block]);
 
     {
         let mut split = app.split_for_render(
@@ -188,7 +189,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
             &ci_status_lookup,
             None,
             None,
-            description_min_height,
+            synced_description_height,
         );
         tui_pane::render_panes(frame, &mut split.registry, &tiled, &split.ctx);
     }
@@ -402,7 +403,7 @@ fn dispatch_keymap_overlay(app: &mut App, frame: &mut Frame) {
         &ci_status_lookup,
         Some(&inputs),
         None,
-        0,
+        panes::SyncedDescriptionHeight::default(),
     );
     Renderable::render(split.registry.keymap_pane, frame, frame.area(), &split.ctx);
 }
@@ -430,7 +431,7 @@ fn dispatch_settings_overlay(app: &mut App, frame: &mut Frame) {
         &ci_status_lookup,
         None,
         Some(&inputs),
-        0,
+        panes::SyncedDescriptionHeight::default(),
     );
     Renderable::render(
         split.registry.settings_pane,
@@ -462,7 +463,7 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         ci_status_lookup: &ci_status_lookup,
         keymap_render_inputs: None,
         settings_render_inputs: None,
-        description_min_height: 0,
+        synced_description_height: panes::SyncedDescriptionHeight::default(),
         running_targets: split.running_targets,
         running_targets_dir: split.running_targets_dir,
     };

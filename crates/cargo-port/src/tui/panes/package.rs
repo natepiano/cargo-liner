@@ -23,9 +23,12 @@ use tui_pane::title_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiDisplay;
+use super::DescriptionBlock;
 use super::DetailField;
+use super::EmptyDescriptionBehavior;
 use super::LintDisplay;
 use super::PackageData;
+use super::SyncedDescriptionHeight;
 use super::pane_impls::PackagePane;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::LintStatus;
@@ -201,23 +204,21 @@ fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect
     usize::from(scroll_y)
 }
 
-const NO_DESCRIPTION_AVAILABLE: &str = "No description available";
-
 const STATS_TITLE: &str = "Structure";
 
 struct ProjectPanelRender<'a> {
-    pkg_data:               &'a PackageData,
-    fields:                 &'a [DetailField],
-    focus:                  PaneFocusState,
-    styles:                 &'a RenderStyles,
-    border_style:           Style,
-    animation_elapsed:      Duration,
-    lint_enabled:           bool,
-    /// Floor applied to the description-block height so the Package
-    /// and Git panes align their description bottoms when both have
-    /// a description. Clamped per-pane by the available
-    /// `description_max_height`.
-    description_min_height: u16,
+    pkg_data:                  &'a PackageData,
+    fields:                    &'a [DetailField],
+    focus:                     PaneFocusState,
+    styles:                    &'a RenderStyles,
+    border_style:              Style,
+    animation_elapsed:         Duration,
+    lint_enabled:              bool,
+    /// Inter-pane description sync floor; clamped per-pane by the
+    /// available `description_max_height`. Read by
+    /// [`DescriptionBlock::render`] so the rendered content stays in
+    /// step with what `sync_floor` saw at the top of the frame.
+    synced_description_height: SyncedDescriptionHeight,
 }
 
 #[derive(Clone, Copy)]
@@ -239,7 +240,7 @@ pub(super) fn render_package_pane_body(
     let PaneRenderCtx {
         animation_elapsed,
         config,
-        description_min_height,
+        synced_description_height,
         ..
     } = ctx;
     let lint_enabled = config.current().lint.enabled;
@@ -282,7 +283,7 @@ pub(super) fn render_package_pane_body(
         border_style,
         animation_elapsed: *animation_elapsed,
         lint_enabled,
-        description_min_height: *description_min_height,
+        synced_description_height: *synced_description_height,
     };
     let areas = render_project_description_section(frame, &context, area, project_inner);
     {
@@ -313,30 +314,27 @@ fn render_project_description_section(
     let baseline_max = project_inner
         .height
         .saturating_sub(reserved_lower_height.saturating_add(reserved_separator_height));
-    // Hard cap: keep at least one row for the separator below.
-    let synced_cap = project_inner.height.saturating_sub(1);
-    let synced_floor = context.description_min_height.min(synced_cap);
-    // Let the sync floor push lower content down — viewport scrolls
-    // when the lower area shrinks below `reserved_lower_height`.
-    let description_max_height = baseline_max.max(synced_floor);
-    let description_padding = u16::from(project_inner.width > 2);
-    let description_width = project_inner
-        .width
-        .saturating_sub(description_padding.saturating_mul(2));
-    let description_lines = description_lines(
+    // Build the same DescriptionBlock that `sync_floor` consumed at
+    // the top of the frame and let it render — the block owns the
+    // wrapped rows so the rendered content can't drift from the
+    // height that fed the inter-pane sync.
+    let block = DescriptionBlock::for_pane(
         context.pkg_data.description.as_deref(),
-        description_width,
-        description_max_height,
+        area,
+        EmptyDescriptionBehavior::ShowPlaceholder,
     );
-    let natural_height = u16::try_from(description_lines.len()).unwrap_or(u16::MAX);
-    let description_height = natural_height.max(synced_floor);
+    let description_height = block.render(
+        frame,
+        project_inner,
+        context.synced_description_height,
+        baseline_max,
+    );
     let description_area = Rect {
-        x: project_inner.x.saturating_add(description_padding),
-        width: description_width,
+        x:      project_inner.x,
+        y:      project_inner.y,
+        width:  project_inner.width,
         height: description_height,
-        ..project_inner
     };
-    frame.render_widget(Paragraph::new(description_lines), description_area);
 
     let separator_height = u16::from(
         description_height > 0
@@ -493,62 +491,6 @@ fn render_stats_column(
         })
         .collect();
     frame.render_widget(Paragraph::new(stat_lines), stats_inner);
-}
-
-/// Natural height (in rows) the description text would occupy inside
-/// `area`, computed from the same geometry the Package and Git panes
-/// use at render time: outer block borders cost 2 on each axis, then
-/// a 1-cell horizontal padding inside that. Returns `0` for missing
-/// or empty descriptions so callers can suppress sync when either
-/// side has nothing to render.
-pub fn description_natural_height(text: Option<&str>, area: Rect) -> u16 {
-    let inner_width = area.width.saturating_sub(2);
-    let inner_height = area.height.saturating_sub(2);
-    let description_padding = u16::from(inner_width > 2);
-    let description_width = inner_width.saturating_sub(description_padding.saturating_mul(2));
-    if description_width == 0 || inner_height == 0 {
-        return 0;
-    }
-    let Some(text) = text.map(str::trim).filter(|s| !s.is_empty()) else {
-        return 0;
-    };
-    let wrapped = word_wrap(text, usize::from(description_width));
-    u16::try_from(wrapped.len())
-        .unwrap_or(u16::MAX)
-        .min(inner_height)
-}
-
-pub fn description_lines(
-    description: Option<&str>,
-    width: u16,
-    max_height: u16,
-) -> Vec<Line<'static>> {
-    let max_width = usize::from(width);
-    let max_height = usize::from(max_height);
-    if max_width == 0 || max_height == 0 {
-        return Vec::new();
-    }
-
-    let (description, style) = description
-        .map(str::trim)
-        .filter(|description| !description.is_empty())
-        .map_or_else(
-            || (NO_DESCRIPTION_AVAILABLE, Style::default().fg(label_color())),
-            |description| (description, Style::default()),
-        );
-
-    let wrapped = word_wrap(description, max_width);
-    let overflowed = wrapped.len() > max_height;
-    let mut visible = wrapped.into_iter().take(max_height).collect::<Vec<_>>();
-    if overflowed && let Some(last) = visible.last_mut() {
-        let with_ellipsis = format!("{last}\u{2026}");
-        *last = render::truncate_with_ellipsis(&with_ellipsis, max_width, "\u{2026}");
-    }
-
-    visible
-        .into_iter()
-        .map(|line| Line::from(Span::styled(line, style)))
-        .collect()
 }
 
 /// Style for the Lint row in the Package detail pane, derived

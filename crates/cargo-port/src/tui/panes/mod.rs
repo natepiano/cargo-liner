@@ -3,6 +3,7 @@ mod ci;
 mod constants;
 mod cpu;
 mod data;
+mod description;
 mod git;
 mod lang;
 mod layout;
@@ -40,15 +41,18 @@ pub(super) use cpu::CPU_PANE_WIDTH;
 #[cfg(test)]
 pub(super) use cpu::cpu_required_pane_height;
 pub(super) use data::DetailCacheKey;
+pub(super) use description::DescriptionBlock;
+pub(super) use description::EmptyDescriptionBehavior;
+pub(super) use description::SyncedDescriptionHeight;
+#[cfg(test)]
+pub(super) use description::placeholder_text;
+pub(super) use description::sync_floor;
 #[cfg(test)]
 pub(super) use git::git_label_width;
 pub(super) use layout::BottomRow;
 pub(super) use layout::resolve_layout;
 pub(super) use layout::tab_order;
 pub(super) use lints::render_lints_pane_body;
-#[cfg(test)]
-pub(super) use package::description_lines;
-pub(super) use package::description_natural_height;
 #[cfg(test)]
 pub(super) use package::detail_column_scroll_offset;
 #[cfg(test)]
