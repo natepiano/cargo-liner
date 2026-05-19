@@ -88,7 +88,7 @@ pub(crate) enum WatcherMsg {
 // diff. Tracked for Step 1b follow-up.
 pub(crate) fn spawn_watcher(
     watch_roots: &[AbsolutePath],
-    bg_tx: Sender<BackgroundMsg>,
+    background_tx: Sender<BackgroundMsg>,
     ci_run_count: u32,
     non_rust: NonRustInclusion,
     client: HttpClient,
@@ -122,13 +122,13 @@ pub(crate) fn spawn_watcher(
     register_cargo_home_watch(&mut watcher, &registered_roots);
     let metadata_dispatch = MetadataDispatchContext {
         handle: client.handle.clone(),
-        tx: bg_tx.clone(),
+        tx: background_tx.clone(),
         metadata_store,
         metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
     };
     let ctx = WatcherLoopContext {
         watch_roots: registered_roots,
-        bg_tx,
+        background_tx,
         ci_run_count,
         non_rust,
         client,
@@ -143,7 +143,7 @@ pub(crate) fn spawn_watcher(
 
 struct WatcherLoopContext {
     watch_roots:       RegisteredRoots,
-    bg_tx:             Sender<BackgroundMsg>,
+    background_tx:     Sender<BackgroundMsg>,
     ci_run_count:      u32,
     non_rust:          NonRustInclusion,
     client:            HttpClient,
@@ -242,7 +242,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
 ) {
     let WatcherLoopContext {
         watch_roots,
-        bg_tx,
+        background_tx,
         ci_run_count,
         non_rust,
         client,
@@ -271,7 +271,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             notify_events,
             watch_roots.dirs(),
             &WatcherBackgroundSinks {
-                bg_tx,
+                background_tx,
                 lint_runtime: ctx.lint_runtime.as_ref(),
                 metadata_dispatch: Some(metadata_dispatch),
             },
@@ -289,7 +289,7 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             &client.handle,
             &git_limit,
             &git_done_tx,
-            bg_tx,
+            background_tx,
             &state.projects,
             &mut state.pending_git,
         );
@@ -299,14 +299,14 @@ fn watcher_loop<W: Watcher + Send + 'static>(
             &client.handle,
             &disk_limit,
             &disk_done_tx,
-            bg_tx,
+            background_tx,
             &state.projects,
             &mut state.pending_disk,
         );
 
         // Probe new-project candidates whose debounce has expired.
         probe_new_projects(
-            bg_tx,
+            background_tx,
             &mut state.pending_new,
             &mut state.discovered,
             *ci_run_count,

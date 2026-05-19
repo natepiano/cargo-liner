@@ -23,6 +23,7 @@ use super::language_stats;
 use super::tree;
 use crate::config::NonRustInclusion;
 use crate::constants::CARGO_METADATA_TIMEOUT;
+use crate::constants::CARGO_TOML;
 use crate::constants::SCAN_DISK_CONCURRENCY;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::http::HttpClient;
@@ -351,7 +352,7 @@ fn run_cargo_metadata_for_root(
         },
     };
 
-    let manifest_path = workspace_root.as_path().join("Cargo.toml");
+    let manifest_path = workspace_root.as_path().join(CARGO_TOML);
     let started_at = std::time::Instant::now();
     let result = match execute_cargo_metadata(&manifest_path) {
         Ok(metadata) => Ok(build_workspace_metadata(

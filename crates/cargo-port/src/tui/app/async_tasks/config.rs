@@ -324,7 +324,7 @@ impl App {
     /// pattern.
     pub fn apply_lint_config_change(&mut self, cfg: &CargoPortConfig) {
         // Inflight: respawn the lint runtime + clear in-flight tracking.
-        let lint_spawn = lint::spawn(cfg, self.background.bg_sender());
+        let lint_spawn = lint::spawn(cfg, self.background.background_sender());
         self.lint.set_runtime(lint_spawn.handle);
         self.lint.running_mut().clear();
         self.sync_running_lint_toast();

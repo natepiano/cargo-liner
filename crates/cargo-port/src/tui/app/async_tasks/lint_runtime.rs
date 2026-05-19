@@ -17,7 +17,7 @@ impl App {
         let watch_roots = scan::resolve_include_dirs(&self.config.current().tui.include_dirs);
         let new_watcher = watcher::spawn_watcher(
             &watch_roots,
-            self.background.bg_sender(),
+            self.background.background_sender(),
             self.config.ci_run_count(),
             self.config.include_non_rust(),
             self.net.http_client(),
@@ -79,7 +79,7 @@ impl App {
             .lint
             .cache_size_bytes()
             .unwrap_or(None);
-        let tx = self.background.bg_sender();
+        let tx = self.background.background_sender();
         let handle = self.net.http_client().handle;
         handle.spawn(async move {
             let usage =

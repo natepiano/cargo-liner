@@ -7,6 +7,7 @@ use notify::Error;
 use notify::RecursiveMode;
 use notify::Watcher;
 
+use crate::constants::DOT_CARGO_DIR;
 use crate::project::AbsolutePath;
 
 /// Witness that a set of watch roots was actually registered with the
@@ -101,7 +102,7 @@ fn resolve_cargo_home() -> Option<PathBuf> {
     {
         return Some(PathBuf::from(home));
     }
-    dirs::home_dir().map(|home| home.join(".cargo"))
+    dirs::home_dir().map(|home| home.join(DOT_CARGO_DIR))
 }
 
 /// Subscribe to the cargo home directory (`$CARGO_HOME` or

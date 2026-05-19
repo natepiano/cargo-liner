@@ -14,6 +14,9 @@ use super::tree;
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;
 use crate::config::NonRustInclusion;
+use crate::constants::CARGO_TOML;
+use crate::constants::GIT_DIR;
+use crate::constants::TARGET_DIR;
 use crate::enrichment;
 use crate::http::HttpClient;
 use crate::project;
@@ -33,12 +36,12 @@ pub(crate) fn discover_project_item(root_dir: &Path) -> Option<RootItem> {
     while let Some(Ok(entry)) = iter.next() {
         if entry.file_type().is_dir() {
             let name = entry.file_name();
-            if name == "target" || name == ".git" {
+            if name == TARGET_DIR || name == GIT_DIR {
                 iter.skip_current_dir();
                 continue;
             }
         }
-        if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
+        if entry.file_type().is_file() && entry.file_name() == CARGO_TOML {
             let parsed = project::from_cargo_toml(entry.path()).ok()?;
             items.push(tree::cargo_project_to_item(parsed));
         }
@@ -257,14 +260,14 @@ pub(super) fn phase1_discover(
             if entry.file_type().is_dir() {
                 stats.visited_dirs += 1;
                 let name = entry.file_name();
-                if name == "target" || name == ".git" {
+                if name == TARGET_DIR || name == GIT_DIR {
                     iter.skip_current_dir();
                     continue;
                 }
 
                 if non_rust.includes_non_rust()
-                    && entry.path().join(".git").is_dir()
-                    && !entry.path().join("Cargo.toml").exists()
+                    && entry.path().join(GIT_DIR).is_dir()
+                    && !entry.path().join(CARGO_TOML).exists()
                 {
                     iter.skip_current_dir();
                     discover_non_rust_project(
@@ -276,7 +279,7 @@ pub(super) fn phase1_discover(
                     continue;
                 }
             }
-            if entry.file_type().is_file() && entry.file_name() == "Cargo.toml" {
+            if entry.file_type().is_file() && entry.file_name() == CARGO_TOML {
                 stats.manifests += 1;
                 let manifest_started = std::time::Instant::now();
                 let Ok(cargo_project) = project::from_cargo_toml(entry.path()) else {

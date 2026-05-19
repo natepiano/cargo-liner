@@ -32,7 +32,7 @@ impl App {
         );
     }
     pub(super) fn schedule_startup_project_details(&self) {
-        let tx = self.background.bg_sender();
+        let tx = self.background.background_sender();
         let fetch_context = std::sync::Arc::new(FetchContext {
             client: self.net.http_client(),
         });
@@ -77,7 +77,7 @@ impl App {
     /// crates. This method supplements it by iterating both and fetching
     /// crates.io data for each publishable one.
     pub(super) fn schedule_member_crates_io_fetches(&self) {
-        let tx = self.background.bg_sender();
+        let tx = self.background.background_sender();
         let client = self.net.http_client();
         let mut targets: Vec<(AbsolutePath, String)> = Vec::new();
         for entry in &self.project_list {
@@ -101,7 +101,7 @@ impl App {
         });
     }
     pub(super) fn schedule_git_first_commit_refreshes(&self) {
-        let tx = self.background.bg_sender();
+        let tx = self.background.background_sender();
         let mut projects_by_repo: HashMap<AbsolutePath, Vec<AbsolutePath>> = HashMap::new();
         self.project_list.for_each_leaf_path(|path, _| {
             let abs_path = AbsolutePath::from(path);

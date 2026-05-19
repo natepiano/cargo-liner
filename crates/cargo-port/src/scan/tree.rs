@@ -9,6 +9,7 @@ use toml::Table;
 use toml::Value;
 use walkdir::WalkDir;
 
+use crate::constants::CARGO_TOML;
 use crate::project::AbsolutePath;
 use crate::project::CargoParseResult;
 use crate::project::MemberGroup;
@@ -125,7 +126,7 @@ pub(crate) fn build_tree(items: &[RootItem], inline_dirs: &[String]) -> Vec<Root
 }
 
 fn workspace_member_paths_new(ws_path: &Path, items: &[RootItem]) -> HashSet<AbsolutePath> {
-    let manifest = ws_path.join("Cargo.toml");
+    let manifest = ws_path.join(CARGO_TOML);
     let Some((members, excludes)) = workspace_member_patterns(&manifest) else {
         return items
             .iter()

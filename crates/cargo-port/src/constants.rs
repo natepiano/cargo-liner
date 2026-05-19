@@ -36,9 +36,18 @@ pub(crate) const GH_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const CI_CACHE_DIR: &str = "ci";
 pub(crate) const LINTS_CACHE_DIR: &str = "lint-runs";
 
-// ── Cargo manifest ───────────────────────────────────────────────────
+// ── Cargo / git paths ─────────────────────────────────────────────────
 
+pub(crate) const CARGO_CONFIG: &str = "config";
+pub(crate) const CARGO_CONFIG_TOML: &str = "config.toml";
+pub(crate) const CARGO_LOCK: &str = "Cargo.lock";
 pub(crate) const CARGO_TOML: &str = "Cargo.toml";
+pub(crate) const DOT_CARGO_DIR: &str = ".cargo";
+pub(crate) const GIT_DIR: &str = ".git";
+pub(crate) const GIT_REMOTE_SUFFIX: &str = ".git";
+pub(crate) const RUST_TOOLCHAIN: &str = "rust-toolchain";
+pub(crate) const RUST_TOOLCHAIN_TOML: &str = "rust-toolchain.toml";
+pub(crate) const TARGET_DIR: &str = "target";
 
 // ── Scan constants ────────────────────────────────────────────────────
 

@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::constants::GIT_DIR;
 use crate::project::info::WorktreeHealth;
 use crate::project::paths::AbsolutePath;
 
@@ -53,7 +54,7 @@ pub(crate) fn git_repo_root(project_dir: &Path) -> Option<AbsolutePath> {
     project_dir
         .ancestors()
         .find(|dir| {
-            let git_path = dir.join(".git");
+            let git_path = dir.join(GIT_DIR);
             git_path.is_dir() || git_path.is_file()
         })
         .map(AbsolutePath::from)
@@ -65,7 +66,7 @@ pub(crate) fn git_repo_root(project_dir: &Path) -> Option<AbsolutePath> {
 /// For worktrees, `.git` is a file containing `gitdir: <path>` — this
 /// function reads that file and returns the resolved path.
 pub(crate) fn resolve_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
-    let git_path = repo_root.join(".git");
+    let git_path = repo_root.join(GIT_DIR);
     if git_path.is_dir() {
         return Some(git_path.into());
     }
@@ -97,7 +98,7 @@ pub(crate) fn resolve_common_git_dir(repo_root: &Path) -> Option<AbsolutePath> {
 /// Check if a project directory is a broken worktree — `.git` is a file whose
 /// gitdir target does not exist on disk.
 pub(crate) fn get_worktree_health(project_dir: &Path) -> WorktreeHealth {
-    let git_path = project_dir.join(".git");
+    let git_path = project_dir.join(GIT_DIR);
     if !git_path.is_file() {
         return WorktreeHealth::Normal;
     }
@@ -121,7 +122,7 @@ pub(crate) fn get_worktree_health(project_dir: &Path) -> WorktreeHealth {
 pub(crate) fn get_worktree_status(project_dir: &Path) -> WorktreeStatus {
     let mut dir = project_dir;
     loop {
-        let git_path = dir.join(".git");
+        let git_path = dir.join(GIT_DIR);
         if git_path.is_file() {
             return linked_status_from_gitfile(&git_path, dir);
         }

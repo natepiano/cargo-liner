@@ -22,7 +22,7 @@ impl App {
         let mut stats = PollBackgroundStats::default();
 
         while msg_count < MAX_MSGS_PER_FRAME {
-            let Ok(msg) = self.background.bg_rx().try_recv() else {
+            let Ok(msg) = self.background.background_receiver().try_recv() else {
                 break;
             };
             record_background_msg_kind(&mut stats, &msg);

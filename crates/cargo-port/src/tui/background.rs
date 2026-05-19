@@ -1,7 +1,8 @@
 //! The `Background` subsystem.
 //!
 //! Owns the four mpsc channel pairs plus the watcher sender:
-//! - `bg_tx` / `bg_rx` (replaced wholesale on every rescan — see [`Background::swap_bg_channel`])
+//! - `background_tx` / `background_rx` (replaced wholesale on every rescan — see
+//!   [`Background::swap_background_channel`])
 //! - `ci_fetch_tx` / `ci_fetch_rx`
 //! - `clean_tx` / `clean_rx`
 //! - `example_tx` / `example_rx`
@@ -32,18 +33,18 @@ use crate::watcher::WatcherMsg;
 /// Bundle the four channel pairs plus the watcher sender that
 /// [`Background`] owns. Single argument to [`Background::new`].
 pub struct BackgroundChannels {
-    pub bg:       (Sender<BackgroundMsg>, Receiver<BackgroundMsg>),
-    pub ci_fetch: (Sender<CiFetchMsg>, Receiver<CiFetchMsg>),
-    pub clean:    (Sender<CleanMsg>, Receiver<CleanMsg>),
-    pub example:  (Sender<ExampleMsg>, Receiver<ExampleMsg>),
-    pub watch_tx: Sender<WatcherMsg>,
+    pub background: (Sender<BackgroundMsg>, Receiver<BackgroundMsg>),
+    pub ci_fetch:   (Sender<CiFetchMsg>, Receiver<CiFetchMsg>),
+    pub clean:      (Sender<CleanMsg>, Receiver<CleanMsg>),
+    pub example:    (Sender<ExampleMsg>, Receiver<ExampleMsg>),
+    pub watch_tx:   Sender<WatcherMsg>,
 }
 
 /// Owns every long-lived I/O channel App holds. App holds a single
 /// `background: Background` field.
 pub(super) struct Background {
-    bg_tx:       Sender<BackgroundMsg>,
-    bg_rx:       Receiver<BackgroundMsg>,
+    tx:          Sender<BackgroundMsg>,
+    rx:          Receiver<BackgroundMsg>,
     ci_fetch_tx: Sender<CiFetchMsg>,
     ci_fetch_rx: Receiver<CiFetchMsg>,
     clean_tx:    Sender<CleanMsg>,
@@ -56,15 +57,15 @@ pub(super) struct Background {
 impl Background {
     pub(super) fn new(channels: BackgroundChannels) -> Self {
         let BackgroundChannels {
-            bg: (bg_tx, bg_rx),
+            background: (background_tx, background_rx),
             ci_fetch: (ci_fetch_tx, ci_fetch_rx),
             clean: (clean_tx, clean_rx),
             example: (example_tx, example_rx),
             watch_tx,
         } = channels;
         Self {
-            bg_tx,
-            bg_rx,
+            tx: background_tx,
+            rx: background_rx,
             ci_fetch_tx,
             ci_fetch_rx,
             clean_tx,
@@ -77,7 +78,7 @@ impl Background {
 
     // ── Senders (cloned by spawn paths) ──────────────────────────────
 
-    pub(super) fn bg_sender(&self) -> Sender<BackgroundMsg> { self.bg_tx.clone() }
+    pub(super) fn background_sender(&self) -> Sender<BackgroundMsg> { self.tx.clone() }
 
     pub(super) fn ci_fetch_sender(&self) -> Sender<CiFetchMsg> { self.ci_fetch_tx.clone() }
 
@@ -87,7 +88,7 @@ impl Background {
 
     // ── Receiver access ──────────────────────────────────────────────
 
-    pub(super) const fn bg_rx(&self) -> &Receiver<BackgroundMsg> { &self.bg_rx }
+    pub(super) const fn background_receiver(&self) -> &Receiver<BackgroundMsg> { &self.rx }
 
     pub(super) const fn ci_fetch_rx(&self) -> &Receiver<CiFetchMsg> { &self.ci_fetch_rx }
 
@@ -101,19 +102,19 @@ impl Background {
         self.watch_tx.send(msg)
     }
 
-    /// Replace the bg channel pair wholesale. Called from
-    /// `App::rescan` — the bg channel is rebuilt for each scan run
+    /// Replace the background channel pair wholesale. Called from
+    /// `App::rescan` — the background channel is rebuilt for each scan run
     /// while the other three channel pairs outlive any single
     /// rescan. The asymmetry stays explicit in the API rather than
     /// getting smoothed over (see plan note "Background channel-
     /// rescan caveat").
-    pub(super) fn swap_bg_channel(
+    pub(super) fn swap_background_channel(
         &mut self,
         tx: Sender<BackgroundMsg>,
         rx: Receiver<BackgroundMsg>,
     ) {
-        self.bg_tx = tx;
-        self.bg_rx = rx;
+        self.tx = tx;
+        self.rx = rx;
     }
 
     /// Replace the watcher sender, used by `App::respawn_watcher`
@@ -157,7 +158,7 @@ mod tests {
     fn fresh() -> Background {
         let (watch_tx, _watch_rx) = mpsc::channel();
         Background::new(BackgroundChannels {
-            bg: mpsc::channel(),
+            background: mpsc::channel(),
             ci_fetch: mpsc::channel(),
             clean: mpsc::channel(),
             example: mpsc::channel(),
@@ -167,52 +168,60 @@ mod tests {
 
     #[test]
     fn bg_sender_clone_round_trips_through_rx() {
-        let bg = fresh();
-        let sender = bg.bg_sender();
+        let background = fresh();
+        let sender = background.background_sender();
         sender
             .send(make_msg())
             .expect("send through cloned bg sender");
-        let received = bg.bg_rx().recv().expect("recv on bg_rx");
+        let received = background
+            .background_receiver()
+            .recv()
+            .expect("recv on background_rx");
         assert!(matches!(received, BackgroundMsg::RepoFetchQueued { .. }));
     }
 
     #[test]
     fn swap_bg_channel_routes_to_new_pair_only() {
-        let mut bg = fresh();
-        let original_sender = bg.bg_sender();
+        let mut background = fresh();
+        let original_sender = background.background_sender();
 
         let (new_tx, new_rx) = mpsc::channel();
-        bg.swap_bg_channel(new_tx, new_rx);
+        background.swap_background_channel(new_tx, new_rx);
 
         // Sender cloned before the swap can still send (it's tied to
         // the dropped receiver), but the swapped-in receiver must
         // not see anything from it.
         let _ = original_sender.send(make_msg());
         assert!(
-            bg.bg_rx().try_recv().is_err(),
+            background.background_receiver().try_recv().is_err(),
             "stale sender must not reach the swapped-in rx"
         );
 
         // A fresh send via the new sender DOES reach the new rx.
-        bg.bg_sender()
+        background
+            .background_sender()
             .send(make_msg())
             .expect("send through post-swap bg sender");
-        let received = bg.bg_rx().recv().expect("recv on swapped bg_rx");
+        let received = background
+            .background_receiver()
+            .recv()
+            .expect("recv on swapped background_rx");
         assert!(matches!(received, BackgroundMsg::RepoFetchQueued { .. }));
     }
 
     #[test]
     fn send_watcher_delivers_to_watcher_channel() {
         let (watch_tx, watch_rx) = mpsc::channel();
-        let bg = Background::new(BackgroundChannels {
-            bg: mpsc::channel(),
+        let background = Background::new(BackgroundChannels {
+            background: mpsc::channel(),
             ci_fetch: mpsc::channel(),
             clean: mpsc::channel(),
             example: mpsc::channel(),
             watch_tx,
         });
 
-        bg.send_watcher(WatcherMsg::InitialRegistrationComplete)
+        background
+            .send_watcher(WatcherMsg::InitialRegistrationComplete)
             .expect("send_watcher succeeds");
         let received = watch_rx.recv().expect("recv on watch_rx");
         assert!(matches!(received, WatcherMsg::InitialRegistrationComplete));
@@ -220,10 +229,11 @@ mod tests {
 
     #[test]
     fn replace_watcher_sender_redirects_send_watcher() {
-        let mut bg = fresh();
+        let mut background = fresh();
         let (new_watch_tx, new_watch_rx) = mpsc::channel();
-        bg.replace_watcher_sender(new_watch_tx);
-        bg.send_watcher(WatcherMsg::InitialRegistrationComplete)
+        background.replace_watcher_sender(new_watch_tx);
+        background
+            .send_watcher(WatcherMsg::InitialRegistrationComplete)
             .expect("send_watcher succeeds post-replace");
         let received = new_watch_rx.recv().expect("recv on new watcher rx");
         assert!(matches!(received, WatcherMsg::InitialRegistrationComplete));

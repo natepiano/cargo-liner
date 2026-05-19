@@ -52,6 +52,7 @@ use super::panes::EmptyDescriptionBehavior;
 use super::panes::PaneId;
 use super::settings;
 use crate::ci::CiStatus;
+use crate::constants::TARGET_DIR;
 use crate::project;
 use crate::project::AbsolutePath;
 
@@ -241,7 +242,7 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
             let target = app
                 .scan
                 .resolve_target_dir(project_path)
-                .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join("target")));
+                .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join(TARGET_DIR)));
             let mut lines = vec![project::home_relative_path(target.as_path())];
 
             // Report affected siblings (step 6d): projects that share
@@ -278,7 +279,7 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
                 let target = app
                     .scan
                     .resolve_target_dir(path)
-                    .unwrap_or_else(|| AbsolutePath::from(path.as_path().join("target")));
+                    .unwrap_or_else(|| AbsolutePath::from(path.as_path().join(TARGET_DIR)));
                 if seen_targets.insert(target.clone()) {
                     append_sibling_lines(app, &target, &selection, &mut lines);
                 }

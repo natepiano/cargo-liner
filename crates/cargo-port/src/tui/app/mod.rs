@@ -94,6 +94,7 @@ use super::state::SyncTracker;
 use super::state::Themes;
 use crate::ci::OwnerRepo;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
+use crate::constants::TARGET_DIR;
 use crate::http::HttpClient;
 use crate::lint::LintRuns;
 #[cfg(test)]
@@ -274,8 +275,8 @@ pub(super) struct App {
     /// impl-files reach pane state through this handle.
     pub(super) panes:              Panes,
     /// Background subsystem. Owns the four mpsc channel pairs plus
-    /// `watch_tx`. The `bg_*` pair is replaced wholesale on every
-    /// rescan via [`Background::swap_bg_channel`]; the others outlive
+    /// `watch_tx`. The `background_*` pair is replaced wholesale on every
+    /// rescan via [`Background::swap_background_channel`]; the others outlive
     /// any single rescan.
     pub(super) background:         Background,
     /// Inflight subsystem. Owns the running-paths maps, toast
@@ -359,8 +360,8 @@ impl App {
     /// end-to-end and is visibility-anchored to `tui::app::mod`.
     pub(super) fn new(
         projects: &[RootItem],
-        bg_tx: Sender<BackgroundMsg>,
-        bg_rx: Receiver<BackgroundMsg>,
+        background_tx: Sender<BackgroundMsg>,
+        background_rx: Receiver<BackgroundMsg>,
         startup_settings: StartupSettings,
         http_client: HttpClient,
         scan_started_at: Instant,
@@ -368,8 +369,8 @@ impl App {
     ) -> Result<Self, Error> {
         construct::AppBuilder::new(
             projects,
-            bg_tx,
-            bg_rx,
+            background_tx,
+            background_rx,
             startup_settings,
             http_client,
             scan_started_at,
@@ -474,7 +475,7 @@ impl App {
         let target_dir = self
             .scan
             .resolve_target_dir(project_path)
-            .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join("target")));
+            .unwrap_or_else(|| AbsolutePath::from(project_path.as_path().join(TARGET_DIR)));
         if !target_dir.as_path().exists() {
             let name = project::home_relative_path(project_path.as_path());
             self.show_timed_toast("Already clean", name);
@@ -711,7 +712,7 @@ impl App {
     fn clean_metadata_dispatch(&self) -> MetadataDispatchContext {
         MetadataDispatchContext {
             handle:         self.net.http_client.handle.clone(),
-            tx:             self.background.bg_sender(),
+            tx:             self.background.background_sender(),
             metadata_store: Arc::clone(self.scan.metadata_store()),
             // Use the shared scan-concurrency cap so confirm-triggered
             // refreshes can't monopolize the metadata blocking pool.

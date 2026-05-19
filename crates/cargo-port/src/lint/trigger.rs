@@ -5,6 +5,15 @@ use std::time::Duration;
 use notify::Event;
 use notify::event::EventKind;
 
+use crate::constants::CARGO_CONFIG;
+use crate::constants::CARGO_CONFIG_TOML;
+use crate::constants::CARGO_LOCK;
+use crate::constants::CARGO_TOML;
+use crate::constants::DOT_CARGO_DIR;
+use crate::constants::GIT_DIR;
+use crate::constants::RUST_TOOLCHAIN;
+use crate::constants::RUST_TOOLCHAIN_TOML;
+use crate::constants::TARGET_DIR;
 use crate::project::AbsolutePath;
 
 const LINT_DEBOUNCE: Duration = Duration::from_millis(750);
@@ -77,7 +86,7 @@ pub(crate) fn classify_cargo_metadata_event_path(
     }
     if path.components().any(|component| {
         let part = component.as_os_str();
-        part == "target" || part == ".git"
+        part == TARGET_DIR || part == GIT_DIR
     }) {
         return None;
     }
@@ -89,15 +98,15 @@ pub(crate) fn classify_cargo_metadata_event_path(
 pub(crate) fn classify_cargo_metadata_basename(path: &Path) -> Option<CargoMetadataTriggerKind> {
     let file_name = path.file_name().and_then(|name| name.to_str())?;
     match file_name {
-        "Cargo.toml" => Some(CargoMetadataTriggerKind::Manifest),
-        "Cargo.lock" => Some(CargoMetadataTriggerKind::Lockfile),
-        "rust-toolchain" | "rust-toolchain.toml" => Some(CargoMetadataTriggerKind::Toolchain),
-        "config" | "config.toml" => {
+        CARGO_TOML => Some(CargoMetadataTriggerKind::Manifest),
+        CARGO_LOCK => Some(CargoMetadataTriggerKind::Lockfile),
+        RUST_TOOLCHAIN | RUST_TOOLCHAIN_TOML => Some(CargoMetadataTriggerKind::Toolchain),
+        CARGO_CONFIG | CARGO_CONFIG_TOML => {
             let parent_is_dot_cargo = path
                 .parent()
                 .and_then(|parent| parent.file_name())
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name == ".cargo");
+                .is_some_and(|name| name == DOT_CARGO_DIR);
             parent_is_dot_cargo.then_some(CargoMetadataTriggerKind::CargoConfig)
         },
         _ => None,
@@ -122,15 +131,15 @@ pub(crate) fn classify_event_path(
     }
     if path.components().any(|component| {
         let part = component.as_os_str();
-        part == "target" || part == ".git"
+        part == TARGET_DIR || part == GIT_DIR
     }) {
         return None;
     }
 
     let file_name = path.file_name().and_then(|name| name.to_str())?;
-    let trigger = if file_name == "Cargo.toml" {
+    let trigger = if file_name == CARGO_TOML {
         LintTriggerKind::Manifest
-    } else if file_name == "Cargo.lock" {
+    } else if file_name == CARGO_LOCK {
         LintTriggerKind::Lockfile
     } else if path.extension().is_some_and(|ext| ext == "rs") {
         LintTriggerKind::RustSource

@@ -82,7 +82,7 @@ impl App {
             self.net.http_client(),
             self.scan.metadata_store_handle(),
         );
-        self.background.swap_bg_channel(tx, rx);
+        self.background.swap_background_channel(tx, rx);
         self.respawn_watcher();
         let current_config = self.config.current().clone();
         self.refresh_lint_runtime_from_config(&current_config);

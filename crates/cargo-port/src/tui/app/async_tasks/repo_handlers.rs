@@ -40,7 +40,7 @@ impl App {
             return;
         }
 
-        let tx = self.background.bg_sender();
+        let tx = self.background.background_sender();
         let client = self.net.http_client();
         let repo_cache = self.net.github.fetch_cache.clone();
         let path: AbsolutePath = AbsolutePath::from(path);

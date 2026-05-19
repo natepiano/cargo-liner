@@ -36,6 +36,7 @@ use crate::config::CargoPortConfig;
 use crate::config::DiscoveryLint;
 use crate::config::LintCommandConfig;
 use crate::config::LintConfig;
+use crate::constants::CARGO_TOML;
 use crate::constants::LINTS_HISTORY_JSONL;
 use crate::constants::LINTS_LATEST_JSON;
 use crate::project::AbsolutePath;
@@ -124,7 +125,7 @@ struct ProjectWorker {
     handle:     JoinHandle<()>,
 }
 
-pub fn spawn(config: &CargoPortConfig, bg_tx: Sender<BackgroundMsg>) -> SpawnResult {
+pub fn spawn(config: &CargoPortConfig, background_tx: Sender<BackgroundMsg>) -> SpawnResult {
     if !config.lint.enabled {
         return SpawnResult {
             handle:  None,
@@ -136,7 +137,7 @@ pub fn spawn(config: &CargoPortConfig, bg_tx: Sender<BackgroundMsg>) -> SpawnRes
     let cache_size_bytes = config.lint.cache_size_bytes().unwrap_or(None);
     let lint = config.lint.clone();
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || supervisor_loop(rx, cache_root, lint, cache_size_bytes, bg_tx));
+    thread::spawn(move || supervisor_loop(rx, cache_root, lint, cache_size_bytes, background_tx));
     SpawnResult {
         handle:  Some(RuntimeHandle { tx }),
         warning: None,
@@ -152,7 +153,7 @@ fn supervisor_loop(
     cache_root: AbsolutePath,
     lint: LintConfig,
     cache_size_bytes: Option<u64>,
-    bg_tx: Sender<BackgroundMsg>,
+    background_tx: Sender<BackgroundMsg>,
 ) {
     let mut workers: HashMap<AbsolutePath, ProjectWorker> = HashMap::new();
     // Lazy hydration: the cache starts empty and `cached_status_for_project`
@@ -176,8 +177,8 @@ fn supervisor_loop(
         match rx.recv() {
             Ok(SupervisorMsg::SyncProjects { projects }) => {
                 let desired = desired_projects(&lint, projects);
-                emit_current_statuses(&desired, &status_cache, &cache_root, &bg_tx);
-                reconcile_workers(&mut workers, desired, &worker_config, &bg_tx);
+                emit_current_statuses(&desired, &status_cache, &cache_root, &background_tx);
+                reconcile_workers(&mut workers, desired, &worker_config, &background_tx);
             },
             Ok(SupervisorMsg::RegisterProject { project }) => {
                 let abs_path = project.abs_path.clone();
@@ -187,11 +188,11 @@ fn supervisor_loop(
                             project.project_label.clone(),
                             abs_path.clone(),
                             &worker_config,
-                            bg_tx.clone(),
+                            background_tx.clone(),
                         )
                     });
                 }
-                let _ = bg_tx.send(BackgroundMsg::LintStartupStatus {
+                let _ = background_tx.send(BackgroundMsg::LintStartupStatus {
                     path:   abs_path.clone(),
                     status: cached_status_for_project(&status_cache, &cache_root, &abs_path),
                 });
@@ -199,7 +200,7 @@ fn supervisor_loop(
             Ok(SupervisorMsg::UnregisterProject { abs_path }) => {
                 if let Some(worker) = workers.remove(&abs_path) {
                     stop_worker(worker);
-                    let _ = bg_tx.send(BackgroundMsg::LintStatus {
+                    let _ = background_tx.send(BackgroundMsg::LintStatus {
                         path:   abs_path,
                         status: LintStatus::NoLog,
                     });
@@ -224,10 +225,10 @@ fn emit_current_statuses(
     desired: &HashMap<AbsolutePath, RegisterProjectRequest>,
     status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
     cache_root: &Path,
-    bg_tx: &Sender<BackgroundMsg>,
+    background_tx: &Sender<BackgroundMsg>,
 ) {
     for request in desired.values() {
-        let _ = bg_tx.send(BackgroundMsg::LintStartupStatus {
+        let _ = background_tx.send(BackgroundMsg::LintStartupStatus {
             path:   request.abs_path.clone(),
             status: cached_status_for_project(status_cache, cache_root, &request.abs_path),
         });
@@ -294,7 +295,7 @@ fn reconcile_workers(
     workers: &mut HashMap<AbsolutePath, ProjectWorker>,
     desired: HashMap<AbsolutePath, RegisterProjectRequest>,
     config: &WorkerConfig,
-    bg_tx: &Sender<BackgroundMsg>,
+    background_tx: &Sender<BackgroundMsg>,
 ) {
     let stale: Vec<AbsolutePath> = workers
         .keys()
@@ -304,7 +305,7 @@ fn reconcile_workers(
     for path in stale {
         if let Some(worker) = workers.remove(&path) {
             stop_worker(worker);
-            let _ = bg_tx.send(BackgroundMsg::LintStatus {
+            let _ = background_tx.send(BackgroundMsg::LintStatus {
                 path,
                 status: LintStatus::NoLog,
             });
@@ -316,7 +317,7 @@ fn reconcile_workers(
                 request.project_label,
                 request.abs_path,
                 config,
-                bg_tx.clone(),
+                background_tx.clone(),
             )
         });
     }
@@ -338,7 +339,7 @@ fn spawn_project_worker(
     project_label: String,
     project_root: AbsolutePath,
     config: &WorkerConfig,
-    bg_tx: Sender<BackgroundMsg>,
+    background_tx: Sender<BackgroundMsg>,
 ) -> ProjectWorker {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::clone(&stop);
@@ -400,7 +401,7 @@ fn spawn_project_worker(
                             cache_size_bytes,
                         },
                         &status_cache,
-                        &bg_tx,
+                        &background_tx,
                         &child_slot,
                     );
                     tracing::info!(
@@ -422,7 +423,7 @@ fn spawn_project_worker(
 }
 
 fn should_watch_project(lint: &LintConfig, request: &RegisterProjectRequest) -> bool {
-    if !request.is_rust || !request.abs_path.join("Cargo.toml").is_file() {
+    if !request.is_rust || !request.abs_path.join(CARGO_TOML).is_file() {
         return false;
     }
     if !matches_prefixes(
@@ -465,7 +466,7 @@ fn matches_prefixes(
 }
 
 fn project_still_runnable(project_root: &Path) -> bool {
-    project_root.is_dir() && project_root.join("Cargo.toml").is_file()
+    project_root.is_dir() && project_root.join(CARGO_TOML).is_file()
 }
 
 struct CommandExecution {
@@ -479,7 +480,7 @@ pub fn run_commands_for_project(
     project_label: &str,
     config: &RunCommandsConfig<'_>,
     status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
-    bg_tx: &Sender<BackgroundMsg>,
+    background_tx: &Sender<BackgroundMsg>,
     child_slot: &ChildSlot,
 ) -> io::Result<()> {
     if !project_still_runnable(project_root) {
@@ -530,7 +531,7 @@ pub fn run_commands_for_project(
         status_cache,
         project_root,
         status::read_status_under(cache_root, project_root),
-        bg_tx,
+        background_tx,
     );
 
     let result = execute_commands(
@@ -543,7 +544,7 @@ pub fn run_commands_for_project(
     )?;
     if matches!(result, CommandsResult::ProjectRemoved) {
         let _ = read_write::clear_latest_under(cache_root, project_root);
-        publish_status(status_cache, project_root, LintStatus::NoLog, bg_tx);
+        publish_status(status_cache, project_root, LintStatus::NoLog, background_tx);
         return Ok(());
     }
 
@@ -559,7 +560,7 @@ pub fn run_commands_for_project(
     let prune_stats =
         history::append_history_under(cache_root, project_root, &run, cache_size_bytes)?;
     if prune_stats.runs_evicted > 0 {
-        let _ = bg_tx.send(BackgroundMsg::LintCachePruned {
+        let _ = background_tx.send(BackgroundMsg::LintCachePruned {
             runs_evicted:    prune_stats.runs_evicted,
             bytes_reclaimed: prune_stats.bytes_reclaimed,
         });
@@ -568,7 +569,7 @@ pub fn run_commands_for_project(
         status_cache,
         project_root,
         status::read_status_under(cache_root, project_root),
-        bg_tx,
+        background_tx,
     );
     Ok(())
 }
@@ -587,7 +588,7 @@ fn execute_commands(
     run: &mut LintRun,
     child_slot: &ChildSlot,
 ) -> io::Result<CommandsResult> {
-    let manifest_path = project_root.join("Cargo.toml");
+    let manifest_path = project_root.join(CARGO_TOML);
     let mut failed = false;
     for (index, command) in commands.iter().enumerate() {
         if !project_still_runnable(project_root) {
@@ -638,7 +639,7 @@ fn publish_status(
     status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
     project_root: &Path,
     status: LintStatus,
-    bg_tx: &Sender<BackgroundMsg>,
+    background_tx: &Sender<BackgroundMsg>,
 ) {
     if let Ok(mut statuses) = status_cache.lock() {
         let key = paths::project_key(project_root);
@@ -648,7 +649,7 @@ fn publish_status(
             statuses.insert(key, status.clone());
         }
     }
-    let _ = bg_tx.send(BackgroundMsg::LintStatus {
+    let _ = background_tx.send(BackgroundMsg::LintStatus {
         path: AbsolutePath::from(project_root),
         status,
     });
@@ -1032,8 +1033,8 @@ mod tests {
             command: "printf 'lint ok\\n'".to_string(),
         }];
 
-        let (bg_tx, bg_rx) = mpsc::channel();
-        let spawn = spawn(&cfg, bg_tx);
+        let (background_tx, background_rx) = mpsc::channel();
+        let spawn = spawn(&cfg, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
         let request = request("~/rust/demo", project_dir.path(), true);
         runtime.sync_projects(vec![request.clone()]);
@@ -1049,7 +1050,7 @@ mod tests {
         let mut saw_passed = false;
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            match bg_rx.recv_timeout(remaining) {
+            match background_rx.recv_timeout(remaining) {
                 Ok(BackgroundMsg::LintStatus { path, status })
                     if path.as_path() == project_dir.path()
                         && matches!(status, LintStatus::Passed(_)) =>
@@ -1106,7 +1107,7 @@ mod tests {
         let mut workers = HashMap::new();
         let (worker, exited) = dummy_worker();
         workers.insert(path, worker);
-        let (bg_tx, bg_rx) = mpsc::channel();
+        let (background_tx, background_rx) = mpsc::channel();
         let config = WorkerConfig {
             cache_root:       "/tmp/cache".into(),
             commands:         Vec::new(),
@@ -1115,12 +1116,12 @@ mod tests {
             status_cache:     Arc::new(Mutex::new(HashMap::new())),
         };
 
-        reconcile_workers(&mut workers, HashMap::new(), &config, &bg_tx);
+        reconcile_workers(&mut workers, HashMap::new(), &config, &background_tx);
 
         assert!(workers.is_empty());
         assert!(exited.load(Ordering::Relaxed));
         assert!(matches!(
-            bg_rx.try_recv(),
+            background_rx.try_recv(),
             Ok(BackgroundMsg::LintStatus {
                 status: LintStatus::NoLog,
                 ..
@@ -1140,7 +1141,7 @@ mod tests {
         let desired = HashMap::from([(AbsolutePath::from(project_dir.path()), request)]);
 
         let mut workers = HashMap::new();
-        let (bg_tx, _bg_rx) = mpsc::channel();
+        let (background_tx, _) = mpsc::channel();
         let config = WorkerConfig {
             cache_root:       "/tmp/cache".into(),
             commands:         Vec::new(),
@@ -1148,7 +1149,7 @@ mod tests {
             on_discovery:     DiscoveryLint::Immediate,
             status_cache:     Arc::new(Mutex::new(HashMap::new())),
         };
-        reconcile_workers(&mut workers, desired, &config, &bg_tx);
+        reconcile_workers(&mut workers, desired, &config, &background_tx);
 
         assert_eq!(workers.len(), 1);
         for (_, worker) in workers.drain() {

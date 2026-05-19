@@ -138,14 +138,14 @@ pub fn run() -> ExitCode {
     tracing::info!(kind = "initial", run = 1, "scan_start");
     let scan_dirs = scan::resolve_include_dirs(&cfg.tui.include_dirs);
     let metadata_store = Arc::new(Mutex::new(WorkspaceMetadataStore::new()));
-    let (bg_tx, bg_rx) = scan::spawn_streaming_scan(
+    let (background_tx, background_rx) = scan::spawn_streaming_scan(
         scan_dirs,
         &cfg.tui.inline_dirs,
         cfg.tui.include_non_rust,
         http_client.clone(),
         Arc::clone(&metadata_store),
     );
-    themes::spawn_appearance_poller(rt.handle(), bg_tx.clone());
+    themes::spawn_appearance_poller(rt.handle(), background_tx.clone());
     let projects: Vec<RootItem> = Vec::new();
 
     let original_hook = std::panic::take_hook();
@@ -170,8 +170,8 @@ pub fn run() -> ExitCode {
 
     let mut app = match App::new(
         &projects,
-        bg_tx,
-        bg_rx,
+        background_tx,
+        background_rx,
         startup_settings,
         http_client,
         scan_started_at,
@@ -565,7 +565,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
     };
 
     let tx = app.background.ci_fetch_sender();
-    let bg_tx = app.background.bg_sender();
+    let background_tx = app.background.background_sender();
     let client = app.net.http_client();
     let project_path = fetch.project_path.clone();
     let ci_run_count = fetch.ci_run_count;
@@ -599,7 +599,7 @@ fn spawn_ci_fetch(app: &App, fetch: &PendingCiFetch) {
                 (result, signal)
             },
         };
-        scan::emit_service_signal(&bg_tx, network);
+        scan::emit_service_signal(&background_tx, network);
         let _ = tx.send(CiFetchMsg::Complete {
             path: project_path,
             result,
@@ -623,7 +623,7 @@ fn save_last_selected(project_path: &AbsolutePath) {
 
 /// Spawn a background thread to fetch details for a single project ahead of the main scan.
 pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name: Option<&String>) {
-    let tx = app.background.bg_sender();
+    let tx = app.background.background_sender();
     let client = app.net.http_client();
     let abs = AbsolutePath::from(abs_path);
     let project_name = name.cloned();

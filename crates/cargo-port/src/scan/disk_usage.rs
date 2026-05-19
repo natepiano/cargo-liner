@@ -6,6 +6,7 @@ use walkdir::WalkDir;
 
 use super::BackgroundMsg;
 use super::cargo_metadata::StreamingScanContext;
+use crate::constants::TARGET_DIR;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 
@@ -122,7 +123,7 @@ impl DirSizes {
 }
 
 fn file_lives_under_target(path: &Path) -> bool {
-    path.components().any(|c| c.as_os_str() == "target")
+    path.components().any(|c| c.as_os_str() == TARGET_DIR)
 }
 
 fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {

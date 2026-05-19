@@ -9,6 +9,7 @@ use super::command;
 use super::discovery;
 use crate::config;
 use crate::config::CargoPortConfig;
+use crate::constants::GIT_REMOTE_SUFFIX;
 
 /// Whether a project is a plain clone or a fork (has an "upstream" remote).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -560,7 +561,7 @@ fn parse_remote_url(raw: &str) -> (Option<String>, Option<String>, Option<String
     if let Some(after_at) = raw.strip_prefix("git@")
         && let Some((host, path)) = after_at.split_once(':')
     {
-        let path = path.strip_suffix(".git").unwrap_or(path);
+        let path = path.strip_suffix(GIT_REMOTE_SUFFIX).unwrap_or(path);
         let mut parts = path.splitn(2, '/');
         let owner = parts.next().map(String::from);
         let repo = parts.next().map(String::from);
@@ -569,7 +570,7 @@ fn parse_remote_url(raw: &str) -> (Option<String>, Option<String>, Option<String
     }
 
     if raw.starts_with("https://") || raw.starts_with("http://") {
-        let clean = raw.strip_suffix(".git").unwrap_or(raw);
+        let clean = raw.strip_suffix(GIT_REMOTE_SUFFIX).unwrap_or(raw);
         let mut segments = clean.split('/').skip(3);
         let owner = segments.next().map(String::from);
         let repo = segments.next().map(String::from);

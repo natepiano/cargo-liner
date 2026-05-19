@@ -6,6 +6,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::config::NonRustInclusion;
+use crate::constants::CARGO_TOML;
+use crate::constants::GIT_DIR;
 use crate::constants::NEW_PROJECT_DEBOUNCE;
 use crate::enrichment;
 use crate::http::HttpClient;
@@ -19,10 +21,13 @@ use crate::scan::BackgroundMsg;
 use crate::scan::FetchContext;
 use crate::scan::ProjectDetailRequest;
 
-pub(super) fn spawn_project_refresh(bg_tx: Sender<BackgroundMsg>, project_root: AbsolutePath) {
+pub(super) fn spawn_project_refresh(
+    background_tx: Sender<BackgroundMsg>,
+    project_root: AbsolutePath,
+) {
     rayon::spawn(move || {
         let Some(item) = scan::discover_project_item(&project_root).or_else(|| {
-            let cargo_toml = project_root.join("Cargo.toml");
+            let cargo_toml = project_root.join(CARGO_TOML);
             project::from_cargo_toml(&cargo_toml)
                 .ok()
                 .map(scan::cargo_project_to_item)
@@ -31,8 +36,8 @@ pub(super) fn spawn_project_refresh(bg_tx: Sender<BackgroundMsg>, project_root: 
         };
         let disk_entries = scan::disk_usage_batch_for_item(&item);
         let root_path = AbsolutePath::from(item.path().to_path_buf());
-        let _ = bg_tx.send(BackgroundMsg::ProjectRefreshed { item });
-        let _ = bg_tx.send(BackgroundMsg::DiskUsageBatch {
+        let _ = background_tx.send(BackgroundMsg::ProjectRefreshed { item });
+        let _ = background_tx.send(BackgroundMsg::DiskUsageBatch {
             root_path,
             entries: disk_entries,
         });
@@ -40,7 +45,7 @@ pub(super) fn spawn_project_refresh(bg_tx: Sender<BackgroundMsg>, project_root: 
 }
 
 pub(super) fn spawn_project_refresh_after(
-    bg_tx: Sender<BackgroundMsg>,
+    background_tx: Sender<BackgroundMsg>,
     project_root: AbsolutePath,
     delay: Duration,
 ) {
@@ -48,11 +53,11 @@ pub(super) fn spawn_project_refresh_after(
         if !delay.is_zero() {
             std::thread::sleep(delay);
         }
-        spawn_project_refresh(bg_tx, project_root);
+        spawn_project_refresh(background_tx, project_root);
     });
 }
 pub(super) fn probe_new_projects(
-    bg_tx: &Sender<BackgroundMsg>,
+    background_tx: &Sender<BackgroundMsg>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
     discovered: &mut HashSet<AbsolutePath>,
     _ci_run_count: u32,
@@ -73,7 +78,7 @@ pub(super) fn probe_new_projects(
             // Directory was removed — send a zero-byte update so the app
             // can mark it as deleted if it was a tracked project.
             discovered.remove(&dir);
-            let _ = bg_tx.send(BackgroundMsg::DiskUsage {
+            let _ = background_tx.send(BackgroundMsg::DiskUsage {
                 path:  dir,
                 bytes: 0,
             });
@@ -94,23 +99,27 @@ pub(super) fn probe_new_projects(
                 GitRepoPresence::OutsideRepo
             };
             let disk_entries = scan::disk_usage_batch_for_item(&item);
-            let _ = bg_tx.send(BackgroundMsg::ProjectDiscovered { item });
-            let _ = bg_tx.send(BackgroundMsg::DiskUsageBatch {
+            let _ = background_tx.send(BackgroundMsg::ProjectDiscovered { item });
+            let _ = background_tx.send(BackgroundMsg::DiskUsageBatch {
                 root_path: abs_path.clone(),
                 entries:   disk_entries,
             });
-            if abs_path.join("Cargo.toml").exists() {
+            if abs_path.join(CARGO_TOML).exists() {
                 // Newly created Rust worktrees can be discovered before all
                 // nested workspace members are visible. A delayed normalized
                 // refresh repairs that initial partial state once the checkout
                 // settles.
-                spawn_project_refresh_after(bg_tx.clone(), abs_path.clone(), NEW_PROJECT_DEBOUNCE);
+                spawn_project_refresh_after(
+                    background_tx.clone(),
+                    abs_path.clone(),
+                    NEW_PROJECT_DEBOUNCE,
+                );
             }
-            let tx = bg_tx.clone();
+            let tx = background_tx.clone();
             let fetch_context = FetchContext {
                 client: client.clone(),
             };
-            enrichment::spawn_language_scan(abs_path.clone(), bg_tx.clone());
+            enrichment::spawn_language_scan(abs_path.clone(), background_tx.clone());
             rayon::spawn(move || {
                 let request = ProjectDetailRequest {
                     tx: &tx,
@@ -143,7 +152,7 @@ pub(super) fn project_level_dir(
     let mut marker_candidate: Option<AbsolutePath> = None;
     loop {
         let parent = path.parent()?;
-        if path.join("Cargo.toml").exists() || path.join(".git").exists() {
+        if path.join(CARGO_TOML).exists() || path.join(GIT_DIR).exists() {
             marker_candidate = Some(AbsolutePath::from(path.clone()));
         }
         if watch_roots.iter().any(|r| parent == r.as_path()) || project_parents.contains(parent) {
@@ -163,11 +172,11 @@ pub(super) fn project_level_dir(
 /// Check if a directory is a project (has `Cargo.toml`, or `.git` when
 /// `include_non_rust` is enabled).
 pub(super) fn probe_project(dir: &Path, non_rust: NonRustInclusion) -> Option<RootItem> {
-    let cargo_toml = dir.join("Cargo.toml");
+    let cargo_toml = dir.join(CARGO_TOML);
     if cargo_toml.exists() {
         return scan::discover_project_item(dir);
     }
-    if non_rust.includes_non_rust() && dir.join(".git").is_dir() {
+    if non_rust.includes_non_rust() && dir.join(GIT_DIR).is_dir() {
         return Some(NonRust(project::from_git_dir(dir)));
     }
     None

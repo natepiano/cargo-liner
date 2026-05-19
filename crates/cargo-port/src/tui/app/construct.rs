@@ -72,8 +72,8 @@ use crate::watcher::WatcherMsg;
 /// reference are cloned at the entry point so the builder can outlive
 /// its caller's stack frame).
 pub(super) struct Inputs {
-    bg_tx:           Sender<BackgroundMsg>,
-    bg_rx:           Receiver<BackgroundMsg>,
+    background_tx:   Sender<BackgroundMsg>,
+    background_rx:   Receiver<BackgroundMsg>,
     cfg:             CargoPortConfig,
     http_client:     HttpClient,
     scan_started_at: Instant,
@@ -114,8 +114,8 @@ pub(super) struct AppBuilder<S> {
 impl AppBuilder<Inputs> {
     pub(super) fn new(
         projects: &[RootItem],
-        bg_tx: Sender<BackgroundMsg>,
-        bg_rx: Receiver<BackgroundMsg>,
+        background_tx: Sender<BackgroundMsg>,
+        background_rx: Receiver<BackgroundMsg>,
         startup_settings: StartupSettings,
         http_client: HttpClient,
         scan_started_at: Instant,
@@ -123,8 +123,8 @@ impl AppBuilder<Inputs> {
     ) -> Self {
         Self {
             state: Inputs {
-                bg_tx,
-                bg_rx,
+                background_tx,
+                background_rx,
                 cfg: startup_settings.config,
                 http_client,
                 scan_started_at,
@@ -169,11 +169,11 @@ impl AppBuilder<Channeled> {
         tui_pane::install_theme_state(tui_pane::ThemeState::with_registry(registry, initial_theme));
         tui_pane::set_focused_pane_tint(inputs.cfg.appearance.focused_pane_tint);
         let config_path = config::config_path();
-        let lint_spawn = lint::spawn(&inputs.cfg, inputs.bg_tx.clone());
+        let lint_spawn = lint::spawn(&inputs.cfg, inputs.background_tx.clone());
         let watch_roots = scan::resolve_include_dirs(&inputs.cfg.tui.include_dirs);
         let watch_tx = watcher::spawn_watcher(
             &watch_roots,
-            inputs.bg_tx.clone(),
+            inputs.background_tx.clone(),
             inputs.cfg.tui.ci_run_count,
             inputs.cfg.tui.include_non_rust,
             inputs.http_client.clone(),
@@ -204,11 +204,11 @@ impl AppBuilder<Started> {
         let mut projects = started.projects;
         projects.init_runtime_state(inputs.cfg.lint.enabled);
         let background = Background::new(BackgroundChannels {
-            bg:       (inputs.bg_tx, inputs.bg_rx),
-            ci_fetch: (channeled.ci_fetch_tx, channeled.ci_fetch_rx),
-            clean:    (channeled.clean_tx, channeled.clean_rx),
-            example:  (channeled.example_tx, channeled.example_rx),
-            watch_tx: started.watch_tx,
+            background: (inputs.background_tx, inputs.background_rx),
+            ci_fetch:   (channeled.ci_fetch_tx, channeled.ci_fetch_rx),
+            clean:      (channeled.clean_tx, channeled.clean_rx),
+            example:    (channeled.example_tx, channeled.example_rx),
+            watch_tx:   started.watch_tx,
         });
         let lint = Lint::new(started.lint_runtime);
         let inflight = Inflight::new();

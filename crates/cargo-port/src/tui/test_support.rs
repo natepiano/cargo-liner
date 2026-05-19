@@ -46,7 +46,7 @@ pub(super) fn make_app_with_config(projects: &[RootItem], config: &CargoPortConf
     // test the same keymap regardless of the host machine.
     let keymap_path = test_keymap_path();
     let _keymap_guard = keymap::override_keymap_path_for_test_if_absent(keymap_path);
-    let (bg_tx, bg_rx) = mpsc::channel();
+    let (background_tx, background_rx) = mpsc::channel();
     let metadata_store = Arc::new(Mutex::new(WorkspaceMetadataStore::new()));
     let settings_spec = SettingsFileSpec::new(APP_NAME, CONFIG_FILE).with_path(&config_path);
     let mut loaded_settings =
@@ -68,8 +68,8 @@ pub(super) fn make_app_with_config(projects: &[RootItem], config: &CargoPortConf
     };
     let mut app = App::new(
         projects,
-        bg_tx,
-        bg_rx,
+        background_tx,
+        background_rx,
         startup_settings,
         test_http_client(),
         Instant::now(),

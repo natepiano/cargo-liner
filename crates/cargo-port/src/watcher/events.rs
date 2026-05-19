@@ -22,7 +22,7 @@ use crate::scan::BackgroundMsg;
 use crate::scan::MetadataDispatchContext;
 
 pub(super) struct WatcherBackgroundSinks<'a> {
-    pub(super) bg_tx:             &'a Sender<BackgroundMsg>,
+    pub(super) background_tx:     &'a Sender<BackgroundMsg>,
     pub(super) lint_runtime:      Option<&'a RuntimeHandle>,
     pub(super) metadata_dispatch: Option<&'a MetadataDispatchContext>,
 }
@@ -52,7 +52,7 @@ pub(super) fn process_notify_events(
                 project_parents: &state.project_parents,
                 discovered: &state.discovered,
             },
-            bg_tx:             sinks.bg_tx,
+            background_tx:     sinks.background_tx,
             lint_runtime:      sinks.lint_runtime,
             metadata_dispatch: sinks.metadata_dispatch,
         };
@@ -86,7 +86,7 @@ pub(super) fn process_notify_events(
                 project_parents: &state.project_parents,
                 discovered: &state.discovered,
             },
-            bg_tx:             sinks.bg_tx,
+            background_tx:     sinks.background_tx,
             lint_runtime:      sinks.lint_runtime,
             metadata_dispatch: sinks.metadata_dispatch,
         };
@@ -126,7 +126,7 @@ pub(super) fn replay_buffered_events(
                 event_path,
                 Some(event),
                 &ctx.event,
-                ctx.bg_tx,
+                ctx.background_tx,
                 ctx.lint_runtime,
                 ctx.metadata_dispatch,
                 pending_disk,
@@ -162,7 +162,7 @@ pub(super) struct EventContext<'a> {
 
 pub(super) struct WatcherDispatchContext<'a> {
     pub(super) event:             EventContext<'a>,
-    pub(super) bg_tx:             &'a Sender<BackgroundMsg>,
+    pub(super) background_tx:     &'a Sender<BackgroundMsg>,
     pub(super) lint_runtime:      Option<&'a RuntimeHandle>,
     /// `None` in test harnesses that do not provide a tokio runtime;
     /// disables the metadata refresh branch rather than panicking.
@@ -177,7 +177,7 @@ pub(super) fn handle_notify_event(
     event_path: &Path,
     event: Option<&Event>,
     ctx: &EventContext<'_>,
-    bg_tx: &Sender<BackgroundMsg>,
+    background_tx: &Sender<BackgroundMsg>,
     lint_runtime: Option<&RuntimeHandle>,
     metadata_dispatch: Option<&MetadataDispatchContext>,
     pending_disk: &mut HashMap<String, WatchState>,
@@ -200,7 +200,7 @@ pub(super) fn handle_notify_event(
                 event_path = %event_path.display(),
                 "watcher_fast_git_event"
             );
-            refresh::emit_root_git_info_refresh(bg_tx, entry);
+            refresh::emit_root_git_info_refresh(background_tx, entry);
             refresh::enqueue_git_refresh(pending_git, refresh_key, now, false, "fast_git");
         }
     }
@@ -238,7 +238,7 @@ pub(super) fn handle_notify_event(
         if entry.is_alive()
             && refresh::is_target_metadata_event(event_path, entry.abs_path.as_path())
         {
-            probe::spawn_project_refresh(bg_tx.clone(), entry.abs_path.clone());
+            probe::spawn_project_refresh(background_tx.clone(), entry.abs_path.clone());
         }
         if refresh::is_internal_git_path(event_path, entry) {
             if let Some(refresh_key) = refresh::git_refresh_key(entry)
@@ -289,7 +289,7 @@ pub(super) fn handle_notify_event(
 pub(super) fn handle_event(
     event_path: &Path,
     ctx: &EventContext<'_>,
-    bg_tx: &Sender<BackgroundMsg>,
+    background_tx: &Sender<BackgroundMsg>,
     pending_disk: &mut HashMap<String, WatchState>,
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
     pending_new: &mut HashMap<AbsolutePath, Instant>,
@@ -300,7 +300,7 @@ pub(super) fn handle_event(
         event_path,
         None,
         ctx,
-        bg_tx,
+        background_tx,
         None,
         None,
         pending_disk,

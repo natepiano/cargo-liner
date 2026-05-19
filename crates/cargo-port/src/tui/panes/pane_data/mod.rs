@@ -18,6 +18,7 @@ use crate::ci;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::constants::GIT_CLONE;
+use crate::constants::GIT_DIR;
 use crate::constants::GIT_FORK;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::http::RateLimitQuota;
@@ -1151,7 +1152,7 @@ fn format_push_annotation(push: &PushState) -> Option<String> {
 fn shorten_remote_url(url: &str, default_host: &str) -> String {
     let stripped = url.strip_prefix(default_host).unwrap_or(url);
     stripped
-        .strip_suffix(".git")
+        .strip_suffix(GIT_DIR)
         .unwrap_or(stripped)
         .to_string()
 }

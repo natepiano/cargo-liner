@@ -18,6 +18,13 @@ use cargo_metadata::TargetKind;
 use cargo_metadata::semver::Version;
 use sha2::Digest as _;
 
+use crate::constants::CARGO_CONFIG;
+use crate::constants::CARGO_CONFIG_TOML;
+use crate::constants::CARGO_LOCK;
+use crate::constants::CARGO_TOML;
+use crate::constants::DOT_CARGO_DIR;
+use crate::constants::RUST_TOOLCHAIN;
+use crate::constants::RUST_TOOLCHAIN_TOML;
 use crate::project::AbsolutePath;
 
 /// Process-wide cache of `cargo metadata` results, keyed by workspace root.
@@ -79,7 +86,7 @@ impl WorkspaceMetadataStore {
     pub fn package_for_path(&self, path: &AbsolutePath) -> Option<&PackageRecord> {
         let root = self.containing_workspace_root(path)?;
         let snap = self.by_root.get(root)?;
-        let expected_manifest = path.as_path().join("Cargo.toml");
+        let expected_manifest = path.as_path().join(CARGO_TOML);
         snap.packages
             .values()
             .find(|pkg| pkg.manifest_path.as_path() == expected_manifest)
@@ -250,8 +257,8 @@ impl ManifestFingerprint {
     /// `None → Some` transition on any config slot is a real change and
     /// invalidates the cached metadata even though no tracked-file edit occurred.
     pub fn capture(workspace_root: &Path) -> io::Result<Self> {
-        let manifest = FileStamp::from_path(&workspace_root.join("Cargo.toml"))?;
-        let lockfile = optional_stamp(&workspace_root.join("Cargo.lock"))?;
+        let manifest = FileStamp::from_path(&workspace_root.join(CARGO_TOML))?;
+        let lockfile = optional_stamp(&workspace_root.join(CARGO_LOCK))?;
         let rust_toolchain = toolchain_stamp(workspace_root)?;
         let configs = capture_config_chain(workspace_root)?;
         Ok(Self {
@@ -278,7 +285,7 @@ fn optional_stamp(path: &Path) -> io::Result<Option<FileStamp>> {
 /// part of the fingerprint.
 fn toolchain_stamp(workspace_root: &Path) -> io::Result<Option<FileStamp>> {
     for ancestor in workspace_root.ancestors() {
-        for name in ["rust-toolchain.toml", "rust-toolchain"] {
+        for name in [RUST_TOOLCHAIN_TOML, RUST_TOOLCHAIN] {
             let candidate = ancestor.join(name);
             if let Some(stamp) = optional_stamp(&candidate)? {
                 return Ok(Some(stamp));
@@ -299,8 +306,8 @@ fn capture_config_chain(workspace_root: &Path) -> io::Result<BTreeMap<PathBuf, O
     let mut visited: Option<PathBuf> = None;
 
     for ancestor in workspace_root.ancestors() {
-        for name in [".cargo/config.toml", ".cargo/config"] {
-            let candidate = ancestor.join(name);
+        for name in [CARGO_CONFIG_TOML, CARGO_CONFIG] {
+            let candidate = ancestor.join(DOT_CARGO_DIR).join(name);
             configs.insert(candidate.clone(), optional_stamp(&candidate)?);
         }
         visited = Some(ancestor.to_path_buf());
@@ -315,7 +322,7 @@ fn capture_config_chain(workspace_root: &Path) -> io::Result<BTreeMap<PathBuf, O
     if let Some(home) = cargo_home
         && visited.as_deref() != Some(home.as_path())
     {
-        for name in ["config.toml", "config"] {
+        for name in [CARGO_CONFIG_TOML, CARGO_CONFIG] {
             let candidate = home.join(name);
             configs.insert(candidate.clone(), optional_stamp(&candidate)?);
         }
@@ -333,7 +340,7 @@ fn resolve_cargo_home() -> Option<PathBuf> {
     {
         return Some(PathBuf::from(home));
     }
-    dirs::home_dir().map(|home| home.join(".cargo"))
+    dirs::home_dir().map(|home| home.join(DOT_CARGO_DIR))
 }
 
 #[cfg(test)]

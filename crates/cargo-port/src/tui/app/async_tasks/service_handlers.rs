@@ -77,7 +77,7 @@ impl App {
             return;
         }
 
-        let tx = self.background.bg_sender();
+        let tx = self.background.background_sender();
         let client = self.net.http_client();
         thread::spawn(move || {
             loop {

@@ -10,7 +10,10 @@ use tokio::sync::Semaphore;
 use super::ProjectEntry;
 use super::WatchState;
 use super::events::EventContext;
+use crate::constants::CARGO_TOML;
 use crate::constants::DEBOUNCE_DURATION;
+use crate::constants::GIT_DIR;
+use crate::constants::TARGET_DIR;
 use crate::lint;
 use crate::project::AbsolutePath;
 use crate::project::CheckoutInfo;
@@ -201,7 +204,7 @@ pub(super) fn is_internal_git_path(event_path: &Path, entry: &ProjectEntry) -> b
     // that live in the common git dir rather than the worktree git dir).
     git_dir.is_some_and(|d| event_path.starts_with(d))
         || common_git_dir.is_some_and(|d| event_path.starts_with(d))
-        || repo_root.is_some_and(|r| event_path.starts_with(r.join(".git")))
+        || repo_root.is_some_and(|r| event_path.starts_with(r.join(GIT_DIR)))
 }
 
 /// Cargo's `target-directory` may be redirected by an out-of-tree
@@ -256,13 +259,13 @@ pub(super) fn is_target_event_for(
     project_root: &Path,
     resolved_target: Option<&Path>,
 ) -> bool {
-    let fallback = project_root.join("target");
+    let fallback = project_root.join(TARGET_DIR);
     let dir = resolved_target.unwrap_or(fallback.as_path());
     event_path.starts_with(dir)
 }
 
 pub(super) fn is_target_metadata_event(event_path: &Path, project_root: &Path) -> bool {
-    let cargo_toml = project_root.join("Cargo.toml");
+    let cargo_toml = project_root.join(CARGO_TOML);
     let build_rs = project_root.join("build.rs");
     let src_main = project_root.join("src").join("main.rs");
     let src_bin = project_root.join("src").join("bin");
@@ -279,7 +282,10 @@ pub(super) fn is_target_metadata_event(event_path: &Path, project_root: &Path) -
         || event_path.starts_with(tests)
 }
 
-pub(super) fn emit_root_git_info_refresh(bg_tx: &Sender<BackgroundMsg>, entry: &ProjectEntry) {
+pub(super) fn emit_root_git_info_refresh(
+    background_tx: &Sender<BackgroundMsg>,
+    entry: &ProjectEntry,
+) {
     let started = Instant::now();
     let Some(repo) = RepoInfo::get(entry.abs_path.as_path()) else {
         return;
@@ -291,12 +297,12 @@ pub(super) fn emit_root_git_info_refresh(bg_tx: &Sender<BackgroundMsg>, entry: &
         git_status = checkout.as_ref().map_or("unknown", |c| c.status.label()),
         "watcher_root_git_info_refresh"
     );
-    let _ = bg_tx.send(BackgroundMsg::RepoInfo {
+    let _ = background_tx.send(BackgroundMsg::RepoInfo {
         path: entry.abs_path.clone(),
         info: repo,
     });
     if let Some(checkout) = checkout {
-        let _ = bg_tx.send(BackgroundMsg::CheckoutInfo {
+        let _ = background_tx.send(BackgroundMsg::CheckoutInfo {
             path: entry.abs_path.clone(),
             info: checkout,
         });
@@ -307,7 +313,7 @@ pub(super) fn fire_git_updates(
     handle: &Handle,
     git_limit: &Arc<Semaphore>,
     git_done_tx: &Sender<AbsolutePath>,
-    bg_tx: &Sender<BackgroundMsg>,
+    background_tx: &Sender<BackgroundMsg>,
     projects: &HashMap<AbsolutePath, ProjectEntry>,
     pending_git: &mut HashMap<AbsolutePath, WatchState>,
 ) {
@@ -343,7 +349,7 @@ pub(super) fn fire_git_updates(
             .find(|entry| {
                 entry.git_dir.as_deref() == Some(refresh_key.as_path())
                     || entry.common_git_dir.as_deref() == Some(refresh_key.as_path())
-                        && entry.abs_path.as_path().join(".git").is_dir()
+                        && entry.abs_path.as_path().join(GIT_DIR).is_dir()
             })
             .map_or_else(|| affected[0].clone(), |entry| entry.abs_path.clone());
         if let Some(state) = pending_git.get_mut(&refresh_key) {
@@ -353,7 +359,7 @@ pub(super) fn fire_git_updates(
             handle,
             git_limit,
             git_done_tx.clone(),
-            bg_tx.clone(),
+            background_tx.clone(),
             refresh_key,
             primary_path,
             affected,
@@ -365,7 +371,7 @@ pub(super) fn spawn_git_refresh(
     handle: &Handle,
     git_limit: &Arc<Semaphore>,
     git_done_tx: Sender<AbsolutePath>,
-    bg_tx: Sender<BackgroundMsg>,
+    background_tx: Sender<BackgroundMsg>,
     refresh_key: AbsolutePath,
     primary_path: AbsolutePath,
     affected: Vec<AbsolutePath>,
@@ -397,7 +403,7 @@ pub(super) fn spawn_git_refresh(
                 .flatten();
         let local_main_branch = repo_info.as_ref().and_then(|r| r.local_main_branch.clone());
         if let Some(repo_info) = repo_info {
-            let _ = bg_tx.send(BackgroundMsg::RepoInfo {
+            let _ = background_tx.send(BackgroundMsg::RepoInfo {
                 path: primary_path.clone(),
                 info: repo_info,
             });
@@ -416,7 +422,7 @@ pub(super) fn spawn_git_refresh(
             .ok()
             .flatten();
             if let Some(checkout) = checkout {
-                let _ = bg_tx.send(BackgroundMsg::CheckoutInfo {
+                let _ = background_tx.send(BackgroundMsg::CheckoutInfo {
                     path: checkout_path,
                     info: checkout,
                 });
@@ -436,7 +442,7 @@ pub(super) fn fire_disk_updates(
     handle: &Handle,
     disk_limit: &Arc<Semaphore>,
     disk_done_tx: &Sender<String>,
-    bg_tx: &Sender<BackgroundMsg>,
+    background_tx: &Sender<BackgroundMsg>,
     projects: &HashMap<AbsolutePath, ProjectEntry>,
     pending_disk: &mut HashMap<String, WatchState>,
 ) {
@@ -461,7 +467,7 @@ pub(super) fn fire_disk_updates(
             handle,
             disk_limit,
             disk_done_tx.clone(),
-            bg_tx.clone(),
+            background_tx.clone(),
             project_label.clone(),
             entry.abs_path.clone(),
         );
@@ -472,7 +478,7 @@ pub(super) fn spawn_disk_update(
     handle: &Handle,
     disk_limit: &Arc<Semaphore>,
     disk_done_tx: Sender<String>,
-    bg_tx: Sender<BackgroundMsg>,
+    background_tx: Sender<BackgroundMsg>,
     project_label: String,
     abs_path: AbsolutePath,
 ) {
@@ -502,7 +508,7 @@ pub(super) fn spawn_disk_update(
             bytes,
             "watcher_disk_usage"
         );
-        let _ = bg_tx.send(BackgroundMsg::DiskUsage {
+        let _ = background_tx.send(BackgroundMsg::DiskUsage {
             path: abs_for_msg,
             bytes,
         });
