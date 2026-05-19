@@ -22,7 +22,8 @@ pub(super) fn build_pane_bindings<Ctx: AppContext + 'static, P: Shortcuts<Ctx>>(
     vim_mode: VimMode,
 ) -> Result<Bindings<P::Actions>, KeymapError> {
     let scope_name = <P as Shortcuts<Ctx>>::SCOPE_NAME;
-    let mut bindings = P::defaults();
+    let mut bindings =
+        overlay::apply_toml_overlay::<P::Actions>(scope_name, P::defaults(), toml_table)?;
     if matches!(vim_mode, VimMode::Enabled) {
         for (action, key) in P::vim_extras() {
             let sequence = KeySequence::from(*key);
@@ -31,7 +32,8 @@ pub(super) fn build_pane_bindings<Ctx: AppContext + 'static, P: Shortcuts<Ctx>>(
             }
         }
     }
-    overlay::apply_toml_overlay::<P::Actions>(scope_name, bindings, toml_table)
+    overlay::check_cross_action_collision(scope_name, &bindings)?;
+    Ok(bindings)
 }
 
 /// Append vim navigation extras to the navigation scope. Skips any

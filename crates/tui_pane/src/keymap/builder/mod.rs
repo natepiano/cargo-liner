@@ -243,8 +243,8 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     }
 
     /// Register the [`Navigation`] singleton. Eagerly collapses
-    /// [`N::defaults()`](Navigation::defaults) (with TOML and vim
-    /// extras overlay) into a [`ScopeMap<N::Actions>`].
+    /// [`N::defaults()`](Navigation::defaults) (with TOML overlay,
+    /// then vim extras) into a [`ScopeMap<N::Actions>`].
     ///
     /// # Errors
     ///
@@ -253,13 +253,13 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     pub fn register_navigation<N: Navigation<Ctx>>(mut self) -> Result<Self, KeymapError> {
         let defaults = N::defaults();
         let scope_name = <N as Navigation<Ctx>>::SCOPE_NAME;
-        let mut bindings = defaults;
+        let mut bindings =
+            apply_toml_overlay::<N::Actions>(scope_name, defaults, self.toml_table.as_ref())?;
         if matches!(self.vim_mode, VimMode::Enabled) {
             apply_vim_navigation_extras::<Ctx, N>(&mut bindings);
             self.vim_reserved_keys = reserved_vim_navigation_keys::<Ctx, N>();
         }
-        let bindings =
-            apply_toml_overlay::<N::Actions>(scope_name, bindings, self.toml_table.as_ref())?;
+        overlay::check_cross_action_collision(scope_name, &bindings)?;
         let scope_map: ScopeMap<N::Actions> = bindings.into_scope_map();
         self.navigation_scope = Some(Box::new(scope_map));
         self.navigation_scope_name = Some(scope_name);

@@ -106,6 +106,18 @@ fn make_app_with_keymap_toml(projects: &[RootItem], toml: &str) -> App {
     make_app(projects)
 }
 
+fn make_app_with_config_and_keymap_toml(
+    projects: &[RootItem],
+    cfg: &CargoPortConfig,
+    toml: &str,
+) -> App {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let toml_path = temp_dir.path().join("keymap.toml");
+    fs::write(&toml_path, toml).expect("write keymap toml");
+    let _keymap_path = keymap::override_keymap_path_for_test(toml_path);
+    super::make_app_with_config(projects, cfg)
+}
+
 fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     let event = Event::Key(KeyEvent::new(code, modifiers));
     input::handle_event(app, &event);
@@ -634,6 +646,31 @@ fn navigation_action_rebound_to_j_moves_cursor_down() {
         baseline + 1,
         "cursor must advance after `'j'` resolves to NavigationAction::Down",
     );
+}
+
+#[test]
+fn generated_home_end_entries_do_not_disable_vim_home_end_navigation() {
+    let projects = vec![
+        super::make_project(Some("alpha"), "~/alpha"),
+        super::make_project(Some("beta"), "~/beta"),
+        super::make_project(Some("gamma"), "~/gamma"),
+    ];
+    let mut cfg = CargoPortConfig::default();
+    cfg.tui.navigation_keys = NavigationKeys::ArrowsAndVim;
+    let mut app = make_app_with_config_and_keymap_toml(
+        &projects,
+        &cfg,
+        "[navigation]\nhome = \"home\"\nend = \"end\"\n",
+    );
+
+    app.project_list.set_cursor(2);
+    press(&mut app, KeyCode::Char('g'), KeyModifiers::NONE);
+    assert_eq!(app.project_list.cursor(), 2);
+    press(&mut app, KeyCode::Char('g'), KeyModifiers::NONE);
+    assert_eq!(app.project_list.cursor(), 0);
+
+    press(&mut app, KeyCode::Char('G'), KeyModifiers::NONE);
+    assert_eq!(app.project_list.cursor(), 2);
 }
 
 /// Rebinding `ProjectListAction::ExpandRow` to `Tab` (with

@@ -482,6 +482,43 @@ fn vim_mode_appends_hjkl_to_navigation() {
     assert_eq!(nav.action_for(&KeyBind::from('j')), Some(NavAction::Down));
     assert_eq!(nav.action_for(&KeyBind::from('k')), Some(NavAction::Up));
     assert_eq!(nav.action_for(&KeyBind::from('l')), Some(NavAction::Right));
+    assert_eq!(
+        nav.action_for_sequence(&KeySequence::parse("g g").expect("parse chord")),
+        Some(NavAction::Home),
+    );
+    assert_eq!(nav.action_for(&KeyBind::from('G')), Some(NavAction::End));
+}
+
+#[test]
+fn vim_navigation_chords_survive_toml_home_end_overrides() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!(
+        "tui_pane_test_vim_home_end_overlay_{}.toml",
+        process::id()
+    ));
+    fs::write(&path, "[navigation]\nhome = \"home\"\nend = \"end\"\n").expect("write toml");
+    let keymap = Keymap::<TestApp>::builder()
+        .load_toml(path.clone())
+        .expect("load_toml must succeed")
+        .vim_mode(VimMode::Enabled)
+        .register_navigation::<AppNav>()
+        .expect("nav register must succeed")
+        .register_globals::<AppGlobals>()
+        .expect("globals register must succeed")
+        .register::<FooPane>(FooPane)
+        .build()
+        .expect("build must succeed");
+    let nav = keymap
+        .navigation::<AppNav>()
+        .expect("nav must be registered");
+
+    assert_eq!(
+        nav.action_for_sequence(&KeySequence::parse("g g").expect("parse chord")),
+        Some(NavAction::Home),
+    );
+    assert_eq!(nav.action_for(&KeyBind::from('G')), Some(NavAction::End));
+
+    let _ = fs::remove_file(path);
 }
 
 #[test]

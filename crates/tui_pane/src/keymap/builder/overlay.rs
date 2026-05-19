@@ -142,7 +142,7 @@ fn check_in_array_duplicates(
 
 /// Reject two actions in the same scope sharing one key. Surfaces
 /// [`KeymapError::CrossActionCollision`].
-fn check_cross_action_collision<A: Action>(
+pub(super) fn check_cross_action_collision<A: Action>(
     scope: &str,
     bindings: &Bindings<A>,
 ) -> Result<(), KeymapError> {
