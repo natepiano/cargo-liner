@@ -1,16 +1,31 @@
 use ratatui::layout::Rect;
+use tui_pane::CopyLabel;
+use tui_pane::CopyPayload;
+use tui_pane::CopySelectionResult;
 use tui_pane::label_color;
 
 use super::CI_COMPACT_DURATION_WIDTH;
 use super::DetailField;
 use super::EmptyDescriptionBehavior;
 use super::GitData;
+use super::LintsData;
 use super::PackageData;
+use super::RemoteRow;
+use super::RunTargetKind;
+use super::TargetEntry;
+use super::TargetSource;
+use super::TargetsData;
+use super::WorktreeInfo;
 use super::pane_data as model;
 use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::ci::FetchStatus::Fetched;
+use crate::lint::LintCommand;
+use crate::lint::LintCommandStatus;
+use crate::lint::LintRun;
+use crate::lint::LintRunStatus;
+use crate::project::AbsolutePath;
 use crate::project::GitStatus;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::pane::PaneFocusState;
@@ -80,6 +95,173 @@ fn ci_run_with_jobs(jobs: Vec<CiJob>) -> CiRun {
         updated_at: None,
         fetched: Fetched,
     }
+}
+
+#[test]
+fn package_copy_crates_io_row_uses_full_url() {
+    let mut data = package_data(true);
+    data.crates_version = Some("0.1.0".to_string());
+    let fields = model::package_fields_from_data(&data);
+    let pos = fields
+        .iter()
+        .position(|field| *field == DetailField::CratesIo)
+        .unwrap_or(usize::MAX);
+    assert_ne!(pos, usize::MAX);
+
+    assert_eq!(
+        model::copy_payload_for_package(&data, pos),
+        CopySelectionResult::Payload(CopyPayload::new(
+            "https://crates.io/crates/demo",
+            CopyLabel::Url,
+        )),
+    );
+}
+
+#[test]
+fn package_copy_lint_and_ci_rows_return_nothing() {
+    let data = package_data(true);
+    let fields = model::package_fields_from_data(&data);
+    for field in [DetailField::Lint, DetailField::Ci] {
+        let pos = fields
+            .iter()
+            .position(|candidate| *candidate == field)
+            .unwrap_or(usize::MAX);
+        assert_ne!(pos, usize::MAX);
+        assert_eq!(
+            model::copy_payload_for_package(&data, pos),
+            CopySelectionResult::Nothing,
+        );
+    }
+}
+
+#[test]
+fn git_copy_remote_uses_full_url_and_worktree_uses_path() {
+    let mut data = git_data();
+    data.remotes.push(RemoteRow {
+        name:            "origin".to_string(),
+        icon:            "",
+        display_url:     "github.com/natepiano/cargo-port".to_string(),
+        tracked_ref:     "main".to_string(),
+        status:          "ok".to_string(),
+        full_url:        Some("https://github.com/natepiano/cargo-port".to_string()),
+        push_annotation: None,
+    });
+    data.worktrees.push(WorktreeInfo {
+        name:         "cargo-port_style_fix".to_string(),
+        path:         "/Users/natemccoy/rust/cargo-port_style_fix".to_string(),
+        branch:       Some("refactor/style".to_string()),
+        ahead_behind: Some((0, 0)),
+    });
+
+    let remote_pos = model::git_fields_from_data(&data).len();
+    let worktree_pos = remote_pos + data.remotes.len();
+
+    assert_eq!(
+        model::copy_payload_for_git(&data, remote_pos),
+        CopySelectionResult::Payload(CopyPayload::new(
+            "https://github.com/natepiano/cargo-port",
+            CopyLabel::Url,
+        )),
+    );
+    assert_eq!(
+        model::copy_payload_for_git(&data, worktree_pos),
+        CopySelectionResult::Payload(CopyPayload::new(
+            "/Users/natemccoy/rust/cargo-port_style_fix",
+            CopyLabel::Path,
+        )),
+    );
+}
+
+#[test]
+fn ci_copy_returns_selected_run_url() {
+    let data = super::CiData {
+        runs:           vec![ci_run_with_jobs(Vec::new())],
+        mode_label:     None,
+        current_branch: None,
+        empty_state:    super::CiEmptyState::NoRuns,
+    };
+
+    assert_eq!(
+        model::copy_payload_for_ci(&data, 0),
+        CopySelectionResult::Payload(CopyPayload::new(
+            "https://example.com/run/1",
+            CopyLabel::Url,
+        )),
+    );
+    assert_eq!(
+        model::copy_payload_for_ci(&data, 1),
+        CopySelectionResult::Nothing,
+    );
+}
+
+#[test]
+fn targets_copy_returns_source_path_for_any_target_row() {
+    let data = TargetsData {
+        binaries: vec![TargetEntry {
+            name:         "demo".to_string(),
+            display_name: "demo".to_string(),
+            kind:         RunTargetKind::Binary,
+            source:       TargetSource::Workspace,
+            src_path:     AbsolutePath::from("/ws/src/main.rs"),
+        }],
+        examples: vec![TargetEntry {
+            name:         "demo_example".to_string(),
+            display_name: "demo_example".to_string(),
+            kind:         RunTargetKind::Example,
+            source:       TargetSource::Workspace,
+            src_path:     AbsolutePath::from("/ws/examples/demo_example.rs"),
+        }],
+        benches:  Vec::new(),
+    };
+
+    assert_eq!(
+        model::copy_payload_for_targets(&data, 0, &|_| false),
+        CopySelectionResult::Payload(CopyPayload::new("/ws/src/main.rs", CopyLabel::Path)),
+    );
+    assert_eq!(
+        model::copy_payload_for_targets(&data, 1, &|_| false),
+        CopySelectionResult::Payload(CopyPayload::new(
+            "/ws/examples/demo_example.rs",
+            CopyLabel::Path,
+        )),
+    );
+}
+
+#[test]
+fn lints_copy_returns_selected_run_log_path() {
+    let project_root = AbsolutePath::from("/Users/natemccoy/rust/demo");
+    let data = LintsData {
+        runs:    vec![LintRun {
+            run_id:      "run-1".to_string(),
+            started_at:  "2026-05-19T10:00:00-04:00".to_string(),
+            finished_at: Some("2026-05-19T10:01:00-04:00".to_string()),
+            duration_ms: Some(60_000),
+            status:      LintRunStatus::Passed,
+            commands:    vec![LintCommand {
+                name:        "clippy".to_string(),
+                command:     "cargo clippy".to_string(),
+                status:      LintCommandStatus::Passed,
+                duration_ms: Some(60_000),
+                exit_code:   Some(0),
+                log_file:    "runs/run-1/clippy.log".to_string(),
+            }],
+        }],
+        sizes:   vec![Some(1024)],
+        is_rust: true,
+    };
+
+    let expected = crate::lint::project_dir(project_root.as_path())
+        .join("runs/run-1/clippy.log")
+        .display()
+        .to_string();
+    assert_eq!(
+        model::copy_payload_for_lints(&data, 0, project_root.as_path()),
+        CopySelectionResult::Payload(CopyPayload::new(expected, CopyLabel::Path)),
+    );
+    assert_eq!(
+        model::copy_payload_for_lints(&data, 1, project_root.as_path()),
+        CopySelectionResult::Nothing,
+    );
 }
 
 #[test]

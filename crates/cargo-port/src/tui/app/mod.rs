@@ -133,6 +133,8 @@ use async_tasks::Startup;
 pub(crate) use target_index::CleanSelection;
 pub(crate) use target_index::TargetDirIndex;
 use tui_pane::AppContext;
+use tui_pane::ClipboardBackend;
+use tui_pane::CopyOutcome;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::FrameworkFocusId;
@@ -141,6 +143,7 @@ use tui_pane::Keymap as FrameworkKeymap;
 use tui_pane::KeymapPane;
 use tui_pane::PaneRegistry;
 use tui_pane::SettingsPane;
+use tui_pane::SystemClipboard;
 use tui_pane::ToastTaskId;
 pub(super) use types::CiRunDisplayMode;
 pub(crate) use types::ConfirmAction;
@@ -446,6 +449,34 @@ impl App {
 
     pub(super) fn show_timed_toast(&mut self, title: impl Into<String>, body: impl Into<String>) {
         self.framework.toasts.push_status(title, body);
+    }
+
+    pub(super) fn copy_focused_selection(&mut self) {
+        let mut backend = SystemClipboard::new();
+        self.copy_focused_selection_with_backend(&mut backend);
+    }
+
+    pub(super) fn copy_focused_selection_with_backend<B>(&mut self, backend: &mut B)
+    where
+        B: ClipboardBackend,
+    {
+        let outcome = self.framework.copy_selection(self, backend);
+        self.show_copy_outcome(outcome);
+    }
+
+    fn show_copy_outcome(&mut self, outcome: CopyOutcome) {
+        match outcome {
+            CopyOutcome::Copied { label } => {
+                self.show_timed_toast("Copy", format!("Copied {}", label.noun()));
+            },
+            CopyOutcome::NothingToCopy => self.show_timed_toast("Copy", "Nothing to copy"),
+            CopyOutcome::Unavailable { reason } => {
+                self.show_timed_toast("Clipboard unavailable", reason.to_string());
+            },
+            CopyOutcome::Failed { reason } => {
+                self.show_timed_toast("Copy failed", reason.to_string());
+            },
+        }
     }
 
     pub(super) fn show_timed_warning_toast(

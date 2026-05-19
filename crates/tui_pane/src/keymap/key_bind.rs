@@ -413,6 +413,10 @@ mod tests {
             Err(KeyParseError::UnknownModifier(_))
         ));
         assert!(matches!(
+            KeyBind::parse("Command+C"),
+            Err(KeyParseError::UnknownModifier(_))
+        ));
+        assert!(matches!(
             KeyBind::parse("F99"),
             Err(KeyParseError::UnknownKey(_))
         ));

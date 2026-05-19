@@ -30,6 +30,10 @@ use self::tab_stop::RegisteredTabStop;
 use self::tab_stop::TabOrder;
 pub use self::tab_stop::TabStop;
 use crate::AppContext;
+use crate::ClipboardBackend;
+use crate::CopyOutcome;
+use crate::CopySelection;
+use crate::CopySelectionResult;
 use crate::FocusedPane;
 use crate::FrameworkFocusId;
 use crate::FrameworkOverlayId;
@@ -41,6 +45,8 @@ use crate::SettingsStore;
 use crate::ToastSettings;
 use crate::Toasts;
 use crate::pane::ModeQuery;
+
+type CopyResolver<Ctx> = fn(&Ctx) -> CopySelectionResult;
 
 /// The framework aggregator owned by every binary that uses
 /// `tui_pane`.
@@ -64,6 +70,7 @@ pub struct Framework<Ctx: AppContext> {
     quit_requested:    bool,
     restart_requested: bool,
     mode_queries:      HashMap<Ctx::AppPaneId, ModeQuery<Ctx>>,
+    copy_resolvers:    HashMap<Ctx::AppPaneId, CopyResolver<Ctx>>,
     pane_order:        Vec<Ctx::AppPaneId>,
     tab_stops:         Vec<RegisteredTabStop<Ctx>>,
     overlay:           Option<FrameworkOverlayId>,
@@ -92,6 +99,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
             quit_requested:    false,
             restart_requested: false,
             mode_queries:      HashMap::new(),
+            copy_resolvers:    HashMap::new(),
             pane_order:        Vec::new(),
             tab_stops:         Vec::new(),
             overlay:           None,
@@ -195,6 +203,49 @@ impl<Ctx: AppContext> Framework<Ctx> {
             self.pane_order.push(id);
             self.tab_stops
                 .push(RegisteredTabStop::new(id, registration_index, tab_stop));
+        }
+    }
+
+    /// Register copy support for an app pane.
+    pub fn register_copy_selection<P>(&mut self)
+    where
+        P: CopySelection<Ctx> + crate::Pane<Ctx>,
+    {
+        self.copy_resolvers
+            .insert(P::APP_PANE_ID, P::copy_selection);
+    }
+
+    /// Copy the focused app pane's current selection through `backend`.
+    pub fn copy_selection<B>(&self, ctx: &Ctx, backend: &mut B) -> CopyOutcome
+    where
+        B: ClipboardBackend,
+    {
+        if self.overlay.is_some() {
+            return CopyOutcome::NothingToCopy;
+        }
+        let FocusedPane::App(id) = self.focused else {
+            return CopyOutcome::NothingToCopy;
+        };
+        if matches!(self.focused_pane_mode(ctx), Some(crate::Mode::TextInput(_))) {
+            return CopyOutcome::NothingToCopy;
+        }
+        let Some(resolver) = self.copy_resolvers.get(&id) else {
+            return CopyOutcome::NothingToCopy;
+        };
+        match resolver(ctx) {
+            CopySelectionResult::Nothing => CopyOutcome::NothingToCopy,
+            CopySelectionResult::Payload(payload) => {
+                if payload.text.is_empty() {
+                    return CopyOutcome::NothingToCopy;
+                }
+                match backend.write_clipboard(&payload.text) {
+                    Ok(()) => CopyOutcome::Copied {
+                        label: payload.label,
+                    },
+                    Err(reason) if reason.is_unavailable() => CopyOutcome::Unavailable { reason },
+                    Err(reason) => CopyOutcome::Failed { reason },
+                }
+            },
         }
     }
 

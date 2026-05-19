@@ -6,6 +6,7 @@
 
 [global]
 clean         = "c"
+copy          = "y"
 dismiss       = "x"
 find          = "/"
 next_pane     = "Tab"

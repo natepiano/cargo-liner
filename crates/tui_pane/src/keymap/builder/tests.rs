@@ -6,6 +6,13 @@ use crossterm::event::KeyCode;
 use super::Keymap;
 use super::VimMode;
 use crate::AppContext;
+use crate::ClipboardBackend;
+use crate::ClipboardError;
+use crate::CopyLabel;
+use crate::CopyOutcome;
+use crate::CopyPayload;
+use crate::CopySelection;
+use crate::CopySelectionResult;
 use crate::FocusedPane;
 use crate::Framework;
 use crate::FrameworkFocusId;
@@ -105,6 +112,55 @@ impl Shortcuts<TestApp> for FooPane {
 }
 
 fn dispatch_noop(_: FooAction, _: &mut TestApp) {}
+
+impl CopySelection<TestApp> for FooPane {
+    fn copy_selection(_ctx: &TestApp) -> CopySelectionResult {
+        CopySelectionResult::Payload(CopyPayload::new("foo", CopyLabel::Value))
+    }
+}
+
+struct AlternateFooCopyPane;
+
+impl Pane<TestApp> for AlternateFooCopyPane {
+    const APP_PANE_ID: TestPaneId = TestPaneId::Foo;
+}
+
+impl CopySelection<TestApp> for AlternateFooCopyPane {
+    fn copy_selection(_ctx: &TestApp) -> CopySelectionResult {
+        CopySelectionResult::Payload(CopyPayload::new("alternate", CopyLabel::Path))
+    }
+}
+
+struct EmptyCopyPane;
+
+impl Pane<TestApp> for EmptyCopyPane {
+    const APP_PANE_ID: TestPaneId = TestPaneId::Bar;
+}
+
+impl CopySelection<TestApp> for EmptyCopyPane {
+    fn copy_selection(_ctx: &TestApp) -> CopySelectionResult { CopySelectionResult::Nothing }
+}
+
+struct FakeClipboard {
+    writes: Vec<String>,
+    result: Result<(), ClipboardError>,
+}
+
+impl Default for FakeClipboard {
+    fn default() -> Self {
+        Self {
+            writes: Vec::new(),
+            result: Ok(()),
+        }
+    }
+}
+
+impl ClipboardBackend for FakeClipboard {
+    fn write_clipboard(&mut self, text: &str) -> Result<(), ClipboardError> {
+        self.writes.push(text.to_string());
+        self.result.clone()
+    }
+}
 
 fn never_tabbable(_: &TestApp) -> bool { false }
 
@@ -1175,4 +1231,145 @@ fn load_toml_missing_file_treated_as_no_overlay() {
         keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
         KeyOutcome::Consumed,
     );
+}
+
+#[test]
+fn build_into_registers_copy_selection() {
+    let mut app = fresh_app();
+    let _keymap = Keymap::<TestApp>::builder()
+        .register_navigation::<AppNav>()
+        .expect("nav register must succeed")
+        .register_globals::<AppGlobals>()
+        .expect("globals register must succeed")
+        .register::<FooPane>(FooPane)
+        .register_copy_selection::<FooPane>()
+        .build_into(&mut app.framework)
+        .expect("build_into");
+
+    let mut clipboard = FakeClipboard::default();
+    let outcome = app.framework.copy_selection(&app, &mut clipboard);
+
+    assert_eq!(
+        outcome,
+        CopyOutcome::Copied {
+            label: CopyLabel::Value,
+        }
+    );
+    assert_eq!(clipboard.writes, ["foo"]);
+}
+
+#[test]
+fn duplicate_copy_registration_replaces_resolver() {
+    let mut app = fresh_app();
+    let _keymap = Keymap::<TestApp>::builder()
+        .register_navigation::<AppNav>()
+        .expect("nav register must succeed")
+        .register_globals::<AppGlobals>()
+        .expect("globals register must succeed")
+        .register::<FooPane>(FooPane)
+        .register_copy_selection::<FooPane>()
+        .register_copy_selection::<AlternateFooCopyPane>()
+        .build_into(&mut app.framework)
+        .expect("build_into");
+
+    let mut clipboard = FakeClipboard::default();
+    let outcome = app.framework.copy_selection(&app, &mut clipboard);
+
+    assert_eq!(
+        outcome,
+        CopyOutcome::Copied {
+            label: CopyLabel::Path,
+        }
+    );
+    assert_eq!(clipboard.writes, ["alternate"]);
+}
+
+#[test]
+fn pane_without_copy_resolver_returns_nothing() {
+    let mut app = fresh_app();
+    let _keymap = Keymap::<TestApp>::builder()
+        .register_navigation::<AppNav>()
+        .expect("nav register must succeed")
+        .register_globals::<AppGlobals>()
+        .expect("globals register must succeed")
+        .register::<FooPane>(FooPane)
+        .build_into(&mut app.framework)
+        .expect("build_into");
+
+    let mut clipboard = FakeClipboard::default();
+    let outcome = app.framework.copy_selection(&app, &mut clipboard);
+
+    assert_eq!(outcome, CopyOutcome::NothingToCopy);
+    assert!(clipboard.writes.is_empty());
+}
+
+#[test]
+fn pane_returning_nothing_does_not_write_clipboard() {
+    let mut app = fresh_app();
+    app.framework.set_focused(FocusedPane::App(TestPaneId::Bar));
+    let _keymap = Keymap::<TestApp>::builder()
+        .register_navigation::<AppNav>()
+        .expect("nav register must succeed")
+        .register_globals::<AppGlobals>()
+        .expect("globals register must succeed")
+        .register::<FooPane>(FooPane)
+        .register_copy_selection::<EmptyCopyPane>()
+        .build_into(&mut app.framework)
+        .expect("build_into");
+
+    let mut clipboard = FakeClipboard::default();
+    let outcome = app.framework.copy_selection(&app, &mut clipboard);
+
+    assert_eq!(outcome, CopyOutcome::NothingToCopy);
+    assert!(clipboard.writes.is_empty());
+}
+
+#[test]
+fn clipboard_failure_returns_failed() {
+    let mut app = fresh_app();
+    let _keymap = Keymap::<TestApp>::builder()
+        .register_navigation::<AppNav>()
+        .expect("nav register must succeed")
+        .register_globals::<AppGlobals>()
+        .expect("globals register must succeed")
+        .register::<FooPane>(FooPane)
+        .register_copy_selection::<FooPane>()
+        .build_into(&mut app.framework)
+        .expect("build_into");
+
+    let mut clipboard = FakeClipboard {
+        writes: Vec::new(),
+        result: Err(ClipboardError::WriteFailed("nope".to_string())),
+    };
+    let outcome = app.framework.copy_selection(&app, &mut clipboard);
+
+    assert_eq!(
+        outcome,
+        CopyOutcome::Failed {
+            reason: ClipboardError::WriteFailed("nope".to_string()),
+        }
+    );
+    assert_eq!(clipboard.writes, ["foo"]);
+}
+
+#[test]
+fn focused_toasts_do_not_write_clipboard() {
+    let mut app = fresh_app();
+    app.framework
+        .set_focused(FocusedPane::Framework(FrameworkFocusId::Toasts));
+    let _keymap = Keymap::<TestApp>::builder()
+        .register_navigation::<AppNav>()
+        .expect("nav register must succeed")
+        .register_globals::<AppGlobals>()
+        .expect("globals register must succeed")
+        .register::<FooPane>(FooPane)
+        .register_copy_selection::<FooPane>()
+        .build_into(&mut app.framework)
+        .expect("build_into");
+
+    let mut clipboard = FakeClipboard::default();
+    let outcome = app.framework.copy_selection(&app, &mut clipboard);
+
+    assert_eq!(outcome, CopyOutcome::NothingToCopy);
+    assert!(clipboard.writes.is_empty());
 }

@@ -32,6 +32,7 @@ use super::runtime_scope::RuntimeScope;
 use super::scope_map::ScopeMap;
 use super::vim::VimMode;
 use crate::AppContext;
+use crate::CopySelection;
 use crate::Framework;
 use crate::OverlayAction;
 use crate::Pane;
@@ -65,6 +66,10 @@ struct PaneRegistration<Ctx: AppContext> {
     id:         Ctx::AppPaneId,
     mode_query: ModeQuery<Ctx>,
     tab_stop:   TabStop<Ctx>,
+}
+
+struct CopyRegistration<Ctx: AppContext> {
+    register: fn(&mut Framework<Ctx>),
 }
 
 /// Marker: builder is in the settings phase. Consumes settings
@@ -103,6 +108,7 @@ pub struct Registering;
 pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
     scopes:                HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
     pane_registrations:    Vec<PaneRegistration<Ctx>>,
+    copy_registrations:    Vec<CopyRegistration<Ctx>>,
     registered_scopes:     HashSet<&'static str>,
     duplicate_scope:       Option<&'static str>,
     config_path:           Option<PathBuf>,
@@ -136,6 +142,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
         Self {
             scopes:                HashMap::new(),
             pane_registrations:    Vec::new(),
+            copy_registrations:    Vec::new(),
             registered_scopes:     HashSet::new(),
             duplicate_scope:       None,
             config_path:           None,
@@ -360,6 +367,18 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
         self
     }
 
+    /// Register copy support for a pane already known to the framework.
+    #[must_use]
+    pub fn register_copy_selection<P>(mut self) -> Self
+    where
+        P: CopySelection<Ctx> + Pane<Ctx>,
+    {
+        self.copy_registrations.push(CopyRegistration {
+            register: Framework::<Ctx>::register_copy_selection::<P>,
+        });
+        self
+    }
+
     /// Register an additional [`Pane<Ctx>`] without a `Shortcuts`
     /// impl. See [`KeymapBuilder::<Configuring>::register_pane`].
     #[must_use]
@@ -396,6 +415,9 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
                 registration.mode_query,
                 registration.tab_stop,
             );
+        }
+        for registration in &self.copy_registrations {
+            (registration.register)(framework);
         }
         finalize(self)
     }
@@ -456,6 +478,7 @@ fn transition<Ctx: AppContext + 'static>(
     KeymapBuilder {
         scopes:                src.scopes,
         pane_registrations:    src.pane_registrations,
+        copy_registrations:    src.copy_registrations,
         registered_scopes:     src.registered_scopes,
         duplicate_scope:       src.duplicate_scope,
         config_path:           src.config_path,

@@ -981,6 +981,7 @@ fn output_active_excludes_diagnostics_and_reaches_output() {
             display_name: "demo".to_string(),
             kind:         crate::tui::panes::RunTargetKind::Binary,
             source:       crate::tui::panes::TargetSource::Workspace,
+            src_path:     crate::project::AbsolutePath::from("/tmp/demo/src/main.rs"),
         }],
         examples: Vec::new(),
         benches:  Vec::new(),

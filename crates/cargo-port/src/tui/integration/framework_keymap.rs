@@ -23,6 +23,10 @@ use tui_pane::BarRegion;
 use tui_pane::BarSlot;
 use tui_pane::Bindings;
 use tui_pane::Configuring;
+use tui_pane::CopyLabel;
+use tui_pane::CopyPayload;
+use tui_pane::CopySelection;
+use tui_pane::CopySelectionResult;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::Globals;
@@ -165,6 +169,7 @@ tui_pane::action_enum! {
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     pub enum AppGlobalAction {
+        Copy         => ("copy",          "copy",     "Copy selection");
         Find         => ("find",          "find",     "Open finder");
         OpenEditor   => ("open_editor",   "editor",   "Open in editor");
         OpenTerminal => ("open_terminal", "terminal", "Open terminal");
@@ -238,6 +243,7 @@ impl Globals<App> for AppGlobalAction {
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
+            'y'                  => Self::Copy,
             '/'                  => Self::Find,
             'e'                  => Self::OpenEditor,
             't'                  => Self::OpenTerminal,
@@ -251,6 +257,7 @@ impl Globals<App> for AppGlobalAction {
 
 fn dispatch_app_global(action: AppGlobalAction, app: &mut App) {
     match action {
+        AppGlobalAction::Copy => app.copy_focused_selection(),
         AppGlobalAction::Find => input::open_finder(app),
         AppGlobalAction::OpenEditor => input::open_in_editor(app),
         AppGlobalAction::OpenTerminal => input::open_terminal(app),
@@ -286,6 +293,15 @@ impl Shortcuts<App> for PackagePane {
     }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_package_action }
+}
+
+impl CopySelection<App> for PackagePane {
+    fn copy_selection(ctx: &App) -> CopySelectionResult {
+        let Some(pkg) = ctx.panes.package.content() else {
+            return CopySelectionResult::Nothing;
+        };
+        panes::copy_payload_for_package(pkg, ctx.panes.package.viewport.pos())
+    }
 }
 
 /// `Activate` on the Package pane is enabled only when the cursor is
@@ -336,6 +352,15 @@ impl Shortcuts<App> for GitPane {
     }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_git_action }
+}
+
+impl CopySelection<App> for GitPane {
+    fn copy_selection(ctx: &App) -> CopySelectionResult {
+        let Some(git) = ctx.panes.git.content() else {
+            return CopySelectionResult::Nothing;
+        };
+        panes::copy_payload_for_git(git, ctx.panes.git.viewport.pos())
+    }
 }
 
 /// `Activate` on the Git pane is enabled only when the cursor is on a
@@ -403,6 +428,17 @@ impl Shortcuts<App> for TargetsPane {
     fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_targets_action }
 }
 
+impl CopySelection<App> for TargetsPane {
+    fn copy_selection(ctx: &App) -> CopySelectionResult {
+        let Some(targets) = ctx.panes.targets.content() else {
+            return CopySelectionResult::Nothing;
+        };
+        panes::copy_payload_for_targets(targets, ctx.panes.targets.viewport.pos(), &|entry| {
+            ctx.target_is_running(entry)
+        })
+    }
+}
+
 /// `Pane<App>` + `Shortcuts<App>` host for the Lints pane.
 pub struct LintsPane;
 
@@ -425,6 +461,21 @@ impl Shortcuts<App> for LintsPane {
     }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_lints_action }
+}
+
+impl CopySelection<App> for LintsPane {
+    fn copy_selection(ctx: &App) -> CopySelectionResult {
+        if !ctx.selected_row_owns_lint() {
+            return CopySelectionResult::Nothing;
+        }
+        let Some(project_root) = ctx.project_list.selected_project_path() else {
+            return CopySelectionResult::Nothing;
+        };
+        let Some(lints) = ctx.lint.content() else {
+            return CopySelectionResult::Nothing;
+        };
+        panes::copy_payload_for_lints(lints, ctx.lint.viewport.pos(), project_root)
+    }
 }
 
 /// `Pane<App>` + `Shortcuts<App>` host for the `CiRuns` pane.
@@ -461,6 +512,15 @@ impl Shortcuts<App> for CiRunsPane {
     }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) { panes::dispatch_ci_runs_action }
+}
+
+impl CopySelection<App> for CiRunsPane {
+    fn copy_selection(ctx: &App) -> CopySelectionResult {
+        let Some(ci) = ctx.ci.content() else {
+            return CopySelectionResult::Nothing;
+        };
+        panes::copy_payload_for_ci(ci, ctx.ci.viewport.pos())
+    }
 }
 
 /// `Activate` on the `CiRuns` pane is hidden when the cursor sits at
@@ -545,6 +605,19 @@ impl Shortcuts<App> for ProjectListPane {
     fn vim_extras() -> &'static [(Self::Actions, KeyBind)] { &PROJECT_LIST_VIM_EXTRAS }
 
     fn dispatcher() -> fn(Self::Actions, &mut App) { input::dispatch_project_list_action }
+}
+
+impl CopySelection<App> for ProjectListPane {
+    fn copy_selection(ctx: &App) -> CopySelectionResult {
+        ctx.project_list
+            .selected_project_path()
+            .map_or(CopySelectionResult::Nothing, |path| {
+                CopySelectionResult::Payload(CopyPayload::new(
+                    path.display().to_string(),
+                    CopyLabel::Path,
+                ))
+            })
+    }
 }
 
 /// `'l'` / `'h'` extend the `ProjectList` scope with vim-style row
@@ -652,13 +725,19 @@ pub fn build_framework_keymap(
         .register_globals::<AppGlobalAction>()?
         .register_overlay()?
         .register::<ProjectListPane>(ProjectListPane)
+        .register_copy_selection::<ProjectListPane>()
         .register::<PackagePane>(PackagePane)
+        .register_copy_selection::<PackagePane>()
         .register_pane::<LangPane>()
         .register_pane::<CpuPane>()
         .register::<GitPane>(GitPane)
+        .register_copy_selection::<GitPane>()
         .register::<TargetsPane>(TargetsPane)
+        .register_copy_selection::<TargetsPane>()
         .register::<LintsPane>(LintsPane)
+        .register_copy_selection::<LintsPane>()
         .register::<CiRunsPane>(CiRunsPane)
+        .register_copy_selection::<CiRunsPane>()
         .register::<OutputPane>(OutputPane)
         .register::<FinderPane>(FinderPane)
         .build_into(framework)
@@ -744,5 +823,20 @@ mod tests {
             Some(CiRunsAction::ShowAll),
         );
         assert_eq!(defaults.action_for(&tui_pane::KeyBind::from('v')), None);
+    }
+
+    #[test]
+    fn app_global_copy_defaults_to_y_without_terminal_copy_keys() {
+        let defaults = AppGlobalAction::defaults().into_scope_map();
+
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::from('y')),
+            Some(AppGlobalAction::Copy),
+        );
+        assert_eq!(defaults.action_for(&tui_pane::KeyBind::ctrl('c')), None,);
+        assert_eq!(
+            defaults.action_for(&tui_pane::KeyBind::ctrl(tui_pane::KeyBind::shift('c'))),
+            None,
+        );
     }
 }

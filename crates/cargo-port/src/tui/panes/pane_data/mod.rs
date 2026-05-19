@@ -13,6 +13,9 @@ pub use formatting::format_remote_status;
 pub use formatting::format_time;
 pub use formatting::format_timestamp;
 use ratatui::style::Color;
+use tui_pane::CopyLabel;
+use tui_pane::CopyPayload;
+use tui_pane::CopySelectionResult;
 
 use crate::ci;
 use crate::ci::CiRun;
@@ -185,6 +188,7 @@ pub struct TargetEntry {
     pub display_name: String,
     pub kind:         RunTargetKind,
     pub source:       TargetSource,
+    pub src_path:     AbsolutePath,
 }
 
 #[derive(Clone, Copy)]
@@ -687,6 +691,7 @@ pub struct RemoteRow {
 #[derive(Clone)]
 pub struct WorktreeInfo {
     pub name:         String,
+    pub path:         String,
     pub branch:       Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
 }
@@ -716,6 +721,129 @@ pub fn git_row_at(data: &GitData, pos: usize) -> Option<GitRow<'_>> {
     }
     let pos = pos - data.remotes.len();
     data.worktrees.get(pos).map(GitRow::Worktree)
+}
+
+fn copyable_text(text: impl Into<String>) -> Option<String> {
+    let text = text.into();
+    let trimmed = text.trim();
+    if trimmed.is_empty() || matches!(trimmed, "-" | "—") {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn copy_payload(text: impl Into<String>, label: CopyLabel) -> CopySelectionResult {
+    copyable_text(text).map_or(CopySelectionResult::Nothing, |text| {
+        CopySelectionResult::Payload(CopyPayload::new(text, label))
+    })
+}
+
+pub fn copy_payload_for_package(data: &PackageData, pos: usize) -> CopySelectionResult {
+    let fields = package_fields_from_data(data);
+    let Some(field) = fields.get(pos).copied() else {
+        return CopySelectionResult::Nothing;
+    };
+    match field {
+        DetailField::Lint | DetailField::Ci => CopySelectionResult::Nothing,
+        DetailField::CratesIo => {
+            if data.title_name.trim().is_empty() || data.title_name == "-" {
+                CopySelectionResult::Nothing
+            } else {
+                copy_payload(
+                    format!("https://crates.io/crates/{}", data.title_name),
+                    CopyLabel::Url,
+                )
+            }
+        },
+        DetailField::Path | DetailField::GitPath => {
+            copy_payload(field.package_value(data), CopyLabel::Path)
+        },
+        DetailField::Homepage | DetailField::Repository => {
+            copy_payload(field.package_value(data), CopyLabel::Url)
+        },
+        _ => copy_payload(field.package_value(data), CopyLabel::Value),
+    }
+}
+
+pub fn copy_payload_for_git(data: &GitData, pos: usize) -> CopySelectionResult {
+    match git_row_at(data, pos) {
+        Some(GitRow::Field(field)) => {
+            copy_payload(git_field_copy_value(data, field), CopyLabel::Value)
+        },
+        Some(GitRow::Remote(remote)) => copy_payload(
+            remote
+                .full_url
+                .as_deref()
+                .unwrap_or(remote.display_url.as_str()),
+            CopyLabel::Url,
+        ),
+        Some(GitRow::Worktree(worktree)) => copy_payload(&worktree.path, CopyLabel::Path),
+        None => CopySelectionResult::Nothing,
+    }
+}
+
+fn git_field_copy_value(data: &GitData, field: DetailField) -> String {
+    match field {
+        DetailField::Head => match data.head.as_ref() {
+            Some(HeadState::Branch(name)) => name.clone(),
+            Some(HeadState::Detached { short_sha }) => short_sha.clone(),
+            Some(HeadState::Unborn) | None => String::new(),
+        },
+        DetailField::GitPath => data
+            .status
+            .map_or_else(String::new, GitStatus::label_with_icon),
+        DetailField::Tracks => data
+            .submodule_ctx
+            .as_ref()
+            .and_then(|context| context.tracks.clone())
+            .unwrap_or_default(),
+        DetailField::Pinned => data
+            .submodule_ctx
+            .as_ref()
+            .map(|context| context.pinned_commit.clone())
+            .unwrap_or_default(),
+        _ => field.git_value(data),
+    }
+}
+
+pub fn copy_payload_for_ci(data: &CiData, pos: usize) -> CopySelectionResult {
+    let Some(run) = data.runs.get(pos) else {
+        return CopySelectionResult::Nothing;
+    };
+    copy_payload(&run.url, CopyLabel::Url)
+}
+
+pub fn copy_payload_for_targets(
+    data: &TargetsData,
+    pos: usize,
+    running_for: &dyn Fn(&TargetEntry) -> bool,
+) -> CopySelectionResult {
+    let entries = build_target_list_from_data(data, running_for);
+    let Some(entry) = entries.get(pos) else {
+        return CopySelectionResult::Nothing;
+    };
+    copy_payload(entry.src_path.display().to_string(), CopyLabel::Path)
+}
+
+pub fn copy_payload_for_lints(
+    data: &LintsData,
+    pos: usize,
+    project_root: &Path,
+) -> CopySelectionResult {
+    let Some(run) = data.runs.get(pos) else {
+        return CopySelectionResult::Nothing;
+    };
+    let Some(command) = run.commands.first() else {
+        return CopySelectionResult::Nothing;
+    };
+    copy_payload(
+        crate::lint::project_dir(project_root)
+            .join(&command.log_file)
+            .display()
+            .to_string(),
+        CopyLabel::Path,
+    )
 }
 
 /// Per-pane data for the Targets panel. Each kind list is pre-sorted by
@@ -784,6 +912,7 @@ impl TargetsData {
                         display_name: target.name.clone(),
                         kind:         RunTargetKind::Binary,
                         source:       source.clone(),
+                        src_path:     target.src_path.clone(),
                     });
                 }
                 if target.kinds.contains(&TargetKind::Example) {
@@ -798,6 +927,7 @@ impl TargetsData {
                         display_name,
                         kind: RunTargetKind::Example,
                         source: source.clone(),
+                        src_path: target.src_path.clone(),
                     });
                 }
                 if target.kinds.contains(&TargetKind::Bench) {
@@ -806,6 +936,7 @@ impl TargetsData {
                         display_name: target.name.clone(),
                         kind:         RunTargetKind::Bench,
                         source:       source.clone(),
+                        src_path:     target.src_path.clone(),
                     });
                 }
             }
@@ -871,6 +1002,7 @@ mod target_list_tests {
             display_name: name.into(),
             kind,
             source: TargetSource::Workspace,
+            src_path: AbsolutePath::from(format!("/tmp/{name}.rs")),
         }
     }
 
@@ -1194,6 +1326,7 @@ fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
             };
             WorktreeInfo {
                 name,
+                path: path.display().to_string(),
                 branch,
                 ahead_behind,
             }

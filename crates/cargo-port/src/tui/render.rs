@@ -610,6 +610,7 @@ pub(super) fn cargo_port_bar_palette() -> BarPalette {
 /// [`AppGlobalAction::ALL`] appears at least once.
 const STRIP_APP_GLOBALS_ORDER: &[AppGlobalAction] = &[
     AppGlobalAction::Find,
+    AppGlobalAction::Copy,
     AppGlobalAction::OpenEditor,
     AppGlobalAction::OpenTerminal,
     AppGlobalAction::Clean,
@@ -626,11 +627,12 @@ const STRIP_SLOT_COUNT: usize = STRIP_APP_GLOBALS_ORDER.len() + STRIP_FRAMEWORK_
 /// per-variant state in [`build_app_slot`].
 const fn app_global_idx(action: AppGlobalAction) -> u8 {
     match action {
-        AppGlobalAction::Find => 0,
-        AppGlobalAction::OpenEditor => 1,
-        AppGlobalAction::OpenTerminal => 2,
-        AppGlobalAction::Rescan => 3,
-        AppGlobalAction::Clean => 4,
+        AppGlobalAction::Copy => 0,
+        AppGlobalAction::Find => 1,
+        AppGlobalAction::OpenEditor => 2,
+        AppGlobalAction::OpenTerminal => 3,
+        AppGlobalAction::Rescan => 4,
+        AppGlobalAction::Clean => 5,
     }
 }
 
@@ -659,7 +661,9 @@ const _: () = {
 fn build_app_slot(action: AppGlobalAction, app: &App) -> StatusLineGlobal<AppGlobalAction> {
     let selected_project_is_deleted = app.project_list.selected_project_is_deleted();
     let state = match action {
-        AppGlobalAction::Find | AppGlobalAction::Rescan => ShortcutState::Enabled,
+        AppGlobalAction::Copy | AppGlobalAction::Find | AppGlobalAction::Rescan => {
+            ShortcutState::Enabled
+        },
         AppGlobalAction::OpenEditor => {
             if selected_project_is_deleted {
                 ShortcutState::Disabled
@@ -694,9 +698,10 @@ fn cargo_port_status_line_globals(
         build_app_slot(STRIP_APP_GLOBALS_ORDER[1], app),
         build_app_slot(STRIP_APP_GLOBALS_ORDER[2], app),
         build_app_slot(STRIP_APP_GLOBALS_ORDER[3], app),
+        build_app_slot(STRIP_APP_GLOBALS_ORDER[4], app),
         StatusLineGlobal::framework(FrameworkGlobalAction::OpenSettings),
         StatusLineGlobal::framework(FrameworkGlobalAction::OpenKeymap),
-        build_app_slot(STRIP_APP_GLOBALS_ORDER[4], app),
+        build_app_slot(STRIP_APP_GLOBALS_ORDER[5], app),
         StatusLineGlobal::framework(FrameworkGlobalAction::Quit),
         StatusLineGlobal::framework(FrameworkGlobalAction::Restart),
     ]
