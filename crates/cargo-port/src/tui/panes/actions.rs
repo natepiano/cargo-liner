@@ -150,6 +150,26 @@ fn navigate_project_list(app: &mut App, action: NavigationAction) {
         NavigationAction::Down => app.project_list.move_down(),
         NavigationAction::Home => app.project_list.move_to_top(),
         NavigationAction::End => app.project_list.move_to_bottom(),
+        NavigationAction::PageUp => {
+            if let Some(step) = project_list_page_step(app) {
+                app.project_list.move_up_by(step);
+            }
+        },
+        NavigationAction::PageDown => {
+            if let Some(step) = project_list_page_step(app) {
+                app.project_list.move_down_by(step);
+            }
+        },
+        NavigationAction::HalfPageUp => {
+            if let Some(step) = project_list_half_page_step(app) {
+                app.project_list.move_up_by(step);
+            }
+        },
+        NavigationAction::HalfPageDown => {
+            if let Some(step) = project_list_half_page_step(app) {
+                app.project_list.move_down_by(step);
+            }
+        },
         NavigationAction::Right => {
             if !app.expand() {
                 app.project_list.move_down();
@@ -170,24 +190,36 @@ fn navigate_detail(app: &mut App, action: NavigationAction) {
         NavigationAction::Down | NavigationAction::Right => pane.down(),
         NavigationAction::Home => pane.home(),
         NavigationAction::End => pane.end(),
+        NavigationAction::PageUp => pane.page_up(),
+        NavigationAction::PageDown => pane.page_down(),
+        NavigationAction::HalfPageUp => pane.half_page_up(),
+        NavigationAction::HalfPageDown => pane.half_page_down(),
     }
 }
 
-const fn navigate_lints(app: &mut App, action: NavigationAction) {
+fn navigate_lints(app: &mut App, action: NavigationAction) {
     match action {
         NavigationAction::Up | NavigationAction::Left => app.lint.viewport.up(),
         NavigationAction::Down | NavigationAction::Right => app.lint.viewport.down(),
         NavigationAction::Home => app.lint.viewport.home(),
         NavigationAction::End => app.lint.viewport.end(),
+        NavigationAction::PageUp => app.lint.viewport.page_up(),
+        NavigationAction::PageDown => app.lint.viewport.page_down(),
+        NavigationAction::HalfPageUp => app.lint.viewport.half_page_up(),
+        NavigationAction::HalfPageDown => app.lint.viewport.half_page_down(),
     }
 }
 
-const fn navigate_ci_runs(app: &mut App, action: NavigationAction) {
+fn navigate_ci_runs(app: &mut App, action: NavigationAction) {
     match action {
         NavigationAction::Up | NavigationAction::Left => app.ci.viewport.up(),
         NavigationAction::Down | NavigationAction::Right => app.ci.viewport.down(),
         NavigationAction::Home => app.ci.viewport.home(),
         NavigationAction::End => app.ci.viewport.end(),
+        NavigationAction::PageUp => app.ci.viewport.page_up(),
+        NavigationAction::PageDown => app.ci.viewport.page_down(),
+        NavigationAction::HalfPageUp => app.ci.viewport.half_page_up(),
+        NavigationAction::HalfPageDown => app.ci.viewport.half_page_down(),
     }
 }
 
@@ -196,11 +228,25 @@ fn navigate_toasts(app: &mut App, action: NavigationAction) {
         NavigationAction::Up | NavigationAction::Left => app.framework.toasts.viewport.up(),
         NavigationAction::Down | NavigationAction::Right => app.framework.toasts.viewport.down(),
         NavigationAction::Home => app.framework.toasts.viewport.home(),
+        NavigationAction::PageUp => app.framework.toasts.viewport.page_up(),
+        NavigationAction::PageDown => app.framework.toasts.viewport.page_down(),
+        NavigationAction::HalfPageUp => app.framework.toasts.viewport.half_page_up(),
+        NavigationAction::HalfPageDown => app.framework.toasts.viewport.half_page_down(),
         NavigationAction::End => {
             let last_index = app.framework.toasts.active_now().len().saturating_sub(1);
             app.framework.toasts.viewport.set_pos(last_index);
         },
     }
+}
+
+fn project_list_page_step(app: &App) -> Option<usize> {
+    let rows = app.panes.project_list.viewport.visible_rows();
+    (rows > 0).then(|| rows.saturating_sub(1).max(1))
+}
+
+fn project_list_half_page_step(app: &App) -> Option<usize> {
+    let rows = app.panes.project_list.viewport.visible_rows();
+    (rows > 0).then(|| (rows / 2).max(1))
 }
 
 pub(super) fn request_clean(app: &mut App) {
@@ -306,6 +352,10 @@ pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
             NavigationAction::Down => app.ci.viewport.down(),
             NavigationAction::Home => app.ci.viewport.home(),
             NavigationAction::End => app.ci.viewport.end(),
+            NavigationAction::PageUp => app.ci.viewport.page_up(),
+            NavigationAction::PageDown => app.ci.viewport.page_down(),
+            NavigationAction::HalfPageUp => app.ci.viewport.half_page_up(),
+            NavigationAction::HalfPageDown => app.ci.viewport.half_page_down(),
             NavigationAction::Left | NavigationAction::Right => {},
         }
     }

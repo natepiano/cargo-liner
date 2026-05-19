@@ -19,6 +19,7 @@ use crate::FrameworkFocusId;
 use crate::FrameworkOverlayId;
 use crate::GlobalAction;
 use crate::KeyBind;
+use crate::KeySequence;
 use crate::OverlayAction;
 use crate::Pane;
 use crate::TabStop;
@@ -498,8 +499,8 @@ fn vim_mode_preserves_arrow_primaries_for_navigation() {
         .navigation::<AppNav>()
         .expect("nav must be registered");
     assert_eq!(
-        nav.key_for(NavAction::Up),
-        Some(&KeyBind::from(KeyCode::Up))
+        nav.key_for(NavAction::Up).and_then(KeySequence::single_key),
+        Some(KeyBind::from(KeyCode::Up))
     );
 }
 
@@ -705,6 +706,74 @@ fn cross_action_collision_in_toml_surfaces_at_build() {
         Err(KeymapError::CrossActionCollision { .. }) => {},
         Err(other) => panic!("expected CrossActionCollision, got {other:?}"),
         Ok(_) => panic!("expected CrossActionCollision, got Ok"),
+    }
+}
+
+#[test]
+fn vim_mode_rejects_app_global_that_shadows_navigation_chord_prefix() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!(
+        "tui_pane_test_vim_app_global_collision_{}.toml",
+        process::id()
+    ));
+    fs::write(&path, "[global]\nfind = \"g\"\n").expect("write toml");
+    let result = Keymap::<TestApp>::builder()
+        .load_toml(path.clone())
+        .expect("load_toml must succeed")
+        .vim_mode(VimMode::Enabled)
+        .register_navigation::<AppNav>()
+        .expect("nav register must succeed")
+        .register_globals::<AppGlobals>();
+    let _ = std::fs::remove_file(&path);
+    match result {
+        Err(KeymapError::CrossScopeVimCollision {
+            scope,
+            action,
+            key,
+            navigation_key,
+        }) => {
+            assert_eq!(scope, "global");
+            assert_eq!(action, "find");
+            assert_eq!(key, "g");
+            assert_eq!(navigation_key, "g g");
+        },
+        Err(other) => panic!("expected CrossScopeVimCollision, got {other:?}"),
+        Ok(_) => panic!("expected CrossScopeVimCollision, got Ok"),
+    }
+}
+
+#[test]
+fn vim_mode_rejects_framework_global_that_shadows_navigation_chord_prefix() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!(
+        "tui_pane_test_vim_framework_global_collision_{}.toml",
+        process::id()
+    ));
+    fs::write(&path, "[global]\nquit = \"g\"\n").expect("write toml");
+    let result = Keymap::<TestApp>::builder()
+        .load_toml(path.clone())
+        .expect("load_toml must succeed")
+        .vim_mode(VimMode::Enabled)
+        .register_navigation::<AppNav>()
+        .expect("nav register must succeed")
+        .register_globals::<AppGlobals>()
+        .expect("app globals skip framework-owned quit")
+        .build();
+    let _ = std::fs::remove_file(&path);
+    match result {
+        Err(KeymapError::CrossScopeVimCollision {
+            scope,
+            action,
+            key,
+            navigation_key,
+        }) => {
+            assert_eq!(scope, "global");
+            assert_eq!(action, "quit");
+            assert_eq!(key, "g");
+            assert_eq!(navigation_key, "g g");
+        },
+        Err(other) => panic!("expected CrossScopeVimCollision, got {other:?}"),
+        Ok(_) => panic!("expected CrossScopeVimCollision, got Ok"),
     }
 }
 

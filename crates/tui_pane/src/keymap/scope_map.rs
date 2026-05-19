@@ -4,7 +4,7 @@
 //!
 //! - `by_key`:    1-to-1 within a scope. The dispatcher's lookup path.
 //! - `by_action`: 1-to-many. Insertion order preserved per action; the first entry in each
-//!   `Vec<KeyBind>` is the action's primary key (what the bar renders when only one key fits).
+//!   `Vec<KeySequence>` is the action's primary binding (what the bar renders when only one fits).
 //!
 //! Constructed by [`Bindings::into_scope_map`](super::bindings::Bindings::into_scope_map)
 //! and the TOML loader. App code never builds one directly — it
@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 use super::key_bind::KeyBind;
+use super::key_sequence::KeySequence;
 
 /// Resolved binding table for a single scope.
 ///
@@ -27,8 +28,8 @@ use super::key_bind::KeyBind;
 /// vectors. No orphans, no double-counts.
 #[derive(Debug)]
 pub struct ScopeMap<A: Copy + Eq + Hash> {
-    by_key:    HashMap<KeyBind, A>,
-    by_action: HashMap<A, Vec<KeyBind>>,
+    by_key:    HashMap<KeySequence, A>,
+    by_action: HashMap<A, Vec<KeySequence>>,
 }
 
 impl<A: Copy + Eq + Hash> ScopeMap<A> {
@@ -49,26 +50,43 @@ impl<A: Copy + Eq + Hash> ScopeMap<A> {
     /// same `action`. Cross-action collisions inside one scope are bugs
     /// in `defaults()`; the TOML loader catches the same condition for
     /// user input and returns `Err` instead of panicking.
-    pub(super) fn insert(&mut self, key: KeyBind, action: A) {
+    pub(super) fn insert(&mut self, key: impl Into<KeySequence>, action: A) {
+        let key = key.into();
         debug_assert!(
             self.by_key
                 .get(&key)
                 .is_none_or(|&existing| existing == action),
             "ScopeMap::insert: key {key:?} already maps to a different action",
         );
-        if self.by_key.insert(key, action).is_none() {
+        if self.by_key.insert(key.clone(), action).is_none() {
             self.by_action.entry(action).or_default().push(key);
         }
     }
 
     /// Dispatcher lookup: which action does `key` fire?
     #[must_use]
-    pub fn action_for(&self, key: &KeyBind) -> Option<A> { self.by_key.get(key).copied() }
+    pub fn action_for(&self, key: &KeyBind) -> Option<A> {
+        self.by_key.get(&KeySequence::from(*key)).copied()
+    }
+
+    /// Dispatcher lookup for a full sequence.
+    #[must_use]
+    pub fn action_for_sequence(&self, sequence: &KeySequence) -> Option<A> {
+        self.by_key.get(sequence).copied()
+    }
+
+    /// Whether `prefix` is the start of any longer sequence.
+    #[must_use]
+    pub fn has_prefix(&self, prefix: &[KeyBind]) -> bool {
+        self.by_key
+            .keys()
+            .any(|sequence| sequence.starts_with_strict(prefix))
+    }
 
     /// Primary key for `action` — the first key bound to it. The bar
     /// reads this when rendering a `BarRow::Paired` slot.
     #[must_use]
-    pub fn key_for(&self, action: A) -> Option<&KeyBind> {
+    pub fn key_for(&self, action: A) -> Option<&KeySequence> {
         self.by_action.get(&action).and_then(|v| v.first())
     }
 
@@ -77,7 +95,7 @@ impl<A: Copy + Eq + Hash> ScopeMap<A> {
     #[must_use]
     pub fn display_key_for(&self, action: A) -> String {
         self.key_for(action)
-            .map(KeyBind::display)
+            .map(KeySequence::display)
             .unwrap_or_default()
     }
 
@@ -85,7 +103,7 @@ impl<A: Copy + Eq + Hash> ScopeMap<A> {
     /// row joins these with `,` after `display_short`. Returns an empty
     /// slice for unbound actions.
     #[must_use]
-    pub fn display_keys_for(&self, action: A) -> &[KeyBind] {
+    pub fn display_keys_for(&self, action: A) -> &[KeySequence] {
         self.by_action.get(&action).map_or(&[], Vec::as_slice)
     }
 }
@@ -127,8 +145,9 @@ mod tests {
             Some(TestAction::Up),
         );
         assert_eq!(
-            map.key_for(TestAction::Up),
-            Some(&KeyBind::from(KeyCode::Up))
+            map.key_for(TestAction::Up)
+                .and_then(KeySequence::single_key),
+            Some(KeyBind::from(KeyCode::Up))
         );
     }
 
@@ -138,8 +157,9 @@ mod tests {
         map.insert(KeyBind::from(KeyCode::Up), TestAction::Up);
         map.insert(KeyBind::from('k'), TestAction::Up);
         assert_eq!(
-            map.key_for(TestAction::Up),
-            Some(&KeyBind::from(KeyCode::Up))
+            map.key_for(TestAction::Up)
+                .and_then(KeySequence::single_key),
+            Some(KeyBind::from(KeyCode::Up))
         );
         assert_eq!(
             map.display_keys_for(TestAction::Up),
@@ -175,6 +195,6 @@ mod tests {
         let mut map = ScopeMap::new();
         map.insert(KeyBind::ctrl('k'), TestAction::Up);
         map.insert(KeyBind::from('k'), TestAction::Up);
-        assert_eq!(map.display_key_for(TestAction::Up), "Ctrl+k");
+        assert_eq!(map.display_key_for(TestAction::Up), "ctrl-k");
     }
 }

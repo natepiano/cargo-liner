@@ -275,6 +275,7 @@ impl AppBuilder<Started> {
             mouse_pos: None,
             framework,
             framework_keymap: Rc::new(framework_keymap),
+            pending_nav_chord: Vec::new(),
         };
         app.finish_new();
         Ok(app)

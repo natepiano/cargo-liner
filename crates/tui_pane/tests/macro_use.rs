@@ -18,6 +18,7 @@ use tui_pane::Framework;
 use tui_pane::FrameworkFocusId;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
+use tui_pane::KeySequence;
 use tui_pane::Mode;
 use tui_pane::Navigation;
 use tui_pane::Pane;
@@ -115,8 +116,9 @@ fn bindings_macro_works_from_outside_crate() {
         Some(CrossCrateAction::Beta),
     );
     assert_eq!(
-        map.key_for(CrossCrateAction::Beta),
-        Some(&KeyBind::from('b')),
+        map.key_for(CrossCrateAction::Beta)
+            .and_then(KeySequence::single_key),
+        Some(KeyBind::from('b')),
         "first key in list arm is primary",
     );
 

@@ -7,6 +7,7 @@ mod global_action;
 mod globals;
 mod key_bind;
 mod key_outcome;
+mod key_sequence;
 mod load;
 mod navigation;
 mod runtime_scope;
@@ -34,6 +35,7 @@ pub use globals::Globals;
 pub use key_bind::KeyBind;
 pub use key_bind::KeyParseError;
 pub use key_outcome::KeyOutcome;
+pub use key_sequence::KeySequence;
 pub use load::KeymapError;
 pub use navigation::Navigation;
 pub use runtime_scope::RenderedSlot;
@@ -219,7 +221,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// if no scope is registered for `id`, the action name is not
     /// recognized, or the named action has no binding.
     #[must_use]
-    pub fn key_for_toml_key(&self, id: Ctx::AppPaneId, action: &str) -> Option<KeyBind> {
+    pub fn key_for_toml_key(&self, id: Ctx::AppPaneId, action: &str) -> Option<KeySequence> {
         self.scopes.get(&id)?.key_for_toml_key(action)
     }
 
@@ -228,7 +230,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// vector if no scope is registered for `id`, the action name is
     /// not recognized, or the named action has no binding.
     #[must_use]
-    pub fn keys_for_toml_key(&self, id: Ctx::AppPaneId, action: &str) -> Vec<KeyBind> {
+    pub fn keys_for_toml_key(&self, id: Ctx::AppPaneId, action: &str) -> Vec<KeySequence> {
         self.scopes
             .get(&id)
             .map_or_else(Vec::new, |scope| scope.keys_for_toml_key(action))
@@ -609,7 +611,7 @@ mod tests {
         );
         assert_eq!(
             keymap.key_for_toml_key(TestPaneId::Foo, "clean"),
-            Some(KeyBind::from('c')),
+            Some(KeyBind::from('c').into()),
         );
         assert!(
             keymap

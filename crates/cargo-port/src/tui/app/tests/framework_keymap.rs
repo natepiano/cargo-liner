@@ -777,11 +777,11 @@ fn keymap_ui_save_preserves_framework_owned_scopes() {
     let saved = fs::read_to_string(&toml_path).expect("read keymap toml");
 
     assert!(saved.contains("[finder]"));
-    assert!(saved.contains("activate = \"Tab\""));
+    assert!(saved.contains("activate = \"tab\""));
     assert!(saved.contains("[output]"));
     assert!(saved.contains("cancel = \"q\""));
     assert!(saved.contains("[overlay]"));
-    assert!(saved.contains("start_edit = \"F2\""));
+    assert!(saved.contains("start_edit = \"f2\""));
 }
 
 #[test]
@@ -803,10 +803,10 @@ fn external_keymap_reload_updates_framework_owned_scope() {
     assert_eq!(
         app.framework_keymap
             .key_for_toml_key(AppPaneId::Output, OutputAction::Cancel.toml_key()),
-        Some(KeyBind {
+        Some(tui_pane::KeySequence::from(KeyBind {
             code: KeyCode::Char('q'),
             mods: KeyModifiers::NONE,
-        }),
+        })),
     );
 }
 
@@ -854,7 +854,7 @@ fn legacy_project_list_removed_actions_migrate_before_framework_load() {
     );
     assert_eq!(
         global.get("rescan").and_then(toml::Value::as_str),
-        Some("Ctrl+r"),
+        Some("ctrl-r"),
     );
 }
 

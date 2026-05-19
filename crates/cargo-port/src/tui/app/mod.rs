@@ -67,6 +67,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::layout::Position;
+use tui_pane::KeyBind;
 use tui_pane::ToastId;
 use tui_pane::ToastStyle::Warning;
 use tui_pane::TrackedItem;
@@ -352,6 +353,7 @@ pub(super) struct App {
     /// `keymap` field; the legacy path remains authoritative for broad
     /// key dispatch.
     pub(super) framework_keymap:   Rc<FrameworkKeymap<Self>>,
+    pub(super) pending_nav_chord:  Vec<KeyBind>,
 }
 
 impl App {

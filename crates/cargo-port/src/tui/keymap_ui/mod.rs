@@ -9,6 +9,7 @@ use ratatui::text::Line;
 use tui_pane::Action;
 use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::KeyBind as FrameworkKeyBind;
+use tui_pane::KeySequence;
 use tui_pane::KeymapCaptureCommand;
 use tui_pane::OverlayAction;
 use tui_pane::Pane;
@@ -43,11 +44,11 @@ use super::keymap::TargetsAction;
 
 // ── Row model ────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PendingRebind {
     scope:  &'static str,
     action: &'static str,
-    bind:   FrameworkKeyBind,
+    bind:   KeySequence,
 }
 
 #[derive(Clone)]
@@ -57,7 +58,7 @@ struct KeymapRow {
     action:      &'static str,
     description: &'static str,
     key_display: String,
-    bind:        Option<FrameworkKeyBind>,
+    bind:        Option<KeySequence>,
     is_header:   bool,
 }
 
@@ -73,8 +74,8 @@ const fn header(section: &'static str) -> KeymapRow {
     }
 }
 
-fn bind_display(bind: Option<FrameworkKeyBind>) -> String {
-    bind.map_or_else(String::new, |key| key.display())
+fn bind_display(bind: Option<&KeySequence>) -> String {
+    bind.map_or_else(String::new, KeySequence::display)
 }
 
 fn action_toml_key<A: Action>(action: A) -> &'static str { action.toml_key() }
@@ -84,7 +85,7 @@ fn action_row<A: Action>(
     scope: &'static str,
     action: A,
     toml_key: &'static str,
-    bind: Option<FrameworkKeyBind>,
+    bind: Option<KeySequence>,
 ) -> KeymapRow {
     action_row_with_description(section, scope, action.description(), toml_key, bind)
 }
@@ -94,14 +95,14 @@ fn action_row_with_description(
     scope: &'static str,
     description: &'static str,
     toml_key: &'static str,
-    bind: Option<FrameworkKeyBind>,
+    bind: Option<KeySequence>,
 ) -> KeymapRow {
     KeymapRow {
         section,
         scope,
         action: toml_key,
         description,
-        key_display: bind_display(bind),
+        key_display: bind_display(bind.as_ref()),
         bind,
         is_header: false,
     }
@@ -119,7 +120,7 @@ fn push_scope<A: Action>(
     let mut section: Vec<KeymapRow> = actions
         .iter()
         .map(|&action| {
-            let bind = scope_map.key_for(action).copied();
+            let bind = scope_map.key_for(action).cloned();
             action_row(section, scope, action, toml_key(action), bind)
         })
         .collect();
@@ -256,7 +257,7 @@ fn push_global_rows(rows: &mut Vec<KeymapRow>, app: &App) {
                 "global",
                 action,
                 action.toml_key(),
-                scope.key_for(action).copied(),
+                scope.key_for(action).cloned(),
             )
         }));
     }
@@ -278,7 +279,7 @@ fn framework_global_row(
         "global",
         framework_global_description(action),
         framework_global_toml_key(action),
-        scope.key_for(action).copied(),
+        scope.key_for(action).cloned(),
     )
 }
 
@@ -415,6 +416,8 @@ pub(super) fn handle_keymap_navigation_key(app: &mut App, normalized: &KeyEvent)
             let last = selectable_row_count(app).saturating_sub(1);
             app.framework.keymap_pane.viewport_mut().set_pos(last);
         },
+        KeyCode::PageUp => app.framework.keymap_pane.viewport_mut().page_up(),
+        KeyCode::PageDown => app.framework.keymap_pane.viewport_mut().page_down(),
         KeyCode::Enter => {
             app.overlays.clear_inline_error();
             app.framework.keymap_pane.enter_awaiting();
@@ -453,6 +456,8 @@ fn handle_captured_bind(app: &mut App, bind: FrameworkKeyBind) {
                 | KeyCode::Right
                 | KeyCode::Home
                 | KeyCode::End
+                | KeyCode::PageUp
+                | KeyCode::PageDown
         )
     {
         reject_capture(
@@ -542,7 +547,7 @@ fn find_conflict(
     rows.iter()
         .filter(|row| !row.is_header)
         .filter(|row| predicate(row))
-        .filter(|row| row.bind == Some(bind))
+        .filter(|row| row.bind.as_ref().and_then(KeySequence::single_key) == Some(bind))
         .find(|row| row.scope != current.scope || row.action != current.action)
         .map(|row| {
             format!(
@@ -555,23 +560,21 @@ fn find_conflict(
 }
 
 fn apply_rebind(app: &mut App, scope: &'static str, action: &'static str, bind: FrameworkKeyBind) {
-    save_keymap_to_disk(
-        app,
-        Some(PendingRebind {
-            scope,
-            action,
-            bind,
-        }),
-    );
+    let pending = PendingRebind {
+        scope,
+        action,
+        bind: bind.into(),
+    };
+    save_keymap_to_disk(app, Some(&pending));
 }
 
 pub(super) fn save_current_keymap_to_disk(app: &mut App) { save_keymap_to_disk(app, None); }
 
-fn save_keymap_to_disk(app: &mut App, pending: Option<PendingRebind>) {
+fn save_keymap_to_disk(app: &mut App, pending: Option<&PendingRebind>) {
     let Some(path) = app.keymap.path() else {
         return;
     };
-    let content = current_keymap_toml_with_pending(app, pending.as_ref());
+    let content = current_keymap_toml_with_pending(app, pending);
     // TODO(toml_edit): use toml_edit for targeted updates preserving comments.
     let _ = std::fs::write(path, &content);
     let legacy = keymap::load_keymap_from_str(&content, app.config.current().tui.navigation_keys);
@@ -590,9 +593,10 @@ pub(super) fn current_keymap_toml(app: &App) -> String {
 fn current_keymap_toml_with_pending(app: &App, pending: Option<&PendingRebind>) -> String {
     let mut out = String::from(
         "# cargo-port keymap configuration\n\
-         # Edit bindings below. Format: action = \"Key\" or \"Modifier+Key\"\n\
-         # Modifiers: Ctrl, Alt, Shift.  Examples: \"Ctrl+r\", \"Shift+Tab\", \"q\"\n\
-         # Note: when vim navigation is enabled, h/j/k/l are reserved\n\
+         # Edit bindings below. Format: action = \"key\" or \"modifier-key\"\n\
+         # Modifiers: ctrl, alt, shift.  Examples: \"ctrl-r\", \"shift-tab\", \"q\"\n\
+         # Chord steps are space-separated, e.g. \"g g\".\n\
+         # Note: when vim navigation is enabled, vim navigation keys are reserved\n\
          #       for navigation and cannot be used as action keys.\n\n",
     );
 
@@ -725,7 +729,7 @@ fn write_overlay_sections(out: &mut String, app: &App, pending: Option<&PendingR
 #[derive(Clone)]
 struct TomlEntry {
     action: &'static str,
-    binds:  Vec<FrameworkKeyBind>,
+    binds:  Vec<KeySequence>,
 }
 
 fn global_entries(app: &App) -> Vec<TomlEntry> {
@@ -796,14 +800,14 @@ fn write_section(
             .filter(|pending| pending.scope == scope && pending.action == entry.action)
             .map_or_else(
                 || keybind_toml_value(&entry.binds),
-                |pending| keybind_toml_value(&[pending.bind]),
+                |pending| keybind_toml_value(std::slice::from_ref(&pending.bind)),
             );
         let _ = writeln!(out, "{:<max_len$} = {}", entry.action, value);
     }
     out.push('\n');
 }
 
-fn keybind_toml_value(binds: &[FrameworkKeyBind]) -> String {
+fn keybind_toml_value(binds: &[KeySequence]) -> String {
     match binds {
         [] => "\"\"".to_string(),
         [bind] => format!("\"{}\"", bind.display()),
@@ -823,7 +827,7 @@ pub(super) fn vim_mode_conflicts(app: &App) -> Vec<String> {
         .into_iter()
         .filter(|row| !row.is_header)
         .filter_map(|row| {
-            let bind = row.bind?;
+            let bind = row.bind?.single_key()?;
             (bind.mods == KeyModifiers::NONE
                 && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l')))
             .then(|| format!("{}.{}", row.scope, row.action))

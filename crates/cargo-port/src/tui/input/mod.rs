@@ -26,6 +26,7 @@ use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
 use tui_pane::KeyOutcome;
+use tui_pane::KeySequence;
 use tui_pane::Mode;
 use tui_pane::Navigation;
 use tui_pane::Pane;
@@ -135,6 +136,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
             &bind,
         )
     {
+        app.pending_nav_chord.clear();
         let was_on_output = app.focus_is(PaneId::Output);
         app.inflight.example_output_mut().clear();
         if was_on_output {
@@ -143,28 +145,35 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
         return;
     }
     if handle_confirm_key(app, code) {
+        app.pending_nav_chord.clear();
         return;
     }
     if dispatch_framework_overlay(app, &bind, &normalized) {
+        app.pending_nav_chord.clear();
         return;
     }
     if dispatch_finder_overlay(app, &bind) {
+        app.pending_nav_chord.clear();
         return;
     }
     let focused = *app.framework.focused();
     let focused_on_toasts = matches!(focused, FocusedPane::Framework(FrameworkFocusId::Toasts));
     if focused_on_toasts && dispatch_focused_toasts(app, &bind) {
+        app.pending_nav_chord.clear();
         return;
     }
     if dispatch_framework_global(app, &bind) {
+        app.pending_nav_chord.clear();
         return;
     }
     if dispatch_app_global(app, &bind) {
+        app.pending_nav_chord.clear();
         return;
     }
     if let FocusedPane::App(id) = focused
         && dispatch_focused_app_pane(app, id, &bind)
     {
+        app.pending_nav_chord.clear();
         return;
     }
     let _ = dispatch_navigation(app, focused, &bind);
@@ -330,11 +339,32 @@ fn dispatch_navigation(app: &mut App, focused: FocusedPane<AppPaneId>, bind: &Ke
     let Some(nav_scope) = keymap.navigation::<AppNavigation>() else {
         return false;
     };
-    let Some(action) = nav_scope.action_for(bind) else {
-        return false;
-    };
-    (AppNavigation::dispatcher())(action, focused, app);
-    true
+    app.pending_nav_chord.push(*bind);
+    let pending = KeySequence::new(app.pending_nav_chord.clone());
+    if let Some(action) = nav_scope.action_for_sequence(&pending)
+        && !nav_scope.has_prefix(pending.keys())
+    {
+        app.pending_nav_chord.clear();
+        (AppNavigation::dispatcher())(action, focused, app);
+        return true;
+    }
+    if nav_scope.has_prefix(pending.keys()) {
+        return true;
+    }
+
+    app.pending_nav_chord.clear();
+    let single = KeySequence::from(*bind);
+    if let Some(action) = nav_scope.action_for_sequence(&single)
+        && !nav_scope.has_prefix(single.keys())
+    {
+        (AppNavigation::dispatcher())(action, focused, app);
+        return true;
+    }
+    if nav_scope.has_prefix(single.keys()) {
+        app.pending_nav_chord.push(*bind);
+        return true;
+    }
+    false
 }
 
 fn focused_text_input_mode(app: &App) -> bool {

@@ -62,6 +62,10 @@ fn parse_keybind(s: &str) -> Result<KeyBind, String> {
         return Ok(KeyBind::plain(KeyCode::Char('+')));
     }
 
+    if s.contains('-') && s != "-" {
+        return parse_hyphen_keybind(s);
+    }
+
     let parts: Vec<&str> = s.split('+').collect();
 
     // Single-character key with no modifiers: e.g. "q", "/", "-"
@@ -81,6 +85,31 @@ fn parse_keybind(s: &str) -> Result<KeyBind, String> {
     let mut modifiers = KeyModifiers::NONE;
     for modifier in modifier_parts {
         match modifier.to_lowercase().as_str() {
+            "ctrl" | "control" => modifiers |= KeyModifiers::CONTROL,
+            "alt" | "option" => modifiers |= KeyModifiers::ALT,
+            "shift" => modifiers |= KeyModifiers::SHIFT,
+            other => return Err(format!("unknown modifier: \"{other}\"")),
+        }
+    }
+
+    let code = parse_key_code(key_part)?;
+    Ok(KeyBind::new(code, modifiers))
+}
+
+fn parse_hyphen_keybind(s: &str) -> Result<KeyBind, String> {
+    let parts: Vec<&str> = s.split('-').collect();
+    let (modifier_parts, key_part) = parts.split_at(parts.len().saturating_sub(1));
+    let key_part = key_part
+        .first()
+        .copied()
+        .ok_or_else(|| format!("modifier with no key: \"{s}\""))?;
+    if key_part.is_empty() {
+        return Err(format!("modifier with no key: \"{s}\""));
+    }
+
+    let mut modifiers = KeyModifiers::NONE;
+    for modifier in modifier_parts {
+        match *modifier {
             "ctrl" | "control" => modifiers |= KeyModifiers::CONTROL,
             "alt" | "option" => modifiers |= KeyModifiers::ALT,
             "shift" => modifiers |= KeyModifiers::SHIFT,

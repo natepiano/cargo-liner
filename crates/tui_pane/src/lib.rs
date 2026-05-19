@@ -74,6 +74,7 @@ pub use keymap::Globals;
 pub use keymap::KeyBind;
 pub use keymap::KeyOutcome;
 pub(crate) use keymap::KeyParseError;
+pub use keymap::KeySequence;
 pub use keymap::Keymap;
 pub use keymap::KeymapBuilder;
 pub use keymap::KeymapError;

@@ -64,6 +64,22 @@ pub enum KeymapError {
         actions: (String, String),
     },
 
+    /// A higher-priority scope binds a key that would prevent a vim
+    /// navigation binding from being reached.
+    #[error(
+        "key '{key}' in [{scope}].{action} conflicts with vim navigation binding '{navigation_key}'"
+    )]
+    CrossScopeVimCollision {
+        /// TOML scope the higher-priority binding belongs to.
+        scope:          String,
+        /// Action whose binding conflicts with the vim navigation key.
+        action:         String,
+        /// The higher-priority binding string.
+        key:            String,
+        /// The vim navigation binding that would be shadowed.
+        navigation_key: String,
+    },
+
     /// A TOML key string failed [`KeyBind::parse`](super::key_bind::KeyBind::parse).
     #[error("invalid binding for {scope}.{action}")]
     InvalidBinding {
@@ -146,6 +162,20 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "key 'q' bound to both quit and find in [global]",
+        );
+    }
+
+    #[test]
+    fn display_cross_scope_vim_collision() {
+        let err = KeymapError::CrossScopeVimCollision {
+            scope:          "global".to_string(),
+            action:         "find".to_string(),
+            key:            "g".to_string(),
+            navigation_key: "g g".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "key 'g' in [global].find conflicts with vim navigation binding 'g g'",
         );
     }
 

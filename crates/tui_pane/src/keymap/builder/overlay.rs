@@ -7,8 +7,8 @@ use toml::Value;
 use crate::Action;
 use crate::Bindings;
 use crate::GlobalAction;
-use crate::KeyBind;
 use crate::KeyParseError;
+use crate::KeySequence;
 use crate::KeymapError;
 
 /// Walk `[scope_name]` in the parsed TOML table (if present) and
@@ -77,12 +77,19 @@ pub(super) fn framework_global_action_key_set() -> HashSet<&'static str> {
     keys
 }
 
-/// Parse a TOML scope entry value into `Vec<KeyBind>`. Accepts a
+/// Parse a TOML scope entry value into `Vec<KeySequence>`. Accepts a
 /// single string or an array of strings.
-fn parse_toml_value(scope: &str, action: &str, value: &Value) -> Result<Vec<KeyBind>, KeymapError> {
+fn parse_toml_value(
+    scope: &str,
+    action: &str,
+    value: &Value,
+) -> Result<Vec<KeySequence>, KeymapError> {
     match value {
         Value::String(s) => {
-            let bind = KeyBind::parse(s).map_err(|source| KeymapError::InvalidBinding {
+            if s.is_empty() {
+                return Ok(Vec::new());
+            }
+            let bind = KeySequence::parse(s).map_err(|source| KeymapError::InvalidBinding {
                 scope: scope.to_string(),
                 action: action.to_string(),
                 source,
@@ -97,7 +104,7 @@ fn parse_toml_value(scope: &str, action: &str, value: &Value) -> Result<Vec<KeyB
                     action: action.to_string(),
                     source: KeyParseError::Empty,
                 })?;
-                let bind = KeyBind::parse(s).map_err(|source| KeymapError::InvalidBinding {
+                let bind = KeySequence::parse(s).map_err(|source| KeymapError::InvalidBinding {
                     scope: scope.to_string(),
                     action: action.to_string(),
                     source,
@@ -119,7 +126,7 @@ fn parse_toml_value(scope: &str, action: &str, value: &Value) -> Result<Vec<KeyB
 fn check_in_array_duplicates(
     scope: &str,
     action: &str,
-    keys: &[KeyBind],
+    keys: &[KeySequence],
 ) -> Result<(), KeymapError> {
     for (i, key) in keys.iter().enumerate() {
         if keys[..i].iter().any(|k| k == key) {
@@ -139,7 +146,7 @@ fn check_cross_action_collision<A: Action>(
     scope: &str,
     bindings: &Bindings<A>,
 ) -> Result<(), KeymapError> {
-    let mut seen: HashMap<KeyBind, A> = HashMap::new();
+    let mut seen: HashMap<KeySequence, A> = HashMap::new();
     for (key, action) in bindings_entries(bindings) {
         if let Some(existing) = seen.get(key)
             && *existing != *action
@@ -153,12 +160,29 @@ fn check_cross_action_collision<A: Action>(
                 ),
             });
         }
-        seen.insert(*key, *action);
+        seen.insert(key.clone(), *action);
+    }
+    let entries = bindings_entries(bindings).collect::<Vec<_>>();
+    for (idx, (left_key, left_action)) in entries.iter().enumerate() {
+        for (right_key, right_action) in entries.iter().skip(idx + 1) {
+            if left_key.starts_with_strict(right_key.keys())
+                || right_key.starts_with_strict(left_key.keys())
+            {
+                return Err(KeymapError::CrossActionCollision {
+                    scope:   scope.to_string(),
+                    key:     format!("{} / {}", left_key.display(), right_key.display()),
+                    actions: (
+                        left_action.toml_key().to_string(),
+                        right_action.toml_key().to_string(),
+                    ),
+                });
+            }
+        }
     }
     Ok(())
 }
 
 /// Borrow the entries of a [`Bindings`] in insertion order.
-fn bindings_entries<A>(bindings: &Bindings<A>) -> impl Iterator<Item = (&KeyBind, &A)> {
+fn bindings_entries<A>(bindings: &Bindings<A>) -> impl Iterator<Item = (&KeySequence, &A)> {
     bindings.entries().iter().map(|(k, a)| (k, a))
 }

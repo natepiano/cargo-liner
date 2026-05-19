@@ -914,6 +914,18 @@ impl ProjectList {
         }
     }
 
+    pub(super) const fn move_up_by(&mut self, step: usize) {
+        self.cursor = self.cursor.saturating_sub(step);
+    }
+
+    pub(super) fn move_down_by(&mut self, step: usize) {
+        let count = self.row_count();
+        if count == 0 {
+            return;
+        }
+        self.cursor = self.cursor.saturating_add(step).min(count - 1);
+    }
+
     pub(super) const fn move_to_top(&mut self) {
         if self.row_count() > 0 {
             self.cursor = 0;

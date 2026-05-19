@@ -45,7 +45,7 @@ pub(super) fn render<Ctx: AppContext + 'static>(
         slot_by_label(&navigation_slots, "up"),
         slot_by_label(&navigation_slots, "down"),
     ) {
-        support::push_paired(&mut spans, up.key, down.key, "nav", palette);
+        support::push_paired(&mut spans, &up.key, &down.key, "nav", palette);
     }
 
     // Pane-emitted nav slots (rare — most panes leave nav to the
@@ -56,11 +56,11 @@ pub(super) fn render<Ctx: AppContext + 'static>(
 
     // Pane-cycle row from the framework globals. Advertises the
     // forward key only ("Tab pane") even though Shift+Tab also works.
-    if let Some(&next) = keymap.framework_globals().key_for(GlobalAction::NextPane) {
+    if let Some(next) = keymap.framework_globals().key_for(GlobalAction::NextPane) {
         let slot = RenderedSlot {
             region:        BarRegion::Nav,
             label:         "pane",
-            key:           next,
+            key:           next.clone(),
             state:         ShortcutState::Enabled,
             visibility:    Visibility::Visible,
             secondary_key: None,

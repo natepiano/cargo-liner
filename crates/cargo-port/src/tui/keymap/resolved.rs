@@ -128,10 +128,10 @@ impl ResolvedKeymap {
         let km = Self::defaults();
         let mut out = String::from(
             "# cargo-port keymap configuration\n\
-             # Edit bindings below. Format: action = \"Key\" or \"Modifier+Key\"\n\
-             # Modifiers: Ctrl, Alt, Shift.  Examples: \"Ctrl+r\", \"Shift+Tab\", \"q\"\n\
+             # Edit bindings below. Format: action = \"key\" or \"modifier-key\"\n\
+             # Modifiers: ctrl, alt, shift.  Examples: \"ctrl-r\", \"shift-tab\", \"q\"\n\
              # Note: = and + are treated as the same physical key.\n\
-             # Note: when vim navigation is enabled, h/j/k/l are reserved\n\
+             # Note: when vim navigation is enabled, vim navigation keys are reserved\n\
              #       for navigation and cannot be used as action keys.\n\n",
         );
 

@@ -17,7 +17,7 @@
 use ratatui::text::Span;
 
 use super::BarPalette;
-use crate::KeyBind;
+use crate::KeySequence;
 use crate::ShortcutState;
 use crate::keymap::RenderedSlot;
 
@@ -28,8 +28,8 @@ const SEPARATOR: &str = "  ";
 /// separator first when `spans` already contains slots for this
 /// region.
 pub(super) fn push_slot(spans: &mut Vec<Span<'static>>, slot: &RenderedSlot, palette: &BarPalette) {
-    if let Some(secondary_key) = slot.secondary_key {
-        push_paired(spans, slot.key, secondary_key, slot.label, palette);
+    if let Some(secondary_key) = &slot.secondary_key {
+        push_paired(spans, &slot.key, secondary_key, slot.label, palette);
         return;
     }
     if !spans.is_empty() {
@@ -51,8 +51,8 @@ pub(super) fn push_slot(spans: &mut Vec<Span<'static>>, slot: &RenderedSlot, pal
 /// `Enabled` — the palette's enabled styles apply.
 pub(super) fn push_paired(
     spans: &mut Vec<Span<'static>>,
-    primary: KeyBind,
-    secondary: KeyBind,
+    primary: &KeySequence,
+    secondary: &KeySequence,
     label: &'static str,
     palette: &BarPalette,
 ) {
@@ -86,6 +86,7 @@ mod tests {
     use super::push_slot;
     use crate::BarRegion;
     use crate::KeyBind;
+    use crate::KeySequence;
     use crate::ShortcutState;
     use crate::Visibility;
     use crate::keymap::RenderedSlot;
@@ -94,7 +95,7 @@ mod tests {
         RenderedSlot {
             region: BarRegion::PaneAction,
             label,
-            key,
+            key: key.into(),
             state: ShortcutState::Enabled,
             visibility: Visibility::Visible,
             secondary_key: None,
@@ -132,8 +133,8 @@ mod tests {
         let mut spans = Vec::new();
         push_paired(
             &mut spans,
-            KeyBind::from(KeyCode::Up),
-            KeyBind::from(KeyCode::Down),
+            &KeyBind::from(KeyCode::Up).into(),
+            &KeyBind::from(KeyCode::Down).into(),
             "nav",
             &palette,
         );
@@ -147,7 +148,7 @@ mod tests {
         let palette = BarPalette::default();
         let mut spans = Vec::new();
         let mut slot = rendered("expand", KeyBind::from(KeyCode::Left));
-        slot.secondary_key = Some(KeyBind::from(KeyCode::Right));
+        slot.secondary_key = Some(KeySequence::from(KeyBind::from(KeyCode::Right)));
 
         push_slot(&mut spans, &slot, &palette);
 

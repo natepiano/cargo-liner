@@ -163,6 +163,10 @@ tui_pane::action_enum! {
         Right => ("right", "right", "Move right");
         Home  => ("home",  "home",  "Jump to start");
         End   => ("end",   "end",   "Jump to end");
+        PageUp       => ("page_up",       "page up",       "Page up");
+        PageDown     => ("page_down",     "page down",     "Page down");
+        HalfPageUp   => ("half_page_up",   "half up",       "Half-page up");
+        HalfPageDown => ("half_page_down", "half down",     "Half-page down");
     }
 }
 
@@ -216,7 +220,11 @@ impl Navigation<App> for AppNavigation {
     const DOWN: Self::Actions = NavigationAction::Down;
     const END: Self::Actions = NavigationAction::End;
     const HOME: Self::Actions = NavigationAction::Home;
+    const HALF_PAGE_DOWN: Self::Actions = NavigationAction::HalfPageDown;
+    const HALF_PAGE_UP: Self::Actions = NavigationAction::HalfPageUp;
     const LEFT: Self::Actions = NavigationAction::Left;
+    const PAGE_DOWN: Self::Actions = NavigationAction::PageDown;
+    const PAGE_UP: Self::Actions = NavigationAction::PageUp;
     const RIGHT: Self::Actions = NavigationAction::Right;
     const UP: Self::Actions = NavigationAction::Up;
 
@@ -228,6 +236,8 @@ impl Navigation<App> for AppNavigation {
             crossterm::event::KeyCode::Right => NavigationAction::Right,
             crossterm::event::KeyCode::Home  => NavigationAction::Home,
             crossterm::event::KeyCode::End   => NavigationAction::End,
+            crossterm::event::KeyCode::PageUp   => NavigationAction::PageUp,
+            crossterm::event::KeyCode::PageDown => NavigationAction::PageDown,
         }
     }
 
@@ -782,8 +792,8 @@ mod tests {
     }
 
     #[test]
-    fn nav_action_count_is_six() {
-        assert_eq!(NavigationAction::ALL.len(), 6);
+    fn nav_action_count_includes_paging_actions() {
+        assert_eq!(NavigationAction::ALL.len(), 10);
     }
 
     #[test]

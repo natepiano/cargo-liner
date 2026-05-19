@@ -45,6 +45,10 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             ListNavigation::Down => self.viewport.down(),
             ListNavigation::Home => self.viewport.home(),
             ListNavigation::End => self.viewport.end(),
+            ListNavigation::PageUp => self.viewport.page_up(),
+            ListNavigation::PageDown => self.viewport.page_down(),
+            ListNavigation::HalfPageUp => self.viewport.half_page_up(),
+            ListNavigation::HalfPageDown => self.viewport.half_page_down(),
         }
         KeyOutcome::Consumed
     }

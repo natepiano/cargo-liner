@@ -51,6 +51,8 @@ use overlay::apply_toml_overlay_with_peer;
 use overlay::framework_global_action_key_set;
 use registration::apply_vim_navigation_extras;
 use registration::build_pane_bindings;
+use registration::check_reserved_vim_navigation_keys;
+use registration::reserved_vim_navigation_keys;
 
 /// `Box<dyn Any>`-erased typed singleton. The builder stores the
 /// `ScopeMap<X::Actions>` from a `Navigation` / `Globals` impl behind
@@ -132,6 +134,7 @@ pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
     /// [`Self::navigation_render_fn`].
     globals_render_fn:     Option<ScopeRenderFn<Ctx>>,
     overlay_scope:         Option<ScopeMap<OverlayAction>>,
+    vim_reserved_keys:     Vec<super::KeySequence>,
     deferred_error:        Option<KeymapError>,
     _state:                PhantomData<State>,
 }
@@ -159,6 +162,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             globals_action_keys:   None,
             globals_render_fn:     None,
             overlay_scope:         None,
+            vim_reserved_keys:     Vec::new(),
             deferred_error:        None,
             _state:                PhantomData,
         }
@@ -249,11 +253,13 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     pub fn register_navigation<N: Navigation<Ctx>>(mut self) -> Result<Self, KeymapError> {
         let defaults = N::defaults();
         let scope_name = <N as Navigation<Ctx>>::SCOPE_NAME;
-        let mut bindings =
-            apply_toml_overlay::<N::Actions>(scope_name, defaults, self.toml_table.as_ref())?;
+        let mut bindings = defaults;
         if matches!(self.vim_mode, VimMode::Enabled) {
             apply_vim_navigation_extras::<Ctx, N>(&mut bindings);
+            self.vim_reserved_keys = reserved_vim_navigation_keys::<Ctx, N>();
         }
+        let bindings =
+            apply_toml_overlay::<N::Actions>(scope_name, bindings, self.toml_table.as_ref())?;
         let scope_map: ScopeMap<N::Actions> = bindings.into_scope_map();
         self.navigation_scope = Some(Box::new(scope_map));
         self.navigation_scope_name = Some(scope_name);
@@ -281,6 +287,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             self.toml_table.as_ref(),
             peer_keys,
         )?;
+        check_reserved_vim_navigation_keys(scope_name, &bindings, &self.vim_reserved_keys)?;
         let scope_map: ScopeMap<G::Actions> = bindings.into_scope_map();
         self.globals_scope = Some(Box::new(scope_map));
         self.globals_scope_name = Some(scope_name);
@@ -495,6 +502,7 @@ fn transition<Ctx: AppContext + 'static>(
         globals_action_keys:   src.globals_action_keys,
         globals_render_fn:     src.globals_render_fn,
         overlay_scope:         src.overlay_scope,
+        vim_reserved_keys:     src.vim_reserved_keys,
         deferred_error:        src.deferred_error,
         _state:                PhantomData,
     }

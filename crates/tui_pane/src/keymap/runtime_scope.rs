@@ -19,6 +19,7 @@ use super::Action;
 use super::Globals;
 use super::KeyBind;
 use super::KeyOutcome;
+use super::KeySequence;
 use super::Keymap;
 use super::Navigation;
 use super::ScopeMap;
@@ -41,16 +42,16 @@ pub(crate) trait RuntimeScope<Ctx: AppContext>: 'static {
     /// from the returned `Vec`.
     fn render_bar_slots(&self, ctx: &Ctx) -> Vec<RenderedSlot>;
 
-    /// Reverse lookup: TOML key string → bound [`KeyBind`].
+    /// Reverse lookup: TOML key string → bound [`KeySequence`].
     /// Returns `None` if `key` does not name an action in this scope's
     /// action enum, or if the named action has no binding.
-    fn key_for_toml_key(&self, key: &str) -> Option<KeyBind>;
+    fn key_for_toml_key(&self, key: &str) -> Option<KeySequence>;
 
-    /// Reverse lookup: TOML key string → every bound [`KeyBind`].
+    /// Reverse lookup: TOML key string → every bound [`KeySequence`].
     /// Returns an empty vector if `key` does not name an action in
     /// this scope's action enum, or if the named action has no
     /// binding.
-    fn keys_for_toml_key(&self, key: &str) -> Vec<KeyBind>;
+    fn keys_for_toml_key(&self, key: &str) -> Vec<KeySequence>;
 
     /// Predicate form of [`Self::key_for_toml_key`] that checks every
     /// key bound to the action, not just its primary display key.
@@ -64,14 +65,14 @@ pub(crate) trait RuntimeScope<Ctx: AppContext>: 'static {
 /// unbound slots are dropped before this struct is built; `visibility`
 /// is preserved on the struct so renderers can still distinguish
 /// current visible-ness without requiring another lookup.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct RenderedSlot {
     /// Which bar region this slot belongs to.
     pub region:        BarRegion,
     /// The action's bar label (e.g. `"activate"`).
     pub label:         &'static str,
     /// The currently bound key.
-    pub key:           KeyBind,
+    pub key:           KeySequence,
     /// Active vs greyed-out.
     pub state:         ShortcutState,
     /// Always [`Visibility::Visible`] in the returned `Vec` (hidden
@@ -81,7 +82,7 @@ pub struct RenderedSlot {
     /// Secondary key for paired bar rows. `None` means this is a
     /// normal single-key slot; `Some` means render `{key}/{secondary}`
     /// with the slot's shared `label`.
-    pub secondary_key: Option<KeyBind>,
+    pub secondary_key: Option<KeySequence>,
 }
 
 /// The single implementor of [`RuntimeScope<Ctx>`]. Captures the
@@ -113,7 +114,7 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
                     if matches!(visibility, Visibility::Hidden) {
                         return None;
                     }
-                    let key = self.bindings.key_for(action).copied()?;
+                    let key = self.bindings.key_for(action).cloned()?;
                     Some(RenderedSlot {
                         region,
                         label: action.bar_label(),
@@ -131,8 +132,8 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
                     {
                         return None;
                     }
-                    let key = self.bindings.key_for(primary).copied()?;
-                    let secondary_key = self.bindings.key_for(secondary).copied()?;
+                    let key = self.bindings.key_for(primary).cloned()?;
+                    let secondary_key = self.bindings.key_for(secondary).cloned()?;
                     Some(RenderedSlot {
                         region,
                         label,
@@ -146,12 +147,12 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
             .collect()
     }
 
-    fn key_for_toml_key(&self, key: &str) -> Option<KeyBind> {
+    fn key_for_toml_key(&self, key: &str) -> Option<KeySequence> {
         let action = P::Actions::from_toml_key(key)?;
-        self.bindings.key_for(action).copied()
+        self.bindings.key_for(action).cloned()
     }
 
-    fn keys_for_toml_key(&self, key: &str) -> Vec<KeyBind> {
+    fn keys_for_toml_key(&self, key: &str) -> Vec<KeySequence> {
         let Some(action) = P::Actions::from_toml_key(key) else {
             return Vec::new();
         };
@@ -180,7 +181,7 @@ pub(super) fn slots_from_scope<A: Action>(
         .iter()
         .copied()
         .filter_map(|action| {
-            let key = scope.key_for(action).copied()?;
+            let key = scope.key_for(action).cloned()?;
             Some(RenderedSlot {
                 region,
                 label: action.bar_label(),
@@ -345,7 +346,7 @@ mod tests {
             RenderedSlot {
                 region:        BarRegion::PaneAction,
                 label:         "go",
-                key:           KeyBind::from(KeyCode::Enter),
+                key:           KeyBind::from(KeyCode::Enter).into(),
                 state:         ShortcutState::Enabled,
                 visibility:    Visibility::Visible,
                 secondary_key: None,
@@ -356,7 +357,7 @@ mod tests {
             RenderedSlot {
                 region:        BarRegion::PaneAction,
                 label:         "clean",
-                key:           KeyBind::from('c'),
+                key:           KeyBind::from('c').into(),
                 state:         ShortcutState::Enabled,
                 visibility:    Visibility::Visible,
                 secondary_key: None,
@@ -421,7 +422,7 @@ mod tests {
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].label, "/");
         assert_eq!(slots[0].key, KeyBind::from(KeyCode::Enter));
-        assert_eq!(slots[0].secondary_key, Some(KeyBind::from('c')));
+        assert_eq!(slots[0].secondary_key, Some(KeyBind::from('c').into()));
     }
 
     #[test]
@@ -429,9 +430,12 @@ mod tests {
         let scope = fresh_scope();
         assert_eq!(
             scope.key_for_toml_key("activate"),
-            Some(KeyBind::from(KeyCode::Enter)),
+            Some(KeyBind::from(KeyCode::Enter).into()),
         );
-        assert_eq!(scope.key_for_toml_key("clean"), Some(KeyBind::from('c')));
+        assert_eq!(
+            scope.key_for_toml_key("clean"),
+            Some(KeyBind::from('c').into())
+        );
     }
 
     #[test]

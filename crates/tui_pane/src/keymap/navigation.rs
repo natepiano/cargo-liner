@@ -41,6 +41,14 @@ pub trait Navigation<Ctx: AppContext>: 'static {
     const HOME: Self::Actions;
     /// The variant for "jump to end" (End / last entry).
     const END: Self::Actions;
+    /// The variant for "page up".
+    const PAGE_UP: Self::Actions = Self::UP;
+    /// The variant for "page down".
+    const PAGE_DOWN: Self::Actions = Self::DOWN;
+    /// The variant for "half-page up".
+    const HALF_PAGE_UP: Self::Actions = Self::UP;
+    /// The variant for "half-page down".
+    const HALF_PAGE_DOWN: Self::Actions = Self::DOWN;
 
     /// Default keybindings.
     fn defaults() -> Bindings<Self::Actions>;
@@ -67,6 +75,14 @@ pub trait Navigation<Ctx: AppContext>: 'static {
             Some(ListNavigation::Home)
         } else if action == Self::END {
             Some(ListNavigation::End)
+        } else if action == Self::PAGE_UP {
+            Some(ListNavigation::PageUp)
+        } else if action == Self::PAGE_DOWN {
+            Some(ListNavigation::PageDown)
+        } else if action == Self::HALF_PAGE_UP {
+            Some(ListNavigation::HalfPageUp)
+        } else if action == Self::HALF_PAGE_DOWN {
+            Some(ListNavigation::HalfPageDown)
         } else {
             None
         }

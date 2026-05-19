@@ -39,6 +39,21 @@ impl From<char> for KeyBind {
 }
 
 impl KeyBind {
+    fn normalized(code: KeyCode, mods: KeyModifiers) -> Self {
+        let (code, mods) = match code {
+            KeyCode::BackTab => (KeyCode::Tab, mods | KeyModifiers::SHIFT),
+            KeyCode::Char(c) if c.is_ascii_lowercase() && mods.contains(KeyModifiers::SHIFT) => (
+                KeyCode::Char(c.to_ascii_uppercase()),
+                mods - KeyModifiers::SHIFT,
+            ),
+            KeyCode::Char(c) if c.is_ascii_uppercase() => {
+                (KeyCode::Char(c), mods - KeyModifiers::SHIFT)
+            },
+            _ => (code, mods),
+        };
+        Self { code, mods }
+    }
+
     /// Canonicalize a crossterm key event into the keymap dispatch form.
     ///
     /// Crossterm can report `BackTab` separately from `Tab + Shift`, and shifted
@@ -46,24 +61,7 @@ impl KeyBind {
     /// keymap stores those as `Tab + Shift` and uppercase `Char` without
     /// `SHIFT`, respectively. `+` and `=` are kept distinct (no collapse).
     #[must_use]
-    pub fn from_key_event(event: KeyEvent) -> Self {
-        let (code, mods) = match event.code {
-            KeyCode::BackTab => (KeyCode::Tab, event.modifiers | KeyModifiers::SHIFT),
-            KeyCode::Char(c)
-                if c.is_ascii_lowercase() && event.modifiers.contains(KeyModifiers::SHIFT) =>
-            {
-                (
-                    KeyCode::Char(c.to_ascii_uppercase()),
-                    event.modifiers - KeyModifiers::SHIFT,
-                )
-            },
-            KeyCode::Char(c) if c.is_ascii_uppercase() => {
-                (event.code, event.modifiers - KeyModifiers::SHIFT)
-            },
-            _ => (event.code, event.modifiers),
-        };
-        Self { code, mods }
-    }
+    pub fn from_key_event(event: KeyEvent) -> Self { Self::normalized(event.code, event.modifiers) }
 
     /// `const`-friendly constructor for `Char(c)` with no modifiers.
     /// `From<char>` is not `const`, so `static` arrays of
@@ -102,8 +100,8 @@ impl KeyBind {
         }
     }
 
-    /// Full display name, e.g. `"Up"`, `"Enter"`, `"Esc"`, `"Ctrl+K"`,
-    /// `"Shift+Tab"`. Used by the keymap-overlay help screen.
+    /// Full display name, e.g. `"up"`, `"enter"`, `"escape"`, `"ctrl-k"`,
+    /// `"shift-tab"`. Used by the keymap-overlay help screen and TOML output.
     #[must_use]
     pub fn display(&self) -> String { with_modifier_prefix(self.mods, &key_name(self.code)) }
 
@@ -125,7 +123,7 @@ impl KeyBind {
         with_short_modifier_prefix(self.mods, key)
     }
 
-    /// Parse a TOML-style key string (e.g. `"Enter"`, `"Ctrl+K"`,
+    /// Parse a TOML-style key string (e.g. `"enter"`, `"ctrl-k"`,
     /// `"Shift+Tab"`, `"+"`, `"="`). `"+"` parses to
     /// `KeyCode::Char('+')` and `"="` to `KeyCode::Char('=')` — the two
     /// are kept distinct (no collapse).
@@ -141,6 +139,10 @@ impl KeyBind {
         if s == "+" || s == "=" {
             let c = s.chars().next().ok_or(KeyParseError::Empty)?;
             return Ok(Self::from(c));
+        }
+
+        if let Ok(bind) = parse_zed_keybind(s) {
+            return Ok(bind);
         }
 
         let mut mods = KeyModifiers::NONE;
@@ -161,7 +163,41 @@ impl KeyBind {
         }
 
         let code = parse_keycode(rest)?;
-        Ok(Self { code, mods })
+        Ok(Self::normalized(code, mods))
+    }
+}
+
+fn parse_zed_keybind(s: &str) -> Result<KeyBind, KeyParseError> {
+    if s == "-" || s == "+" || s == "=" {
+        return Err(KeyParseError::UnknownKey(s.to_string()));
+    }
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() <= 1 {
+        return Err(KeyParseError::UnknownKey(s.to_string()));
+    }
+    let Some((key_part, modifier_parts)) = parts.split_last() else {
+        return Err(KeyParseError::Empty);
+    };
+    if key_part.is_empty() {
+        return Err(KeyParseError::Empty);
+    }
+    let mut mods = KeyModifiers::NONE;
+    for modifier in modifier_parts {
+        let Some(m) = parse_zed_modifier(modifier) else {
+            return Err(KeyParseError::UnknownModifier((*modifier).to_string()));
+        };
+        mods |= m;
+    }
+    let code = parse_keycode(key_part)?;
+    Ok(KeyBind::normalized(code, mods))
+}
+
+fn parse_zed_modifier(s: &str) -> Option<KeyModifiers> {
+    match s {
+        "ctrl" | "control" => Some(KeyModifiers::CONTROL),
+        "shift" => Some(KeyModifiers::SHIFT),
+        "alt" | "option" => Some(KeyModifiers::ALT),
+        _ => None,
     }
 }
 
@@ -179,24 +215,24 @@ fn parse_keycode(s: &str) -> Result<KeyCode, KeyParseError> {
         return Err(KeyParseError::Empty);
     }
     let code = match s {
-        "Enter" => KeyCode::Enter,
-        "Tab" => KeyCode::Tab,
+        "Enter" | "enter" | "return" => KeyCode::Enter,
+        "Tab" | "tab" => KeyCode::Tab,
         "BackTab" => KeyCode::BackTab,
-        "Esc" => KeyCode::Esc,
-        "Backspace" => KeyCode::Backspace,
-        "Delete" => KeyCode::Delete,
-        "Insert" => KeyCode::Insert,
-        "Home" => KeyCode::Home,
-        "End" => KeyCode::End,
-        "PageUp" => KeyCode::PageUp,
-        "PageDown" => KeyCode::PageDown,
-        "Up" => KeyCode::Up,
-        "Down" => KeyCode::Down,
-        "Left" => KeyCode::Left,
-        "Right" => KeyCode::Right,
-        "Space" => KeyCode::Char(' '),
+        "Esc" | "escape" => KeyCode::Esc,
+        "Backspace" | "backspace" => KeyCode::Backspace,
+        "Delete" | "delete" => KeyCode::Delete,
+        "Insert" | "insert" => KeyCode::Insert,
+        "Home" | "home" => KeyCode::Home,
+        "End" | "end" => KeyCode::End,
+        "PageUp" | "pageup" => KeyCode::PageUp,
+        "PageDown" | "pagedown" => KeyCode::PageDown,
+        "Up" | "up" => KeyCode::Up,
+        "Down" | "down" => KeyCode::Down,
+        "Left" | "left" => KeyCode::Left,
+        "Right" | "right" => KeyCode::Right,
+        "Space" | "space" => KeyCode::Char(' '),
         _ => {
-            if let Some(rest) = s.strip_prefix('F')
+            if let Some(rest) = s.strip_prefix('F').or_else(|| s.strip_prefix('f'))
                 && let Ok(n) = rest.parse::<u8>()
             {
                 if (1..=12).contains(&n) {
@@ -217,23 +253,23 @@ fn parse_keycode(s: &str) -> Result<KeyCode, KeyParseError> {
 
 fn key_name(code: KeyCode) -> String {
     match code {
-        KeyCode::Enter => "Enter".to_string(),
-        KeyCode::Tab => "Tab".to_string(),
-        KeyCode::BackTab => "BackTab".to_string(),
-        KeyCode::Esc => "Esc".to_string(),
-        KeyCode::Backspace => "Backspace".to_string(),
-        KeyCode::Delete => "Delete".to_string(),
-        KeyCode::Insert => "Insert".to_string(),
-        KeyCode::Home => "Home".to_string(),
-        KeyCode::End => "End".to_string(),
-        KeyCode::PageUp => "PageUp".to_string(),
-        KeyCode::PageDown => "PageDown".to_string(),
-        KeyCode::Up => "Up".to_string(),
-        KeyCode::Down => "Down".to_string(),
-        KeyCode::Left => "Left".to_string(),
-        KeyCode::Right => "Right".to_string(),
-        KeyCode::F(n) => format!("F{n}"),
-        KeyCode::Char(' ') => "Space".to_string(),
+        KeyCode::Enter => "enter".to_string(),
+        KeyCode::Tab => "tab".to_string(),
+        KeyCode::BackTab => "shift-tab".to_string(),
+        KeyCode::Esc => "escape".to_string(),
+        KeyCode::Backspace => "backspace".to_string(),
+        KeyCode::Delete => "delete".to_string(),
+        KeyCode::Insert => "insert".to_string(),
+        KeyCode::Home => "home".to_string(),
+        KeyCode::End => "end".to_string(),
+        KeyCode::PageUp => "pageup".to_string(),
+        KeyCode::PageDown => "pagedown".to_string(),
+        KeyCode::Up => "up".to_string(),
+        KeyCode::Down => "down".to_string(),
+        KeyCode::Left => "left".to_string(),
+        KeyCode::Right => "right".to_string(),
+        KeyCode::F(n) => format!("f{n}"),
+        KeyCode::Char(' ') => "space".to_string(),
         KeyCode::Char(c) => c.to_string(),
         other => format!("{other:?}"),
     }
@@ -245,13 +281,13 @@ fn with_modifier_prefix(mods: KeyModifiers, key: &str) -> String {
     }
     let mut s = String::new();
     if mods.contains(KeyModifiers::CONTROL) {
-        s.push_str("Ctrl+");
+        s.push_str("ctrl-");
     }
     if mods.contains(KeyModifiers::ALT) {
-        s.push_str("Alt+");
+        s.push_str("alt-");
     }
     if mods.contains(KeyModifiers::SHIFT) {
-        s.push_str("Shift+");
+        s.push_str("shift-");
     }
     s.push_str(key);
     s
@@ -346,8 +382,8 @@ mod tests {
         assert_eq!(kb.mods, KeyModifiers::SHIFT);
 
         let kb = KeyBind::parse("Ctrl+Shift+g").unwrap();
-        assert_eq!(kb.code, KeyCode::Char('g'));
-        assert_eq!(kb.mods, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(kb.code, KeyCode::Char('G'));
+        assert_eq!(kb.mods, KeyModifiers::CONTROL);
 
         let kb = KeyBind::parse("Control+K").unwrap();
         assert_eq!(kb.code, KeyCode::Char('K'));
@@ -524,10 +560,10 @@ mod tests {
     #[test]
     fn display_round_trip() {
         let cases = [
-            (KeyBind::from(KeyCode::Enter), "Enter"),
-            (KeyBind::from(KeyCode::Up), "Up"),
-            (KeyBind::ctrl('k'), "Ctrl+k"),
-            (KeyBind::shift(KeyCode::Tab), "Shift+Tab"),
+            (KeyBind::from(KeyCode::Enter), "enter"),
+            (KeyBind::from(KeyCode::Up), "up"),
+            (KeyBind::ctrl('k'), "ctrl-k"),
+            (KeyBind::shift(KeyCode::Tab), "shift-tab"),
         ];
         for (bind, expected) in cases {
             assert_eq!(bind.display(), expected);

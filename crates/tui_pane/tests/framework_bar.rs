@@ -193,8 +193,8 @@ fn render_status_bar_navigable_pane_shows_every_region() {
     let global = flatten(&bar.global);
 
     assert!(
-        nav.contains("Tab"),
-        "nav must show Tab pane-cycle (got {nav:?})"
+        nav.contains("tab"),
+        "nav must show tab pane-cycle (got {nav:?})"
     );
     assert!(nav.contains('↑'), "nav must show ↑ glyph (got {nav:?})");
     assert!(
@@ -251,7 +251,7 @@ fn render_status_bar_focused_toasts_renders_dismiss_in_global() {
     let global = flatten(&bar.global);
 
     assert!(
-        pane_action.contains("Enter open"),
+        pane_action.contains("enter open"),
         "Toast focus must show ToastsAction::Activate (got {pane_action:?})",
     );
     assert!(

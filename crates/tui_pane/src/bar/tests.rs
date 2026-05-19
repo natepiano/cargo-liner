@@ -461,7 +461,7 @@ fn focused_toasts_renders_nav_pane_actions_and_globals() {
     let (nav, pane_action, global) = flatten_bar(&bar);
     assert!(!nav.is_empty(), "Toasts must show nav (got nav={nav:?})");
     assert!(
-        pane_action.contains("Enter open"),
+        pane_action.contains("enter open"),
         "Toasts must show activate pane action (got pane_action={pane_action:?})",
     );
     assert!(

@@ -1,7 +1,8 @@
 # cargo-port keymap configuration
-# Edit bindings below. Format: action = "Key" or "Modifier+Key"
-# Modifiers: Ctrl, Alt, Shift.  Examples: "Ctrl+r", "Shift+Tab", "q"
-# Note: when vim navigation is enabled, h/j/k/l are reserved
+# Edit bindings below. Format: action = "key" or "modifier-key"
+# Modifiers: ctrl, alt, shift.  Examples: "ctrl-r", "shift-tab", "q"
+# Chord steps are space-separated, e.g. "g g".
+# Note: when vim navigation is enabled, vim navigation keys are reserved
 #       for navigation and cannot be used as action keys.
 
 [global]
@@ -9,58 +10,62 @@ clean         = "c"
 copy          = "y"
 dismiss       = "x"
 find          = "/"
-next_pane     = "Tab"
+next_pane     = "tab"
 open_editor   = "e"
-open_keymap   = "Ctrl+k"
+open_keymap   = "ctrl-k"
 open_terminal = "t"
-prev_pane     = "Shift+Tab"
+prev_pane     = "shift-tab"
 quit          = "q"
-rescan        = "Ctrl+r"
+rescan        = "ctrl-r"
 restart       = "R"
 settings      = "s"
 
 [navigation]
-down  = "Down"
-end   = "End"
-home  = "Home"
-left  = "Left"
-right = "Right"
-up    = "Up"
+down           = "down"
+end            = "end"
+half_page_down = ""
+half_page_up   = ""
+home           = "home"
+left           = "left"
+page_down      = "pagedown"
+page_up        = "pageup"
+right          = "right"
+up             = "up"
 
 [project_list]
 collapse_all = "-"
-collapse_row = "Left"
+collapse_row = "left"
 expand_all   = "="
-expand_row   = "Right"
+expand_row   = "right"
 
 [package]
-activate = "Enter"
+activate = "enter"
 
 [git]
-activate = "Enter"
+activate = "enter"
 
 [targets]
-activate      = "Enter"
+activate      = "enter"
 release_build = "r"
 
 [lints]
-activate      = "Enter"
+activate      = "enter"
 clear_history = "d"
 
 [ci_runs]
-activate    = "Enter"
+activate    = "enter"
 clear_cache = "d"
 fetch_more  = "f"
 show_all    = "a"
 show_branch = "b"
 
 [output]
-cancel = "Esc"
+cancel = "escape"
 
 [finder]
-activate = "Enter"
-cancel   = "Esc"
+activate = "enter"
+cancel   = "escape"
 
 [overlay]
-cancel     = "Esc"
-start_edit = "Enter"
+cancel     = "escape"
+start_edit = "enter"

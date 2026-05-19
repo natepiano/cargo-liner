@@ -164,7 +164,7 @@ where
     {
         let slot = match global.action {
             StatusLineGlobalAction::Framework(action) => {
-                let Some(key) = keymap.framework_globals().key_for(action).copied() else {
+                let Some(key) = keymap.framework_globals().key_for(action).cloned() else {
                     continue;
                 };
                 RenderedSlot {
@@ -180,7 +180,7 @@ where
                 let Some(scope) = keymap.globals::<G>() else {
                     continue;
                 };
-                let Some(key) = scope.key_for(action).copied() else {
+                let Some(key) = scope.key_for(action).cloned() else {
                     continue;
                 };
                 RenderedSlot {

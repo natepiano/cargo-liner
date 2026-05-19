@@ -11,6 +11,7 @@
 use std::hash::Hash;
 
 use super::key_bind::KeyBind;
+use super::key_sequence::KeySequence;
 use super::scope_map::ScopeMap;
 
 /// Default-key declaration table for a single scope.
@@ -20,7 +21,7 @@ use super::scope_map::ScopeMap;
 /// it via [`Self::into_scope_map`] during keymap construction.
 #[derive(Debug)]
 pub struct Bindings<A> {
-    entries: Vec<(KeyBind, A)>,
+    entries: Vec<(KeySequence, A)>,
 }
 
 impl<A> Bindings<A> {
@@ -34,7 +35,7 @@ impl<A> Bindings<A> {
 
     /// Bind one key to one action. Multiple `bind` calls with the same
     /// action append additional keys; the first call's key is primary.
-    pub fn bind(&mut self, key: impl Into<KeyBind>, action: A) -> &mut Self {
+    pub fn bind(&mut self, key: impl Into<KeySequence>, action: A) -> &mut Self {
         self.entries.push((key.into(), action));
         self
     }
@@ -47,7 +48,7 @@ impl<A> Bindings<A> {
         A: Clone,
     {
         for key in keys {
-            self.entries.push((key, action.clone()));
+            self.entries.push((key.into(), action.clone()));
         }
         self
     }
@@ -58,7 +59,7 @@ impl<A> Bindings<A> {
     /// not preserved (TOML overlay redefines the action's keys
     /// outright). `pub(super)` because only the keymap loader (sibling)
     /// applies overrides.
-    pub(super) fn override_action(&mut self, action: &A, keys: Vec<KeyBind>)
+    pub(super) fn override_action(&mut self, action: &A, keys: Vec<KeySequence>)
     where
         A: PartialEq + Clone,
     {
@@ -70,13 +71,13 @@ impl<A> Bindings<A> {
 
     /// True if `key` is already bound on any action. `pub(super)`
     /// because only the vim-extras applier (sibling) checks this.
-    pub(super) fn has_key(&self, key: &KeyBind) -> bool {
+    pub(super) fn has_key(&self, key: &KeySequence) -> bool {
         self.entries.iter().any(|(k, _)| k == key)
     }
 
     /// Borrow every `(key, action)` entry in insertion order.
     /// `pub(super)` because only loader validators (siblings) iterate.
-    pub(super) fn entries(&self) -> &[(KeyBind, A)] { &self.entries }
+    pub(super) fn entries(&self) -> &[(KeySequence, A)] { &self.entries }
 
     /// Consume the builder and return the fully indexed [`ScopeMap`].
     ///
@@ -233,8 +234,9 @@ mod tests {
             .bind('k', TestAction::Up);
         let map = table.into_scope_map();
         assert_eq!(
-            map.key_for(TestAction::Up),
-            Some(&KeyBind::from(KeyCode::Up))
+            map.key_for(TestAction::Up)
+                .and_then(KeySequence::single_key),
+            Some(KeyBind::from(KeyCode::Up))
         );
         assert_eq!(
             map.display_keys_for(TestAction::Up),
@@ -251,8 +253,9 @@ mod tests {
         );
         let map = table.into_scope_map();
         assert_eq!(
-            map.key_for(TestAction::ExpandAll),
-            Some(&KeyBind::from('=')),
+            map.key_for(TestAction::ExpandAll)
+                .and_then(KeySequence::single_key),
+            Some(KeyBind::from('=')),
         );
         assert_eq!(
             map.display_keys_for(TestAction::ExpandAll),

@@ -127,6 +127,12 @@ pub fn handle_finder_text_key(app: &mut App, key: KeyCode) {
         KeyCode::End => {
             app.overlays.finder_pane.viewport.end();
         },
+        KeyCode::PageUp => {
+            app.overlays.finder_pane.viewport.page_up();
+        },
+        KeyCode::PageDown => {
+            app.overlays.finder_pane.viewport.page_down();
+        },
         KeyCode::Backspace => {
             if app.project_list.finder.query.is_empty() {
                 close_finder(app);

@@ -4,6 +4,7 @@ use toml::Table;
 
 use super::KeymapBuilder;
 use super::overlay;
+use super::registration;
 use crate::AppContext;
 use crate::GlobalAction;
 use crate::Keymap;
@@ -51,6 +52,11 @@ pub(super) fn finalize<Ctx: AppContext + 'static, State>(
         GlobalAction::defaults(),
         builder.toml_table.as_ref(),
         builder.globals_action_keys.as_ref(),
+    )?;
+    registration::check_reserved_vim_navigation_keys(
+        "global",
+        &framework_globals,
+        &builder.vim_reserved_keys,
     )?;
     keymap.set_framework_globals(framework_globals.into_scope_map());
     if let Some(overlay_scope) = builder.overlay_scope {

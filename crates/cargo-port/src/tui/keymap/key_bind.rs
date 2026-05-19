@@ -44,35 +44,22 @@ impl KeyBind {
     pub(super) fn plain(code: KeyCode) -> Self { Self::new(code, KeyModifiers::NONE) }
 
     /// Human-readable glyph string for display in status bar / keymap UI.
-    pub(super) fn display(&self) -> String {
+    pub(super) fn display(&self) -> String { self.to_toml_string() }
+
+    /// TOML-serialisable string (e.g. `"ctrl-r"`, `"shift-tab"`, `"q"`).
+    pub(super) fn to_toml_string(&self) -> String {
         let mut parts = String::new();
         if self.modifiers.contains(KeyModifiers::CONTROL) {
-            parts.push('⌃');
+            parts.push_str("ctrl-");
         }
         if self.modifiers.contains(KeyModifiers::ALT) {
-            parts.push('⌥');
+            parts.push_str("alt-");
         }
         if self.modifiers.contains(KeyModifiers::SHIFT) {
-            parts.push('⇧');
+            parts.push_str("shift-");
         }
-        parts.push_str(&parse::code_label(self.code));
+        parts.push_str(&parse::code_label(self.code).to_ascii_lowercase());
         parts
-    }
-
-    /// TOML-serialisable string (e.g. `"Ctrl+r"`, `"Shift+Tab"`, `"q"`).
-    pub(super) fn to_toml_string(&self) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        if self.modifiers.contains(KeyModifiers::CONTROL) {
-            parts.push("Ctrl".to_string());
-        }
-        if self.modifiers.contains(KeyModifiers::ALT) {
-            parts.push("Alt".to_string());
-        }
-        if self.modifiers.contains(KeyModifiers::SHIFT) {
-            parts.push("Shift".to_string());
-        }
-        parts.push(parse::code_label(self.code));
-        parts.join("+")
     }
 }
 
@@ -202,18 +189,18 @@ mod tests {
     }
 
     #[test]
-    fn display_glyphs() {
+    fn display_uses_zed_style() {
         assert_eq!(
             KeyBind::new(KeyCode::Char('r'), KeyModifiers::CONTROL).display(),
-            "⌃r"
+            "ctrl-r"
         );
         assert_eq!(
             KeyBind::new(KeyCode::Char('d'), KeyModifiers::ALT).display(),
-            "⌥d"
+            "alt-d"
         );
         assert_eq!(
             KeyBind::new(KeyCode::Tab, KeyModifiers::SHIFT).display(),
-            "⇧Tab"
+            "shift-tab"
         );
         assert_eq!(KeyBind::plain(KeyCode::Char('q')).display(), "q");
     }

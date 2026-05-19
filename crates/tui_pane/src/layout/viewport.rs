@@ -94,6 +94,61 @@ impl Viewport {
         }
     }
 
+    /// Move the cursor up by `step` rows.
+    pub const fn up_by(&mut self, step: usize) { self.pos = self.pos.saturating_sub(step); }
+
+    /// Move the cursor down by `step` rows.
+    pub fn down_by(&mut self, step: usize) {
+        if self.len == 0 {
+            return;
+        }
+        self.pos = self.pos.saturating_add(step).min(self.len - 1);
+    }
+
+    /// Move up by a full page step when visible rows are known.
+    pub fn page_up(&mut self) {
+        if let Some(step) = self.page_step() {
+            self.up_by(step);
+        }
+    }
+
+    /// Move down by a full page step when visible rows are known.
+    pub fn page_down(&mut self) {
+        if let Some(step) = self.page_step() {
+            self.down_by(step);
+        }
+    }
+
+    /// Move up by a half-page step when visible rows are known.
+    pub fn half_page_up(&mut self) {
+        if let Some(step) = self.half_page_step() {
+            self.up_by(step);
+        }
+    }
+
+    /// Move down by a half-page step when visible rows are known.
+    pub fn half_page_down(&mut self) {
+        if let Some(step) = self.half_page_step() {
+            self.down_by(step);
+        }
+    }
+
+    fn page_step(&self) -> Option<usize> {
+        if self.visible_rows == 0 {
+            None
+        } else {
+            Some(self.visible_rows.saturating_sub(1).max(1))
+        }
+    }
+
+    fn half_page_step(&self) -> Option<usize> {
+        if self.visible_rows == 0 {
+            None
+        } else {
+            Some((self.visible_rows / 2).max(1))
+        }
+    }
+
     /// Move the cursor to the first row.
     pub const fn home(&mut self) { self.pos = 0; }
 

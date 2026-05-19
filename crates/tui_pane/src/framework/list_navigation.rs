@@ -32,6 +32,14 @@ pub enum ListNavigation {
     Home,
     /// Jump to the last entry.
     End,
+    /// Move up by one page step.
+    PageUp,
+    /// Move down by one page step.
+    PageDown,
+    /// Move up by one half-page step.
+    HalfPageUp,
+    /// Move down by one half-page step.
+    HalfPageDown,
 }
 
 /// Direction of a focus-cycle step.
