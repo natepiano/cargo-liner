@@ -28,6 +28,7 @@ use crate::scan::CargoMetadataError;
 use crate::tui::app::Startup;
 use crate::tui::app::target_index::CleanSelection;
 use crate::tui::panes;
+use crate::tui::terminal::CleanMsg;
 
 #[test]
 fn lint_runtime_waits_for_scan_completion() {
@@ -1982,6 +1983,62 @@ fn start_clean_falls_back_to_literal_target_when_no_metadata_yet() {
             .clean()
             .running
             .contains_key(project_path.as_path())
+    );
+}
+
+#[test]
+fn disk_usage_update_does_not_finish_running_clean() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_path = AbsolutePath::from(tmp.path().join("proj"));
+    std::fs::create_dir_all(project_path.as_path().join("target"))
+        .unwrap_or_else(|_| std::process::abort());
+
+    let pkg = RootItem::Rust(RustProject::Package(crate::project::Package {
+        path: project_path.clone(),
+        name: Some("demo".into()),
+        ..crate::project::Package::default()
+    }));
+    let mut app = make_app(&[pkg]);
+
+    assert!(app.start_clean(&project_path));
+    app.handle_disk_usage(project_path.as_path(), 0);
+
+    assert!(
+        app.inflight
+            .clean()
+            .running
+            .contains_key(project_path.as_path()),
+        "disk usage can update before cargo clean exits, so it must not clear the running clean"
+    );
+}
+
+#[test]
+fn clean_finished_message_finishes_running_clean() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_path = AbsolutePath::from(tmp.path().join("proj"));
+    std::fs::create_dir_all(project_path.as_path().join("target"))
+        .unwrap_or_else(|_| std::process::abort());
+
+    let pkg = RootItem::Rust(RustProject::Package(crate::project::Package {
+        path: project_path.clone(),
+        name: Some("demo".into()),
+        ..crate::project::Package::default()
+    }));
+    let mut app = make_app(&[pkg]);
+
+    assert!(app.start_clean(&project_path));
+    app.background
+        .clean_sender()
+        .send(CleanMsg::Finished(project_path.clone()))
+        .expect("send clean finish");
+    app.poll_background();
+
+    assert!(
+        !app.inflight
+            .clean()
+            .running
+            .contains_key(project_path.as_path()),
+        "cargo clean process exit should clear the running clean"
     );
 }
 

@@ -9,9 +9,6 @@ use crate::tui::integration;
 
 impl App {
     pub fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
-        if self.inflight.clean_mut().remove(path).is_some() {
-            self.sync_running_clean_toast();
-        }
         self.apply_disk_usage(path, bytes);
     }
     pub(super) fn handle_disk_usage_batch(&mut self, entries: Vec<(AbsolutePath, DirSizes)>) {

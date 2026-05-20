@@ -151,10 +151,9 @@ impl App {
         while let Ok(msg) = self.background.clean_rx().try_recv() {
             match msg {
                 CleanMsg::Finished(abs_path) => {
-                    // Normally `handle_disk_usage` removes the path
-                    // first (filesystem watcher sees target/ shrink).
-                    // This is the safety-net terminator if no disk
-                    // update arrives.
+                    // The process exit is the completion signal. Disk
+                    // usage updates may arrive earlier while `cargo
+                    // clean` is still deleting files.
                     if self
                         .inflight
                         .clean_mut()
