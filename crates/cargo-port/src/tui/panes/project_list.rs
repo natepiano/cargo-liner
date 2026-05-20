@@ -70,6 +70,8 @@ use crate::tui::render;
 use crate::tui::state;
 use crate::tui::state::Lint;
 
+const TITLE_ELLIPSIS: &str = "\u{2026}";
+
 /// Compute the percentile rank of `bytes` within `sorted_values` (0.0 to 1.0).
 #[allow(
     clippy::cast_precision_loss,
@@ -335,12 +337,6 @@ fn project_panel_title_with_counts(
         root_counts.push((name, count, start_row));
     }
 
-    let prefix = "Roots: ";
-    let inner_max = max_width.saturating_sub(2);
-    if inner_max <= prefix.len() {
-        return format!(" {prefix} ");
-    }
-
     let groups = root_counts
         .iter()
         .map(|(name, count, start)| PaneTitleGroup {
@@ -354,14 +350,27 @@ fn project_panel_title_with_counts(
         .collect();
 
     let body = PaneTitleCount::Grouped(groups).body();
+    project_roots_title("Roots: ", &body, max_width)
+}
+
+fn project_roots_title(prefix: &str, body: &str, max_width: usize) -> String {
+    let inner_max = max_width.saturating_sub(2);
+    if inner_max <= prefix.len() {
+        return format!(" {prefix} ");
+    }
+
     let full = format!(" {prefix}{body} ");
     if full.len() <= max_width + 2 {
         return full;
     }
-    // Truncate if too long.
+
     format!(
         " {prefix}{} ",
-        render::truncate_to_width(&body, inner_max.saturating_sub(prefix.len()))
+        render::truncate_with_ellipsis(
+            body,
+            inner_max.saturating_sub(prefix.len()),
+            TITLE_ELLIPSIS,
+        )
     )
 }
 
@@ -1180,7 +1189,22 @@ fn collect_project_list_entry_disk(
 
 #[cfg(test)]
 mod tests {
+    use super::project_roots_title;
     use super::should_pin_project_summary;
+
+    #[test]
+    fn project_roots_title_adds_ellipsis_when_roots_overflow() {
+        let title = project_roots_title("Roots: ", "~/rust (12)  ~/work (7)", 20);
+
+        assert_eq!(title, " Roots: ~/rust (12… ");
+    }
+
+    #[test]
+    fn project_roots_title_keeps_full_body_when_roots_fit() {
+        let title = project_roots_title("Roots: ", "~/rust (12)", 24);
+
+        assert_eq!(title, " Roots: ~/rust (12) ");
+    }
 
     #[test]
     fn project_summary_stays_inline_when_everything_fits() {
