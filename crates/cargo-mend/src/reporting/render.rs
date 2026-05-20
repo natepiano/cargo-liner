@@ -394,8 +394,13 @@ fn paint(text: &str, code: &str, color_mode: ColorMode) -> String {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use super::CARGO_MEND_FIX;
+    use super::CARGO_MEND_FIX_ALL;
+    use super::CARGO_MEND_FIX_COMPILER;
+    use super::CARGO_MEND_FIX_PUB_USE;
     use super::ColorMode;
     use super::CompilerStats;
+    use super::SUMMARY_LABEL;
     use super::render_human_report;
     use crate::config::DiagnosticCode;
     use crate::reporting::diagnostics::Finding;
@@ -453,7 +458,7 @@ mod tests {
             ColorMode::Disabled,
         );
 
-        assert!(output.contains("summary: 3 compiler warnings"));
+        assert!(output.contains(&format!("{SUMMARY_LABEL} 3 compiler warnings")));
         assert!(!output.contains("warning:"));
     }
 
@@ -466,7 +471,7 @@ mod tests {
         );
 
         assert!(output.contains("warning:"));
-        assert!(output.contains("summary: 1 mend warning"));
+        assert!(output.contains(&format!("{SUMMARY_LABEL} 1 mend warning")));
         assert!(!output.contains("compiler warning"));
     }
 
@@ -478,7 +483,7 @@ mod tests {
             ColorMode::Disabled,
         );
 
-        assert!(output.contains("summary: 3 compiler warnings"));
+        assert!(output.contains(&format!("{SUMMARY_LABEL} 3 compiler warnings")));
         assert!(output.contains("1 mend warning"));
         assert!(
             !output.contains("total warnings"),
@@ -497,20 +502,33 @@ mod tests {
         // Compiler row gets `--fix-compiler`; mend row gets `--fix` plus the
         // continuation `--fix-all` line because two categories are fixable.
         assert!(
-            output.contains(
-                "summary: 3 compiler warnings - 1 fixable with `cargo mend --fix-compiler`\n"
-            ),
+            output.contains(&format!(
+                "{SUMMARY_LABEL} 3 compiler warnings - 1 fixable with `{CARGO_MEND_FIX_COMPILER}`\n"
+            )),
             "compiler row missing/misaligned:\n{output}"
         );
         assert!(
-            output.contains("         1 mend warning      - 1 fixable with `cargo mend --fix`\n"),
+            output.contains(&format!(
+                "{} 1 mend warning      - 1 fixable with `{CARGO_MEND_FIX}`\n",
+                " ".repeat(SUMMARY_LABEL.len())
+            )),
             "mend row missing/misaligned:\n{output}"
         );
         // The `--fix-all` continuation line aligns under the inline fixable
         // (its dash sits in the same column as the mend row's dash).
-        assert!(
-            output.contains("                            - 2 fixable with `cargo mend --fix-all`"),
-            "--fix-all continuation row missing/misaligned:\n{output}"
+        let mend_row_dash = output
+            .lines()
+            .find(|line| line.contains("mend warning"))
+            .and_then(|line| line.find(" - "))
+            .expect("mend row missing dash");
+        let fix_all_row_dash = output
+            .lines()
+            .find(|line| line.contains(CARGO_MEND_FIX_ALL))
+            .and_then(|line| line.find(" - "))
+            .expect("--fix-all continuation row missing dash");
+        assert_eq!(
+            fix_all_row_dash, mend_row_dash,
+            "--fix-all continuation row misaligned:\n{output}"
         );
     }
 
@@ -589,15 +607,15 @@ mod tests {
             "combined flag string must never appear:\n{output}"
         );
         assert!(
-            output.contains("`cargo mend --fix`"),
+            output.contains(&format!("`{CARGO_MEND_FIX}`")),
             "expected dedicated `--fix` line:\n{output}"
         );
         assert!(
-            output.contains("`cargo mend --fix-pub-use`"),
+            output.contains(&format!("`{CARGO_MEND_FIX_PUB_USE}`")),
             "expected dedicated `--fix-pub-use` line:\n{output}"
         );
         assert!(
-            output.contains("`cargo mend --fix-all`"),
+            output.contains(&format!("`{CARGO_MEND_FIX_ALL}`")),
             "expected `--fix-all` continuation line:\n{output}"
         );
     }
@@ -622,13 +640,13 @@ mod tests {
         let output = render_human_report(&report, &compiler_stats(0, 0), ColorMode::Disabled);
 
         let fix_idx = output
-            .find("1 fixable with `cargo mend --fix`")
+            .find(&format!("1 fixable with `{CARGO_MEND_FIX}`"))
             .expect("missing --fix line");
         let pub_use_idx = output
-            .find("1 fixable with `cargo mend --fix-pub-use`")
+            .find(&format!("1 fixable with `{CARGO_MEND_FIX_PUB_USE}`"))
             .expect("missing --fix-pub-use line");
         let fix_all_idx = output
-            .find("2 fixable with `cargo mend --fix-all`")
+            .find(&format!("2 fixable with `{CARGO_MEND_FIX_ALL}`"))
             .expect("missing --fix-all aggregate line");
         assert!(
             fix_idx < pub_use_idx && pub_use_idx < fix_all_idx,
@@ -644,7 +662,7 @@ mod tests {
             ColorMode::Disabled,
         );
 
-        assert!(output.contains("`cargo mend --fix-pub-use`"));
+        assert!(output.contains(&format!("`{CARGO_MEND_FIX_PUB_USE}`")));
         // Single category → no --fix-all line.
         assert!(!output.contains("--fix-all"));
     }
@@ -658,15 +676,15 @@ mod tests {
         );
 
         assert!(
-            output.contains("`cargo mend --fix-compiler`"),
+            output.contains(&format!("`{CARGO_MEND_FIX_COMPILER}`")),
             "compiler row should still suggest --fix-compiler:\n{output}"
         );
         assert!(
-            output.contains("`cargo mend --fix`"),
+            output.contains(&format!("`{CARGO_MEND_FIX}`")),
             "mend row should suggest --fix:\n{output}"
         );
         assert!(
-            output.contains("`cargo mend --fix-all`"),
+            output.contains(&format!("`{CARGO_MEND_FIX_ALL}`")),
             "multi-category aggregate should appear:\n{output}"
         );
     }
@@ -680,7 +698,7 @@ mod tests {
         );
 
         let errors_idx = output.find("errors:").expect("errors header should appear");
-        let summary_idx = output.find("summary:");
+        let summary_idx = output.find(SUMMARY_LABEL);
         if let Some(s) = summary_idx {
             assert!(
                 errors_idx < s,

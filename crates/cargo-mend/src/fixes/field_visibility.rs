@@ -117,13 +117,17 @@ fn line_byte_offset(source: &str, line: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use super::RUSTC_FIELD_VIS_REMOVE_SUGGESTION;
+    use super::RUSTC_LINT_SUGGESTION_PREFIX;
     use super::parse_replacement_from_suggestion;
     use super::vis_annotation_byte_len;
 
     #[test]
     fn parses_consider_using_with_pub_crate() {
         assert_eq!(
-            parse_replacement_from_suggestion(Some("consider using: `pub(crate)`")),
+            parse_replacement_from_suggestion(Some(&format!(
+                "{RUSTC_LINT_SUGGESTION_PREFIX}pub(crate)`"
+            ))),
             Some("pub(crate)".to_string())
         );
     }
@@ -131,7 +135,9 @@ mod tests {
     #[test]
     fn parses_consider_using_with_pub_super() {
         assert_eq!(
-            parse_replacement_from_suggestion(Some("consider using: `pub(super)`")),
+            parse_replacement_from_suggestion(Some(&format!(
+                "{RUSTC_LINT_SUGGESTION_PREFIX}pub(super)`"
+            ))),
             Some("pub(super)".to_string())
         );
     }
@@ -139,7 +145,7 @@ mod tests {
     #[test]
     fn parses_remove_annotation() {
         assert_eq!(
-            parse_replacement_from_suggestion(Some("remove the field's visibility annotation")),
+            parse_replacement_from_suggestion(Some(RUSTC_FIELD_VIS_REMOVE_SUGGESTION)),
             Some(String::new())
         );
     }

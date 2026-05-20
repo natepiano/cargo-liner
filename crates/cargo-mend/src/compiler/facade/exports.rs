@@ -11,8 +11,6 @@ use syn::ItemUse;
 use syn::UseTree;
 use syn::Visibility;
 
-use super::ParentFacadeFixSupport;
-use super::ParentFacadeVisibility;
 use super::boundary;
 use super::reference;
 use super::reference::ParentFacadeUsage;
@@ -23,6 +21,20 @@ use crate::rust_syntax;
 use crate::rust_syntax::PATH_KEYWORD_CRATE;
 use crate::rust_syntax::PATH_KEYWORD_SELF;
 use crate::rust_syntax::PATH_KEYWORD_SUPER;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ParentFacadeFixSupport {
+    #[default]
+    Unsupported,
+    Supported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParentFacadeVisibility {
+    Public,
+    Crate,
+    Super,
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct ParentFacadeExports {
