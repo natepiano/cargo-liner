@@ -73,10 +73,10 @@ impl GitStatusTracker {
     }
 }
 
-/// Render `acme: ● modified → ✓ clean` for one transition.
+/// Render `acme: ● modified ⮕ ✓ clean` for one transition.
 pub fn format_transition(name: &str, transition: &GitStatusTransition) -> String {
     format!(
-        "{name}: {} → {}",
+        "{name}: {} ⮕ {}",
         transition.previous.label_with_icon(),
         transition.current.label_with_icon()
     )
@@ -165,6 +165,6 @@ mod tests {
         assert!(rendered.starts_with("acme: "));
         assert!(rendered.contains("modified"));
         assert!(rendered.contains("clean"));
-        assert!(rendered.contains(" → "));
+        assert!(rendered.contains(" ⮕ "));
     }
 }
