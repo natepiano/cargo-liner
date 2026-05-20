@@ -15,6 +15,7 @@ use std::collections::HashMap;
 
 use tui_pane::ToastTaskId;
 
+use crate::constants::IN_SYNC;
 use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::AbsolutePath;
@@ -108,7 +109,7 @@ pub fn format_transition(name: &str, transition: &SyncTransition) -> String {
 
 fn format_sync(value: Option<(usize, usize)>) -> String {
     match value {
-        Some((0, 0)) => "in sync".to_string(),
+        Some((0, 0)) => format!("{IN_SYNC} in sync"),
         Some((a, 0)) => format!("{SYNC_UP}{a}"),
         Some((0, b)) => format!("{SYNC_DOWN}{b}"),
         Some((a, b)) => format!("{SYNC_UP}{a}{SYNC_DOWN}{b}"),
@@ -207,6 +208,6 @@ mod tests {
             previous: Some((3, 0)),
             current:  Some((0, 0)),
         };
-        assert_eq!(format_transition("acme", &t), "acme: ↑3 → in sync");
+        assert_eq!(format_transition("acme", &t), "acme: ↑3 → ☑️ in sync");
     }
 }

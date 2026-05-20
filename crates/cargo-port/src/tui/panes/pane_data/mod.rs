@@ -5,7 +5,7 @@ use std::path::Component;
 use std::path::Path;
 
 use cargo_metadata::TargetKind;
-use formatting::format_ahead_behind;
+pub use formatting::format_ahead_behind_against;
 pub use formatting::format_date;
 pub use formatting::format_duration;
 use formatting::format_rate_limit_bucket;
@@ -284,7 +284,7 @@ pub enum DetailField {
     Lint,
     Ci,
     Head,
-    GitPath,
+    GitStatus,
     VsLocal,
     Stars,
     RepoDesc,
@@ -317,8 +317,8 @@ impl DetailField {
             Self::Head => "Head",
             Self::Tracks => "Tracks",
             Self::Pinned => "Pinned",
-            Self::GitPath => "Git Path",
-            Self::VsLocal => "vs local main",
+            Self::GitStatus => "Status",
+            Self::VsLocal => "Ahead/Behind",
             Self::Stars => "Stars",
             Self::RepoDesc => "About",
             Self::Inception => "Incept",
@@ -374,7 +374,7 @@ impl DetailField {
             Self::Head
             | Self::Tracks
             | Self::Pinned
-            | Self::GitPath
+            | Self::GitStatus
             | Self::VsLocal
             | Self::Stars
             | Self::RepoDesc
@@ -406,7 +406,7 @@ impl DetailField {
                     }
                 },
             },
-            Self::GitPath => data
+            Self::GitStatus => data
                 .status
                 .map_or_else(String::new, GitStatus::label_with_icon),
             Self::VsLocal => data.vs_local.as_deref().unwrap_or("").to_string(),
@@ -512,7 +512,7 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
         fields.push(DetailField::Pinned);
     }
     if data.status.is_some() {
-        fields.push(DetailField::GitPath);
+        fields.push(DetailField::GitStatus);
     }
     if data.vs_local.is_some() {
         fields.push(DetailField::VsLocal);
@@ -633,7 +633,6 @@ pub struct GitData {
     pub status:             Option<GitStatus>,
     pub vs_local:           Option<String>,
     pub local_main_branch:  Option<String>,
-    pub main_branch_label:  String,
     pub stars:              Option<u64>,
     pub description:        Option<String>,
     pub inception:          Option<String>,
@@ -757,7 +756,7 @@ pub fn copy_payload_for_package(data: &PackageData, pos: usize) -> CopySelection
                 )
             }
         },
-        DetailField::Path | DetailField::GitPath => {
+        DetailField::Path | DetailField::GitStatus => {
             copy_payload(field.package_value(data), CopyLabel::Path)
         },
         DetailField::Homepage | DetailField::Repository => {
@@ -791,7 +790,7 @@ fn git_field_copy_value(data: &GitData, field: DetailField) -> String {
             Some(HeadState::Detached { short_sha }) => short_sha.clone(),
             Some(HeadState::Unborn) | None => String::new(),
         },
-        DetailField::GitPath => data
+        DetailField::GitStatus => data
             .status
             .map_or_else(String::new, GitStatus::label_with_icon),
         DetailField::Tracks => data
@@ -1173,7 +1172,6 @@ struct GitDetailFields {
     path:               Option<GitStatus>,
     vs_local:           Option<String>,
     local_main_branch:  Option<String>,
-    main_branch_label:  String,
     stars:              Option<u64>,
     description:        Option<String>,
     inception:          Option<String>,
@@ -1191,11 +1189,13 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
     let checkout = app.project_list.git_info_for(abs_path);
 
     let head = checkout.map(|info| info.head.clone());
+    let local_main_branch = repo_info.and_then(|repo| repo.local_main_branch.clone());
+    let local_main_label = local_main_branch
+        .as_deref()
+        .unwrap_or_else(|| app.config.current().tui.main_branch.as_str());
     let vs_local = checkout
         .and_then(|info| info.ahead_behind_local)
-        .map(format_ahead_behind);
-    let local_main_branch = repo_info.and_then(|repo| repo.local_main_branch.clone());
-    let main_branch_label = app.config.current().tui.main_branch.clone();
+        .map(|ahead_behind| format_ahead_behind_against(ahead_behind, local_main_label));
     let github = git_repo.and_then(|repo| repo.github_info.as_ref());
     let stars = github.map(|g| g.stars);
     let description = github.and_then(|g| g.description.clone());
@@ -1216,7 +1216,6 @@ fn build_git_detail_fields(app: &App, abs_path: &Path) -> GitDetailFields {
         path: app.project_list.git_status_for(abs_path),
         vs_local,
         local_main_branch,
-        main_branch_label,
         stars,
         description,
         inception,
@@ -1446,7 +1445,6 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             status: git_detail.path,
             vs_local: git_detail.vs_local,
             local_main_branch: git_detail.local_main_branch,
-            main_branch_label: git_detail.main_branch_label,
             stars: git_detail.stars,
             description: git_detail.description,
             inception: git_detail.inception,
@@ -1858,7 +1856,6 @@ fn assemble_detail_pane_data(
             status: git_detail.path,
             vs_local: git_detail.vs_local,
             local_main_branch: git_detail.local_main_branch,
-            main_branch_label: git_detail.main_branch_label,
             stars: git_detail.stars,
             description: git_detail.description,
             inception: git_detail.inception,

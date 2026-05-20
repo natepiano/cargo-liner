@@ -77,13 +77,10 @@ const fn section_for_pos(
     }
 }
 
-pub fn git_label_width(data: &GitData, fields: &[DetailField]) -> usize {
+pub fn git_label_width(fields: &[DetailField]) -> usize {
     fields
         .iter()
-        .map(|field| match *field {
-            DetailField::VsLocal => format!("vs local {}", data.main_branch_label).width(),
-            _ => field.label().width(),
-        })
+        .map(|field| field.label().width())
         .max()
         .unwrap_or(0)
         .max(8)
@@ -151,7 +148,7 @@ fn render_git_column_inner(
             focus:       ctx.focus,
             styles:      ctx.styles,
             area_width:  inner_area.width,
-            label_width: git_label_width(ctx.data, ctx.fields),
+            label_width: git_label_width(ctx.fields),
         },
     );
     append_remotes_section(&mut accum, ctx, flat_len, current_section);
@@ -366,32 +363,25 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
             *accum.focused_output_line = accum.lines.len();
         }
-        let dynamic_label;
-        let label = match *field {
-            DetailField::VsLocal => {
-                let branch = data.main_branch_label.as_str();
-                dynamic_label = format!("vs local {branch}");
-                &dynamic_label
-            },
-            _ => field.label(),
-        };
+        let label = field.label();
         let is_rate_limit_row = matches!(
             *field,
             DetailField::RateLimitCore | DetailField::RateLimitGraphQl
         );
         let value = build_field_value(data, *field, is_rate_limit_row);
         let selection = pane::selection_state(pane, i, focus);
-        let base_value_style = if matches!(*field, DetailField::VsLocal) && value == IN_SYNC {
-            Style::default().fg(success_color())
-        } else if matches!(*field, DetailField::VsLocal) && value == NO_REMOTE_SYNC {
-            Style::default().fg(inactive_border_color())
-        } else if *field == DetailField::WorktreeError {
-            Style::default().fg(text_default()).bg(error_color())
-        } else if is_rate_limit_row && !data.github_status.is_available() {
-            Style::default().fg(error_color())
-        } else {
-            Style::default()
-        };
+        let base_value_style =
+            if matches!(*field, DetailField::VsLocal) && value.starts_with(IN_SYNC) {
+                Style::default().fg(success_color())
+            } else if matches!(*field, DetailField::VsLocal) && value == NO_REMOTE_SYNC {
+                Style::default().fg(inactive_border_color())
+            } else if *field == DetailField::WorktreeError {
+                Style::default().fg(text_default()).bg(error_color())
+            } else if is_rate_limit_row && !data.github_status.is_available() {
+                Style::default().fg(error_color())
+            } else {
+                Style::default()
+            };
         let ls = selection.patch(styles.readonly_label);
         let vs = selection.patch(base_value_style);
         if matches!(
@@ -462,7 +452,7 @@ const REMOTE_ICON_COL: usize = 3;
 const REMOTES_NAME_HEADER: &str = "Remote";
 const REMOTES_URL_HEADER: &str = "URL";
 const REMOTES_TRACKED_HEADER: &str = "Tracked";
-const REMOTES_STATUS_HEADER: &str = "Status";
+const REMOTES_STATUS_HEADER: &str = "Sync";
 
 fn remote_col_widths(remotes: &[RemoteRow]) -> RemoteColWidths {
     let name = remotes
@@ -503,7 +493,7 @@ fn render_remote_header(lines: &mut Vec<Line<'static>>, widths: &RemoteColWidths
         .add_modifier(Modifier::BOLD);
     // Leading: 1 space pad + REMOTE_ICON_COL blank for icon alignment.
     let text = format!(
-        " {:<icon$}{:<name$}  {:<url$}  {:<tracked$}  {:<status$}",
+        " {:<icon$}{:<name$}  {:<url$}  {:<tracked$}  {:>status$}",
         "",
         REMOTES_NAME_HEADER,
         REMOTES_URL_HEADER,
@@ -533,7 +523,7 @@ fn remote_row_line(
         .map(|annotation| format!("  {annotation}"))
         .unwrap_or_default();
     let text = format!(
-        "{:<name$}  {:<url$}  {:<tracked$}  {:<status$}{push_suffix}",
+        "{:<name$}  {:<url$}  {:<tracked$}  {:>status$}{push_suffix}",
         row.name,
         row.display_url,
         row.tracked_ref,
@@ -814,6 +804,13 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> Rect {
 mod tests {
     use super::*;
 
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
     #[test]
     fn section_for_pos_maps_flat_indices() {
         assert_eq!(section_for_pos(0, 3, 2, 1), Some(Section::Flat(0)));
@@ -835,5 +832,43 @@ mod tests {
     fn section_for_pos_out_of_range_is_none() {
         assert_eq!(section_for_pos(6, 3, 2, 1), None);
         assert_eq!(section_for_pos(0, 0, 0, 0), None);
+    }
+
+    #[test]
+    fn remotes_header_labels_sync_column() {
+        let mut lines = Vec::new();
+        let widths = RemoteColWidths {
+            name:    6,
+            url:     8,
+            tracked: 10,
+            status:  6,
+        };
+
+        render_remote_header(&mut lines, &widths);
+
+        assert!(line_text(&lines[0]).ends_with("  Sync"));
+    }
+
+    #[test]
+    fn remotes_sync_values_align_right() {
+        let row = RemoteRow {
+            name:            "origin".to_string(),
+            icon:            GIT_LOCAL,
+            display_url:     "git@x".to_string(),
+            tracked_ref:     "origin/main".to_string(),
+            status:          IN_SYNC.to_string(),
+            full_url:        None,
+            push_annotation: None,
+        };
+        let widths = RemoteColWidths {
+            name:    6,
+            url:     8,
+            tracked: 11,
+            status:  6,
+        };
+
+        let line = remote_row_line(&row, &widths, PaneSelectionState::Unselected);
+
+        assert!(line_text(&line).ends_with("    ☑️"));
     }
 }

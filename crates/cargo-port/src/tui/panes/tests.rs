@@ -69,7 +69,6 @@ fn git_data() -> GitData {
         status:             None,
         vs_local:           None,
         local_main_branch:  None,
-        main_branch_label:  "main".to_string(),
         stars:              None,
         description:        None,
         inception:          None,
@@ -448,7 +447,12 @@ fn git_path_value_appends_status_icon() {
         ..git_data()
     };
 
-    assert_eq!(DetailField::GitPath.git_value(&data), "🟠 modified");
+    assert_eq!(DetailField::GitStatus.git_value(&data), "🟠 modified");
+}
+
+#[test]
+fn git_path_label_is_status() {
+    assert_eq!(DetailField::GitStatus.label(), "Status");
 }
 
 #[test]
@@ -457,18 +461,27 @@ fn sync_value_uses_synced_label_when_in_sync() {
 }
 
 #[test]
-fn git_label_width_uses_configured_main_label() {
-    let data = GitData {
-        vs_local: Some("↑11 ↓3".to_string()),
-        main_branch_label: "primary".to_string(),
-        ..git_data()
-    };
+fn local_ahead_behind_values_name_the_compared_branch() {
+    let cases = [
+        ((8, 0), "↑8 ahead of main"),
+        ((0, 2), "↓2 behind main"),
+        ((8, 2), "↑8 ↓2 diverged from main"),
+        ((0, 0), "☑️ up to date with main"),
+    ];
+
+    for (ahead_behind, expected) in cases {
+        assert_eq!(
+            model::format_ahead_behind_against(ahead_behind, "main"),
+            expected
+        );
+    }
+}
+
+#[test]
+fn git_label_width_uses_ahead_behind_label() {
     let fields = vec![DetailField::VsLocal];
 
-    assert_eq!(
-        panes::git_label_width(&data, &fields),
-        "vs local primary".len()
-    );
+    assert_eq!(panes::git_label_width(&fields), "Ahead/Behind".len());
 }
 
 #[test]
