@@ -114,6 +114,9 @@ fn pane_slots_for<Ctx: AppContext + 'static>(
             FrameworkOverlayId::Settings => {
                 render_overlay_slots(framework.settings_pane.bar_slots(), scope)
             },
+            FrameworkOverlayId::GlobalShortcuts => {
+                render_overlay_slots(framework.global_shortcuts_pane.bar_slots(), scope)
+            },
         };
     }
     match focused {

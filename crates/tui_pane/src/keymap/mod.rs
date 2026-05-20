@@ -38,6 +38,7 @@ pub use key_outcome::KeyOutcome;
 pub use key_sequence::KeySequence;
 pub use load::KeymapError;
 pub use navigation::Navigation;
+pub use runtime_scope::GlobalShortcutRow;
 pub use runtime_scope::RenderedSlot;
 pub use scope_map::ScopeMap;
 pub use shortcuts::Shortcuts;
@@ -55,6 +56,10 @@ use crate::framework;
 /// [`builder::ScopeRenderFn`](self::builder::ScopeRenderFn) — the
 /// keymap and the builder both store one of these per scope.
 type ScopeRenderFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<RenderedSlot>;
+
+/// `<G>`-monomorphized renderer the global-shortcuts overlay reads to
+/// materialize app-global help rows without naming the action enum.
+type ScopeShortcutRowsFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<GlobalShortcutRow>;
 
 /// The keymap container: anchor for every binding the framework
 /// resolves at runtime.
@@ -77,25 +82,27 @@ type ScopeRenderFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<RenderedSlot>;
 /// by [`FocusedPane::Framework`](crate::FocusedPane::Framework) arms in
 /// callers.
 pub struct Keymap<Ctx: AppContext + 'static> {
-    scopes:                HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
-    navigation:            Option<Box<dyn Any>>,
+    scopes:                       HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
+    navigation:                   Option<Box<dyn Any>>,
     /// Monomorphized renderer for the navigation scope. Each
     /// [`KeymapBuilder::register_navigation::<N>`](crate::KeymapBuilder::register_navigation)
     /// call sets this to the `N`-specialized free fn in
     /// [`runtime_scope::render_navigation_slots`]. The bar renderer
     /// reads it via [`Self::render_navigation_slots`] without naming
     /// `N`.
-    navigation_render_fn:  Option<ScopeRenderFn<Ctx>>,
-    globals:               Option<Box<dyn Any>>,
+    navigation_render_fn:         Option<ScopeRenderFn<Ctx>>,
+    globals:                      Option<Box<dyn Any>>,
     /// Monomorphized renderer for the app-globals scope. See
     /// [`Self::navigation_render_fn`].
-    app_globals_render_fn: Option<ScopeRenderFn<Ctx>>,
-    framework_globals:     ScopeMap<GlobalAction>,
-    overlay_scope:         ScopeMap<OverlayAction>,
-    on_quit:               Option<fn(&mut Ctx)>,
-    on_restart:            Option<fn(&mut Ctx)>,
-    dismiss_fallback:      Option<fn(&mut Ctx) -> bool>,
-    config_path:           Option<PathBuf>,
+    app_globals_render_fn:        Option<ScopeRenderFn<Ctx>>,
+    /// Monomorphized help-row renderer for the app-globals scope.
+    app_globals_shortcut_rows_fn: Option<ScopeShortcutRowsFn<Ctx>>,
+    framework_globals:            ScopeMap<GlobalAction>,
+    overlay_scope:                ScopeMap<OverlayAction>,
+    on_quit:                      Option<fn(&mut Ctx)>,
+    on_restart:                   Option<fn(&mut Ctx)>,
+    dismiss_fallback:             Option<fn(&mut Ctx) -> bool>,
+    config_path:                  Option<PathBuf>,
 }
 
 impl<Ctx: AppContext + 'static> Keymap<Ctx> {
@@ -114,6 +121,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
             navigation_render_fn: None,
             globals: None,
             app_globals_render_fn: None,
+            app_globals_shortcut_rows_fn: None,
             framework_globals: GlobalAction::defaults().into_scope_map(),
             overlay_scope: SettingsPane::defaults().into_scope_map(),
             on_quit: None,
@@ -148,6 +156,15 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// stores it, alongside [`Self::set_globals`].
+    pub(super) const fn set_app_globals_shortcut_rows_fn(
+        &mut self,
+        render: ScopeShortcutRowsFn<Ctx>,
+    ) {
+        self.app_globals_shortcut_rows_fn = Some(render);
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
     /// constructs one.
     pub(super) fn set_framework_globals(&mut self, map: ScopeMap<GlobalAction>) {
         self.framework_globals = map;
@@ -155,8 +172,8 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
     /// overlays user TOML onto the framework-owned overlay scope. One
-    /// scope drives both the settings and keymap overlay bars; both
-    /// panes consume [`OverlayAction`].
+    /// scope drives every framework overlay bar; those panes consume
+    /// [`OverlayAction`].
     pub(super) fn set_overlay_scope(&mut self, map: ScopeMap<OverlayAction>) {
         self.overlay_scope = map;
     }
@@ -316,6 +333,43 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
             GlobalAction::ALL,
             &self.framework_globals,
         )
+    }
+
+    /// Rows for the framework-owned global shortcut viewer.
+    ///
+    /// Framework globals and registered app globals are combined here
+    /// so embedding crates only register their `Globals` scope; they
+    /// do not build or render the help list.
+    #[must_use]
+    pub fn global_shortcut_rows(&self) -> Vec<GlobalShortcutRow> {
+        let mut rows = Vec::new();
+        rows.push(self.framework_global_shortcut_row("Global Navigation", GlobalAction::NextPane));
+        rows.push(self.framework_global_shortcut_row("Global Navigation", GlobalAction::PrevPane));
+
+        let mut shortcuts = GlobalAction::ALL
+            .iter()
+            .copied()
+            .filter(|action| !matches!(action, GlobalAction::NextPane | GlobalAction::PrevPane))
+            .map(|action| self.framework_global_shortcut_row("Global Shortcuts", action))
+            .collect::<Vec<_>>();
+        if let Some(render) = self.app_globals_shortcut_rows_fn {
+            shortcuts.extend(render(self));
+        }
+        shortcuts.sort_by_key(|row| row.description);
+        rows.extend(shortcuts);
+        rows
+    }
+
+    fn framework_global_shortcut_row(
+        &self,
+        section: &'static str,
+        action: GlobalAction,
+    ) -> GlobalShortcutRow {
+        GlobalShortcutRow {
+            section,
+            description: action.description(),
+            key: self.framework_globals.key_for(action).cloned(),
+        }
     }
 
     /// Typed singleton getter for the registered [`Navigation`] impl.

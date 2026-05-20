@@ -202,6 +202,36 @@ pub(super) struct RenderBorrows<'a> {
     pub ctx:      PaneRenderCtx<'a>,
 }
 
+/// Optional precomputed render inputs for framework overlays.
+#[derive(Clone, Copy)]
+pub(super) struct OverlayRenderInputs<'a> {
+    keymap:   Option<&'a KeymapRenderInputs>,
+    settings: Option<&'a SettingsRenderInputs>,
+}
+
+impl<'a> OverlayRenderInputs<'a> {
+    pub(super) const fn none() -> Self {
+        Self {
+            keymap:   None,
+            settings: None,
+        }
+    }
+
+    pub(super) const fn keymap(inputs: &'a KeymapRenderInputs) -> Self {
+        Self {
+            keymap: Some(inputs),
+            ..Self::none()
+        }
+    }
+
+    pub(super) const fn settings(inputs: &'a SettingsRenderInputs) -> Self {
+        Self {
+            settings: Some(inputs),
+            ..Self::none()
+        }
+    }
+}
+
 /// Disjoint `&mut` borrows of every renderable pane on `App`.
 /// Cargo-port's [`tui_pane::PaneRegistry`] impl lives on this type;
 /// the embedding-side match in [`tui_pane::render_panes`]'s loop
@@ -619,8 +649,7 @@ impl App {
         selected_project_path: Option<&'a Path>,
         animation_elapsed: Duration,
         ci_status_lookup: &'a CiStatusLookup,
-        keymap_render_inputs: Option<&'a KeymapRenderInputs>,
-        settings_render_inputs: Option<&'a SettingsRenderInputs>,
+        overlay_inputs: OverlayRenderInputs<'a>,
         synced_description_height: SyncedDescriptionHeight,
     ) -> RenderBorrows<'a> {
         let Self {
@@ -657,8 +686,8 @@ impl App {
             inflight,
             scan,
             ci_status_lookup,
-            keymap_render_inputs,
-            settings_render_inputs,
+            keymap_render_inputs: overlay_inputs.keymap,
+            settings_render_inputs: overlay_inputs.settings,
             synced_description_height,
             running_targets,
             running_targets_dir,

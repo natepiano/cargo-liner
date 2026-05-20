@@ -37,6 +37,7 @@ use crate::CopySelectionResult;
 use crate::FocusedPane;
 use crate::FrameworkFocusId;
 use crate::FrameworkOverlayId;
+use crate::GlobalShortcutsPane;
 use crate::KeymapPane;
 use crate::LoadedSettings;
 use crate::Mode;
@@ -66,27 +67,31 @@ type CopyResolver<Ctx> = fn(&Ctx) -> CopySelectionResult;
 /// [`FrameworkFocusId`]) keep that distinction enforced at the type
 /// level.
 pub struct Framework<Ctx: AppContext> {
-    focused:           FocusedPane<Ctx::AppPaneId>,
-    quit_requested:    bool,
-    restart_requested: bool,
-    mode_queries:      HashMap<Ctx::AppPaneId, ModeQuery<Ctx>>,
-    copy_resolvers:    HashMap<Ctx::AppPaneId, CopyResolver<Ctx>>,
-    pane_order:        Vec<Ctx::AppPaneId>,
-    tab_stops:         Vec<RegisteredTabStop<Ctx>>,
-    overlay:           Option<FrameworkOverlayId>,
+    focused:                   FocusedPane<Ctx::AppPaneId>,
+    quit_requested:            bool,
+    restart_requested:         bool,
+    mode_queries:              HashMap<Ctx::AppPaneId, ModeQuery<Ctx>>,
+    copy_resolvers:            HashMap<Ctx::AppPaneId, CopyResolver<Ctx>>,
+    pane_order:                Vec<Ctx::AppPaneId>,
+    tab_stops:                 Vec<RegisteredTabStop<Ctx>>,
+    overlay:                   Option<FrameworkOverlayId>,
     /// Keymap viewer/editor overlay, held inline. Reachable when
     /// [`Self::overlay`] is `Some(FrameworkOverlayId::Keymap)`.
-    pub keymap_pane:   KeymapPane,
+    pub keymap_pane:           KeymapPane,
     /// Settings overlay, held inline. Reachable when
     /// [`Self::overlay`] is `Some(FrameworkOverlayId::Settings)`.
-    pub settings_pane: SettingsPane,
-    settings_store:    SettingsStore,
+    pub settings_pane:         SettingsPane,
+    /// Read-only global shortcuts overlay, held inline. Reachable
+    /// when [`Self::overlay`] is
+    /// `Some(FrameworkOverlayId::GlobalShortcuts)`.
+    pub global_shortcuts_pane: GlobalShortcutsPane,
+    settings_store:            SettingsStore,
     /// Transient notification stack. Tab-focusable when
     /// [`Toasts::has_active`](crate::Toasts::has_active) returns
     /// `true`. Owns its own [`ToastSettings`]; framework accessors
     /// (`toast_settings`, `set_toast_settings`) delegate here so
     /// embeddings never thread duration values into toast methods.
-    pub toasts:        Toasts<Ctx>,
+    pub toasts:                Toasts<Ctx>,
 }
 
 impl<Ctx: AppContext> Framework<Ctx> {
@@ -95,18 +100,19 @@ impl<Ctx: AppContext> Framework<Ctx> {
     #[must_use]
     pub fn new(initial_focus: FocusedPane<Ctx::AppPaneId>) -> Self {
         Self {
-            focused:           initial_focus,
-            quit_requested:    false,
-            restart_requested: false,
-            mode_queries:      HashMap::new(),
-            copy_resolvers:    HashMap::new(),
-            pane_order:        Vec::new(),
-            tab_stops:         Vec::new(),
-            overlay:           None,
-            keymap_pane:       KeymapPane::new(),
-            settings_pane:     SettingsPane::new(),
-            settings_store:    SettingsStore::empty(),
-            toasts:            Toasts::new(),
+            focused:               initial_focus,
+            quit_requested:        false,
+            restart_requested:     false,
+            mode_queries:          HashMap::new(),
+            copy_resolvers:        HashMap::new(),
+            pane_order:            Vec::new(),
+            tab_stops:             Vec::new(),
+            overlay:               None,
+            keymap_pane:           KeymapPane::new(),
+            settings_pane:         SettingsPane::new(),
+            global_shortcuts_pane: GlobalShortcutsPane::new(),
+            settings_store:        SettingsStore::empty(),
+            toasts:                Toasts::new(),
         }
     }
 
@@ -264,6 +270,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
             return Some(match overlay {
                 FrameworkOverlayId::Keymap => self.keymap_pane.mode(ctx),
                 FrameworkOverlayId::Settings => self.settings_pane.mode(ctx),
+                FrameworkOverlayId::GlobalShortcuts => self.global_shortcuts_pane.mode(ctx),
             });
         }
         match self.focused {
@@ -324,6 +331,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
         self.toasts.viewport.set_hovered(None);
         self.keymap_pane.viewport_mut().set_hovered(None);
         self.settings_pane.viewport_mut().set_hovered(None);
+        self.global_shortcuts_pane.viewport_mut().set_hovered(None);
     }
 
     /// Run the framework-owned hit-test ladder at `pos`: first the
@@ -357,6 +365,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
                     row,
                 },
             )),
+            Some(FrameworkOverlayId::GlobalShortcuts) => Some(FrameworkHit::ModalMissed),
             None => None,
         }
     }
@@ -427,7 +436,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
         match self.overlay {
             Some(FrameworkOverlayId::Keymap) => self.keymap_pane.editor_target(),
             Some(FrameworkOverlayId::Settings) => self.settings_pane.editor_target(),
-            None => None,
+            Some(FrameworkOverlayId::GlobalShortcuts) | None => None,
         }
     }
 }

@@ -108,63 +108,68 @@ pub struct Registering;
 /// }
 /// ```
 pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
-    scopes:                HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
-    pane_registrations:    Vec<PaneRegistration<Ctx>>,
-    copy_registrations:    Vec<CopyRegistration<Ctx>>,
-    registered_scopes:     HashSet<&'static str>,
-    duplicate_scope:       Option<&'static str>,
-    config_path:           Option<PathBuf>,
-    toml_table:            Option<Table>,
-    vim_mode:              VimMode,
-    on_quit:               Option<fn(&mut Ctx)>,
-    on_restart:            Option<fn(&mut Ctx)>,
-    dismiss_fallback:      Option<fn(&mut Ctx) -> bool>,
-    navigation_scope:      Option<ErasedSingleton>,
-    navigation_scope_name: Option<&'static str>,
+    scopes:                   HashMap<Ctx::AppPaneId, Box<dyn RuntimeScope<Ctx>>>,
+    pane_registrations:       Vec<PaneRegistration<Ctx>>,
+    copy_registrations:       Vec<CopyRegistration<Ctx>>,
+    registered_scopes:        HashSet<&'static str>,
+    duplicate_scope:          Option<&'static str>,
+    config_path:              Option<PathBuf>,
+    toml_table:               Option<Table>,
+    vim_mode:                 VimMode,
+    on_quit:                  Option<fn(&mut Ctx)>,
+    on_restart:               Option<fn(&mut Ctx)>,
+    dismiss_fallback:         Option<fn(&mut Ctx) -> bool>,
+    navigation_scope:         Option<ErasedSingleton>,
+    navigation_scope_name:    Option<&'static str>,
     /// `N`-monomorphized renderer captured at
     /// [`Self::register_navigation`] time; copied onto the keymap in
     /// [`finalize`]. The bar uses
     /// [`Keymap::render_navigation_slots`] without naming `N`.
-    navigation_render_fn:  Option<ScopeRenderFn<Ctx>>,
-    globals_scope:         Option<ErasedSingleton>,
-    globals_scope_name:    Option<&'static str>,
-    globals_action_keys:   Option<HashSet<&'static str>>,
+    navigation_render_fn:     Option<ScopeRenderFn<Ctx>>,
+    globals_scope:            Option<ErasedSingleton>,
+    globals_scope_name:       Option<&'static str>,
+    globals_action_keys:      Option<HashSet<&'static str>>,
     /// `G`-monomorphized renderer captured at
     /// [`Self::register_globals`] time. See
     /// [`Self::navigation_render_fn`].
-    globals_render_fn:     Option<ScopeRenderFn<Ctx>>,
-    overlay_scope:         Option<ScopeMap<OverlayAction>>,
-    vim_reserved_keys:     Vec<super::KeySequence>,
-    deferred_error:        Option<KeymapError>,
-    _state:                PhantomData<State>,
+    globals_render_fn:        Option<ScopeRenderFn<Ctx>>,
+    /// `G`-monomorphized help-row renderer captured at
+    /// [`Self::register_globals`] time for the global shortcut
+    /// viewer.
+    globals_shortcut_rows_fn: Option<super::ScopeShortcutRowsFn<Ctx>>,
+    overlay_scope:            Option<ScopeMap<OverlayAction>>,
+    vim_reserved_keys:        Vec<super::KeySequence>,
+    deferred_error:           Option<KeymapError>,
+    _state:                   PhantomData<State>,
 }
 
 impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     /// Empty builder.
     pub(super) fn new() -> Self {
         Self {
-            scopes:                HashMap::new(),
-            pane_registrations:    Vec::new(),
-            copy_registrations:    Vec::new(),
-            registered_scopes:     HashSet::new(),
-            duplicate_scope:       None,
-            config_path:           None,
-            toml_table:            None,
-            vim_mode:              VimMode::Disabled,
-            on_quit:               None,
-            on_restart:            None,
-            dismiss_fallback:      None,
-            navigation_scope:      None,
-            navigation_scope_name: None,
-            navigation_render_fn:  None,
-            globals_scope:         None,
-            globals_scope_name:    None,
-            globals_action_keys:   None,
-            globals_render_fn:     None,
-            overlay_scope:         None,
-            vim_reserved_keys:     Vec::new(),
-            deferred_error:        None,
-            _state:                PhantomData,
+            scopes:                   HashMap::new(),
+            pane_registrations:       Vec::new(),
+            copy_registrations:       Vec::new(),
+            registered_scopes:        HashSet::new(),
+            duplicate_scope:          None,
+            config_path:              None,
+            toml_table:               None,
+            vim_mode:                 VimMode::Disabled,
+            on_quit:                  None,
+            on_restart:               None,
+            dismiss_fallback:         None,
+            navigation_scope:         None,
+            navigation_scope_name:    None,
+            navigation_render_fn:     None,
+            globals_scope:            None,
+            globals_scope_name:       None,
+            globals_action_keys:      None,
+            globals_render_fn:        None,
+            globals_shortcut_rows_fn: None,
+            overlay_scope:            None,
+            vim_reserved_keys:        Vec::new(),
+            deferred_error:           None,
+            _state:                   PhantomData,
         }
     }
 
@@ -295,6 +300,8 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             self.globals_action_keys = Some(action_key_set::<G::Actions>());
         }
         self.globals_render_fn = Some(runtime_scope::render_app_globals_slots::<Ctx, G>);
+        self.globals_shortcut_rows_fn =
+            Some(runtime_scope::render_app_global_shortcut_rows::<Ctx, G>);
         self.registered_scopes.insert(scope_name);
         Ok(self)
     }
@@ -483,28 +490,29 @@ fn transition<Ctx: AppContext + 'static>(
     src: KeymapBuilder<Ctx, Configuring>,
 ) -> KeymapBuilder<Ctx, Registering> {
     KeymapBuilder {
-        scopes:                src.scopes,
-        pane_registrations:    src.pane_registrations,
-        copy_registrations:    src.copy_registrations,
-        registered_scopes:     src.registered_scopes,
-        duplicate_scope:       src.duplicate_scope,
-        config_path:           src.config_path,
-        toml_table:            src.toml_table,
-        vim_mode:              src.vim_mode,
-        on_quit:               src.on_quit,
-        on_restart:            src.on_restart,
-        dismiss_fallback:      src.dismiss_fallback,
-        navigation_scope:      src.navigation_scope,
-        navigation_scope_name: src.navigation_scope_name,
-        navigation_render_fn:  src.navigation_render_fn,
-        globals_scope:         src.globals_scope,
-        globals_scope_name:    src.globals_scope_name,
-        globals_action_keys:   src.globals_action_keys,
-        globals_render_fn:     src.globals_render_fn,
-        overlay_scope:         src.overlay_scope,
-        vim_reserved_keys:     src.vim_reserved_keys,
-        deferred_error:        src.deferred_error,
-        _state:                PhantomData,
+        scopes:                   src.scopes,
+        pane_registrations:       src.pane_registrations,
+        copy_registrations:       src.copy_registrations,
+        registered_scopes:        src.registered_scopes,
+        duplicate_scope:          src.duplicate_scope,
+        config_path:              src.config_path,
+        toml_table:               src.toml_table,
+        vim_mode:                 src.vim_mode,
+        on_quit:                  src.on_quit,
+        on_restart:               src.on_restart,
+        dismiss_fallback:         src.dismiss_fallback,
+        navigation_scope:         src.navigation_scope,
+        navigation_scope_name:    src.navigation_scope_name,
+        navigation_render_fn:     src.navigation_render_fn,
+        globals_scope:            src.globals_scope,
+        globals_scope_name:       src.globals_scope_name,
+        globals_action_keys:      src.globals_action_keys,
+        globals_render_fn:        src.globals_render_fn,
+        globals_shortcut_rows_fn: src.globals_shortcut_rows_fn,
+        overlay_scope:            src.overlay_scope,
+        vim_reserved_keys:        src.vim_reserved_keys,
+        deferred_error:           src.deferred_error,
+        _state:                   PhantomData,
     }
 }
 

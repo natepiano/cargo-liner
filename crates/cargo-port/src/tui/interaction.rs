@@ -125,7 +125,11 @@ impl InputContext for App {
                 pane: PaneId::Settings,
                 row,
             }),
-            FrameworkHit::ModalMissed => None,
+            FrameworkHit::Overlay {
+                id: FrameworkOverlayId::GlobalShortcuts,
+                ..
+            }
+            | FrameworkHit::ModalMissed => None,
         }
     }
 }

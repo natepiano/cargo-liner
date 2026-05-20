@@ -47,6 +47,9 @@ pub(super) fn finalize<Ctx: AppContext + 'static, State>(
     if let Some(render) = builder.globals_render_fn {
         keymap.set_app_globals_render_fn(render);
     }
+    if let Some(render) = builder.globals_shortcut_rows_fn {
+        keymap.set_app_globals_shortcut_rows_fn(render);
+    }
     let framework_globals = overlay::apply_toml_overlay_with_peer::<GlobalAction>(
         "global",
         GlobalAction::defaults(),

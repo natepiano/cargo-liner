@@ -57,6 +57,13 @@ impl<A: Action> StatusLineGlobal<A> {
         }
     }
 
+    /// Enabled framework-global slot for the built-in shortcut help
+    /// overlay.
+    #[must_use]
+    pub const fn global_shortcuts_help() -> Self {
+        Self::framework(GlobalAction::OpenGlobalShortcuts)
+    }
+
     /// Enabled app-global slot.
     #[must_use]
     pub const fn app(action: A) -> Self {

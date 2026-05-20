@@ -102,10 +102,10 @@ pub enum HoverTarget {
 /// test in `hit_test_tests` walk all variants and assert each one
 /// appears in `HITTABLE_Z_ORDER`.
 ///
-/// Toasts and the framework overlays (Keymap, Settings) are dispatched
-/// by [`tui_pane::dispatch_hit_test`] through the framework's own
-/// hit-test ladder, not through this registry. The app-modal Finder
-/// overlay is dispatched via
+/// Toasts and the framework overlays (Keymap, Settings, Global
+/// Shortcuts) are dispatched by [`tui_pane::dispatch_hit_test`]
+/// through the framework's own hit-test ladder, not through this
+/// registry. The app-modal Finder overlay is dispatched via
 /// [`tui_pane::InputContext::app_modal_overlay_hit`]. None of those
 /// three appear here.
 #[derive(EnumIter, Clone, Copy, PartialEq, Eq, Hash, Debug)]

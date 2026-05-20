@@ -67,6 +67,7 @@ use crate::tui::app::App;
 use crate::tui::app::ConfirmAction;
 use crate::tui::app::ExpandKey;
 use crate::tui::app::HoveredPaneRow;
+use crate::tui::app::OverlayRenderInputs;
 use crate::tui::finder;
 use crate::tui::input;
 use crate::tui::integration::AppPaneId;
@@ -258,8 +259,7 @@ fn render_lints_panel(app: &mut App, runs: &[LintRun]) {
                 selected_path.as_deref(),
                 animation_elapsed,
                 &ci_status_lookup,
-                None,
-                None,
+                OverlayRenderInputs::none(),
                 SyncedDescriptionHeight::default(),
             );
             tui_pane::Renderable::render(split.registry.lint, frame, area, &split.ctx);
@@ -289,8 +289,7 @@ fn render_ci_panel(app: &mut App, runs: &[CiRun]) {
                 selected_path.as_deref(),
                 animation_elapsed,
                 &ci_status_lookup,
-                None,
-                None,
+                OverlayRenderInputs::none(),
                 SyncedDescriptionHeight::default(),
             );
             tui_pane::Renderable::render(split.registry.ci, frame, area, &split.ctx);

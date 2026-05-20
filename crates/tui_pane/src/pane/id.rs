@@ -6,16 +6,17 @@
 //! overlay layer and the focus layer carry separate enums so the type
 //! system rules out invalid states by construction:
 //!
-//! - [`FrameworkOverlayId`] covers the two overlay panes ([`Keymap`](FrameworkOverlayId::Keymap),
-//!   [`Settings`](FrameworkOverlayId::Settings)). Toasts is not an overlay, so its variant is
-//!   absent.
+//! - [`FrameworkOverlayId`] covers the framework overlay panes
+//!   ([`Keymap`](FrameworkOverlayId::Keymap), [`Settings`](FrameworkOverlayId::Settings),
+//!   [`GlobalShortcuts`](FrameworkOverlayId::GlobalShortcuts)). Toasts is not an overlay, so its
+//!   variant is absent.
 //! - [`FrameworkFocusId`] covers the framework panes that can be reached as a focus target. Today
 //!   only [`Toasts`](FrameworkFocusId::Toasts) qualifies; overlays receive input through the
 //!   overlay layer, not the focused-pane chain.
 
 /// One of the framework's overlay panes.
 ///
-/// The set is closed — the framework owns these two and binaries
+/// The set is closed — the framework owns these and binaries
 /// cannot extend it. App-side panes carry their own enum, exposed via
 /// [`AppContext::AppPaneId`](crate::AppContext::AppPaneId).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -24,6 +25,8 @@ pub enum FrameworkOverlayId {
     Keymap,
     /// The settings overlay.
     Settings,
+    /// The read-only global shortcuts overlay.
+    GlobalShortcuts,
 }
 
 /// A framework-owned pane that can be reached as a focus target.

@@ -21,9 +21,10 @@ use super::key_bind::KeyBind;
 /// [`Self::Dismiss`] runs the framework's overlay/toast chain first
 /// and then bubbles to an optional `dismiss_fallback` hook for app-
 /// owned dismissables (e.g. collapsing a deleted-row placeholder).
-/// The four pane-focus variants ([`Self::NextPane`], [`Self::PrevPane`],
-/// [`Self::OpenKeymap`], [`Self::OpenSettings`]) are dispatched
-/// entirely by the framework, which owns the registered pane set.
+/// The pane-focus and overlay variants ([`Self::NextPane`],
+/// [`Self::PrevPane`], [`Self::OpenKeymap`], [`Self::OpenSettings`],
+/// [`Self::OpenGlobalShortcuts`]) are dispatched entirely by the
+/// framework, which owns the registered pane set and overlays.
 ///
 /// [`Action`] is implemented by hand here rather than through
 /// [`action_enum!`](crate::action_enum) because the strings are
@@ -42,6 +43,8 @@ pub enum GlobalAction {
     OpenKeymap,
     /// Focus the framework-provided settings overlay.
     OpenSettings,
+    /// Focus the framework-provided global shortcuts overlay.
+    OpenGlobalShortcuts,
     /// Close the current overlay, dismiss a focused toast, or — if no
     /// framework dismissable matches — bubble to the binary's optional
     /// `dismiss_fallback` hook.
@@ -63,6 +66,7 @@ impl GlobalAction {
             KeyBind::shift(KeyCode::Tab) => Self::PrevPane,
             KeyBind::ctrl('k') => Self::OpenKeymap,
             's' => Self::OpenSettings,
+            '?' => Self::OpenGlobalShortcuts,
             'x' => Self::Dismiss,
         }
     }
@@ -76,6 +80,7 @@ impl Action for GlobalAction {
         Self::PrevPane,
         Self::OpenKeymap,
         Self::OpenSettings,
+        Self::OpenGlobalShortcuts,
         Self::Dismiss,
     ];
 
@@ -87,6 +92,7 @@ impl Action for GlobalAction {
             Self::PrevPane => "prev_pane",
             Self::OpenKeymap => "open_keymap",
             Self::OpenSettings => "open_settings",
+            Self::OpenGlobalShortcuts => "open_global_shortcuts",
             Self::Dismiss => "dismiss",
         }
     }
@@ -99,6 +105,7 @@ impl Action for GlobalAction {
             Self::PrevPane => "prev",
             Self::OpenKeymap => "keymap",
             Self::OpenSettings => "settings",
+            Self::OpenGlobalShortcuts => "shortcuts",
             Self::Dismiss => "dismiss",
         }
     }
@@ -111,6 +118,7 @@ impl Action for GlobalAction {
             Self::PrevPane => "Previous pane",
             Self::OpenKeymap => "Open keymap viewer",
             Self::OpenSettings => "Open settings",
+            Self::OpenGlobalShortcuts => "Show global shortcuts",
             Self::Dismiss => "Dismiss overlay / output",
         }
     }
@@ -123,6 +131,7 @@ impl Action for GlobalAction {
             "prev_pane" => Some(Self::PrevPane),
             "open_keymap" => Some(Self::OpenKeymap),
             "open_settings" | "settings" => Some(Self::OpenSettings),
+            "open_global_shortcuts" | "shortcuts" => Some(Self::OpenGlobalShortcuts),
             "dismiss" => Some(Self::Dismiss),
             _ => None,
         }
@@ -149,7 +158,7 @@ mod tests {
     use crate::Action;
 
     #[test]
-    fn all_has_seven_variants_in_declaration_order() {
+    fn all_has_eight_variants_in_declaration_order() {
         assert_eq!(
             GlobalAction::ALL,
             &[
@@ -159,6 +168,7 @@ mod tests {
                 GlobalAction::PrevPane,
                 GlobalAction::OpenKeymap,
                 GlobalAction::OpenSettings,
+                GlobalAction::OpenGlobalShortcuts,
                 GlobalAction::Dismiss,
             ]
         );
@@ -193,6 +203,7 @@ mod tests {
         assert_eq!(GlobalAction::Quit.bar_label(), "quit");
         assert_eq!(GlobalAction::NextPane.bar_label(), "next");
         assert_eq!(GlobalAction::OpenKeymap.bar_label(), "keymap");
+        assert_eq!(GlobalAction::OpenGlobalShortcuts.bar_label(), "shortcuts");
     }
 
     #[test]
@@ -216,10 +227,10 @@ mod tests {
     }
 
     #[test]
-    fn defaults_produce_canonical_seven_bindings() {
+    fn defaults_produce_canonical_eight_bindings() {
         let map = GlobalAction::defaults().into_scope_map();
 
-        let cases: [(KeyBind, GlobalAction); 7] = [
+        let cases: [(KeyBind, GlobalAction); 8] = [
             (KeyBind::from('q'), GlobalAction::Quit),
             (KeyBind::from('R'), GlobalAction::Restart),
             (KeyBind::from(KeyCode::Tab), GlobalAction::NextPane),
@@ -232,6 +243,7 @@ mod tests {
             ),
             (KeyBind::ctrl('k'), GlobalAction::OpenKeymap),
             (KeyBind::from('s'), GlobalAction::OpenSettings),
+            (KeyBind::from('?'), GlobalAction::OpenGlobalShortcuts),
             (KeyBind::from('x'), GlobalAction::Dismiss),
         ];
 

@@ -85,6 +85,18 @@ pub struct RenderedSlot {
     pub secondary_key: Option<KeySequence>,
 }
 
+/// One row in the framework-owned global shortcut help overlay.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct GlobalShortcutRow {
+    /// Heading under which the row is rendered.
+    pub section:     &'static str,
+    /// Human-readable action description.
+    pub description: &'static str,
+    /// Currently bound display key. `None` keeps registered but
+    /// unbound actions visible in the help list.
+    pub key:         Option<KeySequence>,
+}
+
 /// The single implementor of [`RuntimeScope<Ctx>`]. Captures the
 /// typed pane and its bindings at registration time so the impl can
 /// call `P::dispatcher()`, `P::Actions::from_toml_key`, `P::bar_slots`,
@@ -221,6 +233,25 @@ pub(crate) fn render_app_globals_slots<Ctx: AppContext + 'static, G: Globals<Ctx
         return Vec::new();
     };
     slots_from_scope(BarRegion::Global, G::render_order(), scope)
+}
+
+/// `G`-monomorphized renderer for the framework-owned global
+/// shortcut overlay.
+pub(crate) fn render_app_global_shortcut_rows<Ctx: AppContext + 'static, G: Globals<Ctx>>(
+    keymap: &Keymap<Ctx>,
+) -> Vec<GlobalShortcutRow> {
+    let Some(scope) = keymap.globals::<G>() else {
+        return Vec::new();
+    };
+    G::Actions::ALL
+        .iter()
+        .copied()
+        .map(|action| GlobalShortcutRow {
+            section:     "Global Shortcuts",
+            description: action.description(),
+            key:         scope.key_for(action).cloned(),
+        })
+        .collect()
 }
 
 #[cfg(test)]

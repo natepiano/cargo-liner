@@ -67,6 +67,7 @@ pub(super) fn framework_overlay_editor_target_path(
     match overlay {
         FrameworkOverlayId::Settings => config_path.map(AbsolutePath::from),
         FrameworkOverlayId::Keymap => keymap_path.map(AbsolutePath::from),
+        FrameworkOverlayId::GlobalShortcuts => None,
     }
 }
 
@@ -118,6 +119,7 @@ pub fn handle_framework_overlay_editor_key(
     let title = match overlay {
         FrameworkOverlayId::Settings => "Settings editor failed",
         FrameworkOverlayId::Keymap => "Keymap editor failed",
+        FrameworkOverlayId::GlobalShortcuts => return false,
     };
     let Some(path) =
         framework_overlay_editor_target_path(overlay, app.config.path(), app.keymap.path())

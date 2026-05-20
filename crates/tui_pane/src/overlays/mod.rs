@@ -1,8 +1,9 @@
 //! Framework-owned panes: built-in overlays.
 //!
-//! Two overlay structs live here:
+//! Three overlay structs live here:
 //! - [`KeymapPane`]: keymap viewer/editor overlay.
 //! - [`SettingsPane`]: settings overlay.
+//! - [`GlobalShortcutsPane`]: read-only global shortcut viewer.
 //!
 //! Both consume [`OverlayAction`], the single action set for the
 //! framework-owned overlay bar (`StartEdit` / `Cancel`). The TOML
@@ -15,6 +16,7 @@
 //! / [`FrameworkFocusId`](crate::FrameworkFocusId) instead. The bar
 //! renderer and input dispatcher special-case framework panes.
 
+mod global_shortcuts;
 mod keymap;
 mod settings;
 
@@ -32,6 +34,7 @@ crate::action_enum! {
     }
 }
 
+pub use global_shortcuts::GlobalShortcutsPane;
 pub use keymap::KeymapCaptureCommand;
 pub use keymap::KeymapPane;
 pub use settings::SettingsCommand;

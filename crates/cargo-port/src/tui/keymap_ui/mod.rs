@@ -181,6 +181,7 @@ const GLOBAL_NAV: &[FrameworkGlobalAction] = &[
 ];
 const GLOBAL_SHORTCUTS: &[FrameworkGlobalAction] = &[
     FrameworkGlobalAction::Dismiss,
+    FrameworkGlobalAction::OpenGlobalShortcuts,
     FrameworkGlobalAction::OpenKeymap,
     FrameworkGlobalAction::OpenSettings,
     FrameworkGlobalAction::Quit,
@@ -291,6 +292,7 @@ const fn framework_global_description(action: FrameworkGlobalAction) -> &'static
         FrameworkGlobalAction::PrevPane => "Focus previous pane",
         FrameworkGlobalAction::OpenKeymap => "Open keymap",
         FrameworkGlobalAction::OpenSettings => "Open settings",
+        FrameworkGlobalAction::OpenGlobalShortcuts => "Show global shortcuts",
         FrameworkGlobalAction::Dismiss => "Dismiss focused item",
     }
 }

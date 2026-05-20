@@ -208,6 +208,9 @@ const fn matches_open_overlay_toggle(
         ) | (
             FrameworkGlobalAction::OpenSettings,
             FrameworkOverlayId::Settings
+        ) | (
+            FrameworkGlobalAction::OpenGlobalShortcuts,
+            FrameworkOverlayId::GlobalShortcuts
         )
     )
 }
@@ -216,6 +219,7 @@ const fn overlay_is_in_text_mode(app: &App, overlay: FrameworkOverlayId) -> bool
     match overlay {
         FrameworkOverlayId::Settings => app.framework.settings_pane.is_editing(),
         FrameworkOverlayId::Keymap => app.framework.keymap_pane.is_capturing(),
+        FrameworkOverlayId::GlobalShortcuts => false,
     }
 }
 
@@ -229,6 +233,7 @@ fn clear_legacy_framework_overlay_state(app: &mut App, overlay: FrameworkOverlay
             app.overlays.clear_inline_error();
             app.framework.keymap_pane.enter_browse();
         },
+        FrameworkOverlayId::GlobalShortcuts => {},
     }
 }
 
@@ -303,6 +308,7 @@ fn dispatch_framework_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEve
     match overlay {
         FrameworkOverlayId::Settings => dispatch_settings_overlay(app, bind),
         FrameworkOverlayId::Keymap => dispatch_keymap_overlay(app, bind, normalized),
+        FrameworkOverlayId::GlobalShortcuts => dispatch_global_shortcuts_overlay(app, bind),
     }
     true
 }
@@ -321,6 +327,18 @@ fn dispatch_keymap_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEvent)
         return;
     }
     keymap_ui::handle_keymap_navigation_key(app, normalized);
+}
+
+fn dispatch_global_shortcuts_overlay(app: &mut App, bind: &KeyBind) {
+    if let Some(action) = app.framework_keymap.overlay().action_for(bind)
+        && matches!(action, tui_pane::OverlayAction::Cancel)
+    {
+        app.close_framework_overlay_if_open();
+        return;
+    }
+    app.framework
+        .global_shortcuts_pane
+        .handle_navigation_key(bind.code);
 }
 
 fn dispatch_finder_overlay(app: &mut App, bind: &KeyBind) -> bool {
@@ -535,6 +553,14 @@ const fn scroll_modal_overlay_at(app: &mut App, pos: Position, up: bool) -> bool
         },
         Some(FrameworkOverlayId::Keymap) => {
             scroll_viewport_if_contains(app.framework.keymap_pane.viewport_mut(), pos, up);
+            true
+        },
+        Some(FrameworkOverlayId::GlobalShortcuts) => {
+            scroll_viewport_if_contains(
+                app.framework.global_shortcuts_pane.viewport_mut(),
+                pos,
+                up,
+            );
             true
         },
         None => false,

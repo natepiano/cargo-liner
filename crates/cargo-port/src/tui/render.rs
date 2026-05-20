@@ -12,19 +12,16 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use tui_pane::Action;
 use tui_pane::BLOCK_BORDER_WIDTH;
 use tui_pane::BYTES_PER_GIB;
 use tui_pane::BYTES_PER_KIB;
 use tui_pane::BYTES_PER_MIB;
 use tui_pane::BarPalette;
 use tui_pane::FrameworkOverlayId;
-use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::PaneFocusState;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::ResolvedPaneLayout;
-use tui_pane::ShortcutState;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::ToastsRenderCtx;
@@ -41,6 +38,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
 use super::app::ConfirmAction;
+use super::app::OverlayRenderInputs;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::integration::AppGlobalAction;
 use super::interaction;
@@ -162,8 +160,7 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
             selected_path.as_deref(),
             animation_elapsed,
             &ci_status_lookup,
-            None,
-            None,
+            OverlayRenderInputs::none(),
             synced_description_height,
         );
         tui_pane::render_panes(frame, &mut split.registry, &tiled, &split.ctx);
@@ -188,6 +185,9 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     }
     if app.framework.overlay() == Some(FrameworkOverlayId::Keymap) {
         dispatch_keymap_overlay(app, frame);
+    }
+    if app.framework.overlay() == Some(FrameworkOverlayId::GlobalShortcuts) {
+        dispatch_global_shortcuts_overlay(app, frame);
     }
     if app.overlays.is_finder_open() {
         dispatch_finder_render(app, frame);
@@ -376,8 +376,7 @@ fn dispatch_keymap_overlay(app: &mut App, frame: &mut Frame) {
         selected_path.as_deref(),
         animation_elapsed,
         &ci_status_lookup,
-        Some(&inputs),
-        None,
+        OverlayRenderInputs::keymap(&inputs),
         panes::SyncedDescriptionHeight::default(),
     );
     Renderable::render(split.registry.keymap_pane, frame, frame.area(), &split.ctx);
@@ -404,8 +403,7 @@ fn dispatch_settings_overlay(app: &mut App, frame: &mut Frame) {
         selected_path.as_deref(),
         animation_elapsed,
         &ci_status_lookup,
-        None,
-        Some(&inputs),
+        OverlayRenderInputs::settings(&inputs),
         panes::SyncedDescriptionHeight::default(),
     );
     Renderable::render(
@@ -414,6 +412,17 @@ fn dispatch_settings_overlay(app: &mut App, frame: &mut Frame) {
         frame.area(),
         &split.ctx,
     );
+}
+
+/// Dispatch the framework-owned Global Shortcuts overlay popup.
+fn dispatch_global_shortcuts_overlay(app: &mut App, frame: &mut Frame) {
+    app.framework.global_shortcuts_pane.focus = RenderFocus {
+        state:      PaneFocusState::Active,
+        is_focused: true,
+    };
+    app.framework
+        .global_shortcuts_pane
+        .render(frame, frame.area(), &app.framework_keymap);
 }
 
 fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
@@ -578,107 +587,12 @@ pub(super) fn cargo_port_bar_palette() -> BarPalette {
     }
 }
 
-/// Ordered list of [`AppGlobalAction`] variants that appear in the
-/// status-line strip, left-to-right. The runtime array reads positions
-/// from here; the const block below enforces that every variant of
-/// [`AppGlobalAction::ALL`] appears at least once.
-const STRIP_APP_GLOBALS_ORDER: &[AppGlobalAction] = &[
-    AppGlobalAction::Find,
-    AppGlobalAction::Copy,
-    AppGlobalAction::OpenEditor,
-    AppGlobalAction::OpenTerminal,
-    AppGlobalAction::Clean,
-    AppGlobalAction::Rescan,
-];
+const STRIP_SLOT_COUNT: usize = 1;
 
-const STRIP_FRAMEWORK_SLOT_COUNT: usize = 4;
-const STRIP_SLOT_COUNT: usize = STRIP_APP_GLOBALS_ORDER.len() + STRIP_FRAMEWORK_SLOT_COUNT;
-
-/// Unique index per [`AppGlobalAction`] variant for const-context
-/// comparison. The exhaustive `match` is what makes the compile-time
-/// guard work: adding a new variant makes this non-exhaustive → compile
-/// error, forcing the developer to assign it a position and decide its
-/// per-variant state in [`build_app_slot`].
-const fn app_global_idx(action: AppGlobalAction) -> u8 {
-    match action {
-        AppGlobalAction::Copy => 0,
-        AppGlobalAction::Find => 1,
-        AppGlobalAction::OpenEditor => 2,
-        AppGlobalAction::OpenTerminal => 3,
-        AppGlobalAction::Rescan => 4,
-        AppGlobalAction::Clean => 5,
-    }
-}
-
-const _: () = {
-    let mut i = 0;
-    while i < AppGlobalAction::ALL.len() {
-        let target = app_global_idx(AppGlobalAction::ALL[i]);
-        let mut found = false;
-        let mut j = 0;
-        while j < STRIP_APP_GLOBALS_ORDER.len() {
-            if app_global_idx(STRIP_APP_GLOBALS_ORDER[j]) == target {
-                found = true;
-                break;
-            }
-            j += 1;
-        }
-        assert!(
-            found,
-            "AppGlobalAction variant missing from STRIP_APP_GLOBALS_ORDER — add it and \
-             place its slot in cargo_port_status_line_globals",
-        );
-        i += 1;
-    }
-};
-
-fn build_app_slot(action: AppGlobalAction, app: &App) -> StatusLineGlobal<AppGlobalAction> {
-    let selected_project_is_deleted = app.project_list.selected_project_is_deleted();
-    let state = match action {
-        AppGlobalAction::Copy | AppGlobalAction::Find | AppGlobalAction::Rescan => {
-            ShortcutState::Enabled
-        },
-        AppGlobalAction::OpenEditor => {
-            if selected_project_is_deleted {
-                ShortcutState::Disabled
-            } else {
-                ShortcutState::Enabled
-            }
-        },
-        AppGlobalAction::OpenTerminal => {
-            let configured = !app.config.terminal_command().trim().is_empty();
-            if configured && !selected_project_is_deleted {
-                ShortcutState::Enabled
-            } else {
-                ShortcutState::Disabled
-            }
-        },
-        AppGlobalAction::Clean => {
-            if app.project_list.clean_selection().is_some() {
-                ShortcutState::Enabled
-            } else {
-                ShortcutState::Disabled
-            }
-        },
-    };
-    StatusLineGlobal::app(action).with_state(state)
-}
-
-fn cargo_port_status_line_globals(
-    app: &App,
+const fn cargo_port_status_line_globals(
+    _app: &App,
 ) -> [StatusLineGlobal<AppGlobalAction>; STRIP_SLOT_COUNT] {
-    [
-        build_app_slot(STRIP_APP_GLOBALS_ORDER[0], app),
-        build_app_slot(STRIP_APP_GLOBALS_ORDER[1], app),
-        build_app_slot(STRIP_APP_GLOBALS_ORDER[2], app),
-        build_app_slot(STRIP_APP_GLOBALS_ORDER[3], app),
-        build_app_slot(STRIP_APP_GLOBALS_ORDER[4], app),
-        StatusLineGlobal::framework(FrameworkGlobalAction::OpenSettings),
-        StatusLineGlobal::framework(FrameworkGlobalAction::OpenKeymap),
-        build_app_slot(STRIP_APP_GLOBALS_ORDER[5], app),
-        StatusLineGlobal::framework(FrameworkGlobalAction::Quit),
-        StatusLineGlobal::framework(FrameworkGlobalAction::Restart),
-    ]
+    [StatusLineGlobal::global_shortcuts_help()]
 }
 
 #[cfg(test)]

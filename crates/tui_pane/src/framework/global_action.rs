@@ -30,8 +30,9 @@ use crate::Keymap;
 ///   the binary registered on the builder.
 /// - [`GlobalAction::NextPane`] / [`GlobalAction::PrevPane`] walk the focus cycle (registered app
 ///   panes plus, when active, [`Toasts`](crate::Toasts)) and update focus.
-/// - [`GlobalAction::OpenKeymap`] / [`GlobalAction::OpenSettings`] open the matching framework
-///   overlay over the focused pane (orthogonal modal layer; focus does not move).
+/// - [`GlobalAction::OpenKeymap`] / [`GlobalAction::OpenSettings`] /
+///   [`GlobalAction::OpenGlobalShortcuts`] open the matching framework overlay over the focused
+///   pane (orthogonal modal layer; focus does not move).
 /// - [`GlobalAction::Dismiss`] runs [`dismiss_chain`] (focused-toast pop → close overlay → fall
 ///   through to the binary's optional `dismiss_fallback` hook).
 ///
@@ -71,6 +72,14 @@ pub(crate) fn dispatch_global<Ctx: AppContext>(
                 let _ = framework.close_overlay();
             } else {
                 framework.open_overlay(FrameworkOverlayId::Settings);
+            }
+        },
+        GlobalAction::OpenGlobalShortcuts => {
+            let framework = ctx.framework_mut();
+            if framework.overlay() == Some(FrameworkOverlayId::GlobalShortcuts) {
+                let _ = framework.close_overlay();
+            } else {
+                framework.open_overlay(FrameworkOverlayId::GlobalShortcuts);
             }
         },
         GlobalAction::Dismiss => {

@@ -6,19 +6,20 @@
 #       for navigation and cannot be used as action keys.
 
 [global]
-clean         = "c"
-copy          = "y"
-dismiss       = "x"
-find          = "/"
-next_pane     = "tab"
-open_editor   = "e"
-open_keymap   = "ctrl-k"
-open_terminal = "t"
-prev_pane     = "shift-tab"
-quit          = "q"
-rescan        = "ctrl-r"
-restart       = "R"
-settings      = "s"
+clean                 = "c"
+copy                  = "y"
+dismiss               = "x"
+find                  = "/"
+next_pane             = "tab"
+open_editor           = "e"
+open_global_shortcuts = "?"
+open_keymap           = "ctrl-k"
+open_terminal         = "t"
+prev_pane             = "shift-tab"
+quit                  = "q"
+rescan                = "ctrl-r"
+restart               = "R"
+settings              = "s"
 
 [navigation]
 down           = "down"

@@ -1252,7 +1252,7 @@ fn focused_toasts_scroll_before_advancing_cycle() {
 }
 
 #[test]
-fn open_keymap_and_open_settings_open_framework_overlays() {
+fn open_framework_overlay_globals_open_framework_overlays() {
     let keymap = Keymap::<TestApp>::builder()
         .build()
         .expect("empty build must succeed");
@@ -1267,6 +1267,13 @@ fn open_keymap_and_open_settings_open_framework_overlays() {
     assert_eq!(
         app.framework().overlay(),
         Some(FrameworkOverlayId::Settings)
+    );
+    assert_eq!(*app.framework().focused(), initial_focus);
+
+    keymap.dispatch_framework_global(GlobalAction::OpenGlobalShortcuts, &mut app);
+    assert_eq!(
+        app.framework().overlay(),
+        Some(FrameworkOverlayId::GlobalShortcuts)
     );
     assert_eq!(*app.framework().focused(), initial_focus);
 

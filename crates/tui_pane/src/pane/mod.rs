@@ -57,7 +57,7 @@ pub(crate) type ModeQuery<Ctx> = fn(&Ctx) -> Mode<Ctx>;
 pub trait Pane<Ctx: AppContext>: 'static {
     /// Stable per-pane identity used by the framework's per-pane
     /// query registry. The trait covers app panes only — framework
-    /// panes (Keymap, Settings, Toasts) are special-cased — so the
+    /// panes (Keymap, Settings, Global Shortcuts, Toasts) are special-cased — so the
     /// variant is always an `AppPaneId`.
     const APP_PANE_ID: Ctx::AppPaneId;
 

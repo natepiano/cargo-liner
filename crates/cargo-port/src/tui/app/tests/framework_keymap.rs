@@ -77,6 +77,8 @@ use crate::tui::state::ServiceStatus;
 
 const TAB_WALK_STEPS: usize = 6;
 const SINGLE_RUN_COUNT: usize = 1;
+const GLOBAL_SHORTCUTS_TEST_WIDTH: u16 = 100;
+const GLOBAL_SHORTCUTS_TEST_HEIGHT: u16 = 40;
 
 fn focus_app_pane_in_framework(app: &mut App, id: AppPaneId) {
     app.set_focus(FocusedPane::App(id));
@@ -608,7 +610,7 @@ fn focused_package_bar_renders_every_app_global() {
 }
 
 #[test]
-fn focused_package_bar_global_region_matches_legacy_total_order() {
+fn focused_package_status_line_collapses_globals_to_shortcuts_help() {
     let project = super::make_project(Some("demo"), "~/demo");
     let mut app = make_app(&[project]);
     app.panes.package.set_content(package_data_no_version());
@@ -616,15 +618,10 @@ fn focused_package_bar_global_region_matches_legacy_total_order() {
 
     let global = render::cargo_port_global_text_for_test(&app);
 
-    assert_contains_in_order(
-        &global,
-        &[
-            "find", "editor", "terminal", "settings", "keymap", "rescan", "quit", "restart",
-        ],
-    );
+    assert_contains_in_order(&global, &["?", "shortcuts"]);
     assert!(
-        !global.contains("dismiss"),
-        "normal app-pane global strip must not show dismiss (got {global:?})",
+        !global.contains("finder") && !global.contains("editor") && !global.contains("quit"),
+        "normal app-pane global strip should advertise only the shortcut viewer (got {global:?})",
     );
 }
 
@@ -948,6 +945,7 @@ fn keymap_popup_keeps_legacy_global_layout_compact() {
             "Dismiss focused item",
             "Open finder",
             "Open keymap",
+            "Show global shortcuts",
             "Project List:",
         ],
     );
@@ -958,6 +956,49 @@ fn keymap_popup_keeps_legacy_global_layout_compact() {
     assert!(
         !text.contains("Close finder"),
         "the keymap popup should stay compact on tall terminals instead of exposing every section",
+    );
+}
+
+#[test]
+fn global_shortcuts_overlay_opens_with_question_mark_and_esc_closes() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+
+    press(&mut app, KeyCode::Char('?'), KeyModifiers::NONE);
+
+    assert_eq!(
+        app.framework.overlay(),
+        Some(tui_pane::FrameworkOverlayId::GlobalShortcuts)
+    );
+
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+    assert_eq!(app.framework.overlay(), None);
+}
+
+#[test]
+fn global_shortcuts_overlay_renders_all_global_shortcuts() {
+    let project = super::make_project(Some("demo"), "~/demo");
+    let mut app = make_app(&[project]);
+    open_framework_overlay(&mut app, FrameworkGlobalAction::OpenGlobalShortcuts);
+
+    let text = buffer_text_sized(
+        &mut app,
+        GLOBAL_SHORTCUTS_TEST_WIDTH,
+        GLOBAL_SHORTCUTS_TEST_HEIGHT,
+    );
+
+    assert_contains_in_order(
+        &text,
+        &[
+            "Global Shortcuts",
+            "Global Navigation:",
+            "Next pane",
+            "Global Shortcuts:",
+            "Open finder",
+            "Quit",
+            "Show global shortcuts",
+        ],
     );
 }
 
