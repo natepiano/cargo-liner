@@ -98,10 +98,10 @@ impl SyncTracker {
     }
 }
 
-/// Render `acme: ↓3 ⮕ in sync` for one transition.
+/// Render `acme: ↓3 ──▶︎ in sync` for one transition.
 pub fn format_transition(name: &str, transition: &SyncTransition) -> String {
     format!(
-        "{name}: {} ⮕ {}",
+        "{name}: {} ──▶︎ {}",
         format_sync(transition.previous),
         format_sync(transition.current)
     )
@@ -208,6 +208,6 @@ mod tests {
             previous: Some((3, 0)),
             current:  Some((0, 0)),
         };
-        assert_eq!(format_transition("acme", &t), "acme: ↑3 ⮕ ☑️ in sync");
+        assert_eq!(format_transition("acme", &t), "acme: ↑3 ──▶︎ ☑️ in sync");
     }
 }
