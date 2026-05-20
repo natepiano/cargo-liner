@@ -198,6 +198,7 @@ pub use theme::target_bench_color;
 pub use theme::text_default;
 pub use theme::theme;
 pub use theme::title_color;
+pub use theme::warning_color;
 pub use toasts::ReactivateOutcome;
 pub use toasts::RunningTracker;
 pub use toasts::ToastCommand;

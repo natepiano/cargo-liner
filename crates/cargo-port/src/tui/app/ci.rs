@@ -35,12 +35,15 @@ impl App {
     }
 
     /// Process a completed CI fetch: merge runs and detect exhaustion.
+    /// Returns `true` when the caller should chain a `FetchOlder` follow-up
+    /// (Sync surfaced no new runs but a cached cursor exists to look further
+    /// back). The caller preserves the toast across the chained fetch.
     pub(super) fn handle_ci_fetch_complete(
         &mut self,
         path: &str,
         result: CiFetchResult,
         kind: CiFetchKind,
-    ) {
+    ) -> bool {
         let abs = AbsolutePath::from(Path::new(path));
 
         let prev_info = self.project_list.ci_info_for(abs.as_path());
@@ -74,6 +77,11 @@ impl App {
         merged.sort_by_key(|run| Reverse(run.run_id));
 
         let found_new = merged.len() > prev_count;
+        // Chain Sync → FetchOlder when Sync surfaced nothing and we still
+        // have a cached cursor to look further back. The caller schedules
+        // the FetchOlder and preserves the toast across the chained fetch.
+        let chain_older =
+            matches!(kind, CiFetchKind::Sync) && !found_new && merged.last().is_some();
         // Only FetchOlder marks/clears exhaustion.  Sync clears it when
         // new runs appear but never marks it — we don't want a routine
         // refresh to block future FetchOlder requests.
@@ -87,10 +95,14 @@ impl App {
                     }
                     false
                 } else {
-                    self.overlays.set_status_flash(
-                        "no new runs found".to_string(),
-                        std::time::Instant::now(),
-                    );
+                    // Skip the status flash when chaining; the chained
+                    // FetchOlder will produce its own outcome message.
+                    if !chain_older {
+                        self.overlays.set_status_flash(
+                            "no new runs found".to_string(),
+                            std::time::Instant::now(),
+                        );
+                    }
                     // Preserve current exhaustion state.
                     prev_exhausted
                 }
@@ -142,6 +154,7 @@ impl App {
             });
         }
         self.scan.bump_generation();
+        chain_older
     }
 
     pub(super) fn ci_display_mode_for(&self, path: &Path) -> CiRunDisplayMode {

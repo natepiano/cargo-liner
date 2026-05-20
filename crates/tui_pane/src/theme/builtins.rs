@@ -40,6 +40,7 @@ pub const fn default_dark() -> Theme {
             inline_error: StyleSpec::from_color(Color::Yellow),
             success:      StyleSpec::from_color(Color::Green),
             label:        StyleSpec::from_color(Color::Rgb(150, 190, 180)),
+            warning:      StyleSpec::from_color(Color::Yellow),
         },
         text:        TextTheme {
             default:   StyleSpec::from_color(Color::White),
@@ -100,6 +101,7 @@ pub const fn default_light() -> Theme {
             inline_error: StyleSpec::from_color(Color::Rgb(180, 95, 0)),
             success:      StyleSpec::from_color(Color::Rgb(0, 120, 0)),
             label:        StyleSpec::from_color(Color::Rgb(60, 100, 90)),
+            warning:      StyleSpec::from_color(Color::Rgb(180, 95, 0)),
         },
         text:        TextTheme {
             default:   StyleSpec::from_color(Color::Black),
@@ -164,6 +166,7 @@ pub const fn high_contrast_dark() -> Theme {
             inline_error: StyleSpec::bold(Color::LightYellow),
             success:      StyleSpec::bold(Color::LightGreen),
             label:        StyleSpec::from_color(Color::White),
+            warning:      StyleSpec::bold(Color::LightYellow),
         },
         text:        TextTheme {
             default:   StyleSpec::from_color(Color::White),
@@ -219,6 +222,7 @@ pub const fn high_contrast_light() -> Theme {
             inline_error: StyleSpec::bold(Color::Rgb(140, 60, 0)),
             success:      StyleSpec::bold(Color::Rgb(0, 100, 0)),
             label:        StyleSpec::from_color(Color::Black),
+            warning:      StyleSpec::bold(Color::Rgb(140, 60, 0)),
         },
         text:        TextTheme {
             default:   StyleSpec::from_color(Color::Black),

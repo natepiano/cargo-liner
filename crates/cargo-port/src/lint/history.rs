@@ -15,6 +15,7 @@ use super::paths;
 use super::read_write;
 use super::status;
 use super::types::LintRun;
+use super::types::LintRunStatus;
 use crate::constants::LINTS_HISTORY_JSONL;
 use crate::project::AbsolutePath;
 
@@ -134,7 +135,8 @@ pub fn read_history(project_root: &Path) -> Vec<LintRun> {
 pub(super) fn read_history_under(cache_root: &Path, project_root: &Path) -> Vec<LintRun> {
     let mut runs =
         read_write::read_history_file(&paths::history_path_under(cache_root, project_root));
-    let latest = read_write::read_latest_file(&paths::latest_path_under(cache_root, project_root));
+    let latest = read_write::read_latest_file(&paths::latest_path_under(cache_root, project_root))
+        .filter(|run| !matches!(run.status, LintRunStatus::Running));
 
     if let Some(latest_run) = latest
         && runs

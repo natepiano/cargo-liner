@@ -371,6 +371,7 @@ impl App {
         }
 
         self.background.register_item_background_services(&item);
+        self.register_lint_project_if_eligible(&item);
         // Insert into the hierarchy directly — under a parent workspace if
         // one exists, otherwise as a top-level peer.
         let discovered_path = item.path().to_path_buf();

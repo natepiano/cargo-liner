@@ -11,6 +11,7 @@ use super::EmptyDescriptionBehavior;
 use super::GitData;
 use super::LintsData;
 use super::PackageData;
+use super::PublishStatus;
 use super::RemoteRow;
 use super::RunTargetKind;
 use super::TargetEntry;
@@ -32,6 +33,7 @@ use crate::project::GitStatus;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::pane::PaneFocusState;
 use crate::tui::panes;
+use crate::tui::state::ServiceStatus;
 
 fn package_data(is_rust_project: bool) -> PackageData {
     PackageData {
@@ -46,6 +48,8 @@ fn package_data(is_rust_project: bool) -> PackageData {
         description:              None,
         crates_version:           None,
         crates_downloads:         None,
+        publish_status:           PublishStatus::NotPublishable,
+        crates_io_service:        ServiceStatus::Available,
         types:                    "lib".to_string(),
         disk:                     "36.3 GiB".to_string(),
         stats_rows:               Vec::new(),
@@ -95,6 +99,151 @@ fn ci_run_with_jobs(jobs: Vec<CiJob>) -> CiRun {
         updated_at: None,
         fetched: Fetched,
     }
+}
+
+#[test]
+fn crates_io_row_hidden_when_publishable_but_service_available() {
+    // Pre-fetch state: no version yet, service is fine. We still
+    // suppress the row — the existing UX before any fetch lands.
+    let mut data = package_data(true);
+    data.crates_version = None;
+    data.crates_downloads = None;
+    data.publish_status = PublishStatus::Publishable;
+    data.crates_io_service = ServiceStatus::Available;
+    let fields = model::package_fields_from_data(&data);
+    assert!(
+        !fields.contains(&DetailField::CratesIo),
+        "no row before data lands while service is reachable"
+    );
+    assert!(!fields.contains(&DetailField::Downloads));
+}
+
+#[test]
+fn crates_io_row_shows_warning_when_unreachable_and_no_version() {
+    // Confirmed-down state with no version yet: the row surfaces
+    // with the warning placeholder text so the user knows why the
+    // value is empty.
+    let mut data = package_data(true);
+    data.crates_version = None;
+    data.crates_downloads = None;
+    data.publish_status = PublishStatus::Publishable;
+    data.crates_io_service = ServiceStatus::Unreachable;
+    let fields = model::package_fields_from_data(&data);
+    assert!(
+        fields.contains(&DetailField::CratesIo),
+        "row must surface during outage so the user sees the placeholder"
+    );
+    assert!(fields.contains(&DetailField::Downloads));
+    assert_eq!(
+        DetailField::CratesIo.package_value(&data),
+        "crates.io unreachable",
+    );
+    assert_eq!(
+        DetailField::Downloads.package_value(&data),
+        "crates.io unreachable",
+    );
+    assert!(model::crates_io_value_is_unreachable_placeholder(&data));
+}
+
+#[test]
+fn crates_io_row_shows_normal_value_when_version_present_during_outage() {
+    // Data landed before the outage (or during a brief recovery).
+    // Even with the service currently unreachable, the row renders
+    // the real value — not the warning placeholder.
+    let mut data = package_data(true);
+    data.crates_version = Some("0.1.0".to_string());
+    data.crates_downloads = Some(123);
+    data.publish_status = PublishStatus::Publishable;
+    data.crates_io_service = ServiceStatus::Unreachable;
+    let fields = model::package_fields_from_data(&data);
+    assert!(fields.contains(&DetailField::CratesIo));
+    assert!(fields.contains(&DetailField::Downloads));
+    assert_eq!(DetailField::CratesIo.package_value(&data), "0.1.0");
+    assert!(!model::crates_io_value_is_unreachable_placeholder(&data));
+}
+
+#[test]
+fn crates_io_row_hidden_for_non_publishable_even_during_outage() {
+    // `publish = false` packages never fire a crates.io fetch, so
+    // surfacing the warning row for them would be misleading.
+    let mut data = package_data(true);
+    data.crates_version = None;
+    data.crates_downloads = None;
+    data.publish_status = PublishStatus::NotPublishable;
+    data.crates_io_service = ServiceStatus::Unreachable;
+    let fields = model::package_fields_from_data(&data);
+    assert!(
+        !fields.contains(&DetailField::CratesIo),
+        "non-publishable rows must stay hidden during outage"
+    );
+    assert!(!fields.contains(&DetailField::Downloads));
+    assert!(!model::crates_io_value_is_unreachable_placeholder(&data));
+}
+
+#[test]
+fn stars_row_hidden_when_github_reachable_and_no_data() {
+    // Pre-fetch state on a reachable GitHub: no stars yet, suppress
+    // the row — same UX as the crates.io row pre-data on a healthy
+    // service. The placeholder helper must report false.
+    let mut data = git_data();
+    data.stars = None;
+    data.github_status = AvailabilityStatus::Reachable;
+    let fields = model::git_fields_from_data(&data);
+    assert!(
+        !fields.contains(&DetailField::Stars),
+        "no Stars row before data lands while GitHub is reachable"
+    );
+    assert!(!model::github_stars_is_unreachable_placeholder(&data));
+}
+
+#[test]
+fn stars_row_shows_warning_when_github_unreachable_and_no_data() {
+    // Outage state with no stars yet: the row surfaces with the
+    // "github unreachable" placeholder so the user knows why the
+    // value is empty. Mirrors `crates_io_row_shows_warning_...`.
+    let mut data = git_data();
+    data.stars = None;
+    data.github_status = AvailabilityStatus::Unreachable;
+    let fields = model::git_fields_from_data(&data);
+    assert!(
+        fields.contains(&DetailField::Stars),
+        "Stars row must surface during outage so the user sees the placeholder"
+    );
+    assert!(model::github_stars_is_unreachable_placeholder(&data));
+    assert!(
+        DetailField::Stars.git_value(&data).is_empty(),
+        "git_value stays empty — the placeholder is added by the renderer overlay"
+    );
+}
+
+#[test]
+fn stars_row_shows_warning_when_github_rate_limited_and_no_data() {
+    // Rate-limit collapses to the same UX as unreachable on the
+    // render side — the value cell isn't going to land, so warn the
+    // user instead of leaving an invisible gap.
+    let mut data = git_data();
+    data.stars = None;
+    data.github_status = AvailabilityStatus::RateLimited;
+    let fields = model::git_fields_from_data(&data);
+    assert!(fields.contains(&DetailField::Stars));
+    assert!(model::github_stars_is_unreachable_placeholder(&data));
+}
+
+#[test]
+fn stars_row_shows_real_value_when_data_present_during_outage() {
+    // Stars landed before the outage (or during a brief recovery).
+    // Even with GitHub currently unreachable, the row renders the
+    // real value — not the warning placeholder.
+    let mut data = git_data();
+    data.stars = Some(42);
+    data.github_status = AvailabilityStatus::Unreachable;
+    let fields = model::git_fields_from_data(&data);
+    assert!(fields.contains(&DetailField::Stars));
+    assert_eq!(DetailField::Stars.git_value(&data), "⭐ 42");
+    assert!(
+        !model::github_stars_is_unreachable_placeholder(&data),
+        "real value present — no placeholder"
+    );
 }
 
 #[test]

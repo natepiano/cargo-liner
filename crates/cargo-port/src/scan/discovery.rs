@@ -89,6 +89,9 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
 
     // Crates.io version + downloads (network)
     if let Some(name) = project_name {
+        let _ = tx.send(BackgroundMsg::CratesIoFetchQueued {
+            name: name.to_string(),
+        });
         let (info, signal) = client.fetch_crates_io_info(name);
         emit_service_signal(tx, signal);
         if let Some(info) = info {
@@ -98,6 +101,9 @@ pub(crate) fn fetch_project_details(req: &ProjectDetailRequest<'_>) {
                 downloads: info.downloads,
             });
         }
+        let _ = tx.send(BackgroundMsg::CratesIoFetchComplete {
+            name: name.to_string(),
+        });
     }
 
     // Submodules (local, fast — reads .gitmodules + one git ls-tree).

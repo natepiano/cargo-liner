@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Block / unblock an external service for cargo-port outage testing.
+#
+# Routes the service's hostnames to a loopback that refuses port 443,
+# then flushes both the DNS cache and mDNSResponder so the new
+# resolution actually takes effect on macOS. Covers both IPv4 and IPv6
+# — macOS may resolve AAAA records and bypass an IPv4-only entry.
+#
+# Each service uses its own marker comment in /etc/hosts so blocking
+# one service leaves the other untouched.
+#
+# Usage:
+#   ./scripts/block crates on      # block crates.io
+#   ./scripts/block crates off     # unblock crates.io
+#   ./scripts/block crates check   # show current state
+#   ./scripts/block github on      # block github.com
+#   ./scripts/block github off
+#   ./scripts/block github check
+
+set -euo pipefail
+
+HOSTS=/etc/hosts
+
+usage() {
+    echo "usage: $0 {crates|github} {on|off|check}" >&2
+    exit 1
+}
+
+service="${1:-}"
+action="${2:-}"
+
+case "$service" in
+crates)
+    hosts=(crates.io static.crates.io)
+    marker="# cargo-port-test-block-crates"
+    probe_host=crates.io
+    ;;
+github)
+    hosts=(github.com api.github.com raw.githubusercontent.com objects.githubusercontent.com)
+    marker="# cargo-port-test-block-github"
+    probe_host=api.github.com
+    ;;
+*)
+    usage
+    ;;
+esac
+
+host_list="${hosts[*]}"
+v4_line="127.0.0.1 $host_list  $marker"
+v6_line="::1       $host_list  $marker"
+
+flush_dns() {
+    sudo dscacheutil -flushcache
+    sudo killall -HUP mDNSResponder
+}
+
+case "$action" in
+on)
+    if grep -qF "$marker" "$HOSTS"; then
+        echo "$service: already blocked"
+    else
+        echo "$v4_line" | sudo tee -a "$HOSTS" >/dev/null
+        echo "$v6_line" | sudo tee -a "$HOSTS" >/dev/null
+        echo "$service: added entries to $HOSTS"
+    fi
+    flush_dns
+    echo "$service: blocked — $probe_host now resolves to loopback"
+    host "$probe_host" | sed 's/^/  /'
+    ;;
+off)
+    if ! grep -qF "$marker" "$HOSTS"; then
+        echo "$service: nothing to remove"
+    else
+        # Escape the marker for sed (it contains spaces and `#`).
+        sudo sed -i '' "\|$marker|d" "$HOSTS"
+        echo "$service: removed entries from $HOSTS"
+    fi
+    flush_dns
+    echo "$service: unblocked"
+    host "$probe_host" | sed 's/^/  /'
+    ;;
+check)
+    if grep -qF "$marker" "$HOSTS"; then
+        echo "$service: STATE: blocked"
+        grep -F "$marker" "$HOSTS" | sed 's/^/  /'
+    else
+        echo "$service: STATE: not blocked"
+    fi
+    echo "$service: resolution:"
+    host "$probe_host" | sed 's/^/  /'
+    ;;
+*)
+    usage
+    ;;
+esac

@@ -15,6 +15,7 @@ use tui_pane::render_overflow_affordance;
 use tui_pane::success_color;
 use tui_pane::text_default;
 use tui_pane::title_color;
+use tui_pane::warning_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::DescriptionBlock;
@@ -24,6 +25,7 @@ use super::GitData;
 use super::RemoteRow;
 use super::SyncedDescriptionHeight;
 use super::WorktreeInfo;
+use super::github_stars_is_unreachable_placeholder;
 use super::package;
 use super::package::RenderStyles;
 use super::pane_impls::GitPane;
@@ -319,7 +321,10 @@ struct RenderFlatArgs<'a> {
 /// Compute the displayed value string for a flat git-pane row,
 /// including row-specific decorations (local-only suffix on `Branch`,
 /// `(github unreachable)` / `(github rate-limited)` suffix on
-/// rate-limit rows).
+/// rate-limit rows). Also returns the "github unreachable"
+/// placeholder text for an empty Stars row when GitHub is down — the
+/// parallel of the crates.io unreachable placeholder on the Package
+/// pane.
 fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool) -> String {
     if field == DetailField::Head {
         let raw = field.git_value(data);
@@ -336,6 +341,12 @@ fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool
         } else {
             format!("{raw} ({suffix})")
         };
+    }
+    if field == DetailField::Stars
+        && raw.is_empty()
+        && github_stars_is_unreachable_placeholder(data)
+    {
+        return "github unreachable".to_string();
     }
     raw
 }
@@ -370,18 +381,21 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         );
         let value = build_field_value(data, *field, is_rate_limit_row);
         let selection = pane::selection_state(pane, i, focus);
-        let base_value_style =
-            if matches!(*field, DetailField::VsLocal) && value.starts_with(IN_SYNC) {
-                Style::default().fg(success_color())
-            } else if matches!(*field, DetailField::VsLocal) && value == NO_REMOTE_SYNC {
-                Style::default().fg(inactive_border_color())
-            } else if *field == DetailField::WorktreeError {
-                Style::default().fg(text_default()).bg(error_color())
-            } else if is_rate_limit_row && !data.github_status.is_available() {
-                Style::default().fg(error_color())
-            } else {
-                Style::default()
-            };
+        let base_value_style = if matches!(*field, DetailField::VsLocal)
+            && value.starts_with(IN_SYNC)
+        {
+            Style::default().fg(success_color())
+        } else if matches!(*field, DetailField::VsLocal) && value == NO_REMOTE_SYNC {
+            Style::default().fg(inactive_border_color())
+        } else if *field == DetailField::WorktreeError {
+            Style::default().fg(text_default()).bg(error_color())
+        } else if is_rate_limit_row && !data.github_status.is_available() {
+            Style::default().fg(error_color())
+        } else if *field == DetailField::Stars && github_stars_is_unreachable_placeholder(data) {
+            Style::default().fg(warning_color())
+        } else {
+            Style::default()
+        };
         let ls = selection.patch(styles.readonly_label);
         let vs = selection.patch(base_value_style);
         if matches!(

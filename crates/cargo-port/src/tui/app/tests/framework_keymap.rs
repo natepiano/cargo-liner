@@ -68,10 +68,12 @@ use crate::tui::panes::GitData;
 use crate::tui::panes::LintsData;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::PaneId;
+use crate::tui::panes::PublishStatus;
 use crate::tui::panes::RemoteRow;
 use crate::tui::panes::TargetsData;
 use crate::tui::render;
 use crate::tui::settings::SettingOption;
+use crate::tui::state::ServiceStatus;
 
 const TAB_WALK_STEPS: usize = 6;
 const SINGLE_RUN_COUNT: usize = 1;
@@ -169,6 +171,8 @@ fn package_data_no_version() -> PackageData {
         description:              None,
         crates_version:           None,
         crates_downloads:         None,
+        publish_status:           PublishStatus::NotPublishable,
+        crates_io_service:        ServiceStatus::Available,
         types:                    "lib".to_string(),
         disk:                     "1.0 MiB".to_string(),
         stats_rows:               Vec::new(),

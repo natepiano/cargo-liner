@@ -9,6 +9,7 @@ use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::types::PollBackgroundStats;
 use crate::tui::panes::CiFetchKind;
+use crate::tui::panes::PendingCiFetch;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -71,12 +72,32 @@ impl App {
                         .project_list
                         .ci_info_for(Path::new(&path))
                         .map_or(0, |info| info.runs.len());
-                    self.handle_ci_fetch_complete(&path, result, kind);
+                    let chain_older = self.handle_ci_fetch_complete(&path, result, kind);
                     let after = self
                         .project_list
                         .ci_info_for(Path::new(&path))
                         .map_or(0, |info| info.runs.len());
                     let new_runs = after.saturating_sub(before);
+                    if chain_older {
+                        // Sync turned up nothing; schedule the follow-up
+                        // FetchOlder using the (unchanged) cached tail as
+                        // the cursor. Preserve the existing toast so the
+                        // user sees one continuous "Fetching CI" task.
+                        let oldest_created_at = self
+                            .project_list
+                            .ci_info_for(Path::new(&path))
+                            .and_then(|info| info.runs.last().map(|r| r.created_at.clone()));
+                        if let Some(oldest_created_at) = oldest_created_at {
+                            self.inflight.set_pending_ci_fetch(PendingCiFetch {
+                                project_path:      path.clone(),
+                                ci_run_count:      self.config.ci_run_count(),
+                                oldest_created_at: Some(oldest_created_at),
+                                kind:              CiFetchKind::FetchOlder,
+                            });
+                            count += 1;
+                            continue;
+                        }
+                    }
                     if let Some(task_id) = self.ci.take_fetch_toast() {
                         let empty: HashSet<TrackedItemKey> = HashSet::new();
                         self.framework
@@ -168,6 +189,8 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::RepoFetchQueued { .. }
         | BackgroundMsg::RepoFetchComplete { .. }
         | BackgroundMsg::CratesIoVersion { .. }
+        | BackgroundMsg::CratesIoFetchQueued { .. }
+        | BackgroundMsg::CratesIoFetchComplete { .. }
         | BackgroundMsg::RepoMeta { .. }
         | BackgroundMsg::Submodules { .. }
         | BackgroundMsg::ScanResult { .. }
@@ -178,6 +201,7 @@ pub(super) const fn record_background_msg_kind(
         | BackgroundMsg::ServiceReachable { .. }
         | BackgroundMsg::ServiceRecovered { .. }
         | BackgroundMsg::ServiceUnreachable { .. }
+        | BackgroundMsg::ServiceUnreachableConfirmed { .. }
         | BackgroundMsg::ServiceRateLimited { .. }
         | BackgroundMsg::LanguageStatsBatch { .. }
         | BackgroundMsg::CargoMetadata { .. }

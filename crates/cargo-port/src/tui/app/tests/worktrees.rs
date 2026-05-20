@@ -1,4 +1,9 @@
+use notify::event::DataChange;
+use notify::event::EventKind;
+use notify::event::ModifyKind;
+
 use super::*;
+use crate::lint;
 use crate::scan;
 
 #[test]
@@ -185,6 +190,65 @@ fn handle_project_discovered_inserts_new_root_in_sorted_position() {
             test_path("~/rust/cargo-port").as_path(),
             test_path("~/rust/rust-template").as_path(),
         ]
+    );
+}
+
+#[test]
+fn handle_project_discovered_registers_new_root_with_lint_runtime() {
+    let project_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(project_dir.path().join("src"))
+        .unwrap_or_else(|_| std::process::abort());
+    std::fs::write(
+        project_dir.path().join("Cargo.toml"),
+        manifest_contents("new_worktree", false),
+    )
+    .unwrap_or_else(|_| std::process::abort());
+    std::fs::write(
+        project_dir.path().join("src").join("lib.rs"),
+        "pub fn demo() {}\n",
+    )
+    .unwrap_or_else(|_| std::process::abort());
+
+    let cache_dir = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let mut cfg = CargoPortConfig::default();
+    cfg.cache.root = cache_dir.path().to_string_lossy().to_string();
+    cfg.lint.enabled = true;
+    cfg.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
+    cfg.lint.commands = vec![crate::config::LintCommandConfig {
+        name:    "echo".to_string(),
+        command: "printf 'lint ok\\n'".to_string(),
+    }];
+    let mut app = make_app_with_config(&[], &cfg);
+
+    assert!(app.handle_project_discovered(item_from_project_dir(project_dir.path())));
+    let trigger = lint::classify_event_path(
+        project_dir.path(),
+        EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+        &project_dir.path().join("src").join("lib.rs"),
+    )
+    .unwrap_or_else(|| std::process::abort());
+    app.lint
+        .runtime()
+        .unwrap_or_else(|| std::process::abort())
+        .lint_trigger(trigger);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut passed = false;
+    while std::time::Instant::now() < deadline {
+        app.poll_background();
+        if matches!(
+            crate::tui::state::Lint::status_for_path(&app.project_list, project_dir.path()),
+            LintStatus::Passed(_)
+        ) {
+            passed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    assert!(
+        passed,
+        "newly discovered project should have an active lint worker for later edits"
     );
 }
 

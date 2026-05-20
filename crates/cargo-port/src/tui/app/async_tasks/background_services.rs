@@ -77,17 +77,56 @@ impl App {
     /// crates. This method supplements it by iterating both and fetching
     /// crates.io data for each publishable one.
     pub(super) fn schedule_member_crates_io_fetches(&self) {
-        let tx = self.background.background_sender();
-        let client = self.net.http_client();
+        let targets = self.collect_publishable_crates_io_targets();
+        self.dispatch_crates_io_fetches(targets);
+    }
+    /// Walk every project (workspace members + vendored) and collect
+    /// `(path, crates.io name)` pairs for every publishable entry.
+    /// Shared by startup scheduling and post-recovery refetch.
+    pub(super) fn collect_publishable_crates_io_targets(&self) -> Vec<(AbsolutePath, String)> {
         let mut targets: Vec<(AbsolutePath, String)> = Vec::new();
         for entry in &self.project_list {
             collect_publishable_children(&entry.item, &mut targets);
         }
+        targets
+    }
+    /// Re-fire crates.io fetches for publishable projects whose
+    /// version data didn't land during a prior outage. Called from the
+    /// service-recovery path so the warning placeholder rows fill in
+    /// once the network is back. The single rayon worker self-throttles
+    /// the burst against the rate-limit bucket.
+    pub(super) fn refetch_missing_crates_io_targets(&self) {
+        let targets: Vec<(AbsolutePath, String)> = self
+            .collect_publishable_crates_io_targets()
+            .into_iter()
+            .filter(|(path, _)| !self.has_crates_io_version(path))
+            .collect();
+        self.dispatch_crates_io_fetches(targets);
+    }
+    /// Whether `path` has a cached crates.io version already. Looks
+    /// the project up via either the rust-info or vendored accessor;
+    /// `None` for either resolution counts as "no version yet."
+    fn has_crates_io_version(&self, path: &AbsolutePath) -> bool {
+        if let Some(rust) = self.project_list.rust_info_at_path(path.as_path()) {
+            return rust.crates_version().is_some();
+        }
+        self.project_list
+            .vendored_at_path(path.as_path())
+            .is_some_and(|v| v.crates_version().is_some())
+    }
+    /// Spawn a single rayon task that drives the supplied
+    /// `(path, name)` targets through the crates.io fetch lifecycle —
+    /// queued toast, network call, version write, complete toast.
+    /// Empty target list short-circuits without spawning.
+    fn dispatch_crates_io_fetches(&self, targets: Vec<(AbsolutePath, String)>) {
         if targets.is_empty() {
             return;
         }
+        let tx = self.background.background_sender();
+        let client = self.net.http_client();
         rayon::spawn(move || {
             for (path, name) in targets {
+                let _ = tx.send(BackgroundMsg::CratesIoFetchQueued { name: name.clone() });
                 let (info, signal) = client.fetch_crates_io_info(&name);
                 scan::emit_service_signal(&tx, signal);
                 if let Some(info) = info {
@@ -97,6 +136,7 @@ impl App {
                         downloads: info.downloads,
                     });
                 }
+                let _ = tx.send(BackgroundMsg::CratesIoFetchComplete { name });
             }
         });
     }

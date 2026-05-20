@@ -149,7 +149,7 @@ fn cache_latest_path_does_not_live_under_project_dir() {
 }
 
 #[test]
-fn history_reads_newest_first_and_includes_latest() {
+fn history_reads_newest_first_and_excludes_running_latest() {
     let cache_dir = tempfile::tempdir().expect("tempdir");
     let project_dir = tempfile::tempdir().expect("tempdir");
     let completed = LintRun {
@@ -175,9 +175,8 @@ fn history_reads_newest_first_and_includes_latest() {
         .expect("write latest");
 
     let runs = history::read_history_under(cache_dir.path(), project_dir.path());
-    assert_eq!(runs.len(), 2);
-    assert_eq!(runs[0].run_id, "running");
-    assert_eq!(runs[1].run_id, "completed");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].run_id, "completed");
 }
 
 #[test]

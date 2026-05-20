@@ -394,29 +394,14 @@ fn handle_ci_fetch_more(app: &mut App) {
                 .and_then(|item| item.name().map(str::to_string))
         })
         .unwrap_or_else(|| project::home_relative_path(&ci_path));
-    // Use the full cached run list (not branch-filtered) so the cursor is
-    // the true oldest cached run. If we used the filtered view, FetchOlder
-    // would re-fetch older-than-filtered runs that are already cached on
-    // other branches, returning zero "new" runs.
-    let oldest_created_at = app
-        .project_list
-        .selected_project_path()
-        .and_then(|path| app.project_list.ci_info_for(path))
-        .and_then(|info| info.runs.last().map(|r| r.created_at.clone()));
-    // FetchOlder whenever we have a date cursor. Explicit F presses should
-    // try to fetch more even if the repo was previously marked exhausted —
-    // if it really is exhausted, FetchOlder will re-confirm and the user
-    // gets a toast.
-    let kind = if oldest_created_at.is_none() {
-        CiFetchKind::Sync
-    } else {
-        CiFetchKind::FetchOlder
-    };
+    // Always start with Sync: pick up runs newer than the cached set. If
+    // Sync surfaces nothing, `poll_ci_fetches` automatically chains a
+    // FetchOlder using the cached tail as the cursor.
     app.inflight.set_pending_ci_fetch(PendingCiFetch {
-        project_path: ci_path.display().to_string(),
-        ci_run_count: app.config.ci_run_count(),
-        oldest_created_at,
-        kind,
+        project_path:      ci_path.display().to_string(),
+        ci_run_count:      app.config.ci_run_count(),
+        oldest_created_at: None,
+        kind:              CiFetchKind::Sync,
     });
     let task_id = app
         .framework

@@ -39,6 +39,18 @@ impl App {
         let next = self.sync_running_toast(toast_slot, "Retrieving GitHub repo details", &items);
         self.net.github.running_mut().toast = next;
     }
+    /// Keep a single "Fetching crates.io info" toast in sync with the
+    /// live in-flight crates.io fetches. Mirrors the GitHub
+    /// repo-fetch toast.
+    pub(super) fn sync_running_crates_io_toast(&mut self) {
+        let (toast_slot, items) = self
+            .net
+            .crates_io
+            .running()
+            .items_for_toast(String::clone, |name| TrackedItemKey::from(name.as_str()));
+        let next = self.sync_running_toast(toast_slot, "Fetching crates.io info", &items);
+        self.net.crates_io.running_mut().toast = next;
+    }
     /// Shared tracked-task toast sync. Grows as new items appear,
     /// marks items completed (freezing elapsed + starting strikethrough)
     /// as items disappear, and begins the toast-level linger

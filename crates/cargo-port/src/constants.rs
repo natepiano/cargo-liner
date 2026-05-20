@@ -70,6 +70,13 @@ pub(crate) const GITHUB_GRAPHQL_URL: &str = "https://api.github.com/graphql";
 pub(crate) const CRATES_IO_API_BASE: &str = "https://crates.io/api/v1";
 pub(crate) const CRATES_IO_USER_AGENT: &str = "cargo-port";
 pub(crate) const SERVICE_RETRY_SECS: u64 = 1;
+/// Wait this long after the first `Unreachable` signal before surfacing
+/// the "service unreachable" toast. If the service recovers inside the
+/// window (probe succeeds or a real request lands), no toast is ever
+/// shown — and the matching "back online" toast is suppressed too.
+/// Absorbs single transient timeouts in a stream of fetches without
+/// flapping the UI; a real outage surfaces after this delay.
+pub(crate) const SERVICE_UNAVAILABLE_GRACE: Duration = Duration::from_secs(3);
 
 // ── Watcher constants ─────────────────────────────────────────────────
 

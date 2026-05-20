@@ -25,6 +25,7 @@ use crate::constants::GIT_DIR;
 use crate::constants::GIT_FORK;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::http::RateLimitQuota;
+use crate::http::ServiceKind;
 use crate::lint;
 use crate::lint::LintRun;
 use crate::perf_log;
@@ -54,6 +55,7 @@ use crate::tui::app::App;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::project_list::ProjectList;
 use crate::tui::render;
+use crate::tui::state::ServiceStatus;
 
 #[derive(Default)]
 struct ProjectCounts {
@@ -348,10 +350,13 @@ impl DetailField {
             Self::Path => data.path.clone(),
             Self::Disk => data.disk.clone(),
             Self::Targets => data.types.clone(),
-            Self::CratesIo => data.crates_version.as_deref().unwrap_or("").to_string(),
+            Self::CratesIo => data.crates_version.as_deref().map_or_else(
+                || crates_io_placeholder(data).to_string(),
+                ToString::to_string,
+            ),
             Self::Downloads => data
                 .crates_downloads
-                .map_or_else(String::new, format_downloads),
+                .map_or_else(|| crates_io_placeholder(data).to_string(), format_downloads),
             Self::Version => data.version.clone(),
             Self::DiskTarget => data
                 .in_project_target
@@ -450,6 +455,52 @@ impl DetailField {
     }
 }
 
+/// Per-service "unreachable" placeholder string. Shared across the
+/// crates.io placeholder rows on the Package pane and the GitHub
+/// stars placeholder row on the Git pane, so the wording stays
+/// consistent across surfaces.
+pub(super) const fn service_unreachable_placeholder(service: ServiceKind) -> &'static str {
+    match service {
+        ServiceKind::CratesIo => "crates.io unreachable",
+        ServiceKind::GitHub => "github unreachable",
+    }
+}
+
+/// Placeholder text shown in the `CratesIo` / Downloads value cells
+/// when no data has landed and the service is confirmed unreachable.
+/// Empty string in every other case — `package_fields_from_data`
+/// already gates the row's visibility, so an empty string here means
+/// "we have data but it's None" (e.g. workspace member with no
+/// version), not "service is down."
+pub(super) const fn crates_io_placeholder(data: &PackageData) -> &'static str {
+    if data.publish_status.is_publishable()
+        && matches!(data.crates_io_service, ServiceStatus::Unreachable)
+    {
+        service_unreachable_placeholder(ServiceKind::CratesIo)
+    } else {
+        ""
+    }
+}
+
+/// True iff the value cell should be rendered in warning color —
+/// publishable project with no version landed yet during a confirmed
+/// crates.io outage.
+pub const fn crates_io_value_is_unreachable_placeholder(data: &PackageData) -> bool {
+    data.crates_version.is_none()
+        && data.publish_status.is_publishable()
+        && matches!(data.crates_io_service, ServiceStatus::Unreachable)
+}
+
+/// True iff the Git pane's Stars row should render a "github
+/// unreachable" placeholder in warning color: GitHub is confirmed
+/// down (Unreachable / `RateLimited`) and no stars count has landed
+/// yet. Mirrors [`crates_io_value_is_unreachable_placeholder`] for
+/// the GitHub-derived field — see [`service_unreachable_placeholder`]
+/// for the shared string.
+pub const fn github_stars_is_unreachable_placeholder(data: &GitData) -> bool {
+    data.stars.is_none() && !data.github_status.is_available()
+}
+
 /// All fields for the `Package` column.
 /// Non-Rust projects show only name, path, disk, and CI.
 pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
@@ -482,10 +533,17 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     if data.has_package {
         fields.push(DetailField::Version);
     }
-    if data.crates_version.is_some() {
+    // Show the CratesIo / Downloads rows when:
+    //   - data has landed (real value), OR
+    //   - the project is publishable AND the crates.io service is confirmed unreachable
+    //     (placeholder in warning color, so the user knows why the field is empty). When the
+    //     service recovers the placeholder hides again until a fetch lands.
+    let show_unreachable_placeholder = data.publish_status.is_publishable()
+        && matches!(data.crates_io_service, ServiceStatus::Unreachable);
+    if data.crates_version.is_some() || show_unreachable_placeholder {
         fields.push(DetailField::CratesIo);
     }
-    if data.crates_downloads.is_some() {
+    if data.crates_downloads.is_some() || show_unreachable_placeholder {
         fields.push(DetailField::Downloads);
     }
     // Step 4 fields: show unconditionally on Rust packages so that
@@ -517,7 +575,11 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     if data.vs_local.is_some() {
         fields.push(DetailField::VsLocal);
     }
-    if data.stars.is_some() {
+    // Show the Stars row when:
+    //   - the count has landed (real value), OR
+    //   - GitHub is confirmed unreachable / rate-limited (placeholder in warning color, mirrors the
+    //     crates.io unreachable row behavior on the Package pane).
+    if data.stars.is_some() || github_stars_is_unreachable_placeholder(data) {
         fields.push(DetailField::Stars);
     }
     // RepoDesc is rendered separately in the About section by
@@ -542,6 +604,21 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     fields
 }
 
+/// Whether a project is publishable to crates.io. Drives whether the
+/// `CratesIo` / Downloads rows ever appear in the Package pane —
+/// non-publishable projects never trigger a fetch, so showing
+/// placeholder rows for them during an outage would be misleading.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PublishStatus {
+    Publishable,
+    #[default]
+    NotPublishable,
+}
+
+impl PublishStatus {
+    pub const fn is_publishable(self) -> bool { matches!(self, Self::Publishable) }
+}
+
 /// Per-pane data for the Package detail panel.
 #[derive(Clone, Default)]
 /// Per-project pane data the Package pane renders. The "value"
@@ -556,6 +633,17 @@ pub struct PackageData {
     pub description:              Option<String>,
     pub crates_version:           Option<String>,
     pub crates_downloads:         Option<u64>,
+    /// Whether this project would have fired a crates.io fetch.
+    /// Combined with `crates_io_service`, drives the "crates.io
+    /// unreachable" placeholder row that keeps the field visible
+    /// during an outage. Non-publishable rows never show the row.
+    pub publish_status:           PublishStatus,
+    /// Snapshot of the crates.io service's render-side availability.
+    /// Set at build time from the live availability state. While
+    /// `Unreachable`, publishable rows without a version yet render
+    /// the warning placeholder; once it flips back to `Available`,
+    /// the placeholder disappears (the row hides until a fetch lands).
+    pub crates_io_service:        ServiceStatus,
     pub types:                    String,
     pub disk:                     String,
     pub stats_rows:               Vec<(&'static str, usize)>,
@@ -1423,6 +1511,8 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
             description: submodule.url.clone(),
             crates_version: None,
             crates_downloads: None,
+            publish_status: PublishStatus::NotPublishable,
+            crates_io_service: ServiceStatus::Available,
             types: String::new(),
             disk,
             stats_rows: Vec::new(),
@@ -1571,20 +1661,29 @@ struct PaneDataSource<'a> {
 
 /// Crates-io fields pulled from either a Rust info or vendored entry.
 struct CratesIoFields {
-    version:   Option<String>,
-    downloads: Option<u64>,
+    version:     Option<String>,
+    downloads:   Option<u64>,
+    /// True iff this project would have fired a crates.io fetch — i.e.
+    /// a publishable package. Used by `package_fields_from_data` to
+    /// keep the `CratesIo` placeholder row visible during a crates.io
+    /// outage even before any version landed; non-publishable rows
+    /// (where no fetch ever runs) never show the row.
+    publishable: bool,
 }
 
 fn resolve_crates_io_fields(app: &App, abs_path: &Path) -> CratesIoFields {
     let rust_info = app.project_list.rust_info_at_path(abs_path);
     let vendored = app.project_list.vendored_at_path(abs_path);
+    let publishable = rust_info.is_some_and(|r| r.cargo.publishable())
+        || vendored.is_some_and(|v| v.cargo.publishable() && v.name.is_some());
     CratesIoFields {
-        version:   rust_info
+        version: rust_info
             .and_then(|r| r.crates_version().map(String::from))
             .or_else(|| vendored.and_then(|v| v.crates_version().map(String::from))),
         downloads: rust_info
             .and_then(RustInfo::crates_downloads)
             .or_else(|| vendored.and_then(VendoredPackage::crates_downloads)),
+        publishable,
     }
 }
 
@@ -1630,6 +1729,8 @@ struct BuildPackageDataArgs {
     manifest:                 ManifestFields,
     crates_version:           Option<String>,
     crates_downloads:         Option<u64>,
+    publish_status:           PublishStatus,
+    crates_io_service:        ServiceStatus,
     types_str:                String,
     disk:                     String,
     in_project_target:        Option<u64>,
@@ -1659,6 +1760,8 @@ fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
         description,
         crates_version: args.crates_version,
         crates_downloads: args.crates_downloads,
+        publish_status: args.publish_status,
+        crates_io_service: args.crates_io_service,
         types: args.types_str,
         disk: args.disk,
         stats_rows: args.stats_rows,
@@ -1721,18 +1824,88 @@ fn compute_package_displays(
     (lint_display, ci_display)
 }
 
+/// Orchestrator for assembling a `DetailPaneData` from the inputs
+/// every pane builder shares. Reads divide into three phases (runtime
+/// state, metadata lookups, derived status), then the package /
+/// targets pieces are constructed and the final result is assembled.
 fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData {
-    let PaneDataSource {
-        abs_path,
-        display_path,
-        title_name,
-        has_cargo,
-        cargo,
-        wt_item,
-        stats_rows,
-        package_title,
-    } = src;
-    let display_path = display_path.to_owned();
+    let abs_path = src.abs_path;
+    let abs_path_owned = AbsolutePath::from(abs_path);
+
+    let runtime = collect_runtime_fields(app, abs_path, src.wt_item);
+    let metadata = collect_metadata_fields(app, abs_path, &abs_path_owned, src.cargo);
+    log_pane_common_breakdown(abs_path, &runtime, &metadata);
+
+    let crates_io_status = derive_crates_io_status(&runtime.crates_io, app);
+    let (lint_display, ci_display) =
+        compute_package_displays(app, &abs_path_owned, runtime.ci, &src.package_title);
+
+    let package = build_package_data(BuildPackageDataArgs {
+        package_title: src.package_title,
+        title_name: src.title_name,
+        display_path: src.display_path.to_owned(),
+        stats_rows: src.stats_rows,
+        has_cargo: src.has_cargo,
+        manifest: metadata.manifest,
+        publish_status: crates_io_status.publish,
+        crates_io_service: crates_io_status.service,
+        crates_version: runtime.crates_io.version,
+        crates_downloads: runtime.crates_io.downloads,
+        types_str: metadata.types_str,
+        disk: runtime.disk,
+        in_project_target: metadata.in_project_target,
+        in_project_non_target: metadata.in_project_non_target,
+        out_of_tree_target_bytes: metadata.out_of_tree_target_bytes,
+        lint_display,
+        ci_display,
+    });
+
+    let targets = lookup_targets_data(app, &abs_path_owned);
+    assemble_detail_pane_data(package, runtime.git_detail, runtime.worktrees, targets)
+}
+
+/// Phase 1 output — every field that depends on runtime state
+/// (filesystem walks, network probes, in-memory caches). Captures
+/// per-piece millisecond timings so the orchestrator can emit a
+/// single combined log line without each helper logging
+/// independently.
+struct RuntimeFields {
+    git_detail:    GitDetailFields,
+    crates_io:     CratesIoFields,
+    disk:          String,
+    ci:            Option<CiStatus>,
+    worktrees:     Vec<WorktreeInfo>,
+    git_detail_ms: u64,
+    disk_ms:       u64,
+    worktrees_ms:  u64,
+}
+
+/// Phase 2 output — every field derived from
+/// `WorkspaceMetadata` / `PackageRecord` lookups plus the in-project
+/// disk-usage breakdown. Same timing capture as `RuntimeFields`.
+struct MetadataFields {
+    types_str:                String,
+    manifest:                 ManifestFields,
+    in_project_target:        Option<u64>,
+    in_project_non_target:    Option<u64>,
+    out_of_tree_target_bytes: Option<u64>,
+    metadata_ms:              u64,
+    oot_ms:                   u64,
+}
+
+/// Phase 3 output — the two enum statuses derived from raw
+/// crates.io data plus the live service-availability snapshot. Kept
+/// together because both feed the same `PackageData` row gating
+/// logic.
+struct CratesIoStatus {
+    publish: PublishStatus,
+    service: ServiceStatus,
+}
+
+/// Phase 1: collect every runtime-derived field (git state, disk
+/// usage, CI status, worktree list, crates.io version cache) along
+/// with the elapsed time for each block.
+fn collect_runtime_fields(app: &App, abs_path: &Path, wt_item: Option<&RootItem>) -> RuntimeFields {
     let t_git = std::time::Instant::now();
     let git_detail = build_git_detail_fields(app, abs_path);
     let git_detail_ms = perf_log::ms(t_git.elapsed().as_millis());
@@ -1751,6 +1924,27 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let worktrees = resolve_worktrees(app, wt_item);
     let worktrees_ms = perf_log::ms(t_wt.elapsed().as_millis());
 
+    RuntimeFields {
+        git_detail,
+        crates_io,
+        disk,
+        ci,
+        worktrees,
+        git_detail_ms,
+        disk_ms,
+        worktrees_ms,
+    }
+}
+
+/// Phase 2: pull the workspace-metadata-derived fields (manifest,
+/// in-project byte breakdown, out-of-tree target bytes) and roll up
+/// the cargo target-kind list into a comma-separated label.
+fn collect_metadata_fields(
+    app: &App,
+    abs_path: &Path,
+    abs_path_owned: &AbsolutePath,
+    cargo: Option<&Cargo>,
+) -> MetadataFields {
     let types_str = cargo.map_or_else(String::new, |c| {
         c.types()
             .iter()
@@ -1759,68 +1953,58 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
             .join(", ")
     });
 
-    let abs_path_owned = AbsolutePath::from(abs_path);
     let t_meta = std::time::Instant::now();
-    let package_record = lookup_package_record(app, &abs_path_owned);
+    let package_record = lookup_package_record(app, abs_path_owned);
     let metadata_ms = perf_log::ms(t_meta.elapsed().as_millis());
     let manifest = manifest_fields_from(package_record.as_ref());
 
     let (in_project_target, in_project_non_target) =
         compute_in_project_bytes(&app.project_list, abs_path);
     let t_oot = std::time::Instant::now();
-    let out_of_tree_target_bytes = lookup_out_of_tree_target_bytes(app, &abs_path_owned);
+    let out_of_tree_target_bytes = lookup_out_of_tree_target_bytes(app, abs_path_owned);
     let oot_ms = perf_log::ms(t_oot.elapsed().as_millis());
 
-    tracing::info!(
-        git_detail_ms,
-        disk_ms,
-        worktrees_ms,
-        metadata_ms,
-        oot_ms,
-        path = %abs_path.display(),
-        "pane_common_breakdown"
-    );
-
-    let ManifestFields {
-        edition,
-        license,
-        homepage,
-        repository,
-        version,
-        description,
-    } = manifest;
-    let crates_version = crates_io.version;
-    let crates_downloads = crates_io.downloads;
-
-    let (lint_display, ci_display) =
-        compute_package_displays(app, &abs_path_owned, ci, &package_title);
-    let package = build_package_data(BuildPackageDataArgs {
-        package_title,
-        title_name,
-        display_path,
-        stats_rows,
-        has_cargo,
-        manifest: ManifestFields {
-            edition,
-            license,
-            homepage,
-            repository,
-            version,
-            description,
-        },
-        crates_version,
-        crates_downloads,
+    MetadataFields {
         types_str,
-        disk,
+        manifest,
         in_project_target,
         in_project_non_target,
         out_of_tree_target_bytes,
-        lint_display,
-        ci_display,
-    });
+        metadata_ms,
+        oot_ms,
+    }
+}
 
-    let targets = lookup_targets_data(app, &abs_path_owned);
-    assemble_detail_pane_data(package, git_detail, worktrees, targets)
+/// Phase 3: collapse the raw `CratesIoFields` plus the live
+/// availability state into the two enums that gate the
+/// `PackageData` rendering.
+const fn derive_crates_io_status(crates_io: &CratesIoFields, app: &App) -> CratesIoStatus {
+    let publish = if crates_io.publishable {
+        PublishStatus::Publishable
+    } else {
+        PublishStatus::NotPublishable
+    };
+    let service = if app.net.crates_io.availability.toast_id().is_some() {
+        ServiceStatus::Unreachable
+    } else {
+        ServiceStatus::Available
+    };
+    CratesIoStatus { publish, service }
+}
+
+/// Emit the combined `pane_common_breakdown` perf log line so each
+/// helper doesn't log independently — keeping the existing log
+/// format intact for downstream tracing consumers.
+fn log_pane_common_breakdown(abs_path: &Path, runtime: &RuntimeFields, metadata: &MetadataFields) {
+    tracing::info!(
+        git_detail_ms = runtime.git_detail_ms,
+        disk_ms = runtime.disk_ms,
+        worktrees_ms = runtime.worktrees_ms,
+        metadata_ms = metadata.metadata_ms,
+        oot_ms = metadata.oot_ms,
+        path = %abs_path.display(),
+        "pane_common_breakdown"
+    );
 }
 
 /// Look up the workspace that covers `abs_path` and aggregate its

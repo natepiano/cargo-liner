@@ -1,8 +1,11 @@
+use std::path::Path;
+
 use tui_pane::Appearance;
 
 use crate::http::ServiceSignal;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
+use crate::project::Submodule;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::types::ScanPhase;
@@ -94,7 +97,16 @@ impl App {
         self.schedule_startup_project_details();
         self.schedule_git_first_commit_refreshes();
     }
-    /// Handle a single `BackgroundMsg`. Returns `true` if the tree needs rebuilding.
+    /// Handle a single `BackgroundMsg`. Returns `true` if the tree
+    /// needs rebuilding. The match is a 1:1 mapping from variant to
+    /// handler — see the style guide entry on never splitting
+    /// exhaustive matches with `unreachable!()`. Multi-statement arms
+    /// are extracted as small helpers so each arm stays a single
+    /// call.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "trivial 1:1 exhaustive variant mapping"
+    )]
     pub fn handle_bg_msg(&mut self, msg: BackgroundMsg) -> bool {
         self.update_generations_for_msg(&msg);
         match msg {
@@ -111,6 +123,12 @@ impl App {
             } => self.insert_ci_runs(path.as_path(), runs, github_total),
             BackgroundMsg::RepoFetchQueued { repo } => self.handle_repo_fetch_queued(repo),
             BackgroundMsg::RepoFetchComplete { repo } => self.handle_repo_fetch_complete(repo),
+            BackgroundMsg::CratesIoFetchQueued { name } => {
+                self.handle_crates_io_fetch_queued(name);
+            },
+            BackgroundMsg::CratesIoFetchComplete { name } => {
+                self.handle_crates_io_fetch_complete(&name);
+            },
             BackgroundMsg::CheckoutInfo { path, info } => {
                 self.handle_checkout_info(path.as_path(), info);
             },
@@ -121,9 +139,7 @@ impl App {
                 self.handle_git_first_commit(path.as_path(), first_commit.as_deref());
             },
             BackgroundMsg::Submodules { path, submodules } => {
-                if let Some(info) = self.project_list.at_path_mut(path.as_path()) {
-                    info.submodules = submodules;
-                }
+                self.handle_submodules_msg(path.as_path(), submodules);
             },
             BackgroundMsg::CratesIoVersion {
                 path,
@@ -142,19 +158,11 @@ impl App {
             BackgroundMsg::ScanResult {
                 projects,
                 disk_entries,
-            } => {
-                self.handle_scan_result(projects, &disk_entries);
-            },
+            } => self.handle_scan_result(projects, &disk_entries),
             BackgroundMsg::ProjectDiscovered { item } => {
-                if self.handle_project_discovered(item) {
-                    return true;
-                }
+                return self.handle_project_discovered(item);
             },
-            BackgroundMsg::ProjectRefreshed { item } => {
-                if self.handle_project_refreshed(item) {
-                    return true;
-                }
-            },
+            BackgroundMsg::ProjectRefreshed { item } => return self.handle_project_refreshed(item),
             BackgroundMsg::LintCachePruned {
                 runs_evicted,
                 bytes_reclaimed,
@@ -172,6 +180,9 @@ impl App {
             BackgroundMsg::ServiceRecovered { service } => self.mark_service_recovered(service),
             BackgroundMsg::ServiceUnreachable { service } => {
                 self.apply_service_signal(ServiceSignal::Unreachable(service));
+            },
+            BackgroundMsg::ServiceUnreachableConfirmed { service } => {
+                self.confirm_service_unreachable(service);
             },
             BackgroundMsg::ServiceRateLimited { service } => {
                 self.apply_service_signal(ServiceSignal::RateLimited(service));
@@ -195,6 +206,14 @@ impl App {
             BackgroundMsg::AppearanceChanged(appearance) => self.apply_os_appearance(appearance),
         }
         false
+    }
+    /// Stash a project's submodule list onto its `ProjectInfo` when
+    /// the path resolves to a known leaf. Extracted from the dispatch
+    /// match so each arm stays a single call.
+    fn handle_submodules_msg(&mut self, path: &Path, submodules: Vec<Submodule>) {
+        if let Some(info) = self.project_list.at_path_mut(path) {
+            info.submodules = submodules;
+        }
     }
     /// Stash the OS appearance and re-resolve the active theme against
     /// the current `[appearance]` config.

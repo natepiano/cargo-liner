@@ -84,6 +84,12 @@ pub fn target_bench_color() -> Color { theme().status.target_bench.color }
 #[must_use]
 pub fn title_color() -> Color { theme().pane_chrome.active_title.color }
 
+/// Cautionary text. Service unavailability placeholders, pending
+/// data that depends on an unreachable service. Distinct from
+/// `error_color` — warning means degraded-but-recoverable.
+#[must_use]
+pub fn warning_color() -> Color { theme().semantic.warning.color }
+
 /// Background tint on fuzzy-matched characters in finder results.
 #[must_use]
 pub fn finder_match_bg() -> Color { theme().finder.match_bg.color }

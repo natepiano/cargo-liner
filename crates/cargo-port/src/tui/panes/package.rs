@@ -20,6 +20,7 @@ use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
 use tui_pane::success_color;
 use tui_pane::title_color;
+use tui_pane::warning_color;
 use unicode_width::UnicodeWidthStr;
 
 use super::CiDisplay;
@@ -133,6 +134,10 @@ fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect
             ci_display_style(&data.ci_display)
         } else if *field == DetailField::Lint {
             lint_display_style(&data.lint_display)
+        } else if matches!(*field, DetailField::CratesIo | DetailField::Downloads)
+            && panes::crates_io_value_is_unreachable_placeholder(data)
+        {
+            Style::default().fg(warning_color())
         } else {
             Style::default()
         };

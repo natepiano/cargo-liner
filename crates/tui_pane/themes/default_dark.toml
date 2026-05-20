@@ -31,6 +31,7 @@ error        = "Red"
 inline_error = "Yellow"
 label        = { r = 150, g = 190, b = 180 }
 success      = "Green"
+warning      = "Yellow"
 
 [variants.text]
 bg_focus  = "Black"

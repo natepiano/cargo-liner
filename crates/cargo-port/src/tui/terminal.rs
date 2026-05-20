@@ -647,6 +647,7 @@ pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name:
         });
 
         if let Some(name) = project_name.as_ref() {
+            let _ = tx.send(BackgroundMsg::CratesIoFetchQueued { name: name.clone() });
             let (info, signal) = client.fetch_crates_io_info(name);
             scan::emit_service_signal(&tx, signal);
             if let Some(info) = info {
@@ -656,6 +657,7 @@ pub(super) fn spawn_priority_fetch(app: &App, _path: &str, abs_path: &str, name:
                     downloads: info.downloads,
                 });
             }
+            let _ = tx.send(BackgroundMsg::CratesIoFetchComplete { name: name.clone() });
         }
     });
 }

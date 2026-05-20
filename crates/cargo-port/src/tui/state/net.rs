@@ -47,6 +47,35 @@ impl AvailabilityStatus {
     pub const fn is_available(self) -> bool { matches!(self, Self::Reachable) }
 }
 
+/// Outcome of a "service became reachable" call. The retry / recovery
+/// paths converge on this so callers handle every case the same way:
+/// `NoTransition` no-ops, `Silent` triggers refetch without a toast,
+/// `WithToast(id)` triggers refetch and surfaces the back-online toast.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryOutcome {
+    /// The service was already reachable — nothing to do.
+    NoTransition,
+    /// State transitioned from unavailable → reachable, but no
+    /// user-visible toast was ever pushed (the grace window absorbed
+    /// the outage). Refetch missing data; stay silent on toasts.
+    Silent,
+    /// State transitioned from unavailable → reachable and a toast
+    /// was up. Dismiss it, push the back-online message, refetch.
+    WithToast(ToastId),
+}
+
+/// Render-side snapshot of service availability — collapses
+/// [`AvailabilityStatus`]'s three-way state to a binary "render the
+/// placeholder, or render the real value." UI code carries this on
+/// per-row data so the rendering function stays a pure read.
+/// Applies equally to GitHub and crates.io.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ServiceStatus {
+    #[default]
+    Available,
+    Unreachable,
+}
+
 pub struct ServiceAvailability {
     status:            AvailabilityStatus,
     retry_active:      bool,
@@ -67,19 +96,22 @@ impl ServiceAvailability {
     #[cfg(test)]
     pub const fn is_unavailable(&self) -> bool { !self.status.is_available() }
 
-    /// Mark the service reachable. Returns the tracked toast id iff
-    /// this call is the transition out of an unavailable state —
-    /// caller should dismiss that toast and fire the recovery message.
-    /// Subsequent `Reachable` signals while already reachable return
-    /// `None`, so the recovery toast only fires once per outage.
-    pub const fn mark_reachable(&mut self) -> Option<ToastId> {
+    /// Mark the service reachable. Returns [`RecoveryOutcome`]:
+    /// - `NoTransition` if already reachable (subsequent successes are silent).
+    /// - `Silent` on the transition edge when no toast was ever surfaced (the grace window absorbed
+    ///   the outage). Caller refetches missing data without showing a toast.
+    /// - `WithToast(id)` on the transition edge with a live toast slot to dismiss; caller also
+    ///   pushes the recovery toast and refetches.
+    pub const fn mark_reachable(&mut self) -> RecoveryOutcome {
         let was_unavailable = !matches!(self.status, AvailabilityStatus::Reachable);
         self.status = AvailabilityStatus::Reachable;
-        if was_unavailable {
-            self.retry_active = false;
-            self.unavailable_toast.take()
-        } else {
-            None
+        if !was_unavailable {
+            return RecoveryOutcome::NoTransition;
+        }
+        self.retry_active = false;
+        match self.unavailable_toast.take() {
+            Some(id) => RecoveryOutcome::WithToast(id),
+            None => RecoveryOutcome::Silent,
         }
     }
 
@@ -115,16 +147,10 @@ impl ServiceAvailability {
 
     pub const fn set_toast(&mut self, id: ToastId) { self.unavailable_toast = Some(id); }
 
-    /// Clear all unavailability state and consume the stored toast id
-    /// if any. `Some(id)` signals the caller to dismiss the error
-    /// toast and push a transient "available" info toast; `None`
-    /// means the recovery was for a service we never toast-signalled
-    /// as down, so the caller should stay silent.
-    pub const fn mark_recovered(&mut self) -> Option<ToastId> {
-        self.status = AvailabilityStatus::Reachable;
-        self.retry_active = false;
-        self.unavailable_toast.take()
-    }
+    /// Convenience for the retry-probe path: identical semantics to
+    /// [`Self::mark_reachable`]. Kept as a distinct name so the
+    /// retry-thread caller reads cleanly.
+    pub const fn mark_recovered(&mut self) -> RecoveryOutcome { self.mark_reachable() }
 }
 
 pub struct Github {
@@ -171,14 +197,24 @@ impl Github {
 
 pub struct CratesIo {
     pub availability: ServiceAvailability,
+    /// Live in-flight crates.io fetches keyed by crate name, paired
+    /// with the single sticky "Fetching crates.io info" toast slot.
+    /// Synced each tick by `App::sync_running_crates_io_toast`. Mirrors
+    /// the GitHub repo-fetch tracker.
+    running:          RunningTracker<String>,
 }
 
 impl CratesIo {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             availability: ServiceAvailability::new(),
+            running:      RunningTracker::new(),
         }
     }
+
+    pub const fn running(&self) -> &RunningTracker<String> { &self.running }
+
+    pub const fn running_mut(&mut self) -> &mut RunningTracker<String> { &mut self.running }
 }
 
 pub struct Net {

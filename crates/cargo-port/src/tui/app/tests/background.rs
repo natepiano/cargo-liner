@@ -1,5 +1,8 @@
 use std::sync::mpsc;
 
+use scan::CachedRepoData;
+use scan::RepoMetaInfo;
+
 use super::*;
 use crate::project::AbsolutePath;
 use crate::watcher::WatcherMsg;
@@ -284,9 +287,21 @@ fn successful_request_dismisses_stuck_unreachable_toast() {
     // quirks, etc.) even while real data fetches were succeeding.
     // A successful request is authoritative evidence the service
     // works — it must clear the toast.
+    //
+    // Under the grace-period flow the toast only surfaces once
+    // `ServiceUnreachableConfirmed` arrives — `ServiceUnreachable`
+    // alone is silent. Drive that explicitly here so the regression
+    // assertion still applies to a *surfaced* toast.
     let mut app = make_app(&[]);
 
     app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
+        service: ServiceKind::GitHub,
+    });
+    assert!(
+        app.net.github.availability.toast_id().is_none(),
+        "Unreachable alone must not surface a toast — grace window first"
+    );
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachableConfirmed {
         service: ServiceKind::GitHub,
     });
     let toast_id = app
@@ -294,7 +309,7 @@ fn successful_request_dismisses_stuck_unreachable_toast() {
         .github
         .availability
         .toast_id()
-        .expect("first unreachable signal pushes a toast");
+        .expect("confirmed signal pushes the toast");
     assert!(app.framework.toasts.is_alive(toast_id));
     assert!(app.net.github.availability.is_unavailable());
 
@@ -315,12 +330,15 @@ fn successful_request_dismisses_stuck_unreachable_toast() {
 fn unreachable_toast_reappears_after_user_dismissal() {
     // Regression: dismissing the persistent unreachable toast by hand
     // left `ServiceAvailability.unavailable_toast` holding a stale id.
-    // Subsequent `ServiceUnreachable` signals saw `needs_toast()` =
-    // false and silently did nothing, so the user had no visible
-    // indicator that GitHub was still unreachable.
+    // Subsequent confirmed unreachable signals saw the stale id and
+    // silently did nothing, so the user had no visible indicator
+    // that GitHub was still unreachable.
     let mut app = make_app(&[]);
 
     app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
+        service: ServiceKind::GitHub,
+    });
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachableConfirmed {
         service: ServiceKind::GitHub,
     });
     let toast_id = app
@@ -328,7 +346,7 @@ fn unreachable_toast_reappears_after_user_dismissal() {
         .github
         .availability
         .toast_id()
-        .expect("first unreachable signal pushes a toast");
+        .expect("confirmed signal pushes a toast");
 
     // User dismisses the toast and waits long enough for the exit
     // animation to complete so the toast is evicted from the manager.
@@ -340,9 +358,9 @@ fn unreachable_toast_reappears_after_user_dismissal() {
         "dismissed toast should no longer be alive after exit animation"
     );
 
-    // Another unreachable signal (e.g. the next fetch fails) must
-    // re-push a fresh toast instead of silently doing nothing.
-    app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
+    // Another confirmed signal (the retry probe reports still down)
+    // must re-push a fresh toast instead of silently doing nothing.
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachableConfirmed {
         service: ServiceKind::GitHub,
     });
     let new_id = app
@@ -350,7 +368,7 @@ fn unreachable_toast_reappears_after_user_dismissal() {
         .github
         .availability
         .toast_id()
-        .expect("second unreachable signal should retain a toast id");
+        .expect("second confirmed signal should retain a toast id");
     assert_ne!(
         new_id, toast_id,
         "a fresh toast should be pushed with a new id"
@@ -358,5 +376,187 @@ fn unreachable_toast_reappears_after_user_dismissal() {
     assert!(
         app.framework.toasts.is_alive(new_id),
         "the new toast should be visible"
+    );
+}
+
+#[test]
+fn transient_unreachable_then_reachable_surfaces_no_toast() {
+    // Single timeout in a stream of fetches: the retry thread starts
+    // its grace sleep, but a real fetch lands `Reachable` before
+    // confirmation. Neither the "unreachable" nor "back online"
+    // toast should ever surface — that's the whole point of the
+    // grace window.
+    let mut app = make_app(&[]);
+    let baseline_toast_count = app.framework.toasts.active().len();
+
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
+        service: ServiceKind::CratesIo,
+    });
+    assert!(
+        app.net.crates_io.availability.toast_id().is_none(),
+        "no toast id during the grace window"
+    );
+
+    app.handle_bg_msg(BackgroundMsg::ServiceReachable {
+        service: ServiceKind::CratesIo,
+    });
+    assert!(
+        !app.net.crates_io.availability.is_unavailable(),
+        "state must flip back to reachable"
+    );
+    assert_eq!(
+        app.framework.toasts.active().len(),
+        baseline_toast_count,
+        "no toasts surfaced — neither unreachable nor back-online"
+    );
+}
+
+#[test]
+fn confirm_after_recovered_during_grace_does_not_resurface_toast() {
+    // The retry thread slept the grace window, then probed and
+    // failed, then emitted `ServiceUnreachableConfirmed`. But during
+    // that gap a successful real fetch already marked the service
+    // reachable. The stale confirm must NOT push a toast.
+    let mut app = make_app(&[]);
+    let baseline_toast_count = app.framework.toasts.active().len();
+
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
+        service: ServiceKind::CratesIo,
+    });
+    app.handle_bg_msg(BackgroundMsg::ServiceReachable {
+        service: ServiceKind::CratesIo,
+    });
+    // Late confirm arrives after state already recovered.
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachableConfirmed {
+        service: ServiceKind::CratesIo,
+    });
+    assert!(
+        app.net.crates_io.availability.toast_id().is_none(),
+        "no toast id should be set — state was already reachable"
+    );
+    assert_eq!(
+        app.framework.toasts.active().len(),
+        baseline_toast_count,
+        "stale confirm must be a no-op"
+    );
+}
+
+#[test]
+fn recovered_without_confirm_suppresses_back_online_toast() {
+    // The grace-window happy path: brief blip, retry thread's first
+    // probe succeeds, `ServiceRecovered` arrives. Since we never
+    // pushed an "unreachable" toast, we must not push the matching
+    // "back online" toast either.
+    let mut app = make_app(&[]);
+    let baseline_toast_count = app.framework.toasts.active().len();
+
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
+        service: ServiceKind::CratesIo,
+    });
+    app.handle_bg_msg(BackgroundMsg::ServiceRecovered {
+        service: ServiceKind::CratesIo,
+    });
+    assert!(
+        !app.net.crates_io.availability.is_unavailable(),
+        "state must flip back to reachable"
+    );
+    assert_eq!(
+        app.framework.toasts.active().len(),
+        baseline_toast_count,
+        "no back-online toast because no unreachable toast ever surfaced"
+    );
+}
+
+#[test]
+fn recovery_invalidates_failed_github_cache_entries() {
+    // The repo cache stores both successful and failed fetches; the
+    // failed ones are flagged by `meta.is_none()` (a successful
+    // GraphQL call always returns a meta payload). On recovery, the
+    // refetch sweep must drop the failed entries so the next fetch
+    // actually runs against the network, while leaving successful
+    // entries in place to avoid burning quota on data we already have.
+    let mut app = make_app(&[]);
+    let success = crate::ci::OwnerRepo::new("acme", "good");
+    let failure = crate::ci::OwnerRepo::new("acme", "bad");
+    scan::store_cached_repo_data(
+        &app.net.github.fetch_cache,
+        &success,
+        CachedRepoData {
+            runs:         Vec::new(),
+            meta:         Some(RepoMetaInfo {
+                stars:       7,
+                description: Some("ok".to_string()),
+            }),
+            github_total: 0,
+        },
+    );
+    scan::store_cached_repo_data(
+        &app.net.github.fetch_cache,
+        &failure,
+        CachedRepoData {
+            runs:         Vec::new(),
+            meta:         None,
+            github_total: 0,
+        },
+    );
+
+    // Drive a confirmed-then-recovered cycle so the recovery hook
+    // actually fires (NoTransition would short-circuit before the
+    // refetch dispatch).
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
+        service: ServiceKind::GitHub,
+    });
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachableConfirmed {
+        service: ServiceKind::GitHub,
+    });
+    app.handle_bg_msg(BackgroundMsg::ServiceRecovered {
+        service: ServiceKind::GitHub,
+    });
+
+    assert!(
+        scan::load_cached_repo_data(&app.net.github.fetch_cache, &success).is_some(),
+        "successful entry must stay cached so the recovery sweep doesn't refetch known-good data"
+    );
+    assert!(
+        scan::load_cached_repo_data(&app.net.github.fetch_cache, &failure).is_none(),
+        "meta.is_none() entry was a failed outage-time fetch — must be dropped on recovery"
+    );
+}
+
+#[test]
+fn confirmed_then_recovered_shows_back_online_toast() {
+    // Full sustained-outage path: confirmed unreachable surfaces a
+    // toast, later recovery dismisses it and pushes a "back online"
+    // toast. This is the user-visible flow we want for a real outage.
+    let mut app = make_app(&[]);
+
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachable {
+        service: ServiceKind::CratesIo,
+    });
+    app.handle_bg_msg(BackgroundMsg::ServiceUnreachableConfirmed {
+        service: ServiceKind::CratesIo,
+    });
+    let unreachable_id = app
+        .net
+        .crates_io
+        .availability
+        .toast_id()
+        .expect("confirmed signal pushes the unreachable toast");
+    let entries_after_confirm = app.framework.toasts.active().len();
+
+    app.handle_bg_msg(BackgroundMsg::ServiceRecovered {
+        service: ServiceKind::CratesIo,
+    });
+    assert!(
+        !app.framework.toasts.is_alive(unreachable_id),
+        "unreachable toast must be dismissed on recovery"
+    );
+    assert!(
+        app.framework.toasts.active().len() > entries_after_confirm,
+        "a fresh `back online` toast must be pushed"
+    );
+    assert!(
+        app.net.crates_io.availability.toast_id().is_none(),
+        "availability state cleared after recovery"
     );
 }

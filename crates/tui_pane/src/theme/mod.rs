@@ -45,6 +45,7 @@ pub use self::accessors::success_color;
 pub use self::accessors::target_bench_color;
 pub use self::accessors::text_default;
 pub use self::accessors::title_color;
+pub use self::accessors::warning_color;
 pub use self::builtins::default_dark;
 pub use self::builtins::default_light;
 pub use self::builtins::high_contrast_dark;
@@ -97,7 +98,7 @@ pub struct FocusTheme {
     pub remembered: StyleSpec,
 }
 
-/// Semantic accents: success, error, accent text, labels.
+/// Semantic accents: success, error, warning, accent text, labels.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct SemanticTheme {
     /// Spinners, shortcut hints, finder cursor.
@@ -111,6 +112,11 @@ pub struct SemanticTheme {
     pub success:      StyleSpec,
     /// Field labels, stat labels, countdowns, hints, chevrons.
     pub label:        StyleSpec,
+    /// Cautionary text — service unavailability placeholders, pending
+    /// data that depends on an unreachable service. Distinct from
+    /// `error` (which means "the operation failed") — `warning` means
+    /// "this is degraded but recoverable."
+    pub warning:      StyleSpec,
 }
 
 /// Foreground text styles (default, secondary, dim, bright, focus bg).

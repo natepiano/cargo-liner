@@ -59,6 +59,9 @@ pub(crate) fn spawn_language_scan(path: AbsolutePath, tx: Sender<BackgroundMsg>)
 }
 
 fn emit_crates_io(name: &str, path: &AbsolutePath, tx: &Sender<BackgroundMsg>, ctx: &FetchContext) {
+    let _ = tx.send(BackgroundMsg::CratesIoFetchQueued {
+        name: name.to_string(),
+    });
     let (info, signal) = ctx.client.fetch_crates_io_info(name);
     scan::emit_service_signal(tx, signal);
     if let Some(info) = info {
@@ -68,4 +71,7 @@ fn emit_crates_io(name: &str, path: &AbsolutePath, tx: &Sender<BackgroundMsg>, c
             downloads: info.downloads,
         });
     }
+    let _ = tx.send(BackgroundMsg::CratesIoFetchComplete {
+        name: name.to_string(),
+    });
 }

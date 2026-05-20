@@ -32,6 +32,7 @@ error        = { color = "LightRed", bold = true }
 inline_error = { color = "LightYellow", bold = true }
 label        = "White"
 success      = { color = "LightGreen", bold = true }
+warning      = { color = "LightYellow", bold = true }
 
 [variants.text]
 bg_focus  = "Black"
@@ -80,6 +81,7 @@ error        = { color = { r = 180, g = 0, b = 0 }, bold = true }
 inline_error = { color = { r = 140, g = 60, b = 0 }, bold = true }
 label        = "Black"
 success      = { color = { r = 0, g = 100, b = 0 }, bold = true }
+warning      = { color = { r = 140, g = 60, b = 0 }, bold = true }
 
 [variants.text]
 bg_focus  = "White"

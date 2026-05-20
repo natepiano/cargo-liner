@@ -111,6 +111,13 @@ pub(crate) enum BackgroundMsg {
         version:   String,
         downloads: u64,
     },
+    /// A crates.io fetch has been queued for `name`. Drives the
+    /// "Fetching crates.io info" running toast. Mirrors
+    /// [`Self::RepoFetchQueued`].
+    CratesIoFetchQueued { name: String },
+    /// A crates.io fetch finished for `name` (success or failure).
+    /// Mirrors [`Self::RepoFetchComplete`].
+    CratesIoFetchComplete { name: String },
     /// GitHub repo metadata (stars, description) fetched.
     RepoMeta {
         path:        AbsolutePath,
@@ -168,6 +175,11 @@ pub(crate) enum BackgroundMsg {
     /// Network failure reaching the service (DNS, connection, timeout,
     /// 5xx).
     ServiceUnreachable { service: ServiceKind },
+    /// The retry thread has confirmed the service is still unreachable
+    /// after the [`SERVICE_UNAVAILABLE_GRACE`](crate::constants::SERVICE_UNAVAILABLE_GRACE)
+    /// window. Surfaces the user-visible "unreachable" toast on the
+    /// main thread — single transient timeouts never make it this far.
+    ServiceUnreachableConfirmed { service: ServiceKind },
     /// Service is reachable but currently rate-limited.
     ServiceRateLimited { service: ServiceKind },
     /// Language statistics (file counts + LOC by language) computed by tokei.
@@ -256,6 +268,8 @@ impl BackgroundMsg {
             // Fetch lifecycle is reflected via toasts, not detail data.
             | Self::RepoFetchQueued { .. }
             | Self::RepoFetchComplete { .. }
+            | Self::CratesIoFetchQueued { .. }
+            | Self::CratesIoFetchComplete { .. }
             // Cache pruning and cache usage refreshes are internal to
             // the lint subsystem.
             | Self::LintCachePruned { .. }
@@ -264,6 +278,7 @@ impl BackgroundMsg {
             | Self::ServiceReachable { .. }
             | Self::ServiceRecovered { .. }
             | Self::ServiceUnreachable { .. }
+            | Self::ServiceUnreachableConfirmed { .. }
             | Self::ServiceRateLimited { .. }
             // OS appearance changes swap the active theme; no per-project
             // detail data flows through this variant.

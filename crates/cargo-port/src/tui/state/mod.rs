@@ -22,6 +22,8 @@ pub(super) use lint::LintDisplay;
 pub(super) use lint::lint_cell_for;
 pub(super) use net::AvailabilityStatus;
 pub(super) use net::Net;
+pub(super) use net::RecoveryOutcome;
+pub(super) use net::ServiceStatus;
 pub(crate) use scan::Scan;
 pub(super) use sync::SyncTracker;
 pub(super) use sync::format_transition as format_sync_transition;
