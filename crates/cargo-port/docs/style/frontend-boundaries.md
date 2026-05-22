@@ -1,36 +1,36 @@
 # Frontend Boundaries
 
-- `src/*` peers are app capabilities and data domains
-- `src/tui/*` is one frontend
+The repo is split into two crates:
 
-Use this test:
+- **`tui_pane/`** — the framework. Reusable across any app that embeds the pane system. Owns rendering primitives, the keymap system, the status bar, the toast system, the theme system (registry, loader, resolver, OS appearance poller, runtime state), and `Appearance` (light/dark).
+- **`cargo-port` (`src/`)** — the app. Owns cargo/project/git/CI domain logic, app-specific config schema and paths, the CLI, and the wiring that composes framework primitives into this terminal UI.
 
-- if a second frontend existed tomorrow, would it reuse this code unchanged?
-- if yes, it probably belongs in `src/*`
-- if no, and it is specific to this terminal UI, it belongs in `src/tui/*`
+## What goes where
 
-Examples that belong in `src/*`:
+**Framework (`tui_pane/`):** anything not specific to cargo-port. If a future client would want it verbatim, it belongs in the framework.
 
-- scanning projects
-- reading port reports
-- watching the filesystem
-- talking to GitHub or crates.io
-- loading and saving config
+- Rendering, focus, panes, layout, keymap, status bar, toasts
+- Theme primitives: types, registry, file loader, watch, resolver, OS appearance poller, runtime state struct
+- `Appearance` (light/dark) and any other domain-neutral theme concepts
 
-Examples that belong in `src/tui/*`:
+**App (`src/`):**
 
-- rendering
-- focus and pane state
-- keyboard and mouse handling
-- view shaping
-- deciding how this UI reacts when config or runtime state changes
+- Domain logic: scanning projects, port reports, watching the filesystem, talking to GitHub or crates.io, lint orchestration
+- App-specific config: `AppearanceConfig` (the cargo-port TOML schema) and other config types
+- App-specific paths: where on disk the user themes directory lives (uses `APP_NAME = "cargo-port"`)
+- Wiring: composing the framework's primitives into this app's main loop, background message channel, and event flow
 
-Dependency direction matters:
+## Dependency direction
 
-- root modules should not know about `App`, `PaneId`, `ratatui`, `crossterm`, or status flashes
-- `src/tui/*` may depend on root modules
+- **`src/tui/*` may depend on `tui_pane` and on root modules.** It is the composition layer.
+- **Root modules under `src/*` (outside `src/tui/*`)** are app capabilities and data domains. They may depend on `tui_pane` types that represent generic concepts (e.g. `tui_pane::Appearance`) — these are framework *primitives*, not TUI-internal types. They should not depend on TUI-internal types like `App`, `PaneId`, `Framework`, ratatui widgets, crossterm events, or status flashes.
+- **`tui_pane` depends on neither.** It is reusable on its own.
 
-Example:
+## The test that matters
 
-- `config.rs` defines config types, normalization, and load/save behavior
-- `tui/config_reload.rs` owns how the TUI reacts to config changes
+When deciding where to put new code, ask: *is this specific to cargo-port, or is it generic to any pane-based TUI app?*
+
+- Specific to cargo-port → app.
+- Generic to any pane-based TUI → framework.
+
+Don't gate on a hypothetical second client. The framework is the framework; generic code lives in it on principle.

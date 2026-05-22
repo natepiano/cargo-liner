@@ -1,15 +1,13 @@
 //! Background poller for the OS appearance setting.
 //!
-//! Spawned at startup on the tokio runtime. Wakes every 1500ms, calls
-//! [`dark_light::detect`] on a blocking thread, and emits
-//! [`BackgroundMsg::AppearanceChanged`] only when the value transitions.
-//! After 10 consecutive detect errors the cadence drops to 30s — a
-//! broken backend stops hammering syscalls without losing the recovery
-//! path (the first successful detect after the slow tick restores the
-//! 1500ms baseline). The poller exits silently when the background
-//! channel closes.
+//! Spawned on a `tokio` runtime. Wakes every 1500ms, calls
+//! [`dark_light::detect`] on a blocking thread, and invokes the
+//! caller-supplied closure whenever the value transitions.  After 10
+//! consecutive detect errors the cadence drops to 30s — a broken
+//! backend stops hammering syscalls without losing the recovery path
+//! (the first successful detect after the slow tick restores the
+//! 1500ms baseline).
 
-use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use dark_light::Error;
@@ -17,19 +15,30 @@ use dark_light::Mode;
 use tokio::runtime::Handle;
 use tokio::time::Interval;
 use tokio::time::MissedTickBehavior;
-use tui_pane::Appearance;
 
-use crate::scan::BackgroundMsg;
+use super::Appearance;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(1500);
 const BACKOFF_INTERVAL: Duration = Duration::from_secs(30);
 const BACKOFF_THRESHOLD: u32 = 10;
 
-pub(crate) fn spawn_appearance_poller(handle: &Handle, tx: Sender<BackgroundMsg>) {
-    handle.spawn(run(tx));
+/// Spawn the OS appearance background task.
+///
+/// Watches the OS appearance setting and calls `on_change` whenever
+/// the value transitions between `Light` and `Dark`. `on_change` runs
+/// on the tokio runtime; do minimal work inside it (e.g. forward to a
+/// channel).
+pub fn spawn_appearance_poller<F>(handle: &Handle, on_change: F)
+where
+    F: Fn(Appearance) + Send + 'static,
+{
+    handle.spawn(run(on_change));
 }
 
-async fn run(tx: Sender<BackgroundMsg>) {
+async fn run<F>(on_change: F)
+where
+    F: Fn(Appearance) + Send + 'static,
+{
     // Start with `last = None` so the first tick emits the current OS
     // state. Otherwise startup resolves with `os = None` (which `Auto`
     // mode falls back to `Dark` for), and the user's actual appearance
@@ -52,12 +61,8 @@ async fn run(tx: Sender<BackgroundMsg>) {
                 let next = to_appearance(mode);
                 if next != last {
                     last = next;
-                    if let Some(appearance) = next
-                        && tx
-                            .send(BackgroundMsg::AppearanceChanged(appearance))
-                            .is_err()
-                    {
-                        return;
+                    if let Some(appearance) = next {
+                        on_change(appearance);
                     }
                 }
             },

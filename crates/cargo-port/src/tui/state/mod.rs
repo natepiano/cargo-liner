@@ -7,7 +7,6 @@ mod lint;
 mod net;
 mod scan;
 mod sync;
-mod themes;
 
 pub(super) use ci::Ci;
 pub(super) use ci::CiDisplay;
@@ -27,4 +26,3 @@ pub(super) use net::ServiceStatus;
 pub(crate) use scan::Scan;
 pub(super) use sync::SyncTracker;
 pub(super) use sync::format_transition as format_sync_transition;
-pub(super) use themes::Themes;

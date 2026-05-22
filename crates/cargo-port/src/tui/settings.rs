@@ -931,7 +931,7 @@ fn get_appearance_mode(table: &Table) -> String {
 
 fn set_appearance_mode(table: &mut Table, value: &str) -> Result<(), SettingsError> {
     let trimmed = value.trim();
-    crate::themes::AppearanceMode::parse(trimmed)
+    tui_pane::AppearanceMode::parse(trimmed)
         .map_err(|err| settings_invalid("appearance", "mode", err))?;
     write_value(table, "appearance", "mode", trimmed.into())
 }

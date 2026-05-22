@@ -4,6 +4,7 @@
 //! HTTP. Sync wrappers (`handle.block_on`) are provided for callers
 //! that run on std/rayon threads during TUI startup and background work.
 
+mod constants;
 mod rate_limit;
 
 use std::collections::HashMap;
@@ -31,6 +32,12 @@ use reqwest::Error;
 use serde::Deserialize;
 use tokio::runtime::Handle;
 
+use self::constants::ACCEPT_HEADER;
+use self::constants::AUTHORIZATION_HEADER;
+use self::constants::CONTENT_TYPE_HEADER;
+use self::constants::GITHUB_JSON_MEDIA_TYPE;
+use self::constants::JSON_MEDIA_TYPE;
+use self::constants::USER_AGENT_HEADER;
 use super::ci::GhRun;
 use super::ci::GqlCheckRun;
 use super::constants::APP_NAME;
@@ -236,8 +243,8 @@ impl HttpClient {
         let response = match self
             .client
             .get(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Accept", "application/vnd.github+json")
+            .header(AUTHORIZATION_HEADER, format!("Bearer {token}"))
+            .header(ACCEPT_HEADER, GITHUB_JSON_MEDIA_TYPE)
             .send()
             .await
         {
@@ -279,8 +286,8 @@ impl HttpClient {
         let response = match self
             .client
             .post(GITHUB_GRAPHQL_URL)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Content-Type", "application/json")
+            .header(AUTHORIZATION_HEADER, format!("Bearer {token}"))
+            .header(CONTENT_TYPE_HEADER, JSON_MEDIA_TYPE)
             .body(payload.to_string())
             .send()
             .await
@@ -429,8 +436,8 @@ impl HttpClient {
         let response = match self
             .client
             .get(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Accept", "application/vnd.github+json")
+            .header(AUTHORIZATION_HEADER, format!("Bearer {token}"))
+            .header(ACCEPT_HEADER, GITHUB_JSON_MEDIA_TYPE)
             .send()
             .await
         {
@@ -514,7 +521,7 @@ impl HttpClient {
         let response = match self
             .client
             .get(&url)
-            .header("User-Agent", CRATES_IO_USER_AGENT)
+            .header(USER_AGENT_HEADER, CRATES_IO_USER_AGENT)
             .send()
             .await
         {

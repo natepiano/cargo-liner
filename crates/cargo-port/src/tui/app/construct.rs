@@ -27,6 +27,7 @@ use tui_pane::FocusedPane;
 use tui_pane::Keymap as FrameworkKeymap;
 use tui_pane::LoadedSettings;
 use tui_pane::SettingsStore;
+use tui_pane::ThemeRuntime;
 use tui_pane::ToastSettings;
 
 use super::App;
@@ -61,7 +62,6 @@ use crate::tui::state::Lint;
 use crate::tui::state::Net;
 use crate::tui::state::Scan;
 use crate::tui::state::SyncTracker;
-use crate::tui::state::Themes;
 use crate::tui::terminal::CiFetchMsg;
 use crate::tui::terminal::CleanMsg;
 use crate::tui::terminal::ExampleMsg;
@@ -158,13 +158,19 @@ impl AppBuilder<Channeled> {
     pub(super) fn run_startup(self) -> AppBuilder<Started> {
         let inputs = &self.state.inputs;
         config::set_active_config(&inputs.cfg);
-        let registry = themes::build_user_registry(themes::themes_dir().as_deref());
+        let registry =
+            tui_pane::ThemeRegistry::from_dir_with_builtins(themes::themes_dir().as_deref());
         // Resolve the initial theme from the loaded `[appearance]`
         // section against the just-built registry. Misses fall back to
         // the appearance-matched built-in silently here — toast
         // machinery is not yet wired this early in startup, and
         // surface for the miss arrives in Phase 4's settings UI badge.
-        let resolved = themes::resolve_theme(&inputs.cfg.appearance, &registry, None);
+        let resolved = registry.resolve_active(
+            &inputs.cfg.appearance.mode,
+            &inputs.cfg.appearance.light_theme,
+            &inputs.cfg.appearance.dark_theme,
+            None,
+        );
         let initial_theme = (*resolved.theme).clone();
         tui_pane::install_theme_state(tui_pane::ThemeState::with_registry(registry, initial_theme));
         tui_pane::set_focused_pane_tint(inputs.cfg.appearance.focused_pane_tint);
@@ -221,7 +227,7 @@ impl AppBuilder<Started> {
             .as_ref()
             .map(|p| p.as_path().to_path_buf());
         let keymap = Keymap::new(keymap_path_buf.clone(), keymap::ResolvedKeymap::defaults());
-        let themes = Themes::new(themes::themes_dir());
+        let themes = ThemeRuntime::new(themes::themes_dir());
         let scan = Scan::new(
             ScanState::new(inputs.scan_started_at),
             inputs.metadata_store,

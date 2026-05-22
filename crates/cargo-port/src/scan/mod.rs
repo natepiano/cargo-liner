@@ -1,8 +1,6 @@
 use std::path::Path;
 use std::sync::mpsc::Sender;
 
-use tui_pane::Appearance;
-
 use crate::cache_paths;
 use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
@@ -53,6 +51,7 @@ pub(crate) use tree::build_tree;
 pub(crate) use tree::cargo_project_to_item;
 pub(crate) use tree::dir_size;
 pub(crate) use tree::normalize_workspace_path;
+use tui_pane::Appearance;
 
 use crate::ci::CiRun;
 use crate::ci::OwnerRepo;

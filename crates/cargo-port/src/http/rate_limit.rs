@@ -8,6 +8,14 @@ use serde_json::Value;
 
 use super::ServiceKind;
 use super::ServiceSignal;
+use super::constants::GITHUB_CORE_BUCKET;
+use super::constants::GITHUB_GRAPHQL_BUCKET;
+use super::constants::GRAPHQL_RATE_LIMITED_ERROR_TYPE;
+use super::constants::RATE_LIMIT_LIMIT_HEADER;
+use super::constants::RATE_LIMIT_REMAINING_HEADER;
+use super::constants::RATE_LIMIT_RESET_HEADER;
+use super::constants::RATE_LIMIT_RESOURCE_HEADER;
+use super::constants::RATE_LIMIT_USED_HEADER;
 
 /// Which GitHub rate-limit bucket a response belongs to. The REST and
 /// GraphQL APIs share `api.github.com` but track their quotas
@@ -44,17 +52,17 @@ pub(crate) struct GitHubRateLimit {
 pub(crate) fn parse_rate_limit_headers(
     headers: &HeaderMap,
 ) -> Option<(RateLimitBucket, RateLimitQuota)> {
-    let resource = headers.get("x-ratelimit-resource")?.to_str().ok()?;
+    let resource = headers.get(RATE_LIMIT_RESOURCE_HEADER)?.to_str().ok()?;
     let bucket = match resource {
-        "core" => RateLimitBucket::Core,
-        "graphql" => RateLimitBucket::GraphQl,
+        GITHUB_CORE_BUCKET => RateLimitBucket::Core,
+        GITHUB_GRAPHQL_BUCKET => RateLimitBucket::GraphQl,
         _ => return None,
     };
     let parse = |name: &str| -> Option<u64> { headers.get(name)?.to_str().ok()?.parse().ok() };
-    let limit = parse("x-ratelimit-limit")?;
-    let used = parse("x-ratelimit-used")?;
-    let remaining = parse("x-ratelimit-remaining")?;
-    let reset_at = parse("x-ratelimit-reset");
+    let limit = parse(RATE_LIMIT_LIMIT_HEADER)?;
+    let used = parse(RATE_LIMIT_USED_HEADER)?;
+    let remaining = parse(RATE_LIMIT_REMAINING_HEADER)?;
+    let reset_at = parse(RATE_LIMIT_RESET_HEADER);
     Some((
         bucket,
         RateLimitQuota {
@@ -80,8 +88,8 @@ pub(crate) fn parse_rate_limit_response(value: &Value) -> GitHubRateLimit {
         })
     };
     GitHubRateLimit {
-        core:    bucket("core"),
-        graphql: bucket("graphql"),
+        core:    bucket(GITHUB_CORE_BUCKET),
+        graphql: bucket(GITHUB_GRAPHQL_BUCKET),
     }
 }
 
@@ -95,7 +103,7 @@ pub(crate) fn github_is_rate_limited(status: StatusCode, headers: &HeaderMap) ->
     }
     if status.as_u16() == 403 {
         return headers
-            .get("x-ratelimit-remaining")
+            .get(RATE_LIMIT_REMAINING_HEADER)
             .and_then(|value| value.to_str().ok())
             .and_then(|text| text.parse::<u64>().ok())
             .is_some_and(|remaining| remaining == 0);
@@ -113,7 +121,7 @@ pub(crate) fn graphql_body_is_rate_limited(body: &Value) -> bool {
             errors.iter().any(|err| {
                 err.get("type")
                     .and_then(serde_json::Value::as_str)
-                    .is_some_and(|t| t == "RATE_LIMITED")
+                    .is_some_and(|t| t == GRAPHQL_RATE_LIMITED_ERROR_TYPE)
             })
         })
 }

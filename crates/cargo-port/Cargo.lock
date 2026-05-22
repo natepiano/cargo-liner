@@ -528,7 +528,6 @@ dependencies = [
  "comfy-table",
  "confique",
  "crossterm",
- "dark-light",
  "dirs",
  "indexmap",
  "notify",
@@ -3901,7 +3900,19 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2",
+ "tokio-macros",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "385a6cb71ab9ab790c5fe8d67f1645e6c450a7ce006a33de03daa956cf70a496"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4160,11 +4171,14 @@ name = "tui_pane"
 version = "0.0.4-dev"
 dependencies = [
  "crossterm",
+ "dark-light",
  "dirs",
  "ratatui",
  "serde",
  "thiserror 2.0.18",
+ "tokio",
  "toml 1.1.2+spec-1.1.0",
+ "tracing",
  "unicode-width",
 ]
 

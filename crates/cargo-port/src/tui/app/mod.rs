@@ -68,6 +68,7 @@ use std::time::Instant;
 
 use ratatui::layout::Position;
 use tui_pane::KeyBind;
+use tui_pane::ThemeRuntime;
 use tui_pane::ToastId;
 use tui_pane::ToastStyle::Warning;
 use tui_pane::TrackedItem;
@@ -92,7 +93,6 @@ use super::state::Inflight;
 use super::state::Keymap;
 use super::state::Scan;
 use super::state::SyncTracker;
-use super::state::Themes;
 use crate::ci::OwnerRepo;
 use crate::constants::SCAN_METADATA_CONCURRENCY;
 use crate::constants::TARGET_DIR;
@@ -336,7 +336,7 @@ pub(super) struct App {
     /// parse-error toast slot used to dismiss prior diagnostics when
     /// the registry reloads cleanly. The active theme + registry
     /// themselves live in `tui_pane`'s `THEME_STATE`.
-    pub(super) themes:             Themes,
+    pub(super) themes:             ThemeRuntime,
     /// Per-project ahead/behind tracker. Holds the eligibility flag,
     /// last-seen value, and the in-flight "Sync changes" task-toast
     /// id used to accumulate transitions within the linger window.

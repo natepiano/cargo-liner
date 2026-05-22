@@ -9,7 +9,6 @@ use crate::http::ServiceKind;
 use crate::http::ServiceSignal;
 use crate::lint;
 use crate::project::AbsolutePath;
-use crate::themes;
 use crate::tui::app::App;
 use crate::tui::app::CargoPortToastAction;
 use crate::tui::integration;
@@ -132,7 +131,7 @@ impl App {
         if self.themes.take_change().is_none() {
             return;
         }
-        let registry = themes::build_user_registry(self.themes.dir());
+        let registry = tui_pane::ThemeRegistry::from_dir_with_builtins(self.themes.dir());
         let failed = registry.status().failed_files.clone();
         let overridden = registry.status().overridden.clone();
         let total = registry.len();
@@ -180,9 +179,11 @@ impl App {
     /// An invalid `mode` string surfaces a timed toast separately.
     pub(super) fn resolve_and_apply_active_theme(&mut self) {
         let registry = tui_pane::registry();
-        let resolved = themes::resolve_theme(
-            &self.config.current().appearance,
-            &registry,
+        let appearance_cfg = &self.config.current().appearance;
+        let resolved = registry.resolve_active(
+            &appearance_cfg.mode,
+            &appearance_cfg.light_theme,
+            &appearance_cfg.dark_theme,
             self.themes.os_appearance(),
         );
         tui_pane::set_active_theme(resolved.theme);

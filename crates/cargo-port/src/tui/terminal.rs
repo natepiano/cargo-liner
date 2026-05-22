@@ -55,7 +55,6 @@ use crate::project::WorkspaceMetadataStore;
 use crate::scan;
 use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
-use crate::themes;
 
 pub(super) enum ExampleMsg {
     Output(String),
@@ -147,7 +146,10 @@ pub fn run() -> ExitCode {
         http_client.clone(),
         Arc::clone(&metadata_store),
     );
-    themes::spawn_appearance_poller(rt.handle(), background_tx.clone());
+    let appearance_tx = background_tx.clone();
+    tui_pane::spawn_appearance_poller(rt.handle(), move |appearance| {
+        let _ = appearance_tx.send(scan::BackgroundMsg::AppearanceChanged(appearance));
+    });
     let projects: Vec<RootItem> = Vec::new();
 
     let original_hook = std::panic::take_hook();

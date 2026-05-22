@@ -12,8 +12,13 @@
 
 mod accessors;
 mod builtins;
+mod loader;
+mod poller;
 mod registry;
+mod resolver;
+mod runtime;
 mod spec;
+mod watch;
 
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -50,6 +55,7 @@ pub use self::builtins::default_dark;
 pub use self::builtins::default_light;
 pub use self::builtins::high_contrast_dark;
 pub use self::builtins::high_contrast_light;
+pub use self::poller::spawn_appearance_poller;
 pub use self::registry::BUILTIN_DARK_NAME;
 pub use self::registry::BUILTIN_HC_DARK_NAME;
 pub use self::registry::BUILTIN_HC_LIGHT_NAME;
@@ -60,8 +66,12 @@ pub use self::registry::ThemeId;
 pub use self::registry::ThemeLoadError;
 pub use self::registry::ThemeRegistry;
 pub use self::registry::ThemeVariant;
+pub use self::resolver::AppearanceMode;
+pub use self::resolver::ResolvedTheme;
+pub use self::runtime::ThemeRuntime;
 pub use self::spec::Modifiers;
 pub use self::spec::StyleSpec;
+pub use self::watch::ThemesWatch;
 
 /// Light vs dark variant target. Identifies which slot in a
 /// `(light_theme, dark_theme)` config pair a variant fills.
