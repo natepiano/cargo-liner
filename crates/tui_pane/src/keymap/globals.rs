@@ -26,6 +26,11 @@ pub trait Globals<Ctx: AppContext>: 'static {
     /// globals share one table at load time.
     const SCOPE_NAME: &'static str = "global";
 
+    /// Human-readable section name for the keymap-overlay help. Empty
+    /// default keeps test impls ergonomic; apps that render the help
+    /// overlay set this to `"Global Shortcuts"` or similar.
+    const SECTION_NAME: &'static str = "";
+
     /// Bar render order for the global region. The bar walks this
     /// slice in order, emitting one slot per variant.
     fn render_order() -> &'static [Self::Actions];

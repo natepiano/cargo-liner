@@ -39,6 +39,7 @@ pub use key_sequence::KeySequence;
 pub use load::KeymapError;
 pub use navigation::Navigation;
 pub use runtime_scope::GlobalShortcutRow;
+pub use runtime_scope::KeymapHelpRow;
 pub use runtime_scope::RenderedSlot;
 pub use scope_map::ScopeMap;
 pub use shortcuts::Shortcuts;
@@ -60,6 +61,16 @@ type ScopeRenderFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<RenderedSlot>;
 /// `<G>`-monomorphized renderer the global-shortcuts overlay reads to
 /// materialize app-global help rows without naming the action enum.
 type ScopeShortcutRowsFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<GlobalShortcutRow>;
+
+/// Monomorphized renderer for one scope's keymap-help rows. Stored on
+/// [`Keymap<Ctx>`] at register time so the help overlay can walk every
+/// scope without naming the action enum.
+type ScopeHelpRowsFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<KeymapHelpRow>;
+
+/// Monomorphized TOML-action-key collector for one scope. Lets the
+/// keymap TOML writer iterate every action even when no binding
+/// currently exists.
+type ScopeTomlActionKeysFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<&'static str>;
 
 /// The keymap container: anchor for every binding the framework
 /// resolves at runtime.
@@ -97,6 +108,14 @@ pub struct Keymap<Ctx: AppContext + 'static> {
     app_globals_render_fn:        Option<ScopeRenderFn<Ctx>>,
     /// Monomorphized help-row renderer for the app-globals scope.
     app_globals_shortcut_rows_fn: Option<ScopeShortcutRowsFn<Ctx>>,
+    /// Monomorphized keymap-help row renderer for navigation.
+    navigation_help_rows_fn:      Option<ScopeHelpRowsFn<Ctx>>,
+    /// Monomorphized keymap-help row renderer for app-globals.
+    app_globals_help_rows_fn:     Option<ScopeHelpRowsFn<Ctx>>,
+    /// Monomorphized TOML-action-key collector for navigation.
+    navigation_toml_keys_fn:      Option<ScopeTomlActionKeysFn<Ctx>>,
+    /// Monomorphized TOML-action-key collector for app-globals.
+    app_globals_toml_keys_fn:     Option<ScopeTomlActionKeysFn<Ctx>>,
     framework_globals:            ScopeMap<GlobalAction>,
     overlay_scope:                ScopeMap<OverlayAction>,
     on_quit:                      Option<fn(&mut Ctx)>,
@@ -122,6 +141,10 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
             globals: None,
             app_globals_render_fn: None,
             app_globals_shortcut_rows_fn: None,
+            navigation_help_rows_fn: None,
+            app_globals_help_rows_fn: None,
+            navigation_toml_keys_fn: None,
+            app_globals_toml_keys_fn: None,
             framework_globals: GlobalAction::defaults().into_scope_map(),
             overlay_scope: SettingsPane::defaults().into_scope_map(),
             on_quit: None,
@@ -162,6 +185,33 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
         render: ScopeShortcutRowsFn<Ctx>,
     ) {
         self.app_globals_shortcut_rows_fn = Some(render);
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// stores the registered navigation impl's help-row renderer.
+    pub(super) const fn set_navigation_help_rows_fn(&mut self, render: ScopeHelpRowsFn<Ctx>) {
+        self.navigation_help_rows_fn = Some(render);
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// stores the registered app-globals impl's help-row renderer.
+    pub(super) const fn set_app_globals_help_rows_fn(&mut self, render: ScopeHelpRowsFn<Ctx>) {
+        self.app_globals_help_rows_fn = Some(render);
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// stores the registered navigation impl's TOML-key collector.
+    pub(super) const fn set_navigation_toml_keys_fn(&mut self, render: ScopeTomlActionKeysFn<Ctx>) {
+        self.navigation_toml_keys_fn = Some(render);
+    }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// stores the registered app-globals impl's TOML-key collector.
+    pub(super) const fn set_app_globals_toml_keys_fn(
+        &mut self,
+        render: ScopeTomlActionKeysFn<Ctx>,
+    ) {
+        self.app_globals_toml_keys_fn = Some(render);
     }
 
     /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
@@ -372,6 +422,12 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
         }
     }
 
+    /// TOML scope name registered for `id`, or `None` when no scope is
+    /// registered. Mirrors the inverse of [`Self::insert_scope`].
+    fn scope_toml_name_for(&self, id: Ctx::AppPaneId) -> Option<&'static str> {
+        self.scopes.get(&id).map(|scope| scope.scope_name())
+    }
+
     /// Typed singleton getter for the registered [`Navigation`] impl.
     ///
     /// Returns `None` when [`KeymapBuilder::register_navigation`] was
@@ -397,6 +453,103 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
             .and_then(|stored| stored.downcast_ref::<ScopeMap<G::Actions>>())
     }
 
+    /// Keymap-help-overlay rows for every registered scope, in the
+    /// order the help panel renders them: framework Global Navigation,
+    /// framework Global Shortcuts (with app-globals appended), the
+    /// registered navigation scope, every app-pane scope in
+    /// `app_pane_order`, then the framework overlay scope. Each scope
+    /// emits one [`KeymapHelpRow::header`] followed by its action
+    /// rows.
+    ///
+    /// `app_pane_order` controls display order across registered pane
+    /// scopes; entries naming an unregistered pane are silently
+    /// skipped.
+    #[must_use]
+    pub fn keymap_help_rows(&self, app_pane_order: &[Ctx::AppPaneId]) -> Vec<KeymapHelpRow> {
+        let mut rows = Vec::new();
+
+        rows.push(KeymapHelpRow::header("Global Navigation", "global"));
+        for action in [GlobalAction::NextPane, GlobalAction::PrevPane] {
+            rows.push(framework_global_help_row("Global Navigation", action, self));
+        }
+
+        rows.push(KeymapHelpRow::header("Global Shortcuts", "global"));
+        for action in GlobalAction::ALL
+            .iter()
+            .copied()
+            .filter(|a| !matches!(a, GlobalAction::NextPane | GlobalAction::PrevPane))
+        {
+            rows.push(framework_global_help_row("Global Shortcuts", action, self));
+        }
+        if let Some(render) = self.app_globals_help_rows_fn {
+            rows.extend(render(self));
+        }
+
+        if let Some(render) = self.navigation_help_rows_fn {
+            rows.extend(render(self));
+        }
+
+        for id in app_pane_order {
+            if let Some(scope) = self.scopes.get(id) {
+                rows.extend(scope.help_rows());
+            }
+        }
+
+        rows.push(KeymapHelpRow::header("Overlay", "overlay"));
+        for action in OverlayAction::ALL.iter().copied() {
+            rows.push(KeymapHelpRow {
+                section:     "Overlay",
+                scope:       "overlay",
+                action:      action.toml_key(),
+                description: action.description(),
+                bind:        self.overlay_scope.display_keys_for(action).first().cloned(),
+                is_header:   false,
+            });
+        }
+
+        rows
+    }
+
+    /// TOML action keys for every registered scope. Used by the
+    /// keymap TOML writer to enumerate every action regardless of
+    /// whether a binding exists. Keyed by scope name in the same
+    /// order [`Self::keymap_help_rows`] emits scope headers.
+    #[must_use]
+    pub fn keymap_toml_scope_keys(
+        &self,
+        app_pane_order: &[Ctx::AppPaneId],
+    ) -> Vec<(&'static str, Vec<&'static str>)> {
+        let mut out: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
+
+        // The "global" section combines framework globals and app
+        // globals. The keymap writer emits them under one [global]
+        // table, so list both action-key collections.
+        let mut global_keys: Vec<&'static str> =
+            GlobalAction::ALL.iter().map(|a| a.toml_key()).collect();
+        if let Some(collect) = self.app_globals_toml_keys_fn {
+            global_keys.extend(collect(self));
+        }
+        out.push(("global", global_keys));
+
+        if let Some(collect) = self.navigation_toml_keys_fn {
+            out.push(("navigation", collect(self)));
+        }
+
+        for id in app_pane_order {
+            if let Some(scope) = self.scopes.get(id)
+                && let Some(name) = self.scope_toml_name_for(*id)
+            {
+                out.push((name, scope.toml_action_keys()));
+            }
+        }
+
+        let overlay_keys: Vec<&'static str> =
+            OverlayAction::ALL.iter().map(|a| a.toml_key()).collect();
+        out.push(("overlay", overlay_keys));
+
+        out
+    }
+
     /// `pub(crate)` so [`crate::framework::dispatch_global`] can read
     /// the hook without widening the public surface.
     pub(crate) const fn on_quit_hook(&self) -> Option<fn(&mut Ctx)> { self.on_quit }
@@ -416,6 +569,24 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// framework-global hit.
     pub fn dispatch_framework_global(&self, action: GlobalAction, ctx: &mut Ctx) {
         framework::dispatch_global(action, self, ctx);
+    }
+}
+
+/// Build one [`KeymapHelpRow`] for a framework global action. Free
+/// fn so [`Keymap::keymap_help_rows`] can iterate without
+/// monomorphizing.
+fn framework_global_help_row<Ctx: AppContext + 'static>(
+    section: &'static str,
+    action: GlobalAction,
+    keymap: &Keymap<Ctx>,
+) -> KeymapHelpRow {
+    KeymapHelpRow {
+        section,
+        scope: "global",
+        action: action.toml_key(),
+        description: action.description(),
+        bind: keymap.framework_globals.key_for(action).cloned(),
+        is_header: false,
     }
 }
 

@@ -14,12 +14,12 @@ next_pane             = "tab"
 open_editor           = "e"
 open_global_shortcuts = "?"
 open_keymap           = "ctrl-k"
+open_settings         = "s"
 open_terminal         = "t"
 prev_pane             = "shift-tab"
 quit                  = "q"
 rescan                = "ctrl-r"
 restart               = "R"
-settings              = "s"
 
 [navigation]
 down           = "down"

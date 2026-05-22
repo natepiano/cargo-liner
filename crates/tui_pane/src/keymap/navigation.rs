@@ -29,6 +29,11 @@ pub trait Navigation<Ctx: AppContext>: 'static {
     /// override.
     const SCOPE_NAME: &'static str = "navigation";
 
+    /// Human-readable section name for the keymap-overlay help. Empty
+    /// default keeps test impls ergonomic; apps that render the help
+    /// overlay set this to `"List Navigation"` or similar.
+    const SECTION_NAME: &'static str = "";
+
     /// The variant for "move up".
     const UP: Self::Actions;
     /// The variant for "move down".

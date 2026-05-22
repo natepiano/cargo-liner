@@ -155,7 +155,6 @@ fn build_project_list_render_ctx_for_test<'a>(
         inflight:                  &app.inflight,
         scan:                      &app.scan,
         ci_status_lookup:          &holder.ci_status_lookup,
-        keymap_render_inputs:      None,
         settings_render_inputs:    None,
         synced_description_height: crate::tui::panes::SyncedDescriptionHeight::default(),
         running_targets:           app.panes.running_targets.snapshot(),

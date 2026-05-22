@@ -42,7 +42,6 @@ use super::app::OverlayRenderInputs;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::integration::AppGlobalAction;
 use super::interaction;
-use super::keymap_ui;
 use super::overlays::PopupFrame;
 use super::pane::PaneRenderCtx;
 use super::panes;
@@ -353,33 +352,19 @@ fn render_confirm_popup(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Dispatch the Keymap overlay popup via [`tui_pane::Renderable`].
-///
-/// The expensive `&App`-reading work (walking `framework_keymap`,
-/// laying out rows, building lines) happens here before
-/// `App::split_for_render`; the trait method on `KeymapPane` reads
-/// the resulting [`crate::tui::keymap_ui::KeymapRenderInputs`] from
-/// `PaneRenderCtx` and draws into `frame`.
+/// Dispatch the Keymap overlay popup via the framework's
+/// [`tui_pane::KeymapPane::render_overlay`] path. Inputs are built
+/// while `&App` is still available, then `&mut keymap_pane` draws.
 fn dispatch_keymap_overlay(app: &mut App, frame: &mut Frame) {
     // Overlay focus is always `Active` while the popup is open.
     app.framework.keymap_pane.focus = RenderFocus {
         state:      PaneFocusState::Active,
         is_focused: true,
     };
-    let inputs = keymap_ui::prepare_keymap_render_inputs(app);
-    let animation_elapsed = app.animation_started.elapsed();
-    let selected_path: Option<PathBuf> = app
-        .selected_project_path_for_render()
-        .map(std::path::Path::to_path_buf);
-    let ci_status_lookup = app.ci.status_lookup();
-    let split = app.split_for_render(
-        selected_path.as_deref(),
-        animation_elapsed,
-        &ci_status_lookup,
-        OverlayRenderInputs::keymap(&inputs),
-        panes::SyncedDescriptionHeight::default(),
-    );
-    Renderable::render(split.registry.keymap_pane, frame, frame.area(), &split.ctx);
+    let inputs = tui_pane::KeymapPane::prepare_overlay_inputs(app, &app.framework_keymap);
+    app.framework
+        .keymap_pane
+        .render_overlay(frame, frame.area(), &inputs);
 }
 
 /// Dispatch the Settings overlay popup via [`tui_pane::Renderable`].
@@ -445,7 +430,6 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         inflight: split.inflight,
         scan: split.scan,
         ci_status_lookup: &ci_status_lookup,
-        keymap_render_inputs: None,
         settings_render_inputs: None,
         synced_description_height: panes::SyncedDescriptionHeight::default(),
         running_targets: split.running_targets,

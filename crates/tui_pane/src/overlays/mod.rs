@@ -18,6 +18,7 @@
 
 mod global_shortcuts;
 mod keymap;
+mod keymap_ui;
 mod settings;
 
 crate::action_enum! {
@@ -37,6 +38,9 @@ crate::action_enum! {
 pub use global_shortcuts::GlobalShortcutsPane;
 pub use keymap::KeymapCaptureCommand;
 pub use keymap::KeymapPane;
+pub use keymap_ui::KEYMAP_POPUP_MAX_HEIGHT;
+pub use keymap_ui::KeymapOverlayInputs;
+pub use keymap_ui::KeymapUiContext;
 pub use settings::SettingsCommand;
 pub use settings::SettingsPane;
 pub use settings::SettingsRenderOptions;

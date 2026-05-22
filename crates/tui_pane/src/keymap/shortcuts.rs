@@ -35,6 +35,12 @@ pub trait Shortcuts<Ctx: AppContext>: Pane<Ctx> {
     /// stable — TOML files are user-edited.
     const SCOPE_NAME: &'static str;
 
+    /// Human-readable section name for the keymap-overlay help (e.g.
+    /// `"Project List"`). Override when the help-overlay header
+    /// differs from the TOML table name; empty default keeps non-UI
+    /// impls (tests, internal scopes) ergonomic.
+    const SECTION_NAME: &'static str = "";
+
     /// Default keybindings. No framework default — every pane declares
     /// its own keys.
     fn defaults() -> Bindings<Self::Actions>;
@@ -136,6 +142,7 @@ mod tests {
         type Actions = FooAction;
 
         const SCOPE_NAME: &'static str = "foo";
+        const SECTION_NAME: &'static str = "Foo";
 
         fn defaults() -> Bindings<Self::Actions> {
             crate::bindings! {

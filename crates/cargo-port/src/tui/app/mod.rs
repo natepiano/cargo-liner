@@ -141,7 +141,6 @@ use tui_pane::Framework;
 use tui_pane::FrameworkFocusId;
 use tui_pane::GlobalAction;
 use tui_pane::Keymap as FrameworkKeymap;
-use tui_pane::KeymapPane;
 use tui_pane::PaneRegistry;
 use tui_pane::SettingsPane;
 use tui_pane::SystemClipboard;
@@ -164,7 +163,6 @@ pub(super) use types::SelectionSync;
 use super::columns;
 pub(super) use super::columns::ProjectListWidths;
 use super::interaction;
-use super::keymap_ui::KeymapRenderInputs;
 use super::overlays::FinderPane;
 use super::pane::PaneRenderCtx;
 use super::panes;
@@ -205,29 +203,15 @@ pub(super) struct RenderBorrows<'a> {
 /// Optional precomputed render inputs for framework overlays.
 #[derive(Clone, Copy)]
 pub(super) struct OverlayRenderInputs<'a> {
-    keymap:   Option<&'a KeymapRenderInputs>,
     settings: Option<&'a SettingsRenderInputs>,
 }
 
 impl<'a> OverlayRenderInputs<'a> {
-    pub(super) const fn none() -> Self {
-        Self {
-            keymap:   None,
-            settings: None,
-        }
-    }
-
-    pub(super) const fn keymap(inputs: &'a KeymapRenderInputs) -> Self {
-        Self {
-            keymap: Some(inputs),
-            ..Self::none()
-        }
-    }
+    pub(super) const fn none() -> Self { Self { settings: None } }
 
     pub(super) const fn settings(inputs: &'a SettingsRenderInputs) -> Self {
         Self {
             settings: Some(inputs),
-            ..Self::none()
         }
     }
 }
@@ -246,7 +230,6 @@ pub(super) struct RenderRegistry<'a> {
     pub output:        &'a mut OutputPane,
     pub lint:          &'a mut Lint,
     pub ci:            &'a mut Ci,
-    pub keymap_pane:   &'a mut KeymapPane,
     pub settings_pane: &'a mut SettingsPane,
 }
 
@@ -268,9 +251,8 @@ impl PaneRegistry for RenderRegistry<'_> {
             PaneId::Output => self.output,
             PaneId::Lints => self.lint,
             PaneId::CiRuns => self.ci,
-            PaneId::Keymap => self.keymap_pane,
             PaneId::Settings => self.settings_pane,
-            PaneId::Toasts | PaneId::Finder => return None,
+            PaneId::Keymap | PaneId::Toasts | PaneId::Finder => return None,
         };
         Some(pane)
     }
@@ -675,7 +657,6 @@ impl App {
             output: &mut panes.output,
             lint,
             ci,
-            keymap_pane: &mut framework.keymap_pane,
             settings_pane: &mut framework.settings_pane,
         };
         let ctx = PaneRenderCtx {
@@ -686,7 +667,6 @@ impl App {
             inflight,
             scan,
             ci_status_lookup,
-            keymap_render_inputs: overlay_inputs.keymap,
             settings_render_inputs: overlay_inputs.settings,
             synced_description_height,
             running_targets,

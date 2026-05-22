@@ -210,12 +210,56 @@ impl AppContext for App {
     }
 }
 
+/// Display ordering for the keymap-help overlay's per-pane sections.
+/// Mirrors the prior `push_app_pane_rows` hardcoded order so the
+/// overlay still surfaces sections in the cargo-port-preferred
+/// sequence.
+const KEYMAP_OVERLAY_PANE_ORDER: &[AppPaneId] = &[
+    AppPaneId::ProjectList,
+    AppPaneId::Package,
+    AppPaneId::Git,
+    AppPaneId::Targets,
+    AppPaneId::Lints,
+    AppPaneId::CiRuns,
+    AppPaneId::Output,
+    AppPaneId::Finder,
+];
+
+impl tui_pane::KeymapUiContext for App {
+    fn keymap_inline_error(&self) -> Option<&str> {
+        self.overlays.inline_error().map(String::as_str)
+    }
+
+    fn keymap_pane_focus_state(&self) -> tui_pane::PaneFocusState {
+        self.pane_focus_state(PaneId::Keymap)
+    }
+
+    fn keymap_pane_sort_priority(&self, scope: &str, toml_key: &str) -> u8 {
+        if scope == "project_list" {
+            match toml_key {
+                "clean" => 0,
+                "collapse_all" => 1,
+                "expand_all" => 2,
+                "collapse_row" => 3,
+                "expand_row" => 4,
+                _ => u8::MAX,
+            }
+        } else {
+            u8::MAX
+        }
+    }
+
+    fn keymap_pane_display_order(&self) -> &[AppPaneId] { KEYMAP_OVERLAY_PANE_ORDER }
+}
+
 /// `Navigation<App>` host. Zero-sized because the framework only needs
 /// the type; navigation defaults / dispatch are static methods.
 pub struct AppNavigation;
 
 impl Navigation<App> for AppNavigation {
     type Actions = NavigationAction;
+
+    const SECTION_NAME: &'static str = "List Navigation";
 
     const DOWN: Self::Actions = NavigationAction::Down;
     const END: Self::Actions = NavigationAction::End;
@@ -248,6 +292,8 @@ impl Navigation<App> for AppNavigation {
 
 impl Globals<App> for AppGlobalAction {
     type Actions = Self;
+
+    const SECTION_NAME: &'static str = "Global Shortcuts";
 
     fn render_order() -> &'static [Self::Actions] { Self::ALL }
 
@@ -289,6 +335,7 @@ impl Shortcuts<App> for PackagePane {
     type Actions = PackageAction;
 
     const SCOPE_NAME: &'static str = "package";
+    const SECTION_NAME: &'static str = "Package";
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
@@ -348,6 +395,7 @@ impl Shortcuts<App> for GitPane {
     type Actions = GitAction;
 
     const SCOPE_NAME: &'static str = "git";
+    const SECTION_NAME: &'static str = "Git";
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
@@ -427,6 +475,7 @@ impl Shortcuts<App> for TargetsPane {
     type Actions = TargetsAction;
 
     const SCOPE_NAME: &'static str = "targets";
+    const SECTION_NAME: &'static str = "Targets";
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
@@ -462,6 +511,7 @@ impl Shortcuts<App> for LintsPane {
     type Actions = LintsAction;
 
     const SCOPE_NAME: &'static str = "lints";
+    const SECTION_NAME: &'static str = "Lints";
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
@@ -501,6 +551,7 @@ impl Shortcuts<App> for CiRunsPane {
     type Actions = CiRunsAction;
 
     const SCOPE_NAME: &'static str = "ci_runs";
+    const SECTION_NAME: &'static str = "CI Runs";
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
@@ -591,6 +642,7 @@ impl Shortcuts<App> for ProjectListPane {
     type Actions = ProjectListAction;
 
     const SCOPE_NAME: &'static str = "project_list";
+    const SECTION_NAME: &'static str = "Project List";
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
@@ -659,6 +711,7 @@ impl Shortcuts<App> for OutputPane {
     type Actions = OutputAction;
 
     const SCOPE_NAME: &'static str = "output";
+    const SECTION_NAME: &'static str = "Output";
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {
@@ -698,6 +751,7 @@ impl Shortcuts<App> for FinderPane {
     type Actions = FinderAction;
 
     const SCOPE_NAME: &'static str = "finder";
+    const SECTION_NAME: &'static str = "Finder";
 
     fn defaults() -> Bindings<Self::Actions> {
         tui_pane::bindings! {

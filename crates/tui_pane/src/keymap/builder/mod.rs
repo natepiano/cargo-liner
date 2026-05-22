@@ -137,6 +137,18 @@ pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
     /// [`Self::register_globals`] time for the global shortcut
     /// viewer.
     globals_shortcut_rows_fn: Option<super::ScopeShortcutRowsFn<Ctx>>,
+    /// `N`-monomorphized help-row renderer captured at
+    /// [`Self::register_navigation`] time for the keymap-help overlay.
+    navigation_help_rows_fn:  Option<super::ScopeHelpRowsFn<Ctx>>,
+    /// `G`-monomorphized help-row renderer captured at
+    /// [`Self::register_globals`] time for the keymap-help overlay.
+    app_globals_help_rows_fn: Option<super::ScopeHelpRowsFn<Ctx>>,
+    /// `N`-monomorphized TOML-action-key collector for the keymap
+    /// TOML writer.
+    navigation_toml_keys_fn:  Option<super::ScopeTomlActionKeysFn<Ctx>>,
+    /// `G`-monomorphized TOML-action-key collector for the keymap
+    /// TOML writer.
+    app_globals_toml_keys_fn: Option<super::ScopeTomlActionKeysFn<Ctx>>,
     overlay_scope:            Option<ScopeMap<OverlayAction>>,
     vim_reserved_keys:        Vec<super::KeySequence>,
     deferred_error:           Option<KeymapError>,
@@ -166,6 +178,10 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             globals_action_keys:      None,
             globals_render_fn:        None,
             globals_shortcut_rows_fn: None,
+            navigation_help_rows_fn:  None,
+            app_globals_help_rows_fn: None,
+            navigation_toml_keys_fn:  None,
+            app_globals_toml_keys_fn: None,
             overlay_scope:            None,
             vim_reserved_keys:        Vec::new(),
             deferred_error:           None,
@@ -269,6 +285,9 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
         self.navigation_scope = Some(Box::new(scope_map));
         self.navigation_scope_name = Some(scope_name);
         self.navigation_render_fn = Some(runtime_scope::render_navigation_slots::<Ctx, N>);
+        self.navigation_help_rows_fn =
+            Some(runtime_scope::keymap_help_rows_for_navigation::<Ctx, N>);
+        self.navigation_toml_keys_fn = Some(runtime_scope::navigation_toml_action_keys::<Ctx, N>);
         self.registered_scopes.insert(scope_name);
         Ok(self)
     }
@@ -302,6 +321,9 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
         self.globals_render_fn = Some(runtime_scope::render_app_globals_slots::<Ctx, G>);
         self.globals_shortcut_rows_fn =
             Some(runtime_scope::render_app_global_shortcut_rows::<Ctx, G>);
+        self.app_globals_help_rows_fn =
+            Some(runtime_scope::keymap_help_rows_for_app_globals::<Ctx, G>);
+        self.app_globals_toml_keys_fn = Some(runtime_scope::app_globals_toml_action_keys::<Ctx, G>);
         self.registered_scopes.insert(scope_name);
         Ok(self)
     }
@@ -509,6 +531,10 @@ fn transition<Ctx: AppContext + 'static>(
         globals_action_keys:      src.globals_action_keys,
         globals_render_fn:        src.globals_render_fn,
         globals_shortcut_rows_fn: src.globals_shortcut_rows_fn,
+        navigation_help_rows_fn:  src.navigation_help_rows_fn,
+        app_globals_help_rows_fn: src.app_globals_help_rows_fn,
+        navigation_toml_keys_fn:  src.navigation_toml_keys_fn,
+        app_globals_toml_keys_fn: src.app_globals_toml_keys_fn,
         overlay_scope:            src.overlay_scope,
         vim_reserved_keys:        src.vim_reserved_keys,
         deferred_error:           src.deferred_error,

@@ -50,6 +50,18 @@ pub(super) fn finalize<Ctx: AppContext + 'static, State>(
     if let Some(render) = builder.globals_shortcut_rows_fn {
         keymap.set_app_globals_shortcut_rows_fn(render);
     }
+    if let Some(render) = builder.navigation_help_rows_fn {
+        keymap.set_navigation_help_rows_fn(render);
+    }
+    if let Some(render) = builder.app_globals_help_rows_fn {
+        keymap.set_app_globals_help_rows_fn(render);
+    }
+    if let Some(render) = builder.navigation_toml_keys_fn {
+        keymap.set_navigation_toml_keys_fn(render);
+    }
+    if let Some(render) = builder.app_globals_toml_keys_fn {
+        keymap.set_app_globals_toml_keys_fn(render);
+    }
     let framework_globals = overlay::apply_toml_overlay_with_peer::<GlobalAction>(
         "global",
         GlobalAction::defaults(),

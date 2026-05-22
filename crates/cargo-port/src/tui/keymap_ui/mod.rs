@@ -1,48 +1,26 @@
-mod view;
-
-use std::fmt::Write as _;
+//! Cargo-port app-side keymap-overlay orchestration: capture flow
+//! command routing + TOML save.
+//!
+//! Rendering and row-building live in the framework's
+//! [`tui_pane::KeymapPane::render_overlay`]; this module retains only
+//! the cargo-port-specific orchestration: dispatching overlay
+//! actions, navigation keys inside the popup, capture-command
+//! routing, conflict detection against currently-bound rows, and the
+//! TOML save / reload path.
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
-use ratatui::text::Line;
 use tui_pane::Action;
-use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::KeyBind as FrameworkKeyBind;
 use tui_pane::KeySequence;
 use tui_pane::KeymapCaptureCommand;
+use tui_pane::KeymapHelpRow;
+use tui_pane::KeymapUiContext as _;
 use tui_pane::OverlayAction;
-use tui_pane::Pane;
-#[cfg(test)]
-use tui_pane::SECTION_HEADER_INDENT;
-use tui_pane::ScopeMap as FrameworkScopeMap;
-use view::KeymapLines;
-pub(super) use view::render_keymap_pane_body;
 
 use super::app::App;
-use super::integration::AppGlobalAction;
-use super::integration::AppNavigation;
-use super::integration::AppPaneId;
-use super::integration::CiRunsPane;
-use super::integration::FinderPane;
-use super::integration::GitPane;
-use super::integration::LintsPane;
-use super::integration::NavigationAction;
-use super::integration::OutputPane;
-use super::integration::PackagePane;
-use super::integration::ProjectListPane;
-use super::integration::TargetsPane;
 use super::keymap;
-use super::keymap::CiRunsAction;
-use super::keymap::FinderAction;
-use super::keymap::GitAction;
-use super::keymap::LintsAction;
-use super::keymap::OutputAction;
-use super::keymap::PackageAction;
-use super::keymap::ProjectListAction;
-use super::keymap::TargetsAction;
-
-// ── Row model ────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 struct PendingRebind {
@@ -50,350 +28,6 @@ struct PendingRebind {
     action: &'static str,
     bind:   KeySequence,
 }
-
-#[derive(Clone)]
-struct KeymapRow {
-    section:     &'static str,
-    scope:       &'static str,
-    action:      &'static str,
-    description: &'static str,
-    key_display: String,
-    bind:        Option<KeySequence>,
-    is_header:   bool,
-}
-
-const fn header(section: &'static str) -> KeymapRow {
-    KeymapRow {
-        section,
-        scope: "",
-        action: "",
-        description: "",
-        key_display: String::new(),
-        bind: None,
-        is_header: true,
-    }
-}
-
-fn bind_display(bind: Option<&KeySequence>) -> String {
-    bind.map_or_else(String::new, KeySequence::display)
-}
-
-fn action_toml_key<A: Action>(action: A) -> &'static str { action.toml_key() }
-
-fn action_row<A: Action>(
-    section: &'static str,
-    scope: &'static str,
-    action: A,
-    toml_key: &'static str,
-    bind: Option<KeySequence>,
-) -> KeymapRow {
-    action_row_with_description(section, scope, action.description(), toml_key, bind)
-}
-
-fn action_row_with_description(
-    section: &'static str,
-    scope: &'static str,
-    description: &'static str,
-    toml_key: &'static str,
-    bind: Option<KeySequence>,
-) -> KeymapRow {
-    KeymapRow {
-        section,
-        scope,
-        action: toml_key,
-        description,
-        key_display: bind_display(bind.as_ref()),
-        bind,
-        is_header: false,
-    }
-}
-
-fn push_scope<A: Action>(
-    rows: &mut Vec<KeymapRow>,
-    section: &'static str,
-    scope: &'static str,
-    actions: &[A],
-    scope_map: &FrameworkScopeMap<A>,
-    toml_key: fn(A) -> &'static str,
-) {
-    rows.push(header(section));
-    let mut section: Vec<KeymapRow> = actions
-        .iter()
-        .map(|&action| {
-            let bind = scope_map.key_for(action).cloned();
-            action_row(section, scope, action, toml_key(action), bind)
-        })
-        .collect();
-    section.sort_by_key(|row| row.description);
-    rows.extend(section);
-}
-
-fn push_app_pane_scope<A: Action>(
-    rows: &mut Vec<KeymapRow>,
-    section: &'static str,
-    scope: &'static str,
-    app_pane_id: AppPaneId,
-    actions: &[A],
-    app: &App,
-) {
-    rows.push(header(section));
-    let mut section_rows: Vec<KeymapRow> = actions
-        .iter()
-        .map(|&action| {
-            let toml_key = action.toml_key();
-            let bind = app.framework_keymap.key_for_toml_key(app_pane_id, toml_key);
-            action_row(section, scope, action, toml_key, bind)
-        })
-        .collect();
-    sort_app_pane_rows(section, &mut section_rows);
-    rows.extend(section_rows);
-}
-
-fn sort_app_pane_rows(section: &'static str, rows: &mut [KeymapRow]) {
-    if section == "Project List" {
-        rows.sort_by_key(project_list_keymap_sort_key);
-    } else {
-        rows.sort_by_key(|row| row.description);
-    }
-}
-
-fn project_list_keymap_sort_key(row: &KeymapRow) -> (u8, &'static str) {
-    match row.action {
-        "clean" => (0, row.description),
-        "collapse_all" => (1, row.description),
-        "expand_all" => (2, row.description),
-        "collapse_row" => (3, row.description),
-        "expand_row" => (4, row.description),
-        _ => (5, row.description),
-    }
-}
-
-fn framework_global_toml_key(action: FrameworkGlobalAction) -> &'static str {
-    match action {
-        FrameworkGlobalAction::OpenSettings => "settings",
-        _ => action.toml_key(),
-    }
-}
-
-const GLOBAL_NAV: &[FrameworkGlobalAction] = &[
-    FrameworkGlobalAction::NextPane,
-    FrameworkGlobalAction::PrevPane,
-];
-const GLOBAL_SHORTCUTS: &[FrameworkGlobalAction] = &[
-    FrameworkGlobalAction::Dismiss,
-    FrameworkGlobalAction::OpenGlobalShortcuts,
-    FrameworkGlobalAction::OpenKeymap,
-    FrameworkGlobalAction::OpenSettings,
-    FrameworkGlobalAction::Quit,
-    FrameworkGlobalAction::Restart,
-];
-
-/// Precomputed render inputs for the Keymap overlay. Built in
-/// `prepare_keymap_render_inputs` while we still hold `&App`, then
-/// stashed on [`crate::tui::pane::PaneRenderCtx::keymap_render_inputs`]
-/// for `KeymapPane`'s `Renderable::render` impl to consume from
-/// `&mut self` + `&PaneRenderCtx` without further `&App` access.
-pub(crate) struct KeymapRenderInputs {
-    pub lines:          Vec<Line<'static>>,
-    pub line_targets:   Vec<Option<usize>>,
-    pub selectable_len: usize,
-    pub content_width:  u16,
-}
-
-/// Build the [`KeymapRenderInputs`] the overlay's body fn reads.
-/// Called from `render::ui` before `App::split_for_render` runs,
-/// so the still-current `&App` borrow can walk
-/// `app.framework_keymap` to enumerate rows.
-pub(super) fn prepare_keymap_render_inputs(app: &App) -> KeymapRenderInputs {
-    let rows = build_rows(app);
-    let is_capturing = app.framework.keymap_pane.is_capturing();
-    let KeymapLines {
-        lines,
-        line_targets,
-    } = view::build_lines(&rows, app, is_capturing);
-    let selectable_len = selectable_row_count(app);
-    let content_width = app.overlays.inline_error().map_or(BASE_POPUP_WIDTH, |msg| {
-        // 2 indent + 25 desc + msg len + 2 pad
-        let needed = u16::try_from(2 + 25 + msg.len() + 2).unwrap_or(u16::MAX);
-        BASE_POPUP_WIDTH.max(needed)
-    });
-    KeymapRenderInputs {
-        lines,
-        line_targets,
-        selectable_len,
-        content_width,
-    }
-}
-
-fn build_rows(app: &App) -> Vec<KeymapRow> {
-    let mut rows = Vec::new();
-    push_global_rows(&mut rows, app);
-    push_navigation_rows(&mut rows, app);
-    push_app_pane_rows(&mut rows, app);
-    push_overlay_rows(&mut rows, app);
-    rows
-}
-
-fn push_global_rows(rows: &mut Vec<KeymapRow>, app: &App) {
-    let framework_globals = app.framework_keymap.framework_globals();
-    rows.push(header("Global Navigation"));
-    let mut nav_rows: Vec<KeymapRow> = GLOBAL_NAV
-        .iter()
-        .copied()
-        .map(|action| framework_global_row(action, framework_globals))
-        .collect();
-    nav_rows.sort_by_key(|row| row.description);
-    rows.extend(nav_rows);
-
-    rows.push(header("Global Shortcuts"));
-    let mut shortcut_rows: Vec<KeymapRow> = GLOBAL_SHORTCUTS
-        .iter()
-        .copied()
-        .map(|action| framework_global_row(action, framework_globals))
-        .collect();
-    if let Some(scope) = app.framework_keymap.globals::<AppGlobalAction>() {
-        shortcut_rows.extend(AppGlobalAction::ALL.iter().copied().map(|action| {
-            action_row(
-                "Global Shortcuts",
-                "global",
-                action,
-                action.toml_key(),
-                scope.key_for(action).cloned(),
-            )
-        }));
-    }
-    shortcut_rows.sort_by_key(|row| row.description);
-    rows.extend(shortcut_rows);
-}
-
-fn framework_global_row(
-    action: FrameworkGlobalAction,
-    scope: &FrameworkScopeMap<FrameworkGlobalAction>,
-) -> KeymapRow {
-    action_row_with_description(
-        match action {
-            FrameworkGlobalAction::NextPane | FrameworkGlobalAction::PrevPane => {
-                "Global Navigation"
-            },
-            _ => "Global Shortcuts",
-        },
-        "global",
-        framework_global_description(action),
-        framework_global_toml_key(action),
-        scope.key_for(action).cloned(),
-    )
-}
-
-const fn framework_global_description(action: FrameworkGlobalAction) -> &'static str {
-    match action {
-        FrameworkGlobalAction::Quit => "Quit application",
-        FrameworkGlobalAction::Restart => "Restart application",
-        FrameworkGlobalAction::NextPane => "Focus next pane",
-        FrameworkGlobalAction::PrevPane => "Focus previous pane",
-        FrameworkGlobalAction::OpenKeymap => "Open keymap",
-        FrameworkGlobalAction::OpenSettings => "Open settings",
-        FrameworkGlobalAction::OpenGlobalShortcuts => "Show global shortcuts",
-        FrameworkGlobalAction::Dismiss => "Dismiss focused item",
-    }
-}
-
-fn push_navigation_rows(rows: &mut Vec<KeymapRow>, app: &App) {
-    if let Some(scope) = app.framework_keymap.navigation::<AppNavigation>() {
-        push_scope(
-            rows,
-            "List Navigation",
-            "navigation",
-            NavigationAction::ALL,
-            scope,
-            action_toml_key,
-        );
-    }
-}
-
-fn push_app_pane_rows(rows: &mut Vec<KeymapRow>, app: &App) {
-    push_app_pane_scope(
-        rows,
-        "Project List",
-        "project_list",
-        ProjectListPane::APP_PANE_ID,
-        <ProjectListAction as Action>::ALL,
-        app,
-    );
-    push_app_pane_scope(
-        rows,
-        "Package",
-        "package",
-        PackagePane::APP_PANE_ID,
-        <PackageAction as Action>::ALL,
-        app,
-    );
-    push_app_pane_scope(
-        rows,
-        "Git",
-        "git",
-        GitPane::APP_PANE_ID,
-        <GitAction as Action>::ALL,
-        app,
-    );
-    push_app_pane_scope(
-        rows,
-        "Targets",
-        "targets",
-        TargetsPane::APP_PANE_ID,
-        <TargetsAction as Action>::ALL,
-        app,
-    );
-    push_app_pane_scope(
-        rows,
-        "CI Runs",
-        "ci_runs",
-        CiRunsPane::APP_PANE_ID,
-        <CiRunsAction as Action>::ALL,
-        app,
-    );
-    push_app_pane_scope(
-        rows,
-        "Lints",
-        "lints",
-        LintsPane::APP_PANE_ID,
-        <LintsAction as Action>::ALL,
-        app,
-    );
-    push_app_pane_scope(
-        rows,
-        "Output",
-        "output",
-        OutputPane::APP_PANE_ID,
-        OutputAction::ALL,
-        app,
-    );
-    push_app_pane_scope(
-        rows,
-        "Finder",
-        "finder",
-        FinderPane::APP_PANE_ID,
-        FinderAction::ALL,
-        app,
-    );
-}
-
-fn push_overlay_rows(rows: &mut Vec<KeymapRow>, app: &App) {
-    push_scope(
-        rows,
-        "Overlay",
-        "overlay",
-        OverlayAction::ALL,
-        app.framework_keymap.overlay(),
-        action_toml_key,
-    );
-}
-
-/// Total number of selectable (non-header) rows.
-pub(super) fn selectable_row_count(app: &App) -> usize {
-    build_rows(app).iter().filter(|row| !row.is_header).count()
-}
-
-// ── Key handling ─────────────────────────────────────────────────────
 
 pub(super) fn dispatch_keymap_action(action: OverlayAction, app: &mut App) {
     match action {
@@ -438,9 +72,18 @@ pub(super) fn handle_keymap_capture_command(app: &mut App, command: KeymapCaptur
     }
 }
 
+fn help_rows(app: &App) -> Vec<KeymapHelpRow> {
+    let order = app.keymap_pane_display_order();
+    app.framework_keymap.keymap_help_rows(order)
+}
+
+fn selectable_row_count(app: &App) -> usize {
+    help_rows(app).iter().filter(|row| !row.is_header).count()
+}
+
 fn handle_captured_bind(app: &mut App, bind: FrameworkKeyBind) {
-    let rows = build_rows(app);
-    let selectable: Vec<&KeymapRow> = rows.iter().filter(|r| !r.is_header).collect();
+    let rows = help_rows(app);
+    let selectable: Vec<&KeymapHelpRow> = rows.iter().filter(|r| !r.is_header).collect();
     let Some(row) = selectable
         .get(app.framework.keymap_pane.viewport().pos())
         .map(|row| (*row).clone())
@@ -499,8 +142,7 @@ fn handle_captured_bind(app: &mut App, bind: FrameworkKeyBind) {
     }
 
     // Check intra-scope conflict.
-    let conflict = check_scope_conflict(&rows, &row, bind);
-    if let Some(msg) = conflict {
+    if let Some(msg) = check_scope_conflict(&rows, &row, bind) {
         reject_capture(app, msg);
         return;
     }
@@ -517,34 +159,34 @@ fn reject_capture(app: &mut App, message: String) {
 }
 
 fn check_global_conflict(
-    rows: &[KeymapRow],
-    current: &KeymapRow,
+    rows: &[KeymapHelpRow],
+    current: &KeymapHelpRow,
     bind: FrameworkKeyBind,
 ) -> Option<String> {
     find_conflict(rows, current, bind, |row| row.scope == "global")
 }
 
 fn check_non_global_conflict(
-    rows: &[KeymapRow],
-    current: &KeymapRow,
+    rows: &[KeymapHelpRow],
+    current: &KeymapHelpRow,
     bind: FrameworkKeyBind,
 ) -> Option<String> {
     find_conflict(rows, current, bind, |row| row.scope != "global")
 }
 
 fn check_scope_conflict(
-    rows: &[KeymapRow],
-    current: &KeymapRow,
+    rows: &[KeymapHelpRow],
+    current: &KeymapHelpRow,
     bind: FrameworkKeyBind,
 ) -> Option<String> {
     find_conflict(rows, current, bind, |row| row.scope == current.scope)
 }
 
 fn find_conflict(
-    rows: &[KeymapRow],
-    current: &KeymapRow,
+    rows: &[KeymapHelpRow],
+    current: &KeymapHelpRow,
     bind: FrameworkKeyBind,
-    predicate: impl Fn(&KeymapRow) -> bool,
+    predicate: impl Fn(&KeymapHelpRow) -> bool,
 ) -> Option<String> {
     rows.iter()
         .filter(|row| !row.is_header)
@@ -593,6 +235,7 @@ pub(super) fn current_keymap_toml(app: &App) -> String {
 }
 
 fn current_keymap_toml_with_pending(app: &App, pending: Option<&PendingRebind>) -> String {
+    use std::fmt::Write as _;
     let mut out = String::from(
         "# cargo-port keymap configuration\n\
          # Edit bindings below. Format: action = \"key\" or \"modifier-key\"\n\
@@ -602,10 +245,34 @@ fn current_keymap_toml_with_pending(app: &App, pending: Option<&PendingRebind>) 
          #       for navigation and cannot be used as action keys.\n\n",
     );
 
-    write_section(&mut out, "global", global_entries(app), pending);
-    write_navigation_section(&mut out, app, pending);
-    write_app_pane_sections(&mut out, app, pending);
-    write_overlay_sections(&mut out, app, pending);
+    let order = app.keymap_pane_display_order();
+    let sections = app.framework_keymap.keymap_toml_scope_keys(order);
+    for (scope, action_keys) in sections {
+        let _ = writeln!(out, "[{scope}]");
+        let mut entries: Vec<(&'static str, Vec<KeySequence>)> = action_keys
+            .into_iter()
+            .map(|action_key| {
+                let binds = binds_for_scope_action(app, scope, action_key);
+                (action_key, binds)
+            })
+            .collect();
+        entries.sort_by_key(|(name, _)| *name);
+        let max_len = entries
+            .iter()
+            .map(|(name, _)| name.len())
+            .max()
+            .unwrap_or(0);
+        for (action_key, binds) in &entries {
+            let value = pending
+                .filter(|pending| pending.scope == scope && pending.action == *action_key)
+                .map_or_else(
+                    || keybind_toml_value(binds),
+                    |pending| keybind_toml_value(std::slice::from_ref(&pending.bind)),
+                );
+            let _ = writeln!(out, "{action_key:<max_len$} = {value}");
+        }
+        out.push('\n');
+    }
     if out.ends_with("\n\n") {
         out.pop();
     }
@@ -613,200 +280,88 @@ fn current_keymap_toml_with_pending(app: &App, pending: Option<&PendingRebind>) 
     out
 }
 
-fn write_navigation_section(out: &mut String, app: &App, pending: Option<&PendingRebind>) {
-    if let Some(scope) = app.framework_keymap.navigation::<AppNavigation>() {
-        write_section(
-            out,
-            "navigation",
-            entries_from_scope(NavigationAction::ALL, scope, action_toml_key),
-            pending,
-        );
+fn binds_for_scope_action(app: &App, scope: &str, action_key: &str) -> Vec<KeySequence> {
+    let keymap = &*app.framework_keymap;
+    if scope == "global" {
+        // Framework + app globals share the [global] table. Try
+        // framework globals first; if that has the action, return its
+        // bind. Otherwise look for the action in app globals via the
+        // help-rows walk (which lists app globals under "Global
+        // Shortcuts").
+        if let Some(action) = tui_pane::GlobalAction::from_toml_key(action_key)
+            && let Some(bind) = keymap.framework_globals().key_for(action)
+        {
+            return vec![bind.clone()];
+        }
+        return app_global_binds_for_action(app, action_key);
     }
-}
-
-fn write_app_pane_sections(out: &mut String, app: &App, pending: Option<&PendingRebind>) {
-    write_section(
-        out,
-        "project_list",
-        entries_from_app_pane(
-            app,
-            ProjectListPane::APP_PANE_ID,
-            <ProjectListAction as Action>::ALL,
-            action_toml_key,
-        ),
-        pending,
-    );
-    write_section(
-        out,
-        "package",
-        entries_from_app_pane(
-            app,
-            PackagePane::APP_PANE_ID,
-            <PackageAction as Action>::ALL,
-            action_toml_key,
-        ),
-        pending,
-    );
-    write_section(
-        out,
-        "git",
-        entries_from_app_pane(
-            app,
-            GitPane::APP_PANE_ID,
-            <GitAction as Action>::ALL,
-            action_toml_key,
-        ),
-        pending,
-    );
-    write_section(
-        out,
-        "targets",
-        entries_from_app_pane(
-            app,
-            TargetsPane::APP_PANE_ID,
-            <TargetsAction as Action>::ALL,
-            action_toml_key,
-        ),
-        pending,
-    );
-    write_section(
-        out,
-        "lints",
-        entries_from_app_pane(
-            app,
-            LintsPane::APP_PANE_ID,
-            <LintsAction as Action>::ALL,
-            action_toml_key,
-        ),
-        pending,
-    );
-    write_section(
-        out,
-        "ci_runs",
-        entries_from_app_pane(
-            app,
-            CiRunsPane::APP_PANE_ID,
-            <CiRunsAction as Action>::ALL,
-            action_toml_key,
-        ),
-        pending,
-    );
-    write_section(
-        out,
-        "output",
-        entries_from_app_pane(
-            app,
-            OutputPane::APP_PANE_ID,
-            OutputAction::ALL,
-            action_toml_key,
-        ),
-        pending,
-    );
-    write_section(
-        out,
-        "finder",
-        entries_from_app_pane(
-            app,
-            FinderPane::APP_PANE_ID,
-            FinderAction::ALL,
-            action_toml_key,
-        ),
-        pending,
-    );
-}
-
-fn write_overlay_sections(out: &mut String, app: &App, pending: Option<&PendingRebind>) {
-    write_section(
-        out,
-        "overlay",
-        entries_from_scope(
-            OverlayAction::ALL,
-            app.framework_keymap.overlay(),
-            action_toml_key,
-        ),
-        pending,
-    );
-}
-
-#[derive(Clone)]
-struct TomlEntry {
-    action: &'static str,
-    binds:  Vec<KeySequence>,
-}
-
-fn global_entries(app: &App) -> Vec<TomlEntry> {
-    let mut entries = entries_from_scope(
-        FrameworkGlobalAction::ALL,
-        app.framework_keymap.framework_globals(),
-        framework_global_toml_key,
-    );
-    if let Some(scope) = app.framework_keymap.globals::<AppGlobalAction>() {
-        entries.extend(entries_from_scope(
-            AppGlobalAction::ALL,
-            scope,
-            action_toml_key,
-        ));
+    if scope == "navigation" {
+        return navigation_binds_for_action(app, action_key);
     }
-    entries
-}
-
-fn entries_from_scope<A: Action>(
-    actions: &[A],
-    scope_map: &FrameworkScopeMap<A>,
-    toml_key: fn(A) -> &'static str,
-) -> Vec<TomlEntry> {
-    actions
-        .iter()
-        .map(|&action| TomlEntry {
-            action: toml_key(action),
-            binds:  scope_map.display_keys_for(action).to_vec(),
-        })
-        .collect()
-}
-
-fn entries_from_app_pane<A: Action>(
-    app: &App,
-    app_pane_id: AppPaneId,
-    actions: &[A],
-    toml_key: fn(A) -> &'static str,
-) -> Vec<TomlEntry> {
-    actions
-        .iter()
-        .map(|&action| {
-            let action_key = toml_key(action);
-            TomlEntry {
-                action: action_key,
-                binds:  app
-                    .framework_keymap
-                    .keys_for_toml_key(app_pane_id, action_key),
-            }
-        })
-        .collect()
-}
-
-fn write_section(
-    out: &mut String,
-    scope: &'static str,
-    mut entries: Vec<TomlEntry>,
-    pending: Option<&PendingRebind>,
-) {
-    let _ = writeln!(out, "[{scope}]");
-    entries.sort_by_key(|entry| entry.action);
-    let max_len = entries
-        .iter()
-        .map(|entry| entry.action.len())
-        .max()
-        .unwrap_or(0);
-    for entry in entries {
-        let value = pending
-            .filter(|pending| pending.scope == scope && pending.action == entry.action)
-            .map_or_else(
-                || keybind_toml_value(&entry.binds),
-                |pending| keybind_toml_value(std::slice::from_ref(&pending.bind)),
-            );
-        let _ = writeln!(out, "{:<max_len$} = {}", entry.action, value);
+    if scope == "overlay" {
+        if let Some(action) = tui_pane::OverlayAction::from_toml_key(action_key) {
+            return keymap.overlay().display_keys_for(action).to_vec();
+        }
+        return Vec::new();
     }
-    out.push('\n');
+    // App-pane scope. Resolve via the runtime lookup keyed by toml
+    // action key.
+    let order = app.keymap_pane_display_order();
+    for id in order {
+        if let Some(name) = keymap_scope_name(app, *id)
+            && name == scope
+        {
+            return keymap.keys_for_toml_key(*id, action_key);
+        }
+    }
+    Vec::new()
+}
+
+const fn keymap_scope_name(_app: &App, id: super::integration::AppPaneId) -> Option<&'static str> {
+    use tui_pane::Shortcuts;
+
+    use super::integration::CiRunsPane;
+    use super::integration::FinderPane;
+    use super::integration::GitPane;
+    use super::integration::LintsPane;
+    use super::integration::OutputPane;
+    use super::integration::PackagePane;
+    use super::integration::ProjectListPane;
+    use super::integration::TargetsPane;
+    Some(match id {
+        super::integration::AppPaneId::ProjectList => {
+            <ProjectListPane as Shortcuts<App>>::SCOPE_NAME
+        },
+        super::integration::AppPaneId::Package => <PackagePane as Shortcuts<App>>::SCOPE_NAME,
+        super::integration::AppPaneId::Git => <GitPane as Shortcuts<App>>::SCOPE_NAME,
+        super::integration::AppPaneId::Targets => <TargetsPane as Shortcuts<App>>::SCOPE_NAME,
+        super::integration::AppPaneId::CiRuns => <CiRunsPane as Shortcuts<App>>::SCOPE_NAME,
+        super::integration::AppPaneId::Lints => <LintsPane as Shortcuts<App>>::SCOPE_NAME,
+        super::integration::AppPaneId::Output => <OutputPane as Shortcuts<App>>::SCOPE_NAME,
+        super::integration::AppPaneId::Finder => <FinderPane as Shortcuts<App>>::SCOPE_NAME,
+        super::integration::AppPaneId::Lang | super::integration::AppPaneId::Cpu => return None,
+    })
+}
+
+fn app_global_binds_for_action(app: &App, action_key: &str) -> Vec<KeySequence> {
+    use super::integration::AppGlobalAction;
+    if let Some(action) = AppGlobalAction::from_toml_key(action_key)
+        && let Some(scope) = app.framework_keymap.globals::<AppGlobalAction>()
+    {
+        return scope.display_keys_for(action).to_vec();
+    }
+    Vec::new()
+}
+
+fn navigation_binds_for_action(app: &App, action_key: &str) -> Vec<KeySequence> {
+    use super::integration::AppNavigation;
+    use super::integration::NavigationAction;
+    if let Some(action) = NavigationAction::from_toml_key(action_key)
+        && let Some(scope) = app.framework_keymap.navigation::<AppNavigation>()
+    {
+        return scope.display_keys_for(action).to_vec();
+    }
+    Vec::new()
 }
 
 fn keybind_toml_value(binds: &[KeySequence]) -> String {
@@ -825,7 +380,7 @@ fn keybind_toml_value(binds: &[KeySequence]) -> String {
 }
 
 pub(super) fn vim_mode_conflicts(app: &App) -> Vec<String> {
-    build_rows(app)
+    help_rows(app)
         .into_iter()
         .filter(|row| !row.is_header)
         .filter_map(|row| {
@@ -835,123 +390,4 @@ pub(super) fn vim_mode_conflicts(app: &App) -> Vec<String> {
             .then(|| format!("{}.{}", row.scope, row.action))
         })
         .collect()
-}
-
-// ── Rendering ────────────────────────────────────────────────────────
-
-const BASE_POPUP_WIDTH: u16 = 52;
-const KEYMAP_POPUP_MAX_HEIGHT: u16 = 43;
-
-#[cfg(test)]
-mod tests {
-    use super::view::build_lines;
-    use super::view::keymap_header_line;
-    use super::view::keymap_popup_height;
-    use super::*;
-
-    fn line_text(line: &Line<'_>) -> String {
-        line.spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect()
-    }
-
-    #[test]
-    fn keymap_header_line_uses_section_name() {
-        let line = keymap_header_line(&header("Global Navigation"));
-
-        assert_eq!(
-            line_text(&line),
-            format!("{SECTION_HEADER_INDENT}Global Navigation:")
-        );
-    }
-
-    #[test]
-    fn keymap_header_line_can_label_list_navigation() {
-        let line = keymap_header_line(&header("List Navigation"));
-
-        assert_eq!(
-            line_text(&line),
-            format!("{SECTION_HEADER_INDENT}List Navigation:")
-        );
-    }
-
-    #[test]
-    fn project_list_rows_keep_expand_collapse_pairs_adjacent() {
-        let mut rows = vec![
-            action_row_with_description(
-                "Project List",
-                "project_list",
-                "Expand row",
-                "expand_row",
-                None,
-            ),
-            action_row_with_description(
-                "Project List",
-                "project_list",
-                "Collapse all",
-                "collapse_all",
-                None,
-            ),
-            action_row_with_description(
-                "Project List",
-                "project_list",
-                "Clean project",
-                "clean",
-                None,
-            ),
-            action_row_with_description(
-                "Project List",
-                "project_list",
-                "Expand all",
-                "expand_all",
-                None,
-            ),
-            action_row_with_description(
-                "Project List",
-                "project_list",
-                "Collapse row",
-                "collapse_row",
-                None,
-            ),
-        ];
-
-        sort_app_pane_rows("Project List", &mut rows);
-
-        assert_eq!(
-            rows.iter().map(|row| row.action).collect::<Vec<_>>(),
-            vec![
-                "clean",
-                "collapse_all",
-                "expand_all",
-                "collapse_row",
-                "expand_row",
-            ],
-        );
-    }
-
-    #[test]
-    fn keymap_lines_track_selectable_rows_only() {
-        let app = crate::tui::test_support::make_app(&[]);
-        let rows = vec![
-            header("One"),
-            action_row_with_description("One", "one", "First", "first", None),
-            header("Two"),
-            action_row_with_description("Two", "two", "Second", "second", None),
-        ];
-
-        let rendered = build_lines(&rows, &app, false);
-
-        assert_eq!(
-            rendered.line_targets,
-            vec![None, None, Some(0), None, Some(1), None],
-        );
-    }
-
-    #[test]
-    fn keymap_popup_height_is_bounded_on_tall_terminals() {
-        assert_eq!(keymap_popup_height(10, 80), 12);
-        assert_eq!(keymap_popup_height(100, 80), KEYMAP_POPUP_MAX_HEIGHT);
-        assert_eq!(keymap_popup_height(100, 20), 18);
-    }
 }

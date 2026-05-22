@@ -16,7 +16,6 @@ use std::time::Duration;
 use strum::EnumIter;
 use tui_pane::ToastId;
 
-use super::keymap_ui::KeymapRenderInputs;
 use super::panes::PaneId;
 use super::panes::SyncedDescriptionHeight;
 use super::project_list::ProjectList;
@@ -64,14 +63,6 @@ pub(crate) struct PaneRenderCtx<'a> {
     /// the CI pane's own dispatcher consume `&mut self.ci` in the
     /// same pass.
     pub(crate) ci_status_lookup:          &'a CiStatusLookup,
-    /// Precomputed render inputs for the Keymap overlay. `None` for
-    /// every render path that isn't the Keymap overlay dispatcher;
-    /// `Some` when the overlay is open and `KeymapPane`'s
-    /// [`tui_pane::Renderable`] impl is about to draw the popup.
-    /// Built by [`crate::tui::keymap_ui::prepare_keymap_render_inputs`]
-    /// before `App::split_for_render`, so the still-current `&App`
-    /// borrow can walk `framework_keymap`.
-    pub(crate) keymap_render_inputs:      Option<&'a KeymapRenderInputs>,
     /// Precomputed render inputs for the Settings overlay. `None`
     /// for every render path that isn't the Settings overlay
     /// dispatcher; `Some` when the overlay is open. Built by

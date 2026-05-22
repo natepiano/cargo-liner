@@ -56,6 +56,21 @@ pub(crate) trait RuntimeScope<Ctx: AppContext>: 'static {
     /// Predicate form of [`Self::key_for_toml_key`] that checks every
     /// key bound to the action, not just its primary display key.
     fn is_key_bound_to_toml_key(&self, key: &str, bind: &KeyBind) -> bool;
+
+    /// Help-overlay rows for this scope. Returns one
+    /// [`KeymapHelpRow::header`] followed by one row per action in
+    /// declaration order, each carrying the resolved binding.
+    fn help_rows(&self) -> Vec<KeymapHelpRow>;
+
+    /// TOML action keys in declaration order. Used by the help
+    /// overlay's TOML writer to walk every action even when no
+    /// binding currently exists. Mirror of [`Self::help_rows`] without
+    /// the header / descriptions.
+    fn toml_action_keys(&self) -> Vec<&'static str>;
+
+    /// TOML table name for the scope (e.g. `"project_list"`). Used by
+    /// the help-overlay TOML writer to label sections.
+    fn scope_name(&self) -> &'static str;
 }
 
 /// One bar slot, fully resolved for the renderer.
@@ -95,6 +110,46 @@ pub struct GlobalShortcutRow {
     /// Currently bound display key. `None` keeps registered but
     /// unbound actions visible in the help list.
     pub key:         Option<KeySequence>,
+}
+
+/// One row of the keymap help overlay built from a registered scope.
+///
+/// Headers carry `is_header == true` and have empty `action` /
+/// `description` / `bind` fields; action rows have `is_header == false`
+/// and their `bind` reflects the current resolved binding (or `None`
+/// when no key is assigned). `scope` is the TOML table name (e.g.
+/// `"project_list"`) and `action` is the TOML action key, both stable
+/// across renames.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct KeymapHelpRow {
+    /// Human-readable section heading (e.g. `"Project List"`).
+    pub section:     &'static str,
+    /// TOML scope name (e.g. `"project_list"`).
+    pub scope:       &'static str,
+    /// TOML action key for the row (e.g. `"expand_all"`). Empty for
+    /// headers.
+    pub action:      &'static str,
+    /// Human-readable description for the row. Empty for headers.
+    pub description: &'static str,
+    /// Resolved binding for action rows; `None` keeps registered but
+    /// unbound actions visible. Always `None` for headers.
+    pub bind:        Option<KeySequence>,
+    /// `true` for the section header row that precedes a scope's
+    /// action rows.
+    pub is_header:   bool,
+}
+
+impl KeymapHelpRow {
+    pub(crate) const fn header(section: &'static str, scope: &'static str) -> Self {
+        Self {
+            section,
+            scope,
+            action: "",
+            description: "",
+            bind: None,
+            is_header: true,
+        }
+    }
 }
 
 /// The single implementor of [`RuntimeScope<Ctx>`]. Captures the
@@ -177,6 +232,26 @@ impl<Ctx: AppContext + 'static, P: Shortcuts<Ctx>> RuntimeScope<Ctx> for PaneSco
         };
         self.bindings.action_for(bind) == Some(action)
     }
+
+    fn help_rows(&self) -> Vec<KeymapHelpRow> {
+        let mut rows = Vec::with_capacity(P::Actions::ALL.len() + 1);
+        rows.push(KeymapHelpRow::header(P::SECTION_NAME, P::SCOPE_NAME));
+        rows.extend(P::Actions::ALL.iter().copied().map(|action| KeymapHelpRow {
+            section:     P::SECTION_NAME,
+            scope:       P::SCOPE_NAME,
+            action:      action.toml_key(),
+            description: action.description(),
+            bind:        self.bindings.display_keys_for(action).first().cloned(),
+            is_header:   false,
+        }));
+        rows
+    }
+
+    fn toml_action_keys(&self) -> Vec<&'static str> {
+        P::Actions::ALL.iter().map(|a| a.toml_key()).collect()
+    }
+
+    fn scope_name(&self) -> &'static str { P::SCOPE_NAME }
 }
 
 /// Materialize bar slots for a generic action enum + scope map. Used
@@ -252,6 +327,67 @@ pub(crate) fn render_app_global_shortcut_rows<Ctx: AppContext + 'static, G: Glob
             key:         scope.key_for(action).cloned(),
         })
         .collect()
+}
+
+/// `N`-monomorphized renderer for the keymap help overlay's
+/// navigation section. Emits one [`KeymapHelpRow::header`] (with
+/// `N::SECTION_NAME`) followed by one row per [`Action::ALL`] entry.
+pub(crate) fn keymap_help_rows_for_navigation<Ctx: AppContext + 'static, N: Navigation<Ctx>>(
+    keymap: &Keymap<Ctx>,
+) -> Vec<KeymapHelpRow> {
+    let Some(scope) = keymap.navigation::<N>() else {
+        return Vec::new();
+    };
+    let mut rows = Vec::with_capacity(N::Actions::ALL.len() + 1);
+    rows.push(KeymapHelpRow::header(N::SECTION_NAME, N::SCOPE_NAME));
+    rows.extend(N::Actions::ALL.iter().copied().map(|action| KeymapHelpRow {
+        section:     N::SECTION_NAME,
+        scope:       N::SCOPE_NAME,
+        action:      action.toml_key(),
+        description: action.description(),
+        bind:        scope.display_keys_for(action).first().cloned(),
+        is_header:   false,
+    }));
+    rows
+}
+
+/// `G`-monomorphized renderer for the keymap help overlay's
+/// app-globals section. Section name comes from [`Globals::SECTION_NAME`].
+pub(crate) fn keymap_help_rows_for_app_globals<Ctx: AppContext + 'static, G: Globals<Ctx>>(
+    keymap: &Keymap<Ctx>,
+) -> Vec<KeymapHelpRow> {
+    let Some(scope) = keymap.globals::<G>() else {
+        return Vec::new();
+    };
+    G::Actions::ALL
+        .iter()
+        .copied()
+        .map(|action| KeymapHelpRow {
+            section:     G::SECTION_NAME,
+            scope:       G::SCOPE_NAME,
+            action:      action.toml_key(),
+            description: action.description(),
+            bind:        scope.display_keys_for(action).first().cloned(),
+            is_header:   false,
+        })
+        .collect()
+}
+
+/// `N`-monomorphized TOML-action-keys collector for the navigation
+/// scope. Used by the keymap TOML writer to enumerate every action
+/// regardless of whether it currently has a binding.
+pub(crate) fn navigation_toml_action_keys<Ctx: AppContext + 'static, N: Navigation<Ctx>>(
+    _keymap: &Keymap<Ctx>,
+) -> Vec<&'static str> {
+    N::Actions::ALL.iter().map(|a| a.toml_key()).collect()
+}
+
+/// `G`-monomorphized TOML-action-keys collector for the app-globals
+/// scope. Mirror of [`navigation_toml_action_keys`].
+pub(crate) fn app_globals_toml_action_keys<Ctx: AppContext + 'static, G: Globals<Ctx>>(
+    _keymap: &Keymap<Ctx>,
+) -> Vec<&'static str> {
+    G::Actions::ALL.iter().map(|a| a.toml_key()).collect()
 }
 
 #[cfg(test)]
