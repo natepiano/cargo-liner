@@ -1,4 +1,3 @@
-use crate::perf_log;
 use crate::tui;
 use crate::tui::app::App;
 use crate::tui::app::VisibleRow;
@@ -48,14 +47,14 @@ impl App {
         let started = std::time::Instant::now();
         let pane_started = std::time::Instant::now();
         let pane = desired.and_then(|key| self.build_selected_pane_data().map(|data| (key, data)));
-        let pane_ms = perf_log::ms(pane_started.elapsed().as_millis());
+        let pane_ms = tui_pane::perf_log_ms(pane_started.elapsed().as_millis());
         if let Some((key, data)) = pane {
             let ci_started = std::time::Instant::now();
             let ci = tui::panes::build_ci_data(self);
-            let ci_ms = perf_log::ms(ci_started.elapsed().as_millis());
+            let ci_ms = tui_pane::perf_log_ms(ci_started.elapsed().as_millis());
             let lints_started = std::time::Instant::now();
             let lints = tui::panes::build_lints_data(self);
-            let lints_ms = perf_log::ms(lints_started.elapsed().as_millis());
+            let lints_ms = tui_pane::perf_log_ms(lints_started.elapsed().as_millis());
             self.ci.set_content(ci);
             self.lint.set_content(lints);
             let target_dir = self
@@ -66,7 +65,7 @@ impl App {
             self.panes
                 .set_detail_data(key, data.package, data.git, data.targets, target_dir);
             tracing::info!(
-                total_ms = perf_log::ms(started.elapsed().as_millis()),
+                total_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
                 pane_ms,
                 ci_ms,
                 lints_ms,

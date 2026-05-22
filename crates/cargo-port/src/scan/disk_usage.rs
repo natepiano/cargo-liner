@@ -66,7 +66,7 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
         };
         let queue_elapsed = queue_started.elapsed();
         tracing::info!(
-            elapsed_ms = crate::perf_log::ms(queue_elapsed.as_millis()),
+            elapsed_ms = tui_pane::perf_log_ms(queue_elapsed.as_millis()),
             abs_path = %tree.root_abs_path.display(),
             rows = tree.entries.len(),
             "tokio_disk_queue_wait"
@@ -79,7 +79,7 @@ fn spawn_disk_usage_tree(scan_context: &StreamingScanContext, tree: DiskUsageTre
             return;
         };
         tracing::info!(
-            elapsed_ms = crate::perf_log::ms(run_started.elapsed().as_millis()),
+            elapsed_ms = tui_pane::perf_log_ms(run_started.elapsed().as_millis()),
             abs_path = %tree.root_abs_path.display(),
             rows = tree.entries.len(),
             "tokio_disk_usage"

@@ -40,7 +40,6 @@ use crate::tui::integration::AppPaneId;
 use crate::tui::keymap::FinderAction;
 use crate::tui::overlays::FinderPane;
 use crate::tui::overlays::PopupFrame;
-use crate::tui::pane;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 use crate::tui::panes::RunTargetKind;
@@ -467,7 +466,8 @@ fn render_finder_results(
                 )),
             ])
             .style(
-                pane::selection_state(&pane.viewport, row_index, pane.focus.state).overlay_style(),
+                tui_pane::selection_state(&pane.viewport, row_index, pane.focus.state)
+                    .overlay_style(),
             )
         })
         .collect();

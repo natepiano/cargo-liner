@@ -32,6 +32,7 @@ use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tui_pane::FRAME_POLL_MILLIS;
+use tui_pane::SLOW_FRAME_MS;
 use tui_pane::TrackedItemKey;
 
 use super::app::App;
@@ -47,8 +48,6 @@ use super::settings;
 use crate::ci;
 use crate::config;
 use crate::http::HttpClient;
-use crate::perf_log;
-use crate::perf_log::SLOW_FRAME_MS;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
 use crate::project::WorkspaceMetadataStore;
@@ -125,7 +124,9 @@ pub fn run() -> ExitCode {
     };
     let cfg = startup_settings.config.clone();
     config::set_active_config(&cfg);
-    let perf_log_path = perf_log::init();
+    let perf_log_path = std::env::temp_dir().join("cargo-port-tui-perf.log");
+    let previous_perf_log_path = std::env::temp_dir().join("cargo-port-tui-perf.prev.log");
+    tui_pane::init_perf_log(&perf_log_path, &previous_perf_log_path);
 
     let Ok(rt) = tokio::runtime::Runtime::new() else {
         tracing::error!("Error: failed to create async runtime");
@@ -408,15 +409,15 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         return;
     }
     tracing::info!(
-        frame_ms = crate::perf_log::ms(metrics.frame_elapsed.as_millis()),
-        input_ms = crate::perf_log::ms(metrics.input_elapsed.as_millis()),
-        bg_ms = crate::perf_log::ms(metrics.bg_elapsed.as_millis()),
-        rows_ms = crate::perf_log::ms(metrics.rows_elapsed.as_millis()),
-        disk_ms = crate::perf_log::ms(metrics.disk_elapsed.as_millis()),
-        fit_ms = crate::perf_log::ms(metrics.fit_elapsed.as_millis()),
-        detail_ms = crate::perf_log::ms(metrics.detail_elapsed.as_millis()),
-        draw_ms = crate::perf_log::ms(metrics.draw_elapsed.as_millis()),
-        idle_ms = crate::perf_log::ms(metrics.idle_elapsed.as_millis()),
+        frame_ms = tui_pane::perf_log_ms(metrics.frame_elapsed.as_millis()),
+        input_ms = tui_pane::perf_log_ms(metrics.input_elapsed.as_millis()),
+        bg_ms = tui_pane::perf_log_ms(metrics.bg_elapsed.as_millis()),
+        rows_ms = tui_pane::perf_log_ms(metrics.rows_elapsed.as_millis()),
+        disk_ms = tui_pane::perf_log_ms(metrics.disk_elapsed.as_millis()),
+        fit_ms = tui_pane::perf_log_ms(metrics.fit_elapsed.as_millis()),
+        detail_ms = tui_pane::perf_log_ms(metrics.detail_elapsed.as_millis()),
+        draw_ms = tui_pane::perf_log_ms(metrics.draw_elapsed.as_millis()),
+        idle_ms = tui_pane::perf_log_ms(metrics.idle_elapsed.as_millis()),
         input_count = metrics.input_count,
         bg_msgs = bg_stats.bg_msgs,
         disk_usage_msgs = bg_stats.disk_usage_msgs,

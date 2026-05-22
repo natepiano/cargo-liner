@@ -3,7 +3,6 @@ use std::time::Instant;
 
 use tui_pane::TrackedItem;
 
-use crate::perf_log;
 use crate::project;
 use crate::tui::app::App;
 use crate::tui::app::Startup;
@@ -45,7 +44,7 @@ impl Startup {
         tracing::info!(
             phase = "lint_terminal_applied",
             since_scan_complete_ms =
-                crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
             seen = self.lint_phase.seen.len(),
             expected = self.lint_phase.expected_len(),
             "startup_phase_complete"
@@ -201,7 +200,7 @@ impl App {
         tracing::info!(
             phase = "disk_applied",
             since_scan_complete_ms =
-                crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
             seen = self.startup.disk.seen.len(),
             expected = self.startup.disk.expected_len(),
             "startup_phase_complete"
@@ -221,7 +220,7 @@ impl App {
         tracing::info!(
             phase = "git_local_applied",
             since_scan_complete_ms =
-                crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
             seen = self.startup.git.seen.len(),
             expected = self.startup.git.expected_len(),
             "startup_phase_complete"
@@ -248,7 +247,7 @@ impl App {
         tracing::info!(
             phase = "repo_fetch_applied",
             since_scan_complete_ms =
-                crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
             seen = self.startup.repo.seen.len(),
             expected = self.startup.repo.expected_len(),
             "startup_phase_complete"
@@ -272,7 +271,7 @@ impl App {
         tracing::info!(
             phase = "metadata_applied",
             since_scan_complete_ms =
-                crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
             seen = self.startup.metadata.seen.len(),
             expected = self.startup.metadata.expected_len(),
             "startup_phase_complete"
@@ -301,7 +300,7 @@ impl App {
         if lint_done {
             let _ = self.startup.toast.take();
         }
-        let since_scan_ms = perf_log::ms(now.duration_since(scan_complete_at).as_millis());
+        let since_scan_ms = tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis());
         tracing::info!(
             since_scan_complete_ms = since_scan_ms,
             disk_seen = self.startup.disk.seen.len(),

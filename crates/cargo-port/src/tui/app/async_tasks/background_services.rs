@@ -26,7 +26,7 @@ impl App {
             count += 1;
         });
         tracing::info!(
-            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+            elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             count,
             "register_background_services_for_tree"
         );
@@ -158,7 +158,7 @@ impl App {
                 let started = Instant::now();
                 let first_commit = project::get_first_commit(&repo_root);
                 tracing::info!(
-                    elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+                    elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
                     repo_root = %repo_root.display(),
                     rows = paths.len(),
                     found = first_commit.is_some(),

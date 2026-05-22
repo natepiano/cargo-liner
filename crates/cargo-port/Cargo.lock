@@ -545,7 +545,6 @@ dependencies = [
  "tokio",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
- "tracing-subscriber",
  "tui_pane",
  "unicode-width",
  "walkdir",
@@ -4175,10 +4174,12 @@ dependencies = [
  "dirs",
  "ratatui",
  "serde",
+ "sysinfo",
  "thiserror 2.0.18",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "unicode-width",
 ]
 

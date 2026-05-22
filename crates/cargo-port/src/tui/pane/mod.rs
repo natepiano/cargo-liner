@@ -1,33 +1,166 @@
-mod dismiss;
-mod dispatch;
+//! cargo-port's app-side hit-test bundle: the `PaneRenderCtx`
+//! references every tile needs at render time, the `HoverTarget`
+//! hit-result enum, the `HittableId` z-order discriminant and its
+//! `HITTABLE_Z_ORDER`, and the `DismissTarget` payload carried by
+//! `GlobalAction::Dismiss`.
+//!
+//! Each clickable pane retains its own hit-test layout (computed
+//! during render) and answers
+//! [`tui_pane::Hittable::hit_test_at`] directly, rather than pushing
+//! hitboxes into a global vec. Render dispatch goes through
+//! [`tui_pane::Renderable`] — impls live alongside each pane struct.
 
-pub(super) use dismiss::DismissTarget;
-pub(super) use dispatch::HITTABLE_Z_ORDER;
-pub(super) use dispatch::HittableId;
-pub(super) use dispatch::HoverTarget;
-pub(crate) use dispatch::PaneRenderCtx;
-pub(super) use tui_pane::HitTestRegistry;
-pub(super) use tui_pane::Hittable;
-pub(super) use tui_pane::PaneAxisSize;
-pub(super) use tui_pane::PaneChrome;
-pub(super) use tui_pane::PaneFocusState;
-pub(super) use tui_pane::PaneGridLayout;
-pub(super) use tui_pane::PanePlacement;
-pub(super) use tui_pane::PaneRule;
-pub(super) use tui_pane::PaneSelectionState;
-pub(super) use tui_pane::PaneSizeSpec;
-pub(super) use tui_pane::PaneTitleCount;
-pub(super) use tui_pane::PaneTitleGroup;
-pub(super) use tui_pane::ResolvedPane;
-pub(super) use tui_pane::ResolvedPaneLayout;
-pub(super) use tui_pane::RuleTitle;
-pub(super) use tui_pane::constraints_for_sizes;
-pub(super) use tui_pane::default_pane_chrome;
-pub(super) use tui_pane::empty_pane_block;
-pub(super) use tui_pane::pane_title;
-pub(super) use tui_pane::prefixed_pane_title;
-pub(super) use tui_pane::render_horizontal_rule;
-pub(super) use tui_pane::render_rules;
-pub(super) use tui_pane::selection_state;
-pub(super) use tui_pane::selection_state_for;
-pub(super) use tui_pane::selection_style;
+use std::path::Path;
+use std::time::Duration;
+
+use strum::EnumIter;
+use tui_pane::ToastId;
+
+use super::keymap_ui::KeymapRenderInputs;
+use super::panes::PaneId;
+use super::panes::SyncedDescriptionHeight;
+use super::project_list::ProjectList;
+use super::running_targets::RunningTargets;
+use super::settings::SettingsRenderInputs;
+use super::state::CiStatusLookup;
+use super::state::Config;
+use super::state::Inflight;
+use super::state::Scan;
+use crate::project::AbsolutePath;
+
+/// Identifies what is being dismissed by a `GlobalAction::Dismiss`.
+#[derive(Clone, Debug)]
+pub enum DismissTarget {
+    Toast(ToastId),
+    DeletedProject(AbsolutePath),
+}
+
+/// Bundle of references a pane needs at render time.
+///
+/// Every field is uniform across the tile-render pass: every pane in
+/// the loop reads the same context. Per-pane state lives on the
+/// pane structs themselves (focus snapshot via
+/// [`tui_pane::RenderFocus`], precomputed CI status cache on
+/// `ProjectListPane`), set by App immediately before
+/// [`tui_pane::render_panes`] runs. That separation is what lets the
+/// generic dispatch loop carry one `&PaneRenderCtx` for the entire
+/// frame.
+pub(crate) struct PaneRenderCtx<'a> {
+    pub(crate) animation_elapsed:         Duration,
+    pub(crate) config:                    &'a Config,
+    pub(crate) project_list:              &'a ProjectList,
+    pub(crate) selected_project_path:     Option<&'a Path>,
+    /// In-flight runtime state read by tiled panes during render
+    /// (currently only `OutputPane` for the running-example title
+    /// and the captured output lines).
+    pub(crate) inflight:                  &'a Inflight,
+    /// Scan subsystem ref. Needed by `ProjectListPane::render` for
+    /// discovery-shimmer lookups; tiled detail panes leave it
+    /// unread.
+    pub(crate) scan:                      &'a Scan,
+    /// Pre-render CI snapshot built from `&Ci` before the dispatch
+    /// loop runs. `ProjectListPane` reads CI status per row through
+    /// this lookup instead of holding `&Ci` directly, which lets
+    /// the CI pane's own dispatcher consume `&mut self.ci` in the
+    /// same pass.
+    pub(crate) ci_status_lookup:          &'a CiStatusLookup,
+    /// Precomputed render inputs for the Keymap overlay. `None` for
+    /// every render path that isn't the Keymap overlay dispatcher;
+    /// `Some` when the overlay is open and `KeymapPane`'s
+    /// [`tui_pane::Renderable`] impl is about to draw the popup.
+    /// Built by [`crate::tui::keymap_ui::prepare_keymap_render_inputs`]
+    /// before `App::split_for_render`, so the still-current `&App`
+    /// borrow can walk `framework_keymap`.
+    pub(crate) keymap_render_inputs:      Option<&'a KeymapRenderInputs>,
+    /// Precomputed render inputs for the Settings overlay. `None`
+    /// for every render path that isn't the Settings overlay
+    /// dispatcher; `Some` when the overlay is open. Built by
+    /// [`crate::tui::settings::prepare_settings_render_inputs`].
+    pub(crate) settings_render_inputs:    Option<&'a SettingsRenderInputs>,
+    /// Inter-pane description sync floor: the height both the Package
+    /// and Git panes' description blocks must clear so their bottom
+    /// edges align. Constructed via [`crate::tui::panes::sync_floor`],
+    /// which reads each pane's [`DescriptionBlock`] so the rendered
+    /// content and the sync height can't diverge. `0` when either
+    /// pane has empty source text.
+    pub(crate) synced_description_height: SyncedDescriptionHeight,
+    /// Snapshot of currently-running cargo targets across the host,
+    /// refreshed once per frame by `App::running_targets_tick`. The
+    /// Targets pane joins this against the displayed project's
+    /// `target_directory` to flag running rows.
+    pub(crate) running_targets:           &'a RunningTargets,
+    /// Resolved canonical `target_directory` of the currently-displayed
+    /// project, used to build `RunningKey`s. `None` when the
+    /// workspace's cargo metadata hasn't landed yet or no project is
+    /// selected.
+    pub(crate) running_targets_dir:       Option<&'a AbsolutePath>,
+}
+
+/// Result of a single pane's hit-test at a screen position.
+#[derive(Clone, Debug)]
+pub enum HoverTarget {
+    PaneRow { pane: PaneId, row: usize },
+    Dismiss(DismissTarget),
+    ToastCard(ToastId),
+}
+
+/// Compile-time enumeration of every tiled pane that implements
+/// [`tui_pane::Hittable`]. The `strum::EnumIter` derive lets the unit
+/// test in `hit_test_tests` walk all variants and assert each one
+/// appears in `HITTABLE_Z_ORDER`.
+///
+/// Toasts and the framework overlays (Keymap, Settings, Global
+/// Shortcuts) are dispatched by [`tui_pane::dispatch_hit_test`]
+/// through the framework's own hit-test ladder, not through this
+/// registry. The app-modal Finder overlay is dispatched via
+/// [`tui_pane::InputContext::app_modal_overlay_hit`]. None of those
+/// three appear here.
+#[derive(EnumIter, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum HittableId {
+    ProjectList,
+    Package,
+    Lang,
+    Cpu,
+    Git,
+    Targets,
+    Lints,
+    CiRuns,
+}
+
+/// Stacking order used for tiled-pane hit-test dispatch: top of stack
+/// first. Overlays and toasts are not here — see [`HittableId`].
+pub const HITTABLE_Z_ORDER: [HittableId; 8] = [
+    HittableId::ProjectList,
+    HittableId::Package,
+    HittableId::Lang,
+    HittableId::Cpu,
+    HittableId::Git,
+    HittableId::Targets,
+    HittableId::Lints,
+    HittableId::CiRuns,
+];
+
+#[cfg(test)]
+mod hit_test_tests {
+    use std::collections::HashSet;
+
+    use strum::IntoEnumIterator;
+
+    use super::HITTABLE_Z_ORDER;
+    use super::HittableId;
+
+    #[test]
+    fn z_order_covers_every_hittable_id() {
+        let in_order: HashSet<HittableId> = HITTABLE_Z_ORDER.iter().copied().collect();
+        let all: HashSet<HittableId> = HittableId::iter().collect();
+        assert_eq!(
+            in_order, all,
+            "every HittableId must appear exactly once in HITTABLE_Z_ORDER"
+        );
+        assert_eq!(
+            HITTABLE_Z_ORDER.len(),
+            in_order.len(),
+            "HITTABLE_Z_ORDER must not contain duplicates"
+        );
+    }
+}

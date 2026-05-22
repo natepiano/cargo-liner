@@ -8,6 +8,8 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::PaneSelectionState;
+use tui_pane::PaneTitleCount;
 use tui_pane::column_header_color;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
@@ -20,10 +22,7 @@ use crate::ci::CiStatus;
 use crate::tui::columns::ColumnSpec;
 use crate::tui::columns::ColumnWidths;
 use crate::tui::constants::CI_TIMESTAMP_WIDTH;
-use crate::tui::pane;
 use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::PaneSelectionState;
-use crate::tui::pane::PaneTitleCount;
 use crate::tui::render;
 use crate::tui::state::Ci;
 
@@ -260,7 +259,7 @@ pub fn ci_table_shows_durations(ci_runs: &[CiRun], cols: &[String], inner_width:
 }
 
 fn ci_panel_title(data: &CiData, focused_pos: Option<usize>) -> String {
-    let title = pane::pane_title(
+    let title = tui_pane::pane_title(
         "CI Runs",
         &PaneTitleCount::Single {
             len:    data.runs.len(),
@@ -298,7 +297,7 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
     let focused_pos = ci_focused.then(|| pane.viewport.pos());
     let title = ci_panel_title(&ci_data, focused_pos);
 
-    let ci_block = pane::default_pane_chrome().block(title, ci_focused);
+    let ci_block = tui_pane::default_pane_chrome().block(title, ci_focused);
 
     let inner = ci_block.inner(area);
     {
@@ -323,7 +322,7 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
                 ci_run,
                 &cols,
                 show_durations,
-                pane::selection_state(viewport_ref, row_index, ci_focus),
+                tui_pane::selection_state(viewport_ref, row_index, ci_focus),
             )
         })
         .collect();
@@ -350,7 +349,7 @@ pub fn render_ci_pane_body(frame: &mut Frame, area: Rect, pane: &mut Ci, ctx: &P
 }
 
 fn render_empty_ci_block(frame: &mut Frame, title: &str, area: Rect) {
-    let block = pane::empty_pane_block(title);
+    let block = tui_pane::empty_pane_block(title);
     frame.render_widget(block, area);
 }
 

@@ -16,6 +16,9 @@ use ratatui::widgets::Cell;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::PaneFocusState;
+use tui_pane::PaneTitleCount;
+use tui_pane::PaneTitleGroup;
 use tui_pane::accent_color;
 use tui_pane::column_header_color;
 use tui_pane::label_color;
@@ -27,11 +30,7 @@ use super::TargetSource;
 use super::TargetsData;
 use super::package::RenderStyles;
 use super::pane_impls::TargetsPane;
-use crate::tui::pane;
-use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::PaneTitleCount;
-use crate::tui::pane::PaneTitleGroup;
 use crate::tui::panes;
 use crate::tui::render;
 use crate::tui::running_targets::RunningKey;
@@ -61,7 +60,7 @@ pub fn render_targets_pane_body(
 
 fn render_empty_targets(frame: &mut Frame, area: Rect, pane: &mut TargetsPane) {
     pane.viewport.clear_surface();
-    let empty_targets = pane::empty_pane_block(" No Targets ");
+    let empty_targets = tui_pane::empty_pane_block(" No Targets ");
     frame.render_widget(empty_targets, area);
 }
 
@@ -173,7 +172,7 @@ fn build_targets_title(focus: PaneFocusState, cursor: usize, data: &TargetsData)
             cursor: section_cursor(bin_count + ex_count, bench_count),
         });
     }
-    pane::prefixed_pane_title("Targets", &PaneTitleCount::Grouped(groups))
+    tui_pane::prefixed_pane_title("Targets", &PaneTitleCount::Grouped(groups))
 }
 
 fn compute_layout(entries: &[TargetEntry], content_width: u16) -> Layout {
@@ -206,7 +205,7 @@ fn build_rows<'a>(
         .iter()
         .enumerate()
         .map(|(row_index, entry)| {
-            let selection = pane::selection_state(&pane.viewport, row_index, focus);
+            let selection = tui_pane::selection_state(&pane.viewport, row_index, focus);
             let name_cell = if running_for(entry) {
                 let (visible, suffix) = render::truncate_with_suffix(
                     &entry.display_name,

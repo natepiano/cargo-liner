@@ -326,7 +326,7 @@ fn open_url(url: &str) {
 #[cfg(test)]
 pub fn handle_ci_runs_key(app: &mut App, event: &KeyEvent) {
     // Pane scope first — TOML rebinds win over navigation defaults.
-    let bind = KeyBind::new(event.code, event.modifiers);
+    let bind = KeyBind::from_parts(event.code, event.modifiers);
     if let Some(action) = app.keymap.current().ci_runs.action_for(&bind) {
         match action {
             CiRunsAction::Activate => handle_ci_enter(app),

@@ -12,6 +12,10 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
+use tui_pane::PaneChrome;
+use tui_pane::PaneFocusState;
+use tui_pane::PaneRule;
+use tui_pane::RuleTitle;
 use tui_pane::Viewport;
 use tui_pane::accent_color;
 use tui_pane::error_color;
@@ -34,12 +38,7 @@ use super::pane_impls::PackagePane;
 use crate::constants::LINT_NO_LOG;
 use crate::lint::LintStatus;
 use crate::tui::integration;
-use crate::tui::pane;
-use crate::tui::pane::PaneChrome;
-use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::PaneRule;
-use crate::tui::pane::RuleTitle;
 use crate::tui::panes;
 use crate::tui::render;
 
@@ -121,7 +120,7 @@ fn render_column_inner(frame: &mut Frame, ctx: &PackageRenderCtx<'_>, area: Rect
             focused_output_line = lines.len();
         }
         let label = field.label();
-        let selection = pane::selection_state(pane, i, focus);
+        let selection = tui_pane::selection_state(pane, i, focus);
         let value = if *field == DetailField::Lint {
             lint_display_to_string(&data.lint_display, ctx.animation_elapsed, ctx.lint_enabled)
         } else if *field == DetailField::Ci {
@@ -370,7 +369,7 @@ fn render_project_description_section(
                 .chrome
                 .title_style(matches!(context.focus, PaneFocusState::Active)),
         });
-        pane::render_horizontal_rule(
+        tui_pane::render_horizontal_rule(
             frame,
             rule_area,
             context.border_style,
@@ -386,7 +385,7 @@ fn render_project_description_section(
             && area.width >= 3
             && area.height > 0
         {
-            pane::render_rules(
+            tui_pane::render_rules(
                 frame,
                 &[PaneRule::Symbol {
                     area:  Rect {
@@ -463,7 +462,7 @@ fn render_stats_column(
     digit_width: u16,
     border_style: Style,
 ) {
-    pane::render_rules(
+    tui_pane::render_rules(
         frame,
         &[PaneRule::Vertical {
             area: Rect {

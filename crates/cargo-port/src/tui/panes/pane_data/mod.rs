@@ -28,7 +28,6 @@ use crate::http::RateLimitQuota;
 use crate::http::ServiceKind;
 use crate::lint;
 use crate::lint::LintRun;
-use crate::perf_log;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::Cargo;
@@ -1908,7 +1907,7 @@ struct CratesIoStatus {
 fn collect_runtime_fields(app: &App, abs_path: &Path, wt_item: Option<&RootItem>) -> RuntimeFields {
     let t_git = std::time::Instant::now();
     let git_detail = build_git_detail_fields(app, abs_path);
-    let git_detail_ms = perf_log::ms(t_git.elapsed().as_millis());
+    let git_detail_ms = tui_pane::perf_log_ms(t_git.elapsed().as_millis());
 
     let crates_io = resolve_crates_io_fields(app, abs_path);
 
@@ -1918,11 +1917,11 @@ fn collect_runtime_fields(app: &App, abs_path: &Path, wt_item: Option<&RootItem>
         super::formatted_disk_for_item,
     );
     let ci = compute_ci_status(app, abs_path, wt_item);
-    let disk_ms = perf_log::ms(t_disk.elapsed().as_millis());
+    let disk_ms = tui_pane::perf_log_ms(t_disk.elapsed().as_millis());
 
     let t_wt = std::time::Instant::now();
     let worktrees = resolve_worktrees(app, wt_item);
-    let worktrees_ms = perf_log::ms(t_wt.elapsed().as_millis());
+    let worktrees_ms = tui_pane::perf_log_ms(t_wt.elapsed().as_millis());
 
     RuntimeFields {
         git_detail,
@@ -1955,14 +1954,14 @@ fn collect_metadata_fields(
 
     let t_meta = std::time::Instant::now();
     let package_record = lookup_package_record(app, abs_path_owned);
-    let metadata_ms = perf_log::ms(t_meta.elapsed().as_millis());
+    let metadata_ms = tui_pane::perf_log_ms(t_meta.elapsed().as_millis());
     let manifest = manifest_fields_from(package_record.as_ref());
 
     let (in_project_target, in_project_non_target) =
         compute_in_project_bytes(&app.project_list, abs_path);
     let t_oot = std::time::Instant::now();
     let out_of_tree_target_bytes = lookup_out_of_tree_target_bytes(app, abs_path_owned);
-    let oot_ms = perf_log::ms(t_oot.elapsed().as_millis());
+    let oot_ms = tui_pane::perf_log_ms(t_oot.elapsed().as_millis());
 
     MetadataFields {
         types_str,

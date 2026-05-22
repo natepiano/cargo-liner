@@ -2136,7 +2136,7 @@ fn register_watch_roots_reports_elapsed_for_representative_roots() {
 
     eprintln!(
         "register_watch_roots_elapsed_ms={}",
-        crate::perf_log::ms(started.elapsed().as_millis())
+        tui_pane::perf_log_ms(started.elapsed().as_millis())
     );
 }
 

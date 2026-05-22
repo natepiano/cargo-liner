@@ -5,6 +5,11 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::PaneFocusState;
+use tui_pane::PaneRule;
+use tui_pane::PaneSelectionState;
+use tui_pane::PaneTitleCount;
+use tui_pane::RuleTitle;
 use tui_pane::Viewport;
 use tui_pane::column_header_color;
 use tui_pane::error_color;
@@ -36,13 +41,7 @@ use crate::constants::SYNC_DOWN;
 use crate::constants::SYNC_UP;
 use crate::project::HeadState;
 use crate::tui::app::AvailabilityStatus;
-use crate::tui::pane;
-use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::PaneRule;
-use crate::tui::pane::PaneSelectionState;
-use crate::tui::pane::PaneTitleCount;
-use crate::tui::pane::RuleTitle;
 use crate::tui::panes;
 
 struct GitRenderCtx<'a> {
@@ -206,7 +205,7 @@ fn append_remotes_section(
         if active && row_index == ctx.pane.pos() {
             *accum.focused_output_line = accum.lines.len();
         }
-        let selection = pane::selection_state(ctx.pane, row_index, ctx.focus);
+        let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
         accum
             .lines
             .push(remote_row_line(remote, &col_widths, selection));
@@ -245,7 +244,7 @@ fn append_worktrees_section(
         if active && row_index == ctx.pane.pos() {
             *accum.focused_output_line = accum.lines.len();
         }
-        let selection = pane::selection_state(ctx.pane, row_index, ctx.focus);
+        let selection = tui_pane::selection_state(ctx.pane, row_index, ctx.focus);
         accum
             .lines
             .push(worktree_row_line(wt, &col_widths, selection));
@@ -290,7 +289,7 @@ fn render_section_overlays(
         let title_style = Style::default()
             .fg(title_color)
             .add_modifier(Modifier::BOLD);
-        pane::render_horizontal_rule(
+        tui_pane::render_horizontal_rule(
             frame,
             Rect {
                 x:      outer_area.x,
@@ -380,7 +379,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
             DetailField::RateLimitCore | DetailField::RateLimitGraphQl
         );
         let value = build_field_value(data, *field, is_rate_limit_row);
-        let selection = pane::selection_state(pane, i, focus);
+        let selection = tui_pane::selection_state(pane, i, focus);
         let base_value_style = if matches!(*field, DetailField::VsLocal)
             && value.starts_with(IN_SYNC)
         {
@@ -645,7 +644,7 @@ fn git_panel_title(data: &GitData) -> String {
         Some(HeadState::Branch(name)) if !name.is_empty() => format!(" Git - {name} "),
         Some(HeadState::Detached { short_sha }) => format!(" Git - detached @ {short_sha} "),
         Some(HeadState::Branch(_) | HeadState::Unborn) | None => {
-            pane::pane_title("Git", &PaneTitleCount::None)
+            tui_pane::pane_title("Git", &PaneTitleCount::None)
         },
     }
 }
@@ -661,7 +660,7 @@ pub(super) fn render_git_pane_body(
 ) {
     let Some(git_data) = pane.content().cloned() else {
         pane.viewport.clear_surface();
-        let empty = pane::empty_pane_block(pane::pane_title("Git", &PaneTitleCount::None));
+        let empty = tui_pane::empty_pane_block(tui_pane::pane_title("Git", &PaneTitleCount::None));
         frame.render_widget(empty, area);
         return;
     };
@@ -670,7 +669,7 @@ pub(super) fn render_git_pane_body(
     let total_rows = flat_fields.len() + git_data.remotes.len() + git_data.worktrees.len();
     if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
         pane.viewport.clear_surface();
-        let empty_git = pane::empty_pane_block(" Not a git repo ");
+        let empty_git = tui_pane::empty_pane_block(" Not a git repo ");
         frame.render_widget(empty_git, area);
         return;
     }
@@ -791,7 +790,7 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> Rect {
         };
     }
 
-    pane::render_rules(
+    tui_pane::render_rules(
         frame,
         &[PaneRule::Horizontal {
             area:        Rect {

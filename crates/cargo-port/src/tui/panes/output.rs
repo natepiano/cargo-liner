@@ -13,7 +13,6 @@ use ratatui::widgets::Paragraph;
 use tui_pane::label_color;
 
 use super::pane_impls::OutputPane;
-use crate::tui::pane;
 use crate::tui::pane::PaneRenderCtx;
 
 pub fn render_output_pane_body(
@@ -27,7 +26,7 @@ pub fn render_output_pane_body(
         |n| format!(" Running: {n} "),
     );
 
-    let block = pane::default_pane_chrome()
+    let block = tui_pane::default_pane_chrome()
         .with_inactive_border(Style::default().fg(label_color()))
         .block(title, pane.focus.is_focused);
 

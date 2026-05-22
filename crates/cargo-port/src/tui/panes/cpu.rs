@@ -8,6 +8,10 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::CpuUsage;
+use tui_pane::PaneFocusState;
+use tui_pane::PaneRule;
+use tui_pane::PaneTitleCount;
 use tui_pane::Viewport;
 use tui_pane::accent_color;
 use tui_pane::column_header_color;
@@ -17,13 +21,7 @@ use tui_pane::text_default;
 use super::package::RenderStyles;
 use super::pane_impls::CpuPane;
 use crate::config::CpuConfig;
-use crate::tui::cpu;
-use crate::tui::cpu::CpuUsage;
-use crate::tui::pane;
-use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::PaneRule;
-use crate::tui::pane::PaneTitleCount;
 
 const CPU_BAR_WIDTH: usize = 10;
 pub(super) const CPU_CONTENT_WIDTH: u16 = 17;
@@ -65,12 +63,17 @@ impl CpuSelectableRow {
 }
 
 fn cpu_bar_line(percent: u8, cpu_cfg: &CpuConfig) -> Line<'static> {
-    let filled = cpu::filled_cells(percent);
-    let severity = cpu::severity(percent, cpu_cfg).color();
+    let filled = tui_pane::cpu_filled_cells(percent);
+    let severity = tui_pane::cpu_severity(
+        percent,
+        cpu_cfg.green_max_percent,
+        cpu_cfg.yellow_max_percent,
+    )
+    .color();
     let filled_span = Span::styled("█".repeat(filled), Style::default().fg(severity));
     let empty_span = Span::styled(
         " ".repeat(CPU_BAR_WIDTH.saturating_sub(filled)),
-        Style::default().fg(cpu::blank_bar_color()),
+        Style::default().fg(tui_pane::cpu_blank_bar_color()),
     );
     let percent_span = Span::raw(format!("{percent:>3}%"));
     Line::from(vec![
@@ -85,12 +88,14 @@ fn cpu_bar_line(percent: u8, cpu_cfg: &CpuConfig) -> Line<'static> {
 
 fn gpu_bar_line(percent: Option<u8>, cpu_cfg: &CpuConfig) -> Line<'static> {
     let value = percent.unwrap_or(0);
-    let filled = cpu::filled_cells(value);
-    let severity = cpu::severity(value, cpu_cfg).color();
+    let filled = tui_pane::cpu_filled_cells(value);
+    let severity =
+        tui_pane::cpu_severity(value, cpu_cfg.green_max_percent, cpu_cfg.yellow_max_percent)
+            .color();
     let filled_span = Span::styled("█".repeat(filled), Style::default().fg(severity));
     let empty_span = Span::styled(
         " ".repeat(CPU_BAR_WIDTH.saturating_sub(filled)),
-        Style::default().fg(cpu::blank_bar_color()),
+        Style::default().fg(tui_pane::cpu_blank_bar_color()),
     );
     let percent_text = percent.map_or_else(|| " --%".to_string(), |value| format!("{value:>3}%"));
     Line::from(vec![
@@ -195,7 +200,7 @@ fn cpu_panel_title(core_count: usize, cursor: Option<usize>) -> String {
     if let Some(pos) = cursor
         && (1..=core_count).contains(&pos)
     {
-        return pane::pane_title(
+        return tui_pane::pane_title(
             "CPU",
             &PaneTitleCount::Single {
                 len:    core_count,
@@ -209,7 +214,7 @@ fn cpu_panel_title(core_count: usize, cursor: Option<usize>) -> String {
 }
 
 fn cpu_row_overlay_style(viewport: &Viewport, logical_row: usize, focus: PaneFocusState) -> Style {
-    pane::selection_state(viewport, logical_row, focus).overlay_style()
+    tui_pane::selection_state(viewport, logical_row, focus).overlay_style()
 }
 
 fn render_selectable_row(
@@ -234,7 +239,7 @@ fn render_cpu_dividers(
     layout: &CpuPanelLayout,
     border_style: Style,
 ) {
-    pane::render_rules(
+    tui_pane::render_rules(
         frame,
         &[
             PaneRule::Horizontal {
@@ -389,7 +394,7 @@ pub(super) fn render_cpu_pane_body(
     let usage = pane
         .content()
         .cloned()
-        .unwrap_or_else(|| cpu::CpuUsage::placeholder(1));
+        .unwrap_or_else(|| tui_pane::CpuUsage::placeholder(1));
     let layout = CpuPanelLayout::new(inner, usage.cores.len());
 
     let border_style = if matches!(focus, PaneFocusState::Active) {

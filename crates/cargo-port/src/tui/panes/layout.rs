@@ -2,16 +2,15 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use tui_pane::PaneAxisSize;
+use tui_pane::PaneGridLayout;
+use tui_pane::PanePlacement;
+use tui_pane::ResolvedPane;
+use tui_pane::ResolvedPaneLayout;
 
 use super::cpu;
 use super::cpu::CPU_PANE_WIDTH;
 use super::spec::PaneId;
-use crate::tui::pane;
-use crate::tui::pane::PaneAxisSize;
-use crate::tui::pane::PaneGridLayout;
-use crate::tui::pane::PanePlacement;
-use crate::tui::pane::ResolvedPane;
-use crate::tui::pane::ResolvedPaneLayout;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BottomRow {
@@ -132,14 +131,14 @@ fn resolve_pane_area(rows: &[Rect], cols: &[Rect], pane: PaneId, bottom_row: Bot
     let middle_right_area = Rect::new(right_col.x, rows[1].y, right_col.width, rows[1].height);
     let top_right = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints(pane::constraints_for_sizes(&[
+        .constraints(tui_pane::constraints_for_sizes(&[
             super::size_spec(PaneId::Package, CPU_PANE_WIDTH).width,
             super::size_spec(PaneId::Git, CPU_PANE_WIDTH).width,
         ]))
         .split(top_right_area);
     let middle_right = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints(pane::constraints_for_sizes(&[
+        .constraints(tui_pane::constraints_for_sizes(&[
             super::size_spec(PaneId::Lang, CPU_PANE_WIDTH).width,
             PaneAxisSize::Fixed(cpu_column_width()),
             super::size_spec(PaneId::Targets, CPU_PANE_WIDTH).width,
@@ -196,12 +195,12 @@ mod tests {
     use std::collections::HashSet;
 
     use ratatui::layout::Rect;
+    use tui_pane::PaneGridLayout;
+    use tui_pane::PanePlacement;
 
     use super::BottomRow;
     use super::derived_layout;
     use super::resolve_layout;
-    use crate::tui::pane::PaneGridLayout;
-    use crate::tui::pane::PanePlacement;
     use crate::tui::panes::PaneId;
 
     #[test]

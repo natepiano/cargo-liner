@@ -43,6 +43,7 @@ use super::integration::AppPaneId;
 use super::integration::FinderPane;
 use super::integration::OutputPane;
 use super::interaction;
+use super::keymap;
 use super::keymap::OutputAction;
 use super::keymap::ProjectListAction;
 use super::keymap_ui;
@@ -90,9 +91,9 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
     app.sync_selected_project();
 
     let elapsed = started.elapsed();
-    if elapsed.as_millis() >= crate::perf_log::SLOW_INPUT_EVENT_MS {
+    if elapsed.as_millis() >= tui_pane::SLOW_INPUT_EVENT_MS {
         tracing::info!(
-            elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
+            elapsed_ms = tui_pane::perf_log_ms(elapsed.as_millis()),
             kind = %event_label(event),
             focus = pane_label(app.focused_pane_id()),
             scan_complete = app.scan.is_complete(),
@@ -179,7 +180,9 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     let _ = dispatch_navigation(app, focused, &bind);
 }
 
-fn key_bind_from_event(event: &KeyEvent) -> KeyBind { KeyBind::from_key_event(*event) }
+fn key_bind_from_event(event: &KeyEvent) -> KeyBind {
+    KeyBind::from_key_event(*event).canonicalize_code(keymap::canonical_code)
+}
 
 fn dispatch_framework_global(app: &mut App, bind: &KeyBind) -> bool {
     let keymap = Rc::clone(&app.framework_keymap);

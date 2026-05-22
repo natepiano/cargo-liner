@@ -116,7 +116,7 @@ pub(crate) fn spawn_watcher(
         requested = watch_roots.len(),
         registered = registered_roots.dirs().len(),
         failed = failures.len(),
-        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+        elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
         "watcher_root_registration_complete"
     );
     register_cargo_home_watch(&mut watcher, &registered_roots);

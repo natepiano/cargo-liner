@@ -256,7 +256,7 @@ fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
         conflicts: &mut Vec<String>,
     ) {
         for (bind, &action) in &scope.by_key {
-            if bind.modifiers == KeyModifiers::NONE && vim_keys.contains(&bind.code) {
+            if bind.mods == KeyModifiers::NONE && vim_keys.contains(&bind.code) {
                 conflicts.push(format!("{scope_name}.{}", toml_key(action)));
             }
         }
@@ -320,7 +320,7 @@ fn vim_mode_conflicts(keymap: &ResolvedKeymap) -> Vec<String> {
 
 fn is_vim_reserved(bind: &KeyBind, vim_mode: NavigationKeys) -> bool {
     vim_mode.uses_vim()
-        && bind.modifiers == KeyModifiers::NONE
+        && bind.mods == KeyModifiers::NONE
         && matches!(bind.code, KeyCode::Char('h' | 'j' | 'k' | 'l'))
 }
 
@@ -572,7 +572,11 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
             .and_then(|st| st.get(toml_key))
             .and_then(toml::Value::as_str);
 
-        let bind_result = raw_value.map(str::parse::<KeyBind>);
+        let bind_result = raw_value.map(|s| {
+            KeyBind::parse(s)
+                .map(|kb| kb.canonicalize_code(super::canonical_code))
+                .map_err(|e| e.to_string())
+        });
 
         let (bind, error) = match bind_result {
             Some(Ok(bind)) => {
@@ -612,7 +616,7 @@ fn resolve_scope<A: Copy + Eq + std::hash::Hash>(
         } else {
             // Fall back to default binding.
             if let Some(default_bind) = defaults.key_for(action) {
-                target.insert(default_bind.clone(), action);
+                target.insert(*default_bind, action);
             }
         }
     }
@@ -844,7 +848,7 @@ collapse_all = "x"
                 .keymap
                 .project_list
                 .key_for(ProjectListAction::ExpandAll),
-            Some(&KeyBind::plain(KeyCode::Char('x')))
+            Some(&KeyBind::from(KeyCode::Char('x')))
         );
         // collapse_all = "x" conflicts with expand_all, so it falls back.
         assert!(
@@ -899,7 +903,7 @@ activate = "h"
         assert_eq!(
             km.project_list
                 .display_key_for(ProjectListAction::ExpandAll),
-            "+"
+            "="
         );
         assert_eq!(km.ci_runs.display_key_for(CiRunsAction::ShowBranch), "b");
         assert_eq!(km.ci_runs.display_key_for(CiRunsAction::ShowAll), "a");
@@ -938,7 +942,7 @@ clear_cache = "d"
         );
         assert_eq!(
             result.keymap.ci_runs.key_for(CiRunsAction::ShowBranch),
-            Some(&KeyBind::plain(KeyCode::Char('t')))
+            Some(&KeyBind::from(KeyCode::Char('t')))
         );
     }
 
@@ -960,7 +964,7 @@ clear_cache = "d"
         // Default should still be applied.
         assert_eq!(
             result.keymap.package.key_for(PackageAction::Activate),
-            Some(&KeyBind::plain(KeyCode::Enter))
+            Some(&KeyBind::from(KeyCode::Enter))
         );
     }
 

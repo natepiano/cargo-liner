@@ -2,6 +2,7 @@ use ratatui::layout::Rect;
 use tui_pane::CopyLabel;
 use tui_pane::CopyPayload;
 use tui_pane::CopySelectionResult;
+use tui_pane::PaneFocusState;
 use tui_pane::label_color;
 
 use super::CI_COMPACT_DURATION_WIDTH;
@@ -31,7 +32,6 @@ use crate::lint::LintRunStatus;
 use crate::project::AbsolutePath;
 use crate::project::GitStatus;
 use crate::tui::app::AvailabilityStatus;
-use crate::tui::pane::PaneFocusState;
 use crate::tui::panes;
 use crate::tui::state::ServiceStatus;
 

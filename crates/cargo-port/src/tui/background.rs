@@ -132,7 +132,7 @@ impl Background {
             repo_root,
         }));
         tracing::info!(
-            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+            elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             path = %item.display_path(),
             has_repo_root,
             "app_register_project_background_services"

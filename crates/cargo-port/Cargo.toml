@@ -40,7 +40,6 @@ tokei              = "14.0.0"
 tokio              = { version = "1", features = ["rt-multi-thread"] }
 toml               = "1.1.2"
 tracing            = "0.1.44"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 unicode-width      = "0.2.2"
 walkdir            = "2"
 

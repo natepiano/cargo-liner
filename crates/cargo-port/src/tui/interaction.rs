@@ -1,6 +1,8 @@
 use ratatui::layout::Position;
 use tui_pane::FrameworkHit;
 use tui_pane::FrameworkOverlayId;
+use tui_pane::HitTestRegistry;
+use tui_pane::Hittable;
 use tui_pane::InputContext;
 use tui_pane::ToastHit;
 use tui_pane::Viewport;
@@ -9,8 +11,6 @@ use super::app::App;
 use super::app::HoveredPaneRow;
 use super::pane::DismissTarget;
 use super::pane::HITTABLE_Z_ORDER;
-use super::pane::HitTestRegistry;
-use super::pane::Hittable;
 use super::pane::HittableId;
 use super::pane::HoverTarget;
 use super::panes::PaneId;

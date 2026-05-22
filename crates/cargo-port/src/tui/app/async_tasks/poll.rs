@@ -47,9 +47,9 @@ impl App {
         stats.needs_rebuild = needs_rebuild;
 
         let elapsed = started.elapsed();
-        if elapsed.as_millis() >= crate::perf_log::SLOW_BG_BATCH_MS {
+        if elapsed.as_millis() >= tui_pane::SLOW_BG_BATCH_MS {
             tracing::info!(
-                elapsed_ms = crate::perf_log::ms(elapsed.as_millis()),
+                elapsed_ms = tui_pane::perf_log_ms(elapsed.as_millis()),
                 bg_msgs = stats.bg_msgs,
                 ci_msgs = stats.ci_msgs,
                 example_msgs = stats.example_msgs,

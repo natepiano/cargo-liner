@@ -8,6 +8,7 @@ use toml::Value;
 use tui_pane::Appearance;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::OverlayAction;
+use tui_pane::PaneFocusState;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::SettingCodecs;
@@ -41,8 +42,6 @@ use super::app::App;
 use super::constants::SETTINGS_POPUP_WIDTH;
 use super::keymap_ui;
 use super::overlays::PopupFrame;
-use super::pane;
-use super::pane::PaneFocusState;
 use super::pane::PaneRenderCtx;
 use super::render;
 use crate::config;
@@ -1273,8 +1272,8 @@ pub(super) fn prepare_settings_render_inputs(
         success_style: Style::default().fg(success_color()),
         error_style: Style::default().fg(error_color()),
         inline_error_style: Style::default().fg(inline_error_color()),
-        active_style: pane::selection_style(PaneFocusState::Active),
-        remembered_style: pane::selection_style(PaneFocusState::Remembered),
+        active_style: tui_pane::selection_style(PaneFocusState::Active),
+        remembered_style: tui_pane::selection_style(PaneFocusState::Remembered),
         hovered_style: Style::default().bg(tui_pane::hover_focus_color()),
     };
     let rendered = app

@@ -14,6 +14,7 @@
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use tui_pane::Hittable;
 use tui_pane::KeymapPane;
 use tui_pane::Renderable;
 use tui_pane::SettingsPane;
@@ -21,7 +22,6 @@ use tui_pane::SettingsPane;
 use super::FinderPane;
 use crate::tui::finder;
 use crate::tui::keymap_ui;
-use crate::tui::pane::Hittable;
 use crate::tui::pane::HoverTarget;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;

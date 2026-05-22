@@ -1,3 +1,13 @@
+//! Sysinfo-backed CPU/GPU sampler plus severity buckets keyed to the
+//! framework's theme colors.
+//!
+//! [`CpuPoller`] holds a sysinfo [`System`] handle and the polling
+//! cadence; [`poll_if_due`](CpuPoller::poll_if_due) returns a fresh
+//! [`CpuUsage`] only when the configured interval has elapsed.
+//! [`severity`] maps a percentage to a [`CpuSeverity`] bucket using
+//! caller-supplied thresholds; [`CpuSeverity::color`] resolves to the
+//! framework's success / title / error theme colors.
+
 use std::process::Command;
 use std::time::Duration;
 use std::time::Instant;
@@ -6,29 +16,35 @@ use ratatui::style::Color;
 use sysinfo::CpuRefreshKind;
 use sysinfo::RefreshKind;
 use sysinfo::System;
-use tui_pane::error_color;
-use tui_pane::inactive_border_color;
-use tui_pane::success_color;
-use tui_pane::title_color;
 
-use crate::config::CpuConfig;
+use crate::theme;
 
+/// Per-core CPU usage sample.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CpuCoreUsage {
+pub struct CpuCoreUsage {
+    /// Display label for the core (typically "CPU N").
     pub label:   String,
+    /// Utilization percentage rounded to a `u8` in `0..=100`.
     pub percent: u8,
 }
 
+/// Aggregate CPU/GPU sample returned by [`CpuPoller::poll_if_due`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CpuUsage {
+pub struct CpuUsage {
+    /// Aggregate CPU utilization across all cores, in `0..=100`.
     pub total_percent: u8,
+    /// Per-core breakdown.
     pub cores:         Vec<CpuCoreUsage>,
+    /// System/user/idle percentage breakdown computed from raw ticks.
     pub breakdown:     CpuBreakdown,
+    /// Latest GPU utilization, when available on this OS.
     pub gpu_percent:   Option<u8>,
 }
 
 impl CpuUsage {
-    pub(super) fn placeholder(core_count: usize) -> Self {
+    /// Build a zero-filled snapshot with `core_count` placeholder cores.
+    #[must_use]
+    pub fn placeholder(core_count: usize) -> Self {
         Self {
             total_percent: 0,
             cores:         (0..core_count)
@@ -43,32 +59,44 @@ impl CpuUsage {
     }
 }
 
+/// System / user / idle CPU-time percentage breakdown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct CpuBreakdown {
+pub struct CpuBreakdown {
+    /// Percentage of CPU time spent in kernel mode.
     pub system: u8,
+    /// Percentage of CPU time spent in user mode.
     pub user:   u8,
+    /// Percentage of CPU time spent idle.
     pub idle:   u8,
 }
 
+/// Severity bucket for a CPU utilization percentage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CpuSeverity {
+pub enum CpuSeverity {
+    /// Below the green-max threshold.
     Green,
+    /// Between green-max and yellow-max.
     Yellow,
+    /// Above the yellow-max threshold.
     Red,
 }
 
 impl CpuSeverity {
-    pub(super) fn color(self) -> Color {
+    /// Resolve this severity to its framework theme color.
+    #[must_use]
+    pub fn color(self) -> Color {
         match self {
-            Self::Green => success_color(),
-            Self::Yellow => title_color(),
-            Self::Red => error_color(),
+            Self::Green => theme::success_color(),
+            Self::Yellow => theme::title_color(),
+            Self::Red => theme::error_color(),
         }
     }
 }
 
+/// Sysinfo-backed CPU/GPU sampler that rate-limits polls to the
+/// configured interval.
 #[derive(Debug)]
-pub(super) struct CpuPoller {
+pub struct CpuPoller {
     system:             System,
     last_poll:          Option<Instant>,
     poll_interval:      Duration,
@@ -76,7 +104,10 @@ pub(super) struct CpuPoller {
 }
 
 impl CpuPoller {
-    pub(super) fn new(config: &CpuConfig) -> Self {
+    /// Construct a poller that refreshes at most every
+    /// `poll_interval_ms` milliseconds.
+    #[must_use]
+    pub fn new(poll_interval_ms: u64) -> Self {
         let mut system = System::new_with_specifics(
             RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()),
         );
@@ -84,18 +115,22 @@ impl CpuPoller {
         Self {
             system,
             last_poll: None,
-            poll_interval: Duration::from_millis(config.poll_ms),
+            poll_interval: Duration::from_millis(poll_interval_ms),
             last_breakdown_raw: read_cpu_breakdown_raw(),
         }
     }
 
-    pub(super) fn core_count(&self) -> usize { self.system.cpus().len().max(1) }
+    /// Number of CPU cores reported by the underlying [`System`], floored at 1.
+    #[must_use]
+    pub fn core_count(&self) -> usize { self.system.cpus().len().max(1) }
 
-    pub(super) fn placeholder_cpu_usage(&self) -> CpuUsage {
-        CpuUsage::placeholder(self.core_count())
-    }
+    /// Zero-filled [`CpuUsage`] sized to the current core count.
+    #[must_use]
+    pub fn placeholder_cpu_usage(&self) -> CpuUsage { CpuUsage::placeholder(self.core_count()) }
 
-    pub(super) fn poll_if_due(&mut self, now: Instant) -> Option<CpuUsage> {
+    /// Return a fresh sample if at least `poll_interval` has elapsed
+    /// since the previous poll, otherwise `None`.
+    pub fn poll_if_due(&mut self, now: Instant) -> Option<CpuUsage> {
         if self
             .last_poll
             .is_some_and(|last| now.duration_since(last) < self.poll_interval)
@@ -128,22 +163,29 @@ impl CpuPoller {
     }
 }
 
-pub(super) fn filled_cells(percent: u8) -> usize {
+/// Number of filled 10%-bucket cells for a given percentage,
+/// rounding up.
+#[must_use]
+pub fn filled_cells(percent: u8) -> usize {
     let clamped = if percent > 100 { 100 } else { percent };
     usize::from(clamped).div_ceil(10)
 }
 
-pub(super) const fn severity(percent: u8, config: &CpuConfig) -> CpuSeverity {
-    if percent <= config.green_max_percent {
+/// Map a percentage to a [`CpuSeverity`] using caller-supplied thresholds.
+#[must_use]
+pub const fn severity(percent: u8, green_max_percent: u8, yellow_max_percent: u8) -> CpuSeverity {
+    if percent <= green_max_percent {
         CpuSeverity::Green
-    } else if percent <= config.yellow_max_percent {
+    } else if percent <= yellow_max_percent {
         CpuSeverity::Yellow
     } else {
         CpuSeverity::Red
     }
 }
 
-pub(super) fn blank_bar_color() -> Color { inactive_border_color() }
+/// Color used to render the empty (unfilled) cells of a CPU bar.
+#[must_use]
+pub fn blank_bar_color() -> Color { theme::inactive_border_color() }
 
 fn cpu_percent(value: f32) -> u8 { rounded_percent(f64::from(value)) }
 

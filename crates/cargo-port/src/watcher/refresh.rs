@@ -292,7 +292,7 @@ pub(super) fn emit_root_git_info_refresh(
     };
     let checkout = CheckoutInfo::get(entry.abs_path.as_path(), repo.local_main_branch.as_deref());
     tracing::info!(
-        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+        elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
         path = %entry.project_label,
         git_status = checkout.as_ref().map_or("unknown", |c| c.status.label()),
         "watcher_root_git_info_refresh"
@@ -384,7 +384,7 @@ pub(super) fn spawn_git_refresh(
             return;
         };
         tracing::info!(
-            elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
+            elapsed_ms = tui_pane::perf_log_ms(queue_started.elapsed().as_millis()),
             refresh_key = %refresh_key.display(),
             affected_rows = affected.len(),
             "watcher_git_queue_wait"
@@ -430,7 +430,7 @@ pub(super) fn spawn_git_refresh(
         }
 
         tracing::info!(
-            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+            elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             refresh_key = %refresh_key.display(),
             "watcher_git_refresh"
         );
@@ -490,7 +490,7 @@ pub(super) fn spawn_disk_update(
             return;
         };
         tracing::info!(
-            elapsed_ms = crate::perf_log::ms(queue_started.elapsed().as_millis()),
+            elapsed_ms = tui_pane::perf_log_ms(queue_started.elapsed().as_millis()),
             path = %project_label,
             abs_path = %abs_path.display(),
             "watcher_disk_queue_wait"
@@ -503,7 +503,7 @@ pub(super) fn spawn_disk_update(
             .ok()
             .unwrap_or(0);
         tracing::info!(
-            elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+            elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
             path = %project_label,
             bytes,
             "watcher_disk_usage"

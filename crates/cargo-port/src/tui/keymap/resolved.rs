@@ -33,11 +33,11 @@ impl ResolvedKeymap {
 
         // Project list
         km.project_list.insert(
-            KeyBind::plain(KeyCode::Char('=')),
+            KeyBind::from(KeyCode::Char('=')),
             ProjectListAction::ExpandAll,
         );
         km.project_list.insert(
-            KeyBind::plain(KeyCode::Char('-')),
+            KeyBind::from(KeyCode::Char('-')),
             ProjectListAction::CollapseAll,
         );
         // ExpandRow / CollapseRow are pane-scope actions routed through
@@ -47,49 +47,47 @@ impl ResolvedKeymap {
         // CollapseRow to Shift+Right / Shift+Left to avoid colliding
         // with the navigation defaults.
         km.project_list.insert(
-            KeyBind::new(KeyCode::Right, KeyModifiers::SHIFT),
+            KeyBind::from_parts(KeyCode::Right, KeyModifiers::SHIFT),
             ProjectListAction::ExpandRow,
         );
         km.project_list.insert(
-            KeyBind::new(KeyCode::Left, KeyModifiers::SHIFT),
+            KeyBind::from_parts(KeyCode::Left, KeyModifiers::SHIFT),
             ProjectListAction::CollapseRow,
         );
 
         // Package
         km.package
-            .insert(KeyBind::plain(KeyCode::Enter), PackageAction::Activate);
+            .insert(KeyBind::from(KeyCode::Enter), PackageAction::Activate);
 
         // Git
         km.git
-            .insert(KeyBind::plain(KeyCode::Enter), GitAction::Activate);
+            .insert(KeyBind::from(KeyCode::Enter), GitAction::Activate);
 
         // Targets
         km.targets
-            .insert(KeyBind::plain(KeyCode::Enter), TargetsAction::Activate);
+            .insert(KeyBind::from(KeyCode::Enter), TargetsAction::Activate);
         km.targets.insert(
-            KeyBind::plain(KeyCode::Char('r')),
+            KeyBind::from(KeyCode::Char('r')),
             TargetsAction::ReleaseBuild,
         );
 
         // CI runs
         km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Enter), CiRunsAction::Activate);
+            .insert(KeyBind::from(KeyCode::Enter), CiRunsAction::Activate);
         km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Char('f')), CiRunsAction::FetchMore);
+            .insert(KeyBind::from(KeyCode::Char('f')), CiRunsAction::FetchMore);
         km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Char('b')), CiRunsAction::ShowBranch);
+            .insert(KeyBind::from(KeyCode::Char('b')), CiRunsAction::ShowBranch);
         km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Char('a')), CiRunsAction::ShowAll);
+            .insert(KeyBind::from(KeyCode::Char('a')), CiRunsAction::ShowAll);
         km.ci_runs
-            .insert(KeyBind::plain(KeyCode::Char('d')), CiRunsAction::ClearCache);
+            .insert(KeyBind::from(KeyCode::Char('d')), CiRunsAction::ClearCache);
 
         // Lints
         km.lints
-            .insert(KeyBind::plain(KeyCode::Enter), LintsAction::Activate);
-        km.lints.insert(
-            KeyBind::plain(KeyCode::Char('d')),
-            LintsAction::ClearHistory,
-        );
+            .insert(KeyBind::from(KeyCode::Enter), LintsAction::Activate);
+        km.lints
+            .insert(KeyBind::from(KeyCode::Char('d')), LintsAction::ClearHistory);
 
         km
     }
@@ -107,7 +105,7 @@ impl ResolvedKeymap {
             .map(|&action| {
                 let key_str = scope
                     .key_for(action)
-                    .map_or_else(String::new, KeyBind::to_toml_string);
+                    .map_or_else(String::new, KeyBind::display);
                 (toml_key(action), key_str)
             })
             .collect();

@@ -9,6 +9,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
+use tui_pane::PaneFocusState;
+use tui_pane::PaneTitleCount;
 use tui_pane::Viewport;
 use tui_pane::column_header_color;
 use tui_pane::label_color;
@@ -19,10 +21,7 @@ use super::package::RenderStyles;
 use super::pane_impls::LangPane;
 use crate::project::LangEntry;
 use crate::project::LanguageStats;
-use crate::tui::pane;
-use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::PaneTitleCount;
 use crate::tui::render;
 
 /// Map a tokei language name to a 2-char icon for the Lang column.
@@ -151,7 +150,7 @@ fn build_lang_rows(
         .enumerate()
         .map(|(row_index, entry)| {
             lang_entry_row(entry, name_width)
-                .style(pane::selection_state(viewport, row_index, focus).overlay_style())
+                .style(tui_pane::selection_state(viewport, row_index, focus).overlay_style())
         })
         .collect()
 }
@@ -196,7 +195,7 @@ pub(super) fn render_lang_pane_body(
 
     let lang_count = lang_stats.as_ref().map_or(0, |s| s.entries.len());
     let cursor = matches!(focus_state, PaneFocusState::Active).then(|| pane.viewport.pos());
-    let title = pane::pane_title(
+    let title = tui_pane::pane_title(
         "Languages",
         &PaneTitleCount::Single {
             len: lang_count,

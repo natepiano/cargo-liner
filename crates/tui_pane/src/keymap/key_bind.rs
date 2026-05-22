@@ -59,9 +59,37 @@ impl KeyBind {
     /// Crossterm can report `BackTab` separately from `Tab + Shift`, and shifted
     /// ASCII letters as both an uppercase character and a `SHIFT` modifier. The
     /// keymap stores those as `Tab + Shift` and uppercase `Char` without
-    /// `SHIFT`, respectively. `+` and `=` are kept distinct (no collapse).
+    /// `SHIFT`, respectively. `+` and `=` are kept distinct (no collapse) —
+    /// apps that want them merged use [`Self::canonicalize_code`].
     #[must_use]
     pub fn from_key_event(event: KeyEvent) -> Self { Self::normalized(event.code, event.modifiers) }
+
+    /// Build a bind from an arbitrary `(code, mods)` pair, applying the
+    /// same normalization rules as [`Self::from_key_event`].
+    ///
+    /// Use this when the app already has the `KeyCode` + `KeyModifiers`
+    /// in hand (e.g. defaults table construction) and wants the
+    /// canonical dispatch form.
+    #[must_use]
+    pub fn from_parts(code: KeyCode, mods: KeyModifiers) -> Self { Self::normalized(code, mods) }
+
+    /// Apply a canonicalizer to this bind's [`KeyCode`], leaving
+    /// modifiers untouched.
+    ///
+    /// The framework treats `+` and `=` (and any other key pair) as
+    /// distinct by default. An app that wants two keys to dispatch
+    /// through the same binding installs a canonicalizer that maps
+    /// one to the other, and calls this both after [`Self::parse`]
+    /// (when loading a keymap from TOML) and after
+    /// [`Self::from_key_event`] (when dispatching crossterm input) so
+    /// the storage and lookup paths agree.
+    #[must_use]
+    pub fn canonicalize_code(self, canonicalize: fn(KeyCode) -> KeyCode) -> Self {
+        Self {
+            code: canonicalize(self.code),
+            mods: self.mods,
+        }
+    }
 
     /// `const`-friendly constructor for `Char(c)` with no modifiers.
     /// `From<char>` is not `const`, so `static` arrays of

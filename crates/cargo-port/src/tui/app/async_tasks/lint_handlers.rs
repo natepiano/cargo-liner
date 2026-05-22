@@ -44,7 +44,7 @@ impl App {
             tracing::info!(
                 phase = "lint_startup_applied",
                 since_scan_complete_ms =
-                    crate::perf_log::ms(now.duration_since(scan_complete_at).as_millis()),
+                    tui_pane::perf_log_ms(now.duration_since(scan_complete_at).as_millis()),
                 seen = self.startup.lint_count.seen,
                 expected = self.startup.lint_count.expected.unwrap_or(0),
                 "startup_phase_complete"

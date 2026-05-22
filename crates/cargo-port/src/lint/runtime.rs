@@ -406,7 +406,7 @@ fn spawn_project_worker(
                     );
                     tracing::info!(
                         path = %project_root.display(),
-                        duration_ms = crate::perf_log::ms(run_started.elapsed().as_millis()),
+                        duration_ms = tui_pane::perf_log_ms(run_started.elapsed().as_millis()),
                         "lint_worker_run_complete"
                     );
                 }
@@ -606,7 +606,7 @@ fn execute_commands(
         )?;
         tracing::info!(
             command = %command.name,
-            duration_ms = crate::perf_log::ms(cmd_started.elapsed().as_millis()),
+            duration_ms = tui_pane::perf_log_ms(cmd_started.elapsed().as_millis()),
             success = execution.success,
             path = %project_root.display(),
             "lint_command_finished"

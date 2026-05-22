@@ -68,6 +68,7 @@ use std::time::Instant;
 
 use ratatui::layout::Position;
 use tui_pane::KeyBind;
+use tui_pane::PaneFocusState;
 use tui_pane::ThemeRuntime;
 use tui_pane::ToastId;
 use tui_pane::ToastStyle::Warning;
@@ -81,7 +82,6 @@ use super::integration;
 use super::integration::AppPaneId;
 use super::keymap;
 use super::overlays::Overlays;
-use super::pane::PaneFocusState;
 use super::panes::PaneId;
 use super::panes::Panes;
 use super::panes::SyncedDescriptionHeight;

@@ -16,6 +16,8 @@ use ratatui::widgets::List;
 use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
+use tui_pane::PaneTitleCount;
+use tui_pane::PaneTitleGroup;
 use tui_pane::Viewport;
 use tui_pane::column_header_color;
 use tui_pane::error_color;
@@ -60,11 +62,8 @@ use crate::tui::app::VisibleRow;
 use crate::tui::columns;
 use crate::tui::columns::LintCell;
 use crate::tui::columns::ProjectRow;
-use crate::tui::pane;
 use crate::tui::pane::DismissTarget;
 use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::PaneTitleCount;
-use crate::tui::pane::PaneTitleGroup;
 use crate::tui::project_list::ProjectList;
 use crate::tui::render;
 use crate::tui::state;
@@ -187,7 +186,7 @@ pub fn render_project_list_pane_body(
     let total_project_rows = items.len();
 
     let title = project_panel_title_with_counts(pane, ctx, area.width.saturating_sub(2).into());
-    let block = pane::default_pane_chrome().block(title, pane.focus.is_focused);
+    let block = tui_pane::default_pane_chrome().block(title, pane.focus.is_focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
@@ -1006,7 +1005,7 @@ pub fn render_tree_items(
         .map(|(row_index, row)| {
             let item = render_tree_item(ctx, row, &root_labels, root_sorted, child_sorted, widths);
             item.style(
-                pane::selection_state_for(viewport, cursor, row_index, focus).overlay_style(),
+                tui_pane::selection_state_for(viewport, cursor, row_index, focus).overlay_style(),
             )
         })
         .collect()

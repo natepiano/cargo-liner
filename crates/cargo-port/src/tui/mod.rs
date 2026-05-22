@@ -2,7 +2,6 @@ mod app;
 mod background;
 mod columns;
 mod constants;
-mod cpu;
 mod finder;
 mod input;
 mod integration;

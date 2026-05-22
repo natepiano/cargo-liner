@@ -14,6 +14,8 @@ use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::TableState;
 use tui_pane::ACTIVITY_SPINNER;
+use tui_pane::PaneFocusState;
+use tui_pane::PaneTitleCount;
 use tui_pane::Viewport;
 use tui_pane::accent_color;
 use tui_pane::column_header_color;
@@ -26,10 +28,7 @@ use tui_pane::title_color;
 use super::LintsData;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
-use crate::tui::pane;
-use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::PaneTitleCount;
 use crate::tui::render;
 use crate::tui::state::Lint;
 
@@ -42,7 +41,7 @@ fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
         };
         return format!(" {msg} ");
     }
-    pane::pane_title(
+    tui_pane::pane_title(
         "Lint Runs",
         &PaneTitleCount::Single {
             len:    data.runs.len(),
@@ -53,9 +52,9 @@ fn lints_panel_title(data: &LintsData, focused: bool, cursor: usize) -> String {
 
 fn lints_panel_block(title: String, focused: bool, has_runs: bool) -> Block<'static> {
     if has_runs {
-        pane::default_pane_chrome().block(title, focused)
+        tui_pane::default_pane_chrome().block(title, focused)
     } else {
-        pane::empty_pane_block(title)
+        tui_pane::empty_pane_block(title)
     }
 }
 
@@ -103,7 +102,7 @@ fn build_lint_rows(
             LintRunStatus::Failed => (Cell::from("failed"), Style::default().fg(error_color())),
         };
 
-        let selection = pane::selection_state(pane, row_index, focus);
+        let selection = tui_pane::selection_state(pane, row_index, focus);
         rows.push(
             Row::new(vec![
                 date_cell,

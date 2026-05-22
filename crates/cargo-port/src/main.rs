@@ -9,7 +9,6 @@ mod constants;
 mod enrichment;
 mod http;
 mod lint;
-mod perf_log;
 mod project;
 mod scan;
 #[cfg(test)]

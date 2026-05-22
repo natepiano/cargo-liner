@@ -13,6 +13,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::widgets::List;
 use ratatui::widgets::Widget;
+use tui_pane::PaneFocusState;
 use tui_pane::RenderFocus;
 
 pub(super) use super::App;
@@ -54,7 +55,6 @@ use crate::scan::BackgroundMsg;
 use crate::scan::CiFetchResult;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::pane::DismissTarget;
-use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes::CiFetchKind;
 use crate::tui::panes::PaneId;

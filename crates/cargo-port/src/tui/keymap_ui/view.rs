@@ -7,6 +7,8 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::KeymapPane;
+use tui_pane::PaneFocusState;
+use tui_pane::PaneSelectionState;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::active_border_color;
@@ -20,9 +22,7 @@ use super::KEYMAP_POPUP_MAX_HEIGHT;
 use super::KeymapRow;
 use crate::tui::app::App;
 use crate::tui::overlays::PopupFrame;
-use crate::tui::pane::PaneFocusState;
 use crate::tui::pane::PaneRenderCtx;
-use crate::tui::pane::PaneSelectionState;
 use crate::tui::panes::PaneId;
 
 pub(super) struct KeymapLines<'a> {

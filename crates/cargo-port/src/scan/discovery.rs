@@ -292,7 +292,7 @@ pub(super) fn phase1_discover(
                     continue;
                 };
                 tracing::info!(
-                    elapsed_ms = crate::perf_log::ms(manifest_started.elapsed().as_millis()),
+                    elapsed_ms = tui_pane::perf_log_ms(manifest_started.elapsed().as_millis()),
                     manifest = %entry.path().display(),
                     "phase1_manifest_parse"
                 );
@@ -306,7 +306,7 @@ pub(super) fn phase1_discover(
                     GitRepoPresence::OutsideRepo
                 };
                 tracing::info!(
-                    elapsed_ms = crate::perf_log::ms(repo_presence_started.elapsed().as_millis()),
+                    elapsed_ms = tui_pane::perf_log_ms(repo_presence_started.elapsed().as_millis()),
                     path = %abs_path,
                     in_repo = repo_presence.is_in_repo(),
                     "phase1_repo_presence"

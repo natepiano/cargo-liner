@@ -19,7 +19,7 @@ impl<A: Copy + Eq + std::hash::Hash> ScopeMap<A> {
     }
 
     pub(super) fn insert(&mut self, key: KeyBind, action: A) {
-        self.by_key.insert(key.clone(), action);
+        self.by_key.insert(key, action);
         self.by_action.insert(action, key);
     }
 

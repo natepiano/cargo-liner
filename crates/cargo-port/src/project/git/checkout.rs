@@ -254,7 +254,7 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
         if ignored {
             let state = GitStatus::Ignored;
             tracing::info!(
-                elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+                elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
                 repo_root = %repo_root.display(),
                 project_dir = %project_dir.display(),
                 state = %state.label(),
@@ -297,7 +297,7 @@ fn get_git_status(project_dir: &Path, repo_root: &Path) -> GitStatus {
         GitStatus::Clean
     };
     tracing::info!(
-        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+        elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
         repo_root = %repo_root.display(),
         project_dir = %project_dir.display(),
         state = %state.label(),

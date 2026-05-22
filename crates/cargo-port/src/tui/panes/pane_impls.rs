@@ -16,6 +16,9 @@ use std::time::Instant;
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use tui_pane::CpuPoller;
+use tui_pane::CpuUsage;
+use tui_pane::Hittable;
 use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::Viewport;
@@ -31,11 +34,7 @@ use super::project_list;
 use super::targets;
 use crate::config::CpuConfig;
 use crate::project::AbsolutePath;
-use crate::tui::cpu::CpuPoller;
-use crate::tui::cpu::CpuUsage;
-use crate::tui::pane;
 use crate::tui::pane::DismissTarget;
-use crate::tui::pane::Hittable;
 use crate::tui::pane::HoverTarget;
 use crate::tui::pane::PaneRenderCtx;
 
@@ -66,7 +65,7 @@ impl Renderable<PaneRenderCtx<'_>> for PackagePane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
-            chrome:         pane::default_pane_chrome(),
+            chrome:         tui_pane::default_pane_chrome(),
         };
         package::render_package_pane_body(frame, area, self, &styles, ctx);
     }
@@ -101,7 +100,7 @@ impl Renderable<PaneRenderCtx<'_>> for LangPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
-            chrome:         pane::default_pane_chrome(),
+            chrome:         tui_pane::default_pane_chrome(),
         };
         lang::render_lang_pane_body(frame, area, self, &styles, ctx);
     }
@@ -137,7 +136,7 @@ impl CpuPane {
             viewport:  Viewport::new(),
             focus:     RenderFocus::inactive(),
             content:   None,
-            poller:    CpuPoller::new(cfg),
+            poller:    CpuPoller::new(cfg.poll_ms),
             row_rects: Vec::new(),
         };
         pane.install_placeholder();
@@ -151,7 +150,7 @@ impl CpuPane {
     }
 
     pub fn reset(&mut self, cfg: &CpuConfig) {
-        self.poller = CpuPoller::new(cfg);
+        self.poller = CpuPoller::new(cfg.poll_ms);
         self.install_placeholder();
     }
 
@@ -170,7 +169,7 @@ impl Renderable<PaneRenderCtx<'_>> for CpuPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
-            chrome:         pane::default_pane_chrome(),
+            chrome:         tui_pane::default_pane_chrome(),
         };
         cpu::render_cpu_pane_body(frame, area, self, &styles, ctx);
     }
@@ -257,7 +256,7 @@ impl Renderable<PaneRenderCtx<'_>> for GitPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
-            chrome:         pane::default_pane_chrome(),
+            chrome:         tui_pane::default_pane_chrome(),
         };
         git::render_git_pane_body(frame, area, self, &styles, ctx);
     }
@@ -331,7 +330,7 @@ impl Renderable<PaneRenderCtx<'_>> for TargetsPane {
     fn render(&mut self, frame: &mut Frame<'_>, area: Rect, ctx: &PaneRenderCtx<'_>) {
         let styles = RenderStyles {
             readonly_label: ratatui::style::Style::default().fg(tui_pane::label_color()),
-            chrome:         pane::default_pane_chrome(),
+            chrome:         tui_pane::default_pane_chrome(),
         };
         targets::render_targets_pane_body(frame, area, self, &styles, ctx);
     }

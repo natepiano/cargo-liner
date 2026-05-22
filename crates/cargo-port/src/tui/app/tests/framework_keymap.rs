@@ -1212,7 +1212,7 @@ fn set_focus_override_updates_framework_focus_and_visits() {
     assert_eq!(app.focused_pane_id(), panes::PaneId::Git);
     assert_eq!(
         app.pane_focus_state(panes::PaneId::Targets),
-        crate::tui::pane::PaneFocusState::Remembered
+        tui_pane::PaneFocusState::Remembered
     );
 
     app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));

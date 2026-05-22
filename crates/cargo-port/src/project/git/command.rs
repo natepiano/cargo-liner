@@ -28,7 +28,7 @@ pub(super) fn git_output_logged<const N: usize>(
         .and_then(|out| out.status.code())
         .map_or_else(|| "signal".to_string(), |code| code.to_string());
     tracing::info!(
-        elapsed_ms = crate::perf_log::ms(started.elapsed().as_millis()),
+        elapsed_ms = tui_pane::perf_log_ms(started.elapsed().as_millis()),
         repo_root = %repo_root.display(),
         op,
         status,

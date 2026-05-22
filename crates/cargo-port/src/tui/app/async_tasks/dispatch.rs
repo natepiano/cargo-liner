@@ -46,7 +46,7 @@ impl App {
         };
 
         tracing::info!(
-            elapsed_ms = crate::perf_log::ms(self.scan.state.started_at.elapsed().as_millis()),
+            elapsed_ms = tui_pane::perf_log_ms(self.scan.state.started_at.elapsed().as_millis()),
             kind,
             run = self.scan.state.run_count,
             tree_items = projects.len(),

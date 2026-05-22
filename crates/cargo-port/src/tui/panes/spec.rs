@@ -1,5 +1,5 @@
-use crate::tui::pane::PaneAxisSize;
-use crate::tui::pane::PaneSizeSpec;
+use tui_pane::PaneAxisSize;
+use tui_pane::PaneSizeSpec;
 
 #[derive(Default, PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub enum PaneId {
