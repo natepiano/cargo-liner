@@ -75,6 +75,7 @@ pub use framework::HitTestRegistry;
 pub use framework::Hittable;
 pub use framework::InputContext;
 pub use framework::ListNavigation;
+pub use framework::ModalHit;
 pub use framework::PaneRegistry;
 pub use framework::Renderable;
 pub use framework::TabStop;

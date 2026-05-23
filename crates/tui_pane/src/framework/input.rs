@@ -10,6 +10,23 @@ use super::hit_test::HitTestRegistry;
 use crate::FrameworkOverlayId;
 use crate::ToastHit;
 
+/// Outcome of [`InputContext::app_modal_overlay_hit`].
+///
+/// Replaces the prior `Option<Option<Target>>` return so each case is
+/// named at the call site.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModalHit<T> {
+    /// No app modal overlay is open; dispatch falls through to the
+    /// tiled-pane walk.
+    Closed,
+    /// An app modal overlay is open and the click landed outside any
+    /// selectable row. The modal swallows the click; no fall-through.
+    MissedRow,
+    /// An app modal overlay is open and the click hit a selectable
+    /// row, producing `target`.
+    Hit(T),
+}
+
 /// Outcome of [`Framework::hit_test_at`](crate::Framework::hit_test_at).
 ///
 /// `Some(FrameworkHit)` means the framework participated in dispatch
@@ -57,13 +74,9 @@ pub trait InputContext: HitTestRegistry {
     /// stops); `None` means fall through.
     fn framework_hit(&self, pos: Position) -> Option<FrameworkHit>;
 
-    /// App-owned modal overlay hit-test. Outer `Some` means the
-    /// app modal layer was open and claims the click — the inner
-    /// `Option<Target>` is the row hit (or `None` if the click
-    /// missed every row inside the overlay). Outer `None` means
-    /// no app modal is open; dispatch falls through to the tiled
-    /// walk.
-    fn app_modal_overlay_hit(&self, pos: Position) -> Option<Option<Self::Target>>;
+    /// App-owned modal overlay hit-test. See [`ModalHit`] for the
+    /// three cases.
+    fn app_modal_overlay_hit(&self, pos: Position) -> ModalHit<Self::Target>;
 
     /// Map a framework-side hit into the app's target type, or
     /// `None` when the hit was absorbed without producing an
@@ -81,8 +94,9 @@ pub fn dispatch_hit_test<C: InputContext>(ctx: &C, pos: Position) -> Option<C::T
     if let Some(hit) = ctx.framework_hit(pos) {
         return ctx.map_framework_hit(hit);
     }
-    if let Some(target) = ctx.app_modal_overlay_hit(pos) {
-        return target;
+    match ctx.app_modal_overlay_hit(pos) {
+        ModalHit::Closed => hit_test::hit_test_at(ctx, pos),
+        ModalHit::MissedRow => None,
+        ModalHit::Hit(target) => Some(target),
     }
-    hit_test::hit_test_at(ctx, pos)
 }

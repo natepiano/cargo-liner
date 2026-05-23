@@ -20,6 +20,7 @@ pub use self::hit_test::Hittable;
 pub use self::hit_test::clear_all_hover;
 pub use self::input::FrameworkHit;
 pub use self::input::InputContext;
+pub use self::input::ModalHit;
 pub use self::input::dispatch_hit_test;
 pub use self::list_navigation::CycleDirection;
 pub use self::list_navigation::ListNavigation;

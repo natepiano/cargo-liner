@@ -4,6 +4,7 @@ use tui_pane::FrameworkOverlayId;
 use tui_pane::HitTestRegistry;
 use tui_pane::Hittable;
 use tui_pane::InputContext;
+use tui_pane::ModalHit;
 use tui_pane::ToastHit;
 use tui_pane::Viewport;
 
@@ -97,12 +98,14 @@ impl InputContext for App {
         self.framework.hit_test_at(pos)
     }
 
-    fn app_modal_overlay_hit(&self, pos: Position) -> Option<Option<HoverTarget>> {
-        if self.overlays.is_finder_open() {
-            Some(self.overlays.finder_pane.hit_test_at(pos))
-        } else {
-            None
+    fn app_modal_overlay_hit(&self, pos: Position) -> ModalHit<HoverTarget> {
+        if !self.overlays.is_finder_open() {
+            return ModalHit::Closed;
         }
+        self.overlays
+            .finder_pane
+            .hit_test_at(pos)
+            .map_or(ModalHit::MissedRow, ModalHit::Hit)
     }
 
     fn map_framework_hit(&self, hit: FrameworkHit) -> Option<HoverTarget> {
@@ -187,15 +190,11 @@ const fn set_hovered(app: &mut App, pane: PaneId, row: Option<usize>) {
 /// Clears any prior hover across every pane first, then sets the row
 /// on the pane indicated by `hovered_pane_row` (if any).
 pub(super) fn apply_hovered_pane_row(app: &mut App) {
-    clear_all_hover(app);
-    if let Some(hovered) = app.panes.hovered_row() {
-        set_hovered(app, hovered.pane, Some(hovered.row));
-    }
-}
-
-fn clear_all_hover(app: &mut App) {
     app.framework.clear_hover();
     app.overlays.finder_pane.viewport.set_hovered(None);
     app.panes.output.viewport.set_hovered(None);
     tui_pane::clear_all_hover(app);
+    if let Some(hovered) = app.panes.hovered_row() {
+        set_hovered(app, hovered.pane, Some(hovered.row));
+    }
 }
