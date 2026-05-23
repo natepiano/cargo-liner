@@ -90,7 +90,6 @@ dependencies = [
  "cargo_metadata",
  "clap",
  "dirs",
- "once_cell",
  "proc-macro2",
  "quote",
  "regex",
