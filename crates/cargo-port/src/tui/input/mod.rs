@@ -1,7 +1,6 @@
 mod editor_terminal;
 
 use std::rc::Rc;
-use std::sync::Mutex;
 use std::time::Instant;
 
 use crossterm::event::Event;
@@ -22,7 +21,6 @@ use tui_pane::AppContext;
 use tui_pane::FocusedPane;
 use tui_pane::FrameworkFocusId;
 use tui_pane::FrameworkOverlayId;
-use tui_pane::GlobalAction as FrameworkGlobalAction;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
 use tui_pane::KeyOutcome;
@@ -30,8 +28,9 @@ use tui_pane::KeySequence;
 use tui_pane::Mode;
 use tui_pane::Navigation;
 use tui_pane::Pane;
-use tui_pane::ToastCommand;
 use tui_pane::Viewport;
+#[cfg(test)]
+pub(super) use tui_pane::set_last_mouse_pos_for_test;
 
 use super::app::App;
 use super::app::ConfirmAction;
@@ -53,34 +52,18 @@ use super::panes::PaneId;
 use super::settings;
 use super::terminal;
 
-/// Last known mouse position, updated from every mouse event. Used to
-/// synthesize a click when `FocusGained` arrives because iTerm2 eats the
-/// mouse-down event that caused the focus change.
-static LAST_MOUSE_POS: Mutex<Option<(u16, u16)>> = std::sync::Mutex::new(None);
-
-#[cfg(test)]
-pub(super) fn set_last_mouse_pos_for_test(pos: Option<(u16, u16)>) {
-    if let Ok(mut last) = LAST_MOUSE_POS.lock() {
-        *last = pos;
-    }
-}
-
 pub(super) fn handle_event(app: &mut App, event: &Event) {
     let started = Instant::now();
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => handle_key_event(app, key),
         Event::Mouse(mouse) => {
-            if let Ok(mut pos) = LAST_MOUSE_POS.lock() {
-                *pos = Some((mouse.column, mouse.row));
-            }
+            tui_pane::record_mouse_pos(mouse.column, mouse.row);
             app.mouse_pos = Some(Position::new(mouse.column, mouse.row));
             handle_mouse_event(app, mouse.kind, mouse.column, mouse.row);
         },
         Event::FocusGained => {
             let _ = terminal::rearm_input_modes();
-            if let Ok(pos) = LAST_MOUSE_POS.lock()
-                && let Some((column, row)) = *pos
-            {
+            if let Some((column, row)) = tui_pane::last_mouse_pos() {
                 app.mouse_pos = Some(Position::new(column, row));
                 handle_mouse_click(app, column, row);
             }
@@ -94,7 +77,7 @@ pub(super) fn handle_event(app: &mut App, event: &Event) {
     if elapsed.as_millis() >= tui_pane::SLOW_INPUT_EVENT_MS {
         tracing::info!(
             elapsed_ms = tui_pane::perf_log_ms(elapsed.as_millis()),
-            kind = %event_label(event),
+            kind = %tui_pane::event_label(event),
             focus = pane_label(app.focused_pane_id()),
             scan_complete = app.scan.is_complete(),
             selected = %app.project_list.selected_project_path()
@@ -159,7 +142,7 @@ fn handle_key_event(app: &mut App, raw: &KeyEvent) {
     }
     let focused = *app.framework.focused();
     let focused_on_toasts = matches!(focused, FocusedPane::Framework(FrameworkFocusId::Toasts));
-    if focused_on_toasts && dispatch_focused_toasts(app, &bind) {
+    if focused_on_toasts && tui_pane::dispatch_focused_toasts(app, &bind) {
         app.pending_nav_chord.clear();
         return;
     }
@@ -199,33 +182,6 @@ fn dispatch_framework_global(app: &mut App, bind: &KeyBind) -> bool {
     true
 }
 
-const fn matches_open_overlay_toggle(
-    action: FrameworkGlobalAction,
-    overlay: FrameworkOverlayId,
-) -> bool {
-    matches!(
-        (action, overlay),
-        (
-            FrameworkGlobalAction::OpenKeymap,
-            FrameworkOverlayId::Keymap
-        ) | (
-            FrameworkGlobalAction::OpenSettings,
-            FrameworkOverlayId::Settings
-        ) | (
-            FrameworkGlobalAction::OpenGlobalShortcuts,
-            FrameworkOverlayId::GlobalShortcuts
-        )
-    )
-}
-
-const fn overlay_is_in_text_mode(app: &App, overlay: FrameworkOverlayId) -> bool {
-    match overlay {
-        FrameworkOverlayId::Settings => app.framework.settings_pane.is_editing(),
-        FrameworkOverlayId::Keymap => app.framework.keymap_pane.is_capturing(),
-        FrameworkOverlayId::GlobalShortcuts => false,
-    }
-}
-
 fn clear_legacy_framework_overlay_state(app: &mut App, overlay: FrameworkOverlayId) {
     match overlay {
         FrameworkOverlayId::Settings => {
@@ -260,14 +216,6 @@ fn dispatch_focused_app_pane(app: &mut App, id: AppPaneId, bind: &KeyBind) -> bo
     )
 }
 
-fn dispatch_focused_toasts(app: &mut App, bind: &KeyBind) -> bool {
-    let (outcome, command) = app.framework.toasts.handle_key_command(bind);
-    if let ToastCommand::Activate(action) = command {
-        app.handle_toast_action(action);
-    }
-    matches!(outcome, KeyOutcome::Consumed)
-}
-
 fn dispatch_framework_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEvent) -> bool {
     let Some(overlay) = app.framework.overlay() else {
         return false;
@@ -281,8 +229,8 @@ fn dispatch_framework_overlay(app: &mut App, bind: &KeyBind, normalized: &KeyEve
     // short-circuit below — text input should not be hijacked into a
     // close.
     if let Some(action) = app.framework_keymap.framework_globals().action_for(bind)
-        && matches_open_overlay_toggle(action, overlay)
-        && !overlay_is_in_text_mode(app, overlay)
+        && tui_pane::matches_open_overlay_toggle(action, overlay)
+        && !tui_pane::overlay_is_in_text_mode(&app.framework, overlay)
     {
         return false;
     }
@@ -596,17 +544,6 @@ const fn pane_label(pane: PaneId) -> &'static str {
         PaneId::Settings => "settings",
         PaneId::Finder => "finder",
         PaneId::Keymap => "keymap",
-    }
-}
-
-pub(super) fn event_label(event: &Event) -> String {
-    match event {
-        Event::Key(key) => format!("key:{:?}:{:?}", key.kind, key.code),
-        Event::Mouse(mouse) => format!("mouse:{:?}", mouse.kind),
-        Event::Resize(width, height) => format!("resize:{width}x{height}"),
-        Event::FocusGained => "focus_gained".to_string(),
-        Event::FocusLost => "focus_lost".to_string(),
-        Event::Paste(text) => format!("paste:{}", text.len()),
     }
 }
 

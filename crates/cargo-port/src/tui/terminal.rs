@@ -310,7 +310,7 @@ fn process_input_frame(app: &mut App, input_rx: &Receiver<Event>) -> (usize, Dur
     let mut input_count = 0usize;
     while let Ok(event) = input_rx.try_recv() {
         input_count += 1;
-        tracing::info!(event = %input::event_label(&event), "input_event_received");
+        tracing::info!(event = %tui_pane::event_label(&event), "input_event_received");
         input::handle_event(app, &event);
         if app.framework.quit_requested() || app.framework.restart_requested() {
             break;

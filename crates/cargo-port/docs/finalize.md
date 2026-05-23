@@ -197,16 +197,35 @@ Before writing any move, draft both trait signatures by grepping each file for `
 
 `src/tui/input/mod.rs` (737 lines) drives crossterm event polling and key dispatch. `editor_terminal.rs` (218 lines) opens an external editor — domain-locked (reads `RootItem::Rust(RustProject::Workspace(_))`).
 
-### Split
+### What actually moved (scope realism)
 
-- **Move to `tui_pane/src/input/`** (or a sensible existing module): the generic event loop, the key→action dispatch table machinery, scroll/click handling.
-- **Stays in app:** `editor_terminal.rs`. The framework's input dispatch returns an `Action` enum; the app's action-handler code matches on it and calls `editor_terminal::launch` directly when the editor action fires. The framework never names the editor concept.
+The phase's original ambition was to move the whole dispatch ladder. In practice the ladder is heavily app-domain: most rungs touch cargo-port-specific state (the example-process kill on Esc, the output-cancel fast path, `app.scan.confirm_verifying()` gating, `app.overlays.is_finder_open()`, `app.panes.tiled_layout` for scroll/click region lookup, `panes::behavior` for vim navigation normalization). Moving the orchestration would require ~10 callback methods on `AppContext` for marginal payoff — the ladder stays in the app.
 
-This keeps `AppContext` clean — no framework trait method for editor launch. The app-domain action handler stays in the app where it belongs.
+What landed in `tui_pane/src/input.rs`:
 
-### Pre-phase domain audit
+- `event_label(&Event) -> String` — stable string label used by slow-event logging and the input-frame tracer.
+- `record_mouse_pos(col, row)` / `last_mouse_pos()` / `set_last_mouse_pos_for_test` — owns the `Mutex<Option<(u16, u16)>>` static used to synthesize a click on `FocusGained` (iTerm2 eats the originating mouse-down).
+- `matches_open_overlay_toggle(action, overlay)` — pure predicate matching framework "open" actions against the open overlay so the open key toggles closed.
+- `overlay_is_in_text_mode(&Framework<Ctx>, overlay)` — gates the toggle short-circuit when the overlay is in capture/edit mode.
+- `dispatch_focused_toasts<Ctx>(&mut Ctx, &KeyBind) -> bool` — routes a key to the toast stack and emits `ToastCommand::Activate` through `AppContext::handle_toast_action`.
 
-The inventory previously called input/ "1 domain ref" — that was wrong. `editor_terminal.rs` has 4 distinct `crate::project::*` types. Confirm by grepping before writing the move. Document any other domain refs in the commit body.
+What stayed in app:
+
+- The outer `handle_event` ladder composition.
+- App early-return paths (Esc-kill example, output cancel, `handle_confirm_key`).
+- Navigation chord state machine (uses `app.pending_nav_chord`).
+- `dispatch_framework_global` / `clear_legacy_framework_overlay_state` (the latter touches `app.overlays.close_settings()` / `clear_inline_error()`).
+- `dispatch_app_global`, `dispatch_focused_app_pane`, `dispatch_navigation` — thin keymap wrappers reading app dispatchers via `AppGlobalAction::dispatcher()` etc.
+- `dispatch_framework_overlay` outer logic — calls into `settings::` and `keymap_ui::` for action/text dispatch.
+- `dispatch_finder_overlay` (cargo-port finder).
+- `normalize_nav` — uses `panes::behavior(PaneBehavior)` for vim/list normalization.
+- Mouse scroll/click handlers — walk `app.panes.tiled_layout`.
+- `handle_confirm_key`, `dispatch_project_list_action`, `dispatch_output_action`, `editor_terminal`.
+- `pane_label` — cargo-port `PaneId` debug strings for slow-event logging.
+
+### Stays in app: `editor_terminal.rs`
+
+The framework's input dispatch returns an `Action` enum; the app's action-handler code matches on it and calls `editor_terminal::launch` directly when the editor action fires. The framework never names the editor concept.
 
 ## Phase 6 — Cleanup
 
