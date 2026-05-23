@@ -35,9 +35,11 @@ use tui_pane::KeyOutcome;
 use tui_pane::Keymap;
 use tui_pane::KeymapBuilder;
 use tui_pane::KeymapError;
+use tui_pane::KeymapUiContext;
 use tui_pane::Mode;
 use tui_pane::Navigation;
 use tui_pane::Pane;
+use tui_pane::PaneFocusState;
 use tui_pane::ShortcutState;
 use tui_pane::Shortcuts;
 use tui_pane::TabStop;
@@ -225,14 +227,12 @@ const KEYMAP_OVERLAY_PANE_ORDER: &[AppPaneId] = &[
     AppPaneId::Finder,
 ];
 
-impl tui_pane::KeymapUiContext for App {
+impl KeymapUiContext for App {
     fn keymap_inline_error(&self) -> Option<&str> {
         self.overlays.inline_error().map(String::as_str)
     }
 
-    fn keymap_pane_focus_state(&self) -> tui_pane::PaneFocusState {
-        self.pane_focus_state(PaneId::Keymap)
-    }
+    fn keymap_pane_focus_state(&self) -> PaneFocusState { self.pane_focus_state(PaneId::Keymap) }
 
     fn keymap_pane_sort_priority(&self, scope: &str, toml_key: &str) -> u8 {
         if scope == "project_list" {

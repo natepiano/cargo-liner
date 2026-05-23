@@ -18,8 +18,21 @@ use tui_pane::KeymapCaptureCommand;
 use tui_pane::KeymapHelpRow;
 use tui_pane::KeymapUiContext as _;
 use tui_pane::OverlayAction;
+use tui_pane::Shortcuts;
 
 use super::app::App;
+use super::integration::AppGlobalAction;
+use super::integration::AppNavigation;
+use super::integration::AppPaneId;
+use super::integration::CiRunsPane;
+use super::integration::FinderPane;
+use super::integration::GitPane;
+use super::integration::LintsPane;
+use super::integration::NavigationAction;
+use super::integration::OutputPane;
+use super::integration::PackagePane;
+use super::integration::ProjectListPane;
+use super::integration::TargetsPane;
 use super::keymap;
 
 #[derive(Clone)]
@@ -317,34 +330,21 @@ fn binds_for_scope_action(app: &App, scope: &str, action_key: &str) -> Vec<KeySe
     Vec::new()
 }
 
-const fn keymap_scope_name(_app: &App, id: super::integration::AppPaneId) -> Option<&'static str> {
-    use tui_pane::Shortcuts;
-
-    use super::integration::CiRunsPane;
-    use super::integration::FinderPane;
-    use super::integration::GitPane;
-    use super::integration::LintsPane;
-    use super::integration::OutputPane;
-    use super::integration::PackagePane;
-    use super::integration::ProjectListPane;
-    use super::integration::TargetsPane;
+const fn keymap_scope_name(_app: &App, id: AppPaneId) -> Option<&'static str> {
     Some(match id {
-        super::integration::AppPaneId::ProjectList => {
-            <ProjectListPane as Shortcuts<App>>::SCOPE_NAME
-        },
-        super::integration::AppPaneId::Package => <PackagePane as Shortcuts<App>>::SCOPE_NAME,
-        super::integration::AppPaneId::Git => <GitPane as Shortcuts<App>>::SCOPE_NAME,
-        super::integration::AppPaneId::Targets => <TargetsPane as Shortcuts<App>>::SCOPE_NAME,
-        super::integration::AppPaneId::CiRuns => <CiRunsPane as Shortcuts<App>>::SCOPE_NAME,
-        super::integration::AppPaneId::Lints => <LintsPane as Shortcuts<App>>::SCOPE_NAME,
-        super::integration::AppPaneId::Output => <OutputPane as Shortcuts<App>>::SCOPE_NAME,
-        super::integration::AppPaneId::Finder => <FinderPane as Shortcuts<App>>::SCOPE_NAME,
-        super::integration::AppPaneId::Lang | super::integration::AppPaneId::Cpu => return None,
+        AppPaneId::ProjectList => <ProjectListPane as Shortcuts<App>>::SCOPE_NAME,
+        AppPaneId::Package => <PackagePane as Shortcuts<App>>::SCOPE_NAME,
+        AppPaneId::Git => <GitPane as Shortcuts<App>>::SCOPE_NAME,
+        AppPaneId::Targets => <TargetsPane as Shortcuts<App>>::SCOPE_NAME,
+        AppPaneId::CiRuns => <CiRunsPane as Shortcuts<App>>::SCOPE_NAME,
+        AppPaneId::Lints => <LintsPane as Shortcuts<App>>::SCOPE_NAME,
+        AppPaneId::Output => <OutputPane as Shortcuts<App>>::SCOPE_NAME,
+        AppPaneId::Finder => <FinderPane as Shortcuts<App>>::SCOPE_NAME,
+        AppPaneId::Lang | AppPaneId::Cpu => return None,
     })
 }
 
 fn app_global_binds_for_action(app: &App, action_key: &str) -> Vec<KeySequence> {
-    use super::integration::AppGlobalAction;
     if let Some(action) = AppGlobalAction::from_toml_key(action_key)
         && let Some(scope) = app.framework_keymap.globals::<AppGlobalAction>()
     {
@@ -354,8 +354,6 @@ fn app_global_binds_for_action(app: &App, action_key: &str) -> Vec<KeySequence> 
 }
 
 fn navigation_binds_for_action(app: &App, action_key: &str) -> Vec<KeySequence> {
-    use super::integration::AppNavigation;
-    use super::integration::NavigationAction;
     if let Some(action) = NavigationAction::from_toml_key(action_key)
         && let Some(scope) = app.framework_keymap.navigation::<AppNavigation>()
     {

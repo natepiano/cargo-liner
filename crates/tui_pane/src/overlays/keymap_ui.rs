@@ -27,7 +27,7 @@ use crate::constants::SECTION_HEADER_INDENT;
 use crate::constants::SECTION_ITEM_INDENT;
 use crate::error_color;
 use crate::label_color;
-use crate::layout::render_overflow_affordance;
+use crate::layout;
 use crate::text_default;
 use crate::title_color;
 
@@ -159,7 +159,7 @@ impl KeymapPane {
         let para = Paragraph::new(inputs.lines.clone())
             .scroll((u16::try_from(scroll_offset).unwrap_or(0), 0));
         frame.render_widget(para, inner);
-        render_overflow_affordance(
+        layout::render_overflow_affordance(
             frame,
             popup.outer,
             ViewportOverflow::new(line_count, scroll_offset, visible_height, selected_line),
