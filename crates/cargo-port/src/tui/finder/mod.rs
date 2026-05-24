@@ -28,6 +28,7 @@ mod tests {
     use crate::project::RustInfo;
     use crate::project::RustProject;
     use crate::project::VendoredPackage;
+    use crate::project::Visibility;
     use crate::project::Workspace;
 
     fn test_path(path: &str) -> AbsolutePath {
@@ -197,5 +198,37 @@ mod tests {
                 && item.search_tokens.iter().any(|token| token == "tools")
                 && item.search_tokens.iter().any(|token| token == "graphs")
         }));
+    }
+
+    #[test]
+    fn build_finder_index_excludes_non_visible_roots() {
+        let visible = Package {
+            path: test_path("~/rust/here"),
+            name: Some("here".to_string()),
+            ..Package::default()
+        };
+        let mut deleted = Package {
+            path: test_path("~/rust/gone"),
+            name: Some("gone".to_string()),
+            ..Package::default()
+        };
+        deleted.rust.info.visibility = Visibility::Deleted;
+
+        let list = crate::tui::project_list::ProjectList::new(vec![
+            RootItem::Rust(RustProject::Package(visible)),
+            RootItem::Rust(RustProject::Package(deleted)),
+        ]);
+        let (items, _widths) = build_finder_index(&list);
+
+        assert!(
+            items
+                .iter()
+                .any(|item| item.project_path == test_path("~/rust/here"))
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| item.project_path != test_path("~/rust/gone"))
+        );
     }
 }

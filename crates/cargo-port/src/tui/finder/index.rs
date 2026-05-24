@@ -12,6 +12,7 @@ use crate::project::ProjectType;
 use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::project::VendoredPackage;
+use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::tui::panes::RunTargetKind;
 use crate::tui::project_list::ProjectList;
@@ -74,14 +75,19 @@ pub const FINDER_HEADERS: [&str; FINDER_COLUMN_COUNT] =
 /// Build a flat index of all searchable items from the project list.
 /// Uses the tree structure so workspace members inherit the branch
 /// from their workspace root (members don't have their own `.git`).
-/// Returns `(items, col_widths)` where `col_widths` is the max display
-/// width of each column across the entire index.
+/// Only `Visible` entries are indexed: `Deleted` (gone from disk) and
+/// `Dismissed` ones are skipped so the finder only returns live,
+/// navigable targets. Returns `(items, col_widths)` where `col_widths` is
+/// the max display width of each column across the entire index.
 pub fn build_finder_index(
     entries: &ProjectList,
 ) -> (Vec<FinderItem>, [usize; FINDER_COLUMN_COUNT]) {
     let mut items = Vec::new();
 
     for entry in entries {
+        if entry.item.visibility() != Visibility::Visible {
+            continue;
+        }
         match &entry.item {
             RootItem::Rust(RustProject::Workspace(ws)) => {
                 add_workspace_items(&mut items, ws);
@@ -109,9 +115,14 @@ pub fn build_finder_index(
                     RustProject::Workspace(ws) => add_workspace_items(&mut items, ws),
                     RustProject::Package(pkg) => add_package_items(&mut items, pkg),
                 };
-                emit(&group.primary);
+                if group.primary.visibility() == Visibility::Visible {
+                    emit(&group.primary);
+                }
                 for l in &group.linked {
                     if l.path() == &primary_path {
+                        continue;
+                    }
+                    if l.visibility() != Visibility::Visible {
                         continue;
                     }
                     emit(l);
