@@ -513,9 +513,12 @@ pub const fn crates_io_value_is_unreachable_placeholder(data: &PackageData) -> b
 /// down (Unreachable / `RateLimited`) and no stars count has landed
 /// yet. Mirrors [`crates_io_value_is_unreachable_placeholder`] for
 /// the GitHub-derived field — see [`service_unreachable_placeholder`]
-/// for the shared string.
+/// for the shared string. Unauthenticated is excluded: it's not an
+/// outage, and the rate-limit rows already carry the auth hint.
 pub const fn github_stars_is_unreachable_placeholder(data: &GitData) -> bool {
-    data.stars.is_none() && !data.github_status.is_available()
+    data.stars.is_none()
+        && !data.github_status.is_available()
+        && !data.github_status.is_unauthenticated()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

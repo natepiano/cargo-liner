@@ -309,5 +309,6 @@ impl App {
         self.net
             .set_force_github_rate_limit(self.config.current().debug.force_github_rate_limit);
         self.net.spawn_rate_limit_prime();
+        self.warn_if_github_unauthenticated();
     }
 }

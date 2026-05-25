@@ -326,11 +326,11 @@ struct RenderFlatArgs<'a> {
 
 /// Compute the displayed value string for a flat git-pane row,
 /// including row-specific decorations (local-only suffix on `Branch`,
-/// `(github unreachable)` / `(github rate-limited)` suffix on
-/// rate-limit rows). Also returns the "github unreachable"
-/// placeholder text for an empty Stars row when GitHub is down — the
-/// parallel of the crates.io unreachable placeholder on the Package
-/// pane.
+/// `(github unreachable)` / `(github rate-limited)` /
+/// `(unauthenticated — gh auth login)` suffix on rate-limit rows).
+/// Also returns the "github unreachable" placeholder text for an empty
+/// Stars row when GitHub is down — the parallel of the crates.io
+/// unreachable placeholder on the Package pane.
 fn build_field_value(data: &GitData, field: DetailField, is_rate_limit_row: bool) -> String {
     if field == DetailField::Head {
         let raw = field.git_value(data);
@@ -362,6 +362,7 @@ const fn github_status_suffix(status: AvailabilityStatus) -> Option<&'static str
         AvailabilityStatus::Reachable => None,
         AvailabilityStatus::Unreachable => Some("github unreachable"),
         AvailabilityStatus::RateLimited => Some("github rate-limited"),
+        AvailabilityStatus::Unauthenticated => Some("unauthenticated — gh auth login"),
     }
 }
 
@@ -397,6 +398,10 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
             Style::default().fg(inactive_border_color())
         } else if *field == DetailField::WorktreeError {
             Style::default().fg(text_default()).bg(error_color())
+        } else if is_rate_limit_row && data.github_status.is_unauthenticated() {
+            // Unauthenticated is actionable, not an outage — warn (yellow)
+            // rather than error (red) like the unreachable / rate-limited rows.
+            Style::default().fg(warning_color())
         } else if is_rate_limit_row && !data.github_status.is_available() {
             Style::default().fg(error_color())
         } else if *field == DetailField::Stars && github_stars_is_unreachable_placeholder(data) {

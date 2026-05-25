@@ -249,6 +249,22 @@ fn stars_row_shows_real_value_when_data_present_during_outage() {
 }
 
 #[test]
+fn stars_row_hidden_when_github_unauthenticated() {
+    // Unauthenticated is not a service outage — don't surface the
+    // "github unreachable" placeholder on the Stars row. The rate-limit
+    // rows and the startup toast carry the `gh auth login` hint instead.
+    let mut data = git_data();
+    data.stars = None;
+    data.github_status = AvailabilityStatus::Unauthenticated;
+    let fields = model::git_fields_from_data(&data);
+    assert!(
+        !fields.contains(&DetailField::Stars),
+        "no Stars placeholder when merely unauthenticated"
+    );
+    assert!(!model::github_stars_is_unreachable_placeholder(&data));
+}
+
+#[test]
 fn package_copy_crates_io_row_uses_full_url() {
     let mut data = package_data(true);
     data.crates_version = Some("0.1.0".to_string());

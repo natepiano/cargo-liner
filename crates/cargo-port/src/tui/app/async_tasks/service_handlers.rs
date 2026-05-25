@@ -15,6 +15,35 @@ use crate::tui::state::AvailabilityStatus;
 use crate::tui::state::RecoveryOutcome;
 
 impl App {
+    /// One-shot startup check: when `gh auth token` returned nothing,
+    /// every authenticated GitHub call silently no-ops (see
+    /// [`crate::http::HttpClient`]), so CI runs and rate-limit buckets
+    /// never load. Mark GitHub unauthenticated — the git-pane
+    /// rate-limit rows read this to surface a `gh auth login` hint — and
+    /// push a one-time persistent warning toast.
+    ///
+    /// Skipped under `cfg(test)`: the token comes from a real `gh auth
+    /// token` subprocess, so honoring it would make toast and render
+    /// state depend on the host's gh login.
+    pub(crate) fn warn_if_github_unauthenticated(&mut self) {
+        if cfg!(test) {
+            return;
+        }
+        if self.net.http_client.has_github_token() {
+            return;
+        }
+        self.net
+            .availability_for(ServiceKind::GitHub)
+            .mark_unauthenticated();
+        self.framework.toasts.push_persistent(
+            "GitHub not authenticated",
+            "CI runs and rate limits are unavailable. Run `gh auth login`, then restart cargo-port.",
+            Warning,
+            None,
+            1,
+        );
+    }
+
     pub(super) fn apply_service_signal(&mut self, signal: ServiceSignal) {
         match signal {
             ServiceSignal::Reachable(service) => self.handle_service_reachable(service),
@@ -73,7 +102,9 @@ impl App {
             let kind = match avail.status() {
                 AvailabilityStatus::Unreachable => AvailabilityKind::Unreachable,
                 AvailabilityStatus::RateLimited => AvailabilityKind::RateLimited,
-                AvailabilityStatus::Reachable => return,
+                // Unauthenticated never spawns a retry (token is fixed for
+                // the process), so this confirm path can't reach it.
+                AvailabilityStatus::Reachable | AvailabilityStatus::Unauthenticated => return,
             };
             (kind, avail.toast_id())
         };

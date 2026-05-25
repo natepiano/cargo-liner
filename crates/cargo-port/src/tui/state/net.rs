@@ -30,21 +30,28 @@ use crate::http::ServiceKind;
 use crate::scan;
 use crate::scan::RepoCache;
 
-/// Three-way availability for a single service. `Unreachable` means
-/// the network layer can't talk to the service at all; `RateLimited`
-/// means the service is reachable but refusing our requests for quota
-/// reasons. Recovery, display text, and toast copy all diverge
-/// between the two — hence the explicit enum.
+/// Availability for a single service. `Unreachable` means the network
+/// layer can't talk to the service at all; `RateLimited` means the
+/// service is reachable but refusing our requests for quota reasons;
+/// `Unauthenticated` (GitHub only) means `gh auth token` returned no
+/// token at startup, so authenticated calls silently no-op. Recovery,
+/// display text, and toast copy diverge between them — hence the
+/// explicit enum.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AvailabilityStatus {
     #[default]
     Reachable,
     Unreachable,
     RateLimited,
+    /// GitHub only: no auth token at startup. Authenticated REST /
+    /// GraphQL calls short-circuit, so CI + rate-limit data never load.
+    Unauthenticated,
 }
 
 impl AvailabilityStatus {
     pub const fn is_available(self) -> bool { matches!(self, Self::Reachable) }
+
+    pub const fn is_unauthenticated(self) -> bool { matches!(self, Self::Unauthenticated) }
 }
 
 /// Outcome of a "service became reachable" call. The retry / recovery
@@ -136,6 +143,14 @@ impl ServiceAvailability {
         let newly_active = !self.retry_active;
         self.retry_active = true;
         newly_active
+    }
+
+    /// Marks the service unauthenticated (no `gh` token at startup).
+    /// Unlike the reachability transitions this spawns no retry loop —
+    /// the token is fixed for the process lifetime, so recovery needs a
+    /// restart. Set once from `App::warn_if_github_unauthenticated`.
+    pub const fn mark_unauthenticated(&mut self) {
+        self.status = AvailabilityStatus::Unauthenticated;
     }
 
     /// The id of the tracked unavailability toast, if one was ever
@@ -270,5 +285,21 @@ impl Net {
                 tracing::info!("rate_limit_prime_failed");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_unauthenticated_sets_status_and_reports_unavailable() {
+        let mut avail = ServiceAvailability::new();
+        avail.mark_unauthenticated();
+        assert_eq!(avail.status(), AvailabilityStatus::Unauthenticated);
+        assert!(avail.status().is_unauthenticated());
+        // Unauthenticated is not "available" — the git pane reads this
+        // to suppress real values and surface the auth hint instead.
+        assert!(!avail.status().is_available());
     }
 }

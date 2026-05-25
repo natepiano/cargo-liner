@@ -163,6 +163,12 @@ impl HttpClient {
         })
     }
 
+    /// Whether a GitHub auth token was obtained at construction. When
+    /// false, every authenticated REST / GraphQL call short-circuits to
+    /// a no-op (see `github_get_async` / `github_graphql_async`), so CI
+    /// runs and rate-limit buckets never load.
+    pub(crate) const fn has_github_token(&self) -> bool { self.github_token.is_some() }
+
     /// Toggle the synthetic GitHub rate-limit short-circuit at runtime.
     /// Intended for the `[debug] force_github_rate_limit` config flag.
     /// Turning the flag on rebases the synthetic countdown to
