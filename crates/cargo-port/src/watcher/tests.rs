@@ -2689,6 +2689,9 @@ fn removed_workspace_worktree_emits_zero_disk_usage() {
 
 /// When notify delivers an event via a symlinked path, the candidate
 /// should be canonicalized so it matches the real path in `discovered`.
+// Uses `std::os::unix::fs::symlink`; Windows symlink creation needs a
+// distinct API and elevated privileges, so this case is unix-only.
+#[cfg(unix)]
 #[test]
 fn symlinked_event_path_canonicalizes_to_real_project() {
     let tmp = tempfile::tempdir().expect("tempdir");

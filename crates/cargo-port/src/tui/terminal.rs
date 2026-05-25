@@ -80,16 +80,18 @@ pub(super) enum CleanMsg {
 
 #[derive(Clone, Copy)]
 struct FrameMetrics {
-    frame_elapsed:  Duration,
-    input_elapsed:  Duration,
-    bg_elapsed:     Duration,
-    rows_elapsed:   Duration,
-    disk_elapsed:   Duration,
-    fit_elapsed:    Duration,
-    detail_elapsed: Duration,
-    draw_elapsed:   Duration,
-    idle_elapsed:   Duration,
-    input_count:    usize,
+    frame_elapsed:       Duration,
+    input_elapsed:       Duration,
+    bg_elapsed:          Duration,
+    cpu_elapsed:         Duration,
+    run_targets_elapsed: Duration,
+    rows_elapsed:        Duration,
+    disk_elapsed:        Duration,
+    fit_elapsed:         Duration,
+    detail_elapsed:      Duration,
+    draw_elapsed:        Duration,
+    idle_elapsed:        Duration,
+    input_count:         usize,
 }
 
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
@@ -116,11 +118,23 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Re
     Ok(())
 }
 
+/// Report a fatal startup/teardown error to both the perf log and
+/// stderr. The tracing subscriber writes to a temp file (see
+/// [`tui_pane::init_perf_log`]), not the terminal, so a bare
+/// `tracing::error!` exits silently from the user's point of view.
+/// Echoing to stderr ensures the console shows *something* before the
+/// process exits. Call only after the terminal has been restored to
+/// the normal screen.
+fn report_fatal(message: &str) {
+    tracing::error!("{message}");
+    eprintln!("cargo-port: {message}");
+}
+
 pub fn run() -> ExitCode {
     let startup_settings = match settings::load_cargo_port_settings_for_startup() {
         Ok(settings) => settings,
         Err(err) => {
-            tracing::error!("Error: {err}");
+            report_fatal(&format!("{err}"));
             return ExitCode::FAILURE;
         },
     };
@@ -131,11 +145,11 @@ pub fn run() -> ExitCode {
     tui_pane::init_perf_log(&perf_log_path, &previous_perf_log_path);
 
     let Ok(rt) = tokio::runtime::Runtime::new() else {
-        tracing::error!("Error: failed to create async runtime");
+        report_fatal("failed to create async runtime");
         return ExitCode::FAILURE;
     };
     let Some(http_client) = HttpClient::new(rt.handle().clone()) else {
-        tracing::error!("Error: failed to create HTTP client");
+        report_fatal("failed to create HTTP client");
         return ExitCode::FAILURE;
     };
     let scan_started_at = std::time::Instant::now();
@@ -170,7 +184,7 @@ pub fn run() -> ExitCode {
     let mut terminal = match setup_terminal() {
         Ok(t) => t,
         Err(e) => {
-            tracing::error!("Error: failed to initialize terminal: {e}");
+            report_fatal(&format!("failed to initialize terminal: {e}"));
             return ExitCode::FAILURE;
         },
     };
@@ -186,8 +200,8 @@ pub fn run() -> ExitCode {
     ) {
         Ok(app) => app,
         Err(e) => {
-            tracing::error!("Error: failed to initialize app: {e:#}");
             let _ = restore_terminal(&mut terminal);
+            report_fatal(&format!("failed to initialize app: {e:#}"));
             return ExitCode::FAILURE;
         },
     };
@@ -206,7 +220,7 @@ pub fn run() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            tracing::error!("Error: {e}");
+            report_fatal(&format!("{e}"));
             ExitCode::FAILURE
         },
     }
@@ -265,8 +279,8 @@ fn event_loop(
 
         let (bg_stats, bg_elapsed) = poll_background_frame(app);
         let tick_now = Instant::now();
-        app.panes.cpu_tick(tick_now);
-        app.running_targets_tick(tick_now);
+        let cpu_elapsed = measure(|| app.panes.cpu_tick(tick_now));
+        let run_targets_elapsed = measure(|| app.running_targets_tick(tick_now));
         app.scan.prune_shimmers(tick_now);
         clear_terminal_if_dirty(terminal, app)?;
 
@@ -294,6 +308,8 @@ fn event_loop(
                 frame_elapsed: frame_started.elapsed(),
                 input_elapsed,
                 bg_elapsed,
+                cpu_elapsed,
+                run_targets_elapsed,
                 rows_elapsed,
                 disk_elapsed,
                 fit_elapsed,
@@ -414,6 +430,8 @@ fn log_slow_frame(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetr
         frame_ms = tui_pane::perf_log_ms(metrics.frame_elapsed.as_millis()),
         input_ms = tui_pane::perf_log_ms(metrics.input_elapsed.as_millis()),
         bg_ms = tui_pane::perf_log_ms(metrics.bg_elapsed.as_millis()),
+        cpu_ms = tui_pane::perf_log_ms(metrics.cpu_elapsed.as_millis()),
+        run_targets_ms = tui_pane::perf_log_ms(metrics.run_targets_elapsed.as_millis()),
         rows_ms = tui_pane::perf_log_ms(metrics.rows_elapsed.as_millis()),
         disk_ms = tui_pane::perf_log_ms(metrics.disk_elapsed.as_millis()),
         fit_ms = tui_pane::perf_log_ms(metrics.fit_elapsed.as_millis()),

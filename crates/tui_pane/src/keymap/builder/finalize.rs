@@ -15,7 +15,7 @@ use crate::KeymapError;
 /// names and emits the scopes, singletons, and lifecycle hooks the
 /// builder has collected.
 pub(super) fn finalize<Ctx: AppContext + 'static, State>(
-    builder: KeymapBuilder<Ctx, State>,
+    mut builder: KeymapBuilder<Ctx, State>,
 ) -> Result<Keymap<Ctx>, KeymapError> {
     if let Some(err) = builder.deferred_error {
         return Err(err);
@@ -29,7 +29,13 @@ pub(super) fn finalize<Ctx: AppContext + 'static, State>(
     if builder.globals_scope.is_none() && !builder.scopes.is_empty() {
         return Err(KeymapError::GlobalsMissing);
     }
-    validate_toml_scopes(builder.toml_table.as_ref(), &builder.registered_scopes)?;
+    validate_toml_scopes(
+        builder.toml_table.as_ref(),
+        &builder.registered_scopes,
+        builder
+            .ignore_unknown
+            .then_some(&mut builder.unknown_warnings),
+    )?;
 
     let mut keymap = Keymap::<Ctx>::new(builder.config_path);
     for (id, scope) in builder.scopes {
@@ -67,6 +73,9 @@ pub(super) fn finalize<Ctx: AppContext + 'static, State>(
         GlobalAction::defaults(),
         builder.toml_table.as_ref(),
         builder.globals_action_keys.as_ref(),
+        builder
+            .ignore_unknown
+            .then_some(&mut builder.unknown_warnings),
     )?;
     registration::check_reserved_vim_navigation_keys(
         "global",
@@ -86,15 +95,21 @@ pub(super) fn finalize<Ctx: AppContext + 'static, State>(
     if let Some(hook) = builder.dismiss_fallback {
         keymap.set_dismiss_fallback(hook);
     }
+    keymap.set_unknown_warnings(builder.unknown_warnings);
     Ok(keymap)
 }
 
 /// Reject TOML scope keys that do not match any registered
 /// `SCOPE_NAME`. The shared `[global]` table is also accepted because
 /// the framework globals read it alongside the binary globals.
+///
+/// `unknown` mirrors [`apply_toml_overlay`](overlay::apply_toml_overlay):
+/// `None` returns [`KeymapError::UnknownScope`] (strict); `Some(sink)`
+/// records a warning and skips the scope (lenient).
 fn validate_toml_scopes(
     table: Option<&Table>,
     registered: &HashSet<&'static str>,
+    mut unknown: Option<&mut Vec<String>>,
 ) -> Result<(), KeymapError> {
     let Some(table) = table else {
         return Ok(());
@@ -104,6 +119,10 @@ fn validate_toml_scopes(
             continue;
         }
         if key == "global" {
+            continue;
+        }
+        if let Some(sink) = unknown.as_deref_mut() {
+            sink.push(format!("unknown scope [{key}] (ignored)"));
             continue;
         }
         return Err(KeymapError::UnknownScope { scope: key.clone() });

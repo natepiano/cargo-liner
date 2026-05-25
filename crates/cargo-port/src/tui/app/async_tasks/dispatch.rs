@@ -67,12 +67,6 @@ impl App {
         self.startup.lint_count.expected = Some(lint_registered);
         self.startup.lint_count.seen = 0;
         self.startup.lint_count.complete_at = None;
-        // When nothing will ever increment `seen` (lint runtime disabled or no
-        // eligible projects), nothing else will drive completion — finish the
-        // phase here so the startup toast can finish.
-        if lint_registered == 0 {
-            self.maybe_complete_startup_lint_cache();
-        }
         self.refresh_lint_runs_from_disk();
         self.scan.bump_generation();
 
@@ -94,6 +88,17 @@ impl App {
         // Mark scan complete and initialize startup tracking.
         self.scan.state.phase = ScanPhase::Complete;
         self.initialize_startup_phase_tracker();
+        // When nothing will ever increment `seen` (lint runtime disabled or
+        // no eligible projects), no later message drives completion — finish
+        // the phase here. This must run *after*
+        // `initialize_startup_phase_tracker` creates the Startup toast:
+        // completing it earlier marks `lint_count.complete_at` while the
+        // toast (and its "Lint history" item) does not yet exist, so the
+        // item is created already-pending and `complete_once` never fires
+        // again — leaving the Startup toast spinning forever.
+        if lint_registered == 0 {
+            self.maybe_complete_startup_lint_cache();
+        }
         self.schedule_startup_project_details();
         self.schedule_git_first_commit_refreshes();
     }

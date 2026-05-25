@@ -20,10 +20,11 @@ use crate::VimMode;
 pub(super) fn build_pane_bindings<Ctx: AppContext + 'static, P: Shortcuts<Ctx>>(
     toml_table: Option<&Table>,
     vim_mode: VimMode,
+    unknown: Option<&mut Vec<String>>,
 ) -> Result<Bindings<P::Actions>, KeymapError> {
     let scope_name = <P as Shortcuts<Ctx>>::SCOPE_NAME;
     let mut bindings =
-        overlay::apply_toml_overlay::<P::Actions>(scope_name, P::defaults(), toml_table)?;
+        overlay::apply_toml_overlay::<P::Actions>(scope_name, P::defaults(), toml_table, unknown)?;
     if matches!(vim_mode, VimMode::Enabled) {
         for (action, key) in P::vim_extras() {
             let sequence = KeySequence::from(*key);

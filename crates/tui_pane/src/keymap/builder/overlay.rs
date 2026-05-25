@@ -15,15 +15,21 @@ use crate::KeymapError;
 /// override matching actions in `defaults`. Returns the overlaid
 /// `Bindings` (replace-per-action semantics: TOML keys for an action
 /// fully replace the action's defaults).
+///
+/// `unknown` controls how an action key with no matching variant is
+/// handled: `None` returns [`KeymapError::UnknownAction`] (strict);
+/// `Some(sink)` pushes a human-readable warning into `sink` and skips
+/// the entry (lenient — see [`KeymapBuilder::ignore_unknown_entries`]).
 pub(super) fn apply_toml_overlay<A>(
     scope_name: &str,
     defaults: Bindings<A>,
     table: Option<&Table>,
+    unknown: Option<&mut Vec<String>>,
 ) -> Result<Bindings<A>, KeymapError>
 where
     A: Action,
 {
-    apply_toml_overlay_with_peer(scope_name, defaults, table, None)
+    apply_toml_overlay_with_peer(scope_name, defaults, table, None, unknown)
 }
 
 /// Same as [`apply_toml_overlay`], but unknown actions present in
@@ -34,6 +40,7 @@ pub(super) fn apply_toml_overlay_with_peer<A>(
     mut defaults: Bindings<A>,
     table: Option<&Table>,
     peer_action_keys: Option<&HashSet<&'static str>>,
+    mut unknown: Option<&mut Vec<String>>,
 ) -> Result<Bindings<A>, KeymapError>
 where
     A: Action,
@@ -51,6 +58,12 @@ where
     for (action_key, value) in scope_table {
         let Some(action) = A::from_toml_key(action_key) else {
             if peer_action_keys.is_some_and(|keys| keys.contains(action_key.as_str())) {
+                continue;
+            }
+            if let Some(sink) = unknown.as_deref_mut() {
+                sink.push(format!(
+                    "unknown action '{action_key}' in [{scope_name}] (ignored)"
+                ));
                 continue;
             }
             return Err(KeymapError::UnknownAction {

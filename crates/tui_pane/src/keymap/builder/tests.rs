@@ -1327,6 +1327,60 @@ fn unknown_action_in_toml_surfaces_at_build() {
 }
 
 #[test]
+fn ignore_unknown_entries_skips_unknown_action() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("tui_pane_test_iua_{}.toml", std::process::id()));
+    std::fs::write(&path, "[foo]\nfrobnicate = \"x\"\n").expect("write toml");
+    let keymap = Keymap::<TestApp>::builder()
+        .ignore_unknown_entries()
+        .load_toml(path.clone())
+        .expect("load_toml must succeed")
+        .register_navigation::<AppNav>()
+        .expect("nav register must succeed")
+        .register_globals::<AppGlobals>()
+        .expect("globals register must succeed")
+        .register::<FooPane>(FooPane)
+        .build()
+        .expect("build must succeed with unknown action ignored");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        keymap.unknown_warnings(),
+        ["unknown action 'frobnicate' in [foo] (ignored)"],
+        "the skipped action must be recorded as a warning",
+    );
+    // The scope's valid default binding survives the skipped entry.
+    let mut app = fresh_app();
+    assert_eq!(
+        keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
+        KeyOutcome::Consumed,
+    );
+}
+
+#[test]
+fn ignore_unknown_entries_skips_unknown_scope() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("tui_pane_test_ius_{}.toml", std::process::id()));
+    std::fs::write(&path, "[bogus_scope]\nx = \"y\"\n").expect("write toml");
+    let keymap = Keymap::<TestApp>::builder()
+        .ignore_unknown_entries()
+        .load_toml(path.clone())
+        .expect("load_toml must succeed")
+        .register_navigation::<AppNav>()
+        .expect("nav register must succeed")
+        .register_globals::<AppGlobals>()
+        .expect("globals register must succeed")
+        .register::<FooPane>(FooPane)
+        .build()
+        .expect("build must succeed with unknown scope ignored");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        keymap.unknown_warnings(),
+        ["unknown scope [bogus_scope] (ignored)"],
+        "the skipped scope must be recorded as a warning",
+    );
+}
+
+#[test]
 fn load_toml_missing_file_treated_as_no_overlay() {
     let path = std::env::temp_dir().join("tui_pane_does_not_exist.toml");
     let _ = std::fs::remove_file(&path);

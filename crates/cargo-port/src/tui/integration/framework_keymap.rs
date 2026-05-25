@@ -781,11 +781,18 @@ fn finder_keys(bind: KeyBind, app: &mut App) {
 /// production keymap TOML, if any. Errors propagate so the caller can
 /// surface them through the existing keymap-diagnostics toast
 /// plumbing.
+///
+/// Built in [`ignore_unknown_entries`](tui_pane::KeymapBuilder::ignore_unknown_entries)
+/// mode: a binding for an action or scope that no longer exists (a
+/// stale keymap from an older version) is skipped rather than failing
+/// the build. The dropped entries are recorded on the returned keymap
+/// — see [`Keymap::unknown_warnings`] — for the caller to surface.
 pub fn build_framework_keymap(
     builder: KeymapBuilder<App, Configuring>,
     framework: &mut Framework<App>,
 ) -> Result<Keymap<App>, KeymapError> {
     builder
+        .ignore_unknown_entries()
         .dismiss_fallback(dismiss_fallback)
         .register_navigation::<AppNavigation>()?
         .register_globals::<AppGlobalAction>()?

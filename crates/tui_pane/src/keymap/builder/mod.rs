@@ -152,6 +152,14 @@ pub struct KeymapBuilder<Ctx: AppContext + 'static, State = Configuring> {
     overlay_scope:            Option<ScopeMap<OverlayAction>>,
     vim_reserved_keys:        Vec<super::KeySequence>,
     deferred_error:           Option<KeymapError>,
+    /// When set, unknown actions / scopes in the loaded TOML are
+    /// skipped and recorded in [`Self::unknown_warnings`] instead of
+    /// failing the build. See [`Self::ignore_unknown_entries`].
+    ignore_unknown:           bool,
+    /// Human-readable warnings for each TOML entry skipped because
+    /// [`Self::ignore_unknown`] is set. Moved onto the finalized
+    /// [`Keymap`] so the binary can surface them.
+    unknown_warnings:         Vec<String>,
     _state:                   PhantomData<State>,
 }
 
@@ -185,8 +193,28 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             overlay_scope:            None,
             vim_reserved_keys:        Vec::new(),
             deferred_error:           None,
+            ignore_unknown:           false,
+            unknown_warnings:         Vec::new(),
             _state:                   PhantomData,
         }
+    }
+
+    /// Make subsequent overlay steps tolerant of unknown TOML entries:
+    /// an action key with no matching variant, or a top-level scope
+    /// table that no registered scope claims, is skipped and recorded
+    /// as a warning (retrievable via
+    /// [`Keymap::unknown_warnings`](super::Keymap::unknown_warnings))
+    /// rather than surfaced as a [`KeymapError`].
+    ///
+    /// Lets a binary tolerate a stale on-disk keymap — e.g. a binding
+    /// for an action that was renamed or removed in a newer version —
+    /// without bricking startup, while still surfacing the dropped
+    /// entries to the user. Parse errors, in-scope collisions, and
+    /// reserved-key conflicts stay fatal.
+    #[must_use]
+    pub const fn ignore_unknown_entries(mut self) -> Self {
+        self.ignore_unknown = true;
+        self
     }
 
     /// Override the config path the loader will read.
@@ -274,8 +302,12 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
     pub fn register_navigation<N: Navigation<Ctx>>(mut self) -> Result<Self, KeymapError> {
         let defaults = N::defaults();
         let scope_name = <N as Navigation<Ctx>>::SCOPE_NAME;
-        let mut bindings =
-            apply_toml_overlay::<N::Actions>(scope_name, defaults, self.toml_table.as_ref())?;
+        let mut bindings = apply_toml_overlay::<N::Actions>(
+            scope_name,
+            defaults,
+            self.toml_table.as_ref(),
+            self.ignore_unknown.then_some(&mut self.unknown_warnings),
+        )?;
         if matches!(self.vim_mode, VimMode::Enabled) {
             apply_vim_navigation_extras::<Ctx, N>(&mut bindings);
             self.vim_reserved_keys = reserved_vim_navigation_keys::<Ctx, N>();
@@ -310,6 +342,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             defaults,
             self.toml_table.as_ref(),
             peer_keys,
+            self.ignore_unknown.then_some(&mut self.unknown_warnings),
         )?;
         check_reserved_vim_navigation_keys(scope_name, &bindings, &self.vim_reserved_keys)?;
         let scope_map: ScopeMap<G::Actions> = bindings.into_scope_map();
@@ -342,6 +375,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Configuring> {
             "overlay",
             SettingsPane::defaults(),
             self.toml_table.as_ref(),
+            self.ignore_unknown.then_some(&mut self.unknown_warnings),
         )?;
         self.overlay_scope = Some(bindings.into_scope_map());
         self.registered_scopes.insert("overlay");
@@ -469,8 +503,11 @@ impl<Ctx: AppContext + 'static, State> KeymapBuilder<Ctx, State> {
         if self.scopes.contains_key(&P::APP_PANE_ID) && self.duplicate_scope.is_none() {
             self.duplicate_scope = Some(type_name::<P>());
         }
-        let bindings = match build_pane_bindings::<Ctx, P>(self.toml_table.as_ref(), self.vim_mode)
-        {
+        let bindings = match build_pane_bindings::<Ctx, P>(
+            self.toml_table.as_ref(),
+            self.vim_mode,
+            self.ignore_unknown.then_some(&mut self.unknown_warnings),
+        ) {
             Ok(b) => b,
             Err(err) => {
                 if self.deferred_error.is_none() {
@@ -538,6 +575,8 @@ fn transition<Ctx: AppContext + 'static>(
         overlay_scope:            src.overlay_scope,
         vim_reserved_keys:        src.vim_reserved_keys,
         deferred_error:           src.deferred_error,
+        ignore_unknown:           src.ignore_unknown,
+        unknown_warnings:         src.unknown_warnings,
         _state:                   PhantomData,
     }
 }

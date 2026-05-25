@@ -16,6 +16,7 @@ use crate::tui::integration::ReloadContext;
 use crate::tui::integration::TreeReaction;
 use crate::tui::keymap;
 use crate::tui::keymap::KeymapError;
+use crate::tui::keymap::KeymapErrorReason;
 use crate::tui::keymap::KeymapErrorReason::Parse;
 use crate::tui::keymap_ui;
 
@@ -33,8 +34,24 @@ impl App {
         let result = keymap::load_keymap(vim_mode);
         self.keymap.replace_current(result.keymap);
         self.keymap.sync_stamp();
-        if !result.errors.is_empty() {
-            self.show_keymap_diagnostics(&result.errors);
+        // The framework keymap (built in `ignore_unknown_entries` mode)
+        // is the authoritative record of unknown actions/scopes across
+        // every scope, so surface those. Reaching here means the
+        // framework build succeeded, so the only legacy errors possible
+        // are `UnknownAction`s already covered by the framework
+        // warnings; keep any other legacy diagnostics in case the two
+        // loaders disagree.
+        let mut diagnostics: Vec<String> = result
+            .errors
+            .iter()
+            .filter(|err| !matches!(err.reason, KeymapErrorReason::UnknownAction))
+            .map(ToString::to_string)
+            .collect();
+        diagnostics.extend(self.framework_keymap.unknown_warnings().iter().cloned());
+        if diagnostics.is_empty() {
+            self.dismiss_keymap_diagnostics();
+        } else {
+            self.show_keymap_diagnostics(&diagnostics);
         }
         if !result.missing_actions.is_empty() {
             keymap_ui::save_current_keymap_to_disk(self);
@@ -62,7 +79,8 @@ impl App {
                     action: String::new(),
                     key:    String::new(),
                     reason: Parse(format!("read error: {e}")),
-                }]);
+                }
+                .to_string()]);
                 return;
             },
         };
@@ -78,7 +96,8 @@ impl App {
             }
             self.dismiss_keymap_diagnostics();
         } else {
-            self.show_keymap_diagnostics(&result.errors);
+            let messages: Vec<String> = result.errors.iter().map(ToString::to_string).collect();
+            self.show_keymap_diagnostics(&messages);
         }
 
         if !result.missing_actions.is_empty() {
@@ -93,15 +112,11 @@ impl App {
         }
     }
 
-    pub(super) fn show_keymap_diagnostics(&mut self, errors: &[KeymapError]) {
+    pub(super) fn show_keymap_diagnostics(&mut self, messages: &[String]) {
         // Dismiss previous diagnostics toast if any.
         self.dismiss_keymap_diagnostics();
 
-        let body = errors
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let body = messages.join("\n");
         let action_path = self
             .keymap
             .path()

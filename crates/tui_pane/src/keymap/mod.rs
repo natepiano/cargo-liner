@@ -122,6 +122,12 @@ pub struct Keymap<Ctx: AppContext + 'static> {
     on_restart:                   Option<fn(&mut Ctx)>,
     dismiss_fallback:             Option<fn(&mut Ctx) -> bool>,
     config_path:                  Option<PathBuf>,
+    /// Warnings for TOML entries skipped during the build because the
+    /// builder ran in
+    /// [`ignore_unknown_entries`](KeymapBuilder::ignore_unknown_entries)
+    /// mode. Empty in the default (strict) build, where such entries
+    /// fail the build instead.
+    unknown_warnings:             Vec<String>,
 }
 
 impl<Ctx: AppContext + 'static> Keymap<Ctx> {
@@ -151,6 +157,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
             on_restart: None,
             dismiss_fallback: None,
             config_path,
+            unknown_warnings: Vec::new(),
         }
     }
 
@@ -260,6 +267,22 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// defaults" and returns `Ok`.
     #[must_use]
     pub fn config_path(&self) -> Option<&Path> { self.config_path.as_deref() }
+
+    /// `pub(super)` because only [`KeymapBuilder::build`] (sibling)
+    /// constructs one.
+    pub(super) fn set_unknown_warnings(&mut self, warnings: Vec<String>) {
+        self.unknown_warnings = warnings;
+    }
+
+    /// Warnings for TOML entries skipped during the build (unknown
+    /// actions and unknown scopes). Non-empty only when the keymap was
+    /// built via
+    /// [`KeymapBuilder::ignore_unknown_entries`]; the default strict
+    /// build fails on such entries instead of recording them. The
+    /// binary surfaces these to the user (e.g. a startup toast) so a
+    /// stale on-disk keymap is visible without bricking startup.
+    #[must_use]
+    pub fn unknown_warnings(&self) -> &[String] { &self.unknown_warnings }
 
     /// Resolve `bind` to an action in the scope registered for
     /// `app_pane_id` and call its dispatcher. Returns

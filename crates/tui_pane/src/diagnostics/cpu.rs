@@ -8,6 +8,7 @@
 //! caller-supplied thresholds; [`CpuSeverity::color`] resolves to the
 //! framework's success / title / error theme colors.
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::Command;
 use std::time::Duration;
 use std::time::Instant;
@@ -54,7 +55,7 @@ impl CpuUsage {
                 })
                 .collect(),
             breakdown:     CpuBreakdown::default(),
-            gpu_percent:   read_gpu_percent(),
+            gpu_percent:   None,
         }
     }
 }
@@ -101,6 +102,9 @@ pub struct CpuPoller {
     last_poll:          Option<Instant>,
     poll_interval:      Duration,
     last_breakdown_raw: CpuBreakdownRaw,
+    /// Persistent PDH query for GPU utilization (Windows only).
+    #[cfg(target_os = "windows")]
+    gpu_query:          Option<GpuQuery>,
 }
 
 impl CpuPoller {
@@ -117,6 +121,8 @@ impl CpuPoller {
             last_poll: None,
             poll_interval: Duration::from_millis(poll_interval_ms),
             last_breakdown_raw: read_cpu_breakdown_raw(),
+            #[cfg(target_os = "windows")]
+            gpu_query: GpuQuery::new(),
         }
     }
 
@@ -139,6 +145,7 @@ impl CpuPoller {
         }
 
         self.last_poll = Some(now);
+
         self.system.refresh_cpu_all();
 
         let cores = self
@@ -153,11 +160,17 @@ impl CpuPoller {
             .collect::<Vec<_>>();
 
         let total_percent = cpu_percent(self.system.global_cpu_usage());
+        let breakdown = cpu_breakdown(&mut self.last_breakdown_raw);
+        #[cfg(target_os = "windows")]
+        let gpu_percent = self.gpu_query.as_ref().and_then(GpuQuery::sample);
+        #[cfg(not(target_os = "windows"))]
+        let gpu_percent = read_gpu_percent();
+
         let usage = CpuUsage {
             total_percent,
             cores,
-            breakdown: cpu_breakdown(&mut self.last_breakdown_raw),
-            gpu_percent: read_gpu_percent(),
+            breakdown,
+            gpu_percent,
         };
         Some(usage)
     }
@@ -272,9 +285,6 @@ fn read_gpu_percent() -> Option<u8> {
 #[cfg(not(target_os = "macos"))]
 #[cfg(target_os = "linux")]
 fn read_gpu_percent() -> Option<u8> { linux_sysfs_gpu_percent().or_else(linux_nvidia_gpu_percent) }
-
-#[cfg(target_os = "windows")]
-fn read_gpu_percent() -> Option<u8> { windows_gpu_percent() }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn read_gpu_percent() -> Option<u8> { None }
@@ -414,6 +424,7 @@ fn linux_nvidia_gpu_percent() -> Option<u8> {
 #[cfg(target_os = "windows")]
 fn windows_cpu_breakdown_raw() -> CpuBreakdownRaw {
     #[repr(C)]
+    #[derive(Clone, Copy)]
     struct FileTime {
         dw_low_date_time:  u32,
         dw_high_date_time: u32,
@@ -446,7 +457,10 @@ fn windows_cpu_breakdown_raw() -> CpuBreakdownRaw {
         dw_high_date_time: 0,
     };
 
-    let ok = unsafe { GetSystemTimes(&mut idle_time, &mut kernel_time, &mut user_time) };
+    // SAFETY: each argument is a valid, writable `FileTime` local; GetSystemTimes
+    // only writes through the pointers and reports success via a nonzero return.
+    let ok =
+        unsafe { GetSystemTimes(&raw mut idle_time, &raw mut kernel_time, &raw mut user_time) };
     if ok == 0 {
         return CpuBreakdownRaw::default();
     }
@@ -462,24 +476,177 @@ fn windows_cpu_breakdown_raw() -> CpuBreakdownRaw {
     }
 }
 
+/// Wildcard PDH counter path summing 3-D engine utilization across
+/// every GPU engine instance. Uses the English (non-localized) counter
+/// names so the query resolves regardless of the system language.
 #[cfg(target_os = "windows")]
-fn windows_gpu_percent() -> Option<u8> {
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "(Get-Counter '\\GPU Engine(*engtype_3D)\\Utilization Percentage').CounterSamples | Measure-Object -Property CookedValue -Sum | Select-Object -ExpandProperty Sum",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+const GPU_COUNTER_PATH: &str = "\\GPU Engine(*engtype_3D)\\Utilization Percentage";
+
+/// `ERROR_SUCCESS` / `PDH_CSTATUS_VALID_DATA`.
+#[cfg(target_os = "windows")]
+const PDH_SUCCESS: u32 = 0x0000_0000;
+/// A per-item `CStatus` indicating a freshly cooked sample.
+#[cfg(target_os = "windows")]
+const PDH_CSTATUS_NEW_DATA: u32 = 0x0000_0001;
+/// `PdhGetFormattedCounterArrayW` needs a larger buffer (sizing pass).
+#[cfg(target_os = "windows")]
+const PDH_MORE_DATA: u32 = 0x8000_07D2;
+/// Request cooked counter values formatted as `f64`.
+#[cfg(target_os = "windows")]
+const PDH_FMT_DOUBLE: u32 = 0x0000_0200;
+
+/// Rust mirror of `PDH_FMT_COUNTERVALUE` (the `double` union arm). The
+/// 8-byte alignment of `f64` reproduces the 4-byte pad C inserts after
+/// `CStatus`, so `double_value` lands at the union's offset.
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[derive(Debug)]
+struct PdhFmtCounterValue {
+    c_status:     u32,
+    double_value: f64,
+}
+
+/// Rust mirror of `PDH_FMT_COUNTERVALUE_ITEM_W`.
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[derive(Debug)]
+struct PdhFmtCounterValueItem {
+    name:  *mut u16,
+    value: PdhFmtCounterValue,
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "pdh")]
+unsafe extern "system" {
+    fn PdhOpenQueryW(data_source: *const u16, user_data: usize, query: *mut isize) -> u32;
+    fn PdhAddEnglishCounterW(
+        query: isize,
+        counter_path: *const u16,
+        user_data: usize,
+        counter: *mut isize,
+    ) -> u32;
+    fn PdhCollectQueryData(query: isize) -> u32;
+    fn PdhGetFormattedCounterArrayW(
+        counter: isize,
+        format: u32,
+        buffer_size: *mut u32,
+        item_count: *mut u32,
+        item_buffer: *mut PdhFmtCounterValueItem,
+    ) -> u32;
+    fn PdhCloseQuery(query: isize) -> u32;
+}
+
+/// A persistent PDH query for GPU 3-D engine utilization.
+///
+/// Replaces the previous per-poll `powershell Get-Counter` spawn that
+/// cost ~2.5s on the render thread. The query stays open across polls,
+/// so each [`sample`](Self::sample) collects a second data point
+/// relative to the previous poll — no process spawn, no sleep, and the
+/// utilization is cooked over the natural poll interval.
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct GpuQuery {
+    query:   isize,
+    counter: isize,
+}
+
+#[cfg(target_os = "windows")]
+impl GpuQuery {
+    /// Open the query, add the wildcard counter, and prime the baseline
+    /// sample. Returns `None` if PDH or the GPU counter is unavailable.
+    fn new() -> Option<Self> {
+        let path: Vec<u16> = GPU_COUNTER_PATH
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut query: isize = 0;
+        // SAFETY: `query` is a valid out-param; a null data source selects the
+        // live system, per the PdhOpenQueryW contract.
+        if unsafe { PdhOpenQueryW(std::ptr::null(), 0, &raw mut query) } != PDH_SUCCESS {
+            return None;
+        }
+        let mut counter: isize = 0;
+        // SAFETY: `query` is the handle just opened; `path` is a NUL-terminated
+        // UTF-16 string that outlives the call; `counter` is a valid out-param.
+        if unsafe { PdhAddEnglishCounterW(query, path.as_ptr(), 0, &raw mut counter) }
+            != PDH_SUCCESS
+        {
+            // SAFETY: `query` is the live handle returned by PdhOpenQueryW.
+            unsafe { PdhCloseQuery(query) };
+            return None;
+        }
+        // Rate counters need two samples to cook a value; prime the baseline.
+        // SAFETY: `query` is a live, open query handle.
+        unsafe { PdhCollectQueryData(query) };
+        Some(Self { query, counter })
     }
-    let value = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse::<f64>()
-        .ok()?;
-    Some(rounded_percent(value))
+
+    /// Collect a fresh sample and sum the cooked utilization across all
+    /// matching engine instances, clamped to `0..=100`.
+    fn sample(&self) -> Option<u8> {
+        // SAFETY: `self.query` stays valid for the lifetime of `self`.
+        if unsafe { PdhCollectQueryData(self.query) } != PDH_SUCCESS {
+            return None;
+        }
+
+        // Sizing pass: a NULL buffer yields the bytes and item count needed.
+        let mut buffer_size: u32 = 0;
+        let mut item_count: u32 = 0;
+        // SAFETY: `self.counter` is live; the size/count out-params are valid;
+        // a null item buffer requests only the required sizes (PDH_MORE_DATA).
+        let status = unsafe {
+            PdhGetFormattedCounterArrayW(
+                self.counter,
+                PDH_FMT_DOUBLE,
+                &raw mut buffer_size,
+                &raw mut item_count,
+                std::ptr::null_mut(),
+            )
+        };
+        if status != PDH_MORE_DATA || buffer_size == 0 {
+            return None;
+        }
+
+        // Allocate as `PdhFmtCounterValueItem` so the buffer is correctly
+        // aligned; PDH appends the instance-name strings in the tail bytes.
+        let elem = std::mem::size_of::<PdhFmtCounterValueItem>();
+        let capacity = (buffer_size as usize).div_ceil(elem).max(1);
+        let mut buffer: Vec<PdhFmtCounterValueItem> = Vec::with_capacity(capacity);
+        let mut alloc_size = u32::try_from(capacity.saturating_mul(elem)).unwrap_or(buffer_size);
+        // SAFETY: `buffer` holds `capacity` correctly aligned items totalling
+        // `alloc_size` bytes (>= the sizing pass), enough for the items plus the
+        // name strings PDH appends; `self.counter` and the out-params are valid.
+        if unsafe {
+            PdhGetFormattedCounterArrayW(
+                self.counter,
+                PDH_FMT_DOUBLE,
+                &raw mut alloc_size,
+                &raw mut item_count,
+                buffer.as_mut_ptr(),
+            )
+        } != PDH_SUCCESS
+        {
+            return None;
+        }
+
+        // SAFETY: PDH initialized `item_count` contiguous items at the front of
+        // `buffer`; the iteration below reads no further than that.
+        let items = unsafe { std::slice::from_raw_parts(buffer.as_ptr(), item_count as usize) };
+        let sum: f64 = items
+            .iter()
+            .filter(|item| matches!(item.value.c_status, PDH_SUCCESS | PDH_CSTATUS_NEW_DATA))
+            .map(|item| item.value.double_value)
+            .sum();
+        Some(rounded_percent(sum))
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for GpuQuery {
+    fn drop(&mut self) {
+        // SAFETY: `self.query` was opened by PdhOpenQueryW and is closed once.
+        unsafe { PdhCloseQuery(self.query) };
+    }
 }
 
 #[cfg(test)]
