@@ -16,6 +16,9 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::prelude::*;
 
+use super::constants::DEFAULT_PERF_LOG_FILTER;
+use super::constants::PERF_LOG_ENV;
+
 /// Frame paint exceeding this is logged as a slow frame (ms).
 pub const SLOW_FRAME_MS: u128 = 30;
 /// Background-message batch processing exceeding this is logged (ms).
@@ -49,8 +52,8 @@ pub fn init(current_log_path: &Path, previous_log_path: &Path) {
         .truncate(true)
         .open(current_log_path);
 
-    let filter =
-        EnvFilter::try_from_env("CARGO_PORT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_env(PERF_LOG_ENV)
+        .unwrap_or_else(|_| EnvFilter::new(DEFAULT_PERF_LOG_FILTER));
 
     if let Ok(file) = file {
         init_file_subscriber(file, filter);

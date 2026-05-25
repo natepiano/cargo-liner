@@ -6,6 +6,7 @@
 //! exposes the slow-threshold constants and a `u128`→`u64` helper used
 //! by callers when emitting tracing fields.
 
+mod constants;
 mod cpu;
 mod perf_log;
 

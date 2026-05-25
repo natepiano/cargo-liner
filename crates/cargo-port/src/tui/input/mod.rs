@@ -208,10 +208,10 @@ fn dispatch_app_global(app: &mut App, bind: &KeyBind) -> bool {
     true
 }
 
-fn dispatch_focused_app_pane(app: &mut App, id: AppPaneId, bind: &KeyBind) -> bool {
+fn dispatch_focused_app_pane(app: &mut App, app_pane_id: AppPaneId, bind: &KeyBind) -> bool {
     let keymap = Rc::clone(&app.framework_keymap);
     matches!(
-        keymap.dispatch_app_pane(id, bind, app),
+        keymap.dispatch_app_pane(app_pane_id, bind, app),
         KeyOutcome::Consumed
     )
 }

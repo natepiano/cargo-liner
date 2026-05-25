@@ -246,8 +246,12 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
 
     /// Insert one scope under its `AppPaneId`. `pub(super)` so only
     /// the builder writes.
-    pub(super) fn insert_scope(&mut self, id: Ctx::AppPaneId, scope: Box<dyn RuntimeScope<Ctx>>) {
-        self.scopes.insert(id, scope);
+    pub(super) fn insert_scope(
+        &mut self,
+        app_pane_id: Ctx::AppPaneId,
+        scope: Box<dyn RuntimeScope<Ctx>>,
+    ) {
+        self.scopes.insert(app_pane_id, scope);
     }
 
     /// Path to the config file the loader read (or would read), if
@@ -257,55 +261,68 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     #[must_use]
     pub fn config_path(&self) -> Option<&Path> { self.config_path.as_deref() }
 
-    /// Resolve `bind` to an action in the scope registered for `id`
-    /// and call its dispatcher. Returns [`KeyOutcome::Unhandled`] if
-    /// no scope is registered for `id` or no binding matches; the
-    /// caller continues its dispatch chain (globals, dismiss,
-    /// fallback) on `Unhandled`.
+    /// Resolve `bind` to an action in the scope registered for
+    /// `app_pane_id` and call its dispatcher. Returns
+    /// [`KeyOutcome::Unhandled`] if no scope is registered for
+    /// `app_pane_id` or no binding matches; the caller continues its
+    /// dispatch chain (globals, dismiss, fallback) on `Unhandled`.
     pub fn dispatch_app_pane(
         &self,
-        id: Ctx::AppPaneId,
+        app_pane_id: Ctx::AppPaneId,
         bind: &KeyBind,
         ctx: &mut Ctx,
     ) -> KeyOutcome {
         self.scopes
-            .get(&id)
+            .get(&app_pane_id)
             .map_or(KeyOutcome::Unhandled, |s| s.dispatch_key(bind, ctx))
     }
 
-    /// Bar slots for the scope registered for `id`, fully resolved
-    /// (label / key / state / visibility). Returns an empty `Vec` if
-    /// no scope is registered.
+    /// Bar slots for the scope registered for `app_pane_id`, fully
+    /// resolved (label / key / state / visibility). Returns an empty
+    /// `Vec` if no scope is registered.
     #[must_use]
-    pub fn render_app_pane_bar_slots(&self, id: Ctx::AppPaneId, ctx: &Ctx) -> Vec<RenderedSlot> {
+    pub fn render_app_pane_bar_slots(
+        &self,
+        app_pane_id: Ctx::AppPaneId,
+        ctx: &Ctx,
+    ) -> Vec<RenderedSlot> {
         self.scopes
-            .get(&id)
+            .get(&app_pane_id)
             .map_or_else(Vec::new, |s| s.render_bar_slots(ctx))
     }
 
     /// Reverse lookup: TOML action key string → currently bound
-    /// [`KeyBind`] in the scope registered for `id`. Returns `None`
-    /// if no scope is registered for `id`, the action name is not
-    /// recognized, or the named action has no binding.
+    /// [`KeyBind`] in the scope registered for `app_pane_id`. Returns
+    /// `None` if no scope is registered for `app_pane_id`, the action
+    /// name is not recognized, or the named action has no binding.
     #[must_use]
-    pub fn key_for_toml_key(&self, id: Ctx::AppPaneId, action: &str) -> Option<KeySequence> {
-        self.scopes.get(&id)?.key_for_toml_key(action)
+    pub fn key_for_toml_key(
+        &self,
+        app_pane_id: Ctx::AppPaneId,
+        action: &str,
+    ) -> Option<KeySequence> {
+        self.scopes.get(&app_pane_id)?.key_for_toml_key(action)
     }
 
     /// Reverse lookup: TOML action key string → every currently bound
-    /// [`KeyBind`] in the scope registered for `id`. Returns an empty
-    /// vector if no scope is registered for `id`, the action name is
-    /// not recognized, or the named action has no binding.
+    /// [`KeyBind`] in the scope registered for `app_pane_id`. Returns
+    /// an empty vector if no scope is registered for `app_pane_id`, the
+    /// action name is not recognized, or the named action has no
+    /// binding.
     #[must_use]
-    pub fn keys_for_toml_key(&self, id: Ctx::AppPaneId, action: &str) -> Vec<KeySequence> {
+    pub fn keys_for_toml_key(
+        &self,
+        app_pane_id: Ctx::AppPaneId,
+        action: &str,
+    ) -> Vec<KeySequence> {
         self.scopes
-            .get(&id)
+            .get(&app_pane_id)
             .map_or_else(Vec::new, |scope| scope.keys_for_toml_key(action))
     }
 
     /// Reverse lookup predicate: returns `true` when `bind` is one of
     /// the keys currently bound to the TOML action key string in the
-    /// scope registered for `id`.
+    /// scope registered for `app_pane_id`.
     ///
     /// Unlike [`Self::key_for_toml_key`], this checks every binding
     /// for the action, not just the primary key rendered in compact
@@ -314,12 +331,12 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     #[must_use]
     pub fn is_key_bound_to_toml_key(
         &self,
-        id: Ctx::AppPaneId,
+        app_pane_id: Ctx::AppPaneId,
         action: &str,
         bind: &KeyBind,
     ) -> bool {
         self.scopes
-            .get(&id)
+            .get(&app_pane_id)
             .is_some_and(|scope| scope.is_key_bound_to_toml_key(action, bind))
     }
 
@@ -422,10 +439,11 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
         }
     }
 
-    /// TOML scope name registered for `id`, or `None` when no scope is
-    /// registered. Mirrors the inverse of [`Self::insert_scope`].
-    fn scope_toml_name_for(&self, id: Ctx::AppPaneId) -> Option<&'static str> {
-        self.scopes.get(&id).map(|scope| scope.scope_name())
+    /// TOML scope name registered for `app_pane_id`, or `None` when no
+    /// scope is registered. Mirrors the inverse of
+    /// [`Self::insert_scope`].
+    fn scope_toml_name_for(&self, app_pane_id: Ctx::AppPaneId) -> Option<&'static str> {
+        self.scopes.get(&app_pane_id).map(|scope| scope.scope_name())
     }
 
     /// Typed singleton getter for the registered [`Navigation`] impl.

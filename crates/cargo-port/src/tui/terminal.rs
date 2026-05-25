@@ -38,6 +38,8 @@ use tui_pane::TrackedItemKey;
 use super::app::App;
 use super::app::PendingClean;
 use super::app::PollBackgroundStats;
+use super::constants::PERF_LOG_FILE;
+use super::constants::PREVIOUS_PERF_LOG_FILE;
 use super::input;
 use super::panes::CiFetchKind;
 use super::panes::PendingCiFetch;
@@ -124,8 +126,8 @@ pub fn run() -> ExitCode {
     };
     let cfg = startup_settings.config.clone();
     config::set_active_config(&cfg);
-    let perf_log_path = std::env::temp_dir().join("cargo-port-tui-perf.log");
-    let previous_perf_log_path = std::env::temp_dir().join("cargo-port-tui-perf.prev.log");
+    let perf_log_path = std::env::temp_dir().join(PERF_LOG_FILE);
+    let previous_perf_log_path = std::env::temp_dir().join(PREVIOUS_PERF_LOG_FILE);
     tui_pane::init_perf_log(&perf_log_path, &previous_perf_log_path);
 
     let Ok(rt) = tokio::runtime::Runtime::new() else {

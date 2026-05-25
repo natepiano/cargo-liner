@@ -76,25 +76,25 @@ impl<Ctx: AppContext> TabStop<Ctx> {
 const fn always_tabbable<Ctx: AppContext>(_: &Ctx) -> bool { true }
 
 pub(super) struct RegisteredTabStop<Ctx: AppContext> {
-    id:                 Ctx::AppPaneId,
+    app_pane_id:        Ctx::AppPaneId,
     registration_index: usize,
     tab_stop:           TabStop<Ctx>,
 }
 
 impl<Ctx: AppContext> RegisteredTabStop<Ctx> {
     pub(super) const fn new(
-        id: Ctx::AppPaneId,
+        app_pane_id: Ctx::AppPaneId,
         registration_index: usize,
         tab_stop: TabStop<Ctx>,
     ) -> Self {
         Self {
-            id,
+            app_pane_id,
             registration_index,
             tab_stop,
         }
     }
 
-    pub(super) const fn id(&self) -> Ctx::AppPaneId { self.id }
+    pub(super) const fn id(&self) -> Ctx::AppPaneId { self.app_pane_id }
 
     pub(super) const fn registration_index(&self) -> usize { self.registration_index }
 

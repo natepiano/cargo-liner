@@ -9,6 +9,10 @@ pub(super) const CI_TIMESTAMP_WIDTH: u16 = 16;
 
 pub(super) const MAX_FINDER_RESULTS: usize = 50;
 
+// perf log
+pub(super) const PERF_LOG_FILE: &str = "cargo-port-tui-perf.log";
+pub(super) const PREVIOUS_PERF_LOG_FILE: &str = "cargo-port-tui-perf.prev.log";
+
 // Startup toast phase labels — used as both the tracked-item label and
 // key. Completion matches by key via `mark_tracked_item_completed`.
 pub(super) const STARTUP_PHASE_DISK: &str = "Disk usage";

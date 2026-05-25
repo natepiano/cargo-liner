@@ -201,15 +201,15 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// can call it.
     pub(super) fn register_app_pane(
         &mut self,
-        id: Ctx::AppPaneId,
+        app_pane_id: Ctx::AppPaneId,
         mode_query: ModeQuery<Ctx>,
         tab_stop: TabStop<Ctx>,
     ) {
-        if self.mode_queries.insert(id, mode_query).is_none() {
+        if self.mode_queries.insert(app_pane_id, mode_query).is_none() {
             let registration_index = self.pane_order.len();
-            self.pane_order.push(id);
+            self.pane_order.push(app_pane_id);
             self.tab_stops
-                .push(RegisteredTabStop::new(id, registration_index, tab_stop));
+                .push(RegisteredTabStop::new(app_pane_id, registration_index, tab_stop));
         }
     }
 

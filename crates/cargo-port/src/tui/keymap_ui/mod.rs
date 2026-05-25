@@ -330,8 +330,8 @@ fn binds_for_scope_action(app: &App, scope: &str, action_key: &str) -> Vec<KeySe
     Vec::new()
 }
 
-const fn keymap_scope_name(_app: &App, id: AppPaneId) -> Option<&'static str> {
-    Some(match id {
+const fn keymap_scope_name(_app: &App, app_pane_id: AppPaneId) -> Option<&'static str> {
+    Some(match app_pane_id {
         AppPaneId::ProjectList => <ProjectListPane as Shortcuts<App>>::SCOPE_NAME,
         AppPaneId::Package => <PackagePane as Shortcuts<App>>::SCOPE_NAME,
         AppPaneId::Git => <GitPane as Shortcuts<App>>::SCOPE_NAME,

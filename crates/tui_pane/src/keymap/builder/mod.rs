@@ -65,9 +65,9 @@ type ErasedSingleton = Box<dyn Any>;
 type ScopeRenderFn<Ctx> = fn(&Keymap<Ctx>) -> Vec<super::RenderedSlot>;
 
 struct PaneRegistration<Ctx: AppContext> {
-    id:         Ctx::AppPaneId,
-    mode_query: ModeQuery<Ctx>,
-    tab_stop:   TabStop<Ctx>,
+    app_pane_id: Ctx::AppPaneId,
+    mode_query:  ModeQuery<Ctx>,
+    tab_stop:    TabStop<Ctx>,
 }
 
 struct CopyRegistration<Ctx: AppContext> {
@@ -447,7 +447,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
     pub fn build_into(self, framework: &mut Framework<Ctx>) -> Result<Keymap<Ctx>, KeymapError> {
         for registration in &self.pane_registrations {
             framework.register_app_pane(
-                registration.id,
+                registration.app_pane_id,
                 registration.mode_query,
                 registration.tab_stop,
             );
@@ -460,7 +460,7 @@ impl<Ctx: AppContext + 'static> KeymapBuilder<Ctx, Registering> {
 }
 
 impl<Ctx: AppContext + 'static, State> KeymapBuilder<Ctx, State> {
-    /// Insert one pane scope. Records the `(id, mode_fn)` pair for
+    /// Insert one pane scope. Records the `(app_pane_id, mode_fn)` pair for
     /// `build_into` and the `SCOPE_NAME` for cross-scope validation.
     /// Detects `APP_PANE_ID` duplicates and stashes the offender's
     /// type name for `build` / `build_into` to surface as
@@ -485,9 +485,9 @@ impl<Ctx: AppContext + 'static, State> KeymapBuilder<Ctx, State> {
         });
         self.scopes.insert(P::APP_PANE_ID, scope);
         self.pane_registrations.push(PaneRegistration {
-            id:         P::APP_PANE_ID,
-            mode_query: <P as Pane<Ctx>>::mode(),
-            tab_stop:   <P as Pane<Ctx>>::tab_stop(),
+            app_pane_id: P::APP_PANE_ID,
+            mode_query:  <P as Pane<Ctx>>::mode(),
+            tab_stop:    <P as Pane<Ctx>>::tab_stop(),
         });
         self.registered_scopes
             .insert(<P as Shortcuts<Ctx>>::SCOPE_NAME);
@@ -498,9 +498,9 @@ impl<Ctx: AppContext + 'static, State> KeymapBuilder<Ctx, State> {
     /// pane-local actions but still need to appear in focus cycling.
     fn insert_pane_no_shortcuts<P: Pane<Ctx>>(&mut self) {
         self.pane_registrations.push(PaneRegistration {
-            id:         P::APP_PANE_ID,
-            mode_query: <P as Pane<Ctx>>::mode(),
-            tab_stop:   <P as Pane<Ctx>>::tab_stop(),
+            app_pane_id: P::APP_PANE_ID,
+            mode_query:  <P as Pane<Ctx>>::mode(),
+            tab_stop:    <P as Pane<Ctx>>::tab_stop(),
         });
     }
 }
