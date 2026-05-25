@@ -310,11 +310,7 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// action name is not recognized, or the named action has no
     /// binding.
     #[must_use]
-    pub fn keys_for_toml_key(
-        &self,
-        app_pane_id: Ctx::AppPaneId,
-        action: &str,
-    ) -> Vec<KeySequence> {
+    pub fn keys_for_toml_key(&self, app_pane_id: Ctx::AppPaneId, action: &str) -> Vec<KeySequence> {
         self.scopes
             .get(&app_pane_id)
             .map_or_else(Vec::new, |scope| scope.keys_for_toml_key(action))
@@ -443,7 +439,9 @@ impl<Ctx: AppContext + 'static> Keymap<Ctx> {
     /// scope is registered. Mirrors the inverse of
     /// [`Self::insert_scope`].
     fn scope_toml_name_for(&self, app_pane_id: Ctx::AppPaneId) -> Option<&'static str> {
-        self.scopes.get(&app_pane_id).map(|scope| scope.scope_name())
+        self.scopes
+            .get(&app_pane_id)
+            .map(|scope| scope.scope_name())
     }
 
     /// Typed singleton getter for the registered [`Navigation`] impl.

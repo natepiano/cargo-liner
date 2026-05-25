@@ -208,8 +208,11 @@ impl<Ctx: AppContext> Framework<Ctx> {
         if self.mode_queries.insert(app_pane_id, mode_query).is_none() {
             let registration_index = self.pane_order.len();
             self.pane_order.push(app_pane_id);
-            self.tab_stops
-                .push(RegisteredTabStop::new(app_pane_id, registration_index, tab_stop));
+            self.tab_stops.push(RegisteredTabStop::new(
+                app_pane_id,
+                registration_index,
+                tab_stop,
+            ));
         }
     }
 
