@@ -12,6 +12,7 @@ use std::time::Duration;
 use tui_pane::WatchedFile;
 
 use crate::config::CargoPortConfig;
+use crate::config::EdgeScroll;
 use crate::config::NavigationKeys;
 use crate::config::NonRustInclusion;
 use crate::config::ScrollDirection;
@@ -58,6 +59,8 @@ impl Config {
     pub const fn ci_run_count(&self) -> u32 { self.current().tui.ci_run_count }
 
     pub const fn navigation_keys(&self) -> NavigationKeys { self.current().tui.navigation_keys }
+
+    pub const fn edge_scroll(&self) -> EdgeScroll { self.current().tui.edge_scroll }
 
     pub fn editor(&self) -> &str { &self.current().tui.editor }
 

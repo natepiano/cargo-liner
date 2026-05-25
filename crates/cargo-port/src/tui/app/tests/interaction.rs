@@ -32,6 +32,7 @@ use crate::ci::CiJob;
 use crate::ci::CiRun;
 use crate::ci::CiStatus;
 use crate::ci::FetchStatus;
+use crate::config::EdgeScroll;
 use crate::lint::LintCommand;
 use crate::lint::LintCommandStatus;
 use crate::lint::LintRun;
@@ -73,6 +74,7 @@ use crate::tui::app::OverlayRenderInputs;
 use crate::tui::finder;
 use crate::tui::input;
 use crate::tui::integration::AppPaneId;
+use crate::tui::integration::NavigationAction;
 use crate::tui::interaction;
 use crate::tui::pane::DismissTarget;
 use crate::tui::pane::HoverTarget;
@@ -1176,6 +1178,55 @@ fn package_pane_row_click_selects_field() {
 
     assert_eq!(app.focused_pane_id(), PaneId::Package);
     assert_eq!(app.panes.package.viewport.pos(), 1);
+}
+
+#[test]
+fn edge_scroll_down_past_bottom_advances_to_next_pane() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+    app.config.current_mut().tui.edge_scroll = EdgeScroll::AdvancesPane;
+    render_ui(&mut app);
+    app.set_focus(FocusedPane::App(AppPaneId::ProjectList));
+    app.project_list.move_to_bottom();
+
+    panes::dispatch_navigation_action(
+        NavigationAction::Down,
+        FocusedPane::App(AppPaneId::ProjectList),
+        &mut app,
+    );
+
+    assert_eq!(
+        app.focused_pane_id(),
+        PaneId::Package,
+        "Down at the bottom row should roll focus to the next pane in tab order",
+    );
+}
+
+#[test]
+fn edge_scroll_off_holds_focus_at_list_edge() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+    render_ui(&mut app);
+    app.set_focus(FocusedPane::App(AppPaneId::ProjectList));
+    app.project_list.move_to_bottom();
+
+    panes::dispatch_navigation_action(
+        NavigationAction::Down,
+        FocusedPane::App(AppPaneId::ProjectList),
+        &mut app,
+    );
+
+    assert_eq!(
+        app.focused_pane_id(),
+        PaneId::ProjectList,
+        "with edge scroll off, focus stays at the list edge",
+    );
 }
 
 #[test]

@@ -79,6 +79,21 @@ pub(super) fn focus_step<Ctx: AppContext>(ctx: &mut Ctx, direction: CycleDirecti
     }
 }
 
+/// Advance focus to the next pane in the live focus cycle.
+///
+/// The same step [`GlobalAction::NextPane`](crate::GlobalAction::NextPane)
+/// takes. Exposed so a binary can drive cycle-ordered focus changes from
+/// its own input handling, such as rolling focus to the adjacent pane when
+/// a list is scrolled past its last row.
+pub fn focus_next<Ctx: AppContext>(ctx: &mut Ctx) { focus_step(ctx, CycleDirection::Next); }
+
+/// Retreat focus to the previous pane in the live focus cycle.
+///
+/// The same step [`GlobalAction::PrevPane`](crate::GlobalAction::PrevPane)
+/// takes. The counterpart to [`focus_next`] for scrolling past the first
+/// row.
+pub fn focus_prev<Ctx: AppContext>(ctx: &mut Ctx) { focus_step(ctx, CycleDirection::Prev); }
+
 /// Build the focus cycle for the current framework state. Live app tab
 /// stops come first; Toasts is appended when
 /// [`crate::Toasts::has_active`] returns `true`.

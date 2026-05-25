@@ -14,6 +14,8 @@ use std::path::Path;
 
 use ratatui::layout::Position;
 
+pub use self::focus::focus_next;
+pub use self::focus::focus_prev;
 pub(crate) use self::global_action::dispatch_global;
 pub use self::hit_test::HitTestRegistry;
 pub use self::hit_test::Hittable;

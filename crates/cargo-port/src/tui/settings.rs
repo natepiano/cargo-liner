@@ -55,6 +55,7 @@ pub(super) enum SettingOption {
     InvertScroll,
     IncludeNonRust,
     NavigationKeys,
+    EdgeScroll,
     CiRunCount,
     Editor,
     TerminalCommand,
@@ -420,6 +421,12 @@ fn register_general_settings(registry: SettingsRegistry) -> SettingsRegistry {
             get_navigation_keys,
             set_navigation_keys,
         )
+        .add_bool_in(
+            SettingsSection::App("tui"),
+            "edge_scroll",
+            get_edge_scroll,
+            set_edge_scroll,
+        )
         .add_int_in(
             SettingsSection::App("tui"),
             "ci_run_count",
@@ -583,6 +590,7 @@ pub(super) fn settings_table_from_config(config: &CargoPortConfig) -> Result<Tab
     set_invert_scroll(&mut table, config.mouse.invert_scroll.is_inverted())?;
     set_include_non_rust(&mut table, config.tui.include_non_rust.includes_non_rust())?;
     set_navigation_keys(&mut table, config.tui.navigation_keys.uses_vim())?;
+    set_edge_scroll(&mut table, config.tui.edge_scroll.advances_pane())?;
     set_ci_run_count(&mut table, i64::from(config.tui.ci_run_count))?;
     set_editor(&mut table, &config.tui.editor)?;
     set_terminal_command(&mut table, &config.tui.terminal_command)?;
@@ -687,6 +695,15 @@ fn get_navigation_keys(table: &Table) -> bool {
 
 fn set_navigation_keys(table: &mut Table, value: bool) -> Result<(), SettingsError> {
     write_value(table, "tui", "navigation_keys", value.into())
+}
+
+fn get_edge_scroll(table: &Table) -> bool {
+    read_bool(table, "tui", "edge_scroll")
+        .unwrap_or_else(|| default_config().tui.edge_scroll.advances_pane())
+}
+
+fn set_edge_scroll(table: &mut Table, value: bool) -> Result<(), SettingsError> {
+    write_value(table, "tui", "edge_scroll", value.into())
 }
 
 fn get_ci_run_count(table: &Table) -> i64 {
@@ -1086,6 +1103,16 @@ fn general_settings_rows(app: &App, config: &CargoPortConfig) -> Vec<SettingsUiR
             .to_string(),
         ),
         (
+            Some(SettingOption::EdgeScroll),
+            "Edge scroll advances pane".to_string(),
+            if app.config.edge_scroll().advances_pane() {
+                "ON"
+            } else {
+                "OFF"
+            }
+            .to_string(),
+        ),
+        (
             Some(SettingOption::CiRunCount),
             "CI run count".to_string(),
             config.tui.ci_run_count.to_string(),
@@ -1388,6 +1415,7 @@ const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
             SettingOption::InvertScroll
                 | SettingOption::IncludeNonRust
                 | SettingOption::NavigationKeys
+                | SettingOption::EdgeScroll
                 | SettingOption::LintsEnabled
                 | SettingOption::LintOnDiscovery,
         )
@@ -1459,6 +1487,10 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
         },
         Some(SettingOption::NavigationKeys) => {
             toggle_vim_mode(app);
+        },
+        Some(SettingOption::EdgeScroll) => {
+            let next = !app.config.edge_scroll().advances_pane();
+            let _ = save_app_setting_with_toast(app, |table| set_edge_scroll(table, next));
         },
         Some(SettingOption::CiRunCount) => {
             let current = app.config.current().tui.ci_run_count;
@@ -1552,6 +1584,10 @@ fn handle_settings_activate_key(app: &mut App, setting: Option<SettingOption>) {
         },
         Some(SettingOption::NavigationKeys) => {
             toggle_vim_mode(app);
+        },
+        Some(SettingOption::EdgeScroll) => {
+            let next = !app.config.edge_scroll().advances_pane();
+            let _ = save_app_setting_with_toast(app, |table| set_edge_scroll(table, next));
         },
         Some(SettingOption::CiRunCount) => {
             begin_settings_edit(app, app.config.current().tui.ci_run_count.to_string());
@@ -1691,6 +1727,7 @@ fn apply_general_settings_edit(
         | SettingOption::InvertScroll
         | SettingOption::IncludeNonRust
         | SettingOption::NavigationKeys
+        | SettingOption::EdgeScroll
         | SettingOption::LintsEnabled
         | SettingOption::LintOnDiscovery
         | SettingOption::LintProjects

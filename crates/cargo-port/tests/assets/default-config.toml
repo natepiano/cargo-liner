@@ -47,6 +47,12 @@
 # Default value: false
 #navigation_keys = false
 
+# Whether scrolling past the top or bottom of a list moves focus to the
+# adjacent pane in tab order instead of stopping at the edge.
+#
+# Default value: false
+#edge_scroll = false
+
 # Directories to scan for projects (relative to the scan root, or
 # absolute paths). When empty, the entire scan root is walked.
 #

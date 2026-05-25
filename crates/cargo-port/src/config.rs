@@ -109,6 +109,34 @@ impl NavigationKeys {
     pub(crate) const fn uses_vim(self) -> bool { matches!(self, Self::ArrowsAndVim) }
 }
 
+/// Whether scrolling past the top or bottom of a list rolls focus to the
+/// adjacent pane in tab order, or stops at the edge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub(crate) enum EdgeScroll {
+    #[default]
+    Stops,
+    AdvancesPane,
+}
+
+impl From<bool> for EdgeScroll {
+    fn from(enabled: bool) -> Self {
+        if enabled {
+            Self::AdvancesPane
+        } else {
+            Self::Stops
+        }
+    }
+}
+
+impl From<EdgeScroll> for bool {
+    fn from(value: EdgeScroll) -> Self { matches!(value, EdgeScroll::AdvancesPane) }
+}
+
+impl EdgeScroll {
+    pub(crate) const fn advances_pane(self) -> bool { matches!(self, Self::AdvancesPane) }
+}
+
 /// Cache storage settings shared by CI and lint-history data.
 #[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
 pub(crate) struct CacheConfig {
@@ -628,6 +656,11 @@ pub(crate) struct TuiConfig {
     #[config(default = false)]
     pub navigation_keys: NavigationKeys,
 
+    /// Whether scrolling past the top or bottom of a list moves focus to the
+    /// adjacent pane in tab order instead of stopping at the edge.
+    #[config(default = false)]
+    pub edge_scroll: EdgeScroll,
+
     /// Directories to scan for projects (relative to the scan root, or
     /// absolute paths). When empty, the entire scan root is walked.
     #[config(default = [])]
@@ -680,6 +713,7 @@ impl Default for TuiConfig {
             inline_dirs:             vec!["crates".to_string()],
             ci_run_count:            5,
             navigation_keys:         NavigationKeys::ArrowsOnly,
+            edge_scroll:             EdgeScroll::Stops,
             include_dirs:            Vec::new(),
             include_non_rust:        NonRustInclusion::Exclude,
             editor:                  "zed".to_string(),
@@ -788,6 +822,7 @@ mod tests {
         assert!(cfg.tui.other_primary_branches.is_empty());
         assert!((cfg.tui.discovery_shimmer_secs - 10.0).abs() < f64::EPSILON);
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsOnly);
+        assert_eq!(cfg.tui.edge_scroll, EdgeScroll::Stops);
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Inverted);
         assert!(!cfg.lint.enabled);
         assert!(cfg.lint.include.is_empty());
@@ -944,7 +979,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
-            "[mouse]\ninvert_scroll = false\n\n[tui]\ninclude_non_rust = true\nnavigation_keys = true\n",
+            "[mouse]\ninvert_scroll = false\n\n[tui]\ninclude_non_rust = true\nnavigation_keys = true\nedge_scroll = true\n",
         )
         .expect("write");
 
@@ -956,6 +991,7 @@ mod tests {
         assert_eq!(cfg.mouse.invert_scroll, ScrollDirection::Normal);
         assert_eq!(cfg.tui.include_non_rust, NonRustInclusion::Include);
         assert_eq!(cfg.tui.navigation_keys, NavigationKeys::ArrowsAndVim);
+        assert_eq!(cfg.tui.edge_scroll, EdgeScroll::AdvancesPane);
     }
 
     /// Cache root override parses from TOML.

@@ -127,6 +127,8 @@ pub(super) fn dispatch_navigation_action(
     focused: FocusedPane<AppPaneId>,
     app: &mut App,
 ) {
+    let edge_advance = edge_scroll_probe(action, focused, app);
+
     match focused {
         FocusedPane::App(AppPaneId::ProjectList) => navigate_project_list(app, action),
         FocusedPane::App(AppPaneId::Package) => navigate_package_detail(app, action),
@@ -137,6 +139,68 @@ pub(super) fn dispatch_navigation_action(
         FocusedPane::App(AppPaneId::CiRuns) => navigate_ci_runs(app, action),
         FocusedPane::App(AppPaneId::Output | AppPaneId::Finder) => {},
         FocusedPane::Framework(FrameworkFocusId::Toasts) => navigate_toasts(app, action),
+    }
+
+    // When the cursor could not move — the list was already at its edge —
+    // roll focus to the adjacent pane in tab order instead of stopping.
+    if let Some((advance, cursor_before)) = edge_advance
+        && list_cursor(focused, app) == Some(cursor_before)
+    {
+        match advance {
+            EdgeAdvance::Next => tui_pane::focus_next(app),
+            EdgeAdvance::Prev => tui_pane::focus_prev(app),
+        }
+    }
+}
+
+/// Direction to roll focus when a vertical scroll runs off a list edge.
+enum EdgeAdvance {
+    Next,
+    Prev,
+}
+
+/// Decide whether this navigation should advance the focused pane on a
+/// no-op edge hit, and capture the cursor position to compare against
+/// afterward. Returns `None` when the edge-scroll setting is off, the
+/// action is not a single vertical step, or the focused pane has no
+/// participating list.
+fn edge_scroll_probe(
+    action: NavigationAction,
+    focused: FocusedPane<AppPaneId>,
+    app: &App,
+) -> Option<(EdgeAdvance, usize)> {
+    if !app.config.edge_scroll().advances_pane() {
+        return None;
+    }
+    let advance = match action {
+        NavigationAction::Up => EdgeAdvance::Prev,
+        NavigationAction::Down => EdgeAdvance::Next,
+        NavigationAction::Left
+        | NavigationAction::Right
+        | NavigationAction::Home
+        | NavigationAction::End
+        | NavigationAction::PageUp
+        | NavigationAction::PageDown
+        | NavigationAction::HalfPageUp
+        | NavigationAction::HalfPageDown => return None,
+    };
+    list_cursor(focused, app).map(|cursor| (advance, cursor))
+}
+
+/// Current cursor row for the focused pane's list, or `None` for panes
+/// that do not take part in edge-scroll focus advance (text input,
+/// static output, and framework panes).
+fn list_cursor(focused: FocusedPane<AppPaneId>, app: &App) -> Option<usize> {
+    match focused {
+        FocusedPane::App(AppPaneId::ProjectList) => Some(app.project_list.cursor()),
+        FocusedPane::App(AppPaneId::Package) => Some(app.panes.package.viewport.pos()),
+        FocusedPane::App(
+            AppPaneId::Lang | AppPaneId::Cpu | AppPaneId::Git | AppPaneId::Targets,
+        ) => Some(active_detail_viewport(app).pos()),
+        FocusedPane::App(AppPaneId::Lints) => Some(app.lint.viewport.pos()),
+        FocusedPane::App(AppPaneId::CiRuns) => Some(app.ci.viewport.pos()),
+        FocusedPane::App(AppPaneId::Output | AppPaneId::Finder)
+        | FocusedPane::Framework(FrameworkFocusId::Toasts) => None,
     }
 }
 
@@ -353,6 +417,26 @@ fn active_detail_pane(app: &mut App) -> &mut Viewport {
         | PaneId::Settings
         | PaneId::Finder
         | PaneId::Keymap => &mut app.panes.package.viewport,
+    }
+}
+
+/// Shared-reference counterpart to [`active_detail_pane`], used to read
+/// the cursor row without taking a mutable borrow.
+fn active_detail_viewport(app: &App) -> &Viewport {
+    match app.base_focus() {
+        PaneId::Targets => &app.panes.targets.viewport,
+        PaneId::Lang => &app.panes.lang.viewport,
+        PaneId::Cpu => &app.panes.cpu.viewport,
+        PaneId::Git => &app.panes.git.viewport,
+        PaneId::Package
+        | PaneId::ProjectList
+        | PaneId::Lints
+        | PaneId::CiRuns
+        | PaneId::Output
+        | PaneId::Toasts
+        | PaneId::Settings
+        | PaneId::Finder
+        | PaneId::Keymap => &app.panes.package.viewport,
     }
 }
 

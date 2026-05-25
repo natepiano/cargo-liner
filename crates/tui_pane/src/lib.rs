@@ -82,6 +82,8 @@ pub use framework::Renderable;
 pub use framework::TabStop;
 pub use framework::clear_all_hover;
 pub use framework::dispatch_hit_test;
+pub use framework::focus_next;
+pub use framework::focus_prev;
 pub use framework::render_panes;
 pub use input::dispatch_focused_toasts;
 pub use input::event_label;
