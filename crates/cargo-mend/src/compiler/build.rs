@@ -2,13 +2,22 @@ use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::IsTerminal;
+use std::io::Write;
 use std::path::Path;
 use std::process::ChildStderr;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -76,6 +85,9 @@ pub(crate) const CARGO_SUBCOMMAND_MEND: &str = "mend";
 // diagnostic severity prefixes
 pub(crate) const DIAGNOSTIC_SEVERITY_ERROR_PREFIX: &str = "error:";
 pub(crate) const DIAGNOSTIC_SEVERITY_WARNING_PREFIX: &str = "warning:";
+
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(120);
+const PROGRESS_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BuildOutputMode {
@@ -315,6 +327,7 @@ fn stream_cargo_stderr(
     output_mode: BuildOutputMode,
 ) -> Result<StderrObservation> {
     let mut reader = BufReader::new(stderr);
+    let mut progress = CargoProgress::start(output_mode);
     let mut line = String::new();
     let mut block = Vec::new();
     let mut suppression_notice = SuppressionNotice::Pending;
@@ -333,6 +346,7 @@ fn stream_cargo_stderr(
                 &mut compiler_warning_count,
                 &mut compiler_fixable_count,
                 output_mode,
+                &mut progress,
             );
             break;
         }
@@ -346,11 +360,9 @@ fn stream_cargo_stderr(
                 &mut compiler_warning_count,
                 &mut compiler_fixable_count,
                 output_mode,
+                &mut progress,
             );
-            // Suppress "Finished" lines and all progress in Quiet mode
-            if !is_finished_line(&current)
-                && !matches!(output_mode, BuildOutputMode::Json | BuildOutputMode::Quiet)
-            {
+            if should_forward_progress_line(&current, output_mode, progress.is_active()) {
                 eprint!("{current}");
             }
             continue;
@@ -365,6 +377,7 @@ fn stream_cargo_stderr(
                 &mut compiler_warning_count,
                 &mut compiler_fixable_count,
                 output_mode,
+                &mut progress,
             );
         } else {
             block.push(current);
@@ -376,6 +389,16 @@ fn stream_cargo_stderr(
         warning_count: compiler_warning_count,
         fixable_count: compiler_fixable_count,
     })
+}
+
+fn should_forward_progress_line(
+    line: &str,
+    output_mode: BuildOutputMode,
+    progress_active: bool,
+) -> bool {
+    !progress_active
+        && !is_finished_line(line)
+        && !matches!(output_mode, BuildOutputMode::Json | BuildOutputMode::Quiet)
 }
 
 pub(super) fn is_progress_line(line: &str) -> bool {
@@ -487,6 +510,7 @@ fn flush_diagnostic_block(
     compiler_warning_count: &mut usize,
     compiler_fixable_count: &mut usize,
     output_mode: BuildOutputMode,
+    progress: &mut impl ProgressDisplay,
 ) {
     if block.is_empty() {
         return;
@@ -499,9 +523,9 @@ fn flush_diagnostic_block(
                 BuildOutputMode::SuppressUnusedImportWarnings
                     if *suppression_notice == SuppressionNotice::Pending =>
                 {
-                    eprintln!(
+                    progress.write_status_notice(
                         "mend: suppressing `unused import` warning during `--fix-pub-use` \
-                         discovery"
+                         discovery",
                     );
                     *suppression_notice = SuppressionNotice::Printed;
                 },
@@ -531,6 +555,7 @@ fn flush_diagnostic_block(
             // users with the opaque "compiler failed" message and no way
             // to see what cargo actually complained about.
             if !matches!(output_mode, BuildOutputMode::Json) {
+                progress.stop_for_forwarded_output();
                 for line in block.iter() {
                     eprint!("{line}");
                 }
@@ -541,15 +566,169 @@ fn flush_diagnostic_block(
     block.clear();
 }
 
+trait ProgressDisplay {
+    fn is_active(&self) -> bool;
+
+    fn write_status_notice(&mut self, notice: &str);
+
+    fn stop_for_forwarded_output(&mut self);
+}
+
+struct CargoProgress {
+    state: Option<CargoProgressState>,
+}
+
+struct CargoProgressState {
+    active:      Arc<AtomicBool>,
+    output_lock: Arc<Mutex<()>>,
+    handle:      Option<JoinHandle<()>>,
+    line_width:  usize,
+}
+
+impl CargoProgress {
+    fn start(output_mode: BuildOutputMode) -> Self {
+        let Some(message) = progress_message_for(output_mode) else {
+            return Self { state: None };
+        };
+        if !io::stderr().is_terminal() {
+            return Self { state: None };
+        }
+
+        let active = Arc::new(AtomicBool::new(true));
+        let output_lock = Arc::new(Mutex::new(()));
+        let thread_active = Arc::clone(&active);
+        let thread_lock = Arc::clone(&output_lock);
+        let line_width = progress_line_width(message);
+        let handle = thread::spawn(move || {
+            let mut frame_index = 0;
+            while thread_active.load(Ordering::Relaxed) {
+                if let Ok(_guard) = thread_lock.lock() {
+                    eprint!("{}", progress_frame(message, frame_index));
+                    let _ = io::stderr().flush();
+                }
+                frame_index = (frame_index + 1) % PROGRESS_FRAMES.len();
+                thread::sleep(PROGRESS_INTERVAL);
+            }
+        });
+
+        Self {
+            state: Some(CargoProgressState {
+                active,
+                output_lock,
+                handle: Some(handle),
+                line_width,
+            }),
+        }
+    }
+
+    fn stop(&mut self) {
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        state.active.store(false, Ordering::Relaxed);
+        if let Some(handle) = state.handle.take() {
+            let _ = handle.join();
+        }
+        state.clear_line();
+        self.state = None;
+    }
+}
+
+impl Drop for CargoProgress {
+    fn drop(&mut self) { self.stop(); }
+}
+
+impl ProgressDisplay for CargoProgress {
+    fn is_active(&self) -> bool { self.state.is_some() }
+
+    fn write_status_notice(&mut self, notice: &str) {
+        if let Some(state) = self.state.as_ref() {
+            state.write_status_notice(notice);
+        } else {
+            eprintln!("{notice}");
+        }
+    }
+
+    fn stop_for_forwarded_output(&mut self) { self.stop(); }
+}
+
+impl CargoProgressState {
+    fn clear_line(&self) {
+        if let Ok(_guard) = self.output_lock.lock() {
+            eprint!("{}", clear_progress_line(self.line_width));
+            let _ = io::stderr().flush();
+        }
+    }
+
+    fn write_status_notice(&self, notice: &str) {
+        if let Ok(_guard) = self.output_lock.lock() {
+            eprint!("{}", clear_progress_line(self.line_width));
+            eprintln!("{notice}");
+            let _ = io::stderr().flush();
+        }
+    }
+}
+
+const fn progress_message_for(output_mode: BuildOutputMode) -> Option<&'static str> {
+    match output_mode {
+        BuildOutputMode::SuppressUnusedImportWarnings => Some("checking for fix candidates"),
+        BuildOutputMode::Quiet => Some("validating applied fixes"),
+        BuildOutputMode::Full | BuildOutputMode::Json => None,
+    }
+}
+
+fn progress_frame(message: &str, frame_index: usize) -> String {
+    let frame = PROGRESS_FRAMES[frame_index % PROGRESS_FRAMES.len()];
+    format!("\rmend: {frame} {message}")
+}
+
+fn progress_line_width(message: &str) -> usize { progress_frame(message, 0).chars().count() - 1 }
+
+fn clear_progress_line(width: usize) -> String { format!("\r{}\r", " ".repeat(width)) }
+
 #[cfg(test)]
 mod tests {
     use super::BuildOutputMode;
     use super::CompilerWarningFacts;
     use super::DiagnosticBlockKind;
+    use super::ProgressDisplay;
     use super::SuppressionNotice;
     use super::classify_diagnostic_block;
+    use super::clear_progress_line;
     use super::flush_diagnostic_block;
     use super::is_progress_line;
+    use super::progress_frame;
+    use super::progress_line_width;
+    use super::progress_message_for;
+    use super::should_forward_progress_line;
+
+    #[derive(Default)]
+    struct ProgressRecorder {
+        active:  bool,
+        notices: Vec<String>,
+        stops:   usize,
+    }
+
+    impl ProgressRecorder {
+        const fn active() -> Self {
+            Self {
+                active:  true,
+                notices: Vec::new(),
+                stops:   0,
+            }
+        }
+    }
+
+    impl ProgressDisplay for ProgressRecorder {
+        fn is_active(&self) -> bool { self.active }
+
+        fn write_status_notice(&mut self, notice: &str) { self.notices.push(notice.to_string()); }
+
+        fn stop_for_forwarded_output(&mut self) {
+            self.stops += 1;
+            self.active = false;
+        }
+    }
 
     #[test]
     fn plain_building_progress_line_is_treated_as_progress() {
@@ -600,9 +779,108 @@ mod tests {
             &mut compiler_warning_count,
             &mut compiler_fixable_count,
             BuildOutputMode::Quiet,
+            &mut ProgressRecorder::default(),
         );
 
         assert_eq!(compiler_warning_count, 0);
         assert_eq!(compiler_fixable_count, 0);
+    }
+
+    #[test]
+    fn quiet_mode_uses_validation_status_message() {
+        assert_eq!(
+            progress_message_for(BuildOutputMode::Quiet),
+            Some("validating applied fixes")
+        );
+    }
+
+    #[test]
+    fn json_mode_has_no_progress_status() {
+        assert_eq!(progress_message_for(BuildOutputMode::Json), None);
+    }
+
+    #[test]
+    fn progress_frame_and_clear_line_use_carriage_return() {
+        let frame = progress_frame("validating applied fixes", 1);
+        let width = progress_line_width("validating applied fixes");
+
+        assert_eq!(frame, "\rmend: / validating applied fixes");
+        assert_eq!(
+            clear_progress_line(width),
+            format!("\r{}\r", " ".repeat(width))
+        );
+    }
+
+    #[test]
+    fn progress_lines_are_hidden_while_progress_status_is_active() {
+        let line = "    Checking fixture v0.1.0\n";
+
+        assert!(!should_forward_progress_line(
+            line,
+            BuildOutputMode::SuppressUnusedImportWarnings,
+            true
+        ));
+        assert!(should_forward_progress_line(
+            line,
+            BuildOutputMode::SuppressUnusedImportWarnings,
+            false
+        ));
+    }
+
+    #[test]
+    fn forwarded_diagnostic_stops_progress_before_printing() {
+        let mut block = vec!["error: expected item\n".to_string(), "\n".to_string()];
+        let mut suppression_notice = SuppressionNotice::Pending;
+        let mut compiler_warning_facts = CompilerWarningFacts::None;
+        let mut compiler_warning_count = 0;
+        let mut compiler_fixable_count = 0;
+        let mut progress = ProgressRecorder::active();
+
+        flush_diagnostic_block(
+            &mut block,
+            &mut suppression_notice,
+            &mut compiler_warning_facts,
+            &mut compiler_warning_count,
+            &mut compiler_fixable_count,
+            BuildOutputMode::Quiet,
+            &mut progress,
+        );
+
+        assert_eq!(progress.stops, 1);
+        assert!(progress.notices.is_empty());
+        assert!(!progress.active);
+    }
+
+    #[test]
+    fn suppression_notice_writes_progress_status_notice_without_stopping() {
+        let mut block = vec![
+            "warning: unused import: `child::SpawnStats`\n".to_string(),
+            "\n".to_string(),
+        ];
+        let mut suppression_notice = SuppressionNotice::Pending;
+        let mut compiler_warning_facts = CompilerWarningFacts::None;
+        let mut compiler_warning_count = 0;
+        let mut compiler_fixable_count = 0;
+        let mut progress = ProgressRecorder::active();
+
+        flush_diagnostic_block(
+            &mut block,
+            &mut suppression_notice,
+            &mut compiler_warning_facts,
+            &mut compiler_warning_count,
+            &mut compiler_fixable_count,
+            BuildOutputMode::SuppressUnusedImportWarnings,
+            &mut progress,
+        );
+
+        assert_eq!(
+            progress.notices,
+            vec![
+                "mend: suppressing `unused import` warning during `--fix-pub-use` discovery"
+                    .to_string()
+            ]
+        );
+        assert_eq!(progress.stops, 0);
+        assert!(progress.active);
     }
 }

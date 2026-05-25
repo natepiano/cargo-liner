@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Show an interactive progress indicator while fix validation output is suppressed.
+
 ## [0.14.0] - 2026-05-17
 
 ### Added

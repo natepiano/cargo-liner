@@ -277,7 +277,12 @@ impl<'a> MendRunner<'a> {
 
         let snapshots = imports::snapshot_files(&fixes).map_err(MendFailure::Unexpected)?;
         imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
-        match self.build_selection(BuildOutputMode::Quiet) {
+        let validation_output_mode = if self.output_format == OutputFormat::Json {
+            BuildOutputMode::Json
+        } else {
+            BuildOutputMode::Quiet
+        };
+        match self.build_selection(validation_output_mode) {
             Ok(validation) => {
                 let check_duration = plan_check_duration + validation.check_duration;
                 let notice = Self::build_fix_notice(
