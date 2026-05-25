@@ -57,6 +57,7 @@ pub use copy::CopySelectionResult;
 pub use copy::SystemClipboard;
 pub use diagnostics::CpuBreakdown;
 pub use diagnostics::CpuCoreUsage;
+pub use diagnostics::CpuMonitor;
 pub use diagnostics::CpuPoller;
 pub use diagnostics::CpuSeverity;
 pub use diagnostics::CpuUsage;

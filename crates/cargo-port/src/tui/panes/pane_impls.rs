@@ -11,12 +11,11 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
-use tui_pane::CpuPoller;
+use tui_pane::CpuMonitor;
 use tui_pane::CpuUsage;
 use tui_pane::Hittable;
 use tui_pane::RenderFocus;
@@ -131,7 +130,7 @@ pub struct CpuPane {
     pub viewport: Viewport,
     pub focus:    RenderFocus,
     content:      Option<CpuUsage>,
-    poller:       CpuPoller,
+    monitor:      CpuMonitor,
     /// Per-rendered-row `(Rect, logical_row)` recorded each frame
     /// so `Hittable::hit_test_at` can map `pos` back to the logical
     /// row. CPU rows are non-uniform (aggregate, per-core,
@@ -146,26 +145,26 @@ impl CpuPane {
             viewport:  Viewport::new(),
             focus:     RenderFocus::inactive(),
             content:   None,
-            poller:    CpuPoller::new(cfg.poll_ms),
+            monitor:   CpuMonitor::new(cfg.poll_ms),
             row_rects: Vec::new(),
         };
         pane.install_placeholder();
         pane
     }
 
-    pub fn tick(&mut self, now: Instant) {
-        if let Some(usage) = self.poller.poll_if_due(now) {
+    pub fn tick(&mut self) {
+        if let Some(usage) = self.monitor.latest() {
             self.content = Some(usage);
         }
     }
 
     pub fn reset(&mut self, cfg: &CpuConfig) {
-        self.poller = CpuPoller::new(cfg.poll_ms);
+        self.monitor = CpuMonitor::new(cfg.poll_ms);
         self.install_placeholder();
     }
 
     pub fn install_placeholder(&mut self) {
-        self.content = Some(self.poller.placeholder_cpu_usage());
+        self.content = Some(self.monitor.placeholder_cpu_usage());
     }
 
     pub const fn content(&self) -> Option<&CpuUsage> { self.content.as_ref() }

@@ -134,7 +134,7 @@ pub fn run() -> ExitCode {
     let startup_settings = match settings::load_cargo_port_settings_for_startup() {
         Ok(settings) => settings,
         Err(err) => {
-            report_fatal(&format!("{err}"));
+            report_fatal(&err);
             return ExitCode::FAILURE;
         },
     };
@@ -279,7 +279,7 @@ fn event_loop(
 
         let (bg_stats, bg_elapsed) = poll_background_frame(app);
         let tick_now = Instant::now();
-        let cpu_elapsed = measure(|| app.panes.cpu_tick(tick_now));
+        let cpu_elapsed = measure(|| app.panes.cpu_tick());
         let run_targets_elapsed = measure(|| app.running_targets_tick(tick_now));
         app.scan.prune_shimmers(tick_now);
         clear_terminal_if_dirty(terminal, app)?;

@@ -1,17 +1,24 @@
 //! Sysinfo-backed CPU/GPU sampler plus severity buckets keyed to the
 //! framework's theme colors.
 //!
-//! [`CpuPoller`] holds a sysinfo [`System`] handle and the polling
-//! cadence; [`poll_if_due`](CpuPoller::poll_if_due) returns a fresh
-//! [`CpuUsage`] only when the configured interval has elapsed.
-//! [`severity`] maps a percentage to a [`CpuSeverity`] bucket using
-//! caller-supplied thresholds; [`CpuSeverity::color`] resolves to the
-//! framework's success / title / error theme colors.
+//! [`CpuMonitor`] owns a background worker thread that runs a
+//! [`CpuPoller`] on a fixed cadence and forwards each sampled
+//! [`CpuUsage`] over a channel. The render thread only performs a
+//! non-blocking [`latest`](CpuMonitor::latest) drain, so frame paints
+//! never block on the sysinfo / `GetSystemTimes` / PDH syscalls the
+//! poll performs. [`severity`] maps a percentage to a [`CpuSeverity`]
+//! bucket using caller-supplied thresholds; [`CpuSeverity::color`]
+//! resolves to the framework's success / title / error theme colors.
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::Command;
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::Sender;
+use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
-use std::time::Instant;
 
 use ratatui::style::Color;
 use sysinfo::CpuRefreshKind;
@@ -29,7 +36,7 @@ pub struct CpuCoreUsage {
     pub percent: u8,
 }
 
-/// Aggregate CPU/GPU sample returned by [`CpuPoller::poll_if_due`].
+/// Aggregate CPU/GPU sample produced by [`CpuPoller::poll`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CpuUsage {
     /// Aggregate CPU utilization across all cores, in `0..=100`.
@@ -94,32 +101,36 @@ impl CpuSeverity {
     }
 }
 
-/// Sysinfo-backed CPU/GPU sampler that rate-limits polls to the
-/// configured interval.
+/// Sysinfo-backed CPU/GPU sampler.
+///
+/// Each [`poll`](Self::poll) refreshes the sysinfo [`System`], computes
+/// the system/user/idle breakdown from raw ticks, and samples GPU
+/// utilization. The sampler does not gate its own cadence — that is
+/// owned by [`CpuMonitor`], which drives a poller on a worker thread.
 #[derive(Debug)]
 pub struct CpuPoller {
     system:             System,
-    last_poll:          Option<Instant>,
-    poll_interval:      Duration,
     last_breakdown_raw: CpuBreakdownRaw,
     /// Persistent PDH query for GPU utilization (Windows only).
     #[cfg(target_os = "windows")]
     gpu_query:          Option<GpuQuery>,
 }
 
+impl Default for CpuPoller {
+    fn default() -> Self { Self::new() }
+}
+
 impl CpuPoller {
-    /// Construct a poller that refreshes at most every
-    /// `poll_interval_ms` milliseconds.
+    /// Construct a poller, priming the sysinfo and breakdown baselines
+    /// so the first [`poll`](Self::poll) reports a real delta.
     #[must_use]
-    pub fn new(poll_interval_ms: u64) -> Self {
+    pub fn new() -> Self {
         let mut system = System::new_with_specifics(
             RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()),
         );
         system.refresh_cpu_all();
         Self {
             system,
-            last_poll: None,
-            poll_interval: Duration::from_millis(poll_interval_ms),
             last_breakdown_raw: read_cpu_breakdown_raw(),
             #[cfg(target_os = "windows")]
             gpu_query: GpuQuery::new(),
@@ -130,22 +141,8 @@ impl CpuPoller {
     #[must_use]
     pub fn core_count(&self) -> usize { self.system.cpus().len().max(1) }
 
-    /// Zero-filled [`CpuUsage`] sized to the current core count.
-    #[must_use]
-    pub fn placeholder_cpu_usage(&self) -> CpuUsage { CpuUsage::placeholder(self.core_count()) }
-
-    /// Return a fresh sample if at least `poll_interval` has elapsed
-    /// since the previous poll, otherwise `None`.
-    pub fn poll_if_due(&mut self, now: Instant) -> Option<CpuUsage> {
-        if self
-            .last_poll
-            .is_some_and(|last| now.duration_since(last) < self.poll_interval)
-        {
-            return None;
-        }
-
-        self.last_poll = Some(now);
-
+    /// Sample CPU and GPU utilization now, relative to the previous poll.
+    pub fn poll(&mut self) -> CpuUsage {
         self.system.refresh_cpu_all();
 
         let cores = self
@@ -166,13 +163,105 @@ impl CpuPoller {
         #[cfg(not(target_os = "windows"))]
         let gpu_percent = read_gpu_percent();
 
-        let usage = CpuUsage {
+        CpuUsage {
             total_percent,
             cores,
             breakdown,
             gpu_percent,
-        };
-        Some(usage)
+        }
+    }
+}
+
+/// Background CPU/GPU sampler.
+///
+/// Spawns a worker thread that runs a [`CpuPoller`] on a fixed cadence
+/// and forwards each [`CpuUsage`] over a channel. The render thread
+/// calls [`latest`](Self::latest) — a non-blocking drain — so it never
+/// blocks on the syscalls a poll performs. Dropping the monitor stops
+/// the worker and joins it.
+#[derive(Debug)]
+pub struct CpuMonitor {
+    samples:     Receiver<CpuUsage>,
+    stop_sender: Sender<()>,
+    handle:      Option<JoinHandle<()>>,
+    core_count:  usize,
+}
+
+impl CpuMonitor {
+    /// Spawn the worker thread, sampling at most every
+    /// `poll_interval_ms` milliseconds (floored at 1ms).
+    ///
+    /// The poller is primed on the calling thread so [`core_count`]
+    /// is available immediately; the first sample arrives one interval
+    /// later, by which point the worker has a real delta window.
+    ///
+    /// [`core_count`]: Self::core_count
+    #[must_use]
+    pub fn new(poll_interval_ms: u64) -> Self {
+        let mut poller = CpuPoller::new();
+        let core_count = poller.core_count();
+        let interval = Duration::from_millis(poll_interval_ms.max(1));
+        let (sample_sender, samples) = mpsc::channel();
+        let (stop_sender, stop_receiver) = mpsc::channel();
+        let handle = thread::Builder::new()
+            .name("cpu-monitor".to_string())
+            .spawn(move || cpu_poll_loop(&mut poller, &sample_sender, &stop_receiver, interval))
+            .ok();
+        Self {
+            samples,
+            stop_sender,
+            handle,
+            core_count,
+        }
+    }
+
+    /// Number of CPU cores, captured when the worker was spawned.
+    #[must_use]
+    pub const fn core_count(&self) -> usize { self.core_count }
+
+    /// Zero-filled [`CpuUsage`] sized to the current core count.
+    #[must_use]
+    pub fn placeholder_cpu_usage(&self) -> CpuUsage { CpuUsage::placeholder(self.core_count) }
+
+    /// Drain the channel, returning the most recent sample if any
+    /// arrived since the last call. Never blocks.
+    #[must_use]
+    pub fn latest(&self) -> Option<CpuUsage> {
+        let mut newest = None;
+        while let Ok(usage) = self.samples.try_recv() {
+            newest = Some(usage);
+        }
+        newest
+    }
+}
+
+impl Drop for CpuMonitor {
+    fn drop(&mut self) {
+        // Wake the worker out of its timed wait so the join is prompt;
+        // a closed channel (worker already exited) is fine to ignore.
+        let _ = self.stop_sender.send(());
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Worker loop: wait up to `interval` for a stop signal; on timeout,
+/// sample and forward. Exits when stop is signaled, when the monitor
+/// is dropped (stop channel disconnects), or when the sample channel
+/// is closed.
+fn cpu_poll_loop(
+    poller: &mut CpuPoller,
+    samples: &Sender<CpuUsage>,
+    stop: &Receiver<()>,
+    interval: Duration,
+) {
+    // `recv_timeout` returns `Timeout` each interval (sample and forward);
+    // `Ok`/`Disconnected` means stop was signaled or the monitor dropped.
+    while stop.recv_timeout(interval) == Err(RecvTimeoutError::Timeout) {
+        if samples.send(poller.poll()).is_err() {
+            break;
+        }
     }
 }
 

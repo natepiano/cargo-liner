@@ -120,8 +120,8 @@ impl Panes {
     /// Currently only `GitPane`'s worktree-summary map.
     pub fn clear_for_tree_change(&self) { self.git.clear_worktree_summary_cache(); }
 
-    /// Tick the CPU pane's poller. Delegates to `CpuPane::tick`.
-    pub fn cpu_tick(&mut self, now: Instant) { self.cpu.tick(now); }
+    /// Drain the CPU pane's background sampler. Delegates to `CpuPane::tick`.
+    pub fn cpu_tick(&mut self) { self.cpu.tick(); }
 
     /// Refresh the running-targets snapshot. Caller builds `projects`
     /// from cached `cargo metadata` results. The poller gates its own

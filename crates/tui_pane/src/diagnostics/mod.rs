@@ -12,6 +12,7 @@ mod perf_log;
 
 pub use cpu::CpuBreakdown;
 pub use cpu::CpuCoreUsage;
+pub use cpu::CpuMonitor;
 pub use cpu::CpuPoller;
 pub use cpu::CpuSeverity;
 pub use cpu::CpuUsage;
