@@ -9,6 +9,10 @@ use serde_json::from_str;
 
 use crate::config::VisibilityConfig;
 
+// build-fingerprint fallbacks
+const BUILD_ID_FALLBACK: &str = "nobuild";
+const GIT_HASH_FALLBACK: &str = "nogit";
+
 // driver-IPC environment variables
 pub(crate) const CONFIG_FINGERPRINT_ENV: &str = "MEND_CONFIG_FINGERPRINT";
 pub(crate) const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
@@ -22,8 +26,8 @@ pub(crate) const SCOPE_FINGERPRINT_ENV: &str = "MEND_SCOPE_FINGERPRINT";
 
 pub(super) fn current_analysis_fingerprint() -> String {
     let version = env!("CARGO_PKG_VERSION");
-    let git_hash = option_env!("MEND_GIT_HASH").unwrap_or("nogit");
-    let build_id = option_env!("MEND_BUILD_ID").unwrap_or("nobuild");
+    let git_hash = option_env!("MEND_GIT_HASH").unwrap_or(GIT_HASH_FALLBACK);
+    let build_id = option_env!("MEND_BUILD_ID").unwrap_or(BUILD_ID_FALLBACK);
     format!("{version}+{git_hash}+{build_id}")
 }
 

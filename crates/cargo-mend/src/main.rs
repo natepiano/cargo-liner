@@ -122,14 +122,14 @@ fn run() -> Result<ExitCode, MendFailure> {
     )
     .map_err(MendFailure::Unexpected)?;
     let operation_mode = OperationMode::from(&cli.fix);
-    let color = color_mode();
+    let color_mode = color_mode();
     let output_format = cli.output_format;
     let start = Instant::now();
     let runner = MendRunner::new(
         &selection,
         &cargo_plan,
         &loaded_config,
-        color,
+        color_mode,
         output_format,
     );
     let mut outcome = runner.run(operation_mode.clone())?;
@@ -154,8 +154,8 @@ fn run() -> Result<ExitCode, MendFailure> {
             );
 
         if user_asked_for_compiler_fix || pub_use_self_heal {
-            total_compiler_fix_duration +=
-                compiler::run_cargo_fix(&cargo_plan, color).map_err(MendFailure::Unexpected)?;
+            total_compiler_fix_duration += compiler::run_cargo_fix(&cargo_plan, color_mode)
+                .map_err(MendFailure::Unexpected)?;
         }
 
         if !matches!(cli.fix.execution, FixExecution::ApplyAll) || passes >= FIX_ALL_MAX_PASSES {
@@ -191,7 +191,7 @@ fn run() -> Result<ExitCode, MendFailure> {
         &outcome,
         &selection,
         output_format,
-        color,
+        color_mode,
         total_duration,
         check_duration,
     )?;
@@ -209,7 +209,7 @@ fn render_outcome(
     outcome: &ExecutionOutcome,
     selection: &Selection,
     output_format: OutputFormat,
-    color: ColorMode,
+    color_mode: ColorMode,
     total_duration: Duration,
     check_duration: Duration,
 ) -> Result<(), MendFailure> {
@@ -229,7 +229,7 @@ fn render_outcome(
         OutputFormat::Human => {
             print!(
                 "{}",
-                reporting::render_human_report(&outcome.report, &compiler_stats, color)
+                reporting::render_human_report(&outcome.report, &compiler_stats, color_mode)
             );
         },
     }
@@ -238,7 +238,7 @@ fn render_outcome(
         let mend_duration = total_duration.saturating_sub(check_duration);
         eprintln!(
             "{}",
-            reporting::render_timing(total_duration, check_duration, mend_duration, color)
+            reporting::render_timing(total_duration, check_duration, mend_duration, color_mode)
         );
     }
 

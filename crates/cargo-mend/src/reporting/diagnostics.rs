@@ -5,6 +5,7 @@ use serde::Serializer;
 use super::constants::HINT_FIXABLE_WITH_FIX;
 use super::constants::HINT_FIXABLE_WITH_FIX_PUB_USE;
 use crate::config::DiagnosticCode;
+use crate::constants::HELP_URL_BASE;
 
 // --- FixSupport (folded from former fix_support.rs) ---
 
@@ -375,7 +376,7 @@ pub(crate) fn custom_inline_help_text(finding: &Finding) -> Option<&str> {
 
 pub(crate) fn finding_help_url(finding: &Finding) -> String {
     format!(
-        "https://github.com/natepiano/cargo-mend#{}",
+        "{HELP_URL_BASE}#{}",
         diagnostic_spec(finding.diagnostic_code).help_anchor
     )
 }

@@ -38,15 +38,15 @@ pub enum ParentFacadeVisibility {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct ParentFacadeExports {
-    pub explicit:      Vec<String>,
-    pub fix_supported: ParentFacadeFixSupport,
-    pub visibility:    Option<ParentFacadeVisibility>,
+    pub explicit:    Vec<String>,
+    pub fix_support: ParentFacadeFixSupport,
+    pub visibility:  Option<ParentFacadeVisibility>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParentFacadeExportStatus {
     pub usage:           ParentFacadeUsage,
-    pub fix_supported:   ParentFacadeFixSupport,
+    pub fix_support:     ParentFacadeFixSupport,
     pub visibility:      ParentFacadeVisibility,
     pub parent_path:     PathBuf,
     pub parent_rel_path: String,
@@ -132,7 +132,7 @@ pub fn parent_facade_export_status(
 
     Ok(Some(ParentFacadeExportStatus {
         usage,
-        fix_supported: exported_names.fix_supported,
+        fix_support: exported_names.fix_support,
         visibility: exported_names
             .visibility
             .unwrap_or(ParentFacadeVisibility::Public),
@@ -198,7 +198,7 @@ fn collect_matching_pub_use_exports(
     }
     if matched {
         if pub_use_is_fix_supported(&item_use.tree, child_module_name, item_name) {
-            exported.fix_supported = ParentFacadeFixSupport::Supported;
+            exported.fix_support = ParentFacadeFixSupport::Supported;
         }
         exported.visibility = Some(exported.visibility.map_or(use_visibility, |existing| {
             widest_visibility(existing, use_visibility)
@@ -290,7 +290,7 @@ mod tests {
         let exports =
             exported_names_from_parent_boundary(&file, "report_writer", "ReportDefinition");
         assert_eq!(exports.explicit, vec!["ReportDefinition".to_string()]);
-        assert_eq!(exports.fix_supported, ParentFacadeFixSupport::Supported);
+        assert_eq!(exports.fix_support, ParentFacadeFixSupport::Supported);
     }
 
     #[test]
@@ -334,7 +334,7 @@ pub use child::Thing;
         let file = parse_file(source).unwrap();
         let exports = exported_names_from_parent_boundary(&file, "child", "Thing");
         assert_eq!(exports.explicit, vec!["Thing".to_string()]);
-        assert_eq!(exports.fix_supported, ParentFacadeFixSupport::Supported);
+        assert_eq!(exports.fix_support, ParentFacadeFixSupport::Supported);
     }
 
     #[test]
@@ -345,14 +345,14 @@ pub use child::Thing;
         assert_eq!(
             exports,
             ParentFacadeExports {
-                explicit:      vec!["RenamedThing".to_string()],
-                fix_supported: ParentFacadeFixSupport::Unsupported,
-                visibility:    Some(ParentFacadeVisibility::Public),
+                explicit:    vec!["RenamedThing".to_string()],
+                fix_support: ParentFacadeFixSupport::Unsupported,
+                visibility:  Some(ParentFacadeVisibility::Public),
             }
         );
 
         let exports = exported_names_from_parent_boundary(&file, "child", "Other");
         assert_eq!(exports.explicit, vec!["Other".to_string()]);
-        assert_eq!(exports.fix_supported, ParentFacadeFixSupport::Supported);
+        assert_eq!(exports.fix_support, ParentFacadeFixSupport::Supported);
     }
 }

@@ -31,6 +31,7 @@ use crate::selection::Selection;
 pub(crate) const JSON_FILE_EXTENSION: &str = "json";
 
 // findings
+const FINDINGS_DIR_NAME: &str = "mend-findings";
 pub(crate) const FINDINGS_SCHEMA_VERSION: u32 = 14;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -111,7 +112,7 @@ pub(super) struct FindingsSink {
 }
 
 pub(super) fn prepare_findings_dir(target_directory: &Path) -> Result<PathBuf> {
-    let findings_dir = target_directory.join("mend-findings");
+    let findings_dir = target_directory.join(FINDINGS_DIR_NAME);
     fs::create_dir_all(&findings_dir).with_context(|| {
         format!(
             "failed to create findings directory {}",

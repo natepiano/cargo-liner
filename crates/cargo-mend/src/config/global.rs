@@ -9,28 +9,10 @@ use serde::Deserialize;
 use toml::from_str;
 
 use super::diagnostics_config::DiagnosticsConfig;
+use crate::constants::HELP_URL_BASE;
 
 pub(crate) const APP_NAME: &str = "cargo-mend";
 pub(crate) const GLOBAL_CONFIG_FILE: &str = "config.toml";
-pub(crate) const DEFAULT_GLOBAL_CONFIG_TOML: &str = r"# cargo-mend global configuration
-# See https://github.com/natepiano/cargo-mend#diagnostics for details on each rule.
-# Per-project overrides go in mend.toml at your project or workspace root.
-
-[diagnostics]
-forbidden_pub_crate = true
-forbidden_pub_in_crate = true
-review_pub_mod = true
-suspicious_pub = true
-prefer_module_import = true
-inline_path_qualified_type = true
-shorten_local_crate_import = true
-replace_deep_super_import = true
-wildcard_parent_pub_use = true
-internal_parent_pub_use_facade = true
-narrow_to_pub_crate = true
-field_visibility_wider_than_type = true
-imports_at_top = true
-";
 
 #[derive(Debug, Default, Deserialize)]
 struct GlobalConfigFile {
@@ -68,12 +50,36 @@ pub(crate) fn load_global_diagnostics() -> DiagnosticsConfig {
     )
 }
 
+fn default_global_config_toml() -> String {
+    format!(
+        r"# cargo-mend global configuration
+# See {HELP_URL_BASE}#diagnostics for details on each rule.
+# Per-project overrides go in mend.toml at your project or workspace root.
+
+[diagnostics]
+forbidden_pub_crate = true
+forbidden_pub_in_crate = true
+review_pub_mod = true
+suspicious_pub = true
+prefer_module_import = true
+inline_path_qualified_type = true
+shorten_local_crate_import = true
+replace_deep_super_import = true
+wildcard_parent_pub_use = true
+internal_parent_pub_use_facade = true
+narrow_to_pub_crate = true
+field_visibility_wider_than_type = true
+imports_at_top = true
+"
+    )
+}
+
 fn create_default_global_config(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
-    fs::write(path, DEFAULT_GLOBAL_CONFIG_TOML)
+    fs::write(path, default_global_config_toml())
         .with_context(|| format!("failed to write default config to {}", path.display()))?;
     Ok(())
 }
@@ -86,15 +92,15 @@ fn create_default_global_config(path: &Path) -> Result<()> {
 mod tests {
     use toml::from_str;
 
-    use super::DEFAULT_GLOBAL_CONFIG_TOML;
     use super::GlobalConfigFile;
+    use super::default_global_config_toml;
     use crate::config::DiagnosticCode;
     use crate::config::DiagnosticStatus;
 
     #[test]
     fn default_global_config_toml_parses_correctly() {
-        let result: Result<GlobalConfigFile, _> = from_str(DEFAULT_GLOBAL_CONFIG_TOML);
-        assert!(result.is_ok(), "DEFAULT_GLOBAL_CONFIG_TOML should parse");
+        let result: Result<GlobalConfigFile, _> = from_str(&default_global_config_toml());
+        assert!(result.is_ok(), "default_global_config_toml() should parse");
         let global_config_file = result.unwrap();
         for (code, enabled) in global_config_file.diagnostics_config.entries() {
             assert!(

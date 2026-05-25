@@ -14,6 +14,9 @@ use toml::from_str;
 
 use super::diagnostics_config::DiagnosticsConfig;
 
+// config file
+const CONFIG_FILE_NAME: &str = "mend.toml";
+
 #[derive(Debug, Default, Deserialize)]
 struct ConfigFile {
     #[serde(default, rename = "visibility")]
@@ -48,7 +51,7 @@ pub(crate) fn load_config(
         || {
             let mut result = Vec::new();
             for root in [manifest_dir, workspace_root] {
-                result.push(root.join("mend.toml"));
+                result.push(root.join(CONFIG_FILE_NAME));
             }
             result
         },
