@@ -712,7 +712,13 @@ fn lint_display_to_string(
             } else {
                 LINT_NO_LOG
             };
-            format!("{icon} {count}")
+            // A first, in-progress run has no completed count yet; show the
+            // spinner alone rather than a bare "0".
+            if *count == 0 {
+                icon.to_string()
+            } else {
+                format!("{icon} {count}")
+            }
         },
     }
 }
@@ -830,6 +836,23 @@ mod tests {
         assert_eq!(
             lint_display_to_string(&display, elapsed, true),
             format!("{} 3", ACTIVITY_SPINNER.frame_at(elapsed))
+        );
+    }
+
+    #[test]
+    fn package_lint_row_omits_zero_count_during_first_run() {
+        let timestamp =
+            DateTime::parse_from_rfc3339("2026-03-30T14:22:18-05:00").expect("timestamp");
+        let elapsed = Duration::from_millis(100);
+        // First run, no completed history yet: spinner only, no bare "0".
+        let display = LintDisplay::Runs {
+            count:  0,
+            status: LintStatus::Running(timestamp),
+        };
+
+        assert_eq!(
+            lint_display_to_string(&display, elapsed, true),
+            ACTIVITY_SPINNER.frame_at(elapsed).to_string()
         );
     }
 }

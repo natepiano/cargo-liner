@@ -214,7 +214,12 @@ impl Lint {
                 Self::run_count_at(projects, path),
             )
         };
-        if count == 0 {
+        // A first, in-progress run has no completed history yet
+        // (count == 0). Still surface it as `Runs` so the detail pane
+        // shows the spinner — matching the project-list column and
+        // toast, which key off `status` directly. The renderer omits
+        // the `0` count while it's zero.
+        if count == 0 && !matches!(status, LintStatus::Running(_)) {
             LintDisplay::NoRuns
         } else {
             LintDisplay::Runs { count, status }

@@ -39,6 +39,23 @@ pub fn project_key(project_root: &Path) -> String {
     format!("{name}-{hex}")
 }
 
+/// Render an id into a single path segment that is legal on every platform:
+/// keep ASCII alphanumerics plus `-`, `.`, `_`; replace anything else with `-`.
+/// A lint `run_id` is used verbatim as the `runs/{run_id}` archive directory
+/// name, and the default id is an RFC3339 timestamp whose `:` separators are
+/// illegal in Windows paths — so the id must be path-safe where it is created.
+pub fn sanitize_run_id(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 /// Cache-rooted directory for the project's lint watcher protocol files.
 pub fn project_dir(project_root: &Path) -> AbsolutePath {
     cache_root().join(project_key(project_root)).into()
@@ -72,6 +89,17 @@ pub fn history_path_under(cache_root: &Path, project_root: &Path) -> AbsolutePat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_run_id_replaces_path_illegal_chars() {
+        // RFC3339 colons (illegal on Windows) become dashes; digits, dots,
+        // and existing dashes survive, so the id stays unique per timestamp.
+        assert_eq!(
+            sanitize_run_id("2026-05-25T17:20:44.592-04:00"),
+            "2026-05-25T17-20-44.592-04-00"
+        );
+        assert_eq!(sanitize_run_id("run-abc"), "run-abc");
+    }
 
     #[test]
     fn project_key_matches_shasum_cli() {

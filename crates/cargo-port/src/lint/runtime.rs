@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::io;
 use std::io::Read;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Child;
 use std::process::Command;
@@ -496,7 +498,10 @@ pub fn run_commands_for_project(
     let started_at_str = started_at.to_rfc3339();
     let run_started = Instant::now();
     let mut run = LintRun {
-        run_id:      started_at_str.clone(),
+        // The run id doubles as the `runs/{run_id}` archive directory name,
+        // so it must be path-safe — the raw RFC3339 timestamp has `:` which is
+        // illegal on Windows. `started_at` keeps the unsanitized timestamp.
+        run_id:      paths::sanitize_run_id(&started_at_str),
         started_at:  started_at_str,
         finished_at: None,
         duration_ms: None,
@@ -555,15 +560,34 @@ pub fn run_commands_for_project(
         CommandsResult::SomeFailed | CommandsResult::ProjectRemoved => LintRunStatus::Failed,
     };
 
-    run = history::archive_run_output(cache_root, project_root, &run)?;
+    // Archiving rewrites each command's `log_file` to its stable per-run
+    // path. Treat it as best-effort: on failure keep the un-archived run
+    // (its `log_file` still points at the rolling `*-latest.log`, which
+    // exists) so the terminal-status write below always lands. Otherwise an
+    // archive error — e.g. a filesystem rejecting the run-id path — would
+    // strand the run at `Running` and spin the UI forever.
+    match history::archive_run_output(cache_root, project_root, &run) {
+        Ok(archived) => run = archived,
+        Err(err) => tracing::warn!(
+            path = %project_root.display(),
+            error = %err,
+            "lint_archive_failed"
+        ),
+    }
     read_write::write_latest_under(cache_root, project_root, &run)?;
-    let prune_stats =
-        history::append_history_under(cache_root, project_root, &run, cache_size_bytes)?;
-    if prune_stats.runs_evicted > 0 {
-        let _ = background_tx.send(BackgroundMsg::LintCachePruned {
-            runs_evicted:    prune_stats.runs_evicted,
-            bytes_reclaimed: prune_stats.bytes_reclaimed,
-        });
+    match history::append_history_under(cache_root, project_root, &run, cache_size_bytes) {
+        Ok(prune_stats) if prune_stats.runs_evicted > 0 => {
+            let _ = background_tx.send(BackgroundMsg::LintCachePruned {
+                runs_evicted:    prune_stats.runs_evicted,
+                bytes_reclaimed: prune_stats.bytes_reclaimed,
+            });
+        },
+        Ok(_) => {},
+        Err(err) => tracing::warn!(
+            path = %project_root.display(),
+            error = %err,
+            "lint_history_append_failed"
+        ),
     }
     publish_status(
         status_cache,
@@ -655,6 +679,51 @@ fn publish_status(
     });
 }
 
+/// Substitute the lint placeholder variables (`$NAME` and `${NAME}`) in
+/// `command` with their resolved paths. Done in Rust rather than relying on
+/// the shell so commands behave identically under `/bin/sh` and `cmd.exe`
+/// (the latter does not expand `$NAME`). The matching variables are still set
+/// on the child env below, so user-authored variables keep working through
+/// whichever shell runs the command.
+fn expand_lint_placeholders(
+    command: &str,
+    project_root: &Path,
+    manifest_path: &Path,
+    output_dir: &Path,
+) -> String {
+    let mut expanded = command.to_string();
+    for (name, path) in [
+        ("PROJECT_DIR", project_root),
+        ("MANIFEST_PATH", manifest_path),
+        ("LINT_OUTPUT_DIR", output_dir),
+    ] {
+        let value = path.to_string_lossy();
+        expanded = expanded.replace(&format!("${{{name}}}"), value.as_ref());
+        expanded = expanded.replace(&format!("${name}"), value.as_ref());
+    }
+    expanded
+}
+
+/// Build the shell `Command` that runs a lint command line. `/bin/sh` does
+/// not exist on Windows (spawn fails with os error 3), so route through
+/// `cmd /C` there. The command is passed verbatim via `raw_arg`, wrapped in an
+/// outer quote pair: `cmd` strips the outer pair and preserves inner quotes
+/// (e.g. around a manifest path with spaces) that its default arg quoting
+/// would otherwise pass through to the program literally.
+#[cfg(windows)]
+fn lint_shell(command_line: &str) -> Command {
+    let mut shell = Command::new("cmd");
+    shell.raw_arg(format!("/C \"{command_line}\""));
+    shell
+}
+
+#[cfg(not(windows))]
+fn lint_shell(command_line: &str) -> Command {
+    let mut shell = Command::new("/bin/sh");
+    shell.arg("-c").arg(command_line);
+    shell
+}
+
 fn run_command(
     project_root: &Path,
     manifest_path: &Path,
@@ -669,9 +738,9 @@ fn run_command(
     let tmp_path = output_dir.join(format!("{log_name}-latest.log.tmp"));
 
     let started = Instant::now();
-    let spawn_result = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(&command.command)
+    let expanded =
+        expand_lint_placeholders(&command.command, project_root, manifest_path, output_dir);
+    let spawn_result = lint_shell(&expanded)
         .current_dir(project_root)
         .env("PROJECT_DIR", project_root)
         .env("MANIFEST_PATH", manifest_path)
