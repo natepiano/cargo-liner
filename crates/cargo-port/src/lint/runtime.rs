@@ -991,7 +991,7 @@ mod tests {
         let cache_root = cache_paths::lint_runs_root_for(&cfg);
         let commands = vec![LintCommandConfig {
             name:    "echo".to_string(),
-            command: "printf 'lint ok\\n'".to_string(),
+            command: "echo lint ok".to_string(),
         }];
 
         let (tx, _rx) = mpsc::channel();
@@ -1017,7 +1017,8 @@ mod tests {
         let latest = std::fs::read_to_string(latest_path).expect("read latest report");
         let history = std::fs::read_to_string(history_path).expect("read history report");
 
-        assert_eq!(report, "lint ok\n");
+        // `cmd`'s `echo` emits `\r\n`; normalize so the check is host-agnostic.
+        assert_eq!(report.replace("\r\n", "\n"), "lint ok\n");
         assert!(latest.contains("\"status\": \"passed\""));
         assert!(history.contains("\"status\":\"passed\""));
     }
@@ -1099,7 +1100,7 @@ mod tests {
         cfg.lint.include = vec!["~/rust/demo".to_string()];
         cfg.lint.commands = vec![LintCommandConfig {
             name:    "echo".to_string(),
-            command: "printf 'lint ok\\n'".to_string(),
+            command: "echo lint ok".to_string(),
         }];
 
         let (background_tx, background_rx) = mpsc::channel();
@@ -1146,7 +1147,7 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("tempdir");
         let commands = vec![LintCommandConfig {
             name:    "echo".to_string(),
-            command: "printf 'lint ok\\n'".to_string(),
+            command: "echo lint ok".to_string(),
         }];
 
         let (tx, _rx) = mpsc::channel();

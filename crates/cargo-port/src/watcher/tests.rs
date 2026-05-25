@@ -1175,8 +1175,12 @@ fn tracked_file_edit_and_revert_refresh_git_status() {
             &projects,
             pending_git,
         );
-        let messages = collect_messages_until(
+        // Generous timeout: this drives a real `git status` subprocess through
+        // the runtime, and process spawning is slow on Windows under the
+        // parallel full-suite load — the 1s default flakes there.
+        let messages = collect_messages_until_with_timeout(
             &background_rx,
+            Duration::from_secs(30),
             |msg| matches!(msg, BackgroundMsg::CheckoutInfo { path, .. } if *path == *project_dir),
         );
         let git_msg = messages
@@ -1192,7 +1196,7 @@ fn tracked_file_edit_and_revert_refresh_git_status() {
             .expect("git info message for project");
         assert_eq!(git_msg.status, expected);
         let repo_root = git_done_rx
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(Duration::from_secs(30))
             .expect("git refresh completion");
         refresh::handle_git_completion(pending_git, &repo_root);
     };
@@ -1832,7 +1836,7 @@ fn watcher_event_schedules_lint_run_through_main_runtime() {
     cfg.lint.include = vec!["~/rust/demo".to_string()];
     cfg.lint.commands = vec![crate::config::LintCommandConfig {
         name:    "echo".to_string(),
-        command: "printf 'lint ok\\n'".to_string(),
+        command: "echo lint ok".to_string(),
     }];
 
     let (background_tx, background_rx) = mpsc::channel();

@@ -116,13 +116,20 @@ pub fn append_history_under(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
     let json =
         serde_json::to_string(run).map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
-    writeln!(file, "{json}")?;
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        writeln!(file, "{json}")?;
+    }
+    // The handle is closed above before pruning: `prune_runs_under` re-walks
+    // the cache via `total_bytes_under`, which stats this file by path. On
+    // Windows the directory-entry length of a file held open for append
+    // updates only on close, so a still-open handle would hide the just
+    // appended line and make pruning under-trigger.
     let line_bytes = u64::try_from(json.len().saturating_add(1)).unwrap_or(u64::MAX);
     cache_size_index::adjust(cache_root, i64::try_from(line_bytes).unwrap_or(i64::MAX));
     enforce_cache_size_under(cache_root, cache_size_bytes, Some((&path, &run.run_id)))

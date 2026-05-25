@@ -401,7 +401,7 @@ fn handle_project_discovered_registers_new_root_with_lint_runtime() {
     cfg.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
     cfg.lint.commands = vec![crate::config::LintCommandConfig {
         name:    "echo".to_string(),
-        command: "printf 'lint ok\\n'".to_string(),
+        command: "echo lint ok".to_string(),
     }];
     let mut app = make_app_with_config(&[], &cfg);
 
