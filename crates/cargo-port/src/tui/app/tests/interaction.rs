@@ -76,6 +76,7 @@ use crate::tui::integration::AppPaneId;
 use crate::tui::interaction;
 use crate::tui::pane::DismissTarget;
 use crate::tui::pane::HoverTarget;
+use crate::tui::panes;
 use crate::tui::panes::LintsData;
 use crate::tui::panes::PaneId;
 use crate::tui::panes::SyncedDescriptionHeight;
@@ -140,6 +141,18 @@ fn make_member(name: &str, path: &Path) -> Package {
     Package {
         path: AbsolutePath::from(path),
         name: Some(name.to_string()),
+        ..Package::default()
+    }
+}
+
+fn make_member_with_cargo(name: &str, path: &Path, cargo: Cargo) -> Package {
+    Package {
+        path: AbsolutePath::from(path),
+        name: Some(name.to_string()),
+        rust: RustInfo {
+            cargo,
+            ..RustInfo::default()
+        },
         ..Package::default()
     }
 }
@@ -374,6 +387,36 @@ fn pane_row_point(pane: &Viewport, row_index: usize) -> (u16, u16) {
     )
 }
 
+fn package_metadata_row_point(app: &App, row_index: usize) -> (u16, u16) {
+    let area = app.panes.package.viewport.content_area();
+    (
+        area.x.saturating_add(1),
+        area.y
+            .saturating_add(2)
+            .saturating_add(u16::try_from(row_index).unwrap_or(u16::MAX)),
+    )
+}
+
+fn pane_row_hit_point(app: &App, pane: PaneId, row: usize) -> (u16, u16) {
+    let area = app
+        .panes
+        .tiled_layout
+        .panes
+        .iter()
+        .find_map(|resolved| (resolved.pane == pane).then_some(resolved.area))
+        .expect("pane must be laid out");
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            if interaction::hovered_pane_row_at(app, Position::new(x, y))
+                == Some(HoveredPaneRow { pane, row })
+            {
+                return (x, y);
+            }
+        }
+    }
+    panic!("row {row} in pane {pane:?} was not hit-testable");
+}
+
 fn framework_pane_row_point(pane: &Viewport, row_index: usize) -> (u16, u16) {
     let area = pane.content_area();
     (
@@ -594,7 +637,7 @@ fn hovered_pane_row_resolves_project_list_rows() {
 
     let (x, y) = row_body_point(&app, 1);
     assert_eq!(
-        crate::tui::interaction::hovered_pane_row_at(&app, Position::new(x, y)),
+        interaction::hovered_pane_row_at(&app, Position::new(x, y)),
         Some(HoveredPaneRow {
             pane: PaneId::ProjectList,
             row:  1,
@@ -657,7 +700,7 @@ fn git_hover_uses_owner_backed_pane_surface_for_workspace_member() {
 
     let (x, y) = pane_row_point(&app.panes.git.viewport, 0);
     assert_eq!(
-        crate::tui::interaction::hovered_pane_row_at(&app, Position::new(x, y)),
+        interaction::hovered_pane_row_at(&app, Position::new(x, y)),
         Some(HoveredPaneRow {
             pane: PaneId::Git,
             row:  0,
@@ -1128,11 +1171,166 @@ fn package_pane_row_click_selects_field() {
     let mut app = make_app(&[make_package("demo", &project_dir)]);
     render_ui(&mut app);
 
-    let (x, y) = pane_row_point(&app.panes.package.viewport, 1);
+    let (x, y) = pane_row_hit_point(&app, PaneId::Package, 1);
     click(&mut app, x, y);
 
     assert_eq!(app.focused_pane_id(), PaneId::Package);
     assert_eq!(app.panes.package.viewport.pos(), 1);
+}
+
+#[test]
+fn package_pane_description_row_click_selects_first_row() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+    app.panes.package.viewport.set_pos(1);
+    render_ui(&mut app);
+
+    let (x, y) = pane_row_hit_point(&app, PaneId::Package, 0);
+    click(&mut app, x, y);
+
+    assert_eq!(app.focused_pane_id(), PaneId::Package);
+    assert_eq!(app.panes.package.viewport.pos(), 0);
+}
+
+#[test]
+fn package_pane_section_row_click_is_ignored() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary = tmp.path().join("demo");
+    let linked = tmp.path().join("demo_fix");
+    std::fs::create_dir_all(&primary).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&linked).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+        RustProject::Package(make_package_worktree(
+            "demo",
+            &primary,
+            false,
+            Some(&primary),
+        )),
+        vec![RustProject::Package(make_package_worktree(
+            "demo",
+            &linked,
+            true,
+            Some(&primary),
+        ))],
+    ))]);
+    app.set_focus_to_pane(PaneId::Package);
+    app.panes.package.viewport.set_pos(1);
+    render_ui(&mut app);
+
+    let package = app.panes.package.content().expect("package pane content");
+    assert!(matches!(
+        panes::package_rows_from_data(package).get(1),
+        Some(panes::PackageRow::Section(_))
+    ));
+
+    let pos_before = app.panes.package.viewport.pos();
+    let (x, y) = package_metadata_row_point(&app, 0);
+    assert_eq!(
+        interaction::hovered_pane_row_at(&app, Position::new(x, y)),
+        None
+    );
+    click(&mut app, x, y);
+
+    assert_eq!(app.panes.package.viewport.pos(), pos_before);
+}
+
+#[test]
+fn package_pane_keyboard_navigation_skips_section_rows() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary = tmp.path().join("demo");
+    let linked = tmp.path().join("demo_fix");
+    std::fs::create_dir_all(&primary).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&linked).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[RootItem::Worktrees(WorktreeGroup::new(
+        RustProject::Package(make_package_worktree(
+            "demo",
+            &primary,
+            false,
+            Some(&primary),
+        )),
+        vec![RustProject::Package(make_package_worktree(
+            "demo",
+            &linked,
+            true,
+            Some(&primary),
+        ))],
+    ))]);
+    app.set_focus_to_pane(PaneId::Package);
+    render_ui(&mut app);
+
+    let package = app.panes.package.content().expect("package pane content");
+    let rows = panes::package_rows_from_data(package);
+    assert!(matches!(rows.get(1), Some(panes::PackageRow::Section(_))));
+    assert!(matches!(rows.get(6), Some(panes::PackageRow::Section(_))));
+    assert_eq!(app.panes.package.viewport.pos(), 0);
+
+    press_key(&mut app, KeyCode::Up);
+    assert_eq!(app.panes.package.viewport.pos(), 0);
+    press_key(&mut app, KeyCode::Down);
+    assert_eq!(app.panes.package.viewport.pos(), 2);
+    for _ in 0..3 {
+        press_key(&mut app, KeyCode::Down);
+    }
+    assert_eq!(app.panes.package.viewport.pos(), 5);
+
+    press_key(&mut app, KeyCode::Down);
+    assert_eq!(app.panes.package.viewport.pos(), 7);
+
+    press_key(&mut app, KeyCode::Up);
+    assert_eq!(app.panes.package.viewport.pos(), 5);
+}
+
+#[test]
+fn package_pane_structure_rows_are_clickable_after_metadata_rows() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let workspace = tmp.path().join("workspace");
+    let member = workspace.join("core");
+    std::fs::create_dir_all(&member).unwrap_or_else(|_| std::process::abort());
+    let cargo = Cargo {
+        types:       vec![ProjectType::Library],
+        examples:    vec![ExampleGroup {
+            category: String::new(),
+            names:    vec!["demo".to_string()],
+        }],
+        benches:     Vec::new(),
+        test_count:  0,
+        publishable: true,
+    };
+    let root = make_workspace_with_members(
+        "workspace",
+        &workspace,
+        vec![inline_group(vec![make_member_with_cargo(
+            "core", &member, cargo,
+        )])],
+    );
+    let mut app = make_app(&[root]);
+    app.set_focus_to_pane(PaneId::Package);
+    render_ui(&mut app);
+
+    let package = app.panes.package.content().expect("package pane content");
+    let rows = panes::package_rows_from_data(package);
+    let structure_row = rows
+        .iter()
+        .position(|row| matches!(row, panes::PackageRow::Structure(0)))
+        .expect("first structure row");
+    let before_structure =
+        panes::package_selectable_row_at_or_before(&rows, structure_row.saturating_sub(1))
+            .expect("selectable row before structure");
+
+    app.panes.package.viewport.set_pos(before_structure);
+    press_key(&mut app, KeyCode::Down);
+    assert_eq!(app.panes.package.viewport.pos(), structure_row);
+
+    let (x, y) = pane_row_hit_point(&app, PaneId::Package, structure_row);
+    click(&mut app, x, y);
+
+    assert_eq!(app.focused_pane_id(), PaneId::Package);
+    assert_eq!(app.panes.package.viewport.pos(), structure_row);
 }
 
 #[test]
@@ -1210,6 +1408,37 @@ fn git_pane_row_click_selects_field() {
     click(&mut app, x, y);
 
     assert_eq!(app.focused_pane_id(), PaneId::Git);
+    assert_eq!(app.panes.git.viewport.pos(), 1);
+}
+
+#[test]
+fn git_pane_description_row_click_selects_first_row() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let project_dir = tmp.path().join("demo");
+    std::fs::create_dir_all(&project_dir).unwrap_or_else(|_| std::process::abort());
+
+    let mut app = make_app(&[make_package("demo", &project_dir)]);
+    let (checkout, repo) = make_git_info(Some("https://github.com/natepiano/demo"));
+    app.handle_repo_info(&project_dir, repo);
+    app.handle_checkout_info(&project_dir, checkout);
+    app.project_list
+        .handle_repo_meta(&project_dir, 7, Some("A useful demo repo".to_string()));
+    app.panes.git.viewport.set_pos(1);
+    render_ui(&mut app);
+
+    let git = app.panes.git.content().expect("git pane content");
+    assert!(matches!(
+        panes::git_row_at(git, 0),
+        Some(panes::GitRow::Description(_))
+    ));
+
+    let (x, y) = pane_row_hit_point(&app, PaneId::Git, 0);
+    click(&mut app, x, y);
+
+    assert_eq!(app.focused_pane_id(), PaneId::Git);
+    assert_eq!(app.panes.git.viewport.pos(), 0);
+
+    press_key(&mut app, KeyCode::Down);
     assert_eq!(app.panes.git.viewport.pos(), 1);
 }
 

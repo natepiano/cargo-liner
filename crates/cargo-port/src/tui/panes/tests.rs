@@ -43,6 +43,8 @@ fn package_data(is_rust_project: bool) -> PackageData {
             "Project".to_string()
         },
         title_name:               "demo".to_string(),
+        worktree_group_summary:   None,
+        primary_section:          None,
         path:                     "~/demo".to_string(),
         version:                  "0.1.0".to_string(),
         description:              None,
@@ -250,10 +252,10 @@ fn stars_row_shows_real_value_when_data_present_during_outage() {
 fn package_copy_crates_io_row_uses_full_url() {
     let mut data = package_data(true);
     data.crates_version = Some("0.1.0".to_string());
-    let fields = model::package_fields_from_data(&data);
-    let pos = fields
+    let rows = model::package_rows_from_data(&data);
+    let pos = rows
         .iter()
-        .position(|field| *field == DetailField::CratesIo)
+        .position(|row| matches!(row, model::PackageRow::Field(DetailField::CratesIo)))
         .unwrap_or(usize::MAX);
     assert_ne!(pos, usize::MAX);
 
@@ -269,11 +271,11 @@ fn package_copy_crates_io_row_uses_full_url() {
 #[test]
 fn package_copy_lint_and_ci_rows_return_nothing() {
     let data = package_data(true);
-    let fields = model::package_fields_from_data(&data);
+    let rows = model::package_rows_from_data(&data);
     for field in [DetailField::Lint, DetailField::Ci] {
-        let pos = fields
+        let pos = rows
             .iter()
-            .position(|candidate| *candidate == field)
+            .position(|candidate| matches!(candidate, model::PackageRow::Field(candidate) if *candidate == field))
             .unwrap_or(usize::MAX);
         assert_ne!(pos, usize::MAX);
         assert_eq!(

@@ -264,8 +264,11 @@ pub struct PendingCiFetch {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetailField {
+    Worktrees,
+    DeletedWorktrees,
     Path,
     Targets,
+    DiskTotal,
     Disk,
     /// Submodule overlay: `.gitmodules` tracking branch (the `branch =` line).
     Tracks,
@@ -289,7 +292,6 @@ pub enum DetailField {
     GitStatus,
     VsLocal,
     Stars,
-    RepoDesc,
     Inception,
     LastCommit,
     LastFetched,
@@ -308,8 +310,11 @@ pub enum DetailField {
 impl DetailField {
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Worktrees => "Worktrees",
+            Self::DeletedWorktrees => "Deleted",
             Self::Path => "Path",
             Self::Targets => "Type",
+            Self::DiskTotal => "Disk total",
             Self::Disk => "Disk",
             Self::DiskTarget => "  target/",
             Self::DiskNonTarget => "  other",
@@ -322,7 +327,6 @@ impl DetailField {
             Self::GitStatus => "Status",
             Self::VsLocal => "Ahead/Behind",
             Self::Stars => "Stars",
-            Self::RepoDesc => "About",
             Self::Inception => "Incept",
             Self::LastCommit => "Latest",
             Self::LastFetched => "Fetched",
@@ -347,6 +351,18 @@ impl DetailField {
     /// with `Self::Lint` or `Self::Ci` returns an empty string.
     pub fn package_value(self, data: &PackageData) -> String {
         match self {
+            Self::Worktrees => data
+                .worktree_group_summary
+                .as_ref()
+                .map_or_else(String::new, |summary| summary.worktrees.to_string()),
+            Self::DeletedWorktrees => data
+                .worktree_group_summary
+                .as_ref()
+                .map_or_else(String::new, |summary| summary.deleted.to_string()),
+            Self::DiskTotal => data
+                .worktree_group_summary
+                .as_ref()
+                .map_or_else(String::new, |summary| summary.disk.clone()),
             Self::Path => data.path.clone(),
             Self::Disk => data.disk.clone(),
             Self::Targets => data.types.clone(),
@@ -382,7 +398,6 @@ impl DetailField {
             | Self::GitStatus
             | Self::VsLocal
             | Self::Stars
-            | Self::RepoDesc
             | Self::Inception
             | Self::LastCommit
             | Self::LastFetched
@@ -418,7 +433,6 @@ impl DetailField {
             Self::Stars => data
                 .stars
                 .map_or_else(String::new, |count| format!("⭐ {count}")),
-            Self::RepoDesc => data.description.as_deref().unwrap_or("").to_string(),
             Self::Inception => data.inception.as_deref().unwrap_or("").to_string(),
             Self::LastCommit => data.last_commit.as_deref().unwrap_or("").to_string(),
             Self::LastFetched => data.last_fetched.as_deref().unwrap_or("").to_string(),
@@ -435,7 +449,10 @@ impl DetailField {
                 .map(|ctx| format!("{}  (parent HEAD)", ctx.pinned_commit))
                 .unwrap_or_default(),
             // Package fields — should not be called with git_value.
-            Self::Path
+            Self::Worktrees
+            | Self::DeletedWorktrees
+            | Self::Path
+            | Self::DiskTotal
             | Self::Disk
             | Self::DiskTarget
             | Self::DiskNonTarget
@@ -501,7 +518,39 @@ pub const fn github_stars_is_unreachable_placeholder(data: &GitData) -> bool {
     data.stars.is_none() && !data.github_status.is_available()
 }
 
-/// All fields for the `Package` column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackageSection {
+    WorktreeGroupSummary,
+    PrimaryWorkspace,
+    PrimaryPackage,
+}
+
+impl PackageSection {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::WorktreeGroupSummary => "Worktree Group Summary",
+            Self::PrimaryWorkspace => "Primary Workspace",
+            Self::PrimaryPackage => "Primary Package",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackageRow {
+    Description,
+    Section(PackageSection),
+    Field(DetailField),
+    Structure(usize),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorktreeGroupSummary {
+    pub worktrees: usize,
+    pub deleted:   usize,
+    pub disk:      String,
+}
+
+/// Primary project fields for the `Package` column.
 /// Non-Rust projects show only name, path, disk, and CI.
 pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     if data.package_title == "Project" {
@@ -558,6 +607,84 @@ pub fn package_fields_from_data(data: &PackageData) -> Vec<DetailField> {
     fields
 }
 
+pub fn package_rows_from_data(data: &PackageData) -> Vec<PackageRow> {
+    let fields = package_fields_from_data(data);
+    let mut rows = vec![PackageRow::Description];
+    let Some(summary) = data.worktree_group_summary.as_ref() else {
+        rows.extend(fields.into_iter().map(PackageRow::Field));
+        rows.extend((0..data.stats_rows.len()).map(PackageRow::Structure));
+        return rows;
+    };
+
+    rows.extend([
+        PackageRow::Section(PackageSection::WorktreeGroupSummary),
+        PackageRow::Field(DetailField::Worktrees),
+    ]);
+    if summary.deleted > 0 {
+        rows.push(PackageRow::Field(DetailField::DeletedWorktrees));
+    }
+    rows.extend([
+        PackageRow::Field(DetailField::DiskTotal),
+        PackageRow::Field(DetailField::Lint),
+        PackageRow::Field(DetailField::Ci),
+    ]);
+    if let Some(section) = data.primary_section {
+        rows.push(PackageRow::Section(section));
+    }
+    rows.extend(
+        fields
+            .into_iter()
+            .filter(|field| !matches!(field, DetailField::Lint | DetailField::Ci))
+            .map(PackageRow::Field),
+    );
+    rows.extend((0..data.stats_rows.len()).map(PackageRow::Structure));
+    rows
+}
+
+pub fn package_field_at(data: &PackageData, pos: usize) -> Option<DetailField> {
+    package_rows_from_data(data)
+        .get(pos)
+        .and_then(|row| match row {
+            PackageRow::Description | PackageRow::Section(_) | PackageRow::Structure(_) => None,
+            PackageRow::Field(field) => Some(*field),
+        })
+}
+
+pub const fn package_row_is_selectable(row: &PackageRow) -> bool {
+    matches!(
+        row,
+        PackageRow::Description | PackageRow::Field(_) | PackageRow::Structure(_)
+    )
+}
+
+pub fn package_first_selectable_row(rows: &[PackageRow]) -> Option<usize> {
+    rows.iter().position(package_row_is_selectable)
+}
+
+pub fn package_last_selectable_row(rows: &[PackageRow]) -> Option<usize> {
+    rows.iter().rposition(package_row_is_selectable)
+}
+
+pub fn package_selectable_row_at_or_after(rows: &[PackageRow], pos: usize) -> Option<usize> {
+    rows.iter()
+        .enumerate()
+        .skip(pos.min(rows.len()))
+        .find_map(|(index, row)| package_row_is_selectable(row).then_some(index))
+}
+
+pub fn package_selectable_row_at_or_before(rows: &[PackageRow], pos: usize) -> Option<usize> {
+    rows.iter()
+        .enumerate()
+        .take(pos.saturating_add(1).min(rows.len()))
+        .rev()
+        .find_map(|(index, row)| package_row_is_selectable(row).then_some(index))
+}
+
+pub fn package_nearest_selectable_row(rows: &[PackageRow], pos: usize) -> Option<usize> {
+    package_selectable_row_at_or_after(rows, pos)
+        .or_else(|| package_selectable_row_at_or_before(rows, pos))
+}
+
 pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     let mut fields = Vec::new();
     if data.head.is_some() {
@@ -582,7 +709,7 @@ pub fn git_fields_from_data(data: &GitData) -> Vec<DetailField> {
     if data.stars.is_some() || github_stars_is_unreachable_placeholder(data) {
         fields.push(DetailField::Stars);
     }
-    // RepoDesc is rendered separately in the About section by
+    // Repo description is rendered separately in the About section by
     // `render_git_about_section`, so it is intentionally not a flat field.
     if data.inception.is_some() {
         fields.push(DetailField::Inception);
@@ -628,6 +755,8 @@ impl PublishStatus {
 pub struct PackageData {
     pub package_title:            String,
     pub title_name:               String,
+    pub worktree_group_summary:   Option<WorktreeGroupSummary>,
+    pub primary_section:          Option<PackageSection>,
     pub path:                     String,
     pub version:                  String,
     pub description:              Option<String>,
@@ -792,12 +921,25 @@ pub struct WorktreeInfo {
     reason = "Field/Worktree payloads exist for exhaustiveness; callers may match only Remote"
 )]
 pub enum GitRow<'a> {
+    Description(&'a str),
     Field(DetailField),
     Remote(&'a RemoteRow),
     Worktree(&'a WorktreeInfo),
 }
 
+pub fn git_has_description_row(data: &GitData) -> bool {
+    data.description
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|description| !description.is_empty())
+}
+
 pub fn git_row_at(data: &GitData, pos: usize) -> Option<GitRow<'_>> {
+    let description_rows = usize::from(git_has_description_row(data));
+    if description_rows > 0 && pos == 0 {
+        return data.description.as_deref().map(GitRow::Description);
+    }
+    let pos = pos.checked_sub(description_rows)?;
     let fields = git_fields_from_data(data);
     let flat_len = fields.len();
     if pos < flat_len {
@@ -828,9 +970,23 @@ fn copy_payload(text: impl Into<String>, label: CopyLabel) -> CopySelectionResul
 }
 
 pub fn copy_payload_for_package(data: &PackageData, pos: usize) -> CopySelectionResult {
-    let fields = package_fields_from_data(data);
-    let Some(field) = fields.get(pos).copied() else {
+    let Some(row) = package_rows_from_data(data).get(pos).copied() else {
         return CopySelectionResult::Nothing;
+    };
+    let PackageRow::Field(field) = row else {
+        return match row {
+            PackageRow::Description => copy_payload(
+                data.description.as_deref().unwrap_or_default(),
+                CopyLabel::Value,
+            ),
+            PackageRow::Structure(index) => {
+                let Some((label, count)) = data.stats_rows.get(index) else {
+                    return CopySelectionResult::Nothing;
+                };
+                copy_payload(format!("{count} {label}"), CopyLabel::Value)
+            },
+            PackageRow::Section(_) | PackageRow::Field(_) => CopySelectionResult::Nothing,
+        };
     };
     match field {
         DetailField::Lint | DetailField::Ci => CopySelectionResult::Nothing,
@@ -856,6 +1012,7 @@ pub fn copy_payload_for_package(data: &PackageData, pos: usize) -> CopySelection
 
 pub fn copy_payload_for_git(data: &GitData, pos: usize) -> CopySelectionResult {
     match git_row_at(data, pos) {
+        Some(GitRow::Description(description)) => copy_payload(description, CopyLabel::Value),
         Some(GitRow::Field(field)) => {
             copy_payload(git_field_copy_value(data, field), CopyLabel::Value)
         },
@@ -1483,6 +1640,8 @@ pub fn build_pane_data_for_vendored(app: &App, vendored: &VendoredPackage) -> De
             cargo: Some(cargo),
             wt_item: None,
             stats_rows,
+            primary_section: None,
+            fallback_type: None,
             package_title: "Vendored Crate".to_string(),
         },
     )
@@ -1515,6 +1674,8 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
         package: PackageData {
             package_title: "Submodule".to_string(),
             title_name: submodule.name.clone(),
+            worktree_group_summary: None,
+            primary_section: None,
             path: display_path,
             version,
             description: submodule.url.clone(),
@@ -1596,6 +1757,8 @@ fn build_pane_data_for_workspace(
             cargo: Some(cargo),
             wt_item: wt_item_ref,
             stats_rows,
+            primary_section: Some(PackageSection::PrimaryWorkspace).filter(|_| is_wt_group),
+            fallback_type: Some(ProjectType::Workspace),
             package_title,
         },
     )
@@ -1631,6 +1794,8 @@ fn build_pane_data_for_package(
             cargo: Some(cargo),
             wt_item: wt_item_ref,
             stats_rows,
+            primary_section: Some(PackageSection::PrimaryPackage).filter(|_| is_wt_group),
+            fallback_type: None,
             package_title,
         },
     )
@@ -1656,20 +1821,24 @@ fn build_pane_data_non_rust(
             cargo: None,
             wt_item: wt_item_ref,
             stats_rows: Vec::new(),
+            primary_section: None,
+            fallback_type: None,
             package_title: "Project".to_string(),
         },
     )
 }
 
 struct PaneDataSource<'a> {
-    abs_path:      &'a Path,
-    display_path:  &'a str,
-    title_name:    String,
-    has_cargo:     bool,
-    cargo:         Option<&'a Cargo>,
-    wt_item:       Option<&'a RootItem>,
-    stats_rows:    Vec<(&'static str, usize)>,
-    package_title: String,
+    abs_path:        &'a Path,
+    display_path:    &'a str,
+    title_name:      String,
+    has_cargo:       bool,
+    cargo:           Option<&'a Cargo>,
+    wt_item:         Option<&'a RootItem>,
+    stats_rows:      Vec<(&'static str, usize)>,
+    primary_section: Option<PackageSection>,
+    fallback_type:   Option<ProjectType>,
+    package_title:   String,
 }
 
 /// Crates-io fields pulled from either a Rust info or vendored entry.
@@ -1736,6 +1905,8 @@ fn manifest_fields_from(package_record: Option<&PackageRecord>) -> ManifestField
 struct BuildPackageDataArgs {
     package_title:            String,
     title_name:               String,
+    worktree_group_summary:   Option<WorktreeGroupSummary>,
+    primary_section:          Option<PackageSection>,
     display_path:             String,
     stats_rows:               Vec<(&'static str, usize)>,
     has_cargo:                bool,
@@ -1768,6 +1939,8 @@ fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
     PackageData {
         package_title: args.package_title,
         title_name: args.title_name,
+        worktree_group_summary: args.worktree_group_summary,
+        primary_section: args.primary_section,
         path: args.display_path,
         version,
         description,
@@ -1796,6 +1969,20 @@ fn resolve_worktrees(app: &App, wt_item: Option<&RootItem>) -> Vec<WorktreeInfo>
         app.panes
             .git
             .worktree_summary_or_compute(item.path().as_path(), || worktrees_from_item(app, item))
+    })
+}
+
+fn worktree_group_summary_for(item: &RootItem, disk: String) -> Option<WorktreeGroupSummary> {
+    let RootItem::Worktrees(group) = item else {
+        return None;
+    };
+    Some(WorktreeGroupSummary {
+        worktrees: group.visible_entry_count(),
+        deleted: group
+            .iter_entries()
+            .filter(|entry| entry.visibility() == Visibility::Deleted)
+            .count(),
+        disk,
     })
 }
 
@@ -1846,7 +2033,8 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
     let abs_path_owned = AbsolutePath::from(abs_path);
 
     let runtime = collect_runtime_fields(app, abs_path, src.wt_item);
-    let metadata = collect_metadata_fields(app, abs_path, &abs_path_owned, src.cargo);
+    let metadata =
+        collect_metadata_fields(app, abs_path, &abs_path_owned, src.cargo, src.fallback_type);
     log_pane_common_breakdown(abs_path, &runtime, &metadata);
 
     let crates_io_status = derive_crates_io_status(&runtime.crates_io, app);
@@ -1858,6 +2046,8 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         title_name: src.title_name,
         display_path: src.display_path.to_owned(),
         stats_rows: src.stats_rows,
+        worktree_group_summary: runtime.worktree_group_summary,
+        primary_section: src.primary_section,
         has_cargo: src.has_cargo,
         manifest: metadata.manifest,
         publish_status: crates_io_status.publish,
@@ -1883,14 +2073,15 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 /// single combined log line without each helper logging
 /// independently.
 struct RuntimeFields {
-    git_detail:    GitDetailFields,
-    crates_io:     CratesIoFields,
-    disk:          String,
-    ci:            Option<CiStatus>,
-    worktrees:     Vec<WorktreeInfo>,
-    git_detail_ms: u64,
-    disk_ms:       u64,
-    worktrees_ms:  u64,
+    git_detail:             GitDetailFields,
+    crates_io:              CratesIoFields,
+    disk:                   String,
+    worktree_group_summary: Option<WorktreeGroupSummary>,
+    ci:                     Option<CiStatus>,
+    worktrees:              Vec<WorktreeInfo>,
+    git_detail_ms:          u64,
+    disk_ms:                u64,
+    worktrees_ms:           u64,
 }
 
 /// Phase 2 output — every field derived from
@@ -1926,10 +2117,9 @@ fn collect_runtime_fields(app: &App, abs_path: &Path, wt_item: Option<&RootItem>
     let crates_io = resolve_crates_io_fields(app, abs_path);
 
     let t_disk = std::time::Instant::now();
-    let disk = wt_item.map_or_else(
-        || super::formatted_disk(&app.project_list, abs_path),
-        super::formatted_disk_for_item,
-    );
+    let disk = super::formatted_disk(&app.project_list, abs_path);
+    let worktree_group_summary = wt_item
+        .and_then(|item| worktree_group_summary_for(item, super::formatted_disk_for_item(item)));
     let ci = compute_ci_status(app, abs_path, wt_item);
     let disk_ms = tui_pane::perf_log_ms(t_disk.elapsed().as_millis());
 
@@ -1941,6 +2131,7 @@ fn collect_runtime_fields(app: &App, abs_path: &Path, wt_item: Option<&RootItem>
         git_detail,
         crates_io,
         disk,
+        worktree_group_summary,
         ci,
         worktrees,
         git_detail_ms,
@@ -1957,6 +2148,7 @@ fn collect_metadata_fields(
     abs_path: &Path,
     abs_path_owned: &AbsolutePath,
     cargo: Option<&Cargo>,
+    fallback_type: Option<ProjectType>,
 ) -> MetadataFields {
     let types_str = cargo.map_or_else(String::new, |c| {
         c.types()
@@ -1965,6 +2157,11 @@ fn collect_metadata_fields(
             .collect::<Vec<_>>()
             .join(", ")
     });
+    let types_str = if types_str.is_empty() {
+        fallback_type.map_or_else(String::new, |project_type| project_type.to_string())
+    } else {
+        types_str
+    };
 
     let t_meta = std::time::Instant::now();
     let package_record = lookup_package_record(app, abs_path_owned);

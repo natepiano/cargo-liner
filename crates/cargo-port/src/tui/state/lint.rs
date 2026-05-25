@@ -33,6 +33,7 @@ use crate::lint::LintStatus;
 use crate::lint::RuntimeHandle;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
+use crate::project::Visibility;
 use crate::tui::columns::LintCell;
 use crate::tui::integration;
 use crate::tui::pane::HoverTarget;
@@ -196,8 +197,9 @@ impl Lint {
                 Some(item @ RootItem::Worktrees(group)) => {
                     let status = Self::status_for_root(item);
                     let count: usize = group
-                        .iter_paths()
-                        .map(|p| Self::run_count_at(projects, p.as_path()))
+                        .iter_entries()
+                        .filter(|entry| entry.visibility() == Visibility::Visible)
+                        .map(|entry| Self::run_count_at(projects, entry.path().as_path()))
                         .sum();
                     (status, count)
                 },

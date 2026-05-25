@@ -129,12 +129,9 @@ pub(super) fn dispatch_navigation_action(
 ) {
     match focused {
         FocusedPane::App(AppPaneId::ProjectList) => navigate_project_list(app, action),
+        FocusedPane::App(AppPaneId::Package) => navigate_package_detail(app, action),
         FocusedPane::App(
-            AppPaneId::Package
-            | AppPaneId::Lang
-            | AppPaneId::Cpu
-            | AppPaneId::Git
-            | AppPaneId::Targets,
+            AppPaneId::Lang | AppPaneId::Cpu | AppPaneId::Git | AppPaneId::Targets,
         ) => navigate_detail(app, action),
         FocusedPane::App(AppPaneId::Lints) => navigate_lints(app, action),
         FocusedPane::App(AppPaneId::CiRuns) => navigate_ci_runs(app, action),
@@ -185,6 +182,10 @@ fn navigate_project_list(app: &mut App, action: NavigationAction) {
 
 fn navigate_detail(app: &mut App, action: NavigationAction) {
     let pane = active_detail_pane(app);
+    navigate_viewport(pane, action);
+}
+
+fn navigate_viewport(pane: &mut Viewport, action: NavigationAction) {
     match action {
         NavigationAction::Up | NavigationAction::Left => pane.up(),
         NavigationAction::Down | NavigationAction::Right => pane.down(),
@@ -194,6 +195,76 @@ fn navigate_detail(app: &mut App, action: NavigationAction) {
         NavigationAction::PageDown => pane.page_down(),
         NavigationAction::HalfPageUp => pane.half_page_up(),
         NavigationAction::HalfPageDown => pane.half_page_down(),
+    }
+}
+
+pub(super) fn navigate_package_detail(app: &mut App, action: NavigationAction) {
+    let Some(package) = app.panes.package.content() else {
+        navigate_viewport(&mut app.panes.package.viewport, action);
+        return;
+    };
+
+    let rows = super::package_rows_from_data(package);
+    let current = app
+        .panes
+        .package
+        .viewport
+        .pos()
+        .min(rows.len().saturating_sub(1));
+    let target = match action {
+        NavigationAction::Up | NavigationAction::Left => {
+            super::package_selectable_row_at_or_before(&rows, current.saturating_sub(1))
+                .or_else(|| super::package_first_selectable_row(&rows))
+        },
+        NavigationAction::Down | NavigationAction::Right => {
+            super::package_selectable_row_at_or_after(&rows, current.saturating_add(1))
+                .or_else(|| super::package_last_selectable_row(&rows))
+        },
+        NavigationAction::Home => super::package_first_selectable_row(&rows),
+        NavigationAction::End => super::package_last_selectable_row(&rows),
+        NavigationAction::PageUp => {
+            let step = app
+                .panes
+                .package
+                .viewport
+                .visible_rows()
+                .saturating_sub(1)
+                .max(1);
+            let target = current.saturating_sub(step);
+            super::package_selectable_row_at_or_before(&rows, target)
+                .or_else(|| super::package_selectable_row_at_or_after(&rows, target))
+        },
+        NavigationAction::PageDown => {
+            let step = app
+                .panes
+                .package
+                .viewport
+                .visible_rows()
+                .saturating_sub(1)
+                .max(1);
+            let target = current
+                .saturating_add(step)
+                .min(rows.len().saturating_sub(1));
+            super::package_selectable_row_at_or_after(&rows, target)
+                .or_else(|| super::package_selectable_row_at_or_before(&rows, target))
+        },
+        NavigationAction::HalfPageUp => {
+            let step = (app.panes.package.viewport.visible_rows() / 2).max(1);
+            let target = current.saturating_sub(step);
+            super::package_selectable_row_at_or_before(&rows, target)
+                .or_else(|| super::package_selectable_row_at_or_after(&rows, target))
+        },
+        NavigationAction::HalfPageDown => {
+            let step = (app.panes.package.viewport.visible_rows() / 2).max(1);
+            let target = current
+                .saturating_add(step)
+                .min(rows.len().saturating_sub(1));
+            super::package_selectable_row_at_or_after(&rows, target)
+                .or_else(|| super::package_selectable_row_at_or_before(&rows, target))
+        },
+    };
+    if let Some(pos) = target {
+        app.panes.package.viewport.set_pos(pos);
     }
 }
 
@@ -290,14 +361,13 @@ fn handle_detail_enter(app: &mut App) {
     if app.focus_is(PaneId::Targets) {
         handle_target_action(app, BuildMode::Debug);
     } else if app.base_focus() == PaneId::Package {
-        if let Some(pkg) = app.panes.package.content() {
-            let fields = super::package_fields_from_data(pkg);
-            if matches!(
-                fields.get(app.panes.package.viewport.pos()),
+        if let Some(pkg) = app.panes.package.content()
+            && matches!(
+                super::package_field_at(pkg, app.panes.package.viewport.pos()),
                 Some(DetailField::CratesIo)
-            ) {
-                open_url(&format!("https://crates.io/crates/{}", pkg.title_name));
-            }
+            )
+        {
+            open_url(&format!("https://crates.io/crates/{}", pkg.title_name));
         }
     } else if let Some(git) = app.panes.git.content() {
         let pos = app.panes.git.viewport.pos();

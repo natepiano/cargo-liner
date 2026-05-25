@@ -84,16 +84,12 @@ impl WorktreeGroup {
     /// `Running` takes priority: if any entry is actively running, the rollup
     /// reports `Running` so the user sees that work is in progress.
     pub fn lint_rollup_status(&self) -> LintStatus {
-        let statuses: Vec<LintStatus> =
-            std::iter::once(self.primary.rust_info().lint_runs.status())
-                .chain(
-                    self.linked
-                        .iter()
-                        .filter(|l| l.visibility() == Visibility::Visible)
-                        .map(|l| l.rust_info().lint_runs.status()),
-                )
-                .cloned()
-                .collect();
+        let statuses: Vec<LintStatus> = self
+            .iter_entries()
+            .filter(|entry| entry.visibility() == Visibility::Visible)
+            .map(|entry| entry.rust_info().lint_runs.status())
+            .cloned()
+            .collect();
         let running: Vec<LintStatus> = statuses
             .iter()
             .filter(|s| matches!(s, LintStatus::Running(_)))

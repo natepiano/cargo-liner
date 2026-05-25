@@ -1404,6 +1404,71 @@ fn lint_rollup_prefers_running_worktree_over_failed_root_history() {
 }
 
 #[test]
+fn worktree_group_detail_lint_rollup_ignores_deleted_worktrees() {
+    let root = make_package_worktrees_item(
+        make_package_raw(None, "~/ws", None),
+        vec![make_package_raw(None, "~/ws_feat", Some("ws_feat"))],
+    );
+
+    let mut app = make_app(&[make_project(None, "~/ws")]);
+    app.config.current_mut().lint.enabled = true;
+    apply_items(&mut app, &[root]);
+    let primary_path = test_path("~/ws");
+    let linked_path = test_path("~/ws_feat");
+    app.project_list
+        .at_path_mut(linked_path.as_path())
+        .expect("linked worktree should exist")
+        .visibility = Deleted;
+
+    let make_lint_run = |run_id: &str, status| LintRun {
+        run_id: run_id.to_string(),
+        started_at: "2026-03-30T16:12:18-05:00".to_string(),
+        finished_at: Some("2026-03-30T16:13:18-05:00".to_string()),
+        duration_ms: Some(60_000),
+        status,
+        commands: Vec::new(),
+    };
+    app.project_list
+        .lint_at_path_mut(&primary_path)
+        .unwrap()
+        .set_runs(
+            vec![make_lint_run("primary", LintRunStatus::Passed)],
+            primary_path.as_path(),
+        );
+    app.project_list
+        .lint_at_path_mut(&primary_path)
+        .unwrap()
+        .set_status(LintStatus::Passed(parse_ts("2026-03-30T14:22:18-05:00")));
+    app.project_list
+        .lint_at_path_mut(&linked_path)
+        .unwrap()
+        .set_runs(
+            vec![make_lint_run("linked", LintRunStatus::Failed)],
+            linked_path.as_path(),
+        );
+    app.project_list
+        .lint_at_path_mut(&linked_path)
+        .unwrap()
+        .set_status(LintStatus::Failed(parse_ts("2026-03-30T15:22:18-05:00")));
+
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+    app.ensure_detail_cached();
+
+    let display = app.panes.package.content().unwrap().lint_display.clone();
+    assert!(
+        matches!(
+            display,
+            panes::LintDisplay::Runs {
+                count:  1,
+                status: LintStatus::Passed(_),
+            }
+        ),
+        "{display:?}"
+    );
+}
+
+#[test]
 fn worktree_group_detail_lint_rollup_rebuilds_when_linked_worktree_finishes() {
     let root = make_package_worktrees_item(
         make_package_raw(None, "~/ws", None),

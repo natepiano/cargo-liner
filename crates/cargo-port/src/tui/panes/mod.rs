@@ -70,6 +70,9 @@ pub(super) use pane_data::GitData;
 pub(super) use pane_data::GitRow;
 pub(super) use pane_data::LintsData;
 pub(super) use pane_data::PackageData;
+pub(super) use pane_data::PackageRow;
+#[cfg(test)]
+pub(super) use pane_data::PackageSection;
 pub(super) use pane_data::PendingCiFetch;
 pub(super) use pane_data::PendingExampleRun;
 #[cfg(test)]
@@ -99,9 +102,17 @@ pub(super) use pane_data::format_duration;
 pub(super) use pane_data::format_time;
 pub(super) use pane_data::format_timestamp;
 pub(super) use pane_data::git_fields_from_data;
+pub(super) use pane_data::git_has_description_row;
 pub(super) use pane_data::git_row_at;
 pub(super) use pane_data::github_stars_is_unreachable_placeholder;
-pub(super) use pane_data::package_fields_from_data;
+pub(super) use pane_data::package_field_at;
+pub(super) use pane_data::package_first_selectable_row;
+pub(super) use pane_data::package_last_selectable_row;
+pub(super) use pane_data::package_nearest_selectable_row;
+pub(super) use pane_data::package_row_is_selectable;
+pub(super) use pane_data::package_rows_from_data;
+pub(super) use pane_data::package_selectable_row_at_or_after;
+pub(super) use pane_data::package_selectable_row_at_or_before;
 pub(super) use pane_impls::CpuPane;
 pub(super) use pane_impls::GitPane;
 pub(super) use pane_impls::LangPane;
@@ -163,6 +174,10 @@ pub(super) fn dispatch_navigation_action(
     app: &mut App,
 ) {
     actions::dispatch_navigation_action(action, focused, app);
+}
+
+pub(super) fn navigate_package_detail(app: &mut App, action: NavigationAction) {
+    actions::navigate_package_detail(app, action);
 }
 
 pub(super) fn request_clean(app: &mut App) { actions::request_clean(app); }

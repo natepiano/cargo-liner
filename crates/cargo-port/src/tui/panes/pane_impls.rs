@@ -43,14 +43,16 @@ pub struct PackagePane {
     pub viewport: Viewport,
     pub focus:    RenderFocus,
     content:      Option<super::PackageData>,
+    row_rects:    Vec<(Rect, usize)>,
 }
 
 impl PackagePane {
     pub const fn new() -> Self {
         Self {
-            viewport: Viewport::new(),
-            focus:    RenderFocus::inactive(),
-            content:  None,
+            viewport:  Viewport::new(),
+            focus:     RenderFocus::inactive(),
+            content:   None,
+            row_rects: Vec::new(),
         }
     }
 
@@ -59,6 +61,10 @@ impl PackagePane {
     pub fn set_content(&mut self, data: super::PackageData) { self.content = Some(data); }
 
     pub fn clear_content(&mut self) { self.content = None; }
+
+    pub fn set_row_rects(&mut self, rects: Vec<(Rect, usize)>) { self.row_rects = rects; }
+
+    pub fn clear_row_rects(&mut self) { self.row_rects.clear(); }
 }
 
 impl Renderable<PaneRenderCtx<'_>> for PackagePane {
@@ -73,7 +79,11 @@ impl Renderable<PaneRenderCtx<'_>> for PackagePane {
 
 impl Hittable<HoverTarget> for PackagePane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
-        let row = self.viewport.pos_to_local_row(pos)?;
+        let (_rect, row) = self
+            .row_rects
+            .iter()
+            .find(|(rect, _)| rect.contains(pos))
+            .copied()?;
         Some(HoverTarget::PaneRow {
             pane: PaneId::Package,
             row,
@@ -204,9 +214,11 @@ pub struct GitPane {
 
 #[derive(Clone, Default)]
 struct GitRowLayout {
-    content_area:  Rect,
-    scroll_offset: usize,
-    row_line_ys:   Vec<usize>,
+    description_rect: Option<Rect>,
+    content_area:     Rect,
+    scroll_offset:    usize,
+    row_offset:       usize,
+    row_line_ys:      Vec<usize>,
 }
 
 impl GitPane {
@@ -243,10 +255,20 @@ impl GitPane {
 
     pub fn clear_worktree_summary_cache(&self) { self.worktree_summary_cache.borrow_mut().clear(); }
 
-    pub fn set_row_layout(&mut self, content_area: Rect, row_line_ys: Vec<usize>) {
+    pub fn clear_row_layout(&mut self) { self.row_layout = GitRowLayout::default(); }
+
+    pub fn set_row_layout(
+        &mut self,
+        description_rect: Option<Rect>,
+        content_area: Rect,
+        row_offset: usize,
+        row_line_ys: Vec<usize>,
+    ) {
         self.row_layout = GitRowLayout {
+            description_rect,
             content_area,
             scroll_offset: self.viewport.scroll_offset(),
+            row_offset,
             row_line_ys,
         };
     }
@@ -265,6 +287,14 @@ impl Renderable<PaneRenderCtx<'_>> for GitPane {
 impl Hittable<HoverTarget> for GitPane {
     fn hit_test_at(&self, pos: Position) -> Option<HoverTarget> {
         let layout = &self.row_layout;
+        if let Some(rect) = layout.description_rect
+            && rect.contains(pos)
+        {
+            return Some(HoverTarget::PaneRow {
+                pane: PaneId::Git,
+                row:  0,
+            });
+        }
         let inner = layout.content_area;
         if !inner.contains(pos) {
             return None;
@@ -285,7 +315,7 @@ impl Hittable<HoverTarget> for GitPane {
             if pos.y == screen_y {
                 return Some(HoverTarget::PaneRow {
                     pane: PaneId::Git,
-                    row:  row_index,
+                    row:  layout.row_offset + row_index,
                 });
             }
         }

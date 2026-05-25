@@ -168,6 +168,8 @@ fn package_data_no_version() -> PackageData {
     PackageData {
         package_title:            "Package".to_string(),
         title_name:               "demo".to_string(),
+        worktree_group_summary:   None,
+        primary_section:          None,
         path:                     "~/demo".to_string(),
         version:                  "0.1.0".to_string(),
         description:              None,
@@ -267,10 +269,10 @@ fn package_activate_state_enabled_on_crates_io_with_version() {
 
     let mut data = package_data_no_version();
     data.crates_version = Some("0.1.0".to_string());
-    let fields = panes::package_fields_from_data(&data);
-    let crates_io_pos = fields
+    let rows = panes::package_rows_from_data(&data);
+    let crates_io_pos = rows
         .iter()
-        .position(|f| matches!(f, DetailField::CratesIo))
+        .position(|row| matches!(row, panes::PackageRow::Field(DetailField::CratesIo)))
         .expect("crates.io row must appear for a Rust package with title_name set");
     app.panes.package.set_content(data);
     app.panes.package.viewport.set_pos(crates_io_pos);

@@ -24,6 +24,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
+use tui_pane::PaneSelectionState;
 use tui_pane::label_color;
 
 use super::package;
@@ -133,12 +134,33 @@ impl DescriptionBlock {
     /// `synced_floor` as the inter-pane sync floor. Returns the
     /// rendered height, which the pane uses to position the separator
     /// rule and the rest of its content.
+    #[allow(
+        dead_code,
+        reason = "selectable panes call render_with_selection; keep the unselected wrapper for callers that do not track row focus"
+    )]
     pub fn render(
         &self,
         frame: &mut Frame,
         project_inner: Rect,
         synced_floor: SyncedDescriptionHeight,
         max_height: u16,
+    ) -> u16 {
+        self.render_with_selection(
+            frame,
+            project_inner,
+            synced_floor,
+            max_height,
+            PaneSelectionState::Unselected,
+        )
+    }
+
+    pub fn render_with_selection(
+        &self,
+        frame: &mut Frame,
+        project_inner: Rect,
+        synced_floor: SyncedDescriptionHeight,
+        max_height: u16,
+        selection: PaneSelectionState,
     ) -> u16 {
         if self.rows.is_empty() || self.column_width == 0 {
             return 0;
@@ -162,7 +184,7 @@ impl DescriptionBlock {
             );
         }
 
-        let style = self.style;
+        let style = selection.patch(self.style);
         let lines: Vec<Line<'static>> = visible
             .into_iter()
             .map(|row| Line::from(Span::styled(row, style)))

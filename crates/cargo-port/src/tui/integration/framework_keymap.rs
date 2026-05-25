@@ -373,9 +373,11 @@ fn activate_state(ctx: &App) -> ShortcutState {
     let Some(pkg) = ctx.panes.package.content() else {
         return ShortcutState::Disabled;
     };
-    let fields = panes::package_fields_from_data(pkg);
     let pos = ctx.panes.package.viewport.pos();
-    if matches!(fields.get(pos), Some(DetailField::CratesIo)) {
+    if matches!(
+        panes::package_field_at(pkg, pos),
+        Some(DetailField::CratesIo)
+    ) {
         ShortcutState::Enabled
     } else {
         ShortcutState::Disabled

@@ -40,6 +40,7 @@ use super::integration::AppGlobalAction;
 use super::integration::AppNavigation;
 use super::integration::AppPaneId;
 use super::integration::FinderPane;
+use super::integration::NavigationAction;
 use super::integration::OutputPane;
 use super::interaction;
 use super::keymap;
@@ -479,6 +480,15 @@ fn scroll_pane_at(app: &mut App, column: u16, row: u16, scroll_up: bool) {
     for (pane_id, pane_rect) in pane_regions {
         if pane_id == PaneId::ProjectList || !pane_rect.contains(pos) {
             continue;
+        }
+        if pane_id == PaneId::Package {
+            let action = if up {
+                NavigationAction::Up
+            } else {
+                NavigationAction::Down
+            };
+            panes::navigate_package_detail(app, action);
+            return;
         }
         if let Some(pane) = interaction::viewport_mut_for(app, pane_id) {
             if up {

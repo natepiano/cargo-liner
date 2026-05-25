@@ -5,6 +5,7 @@ use notify::event::ModifyKind;
 use super::*;
 use crate::lint;
 use crate::scan;
+use crate::tui::panes;
 
 #[test]
 fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
@@ -76,6 +77,29 @@ fn workspace_worktree_group_root_uses_worktree_group_title() {
     let package = app.panes.package.content().unwrap();
     assert_eq!(package.package_title, "Worktree Group");
     assert_eq!(package.title_name, "bevy_brp");
+    assert_eq!(package.types, "workspace");
+    assert_eq!(
+        package.worktree_group_summary.as_ref().map(|s| s.worktrees),
+        Some(2)
+    );
+    assert_eq!(
+        package.worktree_group_summary.as_ref().map(|s| s.deleted),
+        Some(0)
+    );
+
+    let rows = panes::package_rows_from_data(package);
+    assert_eq!(
+        &rows[..7],
+        &[
+            panes::PackageRow::Description,
+            panes::PackageRow::Section(panes::PackageSection::WorktreeGroupSummary),
+            panes::PackageRow::Field(panes::DetailField::Worktrees),
+            panes::PackageRow::Field(panes::DetailField::DiskTotal),
+            panes::PackageRow::Field(panes::DetailField::Lint),
+            panes::PackageRow::Field(panes::DetailField::Ci),
+            panes::PackageRow::Section(panes::PackageSection::PrimaryWorkspace),
+        ]
+    );
 }
 
 #[test]
@@ -126,7 +150,55 @@ fn package_worktree_group_root_reverts_to_package_after_linked_dismissed() {
     let package = app.panes.package.content().unwrap();
     assert_eq!(package.package_title, "Package");
     assert_eq!(package.title_name, "cargo-mend");
+    assert!(package.worktree_group_summary.is_none());
     assert_eq!(app.panes.git.content().map(|g| g.worktrees.len()), Some(0));
+}
+
+#[test]
+fn worktree_group_summary_counts_visible_and_deleted_entries() {
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("cargo-mend"), "~/rust/cargo-mend", None),
+        vec![make_package_raw(
+            Some("cargo-mend"),
+            "~/rust/cargo-mend_style_fix",
+            Some("cargo-mend_style_fix"),
+        )],
+    );
+
+    let mut app = make_app(&[root]);
+    app.project_list
+        .at_path_mut(test_path("~/rust/cargo-mend_style_fix").as_path())
+        .expect("linked worktree should exist")
+        .visibility = Deleted;
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+    app.ensure_detail_cached();
+
+    let package = app.panes.package.content().unwrap();
+    assert_eq!(package.package_title, "Worktree Group");
+    assert_eq!(
+        package.worktree_group_summary.as_ref().map(|s| s.worktrees),
+        Some(1)
+    );
+    assert_eq!(
+        package.worktree_group_summary.as_ref().map(|s| s.deleted),
+        Some(1)
+    );
+
+    let rows = panes::package_rows_from_data(package);
+    assert_eq!(
+        &rows[..8],
+        &[
+            panes::PackageRow::Description,
+            panes::PackageRow::Section(panes::PackageSection::WorktreeGroupSummary),
+            panes::PackageRow::Field(panes::DetailField::Worktrees),
+            panes::PackageRow::Field(panes::DetailField::DeletedWorktrees),
+            panes::PackageRow::Field(panes::DetailField::DiskTotal),
+            panes::PackageRow::Field(panes::DetailField::Lint),
+            panes::PackageRow::Field(panes::DetailField::Ci),
+            panes::PackageRow::Section(panes::PackageSection::PrimaryPackage),
+        ]
+    );
 }
 
 #[test]
@@ -246,7 +318,7 @@ fn disk_rollup_deduplicates_primary_worktree_path() {
 
     assert_eq!(app.project_list[0].disk_usage_bytes(), Some(36));
     assert_eq!(
-        crate::tui::panes::formatted_disk_for_item(&app.project_list[0].item),
+        panes::formatted_disk_for_item(&app.project_list[0].item),
         crate::tui::render::format_bytes(36)
     );
 }

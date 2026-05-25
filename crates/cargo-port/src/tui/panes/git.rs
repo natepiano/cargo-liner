@@ -45,11 +45,12 @@ use crate::tui::pane::PaneRenderCtx;
 use crate::tui::panes;
 
 struct GitRenderCtx<'a> {
-    data:   &'a GitData,
-    fields: &'a [DetailField],
-    pane:   &'a Viewport,
-    focus:  PaneFocusState,
-    styles: &'a RenderStyles,
+    data:       &'a GitData,
+    fields:     &'a [DetailField],
+    pane:       &'a Viewport,
+    focus:      PaneFocusState,
+    styles:     &'a RenderStyles,
+    row_offset: usize,
 }
 
 /// Which section a flat `pos()` index lives in, plus the offset within
@@ -101,7 +102,8 @@ struct GitRenderLayout {
     scroll_offset: usize,
     /// Inner-y (paragraph-relative) of the first rendered line for each
     /// selectable row (flat fields first, then remote rows, then worktree
-    /// rows). Same ordering as `pane.pos()`.
+    /// rows). `GitPane` adds `row_offset` when mapping these lower rows
+    /// back to logical positions.
     row_line_ys:   Vec<usize>,
 }
 
@@ -123,7 +125,10 @@ fn render_git_column_inner(
     let remotes_len = ctx.data.remotes.len();
     let worktrees_len = ctx.data.worktrees.len();
     let current_section = if matches!(ctx.focus, PaneFocusState::Active) {
-        section_for_pos(ctx.pane.pos(), flat_len, remotes_len, worktrees_len)
+        ctx.pane
+            .pos()
+            .checked_sub(ctx.row_offset)
+            .and_then(|pos| section_for_pos(pos, flat_len, remotes_len, worktrees_len))
     } else {
         None
     };
@@ -150,6 +155,7 @@ fn render_git_column_inner(
             styles:      ctx.styles,
             area_width:  inner_area.width,
             label_width: git_label_width(ctx.fields),
+            row_offset:  ctx.row_offset,
         },
     );
     append_remotes_section(&mut accum, ctx, flat_len, current_section);
@@ -200,7 +206,7 @@ fn append_remotes_section(
     render_remote_header(accum.lines, &col_widths);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, remote) in ctx.data.remotes.iter().enumerate() {
-        let row_index = flat_len + i;
+        let row_index = ctx.row_offset + flat_len + i;
         accum.row_line_ys.push(accum.lines.len());
         if active && row_index == ctx.pane.pos() {
             *accum.focused_output_line = accum.lines.len();
@@ -239,7 +245,7 @@ fn append_worktrees_section(
     render_worktree_header(accum.lines, &col_widths);
     let active = matches!(ctx.focus, PaneFocusState::Active);
     for (i, wt) in ctx.data.worktrees.iter().enumerate() {
-        let row_index = flat_len + remotes_len + i;
+        let row_index = ctx.row_offset + flat_len + remotes_len + i;
         accum.row_line_ys.push(accum.lines.len());
         if active && row_index == ctx.pane.pos() {
             *accum.focused_output_line = accum.lines.len();
@@ -315,6 +321,7 @@ struct RenderFlatArgs<'a> {
     styles:      &'a RenderStyles,
     area_width:  u16,
     label_width: usize,
+    row_offset:  usize,
 }
 
 /// Compute the displayed value string for a flat git-pane row,
@@ -367,10 +374,12 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         styles,
         area_width,
         label_width,
+        row_offset,
     } = *args;
     for (i, field) in fields.iter().enumerate() {
+        let row_index = row_offset + i;
         accum.row_line_ys.push(accum.lines.len());
-        if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
+        if matches!(focus, PaneFocusState::Active) && row_index == pane.pos() {
             *accum.focused_output_line = accum.lines.len();
         }
         let label = field.label();
@@ -379,7 +388,7 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
             DetailField::RateLimitCore | DetailField::RateLimitGraphQl
         );
         let value = build_field_value(data, *field, is_rate_limit_row);
-        let selection = tui_pane::selection_state(pane, i, focus);
+        let selection = tui_pane::selection_state(pane, row_index, focus);
         let base_value_style = if matches!(*field, DetailField::VsLocal)
             && value.starts_with(IN_SYNC)
         {
@@ -397,22 +406,17 @@ fn render_flat_fields(accum: &mut SectionAccum<'_>, args: &RenderFlatArgs<'_>) {
         };
         let ls = selection.patch(styles.readonly_label);
         let vs = selection.patch(base_value_style);
-        if matches!(
-            *field,
-            DetailField::Head | DetailField::RepoDesc | DetailField::WorktreeError
-        ) && !value.is_empty()
-        {
+        if matches!(*field, DetailField::Head | DetailField::WorktreeError) && !value.is_empty() {
             let prefix = format!(" {label:<label_width$} ");
             let prefix_len = prefix.width();
             let col_width = area_width as usize;
             let avail = col_width.saturating_sub(prefix_len + 1);
             if avail > 0 && value.width() > avail {
-                let wrapped =
-                    if matches!(*field, DetailField::RepoDesc | DetailField::WorktreeError) {
-                        package::word_wrap(&value, avail)
-                    } else {
-                        package::hard_wrap(&value, avail)
-                    };
+                let wrapped = if matches!(*field, DetailField::WorktreeError) {
+                    package::word_wrap(&value, avail)
+                } else {
+                    package::hard_wrap(&value, avail)
+                };
                 for (wi, chunk) in wrapped.iter().enumerate() {
                     if wi == 0 {
                         accum.lines.push(Line::from(vec![
@@ -660,15 +664,19 @@ pub(super) fn render_git_pane_body(
 ) {
     let Some(git_data) = pane.content().cloned() else {
         pane.viewport.clear_surface();
+        pane.clear_row_layout();
         let empty = tui_pane::empty_pane_block(tui_pane::pane_title("Git", &PaneTitleCount::None));
         frame.render_widget(empty, area);
         return;
     };
 
     let flat_fields = panes::git_fields_from_data(&git_data);
-    let total_rows = flat_fields.len() + git_data.remotes.len() + git_data.worktrees.len();
+    let description_rows = usize::from(panes::git_has_description_row(&git_data));
+    let total_rows =
+        description_rows + flat_fields.len() + git_data.remotes.len() + git_data.worktrees.len();
     if total_rows == 0 && git_data.description.as_deref().is_none_or(str::is_empty) {
         pane.viewport.clear_surface();
+        pane.clear_row_layout();
         let empty_git = tui_pane::empty_pane_block(" Not a git repo ");
         frame.render_widget(empty_git, area);
         return;
@@ -688,7 +696,7 @@ pub(super) fn render_git_pane_body(
     let git_inner = git_block.inner(area);
     frame.render_widget(git_block, area);
 
-    let content_area = render_git_about_section(
+    let about_layout = render_git_about_section(
         frame,
         &GitAboutCtx {
             description: git_data.description.as_deref(),
@@ -698,13 +706,17 @@ pub(super) fn render_git_pane_body(
             git_inner,
             border_style,
             synced_description_height: ctx.synced_description_height,
+            pane: &pane.viewport,
+            focus,
         },
     );
 
     {
         let viewport = &mut pane.viewport;
-        viewport.set_content_area(content_area);
-        viewport.set_viewport_rows(usize::from(content_area.height));
+        viewport.set_content_area(about_layout.content_area);
+        viewport.set_viewport_rows(
+            usize::from(about_layout.content_area.height).saturating_add(description_rows),
+        );
     }
     let git_ctx = GitRenderCtx {
         data: &git_data,
@@ -712,10 +724,16 @@ pub(super) fn render_git_pane_body(
         pane: &pane.viewport,
         focus,
         styles,
+        row_offset: description_rows,
     };
-    let layout = render_git_column_inner(frame, &git_ctx, area, content_area);
+    let layout = render_git_column_inner(frame, &git_ctx, area, about_layout.content_area);
     pane.viewport.set_scroll_offset(layout.scroll_offset);
-    pane.set_row_layout(content_area, layout.row_line_ys);
+    pane.set_row_layout(
+        about_layout.description_rect,
+        about_layout.content_area,
+        description_rows,
+        layout.row_line_ys,
+    );
     render_overflow_affordance(
         frame,
         area,
@@ -735,12 +753,20 @@ struct GitAboutCtx<'a> {
     git_inner:                 Rect,
     border_style:              Style,
     synced_description_height: SyncedDescriptionHeight,
+    pane:                      &'a Viewport,
+    focus:                     PaneFocusState,
+}
+
+#[derive(Clone, Copy)]
+struct GitAboutLayout {
+    content_area:     Rect,
+    description_rect: Option<Rect>,
 }
 
 /// Render the About section (repo description) at the top of the Git panel,
 /// separated from the rest of the pane by a horizontal rule with `├`/`┤`
 /// endcaps. Returns the area below the separator for the scrolling content.
-fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> Rect {
+fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> GitAboutLayout {
     let git_inner = ctx.git_inner;
 
     let remotes_block = if ctx.data.remotes.is_empty() {
@@ -754,8 +780,9 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> Rect {
         3 + ctx.data.worktrees.len()
     };
     let lower_content_height = ctx.flat_fields.len() + remotes_block + worktrees_block;
-    let reserved_lower_height = u16::try_from(lower_content_height).unwrap_or(u16::MAX);
-    let reserved_separator_height = u16::from(git_inner.height > reserved_lower_height);
+    let reserved_lower_height = u16::from(lower_content_height > 0);
+    let reserved_separator_height =
+        u16::from(git_inner.height > reserved_lower_height.saturating_add(1));
     let baseline_max = git_inner
         .height
         .saturating_sub(reserved_lower_height.saturating_add(reserved_separator_height));
@@ -769,24 +796,36 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> Rect {
         ctx.outer_area,
         EmptyDescriptionBehavior::RenderEmpty,
     );
-    let description_height = block.render(
+    let description_height = block.render_with_selection(
         frame,
         git_inner,
         ctx.synced_description_height,
         baseline_max,
+        tui_pane::selection_state(ctx.pane, 0, ctx.focus),
     );
     if description_height == 0 {
-        return git_inner;
+        return GitAboutLayout {
+            content_area:     git_inner,
+            description_rect: None,
+        };
     }
 
     let separator_y = git_inner.y.saturating_add(description_height);
     let has_room_for_separator = separator_y < git_inner.bottom();
     if !has_room_for_separator {
-        return Rect {
-            x:      git_inner.x,
-            y:      separator_y,
-            width:  git_inner.width,
-            height: 0,
+        return GitAboutLayout {
+            content_area:     Rect {
+                x:      git_inner.x,
+                y:      separator_y,
+                width:  git_inner.width,
+                height: 0,
+            },
+            description_rect: Some(Rect {
+                x:      git_inner.x,
+                y:      git_inner.y,
+                width:  git_inner.width,
+                height: description_height,
+            }),
         };
     }
 
@@ -805,11 +844,19 @@ fn render_git_about_section(frame: &mut Frame, ctx: &GitAboutCtx<'_>) -> Rect {
     );
 
     let content_y = separator_y.saturating_add(1);
-    Rect {
-        x:      git_inner.x,
-        y:      content_y,
-        width:  git_inner.width,
-        height: git_inner.bottom().saturating_sub(content_y),
+    GitAboutLayout {
+        content_area:     Rect {
+            x:      git_inner.x,
+            y:      content_y,
+            width:  git_inner.width,
+            height: git_inner.bottom().saturating_sub(content_y),
+        },
+        description_rect: Some(Rect {
+            x:      git_inner.x,
+            y:      git_inner.y,
+            width:  git_inner.width,
+            height: description_height,
+        }),
     }
 }
 
