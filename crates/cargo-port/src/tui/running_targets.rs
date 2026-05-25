@@ -181,6 +181,7 @@ fn is_hex_hash(s: &str) -> bool {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::path::Path;
     use std::path::PathBuf;
 
     use super::*;
@@ -195,6 +196,11 @@ mod tests {
         }
     }
 
+    /// A candidate executable path, made absolute on the host platform so it
+    /// shares the same drive prefix as the `AbsolutePath` target dir it is
+    /// matched against. Identity on Unix.
+    fn exe_path(path: &str) -> PathBuf { crate::project::normalize_test_path(Path::new(path)) }
+
     fn benches(names: &[&str]) -> HashSet<String> {
         names.iter().map(|s| (*s).to_string()).collect()
     }
@@ -204,7 +210,7 @@ mod tests {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
         let benches = benches(&[]);
         let s = slice(&dir, &benches);
-        let exe = PathBuf::from("/tmp/ws/target/debug/foo");
+        let exe = exe_path("/tmp/ws/target/debug/foo");
         let key = classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
         assert!(matches!(key.kind, RunTargetKind::Binary));
         assert_eq!(key.name, "foo");
@@ -216,7 +222,7 @@ mod tests {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
         let benches = benches(&[]);
         let s = slice(&dir, &benches);
-        let exe = PathBuf::from("/tmp/ws/target/release/examples/bar");
+        let exe = exe_path("/tmp/ws/target/release/examples/bar");
         let key = classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
         assert!(matches!(key.kind, RunTargetKind::Example));
         assert_eq!(key.name, "bar");
@@ -227,7 +233,7 @@ mod tests {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
         let benches = benches(&["baz"]);
         let s = slice(&dir, &benches);
-        let exe = PathBuf::from("/tmp/ws/target/debug/deps/baz-0123456789abcdef");
+        let exe = exe_path("/tmp/ws/target/debug/deps/baz-0123456789abcdef");
         let key = classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
         assert!(matches!(key.kind, RunTargetKind::Bench));
         assert_eq!(key.name, "baz");
@@ -238,7 +244,7 @@ mod tests {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
         let benches = benches(&["baz"]);
         let s = slice(&dir, &benches);
-        let exe = PathBuf::from("/tmp/ws/target/debug/deps/baz-shorthash");
+        let exe = exe_path("/tmp/ws/target/debug/deps/baz-shorthash");
         assert!(classify_exe(&exe, std::slice::from_ref(&s)).is_none());
     }
 
@@ -247,7 +253,7 @@ mod tests {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
         let benches = benches(&["baz"]);
         let s = slice(&dir, &benches);
-        let exe = PathBuf::from("/tmp/ws/target/debug/deps/other-0123456789abcdef");
+        let exe = exe_path("/tmp/ws/target/debug/deps/other-0123456789abcdef");
         assert!(classify_exe(&exe, std::slice::from_ref(&s)).is_none());
     }
 
@@ -256,7 +262,7 @@ mod tests {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
         let benches = benches(&["my", "my-bench"]);
         let s = slice(&dir, &benches);
-        let exe = PathBuf::from("/tmp/ws/target/debug/deps/my-bench-0123456789abcdef");
+        let exe = exe_path("/tmp/ws/target/debug/deps/my-bench-0123456789abcdef");
         let key = classify_exe(&exe, std::slice::from_ref(&s)).expect("matches");
         assert!(matches!(key.kind, RunTargetKind::Bench));
         assert_eq!(key.name, "my-bench");
@@ -267,7 +273,7 @@ mod tests {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
         let benches = benches(&[]);
         let s = slice(&dir, &benches);
-        let exe = PathBuf::from("/usr/bin/ls");
+        let exe = exe_path("/usr/bin/ls");
         assert!(classify_exe(&exe, std::slice::from_ref(&s)).is_none());
     }
 
@@ -276,8 +282,7 @@ mod tests {
         let dir = AbsolutePath::from(PathBuf::from("/tmp/ws/target"));
         let benches = benches(&[]);
         let s = slice(&dir, &benches);
-        let exe =
-            PathBuf::from("/tmp/ws/target/debug/build/foo-1234567890abcdef/build-script-build");
+        let exe = exe_path("/tmp/ws/target/debug/build/foo-1234567890abcdef/build-script-build");
         assert!(classify_exe(&exe, std::slice::from_ref(&s)).is_none());
     }
 }

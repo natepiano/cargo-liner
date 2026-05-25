@@ -196,9 +196,15 @@ mod tests {
         ]);
 
         assert_eq!(trees.len(), 2);
-        assert_eq!(trees[0].root_abs_path, *Path::new("/home/user/rust/bevy"));
+        assert_eq!(
+            trees[0].root_abs_path,
+            *crate::project::normalize_test_path(Path::new("/home/user/rust/bevy"))
+        );
         assert_eq!(trees[0].entries.len(), 3);
-        assert_eq!(trees[1].root_abs_path, *Path::new("/home/user/rust/hana"));
+        assert_eq!(
+            trees[1].root_abs_path,
+            *crate::project::normalize_test_path(Path::new("/home/user/rust/hana"))
+        );
         assert_eq!(trees[1].entries.len(), 1);
     }
 

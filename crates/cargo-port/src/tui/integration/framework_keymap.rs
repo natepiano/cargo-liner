@@ -843,8 +843,9 @@ mod tests {
     #[test]
     fn path_key_uses_cargo_port_absolute_path_string() {
         let path = AbsolutePath::from("/tmp/cargo-port");
+        let expected = crate::project::normalize_test_path(std::path::Path::new("/tmp/cargo-port"));
 
-        assert_eq!(path_key(&path).as_str(), "/tmp/cargo-port");
+        assert_eq!(path_key(&path).as_str(), expected.display().to_string());
     }
 
     #[test]

@@ -79,6 +79,8 @@ impl Display for AbsolutePath {
 
 impl From<PathBuf> for AbsolutePath {
     fn from(path: PathBuf) -> Self {
+        #[cfg(all(test, windows))]
+        let path = normalize_test_path(&path);
         debug_assert!(
             path.is_absolute(),
             "AbsolutePath requires an absolute path: {}",
@@ -89,37 +91,29 @@ impl From<PathBuf> for AbsolutePath {
 }
 
 impl From<String> for AbsolutePath {
-    fn from(path: String) -> Self {
-        let pb = PathBuf::from(path);
-        debug_assert!(
-            pb.is_absolute(),
-            "AbsolutePath requires an absolute path: {}",
-            pb.display()
-        );
-        Self(pb)
-    }
+    fn from(path: String) -> Self { Self::from(PathBuf::from(path)) }
 }
 
 impl From<&str> for AbsolutePath {
-    fn from(path: &str) -> Self {
-        let pb = PathBuf::from(path);
-        debug_assert!(
-            pb.is_absolute(),
-            "AbsolutePath requires an absolute path: {path}"
-        );
-        Self(pb)
-    }
+    fn from(path: &str) -> Self { Self::from(PathBuf::from(path)) }
 }
 
 impl From<&Path> for AbsolutePath {
-    fn from(path: &Path) -> Self {
-        debug_assert!(
-            path.is_absolute(),
-            "AbsolutePath requires an absolute path: {}",
-            path.display()
-        );
-        Self(path.to_path_buf())
+    fn from(path: &Path) -> Self { Self::from(path.to_path_buf()) }
+}
+
+/// Rewrite a Unix-style absolute test path so it is absolute on the host
+/// platform. Fixtures spell paths as `/tmp/...`, but on Windows a leading slash
+/// carries no drive letter, so [`Path::is_absolute`] is `false` and the
+/// assertion in `From<PathBuf>` would fire. Prefixing a drive keeps a single
+/// fixture string valid on every platform. Identity on Unix.
+#[cfg(test)]
+pub(crate) fn normalize_test_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if let Ok(rest) = path.strip_prefix("/") {
+        return Path::new("C:/").join(rest);
     }
+    path.to_path_buf()
 }
 
 /// A display path for the UI (e.g. `~/rust/bevy`). Never used as a `HashMap` key.

@@ -815,13 +815,12 @@ fn project_level_dir_handles_synthetic_path_forms() {
             .iter()
             .map(|p| AbsolutePath::from((*p).to_string()))
             .collect();
-        let result = probe::project_level_dir(Path::new(case.event), &watch_roots, &parents);
-        assert_eq!(
-            result.as_deref(),
-            case.expected.map(Path::new),
-            "{}",
-            case.name
-        );
+        let event = crate::project::normalize_test_path(Path::new(case.event));
+        let result = probe::project_level_dir(&event, &watch_roots, &parents);
+        let expected = case
+            .expected
+            .map(|e| crate::project::normalize_test_path(Path::new(e)));
+        assert_eq!(result.as_deref(), expected.as_deref(), "{}", case.name);
     }
 }
 
@@ -2083,28 +2082,35 @@ fn new_project_enqueued_during_early_scan() {
 #[test]
 fn resolve_include_dirs_cases() {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/user"));
+    // Mirror `resolve_include_dirs`, which canonicalizes each resolved path. On
+    // Windows that yields a `\\?\` verbatim prefix for directories that exist,
+    // so a plain `home.join(..)` would not match.
+    let resolved = |path: PathBuf| {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        AbsolutePath::from(canonical)
+    };
     let cases: Vec<(&str, Vec<String>, Vec<AbsolutePath>)> = vec![
         ("empty_returns_empty", Vec::<String>::new(), vec![]),
         (
             "relative_joins_to_home",
             vec!["rust".to_string(), ".claude".to_string()],
-            vec![
-                AbsolutePath::from(home.join("rust")),
-                AbsolutePath::from(home.join(".claude")),
-            ],
+            vec![resolved(home.join("rust")), resolved(home.join(".claude"))],
         ),
         (
             "tilde_expands_to_home",
             vec!["~/rust".to_string(), "~/.claude".to_string()],
-            vec![
-                AbsolutePath::from(home.join("rust")),
-                AbsolutePath::from(home.join(".claude")),
-            ],
+            vec![resolved(home.join("rust")), resolved(home.join(".claude"))],
         ),
         (
             "absolute_used_as_is",
-            vec!["/opt/projects".to_string()],
-            vec!["/opt/projects".into()],
+            vec![
+                crate::project::normalize_test_path(Path::new("/opt/projects"))
+                    .display()
+                    .to_string(),
+            ],
+            vec![resolved(crate::project::normalize_test_path(Path::new(
+                "/opt/projects",
+            )))],
         ),
     ];
 

@@ -264,6 +264,10 @@ mod tests {
         })
     }
 
+    /// The host-absolute form of a fixture path, matching how `pkg`/`ws` store
+    /// it. Identity on Unix; drive-rooted on Windows.
+    fn p(path: &str) -> std::path::PathBuf { crate::project::normalize_test_path(Path::new(path)) }
+
     #[test]
     fn iter_paths_packages_yields_primary_then_linked_in_order() {
         let group = WorktreeGroup::new(
@@ -274,9 +278,9 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                std::path::Path::new("/abs/main"),
-                std::path::Path::new("/abs/feat-a"),
-                std::path::Path::new("/abs/feat-b"),
+                p("/abs/main").as_path(),
+                p("/abs/feat-a").as_path(),
+                p("/abs/feat-b").as_path(),
             ],
         );
     }
@@ -287,10 +291,7 @@ mod tests {
         let paths: Vec<&Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
         assert_eq!(
             paths,
-            vec![
-                std::path::Path::new("/abs/ws-main"),
-                std::path::Path::new("/abs/ws-feat"),
-            ],
+            vec![p("/abs/ws-main").as_path(), p("/abs/ws-feat").as_path()],
         );
     }
 
@@ -298,7 +299,7 @@ mod tests {
     fn iter_paths_with_no_linked_yields_just_primary() {
         let group = WorktreeGroup::new(pkg("/abs/solo"), Vec::new());
         let paths: Vec<&Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
-        assert_eq!(paths, vec![std::path::Path::new("/abs/solo")]);
+        assert_eq!(paths, vec![p("/abs/solo").as_path()]);
     }
 
     #[test]
@@ -307,10 +308,7 @@ mod tests {
         let paths: Vec<&Path> = group.iter_paths().map(AbsolutePath::as_path).collect();
         assert_eq!(
             paths,
-            vec![
-                std::path::Path::new("/abs/main"),
-                std::path::Path::new("/abs/api-fix"),
-            ],
+            vec![p("/abs/main").as_path(), p("/abs/api-fix").as_path()],
         );
     }
 }

@@ -383,12 +383,21 @@ fn targets_copy_returns_source_path_for_any_target_row() {
 
     assert_eq!(
         model::copy_payload_for_targets(&data, 0, &|_| false),
-        CopySelectionResult::Payload(CopyPayload::new("/ws/src/main.rs", CopyLabel::Path)),
+        CopySelectionResult::Payload(CopyPayload::new(
+            crate::project::normalize_test_path(std::path::Path::new("/ws/src/main.rs"))
+                .display()
+                .to_string(),
+            CopyLabel::Path,
+        )),
     );
     assert_eq!(
         model::copy_payload_for_targets(&data, 1, &|_| false),
         CopySelectionResult::Payload(CopyPayload::new(
-            "/ws/examples/demo_example.rs",
+            crate::project::normalize_test_path(std::path::Path::new(
+                "/ws/examples/demo_example.rs"
+            ))
+            .display()
+            .to_string(),
             CopyLabel::Path,
         )),
     );

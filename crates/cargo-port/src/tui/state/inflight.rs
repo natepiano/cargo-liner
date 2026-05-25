@@ -205,13 +205,13 @@ mod tests {
         let first = inflight.pending_cleans_mut().pop_front();
         assert_eq!(
             first.unwrap().abs_path.as_path(),
-            std::path::Path::new("/tmp/a"),
+            crate::project::normalize_test_path(std::path::Path::new("/tmp/a")).as_path(),
             "FIFO ordering preserved"
         );
         let second = inflight.pending_cleans_mut().pop_front();
         assert_eq!(
             second.unwrap().abs_path.as_path(),
-            std::path::Path::new("/tmp/b")
+            crate::project::normalize_test_path(std::path::Path::new("/tmp/b")).as_path()
         );
         assert!(inflight.pending_cleans_mut().pop_front().is_none());
     }

@@ -747,9 +747,15 @@ fn expect_synthetic_discovery_creates_group(kind: WorktreeProjectKind) {
                 panic!("expected discovered worktree to create a package worktree group");
             };
             assert!(matches!(&group.primary, RustProject::Package(_)));
-            assert_eq!(group.primary.path(), Path::new(primary_path));
+            assert_eq!(
+                group.primary.path(),
+                crate::project::normalize_test_path(Path::new(primary_path)).as_path()
+            );
             assert_eq!(group.linked.len(), 1);
-            assert_eq!(group.linked[0].path(), Path::new(linked_path));
+            assert_eq!(
+                group.linked[0].path(),
+                crate::project::normalize_test_path(Path::new(linked_path)).as_path()
+            );
         },
         WorktreeProjectKind::Workspace => {
             let primary_path = "/abs/obsidian_knife";
@@ -777,9 +783,15 @@ fn expect_synthetic_discovery_creates_group(kind: WorktreeProjectKind) {
                 panic!("expected discovered workspace worktree to create a worktree group");
             };
             assert!(matches!(&group.primary, RustProject::Workspace(_)));
-            assert_eq!(group.primary.path(), Path::new(primary_path));
+            assert_eq!(
+                group.primary.path(),
+                crate::project::normalize_test_path(Path::new(primary_path)).as_path()
+            );
             assert_eq!(group.linked.len(), 1);
-            assert_eq!(group.linked[0].path(), Path::new(linked_path));
+            assert_eq!(
+                group.linked[0].path(),
+                crate::project::normalize_test_path(Path::new(linked_path)).as_path()
+            );
         },
     }
 }
@@ -820,18 +832,10 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
             };
             assert!(matches!(&group.primary, RustProject::Package(_)));
             assert_eq!(group.linked.len(), 2);
-            assert!(
-                group
-                    .linked
-                    .iter()
-                    .any(|l| l.path() == Path::new(existing_linked_path))
-            );
-            assert!(
-                group
-                    .linked
-                    .iter()
-                    .any(|l| l.path() == Path::new(new_linked_path))
-            );
+            assert!(group.linked.iter().any(|l| l.path()
+                == crate::project::normalize_test_path(Path::new(existing_linked_path)).as_path()));
+            assert!(group.linked.iter().any(|l| l.path()
+                == crate::project::normalize_test_path(Path::new(new_linked_path)).as_path()));
         },
         WorktreeProjectKind::Workspace => {
             let primary_path = "/abs/obsidian_knife";
@@ -871,18 +875,10 @@ fn expect_synthetic_discovery_appends_existing_group(kind: WorktreeProjectKind) 
             };
             assert!(matches!(&group.primary, RustProject::Workspace(_)));
             assert_eq!(group.linked.len(), 2);
-            assert!(
-                group
-                    .linked
-                    .iter()
-                    .any(|l| l.path() == Path::new(existing_linked_path))
-            );
-            assert!(
-                group
-                    .linked
-                    .iter()
-                    .any(|l| l.path() == Path::new(new_linked_path))
-            );
+            assert!(group.linked.iter().any(|l| l.path()
+                == crate::project::normalize_test_path(Path::new(existing_linked_path)).as_path()));
+            assert!(group.linked.iter().any(|l| l.path()
+                == crate::project::normalize_test_path(Path::new(new_linked_path)).as_path()));
         },
     }
 }

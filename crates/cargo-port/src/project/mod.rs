@@ -70,6 +70,8 @@ pub(crate) use non_rust::NonRustProject;
 pub(crate) use paths::AbsolutePath;
 pub(crate) use paths::DisplayPath;
 pub(crate) use paths::home_relative_path;
+#[cfg(test)]
+pub(crate) use paths::normalize_test_path;
 pub(crate) use project_entry::GitRepo;
 pub(crate) use project_entry::ProjectEntry;
 pub(crate) use project_entry::entry_contains;
