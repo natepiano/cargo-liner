@@ -57,6 +57,119 @@ fn detail_cache_separates_root_and_worktree_rows_with_same_path() {
 }
 
 #[test]
+fn workspace_worktree_group_root_uses_worktree_group_title() {
+    let primary_ws = make_workspace_raw(Some("bevy_brp"), "~/rust/bevy_brp", vec![], None);
+    let linked_ws = make_workspace_raw(
+        Some("bevy_brp_style_fix"),
+        "~/rust/bevy_brp_style_fix",
+        vec![],
+        Some("bevy_brp_style_fix"),
+    );
+    let root = make_workspace_worktrees_item(primary_ws, vec![linked_ws]);
+
+    let mut app = make_app(&[]);
+    apply_items(&mut app, &[root]);
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+    app.ensure_detail_cached();
+
+    let package = app.panes.package.content().unwrap();
+    assert_eq!(package.package_title, "Worktree Group");
+    assert_eq!(package.title_name, "bevy_brp");
+}
+
+#[test]
+fn package_worktree_group_root_reverts_to_package_after_linked_dismissed() {
+    let tmp = tempfile::tempdir().unwrap_or_else(|_| std::process::abort());
+    let primary_dir = tmp.path().join("cargo-mend");
+    let linked_dir = tmp.path().join("cargo-mend_style_fix");
+    std::fs::create_dir_all(&primary_dir).unwrap_or_else(|_| std::process::abort());
+    std::fs::create_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+
+    let primary_path = primary_dir.to_string_lossy().to_string();
+    let linked_path = linked_dir.to_string_lossy().to_string();
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("cargo-mend"), &primary_path, None),
+        vec![make_package_raw(
+            Some("cargo-mend"),
+            &linked_path,
+            Some("cargo-mend_style_fix"),
+        )],
+    );
+
+    let mut app = make_app(&[root]);
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+    app.ensure_detail_cached();
+    assert_eq!(
+        app.panes
+            .package
+            .content()
+            .map(|p| p.package_title.as_str()),
+        Some("Worktree Group")
+    );
+    assert_eq!(app.panes.git.content().map(|g| g.worktrees.len()), Some(2));
+
+    assert!(app.expand(), "root worktree group should expand");
+    app.ensure_visible_rows_cached();
+    std::fs::remove_dir_all(&linked_dir).unwrap_or_else(|_| std::process::abort());
+    app.handle_disk_usage(Path::new(&linked_path), 0);
+    app.ensure_visible_rows_cached();
+
+    app.project_list.set_cursor(2);
+    let target = app
+        .focused_dismiss_target()
+        .expect("deleted linked worktree should be dismissable");
+    app.dismiss(target);
+    app.ensure_detail_cached();
+
+    let package = app.panes.package.content().unwrap();
+    assert_eq!(package.package_title, "Package");
+    assert_eq!(package.title_name, "cargo-mend");
+    assert_eq!(app.panes.git.content().map(|g| g.worktrees.len()), Some(0));
+}
+
+#[test]
+fn dismissed_linked_worktree_is_omitted_from_group_git_summary() {
+    let root = make_package_worktrees_item(
+        make_package_raw(Some("cargo-mend"), "~/rust/cargo-mend", None),
+        vec![
+            make_package_raw(
+                Some("cargo-mend"),
+                "~/rust/cargo-mend_style_fix",
+                Some("cargo-mend_style_fix"),
+            ),
+            make_package_raw(
+                Some("cargo-mend"),
+                "~/rust/cargo-mend_old_fix",
+                Some("cargo-mend_old_fix"),
+            ),
+        ],
+    );
+
+    let mut app = make_app(&[root]);
+    let dismissed_path = test_path("~/rust/cargo-mend_old_fix");
+    app.project_list
+        .at_path_mut(dismissed_path.as_path())
+        .expect("dismissed worktree should exist")
+        .visibility = Dismissed;
+    app.project_list.set_cursor(0);
+    app.sync_selected_project();
+    app.ensure_detail_cached();
+
+    let git = app.panes.git.content().unwrap();
+    let names: Vec<&str> = git.worktrees.iter().map(|wt| wt.name.as_str()).collect();
+    assert_eq!(names, vec!["cargo-mend", "cargo-mend_style_fix"]);
+    assert_eq!(
+        app.panes
+            .package
+            .content()
+            .map(|p| p.package_title.as_str()),
+        Some("Worktree Group")
+    );
+}
+
+#[test]
 fn linked_worktree_entry_builds_detail_for_selected_row() {
     let primary_ws = make_workspace_raw(
         Some("cargo-port"),

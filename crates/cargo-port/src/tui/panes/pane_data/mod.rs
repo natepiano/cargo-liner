@@ -48,6 +48,7 @@ use crate::project::RustInfo;
 use crate::project::RustProject;
 use crate::project::Submodule;
 use crate::project::VendoredPackage;
+use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorkspaceMetadata;
 use crate::tui::app::App;
@@ -1217,8 +1218,14 @@ fn resolve_package_title(app: &App, item: &RootItem) -> String {
     if app.project_list.is_vendored_path(item.path()) {
         return "Vendored Crate".to_string();
     }
-    if matches!(item, RootItem::Worktrees(_)) {
-        return "Worktree Group".to_string();
+    if let RootItem::Worktrees(group) = item {
+        if group.renders_as_group() {
+            return "Worktree Group".to_string();
+        }
+        return match &group.primary {
+            RustProject::Workspace(_) => "Workspace".to_string(),
+            RustProject::Package(pkg) => resolve_package_title_for_package(app, pkg),
+        };
     }
     if matches!(item, RootItem::Rust(RustProject::Workspace(_))) {
         return "Workspace".to_string();
@@ -1376,8 +1383,10 @@ fn shorten_remote_url(url: &str, default_host: &str) -> String {
         .to_string()
 }
 
-/// Check whether a `RootItem` is a worktree group.
-const fn is_worktree_group(item: &RootItem) -> bool { matches!(item, RootItem::Worktrees(_)) }
+/// Check whether a `RootItem` currently renders as a worktree group.
+fn is_worktree_group(item: &RootItem) -> bool {
+    matches!(item, RootItem::Worktrees(group) if group.renders_as_group())
+}
 
 /// Collect worktree info from a worktree group item.
 ///
@@ -1392,6 +1401,7 @@ fn worktrees_from_item(app: &App, item: &RootItem) -> Vec<WorktreeInfo> {
             let primary_path = group.primary.path().clone();
             let entries: Vec<(AbsolutePath, String)> = group
                 .iter_entries()
+                .filter(|p| p.visibility() != Visibility::Dismissed)
                 .map(|p| (p.path().clone(), p.root_directory_name().into_string()))
                 .collect();
             (entries, primary_path)
@@ -1438,10 +1448,10 @@ pub fn build_pane_data(app: &App, item: &RootItem) -> DetailPaneData {
         },
         RootItem::Worktrees(group) => match &group.primary {
             RustProject::Workspace(ws) => {
-                build_pane_data_for_workspace(app, ws, &display_path, true, Some(item))
+                build_pane_data_for_workspace(app, ws, &display_path, is_wt_group, Some(item))
             },
             RustProject::Package(pkg) => {
-                build_pane_data_for_package(app, pkg, &display_path, true, Some(item))
+                build_pane_data_for_package(app, pkg, &display_path, is_wt_group, Some(item))
             },
         },
     }
@@ -1572,6 +1582,10 @@ fn build_pane_data_for_workspace(
     let stats_rows = counts.to_rows();
 
     let wt_item_ref = wt_item.filter(|_| is_wt_group);
+    let package_title = wt_item_ref.map_or_else(
+        || "Workspace".to_string(),
+        |item| resolve_package_title(app, item),
+    );
     build_pane_data_common(
         app,
         PaneDataSource {
@@ -1582,7 +1596,7 @@ fn build_pane_data_for_workspace(
             cargo: Some(cargo),
             wt_item: wt_item_ref,
             stats_rows,
-            package_title: "Workspace".to_string(),
+            package_title,
         },
     )
 }

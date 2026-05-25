@@ -39,6 +39,8 @@ impl App {
                 if let Some(project) = self.project_list.at_path_mut(&path) {
                     project.visibility = Dismissed;
                 }
+                self.panes.clear_for_tree_change();
+                self.scan.bump_generation();
                 self.ensure_visible_rows_cached();
                 if let Some(ni) = parent_node_index {
                     self.project_list.select_root_row(ni);
