@@ -323,6 +323,14 @@ fn assess_signature_exposure_allowance(
     Ok(None)
 }
 
+pub(super) fn has_signature_exposure_allowance(
+    ctx: &VisibilityContext<'_, '_>,
+    file_path: &Path,
+    item_name: Option<&str>,
+) -> Result<bool> {
+    Ok(assess_signature_exposure_allowance(ctx, file_path, item_name)?.is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

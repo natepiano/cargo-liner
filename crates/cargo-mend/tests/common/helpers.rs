@@ -263,6 +263,7 @@ fn code_from_str(code: &str) -> DiagnosticCode {
         "forbidden_pub_in_crate" => DiagnosticCode::ForbiddenPubInCrate,
         "review_pub_mod" => DiagnosticCode::ReviewPubMod,
         "suspicious_pub" => DiagnosticCode::SuspiciousPub,
+        "unused_pub" => DiagnosticCode::UnusedPub,
         "prefer_module_import" => DiagnosticCode::PreferModuleImport,
         "inline_path_qualified_type" => DiagnosticCode::InlinePathQualifiedType,
         "shorten_local_crate_import" => DiagnosticCode::ShortenLocalCrateImport,

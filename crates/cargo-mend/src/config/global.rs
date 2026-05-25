@@ -61,6 +61,7 @@ forbidden_pub_crate = true
 forbidden_pub_in_crate = true
 review_pub_mod = true
 suspicious_pub = true
+unused_pub = true
 prefer_module_import = true
 inline_path_qualified_type = true
 shorten_local_crate_import = true

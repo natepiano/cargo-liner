@@ -146,11 +146,12 @@ Use this as a migration aid and CI guard:
 The usual review flow is:
 
 1. ask whether the item is truly part of the module's API
-2. if not, try private or `pub(super)` in a nested module
-3. if the item lives in a top-level private module and is not re-exported by the crate root,
+2. if all callers are inside the defining module subtree, make it private
+3. if callers live in sibling modules, try `pub(super)` in a nested module
+4. if the item lives in a top-level private module and is not re-exported by the crate root,
    use `pub(crate)` — `cargo mend --fix` will narrow bare `pub` for you here
-4. if `pub(super)` is too narrow, move the item to a better common parent
-5. only keep broader visibility when the module structure genuinely requires it
+5. if `pub(super)` is too narrow, move the item to a better common parent
+6. only keep broader visibility when the module structure genuinely requires it
 
 ## Diagnostic Reference
 
@@ -294,6 +295,42 @@ The exception applies whether the parent boundary is a `mod.rs` file or an ordin
 like `markdown_file.rs`. If nothing outside the parent subtree uses that re-export, the warning
 still fires — and the compiler usually emits a paired `unused import` warning on the parent.
 `cargo mend --fix-pub-use` is designed to repair that paired case.
+
+<a id="unused-pub"></a>
+### Unused `pub`
+
+When a `pub` item is only used inside its defining module subtree, the modifier grants no useful
+access. Private visibility already lets the defining module and its descendants call the item.
+
+```rust
+// src/lib.rs
+mod renderer;
+
+// src/renderer/mod.rs
+mod tests;
+
+pub fn normalize_label(label: &str) -> String {
+    label.trim().to_string()
+}
+
+// src/renderer/tests.rs
+fn example() {
+    let _ = super::normalize_label(" title ");
+}
+```
+
+The item does not need to be visible to the parent or sibling modules:
+
+```rust
+fn normalize_label(label: &str) -> String {
+    label.trim().to_string()
+}
+```
+
+This warning does not fire for `pub` items in a library crate root, for items reached from outside
+their defining module subtree, or for items structurally exposed through public signatures.
+
+`cargo mend --fix` can remove these `pub` annotations automatically.
 
 <a id="prefer-module-import"></a>
 ### Prefer module import

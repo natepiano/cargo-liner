@@ -32,7 +32,7 @@ pub(crate) const JSON_FILE_EXTENSION: &str = "json";
 
 // findings
 const FINDINGS_DIR_NAME: &str = "mend-findings";
-pub(crate) const FINDINGS_SCHEMA_VERSION: u32 = 14;
+pub(crate) const FINDINGS_SCHEMA_VERSION: u32 = 16;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct StoredReport {
@@ -182,6 +182,11 @@ pub(super) fn load_report(
     // output) lives outside the proposed narrower scope, drop the
     // finding — the proposed narrowing would break a real call site.
     apply_caller_aware_suppression(&mut matched_reports);
+    // When an item can be private, prefer the stronger `unused_pub`
+    // diagnostic over broader visibility-narrowing diagnostics on the
+    // same item. If caller-aware suppression drops `unused_pub`, the
+    // weaker diagnostic remains.
+    apply_visibility_narrowing_priority(&mut matched_reports);
 
     let mut findings = Vec::new();
     let mut pub_use_fix_facts = Vec::new();
@@ -397,6 +402,37 @@ fn apply_caller_aware_suppression(reports: &mut [StoredReport]) {
                 .all(|caller| def_path_is_descendant(caller, narrower_scope))
         });
     }
+}
+
+fn apply_visibility_narrowing_priority(reports: &mut [StoredReport]) {
+    let mut unused_pub_keys = BTreeSet::new();
+    for report in reports.iter() {
+        for finding in &report.findings {
+            if finding.diagnostic_code == DiagnosticCode::UnusedPub {
+                unused_pub_keys.insert(visibility_priority_key(finding));
+            }
+        }
+    }
+
+    if unused_pub_keys.is_empty() {
+        return;
+    }
+
+    for report in reports.iter_mut() {
+        report.findings.retain(|finding| {
+            if !matches!(
+                finding.diagnostic_code,
+                DiagnosticCode::NarrowToPubCrate | DiagnosticCode::SuspiciousPub
+            ) {
+                return true;
+            }
+            !unused_pub_keys.contains(&visibility_priority_key(finding))
+        });
+    }
+}
+
+fn visibility_priority_key(finding: &StoredFinding) -> (String, usize, usize) {
+    (finding.path.clone(), finding.line, finding.column)
 }
 
 /// True when `caller_path` lives within the module subtree rooted at

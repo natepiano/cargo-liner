@@ -21,6 +21,7 @@ pub(crate) enum FixSupport {
     PubUse,
     NeedsManualPubUseCleanup,
     InternalParentFacade,
+    UnusedPub,
     NarrowToPubCrate,
     #[serde(rename = "fix_field_visibility")]
     FieldVisibility,
@@ -41,6 +42,7 @@ impl FixSupport {
             Self::ShortenImport
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
+            | Self::UnusedPub
             | Self::NarrowToPubCrate
             | Self::FieldVisibility
             | Self::ImportsAtTop => Some(HINT_FIXABLE_WITH_FIX),
@@ -54,6 +56,7 @@ impl FixSupport {
             Self::ShortenImport
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
+            | Self::UnusedPub
             | Self::NarrowToPubCrate
             | Self::FieldVisibility
             | Self::ImportsAtTop => Some(FixSummaryBucket::Fix),
@@ -111,6 +114,13 @@ static SUSPICIOUS_PUB: DiagnosticSpec = DiagnosticSpec {
     help_anchor: "suspicious-pub",
     detail_mode: DetailMode::MessageRelatedAndFix,
     fixability:  FixSupport::None,
+};
+static UNUSED_PUB: DiagnosticSpec = DiagnosticSpec {
+    headline:    "`pub` item is not used outside its defining module",
+    inline_help: Some("consider removing `pub`"),
+    help_anchor: "unused-pub",
+    detail_mode: DetailMode::MessageRelatedAndFix,
+    fixability:  FixSupport::UnusedPub,
 };
 static PREFER_MODULE_IMPORT: DiagnosticSpec = DiagnosticSpec {
     headline:    "function import should use module-qualified form",
@@ -184,6 +194,7 @@ pub(crate) fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         DiagnosticCode::ForbiddenPubInCrate => &FORBIDDEN_PUB_IN_CRATE,
         DiagnosticCode::ReviewPubMod => &REVIEW_PUB_MOD,
         DiagnosticCode::SuspiciousPub => &SUSPICIOUS_PUB,
+        DiagnosticCode::UnusedPub => &UNUSED_PUB,
         DiagnosticCode::PreferModuleImport => &PREFER_MODULE_IMPORT,
         DiagnosticCode::InlinePathQualifiedType => &INLINE_PATH_QUALIFIED_TYPE,
         DiagnosticCode::ShortenLocalCrateImport => &SHORTEN_LOCAL_CRATE_IMPORT,

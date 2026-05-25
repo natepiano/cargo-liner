@@ -11,6 +11,7 @@ use super::SuspiciousPubInput;
 use super::VisibilityContext;
 use super::classify;
 use super::classify::CrateKind;
+use super::classify::ModuleLocation;
 use super::classify::ParentVisibility;
 use super::classify::VisibilityFindingContext;
 use crate::compiler::RUST_MODULE_FILE_STEM;
@@ -38,6 +39,7 @@ pub(super) fn record_visibility_findings(
     record_forbidden_pub_crate(ctx, item, &finding_context, sink)?;
     record_forbidden_pub_in_crate(ctx, item, sink)?;
     record_review_pub_mod(ctx, item, &finding_context, sink)?;
+    maybe_record_unused_pub(ctx, item, &finding_context, sink)?;
 
     if item.vis_text == PUB_VISIBILITY_TOKEN
         && finding_context.parent_visibility == ParentVisibility::Private
@@ -79,6 +81,85 @@ pub(super) fn record_visibility_findings(
         )?;
     }
     Ok(())
+}
+
+fn maybe_record_unused_pub(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+    finding_context: &VisibilityFindingContext,
+    sink: &mut FindingsSink,
+) -> Result<()> {
+    if item.vis_text != PUB_VISIBILITY_TOKEN || item.category == ItemCategory::Module {
+        return Ok(());
+    }
+    let (Some(name), Some(kind_label)) = (item.name, item.kind_label) else {
+        return Ok(());
+    };
+    if finding_context.crate_kind == CrateKind::Library
+        && finding_context.module_location == ModuleLocation::CrateRoot
+    {
+        return Ok(());
+    }
+    if finding_context.parent_visibility == ParentVisibility::Public {
+        return Ok(());
+    }
+    if pub_item_is_allowlisted(ctx, finding_context.config_rel_path.as_deref(), name) {
+        return Ok(());
+    }
+    if ctx
+        .effective_visibilities
+        .is_public_at_level(item.def_id, Level::Reachable)
+    {
+        return Ok(());
+    }
+    if parent_facade_exports_item(ctx, item)?
+        || facade::parent_facade_has_glob_export(ctx.source_cache, ctx.source_root, item.file_path)?
+        || facade::path_exists_outside_child_module(
+            ctx.source_cache,
+            ctx.source_root,
+            &use_sites::parent_module_path_segments(ctx.tcx, item.def_id),
+            name,
+        )
+        || policy::has_signature_exposure_allowance(ctx, item.file_path, item.name)?
+    {
+        return Ok(());
+    }
+
+    sink.findings.push(source::build_finding(
+        ctx.tcx,
+        item.file_path,
+        item.highlight_span,
+        FindingParams {
+            severity:                Severity::Warning,
+            diagnostic_code:         DiagnosticCode::UnusedPub,
+            item:                    Some(format!("{kind_label} {name}")),
+            message:                 format!(
+                "{kind_label} is not used outside its defining module"
+            ),
+            suggestion:              Some(String::from("consider removing `pub`")),
+            fixability:              FixSupport::UnusedPub,
+            related:                 None,
+            item_def_path:           Some(use_sites::def_path_string(ctx.tcx, item.def_id)),
+            narrower_scope_def_path: Some(use_sites::parent_module_def_path(ctx.tcx, item.def_id)),
+        },
+    )?);
+    Ok(())
+}
+
+fn pub_item_is_allowlisted(
+    ctx: &VisibilityContext<'_, '_>,
+    config_rel_path: Option<&str>,
+    item_name: &str,
+) -> bool {
+    let Some(path) = config_rel_path else {
+        return false;
+    };
+    let item_key = format!("{path}::{item_name}");
+    ctx.settings
+        .visibility_config
+        .allow_pub_items
+        .iter()
+        .any(|allowed| allowed == &item_key)
 }
 
 fn record_forbidden_pub_crate(
@@ -289,6 +370,23 @@ fn parent_facade_caps_at_pub_crate(
         status.as_ref().map(|s| s.visibility),
         Some(ParentFacadeVisibility::Crate)
     ))
+}
+
+fn parent_facade_exports_item(
+    ctx: &VisibilityContext<'_, '_>,
+    item: &ItemInfo<'_>,
+) -> Result<bool> {
+    let Some(name) = item.name else {
+        return Ok(false);
+    };
+    Ok(facade::parent_facade_export_status(
+        ctx.source_cache,
+        ctx.settings,
+        ctx.source_root,
+        item.file_path,
+        name,
+    )?
+    .is_some())
 }
 
 fn maybe_record_suspicious_pub(

@@ -784,7 +784,8 @@ pub fn touch(_: CacheEntryStatus) {}
         .collect::<BTreeSet<_>>();
     assert!(codes.contains("internal_parent_pub_use_facade"));
     assert!(codes.contains("suspicious_pub"));
-    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert!(codes.contains("unused_pub"));
+    assert_eq!(report.summary.fixable_with_fix, 2);
     assert_eq!(report.summary.fixable_with_fix_pub_use, 4);
 }
 
@@ -829,8 +830,11 @@ edition = "2024"
         .iter()
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
-    assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
-    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(
+        codes,
+        BTreeSet::from(["internal_parent_pub_use_facade", "unused_pub"])
+    );
+    assert_eq!(report.summary.fixable_with_fix, 1);
     assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
@@ -875,8 +879,11 @@ edition = "2024"
         .iter()
         .map(|finding| finding.code.as_str())
         .collect::<BTreeSet<_>>();
-    assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
-    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(
+        codes,
+        BTreeSet::from(["internal_parent_pub_use_facade", "unused_pub"])
+    );
+    assert_eq!(report.summary.fixable_with_fix, 1);
     assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 
@@ -1092,9 +1099,9 @@ edition = "2024"
         .collect::<BTreeSet<_>>();
     assert_eq!(
         codes,
-        BTreeSet::from(["internal_parent_pub_use_facade", "narrow_to_pub_crate"])
+        BTreeSet::from(["internal_parent_pub_use_facade", "unused_pub"])
     );
-    assert_eq!(report.summary.fixable_with_fix, 1);
+    assert_eq!(report.summary.fixable_with_fix, 3);
     assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
 }
 

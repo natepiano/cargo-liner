@@ -394,3 +394,113 @@ pub fn public_reexport_exists_outside_parent(
 
     Ok(false)
 }
+
+pub fn path_exists_outside_child_module(
+    source_cache: &SourceCache,
+    source_root: &Path,
+    child_module_path: &[String],
+    item_name: &str,
+) -> bool {
+    for source_file in source_cache.source_files_under(source_root) {
+        let Some(current_module_path) =
+            source_cache::module_path_from_source_file(source_root, source_file)
+        else {
+            continue;
+        };
+        if module_path_is_descendant(&current_module_path, child_module_path) {
+            continue;
+        }
+        let Some(extracted) = source_cache.extracted_paths(source_file) else {
+            continue;
+        };
+        if extracted_paths_mention_child_item(
+            extracted,
+            &current_module_path,
+            child_module_path,
+            item_name,
+        ) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn extracted_paths_mention_child_item(
+    extracted: &ExtractedPaths,
+    current_module_path: &[String],
+    child_module_path: &[String],
+    item_name: &str,
+) -> bool {
+    extracted.use_paths.iter().any(|(path, _)| {
+        resolved_path_mentions_child_item(path, current_module_path, child_module_path, item_name)
+    }) || extracted.expr_paths.iter().any(|(path, _)| {
+        resolved_path_mentions_child_item(path, current_module_path, child_module_path, item_name)
+            || resolve_alias_expr_path(path, &extracted.use_renames).is_some_and(|resolved| {
+                resolved_path_mentions_child_item(
+                    &resolved,
+                    current_module_path,
+                    child_module_path,
+                    item_name,
+                )
+            })
+    })
+}
+
+fn resolved_path_mentions_child_item(
+    path: &[String],
+    current_module_path: &[String],
+    child_module_path: &[String],
+    item_name: &str,
+) -> bool {
+    resolve_module_relative_paths(path, current_module_path)
+        .into_iter()
+        .any(|resolved| path_mentions_child_item(&resolved, child_module_path, item_name))
+        || relative_tail_mentions_child_item(path, child_module_path, item_name)
+}
+
+fn path_mentions_child_item(
+    path: &[String],
+    child_module_path: &[String],
+    item_name: &str,
+) -> bool {
+    path.len() > child_module_path.len()
+        && path[..child_module_path.len()] == *child_module_path
+        && (path[child_module_path.len()] == item_name || path[child_module_path.len()] == "*")
+}
+
+fn relative_tail_mentions_child_item(
+    path: &[String],
+    child_module_path: &[String],
+    item_name: &str,
+) -> bool {
+    if path.first().map(String::as_str) == Some(PATH_KEYWORD_CRATE) || child_module_path.is_empty()
+    {
+        return false;
+    }
+
+    let mut tail_start = 0usize;
+    while path
+        .get(tail_start)
+        .is_some_and(|segment| segment == PATH_KEYWORD_SUPER)
+    {
+        tail_start += 1;
+    }
+    if path
+        .get(tail_start)
+        .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
+    {
+        tail_start += 1;
+    }
+    let tail = &path[tail_start..];
+
+    (1..=child_module_path.len()).any(|suffix_len| {
+        tail.len() > suffix_len
+            && child_module_path[child_module_path.len() - suffix_len..] == tail[..suffix_len]
+            && (tail[suffix_len] == item_name || tail[suffix_len] == "*")
+    })
+}
+
+fn module_path_is_descendant(candidate: &[String], parent: &[String]) -> bool {
+    candidate == parent || (candidate.len() > parent.len() && candidate[..parent.len()] == *parent)
+}

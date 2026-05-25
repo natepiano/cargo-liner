@@ -7,6 +7,7 @@ mod narrow_pub_crate;
 mod prefer_module_import;
 mod pub_use_fixes;
 mod runner;
+mod unused_pub;
 
 pub(crate) use runner::FIX_ALL_MAX_PASSES;
 pub(crate) use runner::MendRunner;

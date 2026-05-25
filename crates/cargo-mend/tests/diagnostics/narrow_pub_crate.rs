@@ -14,7 +14,11 @@ edition = "2024"
     )
     .expect("write manifest");
     fs::create_dir_all(temp.path().join("src")).expect("create src");
-    fs::write(temp.path().join("src/lib.rs"), "mod helpers;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod helpers;\n\npub fn entry() { helpers::internal_fn(); }\n",
+    )
+    .expect("write lib");
     fs::write(
         temp.path().join("src/helpers.rs"),
         "pub fn internal_fn() {}\n",
@@ -90,7 +94,7 @@ edition = "2024"
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
         temp.path().join("src/lib.rs"),
-        "mod helpers;\npub use helpers::exported_fn;\n",
+        "mod helpers;\npub use helpers::exported_fn;\n\npub fn entry() { helpers::internal_fn(); }\n",
     )
     .expect("write lib");
     fs::write(
@@ -124,7 +128,11 @@ edition = "2024"
     )
     .expect("write manifest");
     fs::create_dir_all(temp.path().join("src/helpers")).expect("create src/helpers");
-    fs::write(temp.path().join("src/lib.rs"), "mod helpers;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod helpers;\n\npub fn entry() { helpers::internal_fn(); }\n",
+    )
+    .expect("write lib");
     fs::write(
         temp.path().join("src/helpers/mod.rs"),
         "pub fn internal_fn() {}\n",
@@ -162,7 +170,7 @@ edition = "2024"
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
         temp.path().join("src/main.rs"),
-        "mod helpers;\nfn main() {}\n",
+        "mod helpers;\nfn main() { helpers::internal_fn(); }\n",
     )
     .expect("write main");
     fs::write(
@@ -246,7 +254,7 @@ edition = "2024"
     fs::create_dir_all(temp.path().join("src")).expect("create src");
     fs::write(
         temp.path().join("src/lib.rs"),
-        "mod helpers;\npub use helpers::exported_fn;\n",
+        "mod helpers;\npub use helpers::exported_fn;\n\npub fn entry() {\n    helpers::internal_fn();\n    let _ = helpers::InternalStruct;\n}\n",
     )
     .expect("write lib");
     fs::write(
@@ -404,7 +412,11 @@ edition = "2024"
     )
     .expect("write manifest");
     fs::create_dir_all(temp.path().join("src")).expect("create src");
-    fs::write(temp.path().join("src/lib.rs"), "mod helpers;\n").expect("write lib");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod helpers;\n\npub fn entry() -> i32 {\n    let helper = helpers::InternalHelper;\n    helper.do_work()\n}\n",
+    )
+    .expect("write lib");
     fs::write(
         temp.path().join("src/helpers.rs"),
         r#"pub struct InternalHelper;

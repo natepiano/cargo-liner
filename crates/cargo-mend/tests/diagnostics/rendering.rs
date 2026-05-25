@@ -39,6 +39,7 @@ fn create_all_diagnostics_fixture() -> TempDir {
         "src/deep_parent/nested",
         "src/field_vis_parent",
         "src/in_body_use",
+        "src/unused_pub",
     ] {
         fs::create_dir_all(temp.path().join(dir)).expect("create fixture dir");
     }
@@ -65,10 +66,13 @@ mod deep_parent;
 mod narrow_mod;
 mod field_vis_parent;
 mod in_body_use;
+mod unused_pub;
 pub mod review_mod;
 pub use private_parent::PublicContainer;
 
-fn main() {}
+fn main() {
+    narrow_mod::unexported_top_level();
+}
 "#,
     )
     .expect("write fixture main");
@@ -78,6 +82,11 @@ fn main() {}
         "pub fn unexported_top_level() {}\n",
     )
     .expect("write narrow mod");
+    fs::write(
+        temp.path().join("src/unused_pub.rs"),
+        "pub fn local_only() {}\n",
+    )
+    .expect("write unused_pub mod");
     write_diagnostic_fixture_modules(temp.path());
 
     temp
@@ -286,7 +295,7 @@ fn fixture_renders_every_current_diagnostic() {
         codes, expected_codes,
         "fixture should trigger every diagnostic at least once"
     );
-    assert_eq!(report.findings.len(), 15);
+    assert_eq!(report.findings.len(), 16);
     assert_summary_matches_findings(&report);
 
     let rendered_output = mend_command()
@@ -402,7 +411,7 @@ fn successive_json_runs_reuse_cached_findings_for_same_scope() {
     let first_codes: BTreeSet<_> = first.findings.iter().map(|finding| finding.code).collect();
     let second_codes: BTreeSet<_> = second.findings.iter().map(|finding| finding.code).collect();
 
-    assert_eq!(first.findings.len(), 15);
+    assert_eq!(first.findings.len(), 16);
     assert_eq!(second.findings.len(), first.findings.len());
     assert_eq!(second_codes, first_codes);
     assert_eq!(second.summary.errors, first.summary.errors);

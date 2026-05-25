@@ -21,6 +21,8 @@ use super::prefer_module_import;
 use super::prefer_module_import::PreferModuleImportScan;
 use super::pub_use_fixes;
 use super::pub_use_fixes::PubUseFixScan;
+use super::unused_pub;
+use super::unused_pub::UnusedPubScan;
 use crate::compiler;
 use crate::compiler::BuildOutputMode;
 use crate::compiler::SelectionResult;
@@ -63,6 +65,7 @@ struct RunPlan {
     import_scan:               Option<ImportScan>,
     prefer_module_import_scan: Option<PreferModuleImportScan>,
     inline_path_scan:          Option<InlinePathScan>,
+    unused_pub_scan:           Option<UnusedPubScan>,
     narrow_pub_crate_scan:     Option<NarrowPubCrateScan>,
     field_visibility_fix_scan: Option<FieldVisibilityFixScan>,
     imports_at_top_scan:       Option<ImportsAtTopScan>,
@@ -77,6 +80,7 @@ struct FixScans<'a> {
     imports:          Option<&'a ImportScan>,
     module_imports:   Option<&'a PreferModuleImportScan>,
     inline_types:     Option<&'a InlinePathScan>,
+    unused_pub:       Option<&'a UnusedPubScan>,
     narrowed_pub:     Option<&'a NarrowPubCrateScan>,
     field_visibility: Option<&'a FieldVisibilityFixScan>,
     imports_at_top:   Option<&'a ImportsAtTopScan>,
@@ -89,6 +93,7 @@ impl RunPlan {
             imports:          self.import_scan.as_ref(),
             module_imports:   self.prefer_module_import_scan.as_ref(),
             inline_types:     self.inline_path_scan.as_ref(),
+            unused_pub:       self.unused_pub_scan.as_ref(),
             narrowed_pub:     self.narrow_pub_crate_scan.as_ref(),
             field_visibility: self.field_visibility_fix_scan.as_ref(),
             imports_at_top:   self.imports_at_top_scan.as_ref(),
@@ -103,6 +108,7 @@ impl FixScans<'_> {
             self.imports.map(|scan| scan.findings.len()),
             self.module_imports.map(|scan| scan.findings.len()),
             self.inline_types.map(|scan| scan.findings.len()),
+            self.unused_pub.map(|scan| scan.fixes.len()),
             self.narrowed_pub.map(|scan| scan.fixes.len()),
             self.field_visibility.map(|scan| scan.fixes.len()),
             self.imports_at_top.map(|scan| scan.findings.len()),
@@ -181,6 +187,12 @@ impl<'a> MendRunner<'a> {
             .then(|| narrow_pub_crate::scan_from_report(&report))
             .transpose()
             .map_err(MendFailure::Unexpected)?;
+        let unused_pub_scan = (operation_mode.fixes.contains(FixKind::UnusedPub)
+            && diagnostics_config.is_enabled(DiagnosticCode::UnusedPub)
+                == DiagnosticStatus::Enabled)
+            .then(|| unused_pub::scan_from_report(&report))
+            .transpose()
+            .map_err(MendFailure::Unexpected)?;
         let field_visibility_fix_scan = (operation_mode.fixes.contains(FixKind::FieldVisibility)
             && diagnostics_config.is_enabled(DiagnosticCode::FieldVisibilityWiderThanType)
                 == DiagnosticStatus::Enabled)
@@ -206,6 +218,7 @@ impl<'a> MendRunner<'a> {
             import_scan,
             prefer_module_import_scan,
             inline_path_scan,
+            unused_pub_scan,
             narrow_pub_crate_scan,
             field_visibility_fix_scan,
             imports_at_top_scan,
@@ -345,6 +358,9 @@ impl<'a> MendRunner<'a> {
             fixes.extend(scan.fixes.iter().cloned());
         }
         if let Some(scan) = fix_scans.inline_types {
+            fixes.extend(scan.fixes.iter().cloned());
+        }
+        if let Some(scan) = fix_scans.unused_pub {
             fixes.extend(scan.fixes.iter().cloned());
         }
         if let Some(scan) = fix_scans.narrowed_pub {
@@ -566,6 +582,7 @@ mod tests {
             imports:          None,
             module_imports:   None,
             inline_types:     None,
+            unused_pub:       None,
             narrowed_pub:     None,
             field_visibility: Some(field_visibility),
             imports_at_top:   None,

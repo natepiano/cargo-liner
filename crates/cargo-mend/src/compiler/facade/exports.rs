@@ -142,6 +142,64 @@ pub fn parent_facade_export_status(
     }))
 }
 
+pub fn parent_facade_has_glob_export(
+    source_cache: &SourceCache,
+    source_root: &Path,
+    child_file: &Path,
+) -> Result<bool> {
+    let Some(initial_boundary) = boundary::parent_boundary_for_child(source_root, child_file)
+    else {
+        return Ok(false);
+    };
+
+    let mut current_child: PathBuf = child_file.to_path_buf();
+    let mut parent_boundary = initial_boundary;
+
+    loop {
+        let Some(child_module_name) =
+            rust_syntax::module_name_for_child_boundary_file(&current_child)
+        else {
+            return Ok(false);
+        };
+
+        if let Some(file) = source_cache.parsed_file(&parent_boundary.boundary_file)
+            && parent_boundary_has_matching_pub_use_glob(file, child_module_name)
+        {
+            return Ok(true);
+        }
+
+        current_child.clone_from(&parent_boundary.boundary_file);
+        let Some(next_boundary) = boundary::parent_of_boundary(source_root, &current_child) else {
+            return Ok(false);
+        };
+        parent_boundary = next_boundary;
+    }
+}
+
+fn parent_boundary_has_matching_pub_use_glob(file: &File, child_module_name: &str) -> bool {
+    file.items.iter().any(|item| {
+        let Item::Use(item_use) = item else {
+            return false;
+        };
+        if parent_facade_visibility(&item_use.vis).is_none() {
+            return false;
+        }
+        let mut paths = Vec::new();
+        source_cache::flatten_use_tree(Vec::new(), &item_use.tree, &mut paths);
+        paths.into_iter().any(|path| {
+            let normalized = if path
+                .first()
+                .is_some_and(|segment| segment == PATH_KEYWORD_SELF)
+            {
+                &path[1..]
+            } else {
+                &path[..]
+            };
+            normalized.len() == 2 && normalized[0] == child_module_name && normalized[1] == "*"
+        })
+    })
+}
+
 pub(super) fn exported_names_from_parent_boundary(
     file: &File,
     child_module_name: &str,

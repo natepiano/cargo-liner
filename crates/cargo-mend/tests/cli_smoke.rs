@@ -213,14 +213,14 @@ fn default_invocation_from_package_root_reports_findings() {
     let temp = create_simple_lib_fixture("cli_default_fixture");
 
     let report = run_mend_json_in(temp.path(), &[]);
-    let narrow_findings: Vec<_> = report
+    let unused_pub_findings: Vec<_> = report
         .findings
         .iter()
-        .filter(|finding| finding.code == DiagnosticCode::NarrowToPubCrate)
+        .filter(|finding| finding.code == DiagnosticCode::UnusedPub)
         .collect();
 
-    assert_eq!(narrow_findings.len(), 1);
-    assert_eq!(narrow_findings[0].path, "src/helpers.rs");
+    assert_eq!(unused_pub_findings.len(), 1);
+    assert_eq!(unused_pub_findings[0].path, "src/helpers.rs");
     assert_summary_matches_findings(&report);
 }
 
@@ -229,14 +229,14 @@ fn positional_manifest_path_reports_findings() {
     let temp = create_simple_lib_fixture("cli_positional_manifest_fixture");
 
     let report = run_mend_json_in(temp.path(), &[temp.path().to_str().expect("utf-8 path")]);
-    let narrow_findings: Vec<_> = report
+    let unused_pub_findings: Vec<_> = report
         .findings
         .iter()
-        .filter(|finding| finding.code == DiagnosticCode::NarrowToPubCrate)
+        .filter(|finding| finding.code == DiagnosticCode::UnusedPub)
         .collect();
 
-    assert_eq!(narrow_findings.len(), 1);
-    assert_eq!(narrow_findings[0].path, "src/helpers.rs");
+    assert_eq!(unused_pub_findings.len(), 1);
+    assert_eq!(unused_pub_findings[0].path, "src/helpers.rs");
     assert_summary_matches_findings(&report);
 }
 
@@ -327,14 +327,14 @@ fn workspace_flag_from_workspace_root_reports_member_findings() {
     let temp = create_simple_workspace_fixture();
 
     let report = run_mend_json_in(temp.path(), &["--workspace"]);
-    let narrow_findings: Vec<_> = report
+    let unused_pub_findings: Vec<_> = report
         .findings
         .iter()
-        .filter(|finding| finding.code == DiagnosticCode::NarrowToPubCrate)
+        .filter(|finding| finding.code == DiagnosticCode::UnusedPub)
         .collect();
 
-    assert_eq!(narrow_findings.len(), 1);
-    assert_eq!(narrow_findings[0].path, "member/src/helpers.rs");
+    assert_eq!(unused_pub_findings.len(), 1);
+    assert_eq!(unused_pub_findings[0].path, "member/src/helpers.rs");
     assert_summary_matches_findings(&report);
 }
 
@@ -343,15 +343,15 @@ fn workspace_all_targets_includes_example_target_findings() {
     let temp = create_workspace_with_example_fixture();
 
     let report = run_mend_json_in(temp.path(), &["--workspace", "--all-targets"]);
-    let narrow_paths = report
+    let unused_pub_paths = report
         .findings
         .iter()
-        .filter(|finding| finding.code == DiagnosticCode::NarrowToPubCrate)
+        .filter(|finding| finding.code == DiagnosticCode::UnusedPub)
         .map(|finding| finding.path.as_str())
         .collect::<BTreeSet<_>>();
 
     assert_eq!(
-        narrow_paths,
+        unused_pub_paths,
         BTreeSet::from(["member/examples/demo/helper.rs", "member/src/helpers.rs"])
     );
     assert_summary_matches_findings(&report);
@@ -362,14 +362,14 @@ fn lib_flag_limits_analysis_to_library_target() {
     let temp = create_lib_and_example_fixture("cli_lib_fixture");
 
     let report = run_mend_json_in(temp.path(), &["--lib"]);
-    let narrow_paths = report
+    let unused_pub_paths = report
         .findings
         .iter()
-        .filter(|finding| finding.code == DiagnosticCode::NarrowToPubCrate)
+        .filter(|finding| finding.code == DiagnosticCode::UnusedPub)
         .map(|finding| finding.path.as_str())
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(narrow_paths, BTreeSet::from(["src/helpers.rs"]));
+    assert_eq!(unused_pub_paths, BTreeSet::from(["src/helpers.rs"]));
     assert_summary_matches_findings(&report);
 }
 
@@ -378,14 +378,17 @@ fn named_example_limits_analysis_to_example_target() {
     let temp = create_clean_lib_with_example_fixture("cli_named_example_fixture");
 
     let report = run_mend_json_in(temp.path(), &["--example", "demo"]);
-    let narrow_paths = report
+    let unused_pub_paths = report
         .findings
         .iter()
-        .filter(|finding| finding.code == DiagnosticCode::NarrowToPubCrate)
+        .filter(|finding| finding.code == DiagnosticCode::UnusedPub)
         .map(|finding| finding.path.as_str())
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(narrow_paths, BTreeSet::from(["examples/demo/helper.rs"]));
+    assert_eq!(
+        unused_pub_paths,
+        BTreeSet::from(["examples/demo/helper.rs"])
+    );
     assert_summary_matches_findings(&report);
 }
 

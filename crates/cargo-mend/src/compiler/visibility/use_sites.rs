@@ -15,12 +15,14 @@ use rustc_hir::AmbigArg;
 use rustc_hir::Expr;
 use rustc_hir::ExprKind;
 use rustc_hir::HirId;
+use rustc_hir::ImplItem;
 use rustc_hir::Item;
 use rustc_hir::ItemKind;
 use rustc_hir::Pat;
 use rustc_hir::PatExprKind;
 use rustc_hir::PatKind;
 use rustc_hir::QPath;
+use rustc_hir::TraitItem;
 use rustc_hir::Ty;
 use rustc_hir::TyKind;
 use rustc_hir::def::Res;
@@ -29,7 +31,9 @@ use rustc_hir::def_id::DefId;
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::Visitor;
 use rustc_hir::intravisit::walk_expr;
+use rustc_hir::intravisit::walk_impl_item;
 use rustc_hir::intravisit::walk_item;
+use rustc_hir::intravisit::walk_trait_item;
 use rustc_middle::hir::nested_filter::All;
 use rustc_middle::ty::TyCtxt;
 
@@ -110,14 +114,37 @@ impl<'tcx> Visitor<'tcx> for UseSiteCollector<'_, 'tcx> {
     fn maybe_tcx(&mut self) -> TyCtxt<'tcx> { self.tcx }
 
     fn visit_item(&mut self, item: &'tcx Item<'tcx>) {
+        let prev = self.current_module;
         if matches!(item.kind, ItemKind::Mod(..)) {
-            let prev = self.current_module;
             self.current_module = item.owner_id.def_id.to_def_id();
-            walk_item(self, item);
-            self.current_module = prev;
         } else {
-            walk_item(self, item);
+            self.current_module = self
+                .tcx
+                .parent_module_from_def_id(item.owner_id.def_id)
+                .to_def_id();
         }
+        walk_item(self, item);
+        self.current_module = prev;
+    }
+
+    fn visit_impl_item(&mut self, item: &'tcx ImplItem<'tcx>) {
+        let prev = self.current_module;
+        self.current_module = self
+            .tcx
+            .parent_module_from_def_id(item.owner_id.def_id)
+            .to_def_id();
+        walk_impl_item(self, item);
+        self.current_module = prev;
+    }
+
+    fn visit_trait_item(&mut self, item: &'tcx TraitItem<'tcx>) {
+        let prev = self.current_module;
+        self.current_module = self
+            .tcx
+            .parent_module_from_def_id(item.owner_id.def_id)
+            .to_def_id();
+        walk_trait_item(self, item);
+        self.current_module = prev;
     }
 
     fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
@@ -170,4 +197,16 @@ pub(super) fn def_path_string(tcx: TyCtxt<'_>, def_id: LocalDefId) -> String {
 pub(super) fn parent_module_def_path(tcx: TyCtxt<'_>, def_id: LocalDefId) -> String {
     let parent = tcx.parent_module_from_def_id(def_id);
     tcx.def_path_str(parent.to_def_id())
+}
+
+pub(super) fn parent_module_path_segments(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Vec<String> {
+    let mut segments = parent_module_def_path(tcx, def_id)
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .map(String::from)
+        .collect::<Vec<_>>();
+    if segments.first().is_some_and(|segment| segment == "crate") {
+        segments.remove(0);
+    }
+    segments
 }

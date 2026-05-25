@@ -24,3 +24,4 @@ mod narrow_pub_crate;
 mod prefer_module_import;
 mod pub_use_fixes;
 mod rendering;
+mod unused_pub;

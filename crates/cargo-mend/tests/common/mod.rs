@@ -58,6 +58,7 @@ pub(super) enum DiagnosticCode {
     ForbiddenPubInCrate,
     ReviewPubMod,
     SuspiciousPub,
+    UnusedPub,
     PreferModuleImport,
     InlinePathQualifiedType,
     ShortenLocalCrateImport,
@@ -75,6 +76,7 @@ impl DiagnosticCode {
         Self::ForbiddenPubInCrate,
         Self::ReviewPubMod,
         Self::SuspiciousPub,
+        Self::UnusedPub,
         Self::PreferModuleImport,
         Self::InlinePathQualifiedType,
         Self::ShortenLocalCrateImport,
@@ -92,6 +94,7 @@ impl DiagnosticCode {
             Self::ForbiddenPubInCrate => "forbidden_pub_in_crate",
             Self::ReviewPubMod => "review_pub_mod",
             Self::SuspiciousPub => "suspicious_pub",
+            Self::UnusedPub => "unused_pub",
             Self::PreferModuleImport => "prefer_module_import",
             Self::InlinePathQualifiedType => "inline_path_qualified_type",
             Self::ShortenLocalCrateImport => "shorten_local_crate_import",
@@ -117,6 +120,7 @@ pub(super) enum FixSupport {
     PubUse,
     NeedsManualPubUseCleanup,
     InternalParentFacade,
+    UnusedPub,
     NarrowToPubCrate,
     #[serde(rename = "fix_field_visibility")]
     FieldVisibility,
@@ -137,6 +141,7 @@ impl FixSupport {
             Self::ShortenImport
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
+            | Self::UnusedPub
             | Self::NarrowToPubCrate
             | Self::FieldVisibility
             | Self::ImportsAtTop => Some("this warning is auto-fixable with `cargo mend --fix`"),
@@ -150,6 +155,7 @@ impl FixSupport {
             Self::ShortenImport
             | Self::PreferModuleImport
             | Self::InlinePathQualifiedType
+            | Self::UnusedPub
             | Self::NarrowToPubCrate
             | Self::FieldVisibility
             | Self::ImportsAtTop => Some(FixSummaryBucket::Fix),
@@ -185,6 +191,11 @@ pub(super) const fn diagnostic_spec(code: DiagnosticCode) -> &'static Diagnostic
         headline:    "`pub` is broader than this nested module boundary",
         help_anchor: "suspicious-pub",
         fix_support: FixSupport::None,
+    };
+    const UNUSED_PUB: DiagnosticSpec = DiagnosticSpec {
+        headline:    "`pub` item is not used outside its defining module",
+        help_anchor: "unused-pub",
+        fix_support: FixSupport::UnusedPub,
     };
     const PREFER_MODULE_IMPORT: DiagnosticSpec = DiagnosticSpec {
         headline:    "function import should use module-qualified form",
@@ -237,6 +248,7 @@ pub(super) const fn diagnostic_spec(code: DiagnosticCode) -> &'static Diagnostic
         DiagnosticCode::ForbiddenPubInCrate => &FORBIDDEN_PUB_IN_CRATE,
         DiagnosticCode::ReviewPubMod => &REVIEW_PUB_MOD,
         DiagnosticCode::SuspiciousPub => &SUSPICIOUS_PUB,
+        DiagnosticCode::UnusedPub => &UNUSED_PUB,
         DiagnosticCode::PreferModuleImport => &PREFER_MODULE_IMPORT,
         DiagnosticCode::InlinePathQualifiedType => &INLINE_PATH_QUALIFIED_TYPE,
         DiagnosticCode::ShortenLocalCrateImport => &SHORTEN_LOCAL_CRATE_IMPORT,
