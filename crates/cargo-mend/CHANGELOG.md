@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `unused_pub` no longer fires on a type reachable only through a type alias or another type's public field graph, which made `cargo mend --fix` remove a `pub` that a `pub(crate)` alias still needs (E0446).
+
 ## [0.15.0] - 2026-05-25
 
 ### Added

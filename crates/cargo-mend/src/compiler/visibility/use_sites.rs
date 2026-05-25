@@ -11,6 +11,8 @@
 //! macro invocations and paths produced by proc-macro expansion — both
 //! of which the source-level scanner cannot.
 
+use std::collections::HashSet;
+
 use rustc_hir::AmbigArg;
 use rustc_hir::Expr;
 use rustc_hir::ExprKind;
@@ -25,6 +27,7 @@ use rustc_hir::QPath;
 use rustc_hir::TraitItem;
 use rustc_hir::Ty;
 use rustc_hir::TyKind;
+use rustc_hir::def::DefKind;
 use rustc_hir::def::Res;
 use rustc_hir::def_id::CRATE_DEF_ID;
 use rustc_hir::def_id::DefId;
@@ -35,7 +38,9 @@ use rustc_hir::intravisit::walk_impl_item;
 use rustc_hir::intravisit::walk_item;
 use rustc_hir::intravisit::walk_trait_item;
 use rustc_middle::hir::nested_filter::All;
+use rustc_middle::ty;
 use rustc_middle::ty::TyCtxt;
+use rustc_middle::ty::Visibility;
 
 use crate::compiler::persistence::UseSite;
 
@@ -77,14 +82,80 @@ impl UseSiteCollector<'_, '_> {
     fn record_target(&mut self, target: DefId) {
         // Skip references to items in other crates — narrowing decisions
         // only apply to local items.
-        if !target.is_local() {
+        if target.is_local() {
+            self.push_site(target);
+        }
+        // A reference to a type alias also reaches every type the alias
+        // names: `type M = Wrapper<Inner>` exposes `Inner` wherever `M` is
+        // used, even though `Inner` never appears at the use site. Record
+        // those component types under the same caller module so narrowing
+        // findings see the reach that flows through the alias. Foreign
+        // aliases can still name a local type, so this runs regardless of
+        // where the alias itself lives.
+        if matches!(self.tcx.def_kind(target), DefKind::TyAlias) {
+            self.record_alias_components(target);
+        }
+    }
+
+    /// Record every local type named in an alias's right-hand side as used
+    /// from the current caller module. `type_of` returns the aliased type
+    /// with nested eager aliases already expanded, so walking it yields the
+    /// concrete types the alias exposes.
+    fn record_alias_components(&mut self, alias: DefId) {
+        let aliased = self.tcx.type_of(alias).instantiate_identity();
+        let mut seen = HashSet::new();
+        for arg in aliased.walk() {
+            if let Some(component) = arg.as_type()
+                && let ty::TyKind::Adt(adt_def, _) = component.kind()
+            {
+                self.record_exposed_adt(adt_def.did(), &mut seen);
+            }
+        }
+    }
+
+    /// Record a local type as used from the current caller module, then walk
+    /// its public field graph: a `pub` field of an alias-exposed type makes
+    /// the field's type reachable wherever the alias is used, so those types
+    /// must keep matching visibility too. Fields that do not escape the
+    /// type's own module are not followed — they expose nothing further.
+    fn record_exposed_adt(&mut self, did: DefId, seen: &mut HashSet<DefId>) {
+        let Some(local) = did.as_local() else {
+            return;
+        };
+        if !seen.insert(did) {
             return;
         }
-        let target_def_path = self.tcx.def_path_str(target);
-        let caller_module_def_path = self.tcx.def_path_str(self.current_module);
+        self.push_site(did);
+        let owning_module = self.tcx.parent_module_from_def_id(local).to_def_id();
+        for field in self.tcx.adt_def(did).all_fields() {
+            if !self.field_escapes_module(field.did, owning_module) {
+                continue;
+            }
+            for arg in self.tcx.type_of(field.did).instantiate_identity().walk() {
+                if let Some(component) = arg.as_type()
+                    && let ty::TyKind::Adt(adt_def, _) = component.kind()
+                {
+                    self.record_exposed_adt(adt_def.did(), seen);
+                }
+            }
+        }
+    }
+
+    /// True when `field` is visible beyond `owning_module` — i.e. its
+    /// visibility is `pub` or restricted to a scope wider than the type's own
+    /// module. A module-private field caps the reach of its type and is not
+    /// followed.
+    fn field_escapes_module(&self, field: DefId, owning_module: DefId) -> bool {
+        match self.tcx.visibility(field) {
+            Visibility::Public => true,
+            Visibility::Restricted(scope) => scope != owning_module,
+        }
+    }
+
+    fn push_site(&mut self, target: DefId) {
         self.out.push(UseSite {
-            target_def_path,
-            caller_module_def_path,
+            target_def_path:        self.tcx.def_path_str(target),
+            caller_module_def_path: self.tcx.def_path_str(self.current_module),
         });
     }
 

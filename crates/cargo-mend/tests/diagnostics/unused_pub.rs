@@ -120,6 +120,187 @@ edition = "2024"
 }
 
 #[test]
+fn type_reachable_only_through_pub_crate_alias_is_not_flagged_unused() {
+    // Regression for the `TextExtension`-style false positive. `Inner` and
+    // `Wrapper` appear only as type arguments inside the `pub(crate)` alias
+    // `Alias`, and `Detail` is reachable only through `Inner`'s public field
+    // graph. The alias is used cross-module, so all three are reachable there
+    // even though their names never appear at the use site. Removing `pub`
+    // would leak a private type through the `pub(crate)` alias (E0446), so
+    // they must be narrowed to `pub(crate)`, never flagged unused. `Orphan`
+    // and `Secret` (reachable only through `Inner`'s private field) stay
+    // genuinely unused.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "alias_exposure_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod consumer;\nmod material;\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/material.rs"),
+        r#"pub struct Wrapper<T> {
+    pub value: T,
+}
+
+pub struct Inner {
+    pub detail: Detail,
+    secret:     Secret,
+}
+
+pub struct Detail {
+    pub x: u32,
+}
+
+pub struct Secret {
+    pub s: u32,
+}
+
+pub struct Orphan {
+    pub o: u32,
+}
+
+pub(crate) type Alias = Wrapper<Inner>;
+
+pub(crate) fn make() -> Alias {
+    Wrapper {
+        value: Inner {
+            detail: Detail { x: 0 },
+            secret: Secret { s: 0 },
+        },
+    }
+}
+"#,
+    )
+    .expect("write material");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        "use crate::material::Alias;\n\npub fn run() {\n    let _value: Alias = crate::material::make();\n}\n",
+    )
+    .expect("write consumer");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+
+    let unused_items: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.code == DiagnosticCode::UnusedPub)
+        .filter_map(|finding| finding.item.as_deref())
+        .collect();
+    for exposed in ["struct Wrapper", "struct Inner", "struct Detail"] {
+        assert!(
+            !unused_items.contains(&exposed),
+            "{exposed} is reachable through the pub(crate) alias and must not be flagged unused: {unused_items:?}",
+        );
+    }
+    // The genuinely-internal types are still caught — no over-suppression.
+    assert!(
+        unused_items.contains(&"struct Orphan"),
+        "unused `Orphan` should still be flagged: {unused_items:?}",
+    );
+    assert!(
+        unused_items.contains(&"struct Secret"),
+        "`Secret`, reachable only through a private field, should still be flagged: {unused_items:?}",
+    );
+    assert_summary_matches_findings(&report);
+}
+
+#[test]
+fn fix_narrows_alias_exposed_types_instead_of_breaking_the_build() {
+    // End-to-end form of the bevy_hana failure: before the alias-aware
+    // reachability fix, `--fix` removed `pub` from the alias-named types,
+    // making them private; the `pub(crate)` alias then referenced a private
+    // type (E0446) and the whole batch rolled back. The fix narrows them to
+    // `pub(crate)` and the build stays green.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "alias_exposure_fix_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod consumer;\nmod material;\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/material.rs"),
+        r#"pub struct Wrapper<T> {
+    pub value: T,
+}
+
+pub struct Inner {
+    pub detail: Detail,
+}
+
+pub struct Detail {
+    pub x: u32,
+}
+
+pub(crate) type Alias = Wrapper<Inner>;
+
+pub(crate) fn make() -> Alias {
+    Wrapper {
+        value: Inner {
+            detail: Detail { x: 0 },
+        },
+    }
+}
+"#,
+    )
+    .expect("write material");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        "use crate::material::Alias;\n\npub fn run() {\n    let _value: Alias = crate::material::make();\n}\n",
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed (alias-exposed types should narrow, not break the build): {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let material = fs::read_to_string(temp.path().join("src/material.rs")).expect("read material");
+    for narrowed in [
+        "pub(crate) struct Wrapper",
+        "pub(crate) struct Inner",
+        "pub(crate) struct Detail",
+    ] {
+        assert!(
+            material.contains(narrowed),
+            "expected `{narrowed}`, got: {material}"
+        );
+    }
+    assert!(
+        !material.contains("pub struct"),
+        "no alias-exposed type should be left bare `pub` or removed: {material}"
+    );
+}
+
+#[test]
 fn fix_removes_pub_from_items_and_methods() {
     let temp = tempdir().expect("create temp fixture dir");
 
