@@ -72,6 +72,10 @@ impl AppearanceMode {
 pub struct ResolvedTheme {
     /// The theme to install via [`crate::set_active_theme`].
     pub theme:      Arc<Theme>,
+    /// The light/dark appearance this resolve landed on, after applying
+    /// the mode and OS signal. Callers compare it against the terminal's
+    /// actual background to decide whether to paint a backdrop.
+    pub appearance: Appearance,
     /// `Some(id)` when the configured theme name didn't exist in the
     /// registry. The caller decides whether to surface this.
     pub miss:       Option<ThemeId>,
@@ -125,6 +129,7 @@ impl ThemeRegistry {
         let miss = if hit.is_none() { Some(id) } else { None };
         ResolvedTheme {
             theme,
+            appearance,
             miss,
             mode_error,
         }
@@ -208,5 +213,24 @@ mod tests {
             Some(Appearance::Light),
         );
         assert_eq!(*resolved.theme, builtins::default_light());
+    }
+
+    #[test]
+    fn resolve_active_reports_resolved_appearance() {
+        let registry = ThemeRegistry::new_with_builtins();
+        let pinned = registry.resolve_active(
+            "dark",
+            "Default Light",
+            "Default Dark",
+            Some(Appearance::Light),
+        );
+        assert_eq!(pinned.appearance, Appearance::Dark);
+        let auto = registry.resolve_active(
+            "auto",
+            "Default Light",
+            "Default Dark",
+            Some(Appearance::Light),
+        );
+        assert_eq!(auto.appearance, Appearance::Light);
     }
 }

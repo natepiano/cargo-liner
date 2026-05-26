@@ -1,6 +1,8 @@
 use std::fmt::Write as _;
 use std::time::Instant;
 
+use ratatui::style::Color;
+use tui_pane::Appearance;
 use tui_pane::ToastStyle::Error;
 
 use crate::config;
@@ -19,6 +21,20 @@ use crate::tui::keymap::KeymapError;
 use crate::tui::keymap::KeymapErrorReason;
 use crate::tui::keymap::KeymapErrorReason::Parse;
 use crate::tui::keymap_ui;
+
+/// The backdrop color to paint when the resolved theme appearance
+/// disagrees with the terminal's detected background. Returns `None`
+/// when they match, or when the terminal background is unknown (the OSC
+/// 11 probe failed) — both cases leave the terminal showing through.
+fn background_when_mismatched(
+    terminal: Option<Appearance>,
+    resolved: Appearance,
+    background: Color,
+) -> Option<Color> {
+    terminal
+        .filter(|appearance| *appearance != resolved)
+        .map(|_| background)
+}
 
 impl App {
     pub(super) fn record_config_reload_failure(&mut self, err: &str) {
@@ -201,6 +217,16 @@ impl App {
             &appearance_cfg.dark_theme,
             self.themes.os_appearance(),
         );
+        // When the resolved theme's appearance disagrees with the
+        // terminal's actual background (e.g. a forced dark theme on a
+        // light terminal), paint the theme's base background so the text
+        // stays readable; otherwise leave the terminal showing through.
+        let frame_background = background_when_mismatched(
+            self.themes.terminal_appearance(),
+            resolved.appearance,
+            resolved.theme.text.bg_focus.color,
+        );
+        self.themes.set_frame_background(frame_background);
         tui_pane::set_active_theme(resolved.theme);
         tui_pane::set_focused_pane_tint(self.config.current().appearance.focused_pane_tint);
 
@@ -223,6 +249,15 @@ impl App {
             self.show_timed_toast("Appearance mode", err);
         }
     }
+
+    /// Record the terminal's detected background appearance and re-resolve
+    /// the active theme so the backdrop decision reflects it. Called once
+    /// at startup after the OSC 11 probe, before the input thread starts.
+    pub(crate) fn set_terminal_appearance(&mut self, appearance: Option<Appearance>) {
+        self.themes.set_terminal_appearance(appearance);
+        self.resolve_and_apply_active_theme();
+    }
+
     pub fn maybe_reload_config_from_disk(&mut self) {
         let Some(path) = self.config.take_stamp_change() else {
             return;
@@ -368,5 +403,29 @@ impl App {
     /// real orchestration lives in [`Self::apply_lint_config_change`].
     pub(super) fn refresh_lint_runtime_from_config(&mut self, cfg: &CargoPortConfig) {
         self.apply_lint_config_change(cfg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paints_backdrop_only_when_terminal_disagrees() {
+        // Theme matches the terminal → leave it transparent.
+        assert_eq!(
+            background_when_mismatched(Some(Appearance::Dark), Appearance::Dark, Color::Black),
+            None
+        );
+        // Forced dark theme on a light terminal → paint the dark backdrop.
+        assert_eq!(
+            background_when_mismatched(Some(Appearance::Light), Appearance::Dark, Color::Black),
+            Some(Color::Black)
+        );
+        // Terminal background unknown (probe failed) → never paint.
+        assert_eq!(
+            background_when_mismatched(None, Appearance::Dark, Color::Black),
+            None
+        );
     }
 }

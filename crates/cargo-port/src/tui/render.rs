@@ -11,6 +11,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
 use tui_pane::BLOCK_BORDER_WIDTH;
 use tui_pane::BYTES_PER_GIB;
@@ -94,6 +95,17 @@ pub(super) fn ui(frame: &mut Frame, app: &mut App) {
     app.panes.tiled_layout = ResolvedPaneLayout::default();
     app.panes.project_list.body_rect = Rect::ZERO;
     app.prune_toasts();
+
+    // Paint the backdrop when the active theme's appearance disagrees with
+    // the terminal background (e.g. a forced dark theme on a light
+    // terminal); otherwise leave the terminal showing through so
+    // transparency is preserved. Panes draw on top of this fill.
+    if let Some(color) = app.themes.frame_background() {
+        frame.render_widget(
+            Block::default().style(Style::default().bg(color)),
+            frame.area(),
+        );
+    }
 
     let outer_layout = Layout::default()
         .direction(Direction::Vertical)

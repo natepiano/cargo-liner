@@ -28,6 +28,9 @@ use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::enable_raw_mode;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use terminal_colorsaurus::QueryOptions;
+use terminal_colorsaurus::ThemeMode;
+use tui_pane::Appearance;
 use tui_pane::SLOW_FRAME_MS;
 use tui_pane::TrackedItemKey;
 
@@ -105,6 +108,23 @@ fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
 
 pub(super) fn rearm_input_modes() -> io::Result<()> {
     execute!(io::stdout(), EnableMouseCapture, EnableFocusChange)
+}
+
+/// Probe the terminal for its actual background appearance via an OSC 11
+/// query. Returns `None` when the terminal doesn't answer —
+/// `terminal-colorsaurus` fails fast for terminals that don't support the
+/// query, so this doesn't block on the timeout in that case. Call this in
+/// the window after raw mode is enabled but before the input thread
+/// starts, so the query response isn't consumed by `crossterm::event::read`.
+fn detect_terminal_appearance() -> Option<Appearance> {
+    match terminal_colorsaurus::theme_mode(QueryOptions::default()) {
+        Ok(ThemeMode::Dark) => Some(Appearance::Dark),
+        Ok(ThemeMode::Light) => Some(Appearance::Light),
+        Err(err) => {
+            tracing::debug!(error = %err, "terminal background detection unavailable");
+            None
+        },
+    }
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> {
@@ -206,6 +226,9 @@ pub fn run() -> ExitCode {
         },
     };
     tracing::info!(perf_log = %perf_log_path.display(), "tui_ready");
+    // Probe the terminal background while no thread is reading input yet,
+    // so the OSC 11 response can't be swallowed by `spawn_input_thread`.
+    app.set_terminal_appearance(detect_terminal_appearance());
     let input_rx = spawn_input_thread();
 
     let result = event_loop(&mut terminal, &mut app, &input_rx);

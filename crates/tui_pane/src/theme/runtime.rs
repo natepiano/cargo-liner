@@ -9,6 +9,8 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use ratatui::style::Color;
+
 use super::Appearance;
 use super::ThemesWatch;
 use crate::toasts::ToastId;
@@ -16,19 +18,30 @@ use crate::toasts::ToastId;
 /// Per-app theme runtime state — watch handle, two dismissable
 /// toast-id slots, and last OS appearance.
 pub struct ThemeRuntime {
-    watch:          ThemesWatch,
+    watch:               ThemesWatch,
     /// Toast id for the persistent "Themes reload errors" toast
     /// (parse failures under `themes/*.toml`). Dismissed when the
     /// next reload succeeds with zero failures.
-    diagnostics_id: Option<ToastId>,
+    diagnostics_id:      Option<ToastId>,
     /// Toast id for the persistent "Theme not found" toast emitted
     /// when the configured theme name is absent from the registry.
     /// Dismissed when the next resolve hits.
-    miss_toast_id:  Option<ToastId>,
+    miss_toast_id:       Option<ToastId>,
     /// Last OS appearance reported by the appearance poller. `None`
     /// until the poller emits its first event, or always `None` on
     /// platforms where detection fails.
-    os_appearance:  Option<Appearance>,
+    os_appearance:       Option<Appearance>,
+    /// Light/dark appearance of the terminal's actual background, probed
+    /// once at startup via an OSC 11 query. `None` when the terminal
+    /// didn't answer. Compared against the resolved theme appearance to
+    /// decide whether the active theme matches what it's drawing on.
+    terminal_appearance: Option<Appearance>,
+    /// Backdrop color to fill behind every pane, or `None` to leave the
+    /// terminal background showing through. Set when the resolved theme
+    /// appearance disagrees with `terminal_appearance` (e.g. a forced
+    /// dark theme on a light terminal), so the choice stays readable
+    /// instead of relying on a mismatched terminal background.
+    frame_background:    Option<Color>,
 }
 
 impl ThemeRuntime {
@@ -37,10 +50,12 @@ impl ThemeRuntime {
     #[must_use]
     pub fn new(dir: Option<PathBuf>) -> Self {
         Self {
-            watch:          ThemesWatch::new(dir),
-            diagnostics_id: None,
-            miss_toast_id:  None,
-            os_appearance:  None,
+            watch:               ThemesWatch::new(dir),
+            diagnostics_id:      None,
+            miss_toast_id:       None,
+            os_appearance:       None,
+            terminal_appearance: None,
+            frame_background:    None,
         }
     }
 
@@ -72,6 +87,25 @@ impl ThemeRuntime {
     /// Last OS appearance reported by the poller.
     #[must_use]
     pub const fn os_appearance(&self) -> Option<Appearance> { self.os_appearance }
+
+    /// Stash the terminal's detected background appearance.
+    pub const fn set_terminal_appearance(&mut self, appearance: Option<Appearance>) {
+        self.terminal_appearance = appearance;
+    }
+
+    /// The terminal's detected background appearance.
+    #[must_use]
+    pub const fn terminal_appearance(&self) -> Option<Appearance> { self.terminal_appearance }
+
+    /// Set the backdrop color painted behind the panes (or `None` to
+    /// leave the terminal background showing through).
+    pub const fn set_frame_background(&mut self, background: Option<Color>) {
+        self.frame_background = background;
+    }
+
+    /// The backdrop color painted behind the panes, if any.
+    #[must_use]
+    pub const fn frame_background(&self) -> Option<Color> { self.frame_background }
 }
 
 #[cfg(test)]
@@ -114,5 +148,25 @@ mod tests {
         assert_eq!(runtime.os_appearance(), Some(Appearance::Light));
         runtime.set_os_appearance(None);
         assert!(runtime.os_appearance().is_none());
+    }
+
+    #[test]
+    fn terminal_appearance_round_trip_set_get() {
+        let mut runtime = ThemeRuntime::new(None);
+        assert!(runtime.terminal_appearance().is_none());
+        runtime.set_terminal_appearance(Some(Appearance::Dark));
+        assert_eq!(runtime.terminal_appearance(), Some(Appearance::Dark));
+        runtime.set_terminal_appearance(None);
+        assert!(runtime.terminal_appearance().is_none());
+    }
+
+    #[test]
+    fn frame_background_round_trip_set_get() {
+        let mut runtime = ThemeRuntime::new(None);
+        assert!(runtime.frame_background().is_none());
+        runtime.set_frame_background(Some(Color::Black));
+        assert_eq!(runtime.frame_background(), Some(Color::Black));
+        runtime.set_frame_background(None);
+        assert!(runtime.frame_background().is_none());
     }
 }
