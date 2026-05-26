@@ -96,9 +96,12 @@ fn gpu_bar_line(percent: Option<u8>, cpu_cfg: &CpuConfig) -> Line<'static> {
         return gpu_unavailable_line();
     };
     let filled = tui_pane::cpu_filled_cells(percent);
-    let severity =
-        tui_pane::cpu_severity(percent, cpu_cfg.green_max_percent, cpu_cfg.yellow_max_percent)
-            .color();
+    let severity = tui_pane::cpu_severity(
+        percent,
+        cpu_cfg.green_max_percent,
+        cpu_cfg.yellow_max_percent,
+    )
+    .color();
     let filled_span = Span::styled("█".repeat(filled), Style::default().fg(severity));
     let empty_span = Span::styled(
         " ".repeat(CPU_BAR_WIDTH.saturating_sub(filled)),

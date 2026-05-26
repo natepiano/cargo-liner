@@ -945,10 +945,7 @@ mod tests {
             parse_drm_fdinfo(input),
             Some(DrmClientSample {
                 client_id:      Some(42),
-                engine_busy_ns: vec![
-                    ("gfx".to_string(), 1500),
-                    ("compute".to_string(), 250),
-                ],
+                engine_busy_ns: vec![("gfx".to_string(), 1500), ("compute".to_string(), 250),],
             })
         );
     }
