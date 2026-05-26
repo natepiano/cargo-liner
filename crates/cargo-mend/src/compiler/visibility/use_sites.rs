@@ -85,15 +85,44 @@ impl UseSiteCollector<'_, '_> {
         if target.is_local() {
             self.push_site(target);
         }
-        // A reference to a type alias also reaches every type the alias
-        // names: `type M = Wrapper<Inner>` exposes `Inner` wherever `M` is
-        // used, even though `Inner` never appears at the use site. Record
-        // those component types under the same caller module so narrowing
-        // findings see the reach that flows through the alias. Foreign
-        // aliases can still name a local type, so this runs regardless of
-        // where the alias itself lives.
-        if matches!(self.tcx.def_kind(target), DefKind::TyAlias) {
-            self.record_alias_components(target);
+        match self.tcx.def_kind(target) {
+            // A reference to a type alias also reaches every type the alias
+            // names: `type M = Wrapper<Inner>` exposes `Inner` wherever `M`
+            // is used, even though `Inner` never appears at the use site.
+            // Record those component types under the same caller module so
+            // narrowing findings see the reach that flows through the alias.
+            // Foreign aliases can still name a local type, so this runs
+            // regardless of where the alias itself lives.
+            DefKind::TyAlias => self.record_alias_components(target),
+            // Calling a function reaches every local type named in its
+            // signature: `fn f() -> Guard` exposes `Guard` at the call site
+            // even though `Guard` never appears there. Record those signature
+            // types under the same caller module so narrowing findings see
+            // the reach that flows through the call. Without this, removing
+            // `pub` from a type returned by (or passed to) a `pub(crate)` fn
+            // leaves a private type in that fn's signature (E0446) and rolls
+            // `--fix` back.
+            DefKind::Fn | DefKind::AssocFn => self.record_fn_signature_components(target),
+            _ => {},
+        }
+    }
+
+    /// Record every local type named in a function's signature as used from
+    /// the current caller module, following each type's public field graph the
+    /// same way alias components are. `fn_sig` yields the declared input and
+    /// output types; a module-private field still caps reach, so genuinely
+    /// internal types stay flagged.
+    fn record_fn_signature_components(&mut self, func: DefId) {
+        let signature = self.tcx.fn_sig(func).instantiate_identity();
+        let mut seen = HashSet::new();
+        for input_or_output in signature.skip_binder().inputs_and_output {
+            for arg in input_or_output.walk() {
+                if let Some(component) = arg.as_type()
+                    && let ty::TyKind::Adt(adt_def, _) = component.kind()
+                {
+                    self.record_exposed_adt(adt_def.did(), &mut seen);
+                }
+            }
         }
     }
 

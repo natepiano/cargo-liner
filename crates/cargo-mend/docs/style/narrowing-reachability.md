@@ -22,6 +22,11 @@ Indirections that count as reachability — each has a regression test; keep the
   `unused_pub::type_reachable_only_through_pub_crate_alias_is_not_flagged_unused`
 - **Public field graphs** — a `pub` field of a reachable type transitively
   exposes the field's type — same test
+- **Function signatures** — a type named only in the return or parameter type
+  of a function is reachable wherever that function is called: `fn f() -> Guard`
+  exposes `Guard` at every call site even though `Guard`'s name never appears
+  there —
+  `unused_pub::type_reachable_only_through_pub_crate_fn_return_is_not_flagged_unused`
 
 ### Rule
 

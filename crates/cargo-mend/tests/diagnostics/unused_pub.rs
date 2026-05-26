@@ -301,6 +301,167 @@ pub(crate) fn make() -> Alias {
 }
 
 #[test]
+fn type_reachable_only_through_pub_crate_fn_return_is_not_flagged_unused() {
+    // Regression for the `KeymapPathOverrideGuard`-style false positive.
+    // `Returned` appears only in the return type of the `pub(crate)` fn
+    // `make`, and `Detail` is reachable only through `Returned`'s public
+    // field graph. `make` is called cross-module, so both are reachable at
+    // the call site even though their names never appear there. Removing
+    // `pub` would leave a private type in `make`'s signature (E0446), so they
+    // must be narrowed to `pub(crate)`, never flagged unused. `Orphan` and
+    // `Secret` (reachable only through `Returned`'s private field) stay
+    // genuinely unused.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fn_return_exposure_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod consumer;\nmod material;\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/material.rs"),
+        r#"pub struct Returned {
+    pub detail: Detail,
+    secret:     Secret,
+}
+
+pub struct Detail {
+    pub x: u32,
+}
+
+pub struct Secret {
+    pub s: u32,
+}
+
+pub struct Orphan {
+    pub o: u32,
+}
+
+pub(crate) fn make() -> Returned {
+    Returned {
+        detail: Detail { x: 0 },
+        secret: Secret { s: 0 },
+    }
+}
+"#,
+    )
+    .expect("write material");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        "pub fn run() {\n    let _returned = crate::material::make();\n}\n",
+    )
+    .expect("write consumer");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+
+    let unused_items: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.code == DiagnosticCode::UnusedPub)
+        .filter_map(|finding| finding.item.as_deref())
+        .collect();
+    for exposed in ["struct Returned", "struct Detail"] {
+        assert!(
+            !unused_items.contains(&exposed),
+            "{exposed} is reachable through the pub(crate) fn return and must not be flagged unused: {unused_items:?}",
+        );
+    }
+    // The genuinely-internal types are still caught — no over-suppression.
+    assert!(
+        unused_items.contains(&"struct Orphan"),
+        "unused `Orphan` should still be flagged: {unused_items:?}",
+    );
+    assert!(
+        unused_items.contains(&"struct Secret"),
+        "`Secret`, reachable only through a private field, should still be flagged: {unused_items:?}",
+    );
+    assert_summary_matches_findings(&report);
+}
+
+#[test]
+fn fix_narrows_fn_return_exposed_type_instead_of_breaking_the_build() {
+    // End-to-end form of the cargo-port failure: before the
+    // signature-aware reachability fix, `--fix` removed `pub` from the
+    // returned type, making it private; the `pub(crate)` fn then returned a
+    // private type (E0446) and the whole batch rolled back. The fix narrows
+    // it to `pub(crate)` and the build stays green.
+    let temp = tempdir().expect("create temp fixture dir");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fn_return_exposure_fix_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod consumer;\nmod material;\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/material.rs"),
+        r#"pub struct Returned {
+    pub detail: Detail,
+}
+
+pub struct Detail {
+    pub x: u32,
+}
+
+pub(crate) fn make() -> Returned {
+    Returned {
+        detail: Detail { x: 0 },
+    }
+}
+"#,
+    )
+    .expect("write material");
+    fs::write(
+        temp.path().join("src/consumer.rs"),
+        "pub fn run() {\n    let _returned = crate::material::make();\n}\n",
+    )
+    .expect("write consumer");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed (fn-return-exposed types should narrow, not break the build): {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let material = fs::read_to_string(temp.path().join("src/material.rs")).expect("read material");
+    for narrowed in ["pub(crate) struct Returned", "pub(crate) struct Detail"] {
+        assert!(
+            material.contains(narrowed),
+            "expected `{narrowed}`, got: {material}"
+        );
+    }
+    assert!(
+        !material.contains("pub struct"),
+        "no fn-return-exposed type should be left bare `pub` or removed: {material}"
+    );
+}
+
+#[test]
 fn fix_removes_pub_from_items_and_methods() {
     let temp = tempdir().expect("create temp fixture dir");
 
