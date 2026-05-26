@@ -30,7 +30,6 @@ pub enum LintTriggerKind {
 pub enum LintEventKind {
     CreateOrModify,
     Remove,
-    OtherRelevant,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,7 +152,12 @@ pub(crate) fn classify_event_path(
     } else if matches!(event_kind, EventKind::Create(_) | EventKind::Modify(_)) {
         LintEventKind::CreateOrModify
     } else {
-        LintEventKind::OtherRelevant
+        // Access events (file opens/reads/closes) and other non-content
+        // events are not a reason to re-lint. The Linux inotify backend can
+        // surface these; ignore them so a bare read never triggers a run.
+        // The watcher already masks them out via `EventKindMask::CORE`; this
+        // keeps the classifier correct regardless of the watcher's config.
+        return None;
     };
 
     Some(LintTriggerEvent {

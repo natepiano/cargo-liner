@@ -29,7 +29,10 @@ use events::WatcherBackgroundSinks;
 use events::drain_completed_refreshes;
 use events::drain_notify_events;
 use events::process_notify_events;
+use notify::Config;
 use notify::Event;
+use notify::EventKindMask;
+use notify::RecommendedWatcher;
 use notify::Watcher;
 use probe::probe_new_projects;
 use refresh::fire_disk_updates;
@@ -102,7 +105,14 @@ pub(crate) fn spawn_watcher(
     let handler = move |res| {
         let _ = notify_tx.send(res);
     };
-    let Ok(mut watcher) = notify::recommended_watcher(handler) else {
+    // `CORE` excludes access events (file opens/reads/closes). On Linux the
+    // inotify backend reports reads as watch events; without this, merely
+    // reading a watched `.rs`/`Cargo.toml` — a build, or our own lint run
+    // reading sources — would trigger a lint, which then reads those files
+    // again: a self-perpetuating loop. macOS (`FSEvents`) and Windows never
+    // emit access events, so this is a no-op there.
+    let config = Config::default().with_event_kinds(EventKindMask::CORE);
+    let Ok(mut watcher) = RecommendedWatcher::new(handler, config) else {
         return watch_tx;
     };
     let started = Instant::now();
