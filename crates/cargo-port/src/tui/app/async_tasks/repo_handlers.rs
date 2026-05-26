@@ -376,9 +376,10 @@ impl App {
         // one exists, otherwise as a top-level peer.
         let discovered_path = item.path().to_path_buf();
         let inline_dirs = self.config.current().tui.inline_dirs.clone();
+        let dispatch = self.metadata_dispatch();
         {
             let mut tree = self.mutate_tree();
-            tree.insert_into_hierarchy(item);
+            tree.insert_into_hierarchy(item, &dispatch);
             tree.regroup_members(&inline_dirs);
         }
         self.register_discovery_shimmer(discovered_path.as_path());
@@ -400,9 +401,14 @@ impl App {
         // on `Workspace` / `Package` / `NonRustProject` — so this copy cannot
         // clobber it.
         let inline_dirs = self.config.current().tui.inline_dirs.clone();
+        let dispatch = self.metadata_dispatch();
         {
             let mut tree = self.mutate_tree();
-            let Some(old) = tree.replace_leaf_by_path(&path, item.clone()) else {
+            // The probe-side leaf comes back with a default `Cargo`, so
+            // each replace re-dispatches `cargo metadata`; the first
+            // (transient extraction) dispatch is superseded by the
+            // second via the store's per-root generation counter.
+            let Some(old) = tree.replace_leaf_by_path(&path, item.clone(), &dispatch) else {
                 return false;
             };
             let mut item = item;
@@ -414,7 +420,7 @@ impl App {
                 }
             }
             // Re-replace with the runtime-data-enriched version.
-            tree.replace_leaf_by_path(&path, item);
+            tree.replace_leaf_by_path(&path, item, &dispatch);
             tree.regroup_members(&inline_dirs);
             tree.regroup_top_level_worktrees();
         }

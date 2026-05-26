@@ -21,6 +21,7 @@ mod tree;
 
 pub(crate) use cargo_metadata::CargoMetadataError;
 pub(crate) use cargo_metadata::MetadataDispatchContext;
+pub(crate) use cargo_metadata::cargo_metadata_roots_for_item;
 pub(crate) use cargo_metadata::spawn_cargo_metadata_refresh;
 pub(crate) use cargo_metadata::spawn_out_of_tree_target_walk;
 pub(crate) use cargo_metadata::spawn_streaming_scan;

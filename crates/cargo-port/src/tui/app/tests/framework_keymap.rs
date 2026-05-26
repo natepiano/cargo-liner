@@ -43,6 +43,7 @@ use crate::config::NavigationKeys;
 use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::project::HeadState;
+use crate::project::ProjectType;
 use crate::project::RootItem;
 use crate::project::Submodule;
 use crate::test_support;
@@ -171,14 +172,14 @@ fn package_data_no_version() -> PackageData {
         worktree_group_summary:   None,
         primary_section:          None,
         path:                     "~/demo".to_string(),
-        version:                  "0.1.0".to_string(),
+        version:                  Some("0.1.0".to_string()),
         description:              None,
         crates_version:           None,
         crates_downloads:         None,
         publish_status:           PublishStatus::NotPublishable,
         crates_io_service:        ServiceStatus::Available,
-        types:                    "lib".to_string(),
-        disk:                     "1.0 MiB".to_string(),
+        types:                    Some(vec![ProjectType::Library]),
+        disk:                     Some(1_048_576),
         stats_rows:               Vec::new(),
         has_package:              true,
         edition:                  None,

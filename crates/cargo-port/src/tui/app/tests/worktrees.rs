@@ -77,7 +77,10 @@ fn workspace_worktree_group_root_uses_worktree_group_title() {
     let package = app.panes.package.content().unwrap();
     assert_eq!(package.package_title, "Worktree Group");
     assert_eq!(package.title_name, "bevy_brp");
-    assert_eq!(package.types, "workspace");
+    assert_eq!(
+        panes::DetailField::Targets.package_value(package),
+        "workspace"
+    );
     assert_eq!(
         package.worktree_group_summary.as_ref().map(|s| s.worktrees),
         Some(2)

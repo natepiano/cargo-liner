@@ -364,8 +364,16 @@ impl DetailField {
                 .as_ref()
                 .map_or_else(String::new, |summary| summary.disk.clone()),
             Self::Path => data.path.clone(),
-            Self::Disk => data.disk.clone(),
-            Self::Targets => data.types.clone(),
+            Self::Disk => data.disk.map_or_else(String::new, render::format_bytes),
+            Self::Targets => match &data.types {
+                None => String::new(),
+                Some(types) if types.is_empty() => "-".to_string(),
+                Some(types) => types
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            },
             Self::CratesIo => data.crates_version.as_deref().map_or_else(
                 || crates_io_placeholder(data).to_string(),
                 ToString::to_string,
@@ -373,7 +381,7 @@ impl DetailField {
             Self::Downloads => data
                 .crates_downloads
                 .map_or_else(|| crates_io_placeholder(data).to_string(), format_downloads),
-            Self::Version => data.version.clone(),
+            Self::Version => data.version.clone().unwrap_or_else(|| "-".to_string()),
             Self::DiskTarget => data
                 .in_project_target
                 .map_or_else(String::new, render::format_bytes),
@@ -761,7 +769,10 @@ pub struct PackageData {
     pub worktree_group_summary:   Option<WorktreeGroupSummary>,
     pub primary_section:          Option<PackageSection>,
     pub path:                     String,
-    pub version:                  String,
+    /// Version string. `None` before metadata lands; the renderer
+    /// maps absence to a placeholder. For submodules this carries the
+    /// pinned commit rather than a semver.
+    pub version:                  Option<String>,
     pub description:              Option<String>,
     pub crates_version:           Option<String>,
     pub crates_downloads:         Option<u64>,
@@ -776,8 +787,17 @@ pub struct PackageData {
     /// the warning placeholder; once it flips back to `Available`,
     /// the placeholder disappears (the row hides until a fetch lands).
     pub crates_io_service:        ServiceStatus,
-    pub types:                    String,
-    pub disk:                     String,
+    /// Resolved cargo target kinds. `None` before `cargo metadata`
+    /// lands and for non-Rust projects; `Some(vec)` once resolved —
+    /// the vec is empty only for the rare crate with no lib/bin/
+    /// proc-macro target, and workspaces fold their `Workspace`
+    /// identity into it. The renderer maps absence to a placeholder
+    /// so a missing value can never render as a blank.
+    pub types:                    Option<Vec<ProjectType>>,
+    /// Bytes under the project root. `None` until the disk walk has
+    /// reported; the renderer formats `Some` and leaves `None` blank,
+    /// matching the `target/` / `other` sub-rows.
+    pub disk:                     Option<u64>,
     pub stats_rows:               Vec<(&'static str, usize)>,
     pub has_package:              bool,
     /// Cargo edition ("2021", "2024", …) from the workspace metadata.
@@ -811,10 +831,10 @@ pub struct PackageData {
 }
 
 /// Resolve (version, description) for the detail pane from the
-/// authoritative metadata. Returns `("-", None)` pre-metadata — matches
-/// the Targets pane's pre-metadata placeholder UX.
-fn version_and_description(pkg: Option<&PackageRecord>) -> (String, Option<String>) {
-    let version = pkg.map_or_else(|| "-".to_string(), |p| p.version.to_string());
+/// authoritative metadata. Returns `(None, None)` pre-metadata; the
+/// renderer maps the absent version to its placeholder.
+fn version_and_description(pkg: Option<&PackageRecord>) -> (Option<String>, Option<String>) {
+    let version = pkg.map(|p| p.version.to_string());
     let description = pkg.and_then(|p| p.description.clone());
     (version, description)
 }
@@ -1672,43 +1692,37 @@ pub fn build_pane_data_for_submodule(app: &App, submodule: &Submodule) -> Detail
     let display_path = project::home_relative_path(abs_path);
     let git_detail = build_git_detail_fields(app, abs_path);
 
-    let version = submodule.commit.as_deref().unwrap_or("-").to_string();
-    let disk = submodule
-        .info
-        .disk_usage_bytes
-        .map_or_else(String::new, render::format_bytes);
-
     let submodule_ctx = build_submodule_context(submodule);
 
     DetailPaneData {
         package: PackageData {
-            package_title: "Submodule".to_string(),
-            title_name: submodule.name.clone(),
-            worktree_group_summary: None,
-            primary_section: None,
-            path: display_path,
-            version,
-            description: submodule.url.clone(),
-            crates_version: None,
-            crates_downloads: None,
-            publish_status: PublishStatus::NotPublishable,
-            crates_io_service: ServiceStatus::Available,
-            types: String::new(),
-            disk,
-            stats_rows: Vec::new(),
-            has_package: false,
-            edition: None,
-            license: None,
-            homepage: None,
-            repository: None,
-            in_project_target: None,
-            in_project_non_target: None,
+            package_title:            "Submodule".to_string(),
+            title_name:               submodule.name.clone(),
+            worktree_group_summary:   None,
+            primary_section:          None,
+            path:                     display_path,
+            version:                  submodule.commit.clone(),
+            description:              submodule.url.clone(),
+            crates_version:           None,
+            crates_downloads:         None,
+            publish_status:           PublishStatus::NotPublishable,
+            crates_io_service:        ServiceStatus::Available,
+            types:                    None,
+            disk:                     submodule.info.disk_usage_bytes,
+            stats_rows:               Vec::new(),
+            has_package:              false,
+            edition:                  None,
+            license:                  None,
+            homepage:                 None,
+            repository:               None,
+            in_project_target:        None,
+            in_project_non_target:    None,
             out_of_tree_target_bytes: None,
             // Submodules don't render the Lint/Ci fields; the
             // `package_fields_from_data` filter excludes them when
             // there's no Cargo manifest. Default values are safe.
-            lint_display: super::LintDisplay::default(),
-            ci_display: super::CiDisplay::default(),
+            lint_display:             super::LintDisplay::default(),
+            ci_display:               super::CiDisplay::default(),
         },
         git:     GitData {
             head: git_detail.head,
@@ -1893,7 +1907,7 @@ struct ManifestFields {
     license:     Option<String>,
     homepage:    Option<String>,
     repository:  Option<String>,
-    version:     String,
+    version:     Option<String>,
     description: Option<String>,
 }
 
@@ -1925,8 +1939,8 @@ struct BuildPackageDataArgs {
     crates_downloads:         Option<u64>,
     publish_status:           PublishStatus,
     crates_io_service:        ServiceStatus,
-    types_str:                String,
-    disk:                     String,
+    types:                    Option<Vec<ProjectType>>,
+    disk:                     Option<u64>,
     in_project_target:        Option<u64>,
     in_project_non_target:    Option<u64>,
     out_of_tree_target_bytes: Option<u64>,
@@ -1958,7 +1972,7 @@ fn build_package_data(args: BuildPackageDataArgs) -> PackageData {
         crates_downloads: args.crates_downloads,
         publish_status: args.publish_status,
         crates_io_service: args.crates_io_service,
-        types: args.types_str,
+        types: args.types,
         disk: args.disk,
         stats_rows: args.stats_rows,
         has_package: args.has_cargo,
@@ -2064,7 +2078,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
         crates_io_service: crates_io_status.service,
         crates_version: runtime.crates_io.version,
         crates_downloads: runtime.crates_io.downloads,
-        types_str: metadata.types_str,
+        types: metadata.types,
         disk: runtime.disk,
         in_project_target: metadata.in_project_target,
         in_project_non_target: metadata.in_project_non_target,
@@ -2085,7 +2099,7 @@ fn build_pane_data_common(app: &App, src: PaneDataSource<'_>) -> DetailPaneData 
 struct RuntimeFields {
     git_detail:             GitDetailFields,
     crates_io:              CratesIoFields,
-    disk:                   String,
+    disk:                   Option<u64>,
     worktree_group_summary: Option<WorktreeGroupSummary>,
     ci:                     Option<CiStatus>,
     worktrees:              Vec<WorktreeInfo>,
@@ -2098,7 +2112,7 @@ struct RuntimeFields {
 /// `WorkspaceMetadata` / `PackageRecord` lookups plus the in-project
 /// disk-usage breakdown. Same timing capture as `RuntimeFields`.
 struct MetadataFields {
-    types_str:                String,
+    types:                    Option<Vec<ProjectType>>,
     manifest:                 ManifestFields,
     in_project_target:        Option<u64>,
     in_project_non_target:    Option<u64>,
@@ -2127,7 +2141,10 @@ fn collect_runtime_fields(app: &App, abs_path: &Path, wt_item: Option<&RootItem>
     let crates_io = resolve_crates_io_fields(app, abs_path);
 
     let t_disk = std::time::Instant::now();
-    let disk = super::formatted_disk(&app.project_list, abs_path);
+    let disk = app
+        .project_list
+        .at_path(abs_path)
+        .and_then(|project| project.disk_usage_bytes);
     let worktree_group_summary = wt_item
         .and_then(|item| worktree_group_summary_for(item, super::formatted_disk_for_item(item)));
     let ci = compute_ci_status(app, abs_path, wt_item);
@@ -2160,18 +2177,19 @@ fn collect_metadata_fields(
     cargo: Option<&Cargo>,
     fallback_type: Option<ProjectType>,
 ) -> MetadataFields {
-    let types_str = cargo.map_or_else(String::new, |c| {
-        c.types()
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ")
+    // `None` for non-Rust projects (no cargo). For Rust projects the
+    // resolved target kinds, falling back to the project's own
+    // identity (e.g. `Workspace`) when metadata has not yet supplied
+    // any — an empty vec then means a resolved package with no
+    // lib/bin/proc-macro target.
+    let types = cargo.map(|c| {
+        let resolved = c.types();
+        if resolved.is_empty() {
+            fallback_type.into_iter().collect()
+        } else {
+            resolved.to_vec()
+        }
     });
-    let types_str = if types_str.is_empty() {
-        fallback_type.map_or_else(String::new, |project_type| project_type.to_string())
-    } else {
-        types_str
-    };
 
     let t_meta = std::time::Instant::now();
     let package_record = lookup_package_record(app, abs_path_owned);
@@ -2185,7 +2203,7 @@ fn collect_metadata_fields(
     let oot_ms = tui_pane::perf_log_ms(t_oot.elapsed().as_millis());
 
     MetadataFields {
-        types_str,
+        types,
         manifest,
         in_project_target,
         in_project_non_target,

@@ -159,7 +159,12 @@ fn collect_cargo_metadata_roots(projects: &[RootItem]) -> Vec<AbsolutePath> {
     roots
 }
 
-fn cargo_metadata_roots_for_item(item: &RootItem) -> Vec<AbsolutePath> {
+/// The `cargo metadata` workspace roots a single `RootItem` owns: a
+/// standalone Rust project's own path, every checkout of a worktree
+/// group, or nothing for a non-Rust project. Incremental insertion
+/// paths dispatch a refresh per root so a project never lands in the
+/// list without its metadata scheduled.
+pub(crate) fn cargo_metadata_roots_for_item(item: &RootItem) -> Vec<AbsolutePath> {
     match item {
         RootItem::Rust(rust) => vec![rust.path().clone()],
         RootItem::Worktrees(group) => group.iter_paths().cloned().collect(),

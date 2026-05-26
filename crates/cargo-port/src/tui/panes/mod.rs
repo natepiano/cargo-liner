@@ -122,7 +122,6 @@ pub(super) use pane_impls::ProjectListPane;
 pub(super) use pane_impls::TargetsPane;
 pub(super) use pane_impls::hit_test_table_row;
 pub(super) use project_list::compute_disk_cache;
-pub(super) use project_list::formatted_disk;
 pub(super) use project_list::formatted_disk_for_item;
 #[cfg(test)]
 pub(super) use project_list::render_tree_items;

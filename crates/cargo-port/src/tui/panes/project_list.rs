@@ -145,7 +145,7 @@ const fn rgb_channels(color: Color) -> (u8, u8, u8) {
     }
 }
 
-pub fn formatted_disk(projects: &ProjectList, path: &Path) -> String {
+fn formatted_disk(projects: &ProjectList, path: &Path) -> String {
     let bytes = projects
         .at_path(path)
         .and_then(|project| project.disk_usage_bytes)

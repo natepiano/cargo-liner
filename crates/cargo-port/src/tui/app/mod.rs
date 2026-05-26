@@ -780,19 +780,25 @@ impl App {
         self.confirm = Some(ConfirmAction::CleanGroup { primary, linked });
     }
 
-    /// The scan's `MetadataDispatchContext` refreshed from the current
-    /// App state. Used by `request_clean_confirm` to re-dispatch on
-    /// fingerprint drift.
-    fn clean_metadata_dispatch(&self) -> MetadataDispatchContext {
+    /// A `MetadataDispatchContext` built from the current App state.
+    /// Any path that admits a Rust project into the list (discovery,
+    /// refresh) builds one and hands it to the insertion method, which
+    /// dispatches the `cargo metadata` refresh — so a project can't
+    /// enter the list without its metadata scheduled.
+    pub(super) fn metadata_dispatch(&self) -> MetadataDispatchContext {
         MetadataDispatchContext {
             handle:         self.net.http_client.handle.clone(),
             tx:             self.background.background_sender(),
             metadata_store: Arc::clone(self.scan.metadata_store()),
-            // Use the shared scan-concurrency cap so confirm-triggered
-            // refreshes can't monopolize the metadata blocking pool.
+            // Bound by the scan-concurrency cap so these refreshes can't
+            // monopolize the metadata blocking pool.
             metadata_limit: Arc::new(tokio::sync::Semaphore::new(SCAN_METADATA_CONCURRENCY)),
         }
     }
+
+    /// The dispatch context `request_clean_confirm` uses to re-run
+    /// `cargo metadata` on fingerprint drift.
+    fn clean_metadata_dispatch(&self) -> MetadataDispatchContext { self.metadata_dispatch() }
 
     pub(super) const fn confirm(&self) -> Option<&ConfirmAction> { self.confirm.as_ref() }
 
@@ -1097,15 +1103,40 @@ impl TreeMutation<'_> {
     }
 
     /// Insert a discovered project into the existing tree, returning
-    /// `true` if the insertion changed the tree.
-    pub(super) fn insert_into_hierarchy(&mut self, item: RootItem) -> bool {
-        self.projects.insert_into_hierarchy(item)
+    /// `true` if the insertion changed the tree. Requires the dispatch
+    /// context and schedules a `cargo metadata` refresh for the item's
+    /// Rust roots — insertion and dispatch are one step, so a project
+    /// can never land in the list with unscheduled metadata.
+    pub(super) fn insert_into_hierarchy(
+        &mut self,
+        item: RootItem,
+        dispatch: &MetadataDispatchContext,
+    ) -> bool {
+        let roots = scan::cargo_metadata_roots_for_item(&item);
+        let changed = self.projects.insert_into_hierarchy(item);
+        for root in roots {
+            scan::spawn_cargo_metadata_refresh(dispatch.clone(), root);
+        }
+        changed
     }
 
     /// Replace a single leaf at `path` with `item`. Returns the previous
-    /// item if one was found.
-    pub(super) fn replace_leaf_by_path(&mut self, path: &Path, item: RootItem) -> Option<RootItem> {
-        self.projects.replace_leaf_by_path(path, item)
+    /// item if one was found. Like `insert_into_hierarchy`, the dispatch
+    /// context is required and the item's Rust roots get a fresh
+    /// `cargo metadata` — a probed replacement arrives with a default
+    /// `Cargo`, so without this its Type/edition/targets would blank out.
+    pub(super) fn replace_leaf_by_path(
+        &mut self,
+        path: &Path,
+        item: RootItem,
+        dispatch: &MetadataDispatchContext,
+    ) -> Option<RootItem> {
+        let roots = scan::cargo_metadata_roots_for_item(&item);
+        let previous = self.projects.replace_leaf_by_path(path, item);
+        for root in roots {
+            scan::spawn_cargo_metadata_refresh(dispatch.clone(), root);
+        }
+        previous
     }
 
     /// Re-bucket workspace members under inline-dir groups.

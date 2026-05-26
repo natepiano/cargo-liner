@@ -31,6 +31,7 @@ use crate::lint::LintRun;
 use crate::lint::LintRunStatus;
 use crate::project::AbsolutePath;
 use crate::project::GitStatus;
+use crate::project::ProjectType;
 use crate::tui::app::AvailabilityStatus;
 use crate::tui::panes;
 use crate::tui::state::ServiceStatus;
@@ -46,14 +47,14 @@ fn package_data(is_rust_project: bool) -> PackageData {
         worktree_group_summary:   None,
         primary_section:          None,
         path:                     "~/demo".to_string(),
-        version:                  "0.1.0".to_string(),
+        version:                  Some("0.1.0".to_string()),
         description:              None,
         crates_version:           None,
         crates_downloads:         None,
         publish_status:           PublishStatus::NotPublishable,
         crates_io_service:        ServiceStatus::Available,
-        types:                    "lib".to_string(),
-        disk:                     "36.3 GiB".to_string(),
+        types:                    Some(vec![ProjectType::Library]),
+        disk:                     Some(38_989_922_304),
         stats_rows:               Vec::new(),
         has_package:              true,
         edition:                  None,
