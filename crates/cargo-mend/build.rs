@@ -65,10 +65,7 @@ fn configure_unix_rpath() -> Result<(), String> {
     // to the link search path. Without this `-L`, the linker cannot resolve
     // `-lLLVM-*` and the build fails with `cannot find -lLLVM-...`. The rpath
     // below covers the runtime lookup; this covers link time.
-    println!(
-        "cargo:rustc-link-search=native={}",
-        rustc_lib_dir.display()
-    );
+    println!("cargo:rustc-link-search=native={}", rustc_lib_dir.display());
 
     println!(
         "cargo:rustc-link-arg=-Wl,-rpath,{}",
