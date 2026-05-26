@@ -177,9 +177,14 @@ fn render_column_inner(
                     package_field_render(ctx, *field, label_width, area.width, selection),
                 );
             },
-            PackageRow::Structure(index) => {
+            PackageRow::Structure(_) => {
+                // Structure rows render in the separate stats column,
+                // which doesn't scroll. Anchor the metadata column to its
+                // own last line rather than a position past its content,
+                // so focusing a stat keeps the metadata steady instead of
+                // scrolling it up.
                 if matches!(focus, PaneFocusState::Active) && i == pane.pos() {
-                    focused_output_line = lines.len().saturating_add(*index);
+                    focused_output_line = lines.len().saturating_sub(1);
                 }
             },
             PackageRow::Section(section) => {
