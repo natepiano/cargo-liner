@@ -49,13 +49,13 @@ pub(super) const fn fallback_toast_palette() -> FallbackToastPalette {
 }
 
 /// Result of rendering toast cards.
-pub struct ToastRenderResult {
+struct ToastRenderResult {
     /// Hitboxes for the toast card and close-button regions rendered in this pass.
-    pub hitboxes: Vec<ToastHitbox>,
+    hitboxes: Vec<ToastHitbox>,
 }
 
 /// Render toast cards and return their hit-test regions.
-pub fn render_toasts(
+fn render_toasts(
     frame: &mut Frame,
     area: Rect,
     toasts: &[ToastView],

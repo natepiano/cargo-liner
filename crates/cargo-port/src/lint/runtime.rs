@@ -115,10 +115,10 @@ enum SupervisorMsg {
 
 type ChildSlot = Arc<Mutex<Option<Child>>>;
 
-pub struct RunCommandsConfig<'a> {
-    pub cache_root:       &'a Path,
-    pub commands:         &'a [LintCommandConfig],
-    pub cache_size_bytes: Option<u64>,
+struct RunCommandsConfig<'a> {
+    cache_root:       &'a Path,
+    commands:         &'a [LintCommandConfig],
+    cache_size_bytes: Option<u64>,
 }
 
 struct ProjectWorker {
@@ -536,7 +536,7 @@ fn build_pending_run(commands: &[LintCommandConfig], started_at_str: String) -> 
     }
 }
 
-pub fn run_commands_for_project(
+fn run_commands_for_project(
     project_root: &Path,
     project_label: &str,
     config: &RunCommandsConfig<'_>,

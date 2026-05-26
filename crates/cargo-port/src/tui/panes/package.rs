@@ -136,7 +136,7 @@ pub fn package_label_width(fields: &[DetailField]) -> usize {
         .max(8)
 }
 
-pub fn package_row_label_width(rows: &[PackageRow]) -> usize {
+fn package_row_label_width(rows: &[PackageRow]) -> usize {
     rows.iter()
         .filter_map(|row| match row {
             PackageRow::Description | PackageRow::Section(_) | PackageRow::Structure(_) => None,

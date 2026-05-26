@@ -30,6 +30,7 @@ use super::*;
 use crate::channel;
 use crate::channel::Receiver;
 use crate::lint;
+use crate::project;
 use crate::project::GitStatus;
 use crate::project::GitStatus::Clean;
 use crate::project::GitStatus::Modified;
@@ -817,11 +818,11 @@ fn project_level_dir_handles_synthetic_path_forms() {
             .iter()
             .map(|p| AbsolutePath::from((*p).to_string()))
             .collect();
-        let event = crate::project::normalize_test_path(Path::new(case.event));
+        let event = project::normalize_test_path(Path::new(case.event));
         let result = probe::project_level_dir(&event, &watch_roots, &parents);
         let expected = case
             .expected
-            .map(|e| crate::project::normalize_test_path(Path::new(e)));
+            .map(|e| project::normalize_test_path(Path::new(e)));
         assert_eq!(result.as_deref(), expected.as_deref(), "{}", case.name);
     }
 }

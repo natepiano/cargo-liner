@@ -253,7 +253,7 @@ impl App {
     /// Record the terminal's detected background appearance and re-resolve
     /// the active theme so the backdrop decision reflects it. Called once
     /// at startup after the OSC 11 probe, before the input thread starts.
-    pub(crate) fn set_terminal_appearance(&mut self, appearance: Option<Appearance>) {
+    pub fn set_terminal_appearance(&mut self, appearance: Option<Appearance>) {
         self.themes.set_terminal_appearance(appearance);
         self.resolve_and_apply_active_theme();
     }

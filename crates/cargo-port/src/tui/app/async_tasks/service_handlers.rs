@@ -25,7 +25,7 @@ impl App {
     /// Skipped under `cfg(test)`: the token comes from a real `gh auth
     /// token` subprocess, so honoring it would make toast and render
     /// state depend on the host's gh login.
-    pub(crate) fn warn_if_github_unauthenticated(&mut self) {
+    pub fn warn_if_github_unauthenticated(&mut self) {
         if cfg!(test) {
             return;
         }

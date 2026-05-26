@@ -247,6 +247,7 @@ impl WorktreeGroup {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::path::PathBuf;
 
     use super::*;
 
@@ -266,7 +267,7 @@ mod tests {
 
     /// The host-absolute form of a fixture path, matching how `pkg`/`ws` store
     /// it. Identity on Unix; drive-rooted on Windows.
-    fn p(path: &str) -> std::path::PathBuf { crate::project::normalize_test_path(Path::new(path)) }
+    fn p(path: &str) -> PathBuf { crate::project::normalize_test_path(Path::new(path)) }
 
     #[test]
     fn iter_paths_packages_yields_primary_then_linked_in_order() {

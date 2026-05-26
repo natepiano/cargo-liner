@@ -1,7 +1,7 @@
 use crate::config::CargoPortConfig;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConfigKey {
+enum ConfigKey {
     CpuPollMs,
     CpuGreenMax,
     CpuYellowMax,
@@ -200,7 +200,7 @@ const fn mark_include_non_rust(
     }
 }
 
-pub fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<ConfigKey> {
+fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<ConfigKey> {
     let mut keys = Vec::new();
 
     if old.cpu.poll_ms != new.cpu.poll_ms {

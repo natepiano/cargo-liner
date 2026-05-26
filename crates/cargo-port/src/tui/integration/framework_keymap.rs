@@ -446,7 +446,7 @@ fn git_activate_state(ctx: &App) -> ShortcutState {
 /// `Pane<App>` host for the Lang detail pane. No pane-local actions —
 /// `Clean` lives on [`AppGlobalAction`], and the pane has no
 /// row-conditional dispatch.
-pub struct LangPane;
+struct LangPane;
 
 impl Pane<App> for LangPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Lang;
@@ -456,7 +456,7 @@ impl Pane<App> for LangPane {
 
 /// `Pane<App>` host for the Cpu pane. No pane-local actions — see
 /// [`LangPane`].
-pub struct CpuPane;
+struct CpuPane;
 
 impl Pane<App> for CpuPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Cpu;

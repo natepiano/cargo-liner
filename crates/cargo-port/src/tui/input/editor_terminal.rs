@@ -160,7 +160,7 @@ pub(super) fn terminal_shell_command(command: &str, selected_path: &Path) -> Str
     command.replace("{path}", &shell_escape_path(selected_path))
 }
 
-pub fn open_settings_to_terminal_command(app: &mut App) {
+fn open_settings_to_terminal_command(app: &mut App) {
     let keymap = Rc::clone(&app.framework_keymap);
     keymap.dispatch_framework_global(FrameworkGlobalAction::OpenSettings, app);
     settings::focus_terminal_command(app);
