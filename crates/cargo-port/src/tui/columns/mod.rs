@@ -169,12 +169,13 @@ pub(super) const fn column_defs(lint_enabled: bool) -> [ColumnDef; NUM_COLS] {
             gap:           1,
             header_mode:   HeaderMode::Standard,
         },
-        // 7: Disk
+        // 7: Disk — leading gap keeps a space before the size even when the
+        // Main delta column is non-empty (e.g. "↑5" abutting "107.7 GiB").
         ColumnDef {
             header_levels: &["Disk"],
             width:         ColumnWidth::Fit { min: 4 },
             align:         Align::Right,
-            gap:           0,
+            gap:           1,
             header_mode:   HeaderMode::Standard,
         },
     ]
@@ -801,7 +802,7 @@ mod tests {
         assert_eq!(line.spans[COL_GIT_PATH].content.as_ref(), " Git");
         assert_eq!(line.spans[COL_SYNC].content.as_ref(), " Og");
         assert_eq!(line.spans[COL_MAIN].content.as_ref(), " Mn");
-        assert_eq!(line.spans[COL_DISK].content.as_ref(), "    Disk");
+        assert_eq!(line.spans[COL_DISK].content.as_ref(), "     Disk");
         assert_eq!(line.width(), widths.total_width());
     }
 
@@ -966,7 +967,7 @@ mod tests {
         );
         assert_eq!(line.spans[COL_MAIN].content.as_ref(), "  Σ");
         assert_eq!(line.spans[COL_CI].content.as_ref(), "   ");
-        assert_eq!(line.spans[COL_DISK].content.as_ref(), "36.3 GiB");
+        assert_eq!(line.spans[COL_DISK].content.as_ref(), " 36.3 GiB");
     }
 
     #[test]

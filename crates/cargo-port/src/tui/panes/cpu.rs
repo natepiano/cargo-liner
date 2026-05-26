@@ -17,6 +17,7 @@ use tui_pane::accent_color;
 use tui_pane::column_header_color;
 use tui_pane::error_color;
 use tui_pane::text_default;
+use tui_pane::warning_color;
 
 use super::package::RenderStyles;
 use super::pane_impls::CpuPane;
@@ -24,6 +25,10 @@ use crate::config::CpuConfig;
 use crate::tui::pane::PaneRenderCtx;
 
 const CPU_BAR_WIDTH: usize = 10;
+/// Shown in the GPU row when the OS exposes no GPU utilization (e.g. the
+/// Apple `asahi` driver on Linux). Kept within `CPU_CONTENT_WIDTH` so it
+/// never widens the pane.
+const GPU_UNAVAILABLE_TEXT: &str = "unavailable";
 pub(super) const CPU_CONTENT_WIDTH: u16 = 17;
 pub const CPU_PANE_WIDTH: u16 = CPU_CONTENT_WIDTH + 2;
 const CPU_STATIC_INNER_HEIGHT: u16 = 8;
@@ -87,23 +92,40 @@ fn cpu_bar_line(percent: u8, cpu_cfg: &CpuConfig) -> Line<'static> {
 }
 
 fn gpu_bar_line(percent: Option<u8>, cpu_cfg: &CpuConfig) -> Line<'static> {
-    let value = percent.unwrap_or(0);
-    let filled = tui_pane::cpu_filled_cells(value);
+    let Some(percent) = percent else {
+        return gpu_unavailable_line();
+    };
+    let filled = tui_pane::cpu_filled_cells(percent);
     let severity =
-        tui_pane::cpu_severity(value, cpu_cfg.green_max_percent, cpu_cfg.yellow_max_percent)
+        tui_pane::cpu_severity(percent, cpu_cfg.green_max_percent, cpu_cfg.yellow_max_percent)
             .color();
     let filled_span = Span::styled("█".repeat(filled), Style::default().fg(severity));
     let empty_span = Span::styled(
         " ".repeat(CPU_BAR_WIDTH.saturating_sub(filled)),
         Style::default().fg(tui_pane::cpu_blank_bar_color()),
     );
-    let percent_text = percent.map_or_else(|| " --%".to_string(), |value| format!("{value:>3}%"));
+    let percent_span = Span::raw(format!("{percent:>3}%"));
     Line::from(vec![
         Span::raw(" "),
         filled_span,
         empty_span,
         Span::raw(" "),
-        Span::raw(percent_text),
+        percent_span,
+        Span::raw(" "),
+    ])
+}
+
+/// GPU row content shown when no utilization source exists. Right-aligned
+/// in warning color, with the same trailing space as the percentage so its
+/// right edge lines up; padded to `CPU_CONTENT_WIDTH` so it cannot widen
+/// the pane.
+fn gpu_unavailable_line() -> Line<'static> {
+    let leading_padding = usize::from(CPU_CONTENT_WIDTH)
+        .saturating_sub(GPU_UNAVAILABLE_TEXT.len())
+        .saturating_sub(1);
+    Line::from(vec![
+        Span::raw(" ".repeat(leading_padding)),
+        Span::styled(GPU_UNAVAILABLE_TEXT, Style::default().fg(warning_color())),
         Span::raw(" "),
     ])
 }

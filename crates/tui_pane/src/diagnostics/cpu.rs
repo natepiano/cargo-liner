@@ -10,11 +10,17 @@
 //! bucket using caller-supplied thresholds; [`CpuSeverity::color`]
 //! resolves to the framework's success / title / error theme colors.
 
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::collections::HashSet;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::Command;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
+#[cfg(target_os = "linux")]
+use std::time::Instant;
 
 use crossbeam_channel::Receiver;
 use crossbeam_channel::RecvTimeoutError;
@@ -113,6 +119,9 @@ pub struct CpuPoller {
     /// Persistent PDH query for GPU utilization (Windows only).
     #[cfg(target_os = "windows")]
     gpu_query:          Option<GpuQuery>,
+    /// DRM `fdinfo` engine-utilization sampler (Linux fallback).
+    #[cfg(target_os = "linux")]
+    fdinfo_gpu:         FdinfoGpuSampler,
 }
 
 impl Default for CpuPoller {
@@ -133,6 +142,8 @@ impl CpuPoller {
             last_breakdown_raw: read_cpu_breakdown_raw(),
             #[cfg(target_os = "windows")]
             gpu_query: GpuQuery::new(),
+            #[cfg(target_os = "linux")]
+            fdinfo_gpu: FdinfoGpuSampler::new(),
         }
     }
 
@@ -159,7 +170,9 @@ impl CpuPoller {
         let breakdown = cpu_breakdown(&mut self.last_breakdown_raw);
         #[cfg(target_os = "windows")]
         let gpu_percent = self.gpu_query.as_ref().and_then(GpuQuery::sample);
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
+        let gpu_percent = read_gpu_percent().or_else(|| self.fdinfo_gpu.sample());
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         let gpu_percent = read_gpu_percent();
 
         CpuUsage {
@@ -528,6 +541,149 @@ fn linux_nvidia_gpu_percent() -> Option<u8> {
         .map(|value| value.min(100))
 }
 
+/// Cumulative GPU busy nanoseconds parsed from one DRM `fdinfo` file.
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq, Eq)]
+struct DrmClientSample {
+    /// `drm-client-id`, used to dedupe a client that holds several fds.
+    client_id:      Option<i64>,
+    /// `(engine name, cumulative busy ns)` per `drm-engine-<name>` line.
+    engine_busy_ns: Vec<(String, u64)>,
+}
+
+/// Parse the `drm-` usage-stats keys from one `/proc/<pid>/fdinfo/<fd>`
+/// file. Returns `None` for any fd that exposes no `drm-engine-*` lines:
+/// non-DRM fds, and DRM drivers that emit no engine utilization (the
+/// Apple `asahi` driver among them).
+#[cfg(target_os = "linux")]
+fn parse_drm_fdinfo(contents: &str) -> Option<DrmClientSample> {
+    let mut client_id = None;
+    let mut engine_busy_ns = Vec::new();
+    for line in contents.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key == "drm-client-id" {
+            client_id = value.parse::<i64>().ok();
+        } else if let Some(engine) = key.strip_prefix("drm-engine-") {
+            // `drm-engine-capacity-<name>` is an instance count, not busy time.
+            if engine.starts_with("capacity-") {
+                continue;
+            }
+            // The value reads "<nanoseconds> ns"; take the leading integer.
+            if let Some(busy_ns) = value
+                .split_whitespace()
+                .next()
+                .and_then(|token| token.parse::<u64>().ok())
+            {
+                engine_busy_ns.push((engine.to_string(), busy_ns));
+            }
+        }
+    }
+    if engine_busy_ns.is_empty() {
+        return None;
+    }
+    Some(DrmClientSample {
+        client_id,
+        engine_busy_ns,
+    })
+}
+
+/// Sum cumulative busy nanoseconds per engine across every readable DRM
+/// client in `/proc`. A client that holds multiple fds repeats identical
+/// totals, so dedupe by `drm-client-id` before summing. The map is empty
+/// when no DRM client exposes engine stats.
+#[cfg(target_os = "linux")]
+fn collect_drm_engine_busy_ns() -> HashMap<String, u64> {
+    let mut totals: HashMap<String, u64> = HashMap::new();
+    let mut seen_clients: HashSet<i64> = HashSet::new();
+    let Ok(process_dirs) = std::fs::read_dir("/proc") else {
+        return totals;
+    };
+    for process_dir in process_dirs.filter_map(Result::ok) {
+        let Ok(fdinfo_entries) = std::fs::read_dir(process_dir.path().join("fdinfo")) else {
+            continue;
+        };
+        for fdinfo_entry in fdinfo_entries.filter_map(Result::ok) {
+            let Ok(contents) = std::fs::read_to_string(fdinfo_entry.path()) else {
+                continue;
+            };
+            let Some(sample) = parse_drm_fdinfo(&contents) else {
+                continue;
+            };
+            if let Some(client_id) = sample.client_id
+                && !seen_clients.insert(client_id)
+            {
+                continue;
+            }
+            for (engine, busy_ns) in sample.engine_busy_ns {
+                let total = totals.entry(engine).or_insert(0);
+                *total = total.saturating_add(busy_ns);
+            }
+        }
+    }
+    totals
+}
+
+/// Stateful GPU sampler over DRM `fdinfo` engine utilization.
+///
+/// The kernel reports cumulative per-engine busy nanoseconds; utilization
+/// is the busiest engine's delta over the wall-clock interval between
+/// polls. This is the driver-agnostic fallback used when neither
+/// `gpu_busy_percent` (AMD) nor `nvidia-smi` is available. It reports
+/// nothing when no DRM client exposes engine stats — including the Apple
+/// `asahi` driver, which implements no `fdinfo` utilization.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct FdinfoGpuSampler {
+    previous_busy_ns:    HashMap<String, u64>,
+    previous_sampled_at: Instant,
+}
+
+#[cfg(target_os = "linux")]
+impl FdinfoGpuSampler {
+    /// Prime the baseline from the current engine totals.
+    fn new() -> Self {
+        Self {
+            previous_busy_ns:    collect_drm_engine_busy_ns(),
+            previous_sampled_at: Instant::now(),
+        }
+    }
+
+    /// Sample the busiest engine's utilization since the previous poll,
+    /// in `0..=100`. Returns `None` when no DRM client exposes engine
+    /// stats (this driver provides no `fdinfo` utilization).
+    fn sample(&mut self) -> Option<u8> {
+        let current = collect_drm_engine_busy_ns();
+        let now = Instant::now();
+        let elapsed_ns = now
+            .saturating_duration_since(self.previous_sampled_at)
+            .as_nanos();
+        let busiest_delta_ns = current
+            .iter()
+            .map(|(engine, busy_ns)| {
+                busy_ns.saturating_sub(self.previous_busy_ns.get(engine).copied().unwrap_or(0))
+            })
+            .max();
+        self.previous_busy_ns = current;
+        self.previous_sampled_at = now;
+        engine_busy_percent(busiest_delta_ns?, elapsed_ns)
+    }
+}
+
+/// Busy nanoseconds over an elapsed-nanoseconds window, as a percentage
+/// in `0..=100`. `None` when the window is zero.
+#[cfg(target_os = "linux")]
+fn engine_busy_percent(busy_ns: u64, elapsed_ns: u128) -> Option<u8> {
+    if elapsed_ns == 0 {
+        return None;
+    }
+    let percent = u128::from(busy_ns).saturating_mul(100) / elapsed_ns;
+    Some(bounded_percent_u8(u64::try_from(percent).unwrap_or(100)))
+}
+
 #[cfg(target_os = "windows")]
 fn windows_cpu_breakdown_raw() -> CpuBreakdownRaw {
     #[repr(C)]
@@ -775,6 +931,44 @@ mod tests {
         let input =
             r#""PerformanceStatistics" = {"Renderer Utilization %"=10,"Device Utilization %"=42}"#;
         assert_eq!(parse_gpu_percent(input), Some(42));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_drm_fdinfo_reads_engine_busy_ns_and_skips_capacity() {
+        let input = "drm-driver:\tamdgpu\n\
+                     drm-client-id:\t42\n\
+                     drm-engine-gfx:\t1500 ns\n\
+                     drm-engine-capacity-gfx:\t2\n\
+                     drm-engine-compute:\t250 ns\n";
+        assert_eq!(
+            parse_drm_fdinfo(input),
+            Some(DrmClientSample {
+                client_id:      Some(42),
+                engine_busy_ns: vec![
+                    ("gfx".to_string(), 1500),
+                    ("compute".to_string(), 250),
+                ],
+            })
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_drm_fdinfo_returns_none_without_engine_lines() {
+        // A render-node fd on a driver that emits no engine utilization
+        // (the Apple `asahi` driver looks exactly like this).
+        let input = "pos:\t0\nflags:\t02400002\nmnt_id:\t39\nino:\t460\n";
+        assert_eq!(parse_drm_fdinfo(input), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn engine_busy_percent_is_busy_over_window() {
+        assert_eq!(engine_busy_percent(500_000_000, 1_000_000_000), Some(50));
+        assert_eq!(engine_busy_percent(2_000_000_000, 1_000_000_000), Some(100));
+        assert_eq!(engine_busy_percent(0, 1_000_000_000), Some(0));
+        assert_eq!(engine_busy_percent(10, 0), None);
     }
 
     #[test]
