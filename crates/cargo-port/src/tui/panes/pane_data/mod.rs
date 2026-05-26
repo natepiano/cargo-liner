@@ -1164,7 +1164,8 @@ impl TargetsData {
                     });
                 }
                 if target.kinds.contains(&TargetKind::Example) {
-                    let category = example_category(manifest_dir, target.src_path.as_path());
+                    let category =
+                        example_category(manifest_dir, target.src_path.as_path(), &target.name);
                     let display_name = if category.is_empty() {
                         target.name.clone()
                     } else {
@@ -1220,7 +1221,13 @@ impl TargetsData {
 /// Derive the example's category subdirectory from its `src_path`
 /// relative to its package's manifest dir. `examples/<file>.rs` is
 /// root-level (empty); `examples/<category>/<file>.rs` is categorized.
-fn example_category(manifest_dir: Option<&Path>, src_path: &Path) -> String {
+///
+/// A subdirectory whose name equals `target_name` is the example's own
+/// directory, not a grouping category: cargo names a multi-file
+/// `examples/<name>/main.rs` example after its directory, so the
+/// directory and the target name match. Treat that as root-level to
+/// avoid a `<name>/<name>` display.
+fn example_category(manifest_dir: Option<&Path>, src_path: &Path, target_name: &str) -> String {
     manifest_dir
         .and_then(|dir| src_path.strip_prefix(dir).ok())
         .and_then(|rel| {
@@ -1231,7 +1238,7 @@ fn example_category(manifest_dir: Option<&Path>, src_path: &Path) -> String {
                     _ => None,
                 })
                 .collect();
-            if parts.len() >= 3 {
+            if parts.len() >= 3 && parts[1] != target_name {
                 Some(parts[1].clone())
             } else {
                 None

@@ -812,6 +812,41 @@ mod targets_from_metadata {
     }
 
     #[test]
+    fn multi_file_examples_are_not_categorized_by_their_own_directory() {
+        let pkg = record(
+            "bevy_window_manager",
+            "/ws/bwm/Cargo.toml",
+            vec![
+                target(
+                    "restore_window",
+                    vec![TargetKind::Example],
+                    "/ws/bwm/examples/restore_window/main.rs",
+                ),
+                target(
+                    "custom_app_name",
+                    vec![TargetKind::Example],
+                    "/ws/bwm/examples/custom_app_name/main.rs",
+                ),
+            ],
+        );
+        let data = TargetsData::from_workspace_metadata(
+            &workspace("/ws/bwm", vec![pkg]),
+            &path("/ws/bwm"),
+        );
+
+        let display_names: Vec<&str> = data
+            .examples
+            .iter()
+            .map(|e| e.display_name.as_str())
+            .collect();
+        assert_eq!(
+            display_names,
+            vec!["custom_app_name", "restore_window"],
+            "examples/<name>/main.rs is the example's own directory, not a category"
+        );
+    }
+
+    #[test]
     fn surfaces_benches_flat_and_sorted() {
         let pkg = record(
             "demo",
