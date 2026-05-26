@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix the install failing to link on Linux with `cannot find -lLLVM-*`. `build.rs` now points the linker at the toolchain library directory that holds the bundled LLVM.
+
 ## [0.15.1] - 2026-05-25
 
 ### Fixed

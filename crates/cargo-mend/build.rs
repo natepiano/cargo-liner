@@ -60,6 +60,16 @@ fn configure_unix_rpath() -> Result<(), String> {
     let rustc_lib_dir = sysroot.join("lib");
     let target_lib_dir = sysroot.join("lib").join("rustlib").join(host).join("lib");
 
+    // `librustc_driver` is NEEDED-linked against the bundled LLVM shared library,
+    // which lives in `<sysroot>/lib` — not in the rustlib lib dir that rustc adds
+    // to the link search path. Without this `-L`, the linker cannot resolve
+    // `-lLLVM-*` and the build fails with `cannot find -lLLVM-...`. The rpath
+    // below covers the runtime lookup; this covers link time.
+    println!(
+        "cargo:rustc-link-search=native={}",
+        rustc_lib_dir.display()
+    );
+
     println!(
         "cargo:rustc-link-arg=-Wl,-rpath,{}",
         rustc_lib_dir.display()
