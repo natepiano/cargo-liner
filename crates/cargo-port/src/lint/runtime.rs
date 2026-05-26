@@ -259,13 +259,20 @@ fn cached_status_for_project(
 /// Read a project's most recent terminal lint status from disk. Tries
 /// `latest.json` first, then falls back to the newest non-`Running` line
 /// from `history.jsonl`. A `Running` `latest.json` is always stale on
-/// hydration (the active runtime has its own in-memory `Running` state)
-/// and is treated as missing so the history fallback fires.
-fn read_status_from_disk(cache_root: &Path, project_root: &Path) -> LintStatus {
+/// hydration (the active runtime tracks its own run in memory), so it is
+/// cleared from disk and the history fallback fires. Clearing — rather than
+/// only ignoring it in memory — stops external readers (the `/clippy` cache
+/// check) from waiting on a run a dead app left behind.
+pub(super) fn read_status_from_disk(cache_root: &Path, project_root: &Path) -> LintStatus {
     let project_dir = paths::project_dir_under(cache_root, project_root);
-    let latest = read_write::read_latest_file(&project_dir.join(LINTS_LATEST_JSON))
-        .filter(|run| !matches!(run.status, LintRunStatus::Running));
-    let run = latest.or_else(|| {
+    let terminal_latest = match read_write::read_latest_file(&project_dir.join(LINTS_LATEST_JSON)) {
+        Some(run) if matches!(run.status, LintRunStatus::Running) => {
+            let _ = read_write::clear_latest_under(cache_root, project_root);
+            None
+        },
+        other => other,
+    };
+    let run = terminal_latest.or_else(|| {
         read_write::read_history_file(&project_dir.join(LINTS_HISTORY_JSONL))
             .into_iter()
             .rev()
@@ -478,30 +485,30 @@ struct CommandExecution {
     duration_ms: u64,
 }
 
-pub fn run_commands_for_project(
-    project_root: &Path,
-    project_label: &str,
-    config: &RunCommandsConfig<'_>,
-    status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
-    background_tx: &Sender<BackgroundMsg>,
-    child_slot: &ChildSlot,
-) -> io::Result<()> {
-    if !project_still_runnable(project_root) {
-        return Ok(());
-    }
+/// Clears a stranded `Running` `latest.json` if the run never reaches its
+/// terminal write — an early return, a panic, or the worker being joined
+/// mid-command when the app shuts down. A completed run has already rewritten
+/// the marker to `Passed`/`Failed`, so the drop is a no-op for it. Without
+/// this, a run interrupted between the initial `Running` write and the
+/// terminal write strands the marker, and external readers (the `/clippy`
+/// cache check) wait on a run that will never finish.
+pub(super) struct RunFinalizeGuard<'a> {
+    pub(super) cache_root:   &'a Path,
+    pub(super) project_root: &'a Path,
+}
 
-    let cache_root = config.cache_root;
-    let commands = config.commands;
-    let cache_size_bytes = config.cache_size_bytes;
-    let output_dir = paths::output_dir_under(cache_root, project_root);
-    std::fs::create_dir_all(&output_dir)?;
-    let started_at = Local::now();
-    let started_at_str = started_at.to_rfc3339();
-    let run_started = Instant::now();
-    let mut run = LintRun {
-        // The run id doubles as the `runs/{run_id}` archive directory name,
-        // so it must be path-safe — the raw RFC3339 timestamp has `:` which is
-        // illegal on Windows. `started_at` keeps the unsanitized timestamp.
+impl Drop for RunFinalizeGuard<'_> {
+    fn drop(&mut self) {
+        let _ = read_write::clear_latest_if_running_under(self.cache_root, self.project_root);
+    }
+}
+
+/// Build the initial `Running` run record with one `Pending` entry per
+/// command. The run id doubles as the `runs/{run_id}` archive directory name,
+/// so it is sanitized to be path-safe — the raw RFC3339 timestamp has `:`,
+/// which is illegal on Windows. `started_at` keeps the unsanitized timestamp.
+fn build_pending_run(commands: &[LintCommandConfig], started_at_str: String) -> LintRun {
+    LintRun {
         run_id:      paths::sanitize_run_id(&started_at_str),
         started_at:  started_at_str,
         finished_at: None,
@@ -526,8 +533,33 @@ pub fn run_commands_for_project(
                 }
             })
             .collect(),
-    };
+    }
+}
+
+pub fn run_commands_for_project(
+    project_root: &Path,
+    project_label: &str,
+    config: &RunCommandsConfig<'_>,
+    status_cache: &Arc<Mutex<HashMap<String, LintStatus>>>,
+    background_tx: &Sender<BackgroundMsg>,
+    child_slot: &ChildSlot,
+) -> io::Result<()> {
+    if !project_still_runnable(project_root) {
+        return Ok(());
+    }
+
+    let cache_root = config.cache_root;
+    let commands = config.commands;
+    let cache_size_bytes = config.cache_size_bytes;
+    let output_dir = paths::output_dir_under(cache_root, project_root);
+    std::fs::create_dir_all(&output_dir)?;
+    let run_started = Instant::now();
+    let mut run = build_pending_run(commands, Local::now().to_rfc3339());
     read_write::write_latest_under(cache_root, project_root, &run)?;
+    let _finalize = RunFinalizeGuard {
+        cache_root,
+        project_root,
+    };
     tracing::info!(
         path = project_label,
         abs_path = %project_root.display(),
@@ -561,12 +593,35 @@ pub fn run_commands_for_project(
         CommandsResult::SomeFailed | CommandsResult::ProjectRemoved => LintRunStatus::Failed,
     };
 
-    // Archiving rewrites each command's `log_file` to its stable per-run
-    // path. Treat it as best-effort: on failure keep the un-archived run
-    // (its `log_file` still points at the rolling `*-latest.log`, which
-    // exists) so the terminal-status write below always lands. Otherwise an
-    // archive error — e.g. a filesystem rejecting the run-id path — would
-    // strand the run at `Running` and spin the UI forever.
+    write_terminal_run(
+        cache_root,
+        project_root,
+        run,
+        cache_size_bytes,
+        background_tx,
+    )?;
+    publish_status(
+        status_cache,
+        project_root,
+        status::read_status_under(cache_root, project_root),
+        background_tx,
+    );
+    Ok(())
+}
+
+/// Persist a finished run: archive its logs to the per-run directory, write
+/// the terminal `latest.json`, then append to history. Archiving and the
+/// history append are best-effort — on archive failure the un-archived run is
+/// kept (its `log_file` still points at the rolling `*-latest.log`, which
+/// exists). The terminal `latest.json` write is the one that must land, so an
+/// archive error never strands the run at `Running` and spins the UI forever.
+fn write_terminal_run(
+    cache_root: &Path,
+    project_root: &Path,
+    mut run: LintRun,
+    cache_size_bytes: Option<u64>,
+    background_tx: &Sender<BackgroundMsg>,
+) -> io::Result<()> {
     match history::archive_run_output(cache_root, project_root, &run) {
         Ok(archived) => run = archived,
         Err(err) => tracing::warn!(
@@ -590,12 +645,6 @@ pub fn run_commands_for_project(
             "lint_history_append_failed"
         ),
     }
-    publish_status(
-        status_cache,
-        project_root,
-        status::read_status_under(cache_root, project_root),
-        background_tx,
-    );
     Ok(())
 }
 

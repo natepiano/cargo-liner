@@ -7,6 +7,8 @@ use super::history;
 use super::history::PruneStats;
 use super::paths;
 use super::read_write;
+use super::runtime;
+use super::runtime::RunFinalizeGuard;
 use super::status;
 use super::types::LintCommand;
 use super::types::LintCommandStatus;
@@ -199,6 +201,69 @@ fn clear_latest_if_running_removes_running_latest() {
 
     assert!(cleared);
     assert!(!latest_path_under(cache_dir.path(), project_dir.path()).exists());
+}
+
+#[test]
+fn hydration_clears_stranded_running_and_falls_back_to_history() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = tempfile::tempdir().expect("tempdir");
+    history::append_history_under(
+        cache_dir.path(),
+        project_dir.path(),
+        &run(LintRunStatus::Failed),
+        None,
+    )
+    .expect("append history");
+    read_write::write_latest_under(
+        cache_dir.path(),
+        project_dir.path(),
+        &run(LintRunStatus::Running),
+    )
+    .expect("write latest");
+
+    let status = runtime::read_status_from_disk(cache_dir.path(), project_dir.path());
+
+    assert!(matches!(status, LintStatus::Failed(_)), "history fallback");
+    assert!(
+        !latest_path_under(cache_dir.path(), project_dir.path()).exists(),
+        "a dead app's running marker should be cleared from disk on hydration"
+    );
+}
+
+#[test]
+fn run_finalize_guard_clears_only_unfinished_running() {
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let project_dir = tempfile::tempdir().expect("tempdir");
+
+    read_write::write_latest_under(
+        cache_dir.path(),
+        project_dir.path(),
+        &run(LintRunStatus::Running),
+    )
+    .expect("write running");
+    drop(RunFinalizeGuard {
+        cache_root:   cache_dir.path(),
+        project_root: project_dir.path(),
+    });
+    assert!(
+        !latest_path_under(cache_dir.path(), project_dir.path()).exists(),
+        "an interrupted running marker should be cleared when the guard drops"
+    );
+
+    read_write::write_latest_under(
+        cache_dir.path(),
+        project_dir.path(),
+        &run(LintRunStatus::Passed),
+    )
+    .expect("write passed");
+    drop(RunFinalizeGuard {
+        cache_root:   cache_dir.path(),
+        project_root: project_dir.path(),
+    });
+    assert!(
+        latest_path_under(cache_dir.path(), project_dir.path()).exists(),
+        "a completed marker should survive the guard"
+    );
 }
 
 #[test]

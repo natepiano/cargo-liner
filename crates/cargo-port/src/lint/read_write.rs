@@ -8,7 +8,6 @@ use std::path::Path;
 use super::cache_size_index;
 use super::paths;
 use super::types::LintRun;
-#[cfg(test)]
 use super::types::LintRunStatus;
 
 pub fn write_latest_under(cache_root: &Path, project_root: &Path, run: &LintRun) -> io::Result<()> {
@@ -40,7 +39,10 @@ pub fn clear_latest_under(cache_root: &Path, project_root: &Path) -> io::Result<
     }
 }
 
-#[cfg(test)]
+/// Remove `latest.json` only if it is still marked `Running`. Used to
+/// finalize a run that never reached a terminal write (the worker was joined
+/// mid-command on shutdown, an early return, or a panic) without clobbering a
+/// completed run. Returns whether a `Running` marker was cleared.
 pub fn clear_latest_if_running_under(cache_root: &Path, project_root: &Path) -> io::Result<bool> {
     let path = paths::latest_path_under(cache_root, project_root);
     let Some(run) = read_latest_file(&path) else {
